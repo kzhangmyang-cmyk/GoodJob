@@ -367,21 +367,25 @@ apt-get update
 apt-get install -y ca-certificates curl gnupg nginx mysql-server rsync python3
 
 node_major=0
+node_minor=0
 if command -v node >/dev/null 2>&1; then
   node_major="$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || printf '0')"
+  node_minor="$(node -p 'Number(process.versions.node.split(".")[1])' 2>/dev/null || printf '0')"
 fi
-if (( node_major < 20 )); then
-  log "安装 Node.js 20"
+if (( node_major < 22 || (node_major == 22 && node_minor < 19) )); then
+  log "安装 Node.js 22.19+"
   install -d -m 0755 /etc/apt/keyrings
   curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
-  printf '%s\n' "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+  printf '%s\n' "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
     > /etc/apt/sources.list.d/nodesource.list
   apt-get update
   apt-get install -y nodejs
 fi
 node_major="$(node -p 'Number(process.versions.node.split(".")[0])')"
-(( node_major >= 20 )) || die "Node.js 安装失败，需要 20 或更高版本"
+node_minor="$(node -p 'Number(process.versions.node.split(".")[1])')"
+(( node_major > 22 || (node_major == 22 && node_minor >= 19) )) \
+  || die "Node.js 安装失败，需要 >=22.19.0"
 
 log "2/9 准备运行用户和发布目录"
 if ! id "$APP_USER" >/dev/null 2>&1; then

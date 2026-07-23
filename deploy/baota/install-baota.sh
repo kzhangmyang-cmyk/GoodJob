@@ -129,7 +129,7 @@ GoodJob CRM 宝塔 Linux 一键安装脚本
   - 宝塔中已创建网站并绑定 DOMAIN。
   - 宝塔中已创建 MySQL 数据库和业务用户。
   - 首次安装使用空数据库。
-  - Node.js 22+、npm、Nginx、MySQL 客户端、systemd 可用。
+  - Node.js 22.19+、npm、Nginx、MySQL 客户端、systemd 可用。
   - 推荐先在宝塔为网站启用 HTTPS。
 EOF
 }
@@ -506,7 +506,8 @@ while IFS= read -r candidate; do
 done < <(compgen -G "/www/server/nodejs/*/bin/node" || true)
 for candidate in "${node_candidates[@]}"; do
   candidate_major="$("$candidate" -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || printf '0')"
-  if (( candidate_major >= 22 )); then
+  candidate_minor="$("$candidate" -p 'Number(process.versions.node.split(".")[1])' 2>/dev/null || printf '0')"
+  if (( candidate_major > 22 || (candidate_major == 22 && candidate_minor >= 19) )); then
     NODE_BIN="$candidate"
     if [[ -x "$(dirname "$candidate")/npm" ]]; then
       NPM_BIN="$(dirname "$candidate")/npm"
@@ -521,8 +522,8 @@ MYSQL_BIN="$(find_binary mysql /www/server/mysql/bin/mysql /usr/bin/mysql 2>/dev
 MYSQLDUMP_BIN="$(find_binary mysqldump /www/server/mysql/bin/mysqldump /usr/bin/mysqldump 2>/dev/null || true)"
 NGINX_BIN="$(find_binary nginx /www/server/nginx/sbin/nginx /usr/sbin/nginx 2>/dev/null || true)"
 
-[[ -n "$NODE_BIN" ]] || die "未找到 Node.js。请在宝塔软件商店安装 Node.js 22+，并确保 node 可执行"
-[[ -n "$NPM_BIN" ]] || die "未找到 npm。请在宝塔软件商店安装 Node.js 22+"
+[[ -n "$NODE_BIN" ]] || die "未找到 Node.js >=22.19.0。请在宝塔软件商店安装 Node.js 22.19+，并确保 node 可执行"
+[[ -n "$NPM_BIN" ]] || die "未找到 npm。请在宝塔软件商店安装 Node.js 22.19+"
 [[ -n "$MYSQL_BIN" ]] || die "未找到 MySQL 客户端"
 [[ -n "$MYSQLDUMP_BIN" ]] || die "未找到 mysqldump，无法执行安装前备份"
 [[ -n "$NGINX_BIN" ]] || die "未找到宝塔 Nginx"

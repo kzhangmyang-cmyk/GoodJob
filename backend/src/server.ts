@@ -7,6 +7,7 @@ import nodemailer from "nodemailer";
 import { z } from "zod";
 import { AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, canManageAccount, canManageAccounts, canManageRole, canSeeOwner, canSeePersonalData, canSeeTeam, createCsrfToken, csrfCookieOptions, hashPassword, publicUser, requireAuth, sessionCookieOptions, signToken, validateAuthSecurity, verifyPassword } from "./auth.js";
 import { assertAiBaseUrlAllowed, createAiHttpClient } from "./ai-http-security.js";
+import { createAiModelConfigId } from "./model-providers/connection-service.js";
 import { validateAgentJobSecurity } from "./agent-job-security.js";
 import {
   cancelAgentJob,
@@ -7282,7 +7283,6 @@ app.get("/api/tools/ai-config", requireAuth, (req, res) => {
 
 app.post("/api/tools/ai-config", requireAuth, asyncRoute(async (req, res) => {
   const schema = z.object({
-    id: z.string().min(1).max(64).optional(),
     provider: z.string().min(1).max(40).default("openai"),
     protocol: z.enum(["openai-compatible", "anthropic", "gemini"]).default("openai-compatible"),
     name: z.string().min(1).default("AI业务模型配置"),
@@ -7306,14 +7306,13 @@ app.post("/api/tools/ai-config", requireAuth, asyncRoute(async (req, res) => {
     return;
   }
   const store = getStore();
-  const existing = body.id ? store.aiModelConfigs.find((item) => item.id === body.id && item.ownerId === req.user!.id) : undefined;
-  const apiKey = body.apiKey && !body.apiKey.includes("****") ? body.apiKey : existing?.apiKey || "";
+  const apiKey = body.apiKey && !body.apiKey.includes("****") ? body.apiKey : "";
   if (body.enabled && !apiKey) {
     res.status(400).json({ message: "启用配置前必须填写 API Key" });
     return;
   }
   const config: AiModelConfig = {
-    id: existing?.id || body.id || `ai_${req.user!.id}_${Date.now()}`,
+    id: createAiModelConfigId(),
     provider: body.provider,
     protocol: body.protocol,
     name: body.name,
@@ -7327,15 +7326,13 @@ app.post("/api/tools/ai-config", requireAuth, asyncRoute(async (req, res) => {
     useScoring: body.useScoring,
     useEmailDraft: body.useEmailDraft,
     useExam: body.useExam,
-    lastTestAt: existing?.lastTestAt,
-    lastTestStatus: existing?.lastTestStatus || "untested",
-    lastTestMessage: existing?.lastTestMessage || "",
+    lastTestStatus: "untested",
+    lastTestMessage: "",
     ownerId: req.user!.id,
     teamId: req.user!.teamId,
     updatedAt: new Date().toISOString()
   };
-  if (existing) Object.assign(existing, config);
-  else store.aiModelConfigs.unshift(config);
+  store.aiModelConfigs.unshift(config);
   await store.persist();
   res.json({ config: publicAiConfig(config), configs: getAiConfigs(req.user!).map(publicAiConfig) });
 }));
