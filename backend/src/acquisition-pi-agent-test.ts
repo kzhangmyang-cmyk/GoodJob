@@ -208,4 +208,46 @@ assert.throws(
   /snapshot.jobId/
 );
 
+const restoredTranscript = [{
+  role: "user" as const,
+  content: "上一轮已要求只分析公开采购信号。",
+  timestamp: 10
+}];
+const resumedAgent = createAcquisitionPiAgent({
+  identity: {
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "owner-a",
+    sessionId: "copilot-resumed"
+  },
+  snapshot: {
+    jobId: "job-resumed",
+    connectionId: "connection-a",
+    credentialVersion: 3,
+    provider: "moonshot",
+    model: "kimi-k2.5",
+    promptVersion: "acquisition-copilot-v1",
+    schemaVersion: "copilot-turn.v1",
+    capabilitySnapshotHash: "capability-hash-a",
+    baseUrlFingerprint: "base-url-hash-a"
+  },
+  runtime,
+  toolExecutor: {
+    async execute() {
+      return {};
+    }
+  },
+  toolAudit: audit,
+  toolAuditSecret: "pi-agent-test-audit-secret-at-least-32-characters",
+  initialMessages: restoredTranscript
+});
+assert.deepEqual(resumedAgent.state.messages, restoredTranscript);
+restoredTranscript[0]!.content = "调用者后续修改不得污染智能体状态";
+assert.equal(
+  resumedAgent.state.messages[0]?.role === "user"
+    ? resumedAgent.state.messages[0].content
+    : "",
+  "上一轮已要求只分析公开采购信号。"
+);
+
 console.log("acquisition Pi agent tests passed");

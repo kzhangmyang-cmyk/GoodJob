@@ -219,6 +219,9 @@ implements AcquisitionCopilotRepository {
 }
 
 export interface AcquisitionCopilotRunInput {
+  ownerId: string;
+  teamId: string;
+  actorId: string;
   sessionId: string;
   snapshot: AcquisitionPiModelSnapshot;
   transcript: AgentMessage[];
@@ -553,6 +556,9 @@ export class AcquisitionCopilotService {
         session.id
       );
       const response = await this.#runner.run({
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        actorId: scope.actorId,
         sessionId: session.id,
         snapshot: clone(session.modelSnapshot),
         transcript: existing.map((record) => clone(record.message)),

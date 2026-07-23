@@ -81,6 +81,7 @@ export interface CreateAcquisitionPiAgentOptions {
   toolExecutor: AcquisitionAgentToolExecutor;
   toolAudit: AcquisitionToolAuditLedger;
   toolAuditSecret: string;
+  initialMessages?: AgentMessage[];
   systemPrompt?: string;
   now?: () => number;
 }
@@ -333,6 +334,13 @@ export function createAcquisitionPiAgent(
 ) {
   const snapshot = validatedSnapshot(options.snapshot);
   const now = options.now ?? Date.now;
+  const initialMessages = (options.initialMessages ?? [])
+    .filter((message) =>
+      message.role === "user"
+      || message.role === "assistant"
+      || message.role === "toolResult"
+    )
+    .map((message) => structuredClone(message));
   const tools = createAcquisitionAgentTools({
     identity: options.identity,
     executor: options.toolExecutor,
@@ -346,7 +354,7 @@ export function createAcquisitionPiAgent(
       model: createGatewayModel(snapshot),
       thinkingLevel: "off",
       tools,
-      messages: [] as AgentMessage[]
+      messages: initialMessages
     },
     streamFn: createGatewayStreamFn({
       snapshot,
