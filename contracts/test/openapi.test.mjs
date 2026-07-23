@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadOpenApi, loadOpenApiSource } from "./helpers.mjs";
+import Ajv from "ajv";
+import addFormats from "ajv-formats";
+import { loadContractHarness } from "./helpers.mjs";
 
 const section16 = {
   "/api/v1/ai/providers": ["get"],
@@ -80,6 +83,8 @@ const reads = {
 test("OpenAPI exactly covers Section 16 with typed, authenticated responses", async () => {
   await loadOpenApi();
   const document = await loadOpenApiSource();
+  assert.equal(document.servers[0].url, "/");
+  assert.equal(new URL("/api/v1/acquisition/runs", `https://contract.test${document.servers[0].url}`).pathname, "/api/v1/acquisition/runs");
   assert.deepEqual(Object.keys(document.paths).sort(), Object.keys(section16).sort());
   assert.equal(document.components.schemas.ApiError.additionalProperties, false);
   assert.equal(document.components.schemas.AsyncOperation.additionalProperties, false);
@@ -111,4 +116,10 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   const resume = document.paths["/api/v1/acquisition/runs/{id}/resume"].post.responses["409"];
   assert.equal(resume.content["application/json"].schema.$ref, "#/components/schemas/ApiError");
   assert.deepEqual(resume.headers["X-Error-Code"].schema.enum, ["budget_revision_requires_new_run"]);
+  const { loadExamples } = await loadContractHarness();
+  const examples = await loadExamples();
+  const organizationCandidate = examples.organization.records.find((record) => record.schema === "organization-candidate").value;
+  const ajv = new Ajv({ strict: false });
+  addFormats(ajv);
+  assert.equal(ajv.compile(document.components.schemas.OrganizationCandidate)(organizationCandidate), true);
 });

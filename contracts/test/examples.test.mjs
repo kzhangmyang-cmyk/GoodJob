@@ -37,6 +37,23 @@ test("outcome feedback rejects untyped live parties and legacy individual partie
   assert.equal(validateCase("outcome-feedback", legacy).valid, false);
 });
 
+test("rules decisions cannot claim model metadata and inference cards require support", async () => {
+  const { validateCase } = await loadContractHarness();
+  const decision = {
+    decisionEngine: "rules", grade: "B", score: 60, recommendedAction: "nurture",
+    evidence: [{ evidenceId: "ev_1" }], positiveSignals: [], negativeSignals: [], reasons: ["rule"],
+    confidence: 0.7, ruleVersion: "rules-v1", promptVersion: "prompt-v1", modelProvider: "openai", model: "gpt"
+  };
+  const card = {
+    id: "card_1", candidateId: "candidate_1", partyType: "organization",
+    sections: [{ label: "Pain point", kind: "inference", content: "Likely needs a CRM." }],
+    evidenceIds: ["ev_1"], confidence: 0.8, modelProvider: "openai", model: "gpt", promptVersion: "v1",
+    createdAt: "2026-07-23T00:00:00.000Z"
+  };
+  assert.equal(validateCase("qualification-decision", decision).valid, false);
+  assert.equal(validateCase("battle-card", card).valid, false);
+});
+
 test("contract examples validate as complete organization and individual flows", async () => {
   const { loadExamples, validateCase } = await loadContractHarness();
   const examples = await loadExamples();

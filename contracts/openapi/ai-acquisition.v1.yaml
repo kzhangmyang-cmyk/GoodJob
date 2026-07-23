@@ -4,7 +4,7 @@ info:
   version: ai-acquisition.v1
   description: Versioned contract for authenticated AI acquisition operations.
 servers:
-  - url: /api/v1
+  - url: /
 security:
   - bearerAuth: []
 components:
@@ -63,7 +63,28 @@ components:
       type: object
       additionalProperties: false
       required: [id]
-      properties: { id: { type: string } }
+      properties:
+        id: { type: string }
+        name: { type: string }
+        domain: { type: string, nullable: true }
+        region: { type: string, nullable: true }
+        creditCode: { type: string, nullable: true }
+        evidenceIds: { type: array, items: { type: string } }
+        status: { type: string }
+        createdAt: { type: string, format: date-time }
+        ownerId: { type: string }
+        teamId: { type: string, nullable: true }
+        provider: { type: string }
+        model: { type: string }
+        credentialVersion: { type: integer }
+        partyType: { type: string }
+        candidateId: { type: string }
+        sections: { type: array, items: { type: object } }
+        sourceUrl: { type: string }
+        artifactHash: { type: string }
+        planId: { type: string }
+        runId: { type: string }
+        sessionId: { type: string }
     ModelConnection: *resource
     ModelCallRecord: *resource
     DiscoveryProvider: *resource
