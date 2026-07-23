@@ -143,6 +143,8 @@ function session(): AcquisitionCopilotSession {
       model: "kimi-k2",
       promptVersion: "prompt-v1",
       schemaVersion: "schema-v1",
+      promptHash: "sha256:prompt-v1",
+      schemaHash: "sha256:schema-v1",
       capabilitySnapshotHash: "c".repeat(64),
       baseUrlFingerprint: "d".repeat(64)
     },

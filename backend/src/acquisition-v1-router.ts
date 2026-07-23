@@ -619,10 +619,6 @@ function publicAudit(event: AcquisitionAuditEvent) {
 }
 
 function publicSession(session: AcquisitionCopilotSession) {
-  const snapshot = session.modelSnapshot as typeof session.modelSnapshot & {
-    promptHash: string;
-    schemaHash: string;
-  };
   return {
     id: session.id,
     ownerId: session.ownerId,
@@ -635,8 +631,8 @@ function publicSession(session: AcquisitionCopilotSession) {
       model: session.modelSnapshot.model,
       promptVersion: session.modelSnapshot.promptVersion,
       schemaVersion: session.modelSnapshot.schemaVersion,
-      promptHash: snapshot.promptHash,
-      schemaHash: snapshot.schemaHash
+      promptHash: session.modelSnapshot.promptHash,
+      schemaHash: session.modelSnapshot.schemaHash
     },
     createdAt: session.createdAt
   };

@@ -62,6 +62,8 @@ const agent = createAcquisitionPiAgent({
     model: "kimi-k2.5",
     promptVersion: "acquisition-copilot-v1",
     schemaVersion: "copilot-turn.v1",
+    promptHash: "sha256:prompt-acquisition-copilot-v1",
+    schemaHash: "sha256:schema-copilot-turn-v1",
     capabilitySnapshotHash: "capability-hash-a",
     baseUrlFingerprint: "base-url-hash-a"
   },
@@ -153,6 +155,8 @@ const failingAgent = createAcquisitionPiAgent({
     model: "kimi-k2.5",
     promptVersion: "acquisition-copilot-v1",
     schemaVersion: "copilot-turn.v1",
+    promptHash: "sha256:prompt-acquisition-copilot-v1",
+    schemaHash: "sha256:schema-copilot-turn-v1",
     capabilitySnapshotHash: "capability-hash-a",
     baseUrlFingerprint: "base-url-hash-a"
   },
@@ -193,6 +197,8 @@ assert.throws(
       model: "kimi-k2.5",
       promptVersion: "acquisition-copilot-v1",
       schemaVersion: "copilot-turn.v1",
+      promptHash: "sha256:prompt-acquisition-copilot-v1",
+      schemaHash: "sha256:schema-copilot-turn-v1",
       capabilitySnapshotHash: "capability-hash-a",
       baseUrlFingerprint: "base-url-hash-a"
     },
@@ -228,6 +234,8 @@ const resumedAgent = createAcquisitionPiAgent({
     model: "kimi-k2.5",
     promptVersion: "acquisition-copilot-v1",
     schemaVersion: "copilot-turn.v1",
+    promptHash: "sha256:prompt-acquisition-copilot-v1",
+    schemaHash: "sha256:schema-copilot-turn-v1",
     capabilitySnapshotHash: "capability-hash-a",
     baseUrlFingerprint: "base-url-hash-a"
   },

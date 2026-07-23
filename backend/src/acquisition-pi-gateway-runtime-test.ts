@@ -16,6 +16,8 @@ const snapshot = {
   model: "kimi-k2.5",
   promptVersion: "acquisition-copilot-v1",
   schemaVersion: "copilot-turn.v1",
+  promptHash: "sha256:prompt-acquisition-copilot-v1",
+  schemaHash: "sha256:schema-copilot-turn-v1",
   capabilitySnapshotHash: "capability-hash-runtime-a",
   baseUrlFingerprint: "base-url-hash-runtime-a"
 };
@@ -113,6 +115,14 @@ const baseTurn: AcquisitionPiTurnInput = {
   );
   assert.match(requests[0]?.prompt ?? "", /只使用公开证据/);
   assert.match(requests[0]?.prompt ?? "", /厦门/);
+  assert.match(
+    requests[0]?.prompt ?? "",
+    /sha256:prompt-acquisition-copilot-v1/
+  );
+  assert.match(
+    requests[0]?.prompt ?? "",
+    /sha256:schema-copilot-turn-v1/
+  );
   assert.doesNotMatch(requests[0]?.prompt ?? "", /\[object Object\]/);
 }
 
@@ -279,6 +289,27 @@ const baseTurn: AcquisitionPiTurnInput = {
       snapshot: {
         ...snapshot,
         credentialVersion: 5
+      }
+    }),
+    /MODEL_SNAPSHOT_MISMATCH/
+  );
+}
+
+{
+  const runtime = new ActiveModelGatewayAcquisitionPiRuntime({
+    snapshot,
+    gateway: {
+      async callTools() {
+        throw new Error("gateway must not run for a content hash mismatch");
+      }
+    }
+  });
+  await assert.rejects(
+    () => runtime.run({
+      ...baseTurn,
+      snapshot: {
+        ...snapshot,
+        promptHash: "sha256:changed-prompt"
       }
     }),
     /MODEL_SNAPSHOT_MISMATCH/

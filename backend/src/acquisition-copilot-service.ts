@@ -352,13 +352,9 @@ function validSnapshot(
       400
     );
   }
-  const contentBound = snapshot as AcquisitionPiModelSnapshot & {
-    promptHash?: string;
-    schemaHash?: string;
-  };
   for (const [name, value] of [
-    ["promptHash", contentBound.promptHash],
-    ["schemaHash", contentBound.schemaHash]
+    ["promptHash", snapshot.promptHash],
+    ["schemaHash", snapshot.schemaHash]
   ] as const) {
     const hash = requiredText(value, `modelSnapshot.${name}`, 200);
     if (!hash.startsWith("sha256:")) {

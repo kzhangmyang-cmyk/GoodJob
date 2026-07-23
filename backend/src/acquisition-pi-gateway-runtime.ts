@@ -59,6 +59,8 @@ function snapshotFingerprint(snapshot: AcquisitionPiModelSnapshot) {
     model: snapshot.model,
     promptVersion: snapshot.promptVersion,
     schemaVersion: snapshot.schemaVersion,
+    promptHash: snapshot.promptHash,
+    schemaHash: snapshot.schemaHash,
     capabilitySnapshotHash: snapshot.capabilitySnapshotHash,
     baseUrlFingerprint: snapshot.baseUrlFingerprint
   });
@@ -111,6 +113,8 @@ function promptForTurn(input: AcquisitionPiTurnInput) {
         model: input.snapshot.model,
         promptVersion: input.snapshot.promptVersion,
         schemaVersion: input.snapshot.schemaVersion,
+        promptHash: input.snapshot.promptHash,
+        schemaHash: input.snapshot.schemaHash,
         capabilitySnapshotHash: input.snapshot.capabilitySnapshotHash,
         baseUrlFingerprint: input.snapshot.baseUrlFingerprint
       },

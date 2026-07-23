@@ -22,6 +22,8 @@ const snapshot = {
   model: "glm-5",
   promptVersion: "acquisition-copilot-v1",
   schemaVersion: "copilot-turn.v1",
+  promptHash: "sha256:prompt-acquisition-copilot-v1",
+  schemaHash: "sha256:schema-copilot-turn-v1",
   capabilitySnapshotHash: "capability-runner-a",
   baseUrlFingerprint: "base-url-runner-a"
 };

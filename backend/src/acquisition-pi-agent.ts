@@ -30,6 +30,8 @@ export interface AcquisitionPiModelSnapshot {
   model: string;
   promptVersion: string;
   schemaVersion: string;
+  promptHash: string;
+  schemaHash: string;
   capabilitySnapshotHash: string;
   baseUrlFingerprint: string;
 }
@@ -325,6 +327,11 @@ function validatedSnapshot(
     || snapshot.credentialVersion < 1
   ) {
     throw new TypeError("snapshot.credentialVersion must be a positive integer");
+  }
+  for (const name of ["promptHash", "schemaHash"] as const) {
+    if (!snapshot[name].startsWith("sha256:")) {
+      throw new TypeError(`snapshot.${name} must use a sha256: content identity`);
+    }
   }
   return Object.freeze({ ...snapshot });
 }
