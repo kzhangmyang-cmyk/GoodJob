@@ -1,4 +1,4 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: AI Acquisition API
   version: ai-acquisition.v1
@@ -41,7 +41,10 @@ components:
         id: { type: string }
         kind: { type: string }
         status: { type: string }
+        resourceId: { type: [string, 'null'] }
+        error: { type: [object, 'null'] }
         createdAt: { type: string, format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
     ApiError:
       type: object
       additionalProperties: false
@@ -59,62 +62,37 @@ components:
       properties:
         items: { type: array, items: { type: object } }
         nextCursor: { type: string, nullable: true }
-    ModelProvider: &resource
+    ModelProvider: { $ref: ../json-schema/model-provider.v1.schema.json }
+    ModelConnection: { $ref: ../json-schema/model-connection.v1.schema.json }
+    ModelCallRecord: { $ref: ../json-schema/model-call-record.v1.schema.json }
+    DiscoveryProvider: { $ref: ../json-schema/discovery-provider.v1.schema.json }
+    ProviderConnection: { $ref: ../json-schema/provider-connection.v1.schema.json }
+    ContentFetchOperation: { $ref: ../json-schema/content-fetch-operation.v1.schema.json }
+    ImportOperation: { $ref: ../json-schema/import-operation.v1.schema.json }
+    AcquisitionPlan: { $ref: ../json-schema/acquisition-plan.v1.schema.json }
+    AcquisitionRun: { $ref: ../json-schema/acquisition-run.v1.schema.json }
+    AcquisitionOperationShard: { $ref: ../json-schema/acquisition-operation-shard.v1.schema.json }
+    OrganizationCandidate: { $ref: ../json-schema/organization-candidate.v1.schema.json }
+    IndividualDemandSignal: { $ref: ../json-schema/individual-demand-signal.v1.schema.json }
+    Candidate:
+      oneOf:
+        - { $ref: '#/components/schemas/OrganizationCandidate' }
+        - { $ref: '#/components/schemas/IndividualDemandSignal' }
+    CandidatePagedResult:
       type: object
       additionalProperties: false
-      required: [id]
+      required: [items, nextCursor]
       properties:
-        id: { type: string }
-        name: { type: string }
-        domain: { type: string, nullable: true }
-        region: { type: string, nullable: true }
-        creditCode: { type: string, nullable: true }
-        evidenceIds: { type: array, items: { type: string } }
-        status: { type: string }
-        createdAt: { type: string, format: date-time }
-        ownerId: { type: string }
-        teamId: { type: string, nullable: true }
-        provider: { type: string }
-        model: { type: string }
-        credentialVersion: { type: integer }
-        partyType: { type: string }
-        candidateId: { type: string }
-        sections: { type: array, items: { type: object } }
-        sourceUrl: { type: string }
-        artifactHash: { type: string }
-        planId: { type: string }
-        runId: { type: string }
-        sessionId: { type: string }
-    ModelConnection: *resource
-    ModelCallRecord: *resource
-    DiscoveryProvider: *resource
-    ProviderConnection: *resource
-    ContentFetchOperation: *resource
-    ImportOperation: *resource
-    AcquisitionPlan: *resource
-    AcquisitionRun: *resource
-    AcquisitionOperationShard: *resource
-    OrganizationCandidate:
-      type: object
-      additionalProperties: false
-      required: [id, name, evidenceIds, status, createdAt]
-      properties:
-        id: { type: string }
-        name: { type: string, minLength: 1 }
-        domain: { type: string, nullable: true }
-        region: { type: string, nullable: true }
-        creditCode: { type: string, nullable: true }
-        evidenceIds: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
-        status: { type: string }
-        createdAt: { type: string, format: date-time }
-    DiscoveryEvidence: *resource
-    QualificationDecision: *resource
-    BattleCard: *resource
-    ReviewEvent: *resource
-    OutcomeFeedback: *resource
-    CopilotSession: *resource
-    CopilotTask: *resource
-    AuditEvent: *resource
+        items: { type: array, items: { $ref: '#/components/schemas/Candidate' } }
+        nextCursor: { type: [string, 'null'] }
+    DiscoveryEvidence: { $ref: ../json-schema/discovery-evidence.v1.schema.json }
+    QualificationDecision: { $ref: ../json-schema/qualification-decision.v1.schema.json }
+    BattleCard: { $ref: ../json-schema/battle-card.v1.schema.json }
+    ReviewEvent: { $ref: ../json-schema/review-event.v1.schema.json }
+    OutcomeFeedback: { $ref: ../json-schema/outcome-feedback.v1.schema.json }
+    CopilotSession: { $ref: ../json-schema/copilot-session.v1.schema.json }
+    CopilotTask: { $ref: ../json-schema/copilot-task.v1.schema.json }
+    AuditEvent: { type: object, additionalProperties: false, required: [id], properties: { id: { type: string } } }
 x-error-response: &apiError
   description: Unified API error
   content:
@@ -232,10 +210,19 @@ paths:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post: { <<: *write, summary: Cancel acquisition run }
   /api/v1/acquisition/candidates:
-    get: { <<: *list, summary: List candidates }
+    get:
+      <<: *list
+      summary: List candidates
+      responses:
+        '200':
+          description: Cursor-paginated candidates
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CandidatePagedResult' }
+        '401': *apiError
   /api/v1/acquisition/candidates/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get candidate, responses: { '200': { description: Candidate, content: { application/json: { schema: { $ref: '#/components/schemas/OrganizationCandidate' } } } }, '401': *apiError } }
+    get: { <<: *read, summary: Get candidate, responses: { '200': { description: Candidate, content: { application/json: { schema: { $ref: '#/components/schemas/Candidate' } } } }, '401': *apiError } }
   /api/v1/acquisition/candidates/{id}/evidence:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get: { <<: *list, summary: List candidate evidence }

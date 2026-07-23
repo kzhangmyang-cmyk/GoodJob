@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadOpenApi, loadOpenApiSource } from "./helpers.mjs";
-import Ajv from "ajv";
+import { loadOpenApi, loadOpenApiSource, loadSchemaRegistry } from "./helpers.mjs";
+import Ajv from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { loadContractHarness } from "./helpers.mjs";
 
@@ -52,7 +52,7 @@ const listPaths = [
   "/api/v1/ai/providers", "/api/v1/ai/connections", "/api/v1/ai/connections/{id}/models",
   "/api/v1/ai/calls", "/api/v1/acquisition/providers", "/api/v1/acquisition/provider-connections",
   "/api/v1/acquisition/plans", "/api/v1/acquisition/runs",
-  "/api/v1/acquisition/runs/{id}/operation-shards", "/api/v1/acquisition/candidates",
+  "/api/v1/acquisition/runs/{id}/operation-shards",
   "/api/v1/acquisition/candidates/{id}/evidence", "/api/v1/acquisition/candidates/{id}/reviews",
   "/api/v1/acquisition/outcomes", "/api/v1/acquisition/audit-events"
 ];
@@ -73,7 +73,7 @@ const reads = {
   "/api/v1/acquisition/import-operations/{id}": "ImportOperation",
   "/api/v1/acquisition/plans/{id}": "AcquisitionPlan",
   "/api/v1/acquisition/runs/{id}": "AcquisitionRun",
-  "/api/v1/acquisition/candidates/{id}": "OrganizationCandidate",
+  "/api/v1/acquisition/candidates/{id}": "Candidate",
   "/api/v1/acquisition/candidates/{id}/qualification": "QualificationDecision",
   "/api/v1/acquisition/candidates/{id}/battle-card": "BattleCard",
   "/api/v1/acquisition/copilot/sessions/{id}": "CopilotSession",
@@ -104,6 +104,7 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   for (const path of listPaths) {
     assert.equal(document.paths[path].get.responses["200"].content["application/json"].schema.$ref, "#/components/schemas/PagedResult", path);
   }
+  assert.equal(document.paths["/api/v1/acquisition/candidates"].get.responses["200"].content["application/json"].schema.$ref, "#/components/schemas/CandidatePagedResult");
   for (const [path, schema] of Object.entries(reads)) {
     assert.equal(document.paths[path].get.responses["200"].content["application/json"].schema.$ref, `#/components/schemas/${schema}`, path);
   }
@@ -116,10 +117,47 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   const resume = document.paths["/api/v1/acquisition/runs/{id}/resume"].post.responses["409"];
   assert.equal(resume.content["application/json"].schema.$ref, "#/components/schemas/ApiError");
   assert.deepEqual(resume.headers["X-Error-Code"].schema.enum, ["budget_revision_requires_new_run"]);
-  const { loadExamples } = await loadContractHarness();
-  const examples = await loadExamples();
-  const organizationCandidate = examples.organization.records.find((record) => record.schema === "organization-candidate").value;
-  const ajv = new Ajv({ strict: false });
-  addFormats(ajv);
-  assert.equal(ajv.compile(document.components.schemas.OrganizationCandidate)(organizationCandidate), true);
 });
+
+test("every named API resource component accepts a canonical valid instance", async () => {
+  const document = await loadOpenApi();
+  const registry = await loadSchemaRegistry();
+  const names = ["ModelProvider", "ModelConnection", "ModelCallRecord", "DiscoveryProvider", "ProviderConnection", "ContentFetchOperation", "ImportOperation", "AcquisitionPlan", "AcquisitionRun", "AcquisitionOperationShard", "DiscoveryEvidence", "QualificationDecision", "BattleCard", "ReviewEvent", "OutcomeFeedback", "CopilotSession", "CopilotTask"];
+  const examples = Object.fromEntries(names.map((name) => [name, buildCanonicalExample(registry.schemaDocuments.get(toKebab(name)))]));
+  examples.Candidate = [
+    buildCanonicalExample(registry.schemaDocuments.get("organization-candidate")),
+    buildCanonicalExample(registry.schemaDocuments.get("individual-demand-signal"))
+  ];
+  examples.AsyncOperation = { id: "op", kind: "run", status: "running", resourceId: null, error: null, createdAt: "2026-07-23T00:00:00.000Z", completedAt: null };
+  const ajv = new Ajv({ strict: false }); addFormats(ajv);
+  for (const [name, value] of Object.entries(examples)) {
+    if (name === "Candidate") {
+      for (const [index, instance] of value.entries()) assert.equal(registry.validators.get(index === 0 ? "organization-candidate" : "individual-demand-signal")(instance), true);
+      continue;
+    }
+    if (name === "AsyncOperation") {
+      const validate = ajv.compile(document.components.schemas.AsyncOperation);
+      assert.equal(validate(value), true, JSON.stringify(validate.errors));
+      continue;
+    }
+    const schema = document.components.schemas[name];
+    const canonical = schema.$ref ? registry.schemaDocuments.get(schema.$ref.split("/").pop().replace(".v1.schema.json", "")) : schema;
+    const validate = ajv.compile(canonical);
+    for (const instance of [value]) assert.equal(validate(instance), true, `${name}: ${JSON.stringify(validate.errors)}`);
+  }
+});
+
+function toKebab(name) { return name.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase(); }
+function buildCanonicalExample(schema, root = schema) {
+  if (schema.$ref) return buildCanonicalExample(root.$defs[schema.$ref.split("/").pop()], root);
+  if (schema.const !== undefined) return schema.const;
+  if (schema.enum) return schema.enum.find((value) => value !== null);
+  if (schema.oneOf) return buildCanonicalExample(schema.oneOf[0], root);
+  const type = Array.isArray(schema.type) ? schema.type.find((value) => value !== "null") : schema.type;
+  if (type === "string") return schema.format === "date-time" ? "2026-07-23T00:00:00.000Z" : schema.format === "uri" ? "https://example.com" : schema.maxLength === 3 ? "USD" : "value";
+  if (type === "integer" || type === "number") return Math.max(schema.minimum ?? 0, 1);
+  if (type === "boolean") return true;
+  if (type === "array") return Array.from({ length: schema.minItems ?? 0 }, () => buildCanonicalExample(schema.items ?? {}, root));
+  if (type === "object" || schema.properties) return Object.fromEntries((schema.required ?? []).map((key) => [key, buildCanonicalExample(schema.properties[key], root)]));
+  return {};
+}

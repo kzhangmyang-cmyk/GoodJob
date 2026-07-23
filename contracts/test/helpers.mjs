@@ -23,13 +23,15 @@ export async function loadSchemaRegistry() {
   const names = new Set();
   const ids = new Set();
   const validators = new Map();
+  const schemaDocuments = new Map();
   for (const { filename, schema } of schemas) {
     const name = filename.replace(".v1.schema.json", "");
     names.add(name);
     ids.add(schema.$id);
     validators.set(name, ajv.getSchema(schema.$id));
+    schemaDocuments.set(name, schema);
   }
-  return { names, ids, validators };
+  return { names, ids, validators, schemaDocuments };
 }
 
 export async function loadContractHarness() {
@@ -54,7 +56,7 @@ export async function loadContractHarness() {
 export async function loadOpenApi() {
   const source = await readFile(path.join(root, "openapi", "ai-acquisition.v1.yaml"), "utf8");
   const document = YAML.parse(source, { merge: true, maxAliasCount: -1 });
-  return SwaggerParser.validate(document);
+  return SwaggerParser.validate(document, { resolve: { external: false } });
 }
 
 export async function loadOpenApiSource() {
