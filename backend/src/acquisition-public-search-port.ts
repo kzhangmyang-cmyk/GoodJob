@@ -19,6 +19,7 @@ import {
   createProviderExecutionContext,
   executeProviderSearch
 } from "./provider-runtime.js";
+import { LEAD_PROVIDERS } from "./lead-providers.js";
 import type { CrmStore, PersistedStoreMutation } from "./store.js";
 import type {
   ProviderCatalogItem,
@@ -28,6 +29,30 @@ import type {
 import {
   REAL_WEB_SEARCH_PROVIDERS
 } from "./web-search-providers.js";
+
+export const ACQUISITION_PUBLIC_SEARCH_PROVIDER_IDS = [
+  "baidu_ai_search",
+  "tencent_web_search",
+  "tavily",
+  "serper",
+  "brave",
+  "serpapi"
+] as const;
+
+const ACQUISITION_PUBLIC_SEARCH_PROVIDERS = Object.freeze(
+  ACQUISITION_PUBLIC_SEARCH_PROVIDER_IDS.map((providerId) => {
+    const provider = [
+      ...REAL_WEB_SEARCH_PROVIDERS,
+      ...LEAD_PROVIDERS
+    ].find((item) => item.id === providerId);
+    if (!provider) {
+      throw new Error(
+        `Approved acquisition search provider is unavailable: ${providerId}`
+      );
+    }
+    return provider;
+  })
+);
 
 export type AcquisitionPublicSearchPortErrorCode =
   | "PROVIDER_CONNECTION_UNAVAILABLE"
@@ -389,7 +414,7 @@ implements SearchPublicSourcesPort {
     options: AcquisitionPublicSearchPortOptions
   ) {
     this.providers = new Map(
-      REAL_WEB_SEARCH_PROVIDERS.map((provider) => [
+      ACQUISITION_PUBLIC_SEARCH_PROVIDERS.map((provider) => [
         provider.id,
         provider
       ])
@@ -404,9 +429,7 @@ implements SearchPublicSourcesPort {
     assertNotAborted(request.signal);
     const connection = authorizedConnection(this.store, request);
     const provider = this.providers.get(connection.providerId);
-    if (!provider || !REAL_WEB_SEARCH_PROVIDERS.some(
-      (approved) => approved.id === provider.id
-    )) {
+    if (!provider) {
       throw new AcquisitionPublicSearchPortError("PROVIDER_NOT_SUPPORTED");
     }
     assertReadableByokConnection(connection);

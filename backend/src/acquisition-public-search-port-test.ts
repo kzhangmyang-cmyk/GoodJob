@@ -268,11 +268,14 @@ test("uses an authorized official BYOK connection and maps public organization a
   assert.equal(store.providerRequestLogs.length, 1);
 });
 
-test("supports all three approved real search providers", async () => {
+test("supports all approved real search providers", async () => {
   for (const providerId of [
     "baidu_ai_search",
     "tencent_web_search",
-    "tavily"
+    "tavily",
+    "serper",
+    "brave",
+    "serpapi"
   ]) {
     const selected = connection(providerId);
     const store = createStore({ connections: [selected] });
@@ -395,7 +398,7 @@ test("rejects unsupported or unreadable BYOK connections before execution", asyn
     calls += 1;
     return providerPage();
   };
-  const unsupported = connection("serper");
+  const unsupported = connection("hunter");
   const broken = connection("tavily", {
     id: "broken",
     configurationEncrypted: "not-an-encrypted-credential"
