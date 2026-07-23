@@ -1,6 +1,7 @@
 import type {
   AiJobModelSnapshot,
-  ModelConnection
+  ModelConnection,
+  StoredAiJobModelSnapshot
 } from "./types.js";
 
 interface JobSnapshotVersions {
@@ -25,4 +26,14 @@ export function createAiJobModelSnapshot(
     promptVersion: versions.promptVersion,
     schemaVersion: versions.schemaVersion
   });
+}
+
+export function appendStoredAiJobModelSnapshot(
+  history: StoredAiJobModelSnapshot[],
+  pending: StoredAiJobModelSnapshot[],
+  snapshot: StoredAiJobModelSnapshot
+) {
+  history.push(snapshot);
+  pending.push(snapshot);
+  return snapshot;
 }

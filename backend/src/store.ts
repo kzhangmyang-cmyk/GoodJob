@@ -95,6 +95,7 @@ import {
   prospectStrategySuggestions,
   marketTradeObservations,
   modelConnectionActivationEvents,
+  modelConnectionIdempotencyRecords,
   modelCredentialVersions,
   marketOpportunityBatches,
   marketOpportunitySnapshots,
@@ -170,10 +171,14 @@ import type { CompanyProfile } from "./types.js";
 import type {
   ModelConnection,
   ModelConnectionActivationEvent,
+  ModelConnectionIdempotencyRecord,
   ModelConnectionScope,
   ModelCredentialVersion,
   StoredAiJobModelSnapshot
 } from "./model-providers/types.js";
+import type {
+  ModelConnectionDeletionOptions
+} from "./model-providers/connection-service.js";
 
 export interface PersistedStoreMutation<T> {
   value: T;
@@ -211,8 +216,14 @@ export interface CrmStore {
   websiteOpportunities: WebsiteOpportunity[];
   aiModelConfigs: AiModelConfig[];
   modelCredentialVersions: ModelCredentialVersion[];
+  pendingModelCredentialVersions: ModelCredentialVersion[];
   modelConnectionActivationEvents: ModelConnectionActivationEvent[];
+  pendingModelConnectionActivationEvents:
+    ModelConnectionActivationEvent[];
   aiJobModelSnapshots: StoredAiJobModelSnapshot[];
+  pendingAiJobModelSnapshots: StoredAiJobModelSnapshot[];
+  modelConnectionIdempotencyRecords: ModelConnectionIdempotencyRecord[];
+  pendingModelConnectionIdempotencyRecords: ModelConnectionIdempotencyRecord[];
   providerCatalog: ProviderCatalogItem[];
   providerConnections: ProviderConnection[];
   providerRequestLogs: ProviderRequestLog[];
@@ -304,7 +315,8 @@ export interface CrmStore {
   ): Promise<ModelConnection>;
   deleteModelConnection?(
     scope: ModelConnectionScope,
-    connectionId: string
+    connectionId: string,
+    options?: ModelConnectionDeletionOptions
   ): Promise<ModelConnection>;
   persistMutation?<T>(
     mutation: () => PersistedStoreMutation<T>
@@ -390,8 +402,13 @@ export const memoryStore: CrmStore = {
   ),
   aiModelConfigs,
   modelCredentialVersions,
+  pendingModelCredentialVersions: [],
   modelConnectionActivationEvents,
+  pendingModelConnectionActivationEvents: [],
   aiJobModelSnapshots,
+  pendingAiJobModelSnapshots: [],
+  modelConnectionIdempotencyRecords,
+  pendingModelConnectionIdempotencyRecords: [],
   providerCatalog,
   providerConnections,
   providerRequestLogs,
@@ -475,6 +492,10 @@ export const memoryStore: CrmStore = {
   commissionExports,
   async persist() {
     // Memory mode intentionally keeps current in-process state only.
+    memoryStore.pendingModelCredentialVersions.splice(0);
+    memoryStore.pendingModelConnectionActivationEvents.splice(0);
+    memoryStore.pendingAiJobModelSnapshots.splice(0);
+    memoryStore.pendingModelConnectionIdempotencyRecords.splice(0);
   },
   async mutateCustomerOwnership(input) {
     return mutateCustomerOwnershipMemory(memoryStore, input);

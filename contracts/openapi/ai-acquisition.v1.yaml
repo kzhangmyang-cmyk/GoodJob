@@ -31,7 +31,7 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      schema: { type: string, minLength: 1 }
+      schema: { type: string, minLength: 1, maxLength: 200 }
   schemas:
     AsyncOperation: { $ref: ../json-schema/async-operation.v1.schema.json }
     ApiError:
@@ -127,11 +127,11 @@ paths:
     get: { <<: *list, summary: List model providers }
   /api/v1/ai/connections:
     get: { <<: *list, summary: List model connections }
-    post: { <<: *write, summary: Create model connection }
+    post: { <<: *write, summary: Create model connection, responses: { '200': { description: Model connection, content: { application/json: { schema: { $ref: '#/components/schemas/ModelConnection' } } } }, '400': *apiError, '401': *apiError } }
   /api/v1/ai/connections/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get: { <<: *read, summary: Get model connection, responses: { '200': { description: Model connection, content: { application/json: { schema: { $ref: '#/components/schemas/ModelConnection' } } } }, '401': *apiError } }
-    patch: { <<: *write, summary: Update model connection }
+    patch: { <<: *write, summary: Update model connection, responses: { '200': { description: Model connection, content: { application/json: { schema: { $ref: '#/components/schemas/ModelConnection' } } } }, '400': *apiError, '401': *apiError } }
     delete: { <<: *write, summary: Delete model connection, responses: { '200': { description: Successful response, content: { application/json: { schema: { type: object, additionalProperties: false } } } }, '400': *apiError, '401': *apiError, '409': { description: Connection is retained by active tasks or audit policy, headers: { X-Error-Code: { required: true, schema: { type: string, enum: [connection_in_use] } } }, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } } } }
   /api/v1/ai/connections/{id}/models:
     parameters: [{ $ref: '#/components/parameters/id' }]
@@ -141,7 +141,7 @@ paths:
     post: { <<: *asyncWrite, summary: Test model connection }
   /api/v1/ai/connections/{id}/activate:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *write, summary: Activate model connection }
+    post: { <<: *write, summary: Activate model connection, responses: { '200': { description: Model connection, content: { application/json: { schema: { $ref: '#/components/schemas/ModelConnection' } } } }, '400': *apiError, '401': *apiError } }
   /api/v1/ai/calls:
     get: { <<: *list, summary: List model call records }
   /api/v1/ai/calls/{id}:

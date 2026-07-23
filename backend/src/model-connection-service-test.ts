@@ -9,6 +9,7 @@ import {
   toPublicModelConnection
 } from "./model-providers/connection-service.js";
 import {
+  appendStoredAiJobModelSnapshot,
   createAiJobModelSnapshot
 } from "./model-providers/job-snapshot.js";
 import type {
@@ -54,9 +55,11 @@ test("activation is owner-scoped and existing job snapshots remain immutable", a
     teamId: "team-2"
   };
   const activationEvents: ModelConnectionActivationEvent[] = [];
+  const pendingActivationEvents: ModelConnectionActivationEvent[] = [];
   const store = {
     connections: [first, second, otherOwner, sameOwnerOtherTeam],
     activationEvents,
+    pendingActivationEvents,
     async persist() {}
   };
 
@@ -101,6 +104,7 @@ test("activation is owner-scoped and existing job snapshots remain immutable", a
     reason: "switch",
     createdAt: activationEvents[0].createdAt
   });
+  assert.equal(pendingActivationEvents[0], activationEvents[0]);
 
   const snapshot = createAiJobModelSnapshot(second, 3, {
     promptVersion: "lead-plan.v1",
@@ -133,6 +137,7 @@ test("credential updates append encrypted versions and public responses stay mas
     true
   );
   const credentials: ModelCredentialVersion[] = [];
+  const pendingCredentials: ModelCredentialVersion[] = [];
   const secretV1 = "sk-private-version-one-1234";
   const secretV2 = "sk-private-version-two-5678";
 
@@ -140,7 +145,9 @@ test("credential updates append encrypted versions and public responses stay mas
     credentials,
     modelConnection,
     secretV1,
-    "owner-1"
+    "owner-1",
+    undefined,
+    pendingCredentials
   );
   const snapshotAtV1 = createAiJobModelSnapshot(modelConnection, first.version, {
     promptVersion: "lead-plan.v1",
@@ -150,11 +157,14 @@ test("credential updates append encrypted versions and public responses stay mas
     credentials,
     modelConnection,
     secretV2,
-    "owner-1"
+    "owner-1",
+    undefined,
+    pendingCredentials
   );
   assert.equal(first.version, 1);
   assert.equal(second.version, 2);
   assert.equal(credentials.length, 2);
+  assert.deepEqual(pendingCredentials, credentials);
   assert.equal(modelConnection.credentialVersion, 2);
   assert.equal(snapshotAtV1.credentialVersion, 1);
   assert.ok(first.apiKeyEncrypted.startsWith("ai-v1."));
@@ -167,6 +177,30 @@ test("credential updates append encrypted versions and public responses stay mas
   assert.equal(response.hasKey, true);
   assert.equal(response.apiKey, "****5678");
   assert.equal(JSON.stringify(response).includes(secretV2), false);
+});
+
+test("stored job snapshots are tracked as pending appends", () => {
+  const modelConnection = connection(
+    "conn-job",
+    "owner-1",
+    "openai",
+    true
+  );
+  const snapshot: StoredAiJobModelSnapshot = {
+    ...createAiJobModelSnapshot(modelConnection, 1, {
+      promptVersion: "lead-plan.v1",
+      schemaVersion: "acquisition-plan.v1"
+    }),
+    jobId: "job-pending",
+    ownerId: "owner-1",
+    teamId: "team-1",
+    createdAt: "2026-07-23T10:30:00.000Z"
+  };
+  const history: StoredAiJobModelSnapshot[] = [];
+  const pending: StoredAiJobModelSnapshot[] = [];
+  appendStoredAiJobModelSnapshot(history, pending, snapshot);
+  assert.deepEqual(history, [snapshot]);
+  assert.deepEqual(pending, [snapshot]);
 });
 
 test("connections referenced by immutable job snapshots cannot be deleted", async () => {
@@ -232,6 +266,62 @@ test("the currently active connection must be switched away before deletion", as
       return true;
     }
   );
+});
+
+test("activation audit retention blocks deletion only until its exact expiry", async () => {
+  const retained = connection(
+    "conn-audit-retained",
+    "owner-1",
+    "minimax",
+    false
+  );
+  const activationEvents: ModelConnectionActivationEvent[] = [{
+    id: "event-retained",
+    ownerId: "owner-1",
+    teamId: "team-1",
+    actorId: "owner-1",
+    previousConnectionId: retained.id,
+    connectionId: "conn-replacement",
+    reason: "switch away",
+    createdAt: "2026-07-23T10:00:00.000Z"
+  }];
+  const store = {
+    connections: [retained],
+    jobSnapshots: [] as StoredAiJobModelSnapshot[],
+    activationEvents,
+    async persist() {}
+  };
+  let now = new Date("2026-07-23T11:59:59.999Z");
+  const options = {
+    now: () => now,
+    activationAuditRetentionMs: 2 * 60 * 60 * 1_000
+  };
+
+  await assert.rejects(
+    deleteModelConnection(
+      store,
+      { ownerId: "owner-1", teamId: "team-1" },
+      retained.id,
+      options
+    ),
+    (error: unknown) => {
+      assert.equal(
+        (error as { code?: string }).code,
+        "connection_in_use"
+      );
+      return true;
+    }
+  );
+  assert.equal(store.connections.length, 1);
+
+  now = new Date("2026-07-23T12:00:00.000Z");
+  await deleteModelConnection(
+    store,
+    { ownerId: "owner-1", teamId: "team-1" },
+    retained.id,
+    options
+  );
+  assert.equal(store.connections.length, 0);
 });
 
 test("legacy activation migration selects updated_at DESC then id ASC per owner", () => {
@@ -309,5 +399,13 @@ test("MySQL enforces one active owner and activation is transactionally audited"
   assert.match(
     mysqlStore,
     /selectLegacyActiveConnectionIds[\s\S]+system_migration[\s\S]+ai_model_credential_versions/
+  );
+  assert.match(
+    mysqlStore,
+    /FROM ai_model_connection_activation_events[\s\S]+previous_connection_id = \?[\s\S]+created_at > \?/
+  );
+  assert.match(
+    mysqlStore,
+    /DEFAULT_MODEL_CONNECTION_ACTIVATION_AUDIT_RETENTION_MS/
   );
 });

@@ -19,6 +19,9 @@ import {
   MODEL_PROVIDER_IDS,
   ModelConnectionError
 } from "./model-providers/types.js";
+import {
+  executeModelConnectionWriteIdempotently
+} from "./model-providers/idempotency.js";
 import { validateAgentJobSecurity } from "./agent-job-security.js";
 import {
   cancelAgentJob,
@@ -7325,6 +7328,16 @@ app.get("/api/v1/ai/connections", requireAuth, (req, res) => {
 });
 
 app.post("/api/v1/ai/connections", requireAuth, asyncRoute(async (req, res) => {
+  if (!String(req.header("Idempotency-Key") || "").trim()) {
+    res.status(400).json({
+      code: "idempotency_key_required",
+      message: "必须提供 Idempotency-Key 请求头",
+      details: null,
+      requestId: `req_${randomUUID()}`,
+      retryable: false
+    });
+    return;
+  }
   const schema = z.object({
     provider: z.enum(MODEL_PROVIDER_IDS),
     name: z.string().min(1).max(120).default("AI 模型连接"),
@@ -7351,54 +7364,109 @@ app.post("/api/v1/ai/connections", requireAuth, asyncRoute(async (req, res) => {
     return;
   }
   const store = getStore();
-  const now = new Date().toISOString();
-  const config: AiModelConfig = {
-    id: createAiModelConfigId(),
-    provider: body.provider,
-    protocol: "openai-compatible",
-    name: body.name,
-    baseUrl,
-    model: body.model,
-    apiKey: body.apiKey,
-    enabled: false,
-    temperature: 0.1,
-    useLeadFinder: true,
-    useWebsiteParse: true,
-    useScoring: true,
-    useEmailDraft: true,
-    useExam: false,
-    lastTestStatus: "untested",
-    lastTestMessage: "",
-    ownerId: req.user!.id,
-    teamId: req.user!.teamId,
-    credentialVersion: 1,
-    capabilitySnapshot: body.capabilitySnapshot,
-    createdAt: now,
-    updatedAt: now
-  };
-  const connection = modelConnectionFromAiConfig(config);
-  const credential = createModelCredentialVersion(
-    store.modelCredentialVersions,
-    connection,
-    body.apiKey,
-    req.user!.id,
-    now
-  );
-  config.credentialVersion = credential.version;
-  store.aiModelConfigs.unshift(config);
-  await store.persist();
-  if (body.active) {
-    await activateModelConnection(
-      modelConnectionStore(store),
-      { ownerId: req.user!.id, teamId: req.user!.teamId },
-      config.id,
-      req.user!.id,
-      "connection_created_active"
+  try {
+    const result = await executeModelConnectionWriteIdempotently(
+      store,
+      {
+        ownerId: req.user!.id,
+        teamId: req.user!.teamId,
+        idempotencyKey: String(req.header("Idempotency-Key") || ""),
+        method: req.method,
+        path: req.path,
+        body: { ...body, baseUrl }
+      },
+      async () => {
+        const configStates = store.aiModelConfigs.map((item) => ({
+          item,
+          enabled: item.enabled,
+          updatedAt: item.updatedAt
+        }));
+        const credentialLength = store.modelCredentialVersions.length;
+        const pendingCredentialLength =
+          store.pendingModelCredentialVersions.length;
+        const eventLength =
+          store.modelConnectionActivationEvents.length;
+        const pendingEventLength =
+          store.pendingModelConnectionActivationEvents.length;
+        const now = new Date().toISOString();
+        const config: AiModelConfig = {
+          id: createAiModelConfigId(),
+          provider: body.provider,
+          protocol: "openai-compatible",
+          name: body.name,
+          baseUrl,
+          model: body.model,
+          apiKey: body.apiKey,
+          enabled: false,
+          temperature: 0.1,
+          useLeadFinder: true,
+          useWebsiteParse: true,
+          useScoring: true,
+          useEmailDraft: true,
+          useExam: false,
+          lastTestStatus: "untested",
+          lastTestMessage: "",
+          ownerId: req.user!.id,
+          teamId: req.user!.teamId,
+          credentialVersion: 1,
+          capabilitySnapshot: body.capabilitySnapshot,
+          createdAt: now,
+          updatedAt: now
+        };
+        const rollback = () => {
+          const index = store.aiModelConfigs.indexOf(config);
+          if (index >= 0) store.aiModelConfigs.splice(index, 1);
+          store.modelCredentialVersions.splice(credentialLength);
+          store.pendingModelCredentialVersions.splice(
+            pendingCredentialLength
+          );
+          store.modelConnectionActivationEvents.splice(eventLength);
+          store.pendingModelConnectionActivationEvents.splice(
+            pendingEventLength
+          );
+          for (const state of configStates) {
+            state.item.enabled = state.enabled;
+            state.item.updatedAt = state.updatedAt;
+          }
+        };
+        try {
+          const connection = modelConnectionFromAiConfig(config);
+          const credential = createModelCredentialVersion(
+            store.modelCredentialVersions,
+            connection,
+            body.apiKey,
+            req.user!.id,
+            now,
+            store.pendingModelCredentialVersions
+          );
+          config.credentialVersion = credential.version;
+          store.aiModelConfigs.unshift(config);
+          if (body.active) {
+            await activateModelConnection(
+              modelConnectionStore(store, { deferPersistence: true }),
+              { ownerId: req.user!.id, teamId: req.user!.teamId },
+              config.id,
+              req.user!.id,
+              "connection_created_active"
+            );
+          }
+          return {
+            status: 200,
+            body: modelConnectionFromAiConfig(config),
+            rollback
+          };
+        } catch (error) {
+          rollback();
+          throw error;
+        }
+      }
     );
+    if (result.replayed) res.setHeader("Idempotency-Replayed", "true");
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    if (sendModelConnectionError(res, error)) return;
+    throw error;
   }
-  const created = store.aiModelConfigs.find((item) => item.id === config.id)
-    || config;
-  res.status(201).json(modelConnectionFromAiConfig(created));
 }));
 
 app.get("/api/v1/ai/connections/:id", requireAuth, (req, res) => {
@@ -7417,6 +7485,17 @@ app.get("/api/v1/ai/connections/:id", requireAuth, (req, res) => {
 });
 
 app.patch("/api/v1/ai/connections/:id", requireAuth, asyncRoute(async (req, res) => {
+  const idempotencyKey = String(req.header("Idempotency-Key") || "");
+  if (!idempotencyKey.trim()) {
+    res.status(400).json({
+      code: "idempotency_key_required",
+      message: "必须提供 Idempotency-Key 请求头",
+      details: null,
+      requestId: `req_${randomUUID()}`,
+      retryable: false
+    });
+    return;
+  }
   const schema = z.object({
     name: z.string().min(1).max(120).optional(),
     baseUrl: z.string().url().optional(),
@@ -7425,6 +7504,21 @@ app.patch("/api/v1/ai/connections/:id", requireAuth, asyncRoute(async (req, res)
     capabilitySnapshot: modelCapabilitySnapshotSchema.optional()
   });
   const body = schema.parse(req.body);
+  let normalizedBaseUrl: string | undefined;
+  if (body.baseUrl) {
+    try {
+      normalizedBaseUrl = assertAiBaseUrlAllowed(body.baseUrl);
+    } catch {
+      res.status(400).json({
+        code: "invalid_base_url",
+        message: "AI Base URL 必须是公网 HTTPS 标准端口地址",
+        details: null,
+        requestId: `req_${randomUUID()}`,
+        retryable: false
+      });
+      return;
+    }
+  }
   const store = getStore();
   const config = scopedOfficialAiConfig(req.params.id, req.user!);
   if (!config) {
@@ -7437,56 +7531,144 @@ app.patch("/api/v1/ai/connections/:id", requireAuth, asyncRoute(async (req, res)
     });
     return;
   }
-  if (body.baseUrl) {
-    try {
-      config.baseUrl = assertAiBaseUrlAllowed(body.baseUrl);
-    } catch {
-      res.status(400).json({
-        code: "invalid_base_url",
-        message: "AI Base URL 必须是公网 HTTPS 标准端口地址",
-        details: null,
-        requestId: `req_${randomUUID()}`,
-        retryable: false
-      });
-      return;
-    }
-  }
-  if (body.name) config.name = body.name;
-  if (body.model) config.model = body.model;
-  if (body.capabilitySnapshot) {
-    config.capabilitySnapshot = body.capabilitySnapshot;
-  }
-  config.updatedAt = new Date().toISOString();
-  if (body.apiKey) {
-    const connection = modelConnectionFromAiConfig(config);
-    const credential = createModelCredentialVersion(
-      store.modelCredentialVersions,
-      connection,
-      body.apiKey,
-      req.user!.id,
-      config.updatedAt
+  try {
+    const result = await executeModelConnectionWriteIdempotently(
+      store,
+      {
+        ownerId: req.user!.id,
+        teamId: req.user!.teamId,
+        idempotencyKey,
+        method: req.method,
+        path: req.path,
+        body: {
+          ...body,
+          ...(normalizedBaseUrl ? { baseUrl: normalizedBaseUrl } : {})
+        }
+      },
+      async () => {
+        const before = {
+          name: config.name,
+          baseUrl: config.baseUrl,
+          model: config.model,
+          apiKey: config.apiKey,
+          capabilitySnapshot: config.capabilitySnapshot,
+          credentialVersion: config.credentialVersion,
+          updatedAt: config.updatedAt
+        };
+        const credentialLength = store.modelCredentialVersions.length;
+        const pendingCredentialLength =
+          store.pendingModelCredentialVersions.length;
+        const rollback = () => {
+          Object.assign(config, before);
+          store.modelCredentialVersions.splice(credentialLength);
+          store.pendingModelCredentialVersions.splice(
+            pendingCredentialLength
+          );
+        };
+        try {
+          if (normalizedBaseUrl) config.baseUrl = normalizedBaseUrl;
+          if (body.name) config.name = body.name;
+          if (body.model) config.model = body.model;
+          if (body.capabilitySnapshot) {
+            config.capabilitySnapshot = body.capabilitySnapshot;
+          }
+          config.updatedAt = new Date().toISOString();
+          if (body.apiKey) {
+            const connection = modelConnectionFromAiConfig(config);
+            const credential = createModelCredentialVersion(
+              store.modelCredentialVersions,
+              connection,
+              body.apiKey,
+              req.user!.id,
+              config.updatedAt,
+              store.pendingModelCredentialVersions
+            );
+            config.credentialVersion = credential.version;
+            config.apiKey = body.apiKey;
+          }
+          return {
+            status: 200,
+            body: modelConnectionFromAiConfig(config),
+            rollback
+          };
+        } catch (error) {
+          rollback();
+          throw error;
+        }
+      }
     );
-    config.credentialVersion = credential.version;
-    config.apiKey = body.apiKey;
+    if (result.replayed) res.setHeader("Idempotency-Replayed", "true");
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    if (sendModelConnectionError(res, error)) return;
+    throw error;
   }
-  await store.persist();
-  res.json(modelConnectionFromAiConfig(config));
 }));
 
 app.post("/api/v1/ai/connections/:id/activate", requireAuth, asyncRoute(async (req, res) => {
+  const idempotencyKey = String(req.header("Idempotency-Key") || "");
+  if (!idempotencyKey.trim()) {
+    res.status(400).json({
+      code: "idempotency_key_required",
+      message: "必须提供 Idempotency-Key 请求头",
+      details: null,
+      requestId: `req_${randomUUID()}`,
+      retryable: false
+    });
+    return;
+  }
   const body = z.object({
     reason: z.string().min(1).max(500)
   }).parse(req.body);
   const store = getStore();
   try {
-    const connection = await activateModelConnection(
-      modelConnectionStore(store),
-      { ownerId: req.user!.id, teamId: req.user!.teamId },
-      req.params.id,
-      req.user!.id,
-      body.reason
+    const result = await executeModelConnectionWriteIdempotently(
+      store,
+      {
+        ownerId: req.user!.id,
+        teamId: req.user!.teamId,
+        idempotencyKey,
+        method: req.method,
+        path: req.path,
+        body
+      },
+      async () => {
+        const configStates = store.aiModelConfigs.map((item) => ({
+          item,
+          enabled: item.enabled,
+          updatedAt: item.updatedAt
+        }));
+        const eventLength =
+          store.modelConnectionActivationEvents.length;
+        const pendingEventLength =
+          store.pendingModelConnectionActivationEvents.length;
+        const rollback = () => {
+          for (const state of configStates) {
+            state.item.enabled = state.enabled;
+            state.item.updatedAt = state.updatedAt;
+          }
+          store.modelConnectionActivationEvents.splice(eventLength);
+          store.pendingModelConnectionActivationEvents.splice(
+            pendingEventLength
+          );
+        };
+        try {
+          const connection = await activateModelConnection(
+            modelConnectionStore(store, { deferPersistence: true }),
+            { ownerId: req.user!.id, teamId: req.user!.teamId },
+            req.params.id,
+            req.user!.id,
+            body.reason
+          );
+          return { status: 200, body: connection, rollback };
+        } catch (error) {
+          rollback();
+          throw error;
+        }
+      }
     );
-    res.json(connection);
+    if (result.replayed) res.setHeader("Idempotency-Replayed", "true");
+    res.status(result.status).json(result.body);
   } catch (error) {
     if (sendModelConnectionError(res, error)) return;
     throw error;
@@ -7494,14 +7676,70 @@ app.post("/api/v1/ai/connections/:id/activate", requireAuth, asyncRoute(async (r
 }));
 
 app.delete("/api/v1/ai/connections/:id", requireAuth, asyncRoute(async (req, res) => {
+  const idempotencyKey = String(req.header("Idempotency-Key") || "");
+  if (!idempotencyKey.trim()) {
+    res.status(400).json({
+      code: "idempotency_key_required",
+      message: "必须提供 Idempotency-Key 请求头",
+      details: null,
+      requestId: `req_${randomUUID()}`,
+      retryable: false
+    });
+    return;
+  }
   const store = getStore();
   try {
-    await deleteModelConnection(
-      modelConnectionDeletionStore(store),
-      { ownerId: req.user!.id, teamId: req.user!.teamId },
-      req.params.id
+    const result = await executeModelConnectionWriteIdempotently(
+      store,
+      {
+        ownerId: req.user!.id,
+        teamId: req.user!.teamId,
+        idempotencyKey,
+        method: req.method,
+        path: req.path,
+        body: {}
+      },
+      async () => {
+        const configsBefore = [...store.aiModelConfigs];
+        const credentialsBefore = [...store.modelCredentialVersions];
+        const pendingCredentialsBefore = [
+          ...store.pendingModelCredentialVersions
+        ];
+        const rollback = () => {
+          store.aiModelConfigs.splice(
+            0,
+            store.aiModelConfigs.length,
+            ...configsBefore
+          );
+          store.modelCredentialVersions.splice(
+            0,
+            store.modelCredentialVersions.length,
+            ...credentialsBefore
+          );
+          store.pendingModelCredentialVersions.splice(
+            0,
+            store.pendingModelCredentialVersions.length,
+            ...pendingCredentialsBefore
+          );
+        };
+        try {
+          await deleteModelConnection(
+            modelConnectionDeletionStore(
+              store,
+              { deferPersistence: true }
+            ),
+            { ownerId: req.user!.id, teamId: req.user!.teamId },
+            req.params.id
+          );
+          return { status: 200, body: {}, rollback };
+        } catch (error) {
+          rollback();
+          throw error;
+        }
+      }
     );
-    res.status(204).end();
+    if (result.replayed) res.setHeader("Idempotency-Replayed", "true");
+    res.status(result.status).json(result.body);
   } catch (error) {
     if (sendModelConnectionError(res, error)) return;
     throw error;
@@ -7577,7 +7815,9 @@ app.post("/api/tools/ai-config", requireAuth, asyncRoute(async (req, res) => {
       store.modelCredentialVersions,
       connection,
       apiKey,
-      req.user!.id
+      req.user!.id,
+      undefined,
+      store.pendingModelCredentialVersions
     );
     config.credentialVersion = credential.version;
   }
@@ -10701,7 +10941,10 @@ function publicAiConfig(config: AiModelConfig) {
   };
 }
 
-function modelConnectionStore(store: ReturnType<typeof getStore>) {
+function modelConnectionStore(
+  store: ReturnType<typeof getStore>,
+  options: { deferPersistence?: boolean } = {}
+) {
   const connections = store.aiModelConfigs.flatMap((config) => {
     try {
       return [modelConnectionFromAiConfig(config)];
@@ -10712,6 +10955,8 @@ function modelConnectionStore(store: ReturnType<typeof getStore>) {
   return {
     connections,
     activationEvents: store.modelConnectionActivationEvents,
+    pendingActivationEvents:
+      store.pendingModelConnectionActivationEvents,
     async persist() {
       for (const connection of connections) {
         const config = store.aiModelConfigs.find(
@@ -10721,20 +10966,26 @@ function modelConnectionStore(store: ReturnType<typeof getStore>) {
         config.enabled = connection.status === "active";
         config.updatedAt = connection.updatedAt;
       }
-      await store.persist();
+      if (!options.deferPersistence) await store.persist();
     },
-    activateModelConnectionTransaction: store.activateModelConnection
+    activateModelConnectionTransaction:
+      !options.deferPersistence && store.activateModelConnection
       ? store.activateModelConnection.bind(store)
       : undefined
   };
 }
 
-function modelConnectionDeletionStore(store: ReturnType<typeof getStore>) {
-  const bridge = modelConnectionStore(store);
+function modelConnectionDeletionStore(
+  store: ReturnType<typeof getStore>,
+  options: { deferPersistence?: boolean } = {}
+) {
+  const bridge = modelConnectionStore(store, options);
   return {
     connections: bridge.connections,
     jobSnapshots: store.aiJobModelSnapshots,
-    deleteModelConnectionTransaction: store.deleteModelConnection
+    activationEvents: store.modelConnectionActivationEvents,
+    deleteModelConnectionTransaction:
+      !options.deferPersistence && store.deleteModelConnection
       ? store.deleteModelConnection.bind(store)
       : undefined,
     async persist() {
@@ -10755,7 +11006,14 @@ function modelConnectionDeletionStore(store: ReturnType<typeof getStore>) {
           (item) => retained.has(item.connectionId)
         )
       );
-      await store.persist();
+      store.pendingModelCredentialVersions.splice(
+        0,
+        store.pendingModelCredentialVersions.length,
+        ...store.pendingModelCredentialVersions.filter(
+          (item) => retained.has(item.connectionId)
+        )
+      );
+      if (!options.deferPersistence) await store.persist();
     }
   };
 }
@@ -10765,11 +11023,14 @@ function sendModelConnectionError(
   error: unknown
 ) {
   if (!(error instanceof ModelConnectionError)) return false;
+  if (error.code === "connection_in_use") {
+    res.setHeader("X-Error-Code", "connection_in_use");
+  }
   res.status(error.status).json({
     code: error.code,
     message: error.message,
     details: null,
-    requestId: `req_${randomUUID()}`,
+    requestId: error.requestId || `req_${randomUUID()}`,
     retryable: false
   });
   return true;

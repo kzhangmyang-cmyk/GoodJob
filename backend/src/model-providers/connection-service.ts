@@ -91,6 +91,7 @@ export function selectLegacyActiveConnectionIds(
 export interface ModelConnectionActivationStore {
   connections: ModelConnection[];
   activationEvents: ModelConnectionActivationEvent[];
+  pendingActivationEvents?: ModelConnectionActivationEvent[];
   persist(): Promise<void>;
   activateModelConnectionTransaction?(
     scope: ModelConnectionScope,
@@ -153,6 +154,7 @@ export async function activateModelConnection(
     createdAt: now
   };
   store.activationEvents.push(event);
+  store.pendingActivationEvents?.push(event);
   try {
     await store.persist();
   } catch (error) {
@@ -161,6 +163,9 @@ export async function activateModelConnection(
       state.item.updatedAt = state.updatedAt;
     }
     store.activationEvents.pop();
+    if (store.pendingActivationEvents?.at(-1) === event) {
+      store.pendingActivationEvents.pop();
+    }
     throw error;
   }
   return target;
@@ -171,7 +176,8 @@ export function createModelCredentialVersion(
   connection: ModelConnection,
   apiKey: string,
   actorId: string,
-  now = new Date().toISOString()
+  now = new Date().toISOString(),
+  pendingCredentials?: ModelCredentialVersion[]
 ) {
   const normalizedKey = apiKey.trim();
   if (!normalizedKey) {
@@ -205,6 +211,7 @@ export function createModelCredentialVersion(
     createdAt: now
   };
   credentials.push(credential);
+  pendingCredentials?.push(credential);
   connection.credentialVersion = version;
   connection.updatedAt = now;
   return credential;
@@ -224,20 +231,35 @@ export function toPublicModelConnection(
 interface ModelConnectionDeletionStore {
   connections: ModelConnection[];
   jobSnapshots: StoredAiJobModelSnapshot[];
+  activationEvents?: ModelConnectionActivationEvent[];
   persist(): Promise<void>;
   deleteModelConnectionTransaction?(
     scope: ModelConnectionScope,
-    connectionId: string
+    connectionId: string,
+    options?: ModelConnectionDeletionOptions
   ): Promise<ModelConnection>;
+}
+
+export const DEFAULT_MODEL_CONNECTION_ACTIVATION_AUDIT_RETENTION_MS =
+  90 * 24 * 60 * 60 * 1_000;
+
+export interface ModelConnectionDeletionOptions {
+  now?: () => Date;
+  activationAuditRetentionMs?: number;
 }
 
 export async function deleteModelConnection(
   store: ModelConnectionDeletionStore,
   scope: ModelConnectionScope,
-  connectionId: string
+  connectionId: string,
+  options: ModelConnectionDeletionOptions = {}
 ) {
   if (store.deleteModelConnectionTransaction) {
-    return store.deleteModelConnectionTransaction(scope, connectionId);
+    return store.deleteModelConnectionTransaction(
+      scope,
+      connectionId,
+      options
+    );
   }
   const index = store.connections.findIndex(
     (item) => item.id === connectionId
@@ -251,15 +273,31 @@ export async function deleteModelConnection(
       404
     );
   }
+  const retentionMs =
+    Number.isFinite(options.activationAuditRetentionMs)
+      && Number(options.activationAuditRetentionMs) >= 0
+      ? Number(options.activationAuditRetentionMs)
+      : DEFAULT_MODEL_CONNECTION_ACTIVATION_AUDIT_RETENTION_MS;
+  const nowMs = (options.now?.() || new Date()).getTime();
+  const retainedByAudit = (store.activationEvents || []).some(
+    (item) => item.ownerId === scope.ownerId
+      && item.teamId === scope.teamId
+      && (
+        item.connectionId === connectionId
+        || item.previousConnectionId === connectionId
+      )
+      && new Date(item.createdAt).getTime() + retentionMs > nowMs
+  );
   if (store.connections[index].status === "active"
     || store.jobSnapshots.some(
     (item) => item.connectionId === connectionId
       && item.ownerId === scope.ownerId
       && item.teamId === scope.teamId
-  )) {
+    )
+    || retainedByAudit) {
     throw new ModelConnectionError(
       "connection_in_use",
-      "模型连接当前仍在启用或被任务快照引用，只能先停用",
+      "模型连接仍在启用、被任务快照引用或处于激活审计保留期",
       409
     );
   }

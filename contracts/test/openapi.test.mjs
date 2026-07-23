@@ -89,6 +89,8 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(document.components.schemas.ApiError.additionalProperties, false);
   assert.equal(document.components.schemas.AsyncOperation.$ref, "../json-schema/async-operation.v1.schema.json");
   assert.equal(document.components.schemas.PagedResult.additionalProperties, false);
+  assert.equal(document.components.parameters.idempotencyKey.schema.minLength, 1);
+  assert.equal(document.components.parameters.idempotencyKey.schema.maxLength, 200);
   for (const [path, methods] of Object.entries(section16)) {
     const actualMethods = Object.keys(document.paths[path]).filter((key) => ["get", "post", "patch", "delete"].includes(key)).sort();
     assert.deepEqual(actualMethods, [...methods].sort(), path);
@@ -111,6 +113,18 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   for (const path of asyncPosts) {
     assert.equal(document.paths[path].post.responses["202"].content["application/json"].schema.$ref, "#/components/schemas/AsyncOperation", path);
   }
+  const connectionWrites = [
+    document.paths["/api/v1/ai/connections"].post,
+    document.paths["/api/v1/ai/connections/{id}"].patch,
+    document.paths["/api/v1/ai/connections/{id}/activate"].post
+  ];
+  for (const operation of connectionWrites) {
+    assert.equal(operation.responses["200"].content["application/json"].schema.$ref, "#/components/schemas/ModelConnection");
+  }
+  assert.deepEqual(
+    document.paths["/api/v1/ai/connections/{id}"].delete.responses["200"].content["application/json"].schema,
+    { type: "object", additionalProperties: false }
+  );
   const connectionDelete = document.paths["/api/v1/ai/connections/{id}"].delete.responses["409"];
   assert.equal(connectionDelete.content["application/json"].schema.$ref, "#/components/schemas/ApiError");
   assert.deepEqual(connectionDelete.headers["X-Error-Code"].schema.enum, ["connection_in_use"]);

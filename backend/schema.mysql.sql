@@ -483,6 +483,18 @@ CREATE TABLE ai_model_connection_activation_events (
   INDEX idx_ai_activation_owner(owner_id, created_at)
 );
 
+CREATE TABLE ai_model_connection_idempotency (
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  idempotency_key_hash CHAR(64) NOT NULL,
+  request_fingerprint CHAR(64) NOT NULL,
+  response_status SMALLINT UNSIGNED NOT NULL,
+  response_body_json JSON NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY(owner_id, idempotency_key_hash),
+  INDEX idx_ai_connection_idempotency_created(created_at)
+);
+
 CREATE TABLE ai_job_model_snapshots (
   job_id VARCHAR(90) PRIMARY KEY,
   owner_id VARCHAR(64) NOT NULL,

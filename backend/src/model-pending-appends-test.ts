@@ -1,0 +1,131 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+import {
+  persistThenClearModelAppendBatches
+} from "./model-providers/pending-appends.js";
+import type {
+  ModelConnectionActivationEvent,
+  ModelConnectionIdempotencyRecord,
+  ModelCredentialVersion,
+  StoredAiJobModelSnapshot
+} from "./model-providers/types.js";
+
+function batches() {
+  return {
+    pendingModelCredentialVersions: [] as ModelCredentialVersion[],
+    pendingModelConnectionActivationEvents:
+      [] as ModelConnectionActivationEvent[],
+    pendingAiJobModelSnapshots: [] as StoredAiJobModelSnapshot[],
+    pendingModelConnectionIdempotencyRecords:
+      [] as ModelConnectionIdempotencyRecord[]
+  };
+}
+
+test("pending model appends clear only persisted rows after success", async () => {
+  const live = batches();
+  live.pendingModelCredentialVersions.push(
+    { connectionId: "conn-1", version: 1 } as ModelCredentialVersion
+  );
+  live.pendingModelConnectionActivationEvents.push(
+    { id: "event-1" } as ModelConnectionActivationEvent
+  );
+  live.pendingAiJobModelSnapshots.push(
+    { jobId: "job-1" } as StoredAiJobModelSnapshot
+  );
+  live.pendingModelConnectionIdempotencyRecords.push(
+    {
+      ownerId: "owner-1",
+      idempotencyKeyHash: "hash-1"
+    } as ModelConnectionIdempotencyRecord
+  );
+  const persisted = structuredClone(live);
+  live.pendingModelCredentialVersions.push(
+    { connectionId: "conn-2", version: 2 } as ModelCredentialVersion
+  );
+
+  await persistThenClearModelAppendBatches(
+    live,
+    persisted,
+    async () => {}
+  );
+  assert.deepEqual(
+    live.pendingModelCredentialVersions.map(
+      (item) => `${item.connectionId}:${item.version}`
+    ),
+    ["conn-2:2"]
+  );
+  assert.deepEqual(live.pendingModelConnectionActivationEvents, []);
+  assert.deepEqual(live.pendingAiJobModelSnapshots, []);
+  assert.deepEqual(live.pendingModelConnectionIdempotencyRecords, []);
+});
+
+test("failed model append persistence throws and retains every pending row", async () => {
+  const live = batches();
+  live.pendingModelConnectionActivationEvents.push(
+    { id: "event-retry" } as ModelConnectionActivationEvent
+  );
+  const persisted = structuredClone(live);
+
+  await assert.rejects(
+    persistThenClearModelAppendBatches(
+      live,
+      persisted,
+      async () => {
+        throw new Error("insert failed");
+      }
+    ),
+    /insert failed/
+  );
+  assert.equal(live.pendingModelConnectionActivationEvents.length, 1);
+});
+
+test("MySQL persists pending model rows with strict inserts, not loaded history", () => {
+  const source = readFileSync(
+    new URL("./mysql-store.ts", import.meta.url),
+    "utf8"
+  );
+  for (const pendingName of [
+    "pendingModelCredentialVersions",
+    "pendingModelConnectionActivationEvents",
+    "pendingAiJobModelSnapshots",
+    "pendingModelConnectionIdempotencyRecords"
+  ]) {
+    assert.match(source, new RegExp(`insertRows[\\s\\S]+${pendingName}`));
+  }
+  assert.doesNotMatch(
+    source,
+    /INSERT IGNORE INTO ai_(?:model_credential_versions|model_connection_activation_events|job_model_snapshots|model_connection_idempotency)/
+  );
+});
+
+test("connection idempotency replay is loaded durably from hashed-key SQL", () => {
+  const source = readFileSync(
+    new URL("./mysql-store.ts", import.meta.url),
+    "utf8"
+  );
+  const schemas = [
+    readFileSync(new URL("../schema.mysql.sql", import.meta.url), "utf8"),
+    readFileSync(new URL("../goodjob_crm.full.sql", import.meta.url), "utf8")
+  ];
+  assert.match(
+    source,
+    /modelConnectionIdempotencyRecords:\s*await loadModelConnectionIdempotencyRecords\(pool\)/
+  );
+  assert.match(
+    source,
+    /SELECT \* FROM ai_model_connection_idempotency/
+  );
+  assert.match(
+    source,
+    /insertRows\(connection, "ai_model_connection_idempotency", store\.pendingModelConnectionIdempotencyRecords/
+  );
+  for (const schema of schemas) {
+    assert.match(schema, /CREATE TABLE ai_model_connection_idempotency/);
+    assert.match(
+      schema,
+      /PRIMARY KEY\(owner_id, idempotency_key_hash\)/
+    );
+    assert.doesNotMatch(schema, /\bidempotency_key\s+VARCHAR/i);
+  }
+});

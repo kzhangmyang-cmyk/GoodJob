@@ -87,6 +87,16 @@ export interface StoredAiJobModelSnapshot extends AiJobModelSnapshot {
   createdAt: string;
 }
 
+export interface ModelConnectionIdempotencyRecord {
+  ownerId: string;
+  teamId: string;
+  idempotencyKeyHash: string;
+  requestFingerprint: string;
+  responseStatus: number;
+  responseBody: unknown;
+  createdAt: string;
+}
+
 export interface ModelConnectionScope {
   ownerId: string;
   teamId: string;
@@ -97,9 +107,13 @@ export class ModelConnectionError extends Error {
     public readonly code:
       | "connection_not_found"
       | "connection_in_use"
-      | "credential_not_found",
+      | "credential_not_found"
+      | "idempotency_key_required"
+      | "idempotency_key_invalid"
+      | "idempotency_key_conflict",
     message: string,
-    public readonly status: 404 | 409
+    public readonly status: 400 | 404 | 409,
+    public readonly requestId?: string
   ) {
     super(message);
     this.name = "ModelConnectionError";
