@@ -63,9 +63,12 @@
     "test:prospect-runs:mysql": "NODE_ENV=test JWT_SECRET=goodjob-prospect-run-mysql-test-secret-at-least-32-characters PROSPECT_RUN_IDEMPOTENCY_SECRET=goodjob-prospect-run-mysql-idempotency-test-secret-at-least-32-characters PROSPECT_RUN_CURSOR_SECRET=goodjob-prospect-run-mysql-cursor-test-secret-at-least-32-characters tsx src/prospect-run-mysql-test.ts",
     "test:providers:mysql": "NODE_ENV=test JWT_SECRET=goodjob-provider-mysql-test-secret-at-least-32-characters tsx src/provider-mysql-persistence-test.ts",
     "test:security": "NODE_ENV=test JWT_SECRET=goodjob-security-test-secret-at-least-32-characters tsx src/security-test.ts",
-    "test:collaboration": "NODE_ENV=test JWT_SECRET=goodjob-collaboration-test-secret-at-least-32-characters tsx src/collaboration-test.ts"
+    "test:collaboration": "NODE_ENV=test JWT_SECRET=goodjob-collaboration-test-secret-at-least-32-characters tsx src/collaboration-test.ts",
+    "test:agent:pi": "NODE_ENV=test tsx src/acquisition-pi-tools-test.ts"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "0.81.1",
+    "@earendil-works/pi-ai": "0.81.1",
     "bullmq": "^5.80.3",
     "cors": "^2.8.5",
     "express": "^4.19.2",
@@ -77,6 +80,7 @@
     "qrcode-terminal": "^0.12.0",
     "swagger-ui-express": "^5.0.1",
     "twilio": "^6.0.2",
+    "typebox": "1.1.38",
     "whatsapp-web.js": "^1.34.7",
     "xlsx-js-style": "^1.2.0",
     "zod": "^3.23.8"
