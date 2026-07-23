@@ -14,6 +14,8 @@ import type {
   ReviewEvent
 } from "./acquisition-domain.js";
 import type {
+  AcquisitionCandidateListPage,
+  AcquisitionCandidateListQuery,
   AcquisitionDataScope,
   AcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
@@ -680,6 +682,93 @@ implements AcquisitionDomainRepository {
       candidateId,
       "candidate"
     );
+  }
+
+  async listCandidates(
+    scope: AcquisitionDataScope,
+    query: AcquisitionCandidateListQuery
+  ): Promise<AcquisitionCandidateListPage> {
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 100) {
+      throw new Error("CANDIDATE_LIMIT_INVALID");
+    }
+    const cursor = query.cursor ?? "0";
+    if (!/^(0|[1-9]\d*)$/.test(cursor)) {
+      throw new Error("CANDIDATE_CURSOR_INVALID");
+    }
+    const offset = Number(cursor);
+    if (!Number.isSafeInteger(offset)) {
+      throw new Error("CANDIDATE_CURSOR_INVALID");
+    }
+    const where = ["owner_id = ?", "team_id = ?"];
+    const values: unknown[] = [scope.ownerId, scope.teamId];
+    if (query.subjectKind) {
+      where.push(
+        "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.profile.kind')) = ?"
+      );
+      values.push(query.subjectKind);
+    }
+    if (query.status) {
+      where.push(
+        "JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.status')) = ?"
+      );
+      values.push(query.status);
+    }
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const statistics = await rows(
+        connection,
+        `SELECT COUNT(*) AS total_count,
+                MAX(updated_at) AS max_updated_at,
+                COALESCE(SUM(version), 0) AS version_sum
+         FROM acquisition_candidates
+         WHERE ${where.join(" AND ")}`,
+        values
+      );
+      const statistic = statistics[0] ?? {};
+      const total = Number(statistic.total_count ?? 0);
+      const maxUpdatedAt = statistic.max_updated_at instanceof Date
+        ? statistic.max_updated_at.toISOString()
+        : String(statistic.max_updated_at ?? "");
+      const snapshot = createHash("sha256")
+        .update(JSON.stringify({
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          subjectKind: query.subjectKind ?? null,
+          status: query.status ?? null,
+          total,
+          maxUpdatedAt,
+          versionSum: String(statistic.version_sum ?? "0")
+        }))
+        .digest("hex");
+      if (query.snapshot && query.snapshot !== snapshot) {
+        throw new Error("CANDIDATE_SNAPSHOT_CHANGED");
+      }
+      const pageRows = await rows(
+        connection,
+        `SELECT *
+         FROM acquisition_candidates
+         WHERE ${where.join(" AND ")}
+         ORDER BY updated_at DESC, id ASC
+         LIMIT ? OFFSET ?`,
+        [...values, query.limit, offset]
+      );
+      const items = pageRows.map((row) =>
+        ownedPayload<AcquisitionCandidate>(row, "candidate")
+      );
+      await connection.commit();
+      const nextOffset = offset + items.length;
+      return {
+        items,
+        nextCursor: nextOffset < total ? String(nextOffset) : null,
+        snapshot
+      };
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   }
 
   async insertCandidate(record: AcquisitionCandidate) {
