@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { encryptProviderConfiguration } from "./credential-security.js";
 import {
   ProviderContractError,
   normalizeProviderPage,
@@ -12,6 +14,12 @@ import {
   setProviderHttpTestTransport
 } from "./provider-http-client.js";
 import { LEAD_PROVIDERS } from "./lead-providers.js";
+import {
+  createProviderExecutionContext,
+  executeProviderHealth,
+  executeProviderSearch
+} from "./provider-runtime.js";
+import type { ProviderConnection, ProviderRequestLog } from "./types.js";
 import {
   BAIDU_AI_SEARCH_PROVIDER,
   REAL_WEB_SEARCH_PROVIDERS,
@@ -28,6 +36,11 @@ const query = normalizeProviderQuery({
   excludeKeywords: "招聘",
   limit: 7
 });
+
+const weightedBaiduLength = (value: string) => Array.from(value).reduce(
+  (total, character) => total + (/[\u3400-\u9fff\uf900-\ufaff]/u.test(character) ? 2 : 1),
+  0
+);
 
 function tools(provider: LeadProvider) {
   return {
@@ -65,11 +78,10 @@ setProviderHttpTestTransport(async (url, init) => {
       {
         id: 1,
         title: "华东照明有限公司 - 工业照明方案",
-        url: "https://lighting.example.cn/solutions/industrial",
+        url: "https://Lighting.Example.cn/solutions/industrial?b=2&a=1#section",
         snippet: "华东照明公开发布的工业照明方案摘要。",
         content: "不应替代 snippet 的索引片段。",
-        date: "2026-07-22 09:00:00",
-        type: "web"
+        date: "2026-07-22 09:00:00"
       },
       {
         id: 2,
@@ -98,25 +110,98 @@ assert.equal(new URL(requestedUrl).search, "");
 const baiduHeaders = new Headers(requestedInit?.headers);
 assert.equal(baiduHeaders.get("x-appbuilder-authorization"), "Bearer baidu-private-key");
 assert.equal(baiduHeaders.get("authorization"), null);
-assert.deepEqual(JSON.parse(String(requestedInit?.body)), {
-  messages: [{ role: "user", content: "寻找正在采购工业照明的中国企业 led 工业照明 制造业 采购商 中国 -招聘" }],
+const firstBaiduBody = JSON.parse(String(requestedInit?.body));
+assert.deepEqual({
+  ...firstBaiduBody,
+  messages: undefined
+}, {
+  messages: undefined,
   search_source: "baidu_search_v2",
   resource_type_filter: [{ type: "web", top_k: 7 }],
   safe_search: true
 });
+assert.equal(firstBaiduBody.messages?.[0]?.role, "user");
+assert.ok(weightedBaiduLength(firstBaiduBody.messages?.[0]?.content || "") <= 72);
+assert.match(firstBaiduBody.messages?.[0]?.content || "", /^寻找正在采购工业照明的中国企业/);
+assert.match(firstBaiduBody.messages?.[0]?.content || "", /-招聘/);
 assert.equal(baiduPage.rawCount, 3);
 assert.equal(baiduPage.records.length, 1);
 assert.equal(baiduPage.invalidCount, 1);
 assert.match(baiduPage.warnings?.join("\n") || "", /非网页结果 1 条/);
 assert.match(baiduPage.warnings?.join("\n") || "", /无效网页结果 1 条/);
-assert.equal(baiduPage.records[0]?.sourceUrl, "https://lighting.example.cn/solutions/industrial");
+assert.equal(
+  baiduPage.records[0]?.sourceUrl,
+  "https://lighting.example.cn/solutions/industrial?b=2&a=1#section"
+);
 assert.equal(baiduPage.records[0]?.description, "华东照明公开发布的工业照明方案摘要。");
 assert.equal(baiduPage.records[0]?.recordType, "discovery_page");
-assert.equal(baiduPage.records[0]?.providerRecordId, "baidu-request-1:1");
+assert.match(baiduPage.records[0]?.providerRecordId || "", /^urlh:[a-f0-9]{64}$/);
 assert.match(baiduPage.records[0]?.evidenceSummary || "", /百度索引第 1 名/);
+assert.match(baiduPage.records[0]?.evidenceSummary || "", /请求 baidu-request-1/);
 assert.match(baiduPage.records[0]?.evidenceSummary || "", /2026-07-22/);
+assert.equal(baiduPage.records[0]?.confidence, 0);
+assert.equal(baiduPage.records[0]?.officialWebsite, "");
+assert.equal(baiduPage.exhausted, true);
 assert.equal(normalize(BAIDU_AI_SEARCH_PROVIDER, baiduPage).status, "partial_success");
 assert.equal(String(requestedUrl).includes("baidu-private-key"), false);
+const stableBaiduRecordId = baiduPage.records[0]?.providerRecordId;
+
+setProviderHttpTestTransport(async () => new Response(JSON.stringify({
+  request_id: "baidu-request-rerun",
+  references: [{
+    id: 9,
+    title: "同一网页的新排名",
+    url: "https://lighting.example.cn/solutions/industrial?a=1&b=2",
+    content: "同一来源的另一次索引摘要。"
+  }]
+}), { status: 200 }));
+const rerunBaiduPage = await BAIDU_AI_SEARCH_PROVIDER.search!(
+  { query, cursor: "" },
+  { apiKey: "baidu-private-key" },
+  tools(BAIDU_AI_SEARCH_PROVIDER)
+);
+assert.equal(rerunBaiduPage.records[0]?.providerRecordId, stableBaiduRecordId);
+assert.match(rerunBaiduPage.records[0]?.evidenceSummary || "", /请求 baidu-request-rerun/);
+assert.match(rerunBaiduPage.records[0]?.evidenceSummary || "", /第 1 名/);
+
+setProviderHttpTestTransport(async () => new Response(JSON.stringify({
+  request_id: "baidu-empty-success"
+}), { status: 200 }));
+const baiduEmptyPage = await BAIDU_AI_SEARCH_PROVIDER.search!(
+  { query, cursor: "" },
+  { apiKey: "baidu-private-key" },
+  tools(BAIDU_AI_SEARCH_PROVIDER)
+);
+assert.equal(baiduEmptyPage.records.length, 0);
+assert.equal(baiduEmptyPage.rawCount, 0);
+assert.equal(baiduEmptyPage.exhausted, true);
+
+const longBaiduQuery = normalizeProviderQuery({
+  goal: "超长核心目标".repeat(10),
+  productKeywords: "工业照明,智能制造,采购",
+  countries: "中国",
+  industry: "制造业",
+  customerType: "采购负责人",
+  excludeKeywords: "招聘",
+  limit: 7
+});
+setProviderHttpTestTransport(async (_url, init) => {
+  requestedInit = init;
+  return new Response(JSON.stringify({
+    request_id: "baidu-truncated",
+    references: []
+  }), { status: 200 });
+});
+const truncatedBaiduPage = await BAIDU_AI_SEARCH_PROVIDER.search!(
+  { query: longBaiduQuery, cursor: "" },
+  { apiKey: "baidu-private-key" },
+  tools(BAIDU_AI_SEARCH_PROVIDER)
+);
+const truncatedBaiduContent = JSON.parse(String(requestedInit?.body)).messages[0].content;
+assert.ok(weightedBaiduLength(truncatedBaiduContent) <= 72);
+assert.match(truncatedBaiduContent, /^超长核心目标/);
+assert.match(truncatedBaiduContent, /-招聘/);
+assert.match(truncatedBaiduPage.warnings?.join("\n") || "", /72/);
 
 setProviderHttpTestTransport(async (url, init) => {
   requestedUrl = url;
@@ -153,8 +238,7 @@ const tencentHeaders = new Headers(requestedInit?.headers);
 assert.equal(tencentHeaders.get("authorization"), "Bearer tencent-private-key");
 assert.deepEqual(JSON.parse(String(requestedInit?.body)), {
   Query: "寻找正在采购工业照明的中国企业 led 工业照明 制造业 采购商 中国 -招聘",
-  Mode: 0,
-  Cnt: 10
+  Mode: 0
 });
 assert.equal(tencentPage.rawCount, 3);
 assert.equal(tencentPage.records.length, 1);
@@ -162,10 +246,16 @@ assert.equal(tencentPage.invalidCount, 2);
 assert.match(tencentPage.warnings?.join("\n") || "", /无效结果 2 条/);
 assert.equal(tencentPage.records[0]?.sourceUrl, "https://factory.example.cn/purchase/lighting");
 assert.equal(tencentPage.records[0]?.description, "该工厂发布的工业照明采购信息索引摘要。");
-assert.equal(tencentPage.records[0]?.providerRecordId, "tencent-request-1:1");
-assert.equal(tencentPage.records[0]?.confidence, 87);
+assert.match(tencentPage.records[0]?.providerRecordId || "", /^urlh:[a-f0-9]{64}$/);
+assert.equal(tencentPage.records[0]?.confidence, 0);
+assert.equal(tencentPage.records[0]?.officialWebsite, "");
 assert.match(tencentPage.records[0]?.evidenceSummary || "", /腾讯联网搜索第 1 名/);
 assert.match(tencentPage.records[0]?.evidenceSummary || "", /示例工厂/);
+assert.match(tencentPage.records[0]?.evidenceSummary || "", /请求 tencent-request-1/);
+assert.match(tencentPage.records[0]?.evidenceSummary || "", /检索相关性 0.87/);
+assert.equal(tencentPage.exhausted, true);
+assert.match(tencentPage.warnings?.join("\n") || "", /可能不完整/);
+assert.match(tencentPage.warnings?.join("\n") || "", /无可继续游标/);
 assert.equal(String(requestedUrl).includes("tencent-private-key"), false);
 
 const largerTencentQuery = normalizeProviderQuery({
@@ -188,7 +278,10 @@ await TENCENT_WEB_SEARCH_PROVIDER.search!(
   { apiKey: "tencent-private-key" },
   tools(TENCENT_WEB_SEARCH_PROVIDER)
 );
-assert.equal(JSON.parse(String(requestedInit?.body)).Cnt, 20);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(JSON.parse(String(requestedInit?.body)), "Cnt"),
+  false
+);
 
 setProviderHttpTestTransport(async (url, init) => {
   requestedUrl = url;
@@ -198,7 +291,7 @@ setProviderHttpTestTransport(async (url, init) => {
     results: [
       {
         title: "北方设备公司采购动态",
-        url: "https://equipment.example.cn/news/lighting",
+        url: "https://Equipment.Example.cn/",
         content: "Tavily 返回的索引摘要，不是目标网页全文。",
         score: 0.91
       },
@@ -235,18 +328,22 @@ assert.deepEqual(JSON.parse(String(requestedInit?.body)), {
 });
 assert.equal(tavilyPage.records.length, 1);
 assert.equal(tavilyPage.invalidCount, 1);
-assert.equal(tavilyPage.records[0]?.sourceUrl, "https://equipment.example.cn/news/lighting");
+assert.equal(tavilyPage.records[0]?.sourceUrl, "https://equipment.example.cn/");
 assert.equal(tavilyPage.records[0]?.description, "Tavily 返回的索引摘要，不是目标网页全文。");
-assert.equal(tavilyPage.records[0]?.providerRecordId, "tavily-request-1:1");
-assert.equal(tavilyPage.records[0]?.confidence, 91);
+assert.match(tavilyPage.records[0]?.providerRecordId || "", /^urlh:[a-f0-9]{64}$/);
+assert.equal(tavilyPage.records[0]?.confidence, 0);
+assert.equal(tavilyPage.records[0]?.officialWebsite, "");
 assert.equal(tavilyPage.usage?.quotaUsed, 1);
 assert.equal(tavilyPage.usage?.requestCount, 1);
 assert.match(tavilyPage.usage?.display || "", /1 credit/);
 assert.match(tavilyPage.records[0]?.evidenceSummary || "", /Tavily 索引第 1 名/);
+assert.match(tavilyPage.records[0]?.evidenceSummary || "", /请求 tavily-request-1/);
+assert.match(tavilyPage.records[0]?.evidenceSummary || "", /检索相关性 0.91/);
+assert.equal(tavilyPage.exhausted, true);
 assert.equal(String(requestedUrl).includes("tavily-private-key"), false);
 
 for (const [provider, malformedResponse] of [
-  [BAIDU_AI_SEARCH_PROVIDER, {}],
+  [BAIDU_AI_SEARCH_PROVIDER, []],
   [TENCENT_WEB_SEARCH_PROVIDER, { Response: { RequestId: "x" } }],
   [TAVILY_SEARCH_PROVIDER, { request_id: "x" }]
 ] as const) {
@@ -261,6 +358,25 @@ for (const [provider, malformedResponse] of [
     ),
     (error: unknown) => error instanceof ProviderContractError
       && error.code === "PROVIDER_SCHEMA_CHANGED"
+  );
+}
+
+for (const status of [400, 200]) {
+  setProviderHttpTestTransport(async () => new Response(JSON.stringify({
+    requestId: "baidu-auth-failure",
+    code: 216003,
+    message: "Authentication error with sensitive provider detail"
+  }), { status }));
+  await assert.rejects(
+    BAIDU_AI_SEARCH_PROVIDER.search!(
+      { query, cursor: "" },
+      { apiKey: "private-key" },
+      tools(BAIDU_AI_SEARCH_PROVIDER)
+    ),
+    (error: unknown) => error instanceof ProviderContractError
+      && error.code === "PROVIDER_AUTH_FAILED"
+      && error.httpStatus === (status === 200 ? 401 : status)
+      && !error.publicMessage.includes("sensitive")
   );
 }
 
@@ -284,18 +400,21 @@ for (const [status, expectedCode] of [
   );
 }
 
-setProviderHttpTestTransport(async () => new Response(JSON.stringify({
-  detail: { error: "This request exceeds the plan usage limit." }
-}), { status: 432 }));
-await assert.rejects(
-  TAVILY_SEARCH_PROVIDER.search!(
-    { query, cursor: "" },
-    { apiKey: "private-key" },
-    tools(TAVILY_SEARCH_PROVIDER)
-  ),
-  (error: unknown) => error instanceof ProviderContractError
-    && error.code === "PROVIDER_QUOTA_EXHAUSTED"
-);
+for (const status of [432, 433]) {
+  setProviderHttpTestTransport(async () => new Response(JSON.stringify({
+    detail: { error: "This request exceeds the plan usage limit." }
+  }), { status }));
+  await assert.rejects(
+    TAVILY_SEARCH_PROVIDER.search!(
+      { query, cursor: "" },
+      { apiKey: "private-key" },
+      tools(TAVILY_SEARCH_PROVIDER)
+    ),
+    (error: unknown) => error instanceof ProviderContractError
+      && error.code === "PROVIDER_QUOTA_EXHAUSTED"
+      && error.httpStatus === status
+  );
+}
 
 let networkCalls = 0;
 setProviderHttpTestTransport(async () => {
@@ -342,6 +461,159 @@ for (const provider of REAL_WEB_SEARCH_PROVIDERS) {
   assert.equal(healthCalls, 1, `${provider.id} health should issue one minimal real request`);
 }
 
+const integrationSecret = "integration-baidu-secret-never-log";
+const integrationIdentity = {
+  id: "connection_baidu_integration",
+  providerId: BAIDU_AI_SEARCH_PROVIDER.id,
+  ownerId: "owner_search_integration",
+  teamId: "team_search_integration"
+};
+const integrationConnection: ProviderConnection = {
+  ...integrationIdentity,
+  scope: "personal",
+  credentialRef: "credential_baidu_integration",
+  configurationEncrypted: encryptProviderConfiguration(integrationIdentity, {
+    apiKey: integrationSecret,
+    baseUrl: BAIDU_AI_SEARCH_PROVIDER.defaultBaseUrl || ""
+  }),
+  status: "active",
+  quotaPolicy: {},
+  budgetPolicy: {},
+  lastHealthAt: "",
+  lastHealthStatus: "untested",
+  lastErrorCode: "",
+  lastHealthMessage: "",
+  usage: "",
+  createdBy: integrationIdentity.ownerId,
+  createdAt: "2026-07-23T00:00:00.000Z",
+  updatedAt: "2026-07-23T00:00:00.000Z"
+};
+const integrationLogs: ProviderRequestLog[] = [];
+let integrationNetworkCalls = 0;
+setProviderHttpTestTransport(async (_url, init) => {
+  integrationNetworkCalls += 1;
+  assert.equal(
+    new Headers(init.headers).get("x-appbuilder-authorization"),
+    `Bearer ${integrationSecret}`
+  );
+  return new Response(JSON.stringify({
+    request_id: `integration-request-${integrationNetworkCalls}`,
+    references: integrationNetworkCalls === 1
+      ? [{
+          id: 1,
+          title: "集成测试搜索结果",
+          url: "https://integration.example.cn/result",
+          snippet: "仅用于验证加密连接、运行时和审计脱敏。"
+        }]
+      : []
+  }), { status: 200 });
+});
+const integrationCatalog = catalog(BAIDU_AI_SEARCH_PROVIDER);
+const integrationSearch = await executeProviderSearch({
+  provider: BAIDU_AI_SEARCH_PROVIDER,
+  catalog: integrationCatalog,
+  context: createProviderExecutionContext({
+    teamId: integrationIdentity.teamId,
+    ownerId: integrationIdentity.ownerId,
+    runId: "run_web_search_integration",
+    providerId: BAIDU_AI_SEARCH_PROVIDER.id,
+    operation: "search",
+    purpose: "encrypted_connection_integration"
+  }),
+  connection: integrationConnection,
+  query: {
+    goal: "验证真实搜索运行时",
+    productKeywords: "工业照明",
+    countries: "中国",
+    industry: "制造业",
+    customerType: "采购商",
+    excludeKeywords: "",
+    limit: 3
+  },
+  onLogs(logs) {
+    integrationLogs.push(...logs);
+  }
+});
+assert.equal(integrationSearch.records.length, 1);
+const integrationHealth = await executeProviderHealth({
+  provider: BAIDU_AI_SEARCH_PROVIDER,
+  catalog: integrationCatalog,
+  context: createProviderExecutionContext({
+    teamId: integrationIdentity.teamId,
+    ownerId: integrationIdentity.ownerId,
+    runId: "run_web_search_health_integration",
+    providerId: BAIDU_AI_SEARCH_PROVIDER.id,
+    operation: "health",
+    purpose: "encrypted_connection_health"
+  }),
+  connection: integrationConnection,
+  onLogs(logs) {
+    integrationLogs.push(...logs);
+  }
+});
+assert.equal(integrationHealth.ok, true);
+assert.equal(integrationNetworkCalls, 2);
+assert.equal(integrationConnection.configurationEncrypted.includes(integrationSecret), false);
+assert.equal(integrationLogs.length, 2);
+assert.deepEqual(
+  integrationLogs.map((item) => item.endpointCode).sort(),
+  ["connection_test", "search"]
+);
+assert.ok(integrationLogs.every((item) =>
+  item.connectionId === integrationConnection.id
+  && /^[a-f0-9]{64}$/.test(item.requestFingerprint)
+  && item.httpStatus === 200
+));
+const integrationAuditJson = JSON.stringify(integrationLogs);
+for (const sensitiveValue of [
+  integrationSecret,
+  "验证真实搜索运行时",
+  "工业照明",
+  "x-appbuilder-authorization",
+  "integration-request-1"
+]) {
+  assert.equal(integrationAuditJson.includes(sensitiveValue), false);
+}
+
+const blockedIdentity = {
+  ...integrationIdentity,
+  id: "connection_baidu_blocked"
+};
+const blockedConnection: ProviderConnection = {
+  ...integrationConnection,
+  ...blockedIdentity,
+  credentialRef: "credential_baidu_blocked",
+  configurationEncrypted: encryptProviderConfiguration(blockedIdentity, {
+    apiKey: integrationSecret,
+    baseUrl: "https://example.com"
+  })
+};
+await assert.rejects(executeProviderSearch({
+  provider: BAIDU_AI_SEARCH_PROVIDER,
+  catalog: integrationCatalog,
+  context: createProviderExecutionContext({
+    teamId: blockedIdentity.teamId,
+    ownerId: blockedIdentity.ownerId,
+    runId: "run_web_search_blocked",
+    providerId: BAIDU_AI_SEARCH_PROVIDER.id,
+    operation: "search",
+    purpose: "connection_allowlist_integration"
+  }),
+  connection: blockedConnection,
+  query: {
+    goal: "验证连接白名单",
+    productKeywords: "",
+    countries: "",
+    industry: "",
+    customerType: "",
+    excludeKeywords: "",
+    limit: 1
+  },
+  onLogs() {}
+}), (error: unknown) => error instanceof ProviderContractError
+  && error.code === "PROVIDER_POLICY_BLOCKED");
+assert.equal(integrationNetworkCalls, 2);
+
 assert.deepEqual(
   REAL_WEB_SEARCH_PROVIDERS.map((provider) => provider.id),
   ["baidu_ai_search", "tencent_web_search", "tavily"]
@@ -355,6 +627,16 @@ for (const provider of REAL_WEB_SEARCH_PROVIDERS) {
   assert.equal(item.licensePolicy.requiresKey, true);
   assert.equal(item.accessMode, "api");
 }
+
+const backendPackage = JSON.parse(readFileSync(
+  new URL("../package.json", import.meta.url),
+  "utf8"
+)) as { scripts?: Record<string, string> };
+assert.match(
+  backendPackage.scripts?.test || "",
+  /test:provider:web-search/,
+  "the default backend test command must aggregate the real web-search fixtures"
+);
 
 setProviderHttpTestTransport(null);
 console.log("Real web search provider tests passed");

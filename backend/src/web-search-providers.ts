@@ -13,6 +13,7 @@ import {
   type ProviderUsage,
   type RawLead
 } from "./provider-contract.js";
+import { providerRequestFingerprint } from "./provider-request-logging.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -48,6 +49,29 @@ function quotaExhausted(providerName: string, phase: ProviderOperation, httpStat
   });
 }
 
+function providerFailure(input: {
+  code: ProviderContractError["code"];
+  providerName: string;
+  phase: ProviderOperation;
+  httpStatus: number | null;
+  retryable?: boolean;
+}) {
+  const publicMessages: Partial<Record<ProviderContractError["code"], string>> = {
+    PROVIDER_AUTH_FAILED: `${input.providerName} 鉴权失败，请检查 API Key`,
+    PROVIDER_RATE_LIMITED: `${input.providerName} 调用过于频繁，请稍后重试`,
+    PROVIDER_TIMEOUT: `${input.providerName} 请求超时，请稍后重试`,
+    PROVIDER_UNAVAILABLE: `${input.providerName} 暂时不可用，请稍后重试`
+  };
+  return new ProviderContractError({
+    code: input.code,
+    retryable: input.retryable ?? false,
+    retryAfterAt: null,
+    publicMessage: publicMessages[input.code] || `${input.providerName} 请求失败`,
+    httpStatus: input.httpStatus,
+    phase: input.phase
+  });
+}
+
 function isObject(value: unknown): value is JsonObject {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -70,6 +94,63 @@ function webQueryText(query: NormalizedProviderQuery) {
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function baiduCharacterWeight(character: string) {
+  return /[\u3400-\u9fff\uf900-\ufaff]/u.test(character) ? 2 : 1;
+}
+
+function baiduWeightedLength(value: string) {
+  return Array.from(value).reduce(
+    (total, character) => total + baiduCharacterWeight(character),
+    0
+  );
+}
+
+function takeBaiduWeighted(value: string, budget: number) {
+  let used = 0;
+  let result = "";
+  for (const character of value) {
+    const weight = baiduCharacterWeight(character);
+    if (used + weight > budget) break;
+    result += character;
+    used += weight;
+  }
+  return result.trim();
+}
+
+function baiduQueryText(query: NormalizedProviderQuery) {
+  const full = webQueryText(query);
+  const maxWeight = 72;
+  if (baiduWeightedLength(full) <= maxWeight) {
+    return { text: full, truncated: false };
+  }
+
+  const exclusions = query.excludeKeywords.map((item) => `-${item}`).join(" ");
+  const reservedExclusions = takeBaiduWeighted(exclusions, Math.min(24, maxWeight));
+  const separatorWeight = reservedExclusions ? 1 : 0;
+  const core = query.goal
+    || query.productKeywords.join(" ")
+    || query.industries.join(" ")
+    || "企业采购";
+  const coreBudget = Math.max(
+    0,
+    maxWeight - baiduWeightedLength(reservedExclusions) - separatorWeight
+  );
+  let text = takeBaiduWeighted(core, coreBudget);
+  if (reservedExclusions) text = `${text} ${reservedExclusions}`.trim();
+
+  const context = [
+    query.productKeywords.join(" "),
+    query.industries.join(" "),
+    query.customerTypes.join(" "),
+    query.countries.join(" ")
+  ].filter(Boolean).join(" ");
+  const remaining = maxWeight - baiduWeightedLength(text) - (text && context ? 1 : 0);
+  if (remaining > 0 && context) {
+    text = `${text} ${takeBaiduWeighted(context, remaining)}`.trim();
+  }
+  return { text, truncated: true };
 }
 
 function validSourceUrl(value: unknown) {
@@ -100,36 +181,38 @@ function companyFromResult(title: string, url: string) {
   return stem.replace(/[-_]+/g, " ").replace(/\b\w/g, (character) => character.toUpperCase()).slice(0, 200);
 }
 
-function probableOfficialWebsite(rawUrl: string) {
-  try {
-    const url = new URL(rawUrl);
-    const path = url.pathname.replace(/\/+$/, "") || "/";
-    return path === "/" || /^\/[a-z]{2}(?:-[a-z]{2})?$/i.test(path)
-      ? url.origin
-      : "";
-  } catch {
-    return "";
-  }
+function canonicalSourceUrl(rawUrl: string) {
+  const url = new URL(rawUrl);
+  url.hash = "";
+  url.searchParams.sort();
+  return url.toString();
 }
 
-function confidenceFromScore(score: number | null, fallback = 62) {
-  return score === null
-    ? fallback
-    : Math.max(0, Math.min(100, Math.round(score * 100)));
+function stableSourceRecordId(providerId: string, sourceUrl: string) {
+  return `urlh:${providerRequestFingerprint({
+    purpose: "provider-source-record-v1",
+    providerId,
+    sourceUrl: canonicalSourceUrl(sourceUrl)
+  })}`;
 }
 
 function discoveryLead(input: {
+  providerId: string;
+  requestId: string;
   title: string;
   url: string;
   snippet: string;
   query: NormalizedProviderQuery;
-  providerRecordId: string;
   evidencePrefix: string;
   evidenceDetails?: string[];
   score?: number | null;
 }): RawLead {
   const snippet = input.snippet.slice(0, 2000);
-  const details = (input.evidenceDetails || []).filter(Boolean);
+  const details = [
+    `请求 ${input.requestId}`,
+    ...(input.evidenceDetails || []),
+    typeof input.score === "number" ? `检索相关性 ${input.score}` : ""
+  ].filter(Boolean);
   const evidence = [
     input.evidencePrefix,
     ...details,
@@ -137,20 +220,19 @@ function discoveryLead(input: {
   ].filter(Boolean).join("；").slice(0, 1000);
   return {
     company: companyFromResult(input.title, input.url),
-    officialWebsite: probableOfficialWebsite(input.url),
+    officialWebsite: "",
     country: input.query.countries[0] || "未知",
     business: (snippet || input.query.productKeywords.join(", ") || input.query.industries.join(", ") || "待核实业务").slice(0, 500),
     contact: "待维护",
     contactInfo: "",
     description: snippet,
-    confidence: confidenceFromScore(input.score ?? null),
-    providerRecordId: input.providerRecordId.slice(0, 255),
+    confidence: 0,
+    providerRecordId: stableSourceRecordId(input.providerId, input.url),
     sourceUrl: input.url,
     recordType: "discovery_page",
     evidenceSummary: evidence,
     matchedFields: [
       "company",
-      ...(probableOfficialWebsite(input.url) ? ["officialWebsite"] : []),
       "description",
       "sourceUrl"
     ]
@@ -163,6 +245,7 @@ function providerPage(input: {
   invalidCount: number;
   warnings: string[];
   usage?: Partial<ProviderUsage>;
+  exhausted?: boolean;
 }): ProviderAdapterPage {
   return {
     records: input.records,
@@ -170,7 +253,7 @@ function providerPage(input: {
     invalidCount: input.invalidCount,
     warnings: input.warnings,
     nextCursor: null,
-    exhausted: true,
+    exhausted: input.exhausted ?? true,
     usage: {
       requestCount: 1,
       quotaUsed: null,
@@ -205,12 +288,53 @@ function baseUrl(credential: ProviderCredential, fallback: string) {
   return (credential.baseUrl || fallback).replace(/\/+$/, "");
 }
 
+async function readBaiduResponse(response: Response, phase: ProviderOperation) {
+  const providerName = "百度 AI 搜索";
+  const raw = await response.text();
+  let payload: unknown;
+  const mayInspectBusinessError = response.ok || raw.length <= 64 * 1024;
+  if (mayInspectBusinessError) {
+    try {
+      payload = raw ? JSON.parse(raw) as unknown : null;
+    } catch (error) {
+      if (response.ok) throw schemaChanged(providerName, phase, error);
+    }
+  }
+
+  if (isObject(payload)) {
+    const businessCode = typeof payload.code === "number"
+      ? payload.code
+      : Number(nonEmptyString(payload.code));
+    if (businessCode === 216003) {
+      throw providerFailure({
+        code: "PROVIDER_AUTH_FAILED",
+        providerName,
+        phase,
+        httpStatus: response.ok ? 401 : response.status
+      });
+    }
+    if (Number.isFinite(businessCode) && businessCode !== 0 && response.ok) {
+      throw providerFailure({
+        code: "PROVIDER_UNAVAILABLE",
+        providerName,
+        phase,
+        httpStatus: response.status,
+        retryable: true
+      });
+    }
+  }
+  if (!response.ok) throw providerHttpStatusError(response, providerName);
+  return payload;
+}
+
 async function baiduSearch(
   request: ProviderSearchRequest,
   credential: ProviderCredential,
   tools: ProviderRuntimeTools,
   phase: ProviderOperation = "search"
 ) {
+  const boundedQuery = baiduQueryText(request.query);
+  const requestedLimit = Math.min(request.query.limit, 20);
   const response = await tools.http.fetch(
     `${baseUrl(credential, "https://qianfan.baidubce.com/v2/ai_search")}/web_search`,
     {
@@ -221,69 +345,72 @@ async function baiduSearch(
         accept: "application/json"
       },
       body: JSON.stringify({
-        messages: [{ role: "user", content: webQueryText(request.query) }],
+        messages: [{ role: "user", content: boundedQuery.text }],
         search_source: "baidu_search_v2",
-        resource_type_filter: [{ type: "web", top_k: Math.min(request.query.limit, 20) }],
+        resource_type_filter: [{ type: "web", top_k: requestedLimit }],
         safe_search: true
       })
     }
   );
-  const payload = await readJsonResponse(response, "百度 AI 搜索", phase);
+  const payload = await readBaiduResponse(response, phase);
   if (!isObject(payload)
-    || !Array.isArray(payload.references)
     || !nonEmptyString(payload.request_id)) {
+    throw schemaChanged("百度 AI 搜索", phase);
+  }
+  if (payload.references !== undefined && !Array.isArray(payload.references)) {
     throw schemaChanged("百度 AI 搜索", phase);
   }
 
   const requestId = nonEmptyString(payload.request_id);
+  const references = Array.isArray(payload.references) ? payload.references : [];
   const records: RawLead[] = [];
   let invalidCount = 0;
   let ignoredNonWeb = 0;
-  payload.references.forEach((value, index) => {
+  references.forEach((value, index) => {
     if (!isObject(value)) {
       invalidCount += 1;
       return;
     }
-    if (nonEmptyString(value.type) !== "web") {
+    const resourceType = nonEmptyString(value.type);
+    if (resourceType && resourceType !== "web") {
       ignoredNonWeb += 1;
       return;
     }
     const title = nonEmptyString(value.title);
     const url = validSourceUrl(value.url);
-    const id = typeof value.id === "number" && Number.isFinite(value.id)
-      ? String(value.id)
-      : nonEmptyString(value.id);
-    if (!title || !url || !id) {
+    if (!title || !url) {
       invalidCount += 1;
       return;
     }
     const snippet = nonEmptyString(value.snippet) || nonEmptyString(value.content);
     const date = nonEmptyString(value.date);
     records.push(discoveryLead({
+      providerId: BAIDU_AI_SEARCH_PROVIDER.id,
+      requestId,
       title,
       url,
       snippet,
       query: request.query,
-      providerRecordId: `${requestId}:${id}`,
       evidencePrefix: `百度索引第 ${index + 1} 名`,
       evidenceDetails: date ? [`网页日期 ${date}`] : []
     }));
   });
 
   const warnings = [
+    ...(boundedQuery.truncated ? ["百度搜索词已按官方 72 字符权重上限截断，保留核心目标与排除词"] : []),
     ...(ignoredNonWeb ? [`已忽略非网页结果 ${ignoredNonWeb} 条`] : []),
-    ...(invalidCount ? [`已忽略无效网页结果 ${invalidCount} 条`] : [])
+    ...(invalidCount ? [`已忽略无效网页结果 ${invalidCount} 条`] : []),
+    ...(references.length >= requestedLimit
+      ? ["百度结果已达到当前请求上限；该接口当前无可继续游标，结果可能不完整"]
+      : [])
   ];
   return providerPage({
     records,
-    rawCount: payload.references.length,
+    rawCount: references.length,
     invalidCount,
-    warnings
+    warnings,
+    exhausted: true
   });
-}
-
-function tencentResultCount(limit: number) {
-  return limit <= 10 ? 10 : 20;
 }
 
 async function tencentSearch(
@@ -303,8 +430,7 @@ async function tencentSearch(
       },
       body: JSON.stringify({
         Query: webQueryText(request.query),
-        Mode: 0,
-        Cnt: tencentResultCount(request.query.limit)
+        Mode: 0
       })
     }
   );
@@ -353,11 +479,12 @@ async function tencentSearch(
     const site = nonEmptyString(value.site);
     const date = nonEmptyString(value.date);
     records.push(discoveryLead({
+      providerId: TENCENT_WEB_SEARCH_PROVIDER.id,
+      requestId,
       title,
       url,
       snippet,
       query: request.query,
-      providerRecordId: `${requestId}:${index + 1}`,
       evidencePrefix: `腾讯联网搜索第 ${index + 1} 名`,
       evidenceDetails: [
         site ? `站点 ${site}` : "",
@@ -370,7 +497,13 @@ async function tencentSearch(
     records,
     rawCount: responseBody.Pages.length,
     invalidCount,
-    warnings: invalidCount ? [`已忽略无效结果 ${invalidCount} 条`] : []
+    warnings: [
+      ...(invalidCount ? [`已忽略无效结果 ${invalidCount} 条`] : []),
+      ...(responseBody.Pages.length
+        ? ["腾讯标准接口使用默认返回规模；该接口当前无可继续游标，结果可能不完整"]
+        : [])
+    ],
+    exhausted: true
   });
 }
 
@@ -380,6 +513,7 @@ async function tavilySearch(
   tools: ProviderRuntimeTools,
   phase: ProviderOperation = "search"
 ) {
+  const requestedLimit = Math.min(request.query.limit, 20);
   const response = await tools.http.fetch(
     `${baseUrl(credential, "https://api.tavily.com")}/search`,
     {
@@ -393,14 +527,14 @@ async function tavilySearch(
         query: webQueryText(request.query),
         search_depth: "basic",
         topic: "general",
-        max_results: Math.min(request.query.limit, 20),
+        max_results: requestedLimit,
         include_answer: false,
         include_raw_content: false,
         include_usage: true
       })
     }
   );
-  const payload = await readJsonResponse(response, "Tavily", phase, [432]);
+  const payload = await readJsonResponse(response, "Tavily", phase, [432, 433]);
   if (!isObject(payload)
     || !Array.isArray(payload.results)
     || !nonEmptyString(payload.request_id)) {
@@ -439,11 +573,12 @@ async function tavilySearch(
       return;
     }
     records.push(discoveryLead({
+      providerId: TAVILY_SEARCH_PROVIDER.id,
+      requestId,
       title,
       url,
       snippet,
       query: request.query,
-      providerRecordId: `${requestId}:${index + 1}`,
       evidencePrefix: `Tavily 索引第 ${index + 1} 名`,
       score
     }));
@@ -452,7 +587,13 @@ async function tavilySearch(
     records,
     rawCount: payload.results.length,
     invalidCount,
-    warnings: invalidCount ? [`已忽略无效结果 ${invalidCount} 条`] : [],
+    warnings: [
+      ...(invalidCount ? [`已忽略无效结果 ${invalidCount} 条`] : []),
+      ...(payload.results.length >= requestedLimit
+        ? ["Tavily 结果已达到当前请求上限；该接口当前无可继续游标，结果可能不完整"]
+        : [])
+    ],
+    exhausted: true,
     usage: credits === null
       ? undefined
       : {
