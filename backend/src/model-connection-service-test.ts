@@ -401,6 +401,8 @@ test("MySQL enforces one active owner and activation is transactionally audited"
     );
     assert.match(schema, /CREATE TABLE ai_model_credential_versions/);
     assert.match(schema, /CREATE TABLE ai_job_model_snapshots/);
+    assert.match(schema, /endpoint_profile_id VARCHAR\(80\)/);
+    assert.match(schema, /capability_certification_hash VARCHAR\(80\)/);
   }
   assert.match(
     mysqlStore,
@@ -417,5 +419,13 @@ test("MySQL enforces one active owner and activation is transactionally audited"
   assert.match(
     mysqlStore,
     /DEFAULT_MODEL_CONNECTION_ACTIVATION_AUDIT_RETENTION_MS/
+  );
+  assert.match(
+    mysqlStore,
+    /endpointProfileId: row\.endpoint_profile_id[\s\S]+capabilityCertificationHash:[\s\S]+row\.capability_certification_hash/
+  );
+  assert.match(
+    mysqlStore,
+    /endpoint_profile_id,endpoint_region,endpoint_workspace_id,adapter_version[\s\S]+capability_certification_hash/
   );
 });

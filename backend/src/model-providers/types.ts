@@ -39,9 +39,14 @@ export interface ModelConnection {
   teamId: string | null;
   provider: ModelProviderId;
   model: string;
+  endpointProfileId?: import("./endpoint-profiles.js").ModelEndpointProfileId;
+  endpointRegion?: string;
+  endpointWorkspaceId?: string | null;
+  adapterVersion?: string;
   baseUrlFingerprint?: string;
   credentialVersion: number;
   capabilitySnapshot: ModelCapabilitySnapshot;
+  capabilityCertificationHash?: string;
   status: "active" | "inactive" | "disabled";
   createdAt: string;
   updatedAt: string;

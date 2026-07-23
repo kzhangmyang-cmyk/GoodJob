@@ -28,6 +28,13 @@ import {
 import {
   executeModelConnectionWriteIdempotently
 } from "./model-providers/idempotency.js";
+import {
+  buildOfficialModelConnectionProfile,
+  listOfficialModelEndpointOptions
+} from "./model-providers/connection-profile.js";
+import {
+  ModelEndpointProfileError
+} from "./model-providers/endpoint-profiles.js";
 import { validateAgentJobSecurity } from "./agent-job-security.js";
 import {
   cancelAgentJob,
@@ -7295,14 +7302,6 @@ app.patch("/api/prospect-list/batch", requireAuth, asyncRoute(async (req, res) =
   res.json({ opportunities });
 }));
 
-const modelCapabilitySnapshotSchema = z.object({
-  structuredOutput: z.boolean(),
-  toolCalling: z.boolean(),
-  parallelToolCalling: z.boolean(),
-  streaming: z.boolean(),
-  modelListing: z.boolean()
-});
-
 function scopedOfficialAiConfig(
   id: string,
   user: SessionUser
@@ -7331,6 +7330,13 @@ app.get("/api/v1/ai/connections", requireAuth, (req, res) => {
       }
     });
   res.json({ items: connections, nextCursor: null });
+});
+
+app.get("/api/v1/ai/endpoint-profiles", requireAuth, (_req, res) => {
+  res.json({
+    items: listOfficialModelEndpointOptions(),
+    nextCursor: null
+  });
 });
 
 app.get("/api/v1/ai/calls", requireAuth, (req, res) => {
@@ -7388,19 +7394,21 @@ app.post("/api/v1/ai/connections", requireAuth, asyncRoute(async (req, res) => {
     baseUrl: z.string().url(),
     model: z.string().min(1).max(120),
     apiKey: z.string().min(1).max(400),
-    capabilitySnapshot: modelCapabilitySnapshotSchema.default({
-      ...EMPTY_MODEL_CAPABILITY_SNAPSHOT
-    }),
     active: z.boolean().default(false)
-  });
+  }).strict();
   const body = schema.parse(req.body);
-  let baseUrl = "";
+  let officialProfile;
   try {
-    baseUrl = assertAiBaseUrlAllowed(body.baseUrl);
-  } catch {
+    officialProfile = buildOfficialModelConnectionProfile({
+      provider: body.provider,
+      baseUrl: body.baseUrl,
+      model: body.model
+    });
+  } catch (error) {
+    if (!(error instanceof ModelEndpointProfileError)) throw error;
     res.status(400).json({
-      code: "invalid_base_url",
-      message: "AI Base URL 必须是公网 HTTPS 标准端口地址",
+      code: "invalid_official_endpoint",
+      message: "请选择该模型厂商已验证的官方端点和区域",
       details: null,
       requestId: `req_${randomUUID()}`,
       retryable: false
@@ -7417,7 +7425,7 @@ app.post("/api/v1/ai/connections", requireAuth, asyncRoute(async (req, res) => {
         idempotencyKey: String(req.header("Idempotency-Key") || ""),
         method: req.method,
         path: req.path,
-        body: { ...body, baseUrl }
+        body: { ...body, baseUrl: officialProfile.baseUrl }
       },
       async () => {
         const configStates = store.aiModelConfigs.map((item) => ({
@@ -7438,7 +7446,11 @@ app.post("/api/v1/ai/connections", requireAuth, asyncRoute(async (req, res) => {
           provider: body.provider,
           protocol: "openai-compatible",
           name: body.name,
-          baseUrl,
+          baseUrl: officialProfile.baseUrl,
+          endpointProfileId: officialProfile.endpointProfileId,
+          endpointRegion: officialProfile.region,
+          endpointWorkspaceId: officialProfile.workspaceId || undefined,
+          adapterVersion: officialProfile.adapterVersion,
           model: body.model,
           apiKey: body.apiKey,
           enabled: false,
@@ -7453,7 +7465,11 @@ app.post("/api/v1/ai/connections", requireAuth, asyncRoute(async (req, res) => {
           ownerId: req.user!.id,
           teamId: req.user!.teamId,
           credentialVersion: 1,
-          capabilitySnapshot: body.capabilitySnapshot,
+          capabilitySnapshot: {
+            ...officialProfile.capabilitySnapshot
+          },
+          capabilityCertificationHash:
+            officialProfile.certificationHash,
           createdAt: now,
           updatedAt: now
         };
@@ -7544,31 +7560,33 @@ app.patch("/api/v1/ai/connections/:id", requireAuth, asyncRoute(async (req, res)
     name: z.string().min(1).max(120).optional(),
     baseUrl: z.string().url().optional(),
     model: z.string().min(1).max(120).optional(),
-    apiKey: z.string().min(1).max(400).optional(),
-    capabilitySnapshot: modelCapabilitySnapshotSchema.optional()
-  });
+    apiKey: z.string().min(1).max(400).optional()
+  }).strict();
   const body = schema.parse(req.body);
-  let normalizedBaseUrl: string | undefined;
-  if (body.baseUrl) {
-    try {
-      normalizedBaseUrl = assertAiBaseUrlAllowed(body.baseUrl);
-    } catch {
-      res.status(400).json({
-        code: "invalid_base_url",
-        message: "AI Base URL 必须是公网 HTTPS 标准端口地址",
-        details: null,
-        requestId: `req_${randomUUID()}`,
-        retryable: false
-      });
-      return;
-    }
-  }
   const store = getStore();
   const config = scopedOfficialAiConfig(req.params.id, req.user!);
   if (!config) {
     res.status(404).json({
       code: "connection_not_found",
       message: "模型连接不存在或不属于当前用户",
+      details: null,
+      requestId: `req_${randomUUID()}`,
+      retryable: false
+    });
+    return;
+  }
+  let officialProfile;
+  try {
+    officialProfile = buildOfficialModelConnectionProfile({
+      provider: config.provider as (typeof MODEL_PROVIDER_IDS)[number],
+      baseUrl: body.baseUrl || config.baseUrl,
+      model: body.model || config.model
+    });
+  } catch (error) {
+    if (!(error instanceof ModelEndpointProfileError)) throw error;
+    res.status(400).json({
+      code: "invalid_official_endpoint",
+      message: "请选择该模型厂商已验证的官方端点和区域",
       details: null,
       requestId: `req_${randomUUID()}`,
       retryable: false
@@ -7586,7 +7604,9 @@ app.patch("/api/v1/ai/connections/:id", requireAuth, asyncRoute(async (req, res)
         path: req.path,
         body: {
           ...body,
-          ...(normalizedBaseUrl ? { baseUrl: normalizedBaseUrl } : {})
+          baseUrl: officialProfile.baseUrl,
+          derivedCapabilityCertificationHash:
+            officialProfile.certificationHash
         }
       },
       async () => {
@@ -7595,7 +7615,13 @@ app.patch("/api/v1/ai/connections/:id", requireAuth, asyncRoute(async (req, res)
           baseUrl: config.baseUrl,
           model: config.model,
           apiKey: config.apiKey,
+          endpointProfileId: config.endpointProfileId,
+          endpointRegion: config.endpointRegion,
+          endpointWorkspaceId: config.endpointWorkspaceId,
+          adapterVersion: config.adapterVersion,
           capabilitySnapshot: config.capabilitySnapshot,
+          capabilityCertificationHash:
+            config.capabilityCertificationHash,
           credentialVersion: config.credentialVersion,
           updatedAt: config.updatedAt
         };
@@ -7610,12 +7636,19 @@ app.patch("/api/v1/ai/connections/:id", requireAuth, asyncRoute(async (req, res)
           );
         };
         try {
-          if (normalizedBaseUrl) config.baseUrl = normalizedBaseUrl;
+          config.baseUrl = officialProfile.baseUrl;
+          config.endpointProfileId = officialProfile.endpointProfileId;
+          config.endpointRegion = officialProfile.region;
+          config.endpointWorkspaceId =
+            officialProfile.workspaceId || undefined;
+          config.adapterVersion = officialProfile.adapterVersion;
+          config.capabilitySnapshot = {
+            ...officialProfile.capabilitySnapshot
+          };
+          config.capabilityCertificationHash =
+            officialProfile.certificationHash;
           if (body.name) config.name = body.name;
           if (body.model) config.model = body.model;
-          if (body.capabilitySnapshot) {
-            config.capabilitySnapshot = body.capabilitySnapshot;
-          }
           config.updatedAt = new Date().toISOString();
           if (body.apiKey) {
             const connection = modelConnectionFromAiConfig(config);

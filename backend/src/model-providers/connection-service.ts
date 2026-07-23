@@ -52,6 +52,10 @@ export function modelConnectionFromAiConfig(
     teamId: config.teamId,
     provider: config.provider as ModelConnection["provider"],
     model: config.model,
+    endpointProfileId: config.endpointProfileId,
+    endpointRegion: config.endpointRegion,
+    endpointWorkspaceId: config.endpointWorkspaceId || null,
+    adapterVersion: config.adapterVersion,
     baseUrlFingerprint: `sha256:${createHash("sha256")
       .update(normalizeModelBaseUrl(config.baseUrl))
       .digest("hex")}`,
@@ -60,6 +64,7 @@ export function modelConnectionFromAiConfig(
       ...EMPTY_MODEL_CAPABILITY_SNAPSHOT,
       ...(config.capabilitySnapshot || {})
     },
+    capabilityCertificationHash: config.capabilityCertificationHash,
     status: config.enabled ? "active" : "inactive",
     createdAt: config.createdAt || config.updatedAt,
     updatedAt: config.updatedAt

@@ -2629,11 +2629,16 @@ async function ensureSchema(pool: mysql.Pool) {
     protocol VARCHAR(40) NOT NULL DEFAULT 'openai-compatible',
     name VARCHAR(120) NOT NULL,
     base_url VARCHAR(255) NOT NULL,
+    endpoint_profile_id VARCHAR(80) NULL,
+    endpoint_region VARCHAR(80) NULL,
+    endpoint_workspace_id VARCHAR(120) NULL,
+    adapter_version VARCHAR(80) NULL,
     model VARCHAR(120) NOT NULL,
     api_key TEXT,
     enabled BOOLEAN DEFAULT FALSE,
     credential_version INT NOT NULL DEFAULT 1,
     capability_snapshot_json JSON,
+    capability_certification_hash VARCHAR(80) NULL,
     temperature DECIMAL(4,2) DEFAULT 0.10,
     use_lead_finder BOOLEAN DEFAULT TRUE,
     use_website_parse BOOLEAN DEFAULT TRUE,
@@ -2654,6 +2659,10 @@ async function ensureSchema(pool: mysql.Pool) {
     INDEX idx_ai_model_owner(owner_id)
   )`);
   await ensureColumn(pool, "ai_model_configs", "protocol", "VARCHAR(40) NOT NULL DEFAULT 'openai-compatible'");
+  await ensureColumn(pool, "ai_model_configs", "endpoint_profile_id", "VARCHAR(80) NULL");
+  await ensureColumn(pool, "ai_model_configs", "endpoint_region", "VARCHAR(80) NULL");
+  await ensureColumn(pool, "ai_model_configs", "endpoint_workspace_id", "VARCHAR(120) NULL");
+  await ensureColumn(pool, "ai_model_configs", "adapter_version", "VARCHAR(80) NULL");
   await ensureColumn(pool, "ai_model_configs", "temperature", "DECIMAL(4,2) DEFAULT 0.10");
   await ensureColumn(pool, "ai_model_configs", "use_lead_finder", "BOOLEAN DEFAULT TRUE");
   await ensureColumn(pool, "ai_model_configs", "use_website_parse", "BOOLEAN DEFAULT TRUE");
@@ -2665,6 +2674,7 @@ async function ensureSchema(pool: mysql.Pool) {
   await ensureColumn(pool, "ai_model_configs", "last_test_message", "VARCHAR(255) DEFAULT ''");
   await ensureColumn(pool, "ai_model_configs", "credential_version", "INT NOT NULL DEFAULT 1");
   await ensureColumn(pool, "ai_model_configs", "capability_snapshot_json", "JSON");
+  await ensureColumn(pool, "ai_model_configs", "capability_certification_hash", "VARCHAR(80) NULL");
   await ensureColumn(pool, "ai_model_configs", "created_at", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP");
   await pool.query(`CREATE TABLE IF NOT EXISTS ai_model_credential_versions (
     connection_id VARCHAR(64) NOT NULL,
@@ -5931,6 +5941,10 @@ async function loadAiModelConfigs(
       protocol: row.protocol || (provider === "anthropic" ? "anthropic" : provider === "gemini" ? "gemini" : "openai-compatible"),
       name: row.name,
       baseUrl: row.base_url,
+      endpointProfileId: row.endpoint_profile_id || undefined,
+      endpointRegion: row.endpoint_region || undefined,
+      endpointWorkspaceId: row.endpoint_workspace_id || undefined,
+      adapterVersion: row.adapter_version || undefined,
       model: row.model,
       apiKey,
       enabled: Boolean(row.enabled),
@@ -5949,6 +5963,8 @@ async function loadAiModelConfigs(
       capabilitySnapshot: parseModelCapabilitySnapshot(
         row.capability_snapshot_json
       ),
+      capabilityCertificationHash:
+        row.capability_certification_hash || undefined,
       createdAt: mysqlIsoDate(row.created_at || row.updated_at),
       updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at
     });
@@ -10041,7 +10057,7 @@ async function persistAll(pool: mysql.Pool, store: CrmStore) {
 	    await replaceRows(connection, "deal_recommendations", store.dealRecommendations, (item) => [item.id, item.signalId, item.teamId, item.ownerId, item.prospectCandidateId, item.tenantProspectId || "", item.organizationId || "", item.leadId || "", item.customerId || "", item.suggestedTitle, item.suggestedProduct, item.suggestedQuantity || 0, item.suggestedUnitPrice || 0, item.suggestedAmount || 0, item.currency || "USD", item.initialStage || "询盘", item.nextAction || "", item.nextActionAt || "", item.expectedCloseAt || "", JSON.stringify(item.reasonCodes || []), JSON.stringify(item.missingFields || []), JSON.stringify(item.evidenceRefs || []), item.recommendationScore || 0, JSON.stringify(item.duplicateDealIds || []), item.status, item.reviewedBy || "", item.reviewedAt ? mysqlDate(item.reviewedAt) : null, item.reviewReason || "", item.linkedDealId || "", mysqlDate(item.expiresAt), mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,signal_id,team_id,owner_id,prospect_candidate_id,tenant_prospect_id,organization_id,lead_id,customer_id,suggested_title,suggested_product,suggested_quantity,suggested_unit_price,suggested_amount,currency,initial_stage,next_action,next_action_at,expected_close_at,reason_codes_json,missing_fields_json,evidence_refs_json,recommendation_score,duplicate_deal_ids_json,recommendation_status,reviewed_by,reviewed_at,review_reason,linked_deal_id,expires_at,created_at,updated_at)");
       await replaceRows(connection, "acquisition_outcome_feedback", store.acquisitionOutcomeFeedback, (item) => [item.id, item.teamId, item.ownerId, item.dealId, item.customerId, item.leadId || "", item.prospectCandidateId || "", item.tenantProspectId || "", item.organizationId || "", item.campaignId || "", item.campaignVersion || 0, item.strategyId || "", item.runId || "", JSON.stringify(item.providerCodes || []), item.icpAssessmentId || "", item.icpPolicyId || "", item.outcome, item.amount || 0, item.currency || "USD", item.reasonCategory || "", item.reason || "", mysqlDate(item.closedAt), item.attributionConfidence || 0, JSON.stringify(item.attributionReasonCodes || []), item.payloadHash, mysqlDate(item.createdAt)], "(id,team_id,owner_id,deal_id,customer_id,lead_id,prospect_candidate_id,tenant_prospect_id,organization_id,campaign_id,campaign_version,strategy_id,run_id,provider_codes_json,icp_assessment_id,icp_policy_id,outcome,amount,currency,reason_category,reason_text,closed_at,attribution_confidence,attribution_reason_codes_json,payload_hash,created_at)");
       await replaceRows(connection, "prospect_strategy_suggestions", store.prospectStrategySuggestions, (item) => [item.id, item.teamId, item.ownerId, item.campaignId, item.campaignVersion || 0, item.strategyId, item.suggestionType, JSON.stringify(item.sampleMetrics || {}), JSON.stringify(item.proposedAdjustments || {}), item.rationale || "", JSON.stringify(item.reasonCodes || []), item.sampleFrom ? mysqlDate(item.sampleFrom) : null, item.sampleTo ? mysqlDate(item.sampleTo) : null, item.payloadHash, item.status, item.reviewedBy || "", item.reviewedAt ? mysqlDate(item.reviewedAt) : null, item.reviewNote || "", mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,team_id,owner_id,campaign_id,campaign_version,strategy_id,suggestion_type,sample_metrics_json,proposed_adjustments_json,rationale,reason_codes_json,sample_from,sample_to,payload_hash,suggestion_status,reviewed_by,reviewed_at,review_note,created_at,updated_at)");
-	    await replaceRows(connection, "ai_model_configs", store.aiModelConfigs, (item) => [item.id, item.provider, item.protocol || "openai-compatible", item.name, item.baseUrl, item.model, "", item.enabled, item.credentialVersion || 1, JSON.stringify(item.capabilitySnapshot || DEFAULT_MODEL_CAPABILITY_SNAPSHOT), item.temperature ?? 0.1, item.useLeadFinder ?? true, item.useWebsiteParse ?? true, item.useScoring ?? true, item.useEmailDraft ?? true, item.useExam ?? false, item.lastTestAt ? mysqlDate(item.lastTestAt) : null, item.lastTestStatus || "untested", item.lastTestMessage || "", item.ownerId, item.teamId, mysqlDate(item.createdAt || item.updatedAt), mysqlDate(item.updatedAt)], "(id,provider,protocol,name,base_url,model,api_key,enabled,credential_version,capability_snapshot_json,temperature,use_lead_finder,use_website_parse,use_scoring,use_email_draft,use_exam,last_test_at,last_test_status,last_test_message,owner_id,team_id,created_at,updated_at)");
+	    await replaceRows(connection, "ai_model_configs", store.aiModelConfigs, (item) => [item.id, item.provider, item.protocol || "openai-compatible", item.name, item.baseUrl, item.endpointProfileId || null, item.endpointRegion || null, item.endpointWorkspaceId || null, item.adapterVersion || null, item.model, "", item.enabled, item.credentialVersion || 1, JSON.stringify(item.capabilitySnapshot || DEFAULT_MODEL_CAPABILITY_SNAPSHOT), item.capabilityCertificationHash || null, item.temperature ?? 0.1, item.useLeadFinder ?? true, item.useWebsiteParse ?? true, item.useScoring ?? true, item.useEmailDraft ?? true, item.useExam ?? false, item.lastTestAt ? mysqlDate(item.lastTestAt) : null, item.lastTestStatus || "untested", item.lastTestMessage || "", item.ownerId, item.teamId, mysqlDate(item.createdAt || item.updatedAt), mysqlDate(item.updatedAt)], "(id,provider,protocol,name,base_url,endpoint_profile_id,endpoint_region,endpoint_workspace_id,adapter_version,model,api_key,enabled,credential_version,capability_snapshot_json,capability_certification_hash,temperature,use_lead_finder,use_website_parse,use_scoring,use_email_draft,use_exam,last_test_at,last_test_status,last_test_message,owner_id,team_id,created_at,updated_at)");
       await deleteRemovedModelCredentialRows(
         connection,
         store.aiModelConfigs.map((item) => item.id)

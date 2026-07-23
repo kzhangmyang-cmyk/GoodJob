@@ -222,6 +222,92 @@ test("v1 connection create requires Idempotency-Key", async () => {
   assert.equal(result.json.code, "idempotency_key_required");
 });
 
+test("v1 exposes official endpoint choices without credentials", async () => {
+  const result = await request("/api/v1/ai/endpoint-profiles", {
+    method: "GET"
+  });
+
+  assert.equal(result.response.status, 200);
+  assert.ok(result.json.items.some((item: {
+    provider: string;
+    endpointProfileId: string;
+    baseUrl: string | null;
+  }) =>
+    item.provider === "moonshot"
+    && item.endpointProfileId === "moonshot-cn"
+    && item.baseUrl === "https://api.moonshot.cn/v1"
+  ));
+  assert.equal(JSON.stringify(result.json).includes("apiKey"), false);
+});
+
+test("v1 connection derives immutable official capability evidence", async () => {
+  const result = await request("/api/v1/ai/connections", {
+    method: "POST",
+    headers: {
+      "Idempotency-Key": "official-profile-derived-capabilities"
+    },
+    body: JSON.stringify({
+      provider: "moonshot",
+      name: "Kimi official profile",
+      baseUrl: "https://api.moonshot.cn/v1/",
+      model: "kimi-k3",
+      apiKey: "moonshot-route-secret"
+    })
+  });
+
+  assert.equal(result.response.status, 200);
+  assert.equal(result.json.endpointProfileId, "moonshot-cn");
+  assert.equal(result.json.endpointRegion, "cn");
+  assert.equal(result.json.adapterVersion, "official-openai-compatible.v1");
+  assert.deepEqual(result.json.capabilitySnapshot, {
+    structuredOutput: false,
+    toolCalling: true,
+    parallelToolCalling: false,
+    streaming: true,
+    modelListing: true
+  });
+  assert.match(
+    result.json.capabilityCertificationHash,
+    /^sha256:[a-f0-9]{64}$/
+  );
+});
+
+test("v1 connection rejects arbitrary endpoints and user-declared capabilities", async () => {
+  const arbitrary = await request("/api/v1/ai/connections", {
+    method: "POST",
+    headers: { "Idempotency-Key": "reject-arbitrary-model-endpoint" },
+    body: JSON.stringify({
+      provider: "moonshot",
+      name: "Untrusted endpoint",
+      baseUrl: "https://llm.example.test/v1",
+      model: "kimi-k3",
+      apiKey: "private-secret"
+    })
+  });
+  assert.equal(arbitrary.response.status, 400);
+  assert.equal(arbitrary.json.code, "invalid_official_endpoint");
+
+  const declared = await request("/api/v1/ai/connections", {
+    method: "POST",
+    headers: { "Idempotency-Key": "reject-self-certified-capabilities" },
+    body: JSON.stringify({
+      provider: "openai",
+      name: "Self certified",
+      baseUrl: "https://api.openai.com/v1",
+      model: "unknown-model",
+      apiKey: "private-secret",
+      capabilitySnapshot: {
+        structuredOutput: true,
+        toolCalling: true,
+        parallelToolCalling: true,
+        streaming: true,
+        modelListing: true
+      }
+    })
+  });
+  assert.equal(declared.response.status, 400);
+});
+
 test("v1 connection create replays exactly and rejects conflicting reuse", async () => {
   const idempotencyKey = "connection-create-route-key";
   const apiKey = "route-private-key-4455";

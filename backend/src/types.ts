@@ -2388,6 +2388,10 @@ export interface AiModelConfig {
   protocol: "openai-compatible" | "anthropic" | "gemini";
   name: string;
   baseUrl: string;
+  endpointProfileId?: import("./model-providers/endpoint-profiles.js").ModelEndpointProfileId;
+  endpointRegion?: string;
+  endpointWorkspaceId?: string;
+  adapterVersion?: string;
   model: string;
   apiKey: string;
   enabled: boolean;
@@ -2404,6 +2408,7 @@ export interface AiModelConfig {
   teamId: string;
   credentialVersion?: number;
   capabilitySnapshot?: import("./model-providers/types.js").ModelCapabilitySnapshot;
+  capabilityCertificationHash?: string;
   createdAt?: string;
   updatedAt: string;
 }
