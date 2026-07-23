@@ -53,6 +53,11 @@ export async function loadContractHarness() {
 
 export async function loadOpenApi() {
   const source = await readFile(path.join(root, "openapi", "ai-acquisition.v1.yaml"), "utf8");
-  const document = YAML.parse(source, { merge: true });
+  const document = YAML.parse(source, { merge: true, maxAliasCount: -1 });
   return SwaggerParser.validate(document);
+}
+
+export async function loadOpenApiSource() {
+  const source = await readFile(path.join(root, "openapi", "ai-acquisition.v1.yaml"), "utf8");
+  return YAML.parse(source, { merge: true, maxAliasCount: -1 });
 }

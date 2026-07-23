@@ -35,6 +35,7 @@ components:
   schemas:
     AsyncOperation:
       type: object
+      additionalProperties: false
       required: [id, kind, status, createdAt]
       properties:
         id: { type: string }
@@ -43,6 +44,7 @@ components:
         createdAt: { type: string, format: date-time }
     ApiError:
       type: object
+      additionalProperties: false
       required: [code, message, details, requestId, retryable]
       properties:
         code: { type: string }
@@ -50,47 +52,76 @@ components:
         details: {}
         requestId: { type: string }
         retryable: { type: boolean }
-  responses:
-    Ok:
-      description: Successful response
-      content:
-        application/json:
-          schema: { type: object }
-    Accepted:
-      description: Accepted asynchronous operation
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/AsyncOperation' }
-    ApiError:
-      description: Unified API error
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/ApiError' }
+    PagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { type: object } }
+        nextCursor: { type: string, nullable: true }
+    ModelProvider: &resource
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties: { id: { type: string } }
+    ModelConnection: *resource
+    ModelCallRecord: *resource
+    DiscoveryProvider: *resource
+    ProviderConnection: *resource
+    ContentFetchOperation: *resource
+    ImportOperation: *resource
+    AcquisitionPlan: *resource
+    AcquisitionRun: *resource
+    AcquisitionOperationShard: *resource
+    OrganizationCandidate: *resource
+    DiscoveryEvidence: *resource
+    QualificationDecision: *resource
+    BattleCard: *resource
+    ReviewEvent: *resource
+    OutcomeFeedback: *resource
+    CopilotSession: *resource
+    CopilotTask: *resource
+    AuditEvent: *resource
+x-error-response: &apiError
+  description: Unified API error
+  content:
+    application/json:
+      schema: { $ref: '#/components/schemas/ApiError' }
+x-paged-response: &pagedResponse
+  description: Cursor-paginated result
+  content:
+    application/json:
+      schema: { $ref: '#/components/schemas/PagedResult' }
+x-async-response: &asyncResponse
+  description: Accepted asynchronous operation
+  content:
+    application/json:
+      schema: { $ref: '#/components/schemas/AsyncOperation' }
 x-read: &read
   security: [{ bearerAuth: [] }]
   responses:
-    '200': { $ref: '#/components/responses/Ok' }
-    '401': { $ref: '#/components/responses/ApiError' }
+    '200': *pagedResponse
+    '401': *apiError
 x-list: &list
   security: [{ bearerAuth: [] }]
   parameters: [{ $ref: '#/components/parameters/cursor' }, { $ref: '#/components/parameters/limit' }]
   responses:
-    '200': { $ref: '#/components/responses/Ok' }
-    '401': { $ref: '#/components/responses/ApiError' }
+    '200': *pagedResponse
+    '401': *apiError
 x-write: &write
   security: [{ bearerAuth: [] }]
   parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
   responses:
-    '200': { $ref: '#/components/responses/Ok' }
-    '400': { $ref: '#/components/responses/ApiError' }
-    '401': { $ref: '#/components/responses/ApiError' }
+    '200': { description: Successful response, content: { application/json: { schema: { type: object, additionalProperties: false } } } }
+    '400': *apiError
+    '401': *apiError
 x-async-write: &asyncWrite
   security: [{ bearerAuth: [] }]
   parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
   responses:
-    '202': { $ref: '#/components/responses/Accepted' }
-    '400': { $ref: '#/components/responses/ApiError' }
-    '401': { $ref: '#/components/responses/ApiError' }
+    '202': *asyncResponse
+    '400': *apiError
+    '401': *apiError
 paths:
   /api/v1/ai/providers:
     get: { <<: *list, summary: List model providers }
@@ -99,9 +130,9 @@ paths:
     post: { <<: *write, summary: Create model connection }
   /api/v1/ai/connections/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get model connection }
+    get: { <<: *read, summary: Get model connection, responses: { '200': { description: Model connection, content: { application/json: { schema: { $ref: '#/components/schemas/ModelConnection' } } } }, '401': *apiError } }
     patch: { <<: *write, summary: Update model connection }
-    delete: { <<: *write, summary: Delete model connection }
+    delete: { <<: *write, summary: Delete model connection, responses: { '200': { description: Successful response, content: { application/json: { schema: { type: object, additionalProperties: false } } } }, '400': *apiError, '401': *apiError, '409': { description: Connection is retained by active tasks or audit policy, headers: { X-Error-Code: { required: true, schema: { type: string, enum: [connection_in_use] } } }, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } } } }
   /api/v1/ai/connections/{id}/models:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get: { <<: *list, summary: List supported models }
@@ -115,7 +146,7 @@ paths:
     get: { <<: *list, summary: List model call records }
   /api/v1/ai/calls/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get model call record }
+    get: { <<: *read, summary: Get model call record, responses: { '200': { description: Model call record, content: { application/json: { schema: { $ref: '#/components/schemas/ModelCallRecord' } } } }, '401': *apiError } }
   /api/v1/acquisition/providers:
     get: { <<: *list, summary: List discovery providers }
   /api/v1/acquisition/provider-connections:
@@ -123,7 +154,7 @@ paths:
     post: { <<: *write, summary: Create provider connection }
   /api/v1/acquisition/provider-connections/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get provider connection }
+    get: { <<: *read, summary: Get provider connection, responses: { '200': { description: Provider connection, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderConnection' } } } }, '401': *apiError } }
     patch: { <<: *write, summary: Update provider connection }
     delete: { <<: *write, summary: Delete provider connection }
   /api/v1/acquisition/provider-connections/{id}/test:
@@ -133,18 +164,18 @@ paths:
     post: { <<: *asyncWrite, summary: Create content fetch operation }
   /api/v1/acquisition/fetch-operations/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get content fetch operation }
+    get: { <<: *read, summary: Get content fetch operation, responses: { '200': { description: Content fetch operation, content: { application/json: { schema: { $ref: '#/components/schemas/ContentFetchOperation' } } } }, '401': *apiError } }
   /api/v1/acquisition/import-operations:
     post: { <<: *asyncWrite, summary: Create import operation }
   /api/v1/acquisition/import-operations/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get import operation }
+    get: { <<: *read, summary: Get import operation, responses: { '200': { description: Import operation, content: { application/json: { schema: { $ref: '#/components/schemas/ImportOperation' } } } }, '401': *apiError } }
   /api/v1/acquisition/plans:
     get: { <<: *list, summary: List acquisition plans }
     post: { <<: *write, summary: Create acquisition plan }
   /api/v1/acquisition/plans/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get acquisition plan }
+    get: { <<: *read, summary: Get acquisition plan, responses: { '200': { description: Acquisition plan, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionPlan' } } } }, '401': *apiError } }
     patch: { <<: *write, summary: Update acquisition plan }
   /api/v1/acquisition/plans/{id}/approve:
     parameters: [{ $ref: '#/components/parameters/id' }]
@@ -154,7 +185,7 @@ paths:
     post: { <<: *asyncWrite, summary: Create acquisition run }
   /api/v1/acquisition/runs/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get acquisition run }
+    get: { <<: *read, summary: Get acquisition run, responses: { '200': { description: Acquisition run, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionRun' } } } }, '401': *apiError } }
   /api/v1/acquisition/runs/{id}/operation-shards:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get: { <<: *list, summary: List operation shards }
@@ -163,7 +194,7 @@ paths:
     post: { <<: *write, summary: Pause acquisition run }
   /api/v1/acquisition/runs/{id}/resume:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *write, summary: Resume paused acquisition run }
+    post: { <<: *write, summary: Resume paused acquisition run, responses: { '200': { description: Successful response, content: { application/json: { schema: { type: object, additionalProperties: false } } } }, '400': *apiError, '401': *apiError, '409': { description: Budget exhausted runs require a new approved budget and parent run, headers: { X-Error-Code: { required: true, schema: { type: string, enum: [budget_revision_requires_new_run] } } }, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } } } }
   /api/v1/acquisition/runs/{id}/cancel:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post: { <<: *write, summary: Cancel acquisition run }
@@ -171,7 +202,7 @@ paths:
     get: { <<: *list, summary: List candidates }
   /api/v1/acquisition/candidates/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get candidate }
+    get: { <<: *read, summary: Get candidate, responses: { '200': { description: Candidate, content: { application/json: { schema: { $ref: '#/components/schemas/OrganizationCandidate' } } } }, '401': *apiError } }
   /api/v1/acquisition/candidates/{id}/evidence:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get: { <<: *list, summary: List candidate evidence }
@@ -180,11 +211,11 @@ paths:
     post: { <<: *asyncWrite, summary: Request candidate research }
   /api/v1/acquisition/candidates/{id}/qualification:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get qualification decision }
+    get: { <<: *read, summary: Get qualification decision, responses: { '200': { description: Qualification decision, content: { application/json: { schema: { $ref: '#/components/schemas/QualificationDecision' } } } }, '401': *apiError } }
     post: { <<: *asyncWrite, summary: Create qualification decision }
   /api/v1/acquisition/candidates/{id}/battle-card:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get battle card }
+    get: { <<: *read, summary: Get battle card, responses: { '200': { description: Battle card, content: { application/json: { schema: { $ref: '#/components/schemas/BattleCard' } } } }, '401': *apiError } }
     post: { <<: *asyncWrite, summary: Create battle card }
   /api/v1/acquisition/candidates/{id}/reviews:
     parameters: [{ $ref: '#/components/parameters/id' }]
@@ -202,12 +233,12 @@ paths:
     post: { <<: *asyncWrite, summary: Create copilot session }
   /api/v1/acquisition/copilot/sessions/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get copilot session }
+    get: { <<: *read, summary: Get copilot session, responses: { '200': { description: Copilot session, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotSession' } } } }, '401': *apiError } }
   /api/v1/acquisition/copilot/sessions/{id}/messages:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post: { <<: *asyncWrite, summary: Send copilot message }
   /api/v1/acquisition/copilot/tasks/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get copilot task }
+    get: { <<: *read, summary: Get copilot task, responses: { '200': { description: Copilot task, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotTask' } } } }, '401': *apiError } }
   /api/v1/acquisition/audit-events:
     get: { <<: *list, summary: List audit events }

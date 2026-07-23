@@ -12,6 +12,31 @@ test("personal evidence cannot omit provenance or masquerade as a company", asyn
   }).valid, false);
 });
 
+test("outcome feedback rejects untyped live parties and legacy individual parties", async () => {
+  const { validateCase } = await loadContractHarness();
+  const live = {
+    id: "outcome_live_invalid", ownerId: "owner", teamId: "team", leadId: null, customerId: null,
+    eventType: "validated", occurredAt: "2026-07-23T00:00:00.000Z", amount: null,
+    reasonCode: null, reasonText: null, idempotencyKey: "key", createdBy: "user",
+    createdAt: "2026-07-23T00:00:00.000Z", recordKind: "live", partyRef: { arbitrary: true },
+    candidateId: "candidate", attribution: {
+      runId: "run", evidenceIds: [], providerIds: [], queryIds: [], strategyVersion: "v1",
+      qualificationDecisionId: "decision", decisionVersion: "v1", decisionSnapshotHash: "hash",
+      decisionEngine: "rules", ruleVersion: "v1", modelProvider: null, model: null, promptVersion: null
+    }
+  };
+  const legacy = {
+    ...live, id: "outcome_legacy_invalid", recordKind: "legacy_migrated", legacySourceId: "legacy-1",
+    partyRef: { partyType: "individual", individualPartyId: "party", demandSignalId: "signal" },
+    candidateId: null, attribution: {
+      ...live.attribution, runId: null, strategyVersion: null, qualificationDecisionId: null,
+      decisionVersion: null, decisionSnapshotHash: null, decisionEngine: null, ruleVersion: null
+    }, migrationWarnings: []
+  };
+  assert.equal(validateCase("outcome-feedback", live).valid, false);
+  assert.equal(validateCase("outcome-feedback", legacy).valid, false);
+});
+
 test("contract examples validate as complete organization and individual flows", async () => {
   const { loadExamples, validateCase } = await loadContractHarness();
   const examples = await loadExamples();
