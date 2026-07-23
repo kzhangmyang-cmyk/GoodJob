@@ -84,6 +84,8 @@ export interface StoredAiJobModelSnapshot extends AiJobModelSnapshot {
   jobId: string;
   ownerId: string;
   teamId: string;
+  baseUrl: string;
+  baseUrlFingerprint: string;
   createdAt: string;
 }
 

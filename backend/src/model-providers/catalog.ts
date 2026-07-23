@@ -14,6 +14,17 @@ export interface ModelDescriptor {
   ownedBy: string | null;
 }
 
+function catalogEntry(
+  entry: ModelProviderCatalogEntry
+): ModelProviderCatalogEntry {
+  return Object.freeze({
+    ...entry,
+    models: Object.freeze(
+      entry.models.map((model) => Object.freeze({ ...model }))
+    )
+  });
+}
+
 export const MODEL_PROVIDER_CATALOG = Object.freeze([
   {
     id: "openai",
@@ -78,7 +89,9 @@ export const MODEL_PROVIDER_CATALOG = Object.freeze([
     modelCatalogVersion: "2026-07-23",
     models: Object.freeze([])
   }
-] satisfies readonly ModelProviderCatalogEntry[]);
+].map((entry) => catalogEntry(
+  entry as ModelProviderCatalogEntry
+)));
 
 export function getModelProviderCatalogEntry(provider: ModelProviderId) {
   return MODEL_PROVIDER_CATALOG.find((entry) => entry.id === provider);

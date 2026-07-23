@@ -37,7 +37,9 @@ export type ModelGatewayErrorCode =
   | "MODEL_RESPONSE_INVALID"
   | "MODEL_CREDENTIAL_UNAVAILABLE"
   | "MODEL_CAPABILITY_UNSUPPORTED"
-  | "MODEL_SCHEMA_INVALID";
+  | "MODEL_SCHEMA_INVALID"
+  | "MODEL_STREAM_ABORTED"
+  | "MODEL_STREAM_CANCELLED";
 
 const ERROR_MESSAGES: Record<ModelGatewayErrorCode, string> = {
   MODEL_AUTH_FAILED: "Model provider authentication failed",
@@ -50,7 +52,9 @@ const ERROR_MESSAGES: Record<ModelGatewayErrorCode, string> = {
   MODEL_RESPONSE_INVALID: "Model provider returned an invalid response",
   MODEL_CREDENTIAL_UNAVAILABLE: "The snapshotted credential is unavailable",
   MODEL_CAPABILITY_UNSUPPORTED: "The snapshotted model lacks a required capability",
-  MODEL_SCHEMA_INVALID: "Model output did not match the requested schema"
+  MODEL_SCHEMA_INVALID: "Model output did not match the requested schema",
+  MODEL_STREAM_ABORTED: "Model stream was aborted by the caller",
+  MODEL_STREAM_CANCELLED: "Model stream was cancelled by the consumer"
 };
 
 export class ModelGatewayError extends Error {
@@ -135,7 +139,8 @@ export interface ActiveModelGatewayOptions {
   attemptIdFactory?: () => string;
   requestIdFactory?: () => string;
   now?: () => number;
-  timeoutMs?: number;
+  requestTimeoutMs?: number;
+  streamIdleTimeoutMs?: number;
 }
 
 export interface ModelHealthResult {
@@ -143,6 +148,10 @@ export interface ModelHealthResult {
   provider: AiJobModelSnapshot["provider"];
   model: string;
   providerRequestId: string | null;
+  error: {
+    code: ModelGatewayErrorCode;
+    retryable: boolean;
+  } | null;
 }
 
 export interface StructuredGenerationRequest<T> {
@@ -181,6 +190,7 @@ export interface ToolCallingResult {
 
 export interface TextGenerationRequest {
   prompt: string;
+  signal?: AbortSignal;
 }
 
 export type ModelStreamEvent =
@@ -299,32 +309,48 @@ export class ActiveModelGateway {
     this.#adapter = new OpenAiCompatibleAdapter({
       baseUrl: options.baseUrl,
       fetch: options.fetch,
-      timeoutMs: options.timeoutMs
+      requestTimeoutMs: options.requestTimeoutMs,
+      streamIdleTimeoutMs: options.streamIdleTimeoutMs
     });
   }
 
   async healthCheck(): Promise<ModelHealthResult> {
-    const result = await this.#runAttempt(
-      { operation: "health_check" },
-      async (credential, requestId) => {
-        const response = await this.#adapter.listModels({
-          credential,
-          requestId
-        });
-        return {
-          value: response,
-          usage: response.usage,
-          providerRequestId: response.providerRequestId,
-          resultForHash: response.value.map((model) => model.id)
-        };
-      }
-    );
-    return {
-      ok: true,
-      provider: this.#snapshot.provider,
-      model: this.#snapshot.model,
-      providerRequestId: result.providerRequestId
-    };
+    try {
+      const result = await this.#runAttempt(
+        { operation: "health_check" },
+        async (credential, requestId) => {
+          const response = await this.#adapter.listModels({
+            credential,
+            requestId
+          });
+          return {
+            value: response,
+            usage: response.usage,
+            providerRequestId: response.providerRequestId,
+            resultForHash: response.value.map((model) => model.id)
+          };
+        }
+      );
+      return {
+        ok: true,
+        provider: this.#snapshot.provider,
+        model: this.#snapshot.model,
+        providerRequestId: result.providerRequestId,
+        error: null
+      };
+    } catch (error) {
+      const normalized = normalizeGatewayError(error);
+      return {
+        ok: false,
+        provider: this.#snapshot.provider,
+        model: this.#snapshot.model,
+        providerRequestId: providerRequestIdFromError(error),
+        error: {
+          code: normalized.code,
+          retryable: normalized.retryable
+        }
+      };
+    }
   }
 
   async listModels(): Promise<{
@@ -426,7 +452,9 @@ export class ActiveModelGateway {
           credential,
           requestId,
           prompt: request.prompt,
-          tools: request.tools
+          tools: request.tools,
+          toolChoice: "required",
+          parallelToolCalls: request.parallelToolCalls ?? false
         });
         const toolCalls = response.value.map((call) => {
           if (!allowedToolNames.has(call.name)) {
@@ -480,13 +508,16 @@ export class ActiveModelGateway {
     let output = "";
     let providerRequestId: string | null = null;
     let usage = ZERO_USAGE;
+    let recorded = false;
+    let providerDone = false;
     try {
       const credential = await this.#resolveCredential();
       const stream = await this.#adapter.streamText({
         snapshot: this.#snapshot,
         credential,
         requestId: context.requestId,
-        prompt: request.prompt
+        prompt: request.prompt,
+        signal: request.signal
       });
       providerRequestId = stream.providerRequestId;
       for await (const event of stream.events) {
@@ -496,6 +527,7 @@ export class ActiveModelGateway {
         } else if (event.type === "usage") {
           usage = event.usage;
         } else if (event.type === "done") {
+          providerDone = true;
           yield { type: "done" };
         }
       }
@@ -505,13 +537,37 @@ export class ActiveModelGateway {
         providerRequestId,
         output
       );
+      recorded = true;
     } catch (error) {
-      const normalized = error instanceof ModelGatewayError
-        ? error
-        : normalizeGatewayError(error);
+      const normalized = request.signal?.aborted
+        ? new ModelGatewayError("MODEL_STREAM_ABORTED", false)
+        : error instanceof ModelGatewayError
+          ? error
+          : normalizeGatewayError(error);
       providerRequestId = providerRequestIdFromError(error);
-      this.#recordFailure(context, normalized, providerRequestId);
+      this.#recordFailure(
+        context,
+        normalized,
+        providerRequestId,
+        usage,
+        output
+      );
+      recorded = true;
       throw normalized;
+    } finally {
+      if (!recorded) {
+        if (providerDone) {
+          this.#recordSuccess(context, usage, providerRequestId, output);
+        } else {
+          this.#recordFailure(
+            context,
+            new ModelGatewayError("MODEL_STREAM_CANCELLED", false),
+            providerRequestId,
+            usage,
+            output
+          );
+        }
+      }
     }
   }
 

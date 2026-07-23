@@ -93,7 +93,11 @@ function completionResponse(
 
 function createFixture(
   responses: Array<Response | Error>,
-  capabilityOverrides: Partial<ModelCapabilitySnapshot> = {}
+  capabilityOverrides: Partial<ModelCapabilitySnapshot> = {},
+  timeoutOptions: {
+    requestTimeoutMs?: number;
+    streamIdleTimeoutMs?: number;
+  } = {}
 ) {
   const requests: Array<{ url: string; init?: RequestInit }> = [];
   const credentialResolutions: Array<{
@@ -132,7 +136,8 @@ function createFixture(
     ledger,
     attemptIdFactory: () => `attempt_${++attempt}`,
     requestIdFactory: () => `request_${++request}`,
-    now: () => 1_774_464_000_000
+    now: () => 1_774_464_000_000,
+    ...timeoutOptions
   });
   return {
     gateway,
@@ -157,6 +162,11 @@ test("provider catalog contains exactly the nine approved official providers", (
       "qianfan"
     ]
   );
+  assert.equal(Object.isFrozen(MODEL_PROVIDER_CATALOG), true);
+  for (const provider of MODEL_PROVIDER_CATALOG) {
+    assert.equal(Object.isFrozen(provider), true);
+    assert.equal(Object.isFrozen(provider.models), true);
+  }
 });
 
 test("structured generation validates JSON and records only auditable hashes", async () => {
@@ -339,6 +349,14 @@ test("tool calls normalize arguments and unsupported tools fail before network",
     name: "save_campaign_draft",
     arguments: { campaignId: "campaign_1" }
   }]);
+  const toolRequest = JSON.parse(
+    String(supported.requests[0].init?.body)
+  ) as {
+    tool_choice?: string;
+    parallel_tool_calls?: boolean;
+  };
+  assert.equal(toolRequest.tool_choice, "required");
+  assert.equal(toolRequest.parallel_tool_calls, false);
 
   const unsupported = createFixture([], { toolCalling: false });
   await assert.rejects(
@@ -360,6 +378,70 @@ test("tool calls normalize arguments and unsupported tools fail before network",
     unsupported.ledger.records[0].error?.code,
     "MODEL_CAPABILITY_UNSUPPORTED"
   );
+});
+
+test("parallel tool calling is serialized only after capability preflight", async () => {
+  const unsupported = createFixture([], {
+    parallelToolCalling: false
+  });
+  await assert.rejects(
+    unsupported.gateway.callTools({
+      prompt: "Run both tools",
+      tools: [],
+      parallelToolCalls: true
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelGatewayError);
+      assert.equal(error.code, "MODEL_CAPABILITY_UNSUPPORTED");
+      return true;
+    }
+  );
+  assert.equal(unsupported.requests.length, 0);
+
+  const supported = createFixture([
+    completionResponse(null, {
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: []
+        },
+        finish_reason: "tool_calls"
+      }]
+    })
+  ], {
+    parallelToolCalling: true
+  });
+  await supported.gateway.callTools({
+    prompt: "Run both tools",
+    tools: [],
+    parallelToolCalls: true
+  });
+  const request = JSON.parse(
+    String(supported.requests[0].init?.body)
+  ) as {
+    tool_choice?: string;
+    parallel_tool_calls?: boolean;
+  };
+  assert.equal(request.tool_choice, "required");
+  assert.equal(request.parallel_tool_calls, true);
+});
+
+test("health check returns a normalized failure result and records the failed attempt", async () => {
+  const fixture = createFixture([
+    jsonResponse({ error: { message: "unavailable" } }, 503, {
+      "x-request-id": "provider_health_failed"
+    })
+  ]);
+  const health = await fixture.gateway.healthCheck();
+  assert.equal(health.ok, false);
+  assert.equal(health.provider, "moonshot");
+  assert.equal(health.model, "moonshot-v1-8k");
+  assert.equal(health.error?.code, "MODEL_PROVIDER_UNAVAILABLE");
+  assert.equal(health.error?.retryable, true);
+  assert.equal(fixture.ledger.records.length, 1);
+  assert.equal(fixture.ledger.records[0].status, "failed");
 });
 
 test("429 is retryable and retry after an active switch stays on the job snapshot", async () => {
@@ -637,4 +719,145 @@ test("streaming yields an SSE delta before the response body closes", async () =
     value: undefined
   });
   assert.equal(fixture.ledger.records.length, 1);
+});
+
+test("stream idle timeout is per read and records failure after an earlier delta", async () => {
+  const encoder = new TextEncoder();
+  const response = new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"
+      ));
+    }
+  }), {
+    status: 200,
+    headers: { "content-type": "text/event-stream" }
+  });
+  const fixture = createFixture(
+    [response],
+    {},
+    { requestTimeoutMs: 1_000, streamIdleTimeoutMs: 15 }
+  );
+  const iterator = fixture.gateway.streamText({
+    prompt: "Stream with idle protection"
+  })[Symbol.asyncIterator]();
+  assert.deepEqual(await iterator.next(), {
+    done: false,
+    value: { type: "text_delta", delta: "first" }
+  });
+  await assert.rejects(
+    iterator.next(),
+    (error: unknown) => {
+      assert.ok(error instanceof ModelGatewayError);
+      assert.equal(error.code, "MODEL_TIMEOUT");
+      return true;
+    }
+  );
+  assert.equal(fixture.ledger.records.length, 1);
+  assert.equal(fixture.ledger.records[0].status, "failed");
+  assert.equal(fixture.ledger.records[0].error?.code, "MODEL_TIMEOUT");
+});
+
+test("stream reader failure preserves usage already received in the failure ledger", async () => {
+  const encoder = new TextEncoder();
+  let readCount = 0;
+  const response = new Response(new ReadableStream<Uint8Array>({
+    pull(controller) {
+      readCount += 1;
+      if (readCount === 1) {
+        controller.enqueue(encoder.encode(
+          "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,"
+          + "\"completion_tokens\":3,\"completion_tokens_details\":"
+          + "{\"reasoning_tokens\":2}}}\n\n"
+        ));
+        return;
+      }
+      controller.error(new Error("fixture reader failed"));
+    }
+  }, { highWaterMark: 0 }), {
+    status: 200,
+    headers: { "content-type": "text/event-stream" }
+  });
+  const fixture = createFixture([response]);
+  await assert.rejects(async () => {
+    for await (const _event of fixture.gateway.streamText({
+      prompt: "Preserve usage"
+    })) {
+      // Consume until the transport fails.
+    }
+  });
+  assert.equal(fixture.ledger.records.length, 1);
+  assert.deepEqual({
+    status: fixture.ledger.records[0].status,
+    inputTokens: fixture.ledger.records[0].inputTokens,
+    outputTokens: fixture.ledger.records[0].outputTokens,
+    reasoningTokens: fixture.ledger.records[0].reasoningTokens
+  }, {
+    status: "failed",
+    inputTokens: 8,
+    outputTokens: 3,
+    reasoningTokens: 2
+  });
+});
+
+test("early stream consumer cancellation is never recorded as success", async () => {
+  const encoder = new TextEncoder();
+  const response = new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"
+      ));
+    }
+  }), {
+    status: 200,
+    headers: { "content-type": "text/event-stream" }
+  });
+  const fixture = createFixture([response]);
+  const iterator = fixture.gateway.streamText({
+    prompt: "Cancel after one delta"
+  })[Symbol.asyncIterator]();
+  await iterator.next();
+  await iterator.return?.();
+  assert.equal(fixture.ledger.records.length, 1);
+  assert.equal(fixture.ledger.records[0].status, "failed");
+  assert.equal(
+    fixture.ledger.records[0].error?.code,
+    "MODEL_STREAM_CANCELLED"
+  );
+});
+
+test("caller abort after a delta is normalized and audited as a failed stream", async () => {
+  const encoder = new TextEncoder();
+  const response = new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"
+      ));
+    }
+  }), {
+    status: 200,
+    headers: { "content-type": "text/event-stream" }
+  });
+  const fixture = createFixture(
+    [response],
+    {},
+    { streamIdleTimeoutMs: 5_000 }
+  );
+  const abort = new AbortController();
+  const iterator = fixture.gateway.streamText({
+    prompt: "Abort after one delta",
+    signal: abort.signal
+  })[Symbol.asyncIterator]();
+  await iterator.next();
+  abort.abort();
+  await assert.rejects(iterator.next(), (error: unknown) => {
+    assert.ok(error instanceof ModelGatewayError);
+    assert.equal(error.code, "MODEL_STREAM_ABORTED");
+    return true;
+  });
+  assert.equal(fixture.ledger.records[0].status, "failed");
+  assert.equal(
+    fixture.ledger.records[0].error?.code,
+    "MODEL_STREAM_ABORTED"
+  );
 });

@@ -56,7 +56,8 @@ export class OpenAiCompatibleResponseError extends Error {
 export interface OpenAiCompatibleAdapterOptions {
   baseUrl: string;
   fetch: typeof fetch;
-  timeoutMs?: number;
+  requestTimeoutMs?: number;
+  streamIdleTimeoutMs?: number;
 }
 
 export interface OpenAiCompatibleAdapterRequest {
@@ -69,11 +70,14 @@ export interface OpenAiCompatibleChatRequest
   snapshot: AiJobModelSnapshot;
   prompt: string;
   jsonMode?: boolean;
+  signal?: AbortSignal;
   tools?: Array<{
     name: string;
     description: string;
     parameters: Record<string, unknown>;
   }>;
+  toolChoice?: "auto" | "none" | "required";
+  parallelToolCalls?: boolean;
 }
 
 interface OpenAiUsagePayload {
@@ -131,12 +135,14 @@ function asRecord(value: unknown): Record<string, unknown> {
 export class OpenAiCompatibleAdapter {
   readonly #baseUrl: string;
   readonly #fetch: typeof fetch;
-  readonly #timeoutMs: number;
+  readonly #requestTimeoutMs: number;
+  readonly #streamIdleTimeoutMs: number;
 
   constructor(options: OpenAiCompatibleAdapterOptions) {
     this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.#fetch = options.fetch;
-    this.#timeoutMs = options.timeoutMs ?? 30_000;
+    this.#requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.#streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? 30_000;
   }
 
   async listModels(request: OpenAiCompatibleAdapterRequest) {
@@ -237,7 +243,11 @@ export class OpenAiCompatibleAdapter {
     const requestId = providerRequestId(response);
     return {
       providerRequestId: requestId,
-      events: this.#decodeEventStream(response.body, requestId)
+      events: this.#decodeEventStream(
+        response.body,
+        requestId,
+        request.signal
+      )
     };
   }
 
@@ -259,6 +269,8 @@ export class OpenAiCompatibleAdapter {
           parameters: tool.parameters
         }
       }));
+      body.tool_choice = request.toolChoice ?? "required";
+      body.parallel_tool_calls = request.parallelToolCalls ?? false;
     }
     const response = await this.#request("/chat/completions", {
       method: "POST",
@@ -283,7 +295,8 @@ export class OpenAiCompatibleAdapter {
 
   async *#decodeEventStream(
     body: ReadableStream<Uint8Array>,
-    requestId: string | null
+    requestId: string | null,
+    signal?: AbortSignal
   ): AsyncIterable<OpenAiCompatibleStreamEvent> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
@@ -293,7 +306,7 @@ export class OpenAiCompatibleAdapter {
       while (true) {
         let read: ReadableStreamReadResult<Uint8Array>;
         try {
-          read = await reader.read();
+          read = await this.#readWithIdleTimeout(reader, signal);
         } catch (error) {
           throw new OpenAiCompatibleRequestError(
             null,
@@ -346,6 +359,41 @@ export class OpenAiCompatibleAdapter {
     }
   }
 
+  async #readWithIdleTimeout(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    signal?: AbortSignal
+  ) {
+    if (signal?.aborted) {
+      throw new DOMException("Model stream aborted", "AbortError");
+    }
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        reject(new DOMException("Model stream idle timeout", "TimeoutError"));
+      }, this.#streamIdleTimeoutMs);
+    });
+    const abortPromise = new Promise<never>((_resolve, reject) => {
+      if (!signal) return;
+      onAbort = () => {
+        reject(new DOMException("Model stream aborted", "AbortError"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([
+        reader.read(),
+        timeoutPromise,
+        abortPromise
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
+    }
+  }
+
   #parseEventStreamLine(
     line: string
   ): OpenAiCompatibleStreamEvent | null {
@@ -383,6 +431,13 @@ export class OpenAiCompatibleAdapter {
     }
   ) {
     let response: Response;
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(
+        new DOMException("Model provider request timed out", "TimeoutError")
+      ),
+      this.#requestTimeoutMs
+    );
     try {
       response = await this.#fetch(`${this.#baseUrl}${path}`, {
         method: options.method,
@@ -392,10 +447,12 @@ export class OpenAiCompatibleAdapter {
           "x-client-request-id": options.requestId
         },
         body: options.body ? JSON.stringify(options.body) : undefined,
-        signal: AbortSignal.timeout(this.#timeoutMs)
+        signal: controller.signal
       });
     } catch (error) {
       throw new OpenAiCompatibleRequestError(null, null, null, error);
+    } finally {
+      clearTimeout(timeout);
     }
     if (!response.ok) {
       throw new OpenAiCompatibleRequestError(

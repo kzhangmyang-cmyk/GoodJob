@@ -324,6 +324,8 @@ export const aiJobModelSnapshots:
   import("./model-providers/types.js").StoredAiJobModelSnapshot[] = [];
 export const modelConnectionIdempotencyRecords:
   import("./model-providers/types.js").ModelConnectionIdempotencyRecord[] = [];
+export const modelCallRecords:
+  import("./model-providers/call-ledger.js").ModelCallRecord[] = [];
 
 export const leadSourceConfigs: LeadSourceConfig[] = [];
 

@@ -10,6 +10,9 @@ import type {
   ModelCredentialVersion,
   StoredAiJobModelSnapshot
 } from "./model-providers/types.js";
+import type {
+  ModelCallRecord
+} from "./model-providers/call-ledger.js";
 
 function batches() {
   return {
@@ -18,7 +21,8 @@ function batches() {
       [] as ModelConnectionActivationEvent[],
     pendingAiJobModelSnapshots: [] as StoredAiJobModelSnapshot[],
     pendingModelConnectionIdempotencyRecords:
-      [] as ModelConnectionIdempotencyRecord[]
+      [] as ModelConnectionIdempotencyRecord[],
+    pendingModelCallRecords: [] as ModelCallRecord[]
   };
 }
 
@@ -39,6 +43,9 @@ test("pending model appends clear only persisted rows after success", async () =
       idempotencyKeyHash: "hash-1"
     } as ModelConnectionIdempotencyRecord
   );
+  live.pendingModelCallRecords.push(
+    { id: "call-1" } as ModelCallRecord
+  );
   const persisted = structuredClone(live);
   live.pendingModelCredentialVersions.push(
     { connectionId: "conn-2", version: 2 } as ModelCredentialVersion
@@ -58,6 +65,7 @@ test("pending model appends clear only persisted rows after success", async () =
   assert.deepEqual(live.pendingModelConnectionActivationEvents, []);
   assert.deepEqual(live.pendingAiJobModelSnapshots, []);
   assert.deepEqual(live.pendingModelConnectionIdempotencyRecords, []);
+  assert.deepEqual(live.pendingModelCallRecords, []);
 });
 
 test("failed model append persistence throws and retains every pending row", async () => {
@@ -89,13 +97,53 @@ test("MySQL persists pending model rows with strict inserts, not loaded history"
     "pendingModelCredentialVersions",
     "pendingModelConnectionActivationEvents",
     "pendingAiJobModelSnapshots",
-    "pendingModelConnectionIdempotencyRecords"
+    "pendingModelConnectionIdempotencyRecords",
+    "pendingModelCallRecords"
   ]) {
     assert.match(source, new RegExp(`insertRows[\\s\\S]+${pendingName}`));
   }
   assert.doesNotMatch(
     source,
-    /INSERT IGNORE INTO ai_(?:model_credential_versions|model_connection_activation_events|job_model_snapshots|model_connection_idempotency)/
+    /INSERT IGNORE INTO ai_(?:model_credential_versions|model_connection_activation_events|job_model_snapshots|model_connection_idempotency|model_call_records)/
+  );
+});
+
+test("model call ledger is loaded and appended durably without payload columns", () => {
+  const source = readFileSync(
+    new URL("./mysql-store.ts", import.meta.url),
+    "utf8"
+  );
+  const schemas = [
+    readFileSync(new URL("../schema.mysql.sql", import.meta.url), "utf8"),
+    readFileSync(new URL("../goodjob_crm.full.sql", import.meta.url), "utf8")
+  ];
+  assert.match(source, /modelCallRecords:\s*await loadModelCallRecords\(pool\)/);
+  assert.match(source, /SELECT \* FROM ai_model_call_records/);
+  assert.match(
+    source,
+    /insertRows\(connection, "ai_model_call_records", store\.pendingModelCallRecords/
+  );
+  for (const schema of schemas) {
+    assert.match(schema, /CREATE TABLE ai_model_call_records/);
+    assert.match(schema, /PRIMARY KEY\(id\)/);
+    const table = schema.match(
+      /CREATE TABLE ai_model_call_records \([\s\S]*?\n\);/
+    )?.[0] || "";
+    assert.doesNotMatch(
+      table,
+      /\b(?:prompt|output|api_key|credential_plaintext)\b/i
+    );
+  }
+});
+
+test("MySQL migration backfills immutable endpoints for pre-existing job snapshots", () => {
+  const source = readFileSync(
+    new URL("./mysql-store.ts", import.meta.url),
+    "utf8"
+  );
+  assert.match(
+    source,
+    /UPDATE ai_job_model_snapshots AS snapshot[\s\S]*JOIN ai_model_configs AS config[\s\S]*snapshot\.base_url = config\.base_url[\s\S]*SHA2\(config\.base_url, 256\)[\s\S]*snapshot\.base_url = ''[\s\S]*snapshot\.base_url_fingerprint = ''/
   );
 });
 

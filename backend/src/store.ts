@@ -177,6 +177,9 @@ import type {
   StoredAiJobModelSnapshot
 } from "./model-providers/types.js";
 import type {
+  ModelCallRecord
+} from "./model-providers/call-ledger.js";
+import type {
   ModelConnectionDeletionOptions
 } from "./model-providers/connection-service.js";
 
@@ -224,6 +227,8 @@ export interface CrmStore {
   pendingAiJobModelSnapshots: StoredAiJobModelSnapshot[];
   modelConnectionIdempotencyRecords: ModelConnectionIdempotencyRecord[];
   pendingModelConnectionIdempotencyRecords: ModelConnectionIdempotencyRecord[];
+  modelCallRecords: ModelCallRecord[];
+  pendingModelCallRecords: ModelCallRecord[];
   providerCatalog: ProviderCatalogItem[];
   providerConnections: ProviderConnection[];
   providerRequestLogs: ProviderRequestLog[];
@@ -409,6 +414,8 @@ export const memoryStore: CrmStore = {
   pendingAiJobModelSnapshots: [],
   modelConnectionIdempotencyRecords,
   pendingModelConnectionIdempotencyRecords: [],
+  modelCallRecords: [],
+  pendingModelCallRecords: [],
   providerCatalog,
   providerConnections,
   providerRequestLogs,
@@ -496,6 +503,7 @@ export const memoryStore: CrmStore = {
     memoryStore.pendingModelConnectionActivationEvents.splice(0);
     memoryStore.pendingAiJobModelSnapshots.splice(0);
     memoryStore.pendingModelConnectionIdempotencyRecords.splice(0);
+    memoryStore.pendingModelCallRecords.splice(0);
   },
   async mutateCustomerOwnership(input) {
     return mutateCustomerOwnershipMemory(memoryStore, input);

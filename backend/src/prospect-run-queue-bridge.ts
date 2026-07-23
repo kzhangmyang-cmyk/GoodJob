@@ -17,6 +17,12 @@ import type {
   ProspectRunShard,
   ProspectSearchRun
 } from "./types.js";
+import {
+  bindModelConnectionSnapshot
+} from "./model-providers/runtime.js";
+import {
+  MODEL_PROVIDER_IDS
+} from "./model-providers/types.js";
 
 export const PROSPECT_RUN_QUEUE_BRIDGE_VERSION = "v1";
 
@@ -32,6 +38,40 @@ const ALLOWED_JOB_STATUSES = new Set<AgentJobStatus>([
 ]);
 const TRACE_ID_PATTERN =
   /^trace_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function bindAiSearchJobModelSnapshot(
+  store: CrmStore,
+  input: {
+    providerCode: string;
+    jobId: string;
+    ownerId: string;
+    teamId: string;
+  }
+) {
+  if (input.providerCode !== "ai_search") return null;
+  const active = store.aiModelConfigs.find(
+    (item) => item.ownerId === input.ownerId
+      && item.teamId === input.teamId
+      && item.enabled
+      && item.useLeadFinder
+      && MODEL_PROVIDER_IDS.includes(
+        item.provider as (typeof MODEL_PROVIDER_IDS)[number]
+      )
+  );
+  if (!active) {
+    throw new Error(
+      "AI search job requires an active lead-finder model connection"
+    );
+  }
+  return bindModelConnectionSnapshot(store, {
+    jobId: input.jobId,
+    ownerId: input.ownerId,
+    teamId: input.teamId,
+    connectionId: active.id,
+    promptVersion: "ai-search.v1",
+    schemaVersion: "ai-search-result.v1"
+  });
+}
 
 export class ProspectRunQueueBridgeIntegrityError extends Error {
   readonly code = "RUN_QUEUE_BRIDGE_INTEGRITY_INVALID";
@@ -442,6 +482,9 @@ export function registerProspectRunQueueBridge(
   const originalJobsLength = store.agentJobs.length;
   const originalParentLength = store.prospectRunQueueParentBindings.length;
   const originalChildLength = store.prospectRunQueueChildBindings.length;
+  const originalModelSnapshotLength = store.aiJobModelSnapshots.length;
+  const originalPendingModelSnapshotLength =
+    store.pendingAiJobModelSnapshots.length;
   try {
     const parentJob = registerProspectRunBridgeJob(store, {
       teamId: run.teamId,
@@ -527,12 +570,22 @@ export function registerProspectRunQueueBridge(
         }),
         createdAt: run.createdAt
       });
+      bindAiSearchJobModelSnapshot(store, {
+        providerCode: shard.providerCode,
+        jobId: childJob.id,
+        ownerId: run.ownerId,
+        teamId: run.teamId
+      });
     }
     validateProspectRunQueueBridge(store, run);
   } catch (error) {
     store.agentJobs.splice(originalJobsLength);
     store.prospectRunQueueParentBindings.splice(originalParentLength);
     store.prospectRunQueueChildBindings.splice(originalChildLength);
+    store.aiJobModelSnapshots.splice(originalModelSnapshotLength);
+    store.pendingAiJobModelSnapshots.splice(
+      originalPendingModelSnapshotLength
+    );
     throw error;
   }
 }

@@ -1,8 +1,90 @@
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { createAiHttpClient } from "./ai-http-security.js";
+import { getStore } from "./store.js";
+import {
+  MODEL_PROVIDER_IDS
+} from "./model-providers/types.js";
+import {
+  bindModelConnectionSnapshot,
+  createActiveModelGatewayForSnapshot
+} from "./model-providers/runtime.js";
+import type {
+  ModelRuntimeStore
+} from "./model-providers/runtime.js";
 import type { LeadQuery, RawLead } from "./provider-contract.js";
 import type { AiModelConfig } from "./types.js";
 
 export const AI_MODEL_TIMEOUT_MS = 120_000;
+
+export interface AiModelRuntimeIdentity {
+  jobId: string;
+  promptVersion: string;
+  schemaVersion: string;
+}
+
+export async function callAiModelWithRuntime(
+  store: ModelRuntimeStore & { persist?(): Promise<void> },
+  config: AiModelConfig,
+  prompt: string,
+  maxInputChars = 12_000,
+  fetcher?: (
+    url: string,
+    init?: RequestInit
+  ) => Promise<globalThis.Response>,
+  identity: AiModelRuntimeIdentity = {
+    jobId: `ai_sync_${randomUUID()}`,
+    promptVersion: "legacy-json.v1",
+    schemaVersion: "legacy-json-object.v1"
+  }
+) {
+  const snapshot = bindModelConnectionSnapshot(store, {
+    ...identity,
+    connectionId: config.id,
+    ownerId: config.ownerId,
+    teamId: config.teamId
+  });
+  if (!snapshot.baseUrl) {
+    throw new Error("Snapshotted model endpoint is unavailable");
+  }
+  // The immutable binding must survive a process restart before the first
+  // provider byte leaves this process.
+  await store.persist?.();
+  const secureClient = fetcher
+    ? null
+    : createAiHttpClient(snapshot.baseUrl);
+  const request = fetcher
+    || ((url: string, init?: RequestInit) =>
+      secureClient!.fetch(url, init));
+  const gateway = createActiveModelGatewayForSnapshot(store, {
+    storedSnapshot: snapshot,
+    fetch: request as typeof fetch,
+    requestTimeoutMs: AI_MODEL_TIMEOUT_MS
+  });
+  let providerError: unknown;
+  try {
+    const result = await gateway.generateStructured({
+      prompt: prompt.slice(0, maxInputChars),
+      schema: z.record(z.unknown())
+    });
+    return JSON.stringify(result.value);
+  } catch (error) {
+    providerError = error;
+    throw error;
+  } finally {
+    try {
+      await store.persist?.();
+    } catch (persistenceError) {
+      if (providerError !== undefined) {
+        throw new AggregateError(
+          [providerError, persistenceError],
+          "模型调用失败且审计记录持久化失败"
+        );
+      }
+      throw persistenceError;
+    }
+  }
+}
 
 export async function callAiModel(
   config: AiModelConfig,
@@ -13,6 +95,17 @@ export async function callAiModel(
     init?: RequestInit
   ) => Promise<globalThis.Response>
 ) {
+  if (MODEL_PROVIDER_IDS.includes(
+    config.provider as (typeof MODEL_PROVIDER_IDS)[number]
+  )) {
+    return callAiModelWithRuntime(
+      getStore(),
+      config,
+      prompt,
+      maxInputChars,
+      fetcher
+    );
+  }
   const protocol = config.protocol || "openai-compatible";
   const endpointBase = config.baseUrl.replace(/\/+$/, "");
   const secureClient = fetcher ? null : createAiHttpClient(endpointBase);

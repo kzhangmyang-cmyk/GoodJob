@@ -3,6 +3,9 @@ import test, { after, before } from "node:test";
 import { signToken } from "./auth.js";
 import { app } from "./server.js";
 import { getStore } from "./store.js";
+import type {
+  ModelCallRecord
+} from "./model-providers/call-ledger.js";
 
 const store = getStore();
 const originalConfigs = structuredClone(store.aiModelConfigs);
@@ -15,6 +18,7 @@ const originalIdempotency = structuredClone(
     modelConnectionIdempotencyRecords?: unknown[];
   }).modelConnectionIdempotencyRecords || []
 );
+const originalCalls = structuredClone(store.modelCallRecords);
 let server: ReturnType<typeof app.listen>;
 let baseUrl = "";
 let token = "";
@@ -59,6 +63,12 @@ after(async () => {
     ...originalIdempotency
   );
   idempotencyStore.pendingModelConnectionIdempotencyRecords?.splice(0);
+  store.modelCallRecords.splice(
+    0,
+    store.modelCallRecords.length,
+    ...originalCalls
+  );
+  store.pendingModelCallRecords.splice(0);
   await new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   });
@@ -79,6 +89,116 @@ async function request(
   const json = await response.json().catch(() => null);
   return { response, json };
 }
+
+function modelCall(
+  id: string,
+  ownerId: string,
+  teamId: string,
+  createdAt: string
+): ModelCallRecord {
+  return {
+    id,
+    ownerId,
+    teamId,
+    jobId: `job_${id}`,
+    attemptId: `attempt_${id}`,
+    connectionId: `connection_${id}`,
+    credentialVersion: 2,
+    capabilitySnapshotHash: "sha256:capabilities",
+    provider: "openai",
+    baseUrlFingerprint: "sha256:endpoint",
+    model: "gpt-test",
+    promptVersion: "prompt.v1",
+    schemaVersion: "schema.v1",
+    requestId: `request_${id}`,
+    providerRequestId: null,
+    inputTokens: 5,
+    outputTokens: 3,
+    reasoningTokens: 0,
+    latencyMs: 25,
+    status: "succeeded",
+    error: null,
+    cost: {
+      amountMinor: 0,
+      currency: "USD",
+      kind: "unknown"
+    },
+    parameterHash: "sha256:parameters",
+    resultHash: "sha256:result",
+    createdAt
+  };
+}
+
+test("v1 model call list is owner-and-team scoped and newest first", async () => {
+  store.modelCallRecords.push(
+    modelCall(
+      "call_visible_old",
+      "u_sales_shirley",
+      "europe",
+      "2026-07-22T10:00:00.000Z"
+    ),
+    modelCall(
+      "call_visible_new",
+      "u_sales_shirley",
+      "europe",
+      "2026-07-23T10:00:00.000Z"
+    ),
+    modelCall(
+      "call_other_owner",
+      "u_other",
+      "europe",
+      "2026-07-24T10:00:00.000Z"
+    ),
+    modelCall(
+      "call_other_team",
+      "u_sales_shirley",
+      "other-team",
+      "2026-07-25T10:00:00.000Z"
+    )
+  );
+
+  const result = await request("/api/v1/ai/calls?limit=10", {
+    method: "GET"
+  });
+
+  assert.equal(result.response.status, 200);
+  assert.deepEqual(
+    result.json.items.map((item: { id: string }) => item.id),
+    ["call_visible_new", "call_visible_old"]
+  );
+  assert.equal(result.json.nextCursor, null);
+  assert.equal(JSON.stringify(result.json).includes("private prompt"), false);
+});
+
+test("v1 model call detail never crosses owner or team scope", async () => {
+  const visible = modelCall(
+    "call_detail_visible",
+    "u_sales_shirley",
+    "europe",
+    "2026-07-23T10:00:00.000Z"
+  );
+  const hidden = modelCall(
+    "call_detail_hidden",
+    "u_other",
+    "europe",
+    "2026-07-23T11:00:00.000Z"
+  );
+  store.modelCallRecords.push(visible, hidden);
+
+  const found = await request(
+    "/api/v1/ai/calls/call_detail_visible",
+    { method: "GET" }
+  );
+  assert.equal(found.response.status, 200);
+  assert.equal(found.json.id, visible.id);
+
+  const forbidden = await request(
+    "/api/v1/ai/calls/call_detail_hidden",
+    { method: "GET" }
+  );
+  assert.equal(forbidden.response.status, 404);
+  assert.equal(forbidden.json.code, "model_call_not_found");
+});
 
 test("v1 connection create requires Idempotency-Key", async () => {
   const result = await request("/api/v1/ai/connections", {

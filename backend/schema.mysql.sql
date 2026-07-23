@@ -503,11 +503,45 @@ CREATE TABLE ai_job_model_snapshots (
   credential_version INT NOT NULL,
   provider VARCHAR(40) NOT NULL,
   model VARCHAR(120) NOT NULL,
+  base_url VARCHAR(500) NOT NULL,
+  base_url_fingerprint VARCHAR(80) NOT NULL,
   capability_snapshot_json JSON NOT NULL,
   prompt_version VARCHAR(120) NOT NULL,
   schema_version VARCHAR(120) NOT NULL,
   created_at DATETIME NOT NULL,
   INDEX idx_ai_job_snapshot_connection(connection_id, credential_version)
+);
+
+CREATE TABLE ai_model_call_records (
+  id VARCHAR(100) NOT NULL,
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  job_id VARCHAR(90) NOT NULL,
+  attempt_id VARCHAR(100) NOT NULL,
+  connection_id VARCHAR(64) NOT NULL,
+  credential_version INT NOT NULL,
+  capability_snapshot_hash VARCHAR(80) NOT NULL,
+  provider VARCHAR(40) NOT NULL,
+  base_url_fingerprint VARCHAR(80) NOT NULL,
+  model VARCHAR(120) NOT NULL,
+  prompt_version VARCHAR(120) NOT NULL,
+  schema_version VARCHAR(120) NOT NULL,
+  request_id VARCHAR(100) NOT NULL,
+  provider_request_id VARCHAR(160) NULL,
+  input_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+  output_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+  reasoning_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+  latency_ms INT UNSIGNED NOT NULL DEFAULT 0,
+  call_status ENUM('succeeded','failed') NOT NULL,
+  error_json JSON NULL,
+  cost_json JSON NOT NULL,
+  parameter_hash VARCHAR(80) NOT NULL,
+  result_hash VARCHAR(80) NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY(id),
+  UNIQUE KEY uniq_ai_model_call_attempt(attempt_id),
+  INDEX idx_ai_model_call_owner(owner_id, created_at),
+  INDEX idx_ai_model_call_job(job_id, created_at)
 );
 
 CREATE TABLE lead_source_configs (

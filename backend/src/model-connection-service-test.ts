@@ -194,6 +194,8 @@ test("stored job snapshots are tracked as pending appends", () => {
     jobId: "job-pending",
     ownerId: "owner-1",
     teamId: "team-1",
+    baseUrl: "https://api.openai.com/v1",
+    baseUrlFingerprint: modelConnection.baseUrlFingerprint || "sha256:test",
     createdAt: "2026-07-23T10:30:00.000Z"
   };
   const history: StoredAiJobModelSnapshot[] = [];
@@ -218,6 +220,8 @@ test("connections referenced by immutable job snapshots cannot be deleted", asyn
     jobId: "job-1",
     ownerId: "owner-1",
     teamId: "team-1",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    baseUrlFingerprint: modelConnection.baseUrlFingerprint || "sha256:test",
     createdAt: "2026-07-23T11:00:00.000Z"
   }];
   const store = {

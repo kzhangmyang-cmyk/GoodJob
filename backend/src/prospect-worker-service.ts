@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { createAiSearchProvider } from "./ai-search-provider.js";
+import {
+  resolveAiSearchProviderFromSnapshot
+} from "./ai-search-provider.js";
 import { BullMqProspectQueueBackend } from "./prospect-bullmq-backend.js";
 import { ProspectProviderDispatcher } from "./prospect-provider-dispatcher.js";
 import {
@@ -59,30 +61,8 @@ export class ProspectWorkerService {
       store: this.store,
       dispatcher: new ProspectProviderDispatcher({
         store: this.store,
-        resolveProvider: (request) => {
-          if (request.providerCode !== "ai_search") return undefined;
-          const config = this.store.aiModelConfigs
-            .filter((item) =>
-              item.teamId === request.teamId
-              && item.ownerId === request.ownerId
-              && item.enabled
-              && item.useLeadFinder
-              && Boolean(item.apiKey)
-            )
-            .sort((left, right) =>
-              new Date(right.updatedAt).getTime()
-              - new Date(left.updatedAt).getTime()
-            )[0];
-          return config
-            ? {
-                provider: createAiSearchProvider(config),
-                credential: {
-                  apiKey: config.apiKey,
-                  baseUrl: config.baseUrl
-                }
-              }
-            : undefined;
-        }
+        resolveProvider: (request) =>
+          resolveAiSearchProviderFromSnapshot(this.store, request)
       }),
       claimSecret: executionClaimSecret(),
       providerRawEnvelopeSecret:

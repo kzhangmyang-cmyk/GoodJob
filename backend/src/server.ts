@@ -6,7 +6,13 @@ import { randomUUID } from "node:crypto";
 import nodemailer from "nodemailer";
 import { z } from "zod";
 import { AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, canManageAccount, canManageAccounts, canManageRole, canSeeOwner, canSeePersonalData, canSeeTeam, createCsrfToken, csrfCookieOptions, hashPassword, publicUser, requireAuth, sessionCookieOptions, signToken, validateAuthSecurity, verifyPassword } from "./auth.js";
-import { assertAiBaseUrlAllowed, createAiHttpClient } from "./ai-http-security.js";
+import { assertAiBaseUrlAllowed } from "./ai-http-security.js";
+import {
+  AI_MODEL_TIMEOUT_MS,
+  aiGenerateLeads,
+  callAiModel,
+  extractJsonObject
+} from "./ai-model-runtime.js";
 import {
   activateModelConnection,
   createAiModelConfigId,
@@ -7327,6 +7333,44 @@ app.get("/api/v1/ai/connections", requireAuth, (req, res) => {
   res.json({ items: connections, nextCursor: null });
 });
 
+app.get("/api/v1/ai/calls", requireAuth, (req, res) => {
+  const limit = Math.min(
+    200,
+    Math.max(1, Number.parseInt(String(req.query.limit || "50"), 10) || 50)
+  );
+  const items = getStore().modelCallRecords
+    .filter((item) =>
+      item.ownerId === req.user!.id
+      && item.teamId === req.user!.teamId
+    )
+    .sort((left, right) =>
+      new Date(right.createdAt).getTime()
+      - new Date(left.createdAt).getTime()
+      || right.id.localeCompare(left.id)
+    )
+    .slice(0, limit);
+  res.json({ items, nextCursor: null });
+});
+
+app.get("/api/v1/ai/calls/:id", requireAuth, (req, res) => {
+  const item = getStore().modelCallRecords.find((record) =>
+    record.id === req.params.id
+    && record.ownerId === req.user!.id
+    && record.teamId === req.user!.teamId
+  );
+  if (!item) {
+    res.status(404).json({
+      code: "model_call_not_found",
+      message: "模型调用记录不存在或不属于当前用户",
+      details: null,
+      requestId: `req_${randomUUID()}`,
+      retryable: false
+    });
+    return;
+  }
+  res.json(item);
+});
+
 app.post("/api/v1/ai/connections", requireAuth, asyncRoute(async (req, res) => {
   if (!String(req.header("Idempotency-Key") || "").trim()) {
     res.status(400).json({
@@ -10887,7 +10931,6 @@ function localMinuteText(date: Date) {
 }
 
 type AiUseCase = "leadFinder" | "websiteParse" | "scoring" | "emailDraft" | "exam";
-const AI_MODEL_TIMEOUT_MS = 120000;
 
 function getAiConfigs(user: SessionUser) {
   return getStore().aiModelConfigs
@@ -11103,178 +11146,6 @@ function parseWebsiteOpportunity(
     sourceLabel: "官网链接登记",
     sourceEvidence: []
   }, createdAt);
-}
-
-async function aiGenerateLeads(
-  query: LeadQuery,
-  config: AiModelConfig,
-  fetcher?: (url: string, init?: RequestInit) => Promise<globalThis.Response>
-): Promise<RawLead[]> {
-  const n = Math.min(query.limit, 12);
-  const prompt = [
-    "你是资深外贸获客研究助手。根据下面的客户画像，列出真实、可能存在的目标公司（分销商/系统集成商/OEM/EPC/MRO/终端工厂/贸易商等）。",
-    "严格只返回 JSON，不要解释、不要 Markdown。",
-    "JSON 结构：{\"companies\":[{\"company\":\"\",\"website\":\"\",\"country\":\"\",\"business\":\"\",\"description\":\"\"}]}",
-    "要求：",
-    "1. 只给你有把握真实存在的公司；website 用你所知的官网域名，不确定就留空字符串，绝不编造域名。",
-    "2. 绝不编造邮箱、电话或联系人。",
-    "3. business 聚焦公司产品/业务方向；description 用一句话说明为何匹配画像。",
-    `目标公司数量：${n}`,
-    `产品/关键词：${query.productKeywords || "未指定"}`,
-    `国家/地区：${query.countries || "未指定"}`,
-    `行业/场景：${query.industry || "未指定"}`,
-    `客户类型：${query.customerType || "未指定"}`,
-    `获客目标：${query.goal || "未指定"}`,
-    `排除：${query.excludeKeywords || "无"}`
-  ].join("\n");
-  const content = await callAiModel(config, prompt, 4000, fetcher);
-  const parsed = extractJsonObject(content) as { companies?: unknown };
-  const companies = Array.isArray(parsed.companies) ? parsed.companies : [];
-  return companies
-    .slice(0, n)
-    .map((raw): RawLead => {
-      const item = (raw || {}) as Record<string, unknown>;
-      const firstCountry = query.countries.split(/,|，/)[0]?.trim() || "未知";
-      const detail = String(item.description || "").trim();
-      const officialWebsite = String(item.website || "").trim();
-      return {
-        company: String(item.company || "").trim(),
-        officialWebsite,
-        website: officialWebsite,
-        country: String(item.country || firstCountry).trim(),
-        business: String(item.business || query.productKeywords || "待核实业务").trim(),
-        contact: "待维护",
-        contactInfo: "",
-        description: `${detail}${detail ? "（AI 生成，待核实）" : "AI 生成候选，待核实。"}`,
-        confidence: 58,
-        sourceUrl: "",
-        recordType: "assisted_suggestion",
-        evidenceSummary: `${detail || "AI 生成候选"}；尚未完成外部事实核验。`,
-        matchedFields: ["company", ...(officialWebsite ? ["officialWebsite"] : []), "country", "business"]
-      };
-    })
-    .filter((lead) => lead.company);
-}
-
-async function callAiModel(
-  config: AiModelConfig,
-  prompt: string,
-  maxInputChars = 12000,
-  fetcher?: (url: string, init?: RequestInit) => Promise<globalThis.Response>
-) {
-  const protocol = config.protocol || "openai-compatible";
-  const endpointBase = config.baseUrl.replace(/\/+$/, "");
-  const secureClient = fetcher ? null : createAiHttpClient(endpointBase);
-  const request: (url: string, init?: RequestInit) => Promise<globalThis.Response> = fetcher
-    || ((url, init) => secureClient!.fetch(url, init));
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), AI_MODEL_TIMEOUT_MS);
-  try {
-    if (protocol === "anthropic") {
-      const endpoint = `${endpointBase}/messages`;
-      const response = await request(endpoint, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "x-api-key": config.apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({
-          model: config.model,
-          max_tokens: 800,
-          temperature: config.temperature ?? 0.1,
-          system: "你擅长整理授权 API、搜索服务和用户提供的结构化资料。不得声称访问过企业网页，输出必须可被 JSON.parse 解析。",
-          messages: [{ role: "user", content: prompt.slice(0, maxInputChars) }]
-        })
-      });
-      const data = await readAiJson<{ content?: Array<{ type?: string; text?: string }> }>(response);
-      const content = data.content?.map((item) => item.text || "").join("\n").trim() || "";
-      if (!content) throw new Error("模型返回为空");
-      return content;
-    }
-    if (protocol === "gemini") {
-      const endpoint = `${endpointBase}/models/${encodeURIComponent(config.model)}:generateContent`;
-      const response = await request(endpoint, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "content-type": "application/json",
-          "x-goog-api-key": config.apiKey
-        },
-        body: JSON.stringify({
-          generationConfig: { temperature: config.temperature ?? 0.1 },
-          contents: [{
-            role: "user",
-            parts: [{ text: `你擅长整理授权 API、搜索服务和用户提供的结构化资料。不得声称访问过企业网页，输出必须可被 JSON.parse 解析。\n${prompt.slice(0, maxInputChars)}` }]
-          }]
-        })
-      });
-      const data = await readAiJson<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> }>(response);
-      const content = data.candidates?.[0]?.content?.parts?.map((item) => item.text || "").join("\n").trim() || "";
-      if (!content) throw new Error("模型返回为空");
-      return content;
-    }
-    const endpoint = `${endpointBase}/chat/completions`;
-    const response = await request(endpoint, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        authorization: `Bearer ${config.apiKey}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: config.temperature ?? 0.1,
-        messages: [
-          { role: "system", content: "你擅长整理授权 API、搜索服务和用户提供的结构化资料。不得声称访问过企业网页，输出必须可被 JSON.parse 解析。" },
-          { role: "user", content: prompt.slice(0, maxInputChars) }
-        ],
-        response_format: { type: "json_object" }
-      })
-    });
-    const data = await readAiJson<{ choices?: Array<{ message?: { content?: string } }> }>(response);
-    const content = data.choices?.[0]?.message?.content || "";
-    if (!content.trim()) throw new Error("模型返回为空");
-    return content;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function aiHttpErrorMessage(status: number) {
-  if ([401, 403].includes(status)) return "模型认证失败，请检查 API Key 和账号权限";
-  if (status === 404) return "模型接口或模型名称不存在，请检查 Base URL 和 Model";
-  if (status === 429) return "模型请求过于频繁或额度不足，请稍后重试并检查配额";
-  if (status >= 500) return "模型服务暂时不可用，请稍后重试";
-  if (status >= 400) return "模型请求参数不被接受，请检查协议、模型名称和配置";
-  return `模型接口返回 HTTP ${status}`;
-}
-
-async function readAiJson<T>(response: globalThis.Response): Promise<T> {
-  const contentType = response.headers.get("content-type") || "";
-  const text = await response.text();
-  let data: any = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    if (contentType.includes("text/html") || text.trim().startsWith("<")) {
-      throw new Error("接口返回 HTML 页面而不是 JSON，请检查 Base URL 是否填写为 API 地址");
-    }
-    throw new Error("接口返回内容不是有效 JSON");
-  }
-  if (!response.ok) {
-    throw new Error(aiHttpErrorMessage(response.status));
-  }
-  return data as T;
-}
-
-function extractJsonObject(content: string) {
-  const source = content.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
-  const start = source.indexOf("{");
-  const end = source.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("AI JSON missing");
-  return JSON.parse(source.slice(start, end + 1)) as Record<string, unknown>;
 }
 
 const reportStageWeights: Record<string, number> = {

@@ -104,6 +104,10 @@ import {
   ModelConnectionError
 } from "./model-providers/types.js";
 import type {
+  ModelCallErrorRecord,
+  ModelCallRecord
+} from "./model-providers/call-ledger.js";
+import type {
   ModelCapabilitySnapshot,
   ModelConnection,
   ModelConnectionActivationEvent,
@@ -1532,6 +1536,8 @@ export async function createMysqlStore(
         modelConnectionIdempotencyRecords:
           await loadModelConnectionIdempotencyRecords(pool),
         pendingModelConnectionIdempotencyRecords: [],
+        modelCallRecords: await loadModelCallRecords(pool),
+        pendingModelCallRecords: [],
 		    providerCatalog: await loadProviderCatalog(pool),
 		    providerConnections: await loadProviderConnections(pool),
 		    providerRequestLogs: await loadProviderRequestLogs(pool),
@@ -2703,11 +2709,64 @@ async function ensureSchema(pool: mysql.Pool) {
     credential_version INT NOT NULL,
     provider VARCHAR(40) NOT NULL,
     model VARCHAR(120) NOT NULL,
+    base_url VARCHAR(500) NOT NULL,
+    base_url_fingerprint VARCHAR(80) NOT NULL,
     capability_snapshot_json JSON NOT NULL,
     prompt_version VARCHAR(120) NOT NULL,
     schema_version VARCHAR(120) NOT NULL,
     created_at DATETIME NOT NULL,
     INDEX idx_ai_job_snapshot_connection(connection_id, credential_version)
+  )`);
+  await ensureColumn(
+    pool,
+    "ai_job_model_snapshots",
+    "base_url",
+    "VARCHAR(500) NOT NULL DEFAULT ''"
+  );
+  await ensureColumn(
+    pool,
+    "ai_job_model_snapshots",
+    "base_url_fingerprint",
+    "VARCHAR(80) NOT NULL DEFAULT ''"
+  );
+  await pool.query(`UPDATE ai_job_model_snapshots AS snapshot
+    JOIN ai_model_configs AS config
+      ON config.id = snapshot.connection_id
+    SET snapshot.base_url = config.base_url,
+        snapshot.base_url_fingerprint =
+          CONCAT('sha256:', SHA2(config.base_url, 256))
+    WHERE snapshot.base_url = ''
+       OR snapshot.base_url_fingerprint = ''`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS ai_model_call_records (
+    id VARCHAR(100) NOT NULL,
+    owner_id VARCHAR(64) NOT NULL,
+    team_id VARCHAR(64) NOT NULL,
+    job_id VARCHAR(90) NOT NULL,
+    attempt_id VARCHAR(100) NOT NULL,
+    connection_id VARCHAR(64) NOT NULL,
+    credential_version INT NOT NULL,
+    capability_snapshot_hash VARCHAR(80) NOT NULL,
+    provider VARCHAR(40) NOT NULL,
+    base_url_fingerprint VARCHAR(80) NOT NULL,
+    model VARCHAR(120) NOT NULL,
+    prompt_version VARCHAR(120) NOT NULL,
+    schema_version VARCHAR(120) NOT NULL,
+    request_id VARCHAR(100) NOT NULL,
+    provider_request_id VARCHAR(160) NULL,
+    input_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+    output_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+    reasoning_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+    latency_ms INT UNSIGNED NOT NULL DEFAULT 0,
+    call_status ENUM('succeeded','failed') NOT NULL,
+    error_json JSON NULL,
+    cost_json JSON NOT NULL,
+    parameter_hash VARCHAR(80) NOT NULL,
+    result_hash VARCHAR(80) NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY(id),
+    UNIQUE KEY uniq_ai_model_call_attempt(attempt_id),
+    INDEX idx_ai_model_call_owner(owner_id, created_at),
+    INDEX idx_ai_model_call_job(job_id, created_at)
   )`);
   await migrateLegacyAiModelConnections(pool);
   await ensureColumn(
@@ -5971,6 +6030,8 @@ async function loadAiJobModelSnapshots(
       ? row.provider
       : "openai",
     model: row.model,
+    baseUrl: row.base_url,
+    baseUrlFingerprint: row.base_url_fingerprint,
     capabilitySnapshot: parseModelCapabilitySnapshot(
       row.capability_snapshot_json
     ),
@@ -5978,6 +6039,80 @@ async function loadAiJobModelSnapshots(
     schemaVersion: row.schema_version,
     createdAt: mysqlIsoDate(row.created_at)
   }));
+}
+
+function parsedJsonObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== "string" || !value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function loadModelCallRecords(
+  pool: MysqlQuerySource
+): Promise<ModelCallRecord[]> {
+  return (await rows<Record<string, any>>(
+    pool,
+    `SELECT * FROM ai_model_call_records
+     ORDER BY created_at, id`
+  )).map((row) => {
+    const error = parsedJsonObject(row.error_json);
+    const cost = parsedJsonObject(row.cost_json);
+    return {
+      id: row.id,
+      ownerId: row.owner_id,
+      teamId: row.team_id,
+      jobId: row.job_id,
+      attemptId: row.attempt_id,
+      connectionId: row.connection_id,
+      credentialVersion: Number(row.credential_version),
+      capabilitySnapshotHash: row.capability_snapshot_hash,
+      provider: row.provider,
+      baseUrlFingerprint: row.base_url_fingerprint,
+      model: row.model,
+      promptVersion: row.prompt_version,
+      schemaVersion: row.schema_version,
+      requestId: row.request_id,
+      providerRequestId: row.provider_request_id || null,
+      inputTokens: Number(row.input_tokens || 0),
+      outputTokens: Number(row.output_tokens || 0),
+      reasoningTokens: Number(row.reasoning_tokens || 0),
+      latencyMs: Number(row.latency_ms || 0),
+      status: row.call_status === "succeeded"
+        ? "succeeded"
+        : "failed",
+      error: Object.keys(error).length
+        ? {
+            code: String(error.code || "MODEL_RESPONSE_INVALID"),
+            status: typeof error.status === "number"
+              ? error.status
+              : null,
+            retryable: error.retryable === true,
+            retryAfterMs: typeof error.retryAfterMs === "number"
+              ? error.retryAfterMs
+              : null
+          } satisfies ModelCallErrorRecord
+        : null,
+      cost: {
+        amountMinor: Number(cost.amountMinor || 0),
+        currency: String(cost.currency || "USD"),
+        kind: cost.kind === "estimated" || cost.kind === "actual"
+          ? cost.kind
+          : "unknown"
+      },
+      parameterHash: row.parameter_hash,
+      resultHash: row.result_hash,
+      createdAt: mysqlIsoDate(row.created_at)
+    } satisfies ModelCallRecord;
+  });
 }
 
 async function loadLeadSourceConfigs(pool: mysql.Pool): Promise<LeadSourceConfig[]> {
@@ -9874,8 +10009,9 @@ async function persistAll(pool: mysql.Pool, store: CrmStore) {
       );
       await insertRows(connection, "ai_model_credential_versions", store.pendingModelCredentialVersions, (item) => [item.connectionId, item.version, item.ownerId, item.teamId, item.credentialRef, item.apiKeyEncrypted, item.keyMask, item.createdBy, mysqlDate(item.createdAt)], "(connection_id,credential_version,owner_id,team_id,credential_ref,api_key_encrypted,key_mask,created_by,created_at)");
       await insertRows(connection, "ai_model_connection_activation_events", store.pendingModelConnectionActivationEvents, (item) => [item.id, item.ownerId, item.teamId, item.actorId, item.previousConnectionId, item.connectionId, item.reason, mysqlDate(item.createdAt)], "(id,owner_id,team_id,actor_id,previous_connection_id,connection_id,reason,created_at)");
-      await insertRows(connection, "ai_job_model_snapshots", store.pendingAiJobModelSnapshots, (item) => [item.jobId, item.ownerId, item.teamId, item.connectionId, item.credentialVersion, item.provider, item.model, JSON.stringify(item.capabilitySnapshot), item.promptVersion, item.schemaVersion, mysqlDate(item.createdAt)], "(job_id,owner_id,team_id,connection_id,credential_version,provider,model,capability_snapshot_json,prompt_version,schema_version,created_at)");
+      await insertRows(connection, "ai_job_model_snapshots", store.pendingAiJobModelSnapshots, (item) => [item.jobId, item.ownerId, item.teamId, item.connectionId, item.credentialVersion, item.provider, item.model, item.baseUrl || "", item.baseUrlFingerprint || "", JSON.stringify(item.capabilitySnapshot), item.promptVersion, item.schemaVersion, mysqlDate(item.createdAt)], "(job_id,owner_id,team_id,connection_id,credential_version,provider,model,base_url,base_url_fingerprint,capability_snapshot_json,prompt_version,schema_version,created_at)");
       await insertRows(connection, "ai_model_connection_idempotency", store.pendingModelConnectionIdempotencyRecords, (item) => [item.ownerId, item.teamId, item.idempotencyKeyHash, item.requestFingerprint, item.responseStatus, JSON.stringify(item.responseBody ?? null), mysqlDate(item.createdAt)], "(owner_id,team_id,idempotency_key_hash,request_fingerprint,response_status,response_body_json,created_at)");
+      await insertRows(connection, "ai_model_call_records", store.pendingModelCallRecords, (item) => [item.id, item.ownerId, item.teamId, item.jobId, item.attemptId, item.connectionId, item.credentialVersion, item.capabilitySnapshotHash, item.provider, item.baseUrlFingerprint, item.model, item.promptVersion, item.schemaVersion, item.requestId, item.providerRequestId, item.inputTokens, item.outputTokens, item.reasoningTokens, item.latencyMs, item.status, item.error ? JSON.stringify(item.error) : null, JSON.stringify(item.cost), item.parameterHash, item.resultHash, mysqlDate(item.createdAt)], "(id,owner_id,team_id,job_id,attempt_id,connection_id,credential_version,capability_snapshot_hash,provider,base_url_fingerprint,model,prompt_version,schema_version,request_id,provider_request_id,input_tokens,output_tokens,reasoning_tokens,latency_ms,call_status,error_json,cost_json,parameter_hash,result_hash,created_at)");
 	    await replaceRows(connection, "provider_catalog", store.providerCatalog, (item) => [item.id, item.code, item.name, item.category, item.sourceLevel, item.accessMode, item.baseUrl || "", item.officialDocsUrl || "", JSON.stringify(item.capabilities), JSON.stringify(item.allowedFields), JSON.stringify(item.licensePolicy), JSON.stringify(item.defaultRatePolicy), JSON.stringify(item.retentionPolicy), item.status, item.version, item.reviewedAt ? mysqlDate(item.reviewedAt) : null, mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,code,name,category,source_level,access_mode,base_url,official_docs_url,capability_json,allowed_fields_json,license_policy_json,default_rate_policy_json,retention_policy_json,status,version,reviewed_at,created_at,updated_at)");
 	    await replaceRows(connection, "provider_connections", store.providerConnections, (item) => [item.id, item.providerId, item.scope, item.credentialRef, item.configurationEncrypted, item.status, JSON.stringify(item.quotaPolicy), JSON.stringify(item.budgetPolicy), item.lastHealthAt ? mysqlDate(item.lastHealthAt) : null, item.lastHealthStatus, item.lastErrorCode || "", item.lastHealthMessage || "", item.usage || "", item.ownerId, item.teamId, item.createdBy, mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,provider_id,scope,credential_ref,configuration_encrypted,status,quota_policy_json,budget_policy_json,last_health_at,last_health_status,last_error_code,last_health_message,usage_text,owner_id,team_id,created_by,created_at,updated_at)");
 		    await appendProviderRequestLogRows(connection, store.providerRequestLogs);

@@ -4,6 +4,7 @@ import type {
   ModelCredentialVersion,
   StoredAiJobModelSnapshot
 } from "./types.js";
+import type { ModelCallRecord } from "./call-ledger.js";
 
 export interface PendingModelAppendBatches {
   pendingModelCredentialVersions: ModelCredentialVersion[];
@@ -12,6 +13,7 @@ export interface PendingModelAppendBatches {
   pendingAiJobModelSnapshots: StoredAiJobModelSnapshot[];
   pendingModelConnectionIdempotencyRecords:
     ModelConnectionIdempotencyRecord[];
+  pendingModelCallRecords: ModelCallRecord[];
 }
 
 function removePersisted<T>(
@@ -50,6 +52,11 @@ export function clearPersistedModelAppendBatches(
     live.pendingModelConnectionIdempotencyRecords,
     persisted.pendingModelConnectionIdempotencyRecords,
     (item) => `${item.ownerId}:${item.idempotencyKeyHash}`
+  );
+  removePersisted(
+    live.pendingModelCallRecords,
+    persisted.pendingModelCallRecords,
+    (item) => item.id
   );
 }
 
