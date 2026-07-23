@@ -7,6 +7,7 @@ import type {
   DiscoveryEvidenceInput,
   FinancialValueInput,
   OutcomeEventType,
+  QualificationHardGates,
   QualificationInput
 } from "./acquisition-domain.js";
 import {
@@ -40,13 +41,24 @@ export type AcquisitionToolExecutorErrorCode =
   | "EVIDENCE_REQUIRED"
   | "STALE_DECISION"
   | "CONVERSION_FAILED"
-  | "REVIEW_TASK_NOT_APPROVED"
+  | "ELIGIBILITY_BLOCKED"
+  | "ACTION_NOT_EXECUTED"
+  | "ACTION_EXECUTION_MISMATCH"
+  | "INVALID_JUDGMENT_RESULT"
+  | "UNSUPPORTED_CURRENCY"
   | "TOOL_EXECUTION_FAILED";
 
 export class AcquisitionToolExecutorError extends Error {
   constructor(public readonly code: AcquisitionToolExecutorErrorCode) {
     super(code);
     this.name = "AcquisitionToolExecutorError";
+  }
+}
+
+export class AcquisitionToolIdempotencyConflictError extends Error {
+  constructor() {
+    super("IDEMPOTENCY_CONFLICT");
+    this.name = "AcquisitionToolIdempotencyConflictError";
   }
 }
 
@@ -134,21 +146,45 @@ export interface AcquisitionCandidateIndexEntry {
  * returned by it is re-read through AcquisitionDomainService under tenant scope.
  */
 export interface AcquisitionCandidateDirectoryPort {
-  findByDedupeKey(
-    scope: { ownerId: string; teamId: string },
-    dedupeKey: string
-  ): Promise<AcquisitionCandidateIndexEntry | null>;
-  indexCandidate(
-    entry: AcquisitionCandidateIndexEntry,
-    idempotencyKey: string
-  ): Promise<void>;
-  listCandidates(
-    scope: { ownerId: string; teamId: string },
-    input: {
-      subjectKinds?: SubjectKind[];
-      limit: number;
-    }
-  ): Promise<AcquisitionCandidateIndexEntry[]>;
+  /**
+   * Must atomically serialize ownerId/teamId/dedupeKey and invoke
+   * createCandidate at most once. A database implementation should use a
+   * unique key plus transaction/row lock; find-then-insert is not compliant.
+   */
+  upsertCandidate(input: {
+    ownerId: string;
+    teamId: string;
+    dedupeKey: string;
+    partyType: SubjectKind;
+    idempotencyKey: string;
+    createCandidate: () => Promise<AcquisitionCandidate>;
+  }): Promise<{
+    entry: AcquisitionCandidateIndexEntry;
+    created: boolean;
+  }>;
+}
+
+export interface AcquisitionPriorityCandidateRow {
+  candidateId: string;
+  qualificationGrade: Grade | null;
+  qualificationScore: number | null;
+  financialScore: number | null;
+  updatedAt: string;
+}
+
+/**
+ * Filtering, joining, and sorting happen in storage before LIMIT. This avoids
+ * fetching an arbitrary window and ranking it in memory.
+ */
+export interface AcquisitionPriorityCandidatePort {
+  listPriorityCandidates(input: {
+    ownerId: string;
+    teamId: string;
+    subjectKinds?: SubjectKind[];
+    minimumGrade?: Grade;
+    limit: number;
+    sort: "qualification_and_financial_desc";
+  }): Promise<AcquisitionPriorityCandidateRow[]>;
 }
 
 export type AcquisitionReviewTaskStatus =
@@ -192,6 +228,52 @@ export interface AcquisitionReviewTaskPort {
   ): Promise<AcquisitionReviewTask | null>;
 }
 
+export interface AcquisitionActionExecutionReceipt {
+  executionId: string;
+  ownerId: string;
+  teamId: string;
+  candidateId: string;
+  reviewTaskId: string;
+  proposedAction: AcquisitionReviewTask["proposedAction"];
+  executedAt: string;
+  credential: {
+    issuer: string;
+    credentialId: string;
+    proofHash: string;
+  };
+}
+
+/**
+ * This read-only port verifies execution credentials produced by the separate
+ * human/action worker. The acquisition agent never receives an execution port.
+ */
+export interface AcquisitionActionExecutionPort {
+  getVerifiedExecution(
+    scope: { ownerId: string; teamId: string },
+    reviewTaskId: string
+  ): Promise<AcquisitionActionExecutionReceipt | null>;
+}
+
+/**
+ * Durable, atomic result ledger for every tool, including reads. Implementors
+ * must key by owner/team/tool/idempotencyKey, compare requestHash, serialize
+ * concurrent execution, and persist only successful results.
+ */
+export interface AcquisitionToolResultLedgerPort {
+  executeOnce<T>(
+    input: {
+      ownerId: string;
+      teamId: string;
+      actorId: string;
+      sessionId: string;
+      toolName: string;
+      idempotencyKey: string;
+      requestHash: string;
+    },
+    operation: () => Promise<T>
+  ): Promise<T>;
+}
+
 export interface AcquisitionResearchResult {
   summary: string;
   findings: Array<{
@@ -200,7 +282,6 @@ export interface AcquisitionResearchResult {
     evidenceIds: string[];
     confidence: number | null;
   }>;
-  newEvidence?: DiscoveryEvidenceInput[];
 }
 
 export interface AcquisitionConnectionDraft {
@@ -263,9 +344,13 @@ export interface ProductionAcquisitionAgentToolExecutorOptions {
   domain: AcquisitionDomainService;
   search: SearchPublicSourcesPort;
   candidateDirectory: AcquisitionCandidateDirectoryPort;
+  priorityCandidates: AcquisitionPriorityCandidatePort;
   reviewTasks: AcquisitionReviewTaskPort;
+  actionExecutions: AcquisitionActionExecutionPort;
+  toolResults: AcquisitionToolResultLedgerPort;
   judgments?: AcquisitionJudgmentPort;
   now?: () => string;
+  maxEvidenceAgeDays?: number;
 }
 
 const httpUrl = z.string().url().refine((value) => {
@@ -355,11 +440,12 @@ const schemas = {
       "do_not_contact"
     ]),
     occurredAt: z.string().datetime({ offset: true }),
-    amount: z.number().finite().nonnegative().max(10_000_000_000).optional(),
+    amountMinor: z.number().int().nonnegative()
+      .max(Number.MAX_SAFE_INTEGER).optional(),
     currency: z.string().regex(/^[A-Z]{3}$/u).optional(),
     notes: z.string().max(2_000).optional()
   }).strict().superRefine((value, context) => {
-    if ((value.amount === undefined) !== (value.currency === undefined)) {
+    if ((value.amountMinor === undefined) !== (value.currency === undefined)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         message: "amount and currency must be provided together"
@@ -397,27 +483,77 @@ const individualSubjectSchema = z.object({
   individualPartyId: z.string().trim().min(1).max(100).nullable().optional()
 }).strict();
 
-const searchResponseSchema = z.object({
+const searchResultSchema = z.object({
+  sourceUrl: httpUrl,
+  title: z.string().trim().max(500),
+  snippet: z.string().trim().max(4_000),
+  publishedAt: z.string().datetime({ offset: true }).nullable(),
+  locale: z.string().trim().min(1).max(30),
+  rawArtifactHash: z.string().regex(/^sha256:[a-f0-9]{64}$/iu),
+  accessStatus: z.enum([
+    "indexed_summary",
+    "public_content",
+    "access_restricted"
+  ]),
+  subject: z.discriminatedUnion("kind", [
+    organizationSubjectSchema,
+    individualSubjectSchema
+  ])
+}).strict().refine(
+  (value) => Boolean(value.title || value.snippet),
+  "title or snippet is required"
+);
+
+const searchResponseEnvelopeSchema = z.object({
   providerConnectionId: z.string().trim().min(1).max(255),
   provider: z.string().trim().min(1).max(100),
   requestId: z.string().trim().min(1).max(500).nullable(),
-  results: z.array(z.object({
-    sourceUrl: httpUrl,
-    title: z.string().trim().max(500),
-    snippet: z.string().trim().max(4_000),
-    publishedAt: z.string().datetime({ offset: true }).nullable(),
-    locale: z.string().trim().min(1).max(30),
-    rawArtifactHash: z.string().regex(/^sha256:[a-f0-9]{64}$/iu),
-    accessStatus: z.enum([
-      "indexed_summary",
-      "public_content",
-      "access_restricted"
-    ]),
-    subject: z.discriminatedUnion("kind", [
-      organizationSubjectSchema,
-      individualSubjectSchema
-    ])
+  results: z.array(z.unknown()).max(100)
+}).strict();
+
+const researchJudgmentSchema = z.object({
+  summary: z.string().trim().min(1).max(8_000),
+  findings: z.array(z.object({
+    label: z.string().trim().min(1).max(200),
+    content: z.string().trim().min(1).max(4_000),
+    evidenceIds: z.array(z.string().trim().min(1).max(100)).max(100),
+    confidence: z.number().min(0).max(1).nullable()
   }).strict()).max(100)
+}).strict();
+
+const actionExecutionReceiptSchema = z.object({
+  executionId: z.string().trim().min(1).max(255),
+  ownerId: z.string().trim().min(1).max(100),
+  teamId: z.string().trim().min(1).max(100),
+  candidateId: z.string().trim().min(1).max(255),
+  reviewTaskId: z.string().trim().min(1).max(255),
+  proposedAction: z.enum([
+    "public_reply",
+    "private_domain_invitation",
+    "phone_call",
+    "email",
+    "meeting",
+    "convert"
+  ]),
+  executedAt: z.string().datetime({ offset: true }),
+  credential: z.object({
+    issuer: z.string().trim().min(1).max(255),
+    credentialId: z.string().trim().min(1).max(255),
+    proofHash: z.string().regex(/^sha256:[a-f0-9]{64}$/iu)
+  }).strict()
+}).strict();
+
+const connectionDraftSchema = z.object({
+  channel: z.enum([
+    "public_reply",
+    "enterprise_wechat",
+    "phone",
+    "email",
+    "referral",
+    "meeting"
+  ]),
+  draft: z.string().trim().min(1).max(8_000),
+  rationale: z.string().trim().min(1).max(2_000)
 }).strict();
 
 function hash(value: string) {
@@ -485,15 +621,34 @@ function publicRecord<T extends Record<string, unknown>>(value: T) {
   return result;
 }
 
-function candidateDedupeKey(subject: SearchPublicSourceSubject) {
+export function normalizeAcquisitionRegion(value: string | null) {
+  if (value === null) return null;
+  const normalized = value
+    .normalize("NFKC")
+    .replace(/[\s,，、/]+/gu, " ")
+    .trim();
+  return normalized || null;
+}
+
+function candidateDedupeKey(
+  provider: string,
+  subject: SearchPublicSourceSubject
+) {
+  const platform = subject.kind === "individual"
+    ? subject.sourcePlatform.trim().toLowerCase()
+    : provider.trim().toLowerCase();
   const naturalKey = subject.kind === "organization"
     ? subject.creditCode?.trim().toLowerCase()
       || subject.domain?.trim().toLowerCase()
       || subject.organizationId?.trim().toLowerCase()
-      || `${subject.name.trim().toLowerCase()}\u0000${subject.region ?? ""}`
+      || `${subject.name.trim().toLowerCase()}\u0000${
+        normalizeAcquisitionRegion(subject.region) ?? ""
+      }`
     : subject.publicActorKey.trim().toLowerCase()
       || subject.publicProfileUrl.trim().toLowerCase();
-  return `${subject.kind}:sha256:${hash(naturalKey)}`;
+  return `${
+    provider.trim().toLowerCase()
+  }:${platform}:${subject.kind}:sha256:${hash(naturalKey)}`;
 }
 
 function evidenceInput(
@@ -565,10 +720,77 @@ function buyingStageScore(candidate: AcquisitionCandidate) {
   }[candidate.profile.buyingStage];
 }
 
+function evidenceSourceUrl(evidence: DiscoveryEvidence) {
+  return evidence.provenance.kind === "search_result"
+    || evidence.provenance.kind === "user_submitted_url"
+    ? evidence.provenance.sourceUrl
+    : null;
+}
+
+function deterministicHardGates(
+  candidate: AcquisitionCandidate,
+  evidence: DiscoveryEvidence[],
+  now: string,
+  maxEvidenceAgeDays: number
+): QualificationHardGates {
+  const negativeSignals = candidate.profile.kind === "individual"
+    ? candidate.profile.negativeSignals
+    : [];
+  const rejectionPattern = /(?:不需要|别联系|不要联系|拒绝联系|请勿联系|勿扰)/u;
+  const explicitRejection = negativeSignals.some((value) =>
+    rejectionPattern.test(value)
+  ) || evidence.some((item) => rejectionPattern.test(item.sourceSnippet));
+  const nowMs = new Date(now).getTime();
+  const maxAgeMs = maxEvidenceAgeDays * 86_400_000;
+  const evidenceFresh = evidence.length > 0 && evidence.every((item) => {
+    const sourceTime = new Date(item.publishedAt ?? item.fetchedAt).getTime();
+    return Number.isFinite(sourceTime)
+      && Number.isFinite(nowMs)
+      && nowMs >= sourceTime
+      && nowMs - sourceTime <= maxAgeMs;
+  });
+  const schemaValid = evidence.length > 0 && evidence.every((item) => {
+    const sourceUrl = evidenceSourceUrl(item);
+    if (!sourceUrl
+      || !/^sha256:[a-f0-9]{64}$/iu.test(item.rawArtifactHash)
+      || !/^sha256:[a-f0-9]{64}$/iu.test(item.contentHash)) {
+      return false;
+    }
+    try {
+      return ["http:", "https:"].includes(new URL(sourceUrl).protocol);
+    } catch {
+      return false;
+    }
+  });
+  return {
+    hasOriginalSource: evidence.some((item) => Boolean(evidenceSourceUrl(item))),
+    identityResolved: candidate.profile.kind === "organization"
+      && candidate.partyRef.partyType === "organization"
+      ? Boolean(candidate.profile.name && candidate.partyRef.organizationId)
+      : candidate.profile.kind === "individual"
+        && candidate.partyRef.partyType === "individual"
+        ? Boolean(
+            candidate.profile.publicActorKey
+            && candidate.profile.publicProfileUrl
+            && candidate.partyRef.individualPartyId
+          )
+        : false,
+    notDoNotContact: candidate.status !== "do_not_contact",
+    noExplicitRejection: !explicitRejection,
+    publicDataOnly: evidence.every((item) =>
+      item.accessStatus !== "user_supplied"
+      && item.provenance.kind !== "import_artifact_row"
+    ),
+    evidenceFresh,
+    schemaValid
+  };
+}
+
 function conservativeQualification(
   candidate: AcquisitionCandidate,
   evidence: DiscoveryEvidence[],
-  policyVersion: string
+  policyVersion: string,
+  hardGates: QualificationHardGates
 ): QualificationInput {
   const negativeSignals = candidate.profile.kind === "individual"
     ? candidate.profile.negativeSignals
@@ -599,20 +821,7 @@ function conservativeQualification(
       negativeSignalRisk: explicitRejection ? 100 : 10,
       contactRisk: 35
     },
-    hardGates: {
-      hasOriginalSource: evidence.some((item) =>
-        item.provenance.kind === "search_result"
-        && Boolean(item.provenance.sourceUrl)
-      ),
-      identityResolved: true,
-      notDoNotContact: candidate.status !== "do_not_contact",
-      noExplicitRejection: !explicitRejection,
-      publicDataOnly: evidence.every((item) =>
-        item.accessStatus !== "user_supplied"
-      ),
-      evidenceFresh: evidence.length > 0,
-      schemaValid: true
-    },
+    hardGates,
     evidenceExcerpts: Object.fromEntries(
       evidence.map((item) => [item.id, item.sourceSnippet.slice(0, 500)])
     ),
@@ -710,22 +919,85 @@ function mapOutcome(
   return outcome;
 }
 
+function actionSupportsOutcome(
+  action: AcquisitionReviewTask["proposedAction"],
+  outcome:
+    | "contacted"
+    | "replied"
+    | "qualified"
+    | "converted"
+    | "won"
+    | "lost"
+    | "do_not_contact"
+) {
+  const contactActions = new Set<AcquisitionReviewTask["proposedAction"]>([
+    "public_reply",
+    "private_domain_invitation",
+    "phone_call",
+    "email",
+    "meeting"
+  ]);
+  if (["contacted", "replied", "qualified", "do_not_contact"].includes(outcome)) {
+    return contactActions.has(action);
+  }
+  if (outcome === "converted") {
+    return action === "private_domain_invitation" || action === "convert";
+  }
+  return action === "convert";
+}
+
+const ISO_4217_EXPONENT: Readonly<Record<string, number>> = Object.freeze({
+  CNY: 2,
+  USD: 2,
+  EUR: 2,
+  GBP: 2,
+  HKD: 2,
+  MOP: 2,
+  SGD: 2,
+  AUD: 2,
+  CAD: 2,
+  CHF: 2,
+  JPY: 0,
+  KRW: 0,
+  VND: 0,
+  KWD: 3,
+  BHD: 3,
+  OMR: 3
+});
+
+export function iso4217CurrencyExponent(currency: string) {
+  return ISO_4217_EXPONENT[currency.toUpperCase()] ?? null;
+}
+
 export class ProductionAcquisitionAgentToolExecutor
 implements AcquisitionAgentToolExecutor {
   private readonly domain: AcquisitionDomainService;
   private readonly search: SearchPublicSourcesPort;
   private readonly directory: AcquisitionCandidateDirectoryPort;
+  private readonly priorityCandidates: AcquisitionPriorityCandidatePort;
   private readonly reviewTasks: AcquisitionReviewTaskPort;
+  private readonly actionExecutions: AcquisitionActionExecutionPort;
+  private readonly toolResults: AcquisitionToolResultLedgerPort;
   private readonly judgments?: AcquisitionJudgmentPort;
   private readonly now: () => string;
+  private readonly maxEvidenceAgeDays: number;
 
   constructor(options: ProductionAcquisitionAgentToolExecutorOptions) {
     this.domain = options.domain;
     this.search = options.search;
     this.directory = options.candidateDirectory;
+    this.priorityCandidates = options.priorityCandidates;
     this.reviewTasks = options.reviewTasks;
+    this.actionExecutions = options.actionExecutions;
+    this.toolResults = options.toolResults;
     this.judgments = options.judgments;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.maxEvidenceAgeDays = options.maxEvidenceAgeDays ?? 90;
+    if (!Number.isInteger(this.maxEvidenceAgeDays)
+      || this.maxEvidenceAgeDays < 1
+      || this.maxEvidenceAgeDays > 3_650) {
+      throw new TypeError("maxEvidenceAgeDays must be an integer from 1 to 3650");
+    }
   }
 
   async execute(input: AcquisitionToolExecutionInput): Promise<unknown> {
@@ -736,54 +1008,20 @@ implements AcquisitionAgentToolExecutor {
         throw toolError("UNKNOWN_TOOL");
       }
       const payload = this.parsePayload(input.toolName, input.payload);
-      switch (input.toolName) {
-        case "search_public_sources":
-          return await this.searchPublicSources(input, payload as z.infer<
-            typeof schemas.search_public_sources
-          >);
-        case "get_candidate_evidence":
-          return await this.getCandidateEvidence(input, payload as z.infer<
-            typeof schemas.get_candidate_evidence
-          >);
-        case "research_candidate":
-          return await this.researchCandidate(input, payload as z.infer<
-            typeof schemas.research_candidate
-          >);
-        case "qualify_candidate":
-          return await this.qualifyCandidate(input, payload as z.infer<
-            typeof schemas.qualify_candidate
-          >);
-        case "build_battle_card":
-          return await this.buildBattleCard(input, payload as z.infer<
-            typeof schemas.build_battle_card
-          >);
-        case "estimate_financial_value":
-          return await this.estimateFinancialValue(input, payload as z.infer<
-            typeof schemas.estimate_financial_value
-          >);
-        case "draft_connection_strategy":
-          return await this.draftConnectionStrategy(
-            input,
-            payload as z.infer<typeof schemas.draft_connection_strategy>
-          );
-        case "list_priority_candidates":
-          return await this.listPriorityCandidates(
-            input,
-            payload as z.infer<typeof schemas.list_priority_candidates>
-          );
-        case "create_review_task":
-          return await this.createReviewTask(input, payload as z.infer<
-            typeof schemas.create_review_task
-          >);
-        case "record_outcome":
-          return await this.recordOutcome(input, payload as z.infer<
-            typeof schemas.record_outcome
-          >);
-        default:
-          throw toolError("UNKNOWN_TOOL");
-      }
+      return await this.toolResults.executeOnce({
+        ...input.identity,
+        toolName: input.toolName,
+        idempotencyKey: input.idempotencyKey,
+        requestHash: `sha256:${hashJson({
+          toolName: input.toolName,
+          payload
+        })}`
+      }, () => this.dispatch(input, payload));
     } catch (error) {
       if (error instanceof AcquisitionToolExecutorError) throw error;
+      if (error instanceof AcquisitionToolIdempotencyConflictError) {
+        throw toolError("IDEMPOTENCY_CONFLICT");
+      }
       if (isAbort(error) || input.signal?.aborted) throw abortError();
       if (error instanceof AcquisitionDomainError) {
         throw toolError(domainErrorCode(error));
@@ -792,17 +1030,69 @@ implements AcquisitionAgentToolExecutor {
     }
   }
 
+  private async dispatch(
+    input: AcquisitionToolExecutionInput,
+    payload: unknown
+  ): Promise<unknown> {
+    switch (input.toolName) {
+      case "search_public_sources":
+        return this.searchPublicSources(input, payload as z.infer<
+          typeof schemas.search_public_sources
+        >);
+      case "get_candidate_evidence":
+        return this.getCandidateEvidence(input, payload as z.infer<
+          typeof schemas.get_candidate_evidence
+        >);
+      case "research_candidate":
+        return this.researchCandidate(input, payload as z.infer<
+          typeof schemas.research_candidate
+        >);
+      case "qualify_candidate":
+        return this.qualifyCandidate(input, payload as z.infer<
+          typeof schemas.qualify_candidate
+        >);
+      case "build_battle_card":
+        return this.buildBattleCard(input, payload as z.infer<
+          typeof schemas.build_battle_card
+        >);
+      case "estimate_financial_value":
+        return this.estimateFinancialValue(input, payload as z.infer<
+          typeof schemas.estimate_financial_value
+        >);
+      case "draft_connection_strategy":
+        return this.draftConnectionStrategy(
+          input,
+          payload as z.infer<typeof schemas.draft_connection_strategy>
+        );
+      case "list_priority_candidates":
+        return this.listPriorityCandidates(
+          input,
+          payload as z.infer<typeof schemas.list_priority_candidates>
+        );
+      case "create_review_task":
+        return this.createReviewTask(input, payload as z.infer<
+          typeof schemas.create_review_task
+        >);
+      case "record_outcome":
+        return this.recordOutcome(input, payload as z.infer<
+          typeof schemas.record_outcome
+        >);
+      default:
+        throw toolError("UNKNOWN_TOOL");
+    }
+  }
+
   private validateIdentity(input: AcquisitionToolExecutionInput) {
-    const values = [
-      input.identity.ownerId,
-      input.identity.teamId,
-      input.identity.actorId,
-      input.identity.sessionId,
-      input.toolCallId,
-      input.idempotencyKey
+    const values: Array<[unknown, number]> = [
+      [input.identity.ownerId, 100],
+      [input.identity.teamId, 100],
+      [input.identity.actorId, 100],
+      [input.identity.sessionId, 200],
+      [input.toolCallId, 500],
+      [input.idempotencyKey, 120]
     ];
-    if (values.some((value) =>
-      typeof value !== "string" || !value.trim() || value.length > 500
+    if (values.some(([value, maximum]) =>
+      typeof value !== "string" || !value.trim() || value.length > maximum
     )) {
       throw toolError("INVALID_IDENTITY");
     }
@@ -822,6 +1112,66 @@ implements AcquisitionAgentToolExecutor {
       teamId: input.identity.teamId,
       actorId: input.identity.actorId
     };
+  }
+
+  private async loadEligibleCandidate(
+    input: AcquisitionToolExecutionInput,
+    candidateId: string,
+    operation:
+      | "research"
+      | "qualify"
+      | "battle_card"
+      | "financial_value"
+      | "connection_strategy"
+      | "review_task"
+  ) {
+    const scope = this.scope(input);
+    const candidate = await this.domain.getCandidate(scope, candidateId);
+    const evidence = await this.evidenceForCandidate(scope, candidate);
+    const allowedStatuses: Record<typeof operation, Set<string>> = {
+      research: new Set([
+        "normalized",
+        "qualified",
+        "pending_review",
+        "approved",
+        "needs_research"
+      ]),
+      qualify: new Set([
+        "normalized",
+        "qualified",
+        "pending_review",
+        "approved"
+      ]),
+      battle_card: new Set(["pending_review", "approved"]),
+      financial_value: new Set(["pending_review", "approved"]),
+      connection_strategy: new Set(["pending_review", "approved"]),
+      review_task: new Set(["approved"])
+    };
+    if (!allowedStatuses[operation].has(candidate.status)
+      || evidence.length === 0) {
+      throw toolError("ELIGIBILITY_BLOCKED");
+    }
+    const hardGates = deterministicHardGates(
+      candidate,
+      evidence,
+      this.now(),
+      this.maxEvidenceAgeDays
+    );
+    const requiresPassedGates = operation !== "qualify";
+    if (requiresPassedGates
+      && Object.values(hardGates).some((value) => !value)) {
+      throw toolError("ELIGIBILITY_BLOCKED");
+    }
+    if (["battle_card", "financial_value", "connection_strategy", "review_task"]
+      .includes(operation)
+      && !candidate.latestDecisionId) {
+      throw toolError("ELIGIBILITY_BLOCKED");
+    }
+    if (operation === "review_task"
+      && candidate.approvedDecisionVersion !== candidate.latestDecisionVersion) {
+      throw toolError("ELIGIBILITY_BLOCKED");
+    }
+    return { scope, candidate, evidence, hardGates };
   }
 
   private async searchPublicSources(
@@ -844,7 +1194,7 @@ implements AcquisitionAgentToolExecutor {
     );
     assertNotAborted(input.signal);
 
-    const successes: SearchPublicSourcesResponse[] = [];
+    const successes: Array<z.infer<typeof searchResponseEnvelopeSchema>> = [];
     const providerFailures: Array<{
       providerConnectionId: string;
       errorCode: "SEARCH_PROVIDER_FAILED" | "SEARCH_PROVIDER_INVALID_RESPONSE";
@@ -860,7 +1210,7 @@ implements AcquisitionAgentToolExecutor {
         });
         continue;
       }
-      const parsed = searchResponseSchema.safeParse(item.value);
+      const parsed = searchResponseEnvelopeSchema.safeParse(item.value);
       if (!parsed.success
         || parsed.data.providerConnectionId !== request.providerConnectionId) {
         providerFailures.push({
@@ -878,107 +1228,146 @@ implements AcquisitionAgentToolExecutor {
     const scope = this.scope(input);
     const evidence: DiscoveryEvidence[] = [];
     const candidates = new Map<string, AcquisitionCandidate>();
+    const ingestFailures: Array<{
+      providerConnectionId: string;
+      resultIndex: number;
+      errorCode:
+        | "SEARCH_RESULT_INVALID"
+        | "EVIDENCE_INGEST_FAILED"
+        | "CANDIDATE_UPSERT_FAILED";
+    }> = [];
     let acceptedResults = 0;
     for (const response of successes) {
       for (let index = 0; index < response.results.length; index += 1) {
         if (acceptedResults >= payload.maxResults) break;
         assertNotAborted(input.signal);
-        const result = response.results[index]!;
+        const parsedResult = searchResultSchema.safeParse(
+          response.results[index]
+        );
+        if (!parsedResult.success) {
+          ingestFailures.push({
+            providerConnectionId: response.providerConnectionId,
+            resultIndex: index,
+            errorCode: "SEARCH_RESULT_INVALID"
+          });
+          continue;
+        }
+        const result = parsedResult.data;
         if (!payload.subjectKinds.includes(result.subject.kind)) continue;
-        const dedupeKey = candidateDedupeKey(result.subject);
+        const dedupeKey = candidateDedupeKey(response.provider, result.subject);
         const rawEvidence = evidenceInput(
-          response,
+          response as SearchPublicSourcesResponse,
           result,
           payload.query,
           index + 1
         );
-        const createdEvidence = await this.domain.appendEvidence(
-          scope,
-          rawEvidence,
-          childIdempotencyKey(input.idempotencyKey, "evidence", {
+        let createdEvidence: DiscoveryEvidence;
+        try {
+          createdEvidence = await this.domain.appendEvidence(
+            scope,
+            rawEvidence,
+            childIdempotencyKey(input.idempotencyKey, "evidence", {
+              providerConnectionId: response.providerConnectionId,
+              sourceUrl: result.sourceUrl,
+              targetType: rawEvidence.targetType,
+              dedupeKey
+            })
+          );
+        } catch (error) {
+          if (input.signal?.aborted || isAbort(error)) throw abortError();
+          ingestFailures.push({
             providerConnectionId: response.providerConnectionId,
-            sourceUrl: result.sourceUrl,
-            targetType: rawEvidence.targetType,
-            dedupeKey
-          })
-        );
+            resultIndex: index,
+            errorCode: "EVIDENCE_INGEST_FAILED"
+          });
+          continue;
+        }
         evidence.push(createdEvidence);
 
-        let entry = await this.directory.findByDedupeKey(scope, dedupeKey);
         let candidate: AcquisitionCandidate;
-        if (entry) {
-          candidate = await this.domain.getCandidate(scope, entry.candidateId);
-          candidate = await this.domain.attachEvidenceToCandidate(
-            scope,
-            candidate.id,
-            createdEvidence.id,
-            childIdempotencyKey(input.idempotencyKey, "attach-evidence", {
-              candidateId: candidate.id,
-              evidenceId: createdEvidence.id
-            })
-          );
-        } else if (result.subject.kind === "organization") {
-          const stable = hash(dedupeKey).slice(0, 24);
-          candidate = await this.domain.createOrganizationCandidate(
-            scope,
-            {
-              name: result.subject.name,
-              domain: result.subject.domain,
-              region: result.subject.region,
-              creditCode: result.subject.creditCode,
-              organizationId: result.subject.organizationId
-                || `public-org-${stable}`,
-              tenantProspectId: `prospect-${stable}`,
-              evidenceIds: [createdEvidence.id]
-            },
-            childIdempotencyKey(input.idempotencyKey, "candidate", {
-              dedupeKey,
-              partyType: "organization"
-            })
-          );
-        } else {
-          const stable = hash(dedupeKey).slice(0, 24);
-          candidate = await this.domain.createIndividualCandidate(
-            scope,
-            {
-              publicActorKey: result.subject.publicActorKey,
-              publicDisplayName: result.subject.publicDisplayName,
-              publicProfileUrl: result.subject.publicProfileUrl,
-              sourcePlatform: result.subject.sourcePlatform,
-              demandSignalId: `signal-${hash(
-                `${dedupeKey}\u0000${result.sourceUrl}`
-              ).slice(0, 24)}`,
-              demandCategory: result.subject.demandCategory,
-              demandSummary: result.subject.demandSummary,
-              locationHint: result.subject.locationHint,
-              buyingStage: result.subject.buyingStage,
-              negativeSignals: [...result.subject.negativeSignals],
-              individualPartyId: result.subject.individualPartyId
-                || `public-individual-${stable}`,
-              evidenceIds: [createdEvidence.id]
-            },
-            childIdempotencyKey(input.idempotencyKey, "candidate", {
-              dedupeKey,
-              partyType: "individual"
-            })
-          );
-        }
-        if (!entry) {
-          entry = {
+        try {
+          const upsert = await this.directory.upsertCandidate({
             ownerId: scope.ownerId,
             teamId: scope.teamId,
-            candidateId: candidate.id,
             dedupeKey,
-            partyType: candidate.partyType,
-            indexedAt: this.now()
-          };
-          await this.directory.indexCandidate(
-            entry,
-            childIdempotencyKey(input.idempotencyKey, "candidate-index", {
-              dedupeKey,
-              candidateId: candidate.id
-            })
+            partyType: result.subject.kind,
+            idempotencyKey: childIdempotencyKey(
+              input.idempotencyKey,
+              "candidate-upsert",
+              { dedupeKey }
+            ),
+            createCandidate: async () => {
+              const stable = hash(dedupeKey).slice(0, 24);
+              if (result.subject.kind === "organization") {
+                return this.domain.createOrganizationCandidate(
+                  scope,
+                  {
+                    name: result.subject.name,
+                    domain: result.subject.domain,
+                    region: normalizeAcquisitionRegion(result.subject.region),
+                    creditCode: result.subject.creditCode,
+                    organizationId: result.subject.organizationId
+                      || `public-org-${stable}`,
+                    tenantProspectId: `prospect-${stable}`,
+                    evidenceIds: [createdEvidence.id]
+                  },
+                  childIdempotencyKey(input.idempotencyKey, "candidate", {
+                    dedupeKey,
+                    partyType: "organization"
+                  })
+                );
+              }
+              return this.domain.createIndividualCandidate(
+                scope,
+                {
+                  publicActorKey: result.subject.publicActorKey,
+                  publicDisplayName: result.subject.publicDisplayName,
+                  publicProfileUrl: result.subject.publicProfileUrl,
+                  sourcePlatform: result.subject.sourcePlatform,
+                  demandSignalId: `signal-${hash(
+                    `${dedupeKey}\u0000${result.sourceUrl}`
+                  ).slice(0, 24)}`,
+                  demandCategory: result.subject.demandCategory,
+                  demandSummary: result.subject.demandSummary,
+                  locationHint: normalizeAcquisitionRegion(
+                    result.subject.locationHint
+                  ) ?? "",
+                  buyingStage: result.subject.buyingStage,
+                  negativeSignals: [...result.subject.negativeSignals],
+                  individualPartyId: result.subject.individualPartyId
+                    || `public-individual-${stable}`,
+                  evidenceIds: [createdEvidence.id]
+                },
+                childIdempotencyKey(input.idempotencyKey, "candidate", {
+                  dedupeKey,
+                  partyType: "individual"
+                })
+              );
+            }
+          });
+          candidate = await this.domain.getCandidate(
+            scope,
+            upsert.entry.candidateId
           );
+          if (!upsert.created) {
+            candidate = await this.domain.attachEvidenceToCandidate(
+              scope,
+              candidate.id,
+              createdEvidence.id,
+              childIdempotencyKey(input.idempotencyKey, "attach-evidence", {
+                candidateId: candidate.id,
+                evidenceId: createdEvidence.id
+              })
+            );
+          }
+        } catch (error) {
+          if (input.signal?.aborted || isAbort(error)) throw abortError();
+          ingestFailures.push({
+            providerConnectionId: response.providerConnectionId,
+            resultIndex: index,
+            errorCode: "CANDIDATE_UPSERT_FAILED"
+          });
+          continue;
         }
         candidates.set(candidate.id, candidate);
         acceptedResults += 1;
@@ -986,7 +1375,9 @@ implements AcquisitionAgentToolExecutor {
       if (acceptedResults >= payload.maxResults) break;
     }
     return {
-      status: providerFailures.length > 0 ? "partial" : "succeeded",
+      status: providerFailures.length > 0 || ingestFailures.length > 0
+        ? "partial"
+        : "succeeded",
       query: payload.query,
       providers: successes.map((item) => ({
         providerConnectionId: item.providerConnectionId,
@@ -995,6 +1386,7 @@ implements AcquisitionAgentToolExecutor {
         status: "succeeded"
       })),
       providerFailures,
+      ingestFailures,
       evidence: evidence.map(projectEvidence),
       candidates: [...candidates.values()].map(projectCandidate),
       acceptedResultCount: acceptedResults,
@@ -1030,57 +1422,52 @@ implements AcquisitionAgentToolExecutor {
     input: AcquisitionToolExecutionInput,
     payload: z.infer<typeof schemas.research_candidate>
   ) {
-    const scope = this.scope(input);
-    const candidate = await this.domain.getCandidate(scope, payload.candidateId);
-    const before = await this.evidenceForCandidate(scope, candidate);
-    const result = this.judgments?.research
+    const {
+      scope,
+      candidate,
+      evidence
+    } = await this.loadEligibleCandidate(
+      input,
+      payload.candidateId,
+      "research"
+    );
+    const rawResult = this.judgments?.research
       ? await this.judgments.research({
           scope,
           sessionId: input.identity.sessionId,
           candidate,
-          evidence: before,
+          evidence,
           depth: payload.depth,
           researchQuestions: payload.researchQuestions ?? [],
           signal: input.signal
         })
       : {
           summary: "未配置研究判断端口，仅整理现有公开证据，不生成未经证实的事实。",
-          findings: before.map((item) => ({
+          findings: evidence.map((item) => ({
             label: item.sourceTitle || "公开来源",
             content: item.sourceSnippet,
             evidenceIds: [item.id],
             confidence: 1
-          })),
-          newEvidence: []
+          }))
         };
     assertNotAborted(input.signal);
-    const newEvidence: DiscoveryEvidence[] = [];
-    for (const raw of result.newEvidence ?? []) {
-      assertNotAborted(input.signal);
-      const appended = await this.domain.appendEvidence(
-        scope,
-        raw,
-        childIdempotencyKey(input.idempotencyKey, "research-evidence", raw)
-      );
-      await this.domain.attachEvidenceToCandidate(
-        scope,
-        candidate.id,
-        appended.id,
-        childIdempotencyKey(input.idempotencyKey, "research-attach", {
-          candidateId: candidate.id,
-          evidenceId: appended.id
-        })
-      );
-      newEvidence.push(appended);
+    const parsed = researchJudgmentSchema.safeParse(rawResult);
+    if (!parsed.success) throw toolError("INVALID_JUDGMENT_RESULT");
+    const allowedEvidenceIds = new Set(evidence.map((item) => item.id));
+    if (parsed.data.findings.some((finding) =>
+      finding.evidenceIds.some((id) => !allowedEvidenceIds.has(id))
+    )) {
+      throw toolError("INVALID_JUDGMENT_RESULT");
     }
     return {
       candidateId: candidate.id,
       depth: payload.depth,
       mode: this.judgments?.research ? "judgment_port" : "conservative_rules",
-      summary: result.summary,
-      findings: result.findings,
-      newEvidence: newEvidence.map(projectEvidence),
-      newEvidenceCount: newEvidence.length,
+      summary: parsed.data.summary,
+      findings: parsed.data.findings,
+      newEvidence: [],
+      newEvidenceCount: 0,
+      formalEvidenceCreationAllowed: false,
       requiresHumanVerification: true,
       outreachExecuted: false
     };
@@ -1090,10 +1477,17 @@ implements AcquisitionAgentToolExecutor {
     input: AcquisitionToolExecutionInput,
     payload: z.infer<typeof schemas.qualify_candidate>
   ) {
-    const scope = this.scope(input);
-    const candidate = await this.domain.getCandidate(scope, payload.candidateId);
-    const evidence = await this.evidenceForCandidate(scope, candidate);
-    const decision = this.judgments?.qualify
+    const {
+      scope,
+      candidate,
+      evidence,
+      hardGates
+    } = await this.loadEligibleCandidate(
+      input,
+      payload.candidateId,
+      "qualify"
+    );
+    const rawDecision = this.judgments?.qualify
       ? await this.judgments.qualify({
           scope,
           sessionId: input.identity.sessionId,
@@ -1106,11 +1500,24 @@ implements AcquisitionAgentToolExecutor {
           qualification: conservativeQualification(
             candidate,
             evidence,
-            payload.policyVersion
+            payload.policyVersion,
+            hardGates
           ),
           financial: defaultFinancial()
         };
     assertNotAborted(input.signal);
+    const decision = {
+      qualification: {
+        ...rawDecision.qualification,
+        ruleVersion: payload.policyVersion,
+        hardGates,
+        reasons: [
+          ...rawDecision.qualification.reasons,
+          "确定性硬门禁由系统基于当前候选与正式证据重算，模型输入不能覆盖。"
+        ]
+      },
+      financial: rawDecision.financial
+    };
     const result = await this.domain.qualifyCandidate(
       scope,
       candidate.id,
@@ -1135,9 +1542,15 @@ implements AcquisitionAgentToolExecutor {
     input: AcquisitionToolExecutionInput,
     payload: z.infer<typeof schemas.build_battle_card>
   ) {
-    const scope = this.scope(input);
-    const candidate = await this.domain.getCandidate(scope, payload.candidateId);
-    const evidence = await this.evidenceForCandidate(scope, candidate);
+    const {
+      scope,
+      candidate,
+      evidence
+    } = await this.loadEligibleCandidate(
+      input,
+      payload.candidateId,
+      "battle_card"
+    );
     const templateVersion = payload.templateVersion ?? "battle-card.v1";
     const cardInput = this.judgments?.buildBattleCard
       ? await this.judgments.buildBattleCard({
@@ -1170,8 +1583,11 @@ implements AcquisitionAgentToolExecutor {
     input: AcquisitionToolExecutionInput,
     payload: z.infer<typeof schemas.estimate_financial_value>
   ) {
-    const scope = this.scope(input);
-    await this.domain.getCandidate(scope, payload.candidateId);
+    const { scope } = await this.loadEligibleCandidate(
+      input,
+      payload.candidateId,
+      "financial_value"
+    );
     const values = await this.domain.listFinancialValueDecisions(
       scope,
       payload.candidateId
@@ -1208,10 +1624,16 @@ implements AcquisitionAgentToolExecutor {
     input: AcquisitionToolExecutionInput,
     payload: z.infer<typeof schemas.draft_connection_strategy>
   ) {
-    const scope = this.scope(input);
-    const candidate = await this.domain.getCandidate(scope, payload.candidateId);
-    const evidence = await this.evidenceForCandidate(scope, candidate);
-    const drafts = this.judgments?.draftConnectionStrategy
+    const {
+      scope,
+      candidate,
+      evidence
+    } = await this.loadEligibleCandidate(
+      input,
+      payload.candidateId,
+      "connection_strategy"
+    );
+    const rawDrafts = this.judgments?.draftConnectionStrategy
       ? await this.judgments.draftConnectionStrategy({
           scope,
           sessionId: input.identity.sessionId,
@@ -1223,10 +1645,21 @@ implements AcquisitionAgentToolExecutor {
         })
       : defaultConnectionDrafts(payload.channels, payload.targetRole);
     assertNotAborted(input.signal);
+    const parsedDrafts = z.array(connectionDraftSchema)
+      .min(1).max(6).safeParse(rawDrafts);
+    if (!parsedDrafts.success
+      || parsedDrafts.data.length !== payload.channels.length
+      || new Set(parsedDrafts.data.map((item) => item.channel)).size
+        !== parsedDrafts.data.length
+      || parsedDrafts.data.some((item) =>
+        !payload.channels.includes(item.channel)
+      )) {
+      throw toolError("INVALID_JUDGMENT_RESULT");
+    }
     return {
       candidateId: candidate.id,
       targetRole: payload.targetRole,
-      drafts,
+      drafts: parsedDrafts.data,
       evidenceIds: evidence.map((item) => item.id),
       mode: this.judgments?.draftConnectionStrategy
         ? "judgment_port"
@@ -1241,9 +1674,13 @@ implements AcquisitionAgentToolExecutor {
     payload: z.infer<typeof schemas.list_priority_candidates>
   ) {
     const scope = this.scope(input);
-    const entries = await this.directory.listCandidates(scope, {
+    const rowsFromStorage = await this.priorityCandidates.listPriorityCandidates({
+      ownerId: scope.ownerId,
+      teamId: scope.teamId,
       subjectKinds: payload.subjectKinds,
-      limit: Math.min(100, payload.limit * 3)
+      minimumGrade: payload.minimumGrade,
+      limit: payload.limit,
+      sort: "qualification_and_financial_desc"
     });
     const rows: Array<{
       candidate: AcquisitionCandidate;
@@ -1255,13 +1692,13 @@ implements AcquisitionAgentToolExecutor {
       >[number] | null;
     }> = [];
     const seen = new Set<string>();
-    for (const entry of entries) {
+    for (const stored of rowsFromStorage) {
       assertNotAborted(input.signal);
-      if (seen.has(entry.candidateId)) continue;
+      if (seen.has(stored.candidateId)) continue;
       try {
         const candidate = await this.domain.getCandidate(
           scope,
-          entry.candidateId
+          stored.candidateId
         );
         if (payload.subjectKinds
           && !payload.subjectKinds.includes(candidate.partyType)) {
@@ -1276,6 +1713,11 @@ implements AcquisitionAgentToolExecutor {
           candidate.id
         );
         const qualification = qualifications.at(-1) ?? null;
+        if ((qualification?.grade ?? null) !== stored.qualificationGrade
+          || (qualification?.score ?? null) !== stored.qualificationScore
+          || (values.at(-1)?.score ?? null) !== stored.financialScore) {
+          continue;
+        }
         if (payload.minimumGrade
           && (!qualification
             || GRADE_RANK[qualification.grade]
@@ -1296,16 +1738,8 @@ implements AcquisitionAgentToolExecutor {
         throw error;
       }
     }
-    rows.sort((left, right) => {
-      const leftGrade = left.qualification?.grade ?? "D";
-      const rightGrade = right.qualification?.grade ?? "D";
-      return GRADE_RANK[leftGrade] - GRADE_RANK[rightGrade]
-        || (right.financialValue?.score ?? 0)
-          - (left.financialValue?.score ?? 0)
-        || right.candidate.updatedAt.localeCompare(left.candidate.updatedAt);
-    });
     return {
-      candidates: rows.slice(0, payload.limit).map((row) => ({
+      candidates: rows.map((row) => ({
         candidate: projectCandidate(row.candidate),
         qualification: row.qualification
           ? publicRecord(
@@ -1327,8 +1761,14 @@ implements AcquisitionAgentToolExecutor {
     input: AcquisitionToolExecutionInput,
     payload: z.infer<typeof schemas.create_review_task>
   ) {
-    const scope = this.scope(input);
-    const candidate = await this.domain.getCandidate(scope, payload.candidateId);
+    const {
+      scope,
+      candidate
+    } = await this.loadEligibleCandidate(
+      input,
+      payload.candidateId,
+      "review_task"
+    );
     const reviewTask = await this.reviewTasks.create({
       ownerId: scope.ownerId,
       teamId: scope.teamId,
@@ -1341,7 +1781,10 @@ implements AcquisitionAgentToolExecutor {
     });
     if (reviewTask.ownerId !== scope.ownerId
       || reviewTask.teamId !== scope.teamId
-      || reviewTask.candidateId !== candidate.id) {
+      || reviewTask.candidateId !== candidate.id
+      || reviewTask.proposedAction !== payload.proposedAction
+      || reviewTask.idempotencyKey !== input.idempotencyKey
+      || reviewTask.status !== "pending") {
       throw toolError("TOOL_EXECUTION_FAILED");
     }
     return {
@@ -1357,6 +1800,12 @@ implements AcquisitionAgentToolExecutor {
     input: AcquisitionToolExecutionInput,
     payload: z.infer<typeof schemas.record_outcome>
   ) {
+    const currencyExponent = payload.currency
+      ? iso4217CurrencyExponent(payload.currency)
+      : null;
+    if (payload.currency && currencyExponent === null) {
+      throw toolError("UNSUPPORTED_CURRENCY");
+    }
     const scope = this.scope(input);
     const candidate = await this.domain.getCandidate(scope, payload.candidateId);
     const reviewTask = await this.reviewTasks.get(
@@ -1366,7 +1815,30 @@ implements AcquisitionAgentToolExecutor {
     if (!reviewTask
       || reviewTask.candidateId !== candidate.id
       || !["approved", "executed"].includes(reviewTask.status)) {
-      throw toolError("REVIEW_TASK_NOT_APPROVED");
+      throw toolError("ACTION_NOT_EXECUTED");
+    }
+    const rawExecution = await this.actionExecutions.getVerifiedExecution(
+      scope,
+      payload.reviewTaskId
+    );
+    const parsedExecution = actionExecutionReceiptSchema.safeParse(rawExecution);
+    if (!parsedExecution.success) {
+      throw toolError("ACTION_NOT_EXECUTED");
+    }
+    const execution = parsedExecution.data;
+    if (execution.ownerId !== scope.ownerId
+      || execution.teamId !== scope.teamId
+      || execution.candidateId !== candidate.id
+      || execution.reviewTaskId !== reviewTask.id
+      || execution.proposedAction !== reviewTask.proposedAction
+      || !actionSupportsOutcome(execution.proposedAction, payload.outcome)
+      || new Date(execution.executedAt).getTime()
+        < new Date(reviewTask.createdAt).getTime()) {
+      throw toolError("ACTION_EXECUTION_MISMATCH");
+    }
+    if (new Date(payload.occurredAt).getTime()
+      < new Date(execution.executedAt).getTime()) {
+      throw toolError("ACTION_EXECUTION_MISMATCH");
     }
     const decisions = await this.domain.listQualificationDecisions(
       scope,
@@ -1390,10 +1862,10 @@ implements AcquisitionAgentToolExecutor {
       customerId: null,
       eventType: mapOutcome(payload.outcome),
       occurredAt: payload.occurredAt,
-      amount: payload.amount === undefined
+      amount: payload.amountMinor === undefined
         ? null
         : {
-            amountMinor: Math.round(payload.amount * 100),
+            amountMinor: payload.amountMinor,
             currency: payload.currency!
           },
       reasonCode: `agent_recorded_${payload.outcome}`,
@@ -1414,6 +1886,13 @@ implements AcquisitionAgentToolExecutor {
     return {
       outcome: publicRecord(outcome as unknown as Record<string, unknown>),
       reviewedByTaskId: reviewTask.id,
+      execution: {
+        executionId: execution.executionId,
+        executedAt: execution.executedAt,
+        credentialIssuer: execution.credential.issuer,
+        credentialId: execution.credential.credentialId
+      },
+      currencyExponent,
       actionRecordedOnly: true,
       outreachExecuted: false
     };

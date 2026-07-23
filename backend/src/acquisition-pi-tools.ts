@@ -261,7 +261,7 @@ const TOOL_BLUEPRINTS: readonly ToolBlueprint[] = [
   {
     name: "record_outcome",
     label: "记录获客结果",
-    description: "在已审核的业务动作后记录结果，用于闭环优化；不执行任何外部触达。",
+    description: "只在已审核动作存在可信执行凭证后记录结果，用于闭环优化；本工具不执行任何外部触达。",
     parameters: Type.Object({
       candidateId: Type.String({ minLength: 1, maxLength: 255 }),
       reviewTaskId: Type.String({ minLength: 1, maxLength: 255 }),
@@ -279,7 +279,10 @@ const TOOL_BLUEPRINTS: readonly ToolBlueprint[] = [
         maxLength: 35,
         format: "date-time"
       }),
-      amount: Type.Optional(Type.Number({ minimum: 0 })),
+      amountMinor: Type.Optional(Type.Integer({
+        minimum: 0,
+        maximum: Number.MAX_SAFE_INTEGER
+      })),
       currency: Type.Optional(Type.String({
         minLength: 3,
         maxLength: 3,

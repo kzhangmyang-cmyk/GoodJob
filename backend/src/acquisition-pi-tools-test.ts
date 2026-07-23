@@ -118,6 +118,13 @@ assert.equal(
   byName(tools, "record_outcome").executionMode,
   "sequential"
 );
+const outcomeProperties = (
+  byName(tools, "record_outcome").parameters as {
+    properties?: Record<string, unknown>;
+  }
+).properties ?? {};
+assert.equal("amountMinor" in outcomeProperties, true);
+assert.equal("amount" in outcomeProperties, false);
 
 const evidenceResult = await byName(tools, "get_candidate_evidence").execute(
   "call-evidence-1",
