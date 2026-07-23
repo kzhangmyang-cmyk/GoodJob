@@ -23,7 +23,8 @@ import type {
 } from "./acquisition-copilot-service.js";
 import {
   createAcquisitionV1Router,
-  type AcquisitionV1QueryPort
+  type AcquisitionV1QueryPort,
+  type AcquisitionV1RouterOptions
 } from "./acquisition-v1-router.js";
 
 const OWNER_A = "owner-a";
@@ -45,6 +46,8 @@ async function createFixture(options: {
     scope: AcquisitionCopilotScope,
     taskId: string
   ) => void | Promise<void>;
+  resolveCopilotModelSnapshot?:
+    AcquisitionV1RouterOptions["resolveCopilotModelSnapshot"];
 } = {}) {
   const repository = new InMemoryAcquisitionDomainRepository();
   const candidates = new Map<string, AcquisitionCandidate>();
@@ -194,7 +197,8 @@ async function createFixture(options: {
     requestIdFactory: deterministicIds(),
     cursorSecret:
       "router-test-cursor-secret-that-is-at-least-32-characters",
-    dispatchCopilotTask: options.dispatchCopilotTask
+    dispatchCopilotTask: options.dispatchCopilotTask,
+    resolveCopilotModelSnapshot: options.resolveCopilotModelSnapshot
   }));
 
   const server = await new Promise<Server>((resolve) => {
@@ -891,6 +895,86 @@ test("v1 copilot dispatch failures are terminal, observable, and never redispatc
       assert.equal(stored.errorCode, "COPILOT_DISPATCH_FAILED");
     }
     assert.equal(dispatchCalls, 2);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("v1 copilot sessions bind immutable model content on the server", async () => {
+  const resolutions: Array<{
+    ownerId: string;
+    teamId: string;
+    actorId: string;
+    connectionId: string | null;
+  }> = [];
+  const fixture = await createFixture({
+    async resolveCopilotModelSnapshot(scope, input) {
+      resolutions.push({
+        ...scope,
+        connectionId: input.connectionId
+      });
+      return {
+        jobId: "job-server-bound",
+        connectionId: input.connectionId ?? "connection-active",
+        credentialVersion: 7,
+        provider: "qwen",
+        model: "qwen-plus",
+        promptVersion: "acquisition-copilot-v1",
+        schemaVersion: "copilot-turn.v1",
+        promptHash: "sha256:server-prompt-bundle",
+        schemaHash: "sha256:server-schema-bundle",
+        capabilitySnapshotHash: "sha256:server-capability",
+        baseUrlFingerprint: "sha256:server-base-url"
+      };
+    }
+  });
+  try {
+    const created = await fixture.request(
+      "/api/v1/acquisition/copilot/sessions",
+      write({ connectionId: "connection-selected" }, "server-bound-session")
+    );
+    assert.equal(created.response.status, 202);
+    assert.deepEqual(resolutions, [{
+      ownerId: OWNER_A,
+      teamId: TEAM_A,
+      actorId: OWNER_A,
+      connectionId: "connection-selected"
+    }]);
+
+    const session = await fixture.request(
+      `/api/v1/acquisition/copilot/sessions/${created.json.resourceId}`
+    );
+    assert.equal(session.response.status, 200);
+    assert.equal(session.json.modelSnapshot.connectionId, "connection-selected");
+    assert.equal(
+      session.json.modelSnapshot.promptHash,
+      "sha256:server-prompt-bundle"
+    );
+
+    const clientSnapshot = await fixture.request(
+      "/api/v1/acquisition/copilot/sessions",
+      write({
+        modelSnapshot: {
+          jobId: "job-client-controlled",
+          connectionId: "connection-client-controlled",
+          credentialVersion: 1,
+          provider: "qwen",
+          model: "qwen-plus",
+          promptVersion: "client",
+          schemaVersion: "client",
+          promptHash: "sha256:client",
+          schemaHash: "sha256:client",
+          capabilitySnapshotHash: "sha256:client",
+          baseUrlFingerprint: "sha256:client"
+        }
+      }, "client-controlled-session")
+    );
+    assert.equal(clientSnapshot.response.status, 400);
+    assert.equal(
+      resolutions.length,
+      1,
+      "client-controlled snapshots must be rejected before resolution"
+    );
   } finally {
     await fixture.close();
   }

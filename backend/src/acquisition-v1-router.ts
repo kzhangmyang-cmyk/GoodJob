@@ -37,6 +37,9 @@ import {
   type AcquisitionCopilotSession,
   type AcquisitionCopilotTask
 } from "./acquisition-copilot-service.js";
+import type {
+  AcquisitionPiModelSnapshot
+} from "./acquisition-pi-agent.js";
 import { MODEL_PROVIDER_IDS } from "./model-providers/types.js";
 
 const candidateStatuses = [
@@ -282,6 +285,10 @@ const createCopilotSessionBodySchema = z.object({
   modelSnapshot: modelSnapshotSchema
 }).strict();
 
+const createBoundCopilotSessionBodySchema = z.object({
+  connectionId: idSchema.nullable().optional()
+}).strict();
+
 const copilotMessageBodySchema = z.object({
   message: requiredText(20_000)
 }).strict();
@@ -343,6 +350,16 @@ export interface AcquisitionV1RouterOptions {
     scope: AcquisitionCopilotScope,
     taskId: string
   ) => void | Promise<void>;
+  /**
+   * Production callers should provide this resolver. When configured, the
+   * public API accepts only an optional connectionId and the server binds all
+   * immutable model/content identities. This prevents clients from inventing
+   * credential versions, capability snapshots, or prompt/tool hashes.
+   */
+  resolveCopilotModelSnapshot?: (
+    scope: AcquisitionCopilotScope,
+    input: { connectionId: string | null }
+  ) => Promise<AcquisitionPiModelSnapshot>;
 }
 
 class AcquisitionV1HttpError extends Error {
@@ -1253,10 +1270,19 @@ export function createAcquisitionV1Router(
     "/api/v1/acquisition/copilot/sessions",
     asyncRoute(async (req, res) => {
       const scope = scopeFromRequest(req);
-      const body = parse(createCopilotSessionBodySchema, req.body);
+      const snapshot = options.resolveCopilotModelSnapshot
+        ? await options.resolveCopilotModelSnapshot(
+          scope,
+          {
+            connectionId:
+              parse(createBoundCopilotSessionBodySchema, req.body)
+                .connectionId ?? null
+          }
+        )
+        : parse(createCopilotSessionBodySchema, req.body).modelSnapshot;
       const session = await options.copilotService.createSession(
         scope,
-        body.modelSnapshot,
+        snapshot,
         idempotencyKey(req)
       );
       res.status(202).json(operation({
