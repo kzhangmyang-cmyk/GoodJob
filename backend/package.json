@@ -64,7 +64,7 @@
     "test:providers:mysql": "NODE_ENV=test JWT_SECRET=goodjob-provider-mysql-test-secret-at-least-32-characters tsx src/provider-mysql-persistence-test.ts",
     "test:security": "NODE_ENV=test JWT_SECRET=goodjob-security-test-secret-at-least-32-characters tsx src/security-test.ts",
     "test:collaboration": "NODE_ENV=test JWT_SECRET=goodjob-collaboration-test-secret-at-least-32-characters tsx src/collaboration-test.ts",
-    "test:agent:pi": "NODE_ENV=test tsx src/acquisition-pi-tools-test.ts"
+    "test:agent:pi": "NODE_ENV=test tsx src/acquisition-pi-tools-test.ts && NODE_ENV=test tsx src/acquisition-pi-agent-test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.81.1",
