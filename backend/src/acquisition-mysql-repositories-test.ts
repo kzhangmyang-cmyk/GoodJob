@@ -17,7 +17,9 @@ import type {
   AcquisitionCopilotTask
 } from "./acquisition-copilot-service.js";
 import type {
-  AcquisitionPlan
+  AcquisitionPlan,
+  AcquisitionPlanVersion,
+  AcquisitionRun
 } from "./acquisition-plan-run-repository.js";
 
 type QueryResult = [unknown, unknown];
@@ -236,6 +238,57 @@ function plan(): AcquisitionPlan {
   };
 }
 
+function planVersion(): AcquisitionPlanVersion {
+  const value = plan();
+  return {
+    id: value.currentVersionId,
+    planId: value.id,
+    ownerId: value.ownerId,
+    teamId: value.teamId,
+    version: value.version,
+    payload: structuredClone(value.payload),
+    payloadHash: "1".repeat(64),
+    createdBy: value.createdBy,
+    createdAt: value.createdAt
+  };
+}
+
+function acquisitionRun(): AcquisitionRun {
+  const value = plan();
+  return {
+    id: "run-1",
+    ownerId: value.ownerId,
+    teamId: value.teamId,
+    planId: value.id,
+    planVersionId: value.currentVersionId,
+    planVersion: value.version,
+    planSnapshotHash: "2".repeat(64),
+    parentRunId: null,
+    status: "queued",
+    terminationIntent: null,
+    revision: 1,
+    etag: "\"run-1:1\"",
+    budgetSnapshotId: "budget-1",
+    budgetSnapshot: structuredClone(value.budgetSnapshot),
+    budgetSnapshotHash: "3".repeat(64),
+    billingCurrency: "CNY",
+    modelSnapshotRef: structuredClone(value.payload.modelSnapshotRef),
+    consumedBudget: {
+      requests: 0,
+      results: 0,
+      amountMinor: 0,
+      durationSeconds: 0
+    },
+    evidenceCount: 0,
+    reason: null,
+    createdBy: "user-1",
+    createdAt: NOW,
+    updatedBy: "user-1",
+    updatedAt: NOW,
+    completedAt: null
+  };
+}
+
 async function testSchemaIsCompleteAndHasNoSecretColumns() {
   const sql = ACQUISITION_MYSQL_SCHEMA_STATEMENTS.join("\n").toLowerCase();
   for (const table of [
@@ -290,6 +343,12 @@ async function testSchemaIsCompleteAndHasNoSecretColumns() {
   assert.match(
     sql,
     /constraint fk_acquisition_shard_run\s+foreign key \(owner_id, team_id, run_id\)/
+  );
+  assert.match(sql, /dispatch_lease_until datetime\(3\) null/);
+  assert.match(sql, /dispatch_attempts bigint unsigned not null default 0/);
+  assert.match(
+    sql,
+    /constraint fk_acquisition_run_plan_version\s+foreign key \(owner_id, team_id, plan_id, plan_version_id\)/
   );
 }
 
@@ -396,6 +455,69 @@ async function testAppendEvidenceUsesInsertOnly() {
   assert.equal("createdAt" in storedPayload, false);
 }
 
+async function testRawIdempotencyKeysAreNotPersisted() {
+  const pool = new FakePool();
+  const repository = new MysqlAcquisitionDomainRepository(asPool(pool));
+  const rawKey = "customer-request-123456";
+  await repository.appendReviewEvent({
+    id: "review-1",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    candidateId: "candidate-1",
+    decisionVersion: "decision-v1",
+    action: "approved",
+    reason: "证据充分",
+    reviewerId: "user-1",
+    idempotencyKey: rawKey,
+    createdAt: NOW
+  });
+  const payload = String(pool.calls.at(-1)!.values.at(-2));
+  assert.doesNotMatch(payload, new RegExp(rawKey));
+  assert.match(payload, /"idempotencyKey":"sha256:[a-f0-9]{64}"/);
+}
+
+async function testDomainIdempotencyRestoresTheRequestKeyOnReplay() {
+  const pool = new FakePool();
+  const repository = new MysqlAcquisitionDomainRepository(asPool(pool));
+  const rawKey = "customer-request-654321";
+  const review = {
+    id: "review-2",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    candidateId: "candidate-1",
+    decisionVersion: "decision-v1",
+    action: "approved" as const,
+    reason: null,
+    reviewerId: "user-1",
+    idempotencyKey: rawKey,
+    createdAt: NOW
+  };
+  const record = {
+    ownerId: "owner-a",
+    teamId: "team-a",
+    operation: "review_candidate",
+    idempotencyKey: rawKey,
+    requestHash: "5".repeat(64),
+    result: { review },
+    createdAt: NOW
+  };
+  await repository.appendIdempotency(record);
+  const payload = String(pool.calls.at(-1)!.values.at(-2));
+  pool.enqueue([{
+    owner_id: "owner-a",
+    team_id: "team-a",
+    payload_json: payload
+  }]);
+  assert.deepEqual(
+    await repository.findIdempotency(
+      { ownerId: "owner-a", teamId: "team-a" },
+      "review_candidate",
+      rawKey
+    ),
+    record
+  );
+}
+
 async function testCopilotPersistenceIsScopedAndMessageOrderIsDurable() {
   const pool = new FakePool();
   const repository = new MysqlAcquisitionCopilotRepository(asPool(pool));
@@ -416,12 +538,25 @@ async function testCopilotPersistenceIsScopedAndMessageOrderIsDurable() {
       createdAt: NOW
     }
   ];
+  pool.connection.enqueue([{ id: "session-1" }]);
+  pool.connection.enqueue([{ max_sequence: 5 }]);
+  pool.connection.enqueue({ affectedRows: 1 });
   await repository.appendMessages(messages);
-  const insert = pool.calls.find((call) =>
+  const insert = pool.connection.calls.find((call) =>
     call.sql.startsWith("INSERT INTO acquisition_copilot_messages")
   );
   assert.ok(insert);
   assert.doesNotMatch(JSON.stringify(insert.values), /api[_-]?key/i);
+  assert.equal(insert.values[4], 6);
+  const storedMessage = JSON.parse(String(insert.values[5]));
+  assert.equal(storedMessage.sequence, 6);
+  assert.equal(pool.connection.beginCount, 1);
+  assert.equal(pool.connection.commitCount, 1);
+  assert.ok(pool.connection.calls.some((call) =>
+    /FROM acquisition_copilot_sessions/.test(call.sql)
+    && /owner_id = \? AND team_id = \?/.test(call.sql)
+    && /FOR UPDATE/.test(call.sql)
+  ));
 
   pool.enqueue([{
     id: "message-1",
@@ -458,7 +593,11 @@ async function testCopilotClaimIsAtomicAndScoped() {
   assert.match(call.sql, /^UPDATE acquisition_copilot_tasks/);
   assert.match(call.sql, /owner_id = \? AND team_id = \?/);
   assert.match(call.sql, /status = 'queued'/);
-  assert.match(call.sql, /dispatch_claimed_at IS NULL/);
+  assert.match(
+    call.sql,
+    /\(\s*dispatch_lease_until IS NULL OR dispatch_lease_until < UTC_TIMESTAMP\(3\)\s*\)/
+  );
+  assert.match(call.sql, /dispatch_attempts = dispatch_attempts \+ 1/);
 }
 
 async function testPlaintextCredentialFieldsAreRejected() {
@@ -468,7 +607,7 @@ async function testPlaintextCredentialFieldsAreRejected() {
     ...session(),
     modelSnapshot: {
       ...session().modelSnapshot,
-      apiKey: "sk-plaintext-must-not-be-stored"
+      clientSecret: "plaintext-must-not-be-stored"
     }
   } as AcquisitionCopilotSession;
   await assert.rejects(
@@ -476,6 +615,94 @@ async function testPlaintextCredentialFieldsAreRejected() {
     /PLAINTEXT_SECRET_REJECTED/
   );
   assert.equal(pool.calls.length, 0);
+}
+
+async function testTaskStateUpdateUsesExpectedPreviousState() {
+  const pool = new FakePool();
+  pool.enqueue({ affectedRows: 1 });
+  const repository = new MysqlAcquisitionCopilotRepository(asPool(pool));
+  await repository.saveTask({
+    ...task(),
+    status: "running",
+    startedAt: NOW
+  });
+  const call = pool.calls.at(-1)!;
+  assert.match(call.sql, /AND status IN \('queued'\)/);
+  assert.deepEqual(call.values.slice(-5), [
+    "task-1",
+    "owner-a",
+    "team-a",
+    "user-1",
+    "session-1"
+  ]);
+}
+
+async function testRunPersistsImmutableSnapshotColumnsAfterVersion() {
+  const pool = new FakePool();
+  const connection = pool.connection;
+  connection.enqueue([{ id: 1 }]);
+  for (let index = 0; index < 10; index += 1) {
+    connection.enqueue([]);
+  }
+  const repository = new MysqlAcquisitionPlanRunRepository(asPool(pool));
+  await repository.transaction((transaction) => {
+    transaction.putPlan(plan());
+    transaction.appendPlanVersion(planVersion());
+    transaction.putRun(acquisitionRun());
+  });
+  const versionIndex = connection.calls.findIndex((call) =>
+    call.sql.startsWith("INSERT INTO acquisition_plan_versions")
+  );
+  const runIndex = connection.calls.findIndex((call) =>
+    call.sql.startsWith("INSERT INTO acquisition_runs")
+  );
+  assert.ok(versionIndex >= 0);
+  assert.ok(runIndex > versionIndex);
+  const insert = connection.calls[runIndex]!;
+  assert.match(
+    insert.sql,
+    /\(id, plan_id, plan_version_id, owner_id, team_id, revision,\s*plan_snapshot_hash, budget_snapshot_hash, payload_json/
+  );
+  assert.deepEqual(insert.values.slice(0, 8), [
+    "run-1",
+    "plan-1",
+    "plan-version-1",
+    "owner-a",
+    "team-a",
+    1,
+    "2".repeat(64),
+    "3".repeat(64)
+  ]);
+}
+
+async function testPlanRunIdempotencyScopesAreHashedAtRest() {
+  const pool = new FakePool();
+  const connection = pool.connection;
+  connection.enqueue([{ id: 1 }]);
+  for (let index = 0; index < 10; index += 1) {
+    connection.enqueue([]);
+  }
+  const rawScopeKey = "team-a\u001fowner-a\u001fcreate_run\u001frequest-123";
+  const repository = new MysqlAcquisitionPlanRunRepository(asPool(pool));
+  await repository.transaction((transaction) => {
+    transaction.putIdempotency({
+      scopeKey: rawScopeKey,
+      requestHash: "4".repeat(64),
+      resultType: "run",
+      resultId: "run-1",
+      createdAt: NOW
+    });
+    assert.equal(transaction.getIdempotency(rawScopeKey)?.resultId, "run-1");
+  });
+  const insert = connection.calls.find((call) =>
+    call.sql.startsWith("INSERT INTO acquisition_run_idempotency")
+  );
+  assert.ok(insert);
+  assert.doesNotMatch(String(insert.values[3]), new RegExp(rawScopeKey));
+  assert.match(
+    String(insert.values[3]),
+    /"scopeKey":"sha256:[a-f0-9]{64}"/
+  );
 }
 
 async function testPlanRunTransactionCommitsNewRowsWithoutOverwriteUpsert() {
@@ -532,9 +759,14 @@ async function run() {
   await testCandidateRejectsJsonVersionThatDiffersFromLockColumn();
   await testCandidateSaveUsesOptimisticVersionAndScope();
   await testAppendEvidenceUsesInsertOnly();
+  await testRawIdempotencyKeysAreNotPersisted();
+  await testDomainIdempotencyRestoresTheRequestKeyOnReplay();
   await testCopilotPersistenceIsScopedAndMessageOrderIsDurable();
   await testCopilotClaimIsAtomicAndScoped();
   await testPlaintextCredentialFieldsAreRejected();
+  await testTaskStateUpdateUsesExpectedPreviousState();
+  await testRunPersistsImmutableSnapshotColumnsAfterVersion();
+  await testPlanRunIdempotencyScopesAreHashedAtRest();
   await testPlanRunTransactionCommitsNewRowsWithoutOverwriteUpsert();
   await testPlanRunTransactionLocksAndRollsBack();
   console.log("acquisition mysql repositories tests passed");

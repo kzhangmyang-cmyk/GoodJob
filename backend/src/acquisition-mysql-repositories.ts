@@ -46,7 +46,8 @@ type QuerySource = Pick<mysql.Pool | mysql.PoolConnection, "query">;
 type Scope = Pick<AcquisitionCopilotScope, "ownerId" | "teamId">;
 type MysqlRow = Record<string, unknown>;
 
-const SENSITIVE_KEY = /^(?:api[_-]?key|secret[_-]?key|access[_-]?token|authorization|credential[_-]?plaintext)$/i;
+const SENSITIVE_KEY =
+  /(?:password|authorization|(?:api|secret|private)[_-]?key|(?:access|refresh|bearer)[_-]?token|client[_-]?secret|credential[_-]?plaintext)$/i;
 
 export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS acquisition_discovery_evidence (
@@ -138,6 +139,7 @@ export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
     owner_id VARCHAR(100) NOT NULL,
     team_id VARCHAR(100) NOT NULL,
     candidate_id VARCHAR(120) NOT NULL,
+    status VARCHAR(30) NOT NULL,
     payload_json JSON NOT NULL,
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
@@ -147,7 +149,13 @@ export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
     CONSTRAINT fk_acquisition_research_candidate
       FOREIGN KEY (owner_id, team_id, candidate_id)
       REFERENCES acquisition_candidates (owner_id, team_id, id)
-      ON UPDATE RESTRICT ON DELETE RESTRICT
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_acquisition_research_status CHECK (
+      status IN (
+        'pending','running','completed','no_new_evidence',
+        'access_restricted','failed'
+      )
+    )
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS acquisition_conversions (
     id VARCHAR(120) PRIMARY KEY,
@@ -238,12 +246,16 @@ export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
     status VARCHAR(20) NOT NULL,
     payload_json JSON NOT NULL,
     dispatch_claimed_at DATETIME(3) NULL,
+    dispatch_lease_until DATETIME(3) NULL,
+    dispatch_attempts BIGINT UNSIGNED NOT NULL DEFAULT 0,
     created_at DATETIME(3) NOT NULL,
     started_at DATETIME(3) NULL,
     completed_at DATETIME(3) NULL,
     UNIQUE KEY uk_acquisition_copilot_task_scope (owner_id, team_id, id),
     KEY idx_acquisition_copilot_task_session
       (owner_id, team_id, session_id, created_at, id),
+    KEY idx_acquisition_copilot_task_dispatch
+      (owner_id, team_id, status, dispatch_lease_until, id),
     CONSTRAINT fk_acquisition_copilot_task_session
       FOREIGN KEY (owner_id, team_id, session_id)
       REFERENCES acquisition_copilot_sessions (owner_id, team_id, id)
@@ -313,6 +325,8 @@ export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
     UNIQUE KEY uk_acquisition_plan_version_scope (owner_id, team_id, id),
     UNIQUE KEY uk_acquisition_plan_version_number
       (owner_id, team_id, plan_id, version_no),
+    UNIQUE KEY uk_acquisition_plan_version_identity
+      (owner_id, team_id, plan_id, id),
     KEY idx_acquisition_plan_version_plan
       (owner_id, team_id, plan_id, version_no, id),
     CONSTRAINT fk_acquisition_plan_version_plan
@@ -323,9 +337,12 @@ export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS acquisition_runs (
     id VARCHAR(160) PRIMARY KEY,
     plan_id VARCHAR(160) NOT NULL,
+    plan_version_id VARCHAR(160) NOT NULL,
     owner_id VARCHAR(100) NOT NULL,
     team_id VARCHAR(100) NOT NULL,
     revision BIGINT UNSIGNED NOT NULL,
+    plan_snapshot_hash CHAR(64) NOT NULL,
+    budget_snapshot_hash CHAR(64) NOT NULL,
     payload_json JSON NOT NULL,
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
@@ -335,6 +352,10 @@ export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
     CONSTRAINT fk_acquisition_run_plan
       FOREIGN KEY (owner_id, team_id, plan_id)
       REFERENCES acquisition_plans (owner_id, team_id, id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_acquisition_run_plan_version
+      FOREIGN KEY (owner_id, team_id, plan_id, plan_version_id)
+      REFERENCES acquisition_plan_versions (owner_id, team_id, plan_id, id)
       ON UPDATE RESTRICT ON DELETE RESTRICT
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS acquisition_operation_shards (
@@ -463,6 +484,12 @@ function hash(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function redactedKey(value: string) {
+  return /^sha256:[a-f0-9]{64}$/i.test(value)
+    ? value.toLowerCase()
+    : `sha256:${hash(value)}`;
+}
+
 function assertNoPlaintextSecrets(
   value: unknown,
   seen = new WeakSet<object>()
@@ -484,7 +511,30 @@ function assertNoPlaintextSecrets(
 
 function json(value: unknown) {
   assertNoPlaintextSecrets(value);
-  return JSON.stringify(value);
+  return JSON.stringify(value, (key, entry) => {
+    if ((key === "idempotencyKey" || key === "scopeKey")
+      && typeof entry === "string") {
+      return redactedKey(entry);
+    }
+    return entry;
+  });
+}
+
+function restoreIdempotencyKey<T>(value: T, rawKey: string): T {
+  const redacted = redactedKey(rawKey);
+  const restore = (entry: unknown): unknown => {
+    if (Array.isArray(entry)) return entry.map(restore);
+    if (!entry || typeof entry !== "object") return entry;
+    return Object.fromEntries(
+      Object.entries(entry as Record<string, unknown>).map(([key, item]) => [
+        key,
+        key === "idempotencyKey" && item === redacted
+          ? rawKey
+          : restore(item)
+      ])
+    );
+  };
+  return restore(value) as T;
 }
 
 function parseJson(value: unknown, resource: string): unknown {
@@ -547,7 +597,11 @@ function ownedPayload<T extends { id: string; ownerId: string; teamId: string }>
     ["candidate_id", "candidateId"],
     ["session_id", "sessionId"],
     ["plan_id", "planId"],
+    ["plan_version_id", "planVersionId"],
     ["run_id", "runId"],
+    ["plan_snapshot_hash", "planSnapshotHash"],
+    ["budget_snapshot_hash", "budgetSnapshotHash"],
+    ["actor_id", "actorId"],
     ["status", "status"]
   ] as const;
   for (const [column, field] of stringColumns) {
@@ -915,13 +969,15 @@ implements AcquisitionDomainRepository {
   async appendResearchAttempt(record: ResearchAttempt) {
     await this.pool.query(
       `INSERT INTO acquisition_research_attempts
-       (id, owner_id, team_id, candidate_id, payload_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (id, owner_id, team_id, candidate_id, status,
+        payload_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.ownerId,
         record.teamId,
         record.candidateId,
+        record.status,
         json(record),
         mysqlDate(record.createdAt),
         mysqlDate(record.completedAt ?? record.startedAt ?? record.createdAt)
@@ -930,13 +986,23 @@ implements AcquisitionDomainRepository {
   }
 
   async saveResearchAttempt(record: ResearchAttempt) {
+    const previousStatuses = record.status === "running"
+      ? ["pending"]
+      : record.status === "failed"
+        ? ["pending", "running"]
+        : ["running"];
+    const statusSql = previousStatuses
+      .map((status) => `'${status}'`)
+      .join(", ");
     const count = await affected(
       this.pool,
       `UPDATE acquisition_research_attempts
-       SET payload_json = ?, updated_at = ?
+       SET status = ?, payload_json = ?, updated_at = ?
        WHERE id = ? AND candidate_id = ?
-         AND owner_id = ? AND team_id = ?`,
+         AND owner_id = ? AND team_id = ?
+         AND status IN (${statusSql})`,
       [
+        record.status,
         json(record),
         mysqlDate(record.completedAt ?? record.startedAt ?? record.createdAt),
         record.id,
@@ -1077,12 +1143,12 @@ implements AcquisitionDomainRepository {
     if (value.ownerId !== scope.ownerId
       || value.teamId !== scope.teamId
       || value.operation !== operation
-      || value.idempotencyKey !== idempotencyKey) {
+      || value.idempotencyKey !== redactedKey(idempotencyKey)) {
       throw new Error(
         "ACQUISITION_MYSQL_INTEGRITY:domain_idempotency:scope_mismatch"
       );
     }
-    return clone(value);
+    return restoreIdempotencyKey(clone(value), idempotencyKey);
   }
 
   async appendIdempotency(record: DomainIdempotencyRecord) {
@@ -1129,21 +1195,28 @@ implements AcquisitionCopilotRepository {
   }
 
   async saveSession(record: AcquisitionCopilotSession) {
+    const previousStatuses = record.status === "active"
+      ? ["active"]
+      : ["active"];
+    const statusSql = previousStatuses
+      .map((status) => `'${status}'`)
+      .join(", ");
     const count = await affected(
       this.pool,
       `UPDATE acquisition_copilot_sessions
-       SET actor_id = ?, status = ?, payload_json = ?,
+       SET status = ?, payload_json = ?,
            updated_at = ?, completed_at = ?
-       WHERE id = ? AND owner_id = ? AND team_id = ?`,
+       WHERE id = ? AND owner_id = ? AND team_id = ?
+         AND actor_id = ? AND status IN (${statusSql})`,
       [
-        record.actorId,
         record.status,
         json(record),
         mysqlDate(record.updatedAt),
         mysqlDate(record.completedAt),
         record.id,
         record.ownerId,
-        record.teamId
+        record.teamId,
+        record.actorId
       ]
     );
     if (count !== 1) throw new Error("SESSION_NOT_FOUND");
@@ -1167,8 +1240,9 @@ implements AcquisitionCopilotRepository {
     await this.pool.query(
       `INSERT INTO acquisition_copilot_tasks
        (id, owner_id, team_id, actor_id, session_id, status, payload_json,
-        dispatch_claimed_at, created_at, started_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+        dispatch_claimed_at, dispatch_lease_until, dispatch_attempts,
+        created_at, started_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?)`,
       [
         record.id,
         record.ownerId,
@@ -1185,22 +1259,37 @@ implements AcquisitionCopilotRepository {
   }
 
   async saveTask(record: AcquisitionCopilotTask) {
+    const previousStatuses = record.status === "running"
+      ? ["queued"]
+      : record.status === "succeeded"
+        ? ["running"]
+        : record.status === "failed" || record.status === "cancelled"
+          ? ["queued", "running"]
+          : [];
+    if (previousStatuses.length === 0) {
+      throw new Error("TASK_STATE_TRANSITION_INVALID");
+    }
+    const statusSql = previousStatuses
+      .map((status) => `'${status}'`)
+      .join(", ");
     const count = await affected(
       this.pool,
       `UPDATE acquisition_copilot_tasks
-       SET actor_id = ?, session_id = ?, status = ?, payload_json = ?,
+       SET status = ?, payload_json = ?,
            started_at = ?, completed_at = ?
-       WHERE id = ? AND owner_id = ? AND team_id = ?`,
+       WHERE id = ? AND owner_id = ? AND team_id = ?
+         AND actor_id = ? AND session_id = ?
+         AND status IN (${statusSql})`,
       [
-        record.actorId,
-        record.sessionId,
         record.status,
         json(record),
         mysqlDate(record.startedAt),
         mysqlDate(record.completedAt),
         record.id,
         record.ownerId,
-        record.teamId
+        record.teamId,
+        record.actorId,
+        record.sessionId
       ]
     );
     if (count !== 1) throw new Error("TASK_NOT_FOUND");
@@ -1224,9 +1313,15 @@ implements AcquisitionCopilotRepository {
     const count = await affected(
       this.pool,
       `UPDATE acquisition_copilot_tasks
-       SET dispatch_claimed_at = UTC_TIMESTAMP(3)
+       SET dispatch_claimed_at = UTC_TIMESTAMP(3),
+           dispatch_lease_until = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 5 MINUTE),
+           dispatch_attempts = dispatch_attempts + 1
        WHERE id = ? AND owner_id = ? AND team_id = ?
-         AND status = 'queued' AND dispatch_claimed_at IS NULL`,
+         AND status = 'queued'
+         AND (
+           dispatch_lease_until IS NULL
+           OR dispatch_lease_until < UTC_TIMESTAMP(3)
+         )`,
       [taskId, scope.ownerId, scope.teamId]
     );
     return count === 1;
@@ -1247,26 +1342,78 @@ implements AcquisitionCopilotRepository {
 
   async appendMessages(records: AcquisitionCopilotMessage[]) {
     if (records.length === 0) return;
+    const scope = {
+      ownerId: records[0]!.ownerId,
+      teamId: records[0]!.teamId,
+      sessionId: records[0]!.sessionId
+    };
+    const messageIds = new Set<string>();
     for (const record of records) {
       if (!Number.isSafeInteger(record.sequence) || record.sequence < 1) {
         throw new Error("COPILOT_MESSAGE_SEQUENCE_INVALID");
       }
+      if (record.ownerId !== scope.ownerId
+        || record.teamId !== scope.teamId
+        || record.sessionId !== scope.sessionId) {
+        throw new Error("COPILOT_MESSAGE_SCOPE_MISMATCH");
+      }
+      if (messageIds.has(record.id)) throw new Error("MESSAGE_EXISTS");
+      messageIds.add(record.id);
     }
-    const placeholders = records.map(() => "(?, ?, ?, ?, ?, ?, ?)").join(", ");
-    await this.pool.query(
-      `INSERT INTO acquisition_copilot_messages
-       (id, owner_id, team_id, session_id, sequence_no, payload_json, created_at)
-       VALUES ${placeholders}`,
-      records.flatMap((record) => [
-        record.id,
-        record.ownerId,
-        record.teamId,
-        record.sessionId,
-        record.sequence,
-        json(record),
-        mysqlDate(record.createdAt)
-      ])
-    );
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const sessionRows = await rows(
+        connection,
+        `SELECT id
+         FROM acquisition_copilot_sessions
+         WHERE id = ? AND owner_id = ? AND team_id = ?
+         FOR UPDATE`,
+        [scope.sessionId, scope.ownerId, scope.teamId]
+      );
+      if (!sessionRows[0]) throw new Error("SESSION_NOT_FOUND");
+      const sequenceRows = await rows(
+        connection,
+        `SELECT COALESCE(MAX(sequence_no), 0) AS max_sequence
+         FROM acquisition_copilot_messages
+         WHERE session_id = ? AND owner_id = ? AND team_id = ?`,
+        [scope.sessionId, scope.ownerId, scope.teamId]
+      );
+      const maxSequence = Number(sequenceRows[0]?.max_sequence ?? 0);
+      if (!Number.isSafeInteger(maxSequence) || maxSequence < 0) {
+        throw new Error(
+          "ACQUISITION_MYSQL_INTEGRITY:copilot_message:max_sequence"
+        );
+      }
+      const rebased = records.map((record, index) => ({
+        ...record,
+        sequence: maxSequence + index + 1
+      }));
+      const placeholders = rebased
+        .map(() => "(?, ?, ?, ?, ?, ?, ?)")
+        .join(", ");
+      await connection.query(
+        `INSERT INTO acquisition_copilot_messages
+         (id, owner_id, team_id, session_id, sequence_no,
+          payload_json, created_at)
+         VALUES ${placeholders}`,
+        rebased.flatMap((record) => [
+          record.id,
+          record.ownerId,
+          record.teamId,
+          record.sessionId,
+          record.sequence,
+          json(record),
+          mysqlDate(record.createdAt)
+        ])
+      );
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
   }
 
   async listMessages(scope: Scope, sessionId: string) {
@@ -1424,22 +1571,25 @@ function transactionView(
       }
       state.audits.set(value.id, clone(value));
     },
-    getIdempotency: (key) => clone(state.idempotency.get(key) ?? null),
+    getIdempotency: (key) =>
+      clone(state.idempotency.get(hash(key)) ?? null),
     putIdempotency: (value) => {
-      if (state.idempotency.has(value.scopeKey)) {
+      const keyHash = hash(value.scopeKey);
+      if (state.idempotency.has(keyHash)) {
         throw new Error(`Idempotency record already exists: ${value.scopeKey}`);
       }
-      state.idempotency.set(value.scopeKey, clone(value));
+      state.idempotency.set(keyHash, clone(value));
     },
     getUsageIdempotency: (key) =>
-      clone(state.usageIdempotency.get(key) ?? null),
+      clone(state.usageIdempotency.get(hash(key)) ?? null),
     putUsageIdempotency: (value) => {
-      if (state.usageIdempotency.has(value.scopeKey)) {
+      const keyHash = hash(value.scopeKey);
+      if (state.usageIdempotency.has(keyHash)) {
         throw new Error(
           `Usage idempotency record already exists: ${value.scopeKey}`
         );
       }
-      state.usageIdempotency.set(value.scopeKey, clone(value));
+      state.usageIdempotency.set(keyHash, clone(value));
     },
     getExecutionIntent: (id) => clone(state.intents.get(id) ?? null),
     putExecutionIntent: (value) => state.intents.set(value.id, clone(value)),
@@ -1500,12 +1650,17 @@ async function loadPlanRunState(
       row.payload_json,
       "run_idempotency"
     ) as AcquisitionIdempotencyRecord;
-    if (hash(value.scopeKey) !== row.scope_key_hash) {
+    const scopeKeyHash = requiredString(
+      row.scope_key_hash,
+      "scope_key_hash",
+      "run_idempotency"
+    );
+    if (value.scopeKey !== `sha256:${scopeKeyHash}`) {
       throw new Error(
         "ACQUISITION_MYSQL_INTEGRITY:run_idempotency:key_mismatch"
       );
     }
-    state.idempotency.set(value.scopeKey, clone(value));
+    state.idempotency.set(scopeKeyHash, clone(value));
   }
   for (const row of await rows(
     source,
@@ -1516,12 +1671,17 @@ async function loadPlanRunState(
       row.payload_json,
       "usage_idempotency"
     ) as AcquisitionUsageIdempotencyRecord;
-    if (hash(value.scopeKey) !== row.scope_key_hash) {
+    const scopeKeyHash = requiredString(
+      row.scope_key_hash,
+      "scope_key_hash",
+      "usage_idempotency"
+    );
+    if (value.scopeKey !== `sha256:${scopeKeyHash}`) {
       throw new Error(
         "ACQUISITION_MYSQL_INTEGRITY:usage_idempotency:key_mismatch"
       );
     }
-    state.usageIdempotency.set(value.scopeKey, clone(value));
+    state.usageIdempotency.set(scopeKeyHash, clone(value));
   }
   state.intents = mapOwnedRows<AcquisitionExecutionIntent>(
     await rows(source, `SELECT *
@@ -1621,15 +1781,19 @@ async function persistRuns(
     if (!previous) {
       await source.query(
         `INSERT INTO acquisition_runs
-         (id, plan_id, owner_id, team_id, revision, payload_json,
+         (id, plan_id, plan_version_id, owner_id, team_id, revision,
+          plan_snapshot_hash, budget_snapshot_hash, payload_json,
           created_at, updated_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           value.id,
           value.planId,
+          value.planVersionId,
           value.ownerId,
           value.teamId,
           value.revision,
+          value.planSnapshotHash,
+          value.budgetSnapshotHash,
           json(value),
           mysqlDate(value.createdAt),
           mysqlDate(value.updatedAt),
@@ -1641,14 +1805,18 @@ async function persistRuns(
     if (sameJson(previous, value)) continue;
     assertImmutableScope(previous, value, "run");
     assertRevisionAdvanced(previous, value, "run");
-    if (previous.planId !== value.planId) {
+    if (previous.planId !== value.planId
+      || previous.planVersionId !== value.planVersionId
+      || previous.planSnapshotHash !== value.planSnapshotHash
+      || previous.budgetSnapshotHash !== value.budgetSnapshotHash) {
       throw new Error("ACQUISITION_MYSQL_PARENT_IMMUTABLE:run");
     }
     const count = await affected(
       source,
       `UPDATE acquisition_runs
        SET revision = ?, payload_json = ?, updated_at = ?, completed_at = ?
-       WHERE id = ? AND plan_id = ?
+       WHERE id = ? AND plan_id = ? AND plan_version_id = ?
+         AND plan_snapshot_hash = ? AND budget_snapshot_hash = ?
          AND owner_id = ? AND team_id = ? AND revision = ?`,
       [
         value.revision,
@@ -1657,6 +1825,9 @@ async function persistRuns(
         mysqlDate(value.completedAt),
         value.id,
         value.planId,
+        value.planVersionId,
+        value.planSnapshotHash,
+        value.budgetSnapshotHash,
         value.ownerId,
         value.teamId,
         previous.revision
@@ -1784,9 +1955,6 @@ async function appendPlanRunChanges(
   after: PlanRunState
 ) {
   await persistPlans(source, before, after);
-  await persistRuns(source, before, after);
-  await persistShards(source, before, after);
-  await persistIntents(source, before, after);
   for (const value of newValues(before.versions, after.versions)) {
     await insertOwned(
       source,
@@ -1797,6 +1965,9 @@ async function appendPlanRunChanges(
       [value.planId, value.version]
     );
   }
+  await persistRuns(source, before, after);
+  await persistShards(source, before, after);
+  await persistIntents(source, before, after);
   for (const value of newValues(before.planEvents, after.planEvents)) {
     await insertOwned(
       source,
