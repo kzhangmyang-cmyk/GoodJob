@@ -132,7 +132,13 @@ test("every named API resource component accepts a canonical valid instance", as
   const ajv = new Ajv({ strict: false }); addFormats(ajv);
   for (const [name, value] of Object.entries(examples)) {
     if (name === "Candidate") {
-      for (const [index, instance] of value.entries()) assert.equal(registry.validators.get(index === 0 ? "organization-candidate" : "individual-demand-signal")(instance), true);
+      assert.deepEqual(document.components.schemas.Candidate.oneOf.map((branch) => branch.$ref), ["../json-schema/organization-candidate.v1.schema.json", "../json-schema/individual-demand-signal.v1.schema.json"]);
+      const validate = ajv.compile({ oneOf: [registry.schemaDocuments.get("organization-candidate"), registry.schemaDocuments.get("individual-demand-signal")] });
+      for (const instance of value) assert.equal(validate(instance), true, JSON.stringify(validate.errors));
+      const paged = document.components.schemas.CandidatePagedResult;
+      assert.deepEqual(paged.properties.items.items.oneOf.map((branch) => branch.$ref), ["../json-schema/organization-candidate.v1.schema.json", "../json-schema/individual-demand-signal.v1.schema.json"]);
+      const validatePaged = ajv.compile({ ...paged, properties: { ...paged.properties, items: { type: "array", items: { oneOf: [registry.schemaDocuments.get("organization-candidate"), registry.schemaDocuments.get("individual-demand-signal")] } } } });
+      assert.equal(validatePaged({ items: value, nextCursor: null }), true, JSON.stringify(validatePaged.errors));
       continue;
     }
     if (name === "AsyncOperation") {
@@ -141,6 +147,7 @@ test("every named API resource component accepts a canonical valid instance", as
       continue;
     }
     const schema = document.components.schemas[name];
+    assert.equal(schema.$ref, `../json-schema/${toKebab(name)}.v1.schema.json`, name);
     const canonical = schema.$ref ? registry.schemaDocuments.get(schema.$ref.split("/").pop().replace(".v1.schema.json", "")) : schema;
     const validate = ajv.compile(canonical);
     for (const instance of [value]) assert.equal(validate(instance), true, `${name}: ${JSON.stringify(validate.errors)}`);
