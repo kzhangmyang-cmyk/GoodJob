@@ -33,18 +33,7 @@ components:
       required: true
       schema: { type: string, minLength: 1 }
   schemas:
-    AsyncOperation:
-      type: object
-      additionalProperties: false
-      required: [id, kind, status, createdAt]
-      properties:
-        id: { type: string }
-        kind: { type: string }
-        status: { type: string }
-        resourceId: { type: [string, 'null'] }
-        error: { type: [object, 'null'] }
-        createdAt: { type: string, format: date-time }
-        completedAt: { type: [string, 'null'], format: date-time }
+    AsyncOperation: { $ref: ../json-schema/async-operation.v1.schema.json }
     ApiError:
       type: object
       additionalProperties: false
@@ -61,7 +50,7 @@ components:
       required: [items, nextCursor]
       properties:
         items: { type: array, items: { type: object } }
-        nextCursor: { type: string, nullable: true }
+        nextCursor: { type: [string, 'null'] }
     ModelProvider: { $ref: ../json-schema/model-provider.v1.schema.json }
     ModelConnection: { $ref: ../json-schema/model-connection.v1.schema.json }
     ModelCallRecord: { $ref: ../json-schema/model-call-record.v1.schema.json }

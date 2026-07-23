@@ -87,7 +87,7 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(new URL("/api/v1/acquisition/runs", `https://contract.test${document.servers[0].url}`).pathname, "/api/v1/acquisition/runs");
   assert.deepEqual(Object.keys(document.paths).sort(), Object.keys(section16).sort());
   assert.equal(document.components.schemas.ApiError.additionalProperties, false);
-  assert.equal(document.components.schemas.AsyncOperation.additionalProperties, false);
+  assert.equal(document.components.schemas.AsyncOperation.$ref, "../json-schema/async-operation.v1.schema.json");
   assert.equal(document.components.schemas.PagedResult.additionalProperties, false);
   for (const [path, methods] of Object.entries(section16)) {
     const actualMethods = Object.keys(document.paths[path]).filter((key) => ["get", "post", "patch", "delete"].includes(key)).sort();
@@ -142,7 +142,8 @@ test("every named API resource component accepts a canonical valid instance", as
       continue;
     }
     if (name === "AsyncOperation") {
-      const validate = ajv.compile(document.components.schemas.AsyncOperation);
+      assert.equal(document.components.schemas.AsyncOperation.$ref, "../json-schema/async-operation.v1.schema.json");
+      const validate = registry.validators.get("async-operation");
       assert.equal(validate(value), true, JSON.stringify(validate.errors));
       continue;
     }
@@ -152,6 +153,30 @@ test("every named API resource component accepts a canonical valid instance", as
     const validate = ajv.compile(canonical);
     for (const instance of [value]) assert.equal(validate(instance), true, `${name}: ${JSON.stringify(validate.errors)}`);
   }
+});
+
+test("OpenAPI canonical edge cases preserve optional timestamps, nullable cursors, and typed async errors", async () => {
+  const document = await loadOpenApiSource();
+  const registry = await loadSchemaRegistry();
+  const modelConnection = {
+    id: "connection_1", ownerId: "owner_1", provider: "openai", model: "gpt-5",
+    credentialVersion: 1,
+    capabilitySnapshot: { structuredOutput: true, toolCalling: true, parallelToolCalling: true, streaming: true, modelListing: true },
+    status: "active", createdAt: "2026-07-23T00:00:00.000Z", updatedAt: "2026-07-23T01:00:00.000Z"
+  };
+  assert.equal(registry.validators.get("model-connection")(modelConnection), true);
+  assert.equal(document.components.schemas.ModelConnection.$ref, "../json-schema/model-connection.v1.schema.json");
+
+  const ajv = new Ajv({ strict: false }); addFormats(ajv);
+  assert.deepEqual(document.components.schemas.PagedResult.properties.nextCursor.type, ["string", "null"]);
+  assert.equal("nullable" in document.components.schemas.PagedResult.properties.nextCursor, false);
+  assert.equal(ajv.compile(document.components.schemas.PagedResult)({ items: [], nextCursor: null }), true);
+
+  assert.equal(document.components.schemas.AsyncOperation.$ref, "../json-schema/async-operation.v1.schema.json");
+  const validateAsync = registry.validators.get("async-operation");
+  const base = { id: "op_1", kind: "run", status: "failed", resourceId: null, createdAt: "2026-07-23T00:00:00.000Z", completedAt: "2026-07-23T00:01:00.000Z" };
+  assert.equal(validateAsync({ ...base, error: { code: "provider_failed", message: "Provider failed", details: {}, requestId: "req_1", retryable: true } }), true);
+  assert.equal(validateAsync({ ...base, error: { arbitrary: true } }), false);
 });
 
 function toKebab(name) { return name.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase(); }
