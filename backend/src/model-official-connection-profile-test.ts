@@ -18,9 +18,9 @@ test("official connection profile derives endpoint and capabilities from registr
   assert.equal(profile.workspaceId, null);
   assert.equal(profile.adapterVersion, "official-openai-compatible.v1");
   assert.deepEqual(profile.capabilitySnapshot, {
-    structuredOutput: false,
+    structuredOutput: true,
     toolCalling: true,
-    parallelToolCalling: false,
+    parallelToolCalling: true,
     streaming: true,
     modelListing: true
   });

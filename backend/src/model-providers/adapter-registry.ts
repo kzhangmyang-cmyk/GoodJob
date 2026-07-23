@@ -224,6 +224,23 @@ const supported = "certified_supported" as const;
 const exactModelCertifications: Readonly<
   Partial<Record<ModelProviderId, readonly ExactModelCertificationDefinition[]>>
 > = Object.freeze({
+  openai: Object.freeze([
+    ...["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].map((model) =>
+      Object.freeze({
+        model,
+        profileIds: Object.freeze(["openai-global"] as const),
+        capabilities: Object.freeze({
+          chatCompletions: supported,
+          responses: supported,
+          streaming: supported,
+          toolCalling: supported,
+          jsonSchema: supported
+        }),
+        officialReference:
+          `https://developers.openai.com/api/docs/models/${model}`
+      })
+    )
+  ]),
   moonshot: Object.freeze([
     Object.freeze({
       model: "kimi-k3",
@@ -231,7 +248,10 @@ const exactModelCertifications: Readonly<
       capabilities: Object.freeze({
         chatCompletions: supported,
         streaming: supported,
-        toolCalling: supported
+        toolCalling: supported,
+        parallelToolCalling: supported,
+        jsonObject: supported,
+        jsonSchema: supported
       }),
       officialReference: "https://platform.kimi.com/docs/api/chat"
     })
@@ -280,6 +300,54 @@ const exactModelCertifications: Readonly<
         }),
         officialReference:
           "https://api-docs.deepseek.com/api/create-chat-completion"
+      })
+    )
+  ]),
+  qwen: Object.freeze([
+    ...["qwen3.7-plus", "qwen3.7-plus-2026-05-26"].map((model) =>
+      Object.freeze({
+        model,
+        profileIds: Object.freeze([
+          "qwen-cn-beijing-shared",
+          "qwen-ap-southeast-1-shared",
+          "qwen-us-east-1-shared",
+          "qwen-cn-beijing-workspace",
+          "qwen-ap-southeast-1-workspace",
+          "qwen-ap-northeast-1-workspace",
+          "qwen-eu-central-1-workspace"
+        ] as const),
+        capabilities: Object.freeze({
+          chatCompletions: supported,
+          responses: supported,
+          streaming: supported,
+          toolCalling: supported,
+          jsonObject: supported
+        }),
+        officialReference:
+          "https://help.aliyun.com/zh/model-studio/text-generation-model"
+      })
+    ),
+    ...["qwen3.6-plus", "qwen3.6-plus-2026-04-02"].map((model) =>
+      Object.freeze({
+        model,
+        profileIds: Object.freeze([
+          "qwen-cn-beijing-shared",
+          "qwen-ap-southeast-1-shared",
+          "qwen-us-east-1-shared",
+          "qwen-cn-beijing-workspace",
+          "qwen-ap-southeast-1-workspace",
+          "qwen-ap-northeast-1-workspace"
+        ] as const),
+        capabilities: Object.freeze({
+          chatCompletions: supported,
+          responses: supported,
+          streaming: supported,
+          toolCalling: supported,
+          parallelToolCalling: supported,
+          jsonObject: supported
+        }),
+        officialReference:
+          "https://help.aliyun.com/en/model-studio/qwen-function-calling"
       })
     )
   ]),

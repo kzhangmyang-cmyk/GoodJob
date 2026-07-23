@@ -633,6 +633,66 @@ test("registrations normalize documented HTTP and business error envelopes", () 
 });
 
 test("capability certification is exact-model and leaves unknowns unverified", () => {
+  for (const model of [
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna"
+  ]) {
+    const openai = getOfficialModelAdapterRegistration(
+      "openai"
+    ).certifyExactModelCapabilities({
+      profileId: "openai-global",
+      model
+    });
+    assert.equal(openai.capabilities.chatCompletions, "certified_supported");
+    assert.equal(openai.capabilities.responses, "certified_supported");
+    assert.equal(openai.capabilities.streaming, "certified_supported");
+    assert.equal(openai.capabilities.toolCalling, "certified_supported");
+    assert.equal(openai.capabilities.jsonSchema, "certified_supported");
+    assert.equal(openai.evidence?.model, model);
+  }
+
+  for (const model of [
+    "qwen3.7-plus",
+    "qwen3.7-plus-2026-05-26",
+    "qwen3.6-plus",
+    "qwen3.6-plus-2026-04-02"
+  ]) {
+    const qwen = getOfficialModelAdapterRegistration(
+      "qwen"
+    ).certifyExactModelCapabilities({
+      profileId: "qwen-cn-beijing-workspace",
+      model
+    });
+    assert.equal(qwen.capabilities.chatCompletions, "certified_supported");
+    assert.equal(qwen.capabilities.responses, "certified_supported");
+    assert.equal(qwen.capabilities.streaming, "certified_supported");
+    assert.equal(qwen.capabilities.toolCalling, "certified_supported");
+    assert.equal(qwen.capabilities.jsonObject, "certified_supported");
+    assert.equal(qwen.evidence?.model, model);
+  }
+
+  const qwenParallel = getOfficialModelAdapterRegistration(
+    "qwen"
+  ).certifyExactModelCapabilities({
+    profileId: "qwen-cn-beijing-workspace",
+    model: "qwen3.6-plus"
+  });
+  assert.equal(
+    qwenParallel.capabilities.parallelToolCalling,
+    "certified_supported"
+  );
+
+  const kimi = getOfficialModelAdapterRegistration(
+    "moonshot"
+  ).certifyExactModelCapabilities({
+    profileId: "moonshot-cn",
+    model: "kimi-k3"
+  });
+  assert.equal(kimi.capabilities.jsonObject, "certified_supported");
+  assert.equal(kimi.capabilities.jsonSchema, "certified_supported");
+  assert.equal(kimi.capabilities.parallelToolCalling, "certified_supported");
+
   const deepseek = getOfficialModelAdapterRegistration(
     "deepseek"
   ).certifyExactModelCapabilities({
