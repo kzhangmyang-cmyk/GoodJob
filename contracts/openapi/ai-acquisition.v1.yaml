@@ -94,7 +94,19 @@ components:
     AcquisitionPlan: *resource
     AcquisitionRun: *resource
     AcquisitionOperationShard: *resource
-    OrganizationCandidate: *resource
+    OrganizationCandidate:
+      type: object
+      additionalProperties: false
+      required: [id, name, evidenceIds, status, createdAt]
+      properties:
+        id: { type: string }
+        name: { type: string, minLength: 1 }
+        domain: { type: string, nullable: true }
+        region: { type: string, nullable: true }
+        creditCode: { type: string, nullable: true }
+        evidenceIds: { type: array, minItems: 1, items: { type: string, minLength: 1 } }
+        status: { type: string }
+        createdAt: { type: string, format: date-time }
     DiscoveryEvidence: *resource
     QualificationDecision: *resource
     BattleCard: *resource
