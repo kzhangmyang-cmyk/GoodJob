@@ -1,0 +1,701 @@
+import {
+  createHmac,
+  randomUUID
+} from "node:crypto";
+import type {
+  AgentMessage
+} from "@earendil-works/pi-agent-core";
+import type {
+  AcquisitionPiModelSnapshot
+} from "./acquisition-pi-agent.js";
+
+export interface AcquisitionCopilotScope {
+  ownerId: string;
+  teamId: string;
+  actorId: string;
+}
+
+export interface AcquisitionCopilotSession {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  actorId: string;
+  status: "active" | "completed" | "failed";
+  modelSnapshot: AcquisitionPiModelSnapshot;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface AcquisitionCopilotTask {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  actorId: string;
+  sessionId: string;
+  kind: "message";
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  prompt: string;
+  result: {
+    summary: string;
+    toolNames: string[];
+  } | null;
+  errorCode: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface AcquisitionCopilotMessage {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  sessionId: string;
+  sequence: number;
+  message: AgentMessage;
+  createdAt: string;
+}
+
+export interface AcquisitionCopilotIdempotencyRecord {
+  ownerId: string;
+  teamId: string;
+  operation: "create_session" | "enqueue_message" | "complete_session";
+  keyHash: string;
+  requestHash: string;
+  resourceType: "session" | "task";
+  resourceId: string;
+  createdAt: string;
+}
+
+export interface AcquisitionCopilotRepository {
+  insertSession(session: AcquisitionCopilotSession): Promise<void>;
+  saveSession(session: AcquisitionCopilotSession): Promise<void>;
+  findSession(
+    scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
+    sessionId: string
+  ): Promise<AcquisitionCopilotSession | undefined>;
+  insertTask(task: AcquisitionCopilotTask): Promise<void>;
+  saveTask(task: AcquisitionCopilotTask): Promise<void>;
+  findTask(
+    scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
+    taskId: string
+  ): Promise<AcquisitionCopilotTask | undefined>;
+  listTasks(
+    scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
+    sessionId: string
+  ): Promise<AcquisitionCopilotTask[]>;
+  appendMessages(messages: AcquisitionCopilotMessage[]): Promise<void>;
+  listMessages(
+    scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
+    sessionId: string
+  ): Promise<AcquisitionCopilotMessage[]>;
+  findIdempotency(input: {
+    ownerId: string;
+    teamId: string;
+    operation: AcquisitionCopilotIdempotencyRecord["operation"];
+    keyHash: string;
+  }): Promise<AcquisitionCopilotIdempotencyRecord | undefined>;
+  appendIdempotency(
+    record: AcquisitionCopilotIdempotencyRecord
+  ): Promise<void>;
+}
+
+function clone<T>(value: T): T {
+  return structuredClone(value);
+}
+
+export class InMemoryAcquisitionCopilotRepository
+implements AcquisitionCopilotRepository {
+  readonly #sessions = new Map<string, AcquisitionCopilotSession>();
+  readonly #tasks = new Map<string, AcquisitionCopilotTask>();
+  readonly #messages: AcquisitionCopilotMessage[] = [];
+  readonly #idempotency = new Map<string, AcquisitionCopilotIdempotencyRecord>();
+
+  async insertSession(session: AcquisitionCopilotSession) {
+    if (this.#sessions.has(session.id)) throw new Error("SESSION_EXISTS");
+    this.#sessions.set(session.id, clone(session));
+  }
+
+  async saveSession(session: AcquisitionCopilotSession) {
+    if (!this.#sessions.has(session.id)) throw new Error("SESSION_NOT_FOUND");
+    this.#sessions.set(session.id, clone(session));
+  }
+
+  async findSession(
+    scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
+    sessionId: string
+  ) {
+    const session = this.#sessions.get(sessionId);
+    return session
+      && session.ownerId === scope.ownerId
+      && session.teamId === scope.teamId
+      ? clone(session)
+      : undefined;
+  }
+
+  async insertTask(task: AcquisitionCopilotTask) {
+    if (this.#tasks.has(task.id)) throw new Error("TASK_EXISTS");
+    this.#tasks.set(task.id, clone(task));
+  }
+
+  async saveTask(task: AcquisitionCopilotTask) {
+    if (!this.#tasks.has(task.id)) throw new Error("TASK_NOT_FOUND");
+    this.#tasks.set(task.id, clone(task));
+  }
+
+  async findTask(
+    scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
+    taskId: string
+  ) {
+    const task = this.#tasks.get(taskId);
+    return task
+      && task.ownerId === scope.ownerId
+      && task.teamId === scope.teamId
+      ? clone(task)
+      : undefined;
+  }
+
+  async listTasks(
+    scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
+    sessionId: string
+  ) {
+    return [...this.#tasks.values()]
+      .filter((task) =>
+        task.ownerId === scope.ownerId
+        && task.teamId === scope.teamId
+        && task.sessionId === sessionId
+      )
+      .map((task) => clone(task));
+  }
+
+  async appendMessages(messages: AcquisitionCopilotMessage[]) {
+    const existingIds = new Set(this.#messages.map((message) => message.id));
+    for (const message of messages) {
+      if (existingIds.has(message.id)) throw new Error("MESSAGE_EXISTS");
+      existingIds.add(message.id);
+      this.#messages.push(clone(message));
+    }
+  }
+
+  async listMessages(
+    scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
+    sessionId: string
+  ) {
+    return this.#messages
+      .filter((message) =>
+        message.ownerId === scope.ownerId
+        && message.teamId === scope.teamId
+        && message.sessionId === sessionId
+      )
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((message) => clone(message));
+  }
+
+  async findIdempotency(input: {
+    ownerId: string;
+    teamId: string;
+    operation: AcquisitionCopilotIdempotencyRecord["operation"];
+    keyHash: string;
+  }) {
+    const record = this.#idempotency.get([
+      input.ownerId,
+      input.teamId,
+      input.operation,
+      input.keyHash
+    ].join(":"));
+    return record ? clone(record) : undefined;
+  }
+
+  async appendIdempotency(record: AcquisitionCopilotIdempotencyRecord) {
+    const key = [
+      record.ownerId,
+      record.teamId,
+      record.operation,
+      record.keyHash
+    ].join(":");
+    if (this.#idempotency.has(key)) throw new Error("IDEMPOTENCY_EXISTS");
+    this.#idempotency.set(key, clone(record));
+  }
+}
+
+export interface AcquisitionCopilotRunInput {
+  sessionId: string;
+  snapshot: AcquisitionPiModelSnapshot;
+  transcript: AgentMessage[];
+  prompt: string;
+}
+
+export interface AcquisitionCopilotRunner {
+  run(input: AcquisitionCopilotRunInput): Promise<{
+    newMessages: AgentMessage[];
+    result: {
+      summary: string;
+      toolNames: string[];
+    };
+  }>;
+}
+
+export type AcquisitionCopilotErrorCode =
+  | "invalid_request"
+  | "resource_not_found"
+  | "invalid_state"
+  | "idempotency_conflict";
+
+export class AcquisitionCopilotError extends Error {
+  constructor(
+    public readonly code: AcquisitionCopilotErrorCode,
+    message: string,
+    public readonly status: 400 | 404 | 409
+  ) {
+    super(message);
+    this.name = "AcquisitionCopilotError";
+  }
+}
+
+export interface AcquisitionCopilotServiceOptions {
+  repository: AcquisitionCopilotRepository;
+  runner: AcquisitionCopilotRunner;
+  idempotencySecret: string;
+  idFactory?: (prefix: string) => string;
+  now?: () => string;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  }
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) =>
+    `${JSON.stringify(key)}:${stableJson(object[key])}`
+  ).join(",")}}`;
+}
+
+function digest(secret: string, value: unknown) {
+  return createHmac("sha256", secret)
+    .update(stableJson(value))
+    .digest("hex");
+}
+
+function safeErrorCode(error: unknown) {
+  const raw = error instanceof Error ? error.message : "";
+  return raw.match(/^[A-Z][A-Z0-9_]{2,63}/)?.[0]
+    ?? "COPILOT_TASK_FAILED";
+}
+
+function requiredText(value: unknown, name: string, maxLength: number) {
+  const text = String(value ?? "").trim();
+  if (!text || text.length > maxLength) {
+    throw new AcquisitionCopilotError(
+      "invalid_request",
+      `${name}不能为空且不能超过 ${maxLength} 个字符`,
+      400
+    );
+  }
+  return text;
+}
+
+function validScope(scope: AcquisitionCopilotScope) {
+  requiredText(scope.ownerId, "ownerId", 100);
+  requiredText(scope.teamId, "teamId", 100);
+  requiredText(scope.actorId, "actorId", 100);
+}
+
+function validSnapshot(
+  snapshot: AcquisitionPiModelSnapshot
+): AcquisitionPiModelSnapshot {
+  for (const [name, value] of Object.entries(snapshot)) {
+    if (name === "credentialVersion") continue;
+    requiredText(value, `modelSnapshot.${name}`, 500);
+  }
+  if (!Number.isInteger(snapshot.credentialVersion)
+    || snapshot.credentialVersion < 1) {
+    throw new AcquisitionCopilotError(
+      "invalid_request",
+      "modelSnapshot.credentialVersion 必须是正整数",
+      400
+    );
+  }
+  return Object.freeze(clone(snapshot));
+}
+
+function sanitizedResult(input: {
+  summary: string;
+  toolNames: string[];
+}) {
+  return {
+    summary: requiredText(input.summary, "任务摘要", 4_000),
+    toolNames: [...new Set(input.toolNames
+      .map((item) => String(item).trim())
+      .filter(Boolean))]
+      .slice(0, 50)
+  };
+}
+
+export class AcquisitionCopilotService {
+  readonly #repository: AcquisitionCopilotRepository;
+  readonly #runner: AcquisitionCopilotRunner;
+  readonly #secret: string;
+  readonly #idFactory: (prefix: string) => string;
+  readonly #now: () => string;
+  readonly #inFlightTasks =
+    new Map<string, Promise<AcquisitionCopilotTask>>();
+  readonly #inFlightCommands =
+    new Map<string, Promise<AcquisitionCopilotSession | AcquisitionCopilotTask>>();
+
+  constructor(options: AcquisitionCopilotServiceOptions) {
+    if (options.idempotencySecret.length < 32) {
+      throw new TypeError(
+        "idempotencySecret must contain at least 32 characters"
+      );
+    }
+    this.#repository = options.repository;
+    this.#runner = options.runner;
+    this.#secret = options.idempotencySecret;
+    this.#idFactory =
+      options.idFactory ?? ((prefix) => `${prefix}_${randomUUID()}`);
+    this.#now = options.now ?? (() => new Date().toISOString());
+  }
+
+  async createSession(
+    scope: AcquisitionCopilotScope,
+    rawSnapshot: AcquisitionPiModelSnapshot,
+    idempotencyKey: string
+  ) {
+    validScope(scope);
+    const snapshot = validSnapshot(rawSnapshot);
+    return this.#idempotent(
+      scope,
+      "create_session",
+      idempotencyKey,
+      snapshot,
+      "session",
+      async () => {
+        const now = this.#now();
+        const session: AcquisitionCopilotSession = {
+          id: this.#idFactory("copilot-session"),
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          actorId: scope.actorId,
+          status: "active",
+          modelSnapshot: snapshot,
+          createdAt: now,
+          updatedAt: now,
+          completedAt: null
+        };
+        await this.#repository.insertSession(session);
+        return session;
+      }
+    ) as Promise<AcquisitionCopilotSession>;
+  }
+
+  async getSession(scope: AcquisitionCopilotScope, sessionId: string) {
+    validScope(scope);
+    const session = await this.#repository.findSession(
+      scope,
+      requiredText(sessionId, "sessionId", 255)
+    );
+    if (!session) {
+      throw new AcquisitionCopilotError(
+        "resource_not_found",
+        "智能体会话不存在",
+        404
+      );
+    }
+    return session;
+  }
+
+  async enqueueMessage(
+    scope: AcquisitionCopilotScope,
+    sessionId: string,
+    rawPrompt: string,
+    idempotencyKey: string
+  ) {
+    validScope(scope);
+    const prompt = requiredText(rawPrompt, "message", 20_000);
+    const session = await this.getSession(scope, sessionId);
+    if (session.status !== "active") {
+      throw new AcquisitionCopilotError(
+        "invalid_state",
+        "只有 active 会话可以接收新消息",
+        409
+      );
+    }
+    return this.#idempotent(
+      scope,
+      "enqueue_message",
+      idempotencyKey,
+      { sessionId: session.id, prompt },
+      "task",
+      async () => {
+        const task: AcquisitionCopilotTask = {
+          id: this.#idFactory("copilot-task"),
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          actorId: scope.actorId,
+          sessionId: session.id,
+          kind: "message",
+          status: "queued",
+          prompt,
+          result: null,
+          errorCode: null,
+          createdAt: this.#now(),
+          startedAt: null,
+          completedAt: null
+        };
+        await this.#repository.insertTask(task);
+        return task;
+      }
+    ) as Promise<AcquisitionCopilotTask>;
+  }
+
+  runTask(scope: AcquisitionCopilotScope, taskId: string) {
+    validScope(scope);
+    const normalizedTaskId = requiredText(taskId, "taskId", 255);
+    const inFlight = this.#inFlightTasks.get(normalizedTaskId);
+    if (inFlight) return inFlight.then(clone);
+    const run = this.#executeTask(scope, normalizedTaskId);
+    this.#inFlightTasks.set(normalizedTaskId, run);
+    void run.finally(() => {
+      this.#inFlightTasks.delete(normalizedTaskId);
+    }).catch(() => undefined);
+    return run.then(clone);
+  }
+
+  async getTask(scope: AcquisitionCopilotScope, taskId: string) {
+    validScope(scope);
+    return this.#requireTask(scope, taskId);
+  }
+
+  async listMessages(scope: AcquisitionCopilotScope, sessionId: string) {
+    validScope(scope);
+    const session = await this.getSession(scope, sessionId);
+    return this.#repository.listMessages(scope, session.id);
+  }
+
+  async completeSession(
+    scope: AcquisitionCopilotScope,
+    sessionId: string,
+    idempotencyKey: string
+  ) {
+    validScope(scope);
+    const session = await this.getSession(scope, sessionId);
+    return this.#idempotent(
+      scope,
+      "complete_session",
+      idempotencyKey,
+      { sessionId: session.id },
+      "session",
+      async () => {
+        if (session.status === "completed") return session;
+        if (session.status !== "active") {
+          throw new AcquisitionCopilotError(
+            "invalid_state",
+            "当前会话不能完成",
+            409
+          );
+        }
+        const tasks = await this.#repository.listTasks(scope, session.id);
+        if (tasks.some((task) =>
+          task.status === "queued" || task.status === "running"
+        )) {
+          throw new AcquisitionCopilotError(
+            "invalid_state",
+            "仍有未完成的智能体任务",
+            409
+          );
+        }
+        const now = this.#now();
+        const completed: AcquisitionCopilotSession = {
+          ...session,
+          status: "completed",
+          updatedAt: now,
+          completedAt: now
+        };
+        await this.#repository.saveSession(completed);
+        return completed;
+      }
+    ) as Promise<AcquisitionCopilotSession>;
+  }
+
+  async #executeTask(
+    scope: AcquisitionCopilotScope,
+    taskId: string
+  ): Promise<AcquisitionCopilotTask> {
+    let task = await this.#requireTask(scope, taskId);
+    if (["succeeded", "failed", "cancelled"].includes(task.status)) {
+      return task;
+    }
+    if (task.status !== "queued") {
+      throw new AcquisitionCopilotError(
+        "invalid_state",
+        "智能体任务已被其他执行器领取",
+        409
+      );
+    }
+    const session = await this.getSession(scope, task.sessionId);
+    if (session.status !== "active") {
+      throw new AcquisitionCopilotError(
+        "invalid_state",
+        "智能体会话已结束",
+        409
+      );
+    }
+    task = {
+      ...task,
+      status: "running",
+      startedAt: this.#now()
+    };
+    await this.#repository.saveTask(task);
+    try {
+      const existing = await this.#repository.listMessages(
+        scope,
+        session.id
+      );
+      const response = await this.#runner.run({
+        sessionId: session.id,
+        snapshot: clone(session.modelSnapshot),
+        transcript: existing.map((record) => clone(record.message)),
+        prompt: task.prompt
+      });
+      this.#validateNewMessages(response.newMessages, task.prompt);
+      const startSequence = existing.length;
+      const messages = response.newMessages.map(
+        (message, index): AcquisitionCopilotMessage => ({
+          id: this.#idFactory("copilot-message"),
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          sessionId: session.id,
+          sequence: startSequence + index + 1,
+          message: clone(message),
+          createdAt: this.#now()
+        })
+      );
+      await this.#repository.appendMessages(messages);
+      task = {
+        ...task,
+        status: "succeeded",
+        result: sanitizedResult(response.result),
+        errorCode: null,
+        completedAt: this.#now()
+      };
+      await this.#repository.saveTask(task);
+      return task;
+    } catch (error) {
+      task = {
+        ...task,
+        status: "failed",
+        result: null,
+        errorCode: safeErrorCode(error),
+        completedAt: this.#now()
+      };
+      await this.#repository.saveTask(task);
+      return task;
+    }
+  }
+
+  #validateNewMessages(messages: AgentMessage[], prompt: string) {
+    if (!Array.isArray(messages) || messages.length < 2) {
+      throw new Error("COPILOT_TRANSCRIPT_INVALID");
+    }
+    const first = messages[0];
+    if (!first || first.role !== "user" || first.content !== prompt) {
+      throw new Error("COPILOT_TRANSCRIPT_INVALID");
+    }
+    const final = messages[messages.length - 1];
+    if (!final || final.role !== "assistant") {
+      throw new Error("COPILOT_TRANSCRIPT_INVALID");
+    }
+  }
+
+  async #requireTask(scope: AcquisitionCopilotScope, taskId: string) {
+    const task = await this.#repository.findTask(
+      scope,
+      requiredText(taskId, "taskId", 255)
+    );
+    if (!task) {
+      throw new AcquisitionCopilotError(
+        "resource_not_found",
+        "智能体任务不存在",
+        404
+      );
+    }
+    return task;
+  }
+
+  async #idempotent(
+    scope: AcquisitionCopilotScope,
+    operation: AcquisitionCopilotIdempotencyRecord["operation"],
+    rawKey: string,
+    request: unknown,
+    resourceType: AcquisitionCopilotIdempotencyRecord["resourceType"],
+    create: () => Promise<AcquisitionCopilotSession | AcquisitionCopilotTask>
+  ) {
+    const key = requiredText(rawKey, "Idempotency-Key", 255);
+    const keyHash = digest(this.#secret, key);
+    const requestHash = digest(this.#secret, request);
+    const commandKey = [
+      scope.ownerId,
+      scope.teamId,
+      operation,
+      keyHash
+    ].join(":");
+    const active = this.#inFlightCommands.get(commandKey);
+    if (active) {
+      const resource = await active;
+      const record = await this.#repository.findIdempotency({
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        operation,
+        keyHash
+      });
+      if (record && record.requestHash !== requestHash) {
+        throw new AcquisitionCopilotError(
+          "idempotency_conflict",
+          "相同 Idempotency-Key 对应了不同请求",
+          409
+        );
+      }
+      return clone(resource);
+    }
+    const command = (async () => {
+      const existing = await this.#repository.findIdempotency({
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        operation,
+        keyHash
+      });
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          throw new AcquisitionCopilotError(
+            "idempotency_conflict",
+            "相同 Idempotency-Key 对应了不同请求",
+            409
+          );
+        }
+        if (existing.resourceType === "session") {
+          return this.getSession(scope, existing.resourceId);
+        }
+        return this.#requireTask(scope, existing.resourceId);
+      }
+      const resource = await create();
+      await this.#repository.appendIdempotency({
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        operation,
+        keyHash,
+        requestHash,
+        resourceType,
+        resourceId: resource.id,
+        createdAt: this.#now()
+      });
+      return resource;
+    })();
+    this.#inFlightCommands.set(commandKey, command);
+    try {
+      return clone(await command);
+    } finally {
+      this.#inFlightCommands.delete(commandKey);
+    }
+  }
+}
