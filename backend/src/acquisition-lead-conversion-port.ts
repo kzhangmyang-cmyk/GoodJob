@@ -184,7 +184,7 @@ implements LeadConversionPort {
         ? "低"
         : "中";
     const estimatedAmount = financial?.currency === "CNY"
-      ? financial.predictedDealAmountMinor / 100
+      ? financial.expectedRevenueMinor / 100
       : 0;
     const publicSourceUrl = sourceUrl(evidence);
     const lead: Lead = {

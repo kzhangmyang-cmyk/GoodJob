@@ -30,7 +30,7 @@ function candidate(input: {
     createdAt: "2026-07-23T00:00:00.000Z",
     updatedAt: input.updatedAt,
     version: 1
-  } as const;
+  };
   if (input.subject === "organization") {
     return {
       ...base,
@@ -54,7 +54,8 @@ function candidate(input: {
     partyType: "individual",
     partyRef: {
       partyType: "individual",
-      individualPartyId: `party-${input.id}`
+      individualPartyId: `party-${input.id}`,
+      demandSignalId: `signal-${input.id}`
     },
     profile: {
       kind: "individual",
@@ -62,7 +63,6 @@ function candidate(input: {
       publicDisplayName: input.id,
       publicProfileUrl: `https://example.cn/${input.id}`,
       sourcePlatform: "baidu_ai_search",
-      demandSignalId: `signal-${input.id}`,
       demandCategory: "公开采购",
       demandSummary: "公开表达采购需求",
       locationHint: "中国",
