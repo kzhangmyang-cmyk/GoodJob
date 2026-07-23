@@ -58,6 +58,8 @@ export interface AcquisitionModelSnapshotRef {
   capabilitySnapshotHash: string;
   promptVersion: string;
   schemaVersion: string;
+  promptHash: string;
+  schemaHash: string;
 }
 
 export interface AcquisitionProviderConnectionSnapshot {

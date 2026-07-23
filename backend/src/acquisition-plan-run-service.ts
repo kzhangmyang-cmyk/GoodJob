@@ -387,6 +387,8 @@ function planReadinessIssues(payload: AcquisitionPlanPayload) {
     || !model.model?.trim()
     || !model.capabilitySnapshotHash?.trim()
     || !model.promptVersion?.trim()
+    || !model.promptHash?.trim()
+    || !model.schemaHash?.trim()
     || model.schemaVersion !== "acquisition-plan.v1") {
     issues.push("model_snapshot_invalid");
   }

@@ -156,7 +156,9 @@ function planInput(
       model: "glm-4.5",
       capabilitySnapshotHash: "capability-hash-v5",
       promptVersion: "acquisition-plan-prompt.v2",
-      schemaVersion: "acquisition-plan.v1"
+      schemaVersion: "acquisition-plan.v1",
+      promptHash: "sha256:acquisition-plan-prompt-v2",
+      schemaHash: "sha256:acquisition-plan-schema-v1"
     },
     stopConditions: {
       stopWhenBudgetExhausted: true,
@@ -303,6 +305,22 @@ test("explicit approval freezes dual-channel ICP, connections, queries, budget a
     "plan_not_ready"
   );
 
+  const missingContentHashInput = planInput();
+  missingContentHashInput.modelSnapshotRef.promptHash = "";
+  const missingContentHash = await service.createPlan(
+    ownerA,
+    missingContentHashInput
+  );
+  await rejectsCode(
+    () => service.approvePlan(
+      ownerA,
+      missingContentHash.id,
+      missingContentHash.etag,
+      { decision: "approve", reason: "不应批准缺少内容哈希的模型快照" }
+    ),
+    "plan_not_ready"
+  );
+
   const draft = await service.createPlan(ownerA, planInput());
   const approved = await service.approvePlan(
     ownerA,
@@ -350,6 +368,14 @@ test("explicit approval freezes dual-channel ICP, connections, queries, budget a
   assert.equal(
     approvedVersion.payload.modelSnapshotRef.jobSnapshotId,
     "job-snapshot-20260724"
+  );
+  assert.match(
+    approvedVersion.payload.modelSnapshotRef.promptHash,
+    /^sha256:/
+  );
+  assert.match(
+    approvedVersion.payload.modelSnapshotRef.schemaHash,
+    /^sha256:/
   );
 });
 
