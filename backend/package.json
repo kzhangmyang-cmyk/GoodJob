@@ -16,6 +16,7 @@
     "start:worker": "CRM_STORE=mysql node dist/prospect-worker-entry.js",
     "provision:beta-admins": "tsx src/provision-beta-admins.ts",
     "test": "NODE_ENV=test tsx src/self-test.ts",
+    "test:model-gateway": "NODE_ENV=test tsx src/model-gateway-test.ts",
     "test:providers": "NODE_ENV=test JWT_SECRET=goodjob-provider-test-secret-at-least-32-characters tsx src/provider-runtime-test.ts",
     "test:provider:un-comtrade": "NODE_ENV=test JWT_SECRET=goodjob-provider-test-secret-at-least-32-characters tsx src/un-comtrade-provider-test.ts",
     "test:provider:us-census": "NODE_ENV=test JWT_SECRET=goodjob-provider-test-secret-at-least-32-characters tsx src/us-census-trade-provider-test.ts",
