@@ -27,6 +27,11 @@ components:
       name: limit
       in: query
       schema: { type: integer, minimum: 1, maximum: 100 }
+    candidateId:
+      name: candidateId
+      in: query
+      required: true
+      schema: { type: string, minLength: 1 }
     idempotencyKey:
       name: Idempotency-Key
       in: header
@@ -236,7 +241,13 @@ paths:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post: { <<: *write, summary: Convert candidate }
   /api/v1/acquisition/outcomes:
-    get: { <<: *list, summary: List outcome feedback }
+    get:
+      <<: *list
+      summary: List outcome feedback
+      parameters:
+        - { $ref: '#/components/parameters/cursor' }
+        - { $ref: '#/components/parameters/limit' }
+        - { $ref: '#/components/parameters/candidateId' }
     post: { <<: *write, summary: Append outcome feedback }
   /api/v1/acquisition/copilot/sessions:
     post: { <<: *asyncWrite, summary: Create copilot session }
@@ -245,7 +256,17 @@ paths:
     get: { <<: *read, summary: Get copilot session, responses: { '200': { description: Copilot session, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotSession' } } } }, '401': *apiError } }
   /api/v1/acquisition/copilot/sessions/{id}/messages:
     parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *asyncWrite, summary: Send copilot message }
+    post:
+      <<: *asyncWrite
+      summary: Send copilot message
+      responses:
+        '202':
+          description: Queued copilot task
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CopilotTask' }
+        '400': *apiError
+        '401': *apiError
   /api/v1/acquisition/copilot/tasks/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get: { <<: *read, summary: Get copilot task, responses: { '200': { description: Copilot task, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotTask' } } } }, '401': *apiError } }

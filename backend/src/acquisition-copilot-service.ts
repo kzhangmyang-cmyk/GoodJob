@@ -80,6 +80,10 @@ export interface AcquisitionCopilotRepository {
     scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
     taskId: string
   ): Promise<AcquisitionCopilotTask | undefined>;
+  claimTaskDispatch(
+    scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
+    taskId: string
+  ): Promise<boolean>;
   listTasks(
     scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
     sessionId: string
@@ -108,6 +112,7 @@ export class InMemoryAcquisitionCopilotRepository
 implements AcquisitionCopilotRepository {
   readonly #sessions = new Map<string, AcquisitionCopilotSession>();
   readonly #tasks = new Map<string, AcquisitionCopilotTask>();
+  readonly #taskDispatchClaims = new Set<string>();
   readonly #messages: AcquisitionCopilotMessage[] = [];
   readonly #idempotency = new Map<string, AcquisitionCopilotIdempotencyRecord>();
 
@@ -153,6 +158,22 @@ implements AcquisitionCopilotRepository {
       && task.teamId === scope.teamId
       ? clone(task)
       : undefined;
+  }
+
+  async claimTaskDispatch(
+    scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
+    taskId: string
+  ) {
+    const task = this.#tasks.get(taskId);
+    if (!task
+      || task.ownerId !== scope.ownerId
+      || task.teamId !== scope.teamId
+      || task.status !== "queued"
+      || this.#taskDispatchClaims.has(taskId)) {
+      return false;
+    }
+    this.#taskDispatchClaims.add(taskId);
+    return true;
   }
 
   async listTasks(
@@ -286,6 +307,18 @@ function safeErrorCode(error: unknown) {
     ?? "COPILOT_TASK_FAILED";
 }
 
+function stableErrorCode(value: unknown) {
+  const code = requiredText(value, "errorCode", 64);
+  if (!/^[A-Z][A-Z0-9_]{2,63}$/.test(code)) {
+    throw new AcquisitionCopilotError(
+      "invalid_request",
+      "errorCode 必须是稳定的大写错误代码",
+      400
+    );
+  }
+  return code;
+}
+
 function requiredText(value: unknown, name: string, maxLength: number) {
   const text = String(value ?? "").trim();
   if (!text || text.length > maxLength) {
@@ -318,6 +351,23 @@ function validSnapshot(
       "modelSnapshot.credentialVersion 必须是正整数",
       400
     );
+  }
+  const contentBound = snapshot as AcquisitionPiModelSnapshot & {
+    promptHash?: string;
+    schemaHash?: string;
+  };
+  for (const [name, value] of [
+    ["promptHash", contentBound.promptHash],
+    ["schemaHash", contentBound.schemaHash]
+  ] as const) {
+    const hash = requiredText(value, `modelSnapshot.${name}`, 200);
+    if (!hash.startsWith("sha256:")) {
+      throw new AcquisitionCopilotError(
+        "invalid_request",
+        `modelSnapshot.${name} 必须使用 sha256: 内容身份`,
+        400
+      );
+    }
   }
   return Object.freeze(clone(snapshot));
 }
@@ -450,6 +500,45 @@ export class AcquisitionCopilotService {
         return task;
       }
     ) as Promise<AcquisitionCopilotTask>;
+  }
+
+  async claimTaskDispatch(
+    scope: AcquisitionCopilotScope,
+    taskId: string
+  ) {
+    validScope(scope);
+    const task = await this.#requireTask(scope, taskId);
+    if (task.status !== "queued") return false;
+    return this.#repository.claimTaskDispatch(scope, task.id);
+  }
+
+  async markDispatchFailed(
+    scope: AcquisitionCopilotScope,
+    taskId: string,
+    rawErrorCode: string
+  ) {
+    validScope(scope);
+    const errorCode = stableErrorCode(rawErrorCode);
+    const task = await this.#requireTask(scope, taskId);
+    if (task.status === "failed" && task.errorCode === errorCode) {
+      return task;
+    }
+    if (task.status !== "queued" && task.status !== "running") {
+      throw new AcquisitionCopilotError(
+        "invalid_state",
+        "只有 queued 或 running 任务可以记录派发失败",
+        409
+      );
+    }
+    const failed: AcquisitionCopilotTask = {
+      ...task,
+      status: "failed",
+      result: null,
+      errorCode,
+      completedAt: this.#now()
+    };
+    await this.#repository.saveTask(failed);
+    return failed;
   }
 
   runTask(scope: AcquisitionCopilotScope, taskId: string) {

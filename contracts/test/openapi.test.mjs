@@ -62,7 +62,7 @@ const asyncPosts = [
   "/api/v1/acquisition/fetch-operations", "/api/v1/acquisition/import-operations",
   "/api/v1/acquisition/runs", "/api/v1/acquisition/candidates/{id}/research",
   "/api/v1/acquisition/candidates/{id}/qualification", "/api/v1/acquisition/candidates/{id}/battle-card",
-  "/api/v1/acquisition/copilot/sessions", "/api/v1/acquisition/copilot/sessions/{id}/messages"
+  "/api/v1/acquisition/copilot/sessions"
 ];
 
 const reads = {
@@ -113,6 +113,18 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   for (const path of asyncPosts) {
     assert.equal(document.paths[path].post.responses["202"].content["application/json"].schema.$ref, "#/components/schemas/AsyncOperation", path);
   }
+  assert.equal(
+    document.paths["/api/v1/acquisition/copilot/sessions/{id}/messages"]
+      .post.responses["202"].content["application/json"].schema.$ref,
+    "#/components/schemas/CopilotTask"
+  );
+  assert.equal(
+    document.paths["/api/v1/acquisition/outcomes"].get.parameters.some(
+      (parameter) =>
+        parameter.$ref === "#/components/parameters/candidateId"
+    ),
+    true
+  );
   const connectionWrites = [
     document.paths["/api/v1/ai/connections"].post,
     document.paths["/api/v1/ai/connections/{id}"].patch,
@@ -200,7 +212,15 @@ function buildCanonicalExample(schema, root = schema) {
   if (schema.enum) return schema.enum.find((value) => value !== null);
   if (schema.oneOf) return buildCanonicalExample(schema.oneOf[0], root);
   const type = Array.isArray(schema.type) ? schema.type.find((value) => value !== "null") : schema.type;
-  if (type === "string") return schema.format === "date-time" ? "2026-07-23T00:00:00.000Z" : schema.format === "uri" ? "https://example.com" : schema.maxLength === 3 ? "USD" : "value";
+  if (type === "string") return schema.format === "date-time"
+    ? "2026-07-23T00:00:00.000Z"
+    : schema.format === "uri"
+      ? "https://example.com"
+      : schema.maxLength === 3
+        ? "USD"
+        : schema.pattern === "^[A-Z][A-Z0-9_]{2,63}$"
+          ? "COPILOT_TASK_FAILED"
+          : "value";
   if (type === "integer" || type === "number") return Math.max(schema.minimum ?? 0, 1);
   if (type === "boolean") return true;
   if (type === "array") return Array.from({ length: schema.minItems ?? 0 }, () => buildCanonicalExample(schema.items ?? {}, root));

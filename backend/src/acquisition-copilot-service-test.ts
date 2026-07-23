@@ -93,6 +93,8 @@ const snapshot = {
   model: "qwen-plus",
   promptVersion: "acquisition-copilot-v1",
   schemaVersion: "copilot-turn.v1",
+  promptHash: "sha256:prompt-acquisition-copilot-v1",
+  schemaHash: "sha256:schema-copilot-turn-v1",
   capabilitySnapshotHash: "capability-hash",
   baseUrlFingerprint: "base-url-hash"
 };
@@ -111,6 +113,12 @@ assert.equal(created.id, replayed.id);
 assert.equal(created.status, "active");
 assert.equal(created.modelSnapshot.credentialVersion, 2);
 assert.equal(
+  (created.modelSnapshot as typeof created.modelSnapshot & {
+    promptHash: string;
+  }).promptHash,
+  "sha256:prompt-acquisition-copilot-v1"
+);
+assert.equal(
   JSON.stringify(created).includes("apiKey"),
   false,
   "session snapshots must never persist credentials"
@@ -125,6 +133,16 @@ await assert.rejects(
   (error: unknown) =>
     error instanceof AcquisitionCopilotError
     && error.code === "idempotency_conflict"
+);
+await assert.rejects(
+  service.createSession(
+    scope,
+    { ...snapshot, promptHash: "" } as typeof snapshot,
+    "create-session-missing-prompt-hash"
+  ),
+  (error: unknown) =>
+    error instanceof AcquisitionCopilotError
+    && error.code === "invalid_request"
 );
 
 const queued = await service.enqueueMessage(
@@ -200,6 +218,72 @@ const failed = await service.runTask(scope, failedTask.id);
 assert.equal(failed.status, "failed");
 assert.equal(failed.errorCode, "MODEL_RATE_LIMITED");
 assert.equal(JSON.stringify(failed).includes("must-not-leak"), false);
+
+const dispatchFailureTask = await service.enqueueMessage(
+  scope,
+  created.id,
+  "派发失败测试",
+  "message-dispatch-failure"
+);
+assert.equal(
+  await service.claimTaskDispatch(scope, dispatchFailureTask.id),
+  true
+);
+assert.equal(
+  await service.claimTaskDispatch(scope, dispatchFailureTask.id),
+  false,
+  "an idempotency replay must not dispatch the same task twice"
+);
+await assert.rejects(
+  service.claimTaskDispatch(
+    { ownerId: "owner-b", teamId: "team-a", actorId: "owner-b" },
+    dispatchFailureTask.id
+  ),
+  (error: unknown) =>
+    error instanceof AcquisitionCopilotError
+    && error.code === "resource_not_found"
+);
+const dispatchFailed = await service.markDispatchFailed(
+  scope,
+  dispatchFailureTask.id,
+  "COPILOT_DISPATCH_FAILED"
+);
+assert.equal(dispatchFailed.status, "failed");
+assert.equal(dispatchFailed.errorCode, "COPILOT_DISPATCH_FAILED");
+assert.equal(
+  JSON.stringify(dispatchFailed).includes("apiKey"),
+  false,
+  "dispatch failure records must contain only a stable error code"
+);
+assert.equal(
+  (await service.markDispatchFailed(
+    scope,
+    dispatchFailureTask.id,
+    "COPILOT_DISPATCH_FAILED"
+  )).id,
+  dispatchFailureTask.id,
+  "the same terminal dispatch failure must be idempotent"
+);
+
+const runningDispatchFailureTask = await service.enqueueMessage(
+  scope,
+  created.id,
+  "运行态派发失败测试",
+  "message-running-dispatch-failure"
+);
+await repository.saveTask({
+  ...runningDispatchFailureTask,
+  status: "running",
+  startedAt: "2026-07-24T02:00:00.000Z"
+});
+assert.equal(
+  (await service.markDispatchFailed(
+    scope,
+    runningDispatchFailureTask.id,
+    "COPILOT_DISPATCH_FAILED"
+  )).status,
+  "failed"
+);
 
 const completed = await service.completeSession(
   scope,
