@@ -163,6 +163,8 @@ test("credential updates append encrypted versions and public responses stay mas
   );
   assert.equal(first.version, 1);
   assert.equal(second.version, 2);
+  assert.equal(first.provider, "deepseek");
+  assert.equal(second.provider, "deepseek");
   assert.equal(credentials.length, 2);
   assert.deepEqual(pendingCredentials, credentials);
   assert.equal(modelConnection.credentialVersion, 2);
@@ -196,6 +198,8 @@ test("stored job snapshots are tracked as pending appends", () => {
     teamId: "team-1",
     baseUrl: "https://api.openai.com/v1",
     baseUrlFingerprint: modelConnection.baseUrlFingerprint || "sha256:test",
+    promptHash: "sha256:prompt",
+    schemaHash: "sha256:schema",
     createdAt: "2026-07-23T10:30:00.000Z"
   };
   const history: StoredAiJobModelSnapshot[] = [];
@@ -222,6 +226,8 @@ test("connections referenced by immutable job snapshots cannot be deleted", asyn
     teamId: "team-1",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     baseUrlFingerprint: modelConnection.baseUrlFingerprint || "sha256:test",
+    promptHash: "sha256:prompt",
+    schemaHash: "sha256:schema",
     createdAt: "2026-07-23T11:00:00.000Z"
   }];
   const store = {

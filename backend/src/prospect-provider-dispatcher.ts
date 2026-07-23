@@ -3,10 +3,12 @@ import { getProvider } from "./lead-providers.js";
 import {
   providerErrorFromUnknown,
   type LeadProvider,
-  type LeadQuery,
   type ProviderCredential,
   type ProviderPage
 } from "./provider-contract.js";
+import {
+  buildProspectProviderLeadQuery
+} from "./prospect-provider-query.js";
 import {
   prospectProviderResponseComponentHashes,
   prospectProviderResponseHash
@@ -40,10 +42,6 @@ export interface ProspectProviderDispatcherOptions {
   resolveProvider?: (
     request: FakeProspectProviderDispatchRequest
   ) => ProspectProviderResolution | undefined;
-}
-
-function joined(values: readonly string[]) {
-  return values.map((item) => item.trim()).filter(Boolean).join(", ");
 }
 
 function validHttpStatus(value: number | null, fallback: number) {
@@ -221,7 +219,6 @@ implements ProspectExecutionProviderDispatcher {
       if (!request.connectionId.startsWith("builtin:") && !connection) {
         throw new Error("Provider 连接不存在、未启用或不属于当前业务员");
       }
-      const querySnapshot = run.executionSnapshot.resolvedQuery;
       const checkpoint = this.store.prospectExecutionCheckpoints.find(
         (item) =>
           item.teamId === run.teamId
@@ -229,25 +226,13 @@ implements ProspectExecutionProviderDispatcher {
           && item.runId === run.id
           && item.shardId === shard.id
       );
-      const remaining = Math.max(
-        1,
-        shard.resultLimit - (checkpoint?.acceptedCount || 0)
+      const query = buildProspectProviderLeadQuery(
+        run,
+        shard,
+        request.providerCode === "ai_search"
+          ? 0
+          : (checkpoint?.acceptedCount || 0)
       );
-      const query: LeadQuery = {
-        goal: [
-          run.executionSnapshot.campaign.name,
-          joined(querySnapshot.purchaseScenarioTerms)
-        ].filter(Boolean).join("；"),
-        productKeywords: joined([
-          ...querySnapshot.positiveKeywords,
-          ...querySnapshot.synonyms
-        ]),
-        countries: joined(querySnapshot.countries),
-        industry: joined(querySnapshot.industryTerms),
-        customerType: joined(querySnapshot.customerTypes),
-        excludeKeywords: joined(querySnapshot.exclusionKeywords),
-        limit: Math.min(30, remaining)
-      };
       const page = await executeProviderSearch({
         provider: resolved.provider,
         catalog,

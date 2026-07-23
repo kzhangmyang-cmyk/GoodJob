@@ -14,7 +14,10 @@ import {
   ActiveModelGateway
 } from "./gateway.js";
 import { createAiJobModelSnapshot } from "./job-snapshot.js";
-import { modelConnectionFromAiConfig } from "./connection-service.js";
+import {
+  modelConnectionFromAiConfig,
+  normalizeModelBaseUrl
+} from "./connection-service.js";
 import type {
   ModelCredentialVersion,
   StoredAiJobModelSnapshot
@@ -30,6 +33,7 @@ export interface ModelRuntimeStore {
   pendingAiJobModelSnapshots: StoredAiJobModelSnapshot[];
   modelCallRecords: ModelCallRecord[];
   pendingModelCallRecords: ModelCallRecord[];
+  persist?(): Promise<void>;
 }
 
 export interface BindActiveModelSnapshotInput {
@@ -38,6 +42,8 @@ export interface BindActiveModelSnapshotInput {
   teamId: string;
   promptVersion: string;
   schemaVersion: string;
+  promptHash: string;
+  schemaHash: string;
 }
 
 export interface BindModelConnectionSnapshotInput
@@ -94,7 +100,11 @@ export function bindModelConnectionSnapshot(
   if (!config) {
     throw new Error("Official model connection for AI job is unavailable");
   }
+  if (!input.promptHash || !input.schemaHash) {
+    throw new Error("AI job content hashes are required");
+  }
   const connection = modelConnectionFromAiConfig(config);
+  const normalizedBaseUrl = normalizeModelBaseUrl(config.baseUrl);
   const snapshot: StoredAiJobModelSnapshot = Object.freeze({
     ...createAiJobModelSnapshot(
       connection,
@@ -107,9 +117,10 @@ export function bindModelConnectionSnapshot(
     jobId: input.jobId,
     ownerId: input.ownerId,
     teamId: input.teamId,
-    baseUrl: config.baseUrl.replace(/\/+$/, ""),
-    baseUrlFingerprint:
-      connection.baseUrlFingerprint || sha256(config.baseUrl),
+    baseUrl: normalizedBaseUrl,
+    baseUrlFingerprint: sha256(normalizedBaseUrl),
+    promptHash: input.promptHash,
+    schemaHash: input.schemaHash,
     createdAt: new Date().toISOString()
   });
   store.aiJobModelSnapshots.push(snapshot);
@@ -120,26 +131,28 @@ export function bindModelConnectionSnapshot(
 export async function resolveSnapshottedModelCredential(
   store: Pick<
     ModelRuntimeStore,
-    "aiModelConfigs" | "modelCredentialVersions"
+    "modelCredentialVersions"
   >,
-  connectionId: string,
-  credentialVersion: number
+  snapshot: StoredAiJobModelSnapshot
 ) {
-  const config = store.aiModelConfigs.find(
-    (item) => item.id === connectionId
-  );
   const credential = store.modelCredentialVersions.find(
-    (item) => item.connectionId === connectionId
-      && item.version === credentialVersion
+    (item) => item.connectionId === snapshot.connectionId
+      && item.version === snapshot.credentialVersion
   );
-  if (!config || !credential) {
+  if (!credential) {
     throw new Error("Snapshotted credential version is unavailable");
   }
+  if (!credential.provider
+    || credential.provider !== snapshot.provider
+    || credential.ownerId !== snapshot.ownerId
+    || credential.teamId !== snapshot.teamId) {
+    throw new Error("Snapshotted credential immutable identity mismatch");
+  }
   return decryptAiModelApiKey({
-    id: config.id,
-    provider: config.provider,
-    ownerId: credential.ownerId,
-    teamId: credential.teamId
+    id: snapshot.connectionId,
+    provider: snapshot.provider,
+    ownerId: snapshot.ownerId,
+    teamId: snapshot.teamId
   }, credential.apiKeyEncrypted);
 }
 
@@ -178,17 +191,13 @@ export function createActiveModelGatewayForSnapshot(
   store: ModelRuntimeStore,
   options: CreateActiveModelGatewayForSnapshotOptions
 ) {
-  const config = store.aiModelConfigs.find(
-    (item) => item.id === options.storedSnapshot.connectionId
-      && item.ownerId === options.storedSnapshot.ownerId
-      && item.teamId === options.storedSnapshot.teamId
-  );
-  if (!config) {
-    throw new Error("Snapshotted model connection is unavailable");
-  }
   if (!options.storedSnapshot.baseUrl
     || !options.storedSnapshot.baseUrlFingerprint) {
     throw new Error("Snapshotted model endpoint is unavailable");
+  }
+  if (!options.storedSnapshot.promptHash
+    || !options.storedSnapshot.schemaHash) {
+    throw new Error("Snapshotted model content hashes are unavailable");
   }
   const capabilitySnapshotHash = sha256(
     JSON.stringify(options.storedSnapshot.capabilitySnapshot)
@@ -203,14 +212,13 @@ export function createActiveModelGatewayForSnapshot(
     capabilitySnapshotHash,
     baseUrl: options.storedSnapshot.baseUrl,
     baseUrlFingerprint: options.storedSnapshot.baseUrlFingerprint,
-    credentialResolver: (connectionId, credentialVersion) =>
-      resolveSnapshottedModelCredential(
-        store,
-        connectionId,
-        credentialVersion
-      ),
+    credentialResolver: () =>
+      resolveSnapshottedModelCredential(store, options.storedSnapshot),
     fetch: options.fetch,
     ledger: createStoreModelCallLedger(store),
+    persistAttempt: store.persist
+      ? () => store.persist!()
+      : undefined,
     attemptIdFactory:
       options.attemptIdFactory
       ?? (() => `model_attempt_${randomUUID()}`),

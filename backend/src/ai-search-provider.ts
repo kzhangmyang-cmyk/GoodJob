@@ -5,6 +5,7 @@ import {
 import {
   createActiveModelGatewayForSnapshot
 } from "./model-providers/runtime.js";
+import { hashModelCallValue } from "./model-providers/call-ledger.js";
 import {
   defineProvider,
   type LeadQuery,
@@ -18,17 +19,49 @@ import type {
   FakeProspectProviderDispatchRequest
 } from "./prospect-fake-provider.js";
 
+export const AI_SEARCH_PROMPT_VERSION = "ai-search.v1";
+export const AI_SEARCH_SCHEMA_VERSION = "ai-search-result.v1";
+export const AI_SEARCH_RESULT_SCHEMA_CANONICAL = JSON.stringify({
+  type: "object",
+  additionalProperties: false,
+  required: ["companies"],
+  properties: {
+    companies: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["company"],
+        properties: {
+          company: { type: "string" },
+          website: { type: ["string", "null"] },
+          country: { type: ["string", "null"] },
+          business: { type: ["string", "null"] },
+          description: { type: ["string", "null"] }
+        }
+      }
+    }
+  }
+});
+export const AI_SEARCH_SCHEMA_HASH = hashModelCallValue(
+  AI_SEARCH_RESULT_SCHEMA_CANONICAL
+);
+
+const optionalResultString = z.string()
+  .nullish()
+  .transform((value) => value ?? "");
+
 const aiSearchResultSchema = z.object({
   companies: z.array(z.object({
     company: z.string(),
-    website: z.string().optional().default(""),
-    country: z.string().optional().default(""),
-    business: z.string().optional().default(""),
-    description: z.string().optional().default("")
+    website: optionalResultString,
+    country: optionalResultString,
+    business: optionalResultString,
+    description: optionalResultString
   }).strict())
 }).strict();
 
-function promptFor(query: LeadQuery) {
+export function aiSearchPromptFor(query: LeadQuery) {
   const count = Math.min(query.limit, 12);
   return [
     "你是资深外贸获客研究助手。根据客户画像列出真实、可能存在的目标公司。",
@@ -43,6 +76,10 @@ function promptFor(query: LeadQuery) {
     `获客目标：${query.goal || "未指定"}`,
     `排除：${query.excludeKeywords || "无"}`
   ].join("\n");
+}
+
+export function aiSearchPromptHash(query: LeadQuery) {
+  return hashModelCallValue(aiSearchPromptFor(query));
 }
 
 function leadsFromResult(
@@ -143,7 +180,8 @@ export function createAiSearchProvider(
       let providerError: unknown;
       try {
         const response = await gateway.generateStructured({
-          prompt: promptFor(legacyQuery),
+          prompt: aiSearchPromptFor(legacyQuery),
+          schemaHash: AI_SEARCH_SCHEMA_HASH,
           schema: aiSearchResultSchema
         });
         const records = leadsFromResult(legacyQuery, response.value);

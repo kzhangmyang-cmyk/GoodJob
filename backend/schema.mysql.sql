@@ -460,6 +460,7 @@ CREATE TABLE ai_model_configs (
 CREATE TABLE ai_model_credential_versions (
   connection_id VARCHAR(64) NOT NULL,
   credential_version INT NOT NULL,
+  provider VARCHAR(40) NOT NULL,
   owner_id VARCHAR(64) NOT NULL,
   team_id VARCHAR(64) NOT NULL,
   credential_ref VARCHAR(80) NOT NULL UNIQUE,
@@ -508,6 +509,8 @@ CREATE TABLE ai_job_model_snapshots (
   capability_snapshot_json JSON NOT NULL,
   prompt_version VARCHAR(120) NOT NULL,
   schema_version VARCHAR(120) NOT NULL,
+  prompt_hash VARCHAR(80) NOT NULL,
+  schema_hash VARCHAR(80) NOT NULL,
   created_at DATETIME NOT NULL,
   INDEX idx_ai_job_snapshot_connection(connection_id, credential_version)
 );

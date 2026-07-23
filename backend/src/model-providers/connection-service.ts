@@ -30,6 +30,10 @@ export const EMPTY_MODEL_CAPABILITY_SNAPSHOT = Object.freeze({
   modelListing: false
 });
 
+export function normalizeModelBaseUrl(baseUrl: string) {
+  return baseUrl.trim().replace(/\/+$/, "");
+}
+
 export function modelConnectionFromAiConfig(
   config: AiModelConfig
 ): ModelConnection {
@@ -49,7 +53,7 @@ export function modelConnectionFromAiConfig(
     provider: config.provider as ModelConnection["provider"],
     model: config.model,
     baseUrlFingerprint: `sha256:${createHash("sha256")
-      .update(config.baseUrl)
+      .update(normalizeModelBaseUrl(config.baseUrl))
       .digest("hex")}`,
     credentialVersion: config.credentialVersion || 1,
     capabilitySnapshot: {
@@ -196,6 +200,7 @@ export function createModelCredentialVersion(
   const teamId = connection.teamId || "";
   const credential: ModelCredentialVersion = {
     connectionId: connection.id,
+    provider: connection.provider,
     ownerId: connection.ownerId,
     teamId,
     version,

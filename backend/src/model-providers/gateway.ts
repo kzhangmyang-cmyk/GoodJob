@@ -37,6 +37,7 @@ export type ModelGatewayErrorCode =
   | "MODEL_RESPONSE_INVALID"
   | "MODEL_CREDENTIAL_UNAVAILABLE"
   | "MODEL_CAPABILITY_UNSUPPORTED"
+  | "MODEL_CONTENT_HASH_MISMATCH"
   | "MODEL_SCHEMA_INVALID"
   | "MODEL_STREAM_ABORTED"
   | "MODEL_STREAM_CANCELLED";
@@ -52,6 +53,8 @@ const ERROR_MESSAGES: Record<ModelGatewayErrorCode, string> = {
   MODEL_RESPONSE_INVALID: "Model provider returned an invalid response",
   MODEL_CREDENTIAL_UNAVAILABLE: "The snapshotted credential is unavailable",
   MODEL_CAPABILITY_UNSUPPORTED: "The snapshotted model lacks a required capability",
+  MODEL_CONTENT_HASH_MISMATCH:
+    "Model content hash does not match the immutable job snapshot",
   MODEL_SCHEMA_INVALID: "Model output did not match the requested schema",
   MODEL_STREAM_ABORTED: "Model stream was aborted by the caller",
   MODEL_STREAM_CANCELLED: "Model stream was cancelled by the consumer"
@@ -141,6 +144,7 @@ export interface ActiveModelGatewayOptions {
   now?: () => number;
   requestTimeoutMs?: number;
   streamIdleTimeoutMs?: number;
+  persistAttempt?(): Promise<void>;
 }
 
 export interface ModelHealthResult {
@@ -157,6 +161,7 @@ export interface ModelHealthResult {
 export interface StructuredGenerationRequest<T> {
   prompt: string;
   schema: z.ZodType<T>;
+  schemaHash?: string;
 }
 
 export interface StructuredGenerationResult<T> {
@@ -176,6 +181,7 @@ export interface ToolCallingRequest {
   prompt: string;
   tools: ToolDefinition[];
   parallelToolCalls?: boolean;
+  schemaHash?: string;
 }
 
 export interface ToolCallingResult {
@@ -190,6 +196,7 @@ export interface ToolCallingResult {
 
 export interface TextGenerationRequest {
   prompt: string;
+  schemaHash?: string;
   signal?: AbortSignal;
 }
 
@@ -293,6 +300,7 @@ export class ActiveModelGateway {
   readonly #attemptIdFactory: () => string;
   readonly #requestIdFactory: () => string;
   readonly #now: () => number;
+  readonly #persistAttempt?: () => Promise<void>;
 
   constructor(options: ActiveModelGatewayOptions) {
     this.#snapshot = frozenSnapshot(options.snapshot);
@@ -306,6 +314,7 @@ export class ActiveModelGateway {
     this.#requestIdFactory = options.requestIdFactory
       ?? (() => `model_request_${randomUUID()}`);
     this.#now = options.now ?? Date.now;
+    this.#persistAttempt = options.persistAttempt;
     this.#adapter = new OpenAiCompatibleAdapter({
       baseUrl: options.baseUrl,
       fetch: options.fetch,
@@ -388,6 +397,11 @@ export class ActiveModelGateway {
   async generateStructured<T>(
     request: StructuredGenerationRequest<T>
   ): Promise<StructuredGenerationResult<T>> {
+    this.#requireBoundContent(
+      request.prompt,
+      request.schemaHash,
+      { operation: "generate_structured" }
+    );
     this.#requireCapability(
       "structuredOutput",
       { operation: "generate_structured" }
@@ -424,6 +438,14 @@ export class ActiveModelGateway {
   }
 
   async callTools(request: ToolCallingRequest): Promise<ToolCallingResult> {
+    this.#requireBoundContent(
+      request.prompt,
+      request.schemaHash,
+      {
+        operation: "call_tools",
+        toolNames: request.tools.map((tool) => tool.name)
+      }
+    );
     this.#requireCapability(
       "toolCalling",
       { operation: "call_tools", toolNames: request.tools.map((tool) => tool.name) }
@@ -510,7 +532,13 @@ export class ActiveModelGateway {
     let usage = ZERO_USAGE;
     let recorded = false;
     let providerDone = false;
+    let primaryError: ModelGatewayError | undefined;
     try {
+      const hashError = this.#boundContentError(
+        request.prompt,
+        request.schemaHash
+      );
+      if (hashError) throw hashError;
       const credential = await this.#resolveCredential();
       const stream = await this.#adapter.streamText({
         snapshot: this.#snapshot,
@@ -553,7 +581,7 @@ export class ActiveModelGateway {
         output
       );
       recorded = true;
-      throw normalized;
+      primaryError = normalized;
     } finally {
       if (!recorded) {
         if (providerDone) {
@@ -568,7 +596,21 @@ export class ActiveModelGateway {
           );
         }
       }
+      if (this.#persistAttempt) {
+        try {
+          await this.#persistAttempt();
+        } catch (persistenceError) {
+          if (primaryError) {
+            throw new AggregateError(
+              [primaryError, persistenceError],
+              "Model stream failed and its audit record could not be persisted"
+            );
+          }
+          throw persistenceError;
+        }
+      }
     }
+    if (primaryError) throw primaryError;
   }
 
   async #generateAndValidate<T>(prompt: string, schema: z.ZodType<T>) {
@@ -630,6 +672,40 @@ export class ActiveModelGateway {
       "MODEL_CAPABILITY_UNSUPPORTED",
       false
     );
+    this.#recordFailure(context, error, null);
+    throw error;
+  }
+
+  #boundContentError(prompt: string, schemaHash?: string) {
+    const snapshot = this.#snapshot as AiJobModelSnapshot & {
+      promptHash?: string;
+      schemaHash?: string;
+    };
+    if (snapshot.promptHash === undefined
+      && snapshot.schemaHash === undefined) {
+      return null;
+    }
+    if (!snapshot.promptHash
+      || !snapshot.schemaHash
+      || hashModelCallValue(prompt) !== snapshot.promptHash
+      || !schemaHash
+      || schemaHash !== snapshot.schemaHash) {
+      return new ModelGatewayError(
+        "MODEL_CONTENT_HASH_MISMATCH",
+        false
+      );
+    }
+    return null;
+  }
+
+  #requireBoundContent(
+    prompt: string,
+    schemaHash: string | undefined,
+    parameters: Record<string, unknown>
+  ) {
+    const error = this.#boundContentError(prompt, schemaHash);
+    if (!error) return;
+    const context = this.#newAttempt(parameters);
     this.#recordFailure(context, error, null);
     throw error;
   }

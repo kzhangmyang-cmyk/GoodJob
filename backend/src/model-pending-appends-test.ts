@@ -143,8 +143,47 @@ test("MySQL migration backfills immutable endpoints for pre-existing job snapsho
   );
   assert.match(
     source,
-    /UPDATE ai_job_model_snapshots AS snapshot[\s\S]*JOIN ai_model_configs AS config[\s\S]*snapshot\.base_url = config\.base_url[\s\S]*SHA2\(config\.base_url, 256\)[\s\S]*snapshot\.base_url = ''[\s\S]*snapshot\.base_url_fingerprint = ''/
+    /UPDATE ai_job_model_snapshots AS snapshot[\s\S]*JOIN ai_model_configs AS config[\s\S]*snapshot\.base_url = TRIM\(TRAILING '\/' FROM config\.base_url\)[\s\S]*SHA2\(TRIM\(TRAILING '\/' FROM config\.base_url\), 256\)[\s\S]*snapshot\.base_url = ''[\s\S]*snapshot\.base_url_fingerprint = ''/
   );
+});
+
+test("MySQL persists immutable credential AAD and job content hashes", () => {
+  const source = readFileSync(
+    new URL("./mysql-store.ts", import.meta.url),
+    "utf8"
+  );
+  const schemas = [
+    readFileSync(new URL("../schema.mysql.sql", import.meta.url), "utf8"),
+    readFileSync(new URL("../goodjob_crm.full.sql", import.meta.url), "utf8")
+  ];
+
+  assert.match(
+    source,
+    /ai_model_credential_versions[\s\S]*provider VARCHAR\(40\)/
+  );
+  assert.match(
+    source,
+    /UPDATE ai_model_credential_versions AS credential[\s\S]*JOIN ai_model_configs AS config[\s\S]*credential\.provider = config\.provider/
+  );
+  assert.match(
+    source,
+    /pendingModelCredentialVersions[\s\S]*item\.provider[\s\S]*\(connection_id,credential_version,provider,owner_id,team_id/
+  );
+  assert.match(
+    source,
+    /pendingAiJobModelSnapshots[\s\S]*item\.promptHash[\s\S]*item\.schemaHash[\s\S]*prompt_hash,schema_hash/
+  );
+  for (const schema of schemas) {
+    const credentialTable = schema.match(
+      /CREATE TABLE ai_model_credential_versions \([\s\S]*?\n\);/
+    )?.[0] || "";
+    const snapshotTable = schema.match(
+      /CREATE TABLE ai_job_model_snapshots \([\s\S]*?\n\);/
+    )?.[0] || "";
+    assert.match(credentialTable, /\bprovider VARCHAR\(40\) NOT NULL/);
+    assert.match(snapshotTable, /\bprompt_hash VARCHAR\(80\) NOT NULL/);
+    assert.match(snapshotTable, /\bschema_hash VARCHAR\(80\) NOT NULL/);
+  }
 });
 
 test("connection idempotency replay is loaded durably from hashed-key SQL", () => {

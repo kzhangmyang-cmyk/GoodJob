@@ -9,6 +9,7 @@ import {
   bindModelConnectionSnapshot,
   createActiveModelGatewayForSnapshot
 } from "./model-providers/runtime.js";
+import { hashModelCallValue } from "./model-providers/call-ledger.js";
 import type {
   ModelRuntimeStore
 } from "./model-providers/runtime.js";
@@ -16,6 +17,10 @@ import type { LeadQuery, RawLead } from "./provider-contract.js";
 import type { AiModelConfig } from "./types.js";
 
 export const AI_MODEL_TIMEOUT_MS = 120_000;
+export const LEGACY_JSON_OBJECT_SCHEMA_HASH = hashModelCallValue({
+  type: "object",
+  additionalProperties: true
+});
 
 export interface AiModelRuntimeIdentity {
   jobId: string;
@@ -38,11 +43,14 @@ export async function callAiModelWithRuntime(
     schemaVersion: "legacy-json-object.v1"
   }
 ) {
+  const boundedPrompt = prompt.slice(0, maxInputChars);
   const snapshot = bindModelConnectionSnapshot(store, {
     ...identity,
     connectionId: config.id,
     ownerId: config.ownerId,
-    teamId: config.teamId
+    teamId: config.teamId,
+    promptHash: hashModelCallValue(boundedPrompt),
+    schemaHash: LEGACY_JSON_OBJECT_SCHEMA_HASH
   });
   if (!snapshot.baseUrl) {
     throw new Error("Snapshotted model endpoint is unavailable");
@@ -64,7 +72,8 @@ export async function callAiModelWithRuntime(
   let providerError: unknown;
   try {
     const result = await gateway.generateStructured({
-      prompt: prompt.slice(0, maxInputChars),
+      prompt: boundedPrompt,
+      schemaHash: LEGACY_JSON_OBJECT_SCHEMA_HASH,
       schema: z.record(z.unknown())
     });
     return JSON.stringify(result.value);

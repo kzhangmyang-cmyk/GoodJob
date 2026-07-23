@@ -49,6 +49,11 @@ export interface ModelConnection {
 
 export interface ModelCredentialVersion {
   connectionId: string;
+  /**
+   * Immutable encryption AAD. Empty only while a pre-migration row is being
+   * loaded; runtime credential resolution must reject such a row.
+   */
+  provider: string;
   ownerId: string;
   teamId: string;
   version: number;
@@ -86,6 +91,12 @@ export interface StoredAiJobModelSnapshot extends AiJobModelSnapshot {
   teamId: string;
   baseUrl: string;
   baseUrlFingerprint: string;
+  /**
+   * Exact content identities, not merely human-readable version labels.
+   * Empty values identify legacy snapshots that are unsafe to execute.
+   */
+  promptHash: string;
+  schemaHash: string;
   createdAt: string;
 }
 

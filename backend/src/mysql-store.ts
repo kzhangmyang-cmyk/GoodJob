@@ -2669,6 +2669,7 @@ async function ensureSchema(pool: mysql.Pool) {
   await pool.query(`CREATE TABLE IF NOT EXISTS ai_model_credential_versions (
     connection_id VARCHAR(64) NOT NULL,
     credential_version INT NOT NULL,
+    provider VARCHAR(40) NOT NULL,
     owner_id VARCHAR(64) NOT NULL,
     team_id VARCHAR(64) NOT NULL,
     credential_ref VARCHAR(80) NOT NULL UNIQUE,
@@ -2679,6 +2680,17 @@ async function ensureSchema(pool: mysql.Pool) {
     PRIMARY KEY(connection_id, credential_version),
     INDEX idx_ai_credential_owner(owner_id, connection_id)
   )`);
+  await ensureColumn(
+    pool,
+    "ai_model_credential_versions",
+    "provider",
+    "VARCHAR(40) NOT NULL DEFAULT ''"
+  );
+  await pool.query(`UPDATE ai_model_credential_versions AS credential
+    JOIN ai_model_configs AS config
+      ON config.id = credential.connection_id
+    SET credential.provider = config.provider
+    WHERE credential.provider = ''`);
   await pool.query(`CREATE TABLE IF NOT EXISTS ai_model_connection_activation_events (
     id VARCHAR(90) PRIMARY KEY,
     owner_id VARCHAR(64) NOT NULL,
@@ -2714,6 +2726,8 @@ async function ensureSchema(pool: mysql.Pool) {
     capability_snapshot_json JSON NOT NULL,
     prompt_version VARCHAR(120) NOT NULL,
     schema_version VARCHAR(120) NOT NULL,
+    prompt_hash VARCHAR(80) NOT NULL,
+    schema_hash VARCHAR(80) NOT NULL,
     created_at DATETIME NOT NULL,
     INDEX idx_ai_job_snapshot_connection(connection_id, credential_version)
   )`);
@@ -2729,12 +2743,27 @@ async function ensureSchema(pool: mysql.Pool) {
     "base_url_fingerprint",
     "VARCHAR(80) NOT NULL DEFAULT ''"
   );
+  await ensureColumn(
+    pool,
+    "ai_job_model_snapshots",
+    "prompt_hash",
+    "VARCHAR(80) NOT NULL DEFAULT ''"
+  );
+  await ensureColumn(
+    pool,
+    "ai_job_model_snapshots",
+    "schema_hash",
+    "VARCHAR(80) NOT NULL DEFAULT ''"
+  );
   await pool.query(`UPDATE ai_job_model_snapshots AS snapshot
     JOIN ai_model_configs AS config
       ON config.id = snapshot.connection_id
-    SET snapshot.base_url = config.base_url,
+    SET snapshot.base_url = TRIM(TRAILING '/' FROM config.base_url),
         snapshot.base_url_fingerprint =
-          CONCAT('sha256:', SHA2(config.base_url, 256))
+          CONCAT(
+            'sha256:',
+            SHA2(TRIM(TRAILING '/' FROM config.base_url), 256)
+          )
     WHERE snapshot.base_url = ''
        OR snapshot.base_url_fingerprint = ''`);
   await pool.query(`CREATE TABLE IF NOT EXISTS ai_model_call_records (
@@ -4899,12 +4928,13 @@ async function migrateLegacyAiModelConnections(pool: mysql.Pool) {
         if (!(credentialRows as Array<{ connection_id: string }>).length) {
           await connection.query(
             `INSERT INTO ai_model_credential_versions
-              (connection_id, credential_version, owner_id, team_id,
+              (connection_id, credential_version, provider, owner_id, team_id,
                credential_ref, api_key_encrypted, key_mask, created_by,
                created_at)
-             VALUES (?, 1, ?, ?, ?, ?, ?, 'system_migration', ?)`,
+             VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'system_migration', ?)`,
             [
               row.id,
+              row.provider || "openai",
               row.owner_id,
               row.team_id,
               credentialRef,
@@ -5875,6 +5905,12 @@ async function loadAiModelConfigs(
     const versionedCredential = credentialByConnectionVersion.get(
       `${row.id}:${credentialVersion}`
     );
+    if (versionedCredential
+      && versionedCredential.provider !== provider) {
+      throw new Error(
+        "AI model credential immutable provider does not match connection"
+      );
+    }
     const storedApiKey = versionedCredential?.apiKeyEncrypted
       || row.api_key
       || "";
@@ -5956,6 +5992,7 @@ async function loadModelCredentialVersions(
      ORDER BY connection_id, credential_version`
   )).map((row) => ({
     connectionId: row.connection_id,
+    provider: String(row.provider || ""),
     ownerId: row.owner_id,
     teamId: row.team_id,
     version: Number(row.credential_version),
@@ -6037,6 +6074,8 @@ async function loadAiJobModelSnapshots(
     ),
     promptVersion: row.prompt_version,
     schemaVersion: row.schema_version,
+    promptHash: row.prompt_hash || "",
+    schemaHash: row.schema_hash || "",
     createdAt: mysqlIsoDate(row.created_at)
   }));
 }
@@ -10007,9 +10046,9 @@ async function persistAll(pool: mysql.Pool, store: CrmStore) {
         connection,
         store.aiModelConfigs.map((item) => item.id)
       );
-      await insertRows(connection, "ai_model_credential_versions", store.pendingModelCredentialVersions, (item) => [item.connectionId, item.version, item.ownerId, item.teamId, item.credentialRef, item.apiKeyEncrypted, item.keyMask, item.createdBy, mysqlDate(item.createdAt)], "(connection_id,credential_version,owner_id,team_id,credential_ref,api_key_encrypted,key_mask,created_by,created_at)");
+      await insertRows(connection, "ai_model_credential_versions", store.pendingModelCredentialVersions, (item) => [item.connectionId, item.version, item.provider, item.ownerId, item.teamId, item.credentialRef, item.apiKeyEncrypted, item.keyMask, item.createdBy, mysqlDate(item.createdAt)], "(connection_id,credential_version,provider,owner_id,team_id,credential_ref,api_key_encrypted,key_mask,created_by,created_at)");
       await insertRows(connection, "ai_model_connection_activation_events", store.pendingModelConnectionActivationEvents, (item) => [item.id, item.ownerId, item.teamId, item.actorId, item.previousConnectionId, item.connectionId, item.reason, mysqlDate(item.createdAt)], "(id,owner_id,team_id,actor_id,previous_connection_id,connection_id,reason,created_at)");
-      await insertRows(connection, "ai_job_model_snapshots", store.pendingAiJobModelSnapshots, (item) => [item.jobId, item.ownerId, item.teamId, item.connectionId, item.credentialVersion, item.provider, item.model, item.baseUrl || "", item.baseUrlFingerprint || "", JSON.stringify(item.capabilitySnapshot), item.promptVersion, item.schemaVersion, mysqlDate(item.createdAt)], "(job_id,owner_id,team_id,connection_id,credential_version,provider,model,base_url,base_url_fingerprint,capability_snapshot_json,prompt_version,schema_version,created_at)");
+      await insertRows(connection, "ai_job_model_snapshots", store.pendingAiJobModelSnapshots, (item) => [item.jobId, item.ownerId, item.teamId, item.connectionId, item.credentialVersion, item.provider, item.model, item.baseUrl || "", item.baseUrlFingerprint || "", JSON.stringify(item.capabilitySnapshot), item.promptVersion, item.schemaVersion, item.promptHash, item.schemaHash, mysqlDate(item.createdAt)], "(job_id,owner_id,team_id,connection_id,credential_version,provider,model,base_url,base_url_fingerprint,capability_snapshot_json,prompt_version,schema_version,prompt_hash,schema_hash,created_at)");
       await insertRows(connection, "ai_model_connection_idempotency", store.pendingModelConnectionIdempotencyRecords, (item) => [item.ownerId, item.teamId, item.idempotencyKeyHash, item.requestFingerprint, item.responseStatus, JSON.stringify(item.responseBody ?? null), mysqlDate(item.createdAt)], "(owner_id,team_id,idempotency_key_hash,request_fingerprint,response_status,response_body_json,created_at)");
       await insertRows(connection, "ai_model_call_records", store.pendingModelCallRecords, (item) => [item.id, item.ownerId, item.teamId, item.jobId, item.attemptId, item.connectionId, item.credentialVersion, item.capabilitySnapshotHash, item.provider, item.baseUrlFingerprint, item.model, item.promptVersion, item.schemaVersion, item.requestId, item.providerRequestId, item.inputTokens, item.outputTokens, item.reasoningTokens, item.latencyMs, item.status, item.error ? JSON.stringify(item.error) : null, JSON.stringify(item.cost), item.parameterHash, item.resultHash, mysqlDate(item.createdAt)], "(id,owner_id,team_id,job_id,attempt_id,connection_id,credential_version,capability_snapshot_hash,provider,base_url_fingerprint,model,prompt_version,schema_version,request_id,provider_request_id,input_tokens,output_tokens,reasoning_tokens,latency_ms,call_status,error_json,cost_json,parameter_hash,result_hash,created_at)");
 	    await replaceRows(connection, "provider_catalog", store.providerCatalog, (item) => [item.id, item.code, item.name, item.category, item.sourceLevel, item.accessMode, item.baseUrl || "", item.officialDocsUrl || "", JSON.stringify(item.capabilities), JSON.stringify(item.allowedFields), JSON.stringify(item.licensePolicy), JSON.stringify(item.defaultRatePolicy), JSON.stringify(item.retentionPolicy), item.status, item.version, item.reviewedAt ? mysqlDate(item.reviewedAt) : null, mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,code,name,category,source_level,access_mode,base_url,official_docs_url,capability_json,allowed_fields_json,license_policy_json,default_rate_policy_json,retention_policy_json,status,version,reviewed_at,created_at,updated_at)");

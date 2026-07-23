@@ -17,6 +17,16 @@ import type {
   ProspectRunShard,
   ProspectSearchRun
 } from "./types.js";
+import type { LeadQuery } from "./provider-contract.js";
+import {
+  AI_SEARCH_PROMPT_VERSION,
+  AI_SEARCH_SCHEMA_HASH,
+  AI_SEARCH_SCHEMA_VERSION,
+  aiSearchPromptHash
+} from "./ai-search-provider.js";
+import {
+  buildProspectProviderLeadQuery
+} from "./prospect-provider-query.js";
 import {
   bindModelConnectionSnapshot
 } from "./model-providers/runtime.js";
@@ -46,10 +56,14 @@ export function bindAiSearchJobModelSnapshot(
     jobId: string;
     ownerId: string;
     teamId: string;
+    query?: LeadQuery;
   }
 ) {
   if (input.providerCode !== "ai_search") return null;
-  const active = store.aiModelConfigs.find(
+  if (!input.query) {
+    throw new Error("AI search job requires its immutable lead query");
+  }
+  const activeMatches = store.aiModelConfigs.filter(
     (item) => item.ownerId === input.ownerId
       && item.teamId === input.teamId
       && item.enabled
@@ -58,6 +72,12 @@ export function bindAiSearchJobModelSnapshot(
         item.provider as (typeof MODEL_PROVIDER_IDS)[number]
       )
   );
+  if (activeMatches.length > 1) {
+    throw new Error(
+      "AI search job has multiple active lead-finder model connections"
+    );
+  }
+  const active = activeMatches[0];
   if (!active) {
     throw new Error(
       "AI search job requires an active lead-finder model connection"
@@ -68,8 +88,10 @@ export function bindAiSearchJobModelSnapshot(
     ownerId: input.ownerId,
     teamId: input.teamId,
     connectionId: active.id,
-    promptVersion: "ai-search.v1",
-    schemaVersion: "ai-search-result.v1"
+    promptVersion: AI_SEARCH_PROMPT_VERSION,
+    schemaVersion: AI_SEARCH_SCHEMA_VERSION,
+    promptHash: aiSearchPromptHash(input.query),
+    schemaHash: AI_SEARCH_SCHEMA_HASH
   });
 }
 
@@ -574,7 +596,10 @@ export function registerProspectRunQueueBridge(
         providerCode: shard.providerCode,
         jobId: childJob.id,
         ownerId: run.ownerId,
-        teamId: run.teamId
+        teamId: run.teamId,
+        query: shard.providerCode === "ai_search"
+          ? buildProspectProviderLeadQuery(run, shard, 0)
+          : undefined
       });
     }
     validateProspectRunQueueBridge(store, run);
