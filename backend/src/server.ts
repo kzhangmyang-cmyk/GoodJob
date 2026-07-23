@@ -7,7 +7,18 @@ import nodemailer from "nodemailer";
 import { z } from "zod";
 import { AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, canManageAccount, canManageAccounts, canManageRole, canSeeOwner, canSeePersonalData, canSeeTeam, createCsrfToken, csrfCookieOptions, hashPassword, publicUser, requireAuth, sessionCookieOptions, signToken, validateAuthSecurity, verifyPassword } from "./auth.js";
 import { assertAiBaseUrlAllowed, createAiHttpClient } from "./ai-http-security.js";
-import { createAiModelConfigId } from "./model-providers/connection-service.js";
+import {
+  activateModelConnection,
+  createAiModelConfigId,
+  createModelCredentialVersion,
+  deleteModelConnection,
+  EMPTY_MODEL_CAPABILITY_SNAPSHOT,
+  modelConnectionFromAiConfig
+} from "./model-providers/connection-service.js";
+import {
+  MODEL_PROVIDER_IDS,
+  ModelConnectionError
+} from "./model-providers/types.js";
 import { validateAgentJobSecurity } from "./agent-job-security.js";
 import {
   cancelAgentJob,
@@ -7275,6 +7286,228 @@ app.patch("/api/prospect-list/batch", requireAuth, asyncRoute(async (req, res) =
   res.json({ opportunities });
 }));
 
+const modelCapabilitySnapshotSchema = z.object({
+  structuredOutput: z.boolean(),
+  toolCalling: z.boolean(),
+  parallelToolCalling: z.boolean(),
+  streaming: z.boolean(),
+  modelListing: z.boolean()
+});
+
+function scopedOfficialAiConfig(
+  id: string,
+  user: SessionUser
+) {
+  return getStore().aiModelConfigs.find(
+    (item) => item.id === id
+      && item.ownerId === user.id
+      && item.teamId === user.teamId
+      && MODEL_PROVIDER_IDS.includes(
+        item.provider as (typeof MODEL_PROVIDER_IDS)[number]
+      )
+  ) || null;
+}
+
+app.get("/api/v1/ai/connections", requireAuth, (req, res) => {
+  const connections = getStore().aiModelConfigs
+    .filter(
+      (item) => item.ownerId === req.user!.id
+        && item.teamId === req.user!.teamId
+    )
+    .flatMap((item) => {
+      try {
+        return [modelConnectionFromAiConfig(item)];
+      } catch {
+        return [];
+      }
+    });
+  res.json({ items: connections, nextCursor: null });
+});
+
+app.post("/api/v1/ai/connections", requireAuth, asyncRoute(async (req, res) => {
+  const schema = z.object({
+    provider: z.enum(MODEL_PROVIDER_IDS),
+    name: z.string().min(1).max(120).default("AI 模型连接"),
+    baseUrl: z.string().url(),
+    model: z.string().min(1).max(120),
+    apiKey: z.string().min(1).max(400),
+    capabilitySnapshot: modelCapabilitySnapshotSchema.default({
+      ...EMPTY_MODEL_CAPABILITY_SNAPSHOT
+    }),
+    active: z.boolean().default(false)
+  });
+  const body = schema.parse(req.body);
+  let baseUrl = "";
+  try {
+    baseUrl = assertAiBaseUrlAllowed(body.baseUrl);
+  } catch {
+    res.status(400).json({
+      code: "invalid_base_url",
+      message: "AI Base URL 必须是公网 HTTPS 标准端口地址",
+      details: null,
+      requestId: `req_${randomUUID()}`,
+      retryable: false
+    });
+    return;
+  }
+  const store = getStore();
+  const now = new Date().toISOString();
+  const config: AiModelConfig = {
+    id: createAiModelConfigId(),
+    provider: body.provider,
+    protocol: "openai-compatible",
+    name: body.name,
+    baseUrl,
+    model: body.model,
+    apiKey: body.apiKey,
+    enabled: false,
+    temperature: 0.1,
+    useLeadFinder: true,
+    useWebsiteParse: true,
+    useScoring: true,
+    useEmailDraft: true,
+    useExam: false,
+    lastTestStatus: "untested",
+    lastTestMessage: "",
+    ownerId: req.user!.id,
+    teamId: req.user!.teamId,
+    credentialVersion: 1,
+    capabilitySnapshot: body.capabilitySnapshot,
+    createdAt: now,
+    updatedAt: now
+  };
+  const connection = modelConnectionFromAiConfig(config);
+  const credential = createModelCredentialVersion(
+    store.modelCredentialVersions,
+    connection,
+    body.apiKey,
+    req.user!.id,
+    now
+  );
+  config.credentialVersion = credential.version;
+  store.aiModelConfigs.unshift(config);
+  await store.persist();
+  if (body.active) {
+    await activateModelConnection(
+      modelConnectionStore(store),
+      { ownerId: req.user!.id, teamId: req.user!.teamId },
+      config.id,
+      req.user!.id,
+      "connection_created_active"
+    );
+  }
+  const created = store.aiModelConfigs.find((item) => item.id === config.id)
+    || config;
+  res.status(201).json(modelConnectionFromAiConfig(created));
+}));
+
+app.get("/api/v1/ai/connections/:id", requireAuth, (req, res) => {
+  const config = scopedOfficialAiConfig(req.params.id, req.user!);
+  if (!config) {
+    res.status(404).json({
+      code: "connection_not_found",
+      message: "模型连接不存在或不属于当前用户",
+      details: null,
+      requestId: `req_${randomUUID()}`,
+      retryable: false
+    });
+    return;
+  }
+  res.json(modelConnectionFromAiConfig(config));
+});
+
+app.patch("/api/v1/ai/connections/:id", requireAuth, asyncRoute(async (req, res) => {
+  const schema = z.object({
+    name: z.string().min(1).max(120).optional(),
+    baseUrl: z.string().url().optional(),
+    model: z.string().min(1).max(120).optional(),
+    apiKey: z.string().min(1).max(400).optional(),
+    capabilitySnapshot: modelCapabilitySnapshotSchema.optional()
+  });
+  const body = schema.parse(req.body);
+  const store = getStore();
+  const config = scopedOfficialAiConfig(req.params.id, req.user!);
+  if (!config) {
+    res.status(404).json({
+      code: "connection_not_found",
+      message: "模型连接不存在或不属于当前用户",
+      details: null,
+      requestId: `req_${randomUUID()}`,
+      retryable: false
+    });
+    return;
+  }
+  if (body.baseUrl) {
+    try {
+      config.baseUrl = assertAiBaseUrlAllowed(body.baseUrl);
+    } catch {
+      res.status(400).json({
+        code: "invalid_base_url",
+        message: "AI Base URL 必须是公网 HTTPS 标准端口地址",
+        details: null,
+        requestId: `req_${randomUUID()}`,
+        retryable: false
+      });
+      return;
+    }
+  }
+  if (body.name) config.name = body.name;
+  if (body.model) config.model = body.model;
+  if (body.capabilitySnapshot) {
+    config.capabilitySnapshot = body.capabilitySnapshot;
+  }
+  config.updatedAt = new Date().toISOString();
+  if (body.apiKey) {
+    const connection = modelConnectionFromAiConfig(config);
+    const credential = createModelCredentialVersion(
+      store.modelCredentialVersions,
+      connection,
+      body.apiKey,
+      req.user!.id,
+      config.updatedAt
+    );
+    config.credentialVersion = credential.version;
+    config.apiKey = body.apiKey;
+  }
+  await store.persist();
+  res.json(modelConnectionFromAiConfig(config));
+}));
+
+app.post("/api/v1/ai/connections/:id/activate", requireAuth, asyncRoute(async (req, res) => {
+  const body = z.object({
+    reason: z.string().min(1).max(500)
+  }).parse(req.body);
+  const store = getStore();
+  try {
+    const connection = await activateModelConnection(
+      modelConnectionStore(store),
+      { ownerId: req.user!.id, teamId: req.user!.teamId },
+      req.params.id,
+      req.user!.id,
+      body.reason
+    );
+    res.json(connection);
+  } catch (error) {
+    if (sendModelConnectionError(res, error)) return;
+    throw error;
+  }
+}));
+
+app.delete("/api/v1/ai/connections/:id", requireAuth, asyncRoute(async (req, res) => {
+  const store = getStore();
+  try {
+    await deleteModelConnection(
+      modelConnectionDeletionStore(store),
+      { ownerId: req.user!.id, teamId: req.user!.teamId },
+      req.params.id
+    );
+    res.status(204).end();
+  } catch (error) {
+    if (sendModelConnectionError(res, error)) return;
+    throw error;
+  }
+}));
+
 app.get("/api/tools/ai-config", requireAuth, (req, res) => {
   const configs = getAiConfigs(req.user!);
   const config = getAiConfig(req.user!);
@@ -7319,7 +7552,7 @@ app.post("/api/tools/ai-config", requireAuth, asyncRoute(async (req, res) => {
     baseUrl,
     model: body.model,
     apiKey,
-    enabled: body.enabled,
+    enabled: false,
     temperature: body.temperature,
     useLeadFinder: body.useLeadFinder,
     useWebsiteParse: body.useWebsiteParse,
@@ -7330,11 +7563,45 @@ app.post("/api/tools/ai-config", requireAuth, asyncRoute(async (req, res) => {
     lastTestMessage: "",
     ownerId: req.user!.id,
     teamId: req.user!.teamId,
+    credentialVersion: 1,
+    capabilitySnapshot: { ...EMPTY_MODEL_CAPABILITY_SNAPSHOT },
+    createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
   store.aiModelConfigs.unshift(config);
+  if (apiKey && MODEL_PROVIDER_IDS.includes(
+    config.provider as (typeof MODEL_PROVIDER_IDS)[number]
+  )) {
+    const connection = modelConnectionFromAiConfig(config);
+    const credential = createModelCredentialVersion(
+      store.modelCredentialVersions,
+      connection,
+      apiKey,
+      req.user!.id
+    );
+    config.credentialVersion = credential.version;
+  }
+  const officialProvider = MODEL_PROVIDER_IDS.includes(
+    config.provider as (typeof MODEL_PROVIDER_IDS)[number]
+  );
+  if (body.enabled && !officialProvider) {
+    for (const item of store.aiModelConfigs) {
+      if (item.ownerId === config.ownerId) item.enabled = item.id === config.id;
+    }
+  }
   await store.persist();
-  res.json({ config: publicAiConfig(config), configs: getAiConfigs(req.user!).map(publicAiConfig) });
+  if (body.enabled && officialProvider) {
+    await activateModelConnection(
+      modelConnectionStore(store),
+      { ownerId: req.user!.id, teamId: req.user!.teamId },
+      config.id,
+      req.user!.id,
+      "legacy_ai_config_create"
+    );
+  }
+  const savedConfig = store.aiModelConfigs.find((item) => item.id === config.id)
+    || config;
+  res.json({ config: publicAiConfig(savedConfig), configs: getAiConfigs(req.user!).map(publicAiConfig) });
 }));
 
 app.delete("/api/tools/ai-config/:id", requireAuth, asyncRoute(async (req, res) => {
@@ -7344,8 +7611,24 @@ app.delete("/api/tools/ai-config/:id", requireAuth, asyncRoute(async (req, res) 
     res.status(404).json({ message: "配置不存在或无权删除" });
     return;
   }
-  store.aiModelConfigs.splice(index, 1);
-  await store.persist();
+  try {
+    const config = store.aiModelConfigs[index];
+    if (MODEL_PROVIDER_IDS.includes(
+      config.provider as (typeof MODEL_PROVIDER_IDS)[number]
+    )) {
+      await deleteModelConnection(
+        modelConnectionDeletionStore(store),
+        { ownerId: req.user!.id, teamId: req.user!.teamId },
+        config.id
+      );
+    } else {
+      store.aiModelConfigs.splice(index, 1);
+      await store.persist();
+    }
+  } catch (error) {
+    if (sendModelConnectionError(res, error)) return;
+    throw error;
+  }
   const config = getAiConfig(req.user!);
   res.json({ config: config ? publicAiConfig(config) : null, configs: getAiConfigs(req.user!).map(publicAiConfig) });
 }));
@@ -10416,6 +10699,80 @@ function publicAiConfig(config: AiModelConfig) {
     teamId: config.teamId,
     updatedAt: config.updatedAt
   };
+}
+
+function modelConnectionStore(store: ReturnType<typeof getStore>) {
+  const connections = store.aiModelConfigs.flatMap((config) => {
+    try {
+      return [modelConnectionFromAiConfig(config)];
+    } catch {
+      return [];
+    }
+  });
+  return {
+    connections,
+    activationEvents: store.modelConnectionActivationEvents,
+    async persist() {
+      for (const connection of connections) {
+        const config = store.aiModelConfigs.find(
+          (item) => item.id === connection.id
+        );
+        if (!config) continue;
+        config.enabled = connection.status === "active";
+        config.updatedAt = connection.updatedAt;
+      }
+      await store.persist();
+    },
+    activateModelConnectionTransaction: store.activateModelConnection
+      ? store.activateModelConnection.bind(store)
+      : undefined
+  };
+}
+
+function modelConnectionDeletionStore(store: ReturnType<typeof getStore>) {
+  const bridge = modelConnectionStore(store);
+  return {
+    connections: bridge.connections,
+    jobSnapshots: store.aiJobModelSnapshots,
+    deleteModelConnectionTransaction: store.deleteModelConnection
+      ? store.deleteModelConnection.bind(store)
+      : undefined,
+    async persist() {
+      const retained = new Set(bridge.connections.map((item) => item.id));
+      store.aiModelConfigs.splice(
+        0,
+        store.aiModelConfigs.length,
+        ...store.aiModelConfigs.filter(
+          (item) => !MODEL_PROVIDER_IDS.includes(
+            item.provider as (typeof MODEL_PROVIDER_IDS)[number]
+          ) || retained.has(item.id)
+        )
+      );
+      store.modelCredentialVersions.splice(
+        0,
+        store.modelCredentialVersions.length,
+        ...store.modelCredentialVersions.filter(
+          (item) => retained.has(item.connectionId)
+        )
+      );
+      await store.persist();
+    }
+  };
+}
+
+function sendModelConnectionError(
+  res: express.Response,
+  error: unknown
+) {
+  if (!(error instanceof ModelConnectionError)) return false;
+  res.status(error.status).json({
+    code: error.code,
+    message: error.message,
+    details: null,
+    requestId: `req_${randomUUID()}`,
+    retryable: false
+  });
+  return true;
 }
 
 async function testAiConfig(config: AiModelConfig) {

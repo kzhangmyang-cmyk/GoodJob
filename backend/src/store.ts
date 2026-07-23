@@ -3,6 +3,7 @@ import {
   agentJobIdempotencyAliases,
   agentJobs,
   aiModelConfigs,
+  aiJobModelSnapshots,
   caseStudies,
   commissionCalculations,
   commissionExports,
@@ -93,6 +94,8 @@ import {
   prospectStrategyEvents,
   prospectStrategySuggestions,
   marketTradeObservations,
+  modelConnectionActivationEvents,
+  modelCredentialVersions,
   marketOpportunityBatches,
   marketOpportunitySnapshots,
   marketOpportunityCalculationEvents,
@@ -164,6 +167,13 @@ import type {
   ProspectSuppressionEvent
 } from "./types.js";
 import type { CompanyProfile } from "./types.js";
+import type {
+  ModelConnection,
+  ModelConnectionActivationEvent,
+  ModelConnectionScope,
+  ModelCredentialVersion,
+  StoredAiJobModelSnapshot
+} from "./model-providers/types.js";
 
 export interface PersistedStoreMutation<T> {
   value: T;
@@ -200,6 +210,9 @@ export interface CrmStore {
   ocrJobs: OcrJob[];
   websiteOpportunities: WebsiteOpportunity[];
   aiModelConfigs: AiModelConfig[];
+  modelCredentialVersions: ModelCredentialVersion[];
+  modelConnectionActivationEvents: ModelConnectionActivationEvent[];
+  aiJobModelSnapshots: StoredAiJobModelSnapshot[];
   providerCatalog: ProviderCatalogItem[];
   providerConnections: ProviderConnection[];
   providerRequestLogs: ProviderRequestLog[];
@@ -283,6 +296,16 @@ export interface CrmStore {
   commissionItems: CommissionItem[];
   commissionExports: CommissionExport[];
   persist(): Promise<void>;
+  activateModelConnection?(
+    scope: ModelConnectionScope,
+    connectionId: string,
+    actorId: string,
+    reason: string
+  ): Promise<ModelConnection>;
+  deleteModelConnection?(
+    scope: ModelConnectionScope,
+    connectionId: string
+  ): Promise<ModelConnection>;
   persistMutation?<T>(
     mutation: () => PersistedStoreMutation<T>
   ): Promise<T>;
@@ -366,6 +389,9 @@ export const memoryStore: CrmStore = {
     ensureProspectVerificationReport(item)
   ),
   aiModelConfigs,
+  modelCredentialVersions,
+  modelConnectionActivationEvents,
+  aiJobModelSnapshots,
   providerCatalog,
   providerConnections,
   providerRequestLogs,

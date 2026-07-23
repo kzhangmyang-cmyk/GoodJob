@@ -88,6 +88,22 @@ import {
 } from "./credential-security.js";
 import { agentJobIdempotencyAliases, agentJobs, aiModelConfigs, caseStudies, commissionCalculations, commissionExports, commissionItems, commissionProducts, commissionRules, competitors, customerActivities, customerIntelligenceSuggestions, customers, dailyReportComments, dailyReports, dealEvents, deals, examAttempts, examQuestionLinks, examQuestions, exams, importExportJobs, internalMessages, knowledgeAssets, leadActivities, leadSourceConfigs, leadSourceEvents, leads, marketOpportunityBatches, marketOpportunityCalculationEvents, marketOpportunitySnapshots, marketTradeObservations, memos, monthlySalesRecords, ocrJobs, planTasks, planTemplates, problems, prospectCampaignEvents, prospectCampaigns, prospectCampaignVersions, prospectRunQueueChildBindings, prospectRunQueueParentBindings, prospectTouchpoints, providerCatalog as defaultProviderCatalog, providerConnections, providerRequestLogs, providerResponseCache, reminders, salesRecordAudits, todos, tradeDocuments, users, wecomMessages, websiteOpportunities, whatsappBindings, whatsappMessages } from "./data.js";
 import { companyProfiles } from "./data.js";
+import {
+  modelConnectionFromAiConfig,
+  selectLegacyActiveConnectionIds
+} from "./model-providers/connection-service.js";
+import {
+  MODEL_PROVIDER_IDS,
+  ModelConnectionError
+} from "./model-providers/types.js";
+import type {
+  ModelCapabilitySnapshot,
+  ModelConnection,
+  ModelConnectionActivationEvent,
+  ModelConnectionScope,
+  ModelCredentialVersion,
+  StoredAiJobModelSnapshot
+} from "./model-providers/types.js";
 import type { CrmStore, PersistedStoreMutation } from "./store.js";
 import type { WhatsAppBinding, WhatsAppMessage } from "./types.js";
 import type { DailyReport, DailyReportComment, InternalMessage } from "./types.js";
@@ -483,6 +499,190 @@ export async function createMysqlStore(
     } catch (error) {
       applied.rollback();
       throw error;
+    }
+  });
+  const activateModelConnection = (
+    scope: ModelConnectionScope,
+    connectionId: string,
+    actorId: string,
+    reason: string
+  ): Promise<ModelConnection> => enqueuePersistence(async () => {
+    const connection = await pool.getConnection();
+    let transactionStarted = false;
+    try {
+      await connection.beginTransaction();
+      transactionStarted = true;
+      const [targetRows] = await connection.query(
+        `SELECT * FROM ai_model_configs
+         WHERE id = ? AND owner_id = ? AND team_id = ?
+         FOR UPDATE`,
+        [connectionId, scope.ownerId, scope.teamId]
+      );
+      const target = (targetRows as Array<Record<string, any>>)[0];
+      if (!target) {
+        throw new ModelConnectionError(
+          "connection_not_found",
+          "模型连接不存在或不属于当前用户",
+          404
+        );
+      }
+      const [previousRows] = await connection.query(
+        `SELECT id FROM ai_model_configs
+         WHERE owner_id = ? AND enabled = TRUE
+         FOR UPDATE`,
+        [scope.ownerId]
+      );
+      const previousConnectionId =
+        (previousRows as Array<{ id: string }>)[0]?.id || null;
+      const createdAt = new Date().toISOString();
+      const event: ModelConnectionActivationEvent = {
+        id: `mca_${randomUUID()}`,
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        actorId,
+        previousConnectionId,
+        connectionId,
+        reason,
+        createdAt
+      };
+      await connection.query(
+        `UPDATE ai_model_configs
+         SET enabled = FALSE, updated_at = ?
+         WHERE owner_id = ?`,
+        [mysqlDate(createdAt), scope.ownerId]
+      );
+      await connection.query(
+        `UPDATE ai_model_configs
+         SET enabled = TRUE, updated_at = ?
+         WHERE id = ? AND owner_id = ?`,
+        [mysqlDate(createdAt), connectionId, scope.ownerId]
+      );
+      await connection.query(
+        `INSERT INTO ai_model_connection_activation_events
+          (id, owner_id, team_id, actor_id, previous_connection_id,
+           connection_id, reason, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          event.id,
+          event.ownerId,
+          event.teamId,
+          event.actorId,
+          event.previousConnectionId,
+          event.connectionId,
+          event.reason,
+          mysqlDate(event.createdAt)
+        ]
+      );
+      await connection.commit();
+      transactionStarted = false;
+
+      const loadedConfigs = await loadAiModelConfigs(pool);
+      store.aiModelConfigs.splice(
+        0,
+        store.aiModelConfigs.length,
+        ...loadedConfigs
+      );
+      store.modelConnectionActivationEvents.push(event);
+      const activated = store.aiModelConfigs.find(
+        (item) => item.id === connectionId
+      );
+      if (!activated) {
+        throw new ModelConnectionError(
+          "connection_not_found",
+          "激活后未能重新加载模型连接",
+          404
+        );
+      }
+      return modelConnectionFromAiConfig(activated);
+    } catch (error) {
+      if (transactionStarted) await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  });
+  const deleteModelConnection = (
+    scope: ModelConnectionScope,
+    connectionId: string
+  ): Promise<ModelConnection> => enqueuePersistence(async () => {
+    const cached = store.aiModelConfigs.find(
+      (item) => item.id === connectionId
+        && item.ownerId === scope.ownerId
+        && item.teamId === scope.teamId
+    );
+    if (!cached) {
+      throw new ModelConnectionError(
+        "connection_not_found",
+        "模型连接不存在或不属于当前用户",
+        404
+      );
+    }
+    const connection = await pool.getConnection();
+    let transactionStarted = false;
+    try {
+      await connection.beginTransaction();
+      transactionStarted = true;
+      const [targetRows] = await connection.query(
+        `SELECT id, enabled FROM ai_model_configs
+         WHERE id = ? AND owner_id = ? AND team_id = ?
+         FOR UPDATE`,
+        [connectionId, scope.ownerId, scope.teamId]
+      );
+      const target = (targetRows as Array<{
+        id: string;
+        enabled: number;
+      }>)[0];
+      if (!target) {
+        throw new ModelConnectionError(
+          "connection_not_found",
+          "模型连接不存在或不属于当前用户",
+          404
+        );
+      }
+      const [snapshotRows] = await connection.query(
+        `SELECT COUNT(*) AS count FROM ai_job_model_snapshots
+         WHERE connection_id = ?`,
+        [connectionId]
+      );
+      const inUse = Boolean(target.enabled)
+        || Number(
+          (snapshotRows as Array<{ count: number }>)[0]?.count || 0
+        ) > 0;
+      if (inUse) {
+        throw new ModelConnectionError(
+          "connection_in_use",
+          "模型连接当前仍在启用或被任务快照引用，只能先停用",
+          409
+        );
+      }
+      await connection.query(
+        "DELETE FROM ai_model_credential_versions WHERE connection_id = ?",
+        [connectionId]
+      );
+      await connection.query(
+        `DELETE FROM ai_model_configs
+         WHERE id = ? AND owner_id = ? AND team_id = ?`,
+        [connectionId, scope.ownerId, scope.teamId]
+      );
+      await connection.commit();
+      transactionStarted = false;
+      store.aiModelConfigs.splice(
+        store.aiModelConfigs.findIndex((item) => item.id === connectionId),
+        1
+      );
+      store.modelCredentialVersions.splice(
+        0,
+        store.modelCredentialVersions.length,
+        ...store.modelCredentialVersions.filter(
+          (item) => item.connectionId !== connectionId
+        )
+      );
+      return modelConnectionFromAiConfig(cached);
+    } catch (error) {
+      if (transactionStarted) await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
     }
   });
   const mutateCustomerOwnership = (
@@ -1277,7 +1477,11 @@ export async function createMysqlStore(
 		    websiteOpportunities: await loadWebsiteOpportunities(pool),
         prospectCandidateProcessingStates:
           await loadProspectCandidateProcessingStates(pool),
-		    aiModelConfigs: await loadAiModelConfigs(pool),
+        aiModelConfigs: await loadAiModelConfigs(pool),
+        modelCredentialVersions: await loadModelCredentialVersions(pool),
+        modelConnectionActivationEvents:
+          await loadModelConnectionActivationEvents(pool),
+        aiJobModelSnapshots: await loadAiJobModelSnapshots(pool),
 		    providerCatalog: await loadProviderCatalog(pool),
 		    providerConnections: await loadProviderConnections(pool),
 		    providerRequestLogs: await loadProviderRequestLogs(pool),
@@ -1395,6 +1599,8 @@ export async function createMysqlStore(
 		    whatsappBindings: await loadWhatsAppBindings(pool),
 		    whatsappMessages: await loadWhatsAppMessages(pool),
         persist,
+        activateModelConnection,
+        deleteModelConnection,
         persistMutation,
         persistProspectExecutionMutation,
         persistProspectCandidateMutation,
@@ -2370,6 +2576,8 @@ async function ensureSchema(pool: mysql.Pool) {
     model VARCHAR(120) NOT NULL,
     api_key TEXT,
     enabled BOOLEAN DEFAULT FALSE,
+    credential_version INT NOT NULL DEFAULT 1,
+    capability_snapshot_json JSON,
     temperature DECIMAL(4,2) DEFAULT 0.10,
     use_lead_finder BOOLEAN DEFAULT TRUE,
     use_website_parse BOOLEAN DEFAULT TRUE,
@@ -2381,7 +2589,12 @@ async function ensureSchema(pool: mysql.Pool) {
     last_test_message VARCHAR(255) DEFAULT '',
     owner_id VARCHAR(64) NOT NULL,
     team_id VARCHAR(64) NOT NULL,
+    active_owner_id VARCHAR(64) GENERATED ALWAYS AS (
+      CASE WHEN enabled THEN owner_id ELSE NULL END
+    ) STORED,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_ai_model_active_owner(active_owner_id),
     INDEX idx_ai_model_owner(owner_id)
   )`);
   await ensureColumn(pool, "ai_model_configs", "protocol", "VARCHAR(40) NOT NULL DEFAULT 'openai-compatible'");
@@ -2394,6 +2607,60 @@ async function ensureSchema(pool: mysql.Pool) {
   await ensureColumn(pool, "ai_model_configs", "last_test_at", "DATETIME NULL");
   await ensureColumn(pool, "ai_model_configs", "last_test_status", "VARCHAR(20) DEFAULT 'untested'");
   await ensureColumn(pool, "ai_model_configs", "last_test_message", "VARCHAR(255) DEFAULT ''");
+  await ensureColumn(pool, "ai_model_configs", "credential_version", "INT NOT NULL DEFAULT 1");
+  await ensureColumn(pool, "ai_model_configs", "capability_snapshot_json", "JSON");
+  await ensureColumn(pool, "ai_model_configs", "created_at", "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP");
+  await pool.query(`CREATE TABLE IF NOT EXISTS ai_model_credential_versions (
+    connection_id VARCHAR(64) NOT NULL,
+    credential_version INT NOT NULL,
+    owner_id VARCHAR(64) NOT NULL,
+    team_id VARCHAR(64) NOT NULL,
+    credential_ref VARCHAR(80) NOT NULL UNIQUE,
+    api_key_encrypted TEXT NOT NULL,
+    key_mask VARCHAR(8) NOT NULL DEFAULT '',
+    created_by VARCHAR(64) NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY(connection_id, credential_version),
+    INDEX idx_ai_credential_owner(owner_id, connection_id)
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS ai_model_connection_activation_events (
+    id VARCHAR(90) PRIMARY KEY,
+    owner_id VARCHAR(64) NOT NULL,
+    team_id VARCHAR(64) NOT NULL,
+    actor_id VARCHAR(64) NOT NULL,
+    previous_connection_id VARCHAR(64) NULL,
+    connection_id VARCHAR(64) NOT NULL,
+    reason VARCHAR(500) NOT NULL,
+    created_at DATETIME NOT NULL,
+    INDEX idx_ai_activation_owner(owner_id, created_at)
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS ai_job_model_snapshots (
+    job_id VARCHAR(90) PRIMARY KEY,
+    owner_id VARCHAR(64) NOT NULL,
+    team_id VARCHAR(64) NOT NULL,
+    connection_id VARCHAR(64) NOT NULL,
+    credential_version INT NOT NULL,
+    provider VARCHAR(40) NOT NULL,
+    model VARCHAR(120) NOT NULL,
+    capability_snapshot_json JSON NOT NULL,
+    prompt_version VARCHAR(120) NOT NULL,
+    schema_version VARCHAR(120) NOT NULL,
+    created_at DATETIME NOT NULL,
+    INDEX idx_ai_job_snapshot_connection(connection_id, credential_version)
+  )`);
+  await migrateLegacyAiModelConnections(pool);
+  await ensureColumn(
+    pool,
+    "ai_model_configs",
+    "active_owner_id",
+    "VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN enabled THEN owner_id ELSE NULL END) STORED"
+  );
+  await ensureUniqueIndex(
+    pool,
+    "ai_model_configs",
+    "uniq_ai_model_active_owner",
+    ["active_owner_id"]
+  );
   await pool.query(`CREATE TABLE IF NOT EXISTS lead_source_configs (
     id VARCHAR(64) PRIMARY KEY,
     provider VARCHAR(40) NOT NULL,
@@ -4424,6 +4691,111 @@ async function ensureColumn(pool: mysql.Pool, table: string, column: string, def
   if (!exists) await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
+async function migrateLegacyAiModelConnections(pool: mysql.Pool) {
+  const connection = await pool.getConnection();
+  let transactionStarted = false;
+  try {
+    await connection.beginTransaction();
+    transactionStarted = true;
+    const [result] = await connection.query(
+      `SELECT id, provider, api_key, enabled, owner_id, team_id,
+              updated_at, created_at
+       FROM ai_model_configs
+       FOR UPDATE`
+    );
+    const legacyRows = result as Array<Record<string, any>>;
+    const selected = selectLegacyActiveConnectionIds(
+      legacyRows.map((row) => ({
+        id: row.id,
+        ownerId: row.owner_id,
+        enabled: Boolean(row.enabled),
+        updatedAt: mysqlIsoDate(row.updated_at)
+      }))
+    );
+
+    await connection.query("UPDATE ai_model_configs SET enabled = FALSE");
+    for (const [ownerId, connectionId] of selected) {
+      await connection.query(
+        `UPDATE ai_model_configs
+         SET enabled = TRUE
+         WHERE id = ? AND owner_id = ?`,
+        [connectionId, ownerId]
+      );
+      const row = legacyRows.find((item) => item.id === connectionId);
+      if (!row) continue;
+      const eventId = `mca_migration_${createHash("sha256")
+        .update(`${ownerId}|${connectionId}|v1`)
+        .digest("hex")
+        .slice(0, 32)}`;
+      await connection.query(
+        `INSERT IGNORE INTO ai_model_connection_activation_events
+          (id, owner_id, team_id, actor_id, previous_connection_id,
+           connection_id, reason, created_at)
+         VALUES (?, ?, ?, 'system_migration', NULL, ?, ?, ?)`,
+        [
+          eventId,
+          ownerId,
+          row.team_id,
+          connectionId,
+          "legacy_migration_updated_at_desc_id_asc",
+          mysqlDate(mysqlIsoDate(row.updated_at))
+        ]
+      );
+    }
+
+    for (const row of legacyRows) {
+      const storedApiKey = String(row.api_key || "");
+      if (storedApiKey) {
+        const context = {
+          id: row.id,
+          provider: row.provider || "openai",
+          ownerId: row.owner_id,
+          teamId: row.team_id
+        };
+        const plaintext = isEncryptedAiModelApiKey(storedApiKey)
+          ? decryptAiModelApiKey(context, storedApiKey)
+          : storedApiKey;
+        const encrypted = isEncryptedAiModelApiKey(storedApiKey)
+          ? storedApiKey
+          : encryptAiModelApiKey(context, plaintext);
+        const credentialRef = `cred_migration_${createHash("sha256")
+          .update(`${row.id}|1`)
+          .digest("hex")
+          .slice(0, 32)}`;
+        await connection.query(
+          `INSERT IGNORE INTO ai_model_credential_versions
+            (connection_id, credential_version, owner_id, team_id,
+             credential_ref, api_key_encrypted, key_mask, created_by,
+             created_at)
+           VALUES (?, 1, ?, ?, ?, ?, ?, 'system_migration', ?)`,
+          [
+            row.id,
+            row.owner_id,
+            row.team_id,
+            credentialRef,
+            encrypted,
+            plaintext.slice(-4),
+            mysqlDate(mysqlIsoDate(row.created_at || row.updated_at))
+          ]
+        );
+        await connection.query(
+          `UPDATE ai_model_configs
+           SET api_key = '', credential_version = 1
+           WHERE id = ?`,
+          [row.id]
+        );
+      }
+    }
+    await connection.commit();
+    transactionStarted = false;
+  } catch (error) {
+    if (transactionStarted) await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 async function ensureDatetimePrecision(
   pool: mysql.Pool,
   table: string,
@@ -5347,6 +5719,13 @@ async function loadAiModelConfigs(
   pool: MysqlQuerySource
 ): Promise<AiModelConfig[]> {
   const storedRows = await rows<Record<string, any>>(pool, "SELECT * FROM ai_model_configs ORDER BY updated_at DESC");
+  const credentials = await loadModelCredentialVersions(pool);
+  const credentialByConnectionVersion = new Map(
+    credentials.map((item) => [
+      `${item.connectionId}:${item.version}`,
+      item
+    ])
+  );
   const configs: AiModelConfig[] = [];
   for (const row of storedRows) {
     const provider = row.provider || "openai";
@@ -5356,11 +5735,19 @@ async function loadAiModelConfigs(
       ownerId: row.owner_id,
       teamId: row.team_id
     };
-    const storedApiKey = row.api_key || "";
+    const credentialVersion = Number(row.credential_version || 1);
+    const versionedCredential = credentialByConnectionVersion.get(
+      `${row.id}:${credentialVersion}`
+    );
+    const storedApiKey = versionedCredential?.apiKeyEncrypted
+      || row.api_key
+      || "";
     const apiKey = storedApiKey && isEncryptedAiModelApiKey(storedApiKey)
       ? decryptAiModelApiKey(context, storedApiKey)
       : storedApiKey;
-    if (storedApiKey && !isEncryptedAiModelApiKey(storedApiKey)) {
+    if (!versionedCredential
+      && storedApiKey
+      && !isEncryptedAiModelApiKey(storedApiKey)) {
       await pool.query(
         "UPDATE ai_model_configs SET api_key = ? WHERE id = ?",
         [encryptAiModelApiKey(context, storedApiKey), row.id]
@@ -5386,10 +5773,106 @@ async function loadAiModelConfigs(
       lastTestMessage: row.last_test_message || "",
       ownerId: row.owner_id,
       teamId: row.team_id,
+      credentialVersion,
+      capabilitySnapshot: parseModelCapabilitySnapshot(
+        row.capability_snapshot_json
+      ),
+      createdAt: mysqlIsoDate(row.created_at || row.updated_at),
       updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at
     });
   }
   return configs;
+}
+
+const DEFAULT_MODEL_CAPABILITY_SNAPSHOT: ModelCapabilitySnapshot = {
+  structuredOutput: false,
+  toolCalling: false,
+  parallelToolCalling: false,
+  streaming: false,
+  modelListing: false
+};
+
+function parseModelCapabilitySnapshot(value: unknown) {
+  let parsed: Record<string, unknown> = {};
+  try {
+    const candidate = typeof value === "string" ? JSON.parse(value) : value;
+    if (candidate && typeof candidate === "object") {
+      parsed = candidate as Record<string, unknown>;
+    }
+  } catch {
+    parsed = {};
+  }
+  return {
+    structuredOutput: parsed.structuredOutput === true,
+    toolCalling: parsed.toolCalling === true,
+    parallelToolCalling: parsed.parallelToolCalling === true,
+    streaming: parsed.streaming === true,
+    modelListing: parsed.modelListing === true
+  } satisfies ModelCapabilitySnapshot;
+}
+
+async function loadModelCredentialVersions(
+  pool: MysqlQuerySource
+): Promise<ModelCredentialVersion[]> {
+  return (await rows<Record<string, any>>(
+    pool,
+    `SELECT * FROM ai_model_credential_versions
+     ORDER BY connection_id, credential_version`
+  )).map((row) => ({
+    connectionId: row.connection_id,
+    ownerId: row.owner_id,
+    teamId: row.team_id,
+    version: Number(row.credential_version),
+    credentialRef: row.credential_ref,
+    apiKeyEncrypted: row.api_key_encrypted,
+    keyMask: row.key_mask || "",
+    createdBy: row.created_by,
+    createdAt: mysqlIsoDate(row.created_at)
+  }));
+}
+
+async function loadModelConnectionActivationEvents(
+  pool: MysqlQuerySource
+): Promise<ModelConnectionActivationEvent[]> {
+  return (await rows<Record<string, any>>(
+    pool,
+    `SELECT * FROM ai_model_connection_activation_events
+     ORDER BY created_at, id`
+  )).map((row) => ({
+    id: row.id,
+    ownerId: row.owner_id,
+    teamId: row.team_id,
+    actorId: row.actor_id,
+    previousConnectionId: row.previous_connection_id || null,
+    connectionId: row.connection_id,
+    reason: row.reason,
+    createdAt: mysqlIsoDate(row.created_at)
+  }));
+}
+
+async function loadAiJobModelSnapshots(
+  pool: MysqlQuerySource
+): Promise<StoredAiJobModelSnapshot[]> {
+  return (await rows<Record<string, any>>(
+    pool,
+    "SELECT * FROM ai_job_model_snapshots ORDER BY created_at, job_id"
+  )).map((row) => ({
+    jobId: row.job_id,
+    ownerId: row.owner_id,
+    teamId: row.team_id,
+    connectionId: row.connection_id,
+    credentialVersion: Number(row.credential_version),
+    provider: MODEL_PROVIDER_IDS.includes(row.provider)
+      ? row.provider
+      : "openai",
+    model: row.model,
+    capabilitySnapshot: parseModelCapabilitySnapshot(
+      row.capability_snapshot_json
+    ),
+    promptVersion: row.prompt_version,
+    schemaVersion: row.schema_version,
+    createdAt: mysqlIsoDate(row.created_at)
+  }));
 }
 
 async function loadLeadSourceConfigs(pool: mysql.Pool): Promise<LeadSourceConfig[]> {
@@ -9279,7 +9762,10 @@ async function persistAll(pool: mysql.Pool, store: CrmStore) {
 	    await replaceRows(connection, "deal_recommendations", store.dealRecommendations, (item) => [item.id, item.signalId, item.teamId, item.ownerId, item.prospectCandidateId, item.tenantProspectId || "", item.organizationId || "", item.leadId || "", item.customerId || "", item.suggestedTitle, item.suggestedProduct, item.suggestedQuantity || 0, item.suggestedUnitPrice || 0, item.suggestedAmount || 0, item.currency || "USD", item.initialStage || "询盘", item.nextAction || "", item.nextActionAt || "", item.expectedCloseAt || "", JSON.stringify(item.reasonCodes || []), JSON.stringify(item.missingFields || []), JSON.stringify(item.evidenceRefs || []), item.recommendationScore || 0, JSON.stringify(item.duplicateDealIds || []), item.status, item.reviewedBy || "", item.reviewedAt ? mysqlDate(item.reviewedAt) : null, item.reviewReason || "", item.linkedDealId || "", mysqlDate(item.expiresAt), mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,signal_id,team_id,owner_id,prospect_candidate_id,tenant_prospect_id,organization_id,lead_id,customer_id,suggested_title,suggested_product,suggested_quantity,suggested_unit_price,suggested_amount,currency,initial_stage,next_action,next_action_at,expected_close_at,reason_codes_json,missing_fields_json,evidence_refs_json,recommendation_score,duplicate_deal_ids_json,recommendation_status,reviewed_by,reviewed_at,review_reason,linked_deal_id,expires_at,created_at,updated_at)");
       await replaceRows(connection, "acquisition_outcome_feedback", store.acquisitionOutcomeFeedback, (item) => [item.id, item.teamId, item.ownerId, item.dealId, item.customerId, item.leadId || "", item.prospectCandidateId || "", item.tenantProspectId || "", item.organizationId || "", item.campaignId || "", item.campaignVersion || 0, item.strategyId || "", item.runId || "", JSON.stringify(item.providerCodes || []), item.icpAssessmentId || "", item.icpPolicyId || "", item.outcome, item.amount || 0, item.currency || "USD", item.reasonCategory || "", item.reason || "", mysqlDate(item.closedAt), item.attributionConfidence || 0, JSON.stringify(item.attributionReasonCodes || []), item.payloadHash, mysqlDate(item.createdAt)], "(id,team_id,owner_id,deal_id,customer_id,lead_id,prospect_candidate_id,tenant_prospect_id,organization_id,campaign_id,campaign_version,strategy_id,run_id,provider_codes_json,icp_assessment_id,icp_policy_id,outcome,amount,currency,reason_category,reason_text,closed_at,attribution_confidence,attribution_reason_codes_json,payload_hash,created_at)");
       await replaceRows(connection, "prospect_strategy_suggestions", store.prospectStrategySuggestions, (item) => [item.id, item.teamId, item.ownerId, item.campaignId, item.campaignVersion || 0, item.strategyId, item.suggestionType, JSON.stringify(item.sampleMetrics || {}), JSON.stringify(item.proposedAdjustments || {}), item.rationale || "", JSON.stringify(item.reasonCodes || []), item.sampleFrom ? mysqlDate(item.sampleFrom) : null, item.sampleTo ? mysqlDate(item.sampleTo) : null, item.payloadHash, item.status, item.reviewedBy || "", item.reviewedAt ? mysqlDate(item.reviewedAt) : null, item.reviewNote || "", mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,team_id,owner_id,campaign_id,campaign_version,strategy_id,suggestion_type,sample_metrics_json,proposed_adjustments_json,rationale,reason_codes_json,sample_from,sample_to,payload_hash,suggestion_status,reviewed_by,reviewed_at,review_note,created_at,updated_at)");
-	    await replaceRows(connection, "ai_model_configs", store.aiModelConfigs, (item) => [item.id, item.provider, item.protocol || "openai-compatible", item.name, item.baseUrl, item.model, encryptAiModelApiKey(item, item.apiKey), item.enabled, item.temperature ?? 0.1, item.useLeadFinder ?? true, item.useWebsiteParse ?? true, item.useScoring ?? true, item.useEmailDraft ?? true, item.useExam ?? false, item.lastTestAt ? mysqlDate(item.lastTestAt) : null, item.lastTestStatus || "untested", item.lastTestMessage || "", item.ownerId, item.teamId, mysqlDate(item.updatedAt)], "(id,provider,protocol,name,base_url,model,api_key,enabled,temperature,use_lead_finder,use_website_parse,use_scoring,use_email_draft,use_exam,last_test_at,last_test_status,last_test_message,owner_id,team_id,updated_at)");
+	    await replaceRows(connection, "ai_model_configs", store.aiModelConfigs, (item) => [item.id, item.provider, item.protocol || "openai-compatible", item.name, item.baseUrl, item.model, "", item.enabled, item.credentialVersion || 1, JSON.stringify(item.capabilitySnapshot || DEFAULT_MODEL_CAPABILITY_SNAPSHOT), item.temperature ?? 0.1, item.useLeadFinder ?? true, item.useWebsiteParse ?? true, item.useScoring ?? true, item.useEmailDraft ?? true, item.useExam ?? false, item.lastTestAt ? mysqlDate(item.lastTestAt) : null, item.lastTestStatus || "untested", item.lastTestMessage || "", item.ownerId, item.teamId, mysqlDate(item.createdAt || item.updatedAt), mysqlDate(item.updatedAt)], "(id,provider,protocol,name,base_url,model,api_key,enabled,credential_version,capability_snapshot_json,temperature,use_lead_finder,use_website_parse,use_scoring,use_email_draft,use_exam,last_test_at,last_test_status,last_test_message,owner_id,team_id,created_at,updated_at)");
+      await appendRows(connection, "ai_model_credential_versions", store.modelCredentialVersions, (item) => [item.connectionId, item.version, item.ownerId, item.teamId, item.credentialRef, item.apiKeyEncrypted, item.keyMask, item.createdBy, mysqlDate(item.createdAt)], "(connection_id,credential_version,owner_id,team_id,credential_ref,api_key_encrypted,key_mask,created_by,created_at)");
+      await appendRows(connection, "ai_model_connection_activation_events", store.modelConnectionActivationEvents, (item) => [item.id, item.ownerId, item.teamId, item.actorId, item.previousConnectionId, item.connectionId, item.reason, mysqlDate(item.createdAt)], "(id,owner_id,team_id,actor_id,previous_connection_id,connection_id,reason,created_at)");
+      await appendRows(connection, "ai_job_model_snapshots", store.aiJobModelSnapshots, (item) => [item.jobId, item.ownerId, item.teamId, item.connectionId, item.credentialVersion, item.provider, item.model, JSON.stringify(item.capabilitySnapshot), item.promptVersion, item.schemaVersion, mysqlDate(item.createdAt)], "(job_id,owner_id,team_id,connection_id,credential_version,provider,model,capability_snapshot_json,prompt_version,schema_version,created_at)");
 	    await replaceRows(connection, "provider_catalog", store.providerCatalog, (item) => [item.id, item.code, item.name, item.category, item.sourceLevel, item.accessMode, item.baseUrl || "", item.officialDocsUrl || "", JSON.stringify(item.capabilities), JSON.stringify(item.allowedFields), JSON.stringify(item.licensePolicy), JSON.stringify(item.defaultRatePolicy), JSON.stringify(item.retentionPolicy), item.status, item.version, item.reviewedAt ? mysqlDate(item.reviewedAt) : null, mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,code,name,category,source_level,access_mode,base_url,official_docs_url,capability_json,allowed_fields_json,license_policy_json,default_rate_policy_json,retention_policy_json,status,version,reviewed_at,created_at,updated_at)");
 	    await replaceRows(connection, "provider_connections", store.providerConnections, (item) => [item.id, item.providerId, item.scope, item.credentialRef, item.configurationEncrypted, item.status, JSON.stringify(item.quotaPolicy), JSON.stringify(item.budgetPolicy), item.lastHealthAt ? mysqlDate(item.lastHealthAt) : null, item.lastHealthStatus, item.lastErrorCode || "", item.lastHealthMessage || "", item.usage || "", item.ownerId, item.teamId, item.createdBy, mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,provider_id,scope,credential_ref,configuration_encrypted,status,quota_policy_json,budget_policy_json,last_health_at,last_health_status,last_error_code,last_health_message,usage_text,owner_id,team_id,created_by,created_at,updated_at)");
 		    await appendProviderRequestLogRows(connection, store.providerRequestLogs);
@@ -9330,6 +9816,24 @@ async function replaceRows<T>(connection: mysql.PoolConnection, table: string, i
   const mapped = items.map(values);
   const placeholders = mapped.map((row) => `(${row.map(() => "?").join(",")})`).join(",");
   await connection.query(`INSERT INTO ${table} ${columns} VALUES ${placeholders}`, mapped.flat());
+}
+
+async function appendRows<T>(
+  connection: mysql.PoolConnection,
+  table: string,
+  items: T[],
+  values: (item: T) => unknown[],
+  columns: string
+) {
+  if (!items.length) return;
+  const mapped = items.map(values);
+  const placeholders = mapped
+    .map((row) => `(${row.map(() => "?").join(",")})`)
+    .join(",");
+  await connection.query(
+    `INSERT IGNORE INTO ${table} ${columns} VALUES ${placeholders}`,
+    mapped.flat()
+  );
 }
 
 async function persistWebsiteOpportunityRows(

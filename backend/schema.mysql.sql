@@ -435,6 +435,8 @@ CREATE TABLE ai_model_configs (
   model VARCHAR(120) NOT NULL,
   api_key TEXT,
   enabled BOOLEAN DEFAULT FALSE,
+  credential_version INT NOT NULL DEFAULT 1,
+  capability_snapshot_json JSON,
   temperature DECIMAL(4,2) DEFAULT 0.10,
   use_lead_finder BOOLEAN DEFAULT TRUE,
   use_website_parse BOOLEAN DEFAULT TRUE,
@@ -446,8 +448,54 @@ CREATE TABLE ai_model_configs (
   last_test_message VARCHAR(255) DEFAULT '',
   owner_id VARCHAR(64) NOT NULL,
   team_id VARCHAR(64) NOT NULL,
+  active_owner_id VARCHAR(64) GENERATED ALWAYS AS (
+    CASE WHEN enabled THEN owner_id ELSE NULL END
+  ) STORED,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_ai_model_active_owner(active_owner_id),
   INDEX idx_ai_model_owner(owner_id)
+);
+
+CREATE TABLE ai_model_credential_versions (
+  connection_id VARCHAR(64) NOT NULL,
+  credential_version INT NOT NULL,
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  credential_ref VARCHAR(80) NOT NULL UNIQUE,
+  api_key_encrypted TEXT NOT NULL,
+  key_mask VARCHAR(8) NOT NULL DEFAULT '',
+  created_by VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY(connection_id, credential_version),
+  INDEX idx_ai_credential_owner(owner_id, connection_id)
+);
+
+CREATE TABLE ai_model_connection_activation_events (
+  id VARCHAR(90) PRIMARY KEY,
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  actor_id VARCHAR(64) NOT NULL,
+  previous_connection_id VARCHAR(64) NULL,
+  connection_id VARCHAR(64) NOT NULL,
+  reason VARCHAR(500) NOT NULL,
+  created_at DATETIME NOT NULL,
+  INDEX idx_ai_activation_owner(owner_id, created_at)
+);
+
+CREATE TABLE ai_job_model_snapshots (
+  job_id VARCHAR(90) PRIMARY KEY,
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  connection_id VARCHAR(64) NOT NULL,
+  credential_version INT NOT NULL,
+  provider VARCHAR(40) NOT NULL,
+  model VARCHAR(120) NOT NULL,
+  capability_snapshot_json JSON NOT NULL,
+  prompt_version VARCHAR(120) NOT NULL,
+  schema_version VARCHAR(120) NOT NULL,
+  created_at DATETIME NOT NULL,
+  INDEX idx_ai_job_snapshot_connection(connection_id, credential_version)
 );
 
 CREATE TABLE lead_source_configs (

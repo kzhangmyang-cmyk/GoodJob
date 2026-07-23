@@ -316,6 +316,13 @@ export const aiModelConfigs: AiModelConfig[] = [
   }
 ];
 
+export const modelCredentialVersions:
+  import("./model-providers/types.js").ModelCredentialVersion[] = [];
+export const modelConnectionActivationEvents:
+  import("./model-providers/types.js").ModelConnectionActivationEvent[] = [];
+export const aiJobModelSnapshots:
+  import("./model-providers/types.js").StoredAiJobModelSnapshot[] = [];
+
 export const leadSourceConfigs: LeadSourceConfig[] = [];
 
 export const commissionProducts: CommissionProduct[] = [

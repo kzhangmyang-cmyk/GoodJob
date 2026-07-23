@@ -2402,6 +2402,9 @@ export interface AiModelConfig {
   lastTestMessage?: string;
   ownerId: string;
   teamId: string;
+  credentialVersion?: number;
+  capabilitySnapshot?: import("./model-providers/types.js").ModelCapabilitySnapshot;
+  createdAt?: string;
   updatedAt: string;
 }
 
