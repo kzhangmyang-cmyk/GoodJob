@@ -14,6 +14,7 @@ import { WORLD_BANK_PROCUREMENT_PROVIDER } from "./world-bank-procurement-provid
 import { PUBLIC_COMPANY_PROVIDERS } from "./public-company-providers.js";
 import { PUBLIC_PROCUREMENT_PROVIDERS } from "./public-procurement-providers.js";
 import { ASSISTED_SOURCE_PROVIDERS } from "./assisted-source-providers.js";
+import { REAL_WEB_SEARCH_PROVIDERS } from "./web-search-providers.js";
 
 /**
  * 自动获客数据源适配层。
@@ -746,6 +747,7 @@ export const LEAD_PROVIDERS: LeadProvider[] = [
   serper,
   brave,
   serpapi,
+  ...REAL_WEB_SEARCH_PROVIDERS,
   gleif,
   wikidata,
   EU_TED_PROVIDER,

@@ -21,6 +21,7 @@
     "test:provider:un-comtrade": "NODE_ENV=test JWT_SECRET=goodjob-provider-test-secret-at-least-32-characters tsx src/un-comtrade-provider-test.ts",
     "test:provider:us-census": "NODE_ENV=test JWT_SECRET=goodjob-provider-test-secret-at-least-32-characters tsx src/us-census-trade-provider-test.ts",
     "test:provider:sec-edgar": "NODE_ENV=test JWT_SECRET=goodjob-provider-test-secret-at-least-32-characters tsx src/sec-edgar-provider-test.ts",
+    "test:provider:web-search": "NODE_ENV=test JWT_SECRET=goodjob-provider-test-secret-at-least-32-characters tsx src/web-search-providers-test.ts",
     "test:provider:procurement": "NODE_ENV=test JWT_SECRET=goodjob-provider-test-secret-at-least-32-characters tsx src/procurement-providers-test.ts",
     "test:provider:public-sources": "NODE_ENV=test JWT_SECRET=goodjob-public-source-test-secret-at-least-32-characters tsx src/public-sources-provider-test.ts",
     "test:provider:eurostat": "NODE_ENV=test JWT_SECRET=goodjob-provider-test-secret-at-least-32-characters tsx src/eurostat-comext-provider-test.ts",
