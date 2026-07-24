@@ -6,7 +6,8 @@ import {
   InMemoryAcquisitionToolAuditLedger,
   createAcquisitionAgentTools,
   type AcquisitionAgentToolExecutor,
-  type AcquisitionToolExecutionInput
+  type AcquisitionToolExecutionInput,
+  type AcquisitionToolAuditLedger
 } from "./acquisition-pi-tools.js";
 
 const EXPECTED_TOOLS = [
@@ -140,6 +141,101 @@ assert.equal(evidenceText.includes("Bearer must-be-redacted"), false);
 assert.equal(evidenceText.includes("[REDACTED]"), true);
 assert.equal(evidenceText.includes("publicSummary"), true);
 
+let releaseBlockingAudit: (() => void) | undefined;
+let blockingAuditStarted = false;
+const blockingAudit: AcquisitionToolAuditLedger = {
+  append() {
+    blockingAuditStarted = true;
+    return new Promise<void>((resolve) => {
+      releaseBlockingAudit = resolve;
+    });
+  },
+  async list() {
+    return [];
+  }
+};
+const toolsWithBlockingAudit = createAcquisitionAgentTools({
+  identity: {
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "owner-a",
+    sessionId: "copilot-session-blocking-audit"
+  },
+  executor: {
+    async execute() {
+      return { ok: true };
+    }
+  },
+  audit: blockingAudit,
+  auditSecret: "test-blocking-tool-audit-secret-at-least-32-bytes"
+});
+let blockingToolSettled = false;
+const blockingToolExecution = byName(
+  toolsWithBlockingAudit,
+  "get_candidate_evidence"
+).execute(
+  "call-blocking-audit",
+  { candidateId: "candidate-a" },
+  undefined
+).finally(() => {
+  blockingToolSettled = true;
+});
+await new Promise<void>((resolve) => setImmediate(resolve));
+assert.equal(blockingAuditStarted, true);
+assert.equal(
+  blockingToolSettled,
+  false,
+  "a tool result must not return to Pi before its audit record is durable"
+);
+assert.ok(releaseBlockingAudit);
+releaseBlockingAudit();
+await blockingToolExecution;
+
+let rejectingAuditAttempts = 0;
+const rejectingAudit: AcquisitionToolAuditLedger = {
+  async append() {
+    rejectingAuditAttempts += 1;
+    throw new Error("mysql password=must-not-leak");
+  },
+  async list() {
+    return [];
+  }
+};
+const toolsWithRejectingAudit = createAcquisitionAgentTools({
+  identity: {
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "owner-a",
+    sessionId: "copilot-session-rejecting-audit"
+  },
+  executor: {
+    async execute() {
+      return { ok: true };
+    }
+  },
+  audit: rejectingAudit,
+  auditSecret: "test-rejecting-tool-audit-secret-at-least-32-bytes"
+});
+await assert.rejects(
+  () => byName(
+    toolsWithRejectingAudit,
+    "get_candidate_evidence"
+  ).execute(
+    "call-rejecting-audit",
+    { candidateId: "candidate-a" },
+    undefined
+  ),
+  (error: unknown) =>
+    error instanceof Error
+    && error.message === "ACQUISITION_TOOL_AUDIT_WRITE_FAILED"
+    && !error.message.includes("must-not-leak")
+);
+assert.equal(
+  rejectingAuditAttempts,
+  1,
+  "an audit storage failure must fail closed without a second misleading audit"
+);
+
 const abortController = new AbortController();
 abortController.abort();
 const beforeAbortCalls = calls.length;
@@ -168,7 +264,7 @@ await assert.rejects(
   /OUTCOME_REJECTED/
 );
 
-const records = audit.list({
+const records = await audit.list({
   ownerId: "owner-a",
   teamId: "team-a",
   sessionId: "copilot-session-a"
@@ -196,7 +292,7 @@ for (const record of records) {
 }
 
 assert.deepEqual(
-  audit.list({
+  await audit.list({
     ownerId: "other-owner",
     teamId: "team-a",
     sessionId: "copilot-session-a"

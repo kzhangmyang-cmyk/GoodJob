@@ -162,11 +162,11 @@ assert.deepEqual(response.result, {
   toolNames: ["get_candidate_evidence"]
 });
 assert.equal(
-  audit.list({
+  (await audit.list({
     ownerId: "owner-a",
     teamId: "team-a",
     sessionId: "session-a"
-  }).length,
+  })).length,
   1
 );
 

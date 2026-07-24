@@ -132,11 +132,11 @@ assert.equal(
   true
 );
 assert.equal(
-  audit.list({
+  (await audit.list({
     ownerId: "owner-a",
     teamId: "team-a",
     sessionId: "copilot-a"
-  }).length,
+  })).length,
   1
 );
 

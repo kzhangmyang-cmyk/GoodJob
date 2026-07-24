@@ -1473,12 +1473,12 @@ export class InMemoryAcquisitionToolAuditLedgerAdapter
 implements AcquisitionToolAuditLedger {
   readonly #records: AcquisitionToolAuditRecord[] = [];
 
-  append(record: AcquisitionToolAuditRecord) {
+  async append(record: AcquisitionToolAuditRecord) {
     validateAuditRecord(record);
     this.#records.push(clone(record));
   }
 
-  list(scope: AcquisitionToolAuditScope) {
+  async list(scope: AcquisitionToolAuditScope) {
     requireScope(scope);
     requireText(scope.sessionId, "sessionId", 200);
     return this.#records
@@ -1489,17 +1489,6 @@ implements AcquisitionToolAuditLedger {
       )
       .map(clone);
   }
-}
-
-export const ACQUISITION_TOOL_AUDIT_PORT_LIMITATION =
-  "AcquisitionToolAuditLedger is synchronous, while safe MySQL writes require "
-  + "a Promise that callers must await. MysqlAcquisitionToolAuditStore "
-  + "therefore deliberately does not implement that synchronous port; wire "
-  + "the in-memory adapter until the application port becomes asynchronous.";
-
-export interface AsyncAcquisitionToolAuditStore {
-  append(record: AcquisitionToolAuditRecord): Promise<void>;
-  list(scope: AcquisitionToolAuditScope): Promise<AcquisitionToolAuditRecord[]>;
 }
 
 function auditRecordFromRow(row: MysqlRow): AcquisitionToolAuditRecord {
@@ -1534,7 +1523,7 @@ function auditRecordFromRow(row: MysqlRow): AcquisitionToolAuditRecord {
 }
 
 export class MysqlAcquisitionToolAuditStore
-implements AsyncAcquisitionToolAuditStore {
+implements AcquisitionToolAuditLedger {
   constructor(private readonly pool: mysql.Pool) {}
 
   async append(record: AcquisitionToolAuditRecord) {

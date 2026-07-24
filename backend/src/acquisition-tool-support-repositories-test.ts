@@ -3,9 +3,11 @@ import { createHash } from "node:crypto";
 import type mysql from "mysql2/promise";
 import type { AcquisitionCandidate } from "./acquisition-domain.js";
 import { canonicalJsonStringify } from "./canonical-json.js";
-import type { AcquisitionToolAuditRecord } from "./acquisition-pi-tools.js";
+import type {
+  AcquisitionToolAuditLedger,
+  AcquisitionToolAuditRecord
+} from "./acquisition-pi-tools.js";
 import {
-  ACQUISITION_TOOL_AUDIT_PORT_LIMITATION,
   ACQUISITION_TOOL_SUPPORT_MYSQL_SCHEMA_STATEMENTS,
   InMemoryAcquisitionCandidateDirectory,
   InMemoryAcquisitionReviewTaskRepository,
@@ -752,8 +754,8 @@ const auditRecord: AcquisitionToolAuditRecord = {
 
 {
   const audit = new InMemoryAcquisitionToolAuditLedgerAdapter();
-  audit.append(auditRecord);
-  const listed = audit.list({
+  await audit.append(auditRecord);
+  const listed = await audit.list({
     ownerId: "owner-a",
     teamId: "team-a",
     sessionId: "session-a"
@@ -761,15 +763,15 @@ const auditRecord: AcquisitionToolAuditRecord = {
   assert.deepEqual(listed, [auditRecord]);
   listed[0]!.status = "failed";
   assert.equal(
-    audit.list({
+    (await audit.list({
       ownerId: "owner-a",
       teamId: "team-a",
       sessionId: "session-a"
-    })[0]!.status,
+    }))[0]!.status,
     "succeeded"
   );
   assert.deepEqual(
-    audit.list({
+    await audit.list({
       ownerId: "other-owner",
       teamId: "team-a",
       sessionId: "session-a"
@@ -779,10 +781,9 @@ const auditRecord: AcquisitionToolAuditRecord = {
 }
 
 {
-  assert.match(ACQUISITION_TOOL_AUDIT_PORT_LIMITATION, /synchronous/i);
-  assert.match(ACQUISITION_TOOL_AUDIT_PORT_LIMITATION, /Promise/i);
   const pool = new ScriptedPool();
-  const store = new MysqlAcquisitionToolAuditStore(asPool(pool));
+  const store: AcquisitionToolAuditLedger =
+    new MysqlAcquisitionToolAuditStore(asPool(pool));
   await store.append(auditRecord);
   assert.match(pool.calls[0]!.sql, /INSERT INTO acquisition_tool_audit/i);
   assert.equal(pool.calls[0]!.sql.includes("payload_json"), false);

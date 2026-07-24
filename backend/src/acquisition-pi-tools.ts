@@ -71,19 +71,21 @@ export interface AcquisitionToolAuditScope {
 }
 
 export interface AcquisitionToolAuditLedger {
-  append(record: AcquisitionToolAuditRecord): void;
-  list(scope: AcquisitionToolAuditScope): AcquisitionToolAuditRecord[];
+  append(record: AcquisitionToolAuditRecord): Promise<void>;
+  list(
+    scope: AcquisitionToolAuditScope
+  ): Promise<AcquisitionToolAuditRecord[]>;
 }
 
 export class InMemoryAcquisitionToolAuditLedger
 implements AcquisitionToolAuditLedger {
   readonly #records: AcquisitionToolAuditRecord[] = [];
 
-  append(record: AcquisitionToolAuditRecord) {
+  async append(record: AcquisitionToolAuditRecord) {
     this.#records.push(Object.freeze({ ...record }));
   }
 
-  list(scope: AcquisitionToolAuditScope) {
+  async list(scope: AcquisitionToolAuditScope) {
     return this.#records
       .filter((record) =>
         record.ownerId === scope.ownerId
@@ -379,6 +381,17 @@ function resultDetails(value: unknown) {
   return sanitizedValue(value) as Record<string, unknown>;
 }
 
+async function appendAuditOrFail(
+  audit: AcquisitionToolAuditLedger,
+  record: AcquisitionToolAuditRecord
+) {
+  try {
+    await audit.append(record);
+  } catch {
+    throw new Error("ACQUISITION_TOOL_AUDIT_WRITE_FAILED");
+  }
+}
+
 function createTool(
   blueprint: ToolBlueprint,
   options: Required<
@@ -420,7 +433,7 @@ function createTool(
         startedAt
       };
       if (signal?.aborted) {
-        options.audit.append({
+        await appendAuditOrFail(options.audit, {
           ...baseRecord,
           resultHash: null,
           status: "aborted",
@@ -429,6 +442,7 @@ function createTool(
         });
         throw createAbortError();
       }
+      let sanitized: Record<string, unknown>;
       try {
         const value = await options.executor.execute({
           identity: { ...options.identity },
@@ -438,23 +452,12 @@ function createTool(
           payload,
           signal
         });
-        const sanitized = resultDetails(value);
-        options.audit.append({
-          ...baseRecord,
-          resultHash: digest(options.auditSecret, sanitized),
-          status: "succeeded",
-          errorCode: null,
-          completedAt: new Date(options.now()).toISOString()
-        });
-        return {
-          content: [{ type: "text", text: safeResultText(sanitized) }],
-          details: sanitized
-        };
+        sanitized = resultDetails(value);
       } catch (error) {
         const aborted = signal?.aborted
           || (error instanceof DOMException && error.name === "AbortError");
         const errorCode = aborted ? "ABORTED" : safeErrorCode(error);
-        options.audit.append({
+        await appendAuditOrFail(options.audit, {
           ...baseRecord,
           resultHash: null,
           status: aborted ? "aborted" : "failed",
@@ -464,6 +467,17 @@ function createTool(
         if (aborted) throw createAbortError();
         throw new Error(errorCode);
       }
+      await appendAuditOrFail(options.audit, {
+        ...baseRecord,
+        resultHash: digest(options.auditSecret, sanitized),
+        status: "succeeded",
+        errorCode: null,
+        completedAt: new Date(options.now()).toISOString()
+      });
+      return {
+        content: [{ type: "text", text: safeResultText(sanitized) }],
+        details: sanitized
+      };
     }
   };
 }
