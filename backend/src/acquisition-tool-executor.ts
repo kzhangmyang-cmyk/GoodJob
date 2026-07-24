@@ -766,13 +766,20 @@ function deterministicHardGates(
     hasOriginalSource: evidence.some((item) => Boolean(evidenceSourceUrl(item))),
     identityResolved: candidate.profile.kind === "organization"
       && candidate.partyRef.partyType === "organization"
-      ? Boolean(candidate.profile.name && candidate.partyRef.organizationId)
+      ? Boolean(
+          candidate.profile.name
+          && candidate.partyRef.organizationId
+          && !candidate.partyRef.organizationId.startsWith("unresolved-org-")
+        )
       : candidate.profile.kind === "individual"
         && candidate.partyRef.partyType === "individual"
         ? Boolean(
             candidate.profile.publicActorKey
             && candidate.profile.publicProfileUrl
             && candidate.partyRef.individualPartyId
+            && !candidate.partyRef.individualPartyId.startsWith(
+              "unresolved-individual-"
+            )
           )
         : false,
     notDoNotContact: candidate.status !== "do_not_contact",
@@ -1307,7 +1314,7 @@ implements AcquisitionAgentToolExecutor {
                     region: normalizeAcquisitionRegion(result.subject.region),
                     creditCode: result.subject.creditCode,
                     organizationId: result.subject.organizationId
-                      || `public-org-${stable}`,
+                      || `unresolved-org-${stable}`,
                     tenantProspectId: `prospect-${stable}`,
                     evidenceIds: [createdEvidence.id]
                   },
@@ -1335,7 +1342,7 @@ implements AcquisitionAgentToolExecutor {
                   buyingStage: result.subject.buyingStage,
                   negativeSignals: [...result.subject.negativeSignals],
                   individualPartyId: result.subject.individualPartyId
-                    || `public-individual-${stable}`,
+                    || `unresolved-individual-${stable}`,
                   evidenceIds: [createdEvidence.id]
                 },
                 childIdempotencyKey(input.idempotencyKey, "candidate", {

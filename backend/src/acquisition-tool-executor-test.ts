@@ -288,7 +288,10 @@ class TestToolResultLedger implements AcquisitionToolResultLedgerPort {
 class TestSearchPort implements SearchPublicSourcesPort {
   readonly calls: SearchPublicSourcesRequest[] = [];
 
-  constructor(private readonly negativeSignals: string[] = []) {}
+  constructor(
+    private readonly negativeSignals: string[] = [],
+    private readonly resolvedIdentities = true
+  ) {}
 
   async search(
     input: SearchPublicSourcesRequest
@@ -321,7 +324,7 @@ class TestSearchPort implements SearchPublicSourcesPort {
           domain: "growth.example.cn",
           region: "  福建省　厦门市  ",
           creditCode: null,
-          organizationId: "org-growth"
+          organizationId: this.resolvedIdentities ? "org-growth" : null
         }
       },
       {
@@ -343,7 +346,9 @@ class TestSearchPort implements SearchPublicSourcesPort {
           locationHint: "厦门",
           buyingStage: "comparison",
           negativeSignals: [...this.negativeSignals],
-          individualPartyId: "individual-store-owner"
+          individualPartyId: this.resolvedIdentities
+            ? "individual-store-owner"
+            : null
         }
       }
     ];
@@ -379,6 +384,7 @@ class TestSearchPort implements SearchPublicSourcesPort {
 function createHarness(options: {
   judgments?: AcquisitionJudgmentPort;
   negativeSignals?: string[];
+  resolvedIdentities?: boolean;
 } = {}) {
   let id = 0;
   let tick = 0;
@@ -400,7 +406,10 @@ function createHarness(options: {
     now: () =>
       new Date(Date.UTC(2026, 6, 24, 1, 0, tick++)).toISOString()
   });
-  const search = new TestSearchPort(options.negativeSignals);
+  const search = new TestSearchPort(
+    options.negativeSignals,
+    options.resolvedIdentities
+  );
   const directory = new TestCandidateDirectory();
   const priority = new TestPriorityCandidatePort(directory, domain);
   const reviews = new TestReviewTaskPort();
@@ -856,7 +865,8 @@ test("recomputes hard gates deterministically and blocks ineligible strategy or 
   };
   const { executor } = createHarness({
     judgments,
-    negativeSignals: ["别联系我"]
+    negativeSignals: ["别联系我"],
+    resolvedIdentities: false
   });
   const discovery = await discover(executor, ["search-ok"]);
   const individual = discovery.candidates.find(
@@ -869,7 +879,7 @@ test("recomputes hard gates deterministically and blocks ineligible strategy or 
   assert.equal(qualification.qualification.grade, "D");
   assert.deepEqual(
     qualification.qualification.hardGateFailures,
-    ["explicit_rejection"]
+    ["identity_unresolved", "explicit_rejection"]
   );
   assert.equal(
     qualification.qualification.reasons.some((reason: string) =>
