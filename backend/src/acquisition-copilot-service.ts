@@ -84,6 +84,10 @@ export interface AcquisitionCopilotRepository {
     scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
     taskId: string
   ): Promise<boolean>;
+  recoverInterruptedTasks(input: {
+    now: string;
+    staleRunningBefore: string;
+  }): Promise<AcquisitionCopilotTask[]>;
   listTasks(
     scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
     sessionId: string
@@ -174,6 +178,35 @@ implements AcquisitionCopilotRepository {
     }
     this.#taskDispatchClaims.add(taskId);
     return true;
+  }
+
+  async recoverInterruptedTasks(input: {
+    now: string;
+    staleRunningBefore: string;
+  }) {
+    const recoverable: AcquisitionCopilotTask[] = [];
+    for (const [taskId, task] of this.#tasks) {
+      if (task.status === "queued") {
+        this.#taskDispatchClaims.delete(taskId);
+        recoverable.push(clone(task));
+        continue;
+      }
+      if (task.status === "running"
+        && task.startedAt
+        && Date.parse(task.startedAt)
+          <= Date.parse(input.staleRunningBefore)) {
+        this.#tasks.set(taskId, {
+          ...task,
+          status: "failed",
+          result: null,
+          errorCode: "COPILOT_PROCESS_RESTARTED",
+          completedAt: input.now
+        });
+      }
+    }
+    return recoverable.sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt)
+      || left.id.localeCompare(right.id));
   }
 
   async listTasks(
@@ -506,6 +539,23 @@ export class AcquisitionCopilotService {
     const task = await this.#requireTask(scope, taskId);
     if (task.status !== "queued") return false;
     return this.#repository.claimTaskDispatch(scope, task.id);
+  }
+
+  async recoverInterruptedTasks(input: {
+    staleRunningBefore: string;
+  }) {
+    const cutoff = new Date(input.staleRunningBefore);
+    if (!Number.isFinite(cutoff.getTime())) {
+      throw new AcquisitionCopilotError(
+        "invalid_request",
+        "staleRunningBefore 必须是有效时间",
+        400
+      );
+    }
+    return this.#repository.recoverInterruptedTasks({
+      now: this.#now(),
+      staleRunningBefore: cutoff.toISOString()
+    });
   }
 
   async markDispatchFailed(

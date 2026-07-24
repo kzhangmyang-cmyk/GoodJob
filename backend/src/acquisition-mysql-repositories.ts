@@ -1330,6 +1330,87 @@ implements AcquisitionCopilotRepository {
     return count === 1;
   }
 
+  async recoverInterruptedTasks(input: {
+    now: string;
+    staleRunningBefore: string;
+  }) {
+    const result = await rows(
+      this.pool,
+      `SELECT *
+       FROM acquisition_copilot_tasks
+       WHERE (
+         status = 'queued'
+         AND (
+           dispatch_lease_until IS NULL
+           OR dispatch_lease_until <= ?
+         )
+       ) OR (
+         status = 'running'
+         AND started_at IS NOT NULL
+         AND started_at <= ?
+       )
+       ORDER BY created_at, id`,
+      [
+        mysqlDate(input.now),
+        mysqlDate(input.staleRunningBefore)
+      ]
+    );
+    const tasks = result.map((row) =>
+      ownedPayload<AcquisitionCopilotTask>(row, "copilot_task"));
+    const queued: AcquisitionCopilotTask[] = [];
+    for (const task of tasks) {
+      if (task.status === "queued") {
+        const released = await affected(
+          this.pool,
+          `UPDATE acquisition_copilot_tasks
+           SET dispatch_claimed_at = NULL,
+               dispatch_lease_until = NULL
+           WHERE id = ? AND owner_id = ? AND team_id = ?
+             AND status = 'queued'
+             AND (
+               dispatch_lease_until IS NULL
+               OR dispatch_lease_until <= ?
+             )`,
+          [
+            task.id,
+            task.ownerId,
+            task.teamId,
+            mysqlDate(input.now)
+          ]
+        );
+        if (released === 1) queued.push(task);
+        continue;
+      }
+      const failed: AcquisitionCopilotTask = {
+        ...task,
+        status: "failed",
+        result: null,
+        errorCode: "COPILOT_PROCESS_RESTARTED",
+        completedAt: input.now
+      };
+      await affected(
+        this.pool,
+        `UPDATE acquisition_copilot_tasks
+         SET status = 'failed',
+             payload_json = ?,
+             completed_at = ?
+         WHERE id = ? AND owner_id = ? AND team_id = ?
+           AND status = 'running'
+           AND started_at IS NOT NULL
+           AND started_at <= ?`,
+        [
+          json(failed),
+          mysqlDate(failed.completedAt),
+          failed.id,
+          failed.ownerId,
+          failed.teamId,
+          mysqlDate(input.staleRunningBefore)
+        ]
+      );
+    }
+    return queued;
+  }
+
   async listTasks(scope: Scope, sessionId: string) {
     const result = await rows(
       this.pool,

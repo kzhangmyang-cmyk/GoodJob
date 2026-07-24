@@ -285,6 +285,54 @@ assert.equal(
   "failed"
 );
 
+const recoveryQueuedTask = await service.enqueueMessage(
+  scope,
+  created.id,
+  "重启后恢复排队任务",
+  "message-recovery-queued"
+);
+assert.equal(
+  await service.claimTaskDispatch(scope, recoveryQueuedTask.id),
+  true
+);
+const recoveryRunningTask = await service.enqueueMessage(
+  scope,
+  created.id,
+  "重启后终结陈旧运行任务",
+  "message-recovery-running"
+);
+await repository.saveTask({
+  ...recoveryRunningTask,
+  status: "running",
+  startedAt: "2026-07-24T01:00:00.000Z"
+});
+const recoveredTasks = await service.recoverInterruptedTasks({
+  staleRunningBefore: "2026-07-24T02:00:00.000Z"
+});
+assert.deepEqual(
+  recoveredTasks.map((task) => task.id),
+  [recoveryQueuedTask.id]
+);
+assert.equal(
+  await service.claimTaskDispatch(scope, recoveryQueuedTask.id),
+  true,
+  "startup recovery must release an abandoned dispatch claim"
+);
+await service.markDispatchFailed(
+  scope,
+  recoveryQueuedTask.id,
+  "COPILOT_TEST_CLEANUP"
+);
+const recoveredRunning = await service.getTask(
+  scope,
+  recoveryRunningTask.id
+);
+assert.equal(recoveredRunning.status, "failed");
+assert.equal(
+  recoveredRunning.errorCode,
+  "COPILOT_PROCESS_RESTARTED"
+);
+
 const completed = await service.completeSession(
   scope,
   created.id,
