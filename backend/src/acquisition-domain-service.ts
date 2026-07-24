@@ -13,6 +13,7 @@ import type {
   HardGateFailure,
   IdempotencyRecord,
   IndividualCandidateInput,
+  LeadConversionIntent,
   LeadConversionRecord,
   LiveOutcomeFeedbackEvent,
   OrganizationCandidateInput,
@@ -126,6 +127,12 @@ function hash(value: unknown) {
     .digest("hex")}`;
 }
 
+function idempotencyFingerprint(value: string) {
+  return /^sha256:[a-f0-9]{64}$/iu.test(value)
+    ? value.toLowerCase()
+    : `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
 function bounded(value: number, min = 0, max = 100) {
   if (!Number.isFinite(value)) {
     fail("invalid_request", "评分输入必须是有限数值", 400);
@@ -221,6 +228,10 @@ export class AcquisitionDomainService {
     requestHash: string;
     promise: Promise<unknown>;
   }>();
+  private readonly inFlightConversions = new Map<
+    string,
+    Promise<LeadConversionRecord>
+  >();
 
   constructor(options: AcquisitionDomainServiceOptions) {
     this.repository = options.repository;
@@ -1042,13 +1053,147 @@ export class AcquisitionDomainService {
         100
       )
     };
-    return this.idempotent(
-      scope,
-      "convert_candidate",
+    const idempotencyKey = requiredText(
       raw.idempotencyKey,
+      "Idempotency-Key",
+      200
+    );
+    const flightKey = [
+      scope.ownerId,
+      scope.teamId,
+      input.candidateId,
+      idempotencyFingerprint(idempotencyKey)
+    ].join("\u0000");
+    const running = this.inFlightConversions.get(flightKey);
+    if (running) return clone(await running);
+    const operation = this.convertCandidateWithIntent(
+      scope,
       input,
-      async () => {
-        let candidate = await this.requireCandidate(scope, input.candidateId);
+      idempotencyKey
+    );
+    this.inFlightConversions.set(flightKey, operation);
+    try {
+      return clone(await operation);
+    } finally {
+      if (this.inFlightConversions.get(flightKey) === operation) {
+        this.inFlightConversions.delete(flightKey);
+      }
+    }
+  }
+
+  async reconcilePendingLeadConversions(limit = 50) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      fail("invalid_request", "转换恢复批次数必须在 1 到 500 之间", 400);
+    }
+    const intents = await this.repository.listRecoverableConversionIntents(
+      limit
+    );
+    let completed = 0;
+    let failed = 0;
+    for (const intent of intents) {
+      const scope: AcquisitionActorScope = {
+        ownerId: intent.ownerId,
+        teamId: intent.teamId,
+        actorId: intent.reviewerId
+      };
+      const flightKey = [
+        intent.ownerId,
+        intent.teamId,
+        intent.candidateId,
+        idempotencyFingerprint(intent.idempotencyKey)
+      ].join("\u0000");
+      const running = this.inFlightConversions.get(flightKey);
+      const operation = running ?? this.resumeConversionIntent(scope, intent);
+      if (!running) this.inFlightConversions.set(flightKey, operation);
+      try {
+        await operation;
+        completed += 1;
+      } catch {
+        failed += 1;
+      } finally {
+        if (!running && this.inFlightConversions.get(flightKey) === operation) {
+          this.inFlightConversions.delete(flightKey);
+        }
+      }
+    }
+    return {
+      inspected: intents.length,
+      completed,
+      failed
+    };
+  }
+
+  private async convertCandidateWithIntent(
+    scope: AcquisitionActorScope,
+    input: { candidateId: string; decisionVersion: string },
+    idempotencyKey: string
+  ) {
+    const prepared = await this.prepareConversionIntent(
+      scope,
+      input,
+      idempotencyKey
+    );
+    if (!("status" in prepared)) return prepared;
+    return this.resumeConversionIntent(scope, prepared);
+  }
+
+  private async prepareConversionIntent(
+    scope: AcquisitionActorScope,
+    input: { candidateId: string; decisionVersion: string },
+    idempotencyKey: string
+  ): Promise<LeadConversionIntent | LeadConversionRecord> {
+    const requestHash = hash(input);
+    try {
+      return await this.repository.transaction(async () => {
+        const committedIdempotency = await this.repository.findIdempotency(
+          scope,
+          "convert_candidate",
+          idempotencyKey
+        );
+        if (committedIdempotency) {
+          if (committedIdempotency.requestHash !== requestHash) {
+            fail(
+              "idempotency_conflict",
+              "同一 Idempotency-Key 已用于不同转换请求"
+            );
+          }
+          const conversion = await this.repository.findConversion(
+            scope,
+            input.candidateId
+          );
+          if (!conversion
+            || idempotencyFingerprint(conversion.idempotencyKey)
+              !== idempotencyFingerprint(idempotencyKey)
+            || conversion.decisionVersion !== input.decisionVersion) {
+            fail(
+              "conversion_failed",
+              "转换幂等记录存在但领域转换尚未完整提交",
+              502
+            );
+          }
+          return conversion;
+        }
+
+        const existing = await this.repository.findConversionIntent(
+          scope,
+          input.candidateId
+        );
+        if (existing) {
+          if (idempotencyFingerprint(existing.idempotencyKey)
+              !== idempotencyFingerprint(idempotencyKey)
+            || existing.decisionVersion !== input.decisionVersion) {
+            fail(
+              "idempotency_conflict",
+              "该候选已有使用其他参数的转换意图"
+            );
+          }
+          return existing;
+        }
+
+        const candidate = await this.requireCandidate(
+          scope,
+          input.candidateId
+        );
         if (candidate.status !== "approved") {
           fail("invalid_state", "只有人工批准的候选可以转换为 CRM 线索");
         }
@@ -1059,62 +1204,288 @@ export class AcquisitionDomainService {
         if (candidate.hardGateFailures.length > 0) {
           fail("hard_gate_blocked", "硬门禁未通过，禁止转换");
         }
-        const evidenceSnapshotHash = hash({
-          candidateId: candidate.id,
-          evidenceIds: candidate.evidenceIds,
-          decisionVersion: input.decisionVersion
-        });
-        let created: Awaited<ReturnType<LeadConversionPort["createLead"]>>;
-        try {
-          created = await this.leadConversionPort.createLead({
-            ownerId: scope.ownerId,
-            teamId: scope.teamId,
-            actorId: scope.actorId,
-            candidateId: candidate.id,
-            partyRef: candidate.partyRef,
-            decisionVersion: input.decisionVersion,
-            evidenceIds: [...candidate.evidenceIds],
-            idempotencyKey: raw.idempotencyKey
-          });
-        } catch {
-          fail("conversion_failed", "CRM 线索转换失败", 502);
-        }
-        if (hash(created.partyRef) !== hash(candidate.partyRef)) {
-          fail("conversion_failed", "CRM 返回的主体类型或主体引用不一致", 502);
-        }
-        const now = validIso(this.clock(), "转换时间");
-        const record: LeadConversionRecord = {
-          id: this.idFactory("conversion"),
+        const now = validIso(this.clock(), "转换意图创建时间");
+        const intent: LeadConversionIntent = {
+          id: this.idFactory("conversion-intent"),
           ownerId: scope.ownerId,
           teamId: scope.teamId,
           candidateId: candidate.id,
           decisionVersion: input.decisionVersion,
-          partyRef: candidate.partyRef,
-          leadId: requiredText(created.leadId, "CRM Lead ID", 100),
+          partyRef: clone(candidate.partyRef),
           reviewerId: scope.actorId,
-          idempotencyKey: raw.idempotencyKey,
-          evidenceSnapshotHash,
+          idempotencyKey,
+          evidenceIds: [...candidate.evidenceIds],
+          evidenceSnapshotHash: hash({
+            candidateId: candidate.id,
+            evidenceIds: candidate.evidenceIds,
+            decisionVersion: input.decisionVersion
+          }),
+          status: "pending_crm",
+          leadId: null,
+          attemptCount: 0,
+          lastAttemptAt: null,
+          lastError: null,
+          createdAt: now,
+          updatedAt: now,
+          completedAt: null
+        };
+        await this.repository.appendConversionIntent(intent);
+        await this.audit(scope, {
+          candidateId: candidate.id,
+          eventType: "candidate_conversion_requested",
+          fromStatus: candidate.status,
+          toStatus: candidate.status,
+          resourceId: intent.id,
+          idempotencyKey,
+          payload: {
+            intentId: intent.id,
+            decisionVersion: intent.decisionVersion,
+            evidenceSnapshotHash: intent.evidenceSnapshotHash
+          }
+        });
+        return intent;
+      });
+    } catch (error) {
+      const existing = await this.repository.findConversionIntent(
+        scope,
+        input.candidateId
+      );
+      if (existing
+        && idempotencyFingerprint(existing.idempotencyKey)
+          === idempotencyFingerprint(idempotencyKey)
+        && existing.decisionVersion === input.decisionVersion) {
+        return existing;
+      }
+      throw error;
+    }
+  }
+
+  private async resumeConversionIntent(
+    scope: AcquisitionActorScope,
+    prepared: LeadConversionIntent
+  ): Promise<LeadConversionRecord> {
+    let intent = await this.repository.findConversionIntent(
+      scope,
+      prepared.candidateId
+    );
+    if (!intent || intent.id !== prepared.id) {
+      fail("conversion_failed", "转换意图不存在或租户范围不匹配", 502);
+    }
+    if (intent.status === "completed") {
+      const completed = await this.repository.findConversion(
+        scope,
+        intent.candidateId
+      );
+      if (!completed || completed.leadId !== intent.leadId) {
+        fail("conversion_failed", "转换意图已完成但转换记录不完整", 502);
+      }
+      return completed;
+    }
+
+    if (intent.status === "pending_crm") {
+      const attemptAt = validIso(this.clock(), "CRM 转换尝试时间");
+      let created: Awaited<ReturnType<LeadConversionPort["createLead"]>>;
+      try {
+        created = await this.leadConversionPort.createLead({
+          ownerId: intent.ownerId,
+          teamId: intent.teamId,
+          actorId: intent.reviewerId,
+          candidateId: intent.candidateId,
+          partyRef: clone(intent.partyRef),
+          decisionVersion: intent.decisionVersion,
+          evidenceIds: [...intent.evidenceIds],
+          idempotencyKey: intent.idempotencyKey
+        });
+        if (hash(created.partyRef) !== hash(intent.partyRef)) {
+          throw new Error("CRM_PARTY_REF_MISMATCH");
+        }
+      } catch {
+        try {
+          await this.repository.transaction(async () => {
+            const current = await this.repository.findConversionIntent(
+              scope,
+              intent!.candidateId
+            );
+            if (!current || current.status !== "pending_crm") return;
+            await this.repository.saveConversionIntent({
+              ...current,
+              attemptCount: current.attemptCount + 1,
+              lastAttemptAt: attemptAt,
+              lastError: "CRM 线索转换失败",
+              updatedAt: attemptAt
+            });
+          });
+        } catch {
+          // The durable pending intent remains recoverable even if telemetry
+          // about this failed attempt cannot be persisted.
+        }
+        fail("conversion_failed", "CRM 线索转换失败", 502);
+      }
+      const leadId = requiredText(created.leadId, "CRM Lead ID", 100);
+      try {
+        intent = await this.repository.transaction(async () => {
+          const current = await this.repository.findConversionIntent(
+            scope,
+            intent!.candidateId
+          );
+          if (!current) {
+            fail("conversion_failed", "CRM 成功后转换意图丢失", 502);
+          }
+          if (current.status === "completed") return current;
+          if (current.status === "crm_committed") {
+            if (current.leadId !== leadId) {
+              fail("conversion_failed", "CRM Lead ID 与已提交意图不一致", 502);
+            }
+            return current;
+          }
+          const committed: LeadConversionIntent = {
+            ...current,
+            status: "crm_committed",
+            leadId,
+            attemptCount: current.attemptCount + 1,
+            lastAttemptAt: attemptAt,
+            lastError: null,
+            updatedAt: attemptAt
+          };
+          await this.repository.saveConversionIntent(committed);
+          return committed;
+        });
+      } catch (error) {
+        if (error instanceof AcquisitionDomainError) throw error;
+        fail(
+          "conversion_failed",
+          "CRM 已创建线索，但转换意图提交失败；可安全重放恢复",
+          502
+        );
+      }
+    }
+
+    try {
+      return await this.finalizeConversionIntent(scope, intent);
+    } catch (error) {
+      if (error instanceof AcquisitionDomainError) throw error;
+      fail(
+        "conversion_failed",
+        "CRM 已创建线索，但领域转换尚未完成；可安全重放恢复",
+        502
+      );
+    }
+  }
+
+  private async finalizeConversionIntent(
+    scope: AcquisitionActorScope,
+    prepared: LeadConversionIntent
+  ) {
+    return this.repository.transaction(async () => {
+      let intent = await this.repository.findConversionIntent(
+        scope,
+        prepared.candidateId
+      );
+      if (!intent || intent.id !== prepared.id) {
+        fail("conversion_failed", "待完成的转换意图不存在", 502);
+      }
+      const existing = await this.repository.findConversion(
+        scope,
+        intent.candidateId
+      );
+      if (intent.status === "completed") {
+        if (!existing || existing.leadId !== intent.leadId) {
+          fail("conversion_failed", "已完成转换缺少一致的转换记录", 502);
+        }
+        return existing;
+      }
+      if (intent.status !== "crm_committed" || !intent.leadId) {
+        fail("conversion_failed", "CRM 尚未提交，不能完成领域转换", 502);
+      }
+
+      const candidate = await this.requireCandidate(scope, intent.candidateId);
+      let record = existing;
+      const now = validIso(this.clock(), "转换完成时间");
+      if (record) {
+        if (record.leadId !== intent.leadId
+          || record.decisionVersion !== intent.decisionVersion
+          || hash(record.partyRef) !== hash(intent.partyRef)) {
+          fail("conversion_failed", "已有转换记录与转换意图不一致", 502);
+        }
+      } else {
+        record = {
+          id: this.idFactory("conversion"),
+          ownerId: intent.ownerId,
+          teamId: intent.teamId,
+          candidateId: intent.candidateId,
+          decisionVersion: intent.decisionVersion,
+          partyRef: clone(intent.partyRef),
+          leadId: intent.leadId,
+          reviewerId: intent.reviewerId,
+          idempotencyKey: intent.idempotencyKey,
+          evidenceSnapshotHash: intent.evidenceSnapshotHash,
           createdAt: now
         };
         await this.repository.appendConversion(record);
-        const fromStatus = candidate.status;
-        candidate = this.updateCandidate(candidate, {
+      }
+
+      const fromStatus = candidate.status;
+      if (candidate.status !== "converted_to_lead"
+        || candidate.leadId !== record.leadId) {
+        const converted = this.updateCandidate(candidate, {
           status: "converted_to_lead",
           leadId: record.leadId
         });
-        await this.repository.saveCandidate(candidate);
+        await this.repository.saveCandidate(converted);
+      }
+      const audits = await this.repository.listAuditEvents(
+        scope,
+        candidate.id
+      );
+      if (!audits.some((event) =>
+        event.eventType === "candidate_converted_to_lead"
+        && event.resourceId === record!.id
+      )) {
         await this.audit(scope, {
           candidateId: candidate.id,
           eventType: "candidate_converted_to_lead",
           fromStatus,
           toStatus: "converted_to_lead",
           resourceId: record.id,
-          idempotencyKey: raw.idempotencyKey,
+          idempotencyKey: intent.idempotencyKey,
           payload: record
         });
-        return record;
       }
-    );
+      intent = {
+        ...intent,
+        status: "completed",
+        lastError: null,
+        updatedAt: now,
+        completedAt: now
+      };
+      await this.repository.saveConversionIntent(intent);
+      const request = {
+        candidateId: intent.candidateId,
+        decisionVersion: intent.decisionVersion
+      };
+      const committedIdempotency = await this.repository.findIdempotency(
+        scope,
+        "convert_candidate",
+        intent.idempotencyKey
+      );
+      if (!committedIdempotency) {
+        await this.repository.appendIdempotency({
+          ownerId: intent.ownerId,
+          teamId: intent.teamId,
+          operation: "convert_candidate",
+          idempotencyKey: intent.idempotencyKey,
+          requestHash: hash(request),
+          result: clone(record),
+          createdAt: now
+        });
+      } else if (committedIdempotency.requestHash !== hash(request)) {
+        fail(
+          "idempotency_conflict",
+          "转换完成时发现 Idempotency-Key 请求摘要冲突"
+        );
+      }
+      return record;
+    });
   }
 
   async recordOutcome(

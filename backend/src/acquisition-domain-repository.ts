@@ -7,6 +7,7 @@ import type {
   DiscoveryEvidence,
   FinancialValueDecision,
   IdempotencyRecord,
+  LeadConversionIntent,
   LeadConversionRecord,
   LiveOutcomeFeedbackEvent,
   QualificationDecision,
@@ -82,6 +83,15 @@ export interface AcquisitionDomainRepository {
     candidateId: string,
     researchId: string
   ): Promise<ResearchAttempt | null>;
+  appendConversionIntent(intent: LeadConversionIntent): Promise<void>;
+  saveConversionIntent(intent: LeadConversionIntent): Promise<void>;
+  findConversionIntent(
+    scope: AcquisitionDataScope,
+    candidateId: string
+  ): Promise<LeadConversionIntent | null>;
+  listRecoverableConversionIntents(
+    limit: number
+  ): Promise<LeadConversionIntent[]>;
   appendConversion(record: LeadConversionRecord): Promise<void>;
   findConversion(
     scope: AcquisitionDataScope,
@@ -157,6 +167,7 @@ implements AcquisitionDomainRepository {
   private readonly battleCards: BattleCard[] = [];
   private readonly reviewEvents: ReviewEvent[] = [];
   private readonly researchAttempts = new Map<string, ResearchAttempt>();
+  private readonly conversionIntents = new Map<string, LeadConversionIntent>();
   private readonly conversions: LeadConversionRecord[] = [];
   private readonly outcomes: LiveOutcomeFeedbackEvent[] = [];
   private readonly auditEvents: AcquisitionAuditEvent[] = [];
@@ -186,6 +197,10 @@ implements AcquisitionDomainRepository {
       reviewEvents: copy(this.reviewEvents),
       researchAttempts: new Map(
         [...this.researchAttempts.entries()]
+          .map(([key, value]) => [key, copy(value)])
+      ),
+      conversionIntents: new Map(
+        [...this.conversionIntents.entries()]
           .map(([key, value]) => [key, copy(value)])
       ),
       conversions: copy(this.conversions),
@@ -228,6 +243,10 @@ implements AcquisitionDomainRepository {
       this.researchAttempts.clear();
       snapshot.researchAttempts.forEach(
         (value, key) => this.researchAttempts.set(key, value)
+      );
+      this.conversionIntents.clear();
+      snapshot.conversionIntents.forEach(
+        (value, key) => this.conversionIntents.set(key, value)
       );
       this.conversions.splice(
         0,
@@ -401,7 +420,62 @@ implements AcquisitionDomainRepository {
       : null;
   }
 
+  async appendConversionIntent(intent: LeadConversionIntent) {
+    const existing = [...this.conversionIntents.values()].find((item) =>
+      belongs(item, intent)
+      && (
+        item.candidateId === intent.candidateId
+        || item.idempotencyKey === intent.idempotencyKey
+      )
+    );
+    if (existing) {
+      throw new Error(`duplicate conversion intent: ${intent.candidateId}`);
+    }
+    this.conversionIntents.set(intent.id, copy(intent));
+  }
+
+  async saveConversionIntent(intent: LeadConversionIntent) {
+    const existing = this.conversionIntents.get(intent.id);
+    if (!existing || !belongs(existing, intent)) {
+      throw new Error(`conversion intent not found: ${intent.id}`);
+    }
+    this.conversionIntents.set(intent.id, copy(intent));
+  }
+
+  async findConversionIntent(
+    scope: AcquisitionDataScope,
+    candidateId: string
+  ) {
+    const result = [...this.conversionIntents.values()].find((item) =>
+      belongs(item, scope) && item.candidateId === candidateId
+    );
+    return result ? copy(result) : null;
+  }
+
+  async listRecoverableConversionIntents(limit: number) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new Error("CONVERSION_INTENT_LIMIT_INVALID");
+    }
+    return [...this.conversionIntents.values()]
+      .filter((item) => item.status !== "completed")
+      .sort((left, right) =>
+        left.updatedAt.localeCompare(right.updatedAt)
+        || left.id.localeCompare(right.id)
+      )
+      .slice(0, limit)
+      .map(copy);
+  }
+
   async appendConversion(record: LeadConversionRecord) {
+    if (this.conversions.some((item) =>
+      belongs(item, record)
+      && (
+        item.candidateId === record.candidateId
+        || item.idempotencyKey === record.idempotencyKey
+      )
+    )) {
+      throw new Error(`duplicate conversion: ${record.candidateId}`);
+    }
     this.conversions.push(copy(record));
   }
 

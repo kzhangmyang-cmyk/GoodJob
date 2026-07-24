@@ -361,6 +361,32 @@ export interface LeadConversionRecord {
   createdAt: string;
 }
 
+export type LeadConversionIntentStatus =
+  | "pending_crm"
+  | "crm_committed"
+  | "completed";
+
+export interface LeadConversionIntent {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  candidateId: string;
+  decisionVersion: string;
+  partyRef: PartyRef;
+  reviewerId: string;
+  idempotencyKey: string;
+  evidenceIds: string[];
+  evidenceSnapshotHash: string;
+  status: LeadConversionIntentStatus;
+  leadId: string | null;
+  attemptCount: number;
+  lastAttemptAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
 export type OutcomeEventType =
   | "validated"
   | "contacted"

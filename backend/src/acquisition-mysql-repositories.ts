@@ -8,6 +8,7 @@ import type {
   DiscoveryEvidence,
   FinancialValueDecision,
   IdempotencyRecord as DomainIdempotencyRecord,
+  LeadConversionIntent,
   LeadConversionRecord,
   LiveOutcomeFeedbackEvent,
   QualificationDecision,
@@ -159,6 +160,34 @@ export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
         'pending','running','completed','no_new_evidence',
         'access_restricted','failed'
       )
+    )
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS acquisition_conversion_intents (
+    id VARCHAR(120) PRIMARY KEY,
+    owner_id VARCHAR(100) NOT NULL,
+    team_id VARCHAR(100) NOT NULL,
+    candidate_id VARCHAR(120) NOT NULL,
+    status VARCHAR(30) NOT NULL,
+    attempt_count BIGINT UNSIGNED NOT NULL,
+    idempotency_key_hash CHAR(64) NOT NULL,
+    payload_json JSON NOT NULL,
+    created_at DATETIME(3) NOT NULL,
+    updated_at DATETIME(3) NOT NULL,
+    completed_at DATETIME(3) NULL,
+    UNIQUE KEY uk_acquisition_conversion_intent_scope
+      (owner_id, team_id, id),
+    UNIQUE KEY uk_acquisition_conversion_intent_candidate
+      (owner_id, team_id, candidate_id),
+    UNIQUE KEY uk_acquisition_conversion_intent_idempotency
+      (owner_id, team_id, idempotency_key_hash),
+    KEY idx_acquisition_conversion_intent_recovery
+      (status, updated_at, id),
+    CONSTRAINT fk_acquisition_conversion_intent_candidate
+      FOREIGN KEY (owner_id, team_id, candidate_id)
+      REFERENCES acquisition_candidates (owner_id, team_id, id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_acquisition_conversion_intent_status CHECK (
+      status IN ('pending_crm','crm_committed','completed')
     )
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS acquisition_conversions (
@@ -494,6 +523,10 @@ function redactedKey(value: string) {
     : `sha256:${hash(value)}`;
 }
 
+function idempotencyKeyHash(value: string) {
+  return redactedKey(value).slice("sha256:".length);
+}
+
 function assertNoPlaintextSecrets(
   value: unknown,
   seen = new WeakSet<object>()
@@ -587,7 +620,8 @@ function ownedPayload<T extends { id: string; ownerId: string; teamId: string }>
     ["version", "version"],
     ["version_no", "version"],
     ["revision", "revision"],
-    ["attempts", "attempts"]
+    ["attempts", "attempts"],
+    ["attempt_count", "attemptCount"]
   ] as const;
   for (const [column, field] of numericColumns) {
     if (row[column] !== undefined
@@ -1060,6 +1094,87 @@ implements AcquisitionDomainRepository {
       : null;
   }
 
+  async appendConversionIntent(record: LeadConversionIntent) {
+    await this.source().query(
+      `INSERT INTO acquisition_conversion_intents
+       (id, owner_id, team_id, candidate_id, status, attempt_count,
+        idempotency_key_hash, payload_json, created_at, updated_at,
+        completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        record.id,
+        record.ownerId,
+        record.teamId,
+        record.candidateId,
+        record.status,
+        record.attemptCount,
+        idempotencyKeyHash(record.idempotencyKey),
+        json(record),
+        mysqlDate(record.createdAt),
+        mysqlDate(record.updatedAt),
+        mysqlDate(record.completedAt)
+      ]
+    );
+  }
+
+  async saveConversionIntent(record: LeadConversionIntent) {
+    const count = await affected(
+      this.source(),
+      `UPDATE acquisition_conversion_intents
+       SET status = ?, attempt_count = ?, payload_json = ?,
+           updated_at = ?, completed_at = ?
+       WHERE id = ? AND candidate_id = ?
+         AND owner_id = ? AND team_id = ?`,
+      [
+        record.status,
+        record.attemptCount,
+        json(record),
+        mysqlDate(record.updatedAt),
+        mysqlDate(record.completedAt),
+        record.id,
+        record.candidateId,
+        record.ownerId,
+        record.teamId
+      ]
+    );
+    if (count !== 1) throw new Error("CONVERSION_INTENT_NOT_FOUND");
+  }
+
+  async findConversionIntent(
+    scope: AcquisitionDataScope,
+    candidateId: string
+  ) {
+    const result = await rows(
+      this.source(),
+      `SELECT *
+       FROM acquisition_conversion_intents
+       WHERE candidate_id = ? AND owner_id = ? AND team_id = ?
+       LIMIT 1`,
+      [candidateId, scope.ownerId, scope.teamId]
+    );
+    return result[0]
+      ? ownedPayload<LeadConversionIntent>(result[0], "conversion_intent")
+      : null;
+  }
+
+  async listRecoverableConversionIntents(limit: number) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new Error("CONVERSION_INTENT_LIMIT_INVALID");
+    }
+    const result = await rows(
+      this.source(),
+      `SELECT *
+       FROM acquisition_conversion_intents
+       WHERE status IN ('pending_crm', 'crm_committed')
+       ORDER BY updated_at, id
+       LIMIT ?`,
+      [limit]
+    );
+    return result.map((row) =>
+      ownedPayload<LeadConversionIntent>(row, "conversion_intent")
+    );
+  }
+
   appendConversion(record: LeadConversionRecord) {
     return insertOwned(
       this.source(),
@@ -1067,7 +1182,7 @@ implements AcquisitionDomainRepository {
       record,
       record.createdAt,
       ["candidate_id", "idempotency_key_hash"],
-      [record.candidateId, hash(record.idempotencyKey)]
+      [record.candidateId, idempotencyKeyHash(record.idempotencyKey)]
     );
   }
 
@@ -1160,7 +1275,12 @@ implements AcquisitionDomainRepository {
        WHERE owner_id = ? AND team_id = ?
          AND operation_name = ? AND idempotency_key_hash = ?
        LIMIT 1`,
-      [scope.ownerId, scope.teamId, operation, hash(idempotencyKey)]
+      [
+        scope.ownerId,
+        scope.teamId,
+        operation,
+        idempotencyKeyHash(idempotencyKey)
+      ]
     );
     if (!result[0]) return null;
     const value = parseJson(
@@ -1188,7 +1308,7 @@ implements AcquisitionDomainRepository {
         record.ownerId,
         record.teamId,
         record.operation,
-        hash(record.idempotencyKey),
+        idempotencyKeyHash(record.idempotencyKey),
         record.requestHash,
         json(record),
         mysqlDate(record.createdAt)

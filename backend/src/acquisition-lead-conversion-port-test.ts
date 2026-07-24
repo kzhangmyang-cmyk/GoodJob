@@ -134,6 +134,14 @@ assert.doesNotMatch(
   /api[_-]?key|secret|token/i
 );
 
+store.leadSourceEvents.splice(0, store.leadSourceEvents.length);
+store.leadActivities.splice(0, store.leadActivities.length);
+const repaired = await port.createLead(request);
+assert.deepEqual(repaired, first);
+assert.equal(store.leads.length, 1);
+assert.equal(store.leadSourceEvents.length, 1);
+assert.equal(store.leadActivities.length, 1);
+
 await assert.rejects(
   () => port.createLead({
     ...request,

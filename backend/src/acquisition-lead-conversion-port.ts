@@ -137,12 +137,6 @@ implements LeadConversionPort {
           && lead.teamId === request.teamId
         )
       : undefined;
-    if (priorLead) {
-      return {
-        leadId: priorLead.id,
-        partyRef: structuredClone(candidate.partyRef)
-      };
-    }
 
     const evidence = await Promise.all(request.evidenceIds.map(async (id) => {
       if (!candidate.evidenceIds.includes(id)) {
@@ -244,19 +238,69 @@ implements LeadConversionPort {
       nextFollowAt: "",
       createdAt
     };
+    const existingLead = this.#store.leads.find((item) =>
+      item.id === leadId
+    ) ?? priorLead;
+    if (existingLead && (
+      existingLead.id !== leadId
+      || existingLead.ownerId !== request.ownerId
+      || existingLead.teamId !== request.teamId
+      || existingLead.sourceChannel !== "ai_acquisition"
+      || existingLead.externalId !== request.candidateId
+    )) {
+      throw new Error("ACQUISITION_LEAD_ID_COLLISION");
+    }
+    const existingSourceEvent = this.#store.leadSourceEvents.find((item) =>
+      item.id === sourceEventId
+      || (
+        item.ownerId === request.ownerId
+        && item.teamId === request.teamId
+        && item.channel === "ai_acquisition"
+        && item.externalId === request.candidateId
+      )
+    );
+    if (existingSourceEvent && (
+      existingSourceEvent.id !== sourceEventId
+      || existingSourceEvent.leadId !== leadId
+    )) {
+      throw new Error("ACQUISITION_SOURCE_EVENT_COLLISION");
+    }
+    const existingActivity = this.#store.leadActivities.find((item) =>
+      item.id === activityId
+    );
+    if (existingActivity && existingActivity.leadId !== leadId) {
+      throw new Error("ACQUISITION_ACTIVITY_COLLISION");
+    }
+    if (existingLead && existingSourceEvent && existingActivity) {
+      return {
+        leadId,
+        partyRef: structuredClone(candidate.partyRef)
+      };
+    }
     const apply = () => {
-      this.#store.leads.unshift(lead);
-      this.#store.leadSourceEvents.unshift(sourceEvent);
-      this.#store.leadActivities.unshift(activity);
+      const inserted = {
+        lead: !existingLead,
+        sourceEvent: !existingSourceEvent,
+        activity: !existingActivity
+      };
+      if (inserted.lead) this.#store.leads.unshift(lead);
+      if (inserted.sourceEvent) {
+        this.#store.leadSourceEvents.unshift(sourceEvent);
+      }
+      if (inserted.activity) this.#store.leadActivities.unshift(activity);
       return {
         value: {
           leadId,
           partyRef: structuredClone(candidate.partyRef)
         },
         rollback: () => {
-          removeById(this.#store.leads, leadId);
-          removeById(this.#store.leadSourceEvents, sourceEventId);
-          removeById(this.#store.leadActivities, activityId);
+          if (inserted.lead) removeById(this.#store.leads, leadId);
+          if (inserted.sourceEvent) {
+            removeById(this.#store.leadSourceEvents, sourceEventId);
+          }
+          if (inserted.activity) {
+            removeById(this.#store.leadActivities, activityId);
+          }
         }
       };
     };

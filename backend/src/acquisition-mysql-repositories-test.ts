@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type mysql from "mysql2/promise";
 import {
   ACQUISITION_MYSQL_SCHEMA_STATEMENTS,
@@ -9,7 +10,8 @@ import {
 } from "./acquisition-mysql-repositories.js";
 import type {
   AcquisitionCandidate,
-  DiscoveryEvidence
+  DiscoveryEvidence,
+  LeadConversionIntent
 } from "./acquisition-domain.js";
 import type {
   AcquisitionCopilotMessage,
@@ -299,6 +301,7 @@ async function testSchemaIsCompleteAndHasNoSecretColumns() {
     "acquisition_battle_cards",
     "acquisition_review_events",
     "acquisition_research_attempts",
+    "acquisition_conversion_intents",
     "acquisition_conversions",
     "acquisition_outcomes",
     "acquisition_domain_audit_events",
@@ -322,6 +325,14 @@ async function testSchemaIsCompleteAndHasNoSecretColumns() {
   }
   assert.doesNotMatch(sql, /\b(api_key|secret_key|access_token)\b/);
   assert.match(sql, /unique key uk_acquisition_candidate_scope/);
+  assert.match(
+    sql,
+    /unique key uk_acquisition_conversion_intent_candidate\s+\(owner_id, team_id, candidate_id\)/
+  );
+  assert.match(
+    sql,
+    /status in \('pending_crm','crm_committed','completed'\)/
+  );
   assert.match(sql, /unique key uk_acquisition_copilot_message_sequence/);
   assert.match(sql, /unique key uk_acquisition_domain_idempotency/);
   assert.match(
@@ -820,6 +831,93 @@ async function testPlanRunTransactionLocksAndRollsBack() {
   ));
 }
 
+function conversionIntent(): LeadConversionIntent {
+  return {
+    id: "conversion-intent-1",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    candidateId: "candidate-1",
+    decisionVersion: "decision-v1",
+    partyRef: {
+      partyType: "organization",
+      organizationId: "org-1",
+      tenantProspectId: "prospect-1"
+    },
+    reviewerId: "reviewer-1",
+    idempotencyKey: "convert-1",
+    evidenceIds: ["evidence-1"],
+    evidenceSnapshotHash: `sha256:${"f".repeat(64)}`,
+    status: "pending_crm",
+    leadId: null,
+    attemptCount: 0,
+    lastAttemptAt: null,
+    lastError: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    completedAt: null
+  };
+}
+
+function redactedKey(value: string) {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+async function testConversionIntentsAreDurableScopedAndRecoverable() {
+  const pool = new FakePool();
+  const repository = new MysqlAcquisitionDomainRepository(asPool(pool));
+  const intent = conversionIntent();
+
+  await repository.appendConversionIntent(intent);
+  const insert = pool.calls.at(-1)!;
+  assert.match(insert.sql, /INSERT INTO acquisition_conversion_intents/);
+  assert.doesNotMatch(JSON.stringify(insert.values), /convert-1/);
+
+  pool.enqueue([{
+    id: intent.id,
+    owner_id: intent.ownerId,
+    team_id: intent.teamId,
+    candidate_id: intent.candidateId,
+    status: intent.status,
+    payload_json: JSON.stringify({
+      ...intent,
+      idempotencyKey: redactedKey(intent.idempotencyKey)
+    })
+  }]);
+  const restored = await repository.findConversionIntent(
+    { ownerId: intent.ownerId, teamId: intent.teamId },
+    intent.candidateId
+  );
+  assert.equal(restored?.idempotencyKey, redactedKey(intent.idempotencyKey));
+  const find = pool.calls.at(-1)!;
+  assert.match(find.sql, /owner_id = \? AND team_id = \?/);
+  assert.deepEqual(find.values, [
+    intent.candidateId,
+    intent.ownerId,
+    intent.teamId
+  ]);
+
+  pool.enqueue([{
+    id: intent.id,
+    owner_id: intent.ownerId,
+    team_id: intent.teamId,
+    candidate_id: intent.candidateId,
+    status: intent.status,
+    payload_json: JSON.stringify({
+      ...intent,
+      idempotencyKey: redactedKey(intent.idempotencyKey)
+    })
+  }]);
+  const recoverable = await repository.listRecoverableConversionIntents(10);
+  assert.deepEqual(recoverable, [{
+    ...intent,
+    idempotencyKey: redactedKey(intent.idempotencyKey)
+  }]);
+  const list = pool.calls.at(-1)!;
+  assert.match(list.sql, /status IN \('pending_crm', 'crm_committed'\)/);
+  assert.match(list.sql, /LIMIT \?/);
+  assert.deepEqual(list.values, [10]);
+}
+
 async function run() {
   await testSchemaIsCompleteAndHasNoSecretColumns();
   await testEnsureSchemaExecutesEveryStatement();
@@ -840,6 +938,7 @@ async function run() {
   await testPlanRunIdempotencyScopesAreHashedAtRest();
   await testPlanRunTransactionCommitsNewRowsWithoutOverwriteUpsert();
   await testPlanRunTransactionLocksAndRollsBack();
+  await testConversionIntentsAreDurableScopedAndRecoverable();
   console.log("acquisition mysql repositories tests passed");
 }
 
