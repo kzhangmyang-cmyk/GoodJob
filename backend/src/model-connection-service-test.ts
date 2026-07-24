@@ -23,12 +23,13 @@ function connection(
   id: string,
   ownerId: string,
   provider: ModelConnection["provider"],
-  active: boolean
+  active: boolean,
+  teamId = "team-1"
 ): ModelConnection {
   return {
     id,
     ownerId,
-    teamId: "team-1",
+    teamId,
     provider,
     model: `${provider}-model`,
     baseUrlFingerprint: `sha256:${provider}`,
@@ -46,14 +47,17 @@ function connection(
   };
 }
 
-test("activation is owner-scoped and existing job snapshots remain immutable", async () => {
+test("activation is owner-and-team scoped and existing job snapshots remain immutable", async () => {
   const first = connection("conn-first", "owner-1", "moonshot", true);
   const second = connection("conn-second", "owner-1", "zhipu", false);
   const otherOwner = connection("conn-other", "owner-2", "openai", true);
-  const sameOwnerOtherTeam = {
-    ...connection("conn-other-team", "owner-1", "minimax", true),
-    teamId: "team-2"
-  };
+  const sameOwnerOtherTeam = connection(
+    "conn-other-team",
+    "owner-1",
+    "minimax",
+    true,
+    "team-2"
+  );
   const activationEvents: ModelConnectionActivationEvent[] = [];
   const pendingActivationEvents: ModelConnectionActivationEvent[] = [];
   const store = {
@@ -72,12 +76,16 @@ test("activation is owner-scoped and existing job snapshots remain immutable", a
   );
   assert.deepEqual(
     store.connections
-      .filter((item) => item.ownerId === "owner-1" && item.status === "active")
+      .filter(
+        (item) => item.ownerId === "owner-1"
+          && item.teamId === "team-1"
+          && item.status === "active"
+      )
       .map((item) => item.id),
     [second.id]
   );
   assert.equal(otherOwner.status, "active");
-  assert.equal(sameOwnerOtherTeam.status, "inactive");
+  assert.equal(sameOwnerOtherTeam.status, "active");
   await assert.rejects(
     activateModelConnection(
       store,
@@ -334,35 +342,47 @@ test("activation audit retention blocks deletion only until its exact expiry", a
   assert.equal(store.connections.length, 0);
 });
 
-test("legacy activation migration selects updated_at DESC then id ASC per owner", () => {
+test("legacy activation migration selects updated_at DESC then id ASC per owner and team", () => {
   const selected = selectLegacyActiveConnectionIds([
     {
       id: "conn-z",
       ownerId: "owner-1",
+      teamId: "team-1",
       enabled: true,
       updatedAt: "2026-07-23T12:00:00.000Z"
     },
     {
       id: "conn-a",
       ownerId: "owner-1",
+      teamId: "team-1",
       enabled: true,
       updatedAt: "2026-07-23T12:00:00.000Z"
     },
     {
+      id: "conn-team-2",
+      ownerId: "owner-1",
+      teamId: "team-2",
+      enabled: true,
+      updatedAt: "2026-07-23T09:00:00.000Z"
+    },
+    {
       id: "conn-newer",
       ownerId: "owner-2",
+      teamId: "team-1",
       enabled: true,
       updatedAt: "2026-07-23T13:00:00.000Z"
     },
     {
       id: "conn-older",
       ownerId: "owner-2",
+      teamId: "team-1",
       enabled: true,
       updatedAt: "2026-07-23T11:00:00.000Z"
     },
     {
       id: "conn-disabled",
       ownerId: "owner-3",
+      teamId: "team-1",
       enabled: false,
       updatedAt: "2026-07-23T14:00:00.000Z"
     }
@@ -371,13 +391,14 @@ test("legacy activation migration selects updated_at DESC then id ASC per owner"
   assert.deepEqual(
     [...selected.entries()].sort(([left], [right]) => left.localeCompare(right)),
     [
-      ["owner-1", "conn-a"],
-      ["owner-2", "conn-newer"]
+      ['["owner-1","team-1"]', "conn-a"],
+      ['["owner-1","team-2"]', "conn-team-2"],
+      ['["owner-2","team-1"]', "conn-newer"]
     ]
   );
 });
 
-test("MySQL enforces one active owner and activation is transactionally audited", () => {
+test("MySQL enforces one active connection per owner and team and activation is transactionally audited", () => {
   const installSchema = readFileSync(
     new URL("../schema.mysql.sql", import.meta.url),
     "utf8"
@@ -393,24 +414,58 @@ test("MySQL enforces one active owner and activation is transactionally audited"
   for (const schema of [installSchema, fullInstallSchema]) {
     assert.match(
       schema,
-      /active_owner_id VARCHAR\(64\) GENERATED ALWAYS AS/
+      /active_owner_team_key VARCHAR\(191\) GENERATED ALWAYS AS/
     );
     assert.match(
       schema,
-      /UNIQUE KEY uniq_ai_model_active_owner\(active_owner_id\)/
+      /UNIQUE KEY uniq_ai_model_active_owner_team\(active_owner_team_key\)/
     );
     assert.match(schema, /CREATE TABLE ai_model_credential_versions/);
     assert.match(schema, /CREATE TABLE ai_job_model_snapshots/);
+    assert.match(
+      schema,
+      /CREATE TABLE ai_model_connection_idempotency[\s\S]+PRIMARY KEY\(owner_id, team_id, idempotency_key_hash\)/
+    );
     assert.match(schema, /endpoint_profile_id VARCHAR\(80\)/);
     assert.match(schema, /capability_certification_hash VARCHAR\(80\)/);
   }
   assert.match(
     mysqlStore,
-    /const activateModelConnection =[\s\S]+beginTransaction\(\)[\s\S]+SET enabled = FALSE[\s\S]+SET enabled = TRUE[\s\S]+INSERT INTO ai_model_connection_activation_events[\s\S]+commit\(\)/
+    /CREATE TABLE IF NOT EXISTS ai_model_connection_idempotency[\s\S]+PRIMARY KEY\(owner_id, team_id, idempotency_key_hash\)[\s\S]+ensurePrimaryKey\([\s\S]+ai_model_connection_idempotency[\s\S]+\["owner_id", "team_id", "idempotency_key_hash"\]/
   );
   assert.match(
     mysqlStore,
-    /selectLegacyActiveConnectionIds[\s\S]+system_migration[\s\S]+ai_model_credential_versions/
+    /const activateModelConnection =[\s\S]+beginTransaction\(\)[\s\S]+SET enabled = FALSE[\s\S]+WHERE owner_id = \? AND team_id = \?[\s\S]+SET enabled = TRUE[\s\S]+WHERE id = \? AND owner_id = \? AND team_id = \?[\s\S]+INSERT INTO ai_model_connection_activation_events[\s\S]+commit\(\)/
+  );
+  assert.match(
+    mysqlStore,
+    /SELECT \* FROM ai_model_configs[\s\S]+WHERE owner_id = \? AND team_id = \?[\s\S]+ORDER BY id[\s\S]+FOR UPDATE[\s\S]+scopedRows[\s\S]+item\.id === connectionId/
+  );
+  assert.match(
+    mysqlStore,
+    /selectLegacyActiveConnectionIds[\s\S]+WHERE id = \? AND owner_id = \? AND team_id = \?[\s\S]+system_migration[\s\S]+ai_model_credential_versions/
+  );
+  const activeScopeColumnPosition = mysqlStore.indexOf(
+    '"active_owner_team_key"'
+  );
+  const legacyIndexDropPosition = mysqlStore.indexOf(
+    '"uniq_ai_model_active_owner"',
+    activeScopeColumnPosition
+  );
+  const migrationPosition = mysqlStore.indexOf(
+    "await migrateLegacyAiModelConnections(pool)",
+    legacyIndexDropPosition
+  );
+  const activeScopeIndexPosition = mysqlStore.indexOf(
+    '"uniq_ai_model_active_owner_team"',
+    migrationPosition
+  );
+  assert.ok(
+    activeScopeColumnPosition >= 0
+      && legacyIndexDropPosition > activeScopeColumnPosition
+      && migrationPosition > legacyIndexDropPosition
+      && activeScopeIndexPosition > migrationPosition,
+    "schema upgrade must drop the legacy owner-only invariant, normalize each owner/team scope, then install the scoped unique invariant"
   );
   assert.match(
     mysqlStore,

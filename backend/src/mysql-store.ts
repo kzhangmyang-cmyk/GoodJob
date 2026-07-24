@@ -580,13 +580,15 @@ export async function createMysqlStore(
     try {
       await connection.beginTransaction();
       transactionStarted = true;
-      const [targetRows] = await connection.query(
+      const [scopeRows] = await connection.query(
         `SELECT * FROM ai_model_configs
-         WHERE id = ? AND owner_id = ? AND team_id = ?
+         WHERE owner_id = ? AND team_id = ?
+         ORDER BY id
          FOR UPDATE`,
-        [connectionId, scope.ownerId, scope.teamId]
+        [scope.ownerId, scope.teamId]
       );
-      const target = (targetRows as Array<Record<string, any>>)[0];
+      const scopedRows = scopeRows as Array<Record<string, any>>;
+      const target = scopedRows.find((item) => item.id === connectionId);
       if (!target) {
         throw new ModelConnectionError(
           "connection_not_found",
@@ -594,14 +596,8 @@ export async function createMysqlStore(
           404
         );
       }
-      const [previousRows] = await connection.query(
-        `SELECT id FROM ai_model_configs
-         WHERE owner_id = ? AND enabled = TRUE
-         FOR UPDATE`,
-        [scope.ownerId]
-      );
       const previousConnectionId =
-        (previousRows as Array<{ id: string }>)[0]?.id || null;
+        scopedRows.find((item) => Boolean(item.enabled))?.id || null;
       const createdAt = new Date().toISOString();
       const event: ModelConnectionActivationEvent = {
         id: `mca_${randomUUID()}`,
@@ -616,14 +612,19 @@ export async function createMysqlStore(
       await connection.query(
         `UPDATE ai_model_configs
          SET enabled = FALSE, updated_at = ?
-         WHERE owner_id = ?`,
-        [mysqlDate(createdAt), scope.ownerId]
+         WHERE owner_id = ? AND team_id = ?`,
+        [mysqlDate(createdAt), scope.ownerId, scope.teamId]
       );
       await connection.query(
         `UPDATE ai_model_configs
          SET enabled = TRUE, updated_at = ?
-         WHERE id = ? AND owner_id = ?`,
-        [mysqlDate(createdAt), connectionId, scope.ownerId]
+         WHERE id = ? AND owner_id = ? AND team_id = ?`,
+        [
+          mysqlDate(createdAt),
+          connectionId,
+          scope.ownerId,
+          scope.teamId
+        ]
       );
       await connection.query(
         `INSERT INTO ai_model_connection_activation_events
@@ -653,6 +654,8 @@ export async function createMysqlStore(
       store.modelConnectionActivationEvents.push(event);
       const activated = store.aiModelConfigs.find(
         (item) => item.id === connectionId
+          && item.ownerId === scope.ownerId
+          && item.teamId === scope.teamId
       );
       if (!activated) {
         throw new ModelConnectionError(
@@ -2693,12 +2696,16 @@ async function ensureSchema(pool: mysql.Pool) {
     last_test_message VARCHAR(255) DEFAULT '',
     owner_id VARCHAR(64) NOT NULL,
     team_id VARCHAR(64) NOT NULL,
-    active_owner_id VARCHAR(64) GENERATED ALWAYS AS (
-      CASE WHEN enabled THEN owner_id ELSE NULL END
+    active_owner_team_key VARCHAR(191) GENERATED ALWAYS AS (
+      CASE
+        WHEN enabled THEN
+          CONCAT(CHAR_LENGTH(owner_id), ':', owner_id, ':', team_id)
+        ELSE NULL
+      END
     ) STORED,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uniq_ai_model_active_owner(active_owner_id),
+    UNIQUE KEY uniq_ai_model_active_owner_team(active_owner_team_key),
     INDEX idx_ai_model_owner(owner_id)
   )`);
   await ensureColumn(pool, "ai_model_configs", "protocol", "VARCHAR(40) NOT NULL DEFAULT 'openai-compatible'");
@@ -2763,9 +2770,14 @@ async function ensureSchema(pool: mysql.Pool) {
     response_status SMALLINT UNSIGNED NOT NULL,
     response_body_json JSON NOT NULL,
     created_at DATETIME NOT NULL,
-    PRIMARY KEY(owner_id, idempotency_key_hash),
+    PRIMARY KEY(owner_id, team_id, idempotency_key_hash),
     INDEX idx_ai_connection_idempotency_created(created_at)
   )`);
+  await ensurePrimaryKey(
+    pool,
+    "ai_model_connection_idempotency",
+    ["owner_id", "team_id", "idempotency_key_hash"]
+  );
   await pool.query(`CREATE TABLE IF NOT EXISTS ai_job_model_snapshots (
     job_id VARCHAR(90) PRIMARY KEY,
     owner_id VARCHAR(64) NOT NULL,
@@ -2850,18 +2862,29 @@ async function ensureSchema(pool: mysql.Pool) {
     INDEX idx_ai_model_call_owner(owner_id, created_at),
     INDEX idx_ai_model_call_job(job_id, created_at)
   )`);
-  await migrateLegacyAiModelConnections(pool);
   await ensureColumn(
     pool,
     "ai_model_configs",
-    "active_owner_id",
-    "VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN enabled THEN owner_id ELSE NULL END) STORED"
+    "active_owner_team_key",
+    `VARCHAR(191) GENERATED ALWAYS AS (
+      CASE
+        WHEN enabled THEN
+          CONCAT(CHAR_LENGTH(owner_id), ':', owner_id, ':', team_id)
+        ELSE NULL
+      END
+    ) STORED`
   );
+  await dropIndexIfExists(
+    pool,
+    "ai_model_configs",
+    "uniq_ai_model_active_owner"
+  );
+  await migrateLegacyAiModelConnections(pool);
   await ensureUniqueIndex(
     pool,
     "ai_model_configs",
-    "uniq_ai_model_active_owner",
-    ["active_owner_id"]
+    "uniq_ai_model_active_owner_team",
+    ["active_owner_team_key"]
   );
   await pool.query(`CREATE TABLE IF NOT EXISTS lead_source_configs (
     id VARCHAR(64) PRIMARY KEY,
@@ -4917,23 +4940,29 @@ async function migrateLegacyAiModelConnections(pool: mysql.Pool) {
       legacyRows.map((row) => ({
         id: row.id,
         ownerId: row.owner_id,
+        teamId: row.team_id,
         enabled: Boolean(row.enabled),
         updatedAt: mysqlIsoDate(row.updated_at)
       }))
     );
 
-    await connection.query("UPDATE ai_model_configs SET enabled = FALSE");
-    for (const [ownerId, connectionId] of selected) {
+    for (const connectionId of selected.values()) {
+      const row = legacyRows.find((item) => item.id === connectionId);
+      if (!row) continue;
+      await connection.query(
+        `UPDATE ai_model_configs
+         SET enabled = FALSE
+         WHERE owner_id = ? AND team_id = ?`,
+        [row.owner_id, row.team_id]
+      );
       await connection.query(
         `UPDATE ai_model_configs
          SET enabled = TRUE
-         WHERE id = ? AND owner_id = ?`,
-        [connectionId, ownerId]
+         WHERE id = ? AND owner_id = ? AND team_id = ?`,
+        [connectionId, row.owner_id, row.team_id]
       );
-      const row = legacyRows.find((item) => item.id === connectionId);
-      if (!row) continue;
       const eventId = `mca_migration_${createHash("sha256")
-        .update(`${ownerId}|${connectionId}|v1`)
+        .update(`${row.owner_id}|${row.team_id}|${connectionId}|v2`)
         .digest("hex")
         .slice(0, 32)}`;
       const [eventRows] = await connection.query(
@@ -4949,7 +4978,7 @@ async function migrateLegacyAiModelConnections(pool: mysql.Pool) {
            VALUES (?, ?, ?, 'system_migration', NULL, ?, ?, ?)`,
           [
             eventId,
-            ownerId,
+            row.owner_id,
             row.team_id,
             connectionId,
             "legacy_migration_updated_at_desc_id_asc",
@@ -5068,6 +5097,60 @@ async function ensureUniqueIndex(pool: mysql.Pool, table: string, index: string,
     && current.every((column, position) => column === columns[position])) return;
   if (current.length) await pool.query(`ALTER TABLE \`${table}\` DROP INDEX \`${index}\``);
   await pool.query(`ALTER TABLE \`${table}\` ADD UNIQUE KEY \`${index}\` (${columns.map((column) => `\`${column}\``).join(", ")})`);
+}
+
+async function ensurePrimaryKey(
+  pool: mysql.Pool,
+  table: string,
+  columns: string[]
+) {
+  const [result] = await pool.query(
+    `SELECT column_name AS columnName
+     FROM information_schema.statistics
+     WHERE table_schema = DATABASE()
+       AND table_name = ?
+       AND index_name = 'PRIMARY'
+     ORDER BY seq_in_index`,
+    [table]
+  );
+  const current = (
+    result as Array<{ columnName: string }>
+  ).map((row) => row.columnName);
+  if (
+    current.length === columns.length
+    && current.every(
+      (column, position) => column === columns[position]
+    )
+  ) return;
+  const dropPrimaryKey = current.length ? "DROP PRIMARY KEY, " : "";
+  await pool.query(
+    `ALTER TABLE \`${table}\`
+     ${dropPrimaryKey}ADD PRIMARY KEY (${
+       columns.map((column) => `\`${column}\``).join(", ")
+     })`
+  );
+}
+
+async function dropIndexIfExists(
+  pool: mysql.Pool,
+  table: string,
+  index: string
+) {
+  const [result] = await pool.query(
+    `SELECT COUNT(*) AS count
+     FROM information_schema.statistics
+     WHERE table_schema = DATABASE()
+       AND table_name = ?
+       AND index_name = ?`,
+    [table, index]
+  );
+  const exists =
+    Number((result as Array<{ count: number }>)[0]?.count || 0) > 0;
+  if (exists) {
+    await pool.query(
+      `ALTER TABLE \`${table}\` DROP INDEX \`${index}\``
+    );
+  }
 }
 
 async function ensureCheckConstraint(
@@ -6095,7 +6178,7 @@ async function loadModelConnectionIdempotencyRecords(
   return (await rows<Record<string, any>>(
     pool,
     `SELECT * FROM ai_model_connection_idempotency
-     ORDER BY created_at, owner_id, idempotency_key_hash`
+     ORDER BY created_at, owner_id, team_id, idempotency_key_hash`
   )).map((row) => {
     let responseBody: unknown = row.response_body_json;
     if (typeof responseBody === "string") {

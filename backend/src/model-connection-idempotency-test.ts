@@ -4,9 +4,26 @@ import {
   executeModelConnectionWriteIdempotently,
   requireModelConnectionIdempotencyKey
 } from "./model-providers/idempotency.js";
+import {
+  clearPersistedModelAppendBatches
+} from "./model-providers/pending-appends.js";
 import type {
   ModelConnectionIdempotencyRecord
 } from "./model-providers/types.js";
+
+function idempotencyRecord(
+  teamId: string
+): ModelConnectionIdempotencyRecord {
+  return {
+    ownerId: "owner-shared",
+    teamId,
+    idempotencyKeyHash: "a".repeat(64),
+    requestFingerprint: "b".repeat(64),
+    responseStatus: 200,
+    responseBody: { teamId },
+    createdAt: "2026-07-24T00:00:00.000Z"
+  };
+}
 
 test("failed persistence leaves no phantom replay or business mutation", async () => {
   const records: ModelConnectionIdempotencyRecord[] = [];
@@ -143,4 +160,75 @@ test("model connection writes mutate inside the store persistence queue", async 
   assert.equal(directPersistCalls, 0);
   assert.equal(records.length, 1);
   assert.equal(pending.length, 1);
+});
+
+test("the same owner can reuse an idempotency key independently per team", async () => {
+  const records: ModelConnectionIdempotencyRecord[] = [];
+  const pending: ModelConnectionIdempotencyRecord[] = [];
+  const store = {
+    modelConnectionIdempotencyRecords: records,
+    pendingModelConnectionIdempotencyRecords: pending,
+    async persist() {}
+  };
+  let mutationCalls = 0;
+  const request = {
+    ownerId: "owner-shared",
+    idempotencyKey: "same-key-in-two-teams",
+    method: "POST",
+    path: "/api/v1/ai/connections",
+    body: { provider: "openai", model: "gpt-test" }
+  };
+
+  const teamA = await executeModelConnectionWriteIdempotently(
+    store,
+    { ...request, teamId: "team-a" },
+    async () => {
+      mutationCalls += 1;
+      return {
+        status: 200,
+        body: { id: "connection-team-a" }
+      };
+    }
+  );
+  const teamB = await executeModelConnectionWriteIdempotently(
+    store,
+    { ...request, teamId: "team-b" },
+    async () => {
+      mutationCalls += 1;
+      return {
+        status: 200,
+        body: { id: "connection-team-b" }
+      };
+    }
+  );
+
+  assert.equal(teamA.replayed, false);
+  assert.equal(teamB.replayed, false);
+  assert.equal(mutationCalls, 2);
+  assert.deepEqual(
+    records.map((item) => item.teamId).sort(),
+    ["team-a", "team-b"]
+  );
+});
+
+test("clearing a persisted idempotency append keeps another team's key", () => {
+  const teamA = idempotencyRecord("team-a");
+  const teamB = idempotencyRecord("team-b");
+  const live = {
+    pendingModelCredentialVersions: [],
+    pendingModelConnectionActivationEvents: [],
+    pendingAiJobModelSnapshots: [],
+    pendingModelConnectionIdempotencyRecords: [teamA, teamB],
+    pendingModelCallRecords: []
+  };
+
+  clearPersistedModelAppendBatches(live, {
+    ...live,
+    pendingModelConnectionIdempotencyRecords: [teamA]
+  });
+
+  assert.deepEqual(
+    live.pendingModelConnectionIdempotencyRecords,
+    [teamB]
+  );
 });

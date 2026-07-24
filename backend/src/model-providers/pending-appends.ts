@@ -51,7 +51,11 @@ export function clearPersistedModelAppendBatches(
   removePersisted(
     live.pendingModelConnectionIdempotencyRecords,
     persisted.pendingModelConnectionIdempotencyRecords,
-    (item) => `${item.ownerId}:${item.idempotencyKeyHash}`
+    (item) => JSON.stringify([
+      item.ownerId,
+      item.teamId,
+      item.idempotencyKeyHash
+    ])
   );
   removePersisted(
     live.pendingModelCallRecords,

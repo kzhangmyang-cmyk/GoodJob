@@ -109,6 +109,7 @@ export async function executeModelConnectionWriteIdempotently(
     const apply = async () => {
       const existing = store.modelConnectionIdempotencyRecords.find(
         (item) => item.ownerId === request.ownerId
+          && item.teamId === request.teamId
           && item.idempotencyKeyHash === idempotencyKeyHash
       );
       if (existing) {

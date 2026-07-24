@@ -453,12 +453,16 @@ CREATE TABLE ai_model_configs (
   last_test_message VARCHAR(255) DEFAULT '',
   owner_id VARCHAR(64) NOT NULL,
   team_id VARCHAR(64) NOT NULL,
-  active_owner_id VARCHAR(64) GENERATED ALWAYS AS (
-    CASE WHEN enabled THEN owner_id ELSE NULL END
+  active_owner_team_key VARCHAR(191) GENERATED ALWAYS AS (
+    CASE
+      WHEN enabled THEN
+        CONCAT(CHAR_LENGTH(owner_id), ':', owner_id, ':', team_id)
+      ELSE NULL
+    END
   ) STORED,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE KEY uniq_ai_model_active_owner(active_owner_id),
+  UNIQUE KEY uniq_ai_model_active_owner_team(active_owner_team_key),
   INDEX idx_ai_model_owner(owner_id)
 );
 
@@ -497,7 +501,7 @@ CREATE TABLE ai_model_connection_idempotency (
   response_status SMALLINT UNSIGNED NOT NULL,
   response_body_json JSON NOT NULL,
   created_at DATETIME NOT NULL,
-  PRIMARY KEY(owner_id, idempotency_key_hash),
+  PRIMARY KEY(owner_id, team_id, idempotency_key_hash),
   INDEX idx_ai_connection_idempotency_created(created_at)
 );
 

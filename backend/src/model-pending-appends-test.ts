@@ -211,7 +211,7 @@ test("connection idempotency replay is loaded durably from hashed-key SQL", () =
     assert.match(schema, /CREATE TABLE ai_model_connection_idempotency/);
     assert.match(
       schema,
-      /PRIMARY KEY\(owner_id, idempotency_key_hash\)/
+      /PRIMARY KEY\(owner_id, team_id, idempotency_key_hash\)/
     );
     assert.doesNotMatch(schema, /\bidempotency_key\s+VARCHAR/i);
   }

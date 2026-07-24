@@ -7913,7 +7913,12 @@ app.post("/api/tools/ai-config", requireAuth, asyncRoute(async (req, res) => {
   );
   if (body.enabled && !officialProvider) {
     for (const item of store.aiModelConfigs) {
-      if (item.ownerId === config.ownerId) item.enabled = item.id === config.id;
+      if (
+        item.ownerId === config.ownerId
+        && item.teamId === config.teamId
+      ) {
+        item.enabled = item.id === config.id;
+      }
     }
   }
   await store.persist();
@@ -7933,7 +7938,11 @@ app.post("/api/tools/ai-config", requireAuth, asyncRoute(async (req, res) => {
 
 app.delete("/api/tools/ai-config/:id", requireAuth, asyncRoute(async (req, res) => {
   const store = getStore();
-  const index = store.aiModelConfigs.findIndex((item) => item.id === req.params.id && item.ownerId === req.user!.id);
+  const index = store.aiModelConfigs.findIndex(
+    (item) => item.id === req.params.id
+      && item.ownerId === req.user!.id
+      && item.teamId === req.user!.teamId
+  );
   if (index < 0) {
     res.status(404).json({ message: "配置不存在或无权删除" });
     return;
@@ -7964,7 +7973,11 @@ app.post("/api/tools/ai-config/test", requireAuth, asyncRoute(async (req, res) =
   const schema = z.object({ id: z.string().min(1).max(64).optional() });
   const body = schema.parse(req.body || {});
   const config = body.id
-    ? getStore().aiModelConfigs.find((item) => item.id === body.id && item.ownerId === req.user!.id) || null
+    ? getStore().aiModelConfigs.find(
+      (item) => item.id === body.id
+        && item.ownerId === req.user!.id
+        && item.teamId === req.user!.teamId
+    ) || null
     : getAiConfig(req.user!);
   if (!config || !config.baseUrl || !config.model) {
     res.status(400).json({ message: "请先保存模型地址和模型名称" });
@@ -11022,7 +11035,10 @@ type AiUseCase = "leadFinder" | "websiteParse" | "scoring" | "emailDraft" | "exa
 
 function getAiConfigs(user: SessionUser) {
   return getStore().aiModelConfigs
-    .filter((item) => item.ownerId === user.id)
+    .filter(
+      (item) => item.ownerId === user.id
+        && item.teamId === user.teamId
+    )
     .sort((left, right) => Number(right.enabled) - Number(left.enabled) || new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
 }
 

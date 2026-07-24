@@ -9,6 +9,9 @@ import {
   startAgentJob
 } from "./agent-jobs.js";
 import { materializeMarketOpportunityFacts } from "./market-opportunity-facts.js";
+import {
+  executeModelConnectionWriteIdempotently
+} from "./model-providers/idempotency.js";
 import { upsertMarketTradeObservations } from "./market-trade-observations.js";
 import { createMysqlStore, createSerializedPersistence } from "./mysql-store.js";
 import { readProviderResponseCache, writeProviderResponseCache } from "./provider-response-cache.js";
@@ -17,6 +20,7 @@ import { buildProspectVerificationReport } from "./prospect-verification.js";
 import { setStore } from "./store.js";
 import type { TradeObservation } from "./provider-contract.js";
 import type {
+  AiModelConfig,
   ProviderEvidenceSnapshot,
   ProviderRequestLog,
   User,
@@ -29,6 +33,36 @@ function connectionOptions(databaseUrl: URL) {
     port: Number(databaseUrl.port || 3306),
     user: decodeURIComponent(databaseUrl.username),
     password: decodeURIComponent(databaseUrl.password)
+  };
+}
+
+function scopedAiModelConfig(input: {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  updatedAt: string;
+}): AiModelConfig {
+  return {
+    id: input.id,
+    provider: "openai",
+    protocol: "openai-compatible",
+    name: input.id,
+    baseUrl: "https://api.openai.com/v1",
+    model: "test-model",
+    apiKey: "",
+    enabled: false,
+    temperature: 0.1,
+    useLeadFinder: true,
+    useWebsiteParse: true,
+    useScoring: true,
+    useEmailDraft: true,
+    useExam: false,
+    lastTestStatus: "untested",
+    lastTestMessage: "",
+    ownerId: input.ownerId,
+    teamId: input.teamId,
+    createdAt: input.updatedAt,
+    updatedAt: input.updatedAt
   };
 }
 
@@ -260,6 +294,186 @@ async function main() {
     );
     const firstStart = await createMysqlStore();
     setStore(firstStart);
+    const sharedModelOwner = `shared-model-owner-${randomUUID()}`;
+    const teamAConnectionOne = `ai-team-a-1-${randomUUID()}`;
+    const teamAConnectionTwo = `ai-team-a-2-${randomUUID()}`;
+    const teamBConnectionOne = `ai-team-b-1-${randomUUID()}`;
+    const teamBConnectionTwo = `ai-team-b-2-${randomUUID()}`;
+    firstStart.aiModelConfigs.push(
+      scopedAiModelConfig({
+        id: teamAConnectionOne,
+        ownerId: sharedModelOwner,
+        teamId: "model-team-a",
+        updatedAt: "2026-07-23T08:00:00.000Z"
+      }),
+      scopedAiModelConfig({
+        id: teamAConnectionTwo,
+        ownerId: sharedModelOwner,
+        teamId: "model-team-a",
+        updatedAt: "2026-07-23T09:00:00.000Z"
+      }),
+      scopedAiModelConfig({
+        id: teamBConnectionOne,
+        ownerId: sharedModelOwner,
+        teamId: "model-team-b",
+        updatedAt: "2026-07-23T10:00:00.000Z"
+      }),
+      scopedAiModelConfig({
+        id: teamBConnectionTwo,
+        ownerId: sharedModelOwner,
+        teamId: "model-team-b",
+        updatedAt: "2026-07-23T07:00:00.000Z"
+      })
+    );
+    await firstStart.persist();
+    await firstStart.activateModelConnection!(
+      { ownerId: sharedModelOwner, teamId: "model-team-a" },
+      teamAConnectionOne,
+      sharedModelOwner,
+      "mysql_team_isolation_a1"
+    );
+    await firstStart.activateModelConnection!(
+      { ownerId: sharedModelOwner, teamId: "model-team-b" },
+      teamBConnectionOne,
+      sharedModelOwner,
+      "mysql_team_isolation_b1"
+    );
+    await firstStart.activateModelConnection!(
+      { ownerId: sharedModelOwner, teamId: "model-team-a" },
+      teamAConnectionTwo,
+      sharedModelOwner,
+      "mysql_same_team_switch"
+    );
+    const activeAfterSwitch = firstStart.aiModelConfigs
+      .filter(
+        (item) => item.ownerId === sharedModelOwner && item.enabled
+      )
+      .map((item) => `${item.teamId}:${item.id}`)
+      .sort();
+    assert.deepEqual(activeAfterSwitch, [
+      `model-team-a:${teamAConnectionTwo}`,
+      `model-team-b:${teamBConnectionOne}`
+    ]);
+    const sharedIdempotencyRequest = {
+      ownerId: sharedModelOwner,
+      idempotencyKey: "mysql-same-key-across-model-teams",
+      method: "POST",
+      path: "/api/v1/ai/connections",
+      body: { provider: "openai", model: "test-model" }
+    };
+    await executeModelConnectionWriteIdempotently(
+      firstStart,
+      { ...sharedIdempotencyRequest, teamId: "model-team-a" },
+      async () => ({
+        status: 200,
+        body: { id: teamAConnectionOne }
+      })
+    );
+    await executeModelConnectionWriteIdempotently(
+      firstStart,
+      { ...sharedIdempotencyRequest, teamId: "model-team-b" },
+      async () => ({
+        status: 200,
+        body: { id: teamBConnectionOne }
+      })
+    );
+    const [modelIdempotencyRows] = await admin.query<Array<
+      RowDataPacket & { team_id: string }
+    >>(
+      `SELECT team_id
+       FROM \`${databaseName}\`.ai_model_connection_idempotency
+       WHERE owner_id = ?
+       ORDER BY team_id`,
+      [sharedModelOwner]
+    );
+    assert.deepEqual(
+      modelIdempotencyRows.map((item) => item.team_id),
+      ["model-team-a", "model-team-b"]
+    );
+
+    await admin.query(
+      `ALTER TABLE \`${databaseName}\`.ai_model_configs
+       DROP INDEX uniq_ai_model_active_owner_team`
+    );
+    await admin.query(
+      `UPDATE \`${databaseName}\`.ai_model_configs
+       SET enabled = TRUE,
+           updated_at = CASE id
+             WHEN ? THEN ?
+             WHEN ? THEN ?
+             WHEN ? THEN ?
+             WHEN ? THEN ?
+             ELSE updated_at
+           END
+       WHERE id IN (?, ?, ?, ?)`,
+      [
+        teamAConnectionOne,
+        "2026-07-23 08:00:00",
+        teamAConnectionTwo,
+        "2026-07-23 09:00:00",
+        teamBConnectionOne,
+        "2026-07-23 10:00:00",
+        teamBConnectionTwo,
+        "2026-07-23 07:00:00",
+        teamAConnectionOne,
+        teamAConnectionTwo,
+        teamBConnectionOne,
+        teamBConnectionTwo
+      ]
+    );
+    const migrationRestart = await createMysqlStore();
+    assert.deepEqual(
+      migrationRestart.aiModelConfigs
+        .filter(
+          (item) => item.ownerId === sharedModelOwner && item.enabled
+        )
+        .map((item) => `${item.teamId}:${item.id}`)
+        .sort(),
+      [
+        `model-team-a:${teamAConnectionTwo}`,
+        `model-team-b:${teamBConnectionOne}`
+      ],
+      "legacy migration must retain one active model connection per owner and team"
+    );
+    const [modelActiveIndexRows] = await admin.query<Array<
+      RowDataPacket & {
+        Non_unique: number;
+        Seq_in_index: number;
+        Column_name: string;
+      }
+    >>(
+      `SHOW INDEX FROM \`${databaseName}\`.ai_model_configs
+       WHERE Key_name = 'uniq_ai_model_active_owner_team'`
+    );
+    assert.deepEqual(
+      modelActiveIndexRows
+        .sort((left, right) => left.Seq_in_index - right.Seq_in_index)
+        .map((item) => item.Column_name),
+      ["active_owner_team_key"]
+    );
+    assert.ok(
+      modelActiveIndexRows.every(
+        (item) => Number(item.Non_unique) === 0
+      )
+    );
+    const [modelIdempotencyPrimaryKeyRows] =
+      await admin.query<Array<
+        RowDataPacket & {
+          Seq_in_index: number;
+          Column_name: string;
+        }
+      >>(
+        `SHOW INDEX
+         FROM \`${databaseName}\`.ai_model_connection_idempotency
+         WHERE Key_name = 'PRIMARY'`
+      );
+    assert.deepEqual(
+      modelIdempotencyPrimaryKeyRows
+        .sort((left, right) => left.Seq_in_index - right.Seq_in_index)
+        .map((item) => item.Column_name),
+      ["owner_id", "team_id", "idempotency_key_hash"]
+    );
+    await migrationRestart.close?.();
     firstStart.users.push(teamASecondUser, teamBUser);
     const millisecondRequestLog: ProviderRequestLog = {
       id: `prl_millisecond_${randomUUID()}`,

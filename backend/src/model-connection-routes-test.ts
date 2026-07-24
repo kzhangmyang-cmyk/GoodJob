@@ -6,6 +6,7 @@ import { getStore } from "./store.js";
 import type {
   ModelCallRecord
 } from "./model-providers/call-ledger.js";
+import type { AiModelConfig } from "./types.js";
 
 const store = getStore();
 const originalConfigs = structuredClone(store.aiModelConfigs);
@@ -128,6 +129,135 @@ function modelCall(
     createdAt
   };
 }
+
+function legacyModelConfig(
+  id: string,
+  teamId: string,
+  enabled = false
+): AiModelConfig {
+  return {
+    id,
+    provider: "custom-model-provider",
+    protocol: "openai-compatible",
+    name: id,
+    baseUrl: "https://model.example.com/v1",
+    model: "custom-model",
+    apiKey: "",
+    enabled,
+    temperature: 0.1,
+    useLeadFinder: true,
+    useWebsiteParse: true,
+    useScoring: true,
+    useEmailDraft: true,
+    useExam: false,
+    lastTestStatus: "untested",
+    lastTestMessage: "",
+    ownerId: "u_sales_shirley",
+    teamId,
+    createdAt: "2026-07-23T10:00:00.000Z",
+    updatedAt: "2026-07-23T10:00:00.000Z"
+  };
+}
+
+test("legacy model config list never crosses team scope", async () => {
+  const hidden = legacyModelConfig(
+    "legacy-config-hidden-list",
+    "other-team",
+    true
+  );
+  store.aiModelConfigs.push(hidden);
+  try {
+    const result = await request("/api/tools/ai-config", {
+      method: "GET"
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(
+      result.json.configs.some(
+        (item: { id: string }) => item.id === hidden.id
+      ),
+      false
+    );
+    assert.notEqual(result.json.config?.id, hidden.id);
+  } finally {
+    store.aiModelConfigs.splice(
+      store.aiModelConfigs.findIndex((item) => item.id === hidden.id),
+      1
+    );
+  }
+});
+
+test("legacy custom activation does not disable another team", async () => {
+  const hidden = legacyModelConfig(
+    "legacy-config-hidden-active",
+    "other-team",
+    true
+  );
+  store.aiModelConfigs.push(hidden);
+  try {
+    const result = await request("/api/tools/ai-config", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: "custom-model-provider",
+        protocol: "openai-compatible",
+        name: "Legacy scoped activation",
+        baseUrl: "https://model.example.com/v1",
+        model: "custom-model",
+        apiKey: "legacy-scoped-test-key",
+        enabled: true
+      })
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(hidden.enabled, true);
+  } finally {
+    store.aiModelConfigs.splice(
+      0,
+      store.aiModelConfigs.length,
+      ...store.aiModelConfigs.filter(
+        (item) => item.id === hidden.id
+          ? false
+          : item.name !== "Legacy scoped activation"
+      )
+    );
+  }
+});
+
+test("legacy delete and test cannot target another team", async () => {
+  const hiddenDelete = legacyModelConfig(
+    "legacy-config-hidden-delete",
+    "other-team"
+  );
+  const hiddenTest = legacyModelConfig(
+    "legacy-config-hidden-test",
+    "other-team"
+  );
+  store.aiModelConfigs.push(hiddenDelete, hiddenTest);
+  try {
+    const deleted = await request(
+      `/api/tools/ai-config/${hiddenDelete.id}`,
+      { method: "DELETE" }
+    );
+    assert.equal(deleted.response.status, 404);
+    assert.ok(
+      store.aiModelConfigs.some((item) => item.id === hiddenDelete.id)
+    );
+
+    const tested = await request("/api/tools/ai-config/test", {
+      method: "POST",
+      body: JSON.stringify({ id: hiddenTest.id })
+    });
+    assert.equal(tested.response.status, 400);
+    assert.equal(tested.json.message, "请先保存模型地址和模型名称");
+  } finally {
+    store.aiModelConfigs.splice(
+      0,
+      store.aiModelConfigs.length,
+      ...store.aiModelConfigs.filter(
+        (item) => item.id !== hiddenDelete.id
+          && item.id !== hiddenTest.id
+      )
+    );
+  }
+});
 
 test("v1 model call list is owner-and-team scoped and newest first", async () => {
   store.modelCallRecords.push(

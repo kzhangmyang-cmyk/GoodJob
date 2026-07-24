@@ -74,8 +74,13 @@ export function modelConnectionFromAiConfig(
 interface LegacyActiveConnection {
   id: string;
   ownerId: string;
+  teamId: string;
   enabled: boolean;
   updatedAt: string;
+}
+
+function modelConnectionScopeKey(ownerId: string, teamId: string) {
+  return JSON.stringify([ownerId, teamId]);
 }
 
 export function selectLegacyActiveConnectionIds(
@@ -92,7 +97,8 @@ export function selectLegacyActiveConnectionIds(
       return left.id < right.id ? -1 : 1;
     });
   for (const item of enabled) {
-    if (!selected.has(item.ownerId)) selected.set(item.ownerId, item.id);
+    const scopeKey = modelConnectionScopeKey(item.ownerId, item.teamId);
+    if (!selected.has(scopeKey)) selected.set(scopeKey, item.id);
   }
   return selected;
 }
@@ -139,6 +145,7 @@ export async function activateModelConnection(
   }
   const previous = store.connections.find(
     (item) => item.ownerId === scope.ownerId
+      && item.teamId === scope.teamId
       && item.status === "active"
   );
   const before = store.connections.map((item) => ({
@@ -148,7 +155,9 @@ export async function activateModelConnection(
   }));
   const now = new Date().toISOString();
   for (const item of store.connections) {
-    if (item.ownerId !== scope.ownerId) continue;
+    if (item.ownerId !== scope.ownerId || item.teamId !== scope.teamId) {
+      continue;
+    }
     item.status = item.id === target.id ? "active" : "inactive";
     item.updatedAt = now;
   }
