@@ -92,11 +92,15 @@ export class AcquisitionPlanRunError extends Error {
 
 type IdFactory = (prefix: string) => string;
 
-interface AcquisitionPlanRunServiceOptions {
+export interface AcquisitionPlanRunServiceOptions {
   repository: AcquisitionPlanRunRepository;
   executionPort: AcquisitionExecutionPort;
   now?: () => string;
   idFactory?: IdFactory;
+  validatePlanPayloadForApproval?: (
+    scope: AcquisitionScope,
+    payload: AcquisitionPlanPayload
+  ) => Promise<void>;
 }
 
 const ZERO_USAGE: AcquisitionBudgetUsage = Object.freeze({
@@ -387,9 +391,9 @@ function planReadinessIssues(payload: AcquisitionPlanPayload) {
     || !model.model?.trim()
     || !model.capabilitySnapshotHash?.trim()
     || !model.promptVersion?.trim()
+    || !model.schemaVersion?.trim()
     || !model.promptHash?.trim()
-    || !model.schemaHash?.trim()
-    || model.schemaVersion !== "acquisition-plan.v1") {
+    || !model.schemaHash?.trim()) {
     issues.push("model_snapshot_invalid");
   }
   return [...new Set(issues)];
@@ -479,6 +483,10 @@ export class AcquisitionPlanRunService {
   private readonly executionPort: AcquisitionExecutionPort;
   private readonly now: () => string;
   private readonly idFactory: IdFactory;
+  private readonly validatePlanPayloadForApproval?: (
+    scope: AcquisitionScope,
+    payload: AcquisitionPlanPayload
+  ) => Promise<void>;
 
   constructor(options: AcquisitionPlanRunServiceOptions) {
     this.repository = options.repository;
@@ -486,6 +494,8 @@ export class AcquisitionPlanRunService {
     this.now = options.now ?? (() => new Date().toISOString());
     this.idFactory = options.idFactory
       ?? ((prefix) => `${prefix}_${randomUUID()}`);
+    this.validatePlanPayloadForApproval =
+      options.validatePlanPayloadForApproval;
   }
 
   async createPlan(
@@ -635,6 +645,39 @@ export class AcquisitionPlanRunService {
         "explicit_human_approval_required",
         "计划执行前必须记录人工批准决定和理由"
       );
+    }
+    const pending = await this.getPlan(scope, planId);
+    if (pending.status !== "draft") {
+      throw new AcquisitionPlanRunError(
+        409,
+        "plan_not_draft",
+        "只有草稿计划可以审批"
+      );
+    }
+    assertIfMatch(pending.etag, ifMatch);
+    const pendingIssues = planReadinessIssues(pending.payload);
+    if (pendingIssues.length > 0) {
+      throw new AcquisitionPlanRunError(
+        409,
+        "plan_not_ready",
+        "计划尚未满足人工审批条件",
+        { issues: pendingIssues }
+      );
+    }
+    if (this.validatePlanPayloadForApproval) {
+      try {
+        await this.validatePlanPayloadForApproval(
+          scope,
+          clone(pending.payload)
+        );
+      } catch (error) {
+        if (error instanceof AcquisitionPlanRunError) throw error;
+        throw new AcquisitionPlanRunError(
+          503,
+          "plan_approval_validation_failed",
+          "可信模型快照校验暂时不可用"
+        );
+      }
     }
     return this.repository.transaction((transaction) => {
       const current = this.visiblePlan(transaction, scope, planId);

@@ -233,7 +233,11 @@ class RecordingExecutionPort implements AcquisitionExecutionPort {
   }
 }
 
-function harness() {
+function harness(options: {
+  validatePlanPayloadForApproval?: ConstructorParameters<
+    typeof AcquisitionPlanRunService
+  >[0]["validatePlanPayloadForApproval"];
+} = {}) {
   const repository = new InMemoryAcquisitionPlanRunRepository();
   const executionPort = new RecordingExecutionPort();
   let tick = 0;
@@ -243,7 +247,9 @@ function harness() {
     executionPort,
     now: () => new Date(Date.UTC(2026, 6, 24, 0, 0, tick++))
       .toISOString(),
-    idFactory: (prefix) => `${prefix}_${++id}`
+    idFactory: (prefix) => `${prefix}_${++id}`,
+    validatePlanPayloadForApproval:
+      options.validatePlanPayloadForApproval
   });
   return { repository, executionPort, service };
 }
@@ -376,6 +382,57 @@ test("explicit approval freezes dual-channel ICP, connections, queries, budget a
   assert.match(
     approvedVersion.payload.modelSnapshotRef.schemaHash,
     /^sha256:/
+  );
+});
+
+test("approval delegates trusted model snapshot validation and accepts the bound schema bundle", async () => {
+  const validatedSchemas: string[] = [];
+  const { service } = harness({
+    validatePlanPayloadForApproval: async (_scope, payload) => {
+      validatedSchemas.push(payload.modelSnapshotRef.schemaVersion);
+      if (payload.modelSnapshotRef.jobSnapshotId !== "trusted-job-snapshot") {
+        throw new AcquisitionPlanRunError(
+          409,
+          "untrusted_model_snapshot",
+          "计划引用的模型快照不是服务端持久化的可信快照"
+        );
+      }
+    }
+  });
+  const trustedPayload = planInput();
+  trustedPayload.modelSnapshotRef = {
+    ...trustedPayload.modelSnapshotRef,
+    jobSnapshotId: "trusted-job-snapshot",
+    schemaVersion: "acquisition-model-schema-bundle.v1"
+  };
+  const trusted = await service.createPlan(ownerA, trustedPayload);
+  const approved = await service.approvePlan(
+    ownerA,
+    trusted.id,
+    trusted.etag,
+    { decision: "approve", reason: "已核对服务端模型快照" }
+  );
+
+  assert.equal(approved.status, "approved");
+  assert.deepEqual(validatedSchemas, [
+    "acquisition-model-schema-bundle.v1"
+  ]);
+
+  const forgedPayload = planInput();
+  forgedPayload.modelSnapshotRef = {
+    ...forgedPayload.modelSnapshotRef,
+    jobSnapshotId: "client-forged-snapshot",
+    schemaVersion: "acquisition-model-schema-bundle.v1"
+  };
+  const forged = await service.createPlan(ownerA, forgedPayload);
+  await rejectsCode(
+    () => service.approvePlan(
+      ownerA,
+      forged.id,
+      forged.etag,
+      { decision: "approve", reason: "不应接受客户端伪造快照" }
+    ),
+    "untrusted_model_snapshot"
   );
 });
 
