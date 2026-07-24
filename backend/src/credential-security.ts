@@ -46,6 +46,18 @@ function encryptionKey() {
   return createHash("sha256").update(credentialSecret()).digest();
 }
 
+function explicitProviderEncryptionKey(secret: string) {
+  if (
+    typeof secret !== "string"
+    || Buffer.byteLength(secret.trim(), "utf8") < 32
+  ) {
+    throw new TypeError(
+      "credentialSecret must contain at least 32 non-whitespace bytes"
+    );
+  }
+  return createHash("sha256").update(secret).digest();
+}
+
 function aiModelEncryptionKey() {
   return createHash("sha256")
     .update("goodjob-ai-model-api-key-v1|")
@@ -76,8 +88,20 @@ export function encryptProviderConfiguration(
   context: ProviderCredentialContext,
   configuration: ProviderConfiguration
 ) {
+  return encryptProviderConfigurationWithKey(
+    context,
+    configuration,
+    encryptionKey()
+  );
+}
+
+function encryptProviderConfigurationWithKey(
+  context: ProviderCredentialContext,
+  configuration: ProviderConfiguration,
+  key: Buffer
+) {
   const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
   cipher.setAAD(additionalData(context));
   const encrypted = Buffer.concat([
     cipher.update(JSON.stringify(configuration), "utf8"),
@@ -91,15 +115,43 @@ export function encryptProviderConfiguration(
   ].join(".");
 }
 
+export function encryptProviderConfigurationWithSecret(
+  context: ProviderCredentialContext,
+  configuration: ProviderConfiguration,
+  credentialSecret: string
+) {
+  return encryptProviderConfigurationWithKey(
+    context,
+    configuration,
+    explicitProviderEncryptionKey(credentialSecret)
+  );
+}
+
 export function decryptProviderConfiguration(
   context: ProviderCredentialContext,
   encryptedValue: string
+): ProviderConfiguration {
+  return decryptProviderConfigurationWithKey(
+    context,
+    encryptedValue,
+    encryptionKey()
+  );
+}
+
+function decryptProviderConfigurationWithKey(
+  context: ProviderCredentialContext,
+  encryptedValue: string,
+  key: Buffer
 ): ProviderConfiguration {
   const [version, ivValue, tagValue, payloadValue] = encryptedValue.split(".");
   if (version !== "v1" || !ivValue || !tagValue || !payloadValue) {
     throw new Error("Provider 连接配置密文格式无效");
   }
-  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), Buffer.from(ivValue, "base64url"));
+  const decipher = createDecipheriv(
+    "aes-256-gcm",
+    key,
+    Buffer.from(ivValue, "base64url")
+  );
   decipher.setAAD(additionalData(context));
   decipher.setAuthTag(Buffer.from(tagValue, "base64url"));
   const decrypted = Buffer.concat([
@@ -111,6 +163,18 @@ export function decryptProviderConfiguration(
     apiKey: typeof value.apiKey === "string" ? value.apiKey : "",
     baseUrl: typeof value.baseUrl === "string" ? value.baseUrl : ""
   };
+}
+
+export function decryptProviderConfigurationWithSecret(
+  context: ProviderCredentialContext,
+  encryptedValue: string,
+  credentialSecret: string
+): ProviderConfiguration {
+  return decryptProviderConfigurationWithKey(
+    context,
+    encryptedValue,
+    explicitProviderEncryptionKey(credentialSecret)
+  );
 }
 
 function providerResponseCacheAdditionalData(context: ProviderResponseCacheContext) {

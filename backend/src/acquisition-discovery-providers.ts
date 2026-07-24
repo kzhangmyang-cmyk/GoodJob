@@ -6,7 +6,7 @@ export const ACQUISITION_SEARCH_PROVIDER_IDS = Object.freeze([
   "baidu_ai_search",
   "tencent_web_search",
   "serper",
-  "brave_search",
+  "brave",
   "serpapi",
   "tavily"
 ] as const);
