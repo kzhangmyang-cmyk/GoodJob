@@ -298,10 +298,9 @@ function configuredDatabaseUrl(explicit: string | undefined) {
 }
 
 /**
- * ProviderConnection does not yet expose an immutable credential version.
- * Until the provider store grows that field, updatedAt is the only
- * tenant-visible, server-controlled value that changes whenever the
- * connection is saved. Preserve its millisecond value in the immutable plan.
+ * New and migrated Provider connections expose a monotonic credential
+ * version. The timestamp fallback only keeps legacy in-memory fixtures
+ * readable until they are persisted and materialized at version 1.
  */
 export function acquisitionProviderConnectionVersion(
   connection: Pick<ProviderConnection, "updatedAt"> & {

@@ -126,6 +126,31 @@ const defaultUrl = "mysql://goodjob:change_me@127.0.0.1:3306/goodjob_crm";
 
 export type MysqlStoreProcessRole = "api" | "worker";
 
+export interface AcquisitionRuntimeConfigurationState {
+  aiModelConfigs: AiModelConfig[];
+  modelCredentialVersions: ModelCredentialVersion[];
+  aiJobModelSnapshots: StoredAiJobModelSnapshot[];
+  providerCatalog: ProviderCatalogItem[];
+  providerConnections: ProviderConnection[];
+}
+
+export function replaceAcquisitionRuntimeConfiguration(
+  current: AcquisitionRuntimeConfigurationState,
+  authoritative: AcquisitionRuntimeConfigurationState
+) {
+  const replace = <T>(target: T[], source: T[]) => {
+    target.splice(0, target.length, ...source);
+  };
+  replace(current.aiModelConfigs, authoritative.aiModelConfigs);
+  replace(
+    current.modelCredentialVersions,
+    authoritative.modelCredentialVersions
+  );
+  replace(current.aiJobModelSnapshots, authoritative.aiJobModelSnapshots);
+  replace(current.providerCatalog, authoritative.providerCatalog);
+  replace(current.providerConnections, authoritative.providerConnections);
+}
+
 async function acquireProductionInstanceLock(
   pool: mysql.Pool,
   processRole: MysqlStoreProcessRole
@@ -1319,6 +1344,10 @@ export async function createMysqlStore(
       const loadedJobAliases = await loadAgentJobIdempotencyAliases(connection);
       const loadedExecution = await loadProspectExecutionState(connection);
       const loadedAiModelConfigs = await loadAiModelConfigs(connection);
+      const loadedModelCredentialVersions =
+        await loadModelCredentialVersions(connection);
+      const loadedAiJobModelSnapshots =
+        await loadAiJobModelSnapshots(connection);
       const loadedProviderCatalog = await loadProviderCatalog(connection);
       const loadedProviderConnections =
         await loadProviderConnections(connection);
@@ -1470,21 +1499,13 @@ export async function createMysqlStore(
         store.prospectExecutionThrottleBuckets.length,
         ...loadedExecution.throttleBuckets
       );
-      store.aiModelConfigs.splice(
-        0,
-        store.aiModelConfigs.length,
-        ...loadedAiModelConfigs
-      );
-      store.providerCatalog.splice(
-        0,
-        store.providerCatalog.length,
-        ...loadedProviderCatalog
-      );
-      store.providerConnections.splice(
-        0,
-        store.providerConnections.length,
-        ...loadedProviderConnections
-      );
+      replaceAcquisitionRuntimeConfiguration(store, {
+        aiModelConfigs: loadedAiModelConfigs,
+        modelCredentialVersions: loadedModelCredentialVersions,
+        aiJobModelSnapshots: loadedAiJobModelSnapshots,
+        providerCatalog: loadedProviderCatalog,
+        providerConnections: loadedProviderConnections
+      });
     } catch (error) {
       await connection.rollback();
       throw error;
