@@ -48,6 +48,12 @@ import {
   AcquisitionCrmLeadConversionPort
 } from "./acquisition-lead-conversion-port.js";
 import {
+  AcquisitionLeadConversionReconciliationService
+} from "./acquisition-lead-conversion-reconciliation.js";
+import {
+  AcquisitionLeadConversionRecoverySweeper
+} from "./acquisition-lead-conversion-recovery-sweeper.js";
+import {
   ACQUISITION_MODEL_CONTENT_BUNDLE,
   ACQUISITION_MODEL_CONTENT_HASHES,
   ACQUISITION_MODEL_PROMPT_VERSION,
@@ -166,7 +172,9 @@ export interface CreateAcquisitionApplicationOptions {
   workerConcurrency?: number;
   copilotRecoveryIntervalMs?: number;
   discoveryRecoveryIntervalMs?: number;
+  conversionRecoveryIntervalMs?: number;
   discoveryLeaseDurationMs?: number;
+  domainRepository?: AcquisitionDomainRepository;
   discoveryRepository?: AcquisitionDiscoveryOperationRepository;
   shutdownTimeoutMs?: number;
   idFactory?: IdFactory;
@@ -695,6 +703,8 @@ export async function createAcquisitionApplication(
     AcquisitionCopilotRecoverySweeper | null = null;
   let discoveryRecoverySweeper:
     AcquisitionDiscoveryRecoverySweeper | null = null;
+  let conversionRecoverySweeper:
+    AcquisitionLeadConversionRecoverySweeper | null = null;
 
   try {
     let repositories: AcquisitionRepositorySet;
@@ -762,6 +772,9 @@ export async function createAcquisitionApplication(
     if (options.discoveryRepository) {
       repositories.discovery = options.discoveryRepository;
     }
+    if (options.domainRepository) {
+      repositories.domain = options.domainRepository;
+    }
 
     const domainService = new AcquisitionDomainService({
       repository: repositories.domain,
@@ -773,6 +786,10 @@ export async function createAcquisitionApplication(
       idFactory,
       now
     });
+    const conversionReconciliation =
+      new AcquisitionLeadConversionReconciliationService({
+        domainService
+      });
     const searchPort = options.searchPort
       ?? createAcquisitionPublicSearchPort(options.store, {
         credentialSecret: providerCredentialSecret
@@ -1054,6 +1071,12 @@ export async function createAcquisitionApplication(
         nowMs
       });
     await discoveryRecoverySweeper.start();
+    conversionRecoverySweeper =
+      new AcquisitionLeadConversionRecoverySweeper({
+        service: conversionReconciliation,
+        intervalMs: options.conversionRecoveryIntervalMs
+      });
+    await conversionRecoverySweeper.start();
 
     let closePromise: Promise<void> | null = null;
     return {
@@ -1069,6 +1092,8 @@ export async function createAcquisitionApplication(
               Promise.allSettled([
                 copilotRecoverySweeper?.close() ?? Promise.resolve(),
                 discoveryRecoverySweeper?.close()
+                  ?? Promise.resolve(),
+                conversionRecoverySweeper?.close()
                   ?? Promise.resolve(),
                 worker.close(),
                 ...activeCopilotTasks,
@@ -1100,6 +1125,9 @@ export async function createAcquisitionApplication(
       }
     };
   } catch (error) {
+    if (conversionRecoverySweeper) {
+      await conversionRecoverySweeper.close().catch(() => undefined);
+    }
     if (discoveryRecoverySweeper) {
       await discoveryRecoverySweeper.close().catch(() => undefined);
     }

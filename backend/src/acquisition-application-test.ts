@@ -19,6 +19,9 @@ import {
   InMemoryAcquisitionDiscoveryOperationRepository
 } from "./acquisition-discovery-operations.js";
 import {
+  InMemoryAcquisitionDomainRepository
+} from "./acquisition-domain-repository.js";
+import {
   ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS
 } from "./acquisition-discovery-providers.js";
 import type {
@@ -1078,6 +1081,118 @@ test("application startup recovers queued discovery operations", async () => {
     );
     assert.equal(completed?.evidenceCount, 1);
     assert.equal(completed?.leaseToken, null);
+  } finally {
+    await runtime.close();
+  }
+});
+
+test("application startup reconciles a durable pending CRM conversion", async () => {
+  const fixture = isolatedMemoryStore();
+  const repository = new InMemoryAcquisitionDomainRepository();
+  const now = "2026-07-24T08:00:00.000Z";
+  await repository.appendEvidence({
+    id: "evidence-conversion-recovery",
+    ownerId: OWNER,
+    teamId: TEAM,
+    targetType: "organization",
+    sourcePlatform: "baidu_ai_search",
+    sourceTitle: "公开采购需求",
+    sourceSnippet: "正在寻找企业服务系统",
+    publishedAt: "2026-07-23T00:00:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: `sha256:${"a".repeat(64)}`,
+    contentHash: `sha256:${"b".repeat(64)}`,
+    provenance: {
+      kind: "search_result",
+      provider: "baidu_ai_search",
+      queryText: "企业服务 采购",
+      sourceUrl: "https://conversion.example.cn/procurement",
+      resultRank: 1
+    },
+    accessStatus: "indexed_summary",
+    supersedesEvidenceId: null,
+    fetchedAt: now
+  });
+  await repository.insertCandidate({
+    id: "candidate-conversion-recovery",
+    ownerId: OWNER,
+    teamId: TEAM,
+    partyType: "organization",
+    partyRef: {
+      partyType: "organization",
+      organizationId: "org-conversion-recovery",
+      tenantProspectId: "prospect-conversion-recovery"
+    },
+    profile: {
+      kind: "organization",
+      name: "转换恢复示例公司",
+      domain: "conversion.example.cn",
+      region: "厦门",
+      creditCode: null
+    },
+    evidenceIds: ["evidence-conversion-recovery"],
+    status: "approved",
+    latestDecisionId: "qualification-conversion-recovery",
+    latestDecisionVersion: "decision-v1",
+    approvedDecisionVersion: "decision-v1",
+    hardGateFailures: [],
+    leadId: null,
+    createdAt: now,
+    updatedAt: now,
+    version: 1
+  });
+  await repository.appendConversionIntent({
+    id: "conversion-intent-recovery",
+    ownerId: OWNER,
+    teamId: TEAM,
+    candidateId: "candidate-conversion-recovery",
+    decisionVersion: "decision-v1",
+    partyRef: {
+      partyType: "organization",
+      organizationId: "org-conversion-recovery",
+      tenantProspectId: "prospect-conversion-recovery"
+    },
+    reviewerId: OWNER,
+    idempotencyKey: "conversion-recovery",
+    evidenceIds: ["evidence-conversion-recovery"],
+    evidenceSnapshotHash: `sha256:${"c".repeat(64)}`,
+    status: "pending_crm",
+    leadId: null,
+    attemptCount: 0,
+    lastAttemptAt: null,
+    lastError: null,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null
+  });
+
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    domainRepository: repository,
+    conversionRecoveryIntervalMs: 60_000,
+    now: () => now,
+    nowMs: () => Date.parse(now)
+  });
+
+  try {
+    assert.equal(fixture.store.leads.length, 1);
+    assert.equal(fixture.store.leadSourceEvents.length, 1);
+    assert.equal(fixture.store.leadActivities.length, 1);
+    assert.equal(
+      (await repository.findCandidate(
+        { ownerId: OWNER, teamId: TEAM },
+        "candidate-conversion-recovery"
+      ))?.status,
+      "converted_to_lead"
+    );
+    assert.equal(
+      (await repository.findConversionIntent(
+        { ownerId: OWNER, teamId: TEAM },
+        "candidate-conversion-recovery"
+      ))?.status,
+      "completed"
+    );
   } finally {
     await runtime.close();
   }
