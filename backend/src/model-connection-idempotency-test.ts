@@ -88,3 +88,59 @@ test("Idempotency-Key accepts 200 characters and rejects 201", () => {
     }
   );
 });
+
+test("model connection writes mutate inside the store persistence queue", async () => {
+  const records: ModelConnectionIdempotencyRecord[] = [];
+  const pending: ModelConnectionIdempotencyRecord[] = [];
+  let insidePersistenceQueue = false;
+  let directPersistCalls = 0;
+  let mutationCalls = 0;
+  const store = {
+    modelConnectionIdempotencyRecords: records,
+    pendingModelConnectionIdempotencyRecords: pending,
+    async persist() {
+      directPersistCalls += 1;
+    },
+    async persistAsyncMutation<T>(
+      mutation: () => Promise<{
+        value: T;
+        rollback(): void | Promise<void>;
+      }>
+    ) {
+      insidePersistenceQueue = true;
+      const applied = await mutation();
+      insidePersistenceQueue = false;
+      return applied.value;
+    }
+  };
+
+  const result = await executeModelConnectionWriteIdempotently(
+    store,
+    {
+      ownerId: "owner-serialized",
+      teamId: "team-serialized",
+      idempotencyKey: "serialized-model-write",
+      method: "POST",
+      path: "/api/v1/ai/connections",
+      body: { provider: "zhipu", model: "glm-4.5" }
+    },
+    async () => {
+      assert.equal(
+        insidePersistenceQueue,
+        true,
+        "business mutation must begin after entering the shared store queue"
+      );
+      mutationCalls += 1;
+      return {
+        status: 200,
+        body: { id: "connection-serialized" }
+      };
+    }
+  );
+
+  assert.equal(result.replayed, false);
+  assert.equal(mutationCalls, 1);
+  assert.equal(directPersistCalls, 0);
+  assert.equal(records.length, 1);
+  assert.equal(pending.length, 1);
+});

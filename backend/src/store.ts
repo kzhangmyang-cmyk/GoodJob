@@ -188,6 +188,11 @@ export interface PersistedStoreMutation<T> {
   rollback(): void;
 }
 
+export interface AsyncPersistedStoreMutation<T> {
+  value: T;
+  rollback(): void | Promise<void>;
+}
+
 export interface CrmStore {
   mode: "memory" | "mysql";
   users: User[];
@@ -325,6 +330,9 @@ export interface CrmStore {
   ): Promise<ModelConnection>;
   persistMutation?<T>(
     mutation: () => PersistedStoreMutation<T>
+  ): Promise<T>;
+  persistAsyncMutation?<T>(
+    mutation: () => Promise<AsyncPersistedStoreMutation<T>>
   ): Promise<T>;
   persistProspectExecutionMutation?<T>(
     mutation: () => PersistedStoreMutation<T>

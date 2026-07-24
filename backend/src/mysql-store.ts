@@ -116,7 +116,11 @@ import type {
   ModelCredentialVersion,
   StoredAiJobModelSnapshot
 } from "./model-providers/types.js";
-import type { CrmStore, PersistedStoreMutation } from "./store.js";
+import type {
+  AsyncPersistedStoreMutation,
+  CrmStore,
+  PersistedStoreMutation
+} from "./store.js";
 import type { WhatsAppBinding, WhatsAppMessage } from "./types.js";
 import type { DailyReport, DailyReportComment, InternalMessage } from "./types.js";
 import type { AcquisitionOutcomeFeedback, AgentJob, AgentJobIdempotencyAlias, AiModelConfig, CaseStudy, CommissionCalculation, CommissionExport, CommissionItem, CommissionProduct, CommissionRule, Competitor, Customer, CustomerAcquisitionSourceEvent, CustomerActivity, CustomerIntelligenceSuggestion, CustomerOwnershipEvent, CustomerOwnershipMutationInput, CustomerOwnershipMutationResult, Deal, DealEvent, DealRecommendation, Exam, ExamAttempt, ExamQuestion, ExamQuestionLink, ImportExportJob, KnowledgeAsset, Lead, LeadActivity, LeadSourceConfig, LeadSourceEvent, MarketOpportunityBatch, MarketOpportunityCalculationEvent, MarketOpportunitySnapshot, MarketTradeObservation, Memo, MonthlySalesRecord, OcrJob, PlanTask, PlanTemplate, ProblemItem, ProcurementSignal, ProspectCampaign, ProspectCampaignEvent, ProspectCampaignVersion, ProspectCandidateProcessingState, ProspectExecutionAttempt, ProspectExecutionCheckpoint, ProspectExecutionEvent, ProspectExecutionKernelState, ProspectExecutionLease, ProspectExecutionPage, ProspectExecutionThrottleBucket, ProspectProviderRequestAccountingEvidence, ProspectProviderRequestAttemptBinding, ProspectProviderRequestDispatch, ProspectProviderRequestEvent, ProspectProviderRequestLedger, ProspectRunEvent, ProspectRunQueueChildBinding, ProspectRunQueueParentBinding, ProspectRunShard, ProspectSchedule, ProspectSearchRun, ProspectSourceRawBatch, ProspectSourceRawHit, ProspectSourceRawRecord, ProspectStrategy, ProspectStrategyEvent, ProspectStrategySourcePosition, ProspectStrategySuggestion, ProspectTouchpoint, ProviderCatalogItem, ProviderConnection, ProviderRequestLog, ProviderResponseCache, Reminder, SalesRecordAudit, Todo, TradeDocument, User, WecomMessage, WebsiteOpportunity } from "./types.js";
@@ -545,6 +549,23 @@ export async function createMysqlStore(
       return applied.value;
     } catch (error) {
       applied.rollback();
+      throw error;
+    }
+  });
+  const persistAsyncMutation = <T>(
+    mutation: () => Promise<AsyncPersistedStoreMutation<T>>
+  ) => enqueuePersistence(async () => {
+    const applied = await mutation();
+    try {
+      const snapshot = persistenceSnapshot(store);
+      await persistThenClearModelAppendBatches(
+        store,
+        snapshot,
+        () => persistAll(pool, snapshot)
+      );
+      return applied.value;
+    } catch (error) {
+      await applied.rollback();
       throw error;
     }
   });
@@ -1679,6 +1700,7 @@ export async function createMysqlStore(
         activateModelConnection,
         deleteModelConnection,
         persistMutation,
+        persistAsyncMutation,
         persistProspectExecutionMutation,
         persistProspectCandidateMutation,
         persistProspectCandidates,

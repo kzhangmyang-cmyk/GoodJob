@@ -11,6 +11,12 @@ interface ModelConnectionIdempotencyStore {
   modelConnectionIdempotencyRecords: ModelConnectionIdempotencyRecord[];
   pendingModelConnectionIdempotencyRecords: ModelConnectionIdempotencyRecord[];
   persist(): Promise<void>;
+  persistAsyncMutation?<T>(
+    mutation: () => Promise<{
+      value: T;
+      rollback(): void | Promise<void>;
+    }>
+  ): Promise<T>;
 }
 
 interface ModelConnectionWriteRequest {
@@ -100,56 +106,80 @@ export async function executeModelConnectionWriteIdempotently(
   );
   const requestFingerprint = modelConnectionRequestFingerprint(request);
   return runExclusive(store, async () => {
-    const existing = store.modelConnectionIdempotencyRecords.find(
-      (item) => item.ownerId === request.ownerId
-        && item.idempotencyKeyHash === idempotencyKeyHash
-    );
-    if (existing) {
-      if (existing.requestFingerprint !== requestFingerprint) {
-        throw new ModelConnectionError(
-          "idempotency_key_conflict",
-          "该 Idempotency-Key 已用于不同的模型连接请求",
-          409,
-          `req_idem_${idempotencyKeyHash.slice(0, 24)}`
-        );
+    const apply = async () => {
+      const existing = store.modelConnectionIdempotencyRecords.find(
+        (item) => item.ownerId === request.ownerId
+          && item.idempotencyKeyHash === idempotencyKeyHash
+      );
+      if (existing) {
+        if (existing.requestFingerprint !== requestFingerprint) {
+          throw new ModelConnectionError(
+            "idempotency_key_conflict",
+            "该 Idempotency-Key 已用于不同的模型连接请求",
+            409,
+            `req_idem_${idempotencyKeyHash.slice(0, 24)}`
+          );
+        }
+        return {
+          value: {
+            status: existing.responseStatus,
+            body: structuredClone(existing.responseBody),
+            replayed: true
+          },
+          async rollback() {}
+        };
       }
-      return {
-        status: existing.responseStatus,
-        body: structuredClone(existing.responseBody),
-        replayed: true
+
+      const response = await operation();
+      const record: ModelConnectionIdempotencyRecord = {
+        ownerId: request.ownerId,
+        teamId: request.teamId,
+        idempotencyKeyHash,
+        requestFingerprint,
+        responseStatus: response.status,
+        responseBody: structuredClone(response.body),
+        createdAt: new Date().toISOString()
       };
+      store.modelConnectionIdempotencyRecords.push(record);
+      store.pendingModelConnectionIdempotencyRecords.push(record);
+      return {
+        value: {
+          status: response.status,
+          body: response.body,
+          replayed: false
+        },
+        async rollback() {
+          const historyIndex =
+            store.modelConnectionIdempotencyRecords.lastIndexOf(record);
+          if (historyIndex >= 0) {
+            store.modelConnectionIdempotencyRecords.splice(historyIndex, 1);
+          }
+          const pendingIndex =
+            store.pendingModelConnectionIdempotencyRecords.lastIndexOf(
+              record
+            );
+          if (pendingIndex >= 0) {
+            store.pendingModelConnectionIdempotencyRecords.splice(
+              pendingIndex,
+              1
+            );
+          }
+          await response.rollback?.();
+        }
+      };
+    };
+
+    if (store.persistAsyncMutation) {
+      return store.persistAsyncMutation(apply);
     }
 
-    const response = await operation();
-    const record: ModelConnectionIdempotencyRecord = {
-      ownerId: request.ownerId,
-      teamId: request.teamId,
-      idempotencyKeyHash,
-      requestFingerprint,
-      responseStatus: response.status,
-      responseBody: structuredClone(response.body),
-      createdAt: new Date().toISOString()
-    };
-    store.modelConnectionIdempotencyRecords.push(record);
-    store.pendingModelConnectionIdempotencyRecords.push(record);
+    const applied = await apply();
     try {
       await store.persist();
+      return applied.value;
     } catch (error) {
-      const historyIndex =
-        store.modelConnectionIdempotencyRecords.lastIndexOf(record);
-      if (historyIndex >= 0) {
-        store.modelConnectionIdempotencyRecords.splice(historyIndex, 1);
-      }
-      const pendingIndex =
-        store.pendingModelConnectionIdempotencyRecords.lastIndexOf(record);
-      if (pendingIndex >= 0) {
-        store.pendingModelConnectionIdempotencyRecords.splice(
-          pendingIndex,
-          1
-        );
-      }
       try {
-        await response.rollback?.();
+        await applied.rollback();
       } catch (rollbackError) {
         throw new AggregateError(
           [error, rollbackError],
@@ -158,10 +188,5 @@ export async function executeModelConnectionWriteIdempotently(
       }
       throw error;
     }
-    return {
-      status: response.status,
-      body: response.body,
-      replayed: false
-    };
   });
 }
