@@ -23,6 +23,9 @@ import {
   type AcquisitionDiscoveryOperationRepository
 } from "./acquisition-discovery-operations.js";
 import {
+  createAcquisitionDiscoveryOperationsRouter
+} from "./acquisition-discovery-operations-router.js";
+import {
   ensureAcquisitionDiscoveryMysqlSchema,
   MysqlAcquisitionDiscoveryOperationRepository
 } from "./acquisition-discovery-mysql-repository.js";
@@ -60,6 +63,12 @@ import {
 import {
   createAcquisitionPlanRouter
 } from "./acquisition-plan-router.js";
+import {
+  acquisitionProviderConnectionVersion
+} from "./acquisition-provider-connection-version.js";
+import {
+  createAcquisitionProviderConnectionsRouter
+} from "./acquisition-provider-connections-router.js";
 import {
   InMemoryAcquisitionPlanRunRepository,
   type AcquisitionProviderConnectionSnapshot,
@@ -132,9 +141,10 @@ import type {
 import type {
   CrmStore
 } from "./store.js";
-import type {
-  ProviderConnection
-} from "./types.js";
+
+export {
+  acquisitionProviderConnectionVersion
+} from "./acquisition-provider-connection-version.js";
 
 type IdFactory = (prefix: string) => string;
 
@@ -319,29 +329,6 @@ function configuredDatabaseUrl(explicit: string | undefined) {
     || process.env.DATABASE_URL?.trim()
     || process.env.MYSQL_URL?.trim()
     || "";
-}
-
-/**
- * New and migrated Provider connections expose a monotonic credential
- * version. The timestamp fallback only keeps legacy in-memory fixtures
- * readable until they are persisted and materialized at version 1.
- */
-export function acquisitionProviderConnectionVersion(
-  connection: Pick<ProviderConnection, "updatedAt"> & {
-    credentialVersion?: number;
-  }
-) {
-  if (
-    Number.isSafeInteger(connection.credentialVersion)
-    && Number(connection.credentialVersion) > 0
-  ) {
-    return Number(connection.credentialVersion);
-  }
-  const version = Date.parse(connection.updatedAt);
-  if (!Number.isSafeInteger(version) || version < 1) {
-    throw new Error("ACQUISITION_PROVIDER_VERSION_UNAVAILABLE");
-  }
-  return version;
 }
 
 function assertTrustedSearchConnectionSnapshots(
@@ -686,6 +673,10 @@ export async function createAcquisitionApplication(
 ): Promise<AcquisitionHttpRuntime> {
   assertApplicationStore(options.store);
   const masterSecret = requireMasterSecret(options.masterSecret);
+  const providerCredentialSecret = derivedSecret(
+    masterSecret,
+    "provider-credentials"
+  );
   const closeTimeoutMs = shutdownTimeout(options.shutdownTimeoutMs);
   const idFactory =
     options.idFactory ?? ((prefix: string) => `${prefix}_${randomUUID()}`);
@@ -770,7 +761,9 @@ export async function createAcquisitionApplication(
       now
     });
     const searchPort = options.searchPort
-      ?? createAcquisitionPublicSearchPort(options.store);
+      ?? createAcquisitionPublicSearchPort(options.store, {
+        credentialSecret: providerCredentialSecret
+      });
     const discoveryOperations = new AcquisitionDiscoveryOperationService({
       repository: repositories.discovery,
       evidence: domainService,
@@ -886,6 +879,7 @@ export async function createAcquisitionApplication(
     );
 
     const activeCopilotTasks = new Set<Promise<void>>();
+    const activeDiscoveryTasks = new Set<Promise<void>>();
     let closing = false;
     const dispatchCopilotTask = (
       scope: AcquisitionCopilotScope,
@@ -899,8 +893,88 @@ export async function createAcquisitionApplication(
       );
       return trackAcquisitionBackgroundTask(activeCopilotTasks, task);
     };
+    const dispatchDiscoveryTask = (
+      taskFactory: () => Promise<unknown>
+    ) => {
+      if (closing) {
+        throw new Error("ACQUISITION_APPLICATION_CLOSING");
+      }
+      const task = trackAcquisitionBackgroundTask(
+        activeDiscoveryTasks,
+        Promise.resolve()
+          .then(taskFactory)
+          .then(() => undefined)
+      );
+      void task.catch(() => undefined);
+      return Promise.resolve();
+    };
 
     const router = Router();
+    router.use(createAcquisitionProviderConnectionsRouter({
+      store: options.store,
+      credentialSecret: providerCredentialSecret,
+      requestIdFactory: idFactory,
+      idFactory,
+      now,
+      connectionTester: async ({ scope, connection }) => {
+        try {
+          const result = await searchPort.search({
+            ownerId: scope.ownerId,
+            teamId: scope.teamId,
+            actorId: scope.ownerId,
+            sessionId: idFactory("provider_connection_test"),
+            providerConnectionId: connection.id,
+            query: "公开采购需求",
+            subjectKinds: ["organization"],
+            maxResults: 1
+          });
+          return {
+            ok: true,
+            message: "数据源连接测试通过",
+            errorCode: null,
+            retryable: false,
+            retryAfterAt: null,
+            usage: `测试返回 ${result.results.length} 条公开结果`
+          };
+        } catch (error) {
+          const failure = error as {
+            code?: unknown;
+            retryable?: unknown;
+            retryAfterAt?: unknown;
+          };
+          return {
+            ok: false,
+            message: "数据源连接测试失败",
+            errorCode: typeof failure.code === "string"
+              ? failure.code
+              : "PROVIDER_CONNECTION_TEST_FAILED",
+            retryable: failure.retryable === true,
+            retryAfterAt: typeof failure.retryAfterAt === "string"
+              ? failure.retryAfterAt
+              : null,
+            usage: ""
+          };
+        }
+      }
+    }));
+    router.use(createAcquisitionDiscoveryOperationsRouter({
+      service: discoveryOperations,
+      requestIdFactory: () => idFactory("request"),
+      dispatchContentFetchOperation: (scope, operationId) =>
+        dispatchDiscoveryTask(() =>
+          discoveryOperations.executeContentFetchOperation(
+            scope,
+            operationId
+          )
+        ),
+      dispatchImportOperation: (scope, operationId) =>
+        dispatchDiscoveryTask(() =>
+          discoveryOperations.executeImportOperation(
+            scope,
+            operationId
+          )
+        )
+    }));
     router.use(createAcquisitionV1Router({
       domainService,
       copilotService,
@@ -938,7 +1012,8 @@ export async function createAcquisitionApplication(
               Promise.allSettled([
                 recoverySweeper?.close() ?? Promise.resolve(),
                 worker.close(),
-                ...activeCopilotTasks
+                ...activeCopilotTasks,
+                ...activeDiscoveryTasks
               ]),
               closeTimeoutMs
             );

@@ -163,7 +163,8 @@ function fakeSearchPort() {
           subject: individual
             ? {
                 kind: "individual" as const,
-                publicActorKey: "public-operator-application",
+                publicActorKey:
+                  "public:fake-official-search:operator-application",
                 publicDisplayName: "示例门店主理人",
                 publicProfileUrl:
                   "https://example.cn/public-profile/operator",
@@ -917,6 +918,90 @@ test("application approves and executes a controlled content fetch shard", async
     );
     assert.equal(contentShard.status, "succeeded");
     assert.equal(contentShard.evidenceCount, 1);
+  } finally {
+    await server.close();
+    await runtime.close();
+  }
+});
+
+test("application exposes acquisition providers and executes direct discovery operations", async () => {
+  const fixture = isolatedMemoryStore();
+  const fetchedUrls: string[] = [];
+  let sequence = 0;
+  let timestamp = Date.parse("2026-07-24T02:30:00.000Z");
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    searchPort: fakeSearchPort().port,
+    contentFetcher: {
+      async fetch(sourceUrl) {
+        fetchedUrls.push(sourceUrl);
+        return {
+          finalUrl: sourceUrl,
+          status: "succeeded",
+          accessStatus: "public_content",
+          httpStatus: 200,
+          contentType: "text/html; charset=utf-8",
+          title: "公开需求页面",
+          text: "某企业公开寻找 AI 获客增长与经营决策系统。",
+          rawArtifactHash: `sha256:${"1".repeat(64)}`,
+          contentHash: `sha256:${"2".repeat(64)}`
+        };
+      }
+    },
+    modelGatewayFactory: () => fakeGateway().gateway,
+    idFactory: (prefix) => `${prefix}-${++sequence}`,
+    now: () => new Date(timestamp++).toISOString(),
+    nowMs: () => timestamp++
+  });
+  const server = await serve(runtime.handler);
+
+  try {
+    const providers = await server.request(
+      "/api/v1/acquisition/providers"
+    );
+    assert.equal(providers.response.status, 200);
+    assert.ok(
+      providers.json.items.some(
+        (item: { id?: string }) => item.id === "baidu_ai_search"
+      )
+    );
+    assert.ok(
+      providers.json.items.some(
+        (item: { id?: string }) => item.id === "controlled_public_content"
+      )
+    );
+
+    const created = await server.request(
+      "/api/v1/acquisition/content-fetch-operations",
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": "application-direct-content-fetch"
+        },
+        body: JSON.stringify({
+          sourceUrl: "https://example.cn/public-demand/direct",
+          subjectChannel: "organization"
+        })
+      }
+    );
+    assert.equal(
+      created.response.status,
+      202,
+      JSON.stringify(created.json)
+    );
+    assert.equal(created.json.status, "queued");
+
+    const completed = await waitFor(
+      () => server.request(
+        `/api/v1/acquisition/content-fetch-operations/${created.json.id}`
+      ),
+      (value) => value.json.status === "succeeded"
+    );
+    assert.equal(completed.json.evidenceCount, 1);
+    assert.deepEqual(fetchedUrls, [
+      "https://example.cn/public-demand/direct"
+    ]);
   } finally {
     await server.close();
     await runtime.close();
