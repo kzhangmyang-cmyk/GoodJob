@@ -20,6 +20,16 @@ import {
   type AcquisitionAgentToolExecutor,
   type AcquisitionToolExecutionInput
 } from "./acquisition-pi-tools.js";
+import {
+  ACQUISITION_PUBLIC_IDENTITY_RESOLVER_VERSION,
+  acquisitionPublicIdentityDisposition,
+  isSafeAcquisitionPublicActorKey,
+  normalizeAcquisitionPublicCreditCode,
+  normalizeAcquisitionPublicDomain,
+  normalizeAcquisitionPublicUrl,
+  resolveAcquisitionPublicIdentity,
+  type AcquisitionPublicIdentityDisposition
+} from "./acquisition-public-identity-resolver.js";
 
 const TOOL_NAMES = new Set<string>(ACQUISITION_AGENT_TOOL_NAMES);
 const GRADE_RANK = { S: 0, A: 1, B: 2, C: 3, D: 4 } as const;
@@ -31,6 +41,7 @@ type Grade = keyof typeof GRADE_RANK;
 export type AcquisitionToolExecutorErrorCode =
   | "ABORTED"
   | "INVALID_IDENTITY"
+  | "IDENTITY_RESEARCH_REQUIRED"
   | "INVALID_PAYLOAD"
   | "UNKNOWN_TOOL"
   | "SEARCH_ALL_PROVIDERS_FAILED"
@@ -357,6 +368,9 @@ const httpUrl = z.string().url().refine((value) => {
   const protocol = new URL(value).protocol;
   return protocol === "http:" || protocol === "https:";
 });
+const publicHttpUrl = httpUrl.refine(
+  (value) => normalizeAcquisitionPublicUrl(value) !== null
+);
 
 const subjectKindsSchema = z.array(
   z.enum(["organization", "individual"])
@@ -465,9 +479,10 @@ const organizationSubjectSchema = z.object({
 
 const individualSubjectSchema = z.object({
   kind: z.literal("individual"),
-  publicActorKey: z.string().trim().min(1).max(300),
+  publicActorKey: z.string().trim().min(1).max(300)
+    .refine(isSafeAcquisitionPublicActorKey),
   publicDisplayName: z.string().trim().min(1).max(200),
-  publicProfileUrl: httpUrl,
+  publicProfileUrl: publicHttpUrl,
   sourcePlatform: z.string().trim().min(1).max(100),
   demandCategory: z.string().trim().min(1).max(100),
   demandSummary: z.string().trim().min(1).max(2_000),
@@ -484,7 +499,7 @@ const individualSubjectSchema = z.object({
 }).strict();
 
 const searchResultSchema = z.object({
-  sourceUrl: httpUrl,
+  sourceUrl: publicHttpUrl,
   title: z.string().trim().max(500),
   snippet: z.string().trim().max(4_000),
   publishedAt: z.string().datetime({ offset: true }).nullable(),
@@ -630,27 +645,6 @@ export function normalizeAcquisitionRegion(value: string | null) {
   return normalized || null;
 }
 
-function candidateDedupeKey(
-  provider: string,
-  subject: SearchPublicSourceSubject
-) {
-  const platform = subject.kind === "individual"
-    ? subject.sourcePlatform.trim().toLowerCase()
-    : provider.trim().toLowerCase();
-  const naturalKey = subject.kind === "organization"
-    ? subject.creditCode?.trim().toLowerCase()
-      || subject.domain?.trim().toLowerCase()
-      || subject.organizationId?.trim().toLowerCase()
-      || `${subject.name.trim().toLowerCase()}\u0000${
-        normalizeAcquisitionRegion(subject.region) ?? ""
-      }`
-    : subject.publicActorKey.trim().toLowerCase()
-      || subject.publicProfileUrl.trim().toLowerCase();
-  return `${
-    provider.trim().toLowerCase()
-  }:${platform}:${subject.kind}:sha256:${hash(naturalKey)}`;
-}
-
 function evidenceInput(
   response: SearchPublicSourcesResponse,
   result: SearchPublicSourceResult,
@@ -684,8 +678,16 @@ function evidenceInput(
   };
 }
 
-function projectCandidate(candidate: AcquisitionCandidate) {
-  return publicRecord(candidate as unknown as Record<string, unknown>);
+function projectCandidate(
+  candidate: AcquisitionCandidate,
+  identityResolution?: AcquisitionPublicIdentityDisposition
+) {
+  const projected = publicRecord(
+    candidate as unknown as Record<string, unknown>
+  );
+  return identityResolution
+    ? { ...projected, identityResolution }
+    : projected;
 }
 
 function projectEvidence(evidence: DiscoveryEvidence) {
@@ -725,6 +727,59 @@ function evidenceSourceUrl(evidence: DiscoveryEvidence) {
     || evidence.provenance.kind === "user_submitted_url"
     ? evidence.provenance.sourceUrl
     : null;
+}
+
+function candidateIdentityDisposition(
+  candidate: AcquisitionCandidate
+): AcquisitionPublicIdentityDisposition {
+  if (candidate.profile.kind === "organization"
+    && candidate.partyRef.partyType === "organization") {
+    if (candidate.partyRef.organizationId.startsWith("unresolved-org-")) {
+      return {
+        status: "needs_research",
+        basis: null,
+        reasonCode: "insufficient_public_organization_identity",
+        resolverVersion: ACQUISITION_PUBLIC_IDENTITY_RESOLVER_VERSION
+      };
+    }
+    return {
+      status: "resolved",
+      basis: normalizeAcquisitionPublicDomain(candidate.profile.domain)
+        ? "organization_domain"
+        : normalizeAcquisitionPublicCreditCode(candidate.profile.creditCode)
+          ? "organization_credit_code"
+          : "manual_binding",
+      reasonCode: null,
+      resolverVersion: ACQUISITION_PUBLIC_IDENTITY_RESOLVER_VERSION
+    };
+  }
+  if (candidate.profile.kind === "individual"
+    && candidate.partyRef.partyType === "individual") {
+    if (candidate.partyRef.individualPartyId.startsWith(
+      "unresolved-individual-"
+    )) {
+      return {
+        status: "needs_research",
+        basis: null,
+        reasonCode: "insufficient_provider_public_actor_identity",
+        resolverVersion: ACQUISITION_PUBLIC_IDENTITY_RESOLVER_VERSION
+      };
+    }
+    return {
+      status: "resolved",
+      basis: "provider_public_actor",
+      reasonCode: null,
+      resolverVersion: ACQUISITION_PUBLIC_IDENTITY_RESOLVER_VERSION
+    };
+  }
+  return {
+    status: "needs_research",
+    basis: null,
+    reasonCode: candidate.partyType === "organization"
+      ? "insufficient_public_organization_identity"
+      : "insufficient_provider_public_actor_identity",
+    resolverVersion: ACQUISITION_PUBLIC_IDENTITY_RESOLVER_VERSION
+  };
 }
 
 function deterministicHardGates(
@@ -1164,9 +1219,19 @@ implements AcquisitionAgentToolExecutor {
       this.now(),
       this.maxEvidenceAgeDays
     );
-    const requiresPassedGates = operation !== "qualify";
-    if (requiresPassedGates
-      && Object.values(hardGates).some((value) => !value)) {
+    const failedGates = Object.entries(hardGates)
+      .filter(([, passed]) => !passed)
+      .map(([gate]) => gate as keyof QualificationHardGates);
+    if (operation === "qualify"
+      && failedGates.length === 1
+      && failedGates[0] === "identityResolved") {
+      throw toolError("IDENTITY_RESEARCH_REQUIRED");
+    }
+    const researchCanResolveIdentity = operation === "research"
+      && failedGates.every((gate) => gate === "identityResolved");
+    const requiresPassedGates = operation !== "qualify"
+      && !researchCanResolveIdentity;
+    if (requiresPassedGates && failedGates.length > 0) {
       throw toolError("ELIGIBILITY_BLOCKED");
     }
     if (["battle_card", "financial_value", "connection_strategy", "review_task"]
@@ -1235,6 +1300,10 @@ implements AcquisitionAgentToolExecutor {
     const scope = this.scope(input);
     const evidence: DiscoveryEvidence[] = [];
     const candidates = new Map<string, AcquisitionCandidate>();
+    const identityResolutions = new Map<
+      string,
+      AcquisitionPublicIdentityDisposition
+    >();
     const ingestFailures: Array<{
       providerConnectionId: string;
       resultIndex: number;
@@ -1261,7 +1330,14 @@ implements AcquisitionAgentToolExecutor {
         }
         const result = parsedResult.data;
         if (!payload.subjectKinds.includes(result.subject.kind)) continue;
-        const dedupeKey = candidateDedupeKey(response.provider, result.subject);
+        const identityResolution = resolveAcquisitionPublicIdentity({
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          provider: response.provider,
+          sourceUrl: result.sourceUrl,
+          subject: result.subject
+        });
+        const dedupeKey = identityResolution.dedupeKey;
         const rawEvidence = evidenceInput(
           response as SearchPublicSourcesResponse,
           result,
@@ -1310,11 +1386,10 @@ implements AcquisitionAgentToolExecutor {
                   scope,
                   {
                     name: result.subject.name,
-                    domain: result.subject.domain,
+                    domain: identityResolution.normalizedDomain,
                     region: normalizeAcquisitionRegion(result.subject.region),
-                    creditCode: result.subject.creditCode,
-                    organizationId: result.subject.organizationId
-                      || `unresolved-org-${stable}`,
+                    creditCode: identityResolution.normalizedCreditCode,
+                    organizationId: identityResolution.partyId,
                     tenantProspectId: `prospect-${stable}`,
                     evidenceIds: [createdEvidence.id]
                   },
@@ -1341,8 +1416,7 @@ implements AcquisitionAgentToolExecutor {
                   ) ?? "",
                   buyingStage: result.subject.buyingStage,
                   negativeSignals: [...result.subject.negativeSignals],
-                  individualPartyId: result.subject.individualPartyId
-                    || `unresolved-individual-${stable}`,
+                  individualPartyId: identityResolution.partyId,
                   evidenceIds: [createdEvidence.id]
                 },
                 childIdempotencyKey(input.idempotencyKey, "candidate", {
@@ -1377,6 +1451,10 @@ implements AcquisitionAgentToolExecutor {
           continue;
         }
         candidates.set(candidate.id, candidate);
+        identityResolutions.set(
+          candidate.id,
+          acquisitionPublicIdentityDisposition(identityResolution)
+        );
         acceptedResults += 1;
       }
       if (acceptedResults >= payload.maxResults) break;
@@ -1395,7 +1473,9 @@ implements AcquisitionAgentToolExecutor {
       providerFailures,
       ingestFailures,
       evidence: evidence.map(projectEvidence),
-      candidates: [...candidates.values()].map(projectCandidate),
+      candidates: [...candidates.values()].map((candidate) =>
+        projectCandidate(candidate, identityResolutions.get(candidate.id))
+      ),
       acceptedResultCount: acceptedResults,
       outreachExecuted: false
     };
@@ -1418,7 +1498,10 @@ implements AcquisitionAgentToolExecutor {
     const candidate = await this.domain.getCandidate(scope, payload.candidateId);
     const evidence = await this.evidenceForCandidate(scope, candidate);
     return {
-      candidate: projectCandidate(candidate),
+      candidate: projectCandidate(
+        candidate,
+        candidateIdentityDisposition(candidate)
+      ),
       evidence: evidence.map(projectEvidence),
       evidenceCount: evidence.length,
       outreachExecuted: false
@@ -1432,7 +1515,8 @@ implements AcquisitionAgentToolExecutor {
     const {
       scope,
       candidate,
-      evidence
+      evidence,
+      hardGates
     } = await this.loadEligibleCandidate(
       input,
       payload.candidateId,
@@ -1475,6 +1559,7 @@ implements AcquisitionAgentToolExecutor {
       newEvidence: [],
       newEvidenceCount: 0,
       formalEvidenceCreationAllowed: false,
+      requiresIdentityResearch: !hardGates.identityResolved,
       requiresHumanVerification: true,
       outreachExecuted: false
     };

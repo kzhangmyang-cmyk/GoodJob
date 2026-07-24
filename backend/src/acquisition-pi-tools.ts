@@ -156,7 +156,7 @@ const TOOL_BLUEPRINTS: readonly ToolBlueprint[] = [
   {
     name: "research_candidate",
     label: "研究候选客户",
-    description: "基于公开来源补充候选研究任务，不抓取私密或敏感个人数据。",
+    description: "基于公开来源补充候选与主体身份研究；不抓取私密或敏感个人数据，不自动绑定身份或执行触达。",
     parameters: Type.Object({
       candidateId: Type.String({ minLength: 1, maxLength: 255 }),
       depth: Type.Union([

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { encryptProviderConfiguration } from "./credential-security.js";
+import {
+  encryptProviderConfiguration,
+  encryptProviderConfigurationWithSecret
+} from "./credential-security.js";
 import {
   ProviderContractError,
   type LeadProvider,
@@ -23,6 +26,8 @@ process.env.JWT_SECRET =
   "goodjob-acquisition-public-search-test-secret-at-least-32-characters";
 
 const NOW = "2026-07-24T08:00:00.000Z";
+const EXPLICIT_CREDENTIAL_SECRET =
+  "acquisition-public-search-explicit-credential-secret-v1";
 
 function connection(
   providerId: string,
@@ -245,8 +250,16 @@ test("uses an authorized official BYOK connection and maps public organization a
     domain: "growth.example.cn",
     region: "中国 福建 厦门",
     creditCode: null,
-    organizationId: null
+    organizationId: organization.subject.kind === "organization"
+      ? organization.subject.organizationId
+      : null
   });
+  assert.match(
+    organization.subject.kind === "organization"
+      ? organization.subject.organizationId || ""
+      : "",
+    /^public-org-[a-f0-9]{24}$/
+  );
 
   const individual = response.results.find(
     (result) => result.subject.kind === "individual"
@@ -259,13 +272,233 @@ test("uses an authorized official BYOK connection and maps public organization a
   );
   assert.equal(individual.subject.buyingStage, "comparison");
   assert.deepEqual(individual.subject.negativeSignals, ["请勿电话推销"]);
-  assert.equal(individual.subject.individualPartyId, null);
+  assert.match(
+    individual.subject.individualPartyId || "",
+    /^public-individual-[a-f0-9]{24}$/
+  );
 
   const serialized = JSON.stringify(response);
   assert.equal(serialized.includes("private@example.cn"), false);
   assert.equal(serialized.includes("13800000000"), false);
   assert.equal(serialized.includes("不应输出"), false);
   assert.equal(store.providerRequestLogs.length, 1);
+});
+
+test("keeps public organization identities stable across providers but scopes individuals to the provider", async () => {
+  async function identities(providerId: "baidu_ai_search" | "tavily") {
+    const selected = connection(providerId);
+    const store = createStore({ connections: [selected] });
+    const executeSearch: AcquisitionProviderSearchExecutor = async (input) => {
+      input.onLogs([
+        requestLog({
+          provider: input.provider,
+          connection: input.connection,
+          runId: input.context.runId
+        })
+      ]);
+      const page = providerPage();
+      page.records = page.records.map((record) =>
+        record.recordType === "discovery_page"
+          && record.company === "厦门增长科技有限公司"
+          ? {
+              ...record,
+              officialWebsite: providerId === "baidu_ai_search"
+                ? "HTTPS://WWW.GROWTH.EXAMPLE.CN/company/"
+                : "growth.example.cn"
+            }
+          : record
+      );
+      return page;
+    };
+    const response = await createAcquisitionPublicSearchPort(store, {
+      executeSearch
+    }).search(searchInput({
+      providerConnectionId: selected.id
+    }));
+    const organization = response.results.find(
+      (result) => result.subject.kind === "organization"
+    );
+    const individual = response.results.find(
+      (result) => result.subject.kind === "individual"
+    );
+    assert(organization?.subject.kind === "organization");
+    assert(individual?.subject.kind === "individual");
+    return {
+      organizationId: organization.subject.organizationId,
+      individualPartyId: individual.subject.individualPartyId
+    };
+  }
+
+  const baidu = await identities("baidu_ai_search");
+  const tavily = await identities("tavily");
+
+  assert.equal(baidu.organizationId, tavily.organizationId);
+  assert.notEqual(baidu.individualPartyId, tavily.individualPartyId);
+});
+
+test("canonicalizes public profile identities and rejects private URL parameters", async () => {
+  async function individualResult(sourceUrl: string, company: string) {
+    const store = createStore();
+    const executeSearch: AcquisitionProviderSearchExecutor = async (input) => {
+      input.onLogs([
+        requestLog({
+          provider: input.provider,
+          connection: input.connection,
+          runId: input.context.runId
+        })
+      ]);
+      const source = providerPage().records[1]!;
+      return {
+        ...providerPage(),
+        records: [{ ...source, sourceUrl, company }],
+        rawCount: 1,
+        validCount: 1
+      };
+    };
+    const response = await createAcquisitionPublicSearchPort(store, {
+      executeSearch
+    }).search(searchInput({ subjectKinds: ["individual"] }));
+    return response.results[0] ?? null;
+  }
+
+  const first = await individualResult(
+    "https://www.xiaohongshu.com/user/profile/public-actor/?b=2&a=1#bio",
+    "门店主理人林女士"
+  );
+  const second = await individualResult(
+    "https://www.xiaohongshu.com/user/profile/public-actor?a=1&b=2",
+    "林女士（门店负责人）"
+  );
+  assert(first?.subject.kind === "individual");
+  assert(second?.subject.kind === "individual");
+  assert.equal(
+    first.subject.individualPartyId,
+    second.subject.individualPartyId
+  );
+  assert.equal(
+    first.subject.publicActorKey,
+    second.subject.publicActorKey
+  );
+
+  const privateEmail = "private@example.cn";
+  const unsafe = await individualResult(
+    `https://www.xiaohongshu.com/user/profile/public-actor?email=${privateEmail}`,
+    "门店主理人林女士"
+  );
+  assert.equal(unsafe, null);
+
+  const unsafePath = await individualResult(
+    "https://www.xiaohongshu.com/user/profile/private%40example.cn",
+    "门店主理人林女士"
+  );
+  assert.equal(unsafePath, null);
+
+  const lookalikeHost = await individualResult(
+    "https://evil.example.cn/xiaohongshu.com/user/profile/public-actor",
+    "门店主理人林女士"
+  );
+  assert(lookalikeHost?.subject.kind === "individual");
+  assert.equal(lookalikeHost.subject.individualPartyId, null);
+  assert.match(
+    lookalikeHost.subject.publicActorKey,
+    /^unresolved-public-signal:/
+  );
+});
+
+test("keeps deterministic public identities tenant scoped", async () => {
+  async function organizationId(ownerId: string, teamId: string) {
+    const selected = connection("baidu_ai_search", { ownerId, teamId });
+    const store = createStore({ connections: [selected] });
+    const executeSearch: AcquisitionProviderSearchExecutor = async (input) => {
+      input.onLogs([
+        requestLog({
+          provider: input.provider,
+          connection: input.connection,
+          runId: input.context.runId
+        })
+      ]);
+      return providerPage();
+    };
+    const response = await createAcquisitionPublicSearchPort(store, {
+      executeSearch
+    }).search(searchInput({
+      ownerId,
+      teamId,
+      providerConnectionId: selected.id
+    }));
+    const organization = response.results.find(
+      (result) => result.subject.kind === "organization"
+    );
+    assert(organization?.subject.kind === "organization");
+    return organization.subject.organizationId;
+  }
+
+  const firstOwner = await organizationId("owner-a", "team-a");
+  const secondOwnerSameTenant = await organizationId("owner-b", "team-a");
+  const otherTenant = await organizationId("owner-a", "team-b");
+
+  assert.equal(firstOwner, secondOwnerSameTenant);
+  assert.notEqual(firstOwner, otherTenant);
+});
+
+test("resolves only validated public organization identifiers and leaves weak names for research", async () => {
+  async function resolveRecord(
+    record: ProviderPage["records"][number]
+  ) {
+    const store = createStore();
+    const executeSearch: AcquisitionProviderSearchExecutor = async (input) => {
+      input.onLogs([
+        requestLog({
+          provider: input.provider,
+          connection: input.connection,
+          runId: input.context.runId
+        })
+      ]);
+      return {
+        ...providerPage(),
+        records: [record],
+        rawCount: 1,
+        validCount: 1
+      };
+    };
+    const response = await createAcquisitionPublicSearchPort(store, {
+      executeSearch
+    }).search(searchInput({ subjectKinds: ["organization"] }));
+    assert.equal(response.results.length, 1);
+    const subject = response.results[0]!.subject;
+    assert.equal(subject.kind, "organization");
+    return subject;
+  }
+
+  const source = providerPage().records[0]!;
+  const creditResolved = await resolveRecord({
+    ...source,
+    officialWebsite: "",
+    description:
+      "企业公示信息：统一社会信用代码 91350200M000100Y48；正在采购获客系统。"
+  });
+  assert.equal(creditResolved.creditCode, "91350200M000100Y48");
+  assert.match(creditResolved.organizationId || "", /^public-org-/);
+
+  const weak = await resolveRecord({
+    ...source,
+    company: "增长工作室",
+    officialWebsite: "",
+    website: "",
+    description: "公开搜索结果仅包含企业简称，尚无可核验官网或信用代码。"
+  });
+  assert.equal(weak.domain, null);
+  assert.equal(weak.creditCode, null);
+  assert.equal(weak.organizationId, null);
+
+  const invalidCreditCode = await resolveRecord({
+    ...source,
+    officialWebsite: "",
+    description:
+      "企业公示信息：统一社会信用代码 91350200M000100Y43；正在采购获客系统。"
+  });
+  assert.equal(invalidCreditCode.creditCode, null);
+  assert.equal(invalidCreditCode.organizationId, null);
 });
 
 test("supports all approved real search providers", async () => {
@@ -297,6 +530,65 @@ test("supports all approved real search providers", async () => {
     }));
     assert.equal(response.provider, providerId);
   }
+});
+
+test("decrypts BYOK configuration with an explicit credential secret and rejects the wrong secret", async () => {
+  function explicitConnection() {
+    const selected = connection("baidu_ai_search");
+    return {
+      ...selected,
+      configurationEncrypted: encryptProviderConfigurationWithSecret(
+        selected,
+        {
+          apiKey: "explicit-secret-api-key",
+          baseUrl: ""
+        },
+        EXPLICIT_CREDENTIAL_SECRET
+      )
+    };
+  }
+
+  let executionCount = 0;
+  const executeSearch: AcquisitionProviderSearchExecutor = async (input) => {
+    executionCount += 1;
+    input.onLogs([
+      requestLog({
+        provider: input.provider,
+        connection: input.connection,
+        runId: input.context.runId
+      })
+    ]);
+    return { ...providerPage(), records: [] };
+  };
+
+  const accepted = await createAcquisitionPublicSearchPort(
+    createStore({ connections: [explicitConnection()] }),
+    {
+      executeSearch,
+      credentialSecret: EXPLICIT_CREDENTIAL_SECRET
+    }
+  ).search(searchInput({ subjectKinds: ["organization"] }));
+  assert.equal(accepted.provider, "baidu_ai_search");
+  assert.equal(executionCount, 1);
+
+  await assert.rejects(
+    createAcquisitionPublicSearchPort(
+      createStore({ connections: [explicitConnection()] }),
+      {
+        executeSearch,
+        credentialSecret:
+          "acquisition-public-search-wrong-credential-secret-v1"
+      }
+    ).search(searchInput({ subjectKinds: ["organization"] })),
+    (error: unknown) =>
+      error instanceof AcquisitionPublicSearchPortError
+      && error.code === "PROVIDER_CONNECTION_UNAVAILABLE"
+  );
+  assert.equal(
+    executionCount,
+    1,
+    "an unreadable explicit-secret connection must fail before provider use"
+  );
 });
 
 test("does not misclassify an organization page merely because its snippet mentions a decision maker", async () => {

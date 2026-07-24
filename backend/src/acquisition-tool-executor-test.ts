@@ -290,7 +290,11 @@ class TestSearchPort implements SearchPublicSourcesPort {
 
   constructor(
     private readonly negativeSignals: string[] = [],
-    private readonly resolvedIdentities = true
+    private readonly resolvedIdentities = true,
+    private readonly organizationDomain: string | null = "growth.example.cn",
+    private readonly individualActorKey = "public:store-owner",
+    private readonly individualProfileUrl =
+      "https://example.cn/profile/store-owner"
   ) {}
 
   async search(
@@ -321,7 +325,7 @@ class TestSearchPort implements SearchPublicSourcesPort {
         subject: {
           kind: "organization",
           name: "厦门增长科技有限公司",
-          domain: "growth.example.cn",
+          domain: this.organizationDomain,
           region: "  福建省　厦门市  ",
           creditCode: null,
           organizationId: this.resolvedIdentities ? "org-growth" : null
@@ -337,9 +341,9 @@ class TestSearchPort implements SearchPublicSourcesPort {
         accessStatus: "public_content",
         subject: {
           kind: "individual",
-          publicActorKey: "public:store-owner",
+          publicActorKey: this.individualActorKey,
           publicDisplayName: "厦门门店主理人",
-          publicProfileUrl: "https://example.cn/profile/store-owner",
+          publicProfileUrl: this.individualProfileUrl,
           sourcePlatform: "baidu",
           demandCategory: "获客系统",
           demandSummary: "正在比较获客系统，希望近期上线",
@@ -385,6 +389,9 @@ function createHarness(options: {
   judgments?: AcquisitionJudgmentPort;
   negativeSignals?: string[];
   resolvedIdentities?: boolean;
+  organizationDomain?: string | null;
+  individualActorKey?: string;
+  individualProfileUrl?: string;
 } = {}) {
   let id = 0;
   let tick = 0;
@@ -408,7 +415,10 @@ function createHarness(options: {
   });
   const search = new TestSearchPort(
     options.negativeSignals,
-    options.resolvedIdentities
+    options.resolvedIdentities,
+    options.organizationDomain,
+    options.individualActorKey,
+    options.individualProfileUrl
   );
   const directory = new TestCandidateDirectory();
   const priority = new TestPriorityCandidatePort(directory, domain);
@@ -526,6 +536,42 @@ test("searches authorized providers, survives a partial failure, and idempotentl
     (error: unknown) =>
       error instanceof AcquisitionToolExecutorError
       && error.code === "IDEMPOTENCY_CONFLICT"
+  );
+});
+
+test("resolves strong public identities at the executor boundary instead of trusting nullable provider ids", async () => {
+  const { executor } = createHarness({ resolvedIdentities: false });
+
+  const discovery = await discover(executor, ["search-ok"]);
+  const organization = discovery.candidates.find(
+    (item: any) => item.partyType === "organization"
+  );
+  const individual = discovery.candidates.find(
+    (item: any) => item.partyType === "individual"
+  );
+  assert.ok(organization);
+  assert.ok(individual);
+  assert.match(
+    organization.partyRef.organizationId,
+    /^public-org-[a-f0-9]{24}$/
+  );
+  assert.match(
+    individual.partyRef.individualPartyId,
+    /^public-individual-[a-f0-9]{24}$/
+  );
+  assert.equal(organization.identityResolution.status, "resolved");
+  assert.equal(individual.identityResolution.status, "resolved");
+
+  const qualification = await execute(executor, "qualify_candidate", {
+    candidateId: organization.id,
+    policyVersion: "qualification-rules.identity-v1"
+  }, "qualify:strong-public-identity");
+  assert.notEqual(qualification.qualification.grade, "D");
+  assert.equal(
+    qualification.qualification.hardGateFailures.includes(
+      "identity_unresolved"
+    ),
+    false
   );
 });
 
@@ -789,13 +835,18 @@ test("isolates dedupe namespaces, atomically upserts candidates, and reports per
     ["search-tavily"],
     "search:tavily"
   );
-  assert.equal(directory.createCalls, 4);
   assert.equal(
-    otherNamespace.candidates.some((candidate: any) =>
+    directory.createCalls,
+    3,
+    "matching organization domains merge while public individuals remain provider scoped"
+  );
+  const sharedCandidateIds = otherNamespace.candidates
+    .filter((candidate: any) =>
       left.candidates.some((existing: any) => existing.id === candidate.id)
-    ),
-    false,
-    "provider/platform namespace must prevent accidental cross-provider merge"
+    );
+  assert.deepEqual(
+    sharedCandidateIds.map((candidate: any) => candidate.partyType),
+    ["organization"]
   );
 
   const withInvalid = await discover(
@@ -808,6 +859,73 @@ test("isolates dedupe namespaces, atomically upserts candidates, and reports per
   assert.deepEqual(withInvalid.ingestFailures, [{
     providerConnectionId: "search-with-invalid",
     resultIndex: 2,
+    errorCode: "SEARCH_RESULT_INVALID"
+  }]);
+});
+
+test("routes weak organization names to controlled identity research instead of a D do-not-contact decision", async () => {
+  const { executor } = createHarness({
+    resolvedIdentities: false,
+    organizationDomain: null
+  });
+  const discovery = await discover(executor, ["search-ok"]);
+  const organization = discovery.candidates.find(
+    (item: any) => item.partyType === "organization"
+  );
+  assert.ok(organization);
+  assert.match(
+    organization.partyRef.organizationId,
+    /^unresolved-org-[a-f0-9]{24}$/
+  );
+  assert.deepEqual(organization.identityResolution, {
+    status: "needs_research",
+    basis: null,
+    reasonCode: "insufficient_public_organization_identity",
+    resolverVersion: "acquisition-public-identity-v1"
+  });
+
+  const research = await execute(executor, "research_candidate", {
+    candidateId: organization.id,
+    depth: "standard",
+    researchQuestions: ["核验官网域名或统一社会信用代码"]
+  }, "research:weak-organization");
+  assert.equal(research.requiresIdentityResearch, true);
+  assert.equal(research.outreachExecuted, false);
+
+  await assert.rejects(
+    execute(executor, "qualify_candidate", {
+      candidateId: organization.id,
+      policyVersion: "qualification-rules.identity-v1"
+    }, "qualify:weak-organization"),
+    (error: unknown) =>
+      error instanceof AcquisitionToolExecutorError
+      && error.code === "IDENTITY_RESEARCH_REQUIRED"
+  );
+});
+
+test("rejects private contact data masquerading as a public individual identity", async () => {
+  const privatePhone = "13800000000";
+  const { executor } = createHarness({
+    resolvedIdentities: false,
+    individualActorKey: `public:phone:${privatePhone}`
+  });
+
+  const discovery = await discover(
+    executor,
+    ["search-ok"],
+    "search:private-actor-key"
+  );
+
+  assert.equal(
+    discovery.candidates.some(
+      (candidate: any) => candidate.partyType === "individual"
+    ),
+    false
+  );
+  assert.equal(JSON.stringify(discovery).includes(privatePhone), false);
+  assert.deepEqual(discovery.ingestFailures, [{
+    providerConnectionId: "search-ok",
+    resultIndex: 1,
     errorCode: "SEARCH_RESULT_INVALID"
   }]);
 });
@@ -879,7 +997,7 @@ test("recomputes hard gates deterministically and blocks ineligible strategy or 
   assert.equal(qualification.qualification.grade, "D");
   assert.deepEqual(
     qualification.qualification.hardGateFailures,
-    ["identity_unresolved", "explicit_rejection"]
+    ["explicit_rejection"]
   );
   assert.equal(
     qualification.qualification.reasons.some((reason: string) =>

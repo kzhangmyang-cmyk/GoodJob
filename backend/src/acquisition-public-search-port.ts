@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { decryptProviderConfiguration } from "./credential-security.js";
+import {
+  decryptProviderConfiguration,
+  decryptProviderConfigurationWithSecret
+} from "./credential-security.js";
 import type {
   SearchPublicSourceResult,
   SearchPublicSourcesPort,
@@ -29,6 +32,12 @@ import type {
 import {
   REAL_WEB_SEARCH_PROVIDERS
 } from "./web-search-providers.js";
+import {
+  extractAcquisitionPublicCreditCode,
+  normalizeAcquisitionPublicDomain,
+  normalizeAcquisitionPublicUrl,
+  resolveAcquisitionPublicIdentity
+} from "./acquisition-public-identity-resolver.js";
 
 export const ACQUISITION_PUBLIC_SEARCH_PROVIDER_IDS = [
   "baidu_ai_search",
@@ -106,6 +115,7 @@ export type AcquisitionProviderSearchExecutor = (
 
 export interface AcquisitionPublicSearchPortOptions {
   executeSearch?: AcquisitionProviderSearchExecutor;
+  credentialSecret?: string;
 }
 
 function abortError() {
@@ -126,21 +136,11 @@ function clipped(value: string | undefined, maxLength: number) {
 
 function validPublicUrl(value: string) {
   try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol)
-      || url.username
-      || url.password) {
-      return null;
-    }
-    return url;
+    const normalized = normalizeAcquisitionPublicUrl(value);
+    return normalized ? new URL(normalized) : null;
   } catch {
     return null;
   }
-}
-
-function publicDomain(value: string) {
-  const url = validPublicUrl(value);
-  return url ? url.hostname.replace(/^www\./i, "").toLocaleLowerCase() : null;
 }
 
 function usableRegion(value: string | undefined) {
@@ -163,8 +163,32 @@ function localeFor(...values: string[]) {
     : "und";
 }
 
-const PUBLIC_PROFILE_PATH =
-  /(?:xiaohongshu\.com\/user\/profile\/|douyin\.com\/user\/|weibo\.com\/(?:u\/|[0-9]+(?:\/|$))|zhihu\.com\/people\/|linkedin\.com\/in\/|github\.com\/[^/]+\/?$)/iu;
+const PUBLIC_PROFILE_RULES = [
+  {
+    rootHost: "xiaohongshu.com",
+    path: /^\/user\/profile\/[^/]+\/?$/u
+  },
+  {
+    rootHost: "douyin.com",
+    path: /^\/user\/[^/]+\/?$/u
+  },
+  {
+    rootHost: "weibo.com",
+    path: /^\/(?:u\/[^/]+|[0-9]+)\/?$/u
+  },
+  {
+    rootHost: "zhihu.com",
+    path: /^\/people\/[^/]+\/?$/u
+  },
+  {
+    rootHost: "linkedin.com",
+    path: /^\/in\/[^/]+\/?$/u
+  },
+  {
+    rootHost: "github.com",
+    path: /^\/[^/]+\/?$/u
+  }
+] as const;
 
 const PUBLIC_BUSINESS_ROLE =
   /(?:主理人|创始人|联合创始人|老板|负责人|采购经理|采购负责人|总经理|店长|运营总监|销售总监|CEO|founder|owner|director|manager)/iu;
@@ -172,12 +196,21 @@ const ORGANIZATION_NAME =
   /(?:有限公司|有限责任公司|股份公司|集团|企业|公司|机构|中心|协会|合作社)$/u;
 
 function isPublicIndividualSignal(record: ProviderRecord) {
-  const sourceUrl = record.sourceUrl.toLocaleLowerCase();
-  return PUBLIC_PROFILE_PATH.test(sourceUrl)
+  return isVerifiedPublicProfileUrl(record.sourceUrl)
     || (
       !ORGANIZATION_NAME.test(record.company.trim())
       && PUBLIC_BUSINESS_ROLE.test(record.company)
     );
+}
+
+function isVerifiedPublicProfileUrl(value: string | URL) {
+  const url = value instanceof URL ? value : validPublicUrl(value);
+  if (!url) return false;
+  const hostname = url.hostname.toLocaleLowerCase("en-US");
+  return PUBLIC_PROFILE_RULES.some((rule) =>
+    (hostname === rule.rootHost || hostname.endsWith(`.${rule.rootHost}`))
+    && rule.path.test(url.pathname)
+  );
 }
 
 function buyingStage(text: string): Extract<
@@ -243,6 +276,30 @@ function toPublicResult(
   if (individual) {
     if (!request.subjectKinds.includes("individual")) return null;
     const signalText = [title, snippet, record.evidenceSummary || ""].join(" ");
+    const verifiedPublicProfile = isVerifiedPublicProfileUrl(source);
+    const publicActorKey = `${
+      verifiedPublicProfile ? "public" : "unresolved-public-signal"
+    }:${providerId}:sha256:${sha256(source.toString())}`;
+    const subject = {
+      kind: "individual" as const,
+      publicActorKey,
+      publicDisplayName: title || "公开商务账号",
+      publicProfileUrl: source.toString(),
+      sourcePlatform: providerId,
+      demandCategory: demandCategory(request.query),
+      demandSummary:
+        clipped(snippet || "搜索索引仅返回标题，具体需求需人工核实。", 2_000),
+      locationHint: usableRegion(record.country) || "",
+      buyingStage: buyingStage(signalText),
+      negativeSignals: negativeSignals(signalText)
+    };
+    const resolution = resolveAcquisitionPublicIdentity({
+      ownerId: request.ownerId,
+      teamId: request.teamId,
+      provider: providerId,
+      sourceUrl: source.toString(),
+      subject
+    });
     return {
       sourceUrl: source.toString(),
       title,
@@ -252,26 +309,31 @@ function toPublicResult(
       rawArtifactHash: rawArtifactHash(providerId, record),
       accessStatus: "indexed_summary",
       subject: {
-        kind: "individual",
-        publicActorKey:
-          `public:${providerId}:sha256:${sha256(
-            `${source.toString()}\u0000${title}`
-          )}`,
-        publicDisplayName: title || "公开商务账号",
-        publicProfileUrl: source.toString(),
-        sourcePlatform: providerId,
-        demandCategory: demandCategory(request.query),
-        demandSummary:
-          clipped(snippet || "搜索索引仅返回标题，具体需求需人工核实。", 2_000),
-        locationHint: usableRegion(record.country) || "",
-        buyingStage: buyingStage(signalText),
-        negativeSignals: negativeSignals(signalText),
-        individualPartyId: null
+        ...subject,
+        individualPartyId: resolution.status === "resolved"
+          ? resolution.partyId
+          : null
       }
     };
   }
 
   if (!request.subjectKinds.includes("organization")) return null;
+  const subject = {
+    kind: "organization" as const,
+    name: title,
+    domain: normalizeAcquisitionPublicDomain(record.officialWebsite),
+    region: usableRegion(record.country),
+    creditCode: extractAcquisitionPublicCreditCode(
+      [title, snippet, record.evidenceSummary || ""].join(" ")
+    )
+  };
+  const resolution = resolveAcquisitionPublicIdentity({
+    ownerId: request.ownerId,
+    teamId: request.teamId,
+    provider: providerId,
+    sourceUrl: source.toString(),
+    subject
+  });
   return {
     sourceUrl: source.toString(),
     title,
@@ -281,12 +343,10 @@ function toPublicResult(
     rawArtifactHash: rawArtifactHash(providerId, record),
     accessStatus: "indexed_summary",
     subject: {
-      kind: "organization",
-      name: title,
-      domain: publicDomain(record.officialWebsite),
-      region: usableRegion(record.country),
-      creditCode: null,
-      organizationId: null
+      ...subject,
+      organizationId: resolution.status === "resolved"
+        ? resolution.partyId
+        : null
     }
   };
 }
@@ -388,12 +448,21 @@ function authorizedConnection(
   return connection;
 }
 
-function assertReadableByokConnection(connection: ProviderConnection) {
+function assertReadableByokConnection(
+  connection: ProviderConnection,
+  credentialSecret: string | undefined
+) {
   try {
-    const credential = decryptProviderConfiguration(
-      connection,
-      connection.configurationEncrypted
-    );
+    const credential = credentialSecret === undefined
+      ? decryptProviderConfiguration(
+          connection,
+          connection.configurationEncrypted
+        )
+      : decryptProviderConfigurationWithSecret(
+          connection,
+          connection.configurationEncrypted,
+          credentialSecret
+        );
     if (!credential.apiKey.trim() || !connection.credentialRef.trim()) {
       throw new Error("missing credential");
     }
@@ -408,6 +477,7 @@ class StoreBackedAcquisitionPublicSearchPort
 implements SearchPublicSourcesPort {
   private readonly providers: ReadonlyMap<string, LeadProvider>;
   private readonly executeSearch: AcquisitionProviderSearchExecutor;
+  private readonly credentialSecret: string | undefined;
 
   constructor(
     private readonly store: AcquisitionPublicSearchStore,
@@ -421,6 +491,7 @@ implements SearchPublicSourcesPort {
     );
     this.executeSearch = options.executeSearch
       || (async (input) => executeProviderSearch(input));
+    this.credentialSecret = options.credentialSecret;
   }
 
   async search(
@@ -432,7 +503,7 @@ implements SearchPublicSourcesPort {
     if (!provider) {
       throw new AcquisitionPublicSearchPortError("PROVIDER_NOT_SUPPORTED");
     }
-    assertReadableByokConnection(connection);
+    assertReadableByokConnection(connection, this.credentialSecret);
 
     const catalog = this.store.providerCatalog.find((item) =>
       item.code === provider.id
