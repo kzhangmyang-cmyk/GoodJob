@@ -453,16 +453,34 @@ function assertReadableByokConnection(
   credentialSecret: string | undefined
 ) {
   try {
-    const credential = credentialSecret === undefined
-      ? decryptProviderConfiguration(
-          connection,
-          connection.configurationEncrypted
-        )
-      : decryptProviderConfigurationWithSecret(
+    let credential;
+    if (credentialSecret === undefined) {
+      credential = decryptProviderConfiguration(
+        connection,
+        connection.configurationEncrypted
+      );
+    } else {
+      try {
+        credential = decryptProviderConfigurationWithSecret(
           connection,
           connection.configurationEncrypted,
           credentialSecret
         );
+      } catch (error) {
+        const acquisitionV1 = connection.quotaPolicy?.acquisitionV1;
+        if (
+          acquisitionV1
+          && typeof acquisitionV1 === "object"
+          && !Array.isArray(acquisitionV1)
+        ) {
+          throw error;
+        }
+        credential = decryptProviderConfiguration(
+          connection,
+          connection.configurationEncrypted
+        );
+      }
+    }
     if (!credential.apiKey.trim() || !connection.credentialRef.trim()) {
       throw new Error("missing credential");
     }

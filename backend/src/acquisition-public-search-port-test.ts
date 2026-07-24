@@ -591,6 +591,33 @@ test("decrypts BYOK configuration with an explicit credential secret and rejects
   );
 });
 
+test("keeps legacy BYOK connections readable during acquisition credential migration", async () => {
+  const legacy = connection("baidu_ai_search");
+  let executionCount = 0;
+  const executeSearch: AcquisitionProviderSearchExecutor = async (input) => {
+    executionCount += 1;
+    input.onLogs([
+      requestLog({
+        provider: input.provider,
+        connection: input.connection,
+        runId: input.context.runId
+      })
+    ]);
+    return { ...providerPage(), records: [] };
+  };
+
+  const response = await createAcquisitionPublicSearchPort(
+    createStore({ connections: [legacy] }),
+    {
+      executeSearch,
+      credentialSecret: EXPLICIT_CREDENTIAL_SECRET
+    }
+  ).search(searchInput({ subjectKinds: ["organization"] }));
+
+  assert.equal(response.provider, "baidu_ai_search");
+  assert.equal(executionCount, 1);
+});
+
 test("does not misclassify an organization page merely because its snippet mentions a decision maker", async () => {
   const store = createStore();
   const executeSearch: AcquisitionProviderSearchExecutor = async (input) => {
