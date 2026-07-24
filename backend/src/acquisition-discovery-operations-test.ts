@@ -91,6 +91,117 @@ function serviceFixture(input: {
   return { service, repository, sink };
 }
 
+const ZIP_CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
+const ZIP_LOCAL_FILE_SIGNATURE = 0x04034b50;
+const ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06054b50;
+
+function simpleXlsxBuffer() {
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet([
+    ["标题", "摘要"],
+    ["公开商机", "客户正在寻找 CRM"]
+  ]);
+  XLSX.utils.book_append_sheet(workbook, sheet, "线索");
+  return Buffer.from(XLSX.write(workbook, {
+    type: "buffer",
+    bookType: "xlsx"
+  }) as Buffer);
+}
+
+function zipEocdOffset(buffer: Buffer) {
+  for (let offset = buffer.length - 22; offset >= 0; offset -= 1) {
+    if (buffer.readUInt32LE(offset)
+      === ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+      return offset;
+    }
+  }
+  throw new Error("test XLSX has no EOCD");
+}
+
+function zipCentralEntries(buffer: Buffer) {
+  const eocd = zipEocdOffset(buffer);
+  const totalEntries = buffer.readUInt16LE(eocd + 10);
+  let offset = buffer.readUInt32LE(eocd + 16);
+  const entries: Array<{
+    offset: number;
+    localOffset: number;
+    name: string;
+  }> = [];
+  for (let index = 0; index < totalEntries; index += 1) {
+    assert.equal(
+      buffer.readUInt32LE(offset),
+      ZIP_CENTRAL_DIRECTORY_SIGNATURE
+    );
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    entries.push({
+      offset,
+      localOffset: buffer.readUInt32LE(offset + 42),
+      name: buffer.subarray(
+        offset + 46,
+        offset + 46 + nameLength
+      ).toString("utf8")
+    });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function replaceCentralEntryName(
+  source: Buffer,
+  currentName: string,
+  dangerousName: string
+) {
+  assert.equal(
+    Buffer.byteLength(dangerousName),
+    Buffer.byteLength(currentName)
+  );
+  const buffer = Buffer.from(source);
+  const entry = zipCentralEntries(buffer)
+    .find((candidate) => candidate.name === currentName);
+  assert.ok(entry);
+  buffer.write(dangerousName, entry.offset + 46, "utf8");
+  return buffer;
+}
+
+async function assertRejectedXlsx(
+  content: Buffer,
+  idempotencyKey: string,
+  code: "IMPORT_ARTIFACT_INVALID" | "IMPORT_LIMIT_EXCEEDED"
+) {
+  const fixture = serviceFixture();
+  const created = await fixture.service.createImportOperation(
+    scope,
+    {
+      fileName: "不安全.xlsx",
+      mediaType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      content,
+      subjectChannel: "organization",
+      columnMapping: {
+        sourceTitle: "标题",
+        sourceSnippet: "摘要"
+      }
+    },
+    idempotencyKey
+  );
+  await assert.rejects(
+    fixture.service.executeImportOperation(scope, created.id),
+    (error: unknown) =>
+      error instanceof AcquisitionDiscoveryOperationError
+      && error.code === code
+      && error.message === code
+  );
+  const failed = await fixture.service.getImportOperation(
+    scope,
+    created.id
+  );
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.errorCode, code);
+  assert.equal(fixture.sink.appended.length, 0);
+}
+
 test("content fetch operation is idempotent, tenant scoped, and appends public evidence", async () => {
   const fixture = serviceFixture();
   const created = await fixture.service.createContentFetchOperation(
@@ -494,4 +605,193 @@ test("controlled content fetcher blocks unsafe URLs and parses bounded public HT
   } finally {
     setProviderHttpTestTransport(null);
   }
+});
+
+test("content fetch operation rejects secret-bearing query parameter names before persistence", async () => {
+  const fixture = serviceFixture();
+  const unsafeUrls = [
+    "https://example.com/public?api_key=secret",
+    "https://example.com/public?Api-Key=secret",
+    "https://example.com/public?access.token=secret",
+    "https://example.com/public?client_secret=secret",
+    "https://example.com/public?secret-key=secret",
+    "https://example.com/public?password=secret",
+    "https://example.com/public?password_hint=secret",
+    "https://example.com/public?X-Amz-Signature=secret",
+    "https://example.com/public?credential=secret",
+    "https://example.com/public?credential-id=secret"
+  ];
+
+  for (const [index, sourceUrl] of unsafeUrls.entries()) {
+    await assert.rejects(
+      fixture.service.createContentFetchOperation(
+        scope,
+        {
+          sourceUrl,
+          subjectChannel: "organization"
+        },
+        `secret-query-${index}`
+      ),
+      (error: unknown) =>
+        error instanceof AcquisitionDiscoveryOperationError
+        && error.code === "UNSAFE_SOURCE_URL"
+        && error.message === "UNSAFE_SOURCE_URL"
+    );
+  }
+
+  assert.equal(fixture.repository.size("fetch"), 0);
+  const safe = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://example.com/public?page=2&industry=crm",
+      subjectChannel: "organization"
+    },
+    "safe-query"
+  );
+  assert.equal(safe.status, "queued");
+});
+
+test("controlled content fetcher requests identity encoding and rejects compressed responses", async () => {
+  const fetcher = new ControlledPublicContentFetcher({
+    maxResponseBytes: 32 * 1024,
+    timeoutMs: 1_000
+  });
+  let observedAcceptEncoding = "";
+  setProviderHttpTestTransport(async (_url, init) => {
+    observedAcceptEncoding =
+      new Headers(init.headers).get("accept-encoding") ?? "";
+    return new Response("<html><body>compressed</body></html>", {
+      status: 200,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "content-encoding": "gzip"
+      }
+    });
+  });
+  try {
+    await assert.rejects(
+      fetcher.fetch("https://public.example.com/compressed"),
+      (error: unknown) =>
+        error instanceof AcquisitionDiscoveryOperationError
+        && error.code === "CONTENT_FETCH_FAILED"
+        && error.message === "CONTENT_FETCH_FAILED"
+    );
+    assert.equal(observedAcceptEncoding, "identity");
+  } finally {
+    setProviderHttpTestTransport(null);
+  }
+});
+
+test("XLSX import rejects excessive total uncompressed bytes from the central directory", async () => {
+  const buffer = simpleXlsxBuffer();
+  const entry = zipCentralEntries(buffer)[0]!;
+  buffer.writeUInt32LE(26 * 1024 * 1024, entry.offset + 24);
+
+  await assertRejectedXlsx(
+    buffer,
+    "xlsx-total-uncompressed-limit",
+    "IMPORT_LIMIT_EXCEEDED"
+  );
+});
+
+test("XLSX import rejects central-directory compression ratios above 100", async () => {
+  const buffer = simpleXlsxBuffer();
+  const entry = zipCentralEntries(buffer)
+    .find((candidate) => {
+      const compressed = buffer.readUInt32LE(candidate.offset + 20);
+      return compressed > 0 && compressed < 10_000;
+    });
+  assert.ok(entry);
+  const compressed = buffer.readUInt32LE(entry.offset + 20);
+  buffer.writeUInt32LE(compressed * 101, entry.offset + 24);
+
+  await assertRejectedXlsx(
+    buffer,
+    "xlsx-ratio-limit",
+    "IMPORT_LIMIT_EXCEEDED"
+  );
+});
+
+test("XLSX import rejects archives claiming more than 2000 entries", async () => {
+  const buffer = simpleXlsxBuffer();
+  const eocd = zipEocdOffset(buffer);
+  buffer.writeUInt16LE(2_001, eocd + 8);
+  buffer.writeUInt16LE(2_001, eocd + 10);
+
+  await assertRejectedXlsx(
+    buffer,
+    "xlsx-entry-limit",
+    "IMPORT_LIMIT_EXCEEDED"
+  );
+});
+
+test("XLSX import rejects ZIP64 and encrypted central-directory entries", async () => {
+  const zip64 = simpleXlsxBuffer();
+  const zip64Entry = zipCentralEntries(zip64)[0]!;
+  assert.equal(
+    zip64.readUInt32LE(zip64Entry.localOffset),
+    ZIP_LOCAL_FILE_SIGNATURE
+  );
+  zip64.writeUInt16LE(45, zip64Entry.offset + 6);
+  zip64.writeUInt16LE(45, zip64Entry.localOffset + 4);
+  await assertRejectedXlsx(
+    zip64,
+    "xlsx-zip64",
+    "IMPORT_ARTIFACT_INVALID"
+  );
+
+  const encrypted = simpleXlsxBuffer();
+  const encryptedEntry = zipCentralEntries(encrypted)[0]!;
+  encrypted.writeUInt16LE(
+    encrypted.readUInt16LE(encryptedEntry.offset + 8) | 0x0001,
+    encryptedEntry.offset + 8
+  );
+  encrypted.writeUInt16LE(
+    encrypted.readUInt16LE(encryptedEntry.localOffset + 6) | 0x0001,
+    encryptedEntry.localOffset + 6
+  );
+  await assertRejectedXlsx(
+    encrypted,
+    "xlsx-encrypted",
+    "IMPORT_ARTIFACT_INVALID"
+  );
+});
+
+test("XLSX import rejects macro and external-link package entries", async () => {
+  const macro = replaceCentralEntryName(
+    simpleXlsxBuffer(),
+    "docProps/core.xml",
+    "xl/vbaProject.bin"
+  );
+  await assertRejectedXlsx(
+    macro,
+    "xlsx-macro",
+    "IMPORT_ARTIFACT_INVALID"
+  );
+
+  const externalLink = replaceCentralEntryName(
+    simpleXlsxBuffer(),
+    "xl/theme/theme1.xml",
+    "xl/externalLinks/a1"
+  );
+  await assertRejectedXlsx(
+    externalLink,
+    "xlsx-external-link",
+    "IMPORT_ARTIFACT_INVALID"
+  );
+});
+
+test("XLSX import rejects malformed central-directory boundaries", async () => {
+  const buffer = simpleXlsxBuffer();
+  const eocd = zipEocdOffset(buffer);
+  buffer.writeUInt32LE(
+    buffer.readUInt32LE(eocd + 12) + 1,
+    eocd + 12
+  );
+
+  await assertRejectedXlsx(
+    buffer,
+    "xlsx-malformed-central-directory",
+    "IMPORT_ARTIFACT_INVALID"
+  );
 });
