@@ -110,6 +110,16 @@ test("authorized imports use bounded raw media types rather than base64 JSON", (
 
 test("provider connection response and deletion contracts match the runtime", () => {
   const paths = createAcquisitionOpenApiPaths();
+  const providers = paths[
+    "/api/v1/acquisition/providers"
+  ]!.get as Record<string, any>;
+  const providerItem = providers.responses["200"]
+    .content["application/json"].schema.properties.items.items;
+  assert.ok(providerItem.properties.officialDocsUrl);
+  assert.ok(providerItem.properties.defaultBaseUrl);
+  assert.ok(providerItem.properties.requiresKey);
+  assert.ok(providerItem.properties.keyHint);
+
   const created = paths[
     "/api/v1/acquisition/provider-connections"
   ]!.post as Record<string, any>;

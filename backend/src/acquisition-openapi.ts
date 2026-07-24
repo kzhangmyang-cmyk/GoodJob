@@ -70,6 +70,35 @@ const providerConnectionSchema = {
   additionalProperties: false
 };
 
+const acquisitionProviderSchema = {
+  type: "object",
+  required: ["id", "kind", "displayName", "capabilities"],
+  properties: {
+    id: { type: "string" },
+    kind: {
+      type: "string",
+      enum: ["search", "content_fetch", "import"]
+    },
+    displayName: { type: "string" },
+    officialDocsUrl: {
+      type: "string",
+      format: "uri"
+    },
+    defaultBaseUrl: {
+      type: "string",
+      format: "uri"
+    },
+    requiresKey: { type: "boolean" },
+    keyHint: { type: "string" },
+    costNote: { type: "string" },
+    capabilities: {
+      type: "array",
+      items: { type: "string" }
+    }
+  },
+  additionalProperties: false
+};
+
 function response(
   description: string,
   schema: Record<string, unknown> = resourceSchema
@@ -197,7 +226,24 @@ const providerConnectionWriteSchema = {
 function addProviderPaths(paths: AcquisitionOpenApiPaths) {
   add(paths, "/api/v1/acquisition/providers", "get", operation(
     "get",
-    "列出中国及国际官方搜索服务商和系统数据源"
+    "列出中国及国际官方搜索服务商和系统数据源",
+    {
+      responses: standardResponses(200, "数据源目录", {
+        type: "object",
+        required: ["items", "nextCursor"],
+        properties: {
+          items: {
+            type: "array",
+            items: acquisitionProviderSchema
+          },
+          nextCursor: {
+            type: "string",
+            nullable: true
+          }
+        },
+        additionalProperties: false
+      })
+    }
   ));
   add(
     paths,
