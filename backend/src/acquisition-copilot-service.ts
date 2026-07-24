@@ -2,6 +2,7 @@ import {
   createHmac,
   randomUUID
 } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   AgentMessage
 } from "@earendil-works/pi-agent-core";
@@ -36,6 +37,7 @@ export interface AcquisitionCopilotTask {
   kind: "message";
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   prompt: string;
+  inputMessageId?: string;
   result: {
     summary: string;
     toolNames: string[];
@@ -68,6 +70,7 @@ export interface AcquisitionCopilotIdempotencyRecord {
 }
 
 export interface AcquisitionCopilotRepository {
+  transaction<T>(work: () => Promise<T>): Promise<T>;
   insertSession(session: AcquisitionCopilotSession): Promise<void>;
   saveSession(session: AcquisitionCopilotSession): Promise<void>;
   findSession(
@@ -112,29 +115,88 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
+interface InMemoryAcquisitionCopilotState {
+  sessions: Map<string, AcquisitionCopilotSession>;
+  tasks: Map<string, AcquisitionCopilotTask>;
+  taskDispatchClaims: Set<string>;
+  messages: AcquisitionCopilotMessage[];
+  idempotency: Map<string, AcquisitionCopilotIdempotencyRecord>;
+}
+
+function emptyCopilotState(): InMemoryAcquisitionCopilotState {
+  return {
+    sessions: new Map(),
+    tasks: new Map(),
+    taskDispatchClaims: new Set(),
+    messages: [],
+    idempotency: new Map()
+  };
+}
+
+function cloneCopilotState(
+  state: InMemoryAcquisitionCopilotState
+): InMemoryAcquisitionCopilotState {
+  return {
+    sessions: new Map(
+      [...state.sessions].map(([key, value]) => [key, clone(value)])
+    ),
+    tasks: new Map(
+      [...state.tasks].map(([key, value]) => [key, clone(value)])
+    ),
+    taskDispatchClaims: new Set(state.taskDispatchClaims),
+    messages: state.messages.map((message) => clone(message)),
+    idempotency: new Map(
+      [...state.idempotency].map(([key, value]) => [key, clone(value)])
+    )
+  };
+}
+
 export class InMemoryAcquisitionCopilotRepository
 implements AcquisitionCopilotRepository {
-  readonly #sessions = new Map<string, AcquisitionCopilotSession>();
-  readonly #tasks = new Map<string, AcquisitionCopilotTask>();
-  readonly #taskDispatchClaims = new Set<string>();
-  readonly #messages: AcquisitionCopilotMessage[] = [];
-  readonly #idempotency = new Map<string, AcquisitionCopilotIdempotencyRecord>();
+  #state = emptyCopilotState();
+  readonly #transactionContext =
+    new AsyncLocalStorage<InMemoryAcquisitionCopilotState>();
+  #transactionTail: Promise<void> = Promise.resolve();
+
+  #currentState() {
+    return this.#transactionContext.getStore() ?? this.#state;
+  }
+
+  async transaction<T>(work: () => Promise<T>): Promise<T> {
+    if (this.#transactionContext.getStore()) return work();
+    let release!: () => void;
+    const previous = this.#transactionTail;
+    this.#transactionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    const draft = cloneCopilotState(this.#state);
+    try {
+      const result = await this.#transactionContext.run(draft, work);
+      this.#state = draft;
+      return result;
+    } finally {
+      release();
+    }
+  }
 
   async insertSession(session: AcquisitionCopilotSession) {
-    if (this.#sessions.has(session.id)) throw new Error("SESSION_EXISTS");
-    this.#sessions.set(session.id, clone(session));
+    const state = this.#currentState();
+    if (state.sessions.has(session.id)) throw new Error("SESSION_EXISTS");
+    state.sessions.set(session.id, clone(session));
   }
 
   async saveSession(session: AcquisitionCopilotSession) {
-    if (!this.#sessions.has(session.id)) throw new Error("SESSION_NOT_FOUND");
-    this.#sessions.set(session.id, clone(session));
+    const state = this.#currentState();
+    if (!state.sessions.has(session.id)) throw new Error("SESSION_NOT_FOUND");
+    state.sessions.set(session.id, clone(session));
   }
 
   async findSession(
     scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
     sessionId: string
   ) {
-    const session = this.#sessions.get(sessionId);
+    const session = this.#currentState().sessions.get(sessionId);
     return session
       && session.ownerId === scope.ownerId
       && session.teamId === scope.teamId
@@ -143,20 +205,22 @@ implements AcquisitionCopilotRepository {
   }
 
   async insertTask(task: AcquisitionCopilotTask) {
-    if (this.#tasks.has(task.id)) throw new Error("TASK_EXISTS");
-    this.#tasks.set(task.id, clone(task));
+    const state = this.#currentState();
+    if (state.tasks.has(task.id)) throw new Error("TASK_EXISTS");
+    state.tasks.set(task.id, clone(task));
   }
 
   async saveTask(task: AcquisitionCopilotTask) {
-    if (!this.#tasks.has(task.id)) throw new Error("TASK_NOT_FOUND");
-    this.#tasks.set(task.id, clone(task));
+    const state = this.#currentState();
+    if (!state.tasks.has(task.id)) throw new Error("TASK_NOT_FOUND");
+    state.tasks.set(task.id, clone(task));
   }
 
   async findTask(
     scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
     taskId: string
   ) {
-    const task = this.#tasks.get(taskId);
+    const task = this.#currentState().tasks.get(taskId);
     return task
       && task.ownerId === scope.ownerId
       && task.teamId === scope.teamId
@@ -168,15 +232,16 @@ implements AcquisitionCopilotRepository {
     scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
     taskId: string
   ) {
-    const task = this.#tasks.get(taskId);
+    const state = this.#currentState();
+    const task = state.tasks.get(taskId);
     if (!task
       || task.ownerId !== scope.ownerId
       || task.teamId !== scope.teamId
       || task.status !== "queued"
-      || this.#taskDispatchClaims.has(taskId)) {
+      || state.taskDispatchClaims.has(taskId)) {
       return false;
     }
-    this.#taskDispatchClaims.add(taskId);
+    state.taskDispatchClaims.add(taskId);
     return true;
   }
 
@@ -184,10 +249,11 @@ implements AcquisitionCopilotRepository {
     now: string;
     staleRunningBefore: string;
   }) {
+    const state = this.#currentState();
     const recoverable: AcquisitionCopilotTask[] = [];
-    for (const [taskId, task] of this.#tasks) {
+    for (const [taskId, task] of state.tasks) {
       if (task.status === "queued") {
-        this.#taskDispatchClaims.delete(taskId);
+        state.taskDispatchClaims.delete(taskId);
         recoverable.push(clone(task));
         continue;
       }
@@ -195,7 +261,7 @@ implements AcquisitionCopilotRepository {
         && task.startedAt
         && Date.parse(task.startedAt)
           <= Date.parse(input.staleRunningBefore)) {
-        this.#tasks.set(taskId, {
+        state.tasks.set(taskId, {
           ...task,
           status: "failed",
           result: null,
@@ -213,7 +279,7 @@ implements AcquisitionCopilotRepository {
     scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
     sessionId: string
   ) {
-    return [...this.#tasks.values()]
+    return [...this.#currentState().tasks.values()]
       .filter((task) =>
         task.ownerId === scope.ownerId
         && task.teamId === scope.teamId
@@ -223,19 +289,20 @@ implements AcquisitionCopilotRepository {
   }
 
   async appendMessages(messages: AcquisitionCopilotMessage[]) {
-    const existingIds = new Set(this.#messages.map((message) => message.id));
+    const state = this.#currentState();
+    const existingIds = new Set(state.messages.map((message) => message.id));
     for (const message of messages) {
       if (existingIds.has(message.id)) throw new Error("MESSAGE_EXISTS");
       existingIds.add(message.id);
-      this.#messages.push(clone(message));
     }
+    state.messages.push(...messages.map((message) => clone(message)));
   }
 
   async listMessages(
     scope: Pick<AcquisitionCopilotScope, "ownerId" | "teamId">,
     sessionId: string
   ) {
-    return this.#messages
+    return this.#currentState().messages
       .filter((message) =>
         message.ownerId === scope.ownerId
         && message.teamId === scope.teamId
@@ -251,7 +318,7 @@ implements AcquisitionCopilotRepository {
     operation: AcquisitionCopilotIdempotencyRecord["operation"];
     keyHash: string;
   }) {
-    const record = this.#idempotency.get([
+    const record = this.#currentState().idempotency.get([
       input.ownerId,
       input.teamId,
       input.operation,
@@ -261,14 +328,15 @@ implements AcquisitionCopilotRepository {
   }
 
   async appendIdempotency(record: AcquisitionCopilotIdempotencyRecord) {
+    const state = this.#currentState();
     const key = [
       record.ownerId,
       record.teamId,
       record.operation,
       record.keyHash
     ].join(":");
-    if (this.#idempotency.has(key)) throw new Error("IDEMPOTENCY_EXISTS");
-    this.#idempotency.set(key, clone(record));
+    if (state.idempotency.has(key)) throw new Error("IDEMPOTENCY_EXISTS");
+    state.idempotency.set(key, clone(record));
   }
 }
 
@@ -510,8 +578,11 @@ export class AcquisitionCopilotService {
       { sessionId: session.id, prompt },
       "task",
       async () => {
+        const now = this.#now();
+        const taskId = this.#idFactory("copilot-task");
+        const inputMessageId = this.#idFactory("copilot-message");
         const task: AcquisitionCopilotTask = {
-          id: this.#idFactory("copilot-task"),
+          id: taskId,
           ownerId: scope.ownerId,
           teamId: scope.teamId,
           actorId: scope.actorId,
@@ -519,12 +590,30 @@ export class AcquisitionCopilotService {
           kind: "message",
           status: "queued",
           prompt,
+          inputMessageId,
           result: null,
           errorCode: null,
-          createdAt: this.#now(),
+          createdAt: now,
           startedAt: null,
           completedAt: null
         };
+        const existing = await this.#repository.listMessages(
+          scope,
+          session.id
+        );
+        await this.#repository.appendMessages([{
+          id: inputMessageId,
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          sessionId: session.id,
+          sequence: existing.length + 1,
+          message: {
+            role: "user",
+            content: prompt,
+            timestamp: Date.parse(now)
+          },
+          createdAt: now
+        }]);
         await this.#repository.insertTask(task);
         return task;
       }
@@ -690,18 +779,35 @@ export class AcquisitionCopilotService {
         scope,
         session.id
       );
+      const sessionTasks = await this.#repository.listTasks(
+        scope,
+        session.id
+      );
+      const pendingInputMessageIds = new Set(
+        sessionTasks
+          .filter((candidate) =>
+            candidate.status === "queued" || candidate.status === "running"
+          )
+          .map((candidate) => candidate.inputMessageId)
+          .filter((id): id is string => Boolean(id))
+      );
       const response = await this.#runner.run({
         ownerId: scope.ownerId,
         teamId: scope.teamId,
         actorId: scope.actorId,
         sessionId: session.id,
         snapshot: clone(session.modelSnapshot),
-        transcript: existing.map((record) => clone(record.message)),
+        transcript: existing
+          .filter((record) => !pendingInputMessageIds.has(record.id))
+          .map((record) => clone(record.message)),
         prompt: task.prompt
       });
       this.#validateNewMessages(response.newMessages, task.prompt);
       const startSequence = existing.length;
-      const messages = response.newMessages.map(
+      const newMessages = task.inputMessageId
+        ? response.newMessages.slice(1)
+        : response.newMessages;
+      const messages = newMessages.map(
         (message, index): AcquisitionCopilotMessage => ({
           id: this.#idFactory("copilot-message"),
           ownerId: scope.ownerId,
@@ -712,7 +818,6 @@ export class AcquisitionCopilotService {
           createdAt: this.#now()
         })
       );
-      await this.#repository.appendMessages(messages);
       task = {
         ...task,
         status: "succeeded",
@@ -720,7 +825,10 @@ export class AcquisitionCopilotService {
         errorCode: null,
         completedAt: this.#now()
       };
-      await this.#repository.saveTask(task);
+      await this.#repository.transaction(async () => {
+        await this.#repository.appendMessages(messages);
+        await this.#repository.saveTask(task);
+      });
       return task;
     } catch (error) {
       task = {
@@ -799,38 +907,54 @@ export class AcquisitionCopilotService {
       }
       return clone(resource);
     }
-    const command = (async () => {
-      const existing = await this.#repository.findIdempotency({
-        ownerId: scope.ownerId,
-        teamId: scope.teamId,
-        operation,
-        keyHash
-      });
-      if (existing) {
-        if (existing.requestHash !== requestHash) {
-          throw new AcquisitionCopilotError(
-            "idempotency_conflict",
-            "相同 Idempotency-Key 对应了不同请求",
-            409
-          );
-        }
-        if (existing.resourceType === "session") {
-          return this.getSession(scope, existing.resourceId);
-        }
-        return this.#requireTask(scope, existing.resourceId);
+    const replay = async (
+      existing: AcquisitionCopilotIdempotencyRecord
+    ) => {
+      if (existing.requestHash !== requestHash) {
+        throw new AcquisitionCopilotError(
+          "idempotency_conflict",
+          "相同 Idempotency-Key 对应了不同请求",
+          409
+        );
       }
-      const resource = await create();
-      await this.#repository.appendIdempotency({
-        ownerId: scope.ownerId,
-        teamId: scope.teamId,
-        operation,
-        keyHash,
-        requestHash,
-        resourceType,
-        resourceId: resource.id,
-        createdAt: this.#now()
-      });
-      return resource;
+      if (existing.resourceType === "session") {
+        return this.getSession(scope, existing.resourceId);
+      }
+      return this.#requireTask(scope, existing.resourceId);
+    };
+    const command = (async () => {
+      try {
+        return await this.#repository.transaction(async () => {
+          const existing = await this.#repository.findIdempotency({
+            ownerId: scope.ownerId,
+            teamId: scope.teamId,
+            operation,
+            keyHash
+          });
+          if (existing) return replay(existing);
+          const resource = await create();
+          await this.#repository.appendIdempotency({
+            ownerId: scope.ownerId,
+            teamId: scope.teamId,
+            operation,
+            keyHash,
+            requestHash,
+            resourceType,
+            resourceId: resource.id,
+            createdAt: this.#now()
+          });
+          return resource;
+        });
+      } catch (error) {
+        const committed = await this.#repository.findIdempotency({
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          operation,
+          keyHash
+        });
+        if (committed) return replay(committed);
+        throw error;
+      }
     })();
     this.#inFlightCommands.set(commandKey, command);
     try {

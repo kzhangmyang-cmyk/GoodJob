@@ -1199,10 +1199,33 @@ implements AcquisitionDomainRepository {
 
 export class MysqlAcquisitionCopilotRepository
 implements AcquisitionCopilotRepository {
+  private readonly transactionContext =
+    new AsyncLocalStorage<QuerySource>();
+
   constructor(private readonly pool: mysql.Pool) {}
 
+  private source() {
+    return this.transactionContext.getStore() ?? this.pool;
+  }
+
+  async transaction<T>(work: () => Promise<T>): Promise<T> {
+    if (this.transactionContext.getStore()) return work();
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const result = await this.transactionContext.run(connection, work);
+      await connection.commit();
+      return result;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
   async insertSession(record: AcquisitionCopilotSession) {
-    await this.pool.query(
+    await this.source().query(
       `INSERT INTO acquisition_copilot_sessions
        (id, owner_id, team_id, actor_id, status, payload_json,
         created_at, updated_at, completed_at)
@@ -1229,7 +1252,7 @@ implements AcquisitionCopilotRepository {
       .map((status) => `'${status}'`)
       .join(", ");
     const count = await affected(
-      this.pool,
+      this.source(),
       `UPDATE acquisition_copilot_sessions
        SET status = ?, payload_json = ?,
            updated_at = ?, completed_at = ?
@@ -1251,7 +1274,7 @@ implements AcquisitionCopilotRepository {
 
   async findSession(scope: Scope, sessionId: string) {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT *
        FROM acquisition_copilot_sessions
        WHERE id = ? AND owner_id = ? AND team_id = ?
@@ -1264,7 +1287,7 @@ implements AcquisitionCopilotRepository {
   }
 
   async insertTask(record: AcquisitionCopilotTask) {
-    await this.pool.query(
+    await this.source().query(
       `INSERT INTO acquisition_copilot_tasks
        (id, owner_id, team_id, actor_id, session_id, status, payload_json,
         dispatch_claimed_at, dispatch_lease_until, dispatch_attempts,
@@ -1300,7 +1323,7 @@ implements AcquisitionCopilotRepository {
       .map((status) => `'${status}'`)
       .join(", ");
     const count = await affected(
-      this.pool,
+      this.source(),
       `UPDATE acquisition_copilot_tasks
        SET status = ?, payload_json = ?,
            started_at = ?, completed_at = ?
@@ -1324,7 +1347,7 @@ implements AcquisitionCopilotRepository {
 
   async findTask(scope: Scope, taskId: string) {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT *
        FROM acquisition_copilot_tasks
        WHERE id = ? AND owner_id = ? AND team_id = ?
@@ -1338,7 +1361,7 @@ implements AcquisitionCopilotRepository {
 
   async claimTaskDispatch(scope: Scope, taskId: string) {
     const count = await affected(
-      this.pool,
+      this.source(),
       `UPDATE acquisition_copilot_tasks
        SET dispatch_claimed_at = UTC_TIMESTAMP(3),
            dispatch_lease_until = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 5 MINUTE),
@@ -1359,7 +1382,7 @@ implements AcquisitionCopilotRepository {
     staleRunningBefore: string;
   }) {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT *
        FROM acquisition_copilot_tasks
        WHERE (
@@ -1385,7 +1408,7 @@ implements AcquisitionCopilotRepository {
     for (const task of tasks) {
       if (task.status === "queued") {
         const released = await affected(
-          this.pool,
+          this.source(),
           `UPDATE acquisition_copilot_tasks
            SET dispatch_claimed_at = NULL,
                dispatch_lease_until = NULL
@@ -1413,7 +1436,7 @@ implements AcquisitionCopilotRepository {
         completedAt: input.now
       };
       await affected(
-        this.pool,
+        this.source(),
         `UPDATE acquisition_copilot_tasks
          SET status = 'failed',
              payload_json = ?,
@@ -1437,7 +1460,7 @@ implements AcquisitionCopilotRepository {
 
   async listTasks(scope: Scope, sessionId: string) {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT *
        FROM acquisition_copilot_tasks
        WHERE session_id = ? AND owner_id = ? AND team_id = ?
@@ -1448,7 +1471,9 @@ implements AcquisitionCopilotRepository {
       ownedPayload<AcquisitionCopilotTask>(row, "copilot_task"));
   }
 
-  async appendMessages(records: AcquisitionCopilotMessage[]) {
+  async appendMessages(
+    records: AcquisitionCopilotMessage[]
+  ): Promise<void> {
     if (records.length === 0) return;
     const scope = {
       ownerId: records[0]!.ownerId,
@@ -1468,65 +1493,60 @@ implements AcquisitionCopilotRepository {
       if (messageIds.has(record.id)) throw new Error("MESSAGE_EXISTS");
       messageIds.add(record.id);
     }
-    const connection = await this.pool.getConnection();
-    try {
-      await connection.beginTransaction();
-      const sessionRows = await rows(
-        connection,
-        `SELECT id
-         FROM acquisition_copilot_sessions
-         WHERE id = ? AND owner_id = ? AND team_id = ?
-         FOR UPDATE`,
-        [scope.sessionId, scope.ownerId, scope.teamId]
-      );
-      if (!sessionRows[0]) throw new Error("SESSION_NOT_FOUND");
-      const sequenceRows = await rows(
-        connection,
-        `SELECT COALESCE(MAX(sequence_no), 0) AS max_sequence
-         FROM acquisition_copilot_messages
-         WHERE session_id = ? AND owner_id = ? AND team_id = ?`,
-        [scope.sessionId, scope.ownerId, scope.teamId]
-      );
-      const maxSequence = Number(sequenceRows[0]?.max_sequence ?? 0);
-      if (!Number.isSafeInteger(maxSequence) || maxSequence < 0) {
-        throw new Error(
-          "ACQUISITION_MYSQL_INTEGRITY:copilot_message:max_sequence"
-        );
-      }
-      const rebased = records.map((record, index) => ({
-        ...record,
-        sequence: maxSequence + index + 1
-      }));
-      const placeholders = rebased
-        .map(() => "(?, ?, ?, ?, ?, ?, ?)")
-        .join(", ");
-      await connection.query(
-        `INSERT INTO acquisition_copilot_messages
-         (id, owner_id, team_id, session_id, sequence_no,
-          payload_json, created_at)
-         VALUES ${placeholders}`,
-        rebased.flatMap((record) => [
-          record.id,
-          record.ownerId,
-          record.teamId,
-          record.sessionId,
-          record.sequence,
-          json(record),
-          mysqlDate(record.createdAt)
-        ])
-      );
-      await connection.commit();
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
+    if (!this.transactionContext.getStore()) {
+      await this.transaction(() => this.appendMessages(records));
+      return;
     }
+    const source = this.source();
+    const sessionRows = await rows(
+      source,
+      `SELECT id
+       FROM acquisition_copilot_sessions
+       WHERE id = ? AND owner_id = ? AND team_id = ?
+       FOR UPDATE`,
+      [scope.sessionId, scope.ownerId, scope.teamId]
+    );
+    if (!sessionRows[0]) throw new Error("SESSION_NOT_FOUND");
+    const sequenceRows = await rows(
+      source,
+      `SELECT COALESCE(MAX(sequence_no), 0) AS max_sequence
+       FROM acquisition_copilot_messages
+       WHERE session_id = ? AND owner_id = ? AND team_id = ?`,
+      [scope.sessionId, scope.ownerId, scope.teamId]
+    );
+    const maxSequence = Number(sequenceRows[0]?.max_sequence ?? 0);
+    if (!Number.isSafeInteger(maxSequence) || maxSequence < 0) {
+      throw new Error(
+        "ACQUISITION_MYSQL_INTEGRITY:copilot_message:max_sequence"
+      );
+    }
+    const rebased = records.map((record, index) => ({
+      ...record,
+      sequence: maxSequence + index + 1
+    }));
+    const placeholders = rebased
+      .map(() => "(?, ?, ?, ?, ?, ?, ?)")
+      .join(", ");
+    await source.query(
+      `INSERT INTO acquisition_copilot_messages
+       (id, owner_id, team_id, session_id, sequence_no,
+        payload_json, created_at)
+       VALUES ${placeholders}`,
+      rebased.flatMap((record) => [
+        record.id,
+        record.ownerId,
+        record.teamId,
+        record.sessionId,
+        record.sequence,
+        json(record),
+        mysqlDate(record.createdAt)
+      ])
+    );
   }
 
   async listMessages(scope: Scope, sessionId: string) {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT id, owner_id, team_id, session_id, sequence_no, payload_json
        FROM acquisition_copilot_messages
        WHERE session_id = ? AND owner_id = ? AND team_id = ?
@@ -1557,7 +1577,7 @@ implements AcquisitionCopilotRepository {
     keyHash: string;
   }) {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT owner_id, team_id, operation_name, key_hash, payload_json
        FROM acquisition_copilot_idempotency
        WHERE owner_id = ? AND team_id = ?
@@ -1582,7 +1602,7 @@ implements AcquisitionCopilotRepository {
   }
 
   async appendIdempotency(record: AcquisitionCopilotIdempotencyRecord) {
-    await this.pool.query(
+    await this.source().query(
       `INSERT INTO acquisition_copilot_idempotency
        (owner_id, team_id, operation_name, key_hash,
         request_hash, payload_json, created_at)

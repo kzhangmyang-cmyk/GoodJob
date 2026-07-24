@@ -638,6 +638,37 @@ async function testCopilotClaimIsAtomicAndScoped() {
   assert.match(call.sql, /dispatch_attempts = dispatch_attempts \+ 1/);
 }
 
+async function testCopilotTransactionUsesOneConnectionAndRollsBackAtomically() {
+  const pool = new FakePool();
+  const repository = new MysqlAcquisitionCopilotRepository(asPool(pool));
+  const failure = new Error("SIMULATED_COPILOT_CRASH");
+  await assert.rejects(
+    () => repository.transaction(async () => {
+      await repository.insertSession(session());
+      throw failure;
+    }),
+    failure
+  );
+  assert.equal(pool.connection.beginCount, 1);
+  assert.equal(pool.connection.commitCount, 0);
+  assert.equal(pool.connection.rollbackCount, 1);
+  assert.equal(pool.connection.releaseCount, 1);
+  assert.equal(
+    pool.connection.calls.some((call) =>
+      call.sql.startsWith("INSERT INTO acquisition_copilot_sessions")
+    ),
+    true,
+    "copilot writes must share the transaction connection"
+  );
+  assert.equal(
+    pool.calls.some((call) =>
+      call.sql.startsWith("INSERT INTO acquisition_copilot_sessions")
+    ),
+    false,
+    "copilot writes must not escape to the pool during a transaction"
+  );
+}
+
 async function testPlaintextCredentialFieldsAreRejected() {
   const pool = new FakePool();
   const repository = new MysqlAcquisitionCopilotRepository(asPool(pool));
@@ -802,6 +833,7 @@ async function run() {
   await testDomainIdempotencyRestoresTheRequestKeyOnReplay();
   await testCopilotPersistenceIsScopedAndMessageOrderIsDurable();
   await testCopilotClaimIsAtomicAndScoped();
+  await testCopilotTransactionUsesOneConnectionAndRollsBackAtomically();
   await testPlaintextCredentialFieldsAreRejected();
   await testTaskStateUpdateUsesExpectedPreviousState();
   await testRunPersistsImmutableSnapshotColumnsAfterVersion();
