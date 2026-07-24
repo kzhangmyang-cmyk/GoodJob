@@ -83,6 +83,9 @@ import {
   createAcquisitionApplication
 } from "./acquisition-application.js";
 import {
+  resolveAcquisitionMasterSecret
+} from "./acquisition-master-secret.js";
+import {
   AcquisitionRuntimeBridge
 } from "./acquisition-runtime-bridge.js";
 import {
@@ -11536,11 +11539,12 @@ async function startServer() {
   try {
     const acquisitionRuntime = await createAcquisitionApplication({
       store,
-      masterSecret: (
-        process.env.ACQUISITION_MASTER_SECRET
-        || process.env.JWT_SECRET
-        || ""
-      )
+      masterSecret: resolveAcquisitionMasterSecret({
+        nodeEnv: process.env.NODE_ENV,
+        acquisitionMasterSecret:
+          process.env.ACQUISITION_MASTER_SECRET,
+        jwtSecret: process.env.JWT_SECRET
+      })
     });
     acquisitionRuntimeBridge.install(acquisitionRuntime);
   } catch (error) {
