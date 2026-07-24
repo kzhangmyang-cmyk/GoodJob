@@ -179,6 +179,10 @@ export interface AcquisitionDiscoveryOperationRepository {
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string
   ): Promise<AcquisitionContentFetchOperationRecord | null>;
+  listContentFetchOperations(
+    scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
+    limit: number
+  ): Promise<AcquisitionContentFetchOperationRecord[]>;
   claimContentFetchOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string,
@@ -200,6 +204,10 @@ export interface AcquisitionDiscoveryOperationRepository {
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string
   ): Promise<AcquisitionImportOperationRecord | null>;
+  listImportOperations(
+    scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
+    limit: number
+  ): Promise<AcquisitionImportOperationRecord[]>;
   claimImportOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string,
@@ -250,6 +258,17 @@ function validatedScope(scope: AcquisitionDiscoveryScope) {
     teamId: nonEmptyText(scope.teamId, "teamId", 100),
     actorId: nonEmptyText(scope.actorId, "actorId", 100)
   };
+}
+
+function validatedListLimit(value: number | undefined) {
+  const limit = value ?? 50;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new AcquisitionDiscoveryOperationError(
+      "INVALID_REQUEST",
+      "limit 必须为 1 到 100 之间的整数"
+    );
+  }
+  return limit;
 }
 
 function publicFetch(
@@ -342,6 +361,21 @@ implements AcquisitionDiscoveryOperationRepository {
       : null;
   }
 
+  async listContentFetchOperations(
+    scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
+    limit: number
+  ) {
+    return [...this.fetchOperations.values()]
+      .filter((operation) =>
+        operation.ownerId === scope.ownerId
+        && operation.teamId === scope.teamId)
+      .sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt)
+        || right.id.localeCompare(left.id))
+      .slice(0, limit)
+      .map(clone);
+  }
+
   async claimContentFetchOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string,
@@ -407,6 +441,21 @@ implements AcquisitionDiscoveryOperationRepository {
       && operation.teamId === scope.teamId
       ? clone(operation)
       : null;
+  }
+
+  async listImportOperations(
+    scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
+    limit: number
+  ) {
+    return [...this.importOperations.values()]
+      .filter((operation) =>
+        operation.ownerId === scope.ownerId
+        && operation.teamId === scope.teamId)
+      .sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt)
+        || right.id.localeCompare(left.id))
+      .slice(0, limit)
+      .map(clone);
   }
 
   async claimImportOperation(
@@ -645,6 +694,17 @@ const MAX_IMPORT_COLUMNS = 100;
 const MAX_IMPORT_SHEETS = 10;
 const MAX_IMPORT_CELL_LENGTH = 20_000;
 
+function boundedImportContent(result: Buffer) {
+  if (result.length === 0 || result.length > MAX_IMPORT_BYTES) {
+    throw new AcquisitionDiscoveryOperationError(
+      result.length > MAX_IMPORT_BYTES
+        ? "IMPORT_LIMIT_EXCEEDED"
+        : "IMPORT_ARTIFACT_INVALID"
+    );
+  }
+  return result;
+}
+
 function strictBase64(value: string) {
   const normalized = value.trim();
   if (!normalized
@@ -654,15 +714,28 @@ function strictBase64(value: string) {
       "IMPORT_ARTIFACT_INVALID"
     );
   }
-  const result = Buffer.from(normalized, "base64");
-  if (result.length === 0 || result.length > MAX_IMPORT_BYTES) {
+  return boundedImportContent(Buffer.from(normalized, "base64"));
+}
+
+function importContent(
+  input: { content: Uint8Array; contentBase64?: never }
+    | { content?: never; contentBase64: string }
+) {
+  if (input.content !== undefined) {
+    if (!(input.content instanceof Uint8Array)
+      || input.contentBase64 !== undefined) {
+      throw new AcquisitionDiscoveryOperationError(
+        "IMPORT_ARTIFACT_INVALID"
+      );
+    }
+    return boundedImportContent(Buffer.from(input.content));
+  }
+  if (typeof input.contentBase64 !== "string") {
     throw new AcquisitionDiscoveryOperationError(
-      result.length > MAX_IMPORT_BYTES
-        ? "IMPORT_LIMIT_EXCEEDED"
-        : "IMPORT_ARTIFACT_INVALID"
+      "IMPORT_ARTIFACT_INVALID"
     );
   }
-  return result;
+  return strictBase64(input.contentBase64);
 }
 
 function normalizedMapping(
@@ -902,6 +975,12 @@ function operationErrorCode(error: unknown) {
     : "IMPORT_PROCESSING_FAILED";
 }
 
+function contentFetchOperationErrorCode(error: unknown) {
+  return error instanceof AcquisitionDiscoveryOperationError
+    ? error.code
+    : "CONTENT_FETCH_FAILED";
+}
+
 function rowValue(
   record: Map<string, string>,
   column: string | undefined
@@ -949,6 +1028,16 @@ export interface AcquisitionDiscoveryOperationServiceOptions {
   idFactory?: (prefix: string) => string;
   now?: () => string;
 }
+
+export type AcquisitionImportOperationInput = {
+  fileName: string;
+  mediaType: AcquisitionImportOperation["mediaType"];
+  subjectChannel: AcquisitionDiscoverySubjectChannel;
+  columnMapping: AcquisitionImportColumnMapping;
+} & (
+  | { content: Uint8Array; contentBase64?: never }
+  | { content?: never; contentBase64: string }
+);
 
 export class AcquisitionDiscoveryOperationService {
   private readonly repository: AcquisitionDiscoveryOperationRepository;
@@ -1038,6 +1127,19 @@ export class AcquisitionDiscoveryOperationService {
       throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
     }
     return publicFetch(operation);
+  }
+
+  async listContentFetchOperations(
+    rawScope: AcquisitionDiscoveryScope,
+    options: { limit?: number } = {}
+  ) {
+    const scope = validatedScope(rawScope);
+    const operations =
+      await this.repository.listContentFetchOperations(
+        scope,
+        validatedListLimit(options.limit)
+      );
+    return operations.map(publicFetch);
   }
 
   executeContentFetchOperation(
@@ -1132,7 +1234,7 @@ export class AcquisitionDiscoveryOperationService {
       return publicFetch(operation);
     } catch (error) {
       operation.status = "failed";
-      operation.errorCode = operationErrorCode(error);
+      operation.errorCode = contentFetchOperationErrorCode(error);
       operation.completedAt = this.now();
       await this.repository.putContentFetchOperation(operation);
       throw error;
@@ -1141,13 +1243,7 @@ export class AcquisitionDiscoveryOperationService {
 
   async createImportOperation(
     rawScope: AcquisitionDiscoveryScope,
-    input: {
-      fileName: string;
-      mediaType: AcquisitionImportOperation["mediaType"];
-      contentBase64: string;
-      subjectChannel: AcquisitionDiscoverySubjectChannel;
-      columnMapping: AcquisitionImportColumnMapping;
-    },
+    input: AcquisitionImportOperationInput,
     idempotencyKey: string
   ) {
     const scope = validatedScope(rawScope);
@@ -1159,7 +1255,7 @@ export class AcquisitionDiscoveryOperationService {
       || !["organization", "individual"].includes(input.subjectChannel)) {
       throw new AcquisitionDiscoveryOperationError("INVALID_REQUEST");
     }
-    const content = strictBase64(input.contentBase64);
+    const content = importContent(input);
     const artifactHash = hash(content);
     const columnMapping = normalizedMapping(input.columnMapping);
     const key = nonEmptyText(
@@ -1211,6 +1307,18 @@ export class AcquisitionDiscoveryOperationService {
       throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
     }
     return publicImport(operation);
+  }
+
+  async listImportOperations(
+    rawScope: AcquisitionDiscoveryScope,
+    options: { limit?: number } = {}
+  ) {
+    const scope = validatedScope(rawScope);
+    const operations = await this.repository.listImportOperations(
+      scope,
+      validatedListLimit(options.limit)
+    );
+    return operations.map(publicImport);
   }
 
   executeImportOperation(

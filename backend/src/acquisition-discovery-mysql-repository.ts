@@ -238,6 +238,22 @@ implements AcquisitionDiscoveryOperationRepository {
     return rows[0] ? parsedFetch(rows[0]) : null;
   }
 
+  async listContentFetchOperations(
+    scope: OperationScope,
+    limit: number
+  ) {
+    const rows = await selectedRows(
+      this.pool,
+      `SELECT payload_json
+       FROM acquisition_content_fetch_operations
+       WHERE owner_id = ? AND team_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
+      [scope.ownerId, scope.teamId, limit]
+    );
+    return rows.map(parsedFetch);
+  }
+
   async claimContentFetchOperation(
     scope: OperationScope,
     id: string,
@@ -339,6 +355,19 @@ implements AcquisitionDiscoveryOperationRepository {
       [id, scope.ownerId, scope.teamId]
     );
     return rows[0] ? parsedImport(rows[0]) : null;
+  }
+
+  async listImportOperations(scope: OperationScope, limit: number) {
+    const rows = await selectedRows(
+      this.pool,
+      `SELECT payload_json
+       FROM acquisition_import_operations
+       WHERE owner_id = ? AND team_id = ?
+       ORDER BY created_at DESC, id DESC
+       LIMIT ?`,
+      [scope.ownerId, scope.teamId, limit]
+    );
+    return rows.map(parsedImport);
   }
 
   async claimImportOperation(

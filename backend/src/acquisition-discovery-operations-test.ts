@@ -164,6 +164,51 @@ test("content fetch operation is idempotent, tenant scoped, and appends public e
   );
 });
 
+test("content fetch operation listing is tenant scoped, limited, and newest first", async () => {
+  const fixture = serviceFixture();
+  const first = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://example.com/first",
+      subjectChannel: "organization"
+    },
+    "fetch-list-key-1"
+  );
+  await fixture.service.createContentFetchOperation(
+    {
+      ownerId: "owner-b",
+      teamId: scope.teamId,
+      actorId: "user-b"
+    },
+    {
+      sourceUrl: "https://example.com/foreign",
+      subjectChannel: "organization"
+    },
+    "fetch-list-key-foreign"
+  );
+  const latest = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://example.com/latest",
+      subjectChannel: "individual"
+    },
+    "fetch-list-key-2"
+  );
+
+  const listed = await fixture.service.listContentFetchOperations(
+    scope,
+    { limit: 1 }
+  );
+
+  assert.deepEqual(listed.map((operation) => operation.id), [latest.id]);
+  assert.notEqual(listed[0]?.id, first.id);
+  assert.equal(listed[0]?.ownerId, scope.ownerId);
+  assert.equal(
+    "idempotencyKeyHash" in (listed[0] ?? {}),
+    false
+  );
+});
+
 test("access restricted content is recorded honestly and never presented as fetched content", async () => {
   const fixture = serviceFixture({
     fetch: async (sourceUrl) => ({
@@ -201,6 +246,97 @@ test("access restricted content is recorded honestly and never presented as fetc
     fixture.sink.appended[0]?.input.sourceSnippet ?? "",
     /限制访问/
   );
+});
+
+test("unexpected fetch failures persist the content-fetch fallback code", async () => {
+  const fixture = serviceFixture({
+    fetch: async () => {
+      throw new Error("unexpected upstream failure");
+    }
+  });
+  const created = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://example.com/unavailable",
+      subjectChannel: "organization"
+    },
+    "fetch-key-unexpected-failure"
+  );
+
+  await assert.rejects(
+    fixture.service.executeContentFetchOperation(scope, created.id)
+  );
+  const failed = await fixture.service.getContentFetchOperation(
+    scope,
+    created.id
+  );
+
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.errorCode, "CONTENT_FETCH_FAILED");
+});
+
+test("import operation accepts raw bytes and lists only the newest tenant records", async () => {
+  const fixture = serviceFixture();
+  const csv = new TextEncoder().encode(
+    "标题,摘要\r\n公开商机,客户正在寻找 CRM"
+  );
+  const first = await fixture.service.createImportOperation(
+    scope,
+    {
+      fileName: "first.csv",
+      mediaType: "text/csv",
+      content: csv,
+      subjectChannel: "organization",
+      columnMapping: {
+        sourceTitle: "标题",
+        sourceSnippet: "摘要"
+      }
+    },
+    "import-list-key-1"
+  );
+  await fixture.service.createImportOperation(
+    {
+      ownerId: "owner-b",
+      teamId: scope.teamId,
+      actorId: "user-b"
+    },
+    {
+      fileName: "foreign.csv",
+      mediaType: "text/csv",
+      content: csv,
+      subjectChannel: "organization",
+      columnMapping: {
+        sourceTitle: "标题",
+        sourceSnippet: "摘要"
+      }
+    },
+    "import-list-key-foreign"
+  );
+  const latest = await fixture.service.createImportOperation(
+    scope,
+    {
+      fileName: "latest.csv",
+      mediaType: "text/csv",
+      content: csv,
+      subjectChannel: "individual",
+      columnMapping: {
+        sourceTitle: "标题",
+        sourceSnippet: "摘要"
+      }
+    },
+    "import-list-key-2"
+  );
+
+  const listed = await fixture.service.listImportOperations(
+    scope,
+    { limit: 1 }
+  );
+
+  assert.deepEqual(listed.map((operation) => operation.id), [latest.id]);
+  assert.notEqual(listed[0]?.id, first.id);
+  assert.equal(listed[0]?.ownerId, scope.ownerId);
+  assert.equal("artifactCiphertext" in (listed[0] ?? {}), false);
+  assert.equal("columnMapping" in (listed[0] ?? {}), false);
 });
 
 test("CSV import preserves artifact and row provenance with partial row errors", async () => {

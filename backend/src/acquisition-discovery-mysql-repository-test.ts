@@ -138,6 +138,44 @@ test("mysql repository persists encrypted import artifacts and tenant-scoped fet
   assert.doesNotMatch(serialized, /contentBase64/);
 });
 
+test("mysql repository lists tenant operations by created time and id with a bounded limit", async () => {
+  const pool = new FakePool();
+  const repository =
+    new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool));
+  pool.enqueue([
+    { payload_json: JSON.stringify(fetchOperation) }
+  ]);
+
+  const fetchItems = await repository.listContentFetchOperations(
+    { ownerId: "owner-a", teamId: "team-a" },
+    25
+  );
+
+  assert.deepEqual(fetchItems, [fetchOperation]);
+  const fetchSelect = pool.calls.at(-1)!;
+  assert.match(
+    fetchSelect.sql,
+    /ORDER BY created_at DESC, id DESC LIMIT \?/
+  );
+  assert.deepEqual(fetchSelect.values, ["owner-a", "team-a", 25]);
+
+  pool.enqueue([
+    { payload_json: JSON.stringify(importOperation) }
+  ]);
+  const importItems = await repository.listImportOperations(
+    { ownerId: "owner-a", teamId: "team-a" },
+    10
+  );
+
+  assert.deepEqual(importItems, [importOperation]);
+  const importSelect = pool.calls.at(-1)!;
+  assert.match(
+    importSelect.sql,
+    /ORDER BY created_at DESC, id DESC LIMIT \?/
+  );
+  assert.deepEqual(importSelect.values, ["owner-a", "team-a", 10]);
+});
+
 test("mysql claim is atomic and never steals running or terminal operations", async () => {
   const pool = new FakePool();
   const repository =
