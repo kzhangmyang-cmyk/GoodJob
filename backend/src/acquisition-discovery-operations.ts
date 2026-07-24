@@ -103,13 +103,14 @@ export interface AcquisitionImportOperation {
   completedAt: string | null;
 }
 
-interface ContentFetchOperationRecord
+export interface AcquisitionContentFetchOperationRecord
 extends AcquisitionContentFetchOperation {
   idempotencyKeyHash: string;
   requestHash: string;
 }
 
-interface ImportOperationRecord extends AcquisitionImportOperation {
+export interface AcquisitionImportOperationRecord
+extends AcquisitionImportOperation {
   idempotencyKeyHash: string;
   requestHash: string;
   artifactCiphertext: string;
@@ -169,45 +170,47 @@ export interface AcquisitionContentFetcherPort {
 
 export interface AcquisitionDiscoveryOperationRepository {
   createContentFetchOperation(
-    operation: ContentFetchOperationRecord
+    operation: AcquisitionContentFetchOperationRecord
   ): Promise<{
-    operation: ContentFetchOperationRecord;
+    operation: AcquisitionContentFetchOperationRecord;
     created: boolean;
   }>;
   getContentFetchOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string
-  ): Promise<ContentFetchOperationRecord | null>;
+  ): Promise<AcquisitionContentFetchOperationRecord | null>;
   claimContentFetchOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string,
     startedAt: string
   ): Promise<{
-    operation: ContentFetchOperationRecord | null;
+    operation: AcquisitionContentFetchOperationRecord | null;
     claimed: boolean;
   }>;
   putContentFetchOperation(
-    operation: ContentFetchOperationRecord
+    operation: AcquisitionContentFetchOperationRecord
   ): Promise<void>;
   createImportOperation(
-    operation: ImportOperationRecord
+    operation: AcquisitionImportOperationRecord
   ): Promise<{
-    operation: ImportOperationRecord;
+    operation: AcquisitionImportOperationRecord;
     created: boolean;
   }>;
   getImportOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string
-  ): Promise<ImportOperationRecord | null>;
+  ): Promise<AcquisitionImportOperationRecord | null>;
   claimImportOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string,
     startedAt: string
   ): Promise<{
-    operation: ImportOperationRecord | null;
+    operation: AcquisitionImportOperationRecord | null;
     claimed: boolean;
   }>;
-  putImportOperation(operation: ImportOperationRecord): Promise<void>;
+  putImportOperation(
+    operation: AcquisitionImportOperationRecord
+  ): Promise<void>;
 }
 
 function clone<T>(value: T): T {
@@ -250,7 +253,7 @@ function validatedScope(scope: AcquisitionDiscoveryScope) {
 }
 
 function publicFetch(
-  operation: ContentFetchOperationRecord
+  operation: AcquisitionContentFetchOperationRecord
 ): AcquisitionContentFetchOperation {
   const {
     idempotencyKeyHash: _idempotencyKeyHash,
@@ -261,7 +264,7 @@ function publicFetch(
 }
 
 function publicImport(
-  operation: ImportOperationRecord
+  operation: AcquisitionImportOperationRecord
 ): AcquisitionImportOperation {
   const {
     idempotencyKeyHash: _idempotencyKeyHash,
@@ -292,10 +295,10 @@ function isTerminalImport(status: AcquisitionImportStatus) {
 export class InMemoryAcquisitionDiscoveryOperationRepository
 implements AcquisitionDiscoveryOperationRepository {
   private readonly fetchOperations =
-    new Map<string, ContentFetchOperationRecord>();
+    new Map<string, AcquisitionContentFetchOperationRecord>();
   private readonly fetchIdempotency = new Map<string, string>();
   private readonly importOperations =
-    new Map<string, ImportOperationRecord>();
+    new Map<string, AcquisitionImportOperationRecord>();
   private readonly importIdempotency = new Map<string, string>();
 
   size(prefix: string) {
@@ -305,7 +308,7 @@ implements AcquisitionDiscoveryOperationRepository {
   }
 
   async createContentFetchOperation(
-    operation: ContentFetchOperationRecord
+    operation: AcquisitionContentFetchOperationRecord
   ) {
     const key = [
       operation.ownerId,
@@ -360,7 +363,7 @@ implements AcquisitionDiscoveryOperationRepository {
   }
 
   async putContentFetchOperation(
-    operation: ContentFetchOperationRecord
+    operation: AcquisitionContentFetchOperationRecord
   ) {
     const existing = this.fetchOperations.get(operation.id);
     if (!existing
@@ -371,7 +374,9 @@ implements AcquisitionDiscoveryOperationRepository {
     this.fetchOperations.set(operation.id, clone(operation));
   }
 
-  async createImportOperation(operation: ImportOperationRecord) {
+  async createImportOperation(
+    operation: AcquisitionImportOperationRecord
+  ) {
     const key = [
       operation.ownerId,
       operation.teamId,
@@ -424,7 +429,7 @@ implements AcquisitionDiscoveryOperationRepository {
     return { operation: clone(operation), claimed: true };
   }
 
-  async putImportOperation(operation: ImportOperationRecord) {
+  async putImportOperation(operation: AcquisitionImportOperationRecord) {
     const existing = this.importOperations.get(operation.id);
     if (!existing
       || existing.ownerId !== operation.ownerId
@@ -993,7 +998,7 @@ export class AcquisitionDiscoveryOperationService {
       sourceUrl,
       subjectChannel: input.subjectChannel
     });
-    const operation: ContentFetchOperationRecord = {
+    const operation: AcquisitionContentFetchOperationRecord = {
       id: this.idFactory("fetch"),
       ...scope,
       sourceUrl,
@@ -1169,7 +1174,7 @@ export class AcquisitionDiscoveryOperationService {
       artifactHash,
       columnMapping
     });
-    const operation: ImportOperationRecord = {
+    const operation: AcquisitionImportOperationRecord = {
       id: this.idFactory("import"),
       ...scope,
       fileName,
