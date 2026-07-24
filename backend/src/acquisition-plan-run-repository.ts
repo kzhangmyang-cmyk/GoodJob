@@ -340,6 +340,13 @@ export interface AcquisitionPlanRunRepository {
   listRunExecutionIntents(
     runId: string
   ): Promise<AcquisitionExecutionIntent[]>;
+  /**
+   * Internal startup-recovery scan. Implementations must return only intents
+   * that still have an unresolved persisted shard transition.
+   */
+  listRecoverableExecutionIntents(
+    now: string
+  ): Promise<AcquisitionExecutionIntent[]>;
   listAuditEvents(scope: {
     ownerId: string;
     teamId: string;
@@ -506,6 +513,22 @@ implements AcquisitionPlanRunRepository {
       .map(clone);
   }
 
+  async listRecoverableExecutionIntents(now: string) {
+    const state = await this.snapshot();
+    return Array.from(state.executionIntents.values())
+      .filter((intent) => intentNeedsRecovery(
+        intent,
+        Array.from(state.shards.values()).filter(
+          (shard) => shard.runId === intent.runId
+        ),
+        now
+      ))
+      .sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id))
+      .map(clone);
+  }
+
   async listAuditEvents(scope: { ownerId: string; teamId: string }) {
     const state = await this.snapshot();
     return state.auditEvents
@@ -513,4 +536,28 @@ implements AcquisitionPlanRunRepository {
         && event.teamId === scope.teamId)
       .map(clone);
   }
+}
+
+export function intentNeedsRecovery(
+  intent: AcquisitionExecutionIntent,
+  shards: AcquisitionOperationShard[],
+  now: string
+) {
+  if (intent.status === "pending") return true;
+  if (intent.status === "dispatching") {
+    return !intent.leaseUntil
+      || Date.parse(intent.leaseUntil) <= Date.parse(now);
+  }
+  const selected = new Set(intent.payload.shardIds);
+  const statuses = shards
+    .filter((shard) => selected.has(shard.id))
+    .map((shard) => shard.status);
+  if (intent.kind === "enqueue" || intent.kind === "resume") {
+    return statuses.some((status) =>
+      status === "queued" || status === "retry_scheduled");
+  }
+  if (intent.kind === "pause") {
+    return statuses.includes("pause_requested");
+  }
+  return statuses.includes("cancel_requested");
 }

@@ -547,6 +547,48 @@ test("durable execution intents survive queue/control port failure and can be re
   );
 });
 
+test("startup recovery redispatches a persisted dispatched intent whose shards are still queued", async () => {
+  const {
+    repository,
+    service
+  } = harness();
+  const draft = await service.createPlan(ownerA, planInput());
+  const approved = await service.approvePlan(
+    ownerA,
+    draft.id,
+    draft.etag,
+    { decision: "approve", reason: "批准执行并模拟进程退出" }
+  );
+  const run = await service.createRun(ownerA, approved.id, {
+    idempotencyKey: "run-crash-recovery-0001"
+  });
+  const persisted = await repository.listRunExecutionIntents(run.id);
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0]?.status, "dispatched");
+
+  const restartedPort = new RecordingExecutionPort();
+  let restartedId = 0;
+  const restartedService = new AcquisitionPlanRunService({
+    repository,
+    executionPort: restartedPort,
+    now: () => "2026-07-24T02:00:00.000Z",
+    idFactory: (prefix) => `${prefix}_restarted_${++restartedId}`
+  });
+  const recovered = await restartedService.recoverExecutionIntents(
+    "acquisition-startup-recovery"
+  );
+
+  assert.equal(recovered, 1);
+  assert.equal(restartedPort.enqueueCalls.length, 1);
+  assert.equal(restartedPort.enqueueCalls[0]?.runId, run.id);
+  assert.deepEqual(
+    new Set(restartedPort.enqueueCalls[0]?.shardIds),
+    new Set(
+      (await repository.listRunShards(run.id)).map((shard) => shard.id)
+    )
+  );
+});
+
 test("pause uses safe points, resume preserves consumption, and cancel settles running shards", async () => {
   const { executionPort, repository, service } = harness();
   const draft = await service.createPlan(ownerA, planInput());

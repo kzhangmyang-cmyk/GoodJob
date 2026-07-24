@@ -41,6 +41,9 @@ import type {
   AcquisitionRunEvent,
   AcquisitionUsageIdempotencyRecord
 } from "./acquisition-plan-run-repository.js";
+import {
+  intentNeedsRecovery
+} from "./acquisition-plan-run-repository.js";
 
 type QuerySource = Pick<mysql.Pool | mysql.PoolConnection, "query">;
 type Scope = Pick<AcquisitionCopilotScope, "ownerId" | "teamId">;
@@ -2180,6 +2183,41 @@ implements AcquisitionPlanRunRepository {
     );
     return result.map((row) =>
       ownedPayload<AcquisitionExecutionIntent>(row, "execution_intent"));
+  }
+
+  async listRecoverableExecutionIntents(now: string) {
+    const result = await rows(
+      this.pool,
+      `SELECT i.*
+       FROM acquisition_execution_intents i
+       INNER JOIN acquisition_runs r
+         ON r.id = i.run_id
+        AND r.owner_id = i.owner_id
+        AND r.team_id = i.team_id
+       WHERE i.status = 'pending'
+          OR (i.status = 'dispatching'
+              AND (i.lease_until IS NULL OR i.lease_until <= ?))
+          OR i.status = 'dispatched'
+       ORDER BY i.created_at, i.id`,
+      [mysqlDate(now)]
+    );
+    const intents = result.map((row) =>
+      ownedPayload<AcquisitionExecutionIntent>(row, "execution_intent"));
+    const shardsByRun = new Map<string, AcquisitionOperationShard[]>();
+    for (const intent of intents) {
+      if (!shardsByRun.has(intent.runId)) {
+        shardsByRun.set(
+          intent.runId,
+          await this.listRunShards(intent.runId)
+        );
+      }
+    }
+    return intents.filter((intent) =>
+      intentNeedsRecovery(
+        intent,
+        shardsByRun.get(intent.runId) ?? [],
+        now
+      ));
   }
 
   async listAuditEvents(scope: { ownerId: string; teamId: string }) {
