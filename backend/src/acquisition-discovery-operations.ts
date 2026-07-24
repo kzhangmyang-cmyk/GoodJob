@@ -1216,7 +1216,8 @@ export class AcquisitionDiscoveryOperationService {
   executeImportOperation(
     rawScope: AcquisitionDiscoveryScope,
     id: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options: { maxRows?: number } = {}
   ) {
     const scope = validatedScope(rawScope);
     const operationId = nonEmptyText(id, "导入操作 ID", 160);
@@ -1227,7 +1228,18 @@ export class AcquisitionDiscoveryOperationService {
     ].join("\u001f");
     const current = this.runningImport.get(key);
     if (current) return current;
-    const running = this.executeImport(scope, operationId, signal);
+    const maxRows = options.maxRows ?? MAX_IMPORT_ROWS;
+    if (!Number.isSafeInteger(maxRows)
+      || maxRows < 1
+      || maxRows > MAX_IMPORT_ROWS) {
+      throw new AcquisitionDiscoveryOperationError("INVALID_REQUEST");
+    }
+    const running = this.executeImport(
+      scope,
+      operationId,
+      signal,
+      maxRows
+    );
     this.runningImport.set(key, running);
     void running.then(
       () => this.runningImport.delete(key),
@@ -1239,7 +1251,8 @@ export class AcquisitionDiscoveryOperationService {
   private async executeImport(
     scope: AcquisitionDiscoveryScope,
     id: string,
-    signal?: AbortSignal
+    signal: AbortSignal | undefined,
+    maxRows: number
   ) {
     abortIfRequested(signal);
     const claimed = await this.repository.claimImportOperation(
@@ -1304,6 +1317,15 @@ export class AcquisitionDiscoveryOperationService {
           if (row.every((value) => !String(value ?? "").trim())) continue;
           rowCount += 1;
           const rowNumber = rowIndex + 2;
+          if (acceptedRowCount >= maxRows) {
+            errorRows.push({
+              sheetName: sheet.name,
+              rowNumber,
+              code: "IMPORT_BUDGET_LIMIT",
+              message: "该行超出本次导入预算，未写入证据"
+            });
+            continue;
+          }
           try {
             const record = new Map(
               headers.map((header, index) => [
