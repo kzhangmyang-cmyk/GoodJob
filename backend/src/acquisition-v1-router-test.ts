@@ -48,6 +48,7 @@ async function createFixture(options: {
   ) => void | Promise<void>;
   resolveCopilotModelSnapshot?:
     AcquisitionV1RouterOptions["resolveCopilotModelSnapshot"];
+  allowDirectDomainWrites?: boolean;
 } = {}) {
   const repository = new InMemoryAcquisitionDomainRepository();
   const candidates = new Map<string, AcquisitionCandidate>();
@@ -198,7 +199,8 @@ async function createFixture(options: {
     cursorSecret:
       "router-test-cursor-secret-that-is-at-least-32-characters",
     dispatchCopilotTask: options.dispatchCopilotTask,
-    resolveCopilotModelSnapshot: options.resolveCopilotModelSnapshot
+    resolveCopilotModelSnapshot: options.resolveCopilotModelSnapshot,
+    allowDirectDomainWrites: options.allowDirectDomainWrites ?? true
   }));
 
   const server = await new Promise<Server>((resolve) => {
@@ -362,6 +364,35 @@ test("v1 router rejects unauthenticated and invalid writes with structured error
     assert.equal(scopeInjection.response.status, 400);
     assert.equal(scopeInjection.json.code, "invalid_request");
     assert.equal(scopeInjection.json.details.issues[0].code, "unrecognized_keys");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("v1 router denies direct ingestion, model-derived decisions, and outcome writes by default", async () => {
+  const fixture = await createFixture({
+    allowDirectDomainWrites: false
+  });
+  try {
+    for (const path of [
+      "/api/v1/acquisition/evidence",
+      "/api/v1/acquisition/candidates",
+      "/api/v1/acquisition/candidates/candidate-a/evidence",
+      "/api/v1/acquisition/candidates/candidate-a/research",
+      "/api/v1/acquisition/candidates/candidate-a/qualification",
+      "/api/v1/acquisition/candidates/candidate-a/battle-card",
+      "/api/v1/acquisition/outcomes"
+    ]) {
+      const result = await fixture.request(
+        path,
+        write({}, `blocked-${createHash("sha256")
+          .update(path)
+          .digest("hex")
+          .slice(0, 16)}`)
+      );
+      assert.equal(result.response.status, 403, path);
+      assert.equal(result.json.code, "direct_domain_write_disabled", path);
+    }
   } finally {
     await fixture.close();
   }

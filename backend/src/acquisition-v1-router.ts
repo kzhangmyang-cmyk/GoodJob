@@ -9,6 +9,7 @@ import {
   Router,
   type NextFunction,
   type Request,
+  type RequestHandler,
   type Response
 } from "express";
 import { z, ZodError, type ZodType } from "zod";
@@ -360,6 +361,12 @@ export interface AcquisitionV1RouterOptions {
     scope: AcquisitionCopilotScope,
     input: { connectionId: string | null }
   ) => Promise<AcquisitionPiModelSnapshot>;
+  /**
+   * Compatibility escape hatch for trusted, non-public import tooling only.
+   * Production HTTP applications must leave this disabled so clients cannot
+   * invent evidence, model decisions, battle cards, or revenue outcomes.
+   */
+  allowDirectDomainWrites?: boolean;
 }
 
 class AcquisitionV1HttpError extends Error {
@@ -879,6 +886,17 @@ export function createAcquisitionV1Router(
   const dispatch = options.dispatchCopilotTask
     ?? ((scope: AcquisitionCopilotScope, taskId: string) =>
       options.copilotService.runTask(scope, taskId).then(() => undefined));
+  const requireDirectDomainWrites: RequestHandler = (_req, res, next) => {
+    if (options.allowDirectDomainWrites === true) {
+      next();
+      return;
+    }
+    sendError(new AcquisitionV1HttpError(
+      "direct_domain_write_disabled",
+      "该数据只能由受控获客任务或可信业务集成写入",
+      403
+    ), res);
+  };
 
   router.use("/api/v1/acquisition", (_req, res, next) => {
     const id = idFactory("request");
@@ -896,15 +914,19 @@ export function createAcquisitionV1Router(
     }
   });
 
-  router.post("/api/v1/acquisition/evidence", asyncRoute(async (req, res) => {
-    const scope = scopeFromRequest(req);
-    const result = await options.domainService.appendEvidence(
-      scope,
-      parse(evidenceInputSchema, req.body),
-      idempotencyKey(req)
-    );
-    res.status(201).json(publicEvidence(result));
-  }));
+  router.post(
+    "/api/v1/acquisition/evidence",
+    requireDirectDomainWrites,
+    asyncRoute(async (req, res) => {
+      const scope = scopeFromRequest(req);
+      const result = await options.domainService.appendEvidence(
+        scope,
+        parse(evidenceInputSchema, req.body),
+        idempotencyKey(req)
+      );
+      res.status(201).json(publicEvidence(result));
+    })
+  );
 
   router.get(
     "/api/v1/acquisition/evidence/:id",
@@ -918,44 +940,48 @@ export function createAcquisitionV1Router(
     })
   );
 
-  router.post("/api/v1/acquisition/candidates", asyncRoute(async (req, res) => {
-    const scope = scopeFromRequest(req);
-    const body = parse(candidateInputSchema, req.body);
-    const key = idempotencyKey(req);
-    const result = body.subjectKind === "organization"
-      ? await options.domainService.createOrganizationCandidate(
-        scope,
-        {
-          name: body.name,
-          domain: body.domain,
-          region: body.region,
-          creditCode: body.creditCode,
-          organizationId: body.organizationId,
-          tenantProspectId: body.tenantProspectId,
-          evidenceIds: body.evidenceIds
-        },
-        key
-      )
-      : await options.domainService.createIndividualCandidate(
-        scope,
-        {
-          publicActorKey: body.publicActorKey,
-          publicDisplayName: body.publicDisplayName,
-          publicProfileUrl: body.publicProfileUrl,
-          sourcePlatform: body.sourcePlatform,
-          demandSignalId: body.demandSignalId,
-          demandCategory: body.demandCategory,
-          demandSummary: body.demandSummary,
-          locationHint: body.locationHint,
-          buyingStage: body.buyingStage,
-          negativeSignals: body.negativeSignals,
-          individualPartyId: body.individualPartyId,
-          evidenceIds: body.evidenceIds
-        },
-        key
-      );
-    res.status(201).json(publicCandidate(result));
-  }));
+  router.post(
+    "/api/v1/acquisition/candidates",
+    requireDirectDomainWrites,
+    asyncRoute(async (req, res) => {
+      const scope = scopeFromRequest(req);
+      const body = parse(candidateInputSchema, req.body);
+      const key = idempotencyKey(req);
+      const result = body.subjectKind === "organization"
+        ? await options.domainService.createOrganizationCandidate(
+          scope,
+          {
+            name: body.name,
+            domain: body.domain,
+            region: body.region,
+            creditCode: body.creditCode,
+            organizationId: body.organizationId,
+            tenantProspectId: body.tenantProspectId,
+            evidenceIds: body.evidenceIds
+          },
+          key
+        )
+        : await options.domainService.createIndividualCandidate(
+          scope,
+          {
+            publicActorKey: body.publicActorKey,
+            publicDisplayName: body.publicDisplayName,
+            publicProfileUrl: body.publicProfileUrl,
+            sourcePlatform: body.sourcePlatform,
+            demandSignalId: body.demandSignalId,
+            demandCategory: body.demandCategory,
+            demandSummary: body.demandSummary,
+            locationHint: body.locationHint,
+            buyingStage: body.buyingStage,
+            negativeSignals: body.negativeSignals,
+            individualPartyId: body.individualPartyId,
+            evidenceIds: body.evidenceIds
+          },
+          key
+        );
+      res.status(201).json(publicCandidate(result));
+    })
+  );
 
   router.get("/api/v1/acquisition/candidates", asyncRoute(async (req, res) => {
     const scope = scopeFromRequest(req);
@@ -1053,6 +1079,7 @@ export function createAcquisitionV1Router(
 
   router.post(
     "/api/v1/acquisition/candidates/:id/evidence",
+    requireDirectDomainWrites,
     asyncRoute(async (req, res) => {
       const scope = scopeFromRequest(req);
       const body = parse(attachEvidenceBodySchema, req.body);
@@ -1068,6 +1095,7 @@ export function createAcquisitionV1Router(
 
   router.post(
     "/api/v1/acquisition/candidates/:id/research",
+    requireDirectDomainWrites,
     asyncRoute(async (req, res) => {
       const scope = scopeFromRequest(req);
       const body = parse(researchBodySchema, req.body);
@@ -1106,6 +1134,7 @@ export function createAcquisitionV1Router(
 
   router.post(
     "/api/v1/acquisition/candidates/:id/qualification",
+    requireDirectDomainWrites,
     asyncRoute(async (req, res) => {
       const scope = scopeFromRequest(req);
       const body = parse(qualifyBodySchema, req.body);
@@ -1141,6 +1170,7 @@ export function createAcquisitionV1Router(
 
   router.post(
     "/api/v1/acquisition/candidates/:id/battle-card",
+    requireDirectDomainWrites,
     asyncRoute(async (req, res) => {
       const scope = scopeFromRequest(req);
       const card = await options.domainService.createBattleCard(
@@ -1219,15 +1249,19 @@ export function createAcquisitionV1Router(
     })
   );
 
-  router.post("/api/v1/acquisition/outcomes", asyncRoute(async (req, res) => {
-    const scope = scopeFromRequest(req);
-    const body = parse(outcomeBodySchema, req.body);
-    const outcome = await options.domainService.recordOutcome(scope, {
-      ...body,
-      idempotencyKey: idempotencyKey(req)
-    });
-    res.status(201).json(publicOutcome(outcome));
-  }));
+  router.post(
+    "/api/v1/acquisition/outcomes",
+    requireDirectDomainWrites,
+    asyncRoute(async (req, res) => {
+      const scope = scopeFromRequest(req);
+      const body = parse(outcomeBodySchema, req.body);
+      const outcome = await options.domainService.recordOutcome(scope, {
+        ...body,
+        idempotencyKey: idempotencyKey(req)
+      });
+      res.status(201).json(publicOutcome(outcome));
+    })
+  );
 
   router.get("/api/v1/acquisition/outcomes", asyncRoute(async (req, res) => {
     const scope = scopeFromRequest(req);
