@@ -622,6 +622,15 @@ test("live outcomes are append-only, idempotent, attributed, and tenant isolated
   assert.deepEqual(first.partyRef, candidate.partyRef);
   assert.equal((await service.listOutcomes(ownerScope, candidate.id)).length, 1);
   await assert.rejects(
+    service.recordOutcome(ownerScope, {
+      ...outcomeInput,
+      idempotencyKey: "outcome:negative-amount",
+      amount: { amountMinor: -1, currency: "CNY" }
+    }),
+    (error: unknown) => error instanceof AcquisitionDomainError
+      && error.code === "invalid_request"
+  );
+  await assert.rejects(
     service.listOutcomes(intruderScope, candidate.id),
     (error: unknown) => error instanceof AcquisitionDomainError
       && error.code === "resource_not_found"

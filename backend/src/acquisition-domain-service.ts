@@ -1519,8 +1519,13 @@ export class AcquisitionDomainService {
     amount: { amountMinor: number; currency: string } | null
   ) {
     if (amount === null) return null;
-    if (!Number.isInteger(amount.amountMinor)) {
-      fail("invalid_request", "金额必须使用整数最小货币单位", 400);
+    if (!Number.isSafeInteger(amount.amountMinor)
+      || amount.amountMinor < 0) {
+      fail(
+        "invalid_request",
+        "金额必须使用非负安全整数最小货币单位",
+        400
+      );
     }
     const currency = requiredText(amount.currency, "币种", 3).toUpperCase();
     if (!/^[A-Z]{3}$/u.test(currency)) {
