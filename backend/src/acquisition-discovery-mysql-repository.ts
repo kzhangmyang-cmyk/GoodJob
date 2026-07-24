@@ -1,9 +1,12 @@
 import type mysql from "mysql2/promise";
 import {
   AcquisitionDiscoveryOperationError,
+  type AcquisitionDiscoveryClaim,
   type AcquisitionContentFetchOperationRecord,
   type AcquisitionDiscoveryOperationRepository,
+  type AcquisitionDiscoveryRecoveryQuery,
   type AcquisitionDiscoveryScope,
+  type AcquisitionRecoverableDiscoveryOperation,
   type AcquisitionImportOperationRecord
 } from "./acquisition-discovery-operations.js";
 
@@ -22,6 +25,9 @@ export const ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS = [
     idempotency_key_hash CHAR(64) NOT NULL,
     request_hash CHAR(71) NOT NULL,
     status VARCHAR(30) NOT NULL,
+    lease_owner VARCHAR(160) NULL,
+    lease_token VARCHAR(200) NULL,
+    lease_expires_at DATETIME(3) NULL,
     payload_json JSON NOT NULL,
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
@@ -30,6 +36,8 @@ export const ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS = [
       (owner_id, team_id, idempotency_key_hash),
     KEY idx_acquisition_fetch_scope_status
       (owner_id, team_id, status, updated_at, id),
+    KEY idx_acquisition_fetch_recovery
+      (status, lease_expires_at, updated_at, created_at, id),
     CONSTRAINT chk_acquisition_fetch_status CHECK (
       status IN (
         'queued','running','succeeded','failed','access_restricted'
@@ -43,6 +51,9 @@ export const ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS = [
     idempotency_key_hash CHAR(64) NOT NULL,
     request_hash CHAR(71) NOT NULL,
     status VARCHAR(30) NOT NULL,
+    lease_owner VARCHAR(160) NULL,
+    lease_token VARCHAR(200) NULL,
+    lease_expires_at DATETIME(3) NULL,
     payload_json JSON NOT NULL,
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
@@ -51,19 +62,49 @@ export const ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS = [
       (owner_id, team_id, idempotency_key_hash),
     KEY idx_acquisition_import_scope_status
       (owner_id, team_id, status, updated_at, id),
+    KEY idx_acquisition_import_recovery
+      (status, lease_expires_at, updated_at, created_at, id),
     CONSTRAINT chk_acquisition_import_status CHECK (
       status IN (
         'queued','running','succeeded','partial_success','failed'
       )
     )
-  ) ENGINE=InnoDB`
+  ) ENGINE=InnoDB`,
+  `ALTER TABLE acquisition_content_fetch_operations
+    ADD COLUMN lease_owner VARCHAR(160) NULL`,
+  `ALTER TABLE acquisition_content_fetch_operations
+    ADD COLUMN lease_token VARCHAR(200) NULL`,
+  `ALTER TABLE acquisition_content_fetch_operations
+    ADD COLUMN lease_expires_at DATETIME(3) NULL`,
+  `ALTER TABLE acquisition_content_fetch_operations
+    ADD KEY idx_acquisition_fetch_recovery
+      (status, lease_expires_at, updated_at, created_at, id)`,
+  `ALTER TABLE acquisition_import_operations
+    ADD COLUMN lease_owner VARCHAR(160) NULL`,
+  `ALTER TABLE acquisition_import_operations
+    ADD COLUMN lease_token VARCHAR(200) NULL`,
+  `ALTER TABLE acquisition_import_operations
+    ADD COLUMN lease_expires_at DATETIME(3) NULL`,
+  `ALTER TABLE acquisition_import_operations
+    ADD KEY idx_acquisition_import_recovery
+      (status, lease_expires_at, updated_at, created_at, id)`
 ] as const;
 
 export async function ensureAcquisitionDiscoveryMysqlSchema(
   pool: mysql.Pool
 ) {
   for (const statement of ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS) {
-    await pool.query(statement);
+    try {
+      await pool.query(statement);
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (
+        code !== "ER_DUP_FIELDNAME"
+        && code !== "ER_DUP_KEYNAME"
+      ) {
+        throw error;
+      }
+    }
   }
 }
 
@@ -175,6 +216,27 @@ function json(value: unknown) {
   return JSON.stringify(value);
 }
 
+function recoverableRow(
+  row: MysqlRow
+): AcquisitionRecoverableDiscoveryOperation {
+  const payload = parsePayload(row.payload_json, "recovery_operation");
+  const kind = "artifactCiphertext" in payload
+    ? "import"
+    : "content_fetch";
+  return {
+    kind,
+    id: requiredString(payload, "id"),
+    ownerId: requiredString(payload, "ownerId"),
+    teamId: requiredString(payload, "teamId"),
+    actorId: requiredString(payload, "actorId"),
+    status: requiredString(
+      payload,
+      "status"
+    ) as AcquisitionRecoverableDiscoveryOperation["status"],
+    createdAt: requiredString(payload, "createdAt")
+  };
+}
+
 async function selectedRows(
   source: QuerySource,
   sql: string,
@@ -257,26 +319,52 @@ implements AcquisitionDiscoveryOperationRepository {
   async claimContentFetchOperation(
     scope: OperationScope,
     id: string,
-    startedAt: string
+    claim: AcquisitionDiscoveryClaim
   ) {
     const [result] = await this.pool.query(
       `UPDATE acquisition_content_fetch_operations
        SET status = 'running',
+           lease_owner = ?,
+           lease_token = ?,
+           lease_expires_at = ?,
            payload_json = JSON_SET(
              payload_json,
              '$.status', 'running',
              '$.startedAt', ?,
+             '$.leaseOwner', ?,
+             '$.leaseToken', ?,
+             '$.leaseExpiresAt', ?,
              '$.errorCode', CAST('null' AS JSON)
            ),
            updated_at = ?
        WHERE id = ? AND owner_id = ? AND team_id = ?
-         AND status = 'queued'`,
+         AND (
+           status = 'queued'
+           OR (
+             status = 'running'
+             AND (
+               lease_expires_at <= ?
+               OR (
+                 lease_expires_at IS NULL
+                 AND updated_at <= ?
+               )
+             )
+           )
+         )`,
       [
-        startedAt,
-        mysqlDate(startedAt),
+        claim.leaseOwner,
+        claim.leaseToken,
+        mysqlDate(claim.leaseExpiresAt),
+        claim.claimedAt,
+        claim.leaseOwner,
+        claim.leaseToken,
+        claim.leaseExpiresAt,
+        mysqlDate(claim.claimedAt),
         id,
         scope.ownerId,
-        scope.teamId
+        scope.teamId,
+        mysqlDate(claim.claimedAt),
+        mysqlDate(claim.staleRunningBefore)
       ]
     );
     const operation = await this.getContentFetchOperation(scope, id);
@@ -287,25 +375,40 @@ implements AcquisitionDiscoveryOperationRepository {
   }
 
   async putContentFetchOperation(
-    operation: AcquisitionContentFetchOperationRecord
+    operation: AcquisitionContentFetchOperationRecord,
+    leaseToken: string
   ) {
+    const stored = {
+      ...operation,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null
+    };
     const [result] = await this.pool.query(
       `UPDATE acquisition_content_fetch_operations
-       SET status = ?, payload_json = ?, updated_at = ?
-       WHERE id = ? AND owner_id = ? AND team_id = ?`,
+       SET status = ?,
+           lease_owner = NULL,
+           lease_token = NULL,
+           lease_expires_at = NULL,
+           payload_json = ?,
+           updated_at = ?
+       WHERE id = ? AND owner_id = ? AND team_id = ?
+         AND status = 'running' AND lease_token = ?`,
       [
-        operation.status,
-        json(operation),
+        stored.status,
+        json(stored),
         mysqlDate(operation.completedAt ?? operation.startedAt
           ?? operation.createdAt),
         operation.id,
         operation.ownerId,
-        operation.teamId
+        operation.teamId,
+        leaseToken
       ]
     );
     if (affectedRows(result) !== 1) {
       throw new AcquisitionDiscoveryOperationError(
-        "RESOURCE_NOT_FOUND"
+        "OPERATION_ALREADY_RUNNING",
+        "OPERATION_LEASE_LOST"
       );
     }
   }
@@ -373,26 +476,52 @@ implements AcquisitionDiscoveryOperationRepository {
   async claimImportOperation(
     scope: OperationScope,
     id: string,
-    startedAt: string
+    claim: AcquisitionDiscoveryClaim
   ) {
     const [result] = await this.pool.query(
       `UPDATE acquisition_import_operations
        SET status = 'running',
+           lease_owner = ?,
+           lease_token = ?,
+           lease_expires_at = ?,
            payload_json = JSON_SET(
              payload_json,
              '$.status', 'running',
              '$.startedAt', ?,
+             '$.leaseOwner', ?,
+             '$.leaseToken', ?,
+             '$.leaseExpiresAt', ?,
              '$.errorCode', CAST('null' AS JSON)
            ),
            updated_at = ?
        WHERE id = ? AND owner_id = ? AND team_id = ?
-         AND status = 'queued'`,
+         AND (
+           status = 'queued'
+           OR (
+             status = 'running'
+             AND (
+               lease_expires_at <= ?
+               OR (
+                 lease_expires_at IS NULL
+                 AND updated_at <= ?
+               )
+             )
+           )
+         )`,
       [
-        startedAt,
-        mysqlDate(startedAt),
+        claim.leaseOwner,
+        claim.leaseToken,
+        mysqlDate(claim.leaseExpiresAt),
+        claim.claimedAt,
+        claim.leaseOwner,
+        claim.leaseToken,
+        claim.leaseExpiresAt,
+        mysqlDate(claim.claimedAt),
         id,
         scope.ownerId,
-        scope.teamId
+        scope.teamId,
+        mysqlDate(claim.claimedAt),
+        mysqlDate(claim.staleRunningBefore)
       ]
     );
     const operation = await this.getImportOperation(scope, id);
@@ -403,27 +532,90 @@ implements AcquisitionDiscoveryOperationRepository {
   }
 
   async putImportOperation(
-    operation: AcquisitionImportOperationRecord
+    operation: AcquisitionImportOperationRecord,
+    leaseToken: string
   ) {
+    const stored = {
+      ...operation,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null
+    };
     const [result] = await this.pool.query(
       `UPDATE acquisition_import_operations
-       SET status = ?, payload_json = ?, updated_at = ?
-       WHERE id = ? AND owner_id = ? AND team_id = ?`,
+       SET status = ?,
+           lease_owner = NULL,
+           lease_token = NULL,
+           lease_expires_at = NULL,
+           payload_json = ?,
+           updated_at = ?
+       WHERE id = ? AND owner_id = ? AND team_id = ?
+         AND status = 'running' AND lease_token = ?`,
       [
-        operation.status,
-        json(operation),
+        stored.status,
+        json(stored),
         mysqlDate(operation.completedAt ?? operation.startedAt
           ?? operation.createdAt),
         operation.id,
         operation.ownerId,
-        operation.teamId
+        operation.teamId,
+        leaseToken
       ]
     );
     if (affectedRows(result) !== 1) {
       throw new AcquisitionDiscoveryOperationError(
-        "RESOURCE_NOT_FOUND"
+        "OPERATION_ALREADY_RUNNING",
+        "OPERATION_LEASE_LOST"
       );
     }
+  }
+
+  async listRecoverableOperations(
+    input: AcquisitionDiscoveryRecoveryQuery
+  ) {
+    const rows = await selectedRows(
+      this.pool,
+      `SELECT payload_json, created_at, id
+       FROM (
+         SELECT payload_json, created_at, id
+         FROM acquisition_content_fetch_operations
+         WHERE status = 'queued'
+           OR (
+             status = 'running'
+             AND (
+               lease_expires_at <= ?
+               OR (
+                 lease_expires_at IS NULL
+                 AND updated_at <= ?
+               )
+             )
+           )
+         UNION ALL
+         SELECT payload_json, created_at, id
+         FROM acquisition_import_operations
+         WHERE status = 'queued'
+           OR (
+             status = 'running'
+             AND (
+               lease_expires_at <= ?
+               OR (
+                 lease_expires_at IS NULL
+                 AND updated_at <= ?
+               )
+             )
+           )
+       ) recoverable
+       ORDER BY created_at ASC, id ASC
+       LIMIT ?`,
+      [
+        mysqlDate(input.now),
+        mysqlDate(input.staleRunningBefore),
+        mysqlDate(input.now),
+        mysqlDate(input.staleRunningBefore),
+        input.limit
+      ]
+    );
+    return rows.map(recoverableRow);
   }
 
   private async getFetchByIdempotency(

@@ -320,6 +320,143 @@ test("content fetch operation listing is tenant scoped, limited, and newest firs
   );
 });
 
+test("expired discovery leases are taken over with fencing while live leases are preserved", async () => {
+  const fixture = serviceFixture();
+  const created = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://example.com/recoverable-opportunity",
+      subjectChannel: "organization"
+    },
+    "fetch-lease-key"
+  );
+  const first = await fixture.repository.claimContentFetchOperation(
+    scope,
+    created.id,
+    {
+      leaseOwner: "worker-a",
+      leaseToken: "lease-a",
+      claimedAt: "2026-07-24T08:00:00.000Z",
+      leaseExpiresAt: "2026-07-24T08:10:00.000Z",
+      staleRunningBefore: "2026-07-24T07:50:00.000Z"
+    }
+  );
+  assert.equal(first.claimed, true);
+
+  const liveLease = await fixture.repository.claimContentFetchOperation(
+    scope,
+    created.id,
+    {
+      leaseOwner: "worker-b",
+      leaseToken: "lease-b-live",
+      claimedAt: "2026-07-24T08:05:00.000Z",
+      leaseExpiresAt: "2026-07-24T08:15:00.000Z",
+      staleRunningBefore: "2026-07-24T07:55:00.000Z"
+    }
+  );
+  assert.equal(liveLease.claimed, false);
+  assert.equal(liveLease.operation?.leaseToken, "lease-a");
+
+  const takeover = await fixture.repository.claimContentFetchOperation(
+    scope,
+    created.id,
+    {
+      leaseOwner: "worker-b",
+      leaseToken: "lease-b",
+      claimedAt: "2026-07-24T08:11:00.000Z",
+      leaseExpiresAt: "2026-07-24T08:21:00.000Z",
+      staleRunningBefore: "2026-07-24T08:01:00.000Z"
+    }
+  );
+  assert.equal(takeover.claimed, true);
+  assert.equal(takeover.operation?.leaseToken, "lease-b");
+
+  await assert.rejects(
+    fixture.repository.putContentFetchOperation({
+      ...first.operation!,
+      status: "succeeded",
+      completedAt: "2026-07-24T08:12:00.000Z"
+    }, "lease-a"),
+    (error: unknown) =>
+      error instanceof AcquisitionDiscoveryOperationError
+      && error.code === "OPERATION_ALREADY_RUNNING"
+      && error.message === "OPERATION_LEASE_LOST"
+  );
+  const current = await fixture.repository.getContentFetchOperation(
+    scope,
+    created.id
+  );
+  assert.equal(current?.status, "running");
+  assert.equal(current?.leaseToken, "lease-b");
+});
+
+test("recovery listing spans tenants, is bounded and excludes live or terminal work", async () => {
+  const fixture = serviceFixture();
+  const foreignScope = {
+    ownerId: "owner-b",
+    teamId: "team-b",
+    actorId: "user-b"
+  };
+  const expired = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://example.com/expired",
+      subjectChannel: "organization"
+    },
+    "fetch-recovery-expired"
+  );
+  const queued = await fixture.service.createContentFetchOperation(
+    foreignScope,
+    {
+      sourceUrl: "https://example.com/queued",
+      subjectChannel: "individual"
+    },
+    "fetch-recovery-queued"
+  );
+  const live = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://example.com/live",
+      subjectChannel: "organization"
+    },
+    "fetch-recovery-live"
+  );
+  await fixture.repository.claimContentFetchOperation(scope, expired.id, {
+    leaseOwner: "old-worker",
+    leaseToken: "expired-token",
+    claimedAt: "2026-07-24T07:00:00.000Z",
+    leaseExpiresAt: "2026-07-24T07:10:00.000Z",
+    staleRunningBefore: "2026-07-24T06:50:00.000Z"
+  });
+  await fixture.repository.claimContentFetchOperation(scope, live.id, {
+    leaseOwner: "live-worker",
+    leaseToken: "live-token",
+    claimedAt: "2026-07-24T07:55:00.000Z",
+    leaseExpiresAt: "2026-07-24T08:10:00.000Z",
+    staleRunningBefore: "2026-07-24T07:45:00.000Z"
+  });
+
+  const recoverable =
+    await fixture.repository.listRecoverableOperations({
+      now: "2026-07-24T08:00:00.000Z",
+      staleRunningBefore: "2026-07-24T07:45:00.000Z",
+      limit: 2
+    });
+
+  assert.deepEqual(
+    recoverable.map((operation) => operation.id),
+    [expired.id, queued.id]
+  );
+  assert.deepEqual(
+    recoverable.map((operation) => operation.ownerId),
+    [scope.ownerId, foreignScope.ownerId]
+  );
+  assert.equal(
+    recoverable.some((operation) => operation.id === live.id),
+    false
+  );
+});
+
 test("access restricted content is recorded honestly and never presented as fetched content", async () => {
   const fixture = serviceFixture({
     fetch: async (sourceUrl) => ({

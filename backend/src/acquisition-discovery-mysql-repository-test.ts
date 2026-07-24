@@ -185,20 +185,86 @@ test("mysql claim is atomic and never steals running or terminal operations", as
     payload_json: JSON.stringify({
       ...fetchOperation,
       status: "running",
-      startedAt: "2026-07-24T08:01:00.000Z"
+      startedAt: "2026-07-24T08:01:00.000Z",
+      leaseOwner: "worker-a",
+      leaseToken: "lease-a",
+      leaseExpiresAt: "2026-07-24T08:11:00.000Z"
     })
   }]);
   const claimed = await repository.claimContentFetchOperation(
     { ownerId: "owner-a", teamId: "team-a" },
     fetchOperation.id,
-    "2026-07-24T08:01:00.000Z"
+    {
+      leaseOwner: "worker-a",
+      leaseToken: "lease-a",
+      claimedAt: "2026-07-24T08:01:00.000Z",
+      leaseExpiresAt: "2026-07-24T08:11:00.000Z",
+      staleRunningBefore: "2026-07-24T07:51:00.000Z"
+    }
   );
   assert.equal(claimed.claimed, true);
   assert.equal(claimed.operation?.status, "running");
   const update = pool.calls[0]!;
   assert.match(update.sql, /status = 'queued'/);
+  assert.match(update.sql, /lease_expires_at <= \?/);
   assert.match(update.sql, /owner_id = \\?/);
   assert.match(update.sql, /team_id = \\?/);
+});
+
+test("mysql recovery listing is cross-tenant, bounded, and oldest first", async () => {
+  const pool = new FakePool();
+  const repository =
+    new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool));
+  pool.enqueue([
+    { payload_json: JSON.stringify(fetchOperation) },
+    { payload_json: JSON.stringify(importOperation) }
+  ]);
+
+  const operations = await repository.listRecoverableOperations({
+    now: "2026-07-24T08:10:00.000Z",
+    staleRunningBefore: "2026-07-24T08:00:00.000Z",
+    limit: 20
+  });
+
+  assert.deepEqual(
+    operations.map((operation) => operation.id),
+    [fetchOperation.id, importOperation.id]
+  );
+  const query = pool.calls.at(-1)!;
+  assert.match(query.sql, /UNION ALL/);
+  assert.match(query.sql, /lease_expires_at <= \?/);
+  assert.match(query.sql, /ORDER BY created_at ASC, id ASC/);
+  assert.match(query.sql, /LIMIT \?/);
+  assert.deepEqual(query.values, [
+    "2026-07-24 08:10:00.000",
+    "2026-07-24 08:00:00.000",
+    "2026-07-24 08:10:00.000",
+    "2026-07-24 08:00:00.000",
+    20
+  ]);
+});
+
+test("mysql terminal writes are fenced by the active lease token", async () => {
+  const pool = new FakePool();
+  const repository =
+    new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool));
+  pool.enqueue({ affectedRows: 0 });
+
+  await assert.rejects(
+    repository.putContentFetchOperation({
+      ...fetchOperation,
+      status: "succeeded",
+      startedAt: "2026-07-24T08:00:00.000Z",
+      completedAt: "2026-07-24T08:01:00.000Z"
+    }, "stale-lease"),
+    (error: unknown) =>
+      error instanceof AcquisitionDiscoveryOperationError
+      && error.code === "OPERATION_ALREADY_RUNNING"
+      && error.message === "OPERATION_LEASE_LOST"
+  );
+  const query = pool.calls.at(-1)!;
+  assert.match(query.sql, /lease_token = \?/);
+  assert.equal(query.values.at(-1), "stale-lease");
 });
 
 test("duplicate idempotency compares request hashes instead of silently reusing another request", async () => {

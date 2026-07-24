@@ -12,7 +12,11 @@ import {
   trackAcquisitionBackgroundTask
 } from "./acquisition-application.js";
 import type {
-  AcquisitionContentFetcherPort
+  AcquisitionContentFetcherPort,
+  AcquisitionContentFetchOperationRecord
+} from "./acquisition-discovery-operations.js";
+import {
+  InMemoryAcquisitionDiscoveryOperationRepository
 } from "./acquisition-discovery-operations.js";
 import {
   ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS
@@ -1004,6 +1008,77 @@ test("application exposes acquisition providers and executes direct discovery op
     ]);
   } finally {
     await server.close();
+    await runtime.close();
+  }
+});
+
+test("application startup recovers queued discovery operations", async () => {
+  const fixture = isolatedMemoryStore();
+  const discoveryRepository =
+    new InMemoryAcquisitionDiscoveryOperationRepository();
+  const queued: AcquisitionContentFetchOperationRecord = {
+    id: "fetch-startup-recovery",
+    ownerId: OWNER,
+    teamId: TEAM,
+    actorId: OWNER,
+    sourceUrl: "https://example.cn/startup-recovery",
+    finalUrl: null,
+    subjectChannel: "organization",
+    status: "queued",
+    accessStatus: null,
+    httpStatus: null,
+    contentType: null,
+    title: null,
+    rawArtifactHash: null,
+    contentHash: null,
+    evidenceCount: 0,
+    errorCode: null,
+    idempotencyKeyHash: "f".repeat(64),
+    requestHash: `sha256:${"e".repeat(64)}`,
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    createdAt: "2026-07-24T02:00:00.000Z",
+    startedAt: null,
+    completedAt: null
+  };
+  await discoveryRepository.createContentFetchOperation(queued);
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    discoveryRepository,
+    searchPort: fakeSearchPort().port,
+    contentFetcher: {
+      async fetch(sourceUrl) {
+        return {
+          finalUrl: sourceUrl,
+          status: "succeeded",
+          accessStatus: "public_content",
+          httpStatus: 200,
+          contentType: "text/html",
+          title: "恢复后的公开商机",
+          text: "应用启动后恢复了此前排队的公开商机抓取。",
+          rawArtifactHash: `sha256:${"3".repeat(64)}`,
+          contentHash: `sha256:${"4".repeat(64)}`
+        };
+      }
+    },
+    modelGatewayFactory: () => fakeGateway().gateway,
+    now: () => "2026-07-24T03:00:00.000Z",
+    nowMs: () => Date.parse("2026-07-24T03:00:00.000Z")
+  });
+
+  try {
+    const completed = await waitFor(
+      () => discoveryRepository.getContentFetchOperation(
+        { ownerId: OWNER, teamId: TEAM },
+        queued.id
+      ),
+      (value) => value?.status === "succeeded"
+    );
+    assert.equal(completed?.evidenceCount, 1);
+    assert.equal(completed?.leaseToken, null);
+  } finally {
     await runtime.close();
   }
 });

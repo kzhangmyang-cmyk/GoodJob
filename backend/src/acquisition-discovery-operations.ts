@@ -107,6 +107,9 @@ export interface AcquisitionContentFetchOperationRecord
 extends AcquisitionContentFetchOperation {
   idempotencyKeyHash: string;
   requestHash: string;
+  leaseOwner?: string | null;
+  leaseToken?: string | null;
+  leaseExpiresAt?: string | null;
 }
 
 export interface AcquisitionImportOperationRecord
@@ -115,6 +118,33 @@ extends AcquisitionImportOperation {
   requestHash: string;
   artifactCiphertext: string;
   columnMapping: AcquisitionImportColumnMapping;
+  leaseOwner?: string | null;
+  leaseToken?: string | null;
+  leaseExpiresAt?: string | null;
+}
+
+export interface AcquisitionDiscoveryClaim {
+  leaseOwner: string;
+  leaseToken: string;
+  claimedAt: string;
+  leaseExpiresAt: string;
+  staleRunningBefore: string;
+}
+
+export interface AcquisitionDiscoveryRecoveryQuery {
+  now: string;
+  staleRunningBefore: string;
+  limit: number;
+}
+
+export interface AcquisitionRecoverableDiscoveryOperation {
+  kind: "content_fetch" | "import";
+  id: string;
+  ownerId: string;
+  teamId: string;
+  actorId: string;
+  status: AcquisitionContentFetchStatus | AcquisitionImportStatus;
+  createdAt: string;
 }
 
 export type AcquisitionDiscoveryOperationErrorCode =
@@ -183,16 +213,20 @@ export interface AcquisitionDiscoveryOperationRepository {
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     limit: number
   ): Promise<AcquisitionContentFetchOperationRecord[]>;
+  listRecoverableOperations(
+    input: AcquisitionDiscoveryRecoveryQuery
+  ): Promise<AcquisitionRecoverableDiscoveryOperation[]>;
   claimContentFetchOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string,
-    startedAt: string
+    claim: AcquisitionDiscoveryClaim
   ): Promise<{
     operation: AcquisitionContentFetchOperationRecord | null;
     claimed: boolean;
   }>;
   putContentFetchOperation(
-    operation: AcquisitionContentFetchOperationRecord
+    operation: AcquisitionContentFetchOperationRecord,
+    leaseToken: string
   ): Promise<void>;
   createImportOperation(
     operation: AcquisitionImportOperationRecord
@@ -211,13 +245,14 @@ export interface AcquisitionDiscoveryOperationRepository {
   claimImportOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string,
-    startedAt: string
+    claim: AcquisitionDiscoveryClaim
   ): Promise<{
     operation: AcquisitionImportOperationRecord | null;
     claimed: boolean;
   }>;
   putImportOperation(
-    operation: AcquisitionImportOperationRecord
+    operation: AcquisitionImportOperationRecord,
+    leaseToken: string
   ): Promise<void>;
 }
 
@@ -277,6 +312,9 @@ function publicFetch(
   const {
     idempotencyKeyHash: _idempotencyKeyHash,
     requestHash: _requestHash,
+    leaseOwner: _leaseOwner,
+    leaseToken: _leaseToken,
+    leaseExpiresAt: _leaseExpiresAt,
     ...value
   } = operation;
   return clone(value);
@@ -290,6 +328,9 @@ function publicImport(
     requestHash: _requestHash,
     artifactCiphertext: _artifactCiphertext,
     columnMapping: _columnMapping,
+    leaseOwner: _leaseOwner,
+    leaseToken: _leaseToken,
+    leaseExpiresAt: _leaseExpiresAt,
     ...value
   } = operation;
   return clone(value);
@@ -309,6 +350,41 @@ function isTerminalImport(status: AcquisitionImportStatus) {
     "partial_success",
     "failed"
   ].includes(status);
+}
+
+function expiredRunningLease(
+  operation: {
+    status: string;
+    leaseExpiresAt?: string | null;
+    startedAt: string | null;
+    createdAt: string;
+  },
+  now: string,
+  staleRunningBefore: string
+) {
+  if (operation.status !== "running") return false;
+  if (operation.leaseExpiresAt) {
+    return operation.leaseExpiresAt <= now;
+  }
+  return (operation.startedAt ?? operation.createdAt)
+    <= staleRunningBefore;
+}
+
+function recoveryRow(
+  kind: AcquisitionRecoverableDiscoveryOperation["kind"],
+  operation:
+    | AcquisitionContentFetchOperationRecord
+    | AcquisitionImportOperationRecord
+): AcquisitionRecoverableDiscoveryOperation {
+  return {
+    kind,
+    id: operation.id,
+    ownerId: operation.ownerId,
+    teamId: operation.teamId,
+    actorId: operation.actorId,
+    status: operation.status,
+    createdAt: operation.createdAt
+  };
 }
 
 export class InMemoryAcquisitionDiscoveryOperationRepository
@@ -379,25 +455,34 @@ implements AcquisitionDiscoveryOperationRepository {
   async claimContentFetchOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string,
-    startedAt: string
+    claim: AcquisitionDiscoveryClaim
   ) {
     const operation = await this.getContentFetchOperation(scope, id);
     if (!operation) return { operation: null, claimed: false };
     if (isTerminalFetch(operation.status)) {
       return { operation, claimed: false };
     }
-    if (operation.status === "running") {
+    if (operation.status === "running"
+      && !expiredRunningLease(
+        operation,
+        claim.claimedAt,
+        claim.staleRunningBefore
+      )) {
       return { operation, claimed: false };
     }
     operation.status = "running";
-    operation.startedAt = startedAt;
+    operation.startedAt = claim.claimedAt;
+    operation.leaseOwner = claim.leaseOwner;
+    operation.leaseToken = claim.leaseToken;
+    operation.leaseExpiresAt = claim.leaseExpiresAt;
     operation.errorCode = null;
     this.fetchOperations.set(id, clone(operation));
     return { operation: clone(operation), claimed: true };
   }
 
   async putContentFetchOperation(
-    operation: AcquisitionContentFetchOperationRecord
+    operation: AcquisitionContentFetchOperationRecord,
+    leaseToken: string
   ) {
     const existing = this.fetchOperations.get(operation.id);
     if (!existing
@@ -405,7 +490,21 @@ implements AcquisitionDiscoveryOperationRepository {
       || existing.teamId !== operation.teamId) {
       throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
     }
-    this.fetchOperations.set(operation.id, clone(operation));
+    if (
+      existing.status !== "running"
+      || existing.leaseToken !== leaseToken
+    ) {
+      throw new AcquisitionDiscoveryOperationError(
+        "OPERATION_ALREADY_RUNNING",
+        "OPERATION_LEASE_LOST"
+      );
+    }
+    this.fetchOperations.set(operation.id, clone({
+      ...operation,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null
+    }));
   }
 
   async createImportOperation(
@@ -461,31 +560,86 @@ implements AcquisitionDiscoveryOperationRepository {
   async claimImportOperation(
     scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
     id: string,
-    startedAt: string
+    claim: AcquisitionDiscoveryClaim
   ) {
     const operation = await this.getImportOperation(scope, id);
     if (!operation) return { operation: null, claimed: false };
     if (isTerminalImport(operation.status)) {
       return { operation, claimed: false };
     }
-    if (operation.status === "running") {
+    if (operation.status === "running"
+      && !expiredRunningLease(
+        operation,
+        claim.claimedAt,
+        claim.staleRunningBefore
+      )) {
       return { operation, claimed: false };
     }
     operation.status = "running";
-    operation.startedAt = startedAt;
+    operation.startedAt = claim.claimedAt;
+    operation.leaseOwner = claim.leaseOwner;
+    operation.leaseToken = claim.leaseToken;
+    operation.leaseExpiresAt = claim.leaseExpiresAt;
     operation.errorCode = null;
     this.importOperations.set(id, clone(operation));
     return { operation: clone(operation), claimed: true };
   }
 
-  async putImportOperation(operation: AcquisitionImportOperationRecord) {
+  async putImportOperation(
+    operation: AcquisitionImportOperationRecord,
+    leaseToken: string
+  ) {
     const existing = this.importOperations.get(operation.id);
     if (!existing
       || existing.ownerId !== operation.ownerId
       || existing.teamId !== operation.teamId) {
       throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
     }
-    this.importOperations.set(operation.id, clone(operation));
+    if (
+      existing.status !== "running"
+      || existing.leaseToken !== leaseToken
+    ) {
+      throw new AcquisitionDiscoveryOperationError(
+        "OPERATION_ALREADY_RUNNING",
+        "OPERATION_LEASE_LOST"
+      );
+    }
+    this.importOperations.set(operation.id, clone({
+      ...operation,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null
+    }));
+  }
+
+  async listRecoverableOperations(
+    input: AcquisitionDiscoveryRecoveryQuery
+  ) {
+    return [
+      ...[...this.fetchOperations.values()]
+        .filter((operation) =>
+          operation.status === "queued"
+          || expiredRunningLease(
+            operation,
+            input.now,
+            input.staleRunningBefore
+          ))
+        .map((operation) => recoveryRow("content_fetch", operation)),
+      ...[...this.importOperations.values()]
+        .filter((operation) =>
+          operation.status === "queued"
+          || expiredRunningLease(
+            operation,
+            input.now,
+            input.staleRunningBefore
+          ))
+        .map((operation) => recoveryRow("import", operation))
+    ]
+      .sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id))
+      .slice(0, input.limit)
+      .map(clone);
   }
 }
 
@@ -1297,6 +1451,12 @@ function contentFetchOperationErrorCode(error: unknown) {
     : "CONTENT_FETCH_FAILED";
 }
 
+function isLeaseLostError(error: unknown) {
+  return error instanceof AcquisitionDiscoveryOperationError
+    && error.code === "OPERATION_ALREADY_RUNNING"
+    && error.message === "OPERATION_LEASE_LOST";
+}
+
 function rowValue(
   record: Map<string, string>,
   column: string | undefined
@@ -1341,6 +1501,9 @@ export interface AcquisitionDiscoveryOperationServiceOptions {
   evidence: AcquisitionDiscoveryEvidencePort;
   fetcher?: AcquisitionContentFetcherPort;
   masterSecret: string;
+  workerId?: string;
+  leaseDurationMs?: number;
+  leaseTokenFactory?: () => string;
   idFactory?: (prefix: string) => string;
   now?: () => string;
 }
@@ -1362,6 +1525,9 @@ export class AcquisitionDiscoveryOperationService {
   private readonly artifactKey: Buffer;
   private readonly idFactory: (prefix: string) => string;
   private readonly now: () => string;
+  private readonly workerId: string;
+  private readonly leaseDurationMs: number;
+  private readonly leaseTokenFactory: () => string;
   private readonly runningFetch = new Map<
     string,
     Promise<AcquisitionContentFetchOperation>
@@ -1379,6 +1545,60 @@ export class AcquisitionDiscoveryOperationService {
     this.idFactory = options.idFactory
       ?? ((prefix) => `${prefix}_${randomUUID()}`);
     this.now = options.now ?? (() => new Date().toISOString());
+    this.workerId = nonEmptyText(
+      options.workerId ?? `discovery-worker-${randomUUID()}`,
+      "workerId",
+      160
+    );
+    this.leaseDurationMs = options.leaseDurationMs ?? 10 * 60_000;
+    if (
+      !Number.isSafeInteger(this.leaseDurationMs)
+      || this.leaseDurationMs < 10_000
+      || this.leaseDurationMs > 24 * 60 * 60_000
+    ) {
+      throw new TypeError(
+        "leaseDurationMs must be between 10000 and 86400000"
+      );
+    }
+    this.leaseTokenFactory = options.leaseTokenFactory
+      ?? (() => randomUUID());
+  }
+
+  async recoverInterruptedOperations(input: {
+    staleRunningBefore: string;
+    limit?: number;
+  }) {
+    const staleRunningBefore = new Date(
+      input.staleRunningBefore
+    ).toISOString();
+    return this.repository.listRecoverableOperations({
+      now: this.now(),
+      staleRunningBefore,
+      limit: validatedListLimit(input.limit)
+    });
+  }
+
+  private nextClaim(): AcquisitionDiscoveryClaim {
+    const claimedAt = this.now();
+    const claimedAtMs = Date.parse(claimedAt);
+    if (!Number.isFinite(claimedAtMs)) {
+      throw new Error("ACQUISITION_DISCOVERY_INVALID_CLOCK");
+    }
+    return {
+      leaseOwner: this.workerId,
+      leaseToken: nonEmptyText(
+        this.leaseTokenFactory(),
+        "leaseToken",
+        200
+      ),
+      claimedAt,
+      leaseExpiresAt: new Date(
+        claimedAtMs + this.leaseDurationMs
+      ).toISOString(),
+      staleRunningBefore: new Date(
+        claimedAtMs - this.leaseDurationMs
+      ).toISOString()
+    };
   }
 
   async createContentFetchOperation(
@@ -1420,6 +1640,9 @@ export class AcquisitionDiscoveryOperationService {
       errorCode: null,
       idempotencyKeyHash: keyHash(key),
       requestHash,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
       createdAt: this.now(),
       startedAt: null,
       completedAt: null
@@ -1490,7 +1713,7 @@ export class AcquisitionDiscoveryOperationService {
     const claimed = await this.repository.claimContentFetchOperation(
       scope,
       id,
-      this.now()
+      this.nextClaim()
     );
     if (!claimed.operation) {
       throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
@@ -1504,6 +1727,10 @@ export class AcquisitionDiscoveryOperationService {
       );
     }
     const operation = claimed.operation;
+    const leaseToken = operation.leaseToken;
+    if (!leaseToken) {
+      throw new Error("ACQUISITION_DISCOVERY_MISSING_LEASE_TOKEN");
+    }
     try {
       const result = await this.fetcher.fetch(operation.sourceUrl, signal);
       abortIfRequested(signal);
@@ -1546,13 +1773,22 @@ export class AcquisitionDiscoveryOperationService {
       operation.evidenceCount = evidence ? 1 : 0;
       operation.errorCode = null;
       operation.completedAt = this.now();
-      await this.repository.putContentFetchOperation(operation);
+      await this.repository.putContentFetchOperation(
+        operation,
+        leaseToken
+      );
       return publicFetch(operation);
     } catch (error) {
+      if (isLeaseLostError(error)) {
+        throw error;
+      }
       operation.status = "failed";
       operation.errorCode = contentFetchOperationErrorCode(error);
       operation.completedAt = this.now();
-      await this.repository.putContentFetchOperation(operation);
+      await this.repository.putContentFetchOperation(
+        operation,
+        leaseToken
+      );
       throw error;
     }
   }
@@ -1602,6 +1838,9 @@ export class AcquisitionDiscoveryOperationService {
       errorCode: null,
       idempotencyKeyHash: keyHash(key),
       requestHash,
+      leaseOwner: null,
+      leaseToken: null,
+      leaseExpiresAt: null,
       createdAt: this.now(),
       startedAt: null,
       completedAt: null
@@ -1682,7 +1921,7 @@ export class AcquisitionDiscoveryOperationService {
     const claimed = await this.repository.claimImportOperation(
       scope,
       id,
-      this.now()
+      this.nextClaim()
     );
     if (!claimed.operation) {
       throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
@@ -1696,6 +1935,10 @@ export class AcquisitionDiscoveryOperationService {
       );
     }
     const operation = claimed.operation;
+    const leaseToken = operation.leaseToken;
+    if (!leaseToken) {
+      throw new Error("ACQUISITION_DISCOVERY_MISSING_LEASE_TOKEN");
+    }
     try {
       const content = openArtifact(
         this.artifactKey,
@@ -1849,13 +2092,16 @@ export class AcquisitionDiscoveryOperationService {
         ? "IMPORT_PROCESSING_FAILED"
         : null;
       operation.completedAt = this.now();
-      await this.repository.putImportOperation(operation);
+      await this.repository.putImportOperation(operation, leaseToken);
       return publicImport(operation);
     } catch (error) {
+      if (isLeaseLostError(error)) {
+        throw error;
+      }
       operation.status = "failed";
       operation.errorCode = operationErrorCode(error);
       operation.completedAt = this.now();
-      await this.repository.putImportOperation(operation);
+      await this.repository.putImportOperation(operation, leaseToken);
       throw error;
     }
   }

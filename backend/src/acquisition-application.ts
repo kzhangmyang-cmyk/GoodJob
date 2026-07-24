@@ -26,6 +26,9 @@ import {
   createAcquisitionDiscoveryOperationsRouter
 } from "./acquisition-discovery-operations-router.js";
 import {
+  AcquisitionDiscoveryRecoverySweeper
+} from "./acquisition-discovery-recovery-sweeper.js";
+import {
   ensureAcquisitionDiscoveryMysqlSchema,
   MysqlAcquisitionDiscoveryOperationRepository
 } from "./acquisition-discovery-mysql-repository.js";
@@ -161,6 +164,9 @@ export interface CreateAcquisitionApplicationOptions {
   mysqlPoolFactory?: (databaseUrl: string) => mysql.Pool;
   workerConcurrency?: number;
   copilotRecoveryIntervalMs?: number;
+  discoveryRecoveryIntervalMs?: number;
+  discoveryLeaseDurationMs?: number;
+  discoveryRepository?: AcquisitionDiscoveryOperationRepository;
   shutdownTimeoutMs?: number;
   idFactory?: IdFactory;
   now?: () => string;
@@ -684,7 +690,10 @@ export async function createAcquisitionApplication(
   const nowMs = options.nowMs ?? Date.now;
   let pool: mysql.Pool | null = null;
   let executionWorker: AcquisitionPlanExecutionWorker | null = null;
-  let recoverySweeper: AcquisitionCopilotRecoverySweeper | null = null;
+  let copilotRecoverySweeper:
+    AcquisitionCopilotRecoverySweeper | null = null;
+  let discoveryRecoverySweeper:
+    AcquisitionDiscoveryRecoverySweeper | null = null;
 
   try {
     let repositories: AcquisitionRepositorySet;
@@ -749,6 +758,9 @@ export async function createAcquisitionApplication(
       toolResults = new InMemoryAcquisitionToolResultLedger();
       toolAudit = new InMemoryAcquisitionToolAuditLedgerAdapter();
     }
+    if (options.discoveryRepository) {
+      repositories.discovery = options.discoveryRepository;
+    }
 
     const domainService = new AcquisitionDomainService({
       repository: repositories.domain,
@@ -770,6 +782,8 @@ export async function createAcquisitionApplication(
       fetcher: options.contentFetcher
         ?? new ControlledPublicContentFetcher(),
       masterSecret: derivedSecret(masterSecret, "discovery-artifacts"),
+      workerId: idFactory("discovery-worker"),
+      leaseDurationMs: options.discoveryLeaseDurationMs,
       idFactory,
       now
     });
@@ -990,13 +1004,34 @@ export async function createAcquisitionApplication(
       requestIdFactory: () => idFactory("request")
     }));
 
-    recoverySweeper = new AcquisitionCopilotRecoverySweeper({
+    copilotRecoverySweeper = new AcquisitionCopilotRecoverySweeper({
       service: copilotService,
       dispatchTask: dispatchCopilotTask,
       intervalMs: options.copilotRecoveryIntervalMs,
       nowMs
     });
-    await recoverySweeper.start();
+    await copilotRecoverySweeper.start();
+    discoveryRecoverySweeper =
+      new AcquisitionDiscoveryRecoverySweeper({
+        service: discoveryOperations,
+        dispatchContentFetchOperation: (scope, operationId) =>
+          dispatchDiscoveryTask(() =>
+            discoveryOperations.executeContentFetchOperation(
+              scope,
+              operationId
+            )
+          ),
+        dispatchImportOperation: (scope, operationId) =>
+          dispatchDiscoveryTask(() =>
+            discoveryOperations.executeImportOperation(
+              scope,
+              operationId
+            )
+          ),
+        intervalMs: options.discoveryRecoveryIntervalMs,
+        nowMs
+      });
+    await discoveryRecoverySweeper.start();
 
     let closePromise: Promise<void> | null = null;
     return {
@@ -1010,7 +1045,9 @@ export async function createAcquisitionApplication(
           try {
             settlements = await waitWithTimeout(
               Promise.allSettled([
-                recoverySweeper?.close() ?? Promise.resolve(),
+                copilotRecoverySweeper?.close() ?? Promise.resolve(),
+                discoveryRecoverySweeper?.close()
+                  ?? Promise.resolve(),
                 worker.close(),
                 ...activeCopilotTasks,
                 ...activeDiscoveryTasks
@@ -1041,8 +1078,11 @@ export async function createAcquisitionApplication(
       }
     };
   } catch (error) {
-    if (recoverySweeper) {
-      await recoverySweeper.close().catch(() => undefined);
+    if (discoveryRecoverySweeper) {
+      await discoveryRecoverySweeper.close().catch(() => undefined);
+    }
+    if (copilotRecoverySweeper) {
+      await copilotRecoverySweeper.close().catch(() => undefined);
     }
     if (executionWorker) {
       await waitWithTimeout(
