@@ -16,6 +16,24 @@ import {
   AcquisitionDomainService
 } from "./acquisition-domain-service.js";
 import {
+  AcquisitionDiscoveryOperationService,
+  ControlledPublicContentFetcher,
+  InMemoryAcquisitionDiscoveryOperationRepository,
+  type AcquisitionContentFetcherPort,
+  type AcquisitionDiscoveryOperationRepository
+} from "./acquisition-discovery-operations.js";
+import {
+  ensureAcquisitionDiscoveryMysqlSchema,
+  MysqlAcquisitionDiscoveryOperationRepository
+} from "./acquisition-discovery-mysql-repository.js";
+import {
+  isTrustedAcquisitionSystemConnection
+} from "./acquisition-discovery-providers.js";
+import {
+  AcquisitionContentFetchShardProcessor,
+  AcquisitionImportRowsShardProcessor
+} from "./acquisition-discovery-shard-processors.js";
+import {
   createAcquisitionJudgmentPort,
   createAcquisitionJudgmentSessionResolver
 } from "./acquisition-judgment-port.js";
@@ -122,6 +140,7 @@ export interface CreateAcquisitionApplicationOptions {
   masterSecret: string;
   databaseUrl?: string;
   searchPort?: SearchPublicSourcesPort;
+  contentFetcher?: AcquisitionContentFetcherPort;
   modelGatewayFactory?: (
     snapshot: StoredAiJobModelSnapshot,
     contentBundle: ModelContentBundle
@@ -138,6 +157,7 @@ interface AcquisitionRepositorySet {
   domain: AcquisitionDomainRepository;
   copilot: AcquisitionCopilotRepository;
   planRun: AcquisitionPlanRunRepository;
+  discovery: AcquisitionDiscoveryOperationRepository;
 }
 
 const GRADE_RANK = Object.freeze({
@@ -349,6 +369,30 @@ function assertTrustedSearchConnectionSnapshots(
       || snapshot.credentialVersion
         !== acquisitionProviderConnectionVersion(connection)
     ) {
+      throw new Error("ACQUISITION_PROVIDER_SNAPSHOT_MISMATCH");
+    }
+  }
+}
+
+function assertTrustedPlanConnectionSnapshots(
+  store: CrmStore,
+  scope: { ownerId: string; teamId: string },
+  snapshots: AcquisitionProviderConnectionSnapshot[]
+) {
+  if (!Array.isArray(snapshots) || snapshots.length < 1) {
+    throw new Error("ACQUISITION_PROVIDER_SNAPSHOT_UNAVAILABLE");
+  }
+  const seen = new Set<string>();
+  for (const snapshot of snapshots) {
+    if (seen.has(snapshot.connectionId)) {
+      throw new Error("ACQUISITION_PROVIDER_SNAPSHOT_DUPLICATED");
+    }
+    seen.add(snapshot.connectionId);
+    if (snapshot.kind === "search") {
+      assertTrustedSearchConnectionSnapshots(store, scope, [snapshot]);
+      continue;
+    }
+    if (!isTrustedAcquisitionSystemConnection(snapshot)) {
       throw new Error("ACQUISITION_PROVIDER_SNAPSHOT_MISMATCH");
     }
   }
@@ -665,7 +709,12 @@ export async function createAcquisitionApplication(
       pool = (options.mysqlPoolFactory ?? defaultMysqlPool)(databaseUrl);
       await ensureAcquisitionMysqlSchema(pool);
       await ensureAcquisitionToolSupportMysqlSchema(pool);
-      repositories = createMysqlAcquisitionRepositories(pool);
+      await ensureAcquisitionDiscoveryMysqlSchema(pool);
+      repositories = {
+        ...createMysqlAcquisitionRepositories(pool),
+        discovery:
+          new MysqlAcquisitionDiscoveryOperationRepository(pool)
+      };
       candidateDirectory = new MysqlAcquisitionCandidateDirectory(pool, {
         now
       });
@@ -687,7 +736,9 @@ export async function createAcquisitionApplication(
       repositories = {
         domain: new InMemoryAcquisitionDomainRepository(),
         copilot: new InMemoryAcquisitionCopilotRepository(),
-        planRun: new InMemoryAcquisitionPlanRunRepository()
+        planRun: new InMemoryAcquisitionPlanRunRepository(),
+        discovery:
+          new InMemoryAcquisitionDiscoveryOperationRepository()
       };
       candidateDirectory = new InMemoryAcquisitionCandidateDirectory({
         now
@@ -715,6 +766,15 @@ export async function createAcquisitionApplication(
     });
     const searchPort = options.searchPort
       ?? createAcquisitionPublicSearchPort(options.store);
+    const discoveryOperations = new AcquisitionDiscoveryOperationService({
+      repository: repositories.discovery,
+      evidence: domainService,
+      fetcher: options.contentFetcher
+        ?? new ControlledPublicContentFetcher(),
+      masterSecret: derivedSecret(masterSecret, "discovery-artifacts"),
+      idFactory,
+      now
+    });
     const judgmentResolver = createAcquisitionJudgmentSessionResolver({
       repository: repositories.copilot,
       store: options.store,
@@ -780,10 +840,21 @@ export async function createAcquisitionApplication(
         return searchProcessor.process(input);
       }
     };
+    const contentFetchProcessor =
+      new AcquisitionContentFetchShardProcessor({
+        operations: discoveryOperations,
+        nowMs
+      });
+    const importRowsProcessor = new AcquisitionImportRowsShardProcessor({
+      operations: discoveryOperations,
+      nowMs
+    });
     const worker = new AcquisitionPlanExecutionWorker({
       repository: repositories.planRun,
       processorRegistry: new AcquisitionShardProcessorRegistry({
-        search: trustedSearchProcessor
+        search: trustedSearchProcessor,
+        content_fetch: contentFetchProcessor,
+        import_rows: importRowsProcessor
       }),
       maxConcurrency: options.workerConcurrency ?? 2,
       workerActorId: "acquisition-plan-worker"
@@ -795,7 +866,7 @@ export async function createAcquisitionApplication(
       validatePlanPayloadForApproval: async (scope, payload) => {
         await options.store.readBarrier();
         assertTrustedPlanSnapshot(options.store, scope, payload);
-        assertTrustedSearchConnectionSnapshots(
+        assertTrustedPlanConnectionSnapshots(
           options.store,
           scope,
           payload.providerConnections

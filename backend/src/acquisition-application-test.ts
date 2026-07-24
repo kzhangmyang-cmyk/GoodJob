@@ -12,6 +12,15 @@ import {
   trackAcquisitionBackgroundTask
 } from "./acquisition-application.js";
 import type {
+  AcquisitionContentFetcherPort
+} from "./acquisition-discovery-operations.js";
+import {
+  ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS
+} from "./acquisition-discovery-providers.js";
+import type {
+  AcquisitionPlanPayload
+} from "./acquisition-plan-run-repository.js";
+import type {
   SearchPublicSourcesPort
 } from "./acquisition-tool-executor.js";
 import type {
@@ -370,7 +379,7 @@ async function serve(
 
 function planPayload(modelSnapshot: ReturnType<
   typeof acquisitionPiModelSnapshotFromStored
->) {
+>): AcquisitionPlanPayload {
   return {
     name: "全国公开商机搜索",
     objective: "搜索公开存在的组织需求",
@@ -775,6 +784,141 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
   } finally {
     await server.close();
     await runtime.close();
+    await runtime.close();
+  }
+});
+
+test("application approves and executes a controlled content fetch shard", async () => {
+  const fixture = isolatedMemoryStore();
+  const search = fakeSearchPort();
+  const model = fakeGateway();
+  const fetchCalls: string[] = [];
+  const contentFetcher: AcquisitionContentFetcherPort = {
+    async fetch(sourceUrl) {
+      fetchCalls.push(sourceUrl);
+      return {
+        finalUrl: sourceUrl,
+        status: "succeeded",
+        accessStatus: "public_content",
+        httpStatus: 200,
+        contentType: "text/html; charset=utf-8",
+        title: "公开采购需求",
+        text: "示例企业正在公开寻找 AI 获客与经营决策系统供应商。",
+        rawArtifactHash: `sha256:${"e".repeat(64)}`,
+        contentHash: `sha256:${"f".repeat(64)}`
+      };
+    }
+  };
+  let sequence = 0;
+  let timestamp = Date.parse("2026-07-24T02:00:00.000Z");
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    searchPort: search.port,
+    contentFetcher,
+    modelGatewayFactory: () => model.gateway,
+    idFactory: (prefix) => `${prefix}-${++sequence}`,
+    now: () => new Date(timestamp++).toISOString(),
+    nowMs: () => timestamp++
+  });
+  const server = await serve(runtime.handler);
+
+  try {
+    const session = await server.request(
+      "/api/v1/acquisition/copilot/sessions",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "content-fetch-model-session" },
+        body: JSON.stringify({ connectionId: modelConfig().id })
+      }
+    );
+    assert.equal(session.response.status, 202);
+    const snapshot = acquisitionPiModelSnapshotFromStored(
+      fixture.store.aiJobModelSnapshots[0]!
+    );
+    const payload = planPayload(snapshot);
+    payload.providerConnections.push(
+      ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS.contentFetch
+    );
+    payload.operations.push({
+      operationId: "fetch-public-demand-page",
+      subjectChannel: "organization",
+      kind: "content_fetch",
+      connectionId:
+        ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS.contentFetch.connectionId,
+      sourceRef: "https://example.cn/public-procurement",
+      allocatedBudget: {
+        requests: 1,
+        results: 1,
+        amountMinor: 0,
+        durationSeconds: 30
+      }
+    });
+    payload.budgetSnapshot.maxRequests = 3;
+    payload.budgetSnapshot.maxResults = 21;
+    payload.budgetSnapshot.maxDurationSeconds = 150;
+
+    const created = await server.request(
+      "/api/v1/acquisition/plans",
+      {
+        method: "POST",
+        body: JSON.stringify(payload)
+      }
+    );
+    assert.equal(created.response.status, 201);
+    const approved = await server.request(
+      `/api/v1/acquisition/plans/${created.json.id}/approval`,
+      {
+        method: "POST",
+        headers: {
+          "If-Match": created.response.headers.get("etag")!
+        },
+        body: JSON.stringify({
+          decision: "approve",
+          reason: "批准受控公开网页抓取"
+        })
+      }
+    );
+    assert.equal(
+      approved.response.status,
+      200,
+      JSON.stringify(approved.json)
+    );
+
+    const run = await server.request(
+      `/api/v1/acquisition/plans/${created.json.id}/runs`,
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": "run-controlled-content-fetch"
+        },
+        body: JSON.stringify({})
+      }
+    );
+    assert.equal(run.response.status, 202);
+    const terminal = await waitFor(
+      () => server.request(
+        `/api/v1/acquisition/runs/${run.json.id}`
+      ),
+      (value) => ["succeeded", "partial_success", "failed"].includes(
+        String(value.json.status)
+      )
+    );
+    assert.equal(terminal.json.status, "succeeded");
+    assert.deepEqual(fetchCalls, [
+      "https://example.cn/public-procurement"
+    ]);
+
+    const shards = await server.request(
+      `/api/v1/acquisition/runs/${run.json.id}/shards`
+    );
+    const contentShard = shards.json.items.find(
+      (item: { kind?: string }) => item.kind === "content_fetch"
+    );
+    assert.equal(contentShard.status, "succeeded");
+    assert.equal(contentShard.evidenceCount, 1);
+  } finally {
+    await server.close();
     await runtime.close();
   }
 });
