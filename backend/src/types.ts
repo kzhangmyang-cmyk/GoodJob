@@ -748,6 +748,12 @@ export interface ProviderConnection {
   providerId: string;
   scope: "personal" | "team" | "platform";
   credentialRef: string;
+  /**
+   * Monotonic positive version of the decrypted execution configuration.
+   * Optional only for legacy in-memory records; persisted and newly-created
+   * connections always materialize a value starting at 1.
+   */
+  credentialVersion?: number;
   configurationEncrypted: string;
   status: "active" | "disabled" | "error";
   quotaPolicy: Record<string, unknown>;

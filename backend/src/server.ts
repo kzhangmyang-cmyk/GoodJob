@@ -8523,6 +8523,36 @@ function providerConnectionConfiguration(connection?: ProviderConnection) {
   return readProviderConnectionConfiguration(connection).configuration;
 }
 
+interface ProviderExecutionConfiguration {
+  apiKey: string;
+  baseUrl: string;
+}
+
+function normalizedProviderConnectionCredentialVersion(value?: number) {
+  return Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : 1;
+}
+
+export function resolveProviderConnectionCredentialVersion(input: {
+  currentVersion?: number;
+  currentConfiguration: ProviderExecutionConfiguration;
+  nextConfiguration: ProviderExecutionConfiguration;
+}) {
+  const hasValidCurrentVersion = Number.isSafeInteger(input.currentVersion)
+    && Number(input.currentVersion) > 0;
+  const currentVersion = normalizedProviderConnectionCredentialVersion(
+    input.currentVersion
+  );
+  const configurationChanged =
+    input.currentConfiguration.apiKey !== input.nextConfiguration.apiKey
+    || input.currentConfiguration.baseUrl !== input.nextConfiguration.baseUrl;
+  if (!hasValidCurrentVersion) return 1;
+  if (!configurationChanged) return currentVersion;
+  if (currentVersion >= Number.MAX_SAFE_INTEGER) {
+    throw new Error("Provider 连接凭据版本已耗尽，无法继续轮换");
+  }
+  return currentVersion + 1;
+}
+
 function publicLeadSourceConfig(connection: ProviderConnection) {
   const connectionRead = readProviderConnectionConfiguration(connection);
   const configuration = connectionRead.configuration;
@@ -8530,6 +8560,9 @@ function publicLeadSourceConfig(connection: ProviderConnection) {
     id: connection.id,
     provider: connection.providerId,
     scope: connection.scope,
+    credentialVersion: normalizedProviderConnectionCredentialVersion(
+      connection.credentialVersion
+    ),
     apiKey: configuration.apiKey ? `****${configuration.apiKey.slice(-4)}` : "",
     hasApiKey: Boolean(configuration.apiKey),
     baseUrl: configuration.baseUrl,
@@ -8604,6 +8637,11 @@ function providerStatusFor(user: SessionUser, provider: LeadProvider) {
     : connection ? connectionRead.readable && connection.status === "active" : true;
   return {
     ...meta,
+    credentialVersion: connection
+      ? normalizedProviderConnectionCredentialVersion(
+          connection.credentialVersion
+        )
+      : null,
     hasApiKey: Boolean(configuration.apiKey),
     ready: automated ? hasKey : true,
     enabled: catalogEnabled && connectionEnabled,
@@ -9722,6 +9760,13 @@ app.post("/api/lead-finder/source-config", requireAuth, asyncRoute(async (req, r
     ...context,
     scope: "personal",
     credentialRef: existing?.credentialRef || createCredentialRef(),
+    // Enabled/disabled and health fields are operational state, not execution
+    // configuration. They intentionally do not rotate this snapshot version.
+    credentialVersion: resolveProviderConnectionCredentialVersion({
+      currentVersion: existing?.credentialVersion,
+      currentConfiguration: existingConfiguration,
+      nextConfiguration: { apiKey, baseUrl }
+    }),
     configurationEncrypted: encryptProviderConfiguration(context, { apiKey, baseUrl }),
     status: body.enabled ? "active" : "disabled",
     quotaPolicy: existing?.quotaPolicy || {},

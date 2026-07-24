@@ -2862,6 +2862,7 @@ async function ensureSchema(pool: mysql.Pool) {
     provider_id VARCHAR(64) NOT NULL,
     scope VARCHAR(20) NOT NULL DEFAULT 'personal',
     credential_ref VARCHAR(80) NOT NULL UNIQUE,
+    credential_version BIGINT UNSIGNED NOT NULL DEFAULT 1,
     configuration_encrypted TEXT NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'disabled',
     quota_policy_json JSON NOT NULL,
@@ -2880,6 +2881,12 @@ async function ensureSchema(pool: mysql.Pool) {
     INDEX idx_provider_connection_team(team_id),
     INDEX idx_provider_connection_status(status)
   )`);
+  await ensureColumn(
+    pool,
+    "provider_connections",
+    "credential_version",
+    "BIGINT UNSIGNED NOT NULL DEFAULT 1"
+  );
   await pool.query(`CREATE TABLE IF NOT EXISTS provider_request_logs (
     id VARCHAR(80) PRIMARY KEY,
     team_id VARCHAR(64) NOT NULL,
@@ -6213,6 +6220,13 @@ async function loadProviderCatalog(
   }));
 }
 
+function normalizedProviderConnectionCredentialVersion(value: unknown) {
+  const numericValue = Number(value);
+  return Number.isSafeInteger(numericValue) && numericValue > 0
+    ? numericValue
+    : 1;
+}
+
 async function loadProviderConnections(
   pool: MysqlQuerySource
 ): Promise<ProviderConnection[]> {
@@ -6221,6 +6235,9 @@ async function loadProviderConnections(
     providerId: row.provider_id,
     scope: row.scope === "team" || row.scope === "platform" ? row.scope : "personal",
     credentialRef: row.credential_ref,
+    credentialVersion: normalizedProviderConnectionCredentialVersion(
+      row.credential_version
+    ),
     configurationEncrypted: row.configuration_encrypted,
     status: row.status === "active" || row.status === "error" ? row.status : "disabled",
     quotaPolicy: typeof row.quota_policy_json === "string" ? JSON.parse(row.quota_policy_json) : row.quota_policy_json || {},
@@ -10068,7 +10085,7 @@ async function persistAll(pool: mysql.Pool, store: CrmStore) {
       await insertRows(connection, "ai_model_connection_idempotency", store.pendingModelConnectionIdempotencyRecords, (item) => [item.ownerId, item.teamId, item.idempotencyKeyHash, item.requestFingerprint, item.responseStatus, JSON.stringify(item.responseBody ?? null), mysqlDate(item.createdAt)], "(owner_id,team_id,idempotency_key_hash,request_fingerprint,response_status,response_body_json,created_at)");
       await insertRows(connection, "ai_model_call_records", store.pendingModelCallRecords, (item) => [item.id, item.ownerId, item.teamId, item.jobId, item.attemptId, item.connectionId, item.credentialVersion, item.capabilitySnapshotHash, item.provider, item.baseUrlFingerprint, item.model, item.promptVersion, item.schemaVersion, item.requestId, item.providerRequestId, item.inputTokens, item.outputTokens, item.reasoningTokens, item.latencyMs, item.status, item.error ? JSON.stringify(item.error) : null, JSON.stringify(item.cost), item.parameterHash, item.resultHash, mysqlDate(item.createdAt)], "(id,owner_id,team_id,job_id,attempt_id,connection_id,credential_version,capability_snapshot_hash,provider,base_url_fingerprint,model,prompt_version,schema_version,request_id,provider_request_id,input_tokens,output_tokens,reasoning_tokens,latency_ms,call_status,error_json,cost_json,parameter_hash,result_hash,created_at)");
 	    await replaceRows(connection, "provider_catalog", store.providerCatalog, (item) => [item.id, item.code, item.name, item.category, item.sourceLevel, item.accessMode, item.baseUrl || "", item.officialDocsUrl || "", JSON.stringify(item.capabilities), JSON.stringify(item.allowedFields), JSON.stringify(item.licensePolicy), JSON.stringify(item.defaultRatePolicy), JSON.stringify(item.retentionPolicy), item.status, item.version, item.reviewedAt ? mysqlDate(item.reviewedAt) : null, mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,code,name,category,source_level,access_mode,base_url,official_docs_url,capability_json,allowed_fields_json,license_policy_json,default_rate_policy_json,retention_policy_json,status,version,reviewed_at,created_at,updated_at)");
-	    await replaceRows(connection, "provider_connections", store.providerConnections, (item) => [item.id, item.providerId, item.scope, item.credentialRef, item.configurationEncrypted, item.status, JSON.stringify(item.quotaPolicy), JSON.stringify(item.budgetPolicy), item.lastHealthAt ? mysqlDate(item.lastHealthAt) : null, item.lastHealthStatus, item.lastErrorCode || "", item.lastHealthMessage || "", item.usage || "", item.ownerId, item.teamId, item.createdBy, mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,provider_id,scope,credential_ref,configuration_encrypted,status,quota_policy_json,budget_policy_json,last_health_at,last_health_status,last_error_code,last_health_message,usage_text,owner_id,team_id,created_by,created_at,updated_at)");
+	    await replaceRows(connection, "provider_connections", store.providerConnections, (item) => [item.id, item.providerId, item.scope, item.credentialRef, normalizedProviderConnectionCredentialVersion(item.credentialVersion), item.configurationEncrypted, item.status, JSON.stringify(item.quotaPolicy), JSON.stringify(item.budgetPolicy), item.lastHealthAt ? mysqlDate(item.lastHealthAt) : null, item.lastHealthStatus, item.lastErrorCode || "", item.lastHealthMessage || "", item.usage || "", item.ownerId, item.teamId, item.createdBy, mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,provider_id,scope,credential_ref,credential_version,configuration_encrypted,status,quota_policy_json,budget_policy_json,last_health_at,last_health_status,last_error_code,last_health_message,usage_text,owner_id,team_id,created_by,created_at,updated_at)");
 		    await appendProviderRequestLogRows(connection, store.providerRequestLogs);
 		    await replaceRows(connection, "provider_response_cache", store.providerResponseCache, (item) => [item.id, item.providerId, item.providerVersion, item.requestFingerprint, item.payloadEncrypted, item.payloadHash, mysqlDate(item.fetchedAt), mysqlDate(item.expiresAt), item.licenseScope, item.status], "(id,provider_id,provider_version,request_fingerprint,payload_encrypted,payload_hash,fetched_at,expires_at,license_scope,status)");
       await syncProspectCampaignRows(connection, store.prospectCampaigns);
@@ -12786,6 +12803,7 @@ function migrateLegacyLeadSourceConfigs(store: CrmStore) {
         ...context,
         scope: legacy.scope,
         credentialRef: createCredentialRef(),
+        credentialVersion: 1,
         configurationEncrypted: encryptProviderConfiguration(context, {
           apiKey: legacy.apiKey,
           baseUrl: legacy.baseUrl || ""
