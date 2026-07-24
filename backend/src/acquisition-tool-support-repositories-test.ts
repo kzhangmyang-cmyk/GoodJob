@@ -666,7 +666,7 @@ assert.equal(
   assert.ok(pendingInsert);
   assert.match(String(pendingInsert.values[3]), /^[a-f0-9]{64}$/);
   assert.equal(pendingInsert.values.at(-1), null);
-  const successUpdate = pool.connection.calls.find((call) =>
+  const successUpdate = pool.calls.find((call) =>
     call.sql.startsWith("UPDATE acquisition_tool_results")
   );
   assert.ok(successUpdate);
@@ -676,6 +676,166 @@ assert.equal(
     "stored results use an envelope so JSON null remains distinguishable"
   );
   assert.match(pool.connection.calls.at(-1)!.sql, /RELEASE_LOCK/i);
+}
+
+{
+  const pool = new ScriptedPool();
+  pool.connection.enqueue([{ lock_acquired: 1 }]);
+  pool.connection.enqueue([]);
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue({ affectedRows: 1 });
+  const ledger = new MysqlAcquisitionToolResultLedger(asPool(pool), {
+    claimTokenFactory: () => "raw-claim-token-must-not-be-persisted"
+  });
+  await ledger.executeOnce({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "actor-a",
+    sessionId: "session-a",
+    toolName: "get_candidate_evidence",
+    idempotencyKey: "operation-must-run-outside-claim-transaction",
+    requestHash: `sha256:${"7".repeat(64)}`
+  }, async () => {
+    assert.equal(
+      pool.connection.commitCount,
+      1,
+      "the pending claim must commit before an external operation starts"
+    );
+    assert.equal(
+      pool.connection.releaseCount,
+      1,
+      "the database connection must be returned before external work starts"
+    );
+    return { ok: true };
+  });
+  const allDatabaseCalls = JSON.stringify([
+    ...pool.connection.calls,
+    ...pool.calls
+  ]);
+  assert.equal(
+    allDatabaseCalls.includes("raw-claim-token-must-not-be-persisted"),
+    false,
+    "only a hash of the fencing token may reach MySQL"
+  );
+  assert.equal(
+    allDatabaseCalls.includes(
+      createHash("sha256")
+        .update("raw-claim-token-must-not-be-persisted")
+        .digest("hex")
+    ),
+    true
+  );
+}
+
+{
+  const pool = new ScriptedPool();
+  pool.connection.enqueue([{ lock_acquired: 1 }]);
+  pool.connection.enqueue([{
+    request_hash: `sha256:${"8".repeat(64)}`,
+    state: "pending",
+    result_json: null,
+    claim_token_hash: "1".repeat(64),
+    lease_expires_at: "2026-07-24 07:59:00.000",
+    attempt_count: 1
+  }]);
+  pool.connection.enqueue({ affectedRows: 1 });
+  const ledger = new MysqlAcquisitionToolResultLedger(asPool(pool), {
+    now: () => NOW,
+    claimTokenFactory: () => "stale-recovery-token"
+  });
+  let operations = 0;
+  const recovered = await ledger.executeOnce({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "actor-a",
+    sessionId: "session-a",
+    toolName: "research_candidate",
+    idempotencyKey: "stale-pending-key",
+    requestHash: `sha256:${"8".repeat(64)}`
+  }, async () => {
+    operations += 1;
+    return { recovered: true };
+  });
+  assert.deepEqual(recovered, { recovered: true });
+  assert.equal(operations, 1);
+  const reclaim = pool.connection.calls.find((call) =>
+    call.sql.startsWith("UPDATE acquisition_tool_results")
+    && call.sql.includes("attempt_count = attempt_count + 1")
+  );
+  assert.ok(reclaim, "expired pending work must be reclaimed atomically");
+  assert.match(
+    String(reclaim.values[2]),
+    /^[a-f0-9]{64}$/,
+    "the stale claim is replaced by a hashed fencing token"
+  );
+  assert.equal(
+    JSON.stringify(reclaim).includes("stale-recovery-token"),
+    false
+  );
+}
+
+{
+  const pool = new ScriptedPool();
+  pool.connection.enqueue([{ lock_acquired: 1 }]);
+  pool.connection.enqueue([{
+    request_hash: `sha256:${"9".repeat(64)}`,
+    state: "pending",
+    result_json: null,
+    claim_token_hash: "2".repeat(64),
+    lease_expires_at: "2026-07-24 08:01:00.000",
+    attempt_count: 1
+  }]);
+  const ledger = new MysqlAcquisitionToolResultLedger(asPool(pool), {
+    now: () => NOW,
+    pendingWaitTimeoutMs: 0
+  });
+  let operations = 0;
+  await assert.rejects(
+    ledger.executeOnce({
+      ownerId: "owner-a",
+      teamId: "team-a",
+      actorId: "actor-a",
+      sessionId: "session-a",
+      toolName: "research_candidate",
+      idempotencyKey: "live-pending-key",
+      requestHash: `sha256:${"9".repeat(64)}`
+    }, async () => {
+      operations += 1;
+      return { mustNotRun: true };
+    }),
+    /ACQUISITION_TOOL_RESULT_PENDING_TIMEOUT/
+  );
+  assert.equal(operations, 0);
+  assert.equal(pool.connection.commitCount, 1);
+  assert.equal(pool.connection.releaseCount, 1);
+}
+
+{
+  const pool = new ScriptedPool();
+  pool.connection.enqueue([{ lock_acquired: 1 }]);
+  pool.connection.enqueue([]);
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.enqueue({ affectedRows: 0 });
+  const ledger = new MysqlAcquisitionToolResultLedger(asPool(pool), {
+    claimTokenFactory: () => "losing-fencing-token"
+  });
+  await assert.rejects(
+    ledger.executeOnce({
+      ownerId: "owner-a",
+      teamId: "team-a",
+      actorId: "actor-a",
+      sessionId: "session-a",
+      toolName: "research_candidate",
+      idempotencyKey: "lost-lease-key",
+      requestHash: `sha256:${"0".repeat(64)}`
+    }, async () => ({ result: "stale-worker" })),
+    /ACQUISITION_TOOL_RESULT_CLAIM_LOST/
+  );
+  const completion = pool.calls.find((call) =>
+    call.sql.startsWith("UPDATE acquisition_tool_results")
+  );
+  assert.ok(completion);
+  assert.match(completion.sql, /claim_token_hash = \?/);
 }
 
 {
@@ -725,13 +885,24 @@ assert.equal(
     }),
     /operation-failed/
   );
-  assert.equal(pool.connection.commitCount, 0);
-  assert.equal(pool.connection.rollbackCount, 1);
   assert.equal(
-    pool.connection.calls.some((call) =>
+    pool.connection.commitCount,
+    1,
+    "the durable claim is committed before external work fails"
+  );
+  assert.equal(pool.connection.rollbackCount, 0);
+  assert.equal(
+    pool.calls.some((call) =>
       call.sql.startsWith("UPDATE acquisition_tool_results")
     ),
     false
+  );
+  assert.equal(
+    pool.calls.some((call) =>
+      call.sql.startsWith("DELETE FROM acquisition_tool_results")
+    ),
+    true,
+    "a failed claimant releases only its own pending claim"
   );
 }
 

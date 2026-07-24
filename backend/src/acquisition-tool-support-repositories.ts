@@ -140,6 +140,13 @@ export const ACQUISITION_TOOL_SUPPORT_MYSQL_SCHEMA_STATEMENTS = [
         AND completed_at IS NOT NULL)
     )
   ) ENGINE=InnoDB`,
+  `ALTER TABLE acquisition_tool_results
+     ADD COLUMN claim_token_hash CHAR(64) NULL AFTER request_hash`,
+  `ALTER TABLE acquisition_tool_results
+     ADD COLUMN lease_expires_at DATETIME(3) NULL AFTER claim_token_hash`,
+  `ALTER TABLE acquisition_tool_results
+     ADD COLUMN attempt_count INT UNSIGNED NOT NULL DEFAULT 0
+       AFTER lease_expires_at`,
   `CREATE TABLE IF NOT EXISTS acquisition_tool_audit (
     id VARCHAR(160) PRIMARY KEY,
     owner_id VARCHAR(100) NOT NULL,
@@ -164,7 +171,18 @@ export const ACQUISITION_TOOL_SUPPORT_MYSQL_SCHEMA_STATEMENTS = [
 
 export async function ensureAcquisitionToolSupportMysqlSchema(pool: mysql.Pool) {
   for (const statement of ACQUISITION_TOOL_SUPPORT_MYSQL_SCHEMA_STATEMENTS) {
-    await pool.query(statement);
+    try {
+      await pool.query(statement);
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code ?? "")
+        : "";
+      if (statement.startsWith("ALTER TABLE acquisition_tool_results")
+        && code === "ER_DUP_FIELDNAME") {
+        continue;
+      }
+      throw error;
+    }
   }
 }
 
@@ -1256,7 +1274,12 @@ implements AcquisitionToolResultLedgerPort {
 
 export interface MysqlAcquisitionToolResultLedgerOptions {
   lockTimeoutSeconds?: number;
+  claimLeaseSeconds?: number;
+  pendingWaitTimeoutMs?: number;
+  pendingPollIntervalMs?: number;
   now?: () => string;
+  claimTokenFactory?: () => string;
+  sleep?: (milliseconds: number) => Promise<void>;
 }
 
 function parseStoredResult(value: unknown) {
@@ -1288,18 +1311,48 @@ function parseStoredResult(value: unknown) {
 export class MysqlAcquisitionToolResultLedger
 implements AcquisitionToolResultLedgerPort {
   readonly #lockTimeoutSeconds: number;
+  readonly #claimLeaseSeconds: number;
+  readonly #pendingWaitTimeoutMs: number;
+  readonly #pendingPollIntervalMs: number;
   readonly #now: () => string;
+  readonly #claimTokenFactory: () => string;
+  readonly #sleep: (milliseconds: number) => Promise<void>;
 
   constructor(
     private readonly pool: mysql.Pool,
     options: MysqlAcquisitionToolResultLedgerOptions = {}
   ) {
     this.#lockTimeoutSeconds = options.lockTimeoutSeconds ?? 30;
+    this.#claimLeaseSeconds = options.claimLeaseSeconds ?? 300;
+    this.#pendingWaitTimeoutMs = options.pendingWaitTimeoutMs
+      ?? this.#lockTimeoutSeconds * 1_000;
+    this.#pendingPollIntervalMs = options.pendingPollIntervalMs ?? 50;
     this.#now = options.now ?? (() => new Date().toISOString());
+    this.#claimTokenFactory = options.claimTokenFactory ?? randomUUID;
+    this.#sleep = options.sleep ?? (milliseconds =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds))
+    );
     if (!Number.isInteger(this.#lockTimeoutSeconds)
       || this.#lockTimeoutSeconds < 0
       || this.#lockTimeoutSeconds > 300) {
       throw new TypeError("lockTimeoutSeconds must be from 0 to 300");
+    }
+    if (!Number.isInteger(this.#claimLeaseSeconds)
+      || this.#claimLeaseSeconds < 1
+      || this.#claimLeaseSeconds > 3_600) {
+      throw new TypeError("claimLeaseSeconds must be from 1 to 3600");
+    }
+    if (!Number.isInteger(this.#pendingWaitTimeoutMs)
+      || this.#pendingWaitTimeoutMs < 0
+      || this.#pendingWaitTimeoutMs > 300_000) {
+      throw new TypeError("pendingWaitTimeoutMs must be from 0 to 300000");
+    }
+    if (!Number.isInteger(this.#pendingPollIntervalMs)
+      || this.#pendingPollIntervalMs < 1
+      || this.#pendingPollIntervalMs > 10_000) {
+      throw new TypeError(
+        "pendingPollIntervalMs must be from 1 to 10000"
+      );
     }
   }
 
@@ -1315,6 +1368,91 @@ implements AcquisitionToolResultLedgerPort {
       input.toolName,
       keyHash
     ].join("\u0000")).slice(0, 48)}`;
+    const waitDeadline = Date.now() + this.#pendingWaitTimeoutMs;
+    let claimTokenHash: string | null = null;
+    for (;;) {
+      const claim = await this.#claimOrRead(
+        input,
+        keyHash,
+        lockName
+      );
+      if (claim.kind === "succeeded") {
+        return clone(claim.result) as T;
+      }
+      if (claim.kind === "claimed") {
+        claimTokenHash = claim.claimTokenHash;
+        break;
+      }
+      const remaining = waitDeadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error("ACQUISITION_TOOL_RESULT_PENDING_TIMEOUT");
+      }
+      await this.#sleep(Math.min(this.#pendingPollIntervalMs, remaining));
+    }
+
+    try {
+      const result = sanitizedJsonValue(await operation());
+      const serialized = JSON.stringify({ value: result });
+      if (serialized === undefined) {
+        throw new Error("ACQUISITION_TOOL_RESULT_NOT_JSON_SERIALIZABLE");
+      }
+      const completedAt = new Date(this.#now()).toISOString();
+      const [updated] = await this.pool.query(
+        `UPDATE acquisition_tool_results
+         SET state = 'succeeded', result_json = ?, completed_at = ?,
+             claim_token_hash = NULL, lease_expires_at = NULL
+         WHERE owner_id = ? AND team_id = ? AND tool_name = ?
+           AND idempotency_key_hash = ? AND state = 'pending'
+           AND request_hash = ? AND claim_token_hash = ?`,
+        [
+          serialized,
+          mysqlDate(completedAt),
+          input.ownerId,
+          input.teamId,
+          input.toolName,
+          keyHash,
+          input.requestHash,
+          claimTokenHash
+        ]
+      );
+      if (Number((updated as mysql.ResultSetHeader).affectedRows || 0) !== 1) {
+        throw new Error("ACQUISITION_TOOL_RESULT_CLAIM_LOST");
+      }
+      return clone(result) as T;
+    } catch (error) {
+      if (claimTokenHash !== null) {
+        try {
+          await this.pool.query(
+            `DELETE FROM acquisition_tool_results
+             WHERE owner_id = ? AND team_id = ? AND tool_name = ?
+               AND idempotency_key_hash = ? AND state = 'pending'
+               AND request_hash = ? AND claim_token_hash = ?`,
+            [
+              input.ownerId,
+              input.teamId,
+              input.toolName,
+              keyHash,
+              input.requestHash,
+              claimTokenHash
+            ]
+          );
+        } catch {
+          throw new Error("ACQUISITION_TOOL_RESULT_CLAIM_CLEANUP_FAILED");
+        }
+      }
+      throw error;
+    }
+  }
+
+  async #claimOrRead(
+    input: ToolResultExecutionInput,
+    keyHash: string,
+    lockName: string
+  ): Promise<
+    | { kind: "claimed"; claimTokenHash: string }
+    | { kind: "pending" }
+    | { kind: "succeeded"; result: unknown }
+  > {
     const connection = await this.pool.getConnection();
     let locked = false;
     let transaction = false;
@@ -1332,7 +1470,8 @@ implements AcquisitionToolResultLedgerPort {
       transaction = true;
       const found = await rows(
         connection,
-        `SELECT request_hash, state, result_json
+        `SELECT request_hash, state, result_json, claim_token_hash,
+                lease_expires_at, attempt_count
          FROM acquisition_tool_results
          WHERE owner_id = ? AND team_id = ? AND tool_name = ?
            AND idempotency_key_hash = ?
@@ -1341,30 +1480,90 @@ implements AcquisitionToolResultLedgerPort {
         [input.ownerId, input.teamId, input.toolName, keyHash]
       );
       const existing = found[0];
+      const now = new Date(this.#now());
+      if (!Number.isFinite(now.getTime())) {
+        throw new Error("ACQUISITION_TOOL_SUPPORT_INVALID_DATE");
+      }
       if (existing) {
         if (String(existing.request_hash ?? "") !== input.requestHash) {
           throw new AcquisitionToolIdempotencyConflictError();
         }
-        if (existing.state !== "succeeded"
-          || existing.result_json === null
-          || existing.result_json === undefined) {
+        const state = String(existing.state ?? "");
+        if (state === "succeeded") {
+          if (existing.result_json === null
+            || existing.result_json === undefined) {
+            throw new Error(
+              "ACQUISITION_TOOL_SUPPORT_MYSQL_INTEGRITY:tool_result:state"
+            );
+          }
+          const stored = parseStoredResult(existing.result_json);
+          await connection.commit();
+          transaction = false;
+          return { kind: "succeeded", result: stored };
+        }
+        if (state !== "pending") {
           throw new Error(
             "ACQUISITION_TOOL_SUPPORT_MYSQL_INTEGRITY:tool_result:state"
           );
         }
-        const stored = parseStoredResult(existing.result_json);
+        const leaseExpiresAt = existing.lease_expires_at === null
+          || existing.lease_expires_at === undefined
+          ? null
+          : new Date(isoDate(
+            existing.lease_expires_at,
+            "tool_result_lease"
+          ));
+        if (leaseExpiresAt !== null
+          && leaseExpiresAt.getTime() > now.getTime()) {
+          await connection.commit();
+          transaction = false;
+          return { kind: "pending" };
+        }
+        const claimTokenHash = sha256(this.#claimTokenFactory());
+        const nextLease = new Date(
+          now.getTime() + this.#claimLeaseSeconds * 1_000
+        ).toISOString();
+        const [reclaimed] = await connection.query(
+          `UPDATE acquisition_tool_results
+           SET actor_id = ?, session_id = ?, claim_token_hash = ?,
+               lease_expires_at = ?, attempt_count = attempt_count + 1
+           WHERE owner_id = ? AND team_id = ? AND tool_name = ?
+             AND idempotency_key_hash = ? AND state = 'pending'
+             AND request_hash = ?
+             AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
+          [
+            input.actorId,
+            input.sessionId,
+            claimTokenHash,
+            mysqlDate(nextLease),
+            input.ownerId,
+            input.teamId,
+            input.toolName,
+            keyHash,
+            input.requestHash,
+            mysqlDate(now.toISOString())
+          ]
+        );
+        if (Number(
+          (reclaimed as mysql.ResultSetHeader).affectedRows || 0
+        ) !== 1) {
+          throw new Error("ACQUISITION_TOOL_RESULT_CLAIM_LOST");
+        }
         await connection.commit();
         transaction = false;
-        return clone(stored) as T;
+        return { kind: "claimed", claimTokenHash };
       }
 
-      const startedAt = new Date(this.#now()).toISOString();
+      const claimTokenHash = sha256(this.#claimTokenFactory());
+      const leaseExpiresAt = new Date(
+        now.getTime() + this.#claimLeaseSeconds * 1_000
+      ).toISOString();
       await connection.query(
         `INSERT INTO acquisition_tool_results
          (owner_id, team_id, tool_name, idempotency_key_hash, actor_id,
-          session_id, request_hash, state, result_json, created_at,
-          completed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+          session_id, request_hash, claim_token_hash, lease_expires_at,
+          attempt_count, state, result_json, created_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?, ?)`,
         [
           input.ownerId,
           input.teamId,
@@ -1373,37 +1572,16 @@ implements AcquisitionToolResultLedgerPort {
           input.actorId,
           input.sessionId,
           input.requestHash,
+          claimTokenHash,
+          mysqlDate(leaseExpiresAt),
           null,
-          mysqlDate(startedAt),
+          mysqlDate(now.toISOString()),
           null
         ]
       );
-      const result = sanitizedJsonValue(await operation());
-      const serialized = JSON.stringify({ value: result });
-      if (serialized === undefined) {
-        throw new Error("ACQUISITION_TOOL_RESULT_NOT_JSON_SERIALIZABLE");
-      }
-      const completedAt = new Date(this.#now()).toISOString();
-      const [updated] = await connection.query(
-        `UPDATE acquisition_tool_results
-         SET state = 'succeeded', result_json = ?, completed_at = ?
-         WHERE owner_id = ? AND team_id = ? AND tool_name = ?
-           AND idempotency_key_hash = ? AND state = 'pending'`,
-        [
-          serialized,
-          mysqlDate(completedAt),
-          input.ownerId,
-          input.teamId,
-          input.toolName,
-          keyHash
-        ]
-      );
-      if (Number((updated as mysql.ResultSetHeader).affectedRows || 0) !== 1) {
-        throw new Error("ACQUISITION_TOOL_RESULT_WRITE_LOST");
-      }
       await connection.commit();
       transaction = false;
-      return clone(result) as T;
+      return { kind: "claimed", claimTokenHash };
     } catch (error) {
       if (transaction) {
         await connection.rollback();
