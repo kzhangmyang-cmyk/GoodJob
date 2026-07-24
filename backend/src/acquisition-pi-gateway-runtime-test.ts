@@ -3,6 +3,9 @@ import type {
   AcquisitionPiTurnInput
 } from "./acquisition-pi-agent.js";
 import {
+  createAcquisitionModelContentBundle
+} from "./acquisition-model-content.js";
+import {
   ACQUISITION_FINAL_ANSWER_TOOL,
   ActiveModelGatewayAcquisitionPiRuntime,
   type AcquisitionPiGatewayPort
@@ -57,6 +60,26 @@ const baseTurn: AcquisitionPiTurnInput = {
   tools
 };
 
+const contentBundle = createAcquisitionModelContentBundle({
+  systemPrompt: baseTurn.systemPrompt,
+  businessTools: tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    parameters: structuredClone(
+      tool.parameters
+    ) as Record<string, unknown>
+  }))
+});
+
+function createRuntime(gateway: AcquisitionPiGatewayPort) {
+  return new ActiveModelGatewayAcquisitionPiRuntime({
+    snapshot,
+    gateway,
+    contentBundle,
+    systemPrompt: baseTurn.systemPrompt
+  });
+}
+
 {
   const requests: Parameters<AcquisitionPiGatewayPort["callTools"]>[0][] = [];
   const gateway: AcquisitionPiGatewayPort = {
@@ -79,10 +102,7 @@ const baseTurn: AcquisitionPiTurnInput = {
       };
     }
   };
-  const runtime = new ActiveModelGatewayAcquisitionPiRuntime({
-    snapshot,
-    gateway
-  });
+  const runtime = createRuntime(gateway);
 
   const result = await runtime.run(baseTurn);
 
@@ -105,25 +125,28 @@ const baseTurn: AcquisitionPiTurnInput = {
   assert.equal(result.providerRequestId, "moonshot-request-1");
   assert.equal(requests.length, 1);
   assert.equal(requests[0]?.parallelToolCalls, false);
-  assert.deepEqual(
-    requests[0]?.tools.map((tool) => tool.name),
-    [
-      "search_public_sources",
-      "get_candidate_evidence",
-      ACQUISITION_FINAL_ANSWER_TOOL
-    ]
+  const boundRequest = requests[0];
+  assert.ok(
+    boundRequest
+    && "contentBinding" in boundRequest
+    && boundRequest.contentBinding,
+    "Pi turns must select server-registered content instead of sending literals"
   );
-  assert.match(requests[0]?.prompt ?? "", /只使用公开证据/);
-  assert.match(requests[0]?.prompt ?? "", /厦门/);
+  assert.equal(
+    boundRequest.contentBinding.promptId,
+    "acquisition.pi.turn.v1"
+  );
+  assert.equal(
+    boundRequest.contentBinding.toolSchemaId,
+    "acquisition.pi.turn.v1"
+  );
   assert.match(
-    requests[0]?.prompt ?? "",
-    /sha256:prompt-acquisition-copilot-v1/
+    JSON.stringify(boundRequest.contentBinding.dynamicData),
+    /厦门/
   );
-  assert.match(
-    requests[0]?.prompt ?? "",
-    /sha256:schema-copilot-turn-v1/
-  );
-  assert.doesNotMatch(requests[0]?.prompt ?? "", /\[object Object\]/);
+  assert.equal("prompt" in boundRequest, false);
+  assert.equal("tools" in boundRequest, false);
+  assert.equal("schemaHash" in boundRequest, false);
 }
 
 {
@@ -146,10 +169,7 @@ const baseTurn: AcquisitionPiTurnInput = {
       };
     }
   };
-  const runtime = new ActiveModelGatewayAcquisitionPiRuntime({
-    snapshot,
-    gateway
-  });
+  const runtime = createRuntime(gateway);
   const result = await runtime.run({
     ...baseTurn,
     messages: [
@@ -217,9 +237,7 @@ const baseTurn: AcquisitionPiTurnInput = {
 }
 
 {
-  const runtime = new ActiveModelGatewayAcquisitionPiRuntime({
-    snapshot,
-    gateway: {
+  const runtime = createRuntime({
       async callTools() {
         return {
           toolCalls: [{
@@ -235,7 +253,6 @@ const baseTurn: AcquisitionPiTurnInput = {
           providerRequestId: null
         };
       }
-    }
   });
   await assert.rejects(
     () => runtime.run(baseTurn),
@@ -244,9 +261,7 @@ const baseTurn: AcquisitionPiTurnInput = {
 }
 
 {
-  const runtime = new ActiveModelGatewayAcquisitionPiRuntime({
-    snapshot,
-    gateway: {
+  const runtime = createRuntime({
       async callTools() {
         return {
           toolCalls: [{
@@ -266,7 +281,6 @@ const baseTurn: AcquisitionPiTurnInput = {
           providerRequestId: null
         };
       }
-    }
   });
   await assert.rejects(
     () => runtime.run(baseTurn),
@@ -275,13 +289,10 @@ const baseTurn: AcquisitionPiTurnInput = {
 }
 
 {
-  const runtime = new ActiveModelGatewayAcquisitionPiRuntime({
-    snapshot,
-    gateway: {
+  const runtime = createRuntime({
       async callTools() {
         throw new Error("gateway must not run for a mismatched snapshot");
       }
-    }
   });
   await assert.rejects(
     () => runtime.run({
@@ -296,13 +307,10 @@ const baseTurn: AcquisitionPiTurnInput = {
 }
 
 {
-  const runtime = new ActiveModelGatewayAcquisitionPiRuntime({
-    snapshot,
-    gateway: {
+  const runtime = createRuntime({
       async callTools() {
         throw new Error("gateway must not run for a content hash mismatch");
       }
-    }
   });
   await assert.rejects(
     () => runtime.run({

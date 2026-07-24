@@ -11,7 +11,8 @@ import type {
   NewModelCallRecord
 } from "./call-ledger.js";
 import {
-  ActiveModelGateway
+  ActiveModelGateway,
+  type ModelContentBundle
 } from "./gateway.js";
 import { createAiJobModelSnapshot } from "./job-snapshot.js";
 import {
@@ -185,6 +186,7 @@ export interface CreateActiveModelGatewayForSnapshotOptions {
   now?: () => number;
   requestTimeoutMs?: number;
   streamIdleTimeoutMs?: number;
+  contentBundle?: ModelContentBundle;
 }
 
 export function createActiveModelGatewayForSnapshot(
@@ -227,6 +229,7 @@ export function createActiveModelGatewayForSnapshot(
       ?? (() => `model_request_${randomUUID()}`),
     now: options.now,
     requestTimeoutMs: options.requestTimeoutMs,
-    streamIdleTimeoutMs: options.streamIdleTimeoutMs
+    streamIdleTimeoutMs: options.streamIdleTimeoutMs,
+    contentBundle: options.contentBundle
   });
 }

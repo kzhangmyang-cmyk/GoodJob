@@ -111,6 +111,12 @@ interface ToolBlueprint {
   executionMode: "parallel" | "sequential";
 }
 
+export interface AcquisitionAgentToolDefinition {
+  name: AcquisitionAgentToolName;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
 const SUBJECT_KINDS = Type.Union([
   Type.Literal("organization"),
   Type.Literal("individual")
@@ -293,6 +299,17 @@ const TOOL_BLUEPRINTS: readonly ToolBlueprint[] = [
     executionMode: "sequential"
   }
 ];
+
+export function acquisitionAgentToolDefinitions():
+AcquisitionAgentToolDefinition[] {
+  return TOOL_BLUEPRINTS.map((blueprint) => ({
+    name: blueprint.name,
+    description: blueprint.description,
+    parameters: structuredClone(
+      blueprint.parameters
+    ) as Record<string, unknown>
+  }));
+}
 
 function stableJson(value: unknown): string {
   if (value === null || typeof value !== "object") {

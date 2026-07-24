@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { z } from "zod";
+import { canonicalJsonStringify } from "./canonical-json.js";
 import {
   MODEL_PROVIDER_CATALOG
 } from "./model-providers/catalog.js";
@@ -378,6 +379,104 @@ test("tool calls normalize arguments and unsupported tools fail before network",
     unsupported.ledger.records[0].error?.code,
     "MODEL_CAPABILITY_UNSUPPORTED"
   );
+});
+
+test("bound tool calls use only server-registered prompt and schema content", async () => {
+  const tool = {
+    name: "submit_fixture",
+    description: "Submit a fixture result",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["result"],
+      properties: {
+        result: { type: "string" }
+      }
+    }
+  };
+  const contentBundle = {
+    promptTemplates: {
+      "fixture.turn.v1": "FIXED_SERVER_POLICY_V1"
+    },
+    toolSchemas: {
+      "fixture.turn.v1": [tool]
+    }
+  };
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const boundSnapshot = {
+    ...snapshot(),
+    promptHash: sha256(canonicalJsonStringify(
+      contentBundle.promptTemplates
+    ) ?? ""),
+    schemaHash: sha256(canonicalJsonStringify(
+      contentBundle.toolSchemas
+    ) ?? "")
+  };
+  const gateway = new ActiveModelGateway({
+    snapshot: boundSnapshot,
+    identity: {
+      ownerId: "u1",
+      teamId: "t1",
+      jobId: "job_bound_1"
+    },
+    capabilitySnapshotHash: "cap_hash",
+    baseUrl: "https://api.moonshot.cn/v1",
+    baseUrlFingerprint: "sha256:moonshot-base",
+    credentialResolver: async () => apiKey,
+    fetch: (async (input, init) => {
+      requests.push({ url: String(input), init });
+      return completionResponse(null, {
+        choices: [{
+          index: 0,
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "tool_bound_1",
+              type: "function",
+              function: {
+                name: "submit_fixture",
+                arguments: "{\"result\":\"ok\"}"
+              }
+            }]
+          },
+          finish_reason: "tool_calls"
+        }]
+      });
+    }) as typeof fetch,
+    ledger: new AppendOnlyModelCallLedger(),
+    contentBundle
+  } as ConstructorParameters<typeof ActiveModelGateway>[0]);
+
+  const result = await gateway.callTools({
+    contentBinding: {
+      promptId: "fixture.turn.v1",
+      toolSchemaId: "fixture.turn.v1",
+      dynamicData: {
+        userMessage: "UNTRUSTED_DYNAMIC_MESSAGE"
+      }
+    },
+    parallelToolCalls: false
+  } as Parameters<ActiveModelGateway["callTools"]>[0]);
+
+  assert.equal(result.toolCalls[0]?.name, "submit_fixture");
+  const body = JSON.parse(String(requests[0]?.init?.body)) as {
+    messages: Array<{ content: string }>;
+    tools: Array<{
+      function: {
+        name: string;
+        parameters: Record<string, unknown>;
+      };
+    }>;
+  };
+  assert.match(body.messages[0]?.content ?? "", /^FIXED_SERVER_POLICY_V1/);
+  assert.match(
+    body.messages[0]?.content ?? "",
+    /UNTRUSTED_DYNAMIC_DATA[\s\S]*UNTRUSTED_DYNAMIC_MESSAGE/
+  );
+  assert.deepEqual(body.tools.map((item) => item.function.name), [
+    "submit_fixture"
+  ]);
 });
 
 test("parallel tool calling is serialized only after capability preflight", async () => {

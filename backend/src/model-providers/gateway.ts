@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  canonicalJsonStringify
+} from "../canonical-json.js";
+import {
   getModelProviderCatalogEntry
 } from "./catalog.js";
 import type { ModelDescriptor } from "./catalog.js";
@@ -145,6 +148,11 @@ export interface ActiveModelGatewayOptions {
   requestTimeoutMs?: number;
   streamIdleTimeoutMs?: number;
   persistAttempt?(): Promise<void>;
+  /**
+   * Opt-in server-owned content registry. Acquisition runtimes use this for
+   * dynamic turns; legacy literal callers keep using prompt/schema hashes.
+   */
+  contentBundle?: ModelContentBundle;
 }
 
 export interface ModelHealthResult {
@@ -177,12 +185,34 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>;
 }
 
-export interface ToolCallingRequest {
+export interface ModelContentBundle {
+  promptTemplates: Readonly<Record<string, string>>;
+  toolSchemas: Readonly<Record<string, readonly ToolDefinition[]>>;
+}
+
+export interface LiteralToolCallingRequest {
   prompt: string;
   tools: ToolDefinition[];
   parallelToolCalls?: boolean;
   schemaHash?: string;
+  contentBinding?: never;
 }
+
+export interface BoundToolCallingRequest {
+  contentBinding: {
+    promptId: string;
+    toolSchemaId: string;
+    dynamicData: unknown;
+  };
+  parallelToolCalls?: boolean;
+  prompt?: never;
+  tools?: never;
+  schemaHash?: never;
+}
+
+export type ToolCallingRequest =
+  | LiteralToolCallingRequest
+  | BoundToolCallingRequest;
 
 export interface ToolCallingResult {
   toolCalls: Array<{
@@ -218,6 +248,17 @@ interface AttemptContext {
   parameterHash: string;
 }
 
+interface ResolvedToolCallingRequest {
+  prompt: string;
+  tools: ToolDefinition[];
+  parallelToolCalls: boolean;
+  bound: boolean;
+  bindingIds: {
+    promptId: string;
+    toolSchemaId: string;
+  } | null;
+}
+
 const ZERO_USAGE: OpenAiCompatibleUsage = Object.freeze({
   inputTokens: 0,
   outputTokens: 0,
@@ -231,6 +272,89 @@ function frozenSnapshot(snapshot: AiJobModelSnapshot): AiJobModelSnapshot {
       ...snapshot.capabilitySnapshot
     })
   });
+}
+
+function cloneContentBundle(bundle: ModelContentBundle): ModelContentBundle {
+  return Object.freeze({
+    promptTemplates: Object.freeze(
+      structuredClone(bundle.promptTemplates)
+    ),
+    toolSchemas: Object.freeze(Object.fromEntries(
+      Object.entries(bundle.toolSchemas).map(([id, tools]) => [
+        id,
+        Object.freeze(tools.map((tool) => Object.freeze({
+          name: tool.name,
+          description: tool.description,
+          parameters: Object.freeze(structuredClone(tool.parameters))
+        })))
+      ])
+    ))
+  });
+}
+
+function hashCanonical(value: unknown) {
+  const canonical = canonicalJsonStringify(value);
+  if (typeof canonical !== "string") {
+    throw new TypeError("Model content bundle must be JSON serializable");
+  }
+  return hashModelCallValue(canonical);
+}
+
+export function modelContentBundleHashes(bundle: ModelContentBundle) {
+  return Object.freeze({
+    promptHash: hashCanonical(bundle.promptTemplates),
+    schemaHash: hashCanonical(bundle.toolSchemas)
+  });
+}
+
+function validBundleId(id: string) {
+  return /^[a-z0-9][a-z0-9._-]{0,127}$/u.test(id);
+}
+
+function validatedContentBundle(
+  bundle: ModelContentBundle
+): ModelContentBundle {
+  const promptEntries = Object.entries(bundle.promptTemplates);
+  const schemaEntries = Object.entries(bundle.toolSchemas);
+  if (!promptEntries.length || !schemaEntries.length) {
+    throw new TypeError("Model content bundle cannot be empty");
+  }
+  for (const [id, template] of promptEntries) {
+    if (!validBundleId(id) || !template.trim()) {
+      throw new TypeError("Model content bundle prompt is invalid");
+    }
+  }
+  for (const [id, tools] of schemaEntries) {
+    if (!validBundleId(id) || !Array.isArray(tools) || !tools.length) {
+      throw new TypeError("Model content bundle tool schema is invalid");
+    }
+    const names = new Set<string>();
+    for (const tool of tools) {
+      if (!tool.name.trim()
+        || !tool.description.trim()
+        || names.has(tool.name)
+        || !tool.parameters
+        || typeof tool.parameters !== "object"
+        || Array.isArray(tool.parameters)) {
+        throw new TypeError("Model content bundle tool definition is invalid");
+      }
+      names.add(tool.name);
+    }
+  }
+  return cloneContentBundle(bundle);
+}
+
+function boundPrompt(template: string, dynamicData: unknown) {
+  const serialized = canonicalJsonStringify(dynamicData);
+  if (typeof serialized !== "string") {
+    throw new ModelGatewayError("MODEL_RESPONSE_INVALID", false);
+  }
+  return [
+    template,
+    "BEGIN_UNTRUSTED_DYNAMIC_DATA",
+    serialized,
+    "END_UNTRUSTED_DYNAMIC_DATA"
+  ].join("\n");
 }
 
 function responseErrorCode(reason: OpenAiCompatibleResponseError["reason"]) {
@@ -301,6 +425,7 @@ export class ActiveModelGateway {
   readonly #requestIdFactory: () => string;
   readonly #now: () => number;
   readonly #persistAttempt?: () => Promise<void>;
+  readonly #contentBundle: ModelContentBundle | null;
 
   constructor(options: ActiveModelGatewayOptions) {
     this.#snapshot = frozenSnapshot(options.snapshot);
@@ -315,6 +440,20 @@ export class ActiveModelGateway {
       ?? (() => `model_request_${randomUUID()}`);
     this.#now = options.now ?? Date.now;
     this.#persistAttempt = options.persistAttempt;
+    this.#contentBundle = options.contentBundle
+      ? validatedContentBundle(options.contentBundle)
+      : null;
+    if (this.#contentBundle) {
+      const expected = modelContentBundleHashes(this.#contentBundle);
+      const snapshotWithHashes = options.snapshot as AiJobModelSnapshot & {
+        promptHash?: string;
+        schemaHash?: string;
+      };
+      if (snapshotWithHashes.promptHash !== expected.promptHash
+        || snapshotWithHashes.schemaHash !== expected.schemaHash) {
+        throw new ModelGatewayError("MODEL_CONTENT_HASH_MISMATCH", false);
+      }
+    }
     this.#adapter = new OpenAiCompatibleAdapter({
       baseUrl: options.baseUrl,
       fetch: options.fetch,
@@ -438,45 +577,59 @@ export class ActiveModelGateway {
   }
 
   async callTools(request: ToolCallingRequest): Promise<ToolCallingResult> {
-    this.#requireBoundContent(
-      request.prompt,
-      request.schemaHash,
-      {
-        operation: "call_tools",
-        toolNames: request.tools.map((tool) => tool.name)
-      }
-    );
+    const resolved = this.#resolveToolCallingRequest(request);
+    if (!resolved.bound) {
+      this.#requireBoundContent(
+        resolved.prompt,
+        "schemaHash" in request ? request.schemaHash : undefined,
+        {
+          operation: "call_tools",
+          toolNames: resolved.tools.map((tool) => tool.name)
+        }
+      );
+    }
     this.#requireCapability(
       "toolCalling",
-      { operation: "call_tools", toolNames: request.tools.map((tool) => tool.name) }
+      {
+        operation: "call_tools",
+        toolNames: resolved.tools.map((tool) => tool.name),
+        ...(resolved.bindingIds
+          ? { contentBinding: resolved.bindingIds }
+          : {})
+      }
     );
-    if (request.parallelToolCalls) {
+    if (resolved.parallelToolCalls) {
       this.#requireCapability(
         "parallelToolCalling",
         {
           operation: "call_tools",
           parallelToolCalls: true,
-          toolNames: request.tools.map((tool) => tool.name)
+          toolNames: resolved.tools.map((tool) => tool.name)
         }
       );
     }
-    const allowedToolNames = new Set(request.tools.map((tool) => tool.name));
+    const allowedToolNames = new Set(
+      resolved.tools.map((tool) => tool.name)
+    );
     const result = await this.#runAttempt(
       {
         operation: "call_tools",
-        prompt: request.prompt,
-        tools: request.tools,
-        parallelToolCalls: request.parallelToolCalls ?? false
+        prompt: resolved.prompt,
+        tools: resolved.tools,
+        parallelToolCalls: resolved.parallelToolCalls,
+        ...(resolved.bindingIds
+          ? { contentBinding: resolved.bindingIds }
+          : {})
       },
       async (credential, requestId) => {
         const response = await this.#adapter.callTools({
           snapshot: this.#snapshot,
           credential,
           requestId,
-          prompt: request.prompt,
-          tools: request.tools,
+          prompt: resolved.prompt,
+          tools: resolved.tools,
           toolChoice: "required",
-          parallelToolCalls: request.parallelToolCalls ?? false
+          parallelToolCalls: resolved.parallelToolCalls
         });
         const toolCalls = response.value.map((call) => {
           if (!allowedToolNames.has(call.name)) {
@@ -513,6 +666,41 @@ export class ActiveModelGateway {
       toolCalls: result.value,
       usage: result.usage,
       providerRequestId: result.providerRequestId
+    };
+  }
+
+  #resolveToolCallingRequest(
+    request: ToolCallingRequest
+  ): ResolvedToolCallingRequest {
+    if ("contentBinding" in request && request.contentBinding) {
+      const bundle = this.#contentBundle;
+      const binding = request.contentBinding;
+      const template = bundle?.promptTemplates[binding.promptId];
+      const tools = bundle?.toolSchemas[binding.toolSchemaId];
+      if (!bundle || !template || !tools) {
+        throw new ModelGatewayError("MODEL_CONTENT_HASH_MISMATCH", false);
+      }
+      return {
+        prompt: boundPrompt(template, binding.dynamicData),
+        tools: tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          parameters: structuredClone(tool.parameters)
+        })),
+        parallelToolCalls: request.parallelToolCalls ?? false,
+        bound: true,
+        bindingIds: {
+          promptId: binding.promptId,
+          toolSchemaId: binding.toolSchemaId
+        }
+      };
+    }
+    return {
+      prompt: request.prompt,
+      tools: request.tools,
+      parallelToolCalls: request.parallelToolCalls ?? false,
+      bound: false,
+      bindingIds: null
     };
   }
 

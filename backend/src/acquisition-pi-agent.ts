@@ -16,6 +16,9 @@ import type {
   ModelProviderId
 } from "./model-providers/types.js";
 import {
+  DEFAULT_ACQUISITION_PI_SYSTEM_PROMPT
+} from "./acquisition-model-content.js";
+import {
   createAcquisitionAgentTools,
   type AcquisitionAgentIdentity,
   type AcquisitionAgentToolExecutor,
@@ -87,16 +90,6 @@ export interface CreateAcquisitionPiAgentOptions {
   systemPrompt?: string;
   now?: () => number;
 }
-
-const DEFAULT_SYSTEM_PROMPT = [
-  "你是 GoodJob 的 AI 获客增长智能体。",
-  "你的职责是从公开且获授权的数据中发现商机、核验证据、评估意向与财务价值、生成客户作战建议。",
-  "所有事实结论必须引用工具返回的来源或明确标注为推测，并说明置信度。",
-  "不得采集私密或敏感个人信息，不得臆测家庭、健康、宗教、金融、行踪等信息。",
-  "不得自动评论、自动私信、自动加好友、自动群发，也不得调用任何通用文件、终端或数据库工具。",
-  "连接策略、报价和转换只能生成建议或人工审核任务；人类确认前不得声称动作已经执行。",
-  "当证据不足时，明确说证据不足，并建议下一项可核验的研究任务。"
-].join("\n");
 
 const ZERO_PI_USAGE = Object.freeze({
   input: 0,
@@ -357,7 +350,8 @@ export function createAcquisitionPiAgent(
   });
   return new Agent({
     initialState: {
-      systemPrompt: options.systemPrompt?.trim() || DEFAULT_SYSTEM_PROMPT,
+      systemPrompt:
+        options.systemPrompt?.trim() || DEFAULT_ACQUISITION_PI_SYSTEM_PROMPT,
       model: createGatewayModel(snapshot),
       thinkingLevel: "off",
       tools,
