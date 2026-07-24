@@ -136,6 +136,35 @@ function failOnce(
 
 {
   const repository = new InMemoryAcquisitionCopilotRepository();
+  await repository.insertSession(session());
+  await repository.appendMessages([{
+    id: "message-rebase-1",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    sessionId: "session-atomic-1",
+    sequence: 1,
+    message: { role: "user", content: "第一条", timestamp: 1 },
+    createdAt: NOW
+  }]);
+  await repository.appendMessages([{
+    id: "message-rebase-2",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    sessionId: "session-atomic-1",
+    sequence: 1,
+    message: { role: "user", content: "并发后到达", timestamp: 2 },
+    createdAt: NOW
+  }]);
+  assert.deepEqual(
+    (await repository.listMessages(scope, "session-atomic-1"))
+      .map((message) => message.sequence),
+    [1, 2],
+    "memory and MySQL repositories must serialize stale message sequences alike"
+  );
+}
+
+{
+  const repository = new InMemoryAcquisitionCopilotRepository();
   const setup = copilotService(repository, "complete-setup");
   const created = await setup.createSession(
     scope,

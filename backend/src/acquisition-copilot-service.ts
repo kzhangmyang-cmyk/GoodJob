@@ -289,13 +289,39 @@ implements AcquisitionCopilotRepository {
   }
 
   async appendMessages(messages: AcquisitionCopilotMessage[]) {
+    if (messages.length === 0) return;
     const state = this.#currentState();
+    const first = messages[0]!;
+    const session = state.sessions.get(first.sessionId);
+    if (!session
+      || session.ownerId !== first.ownerId
+      || session.teamId !== first.teamId) {
+      throw new Error("SESSION_NOT_FOUND");
+    }
     const existingIds = new Set(state.messages.map((message) => message.id));
     for (const message of messages) {
+      if (!Number.isSafeInteger(message.sequence) || message.sequence < 1) {
+        throw new Error("COPILOT_MESSAGE_SEQUENCE_INVALID");
+      }
+      if (message.ownerId !== first.ownerId
+        || message.teamId !== first.teamId
+        || message.sessionId !== first.sessionId) {
+        throw new Error("COPILOT_MESSAGE_SCOPE_MISMATCH");
+      }
       if (existingIds.has(message.id)) throw new Error("MESSAGE_EXISTS");
       existingIds.add(message.id);
     }
-    state.messages.push(...messages.map((message) => clone(message)));
+    const maxSequence = state.messages
+      .filter((message) =>
+        message.ownerId === first.ownerId
+        && message.teamId === first.teamId
+        && message.sessionId === first.sessionId
+      )
+      .reduce((maximum, message) => Math.max(maximum, message.sequence), 0);
+    state.messages.push(...messages.map((message, index) => clone({
+      ...message,
+      sequence: maxSequence + index + 1
+    })));
   }
 
   async listMessages(
