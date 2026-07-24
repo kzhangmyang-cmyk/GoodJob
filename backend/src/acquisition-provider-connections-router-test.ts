@@ -229,6 +229,16 @@ test("v1 acquisition provider catalog exposes six executable searches and two fi
       ).length,
       6
     );
+    const baidu = result.json.items.find(
+      (item: { id: string }) => item.id === "baidu_ai_search"
+    );
+    assert.equal(baidu.requiresKey, true);
+    assert.equal(
+      baidu.defaultBaseUrl,
+      "https://qianfan.baidubce.com/v2/ai_search"
+    );
+    assert.match(baidu.officialDocsUrl, /^https:\/\/cloud\.baidu\.com\//u);
+    assert.match(baidu.keyHint, /API Key/u);
     assert.equal(JSON.stringify(result.json).includes("apiKey"), false);
     assert.equal(JSON.stringify(result.json).includes("credential"), false);
   } finally {

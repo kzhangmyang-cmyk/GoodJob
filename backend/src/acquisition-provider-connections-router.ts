@@ -541,6 +541,14 @@ export function createAcquisitionProviderConnectionsRouter(
         id,
         kind: "search" as const,
         displayName: catalog?.name || provider.name,
+        officialDocsUrl: catalog?.officialDocsUrl || provider.docsUrl,
+        defaultBaseUrl:
+          catalog?.baseUrl || provider.defaultBaseUrl || "",
+        requiresKey: providerRequiresKey(provider, catalog),
+        keyHint:
+          catalog?.licensePolicy.keyHint || provider.keyHint,
+        costNote:
+          catalog?.licensePolicy.costNote || provider.costNote,
         capabilities: [
           ...(catalog?.capabilities || provider.capabilities)
         ]
