@@ -43,35 +43,29 @@ const providerConnectionSchema = {
   type: "object",
   required: [
     "id",
+    "ownerId",
+    "teamId",
     "providerId",
     "kind",
     "status",
-    "credentialVersion"
+    "credentialVersion",
+    "createdAt"
   ],
   properties: {
     id: { type: "string" },
+    ownerId: { type: "string" },
+    teamId: { type: "string", nullable: true },
     providerId: { type: "string" },
-    kind: { type: "string", enum: ["search"] },
+    kind: {
+      type: "string",
+      enum: ["search", "content_fetch", "import"]
+    },
     status: {
       type: "string",
       enum: ["active", "inactive", "disabled", "error"]
     },
     credentialVersion: { type: "integer", minimum: 1 },
-    lastHealthAt: {
-      type: "string",
-      format: "date-time",
-      nullable: true
-    },
-    lastHealthStatus: {
-      type: "string",
-      nullable: true
-    },
-    lastErrorCode: {
-      type: "string",
-      nullable: true
-    },
-    createdAt: { type: "string", format: "date-time" },
-    updatedAt: { type: "string", format: "date-time" }
+    createdAt: { type: "string", format: "date-time" }
   },
   additionalProperties: false
 };
@@ -200,15 +194,6 @@ const providerConnectionWriteSchema = {
   additionalProperties: false
 };
 
-const safeConnectionResponse = {
-  type: "object",
-  required: ["item"],
-  properties: {
-    item: providerConnectionSchema
-  },
-  additionalProperties: false
-};
-
 function addProviderPaths(paths: AcquisitionOpenApiPaths) {
   add(paths, "/api/v1/acquisition/providers", "get", operation(
     "get",
@@ -242,7 +227,7 @@ function addProviderPaths(paths: AcquisitionOpenApiPaths) {
       responses: standardResponses(
         201,
         "连接已创建",
-        safeConnectionResponse
+        providerConnectionSchema
       )
     })
   );
@@ -255,7 +240,7 @@ function addProviderPaths(paths: AcquisitionOpenApiPaths) {
       responses: standardResponses(
         200,
         "连接详情",
-        safeConnectionResponse
+        providerConnectionSchema
       )
     })
   );
@@ -278,7 +263,7 @@ function addProviderPaths(paths: AcquisitionOpenApiPaths) {
       responses: standardResponses(
         200,
         "连接已更新",
-        safeConnectionResponse
+        providerConnectionSchema
       )
     })
   );
@@ -288,7 +273,14 @@ function addProviderPaths(paths: AcquisitionOpenApiPaths) {
     "delete",
     operation("delete", "删除当前账号的搜索连接", {
       parameters: [idParameter()],
-      responses: standardResponses(200, "连接已删除")
+      responses: {
+        "204": { description: "连接已删除" },
+        "400": response("请求参数无效", errorSchema),
+        "401": response("需要登录", errorSchema),
+        "403": response("系统连接只读", errorSchema),
+        "404": response("连接不存在", errorSchema),
+        "500": response("服务端无法完成请求", errorSchema)
+      }
     })
   );
   add(
@@ -373,7 +365,7 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
       }
     },
     {
-      name: "columnMapping",
+      name: "mapping",
       in: "query",
       required: true,
       description: "URL 编码后的列映射 JSON。",
@@ -519,4 +511,3 @@ AcquisitionOpenApiPaths {
   addCoreAgentPaths(paths);
   return paths;
 }
-

@@ -94,6 +94,35 @@ test("authorized imports use bounded raw media types rather than base64 JSON", (
     "binary"
   );
   assert.equal(operation.requestBody.required, true);
+  assert.ok(
+    operation.parameters.some(
+      (parameter: { name?: string }) => parameter.name === "mapping"
+    )
+  );
+  assert.equal(
+    operation.parameters.some(
+      (parameter: { name?: string }) =>
+        parameter.name === "columnMapping"
+    ),
+    false
+  );
+});
+
+test("provider connection response and deletion contracts match the runtime", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  const created = paths[
+    "/api/v1/acquisition/provider-connections"
+  ]!.post as Record<string, any>;
+  const createSchema = created.responses["201"]
+    .content["application/json"].schema;
+  assert.ok(createSchema.properties.id);
+  assert.equal(createSchema.properties.item, undefined);
+
+  const deleted = paths[
+    "/api/v1/acquisition/provider-connections/{id}"
+  ]!.delete as Record<string, any>;
+  assert.ok(deleted.responses["204"]);
+  assert.equal(deleted.responses["200"], undefined);
 });
 
 test("the main Swagger document includes runtime-bridged acquisition routes", () => {
