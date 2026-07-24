@@ -455,6 +455,44 @@ async function testAppendEvidenceUsesInsertOnly() {
   assert.equal("createdAt" in storedPayload, false);
 }
 
+async function testDomainTransactionUsesOneConnectionAndRollsBackAtomically() {
+  const committedPool = new FakePool();
+  const committedRepository = new MysqlAcquisitionDomainRepository(
+    asPool(committedPool)
+  );
+  await committedRepository.transaction(async () => {
+    await committedRepository.appendEvidence(evidence());
+  });
+  assert.equal(committedPool.connection.beginCount, 1);
+  assert.equal(committedPool.connection.commitCount, 1);
+  assert.equal(committedPool.connection.rollbackCount, 0);
+  assert.ok(committedPool.connection.calls.some((call) =>
+    call.sql.startsWith("INSERT INTO acquisition_discovery_evidence")
+  ));
+  assert.equal(
+    committedPool.calls.some((call) =>
+      call.sql.startsWith("INSERT INTO acquisition_discovery_evidence")
+    ),
+    false,
+    "transactional domain writes must use the leased connection"
+  );
+
+  const rolledBackPool = new FakePool();
+  const rolledBackRepository = new MysqlAcquisitionDomainRepository(
+    asPool(rolledBackPool)
+  );
+  await assert.rejects(
+    rolledBackRepository.transaction(async () => {
+      await rolledBackRepository.appendEvidence(evidence());
+      throw new Error("simulated domain transaction failure");
+    }),
+    /simulated domain transaction failure/
+  );
+  assert.equal(rolledBackPool.connection.commitCount, 0);
+  assert.equal(rolledBackPool.connection.rollbackCount, 1);
+  assert.equal(rolledBackPool.connection.releaseCount, 1);
+}
+
 async function testRawIdempotencyKeysAreNotPersisted() {
   const pool = new FakePool();
   const repository = new MysqlAcquisitionDomainRepository(asPool(pool));
@@ -759,6 +797,7 @@ async function run() {
   await testCandidateRejectsJsonVersionThatDiffersFromLockColumn();
   await testCandidateSaveUsesOptimisticVersionAndScope();
   await testAppendEvidenceUsesInsertOnly();
+  await testDomainTransactionUsesOneConnectionAndRollsBackAtomically();
   await testRawIdempotencyKeysAreNotPersisted();
   await testDomainIdempotencyRestoresTheRequestKeyOnReplay();
   await testCopilotPersistenceIsScopedAndMessageOrderIsDurable();

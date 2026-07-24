@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import mysql from "mysql2/promise";
 import type {
@@ -675,7 +676,30 @@ async function insertOwned(
 
 export class MysqlAcquisitionDomainRepository
 implements AcquisitionDomainRepository {
+  private readonly transactionContext =
+    new AsyncLocalStorage<QuerySource>();
+
   constructor(private readonly pool: mysql.Pool) {}
+
+  private source() {
+    return this.transactionContext.getStore() ?? this.pool;
+  }
+
+  async transaction<T>(work: () => Promise<T>): Promise<T> {
+    if (this.transactionContext.getStore()) return work();
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const result = await this.transactionContext.run(connection, work);
+      await connection.commit();
+      return result;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
 
   private async findOwned<T extends { id: string; ownerId: string; teamId: string }>(
     table: string,
@@ -684,7 +708,7 @@ implements AcquisitionDomainRepository {
     resource: string
   ): Promise<T | null> {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT *
        FROM ${table}
        WHERE id = ? AND owner_id = ? AND team_id = ?
@@ -704,7 +728,7 @@ implements AcquisitionDomainRepository {
     timeColumn = "created_at"
   ): Promise<T[]> {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT *
        FROM ${table}
        WHERE candidate_id = ? AND owner_id = ? AND team_id = ?
@@ -725,7 +749,7 @@ implements AcquisitionDomainRepository {
 
   appendEvidence(record: DiscoveryEvidence) {
     return insertOwned(
-      this.pool,
+      this.source(),
       "acquisition_discovery_evidence",
       record,
       record.fetchedAt
@@ -832,7 +856,7 @@ implements AcquisitionDomainRepository {
     if (!Number.isSafeInteger(record.version) || record.version < 1) {
       throw new Error("ACQUISITION_CANDIDATE_VERSION_INVALID");
     }
-    await this.pool.query(
+    await this.source().query(
       `INSERT INTO acquisition_candidates
        (id, owner_id, team_id, version, payload_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -853,7 +877,7 @@ implements AcquisitionDomainRepository {
       throw new Error("ACQUISITION_CANDIDATE_VERSION_INVALID");
     }
     const count = await affected(
-      this.pool,
+      this.source(),
       `UPDATE acquisition_candidates
        SET version = ?, payload_json = ?, updated_at = ?
        WHERE id = ? AND owner_id = ? AND team_id = ? AND version = ?`,
@@ -872,7 +896,7 @@ implements AcquisitionDomainRepository {
 
   appendQualificationDecision(record: QualificationDecision) {
     return insertOwned(
-      this.pool,
+      this.source(),
       "acquisition_qualification_decisions",
       record,
       record.createdAt,
@@ -887,7 +911,7 @@ implements AcquisitionDomainRepository {
     decisionId: string
   ) {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT *
        FROM acquisition_qualification_decisions
        WHERE id = ? AND candidate_id = ?
@@ -911,7 +935,7 @@ implements AcquisitionDomainRepository {
 
   appendFinancialValue(record: FinancialValueDecision) {
     return insertOwned(
-      this.pool,
+      this.source(),
       "acquisition_financial_values",
       record,
       record.createdAt,
@@ -931,7 +955,7 @@ implements AcquisitionDomainRepository {
 
   appendBattleCard(record: BattleCard) {
     return insertOwned(
-      this.pool,
+      this.source(),
       "acquisition_battle_cards",
       record,
       record.createdAt,
@@ -951,7 +975,7 @@ implements AcquisitionDomainRepository {
 
   appendReviewEvent(record: ReviewEvent) {
     return insertOwned(
-      this.pool,
+      this.source(),
       "acquisition_review_events",
       record,
       record.createdAt,
@@ -970,7 +994,7 @@ implements AcquisitionDomainRepository {
   }
 
   async appendResearchAttempt(record: ResearchAttempt) {
-    await this.pool.query(
+    await this.source().query(
       `INSERT INTO acquisition_research_attempts
        (id, owner_id, team_id, candidate_id, status,
         payload_json, created_at, updated_at)
@@ -998,7 +1022,7 @@ implements AcquisitionDomainRepository {
       .map((status) => `'${status}'`)
       .join(", ");
     const count = await affected(
-      this.pool,
+      this.source(),
       `UPDATE acquisition_research_attempts
        SET status = ?, payload_json = ?, updated_at = ?
        WHERE id = ? AND candidate_id = ?
@@ -1023,7 +1047,7 @@ implements AcquisitionDomainRepository {
     researchId: string
   ) {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT *
        FROM acquisition_research_attempts
        WHERE id = ? AND candidate_id = ?
@@ -1038,7 +1062,7 @@ implements AcquisitionDomainRepository {
 
   appendConversion(record: LeadConversionRecord) {
     return insertOwned(
-      this.pool,
+      this.source(),
       "acquisition_conversions",
       record,
       record.createdAt,
@@ -1049,7 +1073,7 @@ implements AcquisitionDomainRepository {
 
   async findConversion(scope: AcquisitionDataScope, candidateId: string) {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT *
        FROM acquisition_conversions
        WHERE candidate_id = ? AND owner_id = ? AND team_id = ?
@@ -1063,7 +1087,7 @@ implements AcquisitionDomainRepository {
   }
 
   async appendOutcome(record: LiveOutcomeFeedbackEvent) {
-    await this.pool.query(
+    await this.source().query(
       `INSERT INTO acquisition_outcomes
        (id, owner_id, team_id, candidate_id, idempotency_key_hash,
         payload_json, occurred_at, created_at)
@@ -1093,7 +1117,7 @@ implements AcquisitionDomainRepository {
 
   appendAuditEvent(record: DomainAuditEvent) {
     return insertOwned(
-      this.pool,
+      this.source(),
       "acquisition_domain_audit_events",
       record,
       record.createdAt,
@@ -1113,7 +1137,7 @@ implements AcquisitionDomainRepository {
       ? [scope.ownerId, scope.teamId]
       : [scope.ownerId, scope.teamId, candidateId];
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT *
        FROM acquisition_domain_audit_events
        WHERE owner_id = ? AND team_id = ?${candidateClause}
@@ -1130,7 +1154,7 @@ implements AcquisitionDomainRepository {
     idempotencyKey: string
   ) {
     const result = await rows(
-      this.pool,
+      this.source(),
       `SELECT owner_id, team_id, payload_json
        FROM acquisition_domain_idempotency
        WHERE owner_id = ? AND team_id = ?
@@ -1155,7 +1179,7 @@ implements AcquisitionDomainRepository {
   }
 
   async appendIdempotency(record: DomainIdempotencyRecord) {
-    await this.pool.query(
+    await this.source().query(
       `INSERT INTO acquisition_domain_idempotency
        (owner_id, team_id, operation_name, idempotency_key_hash,
         request_hash, payload_json, created_at)

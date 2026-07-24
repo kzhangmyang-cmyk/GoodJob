@@ -33,6 +33,7 @@ export interface AcquisitionCandidateListPage {
 }
 
 export interface AcquisitionDomainRepository {
+  transaction<T>(work: () => Promise<T>): Promise<T>;
   findEvidence(
     scope: AcquisitionDataScope,
     evidenceId: string
@@ -159,6 +160,90 @@ implements AcquisitionDomainRepository {
   private readonly outcomes: LiveOutcomeFeedbackEvent[] = [];
   private readonly auditEvents: AcquisitionAuditEvent[] = [];
   private readonly idempotency = new Map<string, IdempotencyRecord>();
+  private transactionTail: Promise<void> = Promise.resolve();
+
+  async transaction<T>(work: () => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const previous = this.transactionTail;
+    this.transactionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    const snapshot = {
+      evidence: new Map(
+        [...this.evidence.entries()].map(([key, value]) => [key, copy(value)])
+      ),
+      candidates: new Map(
+        [...this.candidates.entries()].map(([key, value]) => [key, copy(value)])
+      ),
+      qualificationDecisions: copy(this.qualificationDecisions),
+      financialValues: copy(this.financialValues),
+      battleCards: copy(this.battleCards),
+      reviewEvents: copy(this.reviewEvents),
+      researchAttempts: new Map(
+        [...this.researchAttempts.entries()]
+          .map(([key, value]) => [key, copy(value)])
+      ),
+      conversions: copy(this.conversions),
+      outcomes: copy(this.outcomes),
+      auditEvents: copy(this.auditEvents),
+      idempotency: new Map(
+        [...this.idempotency.entries()].map(([key, value]) => [key, copy(value)])
+      )
+    };
+    try {
+      return await work();
+    } catch (error) {
+      this.evidence.clear();
+      snapshot.evidence.forEach((value, key) => this.evidence.set(key, value));
+      this.candidates.clear();
+      snapshot.candidates.forEach(
+        (value, key) => this.candidates.set(key, value)
+      );
+      this.qualificationDecisions.splice(
+        0,
+        this.qualificationDecisions.length,
+        ...snapshot.qualificationDecisions
+      );
+      this.financialValues.splice(
+        0,
+        this.financialValues.length,
+        ...snapshot.financialValues
+      );
+      this.battleCards.splice(
+        0,
+        this.battleCards.length,
+        ...snapshot.battleCards
+      );
+      this.reviewEvents.splice(
+        0,
+        this.reviewEvents.length,
+        ...snapshot.reviewEvents
+      );
+      this.researchAttempts.clear();
+      snapshot.researchAttempts.forEach(
+        (value, key) => this.researchAttempts.set(key, value)
+      );
+      this.conversions.splice(
+        0,
+        this.conversions.length,
+        ...snapshot.conversions
+      );
+      this.outcomes.splice(0, this.outcomes.length, ...snapshot.outcomes);
+      this.auditEvents.splice(
+        0,
+        this.auditEvents.length,
+        ...snapshot.auditEvents
+      );
+      this.idempotency.clear();
+      snapshot.idempotency.forEach(
+        (value, key) => this.idempotency.set(key, value)
+      );
+      throw error;
+    } finally {
+      release();
+    }
+  }
 
   async findEvidence(scope: AcquisitionDataScope, evidenceId: string) {
     const evidence = this.evidence.get(evidenceId);

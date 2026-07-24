@@ -1608,20 +1608,6 @@ export class AcquisitionDomainService {
   ): Promise<T> {
     const key = requiredText(idempotencyKey, "Idempotency-Key", 200);
     const requestHash = hash(request);
-    const existing = await this.repository.findIdempotency(
-      scope,
-      operation,
-      key
-    );
-    if (existing) {
-      if (existing.requestHash !== requestHash) {
-        fail(
-          "idempotency_conflict",
-          "同一 Idempotency-Key 已用于不同请求"
-        );
-      }
-      return clone(existing.result as T);
-    }
     const flightKey = [
       scope.ownerId,
       scope.teamId,
@@ -1638,7 +1624,21 @@ export class AcquisitionDomainService {
       }
       return clone(await inFlight.promise as T);
     }
-    const promise = (async () => {
+    const promise = this.repository.transaction(async () => {
+      const existing = await this.repository.findIdempotency(
+        scope,
+        operation,
+        key
+      );
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          fail(
+            "idempotency_conflict",
+            "同一 Idempotency-Key 已用于不同请求"
+          );
+        }
+        return clone(existing.result as T);
+      }
       const result = await execute();
       const record: IdempotencyRecord = {
         ownerId: scope.ownerId,
@@ -1651,7 +1651,21 @@ export class AcquisitionDomainService {
       };
       await this.repository.appendIdempotency(record);
       return clone(result);
-    })();
+    }).catch(async (error) => {
+      const committed = await this.repository.findIdempotency(
+        scope,
+        operation,
+        key
+      );
+      if (!committed) throw error;
+      if (committed.requestHash !== requestHash) {
+        fail(
+          "idempotency_conflict",
+          "同一 Idempotency-Key 已用于不同请求"
+        );
+      }
+      return clone(committed.result as T);
+    });
     this.inFlightIdempotency.set(flightKey, { requestHash, promise });
     try {
       return clone(await promise as T);

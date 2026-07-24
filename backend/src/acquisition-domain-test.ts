@@ -636,3 +636,52 @@ test("live outcomes are append-only, idempotent, attributed, and tenant isolated
       && error.code === "resource_not_found"
   );
 });
+
+test("domain mutations roll back state when the audit append fails", async () => {
+  const baseRepository = new InMemoryAcquisitionDomainRepository();
+  const repository = new Proxy(baseRepository, {
+    get(target, property, receiver) {
+      if (property === "appendAuditEvent") {
+        return async () => {
+          throw new Error("simulated audit persistence failure");
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  const service = new AcquisitionDomainService({
+    repository,
+    leadConversionPort: {
+      createLead: async (request) => ({
+        leadId: "unused",
+        partyRef: request.partyRef
+      })
+    },
+    idFactory: (prefix) => `${prefix}-rollback`,
+    now: () => "2026-07-24T12:00:00.000Z"
+  });
+
+  await assert.rejects(
+    service.appendEvidence(
+      ownerScope,
+      searchEvidence("organization", "rollback"),
+      "append-evidence-rollback"
+    ),
+    /simulated audit persistence failure/
+  );
+
+  assert.equal(
+    await baseRepository.findEvidence(ownerScope, "evidence-rollback"),
+    null,
+    "business state must not survive without its audit and idempotency record"
+  );
+  assert.equal(
+    await baseRepository.findIdempotency(
+      ownerScope,
+      "append_evidence",
+      "append-evidence-rollback"
+    ),
+    null
+  );
+});
