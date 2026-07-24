@@ -1,6 +1,9 @@
 import type { Application, NextFunction, Request, Response } from "express";
 import swaggerUi from "swagger-ui-express";
 import { requireAuth } from "./auth.js";
+import {
+  createAcquisitionOpenApiPaths
+} from "./acquisition-openapi.js";
 
 type HttpMethod = "get" | "post" | "put" | "patch" | "delete";
 
@@ -20,6 +23,7 @@ const methodLabels: Record<HttpMethod, string> = {
 };
 
 const tagRules = [
+  ["/api/v1/acquisition", "AI 获客智能体"],
   ["/api/auth", "认证"],
   ["/api/profile", "个人设置"],
   ["/api/accounts", "账号管理"],
@@ -2410,6 +2414,14 @@ export function createOpenApiDocument(app: Application) {
       responses: responsesFor(route.method, route.path)
     };
   }
+  for (const [path, item] of Object.entries(
+    createAcquisitionOpenApiPaths()
+  )) {
+    paths[path] = {
+      ...(paths[path] ?? {}),
+      ...item
+    };
+  }
 
   return {
     openapi: "3.0.3",
@@ -2424,7 +2436,9 @@ export function createOpenApiDocument(app: Application) {
       ].join("\n\n")
     },
     servers: [{ url: "/", description: "当前部署环境" }],
-    tags: [...new Set(routes.map(({ path }) => tagForPath(path)))].map((name) => ({ name })),
+    tags: [...new Set(
+      Object.keys(paths).map((path) => tagForPath(path))
+    )].map((name) => ({ name })),
     paths,
     components: {
       securitySchemes: {
