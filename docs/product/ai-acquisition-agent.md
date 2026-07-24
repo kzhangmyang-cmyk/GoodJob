@@ -115,15 +115,23 @@ GET    /api/v1/ai/calls/:id
 | `brave` | Brave Search |
 | `serpapi` | SerpApi |
 
-搜索连接由当前用户通过以下接口配置和测试：
+搜索连接由当前用户通过获客 V1 接口配置和测试：
 
 ```text
-GET    /api/lead-finder/providers
-GET    /api/lead-finder/provider-catalog
-POST   /api/lead-finder/source-config
-POST   /api/lead-finder/source-config/test
-DELETE /api/lead-finder/source-config/:provider
+GET    /api/v1/acquisition/providers
+GET    /api/v1/acquisition/provider-connections
+POST   /api/v1/acquisition/provider-connections
+GET    /api/v1/acquisition/provider-connections/:id
+PATCH  /api/v1/acquisition/provider-connections/:id
+DELETE /api/v1/acquisition/provider-connections/:id
+POST   /api/v1/acquisition/provider-connections/:id/test
 ```
+
+以上接口只返回连接 ID、厂商、状态和凭据版本等安全投影，不回传 API Key、
+密文或内部凭据引用。客户在设置页配置一次官方 Key 后，`search_public_sources`
+未指定 `providerConnectionIds` 时会自动使用该客户已启用的全部官方搜索连接；
+若客户明确选择了连接，则只使用所选连接。没有可用连接时返回稳定的
+`SEARCH_PROVIDER_CONNECTION_REQUIRED`，前端应引导客户进入连接设置页。
 
 搜索 API Key 同样加密保存。`ProviderConnection.credentialVersion` 是服务端维护的单调版本号：
 
@@ -237,10 +245,32 @@ GET    /api/v1/acquisition/copilot/sessions/:id
 GET    /api/v1/acquisition/copilot/sessions/:id/messages
 POST   /api/v1/acquisition/copilot/sessions/:id/messages
 GET    /api/v1/acquisition/copilot/tasks/:id
+
+# 官方数据源与客户 BYOK 连接
+GET    /api/v1/acquisition/providers
+GET    /api/v1/acquisition/provider-connections
+POST   /api/v1/acquisition/provider-connections
+GET    /api/v1/acquisition/provider-connections/:id
+PATCH  /api/v1/acquisition/provider-connections/:id
+DELETE /api/v1/acquisition/provider-connections/:id
+POST   /api/v1/acquisition/provider-connections/:id/test
+
+# 受控公开网页抓取
+GET    /api/v1/acquisition/content-fetch-operations
+POST   /api/v1/acquisition/content-fetch-operations
+GET    /api/v1/acquisition/content-fetch-operations/:id
+
+# 客户授权 CSV/XLSX 导入
+GET    /api/v1/acquisition/import-operations
+POST   /api/v1/acquisition/import-operations
+GET    /api/v1/acquisition/import-operations/:id
 ```
 
 列表接口使用有签名的游标；写接口需要按对应契约提供
 `Idempotency-Key` 或 `If-Match`。前端不要自行拼装或修改服务端快照、证据、评分和审计字段。
+导入接口接收最大 5 MB 的原始 CSV/XLSX 请求体；文件名、主体通道和列映射通过
+查询参数或文档指定的请求头传入，不使用 `multipart/form-data`。公开网页 URL
+和文件内容会在持久化前执行安全校验。
 
 ## 8. 启动、恢复与关闭
 
@@ -294,8 +324,9 @@ MODEL_CONNECTION_IDEMPOTENCY_SECRET=...
 4. 创建模型、搜索、领域、工具和 Pi Runtime；
 5. 恢复未完成的 Plan execution intents；
 6. 恢复被进程中断的 Copilot 任务；
-7. 将 Runtime 安装到已认证的 Express 路由；
-8. 启动原有 Prospect worker/scheduler 和 HTTP 服务。
+7. 抢占并恢复排队中或租约已过期的网页抓取与文件导入任务；
+8. 将 Runtime 安装到已认证的 Express 路由；
+9. 启动原有 Prospect worker/scheduler 和 HTTP 服务。
 
 任一步骤失败都会终止启动，不会降级成“页面可用但获客 Runtime 不可用”。收到
 `SIGTERM` / `SIGINT` 时先停止接收新的获客任务，等待计划 Worker 和活动 Copilot 任务收尾，再关闭 MySQL Pool 和 GoodJob Store。默认获客 Worker 并发为 `2`，应用级优雅关闭超时为 30 秒。
@@ -346,7 +377,9 @@ MODEL_CONNECTION_IDEMPOTENCY_SECRET=...
 npm run test:acquisition --workspace backend
 ```
 
-该脚本固定 UTC、单并发执行，并显式列出模型连接、官方端点、模型 Gateway、Pi、Copilot、领域门禁、搜索 Port、工具、计划 Worker 和应用组合测试。显式文件清单能避免目录中偶然新增的实验文件被静默纳入。
+该脚本固定 UTC、单并发执行，并运行模型连接、官方端点、模型 Gateway 以及
+`src/acquisition-*-test.ts` 全部获客专项测试。新增获客测试会自动纳入该脚本，
+不能靠遗漏测试文件规避回归。
 
 受当前沙箱禁止监听本地 Socket 的限制，以下 HTTP 传输测试没有放入该脚本，必须在允许绑定 loopback 的本机或 CI 单独运行：
 

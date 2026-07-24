@@ -16,22 +16,44 @@ const writeSecurity = [
 ];
 
 const errorSchema = {
-  type: "object",
-  required: ["error"],
-  properties: {
-    error: {
+  oneOf: [
+    {
       type: "object",
-      required: ["code", "message"],
+      required: [
+        "code",
+        "message",
+        "details",
+        "requestId",
+        "retryable"
+      ],
       properties: {
         code: { type: "string" },
         message: { type: "string" },
         details: { nullable: true },
-        requestId: { type: "string" }
+        requestId: { type: "string" },
+        retryable: { type: "boolean" }
+      },
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["error"],
+      properties: {
+        error: {
+          type: "object",
+          required: ["code", "message"],
+          properties: {
+            code: { type: "string" },
+            message: { type: "string" },
+            details: { nullable: true },
+            requestId: { type: "string" }
+          },
+          additionalProperties: false
+        }
       },
       additionalProperties: false
     }
-  },
-  additionalProperties: false
+  ]
 };
 
 const resourceSchema = {

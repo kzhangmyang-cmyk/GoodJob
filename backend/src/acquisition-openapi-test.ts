@@ -135,6 +135,28 @@ test("provider connection response and deletion contracts match the runtime", ()
   assert.equal(deleted.responses["200"], undefined);
 });
 
+test("error responses describe both runtime envelopes used by acquisition routers", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  const operation = paths[
+    "/api/v1/acquisition/provider-connections"
+  ]!.post as Record<string, any>;
+  const schema = operation.responses["400"]
+    .content["application/json"].schema;
+
+  assert.equal(schema.oneOf.length, 2);
+  assert.ok(
+    schema.oneOf.some((variant: Record<string, any>) =>
+      variant.required?.includes("code")
+      && variant.required?.includes("retryable")
+    )
+  );
+  assert.ok(
+    schema.oneOf.some((variant: Record<string, any>) =>
+      variant.required?.includes("error")
+    )
+  );
+});
+
 test("the main Swagger document includes runtime-bridged acquisition routes", () => {
   const document = createOpenApiDocument(express()) as {
     paths: Record<string, unknown>;
