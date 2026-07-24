@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   AcquisitionAuditEvent,
   AcquisitionCandidate,
@@ -160,9 +161,12 @@ implements AcquisitionDomainRepository {
   private readonly outcomes: LiveOutcomeFeedbackEvent[] = [];
   private readonly auditEvents: AcquisitionAuditEvent[] = [];
   private readonly idempotency = new Map<string, IdempotencyRecord>();
+  private readonly transactionContext =
+    new AsyncLocalStorage<{ active: boolean }>();
   private transactionTail: Promise<void> = Promise.resolve();
 
   async transaction<T>(work: () => Promise<T>): Promise<T> {
+    if (this.transactionContext.getStore()?.active) return work();
     let release!: () => void;
     const previous = this.transactionTail;
     this.transactionTail = new Promise<void>((resolve) => {
@@ -191,8 +195,9 @@ implements AcquisitionDomainRepository {
         [...this.idempotency.entries()].map(([key, value]) => [key, copy(value)])
       )
     };
+    const context = { active: true };
     try {
-      return await work();
+      return await this.transactionContext.run(context, work);
     } catch (error) {
       this.evidence.clear();
       snapshot.evidence.forEach((value, key) => this.evidence.set(key, value));
@@ -241,6 +246,7 @@ implements AcquisitionDomainRepository {
       );
       throw error;
     } finally {
+      context.active = false;
       release();
     }
   }
