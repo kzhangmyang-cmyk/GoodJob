@@ -80,6 +80,9 @@ import {
   type AcquisitionCopilotScope
 } from "./acquisition-copilot-service.js";
 import {
+  AcquisitionCopilotRecoverySweeper
+} from "./acquisition-copilot-recovery-sweeper.js";
+import {
   acquisitionPiModelSnapshotFromStored,
   bindActiveAcquisitionModelSnapshot,
   createAcquisitionPiRuntimeFactory
@@ -147,6 +150,7 @@ export interface CreateAcquisitionApplicationOptions {
   ) => AcquisitionPiGatewayPort;
   mysqlPoolFactory?: (databaseUrl: string) => mysql.Pool;
   workerConcurrency?: number;
+  copilotRecoveryIntervalMs?: number;
   shutdownTimeoutMs?: number;
   idFactory?: IdFactory;
   now?: () => string;
@@ -689,6 +693,7 @@ export async function createAcquisitionApplication(
   const nowMs = options.nowMs ?? Date.now;
   let pool: mysql.Pool | null = null;
   let executionWorker: AcquisitionPlanExecutionWorker | null = null;
+  let recoverySweeper: AcquisitionCopilotRecoverySweeper | null = null;
 
   try {
     let repositories: AcquisitionRepositorySet;
@@ -911,36 +916,13 @@ export async function createAcquisitionApplication(
       requestIdFactory: () => idFactory("request")
     }));
 
-    const recoveredCopilotTasks =
-      await copilotService.recoverInterruptedTasks({
-        staleRunningBefore: new Date(
-          nowMs() - 10 * 60 * 1_000
-        ).toISOString()
-      });
-    const claimedRecoveredTasks: Array<{
-      scope: AcquisitionCopilotScope;
-      taskId: string;
-    }> = [];
-    for (const task of recoveredCopilotTasks) {
-      const scope = {
-        ownerId: task.ownerId,
-        teamId: task.teamId,
-        actorId: task.actorId
-      };
-      if (await copilotService.claimTaskDispatch(scope, task.id)) {
-        claimedRecoveredTasks.push({ scope, taskId: task.id });
-      }
-    }
-    for (const recovered of claimedRecoveredTasks) {
-      void dispatchCopilotTask(
-        recovered.scope,
-        recovered.taskId
-      ).catch(() => copilotService.markDispatchFailed(
-        recovered.scope,
-        recovered.taskId,
-        "COPILOT_DISPATCH_FAILED"
-      )).catch(() => undefined);
-    }
+    recoverySweeper = new AcquisitionCopilotRecoverySweeper({
+      service: copilotService,
+      dispatchTask: dispatchCopilotTask,
+      intervalMs: options.copilotRecoveryIntervalMs,
+      nowMs
+    });
+    await recoverySweeper.start();
 
     let closePromise: Promise<void> | null = null;
     return {
@@ -954,6 +936,7 @@ export async function createAcquisitionApplication(
           try {
             settlements = await waitWithTimeout(
               Promise.allSettled([
+                recoverySweeper?.close() ?? Promise.resolve(),
                 worker.close(),
                 ...activeCopilotTasks
               ]),
@@ -983,6 +966,9 @@ export async function createAcquisitionApplication(
       }
     };
   } catch (error) {
+    if (recoverySweeper) {
+      await recoverySweeper.close().catch(() => undefined);
+    }
     if (executionWorker) {
       await waitWithTimeout(
         executionWorker.close(),
