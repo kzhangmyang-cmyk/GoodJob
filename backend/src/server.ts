@@ -80,6 +80,12 @@ import { loadLocalEnv } from "./runtime-env.js";
 import { registerSwagger } from "./swagger.js";
 import { resolveBackendHost } from "./server-network.js";
 import {
+  createAcquisitionApplication
+} from "./acquisition-application.js";
+import {
+  AcquisitionRuntimeBridge
+} from "./acquisition-runtime-bridge.js";
+import {
   listTradeObservations,
   parseTradeObservationListQuery,
   TradeObservationListRequestError,
@@ -229,6 +235,7 @@ loadLocalEnv();
 
 export const app = express();
 let activeProspectWorkerService: ProspectWorkerService | null = null;
+const acquisitionRuntimeBridge = new AcquisitionRuntimeBridge();
 
 async function synchronizeProspectQueue() {
   try {
@@ -11427,6 +11434,9 @@ app.patch("/api/reports/executive/note", requireAuth, asyncRoute(async (req, res
   res.json({ note: user.reportNote });
 }));
 
+app.use("/api/v1/acquisition", requireAuth);
+app.use(acquisitionRuntimeBridge.middleware());
+
 registerSwagger(app);
 
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -11478,6 +11488,26 @@ async function startServer() {
     }
   }
   const store = getStore();
+  try {
+    const acquisitionRuntime = await createAcquisitionApplication({
+      store,
+      masterSecret: (
+        process.env.ACQUISITION_MASTER_SECRET
+        || process.env.JWT_SECRET
+        || ""
+      )
+    });
+    acquisitionRuntimeBridge.install(acquisitionRuntime);
+  } catch (error) {
+    console.error(
+      `GoodJob CRM acquisition runtime startup failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    await store.close?.();
+    process.exit(1);
+    return;
+  }
   const prospectQueueRequired =
     process.env.PROSPECT_QUEUE_REQUIRED === "true";
   const prospectWorkerService =
@@ -11489,6 +11519,7 @@ async function startServer() {
       "GoodJob CRM prospect queue startup failed: "
       + "启用强制队列时不能关闭 PROSPECT_WORKER_ENABLED"
     );
+    await acquisitionRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     process.exit(1);
     return;
@@ -11498,6 +11529,7 @@ async function startServer() {
     activeProspectWorkerService = prospectWorkerService;
   } catch (error) {
     console.error(`GoodJob CRM prospect worker startup failed: ${error instanceof Error ? error.message : String(error)}`);
+    await acquisitionRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     process.exit(1);
     return;
@@ -11514,6 +11546,7 @@ async function startServer() {
   } catch (error) {
     activeProspectWorkerService = null;
     await prospectWorkerService?.stop();
+    await acquisitionRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     console.error(`GoodJob CRM prospect scheduler startup failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
@@ -11533,6 +11566,7 @@ async function startServer() {
       await prospectScheduler?.stop();
       activeProspectWorkerService = null;
       await prospectWorkerService?.stop();
+      await acquisitionRuntimeBridge.close();
       await new Promise<void>((resolve, reject) => {
         httpServer.close((error) => {
           if (error) reject(error);
