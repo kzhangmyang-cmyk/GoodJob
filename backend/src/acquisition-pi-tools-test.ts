@@ -97,6 +97,17 @@ await byName(tools, "search_public_sources").execute(
   undefined
 );
 
+const searchRequired = (
+  byName(tools, "search_public_sources").parameters as {
+    required?: string[];
+  }
+).required ?? [];
+assert.equal(
+  searchRequired.includes("providerConnectionIds"),
+  false,
+  "the customer-facing agent must be able to use active connections automatically"
+);
+
 assert.equal(calls.length, 1);
 assert.deepEqual(calls[0]?.identity, {
   ownerId: "owner-a",

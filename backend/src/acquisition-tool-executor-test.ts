@@ -28,6 +28,7 @@ import {
   type AcquisitionPriorityCandidatePort,
   type AcquisitionReviewTask,
   type AcquisitionReviewTaskPort,
+  type AcquisitionSearchConnectionDirectoryPort,
   type AcquisitionToolResultLedgerPort,
   type SearchPublicSourceResult,
   type SearchPublicSourcesPort,
@@ -385,6 +386,23 @@ class TestSearchPort implements SearchPublicSourcesPort {
   }
 }
 
+class TestSearchConnectionDirectory
+implements AcquisitionSearchConnectionDirectoryPort {
+  readonly calls: Array<{ ownerId: string; teamId: string }> = [];
+
+  constructor(
+    private readonly connectionIds = ["search-ok", "search-tavily"]
+  ) {}
+
+  async listActiveConnectionIds(scope: {
+    ownerId: string;
+    teamId: string;
+  }) {
+    this.calls.push(structuredClone(scope));
+    return [...this.connectionIds];
+  }
+}
+
 function createHarness(options: {
   judgments?: AcquisitionJudgmentPort;
   negativeSignals?: string[];
@@ -392,6 +410,7 @@ function createHarness(options: {
   organizationDomain?: string | null;
   individualActorKey?: string;
   individualProfileUrl?: string;
+  searchConnectionIds?: string[];
 } = {}) {
   let id = 0;
   let tick = 0;
@@ -420,6 +439,9 @@ function createHarness(options: {
     options.individualActorKey,
     options.individualProfileUrl
   );
+  const searchConnections = new TestSearchConnectionDirectory(
+    options.searchConnectionIds
+  );
   const directory = new TestCandidateDirectory();
   const priority = new TestPriorityCandidatePort(directory, domain);
   const reviews = new TestReviewTaskPort();
@@ -428,6 +450,7 @@ function createHarness(options: {
   const executor = new ProductionAcquisitionAgentToolExecutor({
     domain,
     search,
+    searchConnections,
     candidateDirectory: directory,
     priorityCandidates: priority,
     reviewTasks: reviews,
@@ -440,6 +463,7 @@ function createHarness(options: {
     repository,
     domain,
     search,
+    searchConnections,
     directory,
     priority,
     reviews,
@@ -537,6 +561,48 @@ test("searches authorized providers, survives a partial failure, and idempotentl
       error instanceof AcquisitionToolExecutorError
       && error.code === "IDEMPOTENCY_CONFLICT"
   );
+});
+
+test("automatically uses the tenant's active search connections when the agent omits internal connection ids", async () => {
+  const {
+    executor,
+    search,
+    searchConnections
+  } = createHarness();
+
+  const result = await execute(executor, "search_public_sources", {
+    query: "厦门 企业 正在寻找 获客系统",
+    subjectKinds: ["organization", "individual"],
+    maxResults: 10
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(searchConnections.calls, [{
+    ownerId: identity.ownerId,
+    teamId: identity.teamId
+  }]);
+  assert.deepEqual(
+    search.calls.map((call) => call.providerConnectionId),
+    ["search-ok", "search-tavily"]
+  );
+});
+
+test("fails with a stable setup error when no active search connection is configured", async () => {
+  const { executor, search } = createHarness({
+    searchConnectionIds: []
+  });
+
+  await assert.rejects(
+    execute(executor, "search_public_sources", {
+      query: "厦门 企业 正在寻找 获客系统",
+      subjectKinds: ["organization", "individual"],
+      maxResults: 10
+    }),
+    (error: unknown) =>
+      error instanceof AcquisitionToolExecutorError
+      && error.code === "SEARCH_PROVIDER_CONNECTION_REQUIRED"
+  );
+  assert.equal(search.calls.length, 0);
 });
 
 test("resolves strong public identities at the executor boundary instead of trusting nullable provider ids", async () => {

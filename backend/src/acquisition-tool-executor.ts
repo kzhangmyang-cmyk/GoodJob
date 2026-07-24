@@ -44,6 +44,7 @@ export type AcquisitionToolExecutorErrorCode =
   | "IDENTITY_RESEARCH_REQUIRED"
   | "INVALID_PAYLOAD"
   | "UNKNOWN_TOOL"
+  | "SEARCH_PROVIDER_CONNECTION_REQUIRED"
   | "SEARCH_ALL_PROVIDERS_FAILED"
   | "RESOURCE_NOT_FOUND"
   | "IDEMPOTENCY_CONFLICT"
@@ -141,6 +142,17 @@ export interface SearchPublicSourcesResponse {
  */
 export interface SearchPublicSourcesPort {
   search(input: SearchPublicSourcesRequest): Promise<SearchPublicSourcesResponse>;
+}
+
+/**
+ * Resolves only active search connections that belong to the supplied tenant
+ * scope. Implementations must never return credentials or configuration.
+ */
+export interface AcquisitionSearchConnectionDirectoryPort {
+  listActiveConnectionIds(scope: {
+    ownerId: string;
+    teamId: string;
+  }): Promise<string[]>;
 }
 
 export interface AcquisitionCandidateIndexEntry {
@@ -354,6 +366,7 @@ export interface AcquisitionJudgmentPort {
 export interface ProductionAcquisitionAgentToolExecutorOptions {
   domain: AcquisitionDomainService;
   search: SearchPublicSourcesPort;
+  searchConnections: AcquisitionSearchConnectionDirectoryPort;
   candidateDirectory: AcquisitionCandidateDirectoryPort;
   priorityCandidates: AcquisitionPriorityCandidatePort;
   reviewTasks: AcquisitionReviewTaskPort;
@@ -384,7 +397,7 @@ const schemas = {
     providerConnectionIds: z.array(z.string().trim().min(1).max(255))
       .min(1).max(10).refine(
         (values) => new Set(values).size === values.length
-      ),
+      ).optional(),
     subjectKinds: subjectKindsSchema,
     maxResults: z.number().int().min(1).max(100)
   }).strict(),
@@ -1035,6 +1048,7 @@ export class ProductionAcquisitionAgentToolExecutor
 implements AcquisitionAgentToolExecutor {
   private readonly domain: AcquisitionDomainService;
   private readonly search: SearchPublicSourcesPort;
+  private readonly searchConnections: AcquisitionSearchConnectionDirectoryPort;
   private readonly directory: AcquisitionCandidateDirectoryPort;
   private readonly priorityCandidates: AcquisitionPriorityCandidatePort;
   private readonly reviewTasks: AcquisitionReviewTaskPort;
@@ -1047,6 +1061,7 @@ implements AcquisitionAgentToolExecutor {
   constructor(options: ProductionAcquisitionAgentToolExecutorOptions) {
     this.domain = options.domain;
     this.search = options.search;
+    this.searchConnections = options.searchConnections;
     this.directory = options.candidateDirectory;
     this.priorityCandidates = options.priorityCandidates;
     this.reviewTasks = options.reviewTasks;
@@ -1251,7 +1266,25 @@ implements AcquisitionAgentToolExecutor {
     payload: z.infer<typeof schemas.search_public_sources>
   ) {
     assertNotAborted(input.signal);
-    const requests = payload.providerConnectionIds.map(
+    const configuredConnectionIds = payload.providerConnectionIds
+      ?? await this.searchConnections.listActiveConnectionIds({
+        ownerId: input.identity.ownerId,
+        teamId: input.identity.teamId
+      });
+    assertNotAborted(input.signal);
+    const providerConnectionIds = [...new Set(
+      configuredConnectionIds
+        .filter((value): value is string =>
+          typeof value === "string"
+          && value.trim().length > 0
+          && value.trim().length <= 255
+        )
+        .map((value) => value.trim())
+    )].slice(0, 10);
+    if (providerConnectionIds.length === 0) {
+      throw toolError("SEARCH_PROVIDER_CONNECTION_REQUIRED");
+    }
+    const requests = providerConnectionIds.map(
       (providerConnectionId): SearchPublicSourcesRequest => ({
         ...input.identity,
         providerConnectionId,

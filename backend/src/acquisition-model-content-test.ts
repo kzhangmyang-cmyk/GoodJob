@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import {
   ACQUISITION_MODEL_CONTENT_BUNDLE,
-  ACQUISITION_MODEL_PROMPT_VERSION
+  ACQUISITION_MODEL_PROMPT_VERSION,
+  ACQUISITION_MODEL_SCHEMA_VERSION
 } from "./acquisition-model-content.js";
 
 const copilotPrompt =
@@ -19,7 +20,11 @@ const judgmentTools =
 
 assert.equal(
   ACQUISITION_MODEL_PROMPT_VERSION,
-  "acquisition-model-prompt-bundle.v2"
+  "acquisition-model-prompt-bundle.v3"
+);
+assert.equal(
+  ACQUISITION_MODEL_SCHEMA_VERSION,
+  "acquisition-model-schema-bundle.v2"
 );
 assert.match(
   copilotPrompt ?? "",
@@ -32,6 +37,10 @@ assert.match(
 assert.match(
   copilotPrompt ?? "",
   /意向资格[\s\S]*财务价值[\s\S]*客户作战卡[\s\S]*人工审核/
+);
+assert.match(
+  copilotPrompt ?? "",
+  /未指定搜索连接[\s\S]*自动使用[\s\S]*已启用/
 );
 assert.match(
   judgmentPrompt ?? "",

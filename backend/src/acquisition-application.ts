@@ -33,6 +33,7 @@ import {
   MysqlAcquisitionDiscoveryOperationRepository
 } from "./acquisition-discovery-mysql-repository.js";
 import {
+  ACQUISITION_SEARCH_PROVIDER_IDS,
   isTrustedAcquisitionSystemConnection
 } from "./acquisition-discovery-providers.js";
 import {
@@ -803,6 +804,27 @@ export async function createAcquisitionApplication(
     const toolExecutor = new ProductionAcquisitionAgentToolExecutor({
       domain: domainService,
       search: searchPort,
+      searchConnections: {
+        async listActiveConnectionIds(scope) {
+          await options.store.readBarrier();
+          return options.store.providerConnections
+            .filter((connection) =>
+              connection.ownerId === scope.ownerId
+              && connection.teamId === scope.teamId
+              && connection.scope === "personal"
+              && connection.status === "active"
+              && ACQUISITION_SEARCH_PROVIDER_IDS.includes(
+                connection.providerId as
+                  (typeof ACQUISITION_SEARCH_PROVIDER_IDS)[number]
+              )
+            )
+            .sort((left, right) =>
+              right.updatedAt.localeCompare(left.updatedAt)
+              || right.id.localeCompare(left.id)
+            )
+            .map((connection) => connection.id);
+        }
+      },
       candidateDirectory,
       priorityCandidates,
       reviewTasks,

@@ -128,13 +128,13 @@ const TOOL_BLUEPRINTS: readonly ToolBlueprint[] = [
   {
     name: "search_public_sources",
     label: "搜索公开商机",
-    description: "通过已授权的官方搜索连接发现公开商机；只返回来源与候选，不执行触达。",
+    description: "通过已授权的官方搜索连接发现公开商机；未指定连接时自动使用当前客户已启用的连接，只返回来源与候选，不执行触达。",
     parameters: Type.Object({
       query: Type.String({ minLength: 2, maxLength: 1000 }),
-      providerConnectionIds: Type.Array(
+      providerConnectionIds: Type.Optional(Type.Array(
         Type.String({ minLength: 1, maxLength: 255 }),
         { minItems: 1, maxItems: 10, uniqueItems: true }
-      ),
+      )),
       subjectKinds: Type.Array(SUBJECT_KINDS, {
         minItems: 1,
         maxItems: 2,

@@ -18,9 +18,9 @@ export const ACQUISITION_FINAL_ANSWER_TOOL =
 export const ACQUISITION_JUDGMENT_SUBMIT_TOOL =
   "__goodjob_submit_acquisition_judgment";
 export const ACQUISITION_MODEL_PROMPT_VERSION =
-  "acquisition-model-prompt-bundle.v2";
+  "acquisition-model-prompt-bundle.v3";
 export const ACQUISITION_MODEL_SCHEMA_VERSION =
-  "acquisition-model-schema-bundle.v1";
+  "acquisition-model-schema-bundle.v2";
 
 const MAX_FINAL_ANSWER_CHARS = 100_000;
 
@@ -30,6 +30,7 @@ export const DEFAULT_ACQUISITION_PI_SYSTEM_PROMPT = [
   "你面向通用行业工作，不预设垂直行业结论；先从用户的产品、地区、客单价、目标客户和排除对象形成 ICP，缺少关键条件时先说明信息缺口。",
   "发现阶段必须分别处理企业公开需求与个人公开经营需求：企业侧优先检索采购、招标、招聘、扩张、开店、招商、供应商替换和经营痛点；个人侧只处理公开职业主页上明确表达的经营需求。",
   "一句询价、点赞或泛泛评论不能单独判为高意向；高意向建议至少两个独立信号，并结合主体身份、时效、购买阶段、负向信号和触达风险。",
+  "调用公开搜索时，除非用户明确选择了已配置的连接，否则不要臆造内部连接 ID；未指定搜索连接时，系统会自动使用该客户已启用的官方搜索连接。",
   "默认作战链路是：公开搜索与证据整理 → 意向资格判断 → 财务价值判断 → 客户作战卡 → 人工审核；证据不足时停在研究或培育阶段。",
   "所有事实结论必须引用工具返回的来源或明确标注为推测，并说明置信度。",
   "不得采集私密或敏感个人信息，不得臆测家庭、健康、宗教、金融、行踪等信息。",
