@@ -191,8 +191,10 @@ export function createDemoRunner(options: CreateDemoRunnerOptions): DemoRunner {
     }
     clearScheduled();
     mark("awaiting_approval");
-    phase = "running";
-    emitState("running");
+    if (phase !== "running") {
+      phase = "running";
+      emitState("running");
+    }
     for (const milestone of RUNNING_MILESTONES) mark(milestone);
   };
 

@@ -135,6 +135,24 @@ test("jumpToResult emits the full ordered demo sequence and completed result", (
   assert.ok(events.some((event) => event.type === "summary"));
 });
 
+test("jumpToResult does not repeat running after an approved plan is already running", () => {
+  const { clock, events, runner } = demo(new FakeClock(), 45_000);
+  runner.start();
+  clock.advance(6_750);
+  runner.approve();
+  runner.jumpToResult();
+
+  const statuses = stateStatuses(events);
+  assert.equal(statuses.filter((status) => status === "running").length, 1);
+  assert.equal(statuses.at(-1), "completed");
+  assert.deepEqual(statuses, [
+    "planning",
+    "awaiting_approval",
+    "running",
+    "completed"
+  ]);
+});
+
 test("dispose cancels scheduled work and exposes no network request dependency", () => {
   const { clock, events, runner } = demo();
   assert.equal("request" in runner, false);
