@@ -486,6 +486,92 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
   );
 }
 
+const identityConfirmationWriteSchema = {
+  oneOf: [
+    {
+      type: "object",
+      required: ["subjectKind", "evidenceIds", "rationale"],
+      anyOf: [
+        { required: ["domain"] },
+        { required: ["creditCode"] }
+      ],
+      properties: {
+        subjectKind: {
+          type: "string",
+          enum: ["organization"]
+        },
+        domain: {
+          type: "string",
+          nullable: true,
+          minLength: 1,
+          maxLength: 255
+        },
+        creditCode: {
+          type: "string",
+          nullable: true,
+          minLength: 1,
+          maxLength: 50
+        },
+        evidenceIds: {
+          type: "array",
+          minItems: 1,
+          maxItems: 100,
+          uniqueItems: true,
+          items: { type: "string", minLength: 1, maxLength: 255 }
+        },
+        rationale: {
+          type: "string",
+          minLength: 1,
+          maxLength: 2_000
+        }
+      },
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: [
+        "subjectKind",
+        "publicProfileUrl",
+        "sourcePlatform",
+        "evidenceIds",
+        "rationale"
+      ],
+      properties: {
+        subjectKind: {
+          type: "string",
+          enum: ["individual"]
+        },
+        publicProfileUrl: {
+          type: "string",
+          format: "uri",
+          maxLength: 2_000
+        },
+        sourcePlatform: {
+          type: "string",
+          minLength: 1,
+          maxLength: 100
+        },
+        evidenceIds: {
+          type: "array",
+          minItems: 1,
+          maxItems: 100,
+          uniqueItems: true,
+          items: { type: "string", minLength: 1, maxLength: 255 }
+        },
+        rationale: {
+          type: "string",
+          minLength: 1,
+          maxLength: 2_000
+        }
+      },
+      additionalProperties: false
+    }
+  ],
+  discriminator: {
+    propertyName: "subjectKind"
+  }
+};
+
 function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
   const definitions: Array<
     [
@@ -500,6 +586,7 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     ["/api/v1/acquisition/candidates", "post", "创建候选客户"],
     ["/api/v1/acquisition/candidates/{id}", "get", "读取候选客户"],
     ["/api/v1/acquisition/candidates/{id}/evidence", "get", "列出候选证据"],
+    ["/api/v1/acquisition/candidates/{id}/identity-confirmation", "post", "人工确认公开主体身份"],
     ["/api/v1/acquisition/candidates/{id}/evidence", "post", "关联候选证据"],
     ["/api/v1/acquisition/candidates/{id}/research", "post", "记录研究尝试"],
     ["/api/v1/acquisition/candidates/{id}/qualification", "get", "读取资格判断"],
@@ -535,9 +622,11 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       path === "/api/v1/acquisition/copilot/sessions"
       || path.endsWith("/messages")
       || path.endsWith("/runs")
+      || path.endsWith("/identity-confirmation")
     );
     const needsEtag = method !== "get" && (
       path.endsWith("/approval")
+      || path.endsWith("/identity-confirmation")
       || path.endsWith("/pause")
       || path.endsWith("/resume")
       || path.endsWith("/cancel")
@@ -562,10 +651,14 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       ...(method === "get"
         ? {}
         : {
-            requestBody: jsonBody({
-              type: "object",
-              additionalProperties: true
-            })
+            requestBody: jsonBody(
+              path.endsWith("/identity-confirmation")
+                ? identityConfirmationWriteSchema
+                : {
+                    type: "object",
+                    additionalProperties: true
+                  }
+            )
           })
     }));
   }

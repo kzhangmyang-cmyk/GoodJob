@@ -296,6 +296,7 @@ async function testSchemaIsCompleteAndHasNoSecretColumns() {
   for (const table of [
     "acquisition_discovery_evidence",
     "acquisition_candidates",
+    "acquisition_candidate_identity_aliases",
     "acquisition_qualification_decisions",
     "acquisition_financial_values",
     "acquisition_battle_cards",
@@ -325,6 +326,10 @@ async function testSchemaIsCompleteAndHasNoSecretColumns() {
   }
   assert.doesNotMatch(sql, /\b(api_key|secret_key|access_token)\b/);
   assert.match(sql, /unique key uk_acquisition_candidate_scope/);
+  assert.match(
+    sql,
+    /primary key \(owner_id, team_id, dedupe_key_hash\)/
+  );
   assert.match(
     sql,
     /unique key uk_acquisition_conversion_intent_candidate\s+\(owner_id, team_id, candidate_id\)/
@@ -453,6 +458,70 @@ async function testCandidateSaveUsesOptimisticVersionAndScope() {
       .saveCandidate(candidate({ version: 2 })),
     /CANDIDATE_VERSION_CONFLICT/
   );
+}
+
+async function testIdentityAliasesAreScopedHashedAndSerialized() {
+  const pool = new FakePool();
+  const repository = new MysqlAcquisitionDomainRepository(asPool(pool));
+  const dedupeKey = "organization:domain:example.cn";
+
+  pool.connection.enqueue([{ lock_acquired: 1 }]);
+  pool.connection.enqueue([]);
+  pool.connection.enqueue([]);
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue([{ lock_released: 1 }]);
+
+  await repository.transaction(() =>
+    repository.bindCandidateIdentityAliases([{
+      ownerId: "owner-a",
+      teamId: "team-a",
+      candidateId: "candidate-1",
+      partyType: "organization",
+      basis: "organization_domain",
+      dedupeKey,
+      createdAt: NOW
+    }])
+  );
+
+  const lock = pool.connection.calls.find((call) =>
+    /GET_LOCK/u.test(call.sql)
+  );
+  const insert = pool.connection.calls.find((call) =>
+    /INSERT INTO acquisition_candidate_identity_aliases/u.test(call.sql)
+  );
+  assert.ok(lock);
+  assert.ok(insert);
+  assert.equal(
+    insert.values.includes(dedupeKey),
+    false,
+    "raw identity keys must not be persisted"
+  );
+  assert.ok(
+    insert.values.includes(
+      createHash("sha256").update(dedupeKey).digest("hex")
+    )
+  );
+  assert.equal(pool.connection.beginCount, 1);
+  assert.equal(pool.connection.commitCount, 1);
+  assert.equal(pool.connection.releaseCount, 1);
+
+  pool.enqueue([{
+    candidate_id: "candidate-1",
+    party_type: "organization",
+    basis: "organization_domain",
+    created_at: NOW
+  }]);
+  const found = await repository.findCandidateIdentityAlias(
+    { ownerId: "owner-a", teamId: "team-a" },
+    dedupeKey
+  );
+  assert.equal(found?.candidateId, "candidate-1");
+  const lookup = pool.calls.at(-1)!;
+  assert.deepEqual(lookup.values, [
+    "owner-a",
+    "team-a",
+    createHash("sha256").update(dedupeKey).digest("hex")
+  ]);
 }
 
 async function testAppendEvidenceUsesInsertOnly() {
@@ -925,6 +994,7 @@ async function run() {
   await testDomainRejectsCorruptOrCrossTenantJson();
   await testCandidateRejectsJsonVersionThatDiffersFromLockColumn();
   await testCandidateSaveUsesOptimisticVersionAndScope();
+  await testIdentityAliasesAreScopedHashedAndSerialized();
   await testAppendEvidenceUsesInsertOnly();
   await testDomainTransactionUsesOneConnectionAndRollsBackAtomically();
   await testRawIdempotencyKeysAreNotPersisted();

@@ -41,6 +41,9 @@ import {
 import type {
   AcquisitionPiModelSnapshot
 } from "./acquisition-pi-agent.js";
+import type {
+  AcquisitionIdentityResolutionService
+} from "./acquisition-identity-resolution-service.js";
 import { MODEL_PROVIDER_IDS } from "./model-providers/types.js";
 
 const candidateStatuses = [
@@ -228,6 +231,23 @@ const attachEvidenceBodySchema = z.object({
   evidenceId: idSchema
 }).strict();
 
+const identityConfirmationBodySchema = z.discriminatedUnion("subjectKind", [
+  z.object({
+    subjectKind: z.literal("organization"),
+    domain: nullableText(255),
+    creditCode: nullableText(50),
+    evidenceIds: z.array(idSchema).min(1).max(100),
+    rationale: requiredText(2_000)
+  }).strict(),
+  z.object({
+    subjectKind: z.literal("individual"),
+    publicProfileUrl: z.string().url().max(2_000),
+    sourcePlatform: requiredText(100),
+    evidenceIds: z.array(idSchema).min(1).max(100),
+    rationale: requiredText(2_000)
+  }).strict()
+]);
+
 const convertBodySchema = z.object({
   decisionVersion: requiredText(100)
 }).strict();
@@ -343,6 +363,7 @@ export interface AcquisitionV1QueryPort {
 
 export interface AcquisitionV1RouterOptions {
   domainService: AcquisitionDomainService;
+  identityResolutionService: AcquisitionIdentityResolutionService;
   copilotService: AcquisitionCopilotService;
   queryPort: AcquisitionV1QueryPort;
   requestIdFactory?: (prefix: string) => string;
@@ -422,6 +443,27 @@ function idempotencyKey(req: Request) {
     );
   }
   return parsed.data;
+}
+
+function expectedCandidateVersion(req: Request) {
+  const raw = req.header("If-Match")?.trim() ?? "";
+  const match = /^"candidate-v([1-9]\d*)"$/u.exec(raw);
+  if (!match) {
+    throw new AcquisitionV1HttpError(
+      "candidate_version_required",
+      '身份确认必须提供 If-Match: "candidate-v{version}"',
+      428
+    );
+  }
+  const version = Number(match[1]);
+  if (!Number.isSafeInteger(version)) {
+    throw new AcquisitionV1HttpError(
+      "invalid_candidate_version",
+      "候选版本无效",
+      400
+    );
+  }
+  return version;
 }
 
 function requestId(res: Response) {
@@ -544,6 +586,7 @@ function publicBattleCard(card: BattleCard) {
   return {
     id: card.id,
     candidateId: card.candidateId,
+    qualificationDecisionId: card.qualificationDecisionId,
     partyType: card.partyType,
     sections: card.sections.map((section) => ({
       label: section.label,
@@ -1078,6 +1121,47 @@ export function createAcquisitionV1Router(
   );
 
   router.post(
+    "/api/v1/acquisition/candidates/:id/identity-confirmation",
+    asyncRoute(async (req, res) => {
+      const scope = scopeFromRequest(req);
+      const candidateId = parse(idSchema, req.params.id);
+      const body = parse(identityConfirmationBodySchema, req.body);
+      const common = {
+        expectedCandidateVersion: expectedCandidateVersion(req),
+        evidenceIds: body.evidenceIds,
+        rationale: body.rationale
+      };
+      const result = await options.identityResolutionService
+        .resolveCandidateIdentity(
+          scope,
+          candidateId,
+          body.subjectKind === "organization"
+            ? {
+                ...common,
+                subject: {
+                  kind: "organization",
+                  domain: body.domain,
+                  creditCode: body.creditCode
+                }
+              }
+            : {
+                ...common,
+                subject: {
+                  kind: "individual",
+                  publicProfileUrl: body.publicProfileUrl,
+                  sourcePlatform: body.sourcePlatform
+                }
+              },
+          idempotencyKey(req)
+        );
+      res.json({
+        candidate: publicCandidate(result.candidate),
+        resolution: result.resolution
+      });
+    })
+  );
+
+  router.post(
     "/api/v1/acquisition/candidates/:id/evidence",
     requireDirectDomainWrites,
     asyncRoute(async (req, res) => {
@@ -1121,14 +1205,23 @@ export function createAcquisitionV1Router(
     asyncRoute(async (req, res) => {
       const scope = scopeFromRequest(req);
       const candidateId = parse(idSchema, req.params.id);
-      const decisions = await options.domainService.listQualificationDecisions(
+      const candidate = await options.domainService.getCandidate(
         scope,
         candidateId
       );
-      res.json(publicQualification(latest(
-        decisions,
-        "资格决定不存在"
-      )));
+      if (!candidate.latestDecisionId) {
+        throw new AcquisitionV1HttpError(
+          "resource_not_found",
+          "候选当前没有有效的资格决定",
+          404
+        );
+      }
+      const decision = await options.domainService.getQualificationDecision(
+        scope,
+        candidateId,
+        candidate.latestDecisionId
+      );
+      res.json(publicQualification(decision));
     })
   );
 
@@ -1160,11 +1253,27 @@ export function createAcquisitionV1Router(
     "/api/v1/acquisition/candidates/:id/battle-card",
     asyncRoute(async (req, res) => {
       const scope = scopeFromRequest(req);
-      const cards = await options.domainService.listBattleCards(
+      const candidate = await options.domainService.getCandidate(
         scope,
         parse(idSchema, req.params.id)
       );
-      res.json(publicBattleCard(latest(cards, "客户作战卡不存在")));
+      if (!candidate.latestDecisionId) {
+        throw new AcquisitionV1HttpError(
+          "resource_not_found",
+          "候选当前没有有效的客户作战卡",
+          404
+        );
+      }
+      const cards = await options.domainService.listBattleCards(
+        scope,
+        candidate.id
+      );
+      res.json(publicBattleCard(latest(
+        cards.filter((card) =>
+          card.qualificationDecisionId === candidate.latestDecisionId
+        ),
+        "候选当前没有有效的客户作战卡"
+      )));
     })
   );
 

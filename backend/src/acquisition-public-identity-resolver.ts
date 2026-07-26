@@ -206,6 +206,46 @@ export function normalizeAcquisitionPublicUrl(value: string) {
   }
 }
 
+const ACQUISITION_PUBLIC_PROFILE_RULES = [
+  {
+    rootHost: "xiaohongshu.com",
+    path: /^\/user\/profile\/[^/]+\/?$/u
+  },
+  {
+    rootHost: "douyin.com",
+    path: /^\/user\/[^/]+\/?$/u
+  },
+  {
+    rootHost: "weibo.com",
+    path: /^\/(?:u\/[^/]+|[0-9]+)\/?$/u
+  },
+  {
+    rootHost: "zhihu.com",
+    path: /^\/people\/[^/]+\/?$/u
+  },
+  {
+    rootHost: "linkedin.com",
+    path: /^\/in\/[^/]+\/?$/u
+  },
+  {
+    rootHost: "github.com",
+    path: /^\/[^/]+\/?$/u
+  }
+] as const;
+
+export function isVerifiedAcquisitionPublicProfileUrl(value: string | URL) {
+  const normalized = normalizeAcquisitionPublicUrl(
+    value instanceof URL ? value.toString() : value
+  );
+  if (!normalized) return false;
+  const url = new URL(normalized);
+  const hostname = url.hostname.toLocaleLowerCase("en-US");
+  return ACQUISITION_PUBLIC_PROFILE_RULES.some((rule) =>
+    (hostname === rule.rootHost || hostname.endsWith(`.${rule.rootHost}`))
+    && rule.path.test(url.pathname)
+  );
+}
+
 function normalizedProvider(value: string) {
   return normalizedText(value).toLocaleLowerCase("en-US");
 }

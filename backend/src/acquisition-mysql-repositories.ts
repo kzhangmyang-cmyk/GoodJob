@@ -4,6 +4,7 @@ import mysql from "mysql2/promise";
 import type {
   AcquisitionAuditEvent as DomainAuditEvent,
   AcquisitionCandidate,
+  AcquisitionCandidateIdentityAlias,
   BattleCard,
   DiscoveryEvidence,
   FinancialValueDecision,
@@ -75,6 +76,31 @@ export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
     UNIQUE KEY uk_acquisition_candidate_scope (owner_id, team_id, id),
     KEY idx_acquisition_candidate_scope_time (owner_id, team_id, updated_at, id),
     CONSTRAINT chk_acquisition_candidate_version CHECK (version >= 1)
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS acquisition_candidate_identity_aliases (
+    owner_id VARCHAR(100) NOT NULL,
+    team_id VARCHAR(100) NOT NULL,
+    dedupe_key_hash CHAR(64) NOT NULL,
+    candidate_id VARCHAR(120) NOT NULL,
+    party_type VARCHAR(20) NOT NULL,
+    basis VARCHAR(40) NOT NULL,
+    created_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (owner_id, team_id, dedupe_key_hash),
+    KEY idx_acquisition_identity_alias_candidate
+      (owner_id, team_id, candidate_id, created_at),
+    CONSTRAINT fk_acquisition_identity_alias_candidate
+      FOREIGN KEY (owner_id, team_id, candidate_id)
+      REFERENCES acquisition_candidates (owner_id, team_id, id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_acquisition_identity_alias_party_type
+      CHECK (party_type IN ('organization','individual')),
+    CONSTRAINT chk_acquisition_identity_alias_basis CHECK (
+      basis IN (
+        'organization_domain',
+        'organization_credit_code',
+        'provider_public_actor'
+      )
+    )
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS acquisition_qualification_decisions (
     id VARCHAR(120) PRIMARY KEY,
@@ -513,6 +539,16 @@ function mysqlDate(value: string | null) {
   return date.toISOString().slice(0, 23).replace("T", " ");
 }
 
+function mysqlIso(value: unknown, resource: string) {
+  const date = value instanceof Date
+    ? value
+    : new Date(String(value ?? ""));
+  if (!Number.isFinite(date.getTime())) {
+    throw new Error(`ACQUISITION_MYSQL_INTEGRITY:${resource}:invalid_date`);
+  }
+  return date.toISOString();
+}
+
 function hash(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -711,26 +747,44 @@ async function insertOwned(
 export class MysqlAcquisitionDomainRepository
 implements AcquisitionDomainRepository {
   private readonly transactionContext =
-    new AsyncLocalStorage<QuerySource>();
+    new AsyncLocalStorage<{
+      source: mysql.PoolConnection;
+      candidateIdentityLocks: string[];
+    }>();
 
   constructor(private readonly pool: mysql.Pool) {}
 
   private source() {
-    return this.transactionContext.getStore() ?? this.pool;
+    return this.transactionContext.getStore()?.source ?? this.pool;
   }
 
   async transaction<T>(work: () => Promise<T>): Promise<T> {
     if (this.transactionContext.getStore()) return work();
     const connection = await this.pool.getConnection();
+    const context = {
+      source: connection,
+      candidateIdentityLocks: [] as string[]
+    };
     try {
       await connection.beginTransaction();
-      const result = await this.transactionContext.run(connection, work);
+      const result = await this.transactionContext.run(context, work);
       await connection.commit();
       return result;
     } catch (error) {
       await connection.rollback();
       throw error;
     } finally {
+      for (const lockName of context.candidateIdentityLocks.reverse()) {
+        try {
+          await connection.query(
+            "SELECT RELEASE_LOCK(?) AS lock_released",
+            [lockName]
+          );
+        } catch {
+          // Connection release also drops advisory locks. Never mask the
+          // transaction result with a best-effort lock release failure.
+        }
+      }
       connection.release();
     }
   }
@@ -926,6 +980,114 @@ implements AcquisitionDomainRepository {
       ]
     );
     if (count !== 1) throw new Error("CANDIDATE_VERSION_CONFLICT");
+  }
+
+  async findCandidateIdentityAlias(
+    scope: AcquisitionDataScope,
+    dedupeKey: string
+  ) {
+    const result = await rows(
+      this.source(),
+      `SELECT candidate_id, party_type, basis, created_at
+       FROM acquisition_candidate_identity_aliases
+       WHERE owner_id = ? AND team_id = ? AND dedupe_key_hash = ?
+       LIMIT 1`,
+      [scope.ownerId, scope.teamId, hash(dedupeKey)]
+    );
+    const row = result[0];
+    if (!row) return null;
+    return {
+      ownerId: scope.ownerId,
+      teamId: scope.teamId,
+      candidateId: requiredString(
+        row.candidate_id,
+        "candidate_id",
+        "candidate_identity_alias"
+      ),
+      partyType: requiredString(
+        row.party_type,
+        "party_type",
+        "candidate_identity_alias"
+      ) as AcquisitionCandidateIdentityAlias["partyType"],
+      basis: requiredString(
+        row.basis,
+        "basis",
+        "candidate_identity_alias"
+      ) as AcquisitionCandidateIdentityAlias["basis"],
+      dedupeKey,
+      createdAt: mysqlIso(row.created_at, "candidate_identity_alias")
+    };
+  }
+
+  async bindCandidateIdentityAliases(
+    aliases: AcquisitionCandidateIdentityAlias[]
+  ) {
+    const context = this.transactionContext.getStore();
+    if (!context) {
+      throw new Error("CANDIDATE_IDENTITY_ALIAS_REQUIRES_TRANSACTION");
+    }
+    const sorted = [...aliases].sort((left, right) =>
+      hash(left.dedupeKey).localeCompare(hash(right.dedupeKey))
+    );
+    for (const alias of sorted) {
+      const dedupeKeyHash = hash(alias.dedupeKey);
+      const lockName = `acq-candidate:${hash([
+        alias.ownerId,
+        alias.teamId,
+        dedupeKeyHash
+      ].join("\u0000")).slice(0, 50)}`;
+      if (!context.candidateIdentityLocks.includes(lockName)) {
+        const lockRows = await rows(
+          context.source,
+          "SELECT GET_LOCK(?, 30) AS lock_acquired",
+          [lockName]
+        );
+        if (Number(lockRows[0]?.lock_acquired) !== 1) {
+          throw new Error("CANDIDATE_IDENTITY_ALIAS_LOCK_TIMEOUT");
+        }
+        context.candidateIdentityLocks.push(lockName);
+      }
+      const aliasRows = await rows(
+        context.source,
+        `SELECT candidate_id, party_type
+         FROM acquisition_candidate_identity_aliases
+         WHERE owner_id = ? AND team_id = ? AND dedupe_key_hash = ?
+         LIMIT 1`,
+        [alias.ownerId, alias.teamId, dedupeKeyHash]
+      );
+      const directoryRows = await rows(
+        context.source,
+        `SELECT candidate_id, party_type
+         FROM acquisition_candidate_directory
+         WHERE owner_id = ? AND team_id = ? AND dedupe_key_hash = ?
+         LIMIT 1`,
+        [alias.ownerId, alias.teamId, dedupeKeyHash]
+      );
+      const existing = aliasRows[0] ?? directoryRows[0];
+      if (existing && (
+        String(existing.candidate_id) !== alias.candidateId
+        || String(existing.party_type) !== alias.partyType
+      )) {
+        throw new Error("CANDIDATE_IDENTITY_ALIAS_CONFLICT");
+      }
+      if (!aliasRows[0]) {
+        await context.source.query(
+          `INSERT INTO acquisition_candidate_identity_aliases
+           (owner_id, team_id, dedupe_key_hash, candidate_id, party_type,
+            basis, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            alias.ownerId,
+            alias.teamId,
+            dedupeKeyHash,
+            alias.candidateId,
+            alias.partyType,
+            alias.basis,
+            mysqlDate(alias.createdAt)
+          ]
+        );
+      }
+    }
   }
 
   appendQualificationDecision(record: QualificationDecision) {

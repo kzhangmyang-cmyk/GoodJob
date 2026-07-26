@@ -15,6 +15,9 @@ import {
   AcquisitionDomainService
 } from "./acquisition-domain-service.js";
 import {
+  AcquisitionIdentityResolutionService
+} from "./acquisition-identity-resolution-service.js";
+import {
   AcquisitionCopilotService,
   InMemoryAcquisitionCopilotRepository
 } from "./acquisition-copilot-service.js";
@@ -193,6 +196,9 @@ async function createFixture(options: {
   });
   app.use(createAcquisitionV1Router({
     domainService,
+    identityResolutionService: new AcquisitionIdentityResolutionService({
+      domain: domainService
+    }),
     copilotService,
     queryPort,
     requestIdFactory: deterministicIds(),

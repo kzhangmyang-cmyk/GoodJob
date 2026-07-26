@@ -5,7 +5,10 @@ import {
   timingSafeEqual
 } from "node:crypto";
 import type mysql from "mysql2/promise";
-import type { AcquisitionCandidate } from "./acquisition-domain.js";
+import type {
+  AcquisitionCandidate,
+  AcquisitionCandidateIdentityAlias
+} from "./acquisition-domain.js";
 import { canonicalJsonStringify } from "./canonical-json.js";
 import type {
   AcquisitionActionExecutionPort,
@@ -290,6 +293,12 @@ function directoryScopeKey(input: {
 
 export interface AcquisitionCandidateDirectoryOptions {
   now?: () => string;
+  identityAliases?: {
+    findCandidateIdentityAlias(
+      scope: { ownerId: string; teamId: string },
+      dedupeKey: string
+    ): Promise<AcquisitionCandidateIdentityAlias | null>;
+  };
 }
 
 export class InMemoryAcquisitionCandidateDirectory
@@ -300,9 +309,12 @@ implements AcquisitionCandidateDirectoryPort {
     Promise<{ entry: AcquisitionCandidateIndexEntry; created: boolean }>
   >();
   readonly #now: () => string;
+  readonly #identityAliases:
+    AcquisitionCandidateDirectoryOptions["identityAliases"];
 
   constructor(options: AcquisitionCandidateDirectoryOptions = {}) {
     this.#now = options.now ?? (() => new Date().toISOString());
+    this.#identityAliases = options.identityAliases;
   }
 
   async upsertCandidate(input: {
@@ -314,6 +326,28 @@ implements AcquisitionCandidateDirectoryPort {
     createCandidate: () => Promise<AcquisitionCandidate>;
   }) {
     validateDirectoryInput(input);
+    const alias = await this.#identityAliases?.findCandidateIdentityAlias(
+      input,
+      input.dedupeKey
+    );
+    if (alias) {
+      if (alias.partyType !== input.partyType) {
+        throw new Error(
+          "ACQUISITION_CANDIDATE_DIRECTORY_PARTY_TYPE_CONFLICT"
+        );
+      }
+      return {
+        entry: {
+          ownerId: alias.ownerId,
+          teamId: alias.teamId,
+          candidateId: alias.candidateId,
+          dedupeKey: input.dedupeKey,
+          partyType: alias.partyType,
+          indexedAt: alias.createdAt
+        },
+        created: false
+      };
+    }
     const key = directoryScopeKey(input);
     const existing = this.#entries.get(key);
     if (existing) {
@@ -362,12 +396,15 @@ export class MysqlAcquisitionCandidateDirectory
 implements AcquisitionCandidateDirectoryPort {
   readonly #now: () => string;
   readonly #lockTimeoutSeconds: number;
+  readonly #identityAliases:
+    AcquisitionCandidateDirectoryOptions["identityAliases"];
 
   constructor(
     private readonly pool: mysql.Pool,
     options: MysqlAcquisitionCandidateDirectoryOptions = {}
   ) {
     this.#now = options.now ?? (() => new Date().toISOString());
+    this.#identityAliases = options.identityAliases;
     this.#lockTimeoutSeconds = options.lockTimeoutSeconds ?? 30;
     if (!Number.isInteger(this.#lockTimeoutSeconds)
       || this.#lockTimeoutSeconds < 0
@@ -404,6 +441,51 @@ implements AcquisitionCandidateDirectoryPort {
         throw new Error("ACQUISITION_CANDIDATE_DIRECTORY_LOCK_TIMEOUT");
       }
       locked = true;
+      const aliasRows = this.#identityAliases
+        ? await rows(
+            connection,
+            `SELECT candidate_id, party_type, basis, created_at
+             FROM acquisition_candidate_identity_aliases
+             WHERE owner_id = ? AND team_id = ? AND dedupe_key_hash = ?
+             LIMIT 1`,
+            [input.ownerId, input.teamId, dedupeKeyHash]
+          )
+        : [];
+      const aliasRow = aliasRows[0];
+      const alias = aliasRow
+        ? {
+            ownerId: input.ownerId,
+            teamId: input.teamId,
+            candidateId: String(aliasRow.candidate_id),
+            dedupeKey: input.dedupeKey,
+            partyType: String(aliasRow.party_type) as
+              AcquisitionCandidateIdentityAlias["partyType"],
+            basis: String(aliasRow.basis) as
+              AcquisitionCandidateIdentityAlias["basis"],
+            createdAt: isoDate(
+              aliasRow.created_at,
+              "candidate_identity_alias"
+            )
+          }
+        : null;
+      if (alias) {
+        if (alias.partyType !== input.partyType) {
+          throw new Error(
+            "ACQUISITION_CANDIDATE_DIRECTORY_PARTY_TYPE_CONFLICT"
+          );
+        }
+        return {
+          entry: {
+            ownerId: alias.ownerId,
+            teamId: alias.teamId,
+            candidateId: alias.candidateId,
+            dedupeKey: input.dedupeKey,
+            partyType: alias.partyType,
+            indexedAt: alias.createdAt
+          },
+          created: false
+        };
+      }
       const found = await rows(
         connection,
         `SELECT candidate_id, party_type, indexed_at

@@ -34,6 +34,7 @@ import {
 } from "./web-search-providers.js";
 import {
   extractAcquisitionPublicCreditCode,
+  isVerifiedAcquisitionPublicProfileUrl,
   normalizeAcquisitionPublicDomain,
   normalizeAcquisitionPublicUrl,
   resolveAcquisitionPublicIdentity
@@ -163,54 +164,17 @@ function localeFor(...values: string[]) {
     : "und";
 }
 
-const PUBLIC_PROFILE_RULES = [
-  {
-    rootHost: "xiaohongshu.com",
-    path: /^\/user\/profile\/[^/]+\/?$/u
-  },
-  {
-    rootHost: "douyin.com",
-    path: /^\/user\/[^/]+\/?$/u
-  },
-  {
-    rootHost: "weibo.com",
-    path: /^\/(?:u\/[^/]+|[0-9]+)\/?$/u
-  },
-  {
-    rootHost: "zhihu.com",
-    path: /^\/people\/[^/]+\/?$/u
-  },
-  {
-    rootHost: "linkedin.com",
-    path: /^\/in\/[^/]+\/?$/u
-  },
-  {
-    rootHost: "github.com",
-    path: /^\/[^/]+\/?$/u
-  }
-] as const;
-
 const PUBLIC_BUSINESS_ROLE =
   /(?:主理人|创始人|联合创始人|老板|负责人|采购经理|采购负责人|总经理|店长|运营总监|销售总监|CEO|founder|owner|director|manager)/iu;
 const ORGANIZATION_NAME =
   /(?:有限公司|有限责任公司|股份公司|集团|企业|公司|机构|中心|协会|合作社)$/u;
 
 function isPublicIndividualSignal(record: ProviderRecord) {
-  return isVerifiedPublicProfileUrl(record.sourceUrl)
+  return isVerifiedAcquisitionPublicProfileUrl(record.sourceUrl)
     || (
       !ORGANIZATION_NAME.test(record.company.trim())
       && PUBLIC_BUSINESS_ROLE.test(record.company)
     );
-}
-
-function isVerifiedPublicProfileUrl(value: string | URL) {
-  const url = value instanceof URL ? value : validPublicUrl(value);
-  if (!url) return false;
-  const hostname = url.hostname.toLocaleLowerCase("en-US");
-  return PUBLIC_PROFILE_RULES.some((rule) =>
-    (hostname === rule.rootHost || hostname.endsWith(`.${rule.rootHost}`))
-    && rule.path.test(url.pathname)
-  );
 }
 
 function buyingStage(text: string): Extract<
@@ -276,7 +240,8 @@ function toPublicResult(
   if (individual) {
     if (!request.subjectKinds.includes("individual")) return null;
     const signalText = [title, snippet, record.evidenceSummary || ""].join(" ");
-    const verifiedPublicProfile = isVerifiedPublicProfileUrl(source);
+    const verifiedPublicProfile =
+      isVerifiedAcquisitionPublicProfileUrl(source);
     const publicActorKey = `${
       verifiedPublicProfile ? "public" : "unresolved-public-signal"
     }:${providerId}:sha256:${sha256(source.toString())}`;

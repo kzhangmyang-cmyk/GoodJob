@@ -21,6 +21,7 @@ test("acquisition OpenAPI publishes the complete agent control surface", () => {
     "/api/v1/acquisition/import-operations/{id}",
     "/api/v1/acquisition/evidence/{id}",
     "/api/v1/acquisition/candidates",
+    "/api/v1/acquisition/candidates/{id}/identity-confirmation",
     "/api/v1/acquisition/candidates/{id}/qualification",
     "/api/v1/acquisition/candidates/{id}/battle-card",
     "/api/v1/acquisition/candidates/{id}/review",
@@ -40,6 +41,42 @@ test("acquisition OpenAPI publishes the complete agent control surface", () => {
   for (const path of required) {
     assert.ok(paths[path], `missing acquisition OpenAPI path: ${path}`);
   }
+});
+
+test("identity confirmation publishes a strict human-review contract", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  const operation = paths[
+    "/api/v1/acquisition/candidates/{id}/identity-confirmation"
+  ]!.post as Record<string, any>;
+  const parameterNames = operation.parameters.map(
+    (parameter: { name: string }) => parameter.name
+  );
+  assert.deepEqual(
+    parameterNames,
+    ["id", "Idempotency-Key", "If-Match"]
+  );
+
+  const schema = operation.requestBody.content["application/json"].schema;
+  assert.equal(schema.oneOf.length, 2);
+  assert.ok(schema.discriminator);
+  assert.equal(
+    JSON.stringify(schema).includes("partyRef"),
+    false,
+    "clients must not be able to forge a resolved party reference"
+  );
+  assert.equal(
+    JSON.stringify(schema).includes("organizationId"),
+    false,
+    "clients must not be able to choose the canonical organization id"
+  );
+  assert.ok(
+    schema.oneOf.every(
+      (variant: Record<string, any>) =>
+        variant.additionalProperties === false
+        && variant.required.includes("evidenceIds")
+        && variant.required.includes("rationale")
+    )
+  );
 });
 
 test("BYOK credentials are write-only and never appear in response schemas", () => {

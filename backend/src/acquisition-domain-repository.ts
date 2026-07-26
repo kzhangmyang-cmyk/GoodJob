@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type {
   AcquisitionAuditEvent,
   AcquisitionCandidate,
+  AcquisitionCandidateIdentityAlias,
   BattleCard,
   DiscoveryEvidence,
   FinancialValueDecision,
@@ -51,6 +52,13 @@ export interface AcquisitionDomainRepository {
   ): Promise<AcquisitionCandidateListPage>;
   insertCandidate(candidate: AcquisitionCandidate): Promise<void>;
   saveCandidate(candidate: AcquisitionCandidate): Promise<void>;
+  findCandidateIdentityAlias(
+    scope: AcquisitionDataScope,
+    dedupeKey: string
+  ): Promise<AcquisitionCandidateIdentityAlias | null>;
+  bindCandidateIdentityAliases(
+    aliases: AcquisitionCandidateIdentityAlias[]
+  ): Promise<void>;
   appendQualificationDecision(decision: QualificationDecision): Promise<void>;
   findQualificationDecision(
     scope: AcquisitionDataScope,
@@ -162,6 +170,8 @@ export class InMemoryAcquisitionDomainRepository
 implements AcquisitionDomainRepository {
   private readonly evidence = new Map<string, DiscoveryEvidence>();
   private readonly candidates = new Map<string, AcquisitionCandidate>();
+  private readonly candidateIdentityAliases =
+    new Map<string, AcquisitionCandidateIdentityAlias>();
   private readonly qualificationDecisions: QualificationDecision[] = [];
   private readonly financialValues: FinancialValueDecision[] = [];
   private readonly battleCards: BattleCard[] = [];
@@ -191,6 +201,10 @@ implements AcquisitionDomainRepository {
       candidates: new Map(
         [...this.candidates.entries()].map(([key, value]) => [key, copy(value)])
       ),
+      candidateIdentityAliases: new Map(
+        [...this.candidateIdentityAliases.entries()]
+          .map(([key, value]) => [key, copy(value)])
+      ),
       qualificationDecisions: copy(this.qualificationDecisions),
       financialValues: copy(this.financialValues),
       battleCards: copy(this.battleCards),
@@ -219,6 +233,10 @@ implements AcquisitionDomainRepository {
       this.candidates.clear();
       snapshot.candidates.forEach(
         (value, key) => this.candidates.set(key, value)
+      );
+      this.candidateIdentityAliases.clear();
+      snapshot.candidateIdentityAliases.forEach(
+        (value, key) => this.candidateIdentityAliases.set(key, value)
       );
       this.qualificationDecisions.splice(
         0,
@@ -331,6 +349,45 @@ implements AcquisitionDomainRepository {
       throw new Error(`candidate not found: ${candidate.id}`);
     }
     this.candidates.set(candidate.id, copy(candidate));
+  }
+
+  async findCandidateIdentityAlias(
+    scope: AcquisitionDataScope,
+    dedupeKey: string
+  ) {
+    const alias = this.candidateIdentityAliases.get(
+      idempotencyMapKey(scope, "candidate_identity_alias", dedupeKey)
+    );
+    return alias ? copy(alias) : null;
+  }
+
+  async bindCandidateIdentityAliases(
+    aliases: AcquisitionCandidateIdentityAlias[]
+  ) {
+    for (const alias of aliases) {
+      const key = idempotencyMapKey(
+        alias,
+        "candidate_identity_alias",
+        alias.dedupeKey
+      );
+      const existing = this.candidateIdentityAliases.get(key);
+      if (existing && (
+        existing.candidateId !== alias.candidateId
+        || existing.partyType !== alias.partyType
+      )) {
+        throw new Error("CANDIDATE_IDENTITY_ALIAS_CONFLICT");
+      }
+    }
+    for (const alias of aliases) {
+      this.candidateIdentityAliases.set(
+        idempotencyMapKey(
+          alias,
+          "candidate_identity_alias",
+          alias.dedupeKey
+        ),
+        copy(alias)
+      );
+    }
   }
 
   async appendQualificationDecision(decision: QualificationDecision) {

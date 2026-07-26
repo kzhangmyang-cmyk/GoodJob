@@ -194,6 +194,32 @@ POST   /api/v1/acquisition/provider-connections/:id/test
 - `evidenceFresh`：证据未过期；
 - `schemaValid`：结构化结果通过 Schema。
 
+搜索结果无法直接解析出强身份时，候选会继续保留，但不得进入资格判断。
+人工核验员可以调用：
+
+```text
+POST /api/v1/acquisition/candidates/:id/identity-confirmation
+Idempotency-Key: <唯一业务键>
+If-Match: "candidate-v<当前候选版本>"
+```
+
+企业候选只能提交经公开证据支持的官网域名和/或统一社会信用代码；个人候选
+只能提交受支持平台的精确公开主页 URL。客户端不能提交 `partyRef`、
+`organizationId`、`individualPartyId` 或去重键，规范化标识和稳定主体 ID
+全部由服务端生成。
+
+身份确认会在同一事务内完成：
+
+1. 复核证据租户、主体类型、公开 URL 和访问状态；
+2. 绑定团队作用域内的强身份别名；
+3. 更新候选主体档案并递增候选版本；
+4. 使旧资格判断、旧批准和旧作战卡失效；
+5. 写入脱敏审计和幂等结果。
+
+以后搜索到相同官网、统一社会信用代码或相同公开主页时，系统会复用原候选，
+不会再创建重复客户。若该身份已绑定其他候选，则返回
+`identity_conflict`，由人工执行候选合并。
+
 作战卡的每个重要结论必须引用候选已有证据。新证据会使原审批失效。CRM 转换只接受：
 
 - 当前状态为 `approved`；
@@ -231,6 +257,7 @@ POST   /api/v1/acquisition/runs/:id/cancel
 GET    /api/v1/acquisition/candidates
 GET    /api/v1/acquisition/candidates/:id
 GET    /api/v1/acquisition/candidates/:id/evidence
+POST   /api/v1/acquisition/candidates/:id/identity-confirmation
 GET    /api/v1/acquisition/candidates/:id/qualification
 GET    /api/v1/acquisition/candidates/:id/battle-card
 GET    /api/v1/acquisition/candidates/:id/reviews

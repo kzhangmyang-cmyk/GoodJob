@@ -5,6 +5,8 @@ import type {
   AcquisitionCandidate,
   BattleCard,
   BattleCardInput,
+  CandidateIdentityResolutionCommitInput,
+  CandidateIdentityResolutionResult,
   CandidateStatus,
   DiscoveryEvidence,
   DiscoveryEvidenceInput,
@@ -57,6 +59,8 @@ export type AcquisitionDomainErrorCode =
   | "invalid_request"
   | "resource_not_found"
   | "idempotency_conflict"
+  | "identity_conflict"
+  | "stale_candidate"
   | "invalid_state"
   | "hard_gate_blocked"
   | "evidence_required"
@@ -459,6 +463,183 @@ export class AcquisitionDomainService {
     return this.requireCandidate(scope, candidateId);
   }
 
+  async applyResolvedCandidateIdentity(
+    scope: AcquisitionActorScope,
+    candidateId: string,
+    raw: CandidateIdentityResolutionCommitInput,
+    idempotencyKey: string
+  ): Promise<CandidateIdentityResolutionResult> {
+    this.validateScope(scope);
+    const input: CandidateIdentityResolutionCommitInput = {
+      expectedCandidateVersion: raw.expectedCandidateVersion,
+      evidenceIds: this.uniqueIds(raw.evidenceIds, "身份核验证据"),
+      rationale: requiredText(raw.rationale, "身份核验说明", 2_000),
+      basis: raw.basis,
+      resolverVersion: requiredText(
+        raw.resolverVersion,
+        "身份解析器版本",
+        100
+      ),
+      identityAliases: (raw.identityAliases ?? []).map((alias) => ({
+        dedupeKey: requiredText(alias.dedupeKey, "身份去重键", 4_000),
+        basis: alias.basis
+      })),
+      partyRef: clone(raw.partyRef),
+      profile: clone(raw.profile)
+    };
+    if (!Number.isSafeInteger(input.expectedCandidateVersion)
+      || input.expectedCandidateVersion < 1) {
+      fail("invalid_request", "候选版本必须是正整数", 400);
+    }
+    if (![
+      "organization_domain",
+      "organization_credit_code",
+      "provider_public_actor"
+    ].includes(input.basis)) {
+      fail("invalid_request", "身份解析依据无效", 400);
+    }
+    if (input.identityAliases.length === 0
+      || input.identityAliases.some((alias) => ![
+        "organization_domain",
+        "organization_credit_code",
+        "provider_public_actor"
+      ].includes(alias.basis))) {
+      fail("invalid_request", "身份别名无效", 400);
+    }
+    return this.idempotent(
+      scope,
+      "resolve_candidate_identity",
+      idempotencyKey,
+      { candidateId, ...input },
+      async () => {
+        let candidate = await this.requireCandidate(scope, candidateId);
+        if (candidate.version !== input.expectedCandidateVersion) {
+          fail("stale_candidate", "候选已更新，请刷新后重新核验身份");
+        }
+        if (candidate.status === "converted_to_lead") {
+          fail("invalid_state", `状态 ${candidate.status} 不能核验身份`);
+        }
+        if (candidate.status === "needs_research") {
+          fail(
+            "invalid_state",
+            "候选仍有研究流程，需先完成或终止研究任务再确认身份"
+          );
+        }
+        const unresolved = candidate.partyRef.partyType === "organization"
+          ? candidate.partyRef.organizationId.startsWith("unresolved-org-")
+          : candidate.partyRef.individualPartyId.startsWith(
+              "unresolved-individual-"
+            );
+        if (!unresolved) {
+          fail("invalid_state", "候选主体身份已经解决，不能重新绑定");
+        }
+        if (candidate.partyType !== input.partyRef.partyType
+          || candidate.profile.kind !== input.profile.kind
+          || candidate.partyType !== input.profile.kind) {
+          fail("invalid_request", "身份核验结果与候选主体类型不一致", 400);
+        }
+        if (input.partyRef.partyType === "organization") {
+          if (input.partyRef.organizationId.startsWith("unresolved-org-")
+            || input.profile.kind !== "organization"
+            || input.basis === "provider_public_actor") {
+            fail("invalid_request", "企业身份核验结果无效", 400);
+          }
+        } else if (
+          input.partyRef.individualPartyId.startsWith(
+            "unresolved-individual-"
+          )
+          || input.profile.kind !== "individual"
+          || input.basis !== "provider_public_actor"
+        ) {
+          fail("invalid_request", "个人公开身份核验结果无效", 400);
+        }
+        const expectedTarget = candidate.partyType === "organization"
+          ? "organization"
+          : "individual_signal";
+        for (const evidenceId of input.evidenceIds) {
+          const evidence = await this.requireEvidence(scope, evidenceId);
+          if (evidence.targetType !== expectedTarget
+            || evidence.accessStatus === "access_restricted"
+            || evidence.provenance.kind === "import_artifact_row") {
+            fail(
+              "evidence_required",
+              "身份核验只能使用同主体的可访问公开来源",
+              422
+            );
+          }
+        }
+        const fromStatus = candidate.status;
+        const previousDecisionVersion = candidate.latestDecisionVersion;
+        const resolvedAt = validIso(this.clock(), "身份核验时间");
+        try {
+          await this.repository.bindCandidateIdentityAliases(
+            input.identityAliases.map((alias) => ({
+              ownerId: scope.ownerId,
+              teamId: scope.teamId,
+              candidateId: candidate.id,
+              partyType: candidate.partyType,
+              basis: alias.basis,
+              dedupeKey: alias.dedupeKey,
+              createdAt: resolvedAt
+            }))
+          );
+        } catch (error) {
+          if (error instanceof Error
+            && error.message === "CANDIDATE_IDENTITY_ALIAS_CONFLICT") {
+            fail(
+              "identity_conflict",
+              "该公开身份已经绑定到其他候选，请人工合并"
+            );
+          }
+          throw error;
+        }
+        candidate = this.updateCandidate(candidate, {
+          partyRef: input.partyRef,
+          profile: input.profile,
+          evidenceIds: [
+            ...new Set([...candidate.evidenceIds, ...input.evidenceIds])
+          ],
+          status: candidate.status === "do_not_contact"
+            ? "do_not_contact"
+            : candidate.status === "rejected"
+              ? "rejected"
+              : "normalized",
+          latestDecisionId: null,
+          latestDecisionVersion: null,
+          approvedDecisionVersion: null,
+          hardGateFailures: []
+        });
+        await this.repository.saveCandidate(candidate);
+        const resolution: CandidateIdentityResolutionResult["resolution"] = {
+          status: "resolved",
+          basis: input.basis,
+          resolverVersion: input.resolverVersion,
+          evidenceIds: input.evidenceIds,
+          resolvedAt,
+          resolvedBy: scope.actorId
+        };
+        await this.audit(scope, {
+          candidateId: candidate.id,
+          eventType: "candidate_identity_resolved",
+          fromStatus,
+          toStatus: candidate.status,
+          resourceId: candidate.id,
+          idempotencyKey,
+          payload: {
+            resolution,
+            rationale: input.rationale,
+            dedupeKeyHashes: input.identityAliases.map((alias) =>
+              hash(alias.dedupeKey)
+            ),
+            previousDecisionVersion,
+            partyRef: candidate.partyRef
+          }
+        });
+        return { candidate, resolution };
+      }
+    );
+  }
+
   async attachEvidenceToCandidate(
     scope: AcquisitionActorScope,
     candidateId: string,
@@ -719,6 +900,7 @@ export class AcquisitionDomainService {
         const now = validIso(this.clock(), "作战卡创建时间");
         const material = {
           candidateId: candidate.id,
+          qualificationDecisionId: candidate.latestDecisionId,
           partyType: candidate.partyType,
           sections,
           evidenceIds,
@@ -1910,6 +2092,8 @@ export class AcquisitionDomainService {
     changes: Partial<Pick<
       AcquisitionCandidate,
       | "status"
+      | "partyRef"
+      | "profile"
       | "latestDecisionId"
       | "latestDecisionVersion"
       | "approvedDecisionVersion"

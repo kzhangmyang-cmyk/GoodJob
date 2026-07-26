@@ -54,6 +54,9 @@ import {
   AcquisitionLeadConversionRecoverySweeper
 } from "./acquisition-lead-conversion-recovery-sweeper.js";
 import {
+  AcquisitionIdentityResolutionService
+} from "./acquisition-identity-resolution-service.js";
+import {
   ACQUISITION_MODEL_CONTENT_BUNDLE,
   ACQUISITION_MODEL_CONTENT_HASHES,
   ACQUISITION_MODEL_PROMPT_VERSION,
@@ -732,7 +735,8 @@ export async function createAcquisitionApplication(
           new MysqlAcquisitionDiscoveryOperationRepository(pool)
       };
       candidateDirectory = new MysqlAcquisitionCandidateDirectory(pool, {
-        now
+        now,
+        identityAliases: repositories.domain
       });
       priorityCandidates =
         new MysqlAcquisitionPriorityCandidateRepository(pool);
@@ -757,7 +761,8 @@ export async function createAcquisitionApplication(
           new InMemoryAcquisitionDiscoveryOperationRepository()
       };
       candidateDirectory = new InMemoryAcquisitionCandidateDirectory({
-        now
+        now,
+        identityAliases: repositories.domain
       });
       priorityCandidates =
         new MemoryPriorityCandidateRepository(repositories.domain);
@@ -774,6 +779,15 @@ export async function createAcquisitionApplication(
     }
     if (options.domainRepository) {
       repositories.domain = options.domainRepository;
+      candidateDirectory = options.store.mode === "mysql"
+        ? new MysqlAcquisitionCandidateDirectory(pool!, {
+            now,
+            identityAliases: repositories.domain
+          })
+        : new InMemoryAcquisitionCandidateDirectory({
+            now,
+            identityAliases: repositories.domain
+          });
     }
 
     const domainService = new AcquisitionDomainService({
@@ -786,6 +800,10 @@ export async function createAcquisitionApplication(
       idFactory,
       now
     });
+    const identityResolutionService =
+      new AcquisitionIdentityResolutionService({
+        domain: domainService
+      });
     const conversionReconciliation =
       new AcquisitionLeadConversionReconciliationService({
         domainService
@@ -1030,6 +1048,7 @@ export async function createAcquisitionApplication(
     }));
     router.use(createAcquisitionV1Router({
       domainService,
+      identityResolutionService,
       copilotService,
       queryPort: repositories.domain,
       requestIdFactory: idFactory,

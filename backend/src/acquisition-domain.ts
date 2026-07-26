@@ -103,6 +103,47 @@ export type CandidateProfile =
   | OrganizationCandidateProfile
   | IndividualCandidateProfile;
 
+export type CandidateIdentityResolutionBasis =
+  | "organization_domain"
+  | "organization_credit_code"
+  | "provider_public_actor";
+
+export interface CandidateIdentityResolutionCommitInput {
+  expectedCandidateVersion: number;
+  evidenceIds: string[];
+  rationale: string;
+  basis: CandidateIdentityResolutionBasis;
+  resolverVersion: string;
+  identityAliases: Array<{
+    dedupeKey: string;
+    basis: CandidateIdentityResolutionBasis;
+  }>;
+  partyRef: PartyRef;
+  profile: CandidateProfile;
+}
+
+export interface CandidateIdentityResolutionResult {
+  candidate: AcquisitionCandidate;
+  resolution: {
+    status: "resolved";
+    basis: CandidateIdentityResolutionBasis;
+    resolverVersion: string;
+    evidenceIds: string[];
+    resolvedAt: string;
+    resolvedBy: string;
+  };
+}
+
+export interface AcquisitionCandidateIdentityAlias {
+  ownerId: string;
+  teamId: string;
+  candidateId: string;
+  partyType: PartyType;
+  basis: CandidateIdentityResolutionBasis;
+  dedupeKey: string;
+  createdAt: string;
+}
+
 export interface AcquisitionCandidate {
   id: string;
   ownerId: string;
@@ -291,6 +332,7 @@ export interface BattleCard {
   ownerId: string;
   teamId: string;
   candidateId: string;
+  qualificationDecisionId: string;
   partyType: PartyType;
   version: string;
   sections: BattleCardSection[];
