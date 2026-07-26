@@ -32,6 +32,33 @@ export interface AcquisitionShardProcessingResult {
     | "failed";
   evidenceCount: number;
   usage: AcquisitionBudgetUsage;
+  presentation?: AcquisitionShardPresentationResult;
+}
+
+export interface AcquisitionShardPresentationResult {
+  rawResultCount: number;
+  acceptedResultCount: number;
+  duplicateResultCount: number;
+  failedResultCount: number;
+  providers: Array<{
+    providerConnectionId: string;
+    provider: string;
+    status: "succeeded";
+  }>;
+  providerFailures: Array<{
+    providerConnectionId: string;
+    provider: string;
+    errorCode: string;
+    retryAfterAt: string | null;
+  }>;
+  candidateIds: string[];
+  processedCandidateIds: string[];
+  battleCardCandidateIds: string[];
+  candidateFailures: Array<{
+    candidateId: string;
+    stage: "research" | "qualification" | "battle_card";
+    errorCode: string;
+  }>;
 }
 
 export interface AcquisitionShardProcessorPort {
@@ -130,7 +157,86 @@ function validResult(
     && (result.status !== "succeeded" || result.evidenceCount > 0)
     && (result.status !== "succeeded_empty" || result.evidenceCount === 0)
     && (result.status !== "partial_success" || result.evidenceCount > 0)
-    && (result.status !== "failed" || result.evidenceCount === 0);
+    && (result.status !== "failed" || result.evidenceCount === 0)
+    && (!result.presentation || validPresentation(
+      result.presentation,
+      result.evidenceCount
+    ));
+}
+
+function nonEmptyString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function uniqueIds(value: unknown) {
+  return Array.isArray(value)
+    && value.every(nonEmptyString)
+    && new Set(value).size === value.length;
+}
+
+function hasOnlyKeys(value: unknown, allowed: readonly string[]) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function stableErrorCode(value: unknown) {
+  return typeof value === "string"
+    && /^[A-Z][A-Z0-9_]{0,127}$/.test(value);
+}
+
+function validPresentation(
+  presentation: AcquisitionShardPresentationResult,
+  evidenceCount: number
+) {
+  const counts = [
+    presentation.rawResultCount,
+    presentation.acceptedResultCount,
+    presentation.duplicateResultCount,
+    presentation.failedResultCount
+  ];
+  return counts.every((count) => Number.isSafeInteger(count) && count >= 0)
+    && presentation.acceptedResultCount === evidenceCount
+    && presentation.rawResultCount >= presentation.acceptedResultCount
+    && presentation.duplicateResultCount <= presentation.acceptedResultCount
+    && uniqueIds(presentation.candidateIds)
+    && uniqueIds(presentation.processedCandidateIds)
+    && uniqueIds(presentation.battleCardCandidateIds)
+    && Array.isArray(presentation.providers)
+    && presentation.providers.every((provider) =>
+      hasOnlyKeys(provider, ["providerConnectionId", "provider", "status"])
+      &&
+      nonEmptyString(provider.providerConnectionId)
+      && nonEmptyString(provider.provider)
+      && provider.status === "succeeded"
+    )
+    && Array.isArray(presentation.providerFailures)
+    && presentation.providerFailures.every((failure) =>
+      hasOnlyKeys(failure, [
+        "providerConnectionId",
+        "provider",
+        "errorCode",
+        "retryAfterAt"
+      ])
+      &&
+      nonEmptyString(failure.providerConnectionId)
+      && nonEmptyString(failure.provider)
+      && stableErrorCode(failure.errorCode)
+      && (failure.retryAfterAt === null
+        || (typeof failure.retryAfterAt === "string"
+          && Number.isFinite(Date.parse(failure.retryAfterAt))))
+    )
+    && Array.isArray(presentation.candidateFailures)
+    && presentation.candidateFailures.every((failure) =>
+      hasOnlyKeys(failure, ["candidateId", "stage", "errorCode"])
+      &&
+      nonEmptyString(failure.candidateId)
+      && ["research", "qualification", "battle_card"].includes(
+        failure.stage
+      )
+      && stableErrorCode(failure.errorCode)
+    );
 }
 
 export class AcquisitionPlanExecutionWorker
@@ -379,7 +485,8 @@ implements AcquisitionExecutionPort {
       phase = "complete";
       await service.completeShard(scope, task.runId, task.shardId, {
         status: result.status,
-        evidenceCount: result.evidenceCount
+        evidenceCount: result.evidenceCount,
+        presentation: result.presentation
       });
     } catch (error) {
       const run = await this.repository.getRun(task.runId);

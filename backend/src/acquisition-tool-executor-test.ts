@@ -411,6 +411,7 @@ function createHarness(options: {
   individualActorKey?: string;
   individualProfileUrl?: string;
   searchConnectionIds?: string[];
+  candidateIdFactory?: () => string;
 } = {}) {
   let id = 0;
   let tick = 0;
@@ -428,7 +429,9 @@ function createHarness(options: {
   const domain = new AcquisitionDomainService({
     repository,
     leadConversionPort,
-    idFactory: (prefix) => `${prefix}-${++id}`,
+    idFactory: (prefix) => prefix === "candidate" && options.candidateIdFactory
+      ? options.candidateIdFactory()
+      : `${prefix}-${++id}`,
     now: () =>
       new Date(Date.UTC(2026, 6, 24, 1, 0, tick++)).toISOString()
   });
@@ -927,6 +930,44 @@ test("isolates dedupe namespaces, atomically upserts candidates, and reports per
     resultIndex: 2,
     errorCode: "SEARCH_RESULT_INVALID"
   }]);
+});
+
+test("reports raw, accepted, duplicate, and failed search counts with candidate ids", async () => {
+  const candidateIds = ["candidate-existing", "candidate-new"];
+  const { executor } = createHarness({
+    candidateIdFactory: () => candidateIds.shift()!
+  });
+  await execute(executor, "search_public_sources", {
+    query: "厦门 获客系统 采购",
+    providerConnectionIds: ["search-ok"],
+    subjectKinds: ["organization"],
+    maxResults: 10
+  }, "search:existing-candidate");
+
+  const result = await execute(executor, "search_public_sources", {
+    query: "厦门 获客系统 采购",
+    providerConnectionIds: ["search-with-invalid"],
+    subjectKinds: ["organization", "individual"],
+    maxResults: 10
+  }, "search:counted-results");
+
+  assert.equal(result.rawResultCount, 3);
+  assert.equal(result.acceptedResultCount, 2);
+  assert.equal(result.duplicateResultCount, 1);
+  assert.equal(result.failedResultCount, 1);
+  assert.deepEqual(
+    [...result.candidateIds].sort(),
+    ["candidate-existing", "candidate-new"]
+  );
+
+  const providerFailure = await execute(executor, "search_public_sources", {
+    query: "厦门 获客系统 采购",
+    providerConnectionIds: ["search-ok", "search-broken"],
+    subjectKinds: ["organization"],
+    maxResults: 10
+  }, "search:provider-failure-not-ingest-failure");
+  assert.equal(providerFailure.providerFailures.length, 1);
+  assert.equal(providerFailure.failedResultCount, 0);
 });
 
 test("routes weak organization names to controlled identity research instead of a D do-not-contact decision", async () => {

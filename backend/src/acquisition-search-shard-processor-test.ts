@@ -147,7 +147,11 @@ test("maps a search shard to search_public_sources and extracts accepted evidenc
         ingestFailures: [],
         evidence: [{ id: "evidence-1" }, { id: "evidence-2" }],
         candidates: [{ id: "candidate-1" }, { id: "candidate-2" }],
+        rawResultCount: 2,
         acceptedResultCount: 2,
+        duplicateResultCount: 0,
+        failedResultCount: 0,
+        candidateIds: ["candidate-1", "candidate-2"],
         outreachExecuted: false
       };
     }
@@ -164,6 +168,22 @@ test("maps a search shard to search_public_sources and extracts accepted evidenc
   assert.deepEqual(result, {
     status: "succeeded",
     evidenceCount: 2,
+    presentation: {
+      rawResultCount: 2,
+      acceptedResultCount: 2,
+      duplicateResultCount: 0,
+      failedResultCount: 0,
+      providers: [{
+        providerConnectionId: "official-search-connection",
+        provider: "official-search",
+        status: "succeeded"
+      }],
+      providerFailures: [],
+      candidateIds: ["candidate-1", "candidate-2"],
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      candidateFailures: []
+    },
     usage: {
       requests: 1,
       results: 2,

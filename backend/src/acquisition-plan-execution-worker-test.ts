@@ -253,6 +253,108 @@ test("a completed search with no accepted evidence settles as succeeded_empty", 
   await worker.close();
 });
 
+test("rejects malformed shard presentations before completion", async () => {
+  const failures: AcquisitionShardWorkerFailure[] = [];
+  const processor = {
+    async process() {
+      return {
+        status: "succeeded",
+        evidenceCount: 1,
+        usage: {
+          requests: 1,
+          results: 1,
+          amountMinor: 0,
+          durationSeconds: 1
+        },
+        presentation: {
+          rawResultCount: -1,
+          acceptedResultCount: 2,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          providers: [{
+            providerConnectionId: "search-connection",
+            provider: "official-search",
+            status: "succeeded"
+          }],
+          providerFailures: [],
+          candidateIds: ["candidate-1", "candidate-1"],
+          processedCandidateIds: [],
+          battleCardCandidateIds: [],
+          candidateFailures: []
+        }
+      };
+    }
+  } as AcquisitionShardProcessorPort;
+  const { repository, service, worker } = createHarness(
+    processor,
+    1,
+    (failure) => failures.push(failure)
+  );
+  const created = await createApprovedRun(service);
+
+  await worker.waitForIdle();
+
+  assert.equal(failures.length, 2);
+  assert.ok(failures.every((failure) =>
+    failure.code === "SHARD_RESULT_INVALID" && failure.phase === "process"
+  ));
+  assert.ok(
+    (await repository.listRunShards(created.id))
+      .every((shard) => shard.status === "failed")
+  );
+  await worker.close();
+});
+
+test("rejects shard presentation error projections with response bodies or credentials", async () => {
+  const failures: AcquisitionShardWorkerFailure[] = [];
+  const processor = {
+    async process() {
+      return {
+        status: "partial_success",
+        evidenceCount: 1,
+        usage: {
+          requests: 1,
+          results: 1,
+          amountMinor: 0,
+          durationSeconds: 1
+        },
+        presentation: {
+          rawResultCount: 1,
+          acceptedResultCount: 1,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          providers: [],
+          providerFailures: [{
+            providerConnectionId: "search-connection",
+            provider: "official-search",
+            errorCode: "SEARCH_PROVIDER_FAILED",
+            retryAfterAt: null,
+            responseBody: "credential=must-not-persist"
+          }],
+          candidateIds: ["candidate-1"],
+          processedCandidateIds: [],
+          battleCardCandidateIds: [],
+          candidateFailures: []
+        }
+      };
+    }
+  } as AcquisitionShardProcessorPort;
+  const { service, worker } = createHarness(
+    processor,
+    1,
+    (failure) => failures.push(failure)
+  );
+
+  await createApprovedRun(service);
+  await worker.waitForIdle();
+
+  assert.equal(failures.length, 2);
+  assert.ok(failures.every((failure) =>
+    failure.code === "SHARD_RESULT_INVALID" && failure.phase === "process"
+  ));
+  await worker.close();
+});
+
 test("a controlled failed result accounts usage before settling the shard", async () => {
   const processor: AcquisitionShardProcessorPort = {
     async process() {

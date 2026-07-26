@@ -1345,10 +1345,14 @@ implements AcquisitionAgentToolExecutor {
         | "EVIDENCE_INGEST_FAILED"
         | "CANDIDATE_UPSERT_FAILED";
     }> = [];
-    let acceptedResults = 0;
+    let rawResultCount = 0;
+    let acceptedResultCount = 0;
+    let duplicateResultCount = 0;
+    const candidateIds = new Set<string>();
     for (const response of successes) {
+      rawResultCount += response.results.length;
       for (let index = 0; index < response.results.length; index += 1) {
-        if (acceptedResults >= payload.maxResults) break;
+        if (acceptedResultCount >= payload.maxResults) break;
         assertNotAborted(input.signal);
         const parsedResult = searchResultSchema.safeParse(
           response.results[index]
@@ -1399,6 +1403,7 @@ implements AcquisitionAgentToolExecutor {
           continue;
         }
         evidence.push(createdEvidence);
+        acceptedResultCount += 1;
 
         let candidate: AcquisitionCandidate;
         try {
@@ -1459,6 +1464,7 @@ implements AcquisitionAgentToolExecutor {
               );
             }
           });
+          if (!upsert.created) duplicateResultCount += 1;
           candidate = await this.domain.getCandidate(
             scope,
             upsert.entry.candidateId
@@ -1484,13 +1490,13 @@ implements AcquisitionAgentToolExecutor {
           continue;
         }
         candidates.set(candidate.id, candidate);
+        candidateIds.add(candidate.id);
         identityResolutions.set(
           candidate.id,
           acquisitionPublicIdentityDisposition(identityResolution)
         );
-        acceptedResults += 1;
       }
-      if (acceptedResults >= payload.maxResults) break;
+      if (acceptedResultCount >= payload.maxResults) break;
     }
     return {
       status: providerFailures.length > 0 || ingestFailures.length > 0
@@ -1509,7 +1515,11 @@ implements AcquisitionAgentToolExecutor {
       candidates: [...candidates.values()].map((candidate) =>
         projectCandidate(candidate, identityResolutions.get(candidate.id))
       ),
-      acceptedResultCount: acceptedResults,
+      rawResultCount,
+      acceptedResultCount,
+      duplicateResultCount,
+      failedResultCount: ingestFailures.length,
+      candidateIds: [...candidateIds].sort(),
       outreachExecuted: false
     };
   }

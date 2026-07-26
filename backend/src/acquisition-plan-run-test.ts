@@ -7,7 +7,8 @@ import {
   type AcquisitionScope
 } from "./acquisition-plan-run-service.js";
 import {
-  InMemoryAcquisitionPlanRunRepository
+  InMemoryAcquisitionPlanRunRepository,
+  type AcquisitionPlanRunRepositoryTransaction
 } from "./acquisition-plan-run-repository.js";
 
 type AsyncTest = () => Promise<void>;
@@ -252,6 +253,25 @@ function harness(options: {
       options.validatePlanPayloadForApproval
   });
   return { repository, executionPort, service };
+}
+
+class FailingCandidateEventRepository
+extends InMemoryAcquisitionPlanRunRepository {
+  failCandidateEvents = false;
+
+  override transaction<T>(
+    work: (transaction: AcquisitionPlanRunRepositoryTransaction) => Promise<T> | T
+  ): Promise<T> {
+    return super.transaction((transaction) => work({
+      ...transaction,
+      appendRunEvent: (event) => {
+        if (this.failCandidateEvents && event.type === "candidate.discovered") {
+          throw new Error("simulated candidate event append failure");
+        }
+        transaction.appendRunEvent(event);
+      }
+    }));
+  }
 }
 
 test("plan updates append immutable versions and enforce ETag plus owner/team isolation", async () => {
@@ -796,6 +816,116 @@ test("successful shard settlement aggregates evidence into a succeeded run", asy
   assert.equal(run.status, "succeeded");
   assert.equal(run.evidenceCount, 3);
   assert.ok(run.completedAt);
+});
+
+test("shard completion atomically records deduplicated discovered candidates", async () => {
+  const { repository, service } = harness();
+  const draft = await service.createPlan(ownerA, planInput());
+  const approved = await service.approvePlan(
+    ownerA,
+    draft.id,
+    draft.etag,
+    { decision: "approve", reason: "人工批准" }
+  );
+  let run = await service.createRun(ownerA, approved.id, {
+    idempotencyKey: "run-candidate-links-0001"
+  });
+  const shard = (await repository.listRunShards(run.id))[0]!;
+  run = await service.startShard(ownerA, run.id, shard.id);
+  await service.completeShard(ownerA, run.id, shard.id, {
+    status: "succeeded",
+    evidenceCount: 2,
+    presentation: {
+      rawResultCount: 3,
+      acceptedResultCount: 2,
+      duplicateResultCount: 1,
+      failedResultCount: 0,
+      providers: [],
+      providerFailures: [],
+      candidateIds: ["candidate-new", "candidate-existing", "candidate-new"],
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      candidateFailures: []
+    }
+  });
+
+  const events = await repository.listRunEvents(run.id);
+  assert.deepEqual(
+    events.filter((event) => event.type === "candidate.discovered")
+      .map((event) => event.data),
+    [
+      {
+        candidateId: "candidate-existing",
+        operationId: shard.operationId,
+        connectionId: shard.connection.connectionId
+      },
+      {
+        candidateId: "candidate-new",
+        operationId: shard.operationId,
+        connectionId: shard.connection.connectionId
+      }
+    ]
+  );
+  assert.deepEqual(
+    events.find((event) => event.type === "shard.succeeded")?.data,
+    {
+      rawResultCount: 3,
+      acceptedResultCount: 2,
+      duplicateResultCount: 1,
+      failedResultCount: 0
+    }
+  );
+});
+
+test("candidate event append failures roll back shard, run, and all completion events", async () => {
+  const repository = new FailingCandidateEventRepository();
+  const executionPort = new RecordingExecutionPort();
+  let id = 0;
+  const service = new AcquisitionPlanRunService({
+    repository,
+    executionPort,
+    now: () => "2026-07-24T00:00:00.000Z",
+    idFactory: (prefix) => `${prefix}_${++id}`
+  });
+  const draft = await service.createPlan(ownerA, planInput());
+  const approved = await service.approvePlan(
+    ownerA,
+    draft.id,
+    draft.etag,
+    { decision: "approve", reason: "人工批准" }
+  );
+  let run = await service.createRun(ownerA, approved.id, {
+    idempotencyKey: "run-candidate-rollback-0001"
+  });
+  const shard = (await repository.listRunShards(run.id))[0]!;
+  run = await service.startShard(ownerA, run.id, shard.id);
+  const eventsBefore = await repository.listRunEvents(run.id);
+  repository.failCandidateEvents = true;
+
+  await assert.rejects(() => service.completeShard(ownerA, run.id, shard.id, {
+    status: "succeeded",
+    evidenceCount: 1,
+    presentation: {
+      rawResultCount: 1,
+      acceptedResultCount: 1,
+      duplicateResultCount: 0,
+      failedResultCount: 0,
+      providers: [],
+      providerFailures: [],
+      candidateIds: ["candidate-new"],
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      candidateFailures: []
+    }
+  }));
+
+  assert.equal((await repository.getRun(run.id))?.status, "running");
+  assert.equal(
+    (await repository.listRunShards(run.id)).find((item) => item.id === shard.id)
+      ?.status,
+    "running"
+  );
+  assert.deepEqual(await repository.listRunEvents(run.id), eventsBefore);
 });
 
 test("usage idempotency and shard hard limits never overspend allocations", async () => {

@@ -23,6 +23,9 @@ import type {
 import {
   intentNeedsRecovery
 } from "./acquisition-plan-run-repository.js";
+import type {
+  AcquisitionShardPresentationResult
+} from "./acquisition-plan-execution-worker.js";
 import { planReadinessIssues } from "./acquisition-plan-readiness.js";
 
 export { planReadinessIssues } from "./acquisition-plan-readiness.js";
@@ -1285,6 +1288,7 @@ export class AcquisitionPlanRunService {
         | "failed"
         | "cancelled";
       evidenceCount: number;
+      presentation?: AcquisitionShardPresentationResult;
     }
   ) {
     assertScope(scope);
@@ -1307,6 +1311,18 @@ export class AcquisitionPlanRunService {
         400,
         "invalid_shard_result",
         "succeeded_empty 分片不能包含证据"
+      );
+    }
+    if (input.presentation
+      && (!nonNegativeInteger(input.presentation.rawResultCount)
+        || !nonNegativeInteger(input.presentation.acceptedResultCount)
+        || !nonNegativeInteger(input.presentation.duplicateResultCount)
+        || !nonNegativeInteger(input.presentation.failedResultCount)
+        || input.presentation.acceptedResultCount !== input.evidenceCount)) {
+      throw new AcquisitionPlanRunError(
+        400,
+        "invalid_shard_result",
+        "presentation 计数必须与已接受证据一致"
       );
     }
     return this.repository.transaction((transaction) => {
@@ -1362,9 +1378,33 @@ export class AcquisitionPlanRunService {
         `shard.${input.status}`,
         scope,
         now,
-        { evidenceCount: input.evidenceCount },
+        input.presentation
+          ? {
+              rawResultCount: input.presentation.rawResultCount,
+              acceptedResultCount: input.presentation.acceptedResultCount,
+              duplicateResultCount: input.presentation.duplicateResultCount,
+              failedResultCount: input.presentation.failedResultCount
+            }
+          : { evidenceCount: input.evidenceCount },
         shard.id
       );
+      for (const candidateId of [
+        ...new Set(input.presentation?.candidateIds ?? [])
+      ].sort()) {
+        this.appendRunEvent(
+          transaction,
+          updatedRun,
+          "candidate.discovered",
+          scope,
+          now,
+          {
+            candidateId,
+            operationId: shard.operationId,
+            connectionId: shard.connection.connectionId
+          },
+          shard.id
+        );
+      }
       this.appendAggregateRunEvent(
         transaction,
         scope,
@@ -1381,7 +1421,15 @@ export class AcquisitionPlanRunService {
         stableHash(shard),
         stableHash(updatedShard),
         now,
-        { resultStatus: input.status, evidenceCount: input.evidenceCount }
+        input.presentation
+          ? {
+              resultStatus: input.status,
+              rawResultCount: input.presentation.rawResultCount,
+              acceptedResultCount: input.presentation.acceptedResultCount,
+              duplicateResultCount: input.presentation.duplicateResultCount,
+              failedResultCount: input.presentation.failedResultCount
+            }
+          : { resultStatus: input.status, evidenceCount: input.evidenceCount }
       );
       return updatedRun;
     });

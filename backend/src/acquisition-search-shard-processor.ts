@@ -113,6 +113,10 @@ implements AcquisitionShardProcessorPort {
       );
     }
     const evidenceCount = record.acceptedResultCount;
+    const rawResultCount = record.rawResultCount;
+    const duplicateResultCount = record.duplicateResultCount;
+    const failedResultCount = record.failedResultCount;
+    const candidateIds = record.candidateIds;
     const providers = record.providers;
     const providerFailures = record.providerFailures;
     const attempts = [
@@ -184,6 +188,40 @@ implements AcquisitionShardProcessorPort {
     return {
       status,
       evidenceCount: Number(evidenceCount),
+      ...(typeof rawResultCount === "number"
+        && typeof duplicateResultCount === "number"
+        && typeof failedResultCount === "number"
+        && Array.isArray(candidateIds)
+        ? {
+            presentation: {
+              rawResultCount,
+              acceptedResultCount: Number(evidenceCount),
+              duplicateResultCount,
+              failedResultCount,
+              providers: providers.map((provider) => ({
+                providerConnectionId: String(
+                  (provider as Record<string, unknown>).providerConnectionId
+                ),
+                provider: String((provider as Record<string, unknown>).provider),
+                status: "succeeded" as const
+              })),
+              providerFailures: providerFailures.map((failure) => ({
+                providerConnectionId: String(
+                  (failure as Record<string, unknown>).providerConnectionId
+                ),
+                provider: String(
+                  (failure as Record<string, unknown>).provider ?? "unknown"
+                ),
+                errorCode: String((failure as Record<string, unknown>).errorCode),
+                retryAfterAt: null
+              })),
+              candidateIds: candidateIds.map(String),
+              processedCandidateIds: [],
+              battleCardCandidateIds: [],
+              candidateFailures: []
+            }
+          }
+        : {}),
       usage
     };
   }
