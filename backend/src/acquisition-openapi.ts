@@ -151,16 +151,16 @@ function standardResponses(
   };
 }
 
-function idParameter() {
+function idParameter(maxLength = 255) {
   return {
     name: "id",
     in: "path",
     required: true,
-    schema: { type: "string", minLength: 1, maxLength: 255 }
+    schema: { type: "string", minLength: 1, maxLength }
   };
 }
 
-function idempotencyParameter() {
+function idempotencyParameter(minLength: 1 | 8 = 8) {
   return {
     name: "Idempotency-Key",
     in: "header",
@@ -168,17 +168,73 @@ function idempotencyParameter() {
     description: "租户作用域内的写入幂等键；原文不会持久化。",
     schema: {
       type: "string",
-      minLength: 8,
+      minLength,
       maxLength: 200
     }
   };
 }
 
-function jsonBody(schema: Record<string, unknown>) {
+function ifMatchParameter(
+  schema: Record<string, unknown> = {
+    type: "string",
+    minLength: 1
+  }
+) {
   return {
+    name: "If-Match",
+    in: "header",
     required: true,
+    schema
+  };
+}
+
+function jsonBody(
+  schema: Record<string, unknown>,
+  required = true
+) {
+  return {
+    required,
     content: {
       "application/json": { schema }
+    }
+  };
+}
+
+function paginationParameters() {
+  return [
+    {
+      name: "cursor",
+      in: "query",
+      required: false,
+      schema: {
+        type: "string",
+        minLength: 1,
+        maxLength: 8_192
+      }
+    },
+    {
+      name: "limit",
+      in: "query",
+      required: false,
+      schema: {
+        type: "integer",
+        minimum: 1,
+        maximum: 100,
+        default: 50
+      }
+    }
+  ];
+}
+
+function boundedLimitParameter() {
+  return {
+    name: "limit",
+    in: "query",
+    required: false,
+    schema: {
+      type: "integer",
+      minimum: 1,
+      maximum: 100
     }
   };
 }
@@ -220,26 +276,36 @@ function add(
   paths[path]![method] = value;
 }
 
+const providerConnectionStatusSchema = {
+  type: "string",
+  enum: ["active", "disabled"]
+};
+
 const providerConnectionWriteSchema = {
   type: "object",
   required: ["providerId", "apiKey"],
   properties: {
-    providerId: { type: "string", maxLength: 100 },
+    providerId: {
+      type: "string",
+      minLength: 1,
+      maxLength: 64,
+      pattern: "^[a-z0-9_]+$"
+    },
     apiKey: {
       type: "string",
       minLength: 1,
-      maxLength: 8192,
+      maxLength: 4_000,
       writeOnly: true,
       description: "客户自己的官方 API Key，仅加密保存且永不回显。"
     },
     baseUrl: {
       type: "string",
       format: "uri",
-      maxLength: 2048
+      maxLength: 2_000
     },
     status: {
-      type: "string",
-      enum: ["active", "disabled"]
+      ...providerConnectionStatusSchema,
+      default: "active"
     }
   },
   additionalProperties: false
@@ -274,11 +340,15 @@ function addProviderPaths(paths: AcquisitionOpenApiPaths) {
     operation("get", "列出当前账号的 BYOK 搜索连接", {
       responses: standardResponses(200, "连接列表", {
         type: "object",
-        required: ["items"],
+        required: ["items", "nextCursor"],
         properties: {
           items: {
             type: "array",
             items: providerConnectionSchema
+          },
+          nextCursor: {
+            type: "string",
+            nullable: true
           }
         },
         additionalProperties: false
@@ -290,13 +360,30 @@ function addProviderPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/provider-connections",
     "post",
     operation("post", "创建官方搜索 API 直连", {
-      parameters: [idempotencyParameter()],
+      parameters: [idempotencyParameter(1)],
       requestBody: jsonBody(providerConnectionWriteSchema),
-      responses: standardResponses(
-        201,
-        "连接已创建",
-        providerConnectionSchema
-      )
+      responses: {
+        ...standardResponses(
+          201,
+          "连接已创建",
+          providerConnectionSchema
+        ),
+        "200": {
+          ...response(
+            "幂等重放已有连接",
+            providerConnectionSchema
+          ),
+          headers: {
+            "Idempotency-Replayed": {
+              description: "值为 true 表示返回的是同一幂等请求的结果。",
+              schema: {
+                type: "string",
+                enum: ["true"]
+              }
+            }
+          }
+        }
+      }
     })
   );
   add(
@@ -313,14 +400,27 @@ function addProviderPaths(paths: AcquisitionOpenApiPaths) {
     })
   );
   const patchSchema = {
-    ...providerConnectionWriteSchema,
-    required: [],
-    properties: {
-      ...providerConnectionWriteSchema.properties,
-      providerId: undefined
-    }
+    oneOf: [
+      {
+        type: "object",
+        required: ["apiKey"],
+        properties: {
+          apiKey: providerConnectionWriteSchema.properties.apiKey,
+          baseUrl: providerConnectionWriteSchema.properties.baseUrl,
+          status: providerConnectionStatusSchema
+        },
+        additionalProperties: false
+      },
+      {
+        type: "object",
+        required: ["status"],
+        properties: {
+          status: providerConnectionStatusSchema
+        },
+        additionalProperties: false
+      }
+    ]
   };
-  delete (patchSchema.properties as Record<string, unknown>).providerId;
   add(
     paths,
     "/api/v1/acquisition/provider-connections/{id}",
@@ -379,6 +479,7 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/content-fetch-operations",
     "get",
     operation("get", "列出受控公开网页抓取任务", {
+      parameters: [boundedLimitParameter()],
       responses: standardResponses(200, "任务列表", listSchema)
     })
   );
@@ -387,7 +488,7 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/content-fetch-operations",
     "post",
     operation("post", "创建受控公开网页抓取任务", {
-      parameters: [idempotencyParameter()],
+      parameters: [idempotencyParameter(1)],
       requestBody: jsonBody({
         type: "object",
         required: ["sourceUrl", "subjectChannel"],
@@ -395,7 +496,13 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
           sourceUrl: {
             type: "string",
             format: "uri",
-            maxLength: 4000
+            pattern: "^[Hh][Tt][Tt][Pp][Ss]://",
+            minLength: 1,
+            maxLength: 4_096,
+            description: [
+              "仅允许公开 HTTPS URL。",
+              "运行时还会拒绝凭据、非默认端口、内网地址和敏感查询参数。"
+            ].join(" ")
           },
           subjectChannel: {
             type: "string",
@@ -412,11 +519,11 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/content-fetch-operations/{id}",
     "get",
     operation("get", "读取网页抓取任务", {
-      parameters: [idParameter()]
+      parameters: [idParameter(160)]
     })
   );
   const importParameters = [
-    idempotencyParameter(),
+    idempotencyParameter(1),
     {
       name: "fileName",
       in: "query",
@@ -450,6 +557,7 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/import-operations",
     "get",
     operation("get", "列出客户授权文件导入任务", {
+      parameters: [boundedLimitParameter()],
       responses: standardResponses(200, "任务列表", listSchema)
     })
   );
@@ -481,7 +589,7 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/import-operations/{id}",
     "get",
     operation("get", "读取文件导入任务", {
-      parameters: [idParameter()]
+      parameters: [idParameter(160)]
     })
   );
 }
@@ -490,10 +598,12 @@ const identityConfirmationWriteSchema = {
   oneOf: [
     {
       type: "object",
-      required: ["subjectKind", "evidenceIds", "rationale"],
-      anyOf: [
-        { required: ["domain"] },
-        { required: ["creditCode"] }
+      required: [
+        "subjectKind",
+        "domain",
+        "creditCode",
+        "evidenceIds",
+        "rationale"
       ],
       properties: {
         subjectKind: {
@@ -503,20 +613,17 @@ const identityConfirmationWriteSchema = {
         domain: {
           type: "string",
           nullable: true,
-          minLength: 1,
           maxLength: 255
         },
         creditCode: {
           type: "string",
           nullable: true,
-          minLength: 1,
           maxLength: 50
         },
         evidenceIds: {
           type: "array",
           minItems: 1,
           maxItems: 100,
-          uniqueItems: true,
           items: { type: "string", minLength: 1, maxLength: 255 }
         },
         rationale: {
@@ -555,7 +662,6 @@ const identityConfirmationWriteSchema = {
           type: "array",
           minItems: 1,
           maxItems: 100,
-          uniqueItems: true,
           items: { type: "string", minLength: 1, maxLength: 255 }
         },
         rationale: {
@@ -755,6 +861,189 @@ const planCreateWriteSchema = {
   additionalProperties: false
 };
 
+const reviewWriteSchema = {
+  oneOf: [
+    {
+      type: "object",
+      required: ["action", "decisionVersion", "reason"],
+      properties: {
+        action: {
+          type: "string",
+          enum: ["approved", "do_not_contact"]
+        },
+        decisionVersion: {
+          type: "string",
+          minLength: 1,
+          maxLength: 100
+        },
+        reason: {
+          type: "string",
+          nullable: true,
+          maxLength: 2_000
+        }
+      },
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      required: ["action", "decisionVersion", "reason"],
+      properties: {
+        action: {
+          type: "string",
+          enum: ["rejected", "needs_research", "reopen"]
+        },
+        decisionVersion: {
+          type: "string",
+          minLength: 1,
+          maxLength: 100
+        },
+        reason: {
+          type: "string",
+          minLength: 1,
+          maxLength: 2_000
+        }
+      },
+      additionalProperties: false
+    }
+  ]
+};
+
+const convertWriteSchema = {
+  type: "object",
+  required: ["decisionVersion"],
+  properties: {
+    decisionVersion: {
+      type: "string",
+      minLength: 1,
+      maxLength: 100
+    }
+  },
+  additionalProperties: false
+};
+
+const copilotSessionWriteSchema = {
+  type: "object",
+  properties: {
+    connectionId: {
+      type: "string",
+      nullable: true,
+      minLength: 1,
+      maxLength: 255
+    }
+  },
+  additionalProperties: false
+};
+
+const copilotMessageWriteSchema = {
+  type: "object",
+  required: ["message"],
+  properties: {
+    message: {
+      type: "string",
+      minLength: 1,
+      maxLength: 20_000
+    }
+  },
+  additionalProperties: false
+};
+
+const planModelSnapshotWriteSchema = {
+  type: "object",
+  required: [
+    "jobSnapshotId",
+    "connectionId",
+    "credentialVersion",
+    "provider",
+    "model",
+    "capabilitySnapshotHash",
+    "promptVersion",
+    "schemaVersion",
+    "promptHash",
+    "schemaHash"
+  ],
+  properties: {
+    jobSnapshotId: { type: "string", minLength: 1, maxLength: 255 },
+    connectionId: { type: "string", minLength: 1, maxLength: 255 },
+    credentialVersion: { type: "integer", minimum: 1 },
+    provider: { type: "string", minLength: 1, maxLength: 100 },
+    model: { type: "string", minLength: 1, maxLength: 200 },
+    capabilitySnapshotHash: {
+      type: "string",
+      minLength: 1,
+      maxLength: 200
+    },
+    promptVersion: { type: "string", minLength: 1, maxLength: 100 },
+    schemaVersion: { type: "string", minLength: 1, maxLength: 100 },
+    promptHash: { type: "string", minLength: 1, maxLength: 200 },
+    schemaHash: { type: "string", minLength: 1, maxLength: 200 }
+  },
+  additionalProperties: false
+};
+
+const planMutationWriteSchema = {
+  type: "object",
+  minProperties: 1,
+  properties: {
+    name: planCreateWriteSchema.properties.name,
+    objective: planCreateWriteSchema.properties.objective,
+    icp: planCreateWriteSchema.properties.icp,
+    subjectChannels: planCreateWriteSchema.properties.subjectChannels,
+    providerConnections:
+      planCreateWriteSchema.properties.providerConnections,
+    operations: planCreateWriteSchema.properties.operations,
+    budgetSnapshot: planCreateWriteSchema.properties.budgetSnapshot,
+    modelSnapshotRef: planModelSnapshotWriteSchema,
+    stopConditions: planCreateWriteSchema.properties.stopConditions
+  },
+  additionalProperties: false
+};
+
+const planApprovalWriteSchema = {
+  type: "object",
+  required: ["decision", "reason"],
+  properties: {
+    decision: {
+      type: "string",
+      enum: ["approve"]
+    },
+    reason: {
+      type: "string",
+      minLength: 1,
+      maxLength: 2_000
+    }
+  },
+  additionalProperties: false
+};
+
+const planRunWriteSchema = {
+  type: "object",
+  properties: {
+    parentRunId: {
+      type: "string",
+      minLength: 1,
+      maxLength: 255
+    },
+    reason: {
+      type: "string",
+      maxLength: 2_000
+    }
+  },
+  additionalProperties: false
+};
+
+const planControlWriteSchema = {
+  type: "object",
+  required: ["reason"],
+  properties: {
+    reason: {
+      type: "string",
+      minLength: 1,
+      maxLength: 2_000
+    }
+  },
+  additionalProperties: false
+};
+
 function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
   const definitions: Array<
     [
@@ -763,24 +1052,17 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       string
     ]
   > = [
-    ["/api/v1/acquisition/evidence", "post", "记录公开证据"],
     ["/api/v1/acquisition/evidence/{id}", "get", "读取公开证据"],
     ["/api/v1/acquisition/candidates", "get", "列出候选客户"],
-    ["/api/v1/acquisition/candidates", "post", "创建候选客户"],
     ["/api/v1/acquisition/candidates/{id}", "get", "读取候选客户"],
     ["/api/v1/acquisition/candidates/{id}/evidence", "get", "列出候选证据"],
     ["/api/v1/acquisition/candidates/{id}/identity-confirmation", "post", "人工确认公开主体身份"],
-    ["/api/v1/acquisition/candidates/{id}/evidence", "post", "关联候选证据"],
-    ["/api/v1/acquisition/candidates/{id}/research", "post", "记录研究尝试"],
     ["/api/v1/acquisition/candidates/{id}/qualification", "get", "读取资格判断"],
-    ["/api/v1/acquisition/candidates/{id}/qualification", "post", "生成资格和财务价值判断"],
     ["/api/v1/acquisition/candidates/{id}/battle-card", "get", "读取客户作战卡"],
-    ["/api/v1/acquisition/candidates/{id}/battle-card", "post", "生成客户作战卡"],
     ["/api/v1/acquisition/candidates/{id}/reviews", "get", "读取人工审核历史"],
     ["/api/v1/acquisition/candidates/{id}/review", "post", "提交人工审核"],
     ["/api/v1/acquisition/candidates/{id}/convert", "post", "人工确认转换为 CRM 线索"],
     ["/api/v1/acquisition/outcomes", "get", "列出成交反馈"],
-    ["/api/v1/acquisition/outcomes", "post", "记录可信业务结果"],
     ["/api/v1/acquisition/audit-events", "get", "读取获客审计事件"],
     ["/api/v1/acquisition/copilot/sessions", "post", "创建绑定模型快照的 Pi 会话"],
     ["/api/v1/acquisition/copilot/sessions/{id}", "get", "读取 Pi 会话"],
@@ -799,54 +1081,210 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     ["/api/v1/acquisition/runs/{id}/resume", "post", "恢复运行"],
     ["/api/v1/acquisition/runs/{id}/cancel", "post", "取消运行"]
   ];
+
+  const writeBodies: Record<string, {
+    schema: Record<string, unknown>;
+    required?: boolean;
+    successStatus?: number;
+    successDescription?: string;
+  }> = {
+    "post /api/v1/acquisition/candidates/{id}/identity-confirmation": {
+      schema: identityConfirmationWriteSchema
+    },
+    "post /api/v1/acquisition/candidates/{id}/review": {
+      schema: reviewWriteSchema
+    },
+    "post /api/v1/acquisition/candidates/{id}/convert": {
+      schema: convertWriteSchema
+    },
+    "post /api/v1/acquisition/copilot/sessions": {
+      schema: copilotSessionWriteSchema,
+      successStatus: 202,
+      successDescription: "Pi 会话创建任务已接受"
+    },
+    "post /api/v1/acquisition/copilot/sessions/{id}/messages": {
+      schema: copilotMessageWriteSchema,
+      successStatus: 202,
+      successDescription: "Pi 消息任务已接受"
+    },
+    "post /api/v1/acquisition/plans": {
+      schema: planCreateWriteSchema,
+      successStatus: 201,
+      successDescription: "获客计划已创建"
+    },
+    "patch /api/v1/acquisition/plans/{id}": {
+      schema: planMutationWriteSchema
+    },
+    "post /api/v1/acquisition/plans/{id}/revisions": {
+      schema: planMutationWriteSchema,
+      successStatus: 201,
+      successDescription: "计划修订已创建"
+    },
+    "post /api/v1/acquisition/plans/{id}/approval": {
+      schema: planApprovalWriteSchema
+    },
+    "post /api/v1/acquisition/plans/{id}/runs": {
+      schema: planRunWriteSchema,
+      required: false,
+      successStatus: 202,
+      successDescription: "计划运行已接受"
+    },
+    "post /api/v1/acquisition/runs/{id}/pause": {
+      schema: planControlWriteSchema
+    },
+    "post /api/v1/acquisition/runs/{id}/resume": {
+      schema: planControlWriteSchema
+    },
+    "post /api/v1/acquisition/runs/{id}/cancel": {
+      schema: planControlWriteSchema
+    }
+  };
+  const v1IdempotentWrites = new Set([
+    "/api/v1/acquisition/candidates/{id}/identity-confirmation",
+    "/api/v1/acquisition/candidates/{id}/review",
+    "/api/v1/acquisition/candidates/{id}/convert",
+    "/api/v1/acquisition/copilot/sessions",
+    "/api/v1/acquisition/copilot/sessions/{id}/messages"
+  ]);
+  const planIdempotentWrites = new Set([
+    "/api/v1/acquisition/plans",
+    "/api/v1/acquisition/plans/{id}/runs"
+  ]);
+  const etagWrites = new Set([
+    "/api/v1/acquisition/candidates/{id}/identity-confirmation",
+    "/api/v1/acquisition/plans/{id}",
+    "/api/v1/acquisition/plans/{id}/revisions",
+    "/api/v1/acquisition/plans/{id}/approval",
+    "/api/v1/acquisition/runs/{id}/pause",
+    "/api/v1/acquisition/runs/{id}/resume",
+    "/api/v1/acquisition/runs/{id}/cancel"
+  ]);
+
   for (const [path, method, summary] of definitions) {
     const hasId = path.includes("{id}");
-    const idempotentCreate = method === "post" && (
-      path === "/api/v1/acquisition/copilot/sessions"
-      || path === "/api/v1/acquisition/plans"
-      || path.endsWith("/messages")
-      || path.endsWith("/runs")
-      || path.endsWith("/identity-confirmation")
-    );
-    const needsEtag = method !== "get" && (
-      path.endsWith("/approval")
-      || path.endsWith("/identity-confirmation")
-      || path.endsWith("/pause")
-      || path.endsWith("/resume")
-      || path.endsWith("/cancel")
-      || (
-        path === "/api/v1/acquisition/plans/{id}"
-        && method === "patch"
-      )
-    );
     const parameters: Array<Record<string, unknown>> = [];
     if (hasId) parameters.push(idParameter());
-    if (idempotentCreate) parameters.push(idempotencyParameter());
-    if (needsEtag) {
-      parameters.push({
-        name: "If-Match",
-        in: "header",
-        required: true,
-        schema: { type: "string" }
-      });
+    if (method === "get") {
+      if ([
+        "/api/v1/acquisition/candidates",
+        "/api/v1/acquisition/candidates/{id}/evidence",
+        "/api/v1/acquisition/candidates/{id}/reviews",
+        "/api/v1/acquisition/outcomes",
+        "/api/v1/acquisition/audit-events",
+        "/api/v1/acquisition/copilot/sessions/{id}/messages"
+      ].includes(path)) {
+        parameters.push(...paginationParameters());
+      }
+      if (path === "/api/v1/acquisition/candidates") {
+        parameters.push(
+          {
+            name: "subjectKind",
+            in: "query",
+            required: false,
+            schema: {
+              type: "string",
+              enum: ["organization", "individual"]
+            }
+          },
+          {
+            name: "status",
+            in: "query",
+            required: false,
+            schema: {
+              type: "string",
+              enum: [
+                "discovered",
+                "unresolvable",
+                "normalized",
+                "qualified",
+                "pending_review",
+                "approved",
+                "rejected",
+                "do_not_contact",
+                "needs_research",
+                "converted_to_lead"
+              ]
+            }
+          }
+        );
+      }
+      if (path === "/api/v1/acquisition/outcomes") {
+        parameters.push({
+          name: "candidateId",
+          in: "query",
+          required: true,
+          schema: {
+            type: "string",
+            minLength: 1,
+            maxLength: 255
+          }
+        });
+      }
+      if (path === "/api/v1/acquisition/audit-events") {
+        parameters.push({
+          name: "candidateId",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            minLength: 1,
+            maxLength: 255
+          }
+        });
+      }
+    } else {
+      if (v1IdempotentWrites.has(path)) {
+        parameters.push(idempotencyParameter(1));
+      } else if (planIdempotentWrites.has(path)) {
+        parameters.push(idempotencyParameter(8));
+      }
+      if (etagWrites.has(path)) {
+        parameters.push(
+          path.endsWith("/identity-confirmation")
+            ? ifMatchParameter({
+                type: "string",
+                pattern: '^"candidate-v[1-9]\\d*"$'
+              })
+            : ifMatchParameter()
+        );
+      }
     }
-    add(paths, path, method, operation(method, summary, {
-      ...(parameters.length > 0 ? { parameters } : {}),
-      ...(method === "get"
-        ? {}
-        : {
-            requestBody: jsonBody(
-              path.endsWith("/identity-confirmation")
-                ? identityConfirmationWriteSchema
-                : path === "/api/v1/acquisition/plans"
-                  ? planCreateWriteSchema
-                : {
-                    type: "object",
-                    additionalProperties: true
-                  }
-            )
-          })
-    }));
+    const body = method === "get"
+      ? null
+      : writeBodies[`${method} ${path}`];
+    if (method !== "get" && !body) {
+      throw new Error(`Missing OpenAPI write body for ${method} ${path}`);
+    }
+    const responses = standardResponses(
+      body?.successStatus ?? 200,
+      body?.successDescription ?? "操作成功"
+    );
+    if (etagWrites.has(path)) {
+      if (
+        path
+        !== "/api/v1/acquisition/candidates/{id}/identity-confirmation"
+      ) {
+        responses["412"] = response("资源版本不匹配", errorSchema);
+      }
+      responses["428"] = response("缺少 If-Match 版本条件", errorSchema);
+    }
+    add(
+      paths,
+      path,
+      method,
+      operation(method, summary, {
+        ...(parameters.length > 0 ? { parameters } : {}),
+        ...(body
+          ? {
+              requestBody: jsonBody(
+                body.schema,
+                body.required ?? true
+              )
+            }
+          : {}),
+        responses
+      })
+    );
   }
 }
 

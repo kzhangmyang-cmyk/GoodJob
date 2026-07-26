@@ -2414,13 +2414,15 @@ export function createOpenApiDocument(app: Application) {
       responses: responsesFor(route.method, route.path)
     };
   }
+  for (const path of Object.keys(paths)) {
+    if (path.startsWith("/api/v1/acquisition/")) {
+      delete paths[path];
+    }
+  }
   for (const [path, item] of Object.entries(
     createAcquisitionOpenApiPaths()
   )) {
-    paths[path] = {
-      ...(paths[path] ?? {}),
-      ...item
-    };
+    paths[path] = item;
   }
 
   return {
