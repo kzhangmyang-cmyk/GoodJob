@@ -341,8 +341,8 @@ export interface AcquisitionPlanRunRepository {
     runId: string
   ): Promise<AcquisitionExecutionIntent[]>;
   /**
-   * Internal startup-recovery scan. Implementations must return only intents
-   * that still have an unresolved persisted shard transition.
+   * Internal recovery scan. Implementations must return only intents that
+   * still have an unresolved persisted shard transition.
    */
   listRecoverableExecutionIntents(
     now: string

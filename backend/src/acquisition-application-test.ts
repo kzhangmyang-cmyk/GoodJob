@@ -27,6 +27,13 @@ import {
 import type {
   AcquisitionPlanPayload
 } from "./acquisition-plan-run-repository.js";
+import {
+  InMemoryAcquisitionPlanRunRepository
+} from "./acquisition-plan-run-repository.js";
+import {
+  AcquisitionPlanRunService,
+  type AcquisitionExecutionPort
+} from "./acquisition-plan-run-service.js";
 import type {
   SearchPublicSourcesPort
 } from "./acquisition-tool-executor.js";
@@ -130,6 +137,42 @@ function isolatedMemoryStore() {
     persistCount: () => persistCount,
     readBarrierCount: () => readBarrierCount
   };
+}
+
+class DelayedPeriodicPlanRunRepository
+extends InMemoryAcquisitionPlanRunRepository {
+  private recoveryReads = 0;
+  private releasePeriodicRead!: () => void;
+  readonly periodicReadStarted: Promise<void>;
+  private readonly periodicReadGate: Promise<void>;
+
+  constructor() {
+    super();
+    let markPeriodicReadStarted!: () => void;
+    this.periodicReadStarted = new Promise<void>((resolve) => {
+      markPeriodicReadStarted = resolve;
+    });
+    this.periodicReadGate = new Promise<void>((resolve) => {
+      this.releasePeriodicRead = resolve;
+    });
+    this.markPeriodicReadStarted = markPeriodicReadStarted;
+  }
+
+  private readonly markPeriodicReadStarted: () => void;
+
+  releasePeriodicRecovery() {
+    this.releasePeriodicRead();
+  }
+
+  override async listRecoverableExecutionIntents(now: string) {
+    this.recoveryReads += 1;
+    if (this.recoveryReads === 1) return [];
+    if (this.recoveryReads === 2) {
+      this.markPeriodicReadStarted();
+      await this.periodicReadGate;
+    }
+    return super.listRecoverableExecutionIntents(now);
+  }
 }
 
 function fakeSearchPort() {
@@ -1279,6 +1322,115 @@ test("application shutdown is bounded when a model call never returns", async ()
     /ACQUISITION_APPLICATION_SHUTDOWN_TIMEOUT/u
   );
   await server.close();
+});
+
+test("application validates the plan execution recovery interval", async () => {
+  const fixture = isolatedMemoryStore();
+  await assert.rejects(
+    createAcquisitionApplication({
+      store: fixture.store,
+      masterSecret: MASTER_SECRET,
+      planExecutionRecoveryIntervalMs: 999
+    }),
+    /intervalMs/u
+  );
+});
+
+test("application stops plan recovery before draining the execution worker", async () => {
+  const fixture = isolatedMemoryStore();
+  const repository = new DelayedPeriodicPlanRunRepository();
+  const noOpExecutionPort: AcquisitionExecutionPort = {
+    async enqueue() {},
+    async requestPause() {},
+    async resume() {},
+    async requestCancel() {}
+  };
+  let sequence = 0;
+  const bootstrapService = new AcquisitionPlanRunService({
+    repository,
+    executionPort: noOpExecutionPort,
+    now: () =>
+      new Date(Date.UTC(2026, 6, 24, 12, 0, sequence++)).toISOString(),
+    idFactory: (prefix) => `${prefix}_application_close_${++sequence}`
+  });
+  const {
+    modelConnectionId,
+    ...publicPayload
+  } = planPayload();
+  void modelConnectionId;
+  const draft = await bootstrapService.createPlan(
+    { ownerId: OWNER, teamId: TEAM, actorId: OWNER },
+    {
+      ...publicPayload,
+      modelSnapshotRef: {
+        jobSnapshotId: "application-close-snapshot",
+        connectionId: modelConfig().id,
+        credentialVersion: 1,
+        provider: "zhipu",
+        model: "glm-4.5",
+        capabilitySnapshotHash: "sha256:application-close-capability",
+        promptVersion: "acquisition-plan-prompt.v2",
+        schemaVersion: "acquisition-plan.v1",
+        promptHash: "sha256:application-close-prompt",
+        schemaHash: "sha256:application-close-schema"
+      }
+    }
+  );
+  const approved = await bootstrapService.approvePlan(
+    { ownerId: OWNER, teamId: TEAM, actorId: OWNER },
+    draft.id,
+    draft.etag,
+    { decision: "approve", reason: "验证恢复器和 worker 的关闭顺序" }
+  );
+  const run = await bootstrapService.createRun(
+    { ownerId: OWNER, teamId: TEAM, actorId: OWNER },
+    approved.id,
+    { idempotencyKey: "application-close-order-run" }
+  );
+
+  let runtime: Awaited<ReturnType<typeof createAcquisitionApplication>>
+    | null = null;
+  try {
+    runtime = await createAcquisitionApplication({
+      store: fixture.store,
+      masterSecret: MASTER_SECRET,
+      searchPort: fakeSearchPort().port,
+      planRunRepository: repository,
+      planExecutionRecoveryIntervalMs: 1_000
+    });
+    let timeout: NodeJS.Timeout | null = null;
+    await Promise.race([
+      repository.periodicReadStarted,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("periodic plan recovery did not start")),
+          2_000
+        );
+      })
+    ]).finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
+
+    let closed = false;
+    const closing = runtime.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    assert.equal(closed, false);
+
+    repository.releasePeriodicRecovery();
+    await closing;
+    assert.ok(
+      (await repository.listRunShards(run.id)).every((shard) =>
+        shard.status !== "queued"
+        && shard.status !== "retry_scheduled"
+      ),
+      "the worker must stay open until the active recovery dispatch drains"
+    );
+  } finally {
+    repository.releasePeriodicRecovery();
+    await runtime?.close().catch(() => undefined);
+  }
 });
 
 test("mysql acquisition application fails closed without a database URL", async () => {

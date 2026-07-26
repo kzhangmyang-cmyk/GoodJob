@@ -74,6 +74,9 @@ import {
   AcquisitionShardProcessorRegistry
 } from "./acquisition-plan-execution-worker.js";
 import {
+  AcquisitionPlanExecutionRecoverySweeper
+} from "./acquisition-plan-execution-recovery-sweeper.js";
+import {
   createAcquisitionPlanRouter
 } from "./acquisition-plan-router.js";
 import {
@@ -173,12 +176,14 @@ export interface CreateAcquisitionApplicationOptions {
   ) => AcquisitionPiGatewayPort;
   mysqlPoolFactory?: (databaseUrl: string) => mysql.Pool;
   workerConcurrency?: number;
+  planExecutionRecoveryIntervalMs?: number;
   copilotRecoveryIntervalMs?: number;
   discoveryRecoveryIntervalMs?: number;
   conversionRecoveryIntervalMs?: number;
   discoveryLeaseDurationMs?: number;
   domainRepository?: AcquisitionDomainRepository;
   discoveryRepository?: AcquisitionDiscoveryOperationRepository;
+  planRunRepository?: AcquisitionPlanRunRepository;
   shutdownTimeoutMs?: number;
   idFactory?: IdFactory;
   now?: () => string;
@@ -731,6 +736,8 @@ export async function createAcquisitionApplication(
   const nowMs = options.nowMs ?? Date.now;
   let pool: mysql.Pool | null = null;
   let executionWorker: AcquisitionPlanExecutionWorker | null = null;
+  let planExecutionRecoverySweeper:
+    AcquisitionPlanExecutionRecoverySweeper | null = null;
   let copilotRecoverySweeper:
     AcquisitionCopilotRecoverySweeper | null = null;
   let discoveryRecoverySweeper:
@@ -805,6 +812,9 @@ export async function createAcquisitionApplication(
     }
     if (options.discoveryRepository) {
       repositories.discovery = options.discoveryRepository;
+    }
+    if (options.planRunRepository) {
+      repositories.planRun = options.planRunRepository;
     }
     if (options.domainRepository) {
       repositories.domain = options.domainRepository;
@@ -974,9 +984,12 @@ export async function createAcquisitionApplication(
       now
     });
     worker.attachService(planService);
-    await planService.recoverExecutionIntents(
-      "acquisition-startup-recovery"
-    );
+    planExecutionRecoverySweeper =
+      new AcquisitionPlanExecutionRecoverySweeper({
+        service: planService,
+        intervalMs: options.planExecutionRecoveryIntervalMs
+      });
+    await planExecutionRecoverySweeper.start();
 
     const activeCopilotTasks = new Set<Promise<void>>();
     const activeDiscoveryTasks = new Set<Promise<void>>();
@@ -1159,7 +1172,10 @@ export async function createAcquisitionApplication(
                   ?? Promise.resolve(),
                 conversionRecoverySweeper?.close()
                   ?? Promise.resolve(),
-                worker.close(),
+                (async () => {
+                  await planExecutionRecoverySweeper?.close();
+                  await worker.close();
+                })(),
                 ...activeCopilotTasks,
                 ...activeDiscoveryTasks
               ]),
@@ -1197,6 +1213,9 @@ export async function createAcquisitionApplication(
     }
     if (copilotRecoverySweeper) {
       await copilotRecoverySweeper.close().catch(() => undefined);
+    }
+    if (planExecutionRecoverySweeper) {
+      await planExecutionRecoverySweeper.close().catch(() => undefined);
     }
     if (executionWorker) {
       await waitWithTimeout(

@@ -125,6 +125,32 @@ function createHarness(
   return { repository, service, worker };
 }
 
+class CoordinatedShardReadRepository
+extends InMemoryAcquisitionPlanRunRepository {
+  private raceReadsRemaining = 0;
+  private arrivals = 0;
+  private releaseReaders: (() => void) | null = null;
+  private readersReady: Promise<void> = Promise.resolve();
+
+  beginTwoWorkerStartRace() {
+    this.raceReadsRemaining = 2;
+    this.arrivals = 0;
+    this.readersReady = new Promise<void>((resolve) => {
+      this.releaseReaders = resolve;
+    });
+  }
+
+  override async listRunShards(runId: string) {
+    const snapshot = await super.listRunShards(runId);
+    if (this.raceReadsRemaining <= 0) return snapshot;
+    this.raceReadsRemaining -= 1;
+    this.arrivals += 1;
+    if (this.arrivals === 2) this.releaseReaders?.();
+    await this.readersReady;
+    return snapshot;
+  }
+}
+
 async function createApprovedRun(
   service: AcquisitionPlanRunService,
   input = planInput()
@@ -394,6 +420,86 @@ test("the first accepted dispatchKey owns the shard set for the process lifetime
   );
   assert.equal(processed, 1);
   await worker.close();
+});
+
+test("a losing worker start race never fails the shard owned by another worker", async () => {
+  const repository = new CoordinatedShardReadRepository();
+  const noOpExecutionPort: AcquisitionExecutionPort = {
+    async enqueue() {},
+    async requestPause() {},
+    async resume() {},
+    async requestCancel() {}
+  };
+  let sequence = 0;
+  const service = new AcquisitionPlanRunService({
+    repository,
+    executionPort: noOpExecutionPort,
+    now: () =>
+      new Date(Date.UTC(2026, 6, 24, 10, 0, sequence++)).toISOString(),
+    idFactory: (prefix) => `${prefix}_worker_race_${++sequence}`
+  });
+  const run = await createApprovedRun(service);
+  const shard = (await repository.listRunShards(run.id))[0]!;
+  let releaseProcessor!: () => void;
+  let markProcessorStarted!: () => void;
+  const processorGate = new Promise<void>((resolve) => {
+    releaseProcessor = resolve;
+  });
+  const processorStarted = new Promise<void>((resolve) => {
+    markProcessorStarted = resolve;
+  });
+  const processor: AcquisitionShardProcessorPort = {
+    async process() {
+      markProcessorStarted();
+      await processorGate;
+      return {
+        status: "succeeded",
+        evidenceCount: 1,
+        usage: {
+          requests: 1,
+          results: 1,
+          amountMinor: 1,
+          durationSeconds: 1
+        }
+      };
+    }
+  };
+  const createWorker = () => new AcquisitionPlanExecutionWorker({
+    repository,
+    processorRegistry: new AcquisitionShardProcessorRegistry({
+      search: processor
+    }),
+    workerActorId: "acquisition-racing-worker"
+  }).attachService(service);
+  const firstWorker = createWorker();
+  const secondWorker = createWorker();
+
+  repository.beginTwoWorkerStartRace();
+  await firstWorker.enqueue({
+    runId: run.id,
+    shardIds: [shard.id],
+    dispatchKey: "worker-race-first"
+  });
+  await secondWorker.enqueue({
+    runId: run.id,
+    shardIds: [shard.id],
+    dispatchKey: "worker-race-second"
+  });
+  await processorStarted;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const statusWhileOwned = (
+    await repository.listRunShards(run.id)
+  ).find((item) => item.id === shard.id)?.status;
+
+  releaseProcessor();
+  await Promise.all([firstWorker.close(), secondWorker.close()]);
+  assert.equal(
+    statusWhileOwned,
+    "running",
+    "shard_not_startable means another worker already owns the shard"
+  );
 });
 
 test("pause aborts the active processor, acknowledges the safe point, and resume requeues paused shards", async () => {

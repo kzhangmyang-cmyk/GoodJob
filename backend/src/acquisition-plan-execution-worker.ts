@@ -389,6 +389,11 @@ implements AcquisitionExecutionPort {
         teamId: run.teamId,
         actorId: this.workerActorId
       };
+      if (phase === "start"
+        && error instanceof AcquisitionPlanRunError
+        && error.code === "shard_not_startable") {
+        return;
+      }
       if (await this.settleRequestedControl(service, scope, task)) return;
       if (phase !== "process"
         || !(error instanceof TypeError

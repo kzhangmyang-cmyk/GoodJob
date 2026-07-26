@@ -1088,9 +1088,9 @@ export class AcquisitionPlanRunService {
   }
 
   /**
-   * Internal process-start recovery. It intentionally scans all tenant scopes
-   * through the repository and reconstructs a scope from each persisted
-   * intent; it is never exposed as an HTTP operation.
+   * Internal recovery sweep. It intentionally scans all tenant scopes through
+   * the repository and reconstructs a scope from each persisted intent; it is
+   * never exposed as an HTTP operation.
    */
   async recoverExecutionIntents(actorId: string) {
     const recoveryActorId = actorId?.trim();
@@ -1101,57 +1101,63 @@ export class AcquisitionPlanRunService {
       this.now()
     );
     let recovered = 0;
+    let firstFailure: unknown;
     for (const snapshot of snapshots) {
       const scope: AcquisitionScope = {
         ownerId: snapshot.ownerId,
         teamId: snapshot.teamId,
         actorId: recoveryActorId
       };
-      const intentId = await this.repository.transaction((transaction) => {
-        const current = transaction.getExecutionIntent(snapshot.id);
-        if (!current
-          || current.ownerId !== snapshot.ownerId
-          || current.teamId !== snapshot.teamId) {
-          return null;
-        }
-        const run = this.visibleRun(
-          transaction,
-          scope,
-          current.runId
-        );
-        const now = this.now();
-        if (!intentNeedsRecovery(
-          current,
-          transaction.listRunShards(run.id),
-          now
-        )) {
-          return null;
-        }
-        transaction.putExecutionIntent({
-          ...current,
-          status: "pending",
-          leaseUntil: null,
-          lastError: current.lastError,
-          updatedAt: now
-        });
-        this.appendRunEvent(
-          transaction,
-          run,
-          "execution.recovery_scheduled",
-          scope,
-          now,
-          {
-            intentId: current.id,
-            kind: current.kind,
-            previousStatus: current.status
+      try {
+        const intentId = await this.repository.transaction((transaction) => {
+          const current = transaction.getExecutionIntent(snapshot.id);
+          if (!current
+            || current.ownerId !== snapshot.ownerId
+            || current.teamId !== snapshot.teamId) {
+            return null;
           }
-        );
-        return current.id;
-      });
-      if (!intentId) continue;
-      await this.dispatchExecutionIntent(scope, intentId);
-      recovered += 1;
+          const run = this.visibleRun(
+            transaction,
+            scope,
+            current.runId
+          );
+          const now = this.now();
+          if (!intentNeedsRecovery(
+            current,
+            transaction.listRunShards(run.id),
+            now
+          )) {
+            return null;
+          }
+          transaction.putExecutionIntent({
+            ...current,
+            status: "pending",
+            leaseUntil: null,
+            lastError: current.lastError,
+            updatedAt: now
+          });
+          this.appendRunEvent(
+            transaction,
+            run,
+            "execution.recovery_scheduled",
+            scope,
+            now,
+            {
+              intentId: current.id,
+              kind: current.kind,
+              previousStatus: current.status
+            }
+          );
+          return current.id;
+        });
+        if (!intentId) continue;
+        await this.dispatchExecutionIntent(scope, intentId);
+        recovered += 1;
+      } catch (error) {
+        firstFailure ??= error;
+      }
     }
+    if (firstFailure) throw firstFailure;
     return recovered;
   }
 

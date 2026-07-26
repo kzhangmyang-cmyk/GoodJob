@@ -354,14 +354,19 @@ MODEL_CONNECTION_IDEMPOTENCY_SECRET=...
 2. 初始化 GoodJob Store；
 3. 在 MySQL 模式创建/迁移获客表；
 4. 创建模型、搜索、领域、工具和 Pi Runtime；
-5. 恢复未完成的 Plan execution intents；
+5. 立即恢复未完成的 Plan execution intents，并启动默认每 60 秒一次、
+   进程内不重入的周期恢复扫描；
 6. 恢复被进程中断的 Copilot 任务；
 7. 抢占并恢复排队中或租约已过期的网页抓取与文件导入任务；
 8. 将 Runtime 安装到已认证的 Express 路由；
 9. 启动原有 Prospect worker/scheduler 和 HTTP 服务。
 
-任一步骤失败都会终止启动，不会降级成“页面可用但获客 Runtime 不可用”。收到
-`SIGTERM` / `SIGINT` 时先停止接收新的获客任务，等待计划 Worker 和活动 Copilot 任务收尾，再关闭 MySQL Pool 和 GoodJob Store。默认获客 Worker 并发为 `2`，应用级优雅关闭超时为 30 秒。
+任一步骤失败都会终止启动，不会降级成“页面可用但获客 Runtime 不可用”。
+Plan execution intent 的启动首扫失败同样会终止启动；运行期单轮扫描失败会保留
+可恢复状态并等待下一轮，不阻塞其他恢复意图。收到 `SIGTERM` / `SIGINT` 时先停止
+周期恢复扫描，再等待计划 Worker 和活动 Copilot 任务收尾，最后关闭 MySQL Pool
+和 GoodJob Store，避免恢复器向已关闭的 Worker 派发任务。默认获客 Worker 并发为
+`2`，应用级优雅关闭超时为 30 秒。
 
 ## 9. Memory 与 MySQL
 

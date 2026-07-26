@@ -621,6 +621,48 @@ test("startup recovery redispatches a persisted dispatched intent whose shards a
   );
 });
 
+test("execution-intent recovery reports a failure after attempting later intents", async () => {
+  const {
+    repository,
+    service
+  } = harness();
+  const runs = [];
+  for (const [index, name] of ["第一份恢复计划", "第二份恢复计划"].entries()) {
+    const draft = await service.createPlan(ownerA, planInput({ name }));
+    const approved = await service.approvePlan(
+      ownerA,
+      draft.id,
+      draft.etag,
+      { decision: "approve", reason: "构造多个等待恢复的执行意图" }
+    );
+    runs.push(await service.createRun(ownerA, approved.id, {
+      idempotencyKey: `multi-recovery-run-000${index + 1}`
+    }));
+  }
+
+  const restartedPort = new RecordingExecutionPort();
+  restartedPort.enqueueFailuresRemaining = 1;
+  let restartedId = 0;
+  const restartedService = new AcquisitionPlanRunService({
+    repository,
+    executionPort: restartedPort,
+    now: () => "2026-07-24T03:00:00.000Z",
+    idFactory: (prefix) => `${prefix}_multi_recovery_${++restartedId}`
+  });
+
+  await assert.rejects(
+    restartedService.recoverExecutionIntents(
+      "acquisition-plan-execution-recovery"
+    ),
+    /simulated enqueue failure/u
+  );
+  assert.deepEqual(
+    new Set(restartedPort.enqueueCalls.map((call) => call.runId)),
+    new Set(runs.map((run) => run.id)),
+    "a poison intent must not starve later recoverable intents"
+  );
+});
+
 test("pause uses safe points, resume preserves consumption, and cancel settles running shards", async () => {
   const { executionPort, repository, service } = harness();
   const draft = await service.createPlan(ownerA, planInput());
