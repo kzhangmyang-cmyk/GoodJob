@@ -12,6 +12,8 @@ import {
   type BlockedLeadSource
 } from "./lead-source-selection";
 import type { CustomerMapController, CustomerMapRegion } from "./customer-map";
+import { mountAiGrowthAdvisor } from "./features/ai-growth/index.js";
+import "./features/ai-growth/styles.css";
 
 echarts.use([LineChart, GridComponent, TooltipComponent, SVGRenderer]);
 
@@ -1789,25 +1791,27 @@ let developmentEmailSending = false;
 let developmentEmailTone: "professional" | "concise" | "warm" = "professional";
 let developmentEmailNextFollowAt = "";
 let companyProfileCanManage = false;
-let openWorkspaceTabs = ["dashboard"];
-let workspaceTabHistory = ["dashboard"];
+let openWorkspaceTabs = ["ai-growth"];
+let workspaceTabHistory = ["ai-growth"];
+let aiGrowthAdvisor: ReturnType<typeof mountAiGrowthAdvisor> | null = null;
 
 const viewLabels: Record<string, string> = {
+  "ai-growth": "AI 增长参谋",
   dashboard: "工作台",
-  "lead-finder": "自动获客",
+  "lead-finder": "全网商机",
   "lead-task-detail": "任务执行详情",
-  "prospect-list": "搜客清单",
-  leads: "线索",
+  "prospect-list": "客户作战",
+  leads: "线索池",
   customers: "客户",
   "customer-detail": "客户全景",
   "ai-research": "AI背调",
   "development-email": "开发信",
-  pipeline: "商机",
+  pipeline: "CRM 跟进",
   reminders: "跟进提醒",
   "plan-growth": "计划任务",
   documents: "单据平台",
   commission: "提成对账",
-  reports: "报表",
+  reports: "经营分析",
   knowledge: "资料维护",
   exam: "在线考试",
   "question-bank": "题库维护",
@@ -1821,7 +1825,7 @@ const viewLabels: Record<string, string> = {
   memos: "备忘录",
   imports: "导入导出",
   "ai-config": "AI配置",
-  settings: "系统设置",
+  settings: "设置",
   profile: "个人设置"
 };
 
@@ -2040,6 +2044,59 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function advisorRequest<T>(
+  path: string,
+  init: RequestInit = {}
+): Promise<T> {
+  const method = (init.method || "GET").toUpperCase();
+  const csrfToken = cookieValue("gj_csrf");
+  const response = await fetch(path, {
+    ...init,
+    credentials: "same-origin",
+    headers: {
+      "content-type": "application/json",
+      ...(!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken
+        ? { "x-csrf-token": csrfToken }
+        : {}),
+      ...(init.headers || {})
+    }
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ message: "请求失败" }));
+    if (response.status === 401 && path !== "/api/auth/login") {
+      localStorage.removeItem(storage.user);
+      state.user = null;
+      document.body.classList.remove("is-authenticated");
+      aiGrowthAdvisor?.dispose();
+      aiGrowthAdvisor = null;
+    }
+    const error = new Error(body.message || "请求失败") as Error & {
+      status: number;
+      statusCode: number;
+      response: { status: number };
+    };
+    error.status = response.status;
+    error.statusCode = response.status;
+    error.response = { status: response.status };
+    throw error;
+  }
+  return response.json() as Promise<T>;
+}
+
+function ensureAiGrowthAdvisor() {
+  if (aiGrowthAdvisor) return aiGrowthAdvisor;
+  const root = qs<HTMLElement>("#aiGrowthRoot");
+  if (!root) return null;
+  aiGrowthAdvisor = mountAiGrowthAdvisor(root, {
+    request: advisorRequest,
+    toast: (message) => toast(message),
+    navigate: (view) => activateNavView(view),
+    currentUser: () => state.user,
+    document
+  });
+  return aiGrowthAdvisor;
+}
+
 async function loginWithPassword(email: string, password: string) {
   const result = await api<{ user: User }>("/api/auth/login", {
     method: "POST",
@@ -2050,6 +2107,9 @@ async function loginWithPassword(email: string, password: string) {
   applyAuthedUser(result.user);
   document.body.classList.add("is-authenticated");
   await refreshAll(result.user);
+  if (qs<HTMLElement>(".view.active")?.id === "ai-growth") {
+    ensureAiGrowthAdvisor()?.enter();
+  }
   toast(`已登录：${result.user.name}`);
 }
 
@@ -16031,6 +16091,8 @@ function installEvents() {
     clearCurrentUserMemoDrafts();
     await api("/api/auth/logout", { method: "POST" }).catch(() => null);
     localStorage.removeItem(storage.user);
+    aiGrowthAdvisor?.dispose();
+    aiGrowthAdvisor = null;
     state.user = null;
     document.body.classList.remove("is-authenticated");
     toast("已退出登录");
@@ -16562,37 +16624,41 @@ function installEvents() {
 }
 
 function rememberWorkspaceTab(view: string) {
-  if (!qs<HTMLElement>(`#${CSS.escape(view)}`)) view = "dashboard";
+  if (!qs<HTMLElement>(`#${CSS.escape(view)}`)) view = "ai-growth";
   if (!openWorkspaceTabs.includes(view)) openWorkspaceTabs.push(view);
   workspaceTabHistory = [view, ...workspaceTabHistory.filter((item) => item !== view && openWorkspaceTabs.includes(item))];
 }
 
 function closeWorkspaceTab(view: string) {
-  if (view === "dashboard") return;
+  if (view === "ai-growth") return;
   openWorkspaceTabs = openWorkspaceTabs.filter((item) => item !== view);
   workspaceTabHistory = workspaceTabHistory.filter((item) => item !== view && openWorkspaceTabs.includes(item));
-  const activeView = qs<HTMLElement>(".view.active")?.id || "dashboard";
-  if (activeView === view) activateNavView(workspaceTabHistory[0] || "dashboard");
+  const activeView = qs<HTMLElement>(".view.active")?.id || "ai-growth";
+  if (activeView === view) {
+    activateNavView(workspaceTabHistory[0] || "ai-growth");
+  }
   else renderOpenWorkspaceTabs(activeView);
 }
 
 function renderOpenWorkspaceTabs(activeView: string) {
   const wrap = qs<HTMLElement>("#topOpenTabs");
   if (!wrap) return;
-  if (!openWorkspaceTabs.includes("dashboard")) openWorkspaceTabs.unshift("dashboard");
+  if (!openWorkspaceTabs.includes("ai-growth")) {
+    openWorkspaceTabs.unshift("ai-growth");
+  }
   wrap.innerHTML = openWorkspaceTabs.map((view) => {
     const label = viewLabels[view] || view;
     const active = view === activeView ? " active" : "";
-    const close = view === "dashboard" ? "" : `<span class="top-tab-close" data-close-tab="${view}" aria-label="关闭${label}">×</span>`;
+    const close = view === "ai-growth" ? "" : `<span class="top-tab-close" data-close-tab="${view}" aria-label="关闭${label}">×</span>`;
     return `<button type="button" class="top-tab${active}" data-tab-view="${view}" title="${label}"><span class="top-tab-label">${label}</span>${close}</button>`;
   }).join("");
   qsa<HTMLButtonElement>("[data-tab-view]", wrap).forEach((button) => {
-    button.addEventListener("click", () => activateNavView(button.dataset.tabView || "dashboard"));
+    button.addEventListener("click", () => activateNavView(button.dataset.tabView || "ai-growth"));
   });
   qsa<HTMLElement>("[data-close-tab]", wrap).forEach((button) => {
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      closeWorkspaceTab(button.dataset.closeTab || "dashboard");
+      closeWorkspaceTab(button.dataset.closeTab || "ai-growth");
     });
   });
   qs<HTMLElement>(".top-tab.active", wrap)?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -16605,8 +16671,11 @@ function openSecondaryDropdownForView(view: string) {
 }
 
 function activateNavView(view: string, after?: () => void) {
-  if (!qs<HTMLElement>(`#${CSS.escape(view)}`)) view = "dashboard";
+  if (!qs<HTMLElement>(`#${CSS.escape(view)}`)) view = "ai-growth";
   const activeView = qs<HTMLElement>(".view.active")?.id;
+  if (activeView === "ai-growth" && view !== "ai-growth") {
+    aiGrowthAdvisor?.leave();
+  }
   if (activeView === "memos" && view !== "memos" && memoDirty) void saveCurrentMemoDraft();
   if (view !== "leads") closeLeadDrawer();
   if (view !== "customers") closeCustomerDrawer();
@@ -16632,6 +16701,7 @@ function activateNavView(view: string, after?: () => void) {
   }
   if (view === "dashboard") requestDashboardRefresh();
   if (view === "lead-finder") void loadIdentityConflicts(true);
+  if (view === "ai-growth") ensureAiGrowthAdvisor()?.enter();
   window.scrollTo({ top: 0, behavior: "smooth" });
   after?.();
 }
@@ -16687,6 +16757,10 @@ function resolveTopbarSearchView(rawValue: string) {
   const value = rawValue.trim().toLowerCase();
   if (!value) return null;
   const candidates: Array<[string, string]> = [
+    ["ai 增长参谋", "ai-growth"],
+    ["增长参谋", "ai-growth"],
+    ["增长", "ai-growth"],
+    ["全网商机", "lead-finder"],
     ["工作台", "dashboard"],
     ["待办", "dashboard"],
     ["todo", "dashboard"],
@@ -16774,6 +16848,9 @@ async function restoreSession() {
   document.body.classList.add("is-authenticated");
   try {
     await refreshAll(user);
+    if (qs<HTMLElement>(".view.active")?.id === "ai-growth") {
+      ensureAiGrowthAdvisor()?.enter();
+    }
   } catch (error) {
     toast(error instanceof Error ? `数据加载失败：${error.message}` : "数据加载失败，请稍后重试", "error");
   }
@@ -16781,5 +16858,6 @@ async function restoreSession() {
 
 void loadProductConfig();
 installEvents();
-renderTopbarForView(qs<HTMLElement>(".view.active")?.id || "dashboard");
+ensureAiGrowthAdvisor()?.enter();
+renderTopbarForView(qs<HTMLElement>(".view.active")?.id || "ai-growth");
 void restoreSession();

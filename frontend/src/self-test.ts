@@ -10,6 +10,13 @@ const productConfig = JSON.parse(readFileSync(new URL("../public/product-config.
 };
 
 const required = [
+  "id=\"ai-growth\"",
+  "id=\"aiGrowthRoot\"",
+  "data-view=\"ai-growth\"",
+  "AI 增长参谋",
+  "全网商机",
+  "mountAiGrowthAdvisor",
+  "./features/ai-growth/styles.css",
   "login-screen",
   "loginProductVersion",
   "previewCustomsButton",
@@ -85,6 +92,34 @@ for (const token of required) {
 }
 
 assert.equal(prototype.includes("data-view=\"inbox\""), false, "消息通知不应出现在左侧导航");
+assert.match(
+  prototype,
+  /<div class="view active" id="ai-growth">[\s\S]*?<div id="aiGrowthRoot"><\/div>/
+);
+assert.doesNotMatch(
+  prototype,
+  /<div class="view active" id="dashboard">/
+);
+const primaryNav = prototype.match(
+  /<div class="nav-primary"[\s\S]*?<\/div>\s*<details class="nav-section"/
+)?.[0] ?? "";
+assert.deepEqual(
+  [...primaryNav.matchAll(/data-view="([^"]+)"/g)]
+    .slice(0, 7)
+    .map((match) => match[1]),
+  [
+    "ai-growth",
+    "lead-finder",
+    "leads",
+    "prospect-list",
+    "pipeline",
+    "reports",
+    "settings"
+  ],
+  "核心导航前七项必须保持 AI 增长参谋工作流顺序"
+);
+assert.match(apiLayer, /let openWorkspaceTabs = \["ai-growth"\]/);
+assert.match(apiLayer, /advisorRequest[\s\S]*statusCode[\s\S]*response/);
 assert.equal(prototype.includes("写站内信"), false, "通知中心不应提供人工写信入口");
 assert.equal(apiLayer.includes("openInternalMessageComposeModal"), false, "不应保留旧写信交互");
 assert.match(apiLayer, /selectedDailyReportId = message\.relatedId;[\s\S]*activateNavView\("daily-reports"\)/);
