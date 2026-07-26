@@ -132,7 +132,7 @@ interface HttpErrorShape {
   response?: { status?: unknown };
 }
 
-function statusFromError(error: unknown): number | null {
+export function advisorHttpStatus(error: unknown): number | null {
   if (!error || typeof error !== "object") return null;
   const candidate = error as HttpErrorShape;
   for (const status of [
@@ -193,7 +193,7 @@ async function mapConflict<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    const status = statusFromError(error);
+    const status = advisorHttpStatus(error);
     if (status === 409 || status === 412) {
       throw new AdvisorConflictError(status, error);
     }
