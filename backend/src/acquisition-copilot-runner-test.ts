@@ -7,8 +7,12 @@ import type {
 } from "./acquisition-pi-agent.js";
 import {
   createPiAcquisitionCopilotRunner,
+  createRoutedAcquisitionCopilotRunner,
   type AcquisitionPiRuntimeFactoryInput
 } from "./acquisition-copilot-runner.js";
+import type {
+  AcquisitionPlanDraftGenerator
+} from "./acquisition-plan-draft.js";
 import {
   InMemoryAcquisitionToolAuditLedger,
   type AcquisitionToolExecutionInput
@@ -125,7 +129,8 @@ const response = await runner.run({
   sessionId: "session-a",
   snapshot,
   transcript: previousTranscript,
-  prompt: "分析 candidate-a，并说明下一步。"
+  prompt: "分析 candidate-a，并说明下一步。",
+  responseMode: "assistant"
 });
 
 assert.deepEqual(runtimeFactoryInputs, [{
@@ -171,6 +176,146 @@ assert.equal(
 );
 
 {
+  const assistantCalls: unknown[] = [];
+  const generatorCalls: Parameters<
+    AcquisitionPlanDraftGenerator["generate"]
+  >[0][] = [];
+  const draft = {
+    name: "Runner 计划草稿",
+    objective: "发现公开企业需求",
+    icp: {
+      industries: ["企业服务"],
+      regions: ["中国"],
+      organizationCriteria: ["公开采购需求"],
+      individualCriteria: ["公开经营需求"],
+      exclusionRules: []
+    },
+    subjectChannels: {
+      organization: true,
+      individual: false
+    },
+    providerConnections: [{
+      connectionId: "search-connection-a",
+      providerId: "brave",
+      kind: "search" as const,
+      status: "active" as const,
+      credentialVersion: 1
+    }],
+    operations: [{
+      operationId: "operation-a",
+      subjectChannel: "organization" as const,
+      kind: "search" as const,
+      connectionId: "search-connection-a",
+      query: "企业服务 公开采购",
+      allocatedBudget: {
+        requests: 1,
+        results: 10,
+        amountMinor: 0,
+        durationSeconds: 60
+      }
+    }],
+    budgetSnapshot: {
+      billingCurrency: "CNY",
+      maxRequests: 1,
+      maxResults: 10,
+      maxAmountMinor: 0,
+      maxDurationSeconds: 60
+    },
+    modelConnectionId: "connection-runner-a",
+    stopConditions: {
+      stopWhenBudgetExhausted: true,
+      stopWhenNoMoreResults: true
+    }
+  };
+  const assistantResult = {
+    newMessages: [{
+      role: "user" as const,
+      content: "普通分析",
+      timestamp: 10
+    }, previousTranscript[1]!],
+    result: {
+      summary: "完全委托的普通分析",
+      toolNames: ["get_candidate_evidence"]
+    }
+  };
+  const routed = createRoutedAcquisitionCopilotRunner({
+    assistantRunner: {
+      async run(input) {
+        assistantCalls.push(input);
+        return assistantResult;
+      }
+    },
+    planDraftGenerator: {
+      async generate(input) {
+        generatorCalls.push(input);
+        return {
+          summary: "已生成 Runner 计划草稿",
+          planDraft: structuredClone(draft),
+          assistantMessage: {
+            ...previousTranscript[1]!,
+            content: [{
+              type: "text",
+              text: "已生成 Runner 计划草稿"
+            }]
+          }
+        };
+      }
+    }
+  });
+  const assistantResponse = await routed.run({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "sales-a",
+    sessionId: "session-assistant",
+    snapshot,
+    transcript: previousTranscript,
+    prompt: "普通分析",
+    responseMode: "assistant"
+  });
+  assert.equal(assistantResponse, assistantResult);
+  assert.equal(assistantCalls.length, 1);
+  assert.equal(generatorCalls.length, 0);
+
+  const draftResponse = await routed.run({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "sales-a",
+    sessionId: "session-plan-draft",
+    snapshot,
+    transcript: previousTranscript,
+    prompt: "生成获客计划草稿",
+    responseMode: "plan_draft"
+  });
+  assert.equal(assistantCalls.length, 1);
+  assert.equal(generatorCalls.length, 1);
+  assert.deepEqual(generatorCalls[0], {
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "sales-a",
+    sessionId: "session-plan-draft",
+    transcript: previousTranscript,
+    prompt: "生成获客计划草稿"
+  });
+  assert.deepEqual(
+    draftResponse.newMessages.map((message) => message.role),
+    ["user", "assistant"]
+  );
+  const draftUserMessage = draftResponse.newMessages[0];
+  assert.equal(draftUserMessage?.role, "user");
+  assert.equal(
+    draftUserMessage?.role === "user"
+      ? draftUserMessage.content
+      : null,
+    "生成获客计划草稿"
+  );
+  assert.deepEqual(draftResponse.result, {
+    summary: "已生成 Runner 计划草稿",
+    toolNames: [],
+    planDraft: draft
+  });
+}
+
+{
   const failingRunner = createPiAcquisitionCopilotRunner({
     runtimeFactory: {
       async create() {
@@ -198,7 +343,8 @@ assert.equal(
       sessionId: "session-failure",
       snapshot,
       transcript: [],
-      prompt: "触发失败"
+      prompt: "触发失败",
+      responseMode: "assistant"
     }),
     (error: unknown) =>
       error instanceof Error

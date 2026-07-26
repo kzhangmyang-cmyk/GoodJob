@@ -10,6 +10,9 @@ import type {
   AcquisitionCopilotRunner
 } from "./acquisition-copilot-service.js";
 import type {
+  AcquisitionPlanDraftGenerator
+} from "./acquisition-plan-draft.js";
+import type {
   AcquisitionAgentIdentity,
   AcquisitionAgentToolExecutor,
   AcquisitionToolAuditLedger
@@ -119,6 +122,40 @@ export function createPiAcquisitionCopilotRunner(
       } catch (error) {
         throw new Error(safeErrorCode(error));
       }
+    }
+  };
+}
+
+export function createRoutedAcquisitionCopilotRunner(options: {
+  assistantRunner: AcquisitionCopilotRunner;
+  planDraftGenerator: AcquisitionPlanDraftGenerator;
+}): AcquisitionCopilotRunner {
+  return {
+    run(input) {
+      if (input.responseMode === "assistant") {
+        return options.assistantRunner.run(input);
+      }
+      return options.planDraftGenerator.generate({
+        ownerId: input.ownerId,
+        teamId: input.teamId,
+        actorId: input.actorId,
+        sessionId: input.sessionId,
+        transcript: input.transcript.map((message) =>
+          structuredClone(message)
+        ),
+        prompt: input.prompt
+      }).then((generated) => ({
+        newMessages: [{
+          role: "user" as const,
+          content: input.prompt,
+          timestamp: Date.now()
+        }, structuredClone(generated.assistantMessage)],
+        result: {
+          summary: generated.summary,
+          toolNames: [],
+          planDraft: structuredClone(generated.planDraft)
+        }
+      }));
     }
   };
 }

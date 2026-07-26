@@ -12,6 +12,9 @@ import {
   AcquisitionPlanDraftError
 } from "./acquisition-plan-draft.js";
 import {
+  acquisitionPublicPlanCreateSchema
+} from "./acquisition-plan-contract.js";
+import {
   acquisitionProviderConnectionVersion,
   createAcquisitionActiveSearchConnectionDirectory,
   createAcquisitionApplication,
@@ -629,12 +632,13 @@ test("application search directory rejects non-executable official catalog entri
 
 test("application generates a raw-postable draft and enforces catalog readiness at approval", async () => {
   const fixture = isolatedMemoryStore();
+  const search = fakeSearchPort();
   let sequence = 0;
   let timestamp = Date.parse("2026-07-26T02:00:00.000Z");
   const runtime = await createAcquisitionApplication({
     store: fixture.store,
     masterSecret: MASTER_SECRET,
-    searchPort: fakeSearchPort().port,
+    searchPort: search.port,
     modelGatewayFactory: () => ({
       async callTools(request) {
         assert.ok("contentBinding" in request && request.contentBinding);
@@ -706,21 +710,47 @@ test("application generates a raw-postable draft and enforces catalog readiness 
       }
     );
     assert.equal(session.response.status, 202);
-    const generateInput = {
-      ownerId: OWNER,
-      teamId: TEAM,
-      actorId: OWNER,
-      sessionId: String(session.json.resourceId),
-      transcript: [{
-        role: "user" as const,
-        content: "请生成一个可批准的双主体获客计划",
-        timestamp: 1
-      }],
-      prompt: "生成计划草稿"
-    };
-    const generated =
-      await runtime.planDraftGenerator.generate(generateInput);
-    const rawBody = structuredClone(generated.planDraft);
+    const sessionId = String(session.json.resourceId);
+    const queued = await server.request(
+      `/api/v1/acquisition/copilot/sessions/${sessionId}/messages`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "application-plan-draft-message" },
+        body: JSON.stringify({
+          message: "请生成一个可批准的双主体获客计划",
+          responseMode: "plan_draft"
+        })
+      }
+    );
+    assert.equal(queued.response.status, 202);
+    assert.equal(queued.json.responseMode, "plan_draft");
+    const generated = await waitFor(
+      () => server.request(
+        `/api/v1/acquisition/copilot/tasks/${queued.json.id}`
+      ),
+      (value) => value.json.status !== "queued"
+        && value.json.status !== "running"
+    );
+    assert.equal(
+      generated.json.status,
+      "succeeded",
+      JSON.stringify(generated.json)
+    );
+    assert.equal(generated.json.responseMode, "plan_draft");
+    assert.deepEqual(generated.json.result.toolNames, []);
+    const rawBody = acquisitionPublicPlanCreateSchema.parse(
+      generated.json.result.planDraft
+    );
+    assert.deepEqual(search.calls, []);
+    const messages = await server.request(
+      `/api/v1/acquisition/copilot/sessions/${sessionId}/messages`
+    );
+    assert.deepEqual(
+      messages.json.items.map((item: {
+        message: { role: string };
+      }) => item.message.role),
+      ["user", "assistant"]
+    );
 
     const created = await server.request(
       "/api/v1/acquisition/plans",
@@ -758,6 +788,18 @@ test("application generates a raw-postable draft and enforces catalog readiness 
     );
     assert.equal(approved.response.status, 200, JSON.stringify(approved.json));
 
+    const generateInput = {
+      ownerId: OWNER,
+      teamId: TEAM,
+      actorId: OWNER,
+      sessionId,
+      transcript: [{
+        role: "user" as const,
+        content: "请生成一个可批准的双主体获客计划",
+        timestamp: 1
+      }],
+      prompt: "生成计划草稿"
+    };
     const pending = await server.request(
       "/api/v1/acquisition/plans",
       {

@@ -8,6 +8,57 @@ import {
   InMemoryAcquisitionCopilotRepository,
   type AcquisitionCopilotRunInput
 } from "./acquisition-copilot-service.js";
+import {
+  acquisitionPublicPlanCreateSchema
+} from "./acquisition-plan-contract.js";
+
+const planDraft = {
+  name: "Copilot 计划草稿",
+  objective: "发现公开企业需求",
+  icp: {
+    industries: ["企业服务"],
+    regions: ["中国"],
+    organizationCriteria: ["公开采购需求"],
+    individualCriteria: ["公开经营需求"],
+    exclusionRules: ["明确拒绝联系"]
+  },
+  subjectChannels: {
+    organization: true,
+    individual: false
+  },
+  providerConnections: [{
+    connectionId: "search-connection-a",
+    providerId: "brave",
+    kind: "search" as const,
+    status: "active" as const,
+    credentialVersion: 1
+  }],
+  operations: [{
+    operationId: "operation-a",
+    subjectChannel: "organization" as const,
+    kind: "search" as const,
+    connectionId: "search-connection-a",
+    query: "企业服务 公开采购",
+    allocatedBudget: {
+      requests: 1,
+      results: 10,
+      amountMinor: 0,
+      durationSeconds: 60
+    }
+  }],
+  budgetSnapshot: {
+    billingCurrency: "CNY",
+    maxRequests: 1,
+    maxResults: 10,
+    maxAmountMinor: 0,
+    maxDurationSeconds: 60
+  },
+  modelConnectionId: "connection-a",
+  stopConditions: {
+    stopWhenBudgetExhausted: true,
+    stopWhenNoMoreResults: true
+  }
+};
 
 const repository = new InMemoryAcquisitionCopilotRepository();
 const runs: AcquisitionCopilotRunInput[] = [];
@@ -26,6 +77,9 @@ const service = new AcquisitionCopilotService({
       if (input.prompt === "并发测试") await waitForRelease;
       if (input.prompt === "触发失败") {
         throw new Error("MODEL_RATE_LIMITED apiKey=must-not-leak");
+      }
+      if (input.prompt === "草稿失败") {
+        throw new Error("PLAN_DRAFT_NOT_READY details=must-not-leak");
       }
       const messages: AgentMessage[] = [
         {
@@ -65,7 +119,10 @@ const service = new AcquisitionCopilotService({
         newMessages: messages,
         result: {
           summary: `已分析：${input.prompt}`,
-          toolNames: []
+          toolNames: [],
+          ...(input.responseMode === "plan_draft"
+            ? { planDraft: structuredClone(planDraft) }
+            : {})
         }
       };
     }
@@ -159,6 +216,24 @@ const queuedReplay = await service.enqueueMessage(
 );
 assert.equal(queued.id, queuedReplay.id);
 assert.equal(queued.status, "queued");
+assert.equal(
+  queued.responseMode,
+  "assistant",
+  "omitting responseMode must preserve the legacy assistant behavior"
+);
+
+await assert.rejects(
+  service.enqueueMessage(
+    scope,
+    created.id,
+    "分析今天最值得跟进的客户",
+    "message-a",
+    "plan_draft"
+  ),
+  (error: unknown) =>
+    error instanceof AcquisitionCopilotError
+    && error.code === "idempotency_conflict"
+);
 
 const succeeded = await service.runTask(scope, queued.id);
 assert.equal(succeeded.status, "succeeded");
@@ -169,6 +244,7 @@ assert.equal(runs[0]?.teamId, "team-a");
 assert.equal(runs[0]?.actorId, "owner-a");
 assert.equal(runs[0]?.snapshot.connectionId, "connection-a");
 assert.deepEqual(runs[0]?.transcript, []);
+assert.equal(runs[0]?.responseMode, "assistant");
 assert.equal((await service.listMessages(scope, created.id)).length, 2);
 assert.equal(
   (await service.runTask(scope, queued.id)).id,
@@ -218,6 +294,35 @@ const failed = await service.runTask(scope, failedTask.id);
 assert.equal(failed.status, "failed");
 assert.equal(failed.errorCode, "MODEL_RATE_LIMITED");
 assert.equal(JSON.stringify(failed).includes("must-not-leak"), false);
+
+const draftTask = await service.enqueueMessage(
+  scope,
+  created.id,
+  "生成计划草稿",
+  "message-plan-draft",
+  "plan_draft"
+);
+assert.equal(draftTask.responseMode, "plan_draft");
+const generatedDraft = await service.runTask(scope, draftTask.id);
+assert.equal(generatedDraft.status, "succeeded");
+assert.deepEqual(
+  acquisitionPublicPlanCreateSchema.parse(
+    generatedDraft.result?.planDraft
+  ),
+  planDraft
+);
+
+const failedDraftTask = await service.enqueueMessage(
+  scope,
+  created.id,
+  "草稿失败",
+  "message-plan-draft-failure",
+  "plan_draft"
+);
+const failedDraft = await service.runTask(scope, failedDraftTask.id);
+assert.equal(failedDraft.status, "failed");
+assert.equal(failedDraft.errorCode, "PLAN_DRAFT_NOT_READY");
+assert.equal(JSON.stringify(failedDraft).includes("must-not-leak"), false);
 
 const dispatchFailureTask = await service.enqueueMessage(
   scope,

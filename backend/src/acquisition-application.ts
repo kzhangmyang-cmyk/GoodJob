@@ -100,7 +100,8 @@ import {
   AcquisitionPlanRunService
 } from "./acquisition-plan-run-service.js";
 import {
-  createPiAcquisitionCopilotRunner
+  createPiAcquisitionCopilotRunner,
+  createRoutedAcquisitionCopilotRunner
 } from "./acquisition-copilot-runner.js";
 import {
   AcquisitionCopilotService,
@@ -949,10 +950,11 @@ export async function createAcquisitionApplication(
     const judgments = createAcquisitionJudgmentPort({
       resolveSession: judgmentResolver
     });
+    const activeSearchConnections =
+      createAcquisitionActiveSearchConnectionDirectory(options.store);
     const planDraftGenerator = createAcquisitionPlanDraftGenerator({
       resolveSession: judgmentResolver,
-      connections:
-        createAcquisitionActiveSearchConnectionDirectory(options.store),
+      connections: activeSearchConnections,
       idFactory
     });
     const toolExecutor = new ProductionAcquisitionAgentToolExecutor({
@@ -991,7 +993,7 @@ export async function createAcquisitionApplication(
       store: options.store,
       gatewayFactory: options.modelGatewayFactory
     });
-    const copilotRunner = canonicalCopilotRunner(
+    const assistantRunner = canonicalCopilotRunner(
       createPiAcquisitionCopilotRunner({
         runtimeFactory: piRuntimeFactory,
         toolExecutor,
@@ -1000,6 +1002,10 @@ export async function createAcquisitionApplication(
         now: nowMs
       })
     );
+    const copilotRunner = createRoutedAcquisitionCopilotRunner({
+      assistantRunner,
+      planDraftGenerator
+    });
     const copilotService = new AcquisitionCopilotService({
       repository: repositories.copilot,
       runner: copilotRunner,

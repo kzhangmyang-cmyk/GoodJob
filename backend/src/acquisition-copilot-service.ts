@@ -9,6 +9,12 @@ import type {
 import type {
   AcquisitionPiModelSnapshot
 } from "./acquisition-pi-agent.js";
+import {
+  acquisitionPublicPlanCreateSchema,
+  type AcquisitionPublicPlanCreateInput
+} from "./acquisition-plan-contract.js";
+
+export type AcquisitionCopilotResponseMode = "assistant" | "plan_draft";
 
 export interface AcquisitionCopilotScope {
   ownerId: string;
@@ -37,10 +43,12 @@ export interface AcquisitionCopilotTask {
   kind: "message";
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   prompt: string;
+  responseMode?: AcquisitionCopilotResponseMode;
   inputMessageId?: string;
   result: {
     summary: string;
     toolNames: string[];
+    planDraft?: AcquisitionPublicPlanCreateInput;
   } | null;
   errorCode: string | null;
   createdAt: string;
@@ -374,6 +382,7 @@ export interface AcquisitionCopilotRunInput {
   snapshot: AcquisitionPiModelSnapshot;
   transcript: AgentMessage[];
   prompt: string;
+  responseMode: AcquisitionCopilotResponseMode;
 }
 
 export interface AcquisitionCopilotRunner {
@@ -382,6 +391,7 @@ export interface AcquisitionCopilotRunner {
     result: {
       summary: string;
       toolNames: string[];
+      planDraft?: AcquisitionPublicPlanCreateInput;
     };
   }>;
 }
@@ -498,13 +508,21 @@ function validSnapshot(
 function sanitizedResult(input: {
   summary: string;
   toolNames: string[];
+  planDraft?: AcquisitionPublicPlanCreateInput;
 }) {
   return {
     summary: requiredText(input.summary, "任务摘要", 4_000),
     toolNames: [...new Set(input.toolNames
       .map((item) => String(item).trim())
       .filter(Boolean))]
-      .slice(0, 50)
+      .slice(0, 50),
+    ...(input.planDraft === undefined
+      ? {}
+      : {
+          planDraft: acquisitionPublicPlanCreateSchema.parse(
+            structuredClone(input.planDraft)
+          )
+        })
   };
 }
 
@@ -585,7 +603,8 @@ export class AcquisitionCopilotService {
     scope: AcquisitionCopilotScope,
     sessionId: string,
     rawPrompt: string,
-    idempotencyKey: string
+    idempotencyKey: string,
+    responseMode: AcquisitionCopilotResponseMode = "assistant"
   ) {
     validScope(scope);
     const prompt = requiredText(rawPrompt, "message", 20_000);
@@ -601,7 +620,7 @@ export class AcquisitionCopilotService {
       scope,
       "enqueue_message",
       idempotencyKey,
-      { sessionId: session.id, prompt },
+      { sessionId: session.id, prompt, responseMode },
       "task",
       async () => {
         const now = this.#now();
@@ -616,6 +635,7 @@ export class AcquisitionCopilotService {
           kind: "message",
           status: "queued",
           prompt,
+          responseMode,
           inputMessageId,
           result: null,
           errorCode: null,
@@ -826,7 +846,8 @@ export class AcquisitionCopilotService {
         transcript: existing
           .filter((record) => !pendingInputMessageIds.has(record.id))
           .map((record) => clone(record.message)),
-        prompt: task.prompt
+        prompt: task.prompt,
+        responseMode: task.responseMode ?? "assistant"
       });
       this.#validateNewMessages(response.newMessages, task.prompt);
       const startSequence = existing.length;

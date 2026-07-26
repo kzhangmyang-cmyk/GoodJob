@@ -1205,6 +1205,36 @@ test("v1 copilot messages return 202 tasks and remain owner-and-team scoped", as
     assert.equal(queued.response.status, 202);
     assert.equal(queued.json.kind, "message");
     assert.equal(queued.json.status, "queued");
+    assert.equal(queued.json.responseMode, "assistant");
+
+    const invalidMode = await fixture.request(
+      `/api/v1/acquisition/copilot/sessions/${session.json.id}/messages`,
+      write({
+        message: "生成计划草稿",
+        responseMode: "unsupported"
+      }, "copilot-message-invalid-mode")
+    );
+    assert.equal(invalidMode.response.status, 400);
+
+    const extraProperty = await fixture.request(
+      `/api/v1/acquisition/copilot/sessions/${session.json.id}/messages`,
+      write({
+        message: "生成计划草稿",
+        responseMode: "plan_draft",
+        ignored: true
+      }, "copilot-message-extra-property")
+    );
+    assert.equal(extraProperty.response.status, 400);
+
+    const conflictingMode = await fixture.request(
+      `/api/v1/acquisition/copilot/sessions/${session.json.id}/messages`,
+      write({
+        message: "分析今天值得人工跟进的客户",
+        responseMode: "plan_draft"
+      }, "copilot-message")
+    );
+    assert.equal(conflictingMode.response.status, 409);
+    assert.equal(conflictingMode.json.code, "idempotency_conflict");
 
     let task = queued;
     for (let index = 0; index < 20 && task.json.status === "queued"; index++) {
@@ -1215,6 +1245,7 @@ test("v1 copilot messages return 202 tasks and remain owner-and-team scoped", as
     }
     assert.equal(task.response.status, 200);
     assert.equal(task.json.status, "succeeded");
+    assert.equal(task.json.responseMode, "assistant");
     assert.equal(task.json.result.summary, "分析完成：分析今天值得人工跟进的客户");
 
     const messages = await fixture.request(
