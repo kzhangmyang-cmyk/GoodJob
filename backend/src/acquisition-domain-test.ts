@@ -277,6 +277,124 @@ test("rules qualification creates append-only decisions and a separate financial
   );
 });
 
+test("current financial value selects the newest record for the latest qualification without mutating state", async () => {
+  const { repository, service } = createHarness();
+  const { candidate } = await createOrganizationCandidate(service);
+  const qualified = await service.qualifyCandidate(
+    ownerScope,
+    candidate.id,
+    strongQualification(),
+    healthyFinancialValue(),
+    "qualify:current-financial"
+  );
+  const timestamp = "2026-07-25T00:00:00.000Z";
+  await repository.appendFinancialValue({
+    ...qualified.financialValue,
+    id: "financial-value-a",
+    createdAt: timestamp
+  });
+  await repository.appendFinancialValue({
+    ...qualified.financialValue,
+    id: "financial-value-z",
+    createdAt: timestamp
+  });
+
+  const candidateBefore = await service.getCandidate(
+    ownerScope,
+    candidate.id
+  );
+  const valuesBefore = await repository.listFinancialValues(
+    ownerScope,
+    candidate.id
+  );
+  const current = await service.getCurrentFinancialValueDecision(
+    ownerScope,
+    candidate.id
+  );
+
+  assert.equal(current.id, "financial-value-z");
+  assert.deepEqual(
+    await repository.listFinancialValues(ownerScope, candidate.id),
+    valuesBefore
+  );
+  assert.deepEqual(
+    await service.getCandidate(ownerScope, candidate.id),
+    candidateBefore
+  );
+});
+
+test("current financial value is absent when the candidate has no current qualification", async () => {
+  const { service } = createHarness();
+  const { candidate } = await createOrganizationCandidate(service);
+  const qualified = await service.qualifyCandidate(
+    ownerScope,
+    candidate.id,
+    strongQualification(),
+    healthyFinancialValue(),
+    "qualify:historical-financial"
+  );
+  const evidence = await service.appendEvidence(
+    ownerScope,
+    searchEvidence("organization", "invalidate-financial"),
+    "evidence:invalidate-financial"
+  );
+  await service.attachEvidenceToCandidate(
+    ownerScope,
+    candidate.id,
+    evidence.id,
+    "attach:invalidate-financial"
+  );
+  assert.equal(
+    (await service.listFinancialValueDecisions(ownerScope, candidate.id))[0]
+      ?.qualificationDecisionId,
+    qualified.qualification.id
+  );
+
+  await assert.rejects(
+    service.getCurrentFinancialValueDecision(ownerScope, candidate.id),
+    (error: unknown) => error instanceof AcquisitionDomainError
+      && error.code === "resource_not_found"
+      && error.status === 404
+  );
+});
+
+test("current financial value never falls back to an older qualification", async () => {
+  const { repository, service } = createHarness();
+  const { candidate } = await createOrganizationCandidate(service);
+  const old = await service.qualifyCandidate(
+    ownerScope,
+    candidate.id,
+    strongQualification(),
+    healthyFinancialValue(),
+    "qualify:old-financial"
+  );
+  const currentQualification = {
+    ...old.qualification,
+    id: "qualification-current",
+    decisionVersion: "decision-v2",
+    createdAt: "2026-07-25T00:00:00.000Z"
+  };
+  await repository.appendQualificationDecision(currentQualification);
+  const currentCandidate = await service.getCandidate(
+    ownerScope,
+    candidate.id
+  );
+  await repository.saveCandidate({
+    ...currentCandidate,
+    latestDecisionId: currentQualification.id,
+    latestDecisionVersion: currentQualification.decisionVersion,
+    version: currentCandidate.version + 1,
+    updatedAt: "2026-07-25T00:00:00.000Z"
+  });
+
+  await assert.rejects(
+    service.getCurrentFinancialValueDecision(ownerScope, candidate.id),
+    (error: unknown) => error instanceof AcquisitionDomainError
+      && error.code === "resource_not_found"
+      && error.status === 404
+  );
+});
+
 test("hard gates cannot be overridden by high model scores", async () => {
   const { service } = createHarness();
   const { candidate } = await createIndividualCandidate(service);

@@ -580,15 +580,22 @@ test("v1 router exposes the full evidence-to-outcome workflow without automatic 
     );
     assert.equal(candidateResult.response.status, 201);
     assert.deepEqual(Object.keys(candidateResult.json).sort(), [
+      "approvedDecisionVersion",
       "createdAt",
       "creditCode",
       "domain",
       "evidenceIds",
       "id",
+      "latestDecisionVersion",
       "name",
       "region",
-      "status"
+      "status",
+      "subjectKind",
+      "updatedAt"
     ]);
+    assert.equal(candidateResult.json.subjectKind, "organization");
+    assert.equal(candidateResult.json.latestDecisionVersion, null);
+    assert.equal(candidateResult.json.approvedDecisionVersion, null);
     const candidateId = candidateResult.json.id as string;
 
     const hidden = await fixture.request(
@@ -616,6 +623,11 @@ test("v1 router exposes the full evidence-to-outcome workflow without automatic 
       write({ evidenceId: secondEvidence.json.id }, "attach-org-2")
     );
     assert.equal(attached.response.status, 200);
+    assert.equal(attached.json.subjectKind, "organization");
+    assert.equal(attached.json.status, "normalized");
+    assert.equal(attached.json.latestDecisionVersion, null);
+    assert.equal(attached.json.approvedDecisionVersion, null);
+    assert.ok(attached.json.updatedAt);
     assert.deepEqual(
       attached.json.evidenceIds,
       [evidenceId, secondEvidence.json.id]
@@ -640,10 +652,15 @@ test("v1 router exposes the full evidence-to-outcome workflow without automatic 
     );
     assert.equal(qualification.response.status, 200);
     assert.deepEqual(Object.keys(qualification.json).sort(), [
+      "candidateId",
       "confidence",
+      "createdAt",
       "decisionEngine",
+      "decisionVersion",
       "evidence",
       "grade",
+      "hardGateFailures",
+      "id",
       "model",
       "modelProvider",
       "negativeSignals",
@@ -654,6 +671,39 @@ test("v1 router exposes the full evidence-to-outcome workflow without automatic 
       "ruleVersion",
       "score"
     ]);
+    assert.equal(qualification.json.candidateId, candidateId);
+    assert.equal(qualification.json.decisionVersion, "decision-v1");
+    assert.deepEqual(qualification.json.hardGateFailures, []);
+
+    const financial = await fixture.request(
+      `/api/v1/acquisition/candidates/${candidateId}/financial-value`
+    );
+    assert.equal(financial.response.status, 200);
+    assert.deepEqual(Object.keys(financial.json).sort(), [
+      "candidateId",
+      "createdAt",
+      "currency",
+      "expectedContributionMinor",
+      "expectedGrossProfitMinor",
+      "expectedRevenueMinor",
+      "factors",
+      "grade",
+      "id",
+      "qualificationDecisionId",
+      "score",
+      "version"
+    ]);
+    assert.equal(financial.json.candidateId, candidateId);
+    assert.equal(
+      financial.json.qualificationDecisionId,
+      qualification.json.id
+    );
+    assert.equal(financial.json.currency, "CNY");
+    assert.equal(financial.json.expectedRevenueMinor, 2_100_000);
+    assert.equal(financial.json.expectedGrossProfitMinor, 1_260_000);
+    assert.equal(financial.json.expectedContributionMinor, 1_045_000);
+    assert.equal("ownerId" in financial.json, false);
+    assert.equal("inputSnapshotHash" in financial.json, false);
 
     const cardResult = await fixture.request(
       `/api/v1/acquisition/candidates/${candidateId}/battle-card`,
@@ -708,6 +758,16 @@ test("v1 router exposes the full evidence-to-outcome workflow without automatic 
     );
     assert.equal(approved.response.status, 200);
     assert.equal(approved.json.review.action, "approved");
+    assert.equal(approved.json.candidate.subjectKind, "organization");
+    assert.equal(
+      approved.json.candidate.latestDecisionVersion,
+      rawDecision.decisionVersion
+    );
+    assert.equal(
+      approved.json.candidate.approvedDecisionVersion,
+      rawDecision.decisionVersion
+    );
+    assert.ok(approved.json.candidate.updatedAt);
 
     const reviews = await fixture.request(
       `/api/v1/acquisition/candidates/${candidateId}/reviews`
@@ -801,6 +861,7 @@ test("v1 router supports individual demand signals and research start", async ()
     );
     assert.equal(candidate.response.status, 201);
     assert.deepEqual(Object.keys(candidate.json).sort(), [
+      "approvedDecisionVersion",
       "buyingStage",
       "demandCategory",
       "demandSummary",
@@ -808,13 +869,22 @@ test("v1 router supports individual demand signals and research start", async ()
       "firstSeenAt",
       "id",
       "lastSeenAt",
+      "latestDecisionVersion",
       "locationHint",
       "negativeSignals",
       "publicActorKey",
       "publicDisplayName",
       "publicProfileUrl",
-      "sourcePlatform"
+      "sourcePlatform",
+      "status",
+      "subjectKind",
+      "updatedAt"
     ]);
+    assert.equal(candidate.json.subjectKind, "individual");
+    assert.equal(candidate.json.status, "normalized");
+    assert.equal(candidate.json.latestDecisionVersion, null);
+    assert.equal(candidate.json.approvedDecisionVersion, null);
+    assert.equal(candidate.json.updatedAt, candidate.json.lastSeenAt);
 
     await fixture.request(
       `/api/v1/acquisition/candidates/${candidate.json.id}/qualification`,
@@ -836,6 +906,13 @@ test("v1 router supports individual demand signals and research start", async ()
     );
     assert.equal(review.response.status, 200);
     assert.equal(review.json.research.status, "pending");
+    assert.equal(review.json.candidate.subjectKind, "individual");
+    assert.equal(
+      review.json.candidate.latestDecisionVersion,
+      decision.decisionVersion
+    );
+    assert.equal(review.json.candidate.approvedDecisionVersion, null);
+    assert.ok(review.json.candidate.updatedAt);
 
     const research = await fixture.request(
       `/api/v1/acquisition/candidates/${candidate.json.id}/research`,
@@ -845,6 +922,71 @@ test("v1 router supports individual demand signals and research start", async ()
     assert.equal(research.json.kind, "candidate_research");
     assert.equal(research.json.status, "running");
     assert.equal(research.json.resourceId, review.json.research.id);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("v1 financial value read is tenant-scoped and never estimates a missing current value", async () => {
+  const fixture = await createFixture();
+  try {
+    const evidence = await fixture.request(
+      "/api/v1/acquisition/evidence",
+      write(
+        evidenceBody("organization", "missing-financial"),
+        "evidence-missing-financial"
+      )
+    );
+    const candidate = await fixture.request(
+      "/api/v1/acquisition/candidates",
+      write({
+        subjectKind: "organization",
+        name: "未评分财务值测试企业",
+        domain: "missing-financial.example.cn",
+        region: "福建厦门",
+        creditCode: null,
+        organizationId: "organization-missing-financial",
+        tenantProspectId: "prospect-missing-financial",
+        evidenceIds: [evidence.json.id]
+      }, "candidate-missing-financial")
+    );
+    const scope = {
+      ownerId: OWNER_A,
+      teamId: TEAM_A,
+      actorId: OWNER_A
+    };
+    assert.equal(
+      (await fixture.domainService.listFinancialValueDecisions(
+        scope,
+        candidate.json.id
+      )).length,
+      0
+    );
+
+    const missing = await fixture.request(
+      `/api/v1/acquisition/candidates/${candidate.json.id}/financial-value`
+    );
+    assert.equal(missing.response.status, 404);
+    assert.equal(missing.json.code, "resource_not_found");
+
+    const hidden = await fixture.request(
+      `/api/v1/acquisition/candidates/${candidate.json.id}/financial-value`,
+      {},
+      { ownerId: "owner-b", teamId: TEAM_A }
+    );
+    assert.equal(hidden.response.status, 404);
+    assert.equal(hidden.json.code, "resource_not_found");
+    assert.equal(
+      (await fixture.domainService.listFinancialValueDecisions(
+        scope,
+        candidate.json.id
+      )).length,
+      0
+    );
+    const unchanged = await fixture.request(
+      `/api/v1/acquisition/candidates/${candidate.json.id}`
+    );
+    assert.deepEqual(unchanged.json, candidate.json);
   } finally {
     await fixture.close();
   }

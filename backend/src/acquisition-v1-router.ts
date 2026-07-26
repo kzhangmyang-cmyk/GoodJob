@@ -19,6 +19,7 @@ import type {
   BattleCard,
   CandidateStatus,
   DiscoveryEvidence,
+  FinancialValueDecision,
   LeadConversionRecord,
   LiveOutcomeFeedbackEvent,
   QualificationDecision,
@@ -535,6 +536,13 @@ function publicEvidence(evidence: DiscoveryEvidence) {
 }
 
 function publicCandidate(candidate: AcquisitionCandidate) {
+  const common = {
+    subjectKind: candidate.profile.kind,
+    status: candidate.status,
+    latestDecisionVersion: candidate.latestDecisionVersion,
+    approvedDecisionVersion: candidate.approvedDecisionVersion,
+    updatedAt: candidate.updatedAt
+  };
   if (candidate.profile.kind === "organization") {
     return {
       id: candidate.id,
@@ -543,7 +551,7 @@ function publicCandidate(candidate: AcquisitionCandidate) {
       region: candidate.profile.region,
       creditCode: candidate.profile.creditCode,
       evidenceIds: [...candidate.evidenceIds],
-      status: candidate.status,
+      ...common,
       createdAt: candidate.createdAt
     };
   }
@@ -559,6 +567,7 @@ function publicCandidate(candidate: AcquisitionCandidate) {
     locationHint: candidate.profile.locationHint,
     buyingStage: candidate.profile.buyingStage,
     negativeSignals: [...candidate.profile.negativeSignals],
+    ...common,
     firstSeenAt: candidate.createdAt,
     lastSeenAt: candidate.updatedAt
   };
@@ -566,6 +575,9 @@ function publicCandidate(candidate: AcquisitionCandidate) {
 
 function publicQualification(decision: QualificationDecision) {
   return {
+    id: decision.id,
+    candidateId: decision.candidateId,
+    decisionVersion: decision.decisionVersion,
     decisionEngine: decision.decisionEngine,
     grade: decision.grade,
     score: decision.score,
@@ -578,7 +590,26 @@ function publicQualification(decision: QualificationDecision) {
     ruleVersion: decision.ruleVersion,
     promptVersion: decision.promptVersion,
     modelProvider: decision.modelProvider,
-    model: decision.model
+    model: decision.model,
+    hardGateFailures: [...decision.hardGateFailures],
+    createdAt: decision.createdAt
+  };
+}
+
+function publicFinancialValue(decision: FinancialValueDecision) {
+  return {
+    id: decision.id,
+    candidateId: decision.candidateId,
+    qualificationDecisionId: decision.qualificationDecisionId,
+    version: decision.version,
+    grade: decision.grade,
+    score: decision.score,
+    currency: decision.currency,
+    expectedRevenueMinor: decision.expectedRevenueMinor,
+    expectedGrossProfitMinor: decision.expectedGrossProfitMinor,
+    expectedContributionMinor: decision.expectedContributionMinor,
+    factors: structuredClone(decision.factors),
+    createdAt: decision.createdAt
   };
 }
 
@@ -1246,6 +1277,18 @@ export function createAcquisitionV1Router(
         createdAt: result.qualification.createdAt,
         completedAt: result.qualification.createdAt
       }));
+    })
+  );
+
+  router.get(
+    "/api/v1/acquisition/candidates/:id/financial-value",
+    asyncRoute(async (req, res) => {
+      const decision =
+        await options.domainService.getCurrentFinancialValueDecision(
+          scopeFromRequest(req),
+          parse(idSchema, req.params.id)
+        );
+      res.json(publicFinancialValue(decision));
     })
   );
 

@@ -834,6 +834,31 @@ export class AcquisitionDomainService {
     return this.repository.listFinancialValues(scope, candidateId);
   }
 
+  async getCurrentFinancialValueDecision(
+    scope: AcquisitionActorScope,
+    candidateId: string
+  ): Promise<FinancialValueDecision> {
+    const candidate = await this.requireCandidate(scope, candidateId);
+    if (!candidate.latestDecisionId) {
+      fail("resource_not_found", "候选当前没有财务价值决定", 404);
+    }
+    const values = await this.repository.listFinancialValues(
+      scope,
+      candidateId
+    );
+    const current = values
+      .filter((value) =>
+        value.qualificationDecisionId === candidate.latestDecisionId)
+      .sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id))
+      .at(-1);
+    if (!current) {
+      fail("resource_not_found", "候选当前没有财务价值决定", 404);
+    }
+    return current;
+  }
+
   async createBattleCard(
     scope: AcquisitionActorScope,
     candidateId: string,

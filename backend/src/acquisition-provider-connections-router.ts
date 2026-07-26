@@ -325,6 +325,11 @@ function publicConnection(connection: ProviderConnection) {
     kind: "search" as const,
     status,
     credentialVersion: acquisitionProviderConnectionVersion(connection),
+    lastHealthAt: connection.lastHealthAt || null,
+    lastHealthStatus: connection.lastHealthStatus,
+    lastErrorCode: connection.lastErrorCode || null,
+    lastHealthMessage: connection.lastHealthMessage,
+    usage: connection.usage,
     createdAt: connection.createdAt
   };
 }
@@ -345,6 +350,11 @@ function publicSystemConnection(
     kind: connection.kind,
     status: connection.status,
     credentialVersion: connection.credentialVersion,
+    lastHealthAt: null,
+    lastHealthStatus: "untested",
+    lastErrorCode: null,
+    lastHealthMessage: "系统托管来源",
+    usage: "",
     createdAt: SYSTEM_CONNECTION_CREATED_AT
   };
 }

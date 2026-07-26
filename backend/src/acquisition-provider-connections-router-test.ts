@@ -270,10 +270,15 @@ test("v1 creates an owner-scoped BYOK search connection with write-only encrypte
       "credentialVersion",
       "id",
       "kind",
+      "lastErrorCode",
+      "lastHealthAt",
+      "lastHealthMessage",
+      "lastHealthStatus",
       "ownerId",
       "providerId",
       "status",
-      "teamId"
+      "teamId",
+      "usage"
     ]);
     assert.equal(result.json.ownerId, OWNER_A);
     assert.equal(result.json.teamId, TEAM_A);
@@ -281,6 +286,11 @@ test("v1 creates an owner-scoped BYOK search connection with write-only encrypte
     assert.equal(result.json.kind, "search");
     assert.equal(result.json.status, "active");
     assert.equal(result.json.credentialVersion, 1);
+    assert.equal(result.json.lastHealthAt, null);
+    assert.equal(result.json.lastHealthStatus, "untested");
+    assert.equal(result.json.lastErrorCode, null);
+    assert.equal(result.json.lastHealthMessage, "");
+    assert.equal(result.json.usage, "");
     assert.equal(JSON.stringify(result.json).includes(apiKey), false);
 
     assert.equal(fixture.store.providerConnections.length, 1);
@@ -527,6 +537,21 @@ test("v1 connection reads include fixed systems and enforce exact owner-and-team
       publicVisible.credentialVersion,
       acquisitionProviderConnectionVersion(visible)
     );
+    assert.deepEqual(publicVisible, {
+      id: visible.id,
+      ownerId: OWNER_A,
+      teamId: TEAM_A,
+      providerId: visible.providerId,
+      kind: "search",
+      status: "active",
+      credentialVersion: acquisitionProviderConnectionVersion(visible),
+      lastHealthAt: null,
+      lastHealthStatus: "untested",
+      lastErrorCode: null,
+      lastHealthMessage: "",
+      usage: "",
+      createdAt: visible.createdAt
+    });
     assert.equal(
       JSON.stringify(list.json).includes(
         visible.configurationEncrypted
@@ -542,6 +567,7 @@ test("v1 connection reads include fixed systems and enforce exact owner-and-team
     assert.equal("configurationEncrypted" in detail.json, false);
     assert.equal("credentialRef" in detail.json, false);
     assert.equal("apiKey" in detail.json, false);
+    assert.equal("baseUrl" in detail.json, false);
 
     const system = await fixture.request(
       `/api/v1/acquisition/provider-connections/${
@@ -552,6 +578,14 @@ test("v1 connection reads include fixed systems and enforce exact owner-and-team
     assert.equal(system.json.kind, "content_fetch");
     assert.equal(system.json.ownerId, "system");
     assert.equal(system.json.teamId, null);
+    assert.equal(system.json.lastHealthAt, null);
+    assert.equal(system.json.lastHealthStatus, "untested");
+    assert.equal(system.json.lastErrorCode, null);
+    assert.equal(system.json.lastHealthMessage, "系统托管来源");
+    assert.equal(system.json.usage, "");
+    assert.equal("credentialRef" in system.json, false);
+    assert.equal("configurationEncrypted" in system.json, false);
+    assert.equal("baseUrl" in system.json, false);
 
     const hidden = await fixture.request(
       `/api/v1/acquisition/provider-connections/${otherOwner.id}`
@@ -731,6 +765,72 @@ test("v1 connection test delegates without exposing the credential secret and pe
     assert.equal(
       acquisitionProviderConnectionVersion(connection),
       beforeVersion
+    );
+    const refreshed = await fixture.request(
+      `/api/v1/acquisition/provider-connections/${created.json.id}`
+    );
+    assert.equal(refreshed.response.status, 200);
+    assert.equal(refreshed.json.lastHealthStatus, "passed");
+    assert.equal(
+      refreshed.json.lastHealthAt,
+      "2026-07-24T00:00:00.000Z"
+    );
+    assert.equal(
+      refreshed.json.lastHealthMessage,
+      "腾讯云联网搜索连接通过"
+    );
+    assert.equal(refreshed.json.lastErrorCode, null);
+    assert.equal(refreshed.json.usage, "fixture usage");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("v1 failed connection tests remain visible through the public health projection", async () => {
+  const fixture = await createFixture({
+    async connectionTester() {
+      return {
+        ok: false,
+        message: "数据源授权已失效，请检查连接配置",
+        errorCode: "PROVIDER_AUTH_FAILED",
+        retryable: false,
+        retryAfterAt: null,
+        usage: ""
+      };
+    }
+  });
+  try {
+    const created = await fixture.request(
+      "/api/v1/acquisition/provider-connections",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "failed-health-create" },
+        body: JSON.stringify({
+          providerId: "serpapi",
+          apiKey: "failed-health-private-key"
+        })
+      }
+    );
+    const tested = await fixture.request(
+      `/api/v1/acquisition/provider-connections/${created.json.id}/test`,
+      { method: "POST" }
+    );
+    assert.equal(tested.response.status, 200);
+    assert.equal(tested.json.ok, false);
+
+    const refreshed = await fixture.request(
+      `/api/v1/acquisition/provider-connections/${created.json.id}`
+    );
+    assert.equal(refreshed.response.status, 200);
+    assert.equal(refreshed.json.lastHealthStatus, "failed");
+    assert.equal(
+      refreshed.json.lastHealthMessage,
+      "数据源授权已失效，请检查连接配置"
+    );
+    assert.equal(refreshed.json.lastErrorCode, "provider_auth_failed");
+    assert.equal(
+      JSON.stringify(refreshed.json).includes("failed-health-private-key"),
+      false
     );
   } finally {
     await fixture.close();
