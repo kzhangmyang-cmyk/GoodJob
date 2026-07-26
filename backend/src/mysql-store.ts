@@ -5102,6 +5102,65 @@ async function ensureUniqueIndex(pool: mysql.Pool, table: string, index: string,
   await pool.query(`ALTER TABLE \`${table}\` ADD UNIQUE KEY \`${index}\` (${columns.map((column) => `\`${column}\``).join(", ")})`);
 }
 
+async function uniqueIndexMatches(
+  pool: mysql.Pool,
+  table: string,
+  index: string,
+  columns: string[]
+) {
+  const [result] = await pool.query(
+    `SELECT column_name AS columnName, non_unique AS nonUnique
+     FROM information_schema.statistics
+     WHERE table_schema = DATABASE()
+       AND table_name = ?
+       AND index_name = ?
+     ORDER BY seq_in_index`,
+    [table, index]
+  );
+  const rows = result as Array<{
+    columnName: string;
+    nonUnique: number;
+  }>;
+  return rows.length === columns.length
+    && rows.every((row, position) =>
+      Number(row.nonUnique) === 0
+      && row.columnName === columns[position]);
+}
+
+async function ensureUniqueIndexAtomically(
+  pool: mysql.Pool,
+  table: string,
+  index: string,
+  columns: string[]
+) {
+  const [result] = await pool.query(
+    `SELECT column_name AS columnName, non_unique AS nonUnique
+     FROM information_schema.statistics
+     WHERE table_schema = DATABASE()
+       AND table_name = ?
+       AND index_name = ?
+     ORDER BY seq_in_index`,
+    [table, index]
+  );
+  const rows = result as Array<{
+    columnName: string;
+    nonUnique: number;
+  }>;
+  const matches = rows.length === columns.length
+    && rows.every((row, position) =>
+      Number(row.nonUnique) === 0
+      && row.columnName === columns[position]);
+  if (matches) return;
+  const add = `ADD UNIQUE KEY \`${index}\` (${
+    columns.map((column) => `\`${column}\``).join(", ")
+  })`;
+  await pool.query(
+    rows.length > 0
+      ? `ALTER TABLE \`${table}\` DROP INDEX \`${index}\`, ${add}`
+      : `ALTER TABLE \`${table}\` ${add}`
+  );
+}
+
 export async function ensureProviderConnectionOwnerTeamUniqueness(
   pool: mysql.Pool
 ) {
@@ -5137,15 +5196,28 @@ export async function ensureProviderConnectionOwnerTeamUniqueness(
       }`
     );
   }
-  await ensureUniqueIndex(
-    pool,
-    "provider_connections",
-    "uk_provider_connection_owner_team",
-    ["provider_id", "owner_id", "team_id"]
-  );
+  const table = "provider_connections";
+  const canonical = "uk_provider_connection_owner_team";
+  const temporary = "uk_provider_connection_owner_team_migration";
+  const columns = ["provider_id", "owner_id", "team_id"];
+  if (!(await uniqueIndexMatches(pool, table, canonical, columns))) {
+    await ensureUniqueIndexAtomically(
+      pool,
+      table,
+      temporary,
+      columns
+    );
+    await ensureUniqueIndexAtomically(
+      pool,
+      table,
+      canonical,
+      columns
+    );
+  }
+  await dropIndexIfExists(pool, table, temporary);
   await dropIndexIfExists(
     pool,
-    "provider_connections",
+    table,
     "uk_provider_connection_owner"
   );
 }

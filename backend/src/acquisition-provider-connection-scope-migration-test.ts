@@ -37,6 +37,7 @@ interface IndexDefinition {
 class FakeProviderConnectionIndexPool {
   readonly calls: string[] = [];
   readonly indexes = new Map<string, IndexDefinition>();
+  failIndexName: string | null;
   readonly duplicateScopes: Array<{
     providerId: string;
     ownerId: string;
@@ -49,12 +50,14 @@ class FakeProviderConnectionIndexPool {
     indexes: Record<string, IndexDefinition>,
     duplicateScopes: FakeProviderConnectionIndexPool[
       "duplicateScopes"
-    ] = []
+    ] = [],
+    failIndexName: string | null = null
   ) {
     for (const [name, definition] of Object.entries(indexes)) {
       this.indexes.set(name, structuredClone(definition));
     }
     this.duplicateScopes = structuredClone(duplicateScopes);
+    this.failIndexName = failIndexName;
   }
 
   async query(sql: string, values: unknown[] = []) {
@@ -80,10 +83,28 @@ class FakeProviderConnectionIndexPool {
         []
       ];
     }
+    const replace = normalized.match(
+      /ALTER TABLE `provider_connections` DROP INDEX `([^`]+)`, ADD UNIQUE KEY `([^`]+)` \(([^)]+)\)/u
+    );
+    if (replace) {
+      if (replace[2] === this.failIndexName) {
+        throw new Error(`injected DDL failure: ${replace[2]}`);
+      }
+      this.indexes.delete(replace[1]!);
+      this.indexes.set(replace[2]!, {
+        columns: [...replace[3]!.matchAll(/`([^`]+)`/gu)]
+          .map((match) => match[1]!),
+        unique: true
+      });
+      return [{ affectedRows: 0 }, []];
+    }
     const add = normalized.match(
       /ALTER TABLE `provider_connections` ADD UNIQUE KEY `([^`]+)` \(([^)]+)\)/u
     );
     if (add) {
+      if (add[1] === this.failIndexName) {
+        throw new Error(`injected DDL failure: ${add[1]}`);
+      }
       this.indexes.set(add[1]!, {
         columns: [...add[2]!.matchAll(/`([^`]+)`/gu)]
           .map((match) => match[1]!),
@@ -142,6 +163,106 @@ test("legacy provider connection indexes upgrade safely and idempotently", async
     pool.calls.filter((sql) => sql.startsWith("ALTER TABLE")),
     firstPassAlterCalls
   );
+});
+
+test("a malformed canonical index without legacy protection is replaced behind a temporary guard", async () => {
+  const pool = new FakeProviderConnectionIndexPool({
+    uk_provider_connection_owner_team: {
+      columns: ["provider_id", "owner_id"],
+      unique: true
+    }
+  });
+
+  await ensureProviderConnectionOwnerTeamUniqueness(asPool(pool));
+  assert.deepEqual(
+    pool.indexes.get("uk_provider_connection_owner_team"),
+    {
+      columns: ["provider_id", "owner_id", "team_id"],
+      unique: true
+    }
+  );
+  assert.equal(
+    pool.indexes.has("uk_provider_connection_owner_team_migration"),
+    false
+  );
+  const alters = pool.calls.filter((sql) => sql.startsWith("ALTER TABLE"));
+  assert.match(
+    alters[0]!,
+    /ADD UNIQUE KEY `uk_provider_connection_owner_team_migration`/u
+  );
+  assert.match(
+    alters[1]!,
+    /DROP INDEX `uk_provider_connection_owner_team`, ADD UNIQUE KEY `uk_provider_connection_owner_team`/u
+  );
+});
+
+test("a malformed temporary index is repaired atomically before canonical replacement", async () => {
+  const pool = new FakeProviderConnectionIndexPool({
+    uk_provider_connection_owner_team: {
+      columns: ["provider_id", "owner_id"],
+      unique: true
+    },
+    uk_provider_connection_owner_team_migration: {
+      columns: ["owner_id", "team_id"],
+      unique: false
+    }
+  });
+
+  await ensureProviderConnectionOwnerTeamUniqueness(asPool(pool));
+  assert.deepEqual(
+    pool.indexes.get("uk_provider_connection_owner_team"),
+    {
+      columns: ["provider_id", "owner_id", "team_id"],
+      unique: true
+    }
+  );
+  assert.equal(
+    pool.indexes.has("uk_provider_connection_owner_team_migration"),
+    false
+  );
+  const firstAlter = pool.calls.find((sql) =>
+    sql.startsWith("ALTER TABLE")
+  );
+  assert.match(
+    firstAlter!,
+    /DROP INDEX `uk_provider_connection_owner_team_migration`, ADD UNIQUE KEY `uk_provider_connection_owner_team_migration`/u
+  );
+});
+
+test("canonical DDL failure leaves the temporary unique guard for a safe retry", async () => {
+  const canonical = "uk_provider_connection_owner_team";
+  const temporary = "uk_provider_connection_owner_team_migration";
+  const pool = new FakeProviderConnectionIndexPool(
+    {
+      [canonical]: {
+        columns: ["provider_id", "owner_id"],
+        unique: true
+      }
+    },
+    [],
+    canonical
+  );
+
+  await assert.rejects(
+    ensureProviderConnectionOwnerTeamUniqueness(asPool(pool)),
+    /injected DDL failure/u
+  );
+  assert.deepEqual(pool.indexes.get(temporary), {
+    columns: ["provider_id", "owner_id", "team_id"],
+    unique: true
+  });
+  assert.deepEqual(pool.indexes.get(canonical), {
+    columns: ["provider_id", "owner_id"],
+    unique: true
+  });
+
+  pool.failIndexName = null;
+  await ensureProviderConnectionOwnerTeamUniqueness(asPool(pool));
+  assert.deepEqual(pool.indexes.get(canonical), {
+    columns: ["provider_id", "owner_id", "team_id"],
+    unique: true
+  });
+  assert.equal(pool.indexes.has(temporary), false);
 });
 
 test("provider connection scope duplicates fail fast without deleting BYOK rows", async () => {
