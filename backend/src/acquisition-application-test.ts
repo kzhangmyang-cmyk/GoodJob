@@ -4,8 +4,13 @@ import express, { type RequestHandler } from "express";
 import type mysql from "mysql2/promise";
 import {
   ACQUISITION_FINAL_ANSWER_TOOL,
-  ACQUISITION_PI_PROMPT_ID
+  ACQUISITION_PI_PROMPT_ID,
+  ACQUISITION_PLAN_DRAFT_PROMPT_ID,
+  ACQUISITION_PLAN_DRAFT_SUBMIT_TOOL
 } from "./acquisition-model-content.js";
+import {
+  AcquisitionPlanDraftError
+} from "./acquisition-plan-draft.js";
 import {
   acquisitionProviderConnectionVersion,
   createAcquisitionActiveSearchConnectionDirectory,
@@ -25,6 +30,9 @@ import {
 import {
   ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS
 } from "./acquisition-discovery-providers.js";
+import {
+  createDefaultProviderCatalog
+} from "./provider-catalog.js";
 import type {
   AcquisitionPlanPayload
 } from "./acquisition-plan-run-repository.js";
@@ -95,10 +103,10 @@ function isolatedMemoryStore() {
     leads: [],
     leadActivities: [],
     leadSourceEvents: [],
-    providerCatalog: [],
+    providerCatalog: createDefaultProviderCatalog(),
     providerConnections: [{
       id: "fake-search-connection",
-      providerId: "fake-official-search",
+      providerId: "brave",
       scope: "personal",
       credentialRef: "credential-ref-application",
       configurationEncrypted: "encrypted-test-configuration",
@@ -455,7 +463,7 @@ function planPayload(
     },
     providerConnections: [{
       connectionId: "fake-search-connection",
-      providerId: "fake-official-search",
+      providerId: "brave",
       kind: "search",
       status: "active",
       credentialVersion: Date.parse("2026-07-24T00:00:00.000Z")
@@ -573,6 +581,227 @@ test("application search directory scopes and stably sorts active personal offic
     credentialVersion: 4
   }]);
   assert.equal(fixture.readBarrierCount(), 1);
+});
+
+test("application search directory rejects non-executable official catalog entries", async () => {
+  const fixture = isolatedMemoryStore();
+  const base = fixture.store.providerConnections[0]!;
+  fixture.store.providerConnections = [
+    ["brave", "connection-review"],
+    ["serper", "connection-disabled"],
+    ["serpapi", "connection-not-api"],
+    ["tavily", "connection-not-key-backed"]
+  ].map(([providerId, id], index) => ({
+    ...base,
+    id: id!,
+    providerId: providerId!,
+    credentialVersion: index + 1
+  }));
+  const brave = fixture.store.providerCatalog.find(
+    (item) => item.code === "brave"
+  );
+  const serper = fixture.store.providerCatalog.find(
+    (item) => item.code === "serper"
+  );
+  const serpapi = fixture.store.providerCatalog.find(
+    (item) => item.code === "serpapi"
+  );
+  const tavily = fixture.store.providerCatalog.find(
+    (item) => item.code === "tavily"
+  );
+  assert.ok(brave && serper && serpapi && tavily);
+  brave.status = "review";
+  serper.status = "disabled";
+  serpapi.accessMode = "manual_assisted";
+  tavily.licensePolicy = {
+    ...tavily.licensePolicy,
+    requiresKey: false
+  };
+
+  const connections = await
+  createAcquisitionActiveSearchConnectionDirectory(fixture.store).list({
+    ownerId: OWNER,
+    teamId: TEAM
+  });
+
+  assert.deepEqual(connections, []);
+});
+
+test("application generates a raw-postable draft and enforces catalog readiness at approval", async () => {
+  const fixture = isolatedMemoryStore();
+  let sequence = 0;
+  let timestamp = Date.parse("2026-07-26T02:00:00.000Z");
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    searchPort: fakeSearchPort().port,
+    modelGatewayFactory: () => ({
+      async callTools(request) {
+        assert.ok("contentBinding" in request && request.contentBinding);
+        assert.equal(
+          request.contentBinding.promptId,
+          ACQUISITION_PLAN_DRAFT_PROMPT_ID
+        );
+        assert.equal(request.parallelToolCalls, false);
+        return {
+          toolCalls: [{
+            id: "application-plan-draft-call",
+            name: ACQUISITION_PLAN_DRAFT_SUBMIT_TOOL,
+            arguments: {
+              name: "生产组合获客计划",
+              objective: "通过所有可用官方来源发现双主体公开需求",
+              icp: {
+                industries: ["企业服务"],
+                regions: ["中国大陆"],
+                organizationCriteria: ["公开采购或扩张信号"],
+                individualCriteria: ["公开表达经营增长需求"],
+                exclusionRules: ["明确拒绝联系"]
+              },
+              subjectChannels: {
+                organization: true,
+                individual: true
+              },
+              queryIntents: [{
+                subjectChannel: "organization",
+                query: "企业服务 采购 OR 扩张"
+              }, {
+                subjectChannel: "individual",
+                query: "经营者 公开表达 获客需求"
+              }],
+              budgetIntent: {
+                billingCurrency: "CNY",
+                maxRequests: 2,
+                maxResults: 20,
+                maxAmountMinor: 0,
+                maxDurationSeconds: 120
+              },
+              stopConditions: {
+                stopWhenBudgetExhausted: true,
+                stopWhenNoMoreResults: true
+              }
+            }
+          }],
+          usage: {
+            inputTokens: 40,
+            outputTokens: 20,
+            reasoningTokens: 0
+          },
+          providerRequestId: "application-plan-draft-request"
+        };
+      }
+    }),
+    idFactory: (prefix) => `${prefix}-draft-${++sequence}`,
+    now: () => new Date(timestamp++).toISOString(),
+    nowMs: () => timestamp++
+  });
+  const server = await serve(runtime.handler);
+
+  try {
+    const session = await server.request(
+      "/api/v1/acquisition/copilot/sessions",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "application-draft-session" },
+        body: JSON.stringify({ connectionId: modelConfig().id })
+      }
+    );
+    assert.equal(session.response.status, 202);
+    const generateInput = {
+      ownerId: OWNER,
+      teamId: TEAM,
+      actorId: OWNER,
+      sessionId: String(session.json.resourceId),
+      transcript: [{
+        role: "user" as const,
+        content: "请生成一个可批准的双主体获客计划",
+        timestamp: 1
+      }],
+      prompt: "生成计划草稿"
+    };
+    const generated =
+      await runtime.planDraftGenerator.generate(generateInput);
+    const rawBody = structuredClone(generated.planDraft);
+
+    const created = await server.request(
+      "/api/v1/acquisition/plans",
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": "application-generated-plan"
+        },
+        body: JSON.stringify(rawBody)
+      }
+    );
+    assert.equal(created.response.status, 201, JSON.stringify(created.json));
+    const {
+      modelSnapshotRef,
+      ...storedPlanBody
+    } = created.json.payload;
+    const {
+      modelConnectionId,
+      ...postedPlanBody
+    } = rawBody;
+    assert.deepEqual(storedPlanBody, postedPlanBody);
+    assert.equal(modelSnapshotRef.connectionId, modelConnectionId);
+    const approved = await server.request(
+      `/api/v1/acquisition/plans/${created.json.id}/approval`,
+      {
+        method: "POST",
+        headers: {
+          "If-Match": created.response.headers.get("etag")!
+        },
+        body: JSON.stringify({
+          decision: "approve",
+          reason: "生产组合验证通过"
+        })
+      }
+    );
+    assert.equal(approved.response.status, 200, JSON.stringify(approved.json));
+
+    const pending = await server.request(
+      "/api/v1/acquisition/plans",
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": "application-catalog-drift-plan"
+        },
+        body: JSON.stringify(rawBody)
+      }
+    );
+    assert.equal(pending.response.status, 201);
+    const braveCatalog = fixture.store.providerCatalog.find(
+      (item) => item.code === "brave"
+    );
+    assert.ok(braveCatalog);
+    braveCatalog.status = "review";
+    await assert.rejects(
+      runtime.planDraftGenerator.generate(generateInput),
+      (error: unknown) =>
+        error instanceof AcquisitionPlanDraftError
+        && error.code === "SEARCH_PROVIDER_CONNECTION_REQUIRED"
+    );
+    const rejectedApproval = await server.request(
+      `/api/v1/acquisition/plans/${pending.json.id}/approval`,
+      {
+        method: "POST",
+        headers: {
+          "If-Match": pending.response.headers.get("etag")!
+        },
+        body: JSON.stringify({
+          decision: "approve",
+          reason: "catalog review 状态不得批准"
+        })
+      }
+    );
+    assert.equal(rejectedApproval.response.status, 503);
+    assert.equal(
+      rejectedApproval.json.error.code,
+      "plan_approval_validation_failed"
+    );
+  } finally {
+    await runtime.close();
+    await server.close();
+  }
 });
 
 async function waitFor<T>(

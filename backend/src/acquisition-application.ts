@@ -79,8 +79,10 @@ import {
 import {
   createAcquisitionPlanRouter
 } from "./acquisition-plan-router.js";
-import type {
-  AcquisitionActiveSearchConnectionDirectory
+import {
+  createAcquisitionPlanDraftGenerator,
+  type AcquisitionActiveSearchConnectionDirectory,
+  type AcquisitionPlanDraftGenerator
 } from "./acquisition-plan-draft.js";
 import {
   acquisitionProviderConnectionVersion
@@ -167,8 +169,28 @@ export {
 
 type IdFactory = (prefix: string) => string;
 
+function isExecutableAcquisitionSearchProvider(
+  store: Pick<CrmStore, "providerCatalog">,
+  providerId: string
+) {
+  if (!ACQUISITION_SEARCH_PROVIDER_IDS.includes(
+    providerId as (typeof ACQUISITION_SEARCH_PROVIDER_IDS)[number]
+  )) {
+    return false;
+  }
+  return store.providerCatalog.some((catalog) =>
+    catalog.code === providerId
+    && catalog.status === "active"
+    && catalog.accessMode === "api"
+    && catalog.licensePolicy.requiresKey === true
+  );
+}
+
 export function createAcquisitionActiveSearchConnectionDirectory(
-  store: Pick<CrmStore, "providerConnections" | "readBarrier">
+  store: Pick<
+    CrmStore,
+    "providerCatalog" | "providerConnections" | "readBarrier"
+  >
 ): AcquisitionActiveSearchConnectionDirectory {
   return {
     async list(scope) {
@@ -179,9 +201,9 @@ export function createAcquisitionActiveSearchConnectionDirectory(
           && connection.teamId === scope.teamId
           && connection.scope === "personal"
           && connection.status === "active"
-          && ACQUISITION_SEARCH_PROVIDER_IDS.includes(
-            connection.providerId as
-              (typeof ACQUISITION_SEARCH_PROVIDER_IDS)[number]
+          && isExecutableAcquisitionSearchProvider(
+            store,
+            connection.providerId
           )
         )
         .sort((left, right) =>
@@ -231,6 +253,11 @@ export interface CreateAcquisitionApplicationOptions {
   idFactory?: IdFactory;
   now?: () => string;
   nowMs?: () => number;
+}
+
+export interface AcquisitionApplicationRuntime
+extends AcquisitionHttpRuntime {
+  planDraftGenerator: AcquisitionPlanDraftGenerator;
 }
 
 interface AcquisitionRepositorySet {
@@ -423,6 +450,10 @@ function assertTrustedSearchConnectionSnapshots(
       || snapshot.kind !== "search"
       || snapshot.status !== "active"
       || snapshot.providerId !== connection.providerId
+      || !isExecutableAcquisitionSearchProvider(
+        store,
+        connection.providerId
+      )
       || snapshot.credentialVersion
         !== acquisitionProviderConnectionVersion(connection)
     ) {
@@ -765,7 +796,7 @@ function assertTrustedPlanSnapshot(
 
 export async function createAcquisitionApplication(
   options: CreateAcquisitionApplicationOptions
-): Promise<AcquisitionHttpRuntime> {
+): Promise<AcquisitionApplicationRuntime> {
   assertApplicationStore(options.store);
   const masterSecret = requireMasterSecret(options.masterSecret);
   const providerCredentialSecret = derivedSecret(
@@ -917,6 +948,12 @@ export async function createAcquisitionApplication(
     });
     const judgments = createAcquisitionJudgmentPort({
       resolveSession: judgmentResolver
+    });
+    const planDraftGenerator = createAcquisitionPlanDraftGenerator({
+      resolveSession: judgmentResolver,
+      connections:
+        createAcquisitionActiveSearchConnectionDirectory(options.store),
+      idFactory
     });
     const toolExecutor = new ProductionAcquisitionAgentToolExecutor({
       domain: domainService,
@@ -1201,6 +1238,7 @@ export async function createAcquisitionApplication(
     let closePromise: Promise<void> | null = null;
     return {
       handler: router as RequestHandler,
+      planDraftGenerator,
       close() {
         if (closePromise) return closePromise;
         closing = true;
