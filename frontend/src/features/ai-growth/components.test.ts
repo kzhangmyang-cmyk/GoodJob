@@ -245,11 +245,13 @@ test("candidate cards expose finance pending and actionable review states", () =
     "do_not_contact",
     "needs_research"
   ];
+  const onPreviewReview = (_candidateId: string) => undefined;
   const rendered = renderCandidateList({
     mode: "real",
     candidates: statuses.map((status) => candidate(status))
   }, {
     onOpenBattleCard: noop,
+    onPreviewReview,
     onApprove: noop,
     onReject: noop,
     onDoNotContact: noop,
@@ -257,6 +259,7 @@ test("candidate cards expose finance pending and actionable review states", () =
     onReopen: noop,
     onConvert: noop
   });
+  assert.equal(rendered.callbacks.onPreviewReview, onPreviewReview);
 
   for (const visible of [
     "待人工审核",
@@ -290,7 +293,7 @@ test("candidate cards expose finance pending and actionable review states", () =
   assert.doesNotMatch(pendingCard, /data-action="convert"/);
 });
 
-test("partial runs name successful and failed sources instead of hiding them in color", () => {
+test("partial runs distinguish successful, partially successful, and failed sources in text", () => {
   const rendered = renderRunConsole({
     mode: "real",
     status: "partial_success",
@@ -313,6 +316,12 @@ test("partial runs name successful and failed sources instead of hiding them in 
       acceptedResultCount: 2,
       failedResultCount: 1,
       errorCode: "RATE_LIMIT"
+    }, {
+      providerId: "行业目录",
+      status: "failed",
+      acceptedResultCount: 0,
+      failedResultCount: 1,
+      errorCode: "PROVIDER_UNAVAILABLE"
     }],
     candidates: [candidate("approved")]
   }, {
@@ -321,6 +330,7 @@ test("partial runs name successful and failed sources instead of hiding them in 
     onCancel: noop,
     candidateCallbacks: {
       onOpenBattleCard: noop,
+      onPreviewReview: noop,
       onApprove: noop,
       onReject: noop,
       onDoNotContact: noop,
@@ -333,9 +343,13 @@ test("partial runs name successful and failed sources instead of hiding them in 
   assert.match(rendered.html, /部分完成/);
   assert.match(rendered.html, /成功来源/);
   assert.match(rendered.html, /百度公开搜索/);
-  assert.match(rendered.html, /失败或受限来源/);
+  assert.match(rendered.html, /部分成功来源/);
+  assert.match(rendered.html, /data-provider-state="partial"/);
   assert.match(rendered.html, /企业官网公开页/);
+  assert.match(rendered.html, /失败或受限来源/);
+  assert.match(rendered.html, /行业目录/);
   assert.match(rendered.html, /RATE_LIMIT/);
+  assert.match(rendered.html, /PROVIDER_UNAVAILABLE/);
 });
 
 test("executive summary keeps currencies separate and gates conversion by mode and approval", () => {

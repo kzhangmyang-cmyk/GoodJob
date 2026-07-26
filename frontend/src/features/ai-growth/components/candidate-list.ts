@@ -18,6 +18,7 @@ export interface CandidateListVm {
 
 export interface CandidateListCallbacks {
   onOpenBattleCard(candidateId: string): void;
+  onPreviewReview(candidateId: string): void;
   onApprove(candidateId: string): void;
   onReject(candidateId: string): void;
   onDoNotContact(candidateId: string): void;

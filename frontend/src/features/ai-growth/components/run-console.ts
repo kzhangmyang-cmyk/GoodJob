@@ -61,17 +61,30 @@ const SUCCESS_PROVIDER_STATES = new Set<AcquisitionShardStatus>([
   "succeeded_empty"
 ]);
 
+function providerPresentation(status: AcquisitionShardStatus): {
+  state: "success" | "partial" | "limited";
+  label: string;
+} {
+  if (SUCCESS_PROVIDER_STATES.has(status)) {
+    return { state: "success", label: "成功来源" };
+  }
+  if (status === "partial_success") {
+    return { state: "partial", label: "部分成功来源" };
+  }
+  return { state: "limited", label: "失败或受限来源" };
+}
+
 function providerRows(providers: readonly RunProviderVm[]): string {
   return providers.map((provider) => {
-    const success = SUCCESS_PROVIDER_STATES.has(provider.status);
+    const presentation = providerPresentation(provider.status);
     return `
-      <li data-provider-state="${success ? "success" : "limited"}">
-        <span class="ai-growth-character-icon" aria-hidden="true">${success ? "成" : "限"}</span>
+      <li data-provider-state="${presentation.state}">
+        <span class="ai-growth-character-icon" aria-hidden="true">${presentation.state === "success" ? "成" : presentation.state === "partial" ? "部" : "限"}</span>
         <span>
           <strong>${escapeHtml(provider.providerId)}</strong>
           <small>${provider.acceptedResultCount} 条有效结果${provider.failedResultCount > 0 ? ` · ${provider.failedResultCount} 条失败` : ""}</small>
         </span>
-        <b>${success ? "成功来源" : "失败或受限来源"}${provider.errorCode ? ` · ${escapeHtml(provider.errorCode)}` : ""}</b>
+        <b>${presentation.label}${provider.errorCode ? ` · ${escapeHtml(provider.errorCode)}` : ""}</b>
       </li>
     `;
   }).join("");
