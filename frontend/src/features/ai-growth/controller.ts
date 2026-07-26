@@ -224,7 +224,7 @@ function parseRecent(value: string | null): RecentAdvisorPointer[] {
   try {
     const parsed = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is RecentAdvisorPointer =>
+    return parsed.flatMap((item): RecentAdvisorPointer[] =>
       Boolean(
         item
         && typeof item.sessionId === "string"
@@ -232,6 +232,13 @@ function parseRecent(value: string | null): RecentAdvisorPointer[] {
         && typeof item.runId === "string"
         && typeof item.updatedAt === "string"
       )
+        ? [{
+            sessionId: item.sessionId,
+            planId: item.planId,
+            runId: item.runId,
+            updatedAt: item.updatedAt
+          }]
+        : []
     ).slice(0, 10);
   } catch {
     return [];
@@ -307,10 +314,12 @@ export function createAiGrowthController(
   let demoRunner: DemoRunner | null = null;
   let disposed = false;
   let operationGeneration = 0;
+  let approvalInFlight: Promise<void> | null = null;
   const pendingConversions = new Map<string, {
     conversion: CandidateConversionDto;
     todo: TodoCreateDto;
   }>();
+  const conversionOperations = new Map<string, Promise<void>>();
 
   const publish = () => {
     options.onChange?.(cloneState(state));
@@ -435,21 +444,41 @@ export function createAiGrowthController(
       : parseRecent(storage.getItem(recentKey(user.id)));
   };
 
-  const validateRecent = async () => {
+  const validateRecent = async (generation: number) => {
     const user = options.user();
     if (!storage || !user) return;
     const validated: RecentAdvisorPointer[] = [];
     for (const pointer of recentTasks) {
+      if (
+        disposed
+        || generation !== operationGeneration
+        || state.mode !== "real"
+      ) return;
       try {
         await Promise.all([
           options.api.getRun(pointer.runId),
           options.validateSession?.(pointer.sessionId) ?? Promise.resolve()
         ]);
+        if (
+          disposed
+          || generation !== operationGeneration
+          || state.mode !== "real"
+        ) return;
         validated.push(pointer);
       } catch (error) {
+        if (
+          disposed
+          || generation !== operationGeneration
+          || state.mode !== "real"
+        ) return;
         if (advisorHttpStatus(error) !== 404) validated.push(pointer);
       }
     }
+    if (
+      disposed
+      || generation !== operationGeneration
+      || state.mode !== "real"
+    ) return;
     recentTasks = validated.slice(0, 10);
     storage.setItem(recentKey(user.id), JSON.stringify(recentTasks));
     publish();
@@ -607,49 +636,63 @@ export function createAiGrowthController(
       }
     },
 
-    async approve() {
+    approve() {
+      if (approvalInFlight) return approvalInFlight;
       if (state.status !== "awaiting_approval" || !state.planDraft) {
-        throw new Error("当前没有等待批准的搜索方案");
+        return Promise.reject(new Error("当前没有等待批准的搜索方案"));
       }
       if (state.mode === "demo") {
         ensureDemoRunner().approve();
-        return;
+        return Promise.resolve();
       }
       const generation = operationGeneration;
-      try {
-        plan = await options.api.createPlan(
-          state.planDraft,
-          idempotencyKey("ai-growth-plan")
-        );
-        if (generation !== operationGeneration) return;
-        plan = await options.api.approvePlan(
-          plan.id,
-          plan.etag,
-          { decision: "approve", reason: "用户确认方案与预算后开始执行" }
-        );
-        if (generation !== operationGeneration) return;
-        currentRun = await options.api.createRun(
-          plan.id,
-          { reason: "已完成人工批准，开始执行公开商机搜索" },
-          idempotencyKey("ai-growth-run")
-        );
-        if (generation !== operationGeneration) return;
-        state = {
-          ...state,
-          status: pageStatusForRun(currentRun.status),
-          runId: currentRun.id,
-          cursor: null,
-          candidatesById: new Map(),
-          summary: null,
-          error: null
-        };
-        saveRecent();
-        publish();
-        poller.start(currentRun.id, "real");
-      } catch (error) {
-        setError(error, "run_start_failed");
-        throw error;
-      }
+      const draft = state.planDraft;
+      const planOperationKey = idempotencyKey("ai-growth-plan");
+      const runOperationKey = idempotencyKey("ai-growth-run");
+      const operation = (async () => {
+        try {
+          plan = await options.api.createPlan(draft, planOperationKey);
+          if (generation !== operationGeneration) return;
+          plan = await options.api.approvePlan(
+            plan.id,
+            plan.etag,
+            { decision: "approve", reason: "用户确认方案与预算后开始执行" }
+          );
+          if (generation !== operationGeneration) return;
+          currentRun = await options.api.createRun(
+            plan.id,
+            { reason: "已完成人工批准，开始执行公开商机搜索" },
+            runOperationKey
+          );
+          if (generation !== operationGeneration) return;
+          state = {
+            ...state,
+            status: pageStatusForRun(currentRun.status),
+            runId: currentRun.id,
+            cursor: null,
+            candidatesById: new Map(),
+            summary: null,
+            error: null
+          };
+          saveRecent();
+          publish();
+          poller.start(currentRun.id, "real");
+        } catch (error) {
+          if (generation === operationGeneration && !disposed) {
+            setError(error, "run_start_failed");
+          }
+          throw error;
+        }
+      })();
+      approvalInFlight = operation;
+      publish();
+      const clearApproval = () => {
+        if (approvalInFlight !== operation) return;
+        approvalInFlight = null;
+        if (state.status === "awaiting_approval" && !disposed) publish();
+      };
+      void operation.then(clearApproval, clearApproval);
+      return operation;
     },
 
     async pause() {
@@ -738,48 +781,66 @@ export function createAiGrowthController(
       publish();
     },
 
-    async convertAndCreateTodo(candidateId) {
+    convertAndCreateTodo(candidateId) {
       if (state.mode === "demo") {
-        throw new Error("演示模式不会写入真实线索或待办");
-      }
-      let pending = pendingConversions.get(candidateId);
-      if (!pending) {
-        const candidate = await options.api.getCandidate(candidateId);
-        if (
-          candidate.status !== "approved"
-          || !candidate.latestDecisionVersion
-          || candidate.approvedDecisionVersion !== candidate.latestDecisionVersion
-        ) {
-          throw new Error("当前资格决定尚未获得有效批准");
-        }
-        const conversion = await options.api.convertCandidate(
-          candidateId,
-          { decisionVersion: candidate.latestDecisionVersion },
-          idempotencyKey("ai-growth-convert")
+        return Promise.reject(
+          new Error("演示模式不会写入真实线索或待办")
         );
-        const title = candidate.subjectKind === "organization"
-          ? candidate.name
-          : candidate.publicDisplayName;
-        pending = {
-          conversion,
-          todo: {
-            title: `跟进${title}`,
-            type: "customer",
-            priority: "high",
-            dueAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
-            related: conversion.leadId
-          }
-        };
-        pendingConversions.set(candidateId, pending);
       }
-      await options.api.createTodoForConversion(
-        pending.conversion.id,
-        pending.todo
-      );
-      pendingConversions.delete(candidateId);
-      const updated = await options.api.getCandidate(candidateId);
-      controller.applyCandidateUpdate(updated);
-      options.toast("已转为线索并创建跟进任务");
+      const inFlight = conversionOperations.get(candidateId);
+      if (inFlight) return inFlight;
+      const conversionOperationKey = idempotencyKey("ai-growth-convert");
+      const operation = (async () => {
+        let pending = pendingConversions.get(candidateId);
+        if (!pending) {
+          const candidate = await options.api.getCandidate(candidateId);
+          if (
+            candidate.status !== "approved"
+            || !candidate.latestDecisionVersion
+            || candidate.approvedDecisionVersion
+              !== candidate.latestDecisionVersion
+          ) {
+            throw new Error("当前资格决定尚未获得有效批准");
+          }
+          const conversion = await options.api.convertCandidate(
+            candidateId,
+            { decisionVersion: candidate.latestDecisionVersion },
+            conversionOperationKey
+          );
+          const title = candidate.subjectKind === "organization"
+            ? candidate.name
+            : candidate.publicDisplayName;
+          pending = {
+            conversion,
+            todo: {
+              title: `跟进${title}`,
+              type: "customer",
+              priority: "high",
+              dueAt: new Date(
+                Date.now() + 24 * 60 * 60 * 1_000
+              ).toISOString(),
+              related: conversion.leadId
+            }
+          };
+          pendingConversions.set(candidateId, pending);
+        }
+        await options.api.createTodoForConversion(
+          pending.conversion.id,
+          pending.todo
+        );
+        pendingConversions.delete(candidateId);
+        const updated = await options.api.getCandidate(candidateId);
+        controller.applyCandidateUpdate(updated);
+        options.toast("已转为线索并创建跟进任务");
+      })();
+      conversionOperations.set(candidateId, operation);
+      const clearConversion = () => {
+        if (conversionOperations.get(candidateId) === operation) {
+          conversionOperations.delete(candidateId);
+        }
+      };
+      void operation.then(clearConversion, clearConversion);
+      return operation;
     },
 
     async createOutreachReviewTask() {
@@ -791,6 +852,9 @@ export function createAiGrowthController(
     },
 
     async continueRecent(runId) {
+      if (state.mode === "demo") {
+        throw new Error("演示模式不能继续真实任务");
+      }
       const pointer = recentTasks.find((item) => item.runId === runId);
       if (!pointer) throw new Error("最近任务已失效");
       currentRun = await options.api.getRun(pointer.runId);
@@ -825,12 +889,14 @@ export function createAiGrowthController(
               : "unavailable",
           detail: `${connection.kind} · 凭据版本 ${connection.credentialVersion}`
         }));
-      const recentVms: RecentAdvisorTaskVm[] = recentTasks.map((item) => ({
-        id: item.runId,
-        title: `商机任务 ${item.runId}`,
-        statusLabel: "真实任务",
-        updatedAtLabel: new Date(item.updatedAt).toLocaleString("zh-CN")
-      }));
+      const recentVms: RecentAdvisorTaskVm[] = state.mode === "real"
+        ? recentTasks.map((item) => ({
+            id: item.runId,
+            title: `商机任务 ${item.runId}`,
+            statusLabel: "真实任务",
+            updatedAtLabel: new Date(item.updatedAt).toLocaleString("zh-CN")
+          }))
+        : [];
       const candidates = [...state.candidatesById.values()];
       const candidateCallbacks = {
         onOpenBattleCard: (id: string) => void controller.openCandidate(id),
@@ -870,7 +936,9 @@ export function createAiGrowthController(
       } else if (state.status === "awaiting_approval" && state.planDraft) {
         stage = renderPlanApproval({
           mode: state.mode,
-          approvalStatus: "awaiting_approval",
+          approvalStatus: approvalInFlight
+            ? "submitting"
+            : "awaiting_approval",
           plan: state.planDraft,
           targetProfile: selectedTemplate.draft.targetProfile,
           companySize: selectedTemplate.draft.companySize,
@@ -961,7 +1029,8 @@ export function createAiGrowthController(
     enter() {
       if (disposed) return;
       readRecent();
-      void validateRecent();
+      const generation = operationGeneration;
+      if (state.mode === "real") void validateRecent(generation);
       if (
         state.mode === "real"
         && currentRun

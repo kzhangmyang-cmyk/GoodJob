@@ -299,6 +299,57 @@ test("未批准时不会创建运行", async () => {
   assert.equal(calls.createRun, 0);
 });
 
+test("并发批准复用同一写入链且只创建一个运行", async () => {
+  const createdPlan = {
+    ...planDraft,
+    id: "plan-1",
+    etag: "\"plan-1:draft\"",
+    status: "draft" as const,
+    version: 1
+  };
+  const approvedPlan = {
+    ...createdPlan,
+    etag: "\"plan-1:approved\"",
+    status: "approved" as const,
+    version: 2
+  };
+  let releaseCreatePlan!: () => void;
+  const createPlanGate = new Promise<void>((resolve) => {
+    releaseCreatePlan = resolve;
+  });
+  const writeCalls = { createPlan: 0, approvePlan: 0, createRun: 0 };
+  const { api } = createApi({
+    createPlan: async () => {
+      writeCalls.createPlan += 1;
+      await createPlanGate;
+      return createdPlan;
+    },
+    approvePlan: async () => {
+      writeCalls.approvePlan += 1;
+      return approvedPlan;
+    },
+    createRun: async () => {
+      writeCalls.createRun += 1;
+      return run();
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  await controller.submit();
+
+  const first = controller.approve();
+  const second = controller.approve();
+  await Promise.resolve();
+  assert.equal(writeCalls.createPlan, 1);
+
+  releaseCreatePlan();
+  await Promise.all([first, second]);
+  assert.deepEqual(writeCalls, {
+    createPlan: 1,
+    approvePlan: 1,
+    createRun: 1
+  });
+});
+
 test("暂停、继续和取消调用真实运行控制接口", async () => {
   const { api, calls } = createApi();
   const controller = createAiGrowthController(controllerOptions(api));
@@ -384,6 +435,59 @@ test("待办失败时复用 conversion 且不重复 convert", async () => {
   assert.equal(todoAttempts, 2);
 });
 
+test("并发转换在首次读取前合并且只写一次 conversion 和 todo", async () => {
+  let releaseCandidate!: () => void;
+  const candidateGate = new Promise<void>((resolve) => {
+    releaseCandidate = resolve;
+  });
+  const operationCalls = { getCandidate: 0, convert: 0, todo: 0 };
+  const { api } = createApi({
+    getCandidate: async () => {
+      operationCalls.getCandidate += 1;
+      if (operationCalls.getCandidate === 1) await candidateGate;
+      return approvedCandidate;
+    },
+    convertCandidate: async () => {
+      operationCalls.convert += 1;
+      return {
+        id: "conversion-1",
+        candidateId: approvedCandidate.id,
+        decisionVersion: "decision-1",
+        partyRef: {},
+        leadId: "lead-1",
+        reviewerId: "user-1",
+        evidenceSnapshotHash: "hash",
+        createdAt: "2026-07-26T09:00:00.000Z"
+      };
+    },
+    createTodoForConversion: async () => {
+      operationCalls.todo += 1;
+      return {
+        id: "todo-1",
+        ownerId: "user-1",
+        teamId: "team-1",
+        title: "跟进示例制造企业",
+        type: "customer",
+        priority: "high",
+        dueAt: "2026-07-27T09:00:00.000Z",
+        related: "lead-1",
+        done: false
+      };
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+
+  const first = controller.convertAndCreateTodo(approvedCandidate.id);
+  const second = controller.convertAndCreateTodo(approvedCandidate.id);
+  await Promise.resolve();
+  assert.equal(operationCalls.getCandidate, 1);
+
+  releaseCandidate();
+  await Promise.all([first, second]);
+  assert.equal(operationCalls.convert, 1);
+  assert.equal(operationCalls.todo, 1);
+});
+
 test("demo 切到 real 清除演示 runner、候选和运行指针", () => {
   const { api } = createApi();
   let disposed = 0;
@@ -430,6 +534,125 @@ test("demo 候选动作不会调用真实抽屉或写入接口", async () => {
   assert.equal(drawerOpen, 0);
   assert.equal(calls.convert, 0);
   assert.equal(calls.todo, 0);
+});
+
+test("demo 隐藏真实最近任务且继续任务不会发请求或启动 poller", async () => {
+  const pointer = {
+    sessionId: "session-1",
+    planId: "plan-1",
+    runId: "run-1",
+    updatedAt: "2026-07-26T09:00:00.000Z"
+  };
+  const requests = { run: 0, plan: 0, pollerStart: 0 };
+  const { api } = createApi({
+    getRun: async () => {
+      requests.run += 1;
+      return run();
+    },
+    getPlan: async () => {
+      requests.plan += 1;
+      return {
+        ...planDraft,
+        id: "plan-1",
+        etag: "\"plan-1:approved\"",
+        status: "approved",
+        version: 2
+      };
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api, {
+    recentStorage: {
+      getItem: () => JSON.stringify([pointer]),
+      setItem: () => undefined,
+      removeItem: () => undefined
+    },
+    pollerFactory: () => ({
+      start: () => {
+        requests.pollerStart += 1;
+      },
+      stop: () => undefined,
+      dispose: () => undefined,
+      cursor: () => null
+    })
+  }));
+  controller.setMode("demo");
+  controller.enter();
+  const root = { innerHTML: "" } as HTMLElement;
+  controller.render(root);
+
+  assert.doesNotMatch(root.innerHTML, /继续任务/);
+  await assert.rejects(
+    () => controller.continueRecent(pointer.runId),
+    /演示模式/
+  );
+  assert.deepEqual(requests, { run: 0, plan: 0, pollerStart: 0 });
+});
+
+test("最近任务解析后只保留四个允许字段", () => {
+  const allowed = {
+    sessionId: "session-1",
+    planId: "plan-1",
+    runId: "run-1",
+    updatedAt: "2026-07-26T09:00:00.000Z"
+  };
+  const { api } = createApi();
+  const controller = createAiGrowthController(controllerOptions(api, {
+    recentStorage: {
+      getItem: () => JSON.stringify([{
+        ...allowed,
+        candidateText: "不应保留",
+        apiKey: "secret"
+      }]),
+      setItem: () => undefined,
+      removeItem: () => undefined
+    }
+  }));
+
+  controller.enter();
+  assert.deepEqual(controller.getRecentTasks(), [allowed]);
+});
+
+test("最近任务校验在 leave 或 dispose 后不得写存储或发布", async () => {
+  for (const lifecycle of ["leave", "dispose"] as const) {
+    let releaseRun!: () => void;
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    let storageWrites = 0;
+    let publishes = 0;
+    const { api } = createApi({
+      getRun: async () => {
+        await runGate;
+        return run();
+      }
+    });
+    const controller = createAiGrowthController(controllerOptions(api, {
+      onChange: () => {
+        publishes += 1;
+      },
+      recentStorage: {
+        getItem: () => JSON.stringify([{
+          sessionId: "session-1",
+          planId: "plan-1",
+          runId: "run-1",
+          updatedAt: "2026-07-26T09:00:00.000Z"
+        }]),
+        setItem: () => {
+          storageWrites += 1;
+        },
+        removeItem: () => undefined
+      }
+    }));
+
+    controller.enter();
+    controller[lifecycle]();
+    const publishesAfterLifecycle = publishes;
+    releaseRun();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(storageWrites, 0, lifecycle);
+    assert.equal(publishes, publishesAfterLifecycle, lifecycle);
+  }
 });
 
 test("leave 和 dispose 清理 poller、演示 runner与 drawer", () => {

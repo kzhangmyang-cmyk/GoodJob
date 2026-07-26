@@ -81,6 +81,52 @@ function candidate(
   };
 }
 
+function planDraftForTest() {
+  return {
+    name: "制造业商机搜索",
+    objective: "寻找近期有采购需求的制造企业",
+    icp: {
+      industries: ["制造业"],
+      regions: ["上海"],
+      organizationCriteria: ["50 人以上"],
+      individualCriteria: [],
+      exclusionRules: ["勿扰名单"]
+    },
+    subjectChannels: { organization: true, individual: false },
+    providerConnections: [{
+      connectionId: "connection-1",
+      providerId: "百度公开搜索",
+      kind: "search" as const,
+      status: "active" as const,
+      credentialVersion: 1
+    }],
+    operations: [{
+      operationId: "operation-1",
+      subjectChannel: "organization" as const,
+      kind: "search" as const,
+      connectionId: "connection-1",
+      query: "上海 制造业 采购需求",
+      allocatedBudget: {
+        requests: 10,
+        results: 30,
+        amountMinor: 500,
+        durationSeconds: 60
+      }
+    }],
+    budgetSnapshot: {
+      billingCurrency: "CNY",
+      maxRequests: 10,
+      maxResults: 30,
+      maxAmountMinor: 500,
+      maxDurationSeconds: 60
+    },
+    stopConditions: {
+      stopWhenBudgetExhausted: true,
+      stopWhenNoMoreResults: true
+    }
+  };
+}
+
 test("shell keeps the command-center headline, explicit mode, and every state label", () => {
   const labels: Record<AdvisorStatus, string> = {
     idle: "等待任务",
@@ -223,6 +269,24 @@ test("approval renders the complete search plan and budget before execution", ()
   }
 });
 
+test("approval submission disables every plan action while the run starts", () => {
+  const rendered = renderPlanApproval({
+    mode: "real",
+    approvalStatus: "submitting",
+    plan: planDraftForTest(),
+    targetProfile: "制造企业",
+    companySize: "50 人以上",
+    demandSignals: ["采购需求"],
+    searchTopics: ["公开搜索"]
+  }, { onApprove: noop, onEdit: noop, onCancel: noop });
+
+  assert.match(rendered.html, /正在启动搜索/);
+  assert.equal(
+    [...rendered.html.matchAll(/<button[^>]*disabled/g)].length,
+    3
+  );
+});
+
 test("connection-required shows only configuration and demo choices, never fake progress", () => {
   const rendered = renderConnectionRequired({
     missingKinds: ["search"],
@@ -291,6 +355,22 @@ test("candidate cards expose finance pending and actionable review states", () =
   )?.[0];
   assert.ok(pendingCard);
   assert.doesNotMatch(pendingCard, /data-action="convert"/);
+
+  const rejectedCard = rendered.html.match(
+    /data-candidate-id="candidate-rejected"[\s\S]*?<\/article>/
+  )?.[0];
+  const researchCard = rendered.html.match(
+    /data-candidate-id="candidate-needs_research"[\s\S]*?<\/article>/
+  )?.[0];
+  const doNotContactCard = rendered.html.match(
+    /data-candidate-id="candidate-do_not_contact"[\s\S]*?<\/article>/
+  )?.[0];
+  assert.ok(rejectedCard);
+  assert.ok(researchCard);
+  assert.ok(doNotContactCard);
+  assert.match(rejectedCard, /data-action="reopen"/);
+  assert.doesNotMatch(researchCard, /data-action="reopen"/);
+  assert.doesNotMatch(doNotContactCard, /data-action="reopen"/);
 });
 
 test("partial runs distinguish successful, partially successful, and failed sources in text", () => {

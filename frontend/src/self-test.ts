@@ -120,6 +120,16 @@ assert.deepEqual(
 );
 assert.match(apiLayer, /let openWorkspaceTabs = \["ai-growth"\]/);
 assert.match(apiLayer, /advisorRequest[\s\S]*statusCode[\s\S]*response/);
+assert.match(
+  prototype,
+  /goodjob:legacy-view-change/,
+  "legacy navigation must notify the module lifecycle before switching views"
+);
+assert.match(
+  apiLayer,
+  /activeWorkspaceView[\s\S]*goodjob:legacy-view-change[\s\S]*leave\(\)/,
+  "AI growth lifecycle must use one authoritative active workspace view"
+);
 assert.equal(prototype.includes("写站内信"), false, "通知中心不应提供人工写信入口");
 assert.equal(apiLayer.includes("openInternalMessageComposeModal"), false, "不应保留旧写信交互");
 assert.match(apiLayer, /selectedDailyReportId = message\.relatedId;[\s\S]*activateNavView\("daily-reports"\)/);

@@ -122,9 +122,9 @@ function reviewActions(candidate: CandidateCardVm, mode: AdvisorMode): string {
     case "rejected":
       return `${common}<button type="button" class="ai-growth-text-action" data-action="reopen" data-candidate-id="${id}">重新打开</button>`;
     case "needs_research":
-      return `${common}<button type="button" class="ai-growth-text-action" data-action="request-research" data-candidate-id="${id}">补充研究</button><button type="button" class="ai-growth-text-action" data-action="reopen" data-candidate-id="${id}">重新打开</button>`;
+      return `${common}<button type="button" class="ai-growth-text-action" data-action="request-research" data-candidate-id="${id}">补充研究</button>`;
     case "do_not_contact":
-      return `${common}<button type="button" class="ai-growth-text-action" data-action="reopen" data-candidate-id="${id}">重新打开</button>`;
+      return common;
     default:
       return common;
   }

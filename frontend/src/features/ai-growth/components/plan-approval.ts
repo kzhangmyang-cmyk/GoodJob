@@ -11,7 +11,7 @@ import {
 
 export interface PlanApprovalVm {
   mode: AdvisorMode;
-  approvalStatus: "awaiting_approval" | "approved";
+  approvalStatus: "awaiting_approval" | "submitting" | "approved";
   plan: AcquisitionPlanCreateDto;
   targetProfile: string;
   companySize: string;
@@ -38,6 +38,15 @@ export function renderPlanApproval(
   callbacks: PlanApprovalCallbacks
 ): ComponentRender<PlanApprovalCallbacks> {
   const { plan } = vm;
+  const submitting = vm.approvalStatus === "submitting";
+  const disabled = vm.approvalStatus !== "awaiting_approval"
+    ? " disabled"
+    : "";
+  const approvalLabel = vm.approvalStatus === "approved"
+    ? "方案已批准"
+    : submitting
+      ? "正在启动搜索"
+      : "等待人工批准";
   const providerNames = plan.providerConnections.map((provider) => provider.providerId);
   const operationQueries = plan.operations
     .map((operation) => operation.query ?? operation.sourceRef)
@@ -53,7 +62,7 @@ export function renderPlanApproval(
         </div>
         <div class="ai-growth-plan__state">
           <span class="ai-growth-mode">${vm.mode === "demo" ? "演示模式 · 演示数据" : "真实模式"}</span>
-          <strong>${vm.approvalStatus === "approved" ? "方案已批准" : "等待人工批准"}</strong>
+          <strong>${approvalLabel}</strong>
         </div>
       </div>
       <div class="ai-growth-plan-grid">
@@ -99,9 +108,9 @@ export function renderPlanApproval(
       <footer class="ai-growth-plan__footer">
         <p><strong>批准前不会执行搜索。</strong> 方案、来源与预算可以继续修改。</p>
         <div>
-          <button type="button" class="ai-growth-button ai-growth-button--quiet" data-action="cancel-plan">取消</button>
-          <button type="button" class="ai-growth-button ai-growth-button--secondary" data-action="edit-plan">编辑方案</button>
-          <button type="button" class="ai-growth-button ai-growth-button--primary" data-action="approve-plan"${vm.approvalStatus === "approved" ? " disabled" : ""}>批准并开始执行</button>
+          <button type="button" class="ai-growth-button ai-growth-button--quiet" data-action="cancel-plan"${disabled}>取消</button>
+          <button type="button" class="ai-growth-button ai-growth-button--secondary" data-action="edit-plan"${disabled}>编辑方案</button>
+          <button type="button" class="ai-growth-button ai-growth-button--primary" data-action="approve-plan"${disabled}>${submitting ? "正在启动…" : "批准并开始执行"}</button>
         </div>
       </footer>
     </section>

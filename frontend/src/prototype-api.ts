@@ -1794,6 +1794,16 @@ let companyProfileCanManage = false;
 let openWorkspaceTabs = ["ai-growth"];
 let workspaceTabHistory = ["ai-growth"];
 let aiGrowthAdvisor: ReturnType<typeof mountAiGrowthAdvisor> | null = null;
+let activeWorkspaceView = "ai-growth";
+
+window.addEventListener("goodjob:legacy-view-change", (event) => {
+  const nextView = (
+    event as CustomEvent<{ view?: string }>
+  ).detail?.view;
+  if (typeof nextView === "string") {
+    syncAiGrowthWorkspaceLifecycle(nextView);
+  }
+});
 
 const viewLabels: Record<string, string> = {
   "ai-growth": "AI 增长参谋",
@@ -16670,13 +16680,22 @@ function openSecondaryDropdownForView(view: string) {
   if (section) section.open = true;
 }
 
-function activateNavView(view: string, after?: () => void) {
-  if (!qs<HTMLElement>(`#${CSS.escape(view)}`)) view = "ai-growth";
-  const activeView = qs<HTMLElement>(".view.active")?.id;
-  if (activeView === "ai-growth" && view !== "ai-growth") {
+function syncAiGrowthWorkspaceLifecycle(nextView: string) {
+  if (activeWorkspaceView === nextView) return;
+  if (activeWorkspaceView === "ai-growth") {
     aiGrowthAdvisor?.leave();
   }
-  if (activeView === "memos" && view !== "memos" && memoDirty) void saveCurrentMemoDraft();
+  activeWorkspaceView = nextView;
+  if (activeWorkspaceView === "ai-growth") {
+    ensureAiGrowthAdvisor()?.enter();
+  }
+}
+
+function activateNavView(view: string, after?: () => void) {
+  if (!qs<HTMLElement>(`#${CSS.escape(view)}`)) view = "ai-growth";
+  const previousView = activeWorkspaceView;
+  syncAiGrowthWorkspaceLifecycle(view);
+  if (previousView === "memos" && view !== "memos" && memoDirty) void saveCurrentMemoDraft();
   if (view !== "leads") closeLeadDrawer();
   if (view !== "customers") closeCustomerDrawer();
   customerMapController?.setActive(view === "customers" && state.customerViewMode === "map");
@@ -16701,7 +16720,6 @@ function activateNavView(view: string, after?: () => void) {
   }
   if (view === "dashboard") requestDashboardRefresh();
   if (view === "lead-finder") void loadIdentityConflicts(true);
-  if (view === "ai-growth") ensureAiGrowthAdvisor()?.enter();
   window.scrollTo({ top: 0, behavior: "smooth" });
   after?.();
 }

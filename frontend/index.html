@@ -15617,6 +15617,10 @@
     let tabHistory = ["ai-growth"];
     function activateView(id) {
       if (!document.getElementById(id)) id = "ai-growth";
+      const previousId = document.querySelector(".view.active")?.id || "ai-growth";
+      window.dispatchEvent(new CustomEvent("goodjob:legacy-view-change", {
+        detail: { from: previousId, view: id }
+      }));
       if (!openTabs.includes(id)) openTabs.push(id);
       tabHistory = [id, ...tabHistory.filter((item) => item !== id && openTabs.includes(item))];
       navButtons.forEach((button) => button.classList.toggle("active", button.dataset.view === id));
