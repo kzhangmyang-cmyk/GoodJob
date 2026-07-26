@@ -186,6 +186,12 @@ function stableErrorCode(value: unknown) {
     && /^[A-Z][A-Z0-9_]{0,127}$/.test(value);
 }
 
+function isInvalidProcessorResult(error: unknown) {
+  return Boolean(error)
+    && typeof error === "object"
+    && (error as { code?: unknown }).code === "INVALID_SEARCH_RESULT";
+}
+
 function validPresentation(
   presentation: AcquisitionShardPresentationResult,
   evidenceCount: number
@@ -486,7 +492,8 @@ implements AcquisitionExecutionPort {
       await service.completeShard(scope, task.runId, task.shardId, {
         status: result.status,
         evidenceCount: result.evidenceCount,
-        presentation: result.presentation
+        presentation: result.presentation,
+        idempotencyKey: task.dispatchKey
       });
     } catch (error) {
       const run = await this.repository.getRun(task.runId);
@@ -509,7 +516,9 @@ implements AcquisitionExecutionPort {
           code: phase === "start"
             ? "SHARD_START_FAILED"
             : phase === "process"
-              ? "SHARD_PROCESSING_FAILED"
+              ? isInvalidProcessorResult(error)
+                ? "SHARD_RESULT_INVALID"
+                : "SHARD_PROCESSING_FAILED"
               : phase === "budget"
                 ? "SHARD_BUDGET_ACCOUNTING_FAILED"
                 : "SHARD_COMPLETION_FAILED",

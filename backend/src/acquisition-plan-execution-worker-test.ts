@@ -254,54 +254,112 @@ test("a completed search with no accepted evidence settles as succeeded_empty", 
 });
 
 test("rejects malformed shard presentations before completion", async () => {
-  const failures: AcquisitionShardWorkerFailure[] = [];
-  const processor = {
-    async process() {
-      return {
-        status: "succeeded",
-        evidenceCount: 1,
-        usage: {
-          requests: 1,
-          results: 1,
-          amountMinor: 0,
-          durationSeconds: 1
-        },
-        presentation: {
-          rawResultCount: -1,
-          acceptedResultCount: 2,
-          duplicateResultCount: 0,
-          failedResultCount: 0,
-          providers: [{
-            providerConnectionId: "search-connection",
-            provider: "official-search",
-            status: "succeeded"
-          }],
-          providerFailures: [],
-          candidateIds: ["candidate-1", "candidate-1"],
-          processedCandidateIds: [],
-          battleCardCandidateIds: [],
-          candidateFailures: []
-        }
-      };
+  const cases = [
+    {
+      name: "negative count",
+      presentation: {
+        rawResultCount: -1,
+        acceptedResultCount: 1,
+        duplicateResultCount: 0,
+        failedResultCount: 0,
+        candidateIds: ["candidate-1"]
+      }
+    },
+    {
+      name: "duplicate candidate id",
+      presentation: {
+        rawResultCount: 1,
+        acceptedResultCount: 1,
+        duplicateResultCount: 0,
+        failedResultCount: 0,
+        candidateIds: ["candidate-1", "candidate-1"]
+      }
+    },
+    {
+      name: "accepted count mismatch",
+      presentation: {
+        rawResultCount: 1,
+        acceptedResultCount: 0,
+        duplicateResultCount: 0,
+        failedResultCount: 0,
+        candidateIds: ["candidate-1"]
+      }
     }
-  } as AcquisitionShardProcessorPort;
-  const { repository, service, worker } = createHarness(
+  ];
+  for (const invalid of cases) {
+    const failures: AcquisitionShardWorkerFailure[] = [];
+    const processor = {
+      async process() {
+        return {
+          status: "succeeded",
+          evidenceCount: 1,
+          usage: {
+            requests: 1,
+            results: 1,
+            amountMinor: 0,
+            durationSeconds: 1
+          },
+          presentation: {
+            ...invalid.presentation,
+            providers: [{
+              providerConnectionId: "search-connection",
+              provider: "official-search",
+              status: "succeeded" as const
+            }],
+            providerFailures: [],
+            processedCandidateIds: [],
+            battleCardCandidateIds: [],
+            candidateFailures: []
+          }
+        };
+      }
+    } as AcquisitionShardProcessorPort;
+    const { repository, service, worker } = createHarness(
+      processor,
+      1,
+      (failure) => failures.push(failure)
+    );
+    const created = await createApprovedRun(service);
+
+    await worker.waitForIdle();
+
+    assert.equal(failures.length, 2, invalid.name);
+    assert.ok(failures.every((failure) =>
+      failure.code === "SHARD_RESULT_INVALID" && failure.phase === "process"
+    ), invalid.name);
+    assert.ok(
+      (await repository.listRunShards(created.id))
+        .every((shard) => shard.status === "failed"),
+      invalid.name
+    );
+    await worker.close();
+  }
+});
+
+test("maps invalid authoritative search snapshots to SHARD_RESULT_INVALID", async () => {
+  const failures: AcquisitionShardWorkerFailure[] = [];
+  const processor: AcquisitionShardProcessorPort = {
+    async process() {
+      const error = new Error("INVALID_SEARCH_RESULT") as Error & {
+        code: string;
+      };
+      error.code = "INVALID_SEARCH_RESULT";
+      throw error;
+    }
+  };
+  const { service, worker } = createHarness(
     processor,
     1,
     (failure) => failures.push(failure)
   );
-  const created = await createApprovedRun(service);
 
+  await createApprovedRun(service);
   await worker.waitForIdle();
 
   assert.equal(failures.length, 2);
   assert.ok(failures.every((failure) =>
     failure.code === "SHARD_RESULT_INVALID" && failure.phase === "process"
   ));
-  assert.ok(
-    (await repository.listRunShards(created.id))
-      .every((shard) => shard.status === "failed")
-  );
   await worker.close();
 });
 

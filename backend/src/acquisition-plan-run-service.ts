@@ -859,6 +859,8 @@ export class AcquisitionPlanRunService {
           consumedBudget: clone(ZERO_USAGE),
           modelSnapshotRef: clone(version.payload.modelSnapshotRef),
           evidenceCount: 0,
+          completionIdempotencyKey: undefined,
+          completionRequestHash: undefined,
           revision: 1,
           createdAt: now,
           updatedAt: now,
@@ -1289,9 +1291,24 @@ export class AcquisitionPlanRunService {
         | "cancelled";
       evidenceCount: number;
       presentation?: AcquisitionShardPresentationResult;
+      idempotencyKey?: string;
     }
   ) {
     assertScope(scope);
+    const idempotencyKey = input.idempotencyKey?.trim();
+    if (input.idempotencyKey !== undefined
+      && (!idempotencyKey || idempotencyKey.length < 8)) {
+      throw new AcquisitionPlanRunError(
+        400,
+        "invalid_idempotency_key",
+        "分片结算幂等键必须至少包含 8 个字符"
+      );
+    }
+    const completionRequestHash = stableHash({
+      status: input.status,
+      evidenceCount: input.evidenceCount,
+      presentation: input.presentation ?? null
+    });
     if (!nonNegativeInteger(input.evidenceCount)) {
       throw new AcquisitionPlanRunError(
         400,
@@ -1328,6 +1345,17 @@ export class AcquisitionPlanRunService {
     return this.repository.transaction((transaction) => {
       const run = this.visibleRun(transaction, scope, runId);
       const shard = this.visibleShard(transaction, scope, run, shardId);
+      if (idempotencyKey
+        && shard.completionIdempotencyKey === idempotencyKey) {
+        if (shard.completionRequestHash !== completionRequestHash) {
+          throw new AcquisitionPlanRunError(
+            409,
+            "idempotency_conflict",
+            "同一分片结算幂等键已用于不同请求"
+          );
+        }
+        return run;
+      }
       if (!["running", "pause_requested", "cancel_requested"]
         .includes(shard.status)) {
         throw new AcquisitionPlanRunError(
@@ -1358,6 +1386,8 @@ export class AcquisitionPlanRunService {
         ...shard,
         status: input.status,
         evidenceCount: input.evidenceCount,
+        completionIdempotencyKey: idempotencyKey,
+        completionRequestHash: idempotencyKey ? completionRequestHash : undefined,
         revision: shard.revision + 1,
         updatedAt: now,
         completedAt: now

@@ -183,6 +183,8 @@ export interface AcquisitionOperationShard {
   consumedBudget: AcquisitionBudgetUsage;
   modelSnapshotRef: AcquisitionModelSnapshotRef;
   evidenceCount: number;
+  completionIdempotencyKey?: string;
+  completionRequestHash?: string;
   revision: number;
   createdAt: string;
   updatedAt: string;

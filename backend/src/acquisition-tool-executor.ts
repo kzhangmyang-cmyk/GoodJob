@@ -1302,7 +1302,9 @@ implements AcquisitionAgentToolExecutor {
     const successes: Array<z.infer<typeof searchResponseEnvelopeSchema>> = [];
     const providerFailures: Array<{
       providerConnectionId: string;
+      provider: string;
       errorCode: "SEARCH_PROVIDER_FAILED" | "SEARCH_PROVIDER_INVALID_RESPONSE";
+      retryAfterAt: string | null;
     }> = [];
     for (let index = 0; index < settled.length; index += 1) {
       const item = settled[index]!;
@@ -1311,7 +1313,9 @@ implements AcquisitionAgentToolExecutor {
         if (isAbort(item.reason)) throw abortError();
         providerFailures.push({
           providerConnectionId: request.providerConnectionId,
-          errorCode: "SEARCH_PROVIDER_FAILED"
+          provider: "unknown",
+          errorCode: "SEARCH_PROVIDER_FAILED",
+          retryAfterAt: null
         });
         continue;
       }
@@ -1320,7 +1324,9 @@ implements AcquisitionAgentToolExecutor {
         || parsed.data.providerConnectionId !== request.providerConnectionId) {
         providerFailures.push({
           providerConnectionId: request.providerConnectionId,
-          errorCode: "SEARCH_PROVIDER_INVALID_RESPONSE"
+          provider: "unknown",
+          errorCode: "SEARCH_PROVIDER_INVALID_RESPONSE",
+          retryAfterAt: null
         });
         continue;
       }

@@ -877,6 +877,59 @@ test("shard completion atomically records deduplicated discovered candidates", a
   );
 });
 
+test("same completion idempotency key retries without duplicate candidate links", async () => {
+  const { repository, service } = harness();
+  const draft = await service.createPlan(ownerA, planInput());
+  const approved = await service.approvePlan(
+    ownerA,
+    draft.id,
+    draft.etag,
+    { decision: "approve", reason: "人工批准" }
+  );
+  let run = await service.createRun(ownerA, approved.id, {
+    idempotencyKey: "run-candidate-retry-0001"
+  });
+  const shard = (await repository.listRunShards(run.id))[0]!;
+  run = await service.startShard(ownerA, run.id, shard.id);
+  const completion = {
+    idempotencyKey: "search-dispatch-retry-0001",
+    status: "succeeded" as const,
+    evidenceCount: 1,
+    presentation: {
+      rawResultCount: 1,
+      acceptedResultCount: 1,
+      duplicateResultCount: 0,
+      failedResultCount: 0,
+      providers: [],
+      providerFailures: [],
+      candidateIds: ["candidate-retry"],
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      candidateFailures: []
+    }
+  };
+  const completed = await service.completeShard(
+    ownerA,
+    run.id,
+    shard.id,
+    completion
+  );
+  const replay = await service.completeShard(
+    ownerA,
+    run.id,
+    shard.id,
+    structuredClone(completion)
+  );
+
+  assert.equal(replay.id, completed.id);
+  assert.deepEqual(
+    (await repository.listRunEvents(run.id))
+      .filter((event) => event.type === "candidate.discovered")
+      .map((event) => event.data.candidateId),
+    ["candidate-retry"]
+  );
+});
+
 test("candidate event append failures roll back shard, run, and all completion events", async () => {
   const repository = new FailingCandidateEventRepository();
   const executionPort = new RecordingExecutionPort();

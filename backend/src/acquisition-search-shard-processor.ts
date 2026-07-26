@@ -126,6 +126,18 @@ implements AcquisitionShardProcessorPort {
     if (!Number.isSafeInteger(evidenceCount)
       || Number(evidenceCount) < 0
       || Number(evidenceCount) > maxResults
+      || !Number.isSafeInteger(rawResultCount)
+      || Number(rawResultCount) < Number(evidenceCount)
+      || !Number.isSafeInteger(duplicateResultCount)
+      || Number(duplicateResultCount) < 0
+      || Number(duplicateResultCount) > Number(evidenceCount)
+      || !Number.isSafeInteger(failedResultCount)
+      || Number(failedResultCount) < 0
+      || !Array.isArray(candidateIds)
+      || candidateIds.some((candidateId) =>
+        typeof candidateId !== "string" || candidateId.trim().length === 0
+      )
+      || new Set(candidateIds).size !== candidateIds.length
       || !["succeeded", "partial"].includes(String(record.status))
       || !Array.isArray(providers)
       || !Array.isArray(providerFailures)
@@ -188,40 +200,35 @@ implements AcquisitionShardProcessorPort {
     return {
       status,
       evidenceCount: Number(evidenceCount),
-      ...(typeof rawResultCount === "number"
-        && typeof duplicateResultCount === "number"
-        && typeof failedResultCount === "number"
-        && Array.isArray(candidateIds)
-        ? {
-            presentation: {
-              rawResultCount,
-              acceptedResultCount: Number(evidenceCount),
-              duplicateResultCount,
-              failedResultCount,
-              providers: providers.map((provider) => ({
-                providerConnectionId: String(
-                  (provider as Record<string, unknown>).providerConnectionId
-                ),
-                provider: String((provider as Record<string, unknown>).provider),
-                status: "succeeded" as const
-              })),
-              providerFailures: providerFailures.map((failure) => ({
-                providerConnectionId: String(
-                  (failure as Record<string, unknown>).providerConnectionId
-                ),
-                provider: String(
-                  (failure as Record<string, unknown>).provider ?? "unknown"
-                ),
-                errorCode: String((failure as Record<string, unknown>).errorCode),
-                retryAfterAt: null
-              })),
-              candidateIds: candidateIds.map(String),
-              processedCandidateIds: [],
-              battleCardCandidateIds: [],
-              candidateFailures: []
-            }
-          }
-        : {}),
+      presentation: {
+        rawResultCount: Number(rawResultCount),
+        acceptedResultCount: Number(evidenceCount),
+        duplicateResultCount: Number(duplicateResultCount),
+        failedResultCount: Number(failedResultCount),
+        providers: providers.map((provider) => ({
+          providerConnectionId: String(
+            (provider as Record<string, unknown>).providerConnectionId
+          ),
+          provider: String((provider as Record<string, unknown>).provider),
+          status: "succeeded" as const
+        })),
+        providerFailures: providerFailures.map((failure) => ({
+          providerConnectionId: String(
+            (failure as Record<string, unknown>).providerConnectionId
+          ),
+          provider: String(
+            (failure as Record<string, unknown>).provider ?? "unknown"
+          ),
+          errorCode: String((failure as Record<string, unknown>).errorCode),
+          retryAfterAt: (failure as Record<string, unknown>).retryAfterAt === null
+            ? null
+            : String((failure as Record<string, unknown>).retryAfterAt)
+        })),
+        candidateIds: candidateIds.map(String),
+        processedCandidateIds: [],
+        battleCardCandidateIds: [],
+        candidateFailures: []
+      },
       usage
     };
   }

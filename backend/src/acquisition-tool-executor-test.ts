@@ -517,7 +517,9 @@ test("searches authorized providers, survives a partial failure, and idempotentl
   assert.equal(first.providerFailures.length, 1);
   assert.deepEqual(first.providerFailures[0], {
     providerConnectionId: "search-broken",
-    errorCode: "SEARCH_PROVIDER_FAILED"
+    provider: "unknown",
+    errorCode: "SEARCH_PROVIDER_FAILED",
+    retryAfterAt: null
   });
   assert.equal(JSON.stringify(first).includes("must-not-leak"), false);
   assert.equal(first.candidates.length, 2);

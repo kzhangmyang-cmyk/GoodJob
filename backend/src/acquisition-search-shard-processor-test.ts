@@ -210,6 +210,78 @@ test("maps a search shard to search_public_sources and extracts accepted evidenc
   assert.match(calls[0]?.idempotencyKey ?? "", /^acquisition-search:/);
 });
 
+test("rejects missing or malformed authoritative search presentation fields", async () => {
+  const invalidSnapshots = [
+    { rawResultCount: undefined },
+    { duplicateResultCount: -1 },
+    { failedResultCount: "0" },
+    { candidateIds: ["candidate-1", "candidate-1"] }
+  ];
+  for (const snapshot of invalidSnapshots) {
+    const executor: AcquisitionAgentToolExecutor = {
+      async execute() {
+        return {
+          status: "succeeded",
+          providers: [{
+            providerConnectionId: "official-search-connection",
+            provider: "official-search",
+            status: "succeeded"
+          }],
+          providerFailures: [],
+          rawResultCount: 1,
+          acceptedResultCount: 1,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          candidateIds: ["candidate-1"],
+          outreachExecuted: false,
+          ...snapshot
+        };
+      }
+    };
+    const processor = new AcquisitionSearchShardProcessor({ executor });
+    await assert.rejects(
+      processor.process(processingInput()),
+      (error: unknown) =>
+        error instanceof AcquisitionSearchShardProcessorError
+        && error.code === "INVALID_SEARCH_RESULT"
+    );
+  }
+});
+
+test("preserves an authoritative provider retryAfterAt in presentation", async () => {
+  const executor: AcquisitionAgentToolExecutor = {
+    async execute() {
+      return {
+        status: "partial",
+        providers: [],
+        providerFailures: [{
+          providerConnectionId: "official-search-connection",
+          provider: "official-search",
+          errorCode: "SEARCH_PROVIDER_FAILED",
+          retryAfterAt: "2026-07-24T10:00:00.000Z"
+        }],
+        rawResultCount: 0,
+        acceptedResultCount: 0,
+        duplicateResultCount: 0,
+        failedResultCount: 0,
+        candidateIds: [],
+        outreachExecuted: false
+      };
+    }
+  };
+  const processor = new AcquisitionSearchShardProcessor({ executor });
+
+  const result = await processor.process(processingInput());
+
+  assert.equal(result.status, "failed");
+  assert.deepEqual(result.presentation?.providerFailures, [{
+    providerConnectionId: "official-search-connection",
+    provider: "official-search",
+    errorCode: "SEARCH_PROVIDER_FAILED",
+    retryAfterAt: "2026-07-24T10:00:00.000Z"
+  }]);
+});
+
 test("rejects non-search shards without calling any agent tool", async () => {
   let calls = 0;
   const executor: AcquisitionAgentToolExecutor = {
@@ -302,7 +374,8 @@ test("preserves a partial search outcome when accepted evidence survives ingest 
       return {
         status: "partial",
         providers: [{
-          providerConnectionId: "official-search-connection"
+          providerConnectionId: "official-search-connection",
+          provider: "official-search"
         }],
         providerFailures: [],
         ingestFailures: [{
@@ -312,7 +385,11 @@ test("preserves a partial search outcome when accepted evidence survives ingest 
         }],
         evidence: [{ id: "evidence-1" }],
         candidates: [{ id: "candidate-1" }],
+        rawResultCount: 2,
         acceptedResultCount: 1,
+        duplicateResultCount: 0,
+        failedResultCount: 1,
+        candidateIds: ["candidate-1"],
         outreachExecuted: false
       };
     }
@@ -327,6 +404,22 @@ test("preserves a partial search outcome when accepted evidence survives ingest 
   assert.deepEqual(result, {
     status: "partial_success",
     evidenceCount: 1,
+    presentation: {
+      rawResultCount: 2,
+      acceptedResultCount: 1,
+      duplicateResultCount: 0,
+      failedResultCount: 1,
+      providers: [{
+        providerConnectionId: "official-search-connection",
+        provider: "official-search",
+        status: "succeeded"
+      }],
+      providerFailures: [],
+      candidateIds: ["candidate-1"],
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      candidateFailures: []
+    },
     usage: {
       requests: 1,
       results: 1,
@@ -342,10 +435,15 @@ test("uses explicit executor usage when the search result supplies a valid accou
       return {
         status: "succeeded",
         providers: [{
-          providerConnectionId: "official-search-connection"
+          providerConnectionId: "official-search-connection",
+          provider: "official-search"
         }],
         providerFailures: [],
+        rawResultCount: 2,
         acceptedResultCount: 2,
+        duplicateResultCount: 0,
+        failedResultCount: 0,
+        candidateIds: ["candidate-1", "candidate-2"],
         usage: {
           requests: 2,
           results: 2,
