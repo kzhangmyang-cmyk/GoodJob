@@ -464,34 +464,105 @@ test("review actions use the current decision version and only exact approval un
   );
 });
 
-test("rejected, do-not-contact, and needs-research candidates only reopen on explicit invocation", async () => {
-  for (const status of [
-    "rejected",
-    "do_not_contact",
-    "needs_research"
-  ] as const) {
-    const reviewCalls: string[] = [];
-    const api = apiStub({
-      getCandidate: async () => candidate(status),
-      reviewCandidate: async (_candidateId, input) => {
-        reviewCalls.push(input.action);
-        return {
-          candidate: candidate("pending_review"),
-          review: {},
-          research: null
-        };
-      }
-    });
+test("only rejected candidates expose backend-supported reopen", async () => {
+  const rejected = createBattleCardDrawer({
+    api: apiStub({ getCandidate: async () => candidate("rejected") }),
+    onCandidateUpdated: () => undefined
+  });
+  await rejected.open("candidate-1");
+  assert.match(rejected.render().html, /重新打开/);
+  assert.match(rejected.render().html, /重新打开原因（必填）/);
+
+  for (const status of ["do_not_contact", "needs_research"] as const) {
     const drawer = createBattleCardDrawer({
-      api,
+      api: apiStub({ getCandidate: async () => candidate(status) }),
       onCandidateUpdated: () => undefined
     });
     await drawer.open("candidate-1");
-    assert.deepEqual(reviewCalls, []);
-    assert.match(drawer.render().html, /重新打开/);
+    assert.doesNotMatch(drawer.render().html, /重新打开/);
+    await assert.rejects(
+      () => drawer.review("reopen", "已有新增公开证据"),
+      /当前候选状态不允许/
+    );
+  }
+});
 
-    await drawer.review("reopen", null);
-    assert.deepEqual(reviewCalls, ["reopen"]);
+test("typed renderer review input carries reasons and blocks missing required reasons before API", async () => {
+  const calls: Array<{ action: string; reason: string | null }> = [];
+  let current = candidate("pending_review");
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => current,
+      reviewCandidate: async (_candidateId, input) => {
+        calls.push({ action: input.action, reason: input.reason });
+        current = candidate(input.action === "approved"
+          ? "approved"
+          : input.action === "do_not_contact"
+            ? "do_not_contact"
+            : input.action === "reopen"
+              ? "normalized"
+              : input.action);
+        return { candidate: current, review: {}, research: null };
+      }
+    }),
+    onCandidateUpdated: () => undefined
+  });
+  await drawer.open("candidate-1");
+  assert.match(drawer.render().html, /驳回、补充研究时必填/);
+
+  for (const action of ["rejected", "needs_research"] as const) {
+    await assert.rejects(
+      () => drawer.review(action, "  "),
+      /必须填写原因/
+    );
+  }
+  assert.equal(calls.length, 0);
+
+  await drawer.render().callbacks.onReview({
+    action: "rejected",
+    reason: "公开采购信号已经失效"
+  });
+  assert.deepEqual(calls[0], {
+    action: "rejected",
+    reason: "公开采购信号已经失效"
+  });
+
+  current = candidate("rejected");
+  await drawer.open("candidate-1");
+  await assert.rejects(
+    () => drawer.review("reopen", null),
+    /必须填写原因/
+  );
+  assert.equal(calls.length, 1);
+  await drawer.render().callbacks.onReview({
+    action: "reopen",
+    reason: "发现新的官网采购公告"
+  });
+  assert.deepEqual(calls[1], {
+    action: "reopen",
+    reason: "发现新的官网采购公告"
+  });
+});
+
+test("approved and do-not-contact keep backend-compatible optional reason semantics", async () => {
+  for (const action of ["approved", "do_not_contact"] as const) {
+    const calls: Array<string | null> = [];
+    const drawer = createBattleCardDrawer({
+      api: apiStub({
+        reviewCandidate: async (_candidateId, input) => {
+          calls.push(input.reason);
+          return {
+            candidate: candidate(action),
+            review: {},
+            research: null
+          };
+        }
+      }),
+      onCandidateUpdated: () => undefined
+    });
+    await drawer.open("candidate-1");
+    await drawer.review(action, null);
+    assert.deepEqual(calls, [null]);
   }
 });
 
@@ -529,4 +600,135 @@ test("close resets the selected candidate and keeps a pure closed rendering", as
   assert.equal(drawer.getState().open, false);
   assert.equal(drawer.getState().candidateId, null);
   assert.equal(drawer.render().html, "");
+});
+
+test("switching candidates discards a stale qualification task completion", async () => {
+  const pendingTask = deferred<CopilotTaskDto>();
+  const qualificationReads: string[] = [];
+  const qualificationB = {
+    ...qualification,
+    id: "qualification-b",
+    candidateId: "candidate-2",
+    decisionVersion: "decision-b"
+  };
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async (candidateId) => candidate("pending_review", {
+        id: candidateId,
+        name: candidateId === "candidate-1" ? "候选甲" : "候选乙",
+        latestDecisionVersion: candidateId === "candidate-1"
+          ? "decision-v2"
+          : "decision-b"
+      }),
+      getQualification: async (candidateId) => {
+        qualificationReads.push(candidateId);
+        if (candidateId === "candidate-1") {
+          throw httpError(404, "missing");
+        }
+        return qualificationB;
+      },
+      requestAssistantAction: async () => pendingTask.promise
+    }),
+    onCandidateUpdated: () => undefined
+  });
+  await drawer.open("candidate-1");
+  const running = drawer.runQualification();
+  await Promise.resolve();
+  await Promise.resolve();
+  await drawer.open("candidate-2");
+
+  pendingTask.resolve(succeededTask("task-a", "qualify_candidate"));
+  await running;
+
+  assert.equal(drawer.getState().candidateId, "candidate-2");
+  assert.equal(drawer.getState().qualification.data?.candidateId, "candidate-2");
+  assert.equal(drawer.getState().action.status, "idle");
+  assert.deepEqual(qualificationReads, ["candidate-1", "candidate-2"]);
+});
+
+test("closing during battle-card generation ignores stale task and refresh results", async () => {
+  const pendingTask = deferred<CopilotTaskDto>();
+  let cardReads = 0;
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getBattleCard: async () => {
+        cardReads += 1;
+        throw httpError(404, "missing");
+      },
+      requestAssistantAction: async () => pendingTask.promise
+    }),
+    onCandidateUpdated: () => undefined
+  });
+  await drawer.open("candidate-1");
+  const running = drawer.generateBattleCard();
+  await Promise.resolve();
+  await Promise.resolve();
+  drawer.close();
+
+  pendingTask.resolve(succeededTask("task-card", "build_battle_card"));
+  await running;
+
+  assert.equal(drawer.getState().open, false);
+  assert.equal(drawer.getState().action.status, "idle");
+  assert.equal(cardReads, 1);
+});
+
+test("switching during review and closing during conversion suppress stale refresh and callbacks", async () => {
+  const pendingReview = deferred<Awaited<ReturnType<AiGrowthApi["reviewCandidate"]>>>();
+  const pendingConversion =
+    deferred<Awaited<ReturnType<AiGrowthApi["convertCandidate"]>>>();
+  const updates: string[] = [];
+  const candidateReads: string[] = [];
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async (candidateId) => {
+        candidateReads.push(candidateId);
+        return candidate(
+          candidateId === "candidate-1" ? "pending_review" : "approved",
+          {
+            id: candidateId,
+            name: candidateId,
+            latestDecisionVersion: "decision-v2",
+            approvedDecisionVersion: candidateId === "candidate-2"
+              ? "decision-v2"
+              : null
+          }
+        );
+      },
+      reviewCandidate: async () => pendingReview.promise,
+      convertCandidate: async () => pendingConversion.promise
+    }),
+    onCandidateUpdated: (value) => updates.push(value.id)
+  });
+
+  await drawer.open("candidate-1");
+  const review = drawer.review("approved", null);
+  await Promise.resolve();
+  await drawer.open("candidate-2");
+  pendingReview.resolve({
+    candidate: candidate("approved"),
+    review: {},
+    research: null
+  });
+  await review;
+  assert.deepEqual(updates, []);
+  assert.deepEqual(candidateReads, ["candidate-1", "candidate-2"]);
+
+  const conversion = drawer.convert();
+  await Promise.resolve();
+  drawer.close();
+  pendingConversion.resolve({
+    id: "conversion-2",
+    candidateId: "candidate-2",
+    decisionVersion: "decision-v2",
+    partyRef: {},
+    leadId: "lead-2",
+    reviewerId: "reviewer-1",
+    evidenceSnapshotHash: "snapshot-2",
+    createdAt: timestamp
+  });
+  await conversion;
+  assert.deepEqual(updates, []);
+  assert.deepEqual(candidateReads, ["candidate-1", "candidate-2"]);
+  assert.equal(drawer.getState().open, false);
 });

@@ -53,19 +53,25 @@ export interface BattleCardDrawerState {
   action: BattleCardActionState;
 }
 
+export type CandidateReviewAction =
+  | "approved"
+  | "rejected"
+  | "do_not_contact"
+  | "needs_research"
+  | "reopen";
+
+export interface CandidateReviewSubmission {
+  action: CandidateReviewAction;
+  reason: string | null;
+}
+
 export interface BattleCardDrawerCallbacks {
   onClose(): void;
-  onRunQualification(): void;
-  onGenerateBattleCard(): void;
-  onReview(action:
-    | "approved"
-    | "rejected"
-    | "do_not_contact"
-    | "needs_research"
-    | "reopen"
-  ): void;
-  onConvert(): void;
-  onCreateOutreachReviewTask(): void;
+  onRunQualification(): Promise<void>;
+  onGenerateBattleCard(): Promise<void>;
+  onReview(input: CandidateReviewSubmission): Promise<void>;
+  onConvert(): Promise<void>;
+  onCreateOutreachReviewTask(): Promise<void>;
 }
 
 export interface BattleCardDrawer {
@@ -76,7 +82,7 @@ export interface BattleCardDrawer {
   runQualification(): Promise<void>;
   generateBattleCard(): Promise<void>;
   review(
-    action: "approved" | "rejected" | "do_not_contact" | "needs_research" | "reopen",
+    action: CandidateReviewAction,
     reason?: string | null
   ): Promise<void>;
   convert(): Promise<void>;
@@ -177,13 +183,17 @@ const TERMINAL_TASK_STATUSES = new Set<CopilotTaskDto["status"]>([
 ]);
 
 const REVIEWABLE_ACTIONS: Readonly<
-  Partial<Record<CandidateStatus, readonly string[]>>
+  Partial<Record<CandidateStatus, readonly CandidateReviewAction[]>>
 > = {
   pending_review: ["approved", "rejected", "do_not_contact", "needs_research"],
-  rejected: ["reopen"],
-  do_not_contact: ["reopen"],
-  needs_research: ["reopen"]
+  rejected: ["reopen"]
 };
+
+const REASON_REQUIRED_ACTIONS = new Set<CandidateReviewAction>([
+  "rejected",
+  "needs_research",
+  "reopen"
+]);
 
 function actionStatus(state: BattleCardActionState): string {
   if (state.status === "idle") return "";
@@ -361,7 +371,7 @@ function reviewPanel(state: BattleCardDrawerState): string {
         </header>
         <p>请核验证据、硬门禁与 AI 理由。系统不会自动批准候选。</p>
         <label>
-          <span>复核说明（可选）</span>
+          <span>复核说明（批准、勿扰可选；驳回、补充研究时必填）</span>
           <textarea data-review-reason rows="3" placeholder="记录批准、驳回或补充研究的原因"></textarea>
         </label>
         <div class="ai-growth-drawer-review__actions">
@@ -380,7 +390,11 @@ function reviewPanel(state: BattleCardDrawerState): string {
     return `
       <section class="ai-growth-drawer-review">
         <h3>当前状态：${escapeHtml(candidate.status)}</h3>
-        <p>重新打开后才能基于最新决定版本继续复核。</p>
+        <p>只有存在新增公开证据时才能重新打开，并需记录明确原因。</p>
+        <label>
+          <span>重新打开原因（必填）</span>
+          <textarea data-review-reason rows="3" required placeholder="说明新增证据及重新评估原因"></textarea>
+        </label>
         <button type="button" class="ai-growth-button ai-growth-button--secondary" data-action="review-reopen">重新打开</button>
       </section>
     `;
@@ -457,16 +471,41 @@ export function createBattleCardDrawer(
 
   const callbacks: BattleCardDrawerCallbacks = {
     onClose: () => drawer.close(),
-    onRunQualification: () =>
-      void drawer.runQualification().catch(() => undefined),
-    onGenerateBattleCard: () =>
-      void drawer.generateBattleCard().catch(() => undefined),
-    onReview: (action) =>
-      void drawer.review(action).catch(() => undefined),
-    onConvert: () => void drawer.convert().catch(() => undefined),
+    onRunQualification: () => drawer.runQualification(),
+    onGenerateBattleCard: () => drawer.generateBattleCard(),
+    onReview: ({ action, reason }) => drawer.review(action, reason),
+    onConvert: () => drawer.convert(),
     onCreateOutreachReviewTask: () =>
-      void drawer.createOutreachReviewTask().catch(() => undefined)
+      drawer.createOutreachReviewTask()
   };
+
+  interface ActionContext {
+    candidateId: string;
+    generation: number;
+  }
+
+  function captureContext(): ActionContext {
+    if (!state.candidateId || !state.open) {
+      throw new Error("请先打开候选客户");
+    }
+    return { candidateId: state.candidateId, generation };
+  }
+
+  function isActive(context: ActionContext): boolean {
+    return state.open
+      && context.generation === generation
+      && state.candidateId === context.candidateId;
+  }
+
+  function publishAction(
+    context: ActionContext,
+    next: BattleCardActionState
+  ): boolean {
+    if (!isActive(context)) return false;
+    state.action = next;
+    notify();
+    return true;
+  }
 
   async function ensureSession(): Promise<string> {
     if (sessionId) return sessionId;
@@ -474,95 +513,104 @@ export function createBattleCardDrawer(
     return sessionId;
   }
 
-  async function pollTask(task: CopilotTaskDto): Promise<CopilotTaskDto> {
+  async function pollTask(
+    context: ActionContext,
+    task: CopilotTaskDto
+  ): Promise<CopilotTaskDto | null> {
     let current = task;
     while (!TERMINAL_TASK_STATUSES.has(current.status)) {
-      state.action = { ...state.action, status: current.status };
-      notify();
+      if (!isActive(context)) return null;
+      publishAction(context, { ...state.action, status: current.status });
       await wait(pollMs);
+      if (!isActive(context)) return null;
       current = await api.getCopilotTask(current.id);
     }
-    state.action = { ...state.action, status: current.status };
-    notify();
+    if (!isActive(context)) return null;
+    publishAction(context, { ...state.action, status: current.status });
     return current;
   }
 
   async function runTool(
+    context: ActionContext,
     kind: BattleCardActionKind,
     toolName: string,
     message: string,
     successMessage: string
   ): Promise<boolean> {
-    state.action = {
+    if (!publishAction(context, {
       kind,
       status: "queued",
       taskId: null,
       message: null,
       error: null
-    };
-    notify();
+    })) return false;
     try {
+      const activeSessionId = await ensureSession();
+      if (!isActive(context)) return false;
       const task = await api.requestAssistantAction(
-        await ensureSession(),
+        activeSessionId,
         message,
         key()
       );
-      state.action.taskId = task.id;
-      notify();
-      const complete = await pollTask(task);
+      if (!isActive(context)) return false;
+      publishAction(context, { ...state.action, taskId: task.id });
+      const complete = await pollTask(context, task);
+      if (complete === null || !isActive(context)) return false;
       if (complete.status !== "succeeded") {
-        state.action.error = complete.status === "cancelled"
-          ? "任务已取消"
-          : "受控任务执行失败";
-        notify();
+        publishAction(context, {
+          ...state.action,
+          error: complete.status === "cancelled"
+            ? "任务已取消"
+            : "受控任务执行失败"
+        });
         return false;
       }
       if (!complete.result?.toolNames?.includes(toolName)) {
-        state.action = {
+        publishAction(context, {
           ...state.action,
           status: "failed",
           error: `任务未执行 ${toolName}，未刷新领域结果`
-        };
-        notify();
+        });
         return false;
       }
-      state.action = {
+      publishAction(context, {
         ...state.action,
         status: "succeeded",
         message: successMessage,
         error: null
-      };
-      notify();
+      });
       return true;
     } catch (error) {
-      state.action = {
-        ...state.action,
-        status: "failed",
-        error: errorMessage(error)
-      };
-      notify();
+      if (isActive(context)) {
+        publishAction(context, {
+          ...state.action,
+          status: "failed",
+          error: errorMessage(error)
+        });
+      }
       return false;
     }
   }
 
-  async function refreshQualificationAndFinance() {
+  async function refreshQualificationAndFinance(context: ActionContext) {
     const [qualificationResult, financialResult] = await Promise.all([
-      settleResource(() => api.getQualification(state.candidateId!)),
-      settleResource(() => api.getFinancialValue(state.candidateId!))
+      settleResource(() => api.getQualification(context.candidateId)),
+      settleResource(() => api.getFinancialValue(context.candidateId))
     ]);
+    if (!isActive(context)) return;
     state.qualification = qualificationResult;
     state.financialValue = financialResult;
     notify();
   }
 
-  async function refreshAfterReview() {
-    const candidateId = state.candidateId!;
+  async function refreshAfterReview(context: ActionContext) {
     const [candidateResult, qualificationResult, financialResult] =
       await Promise.all([
-        settleResource(() => api.getCandidate(candidateId)),
-        settleResource(() => api.getQualification(candidateId)),
-        settleResource(() => api.getFinancialValue(candidateId))
+        settleResource(() => api.getCandidate(context.candidateId)),
+        settleResource(() => api.getQualification(context.candidateId)),
+        settleResource(() => api.getFinancialValue(context.candidateId))
       ]);
+    if (!isActive(context)) return;
     state.candidate = candidateResult;
     state.qualification = qualificationResult;
     state.financialValue = financialResult;
@@ -620,43 +668,50 @@ export function createBattleCardDrawer(
     },
 
     async runQualification() {
-      if (!state.candidateId) throw new Error("请先打开候选客户");
+      const context = captureContext();
       const ok = await runTool(
+        context,
         "qualification",
         "qualify_candidate",
         `请调用 qualify_candidate 工具评估候选。参数：${JSON.stringify({
-          candidateId: state.candidateId,
+          candidateId: context.candidateId,
           policyVersion: "qualification.v1"
         })}`,
         "资格评估已完成"
       );
-      if (ok) await refreshQualificationAndFinance();
+      if (ok && isActive(context)) {
+        await refreshQualificationAndFinance(context);
+      }
     },
 
     async generateBattleCard() {
-      if (!state.candidateId) throw new Error("请先打开候选客户");
+      const context = captureContext();
       const ok = await runTool(
+        context,
         "battle_card",
         "build_battle_card",
         `请调用 build_battle_card 工具生成客户作战卡。参数：${JSON.stringify({
-          candidateId: state.candidateId,
+          candidateId: context.candidateId,
           templateVersion: "battle-card.v1"
         })}`,
         "客户作战卡已生成"
       );
-      if (ok) {
-        state.battleCard = await settleResource(() =>
-          api.getBattleCard(state.candidateId!)
+      if (ok && isActive(context)) {
+        const result = await settleResource(() =>
+          api.getBattleCard(context.candidateId)
         );
+        if (!isActive(context)) return;
+        state.battleCard = result;
         notify();
       }
     },
 
     async review(action, reason = null) {
       const candidate = state.candidate.data;
-      if (!candidate || !state.candidateId) {
+      if (!candidate || !state.candidateId || !state.open) {
         throw new Error("请先读取候选客户");
       }
+      const context = captureContext();
       const allowed = REVIEWABLE_ACTIONS[candidate.status] ?? [];
       if (!allowed.includes(action)) {
         throw new Error("当前候选状态不允许该人工复核动作");
@@ -664,93 +719,103 @@ export function createBattleCardDrawer(
       if (!candidate.latestDecisionVersion) {
         throw new Error("候选尚无可复核的资格决定版本");
       }
-      state.action = {
+      const normalizedReason = reason?.trim() || null;
+      if (REASON_REQUIRED_ACTIONS.has(action) && normalizedReason === null) {
+        throw new Error("该审核动作必须填写原因");
+      }
+      publishAction(context, {
         kind: "candidate_review",
         status: "running",
         taskId: null,
         message: null,
         error: null
-      };
-      notify();
+      });
       try {
         await api.reviewCandidate(
-          state.candidateId,
+          context.candidateId,
           {
             action,
             decisionVersion: candidate.latestDecisionVersion,
-            reason: reason?.trim() || null
+            reason: normalizedReason
           },
           key()
         );
-        await refreshAfterReview();
-        state.action = {
+        if (!isActive(context)) return;
+        await refreshAfterReview(context);
+        if (!isActive(context)) return;
+        publishAction(context, {
           ...state.action,
           status: "succeeded",
           message: "人工复核结果已保存"
-        };
-        notify();
+        });
       } catch (error) {
-        state.action = {
+        if (!isActive(context)) return;
+        publishAction(context, {
           ...state.action,
           status: "failed",
           error: errorMessage(error)
-        };
-        notify();
+        });
         throw error;
       }
     },
 
     async convert() {
       const candidate = state.candidate.data;
-      if (!state.candidateId || !approvedCurrentDecision(candidate)) {
+      if (!state.candidateId || !state.open
+        || !approvedCurrentDecision(candidate)) {
         throw new Error("当前资格决定尚未获得有效批准");
       }
-      state.action = {
+      const context = captureContext();
+      publishAction(context, {
         kind: "conversion",
         status: "running",
         taskId: null,
         message: null,
         error: null
-      };
-      notify();
+      });
       try {
         await api.convertCandidate(
-          state.candidateId,
+          context.candidateId,
           { decisionVersion: candidate!.latestDecisionVersion! },
           key()
         );
-        state.candidate = await settleResource(() =>
-          api.getCandidate(state.candidateId!)
+        if (!isActive(context)) return;
+        const result = await settleResource(() =>
+          api.getCandidate(context.candidateId)
         );
+        if (!isActive(context)) return;
+        state.candidate = result;
         if (state.candidate.data) onCandidateUpdated(state.candidate.data);
         notify();
-        state.action = {
+        publishAction(context, {
           ...state.action,
           status: "succeeded",
           message: "候选已转为线索"
-        };
-        notify();
+        });
       } catch (error) {
-        state.action = {
+        if (!isActive(context)) return;
+        publishAction(context, {
           ...state.action,
           status: "failed",
           error: errorMessage(error)
-        };
-        notify();
+        });
         throw error;
       }
     },
 
     async createOutreachReviewTask() {
       const candidate = state.candidate.data;
-      if (!state.candidateId || !approvedCurrentDecision(candidate)) {
+      if (!state.candidateId || !state.open
+        || !approvedCurrentDecision(candidate)) {
         throw new Error("当前资格决定尚未获得有效批准");
       }
+      const context = captureContext();
       await runTool(
+        context,
         "outreach_review",
         "create_review_task",
         `请调用 create_review_task 工具创建外联动作人工审核任务，不要发送消息。参数：${JSON.stringify({
-          candidateId: state.candidateId,
+          candidateId: context.candidateId,
           proposedAction: "private_domain_invitation",
           rationale: "候选已通过当前资格决定版本的人工批准，下一步外联仍需单独审核。"
         })}`,
