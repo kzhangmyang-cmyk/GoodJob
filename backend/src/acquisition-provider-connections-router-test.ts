@@ -740,7 +740,7 @@ test("v1 connection test delegates without exposing the credential secret and pe
     assert.equal(tested.response.status, 200);
     assert.deepEqual(tested.json, {
       ok: true,
-      message: "腾讯云联网搜索连接通过",
+      message: "数据源连接测试通过",
       errorCode: null,
       retryable: false,
       retryAfterAt: null,
@@ -777,7 +777,7 @@ test("v1 connection test delegates without exposing the credential secret and pe
     );
     assert.equal(
       refreshed.json.lastHealthMessage,
-      "腾讯云联网搜索连接通过"
+      "数据源连接测试通过"
     );
     assert.equal(refreshed.json.lastErrorCode, null);
     assert.equal(refreshed.json.usage, "fixture usage");
@@ -832,6 +832,65 @@ test("v1 failed connection tests remain visible through the public health projec
       JSON.stringify(refreshed.json).includes("failed-health-private-key"),
       false
     );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("v1 health projections redact tester messages containing connection configuration", async () => {
+  const configuredBaseUrl = "https://google.serper.dev";
+  const apiKey = "health-message-private-api-key";
+  let credentialRef = "";
+  const fixture = await createFixture({
+    async connectionTester(input) {
+      credentialRef = input.connection.credentialRef;
+      return {
+        ok: false,
+        message: [
+          `network request to ${configuredBaseUrl} failed`,
+          `credential ${credentialRef}`,
+          `api key ${apiKey}`
+        ].join("; "),
+        errorCode: "PROVIDER_NETWORK_ERROR",
+        retryable: true,
+        retryAfterAt: null,
+        usage: ""
+      };
+    }
+  });
+  try {
+    const created = await fixture.request(
+      "/api/v1/acquisition/provider-connections",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "redacted-health-create" },
+        body: JSON.stringify({
+          providerId: "serper",
+          apiKey,
+          baseUrl: configuredBaseUrl
+        })
+      }
+    );
+    const tested = await fixture.request(
+      `/api/v1/acquisition/provider-connections/${created.json.id}/test`,
+      { method: "POST" }
+    );
+    assert.equal(tested.response.status, 200);
+    assert.equal(tested.json.message, "数据源连接异常，可稍后重试");
+
+    const detail = await fixture.request(
+      `/api/v1/acquisition/provider-connections/${created.json.id}`
+    );
+    const list = await fixture.request(
+      "/api/v1/acquisition/provider-connections"
+    );
+    for (const projection of [detail.json, list.json]) {
+      const serialized = JSON.stringify(projection);
+      assert.equal(serialized.includes(configuredBaseUrl), false);
+      assert.equal(serialized.includes(credentialRef), false);
+      assert.equal(serialized.includes(apiKey), false);
+      assert.match(serialized, /数据源连接异常，可稍后重试/u);
+    }
   } finally {
     await fixture.close();
   }

@@ -385,6 +385,25 @@ function scopedPersonalConnection(
   ) || null;
 }
 
+function safeHealthMessage(
+  result: AcquisitionProviderConnectionTestResult
+) {
+  if (result.ok) return "数据源连接测试通过";
+  const messages: Record<string, string> = {
+    PROVIDER_AUTH_FAILED: "数据源授权已失效，请检查连接配置",
+    PROVIDER_RATE_LIMITED: "数据源当前限流，可稍后重试",
+    PROVIDER_QUOTA_EXHAUSTED: "数据源额度已用尽，请检查套餐或预算",
+    PROVIDER_TIMEOUT: "数据源响应超时，可稍后重试",
+    PROVIDER_POLICY_BLOCKED: "数据源请求被安全策略阻止",
+    PROVIDER_UNAVAILABLE: "数据源暂时不可用，可稍后重试",
+    PROVIDER_SCHEMA_CHANGED: "数据源请求或返回结构不兼容，请检查适配器",
+    PROVIDER_NETWORK_ERROR: "数据源连接异常，可稍后重试",
+    PROVIDER_INTERNAL_ERROR: "数据源适配器执行异常，请检查配置或适配器"
+  };
+  return messages[result.errorCode || ""]
+    || "数据源连接测试失败，请检查连接配置或稍后重试";
+}
+
 function normalizedTestResult(
   result: AcquisitionProviderConnectionTestResult
 ) {
@@ -427,7 +446,7 @@ function normalizedTestResult(
   }
   return {
     ok: result.ok,
-    message: result.message.trim(),
+    message: safeHealthMessage(result),
     errorCode: result.errorCode || null,
     retryable: result.retryable === true,
     retryAfterAt: result.retryAfterAt || null,
