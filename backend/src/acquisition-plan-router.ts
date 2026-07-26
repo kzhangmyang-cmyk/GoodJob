@@ -12,80 +12,14 @@ import {
   type AcquisitionPlanRunService,
   type AcquisitionScope
 } from "./acquisition-plan-run-service.js";
+import {
+  acquisitionPlanPayloadSchema,
+  acquisitionPublicPlanCreateSchema,
+  idSchema,
+  requiredText
+} from "./acquisition-plan-contract.js";
 
-const requiredText = (max: number) => z.string().trim().min(1).max(max);
-const idSchema = requiredText(255);
-const usageSchema = z.object({
-  requests: z.number().int().nonnegative(),
-  results: z.number().int().nonnegative(),
-  amountMinor: z.number().int().nonnegative(),
-  durationSeconds: z.number().int().nonnegative()
-}).strict();
-const budgetSchema = z.object({
-  billingCurrency: z.string().trim().length(3),
-  maxRequests: z.number().int().nonnegative(),
-  maxResults: z.number().int().nonnegative(),
-  maxAmountMinor: z.number().int().nonnegative(),
-  maxDurationSeconds: z.number().int().nonnegative()
-}).strict();
-const providerConnectionSchema = z.object({
-  connectionId: idSchema,
-  providerId: requiredText(100),
-  kind: z.enum(["search", "content_fetch", "import"]),
-  status: z.enum(["active", "inactive", "disabled"]),
-  credentialVersion: z.number().int().positive()
-}).strict();
-const operationSchema = z.object({
-  operationId: idSchema,
-  subjectChannel: z.enum(["organization", "individual"]),
-  kind: z.enum(["search", "content_fetch", "import_rows"]),
-  connectionId: idSchema,
-  query: z.string().trim().min(1).max(4_000).optional(),
-  sourceRef: z.string().trim().min(1).max(4_000).optional(),
-  allocatedBudget: usageSchema
-}).strict();
-const modelSnapshotSchema = z.object({
-  jobSnapshotId: idSchema,
-  connectionId: idSchema,
-  credentialVersion: z.number().int().positive(),
-  provider: requiredText(100),
-  model: requiredText(200),
-  capabilitySnapshotHash: requiredText(200),
-  promptVersion: requiredText(100),
-  schemaVersion: requiredText(100),
-  promptHash: requiredText(200),
-  schemaHash: requiredText(200)
-}).strict();
-const planPayloadSchema = z.object({
-  name: requiredText(200),
-  objective: requiredText(2_000),
-  icp: z.object({
-    industries: z.array(requiredText(120)).min(1).max(100),
-    regions: z.array(requiredText(120)).min(1).max(100),
-    organizationCriteria: z.array(requiredText(500)).min(1).max(100),
-    individualCriteria: z.array(requiredText(500)).min(1).max(100),
-    exclusionRules: z.array(requiredText(500)).max(200)
-  }).strict(),
-  subjectChannels: z.object({
-    organization: z.boolean(),
-    individual: z.boolean()
-  }).strict(),
-  providerConnections: z.array(providerConnectionSchema).min(1).max(100),
-  operations: z.array(operationSchema).min(1).max(500),
-  budgetSnapshot: budgetSchema,
-  modelSnapshotRef: modelSnapshotSchema,
-  stopConditions: z.object({
-    stopWhenBudgetExhausted: z.boolean(),
-    stopWhenNoMoreResults: z.boolean()
-  }).strict()
-}).strict();
-const publicPlanCreateSchema = planPayloadSchema
-  .omit({ modelSnapshotRef: true })
-  .extend({
-    modelConnectionId: idSchema.nullable().optional()
-  })
-  .strict();
-const planPatchSchema = planPayloadSchema.partial().strict().refine(
+const planPatchSchema = acquisitionPlanPayloadSchema.partial().strict().refine(
   (value) => Object.keys(value).length > 0,
   "至少提供一个需要更新的计划字段"
 );
@@ -248,7 +182,7 @@ export function createAcquisitionPlanRouter(
     asyncRoute(async (req, res) => {
       const scope = scopeFromRequest(req);
       const key = idempotencyKey(req);
-      const publicPayload = publicPlanCreateSchema.parse(req.body);
+      const publicPayload = acquisitionPublicPlanCreateSchema.parse(req.body);
       const {
         modelConnectionId = null,
         ...planPayload

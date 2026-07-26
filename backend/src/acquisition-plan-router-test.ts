@@ -8,9 +8,11 @@ import {
 import {
   AcquisitionPlanRunService,
   type AcquisitionExecutionPort,
-  type AcquisitionPlanDraftInput,
   type AcquisitionModelSnapshotRef
 } from "./acquisition-plan-run-service.js";
+import {
+  type AcquisitionPublicPlanCreateInput
+} from "./acquisition-plan-contract.js";
 import {
   createAcquisitionPlanRouter
 } from "./acquisition-plan-router.js";
@@ -41,12 +43,7 @@ class ExecutionPort implements AcquisitionExecutionPort {
   }
 }
 
-type PublicPlanBody = Omit<
-  AcquisitionPlanDraftInput,
-  "modelSnapshotRef"
-> & {
-  modelConnectionId?: string | null;
-};
+type PublicPlanBody = AcquisitionPublicPlanCreateInput;
 
 const TRUSTED_MODEL_SNAPSHOT: AcquisitionModelSnapshotRef = {
   jobSnapshotId: "snapshot-1",
