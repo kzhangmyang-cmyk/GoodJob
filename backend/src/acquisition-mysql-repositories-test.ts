@@ -852,6 +852,43 @@ async function testPlanRunIdempotencyScopesAreHashedAtRest() {
     String(insert.values[3]),
     /"scopeKey":"sha256:[a-f0-9]{64}"/
   );
+  assert.equal(
+    String(insert.values[3]).includes("request-123"),
+    false
+  );
+
+  const planPool = new FakePool();
+  const planConnection = planPool.connection;
+  planConnection.enqueue([{ id: 1 }]);
+  for (let index = 0; index < 10; index += 1) {
+    planConnection.enqueue([]);
+  }
+  const planRepository = new MysqlAcquisitionPlanRunRepository(
+    asPool(planPool)
+  );
+  const rawPlanScopeKey =
+    "team-a\u001fowner-a\u001fcreate_plan\u001fplan-request-123";
+  await planRepository.transaction((transaction) => {
+    transaction.putIdempotency({
+      scopeKey: rawPlanScopeKey,
+      requestHash: "5".repeat(64),
+      resultType: "plan",
+      resultId: "plan-1",
+      createdAt: NOW
+    });
+  });
+  const planInsert = planConnection.calls.find((call) =>
+    call.sql.startsWith("INSERT INTO acquisition_run_idempotency")
+  );
+  assert.ok(planInsert);
+  assert.equal(
+    String(planInsert.values[3]).includes("plan-request-123"),
+    false
+  );
+  assert.match(
+    String(planInsert.values[3]),
+    /"scopeKey":"sha256:[a-f0-9]{64}"/
+  );
 }
 
 async function testPlanRunTransactionCommitsNewRowsWithoutOverwriteUpsert() {

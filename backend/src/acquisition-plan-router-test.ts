@@ -8,7 +8,8 @@ import {
 import {
   AcquisitionPlanRunService,
   type AcquisitionExecutionPort,
-  type AcquisitionPlanDraftInput
+  type AcquisitionPlanDraftInput,
+  type AcquisitionModelSnapshotRef
 } from "./acquisition-plan-run-service.js";
 import {
   createAcquisitionPlanRouter
@@ -40,7 +41,27 @@ class ExecutionPort implements AcquisitionExecutionPort {
   }
 }
 
-function planBody(): AcquisitionPlanDraftInput {
+type PublicPlanBody = Omit<
+  AcquisitionPlanDraftInput,
+  "modelSnapshotRef"
+> & {
+  modelConnectionId?: string | null;
+};
+
+const TRUSTED_MODEL_SNAPSHOT: AcquisitionModelSnapshotRef = {
+  jobSnapshotId: "snapshot-1",
+  connectionId: "model-connection-1",
+  credentialVersion: 1,
+  provider: "moonshot",
+  model: "kimi-k3",
+  capabilitySnapshotHash: "sha256:capabilities",
+  promptVersion: "acquisition.v1",
+  schemaVersion: "acquisition-plan.v1",
+  promptHash: "sha256:prompt",
+  schemaHash: "sha256:schema"
+};
+
+function planBody(): PublicPlanBody {
   return {
     name: "全国通用 AI 获客计划",
     objective: "同时发现组织和个人公开商机",
@@ -97,18 +118,7 @@ function planBody(): AcquisitionPlanDraftInput {
       maxAmountMinor: 400,
       maxDurationSeconds: 240
     },
-    modelSnapshotRef: {
-      jobSnapshotId: "snapshot-1",
-      connectionId: "model-connection-1",
-      credentialVersion: 1,
-      provider: "moonshot",
-      model: "kimi-k3",
-      capabilitySnapshotHash: "sha256:capabilities",
-      promptVersion: "acquisition.v1",
-      schemaVersion: "acquisition-plan.v1",
-      promptHash: "sha256:prompt",
-      schemaHash: "sha256:schema"
-    },
+    modelConnectionId: "model-connection-1",
     stopConditions: {
       stopWhenBudgetExhausted: true,
       stopWhenNoMoreResults: true
@@ -127,6 +137,12 @@ async function fixture() {
     idFactory: (prefix) => `${prefix}-${++sequence}`,
     now: () => new Date(timestamp++).toISOString()
   });
+  const snapshotRequests: Array<{
+    ownerId: string;
+    teamId: string;
+    connectionId: string | null;
+    idempotencyKey: string;
+  }> = [];
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -156,7 +172,18 @@ async function fixture() {
     }
     next();
   });
-  app.use(createAcquisitionPlanRouter({ service }));
+  app.use(createAcquisitionPlanRouter({
+    service,
+    resolveModelSnapshot: async (scope, input) => {
+      snapshotRequests.push({
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        connectionId: input.connectionId,
+        idempotencyKey: input.idempotencyKey
+      });
+      return structuredClone(TRUSTED_MODEL_SNAPSHOT);
+    }
+  }));
 
   const server = await new Promise<Server>((resolve) => {
     const listener = app.listen(0, () => resolve(listener));
@@ -193,6 +220,7 @@ async function fixture() {
 
   return {
     executionPort,
+    snapshotRequests,
     request,
     close: () => new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
@@ -200,7 +228,7 @@ async function fixture() {
   };
 }
 
-test("plan API requires identity and rejects unknown request fields", async () => {
+test("plan creation requires idempotency and binds a trusted model snapshot", async () => {
   const app = await fixture();
   try {
     const unauthorized = await app.request(
@@ -214,12 +242,88 @@ test("plan API requires identity and rejects unknown request fields", async () =
     );
     assert.equal(unauthorized.response.status, 401);
 
+    const missingKey = await app.request("/api/v1/acquisition/plans", {
+      method: "POST",
+      body: JSON.stringify(planBody())
+    });
+    assert.equal(missingKey.response.status, 400);
+    assert.equal(missingKey.json.error.code, "invalid_idempotency_key");
+
+    const shortKey = await app.request("/api/v1/acquisition/plans", {
+      method: "POST",
+      headers: { "Idempotency-Key": "short" },
+      body: JSON.stringify(planBody())
+    });
+    assert.equal(shortKey.response.status, 400);
+    assert.equal(shortKey.json.error.code, "invalid_idempotency_key");
+
     const invalid = await app.request("/api/v1/acquisition/plans", {
       method: "POST",
+      headers: { "Idempotency-Key": "plan-key-invalid" },
       body: JSON.stringify({ ...planBody(), hidden: true })
     });
     assert.equal(invalid.response.status, 400);
     assert.equal(invalid.json.error.code, "invalid_request");
+
+    const forged = await app.request("/api/v1/acquisition/plans", {
+      method: "POST",
+      headers: { "Idempotency-Key": "plan-key-forged" },
+      body: JSON.stringify({
+        ...planBody(),
+        modelSnapshotRef: TRUSTED_MODEL_SNAPSHOT
+      })
+    });
+    assert.equal(forged.response.status, 400);
+    assert.equal(forged.json.error.code, "invalid_request");
+
+    const created = await app.request("/api/v1/acquisition/plans", {
+      method: "POST",
+      headers: { "Idempotency-Key": "plan-key-created" },
+      body: JSON.stringify(planBody())
+    });
+    assert.equal(created.response.status, 201);
+    assert.deepEqual(
+      created.json.payload.modelSnapshotRef,
+      TRUSTED_MODEL_SNAPSHOT
+    );
+    assert.equal("modelConnectionId" in created.json.payload, false);
+    assert.deepEqual(app.snapshotRequests, [{
+      ownerId: OWNER,
+      teamId: TEAM,
+      connectionId: "model-connection-1",
+      idempotencyKey: "plan-key-created"
+    }]);
+
+    const replay = await app.request("/api/v1/acquisition/plans", {
+      method: "POST",
+      headers: { "Idempotency-Key": "plan-key-created" },
+      body: JSON.stringify(planBody())
+    });
+    assert.equal(replay.response.status, 201);
+    assert.equal(replay.json.id, created.json.id);
+
+    const conflict = await app.request("/api/v1/acquisition/plans", {
+      method: "POST",
+      headers: { "Idempotency-Key": "plan-key-created" },
+      body: JSON.stringify({
+        ...planBody(),
+        objective: "同一幂等键不能创建不同计划"
+      })
+    });
+    assert.equal(conflict.response.status, 409);
+    assert.equal(conflict.json.error.code, "idempotency_conflict");
+
+    const otherTeam = await app.request(
+      "/api/v1/acquisition/plans",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "plan-key-created" },
+        body: JSON.stringify(planBody())
+      },
+      { ownerId: OWNER, teamId: "team-2" }
+    );
+    assert.equal(otherTeam.response.status, 201);
+    assert.notEqual(otherTeam.json.id, created.json.id);
   } finally {
     await app.close();
   }
@@ -230,6 +334,7 @@ test("approved plans create one idempotent queued run with frozen hashes", async
   try {
     const created = await app.request("/api/v1/acquisition/plans", {
       method: "POST",
+      headers: { "Idempotency-Key": "plan-key-approved" },
       body: JSON.stringify(planBody())
     });
     assert.equal(created.response.status, 201);
@@ -303,6 +408,7 @@ test("plan and run reads are owner and team isolated", async () => {
   try {
     const created = await app.request("/api/v1/acquisition/plans", {
       method: "POST",
+      headers: { "Idempotency-Key": "plan-key-isolated" },
       body: JSON.stringify(planBody())
     });
     const foreign = await app.request(
@@ -322,6 +428,7 @@ test("queued runs can be paused, resumed, and cancelled with ETag controls", asy
   try {
     const created = await app.request("/api/v1/acquisition/plans", {
       method: "POST",
+      headers: { "Idempotency-Key": "plan-key-controlled" },
       body: JSON.stringify(planBody())
     });
     const approved = await app.request(

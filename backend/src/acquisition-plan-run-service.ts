@@ -503,12 +503,69 @@ export class AcquisitionPlanRunService {
 
   async createPlan(
     scope: AcquisitionScope,
-    input: AcquisitionPlanDraftInput
+    input: AcquisitionPlanDraftInput,
+    options: {
+      idempotencyKey?: string;
+      idempotencyDiscriminator?: string | null;
+    } = {}
   ) {
     assertScope(scope);
     const payload = clone(input);
+    const idempotencyKey = options.idempotencyKey?.trim() || null;
+    if (idempotencyKey && (
+      idempotencyKey.length < 8
+      || idempotencyKey.length > 200
+    )) {
+      throw new AcquisitionPlanRunError(
+        400,
+        "invalid_idempotency_key",
+        "创建计划的幂等键必须为 8 到 200 个字符"
+      );
+    }
+    const requestHash = stableHash({
+      payload,
+      idempotencyDiscriminator:
+        options.idempotencyDiscriminator ?? null
+    });
+    const scopeKey = idempotencyKey
+      ? [
+          scope.teamId,
+          scope.ownerId,
+          "create_plan",
+          idempotencyKey
+        ].join("\u001f")
+      : null;
     const now = this.now();
     return this.repository.transaction((transaction) => {
+      if (scopeKey) {
+        const existing = transaction.getIdempotency(scopeKey);
+        if (existing) {
+          if (existing.requestHash !== requestHash) {
+            throw new AcquisitionPlanRunError(
+              409,
+              "idempotency_conflict",
+              "同一幂等键已用于不同的创建计划请求"
+            );
+          }
+          if (existing.resultType !== "plan") {
+            throw new AcquisitionPlanRunError(
+              409,
+              "idempotency_record_corrupt",
+              "幂等记录类型与创建计划请求不一致"
+            );
+          }
+          const existingPlan = transaction.getPlan(existing.resultId);
+          if (!existingPlan) {
+            throw new AcquisitionPlanRunError(
+              409,
+              "idempotency_record_corrupt",
+              "幂等记录指向的计划不存在"
+            );
+          }
+          assertVisible(scope, existingPlan, "plan");
+          return existingPlan;
+        }
+      }
       const planId = this.idFactory("ap");
       const versionId = this.idFactory("apv");
       const version: AcquisitionPlanVersion = {
@@ -559,6 +616,15 @@ export class AcquisitionPlanRunService {
         now,
         { versionId }
       );
+      if (scopeKey) {
+        transaction.putIdempotency({
+          scopeKey,
+          requestHash,
+          resultType: "plan",
+          resultId: plan.id,
+          createdAt: now
+        });
+      }
       return plan;
     });
   }
@@ -793,6 +859,13 @@ export class AcquisitionPlanRunService {
             409,
             "idempotency_conflict",
             "同一幂等键已用于不同的创建运行请求"
+          );
+        }
+        if (existing.resultType !== "run") {
+          throw new AcquisitionPlanRunError(
+            409,
+            "idempotency_record_corrupt",
+            "幂等记录类型与创建运行请求不一致"
           );
         }
         const run = transaction.getRun(existing.resultId);

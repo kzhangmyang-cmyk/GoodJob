@@ -385,9 +385,16 @@ async function serve(
   };
 }
 
-function planPayload(modelSnapshot: ReturnType<
-  typeof acquisitionPiModelSnapshotFromStored
->): AcquisitionPlanPayload {
+type PublicPlanPayload = Omit<
+  AcquisitionPlanPayload,
+  "modelSnapshotRef"
+> & {
+  modelConnectionId?: string | null;
+};
+
+function planPayload(
+  modelConnectionId: string | null = modelConfig().id
+): PublicPlanPayload {
   return {
     name: "全国公开商机搜索",
     objective: "搜索公开存在的组织需求",
@@ -444,18 +451,7 @@ function planPayload(modelSnapshot: ReturnType<
       maxAmountMinor: 0,
       maxDurationSeconds: 120
     },
-    modelSnapshotRef: {
-      jobSnapshotId: modelSnapshot.jobId,
-      connectionId: modelSnapshot.connectionId,
-      credentialVersion: modelSnapshot.credentialVersion,
-      provider: modelSnapshot.provider,
-      model: modelSnapshot.model,
-      capabilitySnapshotHash: modelSnapshot.capabilitySnapshotHash,
-      promptVersion: modelSnapshot.promptVersion,
-      schemaVersion: modelSnapshot.schemaVersion,
-      promptHash: modelSnapshot.promptHash,
-      schemaHash: modelSnapshot.schemaHash
-    },
+    modelConnectionId,
     stopConditions: {
       stopWhenBudgetExhausted: true,
       stopWhenNoMoreResults: true
@@ -540,9 +536,6 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
       "idempotent session retries must not create or persist orphan snapshots"
     );
 
-    const modelSnapshot = acquisitionPiModelSnapshotFromStored(
-      fixture.store.aiJobModelSnapshots[0]!
-    );
     const unrelatedStoredSnapshot = {
       ...structuredClone(fixture.store.aiJobModelSnapshots[0]!),
       jobId: "unrelated-model-job",
@@ -556,37 +549,28 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
       "/api/v1/acquisition/plans",
       {
         method: "POST",
-        body: JSON.stringify(planPayload(
-          acquisitionPiModelSnapshotFromStored(unrelatedStoredSnapshot)
-        ))
-      }
-    );
-    assert.equal(unrelatedModelPlan.response.status, 201);
-    const unrelatedModelApproval = await server.request(
-      `/api/v1/acquisition/plans/${unrelatedModelPlan.json.id}/approval`,
-      {
-        method: "POST",
         headers: {
-          "If-Match": unrelatedModelPlan.response.headers.get("etag")!
+          "Idempotency-Key": "forged-plan-model-snapshot"
         },
         body: JSON.stringify({
-          decision: "approve",
-          reason: "不能把其他 AI 作业快照用于获客计划"
+          ...planPayload(),
+          modelSnapshotRef:
+            acquisitionPiModelSnapshotFromStored(unrelatedStoredSnapshot)
         })
       }
     );
-    assert.equal(
-      unrelatedModelApproval.response.status,
-      503,
-      JSON.stringify(unrelatedModelApproval.json)
-    );
+    assert.equal(unrelatedModelPlan.response.status, 400);
+    assert.equal(unrelatedModelPlan.json.error.code, "invalid_request");
 
-    const staleProviderPayload = planPayload(modelSnapshot);
+    const staleProviderPayload = planPayload();
     staleProviderPayload.providerConnections[0]!.credentialVersion -= 1;
     const staleProviderPlan = await server.request(
       "/api/v1/acquisition/plans",
       {
         method: "POST",
+        headers: {
+          "Idempotency-Key": "stale-provider-plan"
+        },
         body: JSON.stringify(staleProviderPayload)
       }
     );
@@ -618,13 +602,67 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
       "/api/v1/acquisition/plans",
       {
         method: "POST",
-        body: JSON.stringify(planPayload(modelSnapshot))
+        headers: {
+          "Idempotency-Key": "trusted-public-search-plan"
+        },
+        body: JSON.stringify(planPayload())
       }
     );
     assert.equal(createdPlan.response.status, 201);
     const planId = String(createdPlan.json.id);
     const planEtag = createdPlan.response.headers.get("etag");
     assert.ok(planEtag);
+    const snapshotsBeforePlanReplay =
+      fixture.store.aiJobModelSnapshots.length;
+    const activeModelConfig = fixture.store.aiModelConfigs[0]!;
+    const originalCredentialVersion =
+      activeModelConfig.credentialVersion;
+    activeModelConfig.credentialVersion =
+      (originalCredentialVersion ?? 1) + 1;
+    const replayedPlan = await server.request(
+      "/api/v1/acquisition/plans",
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": "trusted-public-search-plan"
+        },
+        body: JSON.stringify(planPayload())
+      }
+    );
+    assert.equal(replayedPlan.response.status, 201);
+    assert.equal(replayedPlan.json.id, planId);
+    assert.equal(
+      fixture.store.aiJobModelSnapshots.length,
+      snapshotsBeforePlanReplay,
+      "plan retries must reuse the server-bound model snapshot"
+    );
+    assert.equal(
+      replayedPlan.json.payload.modelSnapshotRef.jobSnapshotId,
+      createdPlan.json.payload.modelSnapshotRef.jobSnapshotId
+    );
+    const conflictingPlan = await server.request(
+      "/api/v1/acquisition/plans",
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": "trusted-public-search-plan"
+        },
+        body: JSON.stringify(
+          planPayload("another-model-connection")
+        )
+      }
+    );
+    assert.equal(conflictingPlan.response.status, 409);
+    assert.equal(
+      conflictingPlan.json.error.code,
+      "idempotency_conflict"
+    );
+    assert.equal(
+      fixture.store.aiJobModelSnapshots.length,
+      snapshotsBeforePlanReplay,
+      "idempotency conflicts must not persist orphan model snapshots"
+    );
+    activeModelConfig.credentialVersion = originalCredentialVersion;
 
     const approved = await server.request(
       `/api/v1/acquisition/plans/${planId}/approval`,
@@ -841,10 +879,7 @@ test("application approves and executes a controlled content fetch shard", async
       }
     );
     assert.equal(session.response.status, 202);
-    const snapshot = acquisitionPiModelSnapshotFromStored(
-      fixture.store.aiJobModelSnapshots[0]!
-    );
-    const payload = planPayload(snapshot);
+    const payload = planPayload();
     payload.providerConnections.push(
       ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS.contentFetch
     );
@@ -870,6 +905,9 @@ test("application approves and executes a controlled content fetch shard", async
       "/api/v1/acquisition/plans",
       {
         method: "POST",
+        headers: {
+          "Idempotency-Key": "controlled-content-fetch-plan"
+        },
         body: JSON.stringify(payload)
       }
     );

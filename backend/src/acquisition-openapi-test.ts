@@ -79,6 +79,35 @@ test("identity confirmation publishes a strict human-review contract", () => {
   );
 });
 
+test("plan creation binds a server model snapshot behind an idempotent contract", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  const create = paths[
+    "/api/v1/acquisition/plans"
+  ]!.post as Record<string, any>;
+  assert.deepEqual(
+    create.parameters.map(
+      (parameter: { name: string }) => parameter.name
+    ),
+    ["Idempotency-Key"]
+  );
+  const schema = create.requestBody.content["application/json"].schema;
+  assert.equal(schema.additionalProperties, false);
+  assert.ok(schema.properties.modelConnectionId);
+  assert.equal(
+    "modelSnapshotRef" in schema.properties,
+    false,
+    "clients must never provide a plan model snapshot"
+  );
+  assert.equal(
+    schema.properties.icp.additionalProperties,
+    false
+  );
+  assert.equal(
+    schema.properties.operations.items.additionalProperties,
+    false
+  );
+});
+
 test("BYOK credentials are write-only and never appear in response schemas", () => {
   const paths = createAcquisitionOpenApiPaths();
   const create = paths[

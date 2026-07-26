@@ -519,8 +519,33 @@ const REJECTING_ACTION_EXECUTION_PORT: AcquisitionActionExecutionPort =
 function stableSnapshotJobId(
   store: CrmStore,
   scope: AcquisitionCopilotScope,
-  connectionId: string | null
+  connectionId: string | null,
+  idempotencyKey?: string | null
 ) {
+  const idempotentJobId = idempotencyKey
+    ? `acquisition_model_${createHash("sha256")
+        .update(canonicalJsonStringify({
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          requestBindingHash: createHash("sha256")
+            .update(idempotencyKey)
+            .digest("hex")
+        }) ?? "")
+        .digest("hex")}`
+    : null;
+  if (idempotentJobId) {
+    const existing = store.aiJobModelSnapshots.find((snapshot) =>
+      snapshot.jobId === idempotentJobId
+      && snapshot.ownerId === scope.ownerId
+      && snapshot.teamId === scope.teamId
+    );
+    if (existing) {
+      return {
+        connectionId: existing.connectionId,
+        jobId: existing.jobId
+      };
+    }
+  }
   const config = connectionId
     ? store.aiModelConfigs.find((item) =>
         item.id === connectionId
@@ -574,7 +599,7 @@ function stableSnapshotJobId(
     .digest("hex");
   return {
     connectionId: config.id,
-    jobId: `acquisition_model_${identity}`
+    jobId: idempotentJobId ?? `acquisition_model_${identity}`
   };
 }
 
@@ -600,13 +625,17 @@ function createModelSnapshotResolver(
   >();
   return async (
     scope: AcquisitionCopilotScope,
-    input: { connectionId: string | null }
+    input: {
+      connectionId: string | null;
+      idempotencyKey?: string;
+    }
   ) => {
     await store.readBarrier();
     const binding = stableSnapshotJobId(
       store,
       scope,
-      input.connectionId
+      input.connectionId,
+      input.idempotencyKey
     );
     const pending = inFlight.get(binding.jobId);
     if (pending) {
@@ -980,6 +1009,8 @@ export async function createAcquisitionApplication(
       return Promise.resolve();
     };
 
+    const resolveModelSnapshot =
+      createModelSnapshotResolver(options.store);
     const router = Router();
     router.use(createAcquisitionProviderConnectionsRouter({
       store: options.store,
@@ -1054,11 +1085,25 @@ export async function createAcquisitionApplication(
       requestIdFactory: idFactory,
       cursorSecret: derivedSecret(masterSecret, "v1-cursor"),
       dispatchCopilotTask,
-      resolveCopilotModelSnapshot:
-        createModelSnapshotResolver(options.store)
+      resolveCopilotModelSnapshot: resolveModelSnapshot
     }));
     router.use(createAcquisitionPlanRouter({
       service: planService,
+      resolveModelSnapshot: async (scope, input) => {
+        const snapshot = await resolveModelSnapshot(scope, input);
+        return {
+          jobSnapshotId: snapshot.jobId,
+          connectionId: snapshot.connectionId,
+          credentialVersion: snapshot.credentialVersion,
+          provider: snapshot.provider,
+          model: snapshot.model,
+          capabilitySnapshotHash: snapshot.capabilitySnapshotHash,
+          promptVersion: snapshot.promptVersion,
+          schemaVersion: snapshot.schemaVersion,
+          promptHash: snapshot.promptHash,
+          schemaHash: snapshot.schemaHash
+        };
+      },
       requestIdFactory: () => idFactory("request")
     }));
 

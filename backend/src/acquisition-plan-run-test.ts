@@ -298,6 +298,38 @@ test("plan updates append immutable versions and enforce ETag plus owner/team is
   assert.notEqual(versions[0]?.payloadHash, versions[1]?.payloadHash);
 });
 
+test("plan creation is idempotent within an owner/team scope", async () => {
+  const { repository, service } = harness();
+  const input = planInput();
+  const first = await service.createPlan(ownerA, input, {
+    idempotencyKey: "plan-create-key-0001"
+  });
+  const replay = await service.createPlan(ownerA, structuredClone(input), {
+    idempotencyKey: "plan-create-key-0001"
+  });
+
+  assert.equal(replay.id, first.id);
+  assert.equal(replay.currentVersionId, first.currentVersionId);
+  assert.equal(
+    (await repository.listPlanVersions(first.id)).length,
+    1
+  );
+
+  await rejectsCode(
+    () => service.createPlan(
+      ownerA,
+      planInput({ objective: "同一幂等键不能创建另一个计划" }),
+      { idempotencyKey: "plan-create-key-0001" }
+    ),
+    "idempotency_conflict"
+  );
+
+  const otherTeamPlan = await service.createPlan(otherTeam, input, {
+    idempotencyKey: "plan-create-key-0001"
+  });
+  assert.notEqual(otherTeamPlan.id, first.id);
+});
+
 test("explicit approval freezes dual-channel ICP, connections, queries, budget and model snapshot", async () => {
   const { repository, service } = harness();
   const invalid = await service.createPlan(ownerA, planInput({

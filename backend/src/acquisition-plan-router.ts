@@ -8,6 +8,7 @@ import {
 import { z, ZodError } from "zod";
 import {
   AcquisitionPlanRunError,
+  type AcquisitionModelSnapshotRef,
   type AcquisitionPlanRunService,
   type AcquisitionScope
 } from "./acquisition-plan-run-service.js";
@@ -78,6 +79,12 @@ const planPayloadSchema = z.object({
     stopWhenNoMoreResults: z.boolean()
   }).strict()
 }).strict();
+const publicPlanCreateSchema = planPayloadSchema
+  .omit({ modelSnapshotRef: true })
+  .extend({
+    modelConnectionId: idSchema.nullable().optional()
+  })
+  .strict();
 const planPatchSchema = planPayloadSchema.partial().strict().refine(
   (value) => Object.keys(value).length > 0,
   "至少提供一个需要更新的计划字段"
@@ -96,6 +103,13 @@ const controlBodySchema = z.object({
 
 export interface AcquisitionPlanRouterOptions {
   service: AcquisitionPlanRunService;
+  resolveModelSnapshot: (
+    scope: AcquisitionScope,
+    input: {
+      connectionId: string | null;
+      idempotencyKey: string;
+    }
+  ) => Promise<AcquisitionModelSnapshotRef>;
   requestIdFactory?: () => string;
 }
 
@@ -232,9 +246,27 @@ export function createAcquisitionPlanRouter(
   router.post(
     "/api/v1/acquisition/plans",
     asyncRoute(async (req, res) => {
+      const scope = scopeFromRequest(req);
+      const key = idempotencyKey(req);
+      const publicPayload = publicPlanCreateSchema.parse(req.body);
+      const {
+        modelConnectionId = null,
+        ...planPayload
+      } = publicPayload;
+      const modelSnapshotRef = await options.resolveModelSnapshot(scope, {
+        connectionId: modelConnectionId,
+        idempotencyKey: key
+      });
       const plan = await options.service.createPlan(
-        scopeFromRequest(req),
-        planPayloadSchema.parse(req.body)
+        scope,
+        {
+          ...planPayload,
+          modelSnapshotRef
+        },
+        {
+          idempotencyKey: key,
+          idempotencyDiscriminator: modelConnectionId
+        }
       );
       setEtag(res, plan);
       res.status(201).json(plan);

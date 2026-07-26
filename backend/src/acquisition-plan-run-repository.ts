@@ -231,7 +231,7 @@ export interface AcquisitionAuditEvent {
 export interface AcquisitionIdempotencyRecord {
   scopeKey: string;
   requestHash: string;
-  resultType: "run";
+  resultType: "plan" | "run";
   resultId: string;
   createdAt: string;
 }

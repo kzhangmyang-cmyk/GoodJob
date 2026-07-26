@@ -572,6 +572,189 @@ const identityConfirmationWriteSchema = {
   }
 };
 
+const acquisitionUsageWriteSchema = {
+  type: "object",
+  required: ["requests", "results", "amountMinor", "durationSeconds"],
+  properties: {
+    requests: { type: "integer", minimum: 0 },
+    results: { type: "integer", minimum: 0 },
+    amountMinor: { type: "integer", minimum: 0 },
+    durationSeconds: { type: "integer", minimum: 0 }
+  },
+  additionalProperties: false
+};
+
+const planCreateWriteSchema = {
+  type: "object",
+  required: [
+    "name",
+    "objective",
+    "icp",
+    "subjectChannels",
+    "providerConnections",
+    "operations",
+    "budgetSnapshot",
+    "stopConditions"
+  ],
+  properties: {
+    name: { type: "string", minLength: 1, maxLength: 200 },
+    objective: { type: "string", minLength: 1, maxLength: 2_000 },
+    icp: {
+      type: "object",
+      required: [
+        "industries",
+        "regions",
+        "organizationCriteria",
+        "individualCriteria",
+        "exclusionRules"
+      ],
+      properties: {
+        industries: {
+          type: "array",
+          minItems: 1,
+          maxItems: 100,
+          items: { type: "string", minLength: 1, maxLength: 120 }
+        },
+        regions: {
+          type: "array",
+          minItems: 1,
+          maxItems: 100,
+          items: { type: "string", minLength: 1, maxLength: 120 }
+        },
+        organizationCriteria: {
+          type: "array",
+          minItems: 1,
+          maxItems: 100,
+          items: { type: "string", minLength: 1, maxLength: 500 }
+        },
+        individualCriteria: {
+          type: "array",
+          minItems: 1,
+          maxItems: 100,
+          items: { type: "string", minLength: 1, maxLength: 500 }
+        },
+        exclusionRules: {
+          type: "array",
+          maxItems: 200,
+          items: { type: "string", minLength: 1, maxLength: 500 }
+        }
+      },
+      additionalProperties: false
+    },
+    subjectChannels: {
+      type: "object",
+      required: ["organization", "individual"],
+      properties: {
+        organization: { type: "boolean" },
+        individual: { type: "boolean" }
+      },
+      additionalProperties: false
+    },
+    providerConnections: {
+      type: "array",
+      minItems: 1,
+      maxItems: 100,
+      items: {
+        type: "object",
+        required: [
+          "connectionId",
+          "providerId",
+          "kind",
+          "status",
+          "credentialVersion"
+        ],
+        properties: {
+          connectionId: { type: "string", minLength: 1, maxLength: 255 },
+          providerId: { type: "string", minLength: 1, maxLength: 100 },
+          kind: {
+            type: "string",
+            enum: ["search", "content_fetch", "import"]
+          },
+          status: {
+            type: "string",
+            enum: ["active", "inactive", "disabled"]
+          },
+          credentialVersion: { type: "integer", minimum: 1 }
+        },
+        additionalProperties: false
+      }
+    },
+    operations: {
+      type: "array",
+      minItems: 1,
+      maxItems: 500,
+      items: {
+        type: "object",
+        required: [
+          "operationId",
+          "subjectChannel",
+          "kind",
+          "connectionId",
+          "allocatedBudget"
+        ],
+        properties: {
+          operationId: { type: "string", minLength: 1, maxLength: 255 },
+          subjectChannel: {
+            type: "string",
+            enum: ["organization", "individual"]
+          },
+          kind: {
+            type: "string",
+            enum: ["search", "content_fetch", "import_rows"]
+          },
+          connectionId: { type: "string", minLength: 1, maxLength: 255 },
+          query: { type: "string", minLength: 1, maxLength: 4_000 },
+          sourceRef: { type: "string", minLength: 1, maxLength: 4_000 },
+          allocatedBudget: acquisitionUsageWriteSchema
+        },
+        additionalProperties: false
+      }
+    },
+    budgetSnapshot: {
+      type: "object",
+      required: [
+        "billingCurrency",
+        "maxRequests",
+        "maxResults",
+        "maxAmountMinor",
+        "maxDurationSeconds"
+      ],
+      properties: {
+        billingCurrency: {
+          type: "string",
+          minLength: 3,
+          maxLength: 3
+        },
+        maxRequests: { type: "integer", minimum: 0 },
+        maxResults: { type: "integer", minimum: 0 },
+        maxAmountMinor: { type: "integer", minimum: 0 },
+        maxDurationSeconds: { type: "integer", minimum: 0 }
+      },
+      additionalProperties: false
+    },
+    modelConnectionId: {
+      type: "string",
+      nullable: true,
+      minLength: 1,
+      maxLength: 255,
+      description: "可选 BYOK 模型连接；服务端据此绑定不可伪造的模型快照。"
+    },
+    stopConditions: {
+      type: "object",
+      required: [
+        "stopWhenBudgetExhausted",
+        "stopWhenNoMoreResults"
+      ],
+      properties: {
+        stopWhenBudgetExhausted: { type: "boolean" },
+        stopWhenNoMoreResults: { type: "boolean" }
+      },
+      additionalProperties: false
+    }
+  },
+  additionalProperties: false
+};
+
 function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
   const definitions: Array<
     [
@@ -620,6 +803,7 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     const hasId = path.includes("{id}");
     const idempotentCreate = method === "post" && (
       path === "/api/v1/acquisition/copilot/sessions"
+      || path === "/api/v1/acquisition/plans"
       || path.endsWith("/messages")
       || path.endsWith("/runs")
       || path.endsWith("/identity-confirmation")
@@ -654,6 +838,8 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
             requestBody: jsonBody(
               path.endsWith("/identity-confirmation")
                 ? identityConfirmationWriteSchema
+                : path === "/api/v1/acquisition/plans"
+                  ? planCreateWriteSchema
                 : {
                     type: "object",
                     additionalProperties: true
