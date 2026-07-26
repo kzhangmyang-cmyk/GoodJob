@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5188",
     "build": "tsc -b && vite build",
-    "test:unit": "tsx --test src/features/ai-growth/*.test.ts",
+    "test:unit": "node --import tsx --test src/features/ai-growth/*.test.ts",
     "test": "npm run test:unit && tsx src/self-test.ts",
     "test:e2e": "playwright test"
   },
