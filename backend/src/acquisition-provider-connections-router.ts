@@ -693,10 +693,11 @@ export function createAcquisitionProviderConnectionsRouter(
         if (options.store.providerConnections.some((candidate) =>
           candidate.providerId === body.providerId
           && candidate.ownerId === scope.ownerId
+          && candidate.teamId === scope.teamId
         )) {
           throw new AcquisitionProviderConnectionsHttpError(
             "provider_connection_exists",
-            "当前用户已创建该数据源连接",
+            "当前用户已在当前团队创建该数据源连接",
             409
           );
         }

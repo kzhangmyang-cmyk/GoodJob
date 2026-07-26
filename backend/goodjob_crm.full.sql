@@ -411,6 +411,55 @@ CREATE TABLE ai_model_call_records (
   INDEX idx_ai_model_call_job(job_id, created_at)
 );
 
+CREATE TABLE provider_catalog (
+  id VARCHAR(64) PRIMARY KEY,
+  code VARCHAR(64) NOT NULL UNIQUE,
+  name VARCHAR(160) NOT NULL,
+  category VARCHAR(40) NOT NULL,
+  source_level VARCHAR(40) NOT NULL,
+  access_mode VARCHAR(40) NOT NULL,
+  base_url VARCHAR(255) DEFAULT '',
+  official_docs_url VARCHAR(255) DEFAULT '',
+  capability_json JSON NOT NULL,
+  allowed_fields_json JSON NOT NULL,
+  license_policy_json JSON NOT NULL,
+  default_rate_policy_json JSON NOT NULL,
+  retention_policy_json JSON NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  version VARCHAR(40) NOT NULL DEFAULT '1.0',
+  reviewed_at DATETIME NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  INDEX idx_provider_catalog_status(status)
+);
+
+CREATE TABLE provider_connections (
+  id VARCHAR(64) PRIMARY KEY,
+  provider_id VARCHAR(64) NOT NULL,
+  scope VARCHAR(20) NOT NULL DEFAULT 'personal',
+  credential_ref VARCHAR(80) NOT NULL UNIQUE,
+  credential_version BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  configuration_encrypted TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'disabled',
+  quota_policy_json JSON NOT NULL,
+  budget_policy_json JSON NOT NULL,
+  last_health_at DATETIME NULL,
+  last_health_status VARCHAR(20) NOT NULL DEFAULT 'untested',
+  last_error_code VARCHAR(80) DEFAULT '',
+  last_health_message VARCHAR(255) DEFAULT '',
+  usage_text TEXT,
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  created_by VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  UNIQUE KEY uk_provider_connection_owner_team(
+    provider_id, owner_id, team_id
+  ),
+  INDEX idx_provider_connection_team(team_id),
+  INDEX idx_provider_connection_status(status)
+);
+
 CREATE TABLE import_export_jobs (
   id VARCHAR(64) PRIMARY KEY,
   name VARCHAR(200) NOT NULL,

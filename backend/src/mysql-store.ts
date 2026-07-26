@@ -2943,7 +2943,9 @@ async function ensureSchema(pool: mysql.Pool) {
     created_by VARCHAR(64) NOT NULL,
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL,
-    UNIQUE KEY uk_provider_connection_owner(provider_id, owner_id),
+    UNIQUE KEY uk_provider_connection_owner_team(
+      provider_id, owner_id, team_id
+    ),
     INDEX idx_provider_connection_team(team_id),
     INDEX idx_provider_connection_status(status)
   )`);
@@ -2953,6 +2955,7 @@ async function ensureSchema(pool: mysql.Pool) {
     "credential_version",
     "BIGINT UNSIGNED NOT NULL DEFAULT 1"
   );
+  await ensureProviderConnectionOwnerTeamUniqueness(pool);
   await pool.query(`CREATE TABLE IF NOT EXISTS provider_request_logs (
     id VARCHAR(80) PRIMARY KEY,
     team_id VARCHAR(64) NOT NULL,
@@ -5097,6 +5100,54 @@ async function ensureUniqueIndex(pool: mysql.Pool, table: string, index: string,
     && current.every((column, position) => column === columns[position])) return;
   if (current.length) await pool.query(`ALTER TABLE \`${table}\` DROP INDEX \`${index}\``);
   await pool.query(`ALTER TABLE \`${table}\` ADD UNIQUE KEY \`${index}\` (${columns.map((column) => `\`${column}\``).join(", ")})`);
+}
+
+export async function ensureProviderConnectionOwnerTeamUniqueness(
+  pool: mysql.Pool
+) {
+  const [duplicateResult] = await pool.query(
+    `SELECT provider_id AS providerId,
+            owner_id AS ownerId,
+            team_id AS teamId,
+            COUNT(*) AS duplicateCount,
+            GROUP_CONCAT(id ORDER BY id SEPARATOR ',') AS connectionIds
+     FROM provider_connections
+     GROUP BY provider_id, owner_id, team_id
+     HAVING COUNT(*) > 1
+     ORDER BY provider_id, owner_id, team_id
+     LIMIT 10`
+  );
+  const duplicateScopes = duplicateResult as Array<{
+    providerId: string;
+    ownerId: string;
+    teamId: string;
+    duplicateCount: number;
+    connectionIds: string;
+  }>;
+  if (duplicateScopes.length > 0) {
+    throw new Error(
+      `PROVIDER_CONNECTION_SCOPE_DUPLICATES:${
+        duplicateScopes.map((scope) => [
+          scope.providerId,
+          scope.ownerId,
+          scope.teamId,
+          Number(scope.duplicateCount),
+          scope.connectionIds
+        ].join(":")).join("|")
+      }`
+    );
+  }
+  await ensureUniqueIndex(
+    pool,
+    "provider_connections",
+    "uk_provider_connection_owner_team",
+    ["provider_id", "owner_id", "team_id"]
+  );
+  await dropIndexIfExists(
+    pool,
+    "provider_connections",
+    "uk_provider_connection_owner"
+  );
 }
 
 async function ensurePrimaryKey(

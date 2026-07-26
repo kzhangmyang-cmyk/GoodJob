@@ -600,6 +600,7 @@ CREATE TABLE provider_connections (
   provider_id VARCHAR(64) NOT NULL,
   scope VARCHAR(20) NOT NULL DEFAULT 'personal',
   credential_ref VARCHAR(80) NOT NULL UNIQUE,
+  credential_version BIGINT UNSIGNED NOT NULL DEFAULT 1,
   configuration_encrypted TEXT NOT NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'disabled',
   quota_policy_json JSON NOT NULL,
@@ -614,7 +615,9 @@ CREATE TABLE provider_connections (
   created_by VARCHAR(64) NOT NULL,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
-  UNIQUE KEY uk_provider_connection_owner(provider_id, owner_id),
+  UNIQUE KEY uk_provider_connection_owner_team(
+    provider_id, owner_id, team_id
+  ),
   INDEX idx_provider_connection_team(team_id),
   INDEX idx_provider_connection_status(status)
 );

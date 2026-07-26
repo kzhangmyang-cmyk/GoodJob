@@ -340,6 +340,84 @@ test("v1 provider connection writes use the serialized store mutation boundary",
   }
 });
 
+test("v1 provider uniqueness is scoped by owner and team inside serialized writes", async () => {
+  const store = createStore();
+  let tail = Promise.resolve();
+  let activeMutations = 0;
+  let maximumActiveMutations = 0;
+  store.persistMutation = async (mutation) => {
+    const current = tail.then(async () => {
+      activeMutations += 1;
+      maximumActiveMutations = Math.max(
+        maximumActiveMutations,
+        activeMutations
+      );
+      try {
+        await Promise.resolve();
+        return mutation().value;
+      } finally {
+        activeMutations -= 1;
+      }
+    });
+    tail = current.then(() => undefined, () => undefined);
+    return current;
+  };
+  const fixture = await createFixture({ store });
+  const create = (
+    idempotencyKey: string,
+    teamId: string
+  ) => fixture.request(
+    "/api/v1/acquisition/provider-connections",
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({
+        providerId: "serper",
+        apiKey: `private-${idempotencyKey}`
+      })
+    },
+    { ownerId: OWNER_A, teamId }
+  );
+  try {
+    const crossTeam = await Promise.all([
+      create("same-owner-team-a", TEAM_A),
+      create("same-owner-team-b", "team-provider-b")
+    ]);
+    assert.deepEqual(
+      crossTeam.map((result) => result.response.status),
+      [201, 201]
+    );
+    assert.deepEqual(
+      store.providerConnections
+        .map((connection) => connection.teamId)
+        .sort(),
+      [TEAM_A, "team-provider-b"].sort()
+    );
+
+    const sameTeam = await Promise.all([
+      create("same-team-duplicate-a", "team-provider-c"),
+      create("same-team-duplicate-b", "team-provider-c")
+    ]);
+    assert.deepEqual(
+      sameTeam.map((result) => result.response.status).sort(),
+      [201, 409]
+    );
+    assert.equal(
+      sameTeam.find((result) => result.response.status === 409)?.json.code,
+      "provider_connection_exists"
+    );
+    assert.equal(
+      store.providerConnections.filter(
+        (connection) => connection.teamId === "team-provider-c"
+      ).length,
+      1
+    );
+    assert.equal(maximumActiveMutations, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("v1 create replays exactly and rejects conflicting Idempotency-Key reuse", async () => {
   const fixture = await createFixture();
   const path = "/api/v1/acquisition/provider-connections";
