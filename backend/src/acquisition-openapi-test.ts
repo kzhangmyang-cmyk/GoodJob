@@ -42,6 +42,7 @@ test("acquisition OpenAPI publishes the complete agent control surface", () => {
     "/api/v1/acquisition/plans/{id}/runs",
     "/api/v1/acquisition/runs/{id}",
     "/api/v1/acquisition/runs/{id}/shards",
+    "/api/v1/acquisition/runs/{id}/presentation",
     "/api/v1/acquisition/runs/{id}/pause",
     "/api/v1/acquisition/runs/{id}/resume",
     "/api/v1/acquisition/runs/{id}/cancel"
@@ -49,6 +50,79 @@ test("acquisition OpenAPI publishes the complete agent control surface", () => {
   for (const path of required) {
     assert.ok(paths[path], `missing acquisition OpenAPI path: ${path}`);
   }
+});
+
+test("run presentation publishes a strict read-only paginated DTO", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  const path = paths[
+    "/api/v1/acquisition/runs/{id}/presentation"
+  ];
+  const operation = path?.get as Record<string, any> | undefined;
+  assert.ok(operation);
+  assert.equal(path?.post, undefined);
+  assert.deepEqual(
+    operation.parameters.map(
+      (parameter: { name: string }) => parameter.name
+    ),
+    ["id", "after", "limit"]
+  );
+  assert.equal(operation.parameters[1].schema.maxLength, 8192);
+  assert.equal(operation.parameters[2].schema.default, 50);
+  assert.equal(operation.parameters[2].schema.maximum, 100);
+
+  const schema =
+    operation.responses["200"].content["application/json"].schema;
+  assert.deepEqual(schema.required, [
+    "run",
+    "providers",
+    "summary",
+    "candidateEvents",
+    "nextAfter",
+    "hasMore"
+  ]);
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(
+    schema.properties.candidateEvents.items.required,
+    [
+      "eventId",
+      "createdAt",
+      "candidateId",
+      "candidate",
+      "qualification",
+      "financialValue",
+      "sourcePlatforms",
+      "evidenceCount"
+    ]
+  );
+  assert.equal(
+    schema.properties.candidateEvents.items.properties.financialValue
+      .nullable,
+    true,
+    "missing financial values must be represented as null"
+  );
+  assert.equal(
+    schema.properties.candidateEvents.items.properties.qualification
+      .additionalProperties,
+    false
+  );
+  assert.ok(
+    schema.properties.candidateEvents.items.properties.qualification
+      .required.includes("hardGateFailures")
+  );
+  assert.equal(
+    schema.properties.candidateEvents.items.properties.financialValue
+      .additionalProperties,
+    false
+  );
+  assert.ok(
+    schema.properties.candidateEvents.items.properties.financialValue
+      .required.includes("qualificationDecisionId")
+  );
+  assert.equal(
+    schema.properties.summary.properties.expectedRevenueByCurrency.type,
+    "array",
+    "currencies must remain separate rows"
+  );
 });
 
 test("production OpenAPI does not advertise direct domain writes", () => {

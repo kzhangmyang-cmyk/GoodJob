@@ -100,6 +100,9 @@ import {
   AcquisitionPlanRunService
 } from "./acquisition-plan-run-service.js";
 import {
+  AcquisitionRunPresentationService
+} from "./acquisition-run-presentation.js";
+import {
   createPiAcquisitionCopilotRunner,
   createRoutedAcquisitionCopilotRunner
 } from "./acquisition-copilot-runner.js";
@@ -1069,6 +1072,14 @@ export async function createAcquisitionApplication(
       idFactory,
       now
     });
+    const runPresentationService = new AcquisitionRunPresentationService({
+      planRunRepository: repositories.planRun,
+      domainRepository: repositories.domain,
+      cursorSecret: derivedSecret(
+        masterSecret,
+        "run-presentation-cursor"
+      )
+    });
     worker.attachService(planService);
     planExecutionRecoverySweeper =
       new AcquisitionPlanExecutionRecoverySweeper({
@@ -1188,6 +1199,7 @@ export async function createAcquisitionApplication(
     }));
     router.use(createAcquisitionPlanRouter({
       service: planService,
+      presentationService: runPresentationService,
       resolveModelSnapshot: async (scope, input) => {
         const snapshot = await resolveModelSnapshot(scope, input);
         return {

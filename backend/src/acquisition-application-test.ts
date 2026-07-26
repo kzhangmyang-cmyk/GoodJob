@@ -1152,6 +1152,27 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
       JSON.stringify(candidates.json)
     );
     assert.equal(candidates.json.items.length, 2);
+    const presentation = await server.request(
+      `/api/v1/acquisition/runs/${runId}/presentation?limit=100`
+    );
+    assert.equal(
+      presentation.response.status,
+      200,
+      JSON.stringify(presentation.json)
+    );
+    assert.equal(presentation.json.candidateEvents.length, 2);
+    assert.equal(presentation.json.summary.dedupedCandidates, 2);
+    assert.equal(presentation.json.summary.organizationsFound, 1);
+    assert.equal(
+      presentation.json.providers.every(
+        (provider: { acceptedResultCount: number }) =>
+          provider.acceptedResultCount === 1
+      ),
+      true
+    );
+    assert.equal(presentation.json.hasMore, false);
+    assert.ok(presentation.json.nextAfter);
+
     const organizationCandidate = candidates.json.items.find(
       (candidate: { name?: string }) =>
         candidate.name === "示例科技有限公司"

@@ -140,6 +140,14 @@ async function fixture() {
     connectionId: string | null;
     idempotencyKey: string;
   }> = [];
+  const presentationRequests: Array<{
+    ownerId: string;
+    teamId: string;
+    actorId: string;
+    runId: string;
+    after?: string;
+    limit: number;
+  }> = [];
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -171,6 +179,35 @@ async function fixture() {
   });
   app.use(createAcquisitionPlanRouter({
     service,
+    presentationService: {
+      async get(scope, runId, query) {
+        presentationRequests.push({ ...scope, runId, ...query });
+        return {
+          run: {
+            id: runId,
+            status: "running" as const,
+            etag: `"${runId}:1"`,
+            updatedAt: "2026-07-26T09:00:00.000Z",
+            completedAt: null
+          },
+          providers: [],
+          summary: {
+            sourcesSearched: 0,
+            pagesAnalyzed: 0,
+            organizationsFound: 0,
+            dedupedCandidates: 0,
+            validOpportunities: 0,
+            highIntent: 0,
+            financialEvaluatedHighIntentCount: 0,
+            financialPendingHighIntentCount: 0,
+            expectedRevenueByCurrency: []
+          },
+          candidateEvents: [],
+          nextAfter: query.after ?? "",
+          hasMore: false
+        };
+      }
+    },
     resolveModelSnapshot: async (scope, input) => {
       snapshotRequests.push({
         ownerId: scope.ownerId,
@@ -218,12 +255,61 @@ async function fixture() {
   return {
     executionPort,
     snapshotRequests,
+    presentationRequests,
     request,
     close: () => new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
     })
   };
 }
+
+test("run presentation GET validates pagination and binds the request identity", async () => {
+  const app = await fixture();
+  try {
+    const defaultPage = await app.request(
+      "/api/v1/acquisition/runs/run-presentation/presentation"
+    );
+    assert.equal(defaultPage.response.status, 200);
+    assert.equal(defaultPage.json.run.id, "run-presentation");
+    assert.deepEqual(app.presentationRequests[0], {
+      ownerId: OWNER,
+      teamId: TEAM,
+      actorId: OWNER,
+      runId: "run-presentation",
+      limit: 50
+    });
+
+    const nextPage = await app.request(
+      "/api/v1/acquisition/runs/run-presentation/presentation"
+      + "?after=cursor-1&limit=100"
+    );
+    assert.equal(nextPage.response.status, 200);
+    assert.deepEqual(app.presentationRequests[1], {
+      ownerId: OWNER,
+      teamId: TEAM,
+      actorId: OWNER,
+      runId: "run-presentation",
+      after: "cursor-1",
+      limit: 100
+    });
+
+    for (const query of [
+      "?limit=0",
+      "?limit=101",
+      "?limit=1.5",
+      "?after=",
+      "?unknown=true"
+    ]) {
+      const invalid = await app.request(
+        `/api/v1/acquisition/runs/run-presentation/presentation${query}`
+      );
+      assert.equal(invalid.response.status, 400, query);
+      assert.equal(invalid.json.error.code, "invalid_request");
+    }
+  } finally {
+    await app.close();
+  }
+});
 
 test("plan creation requires idempotency and binds a trusted model snapshot", async () => {
   const app = await fixture();

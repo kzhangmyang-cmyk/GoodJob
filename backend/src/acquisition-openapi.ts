@@ -1044,6 +1044,356 @@ const planControlWriteSchema = {
   additionalProperties: false
 };
 
+const runPresentationSchema = {
+  type: "object",
+  required: [
+    "run",
+    "providers",
+    "summary",
+    "candidateEvents",
+    "nextAfter",
+    "hasMore"
+  ],
+  properties: {
+    run: {
+      type: "object",
+      required: ["id", "status", "etag", "updatedAt", "completedAt"],
+      properties: {
+        id: { type: "string" },
+        status: {
+          type: "string",
+          enum: [
+            "queued",
+            "running",
+            "pause_requested",
+            "paused",
+            "cancel_requested",
+            "cancelled",
+            "succeeded",
+            "succeeded_empty",
+            "partial_success",
+            "failed",
+            "budget_exhausted"
+          ]
+        },
+        etag: { type: "string" },
+        updatedAt: { type: "string", format: "date-time" },
+        completedAt: {
+          type: "string",
+          format: "date-time",
+          nullable: true
+        }
+      },
+      additionalProperties: false
+    },
+    providers: {
+      type: "array",
+      items: {
+        type: "object",
+        required: [
+          "shardId",
+          "connectionId",
+          "providerId",
+          "status",
+          "rawResultCount",
+          "acceptedResultCount",
+          "duplicateResultCount",
+          "failedResultCount",
+          "errorCode",
+          "retryAfterAt"
+        ],
+        properties: {
+          shardId: { type: "string" },
+          connectionId: { type: "string" },
+          providerId: { type: "string" },
+          status: { type: "string" },
+          rawResultCount: { type: "integer", minimum: 0 },
+          acceptedResultCount: { type: "integer", minimum: 0 },
+          duplicateResultCount: { type: "integer", minimum: 0 },
+          failedResultCount: { type: "integer", minimum: 0 },
+          errorCode: { type: "string", nullable: true },
+          retryAfterAt: {
+            type: "string",
+            format: "date-time",
+            nullable: true
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    summary: {
+      type: "object",
+      required: [
+        "sourcesSearched",
+        "pagesAnalyzed",
+        "organizationsFound",
+        "dedupedCandidates",
+        "validOpportunities",
+        "highIntent",
+        "financialEvaluatedHighIntentCount",
+        "financialPendingHighIntentCount",
+        "expectedRevenueByCurrency"
+      ],
+      properties: {
+        sourcesSearched: { type: "integer", minimum: 0 },
+        pagesAnalyzed: {
+          type: "integer",
+          minimum: 0,
+          description: "所有运行分片持久化的执行结果页数。"
+        },
+        organizationsFound: { type: "integer", minimum: 0 },
+        dedupedCandidates: { type: "integer", minimum: 0 },
+        validOpportunities: { type: "integer", minimum: 0 },
+        highIntent: { type: "integer", minimum: 0 },
+        financialEvaluatedHighIntentCount: {
+          type: "integer",
+          minimum: 0
+        },
+        financialPendingHighIntentCount: {
+          type: "integer",
+          minimum: 0
+        },
+        expectedRevenueByCurrency: {
+          type: "array",
+          description: "仅合计高意向且绑定当前资格决定的财务值；币种不换算。",
+          items: {
+            type: "object",
+            required: ["currency", "amountMinor"],
+            properties: {
+              currency: { type: "string" },
+              amountMinor: { type: "integer" }
+            },
+            additionalProperties: false
+          }
+        }
+      },
+      additionalProperties: false
+    },
+    candidateEvents: {
+      type: "array",
+      items: {
+        type: "object",
+        required: [
+          "eventId",
+          "createdAt",
+          "candidateId",
+          "candidate",
+          "qualification",
+          "financialValue",
+          "sourcePlatforms",
+          "evidenceCount"
+        ],
+        properties: {
+          eventId: { type: "string" },
+          createdAt: { type: "string", format: "date-time" },
+          candidateId: { type: "string" },
+          candidate: {
+            type: "object",
+            required: [
+              "id",
+              "subjectKind",
+              "displayName",
+              "industry",
+              "region",
+              "domain",
+              "status",
+              "updatedAt"
+            ],
+            properties: {
+              id: { type: "string" },
+              subjectKind: {
+                type: "string",
+                enum: ["organization", "individual"]
+              },
+              displayName: { type: "string" },
+              industry: { type: "string", nullable: true },
+              region: { type: "string", nullable: true },
+              domain: { type: "string", nullable: true },
+              status: { type: "string" },
+              updatedAt: { type: "string", format: "date-time" }
+            },
+            additionalProperties: false
+          },
+          qualification: {
+            type: "object",
+            nullable: true,
+            required: [
+              "id",
+              "candidateId",
+              "decisionVersion",
+              "decisionEngine",
+              "grade",
+              "score",
+              "recommendedAction",
+              "evidence",
+              "positiveSignals",
+              "negativeSignals",
+              "reasons",
+              "confidence",
+              "ruleVersion",
+              "promptVersion",
+              "modelProvider",
+              "model",
+              "hardGateFailures",
+              "createdAt"
+            ],
+            properties: {
+              id: { type: "string" },
+              candidateId: { type: "string" },
+              decisionVersion: { type: "string" },
+              decisionEngine: {
+                type: "string",
+                enum: ["model", "rules"]
+              },
+              grade: {
+                type: "string",
+                enum: ["S", "A", "B", "C", "D"]
+              },
+              score: { type: "number" },
+              recommendedAction: {
+                type: "string",
+                enum: [
+                  "priority_review",
+                  "public_response",
+                  "nurture",
+                  "observe",
+                  "do_not_contact"
+                ]
+              },
+              evidence: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["evidenceId", "excerpt"],
+                  properties: {
+                    evidenceId: { type: "string" },
+                    excerpt: { type: "string" }
+                  },
+                  additionalProperties: false
+                }
+              },
+              positiveSignals: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["name", "score"],
+                  properties: {
+                    name: { type: "string" },
+                    score: { type: "number" }
+                  },
+                  additionalProperties: false
+                }
+              },
+              negativeSignals: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["name", "score"],
+                  properties: {
+                    name: { type: "string" },
+                    score: { type: "number" }
+                  },
+                  additionalProperties: false
+                }
+              },
+              reasons: {
+                type: "array",
+                items: { type: "string" }
+              },
+              confidence: { type: "number" },
+              ruleVersion: { type: "string" },
+              promptVersion: { type: "string", nullable: true },
+              modelProvider: { type: "string", nullable: true },
+              model: { type: "string", nullable: true },
+              hardGateFailures: {
+                type: "array",
+                items: {
+                  type: "string",
+                  enum: [
+                    "missing_original_source",
+                    "identity_unresolved",
+                    "do_not_contact",
+                    "explicit_rejection",
+                    "non_public_or_sensitive_data",
+                    "stale_evidence",
+                    "schema_invalid"
+                  ]
+                }
+              },
+              createdAt: { type: "string", format: "date-time" }
+            },
+            additionalProperties: false
+          },
+          financialValue: {
+            type: "object",
+            nullable: true,
+            required: [
+              "id",
+              "candidateId",
+              "qualificationDecisionId",
+              "version",
+              "grade",
+              "score",
+              "currency",
+              "expectedRevenueMinor",
+              "expectedGrossProfitMinor",
+              "expectedContributionMinor",
+              "factors",
+              "createdAt"
+            ],
+            properties: {
+              id: { type: "string" },
+              candidateId: { type: "string" },
+              qualificationDecisionId: { type: "string" },
+              version: { type: "string" },
+              grade: {
+                type: "string",
+                enum: ["S", "A", "B", "C", "D"]
+              },
+              score: { type: "number" },
+              currency: { type: "string" },
+              expectedRevenueMinor: { type: "integer" },
+              expectedGrossProfitMinor: { type: "integer" },
+              expectedContributionMinor: { type: "integer" },
+              factors: {
+                type: "object",
+                required: [
+                  "profitability",
+                  "cashFlow",
+                  "creditQuality",
+                  "repeatPotential",
+                  "referralPotential",
+                  "closeProbability"
+                ],
+                properties: {
+                  profitability: { type: "number" },
+                  cashFlow: { type: "number" },
+                  creditQuality: { type: "number" },
+                  repeatPotential: { type: "number" },
+                  referralPotential: { type: "number" },
+                  closeProbability: { type: "number" }
+                },
+                additionalProperties: false
+              },
+              createdAt: { type: "string", format: "date-time" }
+            },
+            additionalProperties: false
+          },
+          sourcePlatforms: {
+            type: "array",
+            items: { type: "string" }
+          },
+          evidenceCount: { type: "integer", minimum: 0 }
+        },
+        additionalProperties: false
+      }
+    },
+    nextAfter: { type: "string" },
+    hasMore: { type: "boolean" }
+  },
+  additionalProperties: false
+};
+
 function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
   const definitions: Array<
     [
@@ -1077,6 +1427,7 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     ["/api/v1/acquisition/plans/{id}/runs", "post", "运行已批准计划"],
     ["/api/v1/acquisition/runs/{id}", "get", "读取运行状态"],
     ["/api/v1/acquisition/runs/{id}/shards", "get", "读取运行分片"],
+    ["/api/v1/acquisition/runs/{id}/presentation", "get", "读取运行权威展示事件"],
     ["/api/v1/acquisition/runs/{id}/pause", "post", "暂停运行"],
     ["/api/v1/acquisition/runs/{id}/resume", "post", "恢复运行"],
     ["/api/v1/acquisition/runs/{id}/cancel", "post", "取消运行"]
@@ -1232,6 +1583,31 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
           }
         });
       }
+      if (path === "/api/v1/acquisition/runs/{id}/presentation") {
+        parameters.push(
+          {
+            name: "after",
+            in: "query",
+            required: false,
+            schema: {
+              type: "string",
+              minLength: 1,
+              maxLength: 8192
+            }
+          },
+          {
+            name: "limit",
+            in: "query",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              default: 50
+            }
+          }
+        );
+      }
     } else {
       if (v1IdempotentWrites.has(path)) {
         parameters.push(idempotencyParameter(1));
@@ -1257,7 +1633,10 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     }
     const responses = standardResponses(
       body?.successStatus ?? 200,
-      body?.successDescription ?? "操作成功"
+      body?.successDescription ?? "操作成功",
+      path === "/api/v1/acquisition/runs/{id}/presentation"
+        ? runPresentationSchema
+        : resourceSchema
     );
     if (etagWrites.has(path)) {
       if (

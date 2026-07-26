@@ -18,6 +18,9 @@ import {
   idSchema,
   requiredText
 } from "./acquisition-plan-contract.js";
+import type {
+  AcquisitionRunPresentationService
+} from "./acquisition-run-presentation.js";
 
 const planPatchSchema = acquisitionPlanPayloadSchema.partial().strict().refine(
   (value) => Object.keys(value).length > 0,
@@ -34,9 +37,14 @@ const runBodySchema = z.object({
 const controlBodySchema = z.object({
   reason: requiredText(2_000)
 }).strict();
+const presentationQuerySchema = z.object({
+  after: z.string().trim().min(1).max(8192).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50)
+}).strict();
 
 export interface AcquisitionPlanRouterOptions {
   service: AcquisitionPlanRunService;
+  presentationService: Pick<AcquisitionRunPresentationService, "get">;
   resolveModelSnapshot: (
     scope: AcquisitionScope,
     input: {
@@ -299,6 +307,19 @@ export function createAcquisitionPlanRouter(
         idSchema.parse(req.params.id)
       );
       res.json({ items, nextCursor: null });
+    })
+  );
+
+  router.get(
+    "/api/v1/acquisition/runs/:id/presentation",
+    asyncRoute(async (req, res) => {
+      const presentation = await options.presentationService.get(
+        scopeFromRequest(req),
+        idSchema.parse(req.params.id),
+        presentationQuerySchema.parse(req.query)
+      );
+      setEtag(res, presentation.run);
+      res.json(presentation);
     })
   );
 
