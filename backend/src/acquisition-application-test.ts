@@ -8,6 +8,7 @@ import {
 } from "./acquisition-model-content.js";
 import {
   acquisitionProviderConnectionVersion,
+  createAcquisitionActiveSearchConnectionDirectory,
   createAcquisitionApplication,
   trackAcquisitionBackgroundTask
 } from "./acquisition-application.js";
@@ -501,6 +502,78 @@ function planPayload(
     }
   };
 }
+
+test("application search directory scopes and stably sorts active personal official connections", async () => {
+  const fixture = isolatedMemoryStore();
+  const base = fixture.store.providerConnections[0]!;
+  fixture.store.providerConnections = [{
+    ...base,
+    id: "connection-serper-z",
+    providerId: "serper",
+    credentialVersion: 4
+  }, {
+    ...base,
+    id: "connection-brave-z",
+    providerId: "brave",
+    credentialVersion: 3
+  }, {
+    ...base,
+    id: "connection-brave-a",
+    providerId: "brave",
+    credentialVersion: 2
+  }, {
+    ...base,
+    id: "connection-cross-owner",
+    providerId: "brave",
+    ownerId: "other-owner",
+    credentialVersion: 9
+  }, {
+    ...base,
+    id: "connection-team-scope",
+    providerId: "brave",
+    scope: "team",
+    credentialVersion: 8
+  }, {
+    ...base,
+    id: "connection-disabled",
+    providerId: "brave",
+    status: "disabled",
+    credentialVersion: 7
+  }, {
+    ...base,
+    id: "connection-unofficial",
+    providerId: "unregistered-search",
+    credentialVersion: 6
+  }];
+  const directory =
+    createAcquisitionActiveSearchConnectionDirectory(fixture.store);
+
+  const connections = await directory.list({
+    ownerId: OWNER,
+    teamId: TEAM
+  });
+
+  assert.deepEqual(connections, [{
+    connectionId: "connection-brave-a",
+    providerId: "brave",
+    kind: "search",
+    status: "active",
+    credentialVersion: 2
+  }, {
+    connectionId: "connection-brave-z",
+    providerId: "brave",
+    kind: "search",
+    status: "active",
+    credentialVersion: 3
+  }, {
+    connectionId: "connection-serper-z",
+    providerId: "serper",
+    kind: "search",
+    status: "active",
+    credentialVersion: 4
+  }]);
+  assert.equal(fixture.readBarrierCount(), 1);
+});
 
 async function waitFor<T>(
   read: () => Promise<T>,

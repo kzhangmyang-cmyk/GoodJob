@@ -11,11 +11,11 @@ import {
   type AcquisitionPiGatewayPort
 } from "./acquisition-pi-gateway-runtime.js";
 import {
-  ACQUISITION_MODEL_CONTENT_BUNDLE,
   ACQUISITION_MODEL_CONTENT_HASHES,
   ACQUISITION_MODEL_PROMPT_VERSION,
   ACQUISITION_MODEL_SCHEMA_VERSION,
-  DEFAULT_ACQUISITION_PI_SYSTEM_PROMPT
+  DEFAULT_ACQUISITION_PI_SYSTEM_PROMPT,
+  acquisitionModelContentForSnapshot
 } from "./acquisition-model-content.js";
 import {
   bindActiveModelSnapshot,
@@ -121,16 +121,11 @@ export function createAcquisitionModelGatewayForSnapshot(
   store: AcquisitionModelSnapshotStore,
   snapshot: StoredAiJobModelSnapshot
 ) {
-  if (snapshot.promptHash !== ACQUISITION_MODEL_CONTENT_HASHES.promptHash
-    || snapshot.schemaHash !== ACQUISITION_MODEL_CONTENT_HASHES.schemaHash
-    || snapshot.promptVersion !== ACQUISITION_MODEL_PROMPT_VERSION
-    || snapshot.schemaVersion !== ACQUISITION_MODEL_SCHEMA_VERSION) {
-    throw new Error("MODEL_CONTENT_HASH_MISMATCH");
-  }
+  const contentBundle = acquisitionModelContentForSnapshot(snapshot);
   return gatewayForContentBundle(
     store,
     snapshot,
-    ACQUISITION_MODEL_CONTENT_BUNDLE
+    contentBundle
   );
 }
 
@@ -171,8 +166,7 @@ export function acquisitionPiModelSnapshotFromStored(
 
 function resolveSnapshot(
   store: AcquisitionModelSnapshotStore,
-  input: AcquisitionPiRuntimeFactoryInput,
-  contentBundle: ModelContentBundle
+  input: AcquisitionPiRuntimeFactoryInput
 ) {
   const stored = store.aiJobModelSnapshots.find((snapshot) =>
     snapshot.jobId === input.snapshot.jobId
@@ -185,13 +179,7 @@ function resolveSnapshot(
   if (!snapshotMatches(stored, input.snapshot)) {
     throw new Error("MODEL_SNAPSHOT_MISMATCH");
   }
-  const contentHashes = modelContentBundleHashes(contentBundle);
-  if (stored.promptHash !== contentHashes.promptHash
-    || stored.schemaHash !== contentHashes.schemaHash
-    || stored.promptVersion !== ACQUISITION_MODEL_PROMPT_VERSION
-    || stored.schemaVersion !== ACQUISITION_MODEL_SCHEMA_VERSION) {
-    throw new Error("MODEL_CONTENT_HASH_MISMATCH");
-  }
+  acquisitionModelContentForSnapshot(stored);
   if (!stored.capabilitySnapshot.toolCalling) {
     throw new Error("MODEL_TOOL_CALLING_UNAVAILABLE");
   }
@@ -202,27 +190,26 @@ export function resolveStoredAcquisitionModelSnapshot(
   store: AcquisitionModelSnapshotStore,
   input: AcquisitionPiRuntimeFactoryInput
 ) {
-  return resolveSnapshot(
-    store,
-    input,
-    ACQUISITION_MODEL_CONTENT_BUNDLE
-  );
+  return resolveSnapshot(store, input);
 }
 
 export function createAcquisitionPiRuntimeFactory(
   options: CreateAcquisitionPiRuntimeFactoryOptions
 ): AcquisitionPiRuntimeFactory {
-  const contentBundle =
-    options.contentBundle ?? ACQUISITION_MODEL_CONTENT_BUNDLE;
   const systemPrompt = options.systemPrompt?.trim()
     || DEFAULT_ACQUISITION_PI_SYSTEM_PROMPT;
   return {
     async create(input) {
-      const immutableSnapshot = resolveSnapshot(
-        options.store,
-        input,
-        contentBundle
-      );
+      const immutableSnapshot = resolveSnapshot(options.store, input);
+      const registeredContentBundle =
+        acquisitionModelContentForSnapshot(immutableSnapshot);
+      const contentBundle =
+        options.contentBundle ?? registeredContentBundle;
+      const contentHashes = modelContentBundleHashes(contentBundle);
+      if (immutableSnapshot.promptHash !== contentHashes.promptHash
+        || immutableSnapshot.schemaHash !== contentHashes.schemaHash) {
+        throw new Error("MODEL_CONTENT_HASH_MISMATCH");
+      }
       const gateway = options.gatewayFactory
         ? options.gatewayFactory(immutableSnapshot, contentBundle)
         : gatewayForContentBundle(

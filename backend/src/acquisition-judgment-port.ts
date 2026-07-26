@@ -12,9 +12,7 @@ import {
   ACQUISITION_JUDGMENT_PROMPT_ID,
   ACQUISITION_JUDGMENT_SUBMIT_TOOL,
   ACQUISITION_JUDGMENT_TOOL_SCHEMA_ID,
-  ACQUISITION_MODEL_CONTENT_HASHES,
-  ACQUISITION_MODEL_PROMPT_VERSION,
-  ACQUISITION_MODEL_SCHEMA_VERSION
+  acquisitionModelContentForSnapshot
 } from "./acquisition-model-content.js";
 import type {
   AcquisitionPiGatewayPort
@@ -344,12 +342,7 @@ function validateSnapshot(
   if (snapshot.ownerId !== ownerId || snapshot.teamId !== teamId) {
     fail("MODEL_SNAPSHOT_MISMATCH");
   }
-  if (snapshot.promptHash !== ACQUISITION_MODEL_CONTENT_HASHES.promptHash
-    || snapshot.schemaHash !== ACQUISITION_MODEL_CONTENT_HASHES.schemaHash
-    || snapshot.promptVersion !== ACQUISITION_MODEL_PROMPT_VERSION
-    || snapshot.schemaVersion !== ACQUISITION_MODEL_SCHEMA_VERSION) {
-    fail("MODEL_CONTENT_HASH_MISMATCH");
-  }
+  acquisitionModelContentForSnapshot(snapshot);
   if (!snapshot.capabilitySnapshot.toolCalling) {
     fail("MODEL_TOOL_CALLING_UNAVAILABLE");
   }

@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  acquisitionPiModelSnapshotFromStored,
   bindActiveAcquisitionModelSnapshot,
   createAcquisitionPiRuntimeFactory
 } from "./acquisition-pi-runtime-factory.js";
 import {
+  ACQUISITION_LEGACY_MODEL_CONTENT_BUNDLE,
+  ACQUISITION_LEGACY_MODEL_CONTENT_HASHES,
+  ACQUISITION_LEGACY_MODEL_PROMPT_VERSION,
+  ACQUISITION_LEGACY_MODEL_SCHEMA_VERSION,
   ACQUISITION_MODEL_CONTENT_HASHES,
   ACQUISITION_MODEL_PROMPT_VERSION,
   ACQUISITION_MODEL_SCHEMA_VERSION,
@@ -116,6 +121,49 @@ const result = await runtime.run({
 assert.equal(result.type, "text");
 assert.equal(gatewaySnapshots.length, 1);
 assert.equal(gatewaySnapshots[0]?.jobId, "job-a");
+
+{
+  const legacySnapshot: StoredAiJobModelSnapshot = {
+    ...storedSnapshot,
+    jobId: "job-legacy-assistant",
+    promptVersion: ACQUISITION_LEGACY_MODEL_PROMPT_VERSION,
+    schemaVersion: ACQUISITION_LEGACY_MODEL_SCHEMA_VERSION,
+    ...ACQUISITION_LEGACY_MODEL_CONTENT_HASHES
+  };
+  let selectedLegacyBundle = false;
+  const legacyFactory = createAcquisitionPiRuntimeFactory({
+    store: { aiJobModelSnapshots: [legacySnapshot] },
+    gatewayFactory(snapshot, contentBundle) {
+      assert.equal(snapshot.jobId, legacySnapshot.jobId);
+      selectedLegacyBundle =
+        contentBundle === ACQUISITION_LEGACY_MODEL_CONTENT_BUNDLE;
+      return gateway;
+    }
+  });
+  const legacyPiSnapshot =
+    acquisitionPiModelSnapshotFromStored(legacySnapshot);
+  const legacyRuntime = await legacyFactory.create({
+    identity: {
+      ownerId: legacySnapshot.ownerId,
+      teamId: legacySnapshot.teamId,
+      actorId: "sales-legacy",
+      sessionId: "session-legacy"
+    },
+    snapshot: legacyPiSnapshot
+  });
+  const legacyResult = await legacyRuntime.run({
+    snapshot: legacyPiSnapshot,
+    systemPrompt: DEFAULT_ACQUISITION_PI_SYSTEM_PROMPT,
+    messages: [{
+      role: "user",
+      content: "继续旧会话中的普通获客分析",
+      timestamp: 1
+    }],
+    tools: acquisitionAgentToolDefinitions()
+  });
+  assert.equal(selectedLegacyBundle, true);
+  assert.equal(legacyResult.type, "text");
+}
 
 await assert.rejects(
   () => factory.create({

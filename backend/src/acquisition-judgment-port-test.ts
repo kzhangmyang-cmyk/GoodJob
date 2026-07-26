@@ -13,6 +13,9 @@ import {
 } from "./acquisition-pi-runtime-factory.js";
 import {
   ACQUISITION_JUDGMENT_SUBMIT_TOOL,
+  ACQUISITION_LEGACY_MODEL_CONTENT_HASHES,
+  ACQUISITION_LEGACY_MODEL_PROMPT_VERSION,
+  ACQUISITION_LEGACY_MODEL_SCHEMA_VERSION,
   ACQUISITION_MODEL_CONTENT_HASHES,
   ACQUISITION_MODEL_PROMPT_VERSION,
   ACQUISITION_MODEL_SCHEMA_VERSION
@@ -511,6 +514,42 @@ test("rejects cross-tenant and stale content snapshots before model calls", asyn
     );
     assert.equal(calls, 0);
   }
+});
+
+test("legacy content snapshots can still run their registered judgment binding", async () => {
+  const legacySnapshot: StoredAiJobModelSnapshot = {
+    ...snapshot,
+    jobId: "job-legacy-judgment",
+    promptVersion: ACQUISITION_LEGACY_MODEL_PROMPT_VERSION,
+    schemaVersion: ACQUISITION_LEGACY_MODEL_SCHEMA_VERSION,
+    ...ACQUISITION_LEGACY_MODEL_CONTENT_HASHES
+  };
+  let calls = 0;
+  const port = createAcquisitionJudgmentPort({
+    async resolveSession() {
+      return {
+        snapshot: legacySnapshot,
+        gateway: {
+          async callTools() {
+            calls += 1;
+            return modelResult(successArguments.research);
+          }
+        }
+      };
+    }
+  });
+
+  const result = await port.research!({
+    scope,
+    sessionId: "session-legacy",
+    candidate,
+    evidence,
+    depth: "standard",
+    researchQuestions: []
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.findings[0]?.label, "事实｜公开需求");
 });
 
 test("session resolver rehydrates only the persisted tenant snapshot", async () => {

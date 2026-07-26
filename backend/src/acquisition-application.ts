@@ -57,10 +57,10 @@ import {
   AcquisitionIdentityResolutionService
 } from "./acquisition-identity-resolution-service.js";
 import {
-  ACQUISITION_MODEL_CONTENT_BUNDLE,
   ACQUISITION_MODEL_CONTENT_HASHES,
   ACQUISITION_MODEL_PROMPT_VERSION,
-  ACQUISITION_MODEL_SCHEMA_VERSION
+  ACQUISITION_MODEL_SCHEMA_VERSION,
+  acquisitionModelContentForSnapshot
 } from "./acquisition-model-content.js";
 import {
   canonicalJsonStringify
@@ -79,6 +79,9 @@ import {
 import {
   createAcquisitionPlanRouter
 } from "./acquisition-plan-router.js";
+import type {
+  AcquisitionActiveSearchConnectionDirectory
+} from "./acquisition-plan-draft.js";
 import {
   acquisitionProviderConnectionVersion
 } from "./acquisition-provider-connection-version.js";
@@ -163,6 +166,46 @@ export {
 } from "./acquisition-provider-connection-version.js";
 
 type IdFactory = (prefix: string) => string;
+
+export function createAcquisitionActiveSearchConnectionDirectory(
+  store: Pick<CrmStore, "providerConnections" | "readBarrier">
+): AcquisitionActiveSearchConnectionDirectory {
+  return {
+    async list(scope) {
+      await store.readBarrier();
+      return store.providerConnections
+        .filter((connection) =>
+          connection.ownerId === scope.ownerId
+          && connection.teamId === scope.teamId
+          && connection.scope === "personal"
+          && connection.status === "active"
+          && ACQUISITION_SEARCH_PROVIDER_IDS.includes(
+            connection.providerId as
+              (typeof ACQUISITION_SEARCH_PROVIDER_IDS)[number]
+          )
+        )
+        .sort((left, right) =>
+          left.providerId < right.providerId
+            ? -1
+            : left.providerId > right.providerId
+              ? 1
+              : left.id < right.id
+                ? -1
+                : left.id > right.id
+                  ? 1
+                  : 0
+        )
+        .map((connection) => ({
+          connectionId: connection.id,
+          providerId: connection.providerId,
+          kind: "search" as const,
+          status: "active" as const,
+          credentialVersion:
+            acquisitionProviderConnectionVersion(connection)
+        }));
+    }
+  };
+}
 
 export interface CreateAcquisitionApplicationOptions {
   store: CrmStore;
@@ -868,7 +911,7 @@ export async function createAcquisitionApplication(
       gatewayFactory: options.modelGatewayFactory
         ? (snapshot) => options.modelGatewayFactory!(
             snapshot,
-            ACQUISITION_MODEL_CONTENT_BUNDLE
+            acquisitionModelContentForSnapshot(snapshot)
           )
         : undefined
     });
