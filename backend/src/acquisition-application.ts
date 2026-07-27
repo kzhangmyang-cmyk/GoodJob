@@ -776,13 +776,12 @@ function trustedPlanSnapshot(
   if (!stored) {
     throw new Error("ACQUISITION_PLAN_MODEL_SNAPSHOT_UNAVAILABLE");
   }
-  if (
-    stored.promptVersion !== ACQUISITION_MODEL_PROMPT_VERSION
-    || stored.schemaVersion !== ACQUISITION_MODEL_SCHEMA_VERSION
-    || stored.promptHash !== ACQUISITION_MODEL_CONTENT_HASHES.promptHash
-    || stored.schemaHash !== ACQUISITION_MODEL_CONTENT_HASHES.schemaHash
-    || stored.capabilitySnapshot.toolCalling !== true
-  ) {
+  try {
+    acquisitionModelContentForSnapshot(stored);
+  } catch {
+    throw new Error("ACQUISITION_PLAN_MODEL_SNAPSHOT_UNTRUSTED");
+  }
+  if (stored.capabilitySnapshot.toolCalling !== true) {
     throw new Error("ACQUISITION_PLAN_MODEL_SNAPSHOT_UNTRUSTED");
   }
   const publicSnapshot = acquisitionPiModelSnapshotFromStored(stored);

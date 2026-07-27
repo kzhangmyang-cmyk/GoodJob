@@ -6,6 +6,9 @@ import {
   ACQUISITION_FINAL_ANSWER_TOOL,
   ACQUISITION_JUDGMENT_PROMPT_ID,
   ACQUISITION_JUDGMENT_SUBMIT_TOOL,
+  ACQUISITION_LEGACY_MODEL_CONTENT_HASHES,
+  ACQUISITION_LEGACY_MODEL_PROMPT_VERSION,
+  ACQUISITION_LEGACY_MODEL_SCHEMA_VERSION,
   ACQUISITION_PI_PROMPT_ID,
   ACQUISITION_PLAN_DRAFT_PROMPT_ID,
   ACQUISITION_PLAN_DRAFT_SUBMIT_TOOL
@@ -64,6 +67,9 @@ import type {
 import type {
   StoredAiJobModelSnapshot
 } from "./model-providers/types.js";
+import {
+  bindModelConnectionSnapshot
+} from "./model-providers/runtime.js";
 
 const OWNER = "owner-application";
 const TEAM = "team-application";
@@ -958,6 +964,167 @@ async function waitFor<T>(
   }
   throw new Error("application test timed out");
 }
+
+test("approved registered legacy model snapshots remain executable while unknown bundles fail closed", async () => {
+  const fixture = isolatedMemoryStore();
+  const planRunRepository = new InMemoryAcquisitionPlanRunRepository();
+  const executionPort: AcquisitionExecutionPort = {
+    async enqueue() {},
+    async requestPause() {},
+    async resume() {},
+    async requestCancel() {}
+  };
+  let seedSequence = 0;
+  const seedService = new AcquisitionPlanRunService({
+    repository: planRunRepository,
+    executionPort,
+    idFactory: (prefix) => `seed-${prefix}-${++seedSequence}`
+  });
+  const legacySnapshot = bindModelConnectionSnapshot(fixture.store, {
+    jobId: "approved-legacy-model-snapshot",
+    ownerId: OWNER,
+    teamId: TEAM,
+    connectionId: modelConfig().id,
+    promptVersion: ACQUISITION_LEGACY_MODEL_PROMPT_VERSION,
+    schemaVersion: ACQUISITION_LEGACY_MODEL_SCHEMA_VERSION,
+    ...ACQUISITION_LEGACY_MODEL_CONTENT_HASHES
+  });
+  const unknownSnapshot = bindModelConnectionSnapshot(fixture.store, {
+    jobId: "approved-unknown-model-snapshot",
+    ownerId: OWNER,
+    teamId: TEAM,
+    connectionId: modelConfig().id,
+    promptVersion: "acquisition-model-prompt-bundle.v999",
+    schemaVersion: "acquisition-model-schema-bundle.v999",
+    promptHash: `sha256:${"c".repeat(64)}`,
+    schemaHash: `sha256:${"d".repeat(64)}`
+  });
+  await fixture.store.persist();
+  const scope = { ownerId: OWNER, teamId: TEAM, actorId: OWNER };
+
+  async function seedApprovedPlan(
+    name: string,
+    snapshot: StoredAiJobModelSnapshot
+  ) {
+    const {
+      modelConnectionId: _modelConnectionId,
+      ...publicPayload
+    } = planPayload();
+    const publicSnapshot = acquisitionPiModelSnapshotFromStored(snapshot);
+    const draft = await seedService.createPlan(scope, {
+      ...publicPayload,
+      name,
+      modelSnapshotRef: {
+        jobSnapshotId: publicSnapshot.jobId,
+        connectionId: publicSnapshot.connectionId,
+        credentialVersion: publicSnapshot.credentialVersion,
+        provider: publicSnapshot.provider,
+        model: publicSnapshot.model,
+        capabilitySnapshotHash: publicSnapshot.capabilitySnapshotHash,
+        promptVersion: publicSnapshot.promptVersion,
+        schemaVersion: publicSnapshot.schemaVersion,
+        promptHash: publicSnapshot.promptHash,
+        schemaHash: publicSnapshot.schemaHash
+      }
+    });
+    return seedService.approvePlan(scope, draft.id, draft.etag, {
+      decision: "approve",
+      reason: "批准时已冻结版本化模型内容"
+    });
+  }
+
+  const legacyPlan = await seedApprovedPlan(
+    "注册表中的旧版模型内容",
+    legacySnapshot
+  );
+  const unknownPlan = await seedApprovedPlan(
+    "注册表外的未知模型内容",
+    unknownSnapshot
+  );
+  const search = fakeSearchPort();
+  const model = fakeGateway();
+  const gatewaySnapshots: StoredAiJobModelSnapshot[] = [];
+  let runtimeSequence = 0;
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    searchPort: search.port,
+    domainRepository: new InMemoryAcquisitionDomainRepository(),
+    planRunRepository,
+    modelGatewayFactory: (snapshot) => {
+      gatewaySnapshots.push(structuredClone(snapshot));
+      return model.gateway;
+    },
+    idFactory: (prefix) => `runtime-${prefix}-${++runtimeSequence}`
+  });
+  const server = await serve(runtime.handler);
+
+  try {
+    const legacyRun = await server.request(
+      `/api/v1/acquisition/plans/${legacyPlan.id}/runs`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "run-approved-legacy-bundle" },
+        body: JSON.stringify({})
+      }
+    );
+    assert.equal(legacyRun.response.status, 202);
+    const terminalLegacyRun = await waitFor(
+      () => server.request(
+        `/api/v1/acquisition/runs/${legacyRun.json.id}`
+      ),
+      (value) => ["succeeded", "partial_success", "failed"].includes(
+        String(value.json.status)
+      )
+    );
+    assert.equal(
+      terminalLegacyRun.json.status,
+      "succeeded",
+      JSON.stringify(terminalLegacyRun.json)
+    );
+    assert.ok(gatewaySnapshots.length > 0);
+    assert.ok(gatewaySnapshots.every(
+      (snapshot) =>
+        snapshot.jobId === legacySnapshot.jobId
+        && snapshot.promptVersion
+          === ACQUISITION_LEGACY_MODEL_PROMPT_VERSION
+        && snapshot.schemaVersion
+          === ACQUISITION_LEGACY_MODEL_SCHEMA_VERSION
+    ));
+
+    const gatewayCallCount = gatewaySnapshots.length;
+    const unknownRun = await server.request(
+      `/api/v1/acquisition/plans/${unknownPlan.id}/runs`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "run-approved-unknown-bundle" },
+        body: JSON.stringify({})
+      }
+    );
+    assert.equal(unknownRun.response.status, 202);
+    const terminalUnknownRun = await waitFor(
+      () => server.request(
+        `/api/v1/acquisition/runs/${unknownRun.json.id}`
+      ),
+      (value) => ["succeeded", "partial_success", "failed"].includes(
+        String(value.json.status)
+      )
+    );
+    assert.notEqual(
+      terminalUnknownRun.json.status,
+      "succeeded",
+      "unregistered model content must not produce completed judgments"
+    );
+    assert.equal(
+      gatewaySnapshots.length,
+      gatewayCallCount,
+      "unregistered model content must fail before gateway construction"
+    );
+  } finally {
+    await runtime.close();
+    await server.close();
+  }
+});
 
 test("memory acquisition application composes search, plans, Pi and safe outcomes", async () => {
   const fixture = isolatedMemoryStore();

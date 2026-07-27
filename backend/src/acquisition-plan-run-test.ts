@@ -793,6 +793,180 @@ test("a worker cannot report cancelled without a prior cancellation request", as
   );
 });
 
+test("completeShard rejects forged zero-evidence partial results at the service boundary", async () => {
+  const cases = [{
+    name: "missing presentation",
+    presentation: undefined
+  }, {
+    name: "empty discovered candidate set",
+    presentation: {
+      rawResultCount: 0,
+      acceptedResultCount: 0,
+      duplicateResultCount: 0,
+      failedResultCount: 0,
+      providers: [{
+        providerConnectionId: "search-cn-v3",
+        provider: "china-search",
+        status: "succeeded" as const
+      }],
+      providerFailures: [],
+      candidateIds: [] as string[],
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      candidateFailures: [{
+        candidateId: "candidate-forged",
+        stage: "research" as const,
+        errorCode: "EVIDENCE_REQUIRED"
+      }]
+    }
+  }, {
+    name: "failure references an undiscovered candidate",
+    presentation: {
+      rawResultCount: 0,
+      acceptedResultCount: 0,
+      duplicateResultCount: 0,
+      failedResultCount: 0,
+      providers: [{
+        providerConnectionId: "search-cn-v3",
+        provider: "china-search",
+        status: "succeeded" as const
+      }],
+      providerFailures: [],
+      candidateIds: ["candidate-real"],
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      candidateFailures: [{
+        candidateId: "candidate-forged",
+        stage: "research" as const,
+        errorCode: "EVIDENCE_REQUIRED"
+      }]
+    }
+  }, {
+    name: "duplicate discovered candidate ids",
+    presentation: {
+      rawResultCount: 0,
+      acceptedResultCount: 0,
+      duplicateResultCount: 0,
+      failedResultCount: 0,
+      providers: [{
+        providerConnectionId: "search-cn-v3",
+        provider: "china-search",
+        status: "succeeded" as const
+      }],
+      providerFailures: [],
+      candidateIds: ["candidate-real", "candidate-real"],
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      candidateFailures: [{
+        candidateId: "candidate-real",
+        stage: "research" as const,
+        errorCode: "EVIDENCE_REQUIRED"
+      }]
+    }
+  }, {
+    name: "all providers failed",
+    presentation: {
+      rawResultCount: 0,
+      acceptedResultCount: 0,
+      duplicateResultCount: 0,
+      failedResultCount: 0,
+      providers: [],
+      providerFailures: [{
+        providerConnectionId: "search-cn-v3",
+        provider: "china-search",
+        errorCode: "SEARCH_PROVIDER_FAILED",
+        retryAfterAt: null
+      }],
+      candidateIds: ["candidate-forged"],
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      candidateFailures: [{
+        candidateId: "candidate-forged",
+        stage: "research" as const,
+        errorCode: "EVIDENCE_REQUIRED"
+      }]
+    }
+  }];
+
+  for (const invalid of cases) {
+    const { repository, service } = harness();
+    const draft = await service.createPlan(ownerA, planInput());
+    const approved = await service.approvePlan(
+      ownerA,
+      draft.id,
+      draft.etag,
+      { decision: "approve", reason: "人工批准" }
+    );
+    const run = await service.createRun(ownerA, approved.id, {
+      idempotencyKey: `run-invalid-partial-${invalid.name}`
+    });
+    const shard = (await repository.listRunShards(run.id))[0]!;
+    await service.startShard(ownerA, run.id, shard.id);
+
+    await rejectsCode(
+      () => service.completeShard(ownerA, run.id, shard.id, {
+        status: "partial_success",
+        evidenceCount: 0,
+        presentation: invalid.presentation
+      }),
+      "invalid_shard_result"
+    );
+    assert.equal(
+      (await repository.listRunShards(run.id))
+        .find((candidate) => candidate.id === shard.id)?.status,
+      "running",
+      invalid.name
+    );
+  }
+});
+
+test("completeShard accepts a genuine discovered-candidate failure with zero evidence", async () => {
+  const { repository, service } = harness();
+  const draft = await service.createPlan(ownerA, planInput());
+  const approved = await service.approvePlan(
+    ownerA,
+    draft.id,
+    draft.etag,
+    { decision: "approve", reason: "人工批准" }
+  );
+  const run = await service.createRun(ownerA, approved.id, {
+    idempotencyKey: "run-valid-zero-partial-0001"
+  });
+  const shard = (await repository.listRunShards(run.id))[0]!;
+  await service.startShard(ownerA, run.id, shard.id);
+  const settled = await service.completeShard(ownerA, run.id, shard.id, {
+    status: "partial_success",
+    evidenceCount: 0,
+    presentation: {
+      rawResultCount: 0,
+      acceptedResultCount: 0,
+      duplicateResultCount: 0,
+      failedResultCount: 0,
+      providers: [{
+        providerConnectionId: shard.connection.connectionId,
+        provider: shard.connection.providerId,
+        status: "succeeded"
+      }],
+      providerFailures: [],
+      candidateIds: ["candidate-without-evidence"],
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      candidateFailures: [{
+        candidateId: "candidate-without-evidence",
+        stage: "research",
+        errorCode: "EVIDENCE_REQUIRED"
+      }]
+    }
+  });
+
+  assert.equal(
+    (await repository.listRunShards(run.id))
+      .find((candidate) => candidate.id === shard.id)?.status,
+    "partial_success"
+  );
+  assert.equal(settled.evidenceCount, 0);
+});
+
 test("successful shard settlement aggregates evidence into a succeeded run", async () => {
   const { repository, service } = harness();
   const draft = await service.createPlan(ownerA, planInput());

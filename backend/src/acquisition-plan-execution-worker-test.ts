@@ -525,6 +525,116 @@ test("zero-evidence partial success is valid only when a candidate stage failed"
   await worker.close();
 });
 
+test("rejects forged zero-evidence candidate failures and failed-provider presentations", async () => {
+  const cases = [{
+    name: "failure for an empty candidate set",
+    providers: [{
+      providerConnectionId: "search-connection",
+      provider: "official-search",
+      status: "succeeded" as const
+    }],
+    providerFailures: [],
+    candidateIds: [] as string[],
+    candidateFailures: [{
+      candidateId: "candidate-forged",
+      stage: "research" as const,
+      errorCode: "EVIDENCE_REQUIRED"
+    }]
+  }, {
+    name: "failure for a candidate absent from the discovery result",
+    providers: [{
+      providerConnectionId: "search-connection",
+      provider: "official-search",
+      status: "succeeded" as const
+    }],
+    providerFailures: [],
+    candidateIds: ["candidate-real"],
+    candidateFailures: [{
+      candidateId: "candidate-forged",
+      stage: "research" as const,
+      errorCode: "EVIDENCE_REQUIRED"
+    }]
+  }, {
+    name: "failure attached to duplicate discovered candidate ids",
+    providers: [{
+      providerConnectionId: "search-connection",
+      provider: "official-search",
+      status: "succeeded" as const
+    }],
+    providerFailures: [],
+    candidateIds: ["candidate-real", "candidate-real"],
+    candidateFailures: [{
+      candidateId: "candidate-real",
+      stage: "research" as const,
+      errorCode: "EVIDENCE_REQUIRED"
+    }]
+  }, {
+    name: "candidate failure attached to a fully failed provider",
+    providers: [],
+    providerFailures: [{
+      providerConnectionId: "search-connection",
+      provider: "official-search",
+      errorCode: "SEARCH_PROVIDER_FAILED",
+      retryAfterAt: null
+    }],
+    candidateIds: ["candidate-forged"],
+    candidateFailures: [{
+      candidateId: "candidate-forged",
+      stage: "research" as const,
+      errorCode: "EVIDENCE_REQUIRED"
+    }]
+  }];
+  for (const invalid of cases) {
+    const failures: AcquisitionShardWorkerFailure[] = [];
+    const processor: AcquisitionShardProcessorPort = {
+      async process() {
+        return {
+          status: "partial_success",
+          evidenceCount: 0,
+          usage: {
+            requests: 1,
+            results: 0,
+            amountMinor: 0,
+            durationSeconds: 1
+          },
+          presentation: {
+            rawResultCount: 0,
+            acceptedResultCount: 0,
+            duplicateResultCount: 0,
+            failedResultCount: 0,
+            providers: invalid.providers,
+            providerFailures: invalid.providerFailures,
+            candidateIds: invalid.candidateIds,
+            processedCandidateIds: [],
+            battleCardCandidateIds: [],
+            candidateFailures: invalid.candidateFailures
+          }
+        };
+      }
+    };
+    const { repository, service, worker } = createHarness(
+      processor,
+      1,
+      (failure) => failures.push(failure)
+    );
+
+    const created = await createApprovedRun(service);
+    await worker.waitForIdle();
+
+    assert.equal(failures.length, 2, invalid.name);
+    assert.ok(failures.every((failure) =>
+      failure.code === "SHARD_RESULT_INVALID"
+      && failure.phase === "process"
+    ), invalid.name);
+    assert.ok(
+      (await repository.listRunShards(created.id))
+        .every((shard) => shard.status === "failed"),
+      invalid.name
+    );
+    await worker.close();
+  }
+});
+
 test("configured concurrency is used without exceeding the shard limit", async () => {
   let active = 0;
   let peak = 0;

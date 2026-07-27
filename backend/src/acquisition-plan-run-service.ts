@@ -212,6 +212,72 @@ function positiveInteger(value: number) {
   return Number.isSafeInteger(value) && value > 0;
 }
 
+function validZeroEvidenceCandidatePartial(
+  presentation: AcquisitionShardPresentationResult | undefined,
+  shard: AcquisitionOperationShard
+) {
+  if (!presentation
+    || !Array.isArray(presentation.providers)
+    || !Array.isArray(presentation.providerFailures)
+    || !Array.isArray(presentation.candidateIds)
+    || !Array.isArray(presentation.processedCandidateIds)
+    || !Array.isArray(presentation.battleCardCandidateIds)
+    || !Array.isArray(presentation.candidateFailures)) {
+    return false;
+  }
+  const nonEmpty = (value: unknown): value is string =>
+    typeof value === "string" && value.trim().length > 0;
+  const uniqueNonEmpty = (ids: unknown[]) =>
+    ids.length > 0
+    && ids.every(nonEmpty)
+    && new Set(ids).size === ids.length;
+  const candidateIds = presentation.candidateIds;
+  const candidateIdSet = new Set(candidateIds);
+  const failedCandidateIds = presentation.candidateFailures.map(
+    (failure) => failure?.candidateId
+  );
+  return uniqueNonEmpty(candidateIds)
+    && presentation.rawResultCount >= presentation.acceptedResultCount
+    && presentation.duplicateResultCount
+      <= presentation.acceptedResultCount
+    && presentation.providers.every((provider) =>
+      nonEmpty(provider?.providerConnectionId)
+      && nonEmpty(provider.provider)
+      && provider.status === "succeeded"
+    )
+    && presentation.providers.some((provider) =>
+      provider?.providerConnectionId === shard.connection.connectionId
+      && nonEmpty(provider.provider)
+      && provider.status === "succeeded"
+    )
+    && presentation.providerFailures.every((failure) =>
+      nonEmpty(failure?.providerConnectionId)
+      && nonEmpty(failure.provider)
+      && typeof failure.errorCode === "string"
+      && /^[A-Z][A-Z0-9_]{0,127}$/.test(failure.errorCode)
+      && (failure.retryAfterAt === null
+        || (typeof failure.retryAfterAt === "string"
+          && Number.isFinite(Date.parse(failure.retryAfterAt))))
+    )
+    && uniqueNonEmpty(failedCandidateIds)
+    && failedCandidateIds.every((candidateId) =>
+      candidateIdSet.has(candidateId))
+    && presentation.candidateFailures.every((failure) =>
+      ["research", "qualification", "battle_card"].includes(failure.stage)
+      && typeof failure.errorCode === "string"
+      && /^[A-Z][A-Z0-9_]{0,127}$/.test(failure.errorCode)
+    )
+    && new Set(presentation.processedCandidateIds).size
+      === presentation.processedCandidateIds.length
+    && presentation.processedCandidateIds.every((candidateId) =>
+      nonEmpty(candidateId) && candidateIdSet.has(candidateId))
+    && new Set(presentation.battleCardCandidateIds).size
+      === presentation.battleCardCandidateIds.length
+    && presentation.battleCardCandidateIds.every((candidateId) =>
+      nonEmpty(candidateId)
+      && presentation.processedCandidateIds.includes(candidateId));
+}
+
 function budgetFields(
   budget: AcquisitionBudgetLimit | AcquisitionBudgetUsage
 ) {
@@ -1332,6 +1398,15 @@ export class AcquisitionPlanRunService {
         "succeeded_empty 分片不能包含证据"
       );
     }
+    if (input.status === "partial_success"
+      && input.evidenceCount === 0
+      && !input.presentation) {
+      throw new AcquisitionPlanRunError(
+        400,
+        "invalid_shard_result",
+        "零证据 partial_success 必须包含可验证的候选处理失败"
+      );
+    }
     if (input.presentation
       && (!nonNegativeInteger(input.presentation.rawResultCount)
         || !nonNegativeInteger(input.presentation.acceptedResultCount)
@@ -1381,6 +1456,18 @@ export class AcquisitionPlanRunService {
           409,
           "cancelled_result_required",
           "等待取消的分片只能结算为 cancelled"
+        );
+      }
+      if (input.status === "partial_success"
+        && input.evidenceCount === 0
+        && !validZeroEvidenceCandidatePartial(
+          input.presentation,
+          shard
+        )) {
+        throw new AcquisitionPlanRunError(
+          400,
+          "invalid_shard_result",
+          "零证据 partial_success 必须来自成功 Provider 的真实候选失败"
         );
       }
       const now = this.now();

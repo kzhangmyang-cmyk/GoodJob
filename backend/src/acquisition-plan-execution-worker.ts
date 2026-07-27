@@ -158,8 +158,7 @@ function validResult(
     && (result.status !== "succeeded_empty" || result.evidenceCount === 0)
     && (result.status !== "partial_success"
       || result.evidenceCount > 0
-      || (Array.isArray(result.presentation?.candidateFailures)
-        && result.presentation.candidateFailures.length > 0))
+      || validZeroEvidenceCandidatePartial(result.presentation))
     && (result.status !== "failed" || result.evidenceCount === 0)
     && (!result.presentation || validPresentation(
       result.presentation,
@@ -189,6 +188,25 @@ function stableErrorCode(value: unknown) {
     && /^[A-Z][A-Z0-9_]{0,127}$/.test(value);
 }
 
+function idsBelongTo(
+  ids: readonly unknown[],
+  ownerIds: readonly string[]
+) {
+  const owners = new Set(ownerIds);
+  return ids.every((id) =>
+    typeof id === "string" && owners.has(id));
+}
+
+function validZeroEvidenceCandidatePartial(
+  presentation: AcquisitionShardPresentationResult | undefined
+) {
+  if (!presentation) return false;
+  return validPresentation(presentation, 0)
+    && presentation.providers.length > 0
+    && presentation.candidateIds.length > 0
+    && presentation.candidateFailures.length > 0;
+}
+
 function isInvalidProcessorResult(error: unknown) {
   return Boolean(error)
     && typeof error === "object"
@@ -205,6 +223,13 @@ function validPresentation(
     presentation.duplicateResultCount,
     presentation.failedResultCount
   ];
+  const failedCandidateIds: unknown[] =
+    Array.isArray(presentation.candidateFailures)
+    ? presentation.candidateFailures.map((failure) =>
+        failure && typeof failure === "object"
+          ? (failure as { candidateId?: unknown }).candidateId
+          : undefined)
+    : [];
   return counts.every((count) => Number.isSafeInteger(count) && count >= 0)
     && presentation.acceptedResultCount === evidenceCount
     && presentation.rawResultCount >= presentation.acceptedResultCount
@@ -212,6 +237,14 @@ function validPresentation(
     && uniqueIds(presentation.candidateIds)
     && uniqueIds(presentation.processedCandidateIds)
     && uniqueIds(presentation.battleCardCandidateIds)
+    && idsBelongTo(
+      presentation.processedCandidateIds,
+      presentation.candidateIds
+    )
+    && idsBelongTo(
+      presentation.battleCardCandidateIds,
+      presentation.processedCandidateIds
+    )
     && Array.isArray(presentation.providers)
     && presentation.providers.every((provider) =>
       hasOnlyKeys(provider, ["providerConnectionId", "provider", "status"])
@@ -237,6 +270,8 @@ function validPresentation(
           && Number.isFinite(Date.parse(failure.retryAfterAt))))
     )
     && Array.isArray(presentation.candidateFailures)
+    && uniqueIds(failedCandidateIds)
+    && idsBelongTo(failedCandidateIds, presentation.candidateIds)
     && presentation.candidateFailures.every((failure) =>
       hasOnlyKeys(failure, ["candidateId", "stage", "errorCode"])
       &&
