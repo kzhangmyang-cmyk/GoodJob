@@ -165,6 +165,27 @@ function idempotencyKey(prefix: string) {
   return `${prefix}:${id}`;
 }
 
+function runEtagRevision(etag: string): number | null {
+  const match = /^".+:([0-9]+)"$/u.exec(etag);
+  if (!match) return null;
+  const revision = Number(match[1]);
+  return Number.isSafeInteger(revision) ? revision : null;
+}
+
+function monotonicRunSnapshot(
+  current: RunDto | null,
+  incoming: RunDto
+): RunDto {
+  if (current === null || current.id !== incoming.id) return incoming;
+  const currentRevision = runEtagRevision(current.etag);
+  const incomingRevision = runEtagRevision(incoming.etag);
+  return currentRevision !== null
+    && incomingRevision !== null
+    && incomingRevision < currentRevision
+    ? current
+    : incoming;
+}
+
 function messageOf(error: unknown) {
   return error instanceof Error && error.message.trim()
     ? error.message
@@ -408,12 +429,12 @@ export function createAiGrowthController(
     getRunPresentation: (runId, input, signal) =>
       options.api.getRunPresentation(runId, input, signal),
     onUpdate(viewModel) {
-      runVm = viewModel;
-      currentRun = viewModel.run;
+      currentRun = monotonicRunSnapshot(currentRun, viewModel.run);
+      runVm = { ...viewModel, run: currentRun };
       state = {
         ...state,
-        status: pageStatusForRun(viewModel.run.status),
-        runId: viewModel.run.id,
+        status: pageStatusForRun(currentRun.status),
+        runId: currentRun.id,
         cursor: viewModel.nextAfter,
         candidatesById: new Map(viewModel.candidatesById),
         summary: viewModel.summary,

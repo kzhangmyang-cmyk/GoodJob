@@ -2,7 +2,7 @@
 
 日期：2026-07-26
 
-状态：基于现有已批准架构的增量设计
+状态：已实现（Task 8 全量验收通过）
 
 基线：GoodJob 1.09，分支 `feature/ai-acquisition-agent-design`
 
@@ -206,3 +206,58 @@ GET /api/v1/acquisition/runs/:id/presentation?after=<cursor>&limit=<n>
 - 前后端工程分支负责页面 ViewModel、运行进度、结果排序、抽屉交互和 CRM
   页面衔接；
 - 双方只通过版本化 OpenAPI/JSON Schema 对接，不直接修改对方内部状态结构。
+
+## 10. 实施与验收记录
+
+实施基线：
+
+```text
+fdd46a0a66451903dbc1b5bc29efa088b9b4d264
+```
+
+Task 8 已增加严格 Playwright fixture，按 method + pathname 拦截接口，记录
+`Idempotency-Key`、`If-Match` 和请求体；任何未声明的获客/待办调用返回 501，
+测试结束必须断言没有意外调用。定向场景已分别通过：
+
+1. 真实两页 presentation 追平、候选从 `researched` 到 `qualified`、
+   `battle-card.v2`、审核批准、一次 CRM 转换和一次待办创建；
+2. 演示模式纯本地只读，获客/待办调用为零；
+3. 搜索连接缺失、单 Provider 和单候选失败、财务待评估以部分成功呈现；
+4. 游标篡改不重试，pause/resume/cancel 使用各自最新 ETag；
+5. 作战卡失败后只经 Copilot 任务重试，不直接 POST 作战卡领域接口。
+
+定向测试同时发现并修复了一个真实并发问题：同一 Run 的陈旧 presentation 响应
+可能覆盖暂停/恢复后更新的 ETag。控制器现在仅在 Run ID 相同且版本号可比较时
+拒绝低版本快照，并有单元测试锁定该行为。
+
+最终提交：`test: verify AI acquisition loop`（以包含本节的提交为准）。
+
+2026-07-27 已由主任务独立完成全量验收：
+
+- Contracts：9/9 通过；
+- 获客后端专项：343/343 通过；
+- Backend 自检与真实搜索 Provider 测试：通过；
+- Frontend 单元测试：74/74，通过；self-test：75 项检查通过；
+- Playwright 闭环 E2E：5/5 通过；
+- Backend/Frontend 生产构建：通过；
+- `git diff --check`：通过；
+- 生产代码安全关键字与前端直接作战卡 POST：无命中。
+
+完整验收命令为：
+
+```bash
+npm run test:contracts
+npm run test:acquisition --workspace backend
+npm run test --workspace backend
+npm run test --workspace frontend
+JWT_SECRET='goodjob-e2e-jwt-secret-at-least-32-characters' \
+ACQUISITION_MASTER_SECRET='goodjob-e2e-master-secret-at-least-32-bytes' \
+npm run test:e2e --workspace frontend -- ai-acquisition-loop.spec.ts
+npm run build
+git diff --check
+
+rg -n 'shell_exec|file_write|auto.*friend|auto.*message|模拟真人|绕过风控' \
+  backend/src/acquisition-* frontend/src/features/ai-growth
+rg -n 'POST.*battle-card|candidates/.*/battle-card.*POST' \
+  frontend/src/features/ai-growth frontend/tests
+```

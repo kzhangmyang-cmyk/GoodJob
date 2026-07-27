@@ -371,6 +371,65 @@ test("暂停、继续和取消调用真实运行控制接口", async () => {
   );
 });
 
+test("陈旧 presentation 不会覆盖同一运行的新版控制 ETag", async () => {
+  const versionedRun = (
+    status: RunDto["status"],
+    revision: number
+  ): RunDto => ({
+    ...run(status),
+    etag: `"run-1:${revision}"`
+  });
+  let presentationUpdate:
+    | RunPresentationPollerOptions["onUpdate"]
+    | undefined;
+  let cancelledWith: string | null = null;
+  const { api } = createApi({
+    createRun: async () => versionedRun("running", 1),
+    pauseRun: async (_runId, etag) => {
+      assert.equal(etag, '"run-1:1"');
+      return versionedRun("paused", 2);
+    },
+    resumeRun: async (_runId, etag) => {
+      assert.equal(etag, '"run-1:2"');
+      return versionedRun("running", 3);
+    },
+    cancelRun: async (_runId, etag) => {
+      cancelledWith = etag;
+      return versionedRun("cancelled", 4);
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api, {
+    pollerFactory: (options) => {
+      presentationUpdate = options.onUpdate;
+      return {
+        start: () => undefined,
+        stop: () => undefined,
+        dispose: () => undefined,
+        cursor: () => null
+      };
+    }
+  }));
+
+  await controller.submit();
+  await controller.approve();
+  await controller.pause();
+  await controller.resume();
+  assert.ok(presentationUpdate);
+  presentationUpdate({
+    run: versionedRun("running", 1),
+    providers: [],
+    summary: null,
+    candidatesById: new Map(),
+    nextAfter: "stale",
+    hasMore: false
+  }, {
+    run: versionedRun("running", 1)
+  } as never);
+  await controller.cancel();
+
+  assert.equal(cancelledWith, '"run-1:3"');
+});
+
 test("缺少真实搜索连接时保留用户输入", async () => {
   const { api } = createApi({
     listProviderConnections: async () => ({ items: [], nextCursor: null })

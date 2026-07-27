@@ -56,6 +56,26 @@ Express 身份认证
 
 Pi 使用 `@earendil-works/pi-agent-core@0.81.1`，不使用其环境变量密钥发现或模型自动路由。模型只能来自当前用户在 GoodJob 中启用并由服务端固化的连接快照。
 
+### 2.1 Pi、确定性流水线与两道人工作业门
+
+| 环节 | Pi / 模型负责 | 确定性流水线负责 |
+|---|---|---|
+| 目标理解 | 将自然语言目标整理为 ICP、查询意图和可解释草稿 | 校验 Schema、租户、连接、快照和预算，生成可审批计划版本 |
+| 公开搜索 | 解释搜索目的和结果，不自行选择未授权连接 | 按已审批 operation/shard 调用官方连接，执行配额、重试、去重和审计 |
+| 候选处理 | 基于证据生成研究摘要、评分解释、财务判断和作战卡草稿 | 执行身份解析、硬门禁、阶段状态机、幂等、失败隔离和优先级排序 |
+| 结果呈现 | 回答“为什么推荐”和“下一步做什么” | 从权威 Repository 生成 presentation 增量投影，模型不能伪造进度 |
+| CRM/触达 | 生成供人修改的连接策略 | 校验审核版本并只执行一次转换；不提供自动外联能力 |
+
+闭环固定保留两道人工作业门：
+
+1. **执行前计划审批门**：用户确认目标、范围、数据源、预算和模型快照后，系统
+   才能创建 Run。
+2. **业务动作前审核门**：自动搜索、研究、评分和作战卡完成后，用户仍需审核
+   当前 decision version，才可转换 CRM 或创建后续人工触达任务。
+
+两道门之间的搜索、归一、补充研究、资格判断、财务评估和作战卡生成由
+GoodJob Worker 自动串联；不要求用户逐条点击“评分”或“生成作战卡”。
+
 ## 3. 已支持的官方 BYOK 模型
 
 每个用户填写自己的官方 API Key。Key 在服务端加密保存，读取接口只返回掩码；团队成员不能读取彼此的 Key。同一用户可以保存多个连接，但同一时间只启用一个连接。
@@ -234,6 +254,35 @@ If-Match: "candidate-v<当前候选版本>"
 面向普通客户端的直接证据、候选、评分、作战卡和 Outcome 写接口默认返回
 `403 direct_domain_write_disabled`。这些权威结果只能由受控任务或明确启用的可信业务集成写入。人工审核和批准后的 CRM 转换仍通过公开 API 完成。
 
+### 6.3 作战卡 V1/V2 兼容
+
+- 新生成结果使用 `battle-card.v2`，包含客户概况、需求证据、供应商假设、
+  决策链、采购偏好、连接策略、不建议动作和财务摘要。
+- 已有 `battle-card.v1` 保持只读可展示；前端按 `schemaVersion` 选择适配器，
+  不在读取时伪造 V2 缺失字段。
+- V1 中不存在的供应商、决策链、采购偏好或财务字段统一显示“未知/暂无证据”，
+  不能由 UI 或模型补写成事实。
+- V2 每项结论必须携带事实/推测/未知语义、证据引用和置信度。新证据或身份确认
+  会使旧判断和旧卡片失效。
+- 作战卡阶段失败只标记该候选可重试，不回滚同一 Run 已完成的其他候选；重试
+  只能从 AI 增长参谋任务入口发起，前端不直接 POST 作战卡领域接口。
+
+### 6.4 搜索、研究和模型预算
+
+预算均为硬上限，不是提示词建议：
+
+- **搜索预算**：计划快照固定 `maxRequests`、`maxResults`、
+  `maxAmountMinor`、`billingCurrency` 和 `maxDurationSeconds`，再分配到每个
+  operation/shard。Worker 在请求前和记账后校验；耗尽后进入
+  `budget_exhausted`，暂停/取消信号向分片和候选处理传播。
+- **补充研究预算**：每个候选最多生成 3 条补充查询，每条最多接收 5 个结果，
+  单次研究默认 30 秒；只能复用 Run 已审批的连接快照，不能创建新候选或静默
+  切换 Provider。
+- **Pi 模型预算**：单次任务默认最多 32 次工具调用、16 个模型轮次、180 秒和
+  200,000 个总 Token。任一上限触发稳定的预算错误码并终止后续调用。
+- **失败隔离**：单 Provider、单候选研究、单模型或单作战卡失败呈现为
+  `partial_success` 或对应候选的可重试阶段；已经完成的结果仍可读取。
+
 ## 7. API 前缀与主要资源
 
 所有获客 API 都要求 GoodJob 登录态，统一位于：
@@ -257,6 +306,7 @@ GET    /api/v1/acquisition/runs/:id/shards
 POST   /api/v1/acquisition/runs/:id/pause
 POST   /api/v1/acquisition/runs/:id/resume
 POST   /api/v1/acquisition/runs/:id/cancel
+GET    /api/v1/acquisition/runs/:id/presentation
 
 # 候选、证据和审核
 GET    /api/v1/acquisition/candidates
@@ -303,6 +353,30 @@ GET    /api/v1/acquisition/import-operations/:id
 导入接口接收最大 5 MB 的原始 CSV/XLSX 请求体；文件名、主体通道和列映射通过
 查询参数或文档指定的请求头传入，不使用 `multipart/form-data`。公开网页 URL
 和文件内容会在持久化前执行安全校验。
+
+### 7.1 Presentation 指标口径
+
+`GET /api/v1/acquisition/runs/:id/presentation?after=<cursor>&limit=<1..100>`
+是前端真实运行模式的唯一进度来源。它是只读增量投影，不触发搜索、模型或写入。
+
+| 字段 | 口径 |
+|---|---|
+| `sourcesSearched` | 当前 Run 中已进入执行投影的 Provider 分片/数据源数量 |
+| `pagesAnalyzed` | 分片已记账的结果处理量；用于展示工作量，不等同于网页 URL 去重数 |
+| `organizationsFound` | 与该 Run 关联、当前主体类型为企业的去重候选数 |
+| `dedupedCandidates` | 与该 Run 关联的稳定候选总数；同一强身份跨来源只计一次 |
+| `validOpportunities` | 当前已有有效资格判断且未被硬门禁阻断的候选数 |
+| `highIntent` | 当前资格等级为 S/A 的候选数 |
+| `financialEvaluatedHighIntentCount` | S/A 候选中已有当前有效财务价值判断的数量 |
+| `financialPendingHighIntentCount` | S/A 候选中仍无当前有效财务价值判断的数量 |
+| `expectedRevenueByCurrency` | 已完成财务评估候选的预计收入，按币种以最小货币单位分别求和，不跨币种换算 |
+| Provider `raw/accepted/duplicate/failedResultCount` | 各分片原始、接收、去重和失败结果计数；部分失败不覆盖已完成结果 |
+| `candidateEvents` | 本页发生发现或权威状态变化的候选快照，可能多次出现同一候选 |
+| `hasMore` / `nextAfter` | 是否仍有后续事件及下页签名游标；游标绑定租户、操作者和 Run，禁止修改 |
+
+页面展示候选当前状态时应按 `candidateId` 合并增量事件，以最新权威快照为准；
+Run 控制按钮必须保留最新 `run.etag`。演示模式使用本地只读回放并明确标记
+“演示数据”，不得调用获客写接口、审核、转换或待办接口。
 
 ## 8. 启动、恢复与关闭
 
@@ -367,6 +441,48 @@ Plan execution intent 的启动首扫失败同样会终止启动；运行期单�
 周期恢复扫描，再等待计划 Worker 和活动 Copilot 任务收尾，最后关闭 MySQL Pool
 和 GoodJob Store，避免恢复器向已关闭的 Worker 派发任务。默认获客 Worker 并发为
 `2`，应用级优雅关闭超时为 30 秒。
+
+### 8.4 本地完整启动与恢复演练
+
+分别启动内存后端和前端：
+
+```bash
+JWT_SECRET='goodjob-local-jwt-secret-at-least-32-characters' \
+ACQUISITION_MASTER_SECRET='goodjob-local-acquisition-secret-at-least-32-bytes' \
+CRM_STORE=memory \
+PORT=4188 \
+npm run dev --workspace backend
+```
+
+```bash
+VITE_API_TARGET='http://127.0.0.1:4188' \
+npm run dev --workspace frontend
+```
+
+需要验证进程重启恢复时，必须改用可丢弃的 MySQL 环境，并在停止、重启前后使用
+相同的数据库和密钥：
+
+```bash
+JWT_SECRET='保持不变的32字符以上密钥' \
+ACQUISITION_MASTER_SECRET='保持不变的32字符以上主密钥' \
+CRM_STORE=mysql \
+DATABASE_URL='mysql://user:password@127.0.0.1:3306/goodjob_test' \
+PORT=4188 \
+npm run dev:mysql --workspace backend
+```
+
+创建并启动一个 Run 后，在 `queued`/`running` 阶段使用 `Ctrl-C` 正常停止，再执行
+同一命令。启动首扫会恢复未完成 execution intent，周期扫描会继续接管可恢复任务。
+用登录 Token 查询真实状态：
+
+```bash
+curl -H "Authorization: Bearer ${TOKEN}" \
+  "http://127.0.0.1:4188/api/v1/acquisition/runs/${RUN_ID}"
+curl -H "Authorization: Bearer ${TOKEN}" \
+  "http://127.0.0.1:4188/api/v1/acquisition/copilot/tasks/${TASK_ID}"
+```
+
+不要用 memory 模式执行恢复验收；它在重启后必然丢失数据。
 
 ## 9. Memory 与 MySQL
 
@@ -438,6 +554,28 @@ acquisition-mysql-repositories-test.ts
 ```
 
 任何测试都不能指向开发者或客户的真实业务数据库。
+
+Task 8 闭环 E2E 使用 Playwright 自动启动 `4288` 内存后端和 `5288` 前端：
+
+```bash
+JWT_SECRET='goodjob-e2e-jwt-secret-at-least-32-characters' \
+ACQUISITION_MASTER_SECRET='goodjob-e2e-master-secret-at-least-32-bytes' \
+npm run test:e2e --workspace frontend -- ai-acquisition-loop.spec.ts
+```
+
+完整交接验收命令：
+
+```bash
+npm run test:contracts
+npm run test:acquisition --workspace backend
+npm run test --workspace backend
+npm run test --workspace frontend
+JWT_SECRET='goodjob-e2e-jwt-secret-at-least-32-characters' \
+ACQUISITION_MASTER_SECRET='goodjob-e2e-master-secret-at-least-32-bytes' \
+npm run test:e2e --workspace frontend -- ai-acquisition-loop.spec.ts
+npm run build
+git diff --check
+```
 
 ## 12. 已知运营限制
 
