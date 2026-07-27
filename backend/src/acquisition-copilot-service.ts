@@ -245,11 +245,23 @@ implements AcquisitionCopilotRepository {
     if (!task
       || task.ownerId !== scope.ownerId
       || task.teamId !== scope.teamId
-      || task.status !== "queued"
-      || state.taskDispatchClaims.has(taskId)) {
+      || task.status !== "queued") {
       return false;
     }
-    state.taskDispatchClaims.add(taskId);
+    const sessionAlreadyRunning = [...state.tasks.values()].some(
+      (candidate) =>
+        candidate.id !== task.id
+        && candidate.ownerId === task.ownerId
+        && candidate.teamId === task.teamId
+        && candidate.sessionId === task.sessionId
+        && candidate.status === "running"
+    );
+    if (sessionAlreadyRunning) return false;
+    state.tasks.set(task.id, {
+      ...task,
+      status: "running",
+      startedAt: new Date().toISOString()
+    });
     return true;
   }
 
@@ -383,6 +395,7 @@ export interface AcquisitionCopilotRunInput {
   transcript: AgentMessage[];
   prompt: string;
   responseMode: AcquisitionCopilotResponseMode;
+  signal?: AbortSignal;
 }
 
 export interface AcquisitionCopilotRunner {
@@ -799,13 +812,6 @@ export class AcquisitionCopilotService {
     if (["succeeded", "failed", "cancelled"].includes(task.status)) {
       return task;
     }
-    if (task.status !== "queued") {
-      throw new AcquisitionCopilotError(
-        "invalid_state",
-        "智能体任务已被其他执行器领取",
-        409
-      );
-    }
     const session = await this.getSession(scope, task.sessionId);
     if (session.status !== "active") {
       throw new AcquisitionCopilotError(
@@ -814,12 +820,27 @@ export class AcquisitionCopilotService {
         409
       );
     }
-    task = {
-      ...task,
-      status: "running",
-      startedAt: this.#now()
-    };
-    await this.#repository.saveTask(task);
+    if (task.status === "queued") {
+      const claimed = await this.#repository.claimTaskDispatch(
+        scope,
+        task.id
+      );
+      if (!claimed) {
+        throw new AcquisitionCopilotError(
+          "invalid_state",
+          "同一会话已有智能体任务正在执行",
+          409
+        );
+      }
+      task = await this.#requireTask(scope, task.id);
+    }
+    if (task.status !== "running") {
+      throw new AcquisitionCopilotError(
+        "invalid_state",
+        "智能体任务已被其他执行器领取",
+        409
+      );
+    }
     try {
       const existing = await this.#repository.listMessages(
         scope,

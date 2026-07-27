@@ -771,7 +771,17 @@ async function testCopilotPersistenceIsScopedAndMessageOrderIsDurable() {
 
 async function testCopilotClaimIsAtomicAndScoped() {
   const pool = new FakePool();
-  pool.enqueue({ affectedRows: 1 });
+  const connection = pool.connection;
+  const queuedTask = task();
+  connection.enqueue([{
+    id: queuedTask.id,
+    owner_id: queuedTask.ownerId,
+    team_id: queuedTask.teamId,
+    payload_json: JSON.stringify(queuedTask)
+  }]);
+  connection.enqueue([{ id: "session-1" }]);
+  connection.enqueue([]);
+  connection.enqueue({ affectedRows: 1 });
   const repository = new MysqlAcquisitionCopilotRepository(asPool(pool));
   assert.equal(
     await repository.claimTaskDispatch(
@@ -780,15 +790,64 @@ async function testCopilotClaimIsAtomicAndScoped() {
     ),
     true
   );
-  const call = pool.calls.at(-1)!;
-  assert.match(call.sql, /^UPDATE acquisition_copilot_tasks/);
-  assert.match(call.sql, /owner_id = \? AND team_id = \?/);
-  assert.match(call.sql, /status = 'queued'/);
-  assert.match(
-    call.sql,
-    /\(\s*dispatch_lease_until IS NULL OR dispatch_lease_until < UTC_TIMESTAMP\(3\)\s*\)/
+  assert.equal(connection.beginCount, 1);
+  assert.equal(connection.commitCount, 1);
+  const targetLock = connection.calls[0]!;
+  assert.match(targetLock.sql, /FROM acquisition_copilot_tasks/);
+  assert.match(targetLock.sql, /owner_id = \? AND team_id = \?/);
+  assert.match(targetLock.sql, /status = 'queued'/);
+  assert.match(targetLock.sql, /FOR UPDATE/);
+  const sessionLock = connection.calls[1]!;
+  assert.match(sessionLock.sql, /FROM acquisition_copilot_sessions/);
+  assert.match(sessionLock.sql, /FOR UPDATE/);
+  const runningCheck = connection.calls[2]!;
+  assert.match(runningCheck.sql, /status = 'running'/);
+  assert.match(runningCheck.sql, /session_id = \?/);
+  const update = connection.calls[3]!;
+  assert.match(update.sql, /^UPDATE acquisition_copilot_tasks/);
+  assert.match(update.sql, /SET status = 'running'/);
+  assert.match(update.sql, /payload_json = \?/);
+  assert.match(update.sql, /owner_id = \? AND team_id = \?/);
+  assert.match(update.sql, /status = 'queued'/);
+  assert.match(update.sql, /dispatch_attempts = dispatch_attempts \+ 1/);
+  const stored = JSON.parse(String(update.values[0]));
+  assert.equal(stored.status, "running");
+  assert.equal(typeof stored.startedAt, "string");
+  assert.equal(
+    update.values[1],
+    stored.startedAt.replace("T", " ").replace("Z", "")
   );
-  assert.match(call.sql, /dispatch_attempts = dispatch_attempts \+ 1/);
+}
+
+async function testCopilotClaimRejectsAnotherRunningTaskInTheSession() {
+  const pool = new FakePool();
+  const connection = pool.connection;
+  const queuedTask = task();
+  connection.enqueue([{
+    id: queuedTask.id,
+    owner_id: queuedTask.ownerId,
+    team_id: queuedTask.teamId,
+    payload_json: JSON.stringify(queuedTask)
+  }]);
+  connection.enqueue([{ id: "session-1" }]);
+  connection.enqueue([{ id: "task-running" }]);
+  const repository = new MysqlAcquisitionCopilotRepository(asPool(pool));
+
+  assert.equal(
+    await repository.claimTaskDispatch(
+      { ownerId: "owner-a", teamId: "team-a" },
+      "task-1"
+    ),
+    false
+  );
+  assert.equal(
+    connection.calls.some((call) =>
+      call.sql.startsWith("UPDATE acquisition_copilot_tasks")
+    ),
+    false
+  );
+  assert.equal(connection.beginCount, 1);
+  assert.equal(connection.commitCount, 1);
 }
 
 async function testCopilotTransactionUsesOneConnectionAndRollsBackAtomically() {
@@ -1290,6 +1349,7 @@ async function run() {
   await testDomainIdempotencyRestoresTheRequestKeyOnReplay();
   await testCopilotPersistenceIsScopedAndMessageOrderIsDurable();
   await testCopilotClaimIsAtomicAndScoped();
+  await testCopilotClaimRejectsAnotherRunningTaskInTheSession();
   await testCopilotTransactionUsesOneConnectionAndRollsBackAtomically();
   await testPlaintextCredentialFieldsAreRejected();
   await testTaskStateUpdateUsesExpectedPreviousState();

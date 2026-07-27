@@ -1,5 +1,6 @@
 import {
   Agent,
+  type AgentTool,
   type AgentMessage,
   type StreamFn
 } from "@earendil-works/pi-agent-core";
@@ -45,6 +46,28 @@ export interface AcquisitionPiUsage {
   reasoningTokens: number;
 }
 
+export interface AcquisitionPiRunLimits {
+  maxToolCalls: number;
+  maxModelTurns: number;
+  maxDurationMs: number;
+  maxTotalTokens: number;
+}
+
+export const DEFAULT_ACQUISITION_PI_RUN_LIMITS =
+  Object.freeze<AcquisitionPiRunLimits>({
+    maxToolCalls: 32,
+    maxModelTurns: 16,
+    maxDurationMs: 180_000,
+    maxTotalTokens: 200_000
+  });
+
+export type AcquisitionPiRunFailureCode =
+  | "AGENT_TOOL_BUDGET_EXHAUSTED"
+  | "AGENT_TURN_BUDGET_EXHAUSTED"
+  | "AGENT_DURATION_EXHAUSTED"
+  | "AGENT_TOKEN_BUDGET_EXHAUSTED"
+  | "MODEL_STREAM_ABORTED";
+
 export interface AcquisitionPiTextTurn {
   type: "text";
   text: string;
@@ -88,6 +111,9 @@ export interface CreateAcquisitionPiAgentOptions {
   toolAuditSecret: string;
   initialMessages?: AgentMessage[];
   systemPrompt?: string;
+  runLimits?: AcquisitionPiRunLimits;
+  signal?: AbortSignal;
+  onFailure?: (code: AcquisitionPiRunFailureCode) => void;
   now?: () => number;
 }
 
@@ -119,7 +145,37 @@ function piUsage(usage: AcquisitionPiUsage) {
   };
 }
 
-function safeRuntimeError(error: unknown) {
+const ACQUISITION_PI_RUN_FAILURE_CODES =
+  new Set<AcquisitionPiRunFailureCode>([
+    "AGENT_TOOL_BUDGET_EXHAUSTED",
+    "AGENT_TURN_BUDGET_EXHAUSTED",
+    "AGENT_DURATION_EXHAUSTED",
+    "AGENT_TOKEN_BUDGET_EXHAUSTED",
+    "MODEL_STREAM_ABORTED"
+  ]);
+
+function controlledFailureCode(signal: AbortSignal | undefined) {
+  if (!signal?.aborted) return null;
+  return typeof signal.reason === "string"
+    && ACQUISITION_PI_RUN_FAILURE_CODES.has(
+      signal.reason as AcquisitionPiRunFailureCode
+    )
+    ? signal.reason as AcquisitionPiRunFailureCode
+    : "MODEL_STREAM_ABORTED";
+}
+
+function safeRuntimeError(
+  error: unknown,
+  failureCode: AcquisitionPiRunFailureCode | null
+) {
+  if (failureCode) {
+    return {
+      code: failureCode,
+      reason: failureCode === "MODEL_STREAM_ABORTED"
+        ? "aborted" as const
+        : "error" as const
+    };
+  }
   if (error instanceof DOMException && error.name === "AbortError") {
     return {
       code: "MODEL_STREAM_ABORTED",
@@ -132,6 +188,115 @@ function safeRuntimeError(error: unknown) {
       ?? "MODEL_PROVIDER_UNAVAILABLE",
     reason: "error" as const
   };
+}
+
+function validatedRunLimits(
+  limits: AcquisitionPiRunLimits | undefined
+): AcquisitionPiRunLimits {
+  const resolved = limits ?? DEFAULT_ACQUISITION_PI_RUN_LIMITS;
+  for (const [name, value] of Object.entries(resolved)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError(`runLimits.${name} must be a positive integer`);
+    }
+  }
+  return Object.freeze({ ...resolved });
+}
+
+function combinedAbortSignal(
+  signals: Array<AbortSignal | undefined>
+): AbortSignal | undefined {
+  const active = signals.filter(
+    (signal): signal is AbortSignal => Boolean(signal)
+  );
+  if (active.length === 0) return undefined;
+  if (active.length === 1) return active[0];
+  return AbortSignal.any(active);
+}
+
+interface AcquisitionPiBudgetController {
+  readonly signal: AbortSignal;
+  beforeModelTurn(): void;
+  afterModelTurn(usage: AcquisitionPiUsage): void;
+  beforeToolCall(): void;
+  failureCode(): AcquisitionPiRunFailureCode | null;
+}
+
+function createRunBudgetController(input: {
+  limits: AcquisitionPiRunLimits;
+  runSignal?: AbortSignal;
+  onFailure?: (code: AcquisitionPiRunFailureCode) => void;
+}): AcquisitionPiBudgetController {
+  const budgetAbort = new AbortController();
+  let modelTurns = 0;
+  let toolCalls = 0;
+  let totalTokens = 0;
+  let budgetFailure: AcquisitionPiRunFailureCode | null = null;
+
+  const failureCode = () =>
+    controlledFailureCode(input.runSignal)
+    ?? budgetFailure;
+  const fail = (code: AcquisitionPiRunFailureCode) => {
+    if (!budgetFailure) {
+      budgetFailure = code;
+      input.onFailure?.(code);
+      budgetAbort.abort(code);
+    }
+    return budgetFailure;
+  };
+  const assertActive = () => {
+    const code = failureCode();
+    if (code) throw new Error(code);
+  };
+
+  return {
+    signal: combinedAbortSignal([
+      input.runSignal,
+      budgetAbort.signal
+    ])!,
+    beforeModelTurn() {
+      assertActive();
+      if (modelTurns >= input.limits.maxModelTurns) {
+        throw new Error(fail("AGENT_TURN_BUDGET_EXHAUSTED"));
+      }
+      modelTurns += 1;
+    },
+    afterModelTurn(usage) {
+      assertActive();
+      totalTokens +=
+        Math.max(0, Math.trunc(usage.inputTokens))
+        + Math.max(0, Math.trunc(usage.outputTokens))
+        + Math.max(0, Math.trunc(usage.reasoningTokens));
+      if (totalTokens > input.limits.maxTotalTokens) {
+        throw new Error(fail("AGENT_TOKEN_BUDGET_EXHAUSTED"));
+      }
+    },
+    beforeToolCall() {
+      assertActive();
+      if (toolCalls >= input.limits.maxToolCalls) {
+        throw new Error(fail("AGENT_TOOL_BUDGET_EXHAUSTED"));
+      }
+      toolCalls += 1;
+    },
+    failureCode
+  };
+}
+
+function boundedTools(
+  tools: AgentTool[],
+  budget: AcquisitionPiBudgetController
+) {
+  return tools.map((tool): AgentTool => ({
+    ...tool,
+    async execute(toolCallId, params, signal, onUpdate) {
+      budget.beforeToolCall();
+      return tool.execute(
+        toolCallId,
+        params,
+        combinedAbortSignal([signal, budget.signal]),
+        onUpdate
+      );
+    }
+  }));
 }
 
 function cloneMessage(message: AssistantMessage): AssistantMessage {
@@ -187,6 +352,7 @@ function createGatewayModel(
 function createGatewayStreamFn(input: {
   snapshot: AcquisitionPiModelSnapshot;
   runtime: AcquisitionPiTurnRuntime;
+  budget: AcquisitionPiBudgetController;
   now: () => number;
 }): StreamFn {
   return (_model, context: Context, options) => {
@@ -198,6 +364,7 @@ function createGatewayStreamFn(input: {
         partial: cloneMessage(initial)
       });
       try {
+        input.budget.beforeModelTurn();
         const result = await input.runtime.run({
           snapshot: { ...input.snapshot },
           systemPrompt: context.systemPrompt ?? "",
@@ -207,8 +374,12 @@ function createGatewayStreamFn(input: {
             description: tool.description,
             parameters: structuredClone(tool.parameters)
           })),
-          signal: options?.signal
+          signal: combinedAbortSignal([
+            options?.signal,
+            input.budget.signal
+          ])
         });
+        input.budget.afterModelTurn(result.usage);
         const usage = piUsage(result.usage);
         if (result.type === "text") {
           const text = result.text.trim();
@@ -288,7 +459,10 @@ function createGatewayStreamFn(input: {
           message: cloneMessage(partial)
         });
       } catch (error) {
-        const safe = safeRuntimeError(error);
+        const safe = safeRuntimeError(
+          error,
+          input.budget.failureCode()
+        );
         const failed: AssistantMessage = {
           ...initial,
           content: [],
@@ -333,6 +507,11 @@ export function createAcquisitionPiAgent(
   options: CreateAcquisitionPiAgentOptions
 ) {
   const snapshot = validatedSnapshot(options.snapshot);
+  const budget = createRunBudgetController({
+    limits: validatedRunLimits(options.runLimits),
+    runSignal: options.signal,
+    onFailure: options.onFailure
+  });
   const now = options.now ?? Date.now;
   const initialMessages = (options.initialMessages ?? [])
     .filter((message) =>
@@ -341,13 +520,16 @@ export function createAcquisitionPiAgent(
       || message.role === "toolResult"
     )
     .map((message) => structuredClone(message));
-  const tools = createAcquisitionAgentTools({
-    identity: options.identity,
-    executor: options.toolExecutor,
-    audit: options.toolAudit,
-    auditSecret: options.toolAuditSecret,
-    now
-  });
+  const tools = boundedTools(
+    createAcquisitionAgentTools({
+      identity: options.identity,
+      executor: options.toolExecutor,
+      audit: options.toolAudit,
+      auditSecret: options.toolAuditSecret,
+      now
+    }),
+    budget
+  );
   return new Agent({
     initialState: {
       systemPrompt:
@@ -360,10 +542,28 @@ export function createAcquisitionPiAgent(
     streamFn: createGatewayStreamFn({
       snapshot,
       runtime: options.runtime,
+      budget,
       now
     }),
     sessionId: options.identity.sessionId,
     toolExecution: "parallel",
+    afterToolCall: async ({ result, isError }) => {
+      const failureCode = budget.failureCode();
+      if (!failureCode) return undefined;
+      return {
+        ...(isError
+          ? {
+              content: [{
+                type: "text" as const,
+                text: failureCode
+              }],
+              details: { errorCode: failureCode },
+              isError: true
+            }
+          : { details: result.details }),
+        terminate: true
+      };
+    },
     convertToLlm: (messages) =>
       messages.filter((message): message is Message =>
         message.role === "user"

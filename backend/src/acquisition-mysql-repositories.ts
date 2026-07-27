@@ -2001,21 +2001,74 @@ implements AcquisitionCopilotRepository {
   }
 
   async claimTaskDispatch(scope: Scope, taskId: string) {
-    const count = await affected(
-      this.source(),
-      `UPDATE acquisition_copilot_tasks
-       SET dispatch_claimed_at = UTC_TIMESTAMP(3),
-           dispatch_lease_until = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 5 MINUTE),
-           dispatch_attempts = dispatch_attempts + 1
-       WHERE id = ? AND owner_id = ? AND team_id = ?
-         AND status = 'queued'
-         AND (
-           dispatch_lease_until IS NULL
-           OR dispatch_lease_until < UTC_TIMESTAMP(3)
-         )`,
-      [taskId, scope.ownerId, scope.teamId]
-    );
-    return count === 1;
+    return this.transaction(async () => {
+      const targetRows = await rows(
+        this.source(),
+        `SELECT *
+         FROM acquisition_copilot_tasks
+         WHERE id = ? AND owner_id = ? AND team_id = ?
+           AND status = 'queued'
+         LIMIT 1
+         FOR UPDATE`,
+        [taskId, scope.ownerId, scope.teamId]
+      );
+      if (!targetRows[0]) return false;
+      const task = ownedPayload<AcquisitionCopilotTask>(
+        targetRows[0],
+        "copilot_task"
+      );
+      const sessionRows = await rows(
+        this.source(),
+        `SELECT id
+         FROM acquisition_copilot_sessions
+         WHERE id = ? AND owner_id = ? AND team_id = ?
+         LIMIT 1
+         FOR UPDATE`,
+        [task.sessionId, scope.ownerId, scope.teamId]
+      );
+      if (!sessionRows[0]) throw new Error("SESSION_NOT_FOUND");
+      const active = await rows(
+        this.source(),
+        `SELECT id
+         FROM acquisition_copilot_tasks
+         WHERE session_id = ? AND owner_id = ? AND team_id = ?
+           AND status = 'running'
+         LIMIT 1`,
+        [task.sessionId, scope.ownerId, scope.teamId]
+      );
+      if (active.length > 0) return false;
+
+      const startedAt = new Date().toISOString();
+      const claimed: AcquisitionCopilotTask = {
+        ...task,
+        status: "running",
+        startedAt
+      };
+      const count = await affected(
+        this.source(),
+        `UPDATE acquisition_copilot_tasks
+         SET status = 'running',
+             payload_json = ?,
+             started_at = ?,
+             dispatch_claimed_at = UTC_TIMESTAMP(3),
+             dispatch_lease_until =
+               DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 5 MINUTE),
+             dispatch_attempts = dispatch_attempts + 1
+         WHERE id = ? AND owner_id = ? AND team_id = ?
+           AND actor_id = ? AND session_id = ?
+           AND status = 'queued'`,
+        [
+          json(claimed),
+          mysqlDate(startedAt),
+          claimed.id,
+          claimed.ownerId,
+          claimed.teamId,
+          claimed.actorId,
+          claimed.sessionId
+        ]
+      );
+      return count === 1;
+    });
   }
 
   async recoverInterruptedTasks(input: {

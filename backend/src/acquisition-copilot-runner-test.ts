@@ -353,4 +353,111 @@ assert.equal(
   );
 }
 
+{
+  const timeoutRunner = createPiAcquisitionCopilotRunner({
+    runtimeFactory: {
+      async create() {
+        return {
+          async run(input) {
+            return new Promise((_, reject) => {
+              input.signal?.addEventListener("abort", () => {
+                reject(new DOMException("aborted", "AbortError"));
+              }, { once: true });
+            });
+          }
+        };
+      }
+    },
+    toolExecutor: {
+      async execute() {
+        throw new Error("not expected");
+      }
+    },
+    toolAudit: audit,
+    toolAuditSecret:
+      "copilot-runner-timeout-secret-at-least-32-characters",
+    runLimits: {
+      maxToolCalls: 32,
+      maxModelTurns: 16,
+      maxDurationMs: 10,
+      maxTotalTokens: 200_000
+    }
+  });
+
+  await assert.rejects(
+    () => timeoutRunner.run({
+      ownerId: "owner-a",
+      teamId: "team-a",
+      actorId: "sales-a",
+      sessionId: "session-timeout",
+      snapshot,
+      transcript: [],
+      prompt: "等待超时",
+      responseMode: "assistant"
+    }),
+    (error: unknown) =>
+      error instanceof Error
+      && error.message === "AGENT_DURATION_EXHAUSTED"
+  );
+}
+
+{
+  let runtimeCalls = 0;
+  const externalAbort = new AbortController();
+  externalAbort.abort();
+  const cancelledRunner = createPiAcquisitionCopilotRunner({
+    runtimeFactory: {
+      async create() {
+        return {
+          async run() {
+            runtimeCalls += 1;
+            return {
+              type: "text",
+              text: "不应运行",
+              usage: {
+                inputTokens: 1,
+                outputTokens: 1,
+                reasoningTokens: 0
+              },
+              providerRequestId: null
+            };
+          }
+        };
+      }
+    },
+    toolExecutor: {
+      async execute() {
+        throw new Error("not expected");
+      }
+    },
+    toolAudit: audit,
+    toolAuditSecret:
+      "copilot-runner-cancel-secret-at-least-32-characters",
+    runLimits: {
+      maxToolCalls: 32,
+      maxModelTurns: 16,
+      maxDurationMs: 1,
+      maxTotalTokens: 200_000
+    }
+  });
+
+  await assert.rejects(
+    () => cancelledRunner.run({
+      ownerId: "owner-a",
+      teamId: "team-a",
+      actorId: "sales-a",
+      sessionId: "session-cancelled",
+      snapshot,
+      transcript: [],
+      prompt: "外部取消优先",
+      responseMode: "assistant",
+      signal: externalAbort.signal
+    }),
+    (error: unknown) =>
+      error instanceof Error
+      && error.message === "MODEL_STREAM_ABORTED"
+  );
+  assert.equal(runtimeCalls, 0);
+}
+
 console.log("acquisition copilot runner tests passed");

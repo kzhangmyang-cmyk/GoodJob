@@ -324,6 +324,86 @@ assert.equal(failedDraft.status, "failed");
 assert.equal(failedDraft.errorCode, "PLAN_DRAFT_NOT_READY");
 assert.equal(JSON.stringify(failedDraft).includes("must-not-leak"), false);
 
+const singleFlightFirst = await service.enqueueMessage(
+  scope,
+  created.id,
+  "同会话第一条派发",
+  "message-single-flight-first"
+);
+const singleFlightSecond = await service.enqueueMessage(
+  scope,
+  created.id,
+  "同会话第二条派发",
+  "message-single-flight-second"
+);
+assert.equal(
+  await service.claimTaskDispatch(scope, singleFlightFirst.id),
+  true
+);
+assert.equal(
+  (await service.getTask(scope, singleFlightFirst.id)).status,
+  "running",
+  "claiming a dispatch must atomically move the task to running"
+);
+assert.equal(
+  await service.claimTaskDispatch(scope, singleFlightSecond.id),
+  false,
+  "a session may have only one running task"
+);
+
+const parallelSession = await service.createSession(
+  scope,
+  snapshot,
+  "create-session-parallel"
+);
+const parallelTask = await service.enqueueMessage(
+  scope,
+  parallelSession.id,
+  "不同会话可以并行",
+  "message-parallel-session"
+);
+assert.equal(
+  await service.claimTaskDispatch(scope, parallelTask.id),
+  true,
+  "different sessions may run concurrently"
+);
+await service.markDispatchFailed(
+  scope,
+  singleFlightFirst.id,
+  "COPILOT_TEST_CLEANUP"
+);
+assert.equal(
+  await service.claimTaskDispatch(scope, singleFlightSecond.id),
+  true,
+  "the next task may be claimed only after the first reaches a terminal state"
+);
+await service.markDispatchFailed(
+  scope,
+  singleFlightSecond.id,
+  "COPILOT_TEST_CLEANUP"
+);
+await service.markDispatchFailed(
+  scope,
+  parallelTask.id,
+  "COPILOT_TEST_CLEANUP"
+);
+
+const routerClaimedTask = await service.enqueueMessage(
+  scope,
+  created.id,
+  "路由器已领取后执行",
+  "message-router-claimed"
+);
+assert.equal(
+  await service.claimTaskDispatch(scope, routerClaimedTask.id),
+  true
+);
+assert.equal(
+  (await service.runTask(scope, routerClaimedTask.id)).status,
+  "succeeded",
+  "runTask must accept a task that the router already moved to running"
+);
+
 const dispatchFailureTask = await service.enqueueMessage(
   scope,
   created.id,
@@ -396,10 +476,6 @@ const recoveryQueuedTask = await service.enqueueMessage(
   "重启后恢复排队任务",
   "message-recovery-queued"
 );
-assert.equal(
-  await service.claimTaskDispatch(scope, recoveryQueuedTask.id),
-  true
-);
 const recoveryRunningTask = await service.enqueueMessage(
   scope,
   created.id,
@@ -421,7 +497,7 @@ assert.deepEqual(
 assert.equal(
   await service.claimTaskDispatch(scope, recoveryQueuedTask.id),
   true,
-  "startup recovery must release an abandoned dispatch claim"
+  "startup recovery must preserve queued task order and make it claimable"
 );
 await service.markDispatchFailed(
   scope,

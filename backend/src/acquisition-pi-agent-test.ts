@@ -258,4 +258,218 @@ assert.equal(
   "上一轮已要求只分析公开采购信号。"
 );
 
+{
+  let runtimeCalls = 0;
+  let realToolExecutions = 0;
+  const budgetAgent = createAcquisitionPiAgent({
+    identity: {
+      ownerId: "owner-a",
+      teamId: "team-a",
+      actorId: "owner-a",
+      sessionId: "copilot-tool-budget"
+    },
+    snapshot: {
+      jobId: "job-tool-budget",
+      connectionId: "connection-a",
+      credentialVersion: 3,
+      provider: "moonshot",
+      model: "kimi-k2.5",
+      promptVersion: "acquisition-copilot-v1",
+      schemaVersion: "copilot-turn.v1",
+      promptHash: "sha256:prompt-acquisition-copilot-v1",
+      schemaHash: "sha256:schema-copilot-turn-v1",
+      capabilitySnapshotHash: "capability-hash-a",
+      baseUrlFingerprint: "base-url-hash-a"
+    },
+    runtime: {
+      async run() {
+        runtimeCalls += 1;
+        if (runtimeCalls === 1) {
+          return {
+            type: "tool_calls",
+            providerRequestId: "provider-tool-budget",
+            usage: {
+              inputTokens: 1,
+              outputTokens: 1,
+              reasoningTokens: 0
+            },
+            calls: Array.from({ length: 33 }, (_, index) => ({
+              id: `budget-tool-${index + 1}`,
+              name: "get_candidate_evidence",
+              arguments: { candidateId: `candidate-${index + 1}` }
+            }))
+          };
+        }
+        return {
+          type: "text",
+          providerRequestId: "provider-tool-budget-fallback",
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            reasoningTokens: 0
+          },
+          text: "不应发起预算耗尽后的模型回合"
+        };
+      }
+    },
+    toolExecutor: {
+      async execute() {
+        realToolExecutions += 1;
+        return {};
+      }
+    },
+    toolAudit: new InMemoryAcquisitionToolAuditLedger(),
+    toolAuditSecret:
+      "pi-agent-tool-budget-secret-at-least-32-characters"
+  });
+
+  await budgetAgent.prompt("验证工具预算");
+
+  assert.equal(
+    realToolExecutions,
+    32,
+    "the 33rd tool call must be rejected before the real executor starts"
+  );
+  assert.equal(
+    runtimeCalls,
+    1,
+    "tool budget exhaustion must terminate the run after the current batch"
+  );
+  assert.match(
+    JSON.stringify(budgetAgent.state.messages),
+    /AGENT_TOOL_BUDGET_EXHAUSTED/
+  );
+}
+
+{
+  let runtimeCalls = 0;
+  let realToolExecutions = 0;
+  const budgetAgent = createAcquisitionPiAgent({
+    identity: {
+      ownerId: "owner-a",
+      teamId: "team-a",
+      actorId: "owner-a",
+      sessionId: "copilot-turn-budget"
+    },
+    snapshot: {
+      jobId: "job-turn-budget",
+      connectionId: "connection-a",
+      credentialVersion: 3,
+      provider: "moonshot",
+      model: "kimi-k2.5",
+      promptVersion: "acquisition-copilot-v1",
+      schemaVersion: "copilot-turn.v1",
+      promptHash: "sha256:prompt-acquisition-copilot-v1",
+      schemaHash: "sha256:schema-copilot-turn-v1",
+      capabilitySnapshotHash: "capability-hash-a",
+      baseUrlFingerprint: "base-url-hash-a"
+    },
+    runtime: {
+      async run() {
+        runtimeCalls += 1;
+        if (runtimeCalls <= 16) {
+          return {
+            type: "tool_calls",
+            providerRequestId: `provider-turn-${runtimeCalls}`,
+            usage: {
+              inputTokens: 1,
+              outputTokens: 1,
+              reasoningTokens: 1
+            },
+            calls: [{
+              id: `turn-budget-tool-${runtimeCalls}`,
+              name: "get_candidate_evidence",
+              arguments: { candidateId: "candidate-a" }
+            }]
+          };
+        }
+        return {
+          type: "text",
+          providerRequestId: "provider-turn-17",
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            reasoningTokens: 1
+          },
+          text: "不应启动第十七个模型回合"
+        };
+      }
+    },
+    toolExecutor: {
+      async execute() {
+        realToolExecutions += 1;
+        return {};
+      }
+    },
+    toolAudit: new InMemoryAcquisitionToolAuditLedger(),
+    toolAuditSecret:
+      "pi-agent-turn-budget-secret-at-least-32-characters"
+  });
+
+  await budgetAgent.prompt("验证模型回合预算");
+
+  assert.equal(runtimeCalls, 16);
+  assert.equal(realToolExecutions, 16);
+  assert.equal(
+    budgetAgent.state.errorMessage,
+    "AGENT_TURN_BUDGET_EXHAUSTED"
+  );
+}
+
+{
+  let runtimeCalls = 0;
+  const budgetAgent = createAcquisitionPiAgent({
+    identity: {
+      ownerId: "owner-a",
+      teamId: "team-a",
+      actorId: "owner-a",
+      sessionId: "copilot-token-budget"
+    },
+    snapshot: {
+      jobId: "job-token-budget",
+      connectionId: "connection-a",
+      credentialVersion: 3,
+      provider: "moonshot",
+      model: "kimi-k2.5",
+      promptVersion: "acquisition-copilot-v1",
+      schemaVersion: "copilot-turn.v1",
+      promptHash: "sha256:prompt-acquisition-copilot-v1",
+      schemaHash: "sha256:schema-copilot-turn-v1",
+      capabilitySnapshotHash: "capability-hash-a",
+      baseUrlFingerprint: "base-url-hash-a"
+    },
+    runtime: {
+      async run() {
+        runtimeCalls += 1;
+        return {
+          type: "text",
+          providerRequestId: "provider-token-budget",
+          usage: {
+            inputTokens: 1,
+            outputTokens: 1,
+            reasoningTokens: 200_000
+          },
+          text: "不应接受超过总 token 预算的模型结果"
+        };
+      }
+    },
+    toolExecutor: {
+      async execute() {
+        return {};
+      }
+    },
+    toolAudit: new InMemoryAcquisitionToolAuditLedger(),
+    toolAuditSecret:
+      "pi-agent-token-budget-secret-at-least-32-characters"
+  });
+
+  await budgetAgent.prompt("验证 token 预算");
+
+  assert.equal(runtimeCalls, 1);
+  assert.equal(
+    budgetAgent.state.errorMessage,
+    "AGENT_TOKEN_BUDGET_EXHAUSTED"
+  );
+}
+
 console.log("acquisition Pi agent tests passed");
