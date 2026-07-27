@@ -281,22 +281,6 @@ function latestShardPresentation(
     .at(0);
 }
 
-function isCurrentHighIntent(qualification: QualificationDecision | null) {
-  return qualification?.grade === "S" || qualification?.grade === "A";
-}
-
-function isCurrentValidOpportunity(
-  candidate: AcquisitionCandidate,
-  qualification: QualificationDecision | null
-) {
-  return Boolean(
-    qualification
-    && ["S", "A", "B"].includes(qualification.grade)
-    && qualification.hardGateFailures.length === 0
-    && candidate.status !== "do_not_contact"
-  );
-}
-
 export class AcquisitionRunPresentationService {
   private readonly planRuns: AcquisitionPlanRunRepository;
   private readonly domain: AcquisitionDomainRepository;
@@ -357,12 +341,30 @@ export class AcquisitionRunPresentationService {
       );
     }
 
-    const [shards, runEvents, auditEvents] = await Promise.all([
+    const [shards, runEvents, candidateLinks] = await Promise.all([
       this.planRuns.listRunShards(runId),
       this.planRuns.listRunEvents(runId),
-      this.domain.listAuditEvents(scope, null)
+      this.planRuns.listRunCandidateLinks(runId)
     ]);
-    const discoveries = runEvents
+    const after = cursor
+      ? {
+          createdAt: cursor.createdAt,
+          eventId: cursor.eventId
+        }
+      : undefined;
+    const pageLimit = query.limit + 1;
+    const [discoveredPage, auditPage] = await Promise.all([
+      this.planRuns.listRunCandidateEventsPage(runId, {
+        after,
+        limit: pageLimit
+      }),
+      this.domain.listPresentationAuditEvents(scope, {
+        candidateWatermarks: candidateLinks,
+        after,
+        limit: pageLimit
+      })
+    ]);
+    const presentationEvents: PresentationEventRef[] = discoveredPage
       .map((event) => ({
         event,
         candidateId: discoveredCandidateId(event)
@@ -373,97 +375,37 @@ export class AcquisitionRunPresentationService {
         item.candidateId !== null
         && item.event.ownerId === scope.ownerId
         && item.event.teamId === scope.teamId
-      );
-    const firstDiscoveryByCandidate = new Map<string, PresentationEventRef>();
-    for (const { event, candidateId } of discoveries) {
-      const ref = {
-        eventId: event.id,
-        createdAt: event.at,
-        candidateId
-      };
-      const existing = firstDiscoveryByCandidate.get(candidateId);
-      if (!existing || eventOrder(ref, existing) < 0) {
-        firstDiscoveryByCandidate.set(candidateId, ref);
-      }
-    }
-
-    const candidateSnapshots = new Map<
-      string,
-      {
-        candidate: AcquisitionCandidate;
-        qualification: QualificationDecision | null;
-        financial: FinancialValueDecision | null;
-        sourcePlatforms: string[];
-      }
-    >();
-    await Promise.all([...firstDiscoveryByCandidate.keys()].map(
-      async (candidateId) => {
-        const candidate = await this.domain.findCandidate(scope, candidateId);
-        if (!candidate) return;
-        const qualification = candidate.latestDecisionId
-          ? await this.domain.findQualificationDecision(
-              scope,
-              candidateId,
-              candidate.latestDecisionId
-            )
-          : null;
-        const financial = qualification
-          ? (await this.domain.listFinancialValues(scope, candidateId))
-              .filter((value) =>
-                value.qualificationDecisionId === qualification.id
-              )
-              .sort((left, right) =>
-                left.createdAt.localeCompare(right.createdAt)
-                || left.id.localeCompare(right.id)
-              )
-              .at(-1) ?? null
-          : null;
-        const evidence = await Promise.all(candidate.evidenceIds.map(
-          (evidenceId) => this.domain.findEvidence(scope, evidenceId)
-        ));
-        candidateSnapshots.set(candidateId, {
-          candidate,
-          qualification,
-          financial,
-          sourcePlatforms: [
-            ...new Set(evidence
-              .flatMap((item) => item?.sourcePlatform ?? [])
-            )
-          ].sort()
-        });
-      }
-    ));
-
-    const presentationEvents: PresentationEventRef[] = discoveries
-      .filter(({ candidateId }) => candidateSnapshots.has(candidateId))
+      )
       .map(({ event, candidateId }) => ({
         eventId: event.id,
         createdAt: event.at,
         candidateId
       }));
-    for (const audit of auditEvents) {
-      if (!audit.candidateId || !candidateSnapshots.has(audit.candidateId)) {
-        continue;
-      }
-      const discovery = firstDiscoveryByCandidate.get(audit.candidateId)!;
-      const ref = {
-        eventId: audit.id,
-        createdAt: audit.createdAt,
-        candidateId: audit.candidateId
-      };
-      if (eventOrder(ref, discovery) > 0) {
-        presentationEvents.push(ref);
-      }
-    }
+    presentationEvents.push(...auditPage.flatMap((audit) =>
+      audit.candidateId
+        ? [{
+            eventId: audit.id,
+            createdAt: audit.createdAt,
+            candidateId: audit.candidateId
+          }]
+        : []
+    ));
     presentationEvents.sort(eventOrder);
-    const remaining = cursor
-      ? presentationEvents.filter((event) => eventOrder(event, {
-          createdAt: cursor.createdAt,
-          eventId: cursor.eventId
-        }) > 0)
-      : presentationEvents;
-    const page = remaining.slice(0, query.limit);
-    const hasMore = remaining.length > page.length;
+    const page = presentationEvents.slice(0, query.limit);
+    const hasMore = presentationEvents.length > page.length;
+    const [candidateSummary, snapshots] = await Promise.all([
+      this.domain.getPresentationCandidateSummary(
+        scope,
+        candidateLinks.map((link) => link.candidateId)
+      ),
+      this.domain.getPresentationCandidateSnapshots(
+        scope,
+        [...new Set(page.map((event) => event.candidateId))]
+      )
+    ]);
+    const candidateSnapshots = new Map(
+      snapshots.map((snapshot) => [snapshot.candidate.id, snapshot])
+    );
     const candidateEvents = page.map((event): RunCandidatePresentationEvent => {
       const snapshot = candidateSnapshots.get(event.candidateId)!;
       return {
@@ -487,19 +429,6 @@ export class AcquisitionRunPresentationService {
           `${shard.connection.providerId}\u0000${shard.connection.connectionId}`
         );
       }
-    }
-    const snapshots = [...candidateSnapshots.values()];
-    const highIntent = snapshots.filter((snapshot) =>
-      isCurrentHighIntent(snapshot.qualification)
-    );
-    const revenue = new Map<string, number>();
-    for (const snapshot of highIntent) {
-      if (!snapshot.financial) continue;
-      revenue.set(
-        snapshot.financial.currency,
-        (revenue.get(snapshot.financial.currency) ?? 0)
-          + snapshot.financial.expectedRevenueMinor
-      );
     }
     const last = page.at(-1);
 
@@ -532,26 +461,7 @@ export class AcquisitionRunPresentationService {
           (total, shard) => total + shard.consumedBudget.results,
           0
         ),
-        organizationsFound: snapshots.filter(
-          (snapshot) => snapshot.candidate.profile.kind === "organization"
-        ).length,
-        dedupedCandidates: snapshots.length,
-        validOpportunities: snapshots.filter((snapshot) =>
-          isCurrentValidOpportunity(
-            snapshot.candidate,
-            snapshot.qualification
-          )
-        ).length,
-        highIntent: highIntent.length,
-        financialEvaluatedHighIntentCount: highIntent.filter(
-          (snapshot) => snapshot.financial !== null
-        ).length,
-        financialPendingHighIntentCount: highIntent.filter(
-          (snapshot) => snapshot.financial === null
-        ).length,
-        expectedRevenueByCurrency: [...revenue.entries()]
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([currency, amountMinor]) => ({ currency, amountMinor }))
+        ...candidateSummary
       },
       candidateEvents,
       nextAfter: last

@@ -841,7 +841,17 @@ test("shard completion atomically records deduplicated discovered candidates", a
       duplicateResultCount: 1,
       failedResultCount: 0,
       providers: [],
-      providerFailures: [],
+      providerFailures: [{
+        providerConnectionId: shard.connection.connectionId,
+        provider: "official-search-runtime",
+        errorCode: "PROVIDER_RATE_LIMITED",
+        retryAfterAt: "2026-07-24T00:05:00.000Z"
+      }, {
+        providerConnectionId: "other-connection",
+        provider: "unrelated-provider",
+        errorCode: "UNRELATED_FAILURE",
+        retryAfterAt: null
+      }],
       candidateIds: ["candidate-new", "candidate-existing", "candidate-new"],
       processedCandidateIds: [],
       battleCardCandidateIds: [],
@@ -872,7 +882,9 @@ test("shard completion atomically records deduplicated discovered candidates", a
       rawResultCount: 3,
       acceptedResultCount: 2,
       duplicateResultCount: 1,
-      failedResultCount: 0
+      failedResultCount: 0,
+      errorCode: "PROVIDER_RATE_LIMITED",
+      retryAfterAt: "2026-07-24T00:05:00.000Z"
     }
   );
 });

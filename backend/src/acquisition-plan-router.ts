@@ -318,8 +318,8 @@ export function createAcquisitionPlanRouter(
         idSchema.parse(req.params.id),
         presentationQuerySchema.parse(req.query)
       );
-      setEtag(res, presentation.run);
-      res.json(presentation);
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify(presentation));
     })
   );
 

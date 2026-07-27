@@ -9,9 +9,12 @@ import {
   ensureAcquisitionMysqlSchema
 } from "./acquisition-mysql-repositories.js";
 import type {
+  AcquisitionAuditEvent,
   AcquisitionCandidate,
   DiscoveryEvidence,
-  LeadConversionIntent
+  FinancialValueDecision,
+  LeadConversionIntent,
+  QualificationDecision
 } from "./acquisition-domain.js";
 import type {
   AcquisitionCopilotMessage,
@@ -129,6 +132,76 @@ function evidence(): DiscoveryEvidence {
     accessStatus: "indexed_summary",
     supersedesEvidenceId: null,
     fetchedAt: NOW
+  };
+}
+
+function qualification(): QualificationDecision {
+  return {
+    id: "qualification-1",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    candidateId: "candidate-1",
+    decisionVersion: "qualification-v1",
+    decisionEngine: "rules",
+    grade: "A",
+    score: 88,
+    recommendedAction: "priority_review",
+    evidence: [],
+    positiveSignals: [],
+    negativeSignals: [],
+    reasons: ["公开需求明确"],
+    confidence: 0.9,
+    ruleVersion: "rules-v1",
+    promptVersion: null,
+    modelProvider: null,
+    model: null,
+    hardGateFailures: [],
+    snapshotHash: "sha256:qualification",
+    createdAt: NOW
+  };
+}
+
+function financial(): FinancialValueDecision {
+  return {
+    id: "financial-1",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    candidateId: "candidate-1",
+    qualificationDecisionId: "qualification-1",
+    version: "financial-v1",
+    grade: "A",
+    score: 82,
+    currency: "CNY",
+    expectedRevenueMinor: 100_000,
+    expectedGrossProfitMinor: 50_000,
+    expectedContributionMinor: 25_000,
+    factors: {
+      profitability: 0.8,
+      cashFlow: 0.8,
+      creditQuality: 0.8,
+      repeatPotential: 0.7,
+      referralPotential: 0.6,
+      closeProbability: 0.8
+    },
+    inputSnapshotHash: "sha256:financial",
+    createdAt: NOW
+  };
+}
+
+function domainAudit(): AcquisitionAuditEvent {
+  return {
+    id: "audit-1",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    candidateId: "candidate-1",
+    actorId: "actor-a",
+    eventType: "candidate_updated",
+    fromStatus: "normalized",
+    toStatus: "qualified",
+    resourceId: "candidate-1",
+    idempotencyKey: "audit-key-1",
+    payloadHash: "sha256:audit",
+    createdAt: "2026-07-24T08:01:00.000Z"
   };
 }
 
@@ -1024,6 +1097,169 @@ async function testConversionIntentsAreDurableScopedAndRecoverable() {
   assert.deepEqual(list.values, [10]);
 }
 
+async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
+  const planPool = new FakePool();
+  const planRepository =
+    new MysqlAcquisitionPlanRunRepository(asPool(planPool));
+  planPool.enqueue([]);
+  await planRepository.listRunCandidateLinks("run-1");
+  const links = planPool.calls.at(-1)!;
+  assert.match(
+    links.sql,
+    /JSON_EXTRACT\(e\.payload_json, '\$\.type'\)[\s)]*= 'candidate\.discovered'/
+  );
+  assert.match(links.sql, /ROW_NUMBER\(\) OVER/u);
+  assert.deepEqual(links.values, ["run-1"]);
+
+  planPool.enqueue([]);
+  await planRepository.listRunCandidateEventsPage("run-1", {
+    after: {
+      createdAt: "2026-07-24T08:00:00.000Z",
+      eventId: "event-1"
+    },
+    limit: 3
+  });
+  const eventPage = planPool.calls.at(-1)!;
+  assert.match(eventPage.sql, /occurred_at > \?/);
+  assert.match(eventPage.sql, /occurred_at = \? AND e\.id > \?/);
+  assert.match(eventPage.sql, /LIMIT \?/);
+  assert.deepEqual(eventPage.values, [
+    "run-1",
+    "2026-07-24 08:00:00.000",
+    "2026-07-24 08:00:00.000",
+    "event-1",
+    3
+  ]);
+
+  const domainPool = new FakePool();
+  const domainRepository =
+    new MysqlAcquisitionDomainRepository(asPool(domainPool));
+  domainPool.enqueue([{
+    id: "audit-1",
+    owner_id: "owner-a",
+    team_id: "team-a",
+    payload_json: JSON.stringify(domainAudit())
+  }]);
+  const audits = await domainRepository.listPresentationAuditEvents(
+    { ownerId: "owner-a", teamId: "team-a" },
+    {
+      candidateWatermarks: [{
+        candidateId: "candidate-1",
+        createdAt: "2026-07-24T08:00:00.000Z",
+        eventId: "event-1"
+      }],
+      after: {
+        createdAt: "2026-07-24T08:00:30.000Z",
+        eventId: "event-2"
+      },
+      limit: 2
+    }
+  );
+  assert.deepEqual(audits, [domainAudit()]);
+  const auditPage = domainPool.calls.at(-1)!;
+  assert.match(auditPage.sql, /JSON_TABLE/u);
+  assert.match(auditPage.sql, /a\.owner_id = \? AND a\.team_id = \?/);
+  assert.match(auditPage.sql, /a\.created_at > links\.discovered_at/u);
+  assert.match(auditPage.sql, /a\.created_at > \?/);
+  assert.match(auditPage.sql, /LIMIT \?/);
+  assert.deepEqual(auditPage.values.slice(-6), [
+    "owner-a",
+    "team-a",
+    "2026-07-24 08:00:30.000",
+    "2026-07-24 08:00:30.000",
+    "event-2",
+    2
+  ]);
+
+  const currentCandidate = candidate({
+    latestDecisionId: "qualification-1",
+    latestDecisionVersion: "qualification-v1",
+    evidenceIds: ["evidence-1"]
+  });
+  domainPool.enqueue([{
+    id: currentCandidate.id,
+    owner_id: currentCandidate.ownerId,
+    team_id: currentCandidate.teamId,
+    payload_json: JSON.stringify(currentCandidate)
+  }]);
+  domainPool.enqueue([{
+    id: "qualification-1",
+    owner_id: "owner-a",
+    team_id: "team-a",
+    payload_json: JSON.stringify(qualification())
+  }]);
+  domainPool.enqueue([{
+    id: "financial-1",
+    owner_id: "owner-a",
+    team_id: "team-a",
+    payload_json: JSON.stringify(financial())
+  }]);
+  domainPool.enqueue([{
+    id: "evidence-1",
+    owner_id: "owner-a",
+    team_id: "team-a",
+    payload_json: JSON.stringify(evidence())
+  }]);
+  const snapshots = await domainRepository.getPresentationCandidateSnapshots(
+    { ownerId: "owner-a", teamId: "team-a" },
+    ["candidate-1"]
+  );
+  assert.deepEqual(snapshots, [{
+    candidate: currentCandidate,
+    qualification: qualification(),
+    financial: financial(),
+    sourcePlatforms: ["baidu"]
+  }]);
+  const batchCalls = domainPool.calls.slice(-4);
+  assert.equal(batchCalls.length, 4);
+  assert.ok(batchCalls.every((call) => /JSON_TABLE/u.test(call.sql)));
+  assert.ok(batchCalls.every((call) =>
+    /owner_id = \? AND .*team_id = \?/u.test(call.sql)
+  ));
+
+  domainPool.enqueue([{
+    revenue_currency: null,
+    deduped_count: 1,
+    organization_count: 0,
+    valid_count: 1,
+    high_intent_count: 1,
+    financial_evaluated_count: 0,
+    financial_pending_count: 1,
+    expected_revenue_minor: 0
+  }, {
+    revenue_currency: "CNY",
+    deduped_count: 1,
+    organization_count: 1,
+    valid_count: 1,
+    high_intent_count: 1,
+    financial_evaluated_count: 1,
+    financial_pending_count: 0,
+    expected_revenue_minor: 100_000
+  }]);
+  assert.deepEqual(
+    await domainRepository.getPresentationCandidateSummary(
+      { ownerId: "owner-a", teamId: "team-a" },
+      ["candidate-1", "candidate-2"]
+    ),
+    {
+      organizationsFound: 1,
+      dedupedCandidates: 2,
+      validOpportunities: 2,
+      highIntent: 2,
+      financialEvaluatedHighIntentCount: 1,
+      financialPendingHighIntentCount: 1,
+      expectedRevenueByCurrency: [{
+        currency: "CNY",
+        amountMinor: 100_000
+      }]
+    }
+  );
+  const summaryCall = domainPool.calls.at(-1)!;
+  assert.match(summaryCall.sql, /JSON_TABLE/u);
+  assert.match(summaryCall.sql, /GROUP BY revenue_currency/u);
+  assert.deepEqual(summaryCall.values.slice(-2), ["owner-a", "team-a"]);
+}
+
 async function run() {
   await testSchemaIsCompleteAndHasNoSecretColumns();
   await testEnsureSchemaExecutesEveryStatement();
@@ -1046,6 +1282,7 @@ async function run() {
   await testPlanRunTransactionCommitsNewRowsWithoutOverwriteUpsert();
   await testPlanRunTransactionLocksAndRollsBack();
   await testConversionIntentsAreDurableScopedAndRecoverable();
+  await testPresentationReadsAreTenantBoundedPagedAndBatched();
   console.log("acquisition mysql repositories tests passed");
 }
 

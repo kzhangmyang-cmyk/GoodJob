@@ -20,7 +20,11 @@ import type {
   AcquisitionCandidateListPage,
   AcquisitionCandidateListQuery,
   AcquisitionDataScope,
-  AcquisitionDomainRepository
+  AcquisitionDomainRepository,
+  AcquisitionPresentationCandidateSnapshot,
+  AcquisitionPresentationCandidateSummary,
+  AcquisitionPresentationEventCursor,
+  AcquisitionPresentationEventWatermark
 } from "./acquisition-domain-repository.js";
 import type {
   AcquisitionCopilotIdempotencyRecord,
@@ -41,7 +45,9 @@ import type {
   AcquisitionPlanRunRepositoryTransaction,
   AcquisitionPlanVersion,
   AcquisitionRun,
+  AcquisitionRunCandidateLink,
   AcquisitionRunEvent,
+  AcquisitionRunEventPageQuery,
   AcquisitionUsageIdempotencyRecord
 } from "./acquisition-plan-run-repository.js";
 import {
@@ -1425,6 +1431,344 @@ implements AcquisitionDomainRepository {
       ownedPayload<DomainAuditEvent>(row, "domain_audit"));
   }
 
+  async listPresentationAuditEvents(
+    scope: AcquisitionDataScope,
+    query: {
+      candidateWatermarks: AcquisitionPresentationEventWatermark[];
+      after?: AcquisitionPresentationEventCursor;
+      limit: number;
+    }
+  ) {
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1) {
+      throw new Error("PRESENTATION_AUDIT_LIMIT_INVALID");
+    }
+    if (query.candidateWatermarks.length === 0) return [];
+    const cursorClause = query.after
+      ? ` AND (
+            a.created_at > ?
+            OR (a.created_at = ? AND a.id > ?)
+          )`
+      : "";
+    const values: unknown[] = [
+      json(query.candidateWatermarks),
+      scope.ownerId,
+      scope.teamId
+    ];
+    if (query.after) {
+      values.push(
+        mysqlDate(query.after.createdAt),
+        mysqlDate(query.after.createdAt),
+        query.after.eventId
+      );
+    }
+    values.push(query.limit);
+    const result = await rows(
+      this.source(),
+      `SELECT a.*
+       FROM acquisition_domain_audit_events a
+       INNER JOIN JSON_TABLE(
+         ?,
+         '$[*]' COLUMNS(
+           candidate_id VARCHAR(120) PATH '$.candidateId',
+           discovered_at DATETIME(3) PATH '$.createdAt',
+           event_id VARCHAR(160) PATH '$.eventId'
+         )
+       ) links
+         ON links.candidate_id = a.candidate_id
+       WHERE a.owner_id = ? AND a.team_id = ?
+         AND (
+           a.created_at > links.discovered_at
+           OR (
+             a.created_at = links.discovered_at
+             AND a.id > links.event_id
+           )
+         )${cursorClause}
+       ORDER BY a.created_at, a.id
+       LIMIT ?`,
+      values
+    );
+    return result.map((row) =>
+      ownedPayload<DomainAuditEvent>(row, "domain_audit"));
+  }
+
+  async getPresentationCandidateSnapshots(
+    scope: AcquisitionDataScope,
+    candidateIds: string[]
+  ): Promise<AcquisitionPresentationCandidateSnapshot[]> {
+    const ids = [...new Set(candidateIds)];
+    if (ids.length === 0) return [];
+    const idSetJson = json(ids.map((candidateId) => ({ candidateId })));
+    const candidates = (await rows(
+      this.source(),
+      `SELECT c.*
+       FROM acquisition_candidates c
+       INNER JOIN JSON_TABLE(
+         ?,
+         '$[*]' COLUMNS(
+           candidate_id VARCHAR(120) PATH '$.candidateId'
+         )
+       ) ids ON ids.candidate_id = c.id
+       WHERE c.owner_id = ? AND c.team_id = ?`,
+      [idSetJson, scope.ownerId, scope.teamId]
+    )).map((row) =>
+      ownedPayload<AcquisitionCandidate>(row, "candidate"));
+    const qualifications = (await rows(
+      this.source(),
+      `SELECT q.*
+       FROM acquisition_qualification_decisions q
+       INNER JOIN JSON_TABLE(
+         ?,
+         '$[*]' COLUMNS(
+           candidate_id VARCHAR(120) PATH '$.candidateId'
+         )
+       ) ids ON ids.candidate_id = q.candidate_id
+       WHERE q.owner_id = ? AND q.team_id = ?`,
+      [idSetJson, scope.ownerId, scope.teamId]
+    )).map((row) =>
+      ownedPayload<QualificationDecision>(row, "qualification"));
+    const financialValues = (await rows(
+      this.source(),
+      `SELECT f.*
+       FROM acquisition_financial_values f
+       INNER JOIN JSON_TABLE(
+         ?,
+         '$[*]' COLUMNS(
+           candidate_id VARCHAR(120) PATH '$.candidateId'
+         )
+       ) ids ON ids.candidate_id = f.candidate_id
+       WHERE f.owner_id = ? AND f.team_id = ?`,
+      [idSetJson, scope.ownerId, scope.teamId]
+    )).map((row) =>
+      ownedPayload<FinancialValueDecision>(row, "financial_value"));
+    const evidenceIds = [
+      ...new Set(candidates.flatMap((candidate) => candidate.evidenceIds))
+    ];
+    const evidence = evidenceIds.length === 0
+      ? []
+      : (await rows(
+          this.source(),
+          `SELECT e.*
+           FROM acquisition_discovery_evidence e
+           INNER JOIN JSON_TABLE(
+             ?,
+             '$[*]' COLUMNS(
+               evidence_id VARCHAR(120) PATH '$.evidenceId'
+             )
+           ) ids ON ids.evidence_id = e.id
+           WHERE e.owner_id = ? AND e.team_id = ?`,
+          [
+            json(evidenceIds.map((evidenceId) => ({ evidenceId }))),
+            scope.ownerId,
+            scope.teamId
+          ]
+        )).map((row) =>
+          ownedPayload<DiscoveryEvidence>(row, "evidence"));
+    const evidenceById = new Map(evidence.map((item) => [item.id, item]));
+    const qualificationById = new Map(
+      qualifications.map((item) => [item.id, item])
+    );
+    return candidates.map((candidate) => {
+      const qualification = candidate.latestDecisionId
+        ? qualificationById.get(candidate.latestDecisionId) ?? null
+        : null;
+      const financial = qualification
+        ? financialValues
+            .filter((item) =>
+              item.candidateId === candidate.id
+              && item.qualificationDecisionId === qualification.id
+            )
+            .sort((left, right) =>
+              left.createdAt.localeCompare(right.createdAt)
+              || left.id.localeCompare(right.id)
+            )
+            .at(-1) ?? null
+        : null;
+      return {
+        candidate,
+        qualification,
+        financial,
+        sourcePlatforms: [
+          ...new Set(candidate.evidenceIds.flatMap((evidenceId) => {
+            const item = evidenceById.get(evidenceId);
+            return item ? [item.sourcePlatform] : [];
+          }))
+        ].sort()
+      };
+    });
+  }
+
+  async getPresentationCandidateSummary(
+    scope: AcquisitionDataScope,
+    candidateIds: string[]
+  ): Promise<AcquisitionPresentationCandidateSummary> {
+    const ids = [...new Set(candidateIds)];
+    if (ids.length === 0) {
+      return {
+        organizationsFound: 0,
+        dedupedCandidates: 0,
+        validOpportunities: 0,
+        highIntent: 0,
+        financialEvaluatedHighIntentCount: 0,
+        financialPendingHighIntentCount: 0,
+        expectedRevenueByCurrency: []
+      };
+    }
+    const result = await rows(
+      this.source(),
+      `WITH candidate_ids AS (
+         SELECT candidate_id
+         FROM JSON_TABLE(
+           ?,
+           '$[*]' COLUMNS(
+             candidate_id VARCHAR(120) PATH '$.candidateId'
+           )
+         ) ids
+       ),
+       current_values AS (
+         SELECT
+           c.id AS candidate_id,
+           c.payload_json AS candidate_json,
+           q.id AS qualification_id,
+           q.payload_json AS qualification_json,
+           f.id AS financial_id,
+           f.payload_json AS financial_json,
+           ROW_NUMBER() OVER (
+             PARTITION BY c.id
+             ORDER BY f.created_at DESC, f.id DESC
+           ) AS financial_row
+         FROM candidate_ids ids
+         INNER JOIN acquisition_candidates c
+           ON c.id = ids.candidate_id
+          AND c.owner_id = ?
+          AND c.team_id = ?
+         LEFT JOIN acquisition_qualification_decisions q
+           ON q.id = JSON_UNQUOTE(
+             JSON_EXTRACT(c.payload_json, '$.latestDecisionId')
+           )
+          AND q.candidate_id = c.id
+          AND q.owner_id = c.owner_id
+          AND q.team_id = c.team_id
+         LEFT JOIN acquisition_financial_values f
+           ON f.candidate_id = c.id
+          AND f.owner_id = c.owner_id
+          AND f.team_id = c.team_id
+          AND JSON_UNQUOTE(
+            JSON_EXTRACT(
+              f.payload_json,
+              '$.qualificationDecisionId'
+            )
+          ) = q.id
+       ),
+       latest_values AS (
+         SELECT
+           *,
+           JSON_UNQUOTE(
+             JSON_EXTRACT(qualification_json, '$.grade')
+           ) AS qualification_grade,
+           CASE
+             WHEN financial_id IS NOT NULL
+              AND JSON_UNQUOTE(
+                JSON_EXTRACT(qualification_json, '$.grade')
+              ) IN ('S', 'A')
+             THEN JSON_UNQUOTE(
+               JSON_EXTRACT(financial_json, '$.currency')
+             )
+             ELSE NULL
+           END AS revenue_currency
+         FROM current_values
+         WHERE financial_row = 1
+       )
+       SELECT
+         revenue_currency,
+         COUNT(*) AS deduped_count,
+         SUM(
+           JSON_UNQUOTE(
+             JSON_EXTRACT(candidate_json, '$.profile.kind')
+           ) = 'organization'
+         ) AS organization_count,
+         SUM(
+           qualification_grade IN ('S', 'A', 'B')
+           AND JSON_LENGTH(
+             JSON_EXTRACT(
+               qualification_json,
+               '$.hardGateFailures'
+             )
+           ) = 0
+           AND JSON_UNQUOTE(
+             JSON_EXTRACT(candidate_json, '$.status')
+           ) <> 'do_not_contact'
+         ) AS valid_count,
+         SUM(qualification_grade IN ('S', 'A')) AS high_intent_count,
+         SUM(
+           qualification_grade IN ('S', 'A')
+           AND financial_id IS NOT NULL
+         ) AS financial_evaluated_count,
+         SUM(
+           qualification_grade IN ('S', 'A')
+           AND financial_id IS NULL
+         ) AS financial_pending_count,
+         SUM(
+           CASE
+             WHEN revenue_currency IS NOT NULL
+             THEN CAST(
+               JSON_UNQUOTE(
+                 JSON_EXTRACT(
+                   financial_json,
+                   '$.expectedRevenueMinor'
+                 )
+               ) AS SIGNED
+             )
+             ELSE 0
+           END
+         ) AS expected_revenue_minor
+       FROM latest_values
+       GROUP BY revenue_currency
+       ORDER BY revenue_currency`,
+      [
+        json(ids.map((candidateId) => ({ candidateId }))),
+        scope.ownerId,
+        scope.teamId
+      ]
+    );
+    const totals = result.reduce<Omit<
+      AcquisitionPresentationCandidateSummary,
+      "expectedRevenueByCurrency"
+    >>((summary, row) => ({
+      organizationsFound:
+        summary.organizationsFound + Number(row.organization_count ?? 0),
+      dedupedCandidates:
+        summary.dedupedCandidates + Number(row.deduped_count ?? 0),
+      validOpportunities:
+        summary.validOpportunities + Number(row.valid_count ?? 0),
+      highIntent:
+        summary.highIntent + Number(row.high_intent_count ?? 0),
+      financialEvaluatedHighIntentCount:
+        summary.financialEvaluatedHighIntentCount
+        + Number(row.financial_evaluated_count ?? 0),
+      financialPendingHighIntentCount:
+        summary.financialPendingHighIntentCount
+        + Number(row.financial_pending_count ?? 0)
+    }), {
+      organizationsFound: 0,
+      dedupedCandidates: 0,
+      validOpportunities: 0,
+      highIntent: 0,
+      financialEvaluatedHighIntentCount: 0,
+      financialPendingHighIntentCount: 0
+    });
+    return {
+      ...totals,
+      expectedRevenueByCurrency: result.flatMap((row) =>
+        typeof row.revenue_currency === "string" && row.revenue_currency
+          ? [{
+              currency: row.revenue_currency,
+              amountMinor: Number(row.expected_revenue_minor ?? 0)
+            }]
+          : []
+      )
+    };
+  }
+
   async findIdempotency(
     scope: AcquisitionDataScope,
     operation: string,
@@ -2570,6 +2914,96 @@ implements AcquisitionPlanRunRepository {
        WHERE e.run_id = ?
        ORDER BY e.revision, e.occurred_at, e.id`,
       [runId]
+    );
+    return result.map((row) =>
+      ownedPayload<AcquisitionRunEvent>(row, "run_event"));
+  }
+
+  async listRunCandidateLinks(
+    runId: string
+  ): Promise<AcquisitionRunCandidateLink[]> {
+    const result = await rows(
+      this.pool,
+      `SELECT candidate_id, occurred_at, event_id
+       FROM (
+         SELECT
+           JSON_UNQUOTE(
+             JSON_EXTRACT(e.payload_json, '$.data.candidateId')
+           ) AS candidate_id,
+           e.occurred_at,
+           e.id AS event_id,
+           ROW_NUMBER() OVER (
+             PARTITION BY JSON_UNQUOTE(
+               JSON_EXTRACT(e.payload_json, '$.data.candidateId')
+             )
+             ORDER BY e.occurred_at, e.id
+           ) AS candidate_row
+         FROM acquisition_run_events e
+         INNER JOIN acquisition_runs r
+           ON r.id = e.run_id
+          AND r.owner_id = e.owner_id
+          AND r.team_id = e.team_id
+         WHERE e.run_id = ?
+           AND JSON_UNQUOTE(
+             JSON_EXTRACT(e.payload_json, '$.type')
+           ) = 'candidate.discovered'
+       ) discovered
+       WHERE candidate_row = 1
+       ORDER BY occurred_at, event_id`,
+      [runId]
+    );
+    return result.map((row) => ({
+      candidateId: requiredString(
+        row.candidate_id,
+        "candidate_id",
+        "run_candidate_link"
+      ),
+      createdAt: mysqlIso(row.occurred_at, "run_candidate_link"),
+      eventId: requiredString(
+        row.event_id,
+        "event_id",
+        "run_candidate_link"
+      )
+    }));
+  }
+
+  async listRunCandidateEventsPage(
+    runId: string,
+    query: AcquisitionRunEventPageQuery
+  ) {
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1) {
+      throw new Error("RUN_CANDIDATE_EVENT_LIMIT_INVALID");
+    }
+    const cursorClause = query.after
+      ? ` AND (
+            e.occurred_at > ?
+            OR (e.occurred_at = ? AND e.id > ?)
+          )`
+      : "";
+    const values: unknown[] = [runId];
+    if (query.after) {
+      values.push(
+        mysqlDate(query.after.createdAt),
+        mysqlDate(query.after.createdAt),
+        query.after.eventId
+      );
+    }
+    values.push(query.limit);
+    const result = await rows(
+      this.pool,
+      `SELECT e.*
+       FROM acquisition_run_events e
+       INNER JOIN acquisition_runs r
+         ON r.id = e.run_id
+        AND r.owner_id = e.owner_id
+        AND r.team_id = e.team_id
+       WHERE e.run_id = ?
+         AND JSON_UNQUOTE(
+           JSON_EXTRACT(e.payload_json, '$.type')
+         ) = 'candidate.discovered'${cursorClause}
+       ORDER BY e.occurred_at, e.id
+       LIMIT ?`,
+      values
     );
     return result.map((row) =>
       ownedPayload<AcquisitionRunEvent>(row, "run_event"));

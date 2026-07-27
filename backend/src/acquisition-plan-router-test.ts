@@ -271,6 +271,11 @@ test("run presentation GET validates pagination and binds the request identity",
     );
     assert.equal(defaultPage.response.status, 200);
     assert.equal(defaultPage.json.run.id, "run-presentation");
+    assert.equal(
+      defaultPage.response.headers.get("etag"),
+      null,
+      "run ETag must not represent a presentation that can change via audit"
+    );
     assert.deepEqual(app.presentationRequests[0], {
       ownerId: OWNER,
       teamId: TEAM,
@@ -292,6 +297,19 @@ test("run presentation GET validates pagination and binds the request identity",
       after: "cursor-1",
       limit: 100
     });
+
+    const changedPresentation = await app.request(
+      "/api/v1/acquisition/runs/run-presentation/presentation?limit=50",
+      {
+        headers: { "If-None-Match": '"run-presentation:1"' }
+      }
+    );
+    assert.equal(
+      changedPresentation.response.status,
+      200,
+      "a run ETag must not turn a changed presentation into 304"
+    );
+    assert.equal(changedPresentation.response.headers.get("etag"), null);
 
     for (const query of [
       "?limit=0",

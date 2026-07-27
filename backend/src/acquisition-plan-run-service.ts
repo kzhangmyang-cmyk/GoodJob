@@ -1382,6 +1382,10 @@ export class AcquisitionPlanRunService {
         );
       }
       const now = this.now();
+      const providerFailure = input.presentation?.providerFailures.find(
+        (failure) =>
+          failure.providerConnectionId === shard.connection.connectionId
+      );
       const updatedShard: AcquisitionOperationShard = {
         ...shard,
         status: input.status,
@@ -1413,7 +1417,13 @@ export class AcquisitionPlanRunService {
               rawResultCount: input.presentation.rawResultCount,
               acceptedResultCount: input.presentation.acceptedResultCount,
               duplicateResultCount: input.presentation.duplicateResultCount,
-              failedResultCount: input.presentation.failedResultCount
+              failedResultCount: input.presentation.failedResultCount,
+              ...(providerFailure
+                ? {
+                    errorCode: providerFailure.errorCode,
+                    retryAfterAt: providerFailure.retryAfterAt
+                  }
+                : {})
             }
           : { evidenceCount: input.evidenceCount },
         shard.id
@@ -1457,7 +1467,13 @@ export class AcquisitionPlanRunService {
               rawResultCount: input.presentation.rawResultCount,
               acceptedResultCount: input.presentation.acceptedResultCount,
               duplicateResultCount: input.presentation.duplicateResultCount,
-              failedResultCount: input.presentation.failedResultCount
+              failedResultCount: input.presentation.failedResultCount,
+              ...(providerFailure
+                ? {
+                    errorCode: providerFailure.errorCode,
+                    retryAfterAt: providerFailure.retryAfterAt
+                  }
+                : {})
             }
           : { resultStatus: input.status, evidenceCount: input.evidenceCount }
       );

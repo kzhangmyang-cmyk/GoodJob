@@ -35,6 +35,37 @@ export interface AcquisitionCandidateListPage {
   snapshot: string;
 }
 
+export interface AcquisitionPresentationEventWatermark {
+  candidateId: string;
+  createdAt: string;
+  eventId: string;
+}
+
+export interface AcquisitionPresentationEventCursor {
+  createdAt: string;
+  eventId: string;
+}
+
+export interface AcquisitionPresentationCandidateSnapshot {
+  candidate: AcquisitionCandidate;
+  qualification: QualificationDecision | null;
+  financial: FinancialValueDecision | null;
+  sourcePlatforms: string[];
+}
+
+export interface AcquisitionPresentationCandidateSummary {
+  organizationsFound: number;
+  dedupedCandidates: number;
+  validOpportunities: number;
+  highIntent: number;
+  financialEvaluatedHighIntentCount: number;
+  financialPendingHighIntentCount: number;
+  expectedRevenueByCurrency: Array<{
+    currency: string;
+    amountMinor: number;
+  }>;
+}
+
 export interface AcquisitionDomainRepository {
   transaction<T>(work: () => Promise<T>): Promise<T>;
   findEvidence(
@@ -115,6 +146,22 @@ export interface AcquisitionDomainRepository {
     scope: AcquisitionDataScope,
     candidateId: string | null
   ): Promise<AcquisitionAuditEvent[]>;
+  listPresentationAuditEvents(
+    scope: AcquisitionDataScope,
+    query: {
+      candidateWatermarks: AcquisitionPresentationEventWatermark[];
+      after?: AcquisitionPresentationEventCursor;
+      limit: number;
+    }
+  ): Promise<AcquisitionAuditEvent[]>;
+  getPresentationCandidateSnapshots(
+    scope: AcquisitionDataScope,
+    candidateIds: string[]
+  ): Promise<AcquisitionPresentationCandidateSnapshot[]>;
+  getPresentationCandidateSummary(
+    scope: AcquisitionDataScope,
+    candidateIds: string[]
+  ): Promise<AcquisitionPresentationCandidateSummary>;
   findIdempotency(
     scope: AcquisitionDataScope,
     operation: string,
@@ -567,6 +614,158 @@ implements AcquisitionDomainRepository {
         && (candidateId === null || item.candidateId === candidateId)
       )
       .map(copy);
+  }
+
+  async listPresentationAuditEvents(
+    scope: AcquisitionDataScope,
+    query: {
+      candidateWatermarks: AcquisitionPresentationEventWatermark[];
+      after?: AcquisitionPresentationEventCursor;
+      limit: number;
+    }
+  ) {
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1) {
+      throw new Error("PRESENTATION_AUDIT_LIMIT_INVALID");
+    }
+    const watermarks = new Map(query.candidateWatermarks.map((item) => [
+      item.candidateId,
+      item
+    ]));
+    const after = query.after;
+    return this.auditEvents
+      .filter((item) => {
+        if (!belongs(item, scope) || !item.candidateId) return false;
+        const discovered = watermarks.get(item.candidateId);
+        if (!discovered) return false;
+        const afterDiscovery =
+          item.createdAt > discovered.createdAt
+          || (
+            item.createdAt === discovered.createdAt
+            && item.id > discovered.eventId
+          );
+        const afterCursor = !after
+          || item.createdAt > after.createdAt
+          || (
+            item.createdAt === after.createdAt
+            && item.id > after.eventId
+          );
+        return afterDiscovery && afterCursor;
+      })
+      .sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id)
+      )
+      .slice(0, query.limit)
+      .map(copy);
+  }
+
+  async getPresentationCandidateSnapshots(
+    scope: AcquisitionDataScope,
+    candidateIds: string[]
+  ): Promise<AcquisitionPresentationCandidateSnapshot[]> {
+    const uniqueIds = [...new Set(candidateIds)];
+    return uniqueIds.flatMap((candidateId) => {
+      const candidate = this.candidates.get(candidateId);
+      if (!candidate || !belongs(candidate, scope)) return [];
+      const qualification = candidate.latestDecisionId
+        ? this.qualificationDecisions.find((item) =>
+            item.id === candidate.latestDecisionId
+            && item.candidateId === candidateId
+            && belongs(item, scope)
+          ) ?? null
+        : null;
+      const financial = qualification
+        ? this.financialValues
+            .filter((item) =>
+              item.candidateId === candidateId
+              && item.qualificationDecisionId === qualification.id
+              && belongs(item, scope)
+            )
+            .sort((left, right) =>
+              left.createdAt.localeCompare(right.createdAt)
+              || left.id.localeCompare(right.id)
+            )
+            .at(-1) ?? null
+        : null;
+      const sourcePlatforms = [
+        ...new Set(candidate.evidenceIds.flatMap((evidenceId) => {
+          const item = this.evidence.get(evidenceId);
+          return item && belongs(item, scope) ? [item.sourcePlatform] : [];
+        }))
+      ].sort();
+      return [{
+        candidate: copy(candidate),
+        qualification: qualification ? copy(qualification) : null,
+        financial: financial ? copy(financial) : null,
+        sourcePlatforms
+      }];
+    });
+  }
+
+  async getPresentationCandidateSummary(
+    scope: AcquisitionDataScope,
+    candidateIds: string[]
+  ): Promise<AcquisitionPresentationCandidateSummary> {
+    const candidates = [...new Set(candidateIds)].flatMap((candidateId) => {
+      const candidate = this.candidates.get(candidateId);
+      if (!candidate || !belongs(candidate, scope)) return [];
+      const qualification = candidate.latestDecisionId
+        ? this.qualificationDecisions.find((item) =>
+            item.id === candidate.latestDecisionId
+            && item.candidateId === candidateId
+            && belongs(item, scope)
+          ) ?? null
+        : null;
+      const financial = qualification
+        ? this.financialValues
+            .filter((item) =>
+              item.candidateId === candidateId
+              && item.qualificationDecisionId === qualification.id
+              && belongs(item, scope)
+            )
+            .sort((left, right) =>
+              left.createdAt.localeCompare(right.createdAt)
+              || left.id.localeCompare(right.id)
+            )
+            .at(-1) ?? null
+        : null;
+      return [{ candidate, qualification, financial }];
+    });
+    const highIntent = candidates.filter((item) =>
+      item.qualification?.grade === "S"
+      || item.qualification?.grade === "A"
+    );
+    const revenue = new Map<string, number>();
+    for (const item of highIntent) {
+      if (!item.financial) continue;
+      revenue.set(
+        item.financial.currency,
+        (revenue.get(item.financial.currency) ?? 0)
+          + item.financial.expectedRevenueMinor
+      );
+    }
+    return {
+      organizationsFound: candidates.filter(
+        (item) => item.candidate.profile.kind === "organization"
+      ).length,
+      dedupedCandidates: candidates.length,
+      validOpportunities: candidates.filter((item) =>
+        item.qualification
+        && ["S", "A", "B"].includes(item.qualification.grade)
+        && item.qualification.hardGateFailures.length === 0
+        && item.candidate.status !== "do_not_contact"
+      ).length,
+      highIntent: highIntent.length,
+      financialEvaluatedHighIntentCount: highIntent.filter(
+        (item) => item.financial !== null
+      ).length,
+      financialPendingHighIntentCount: highIntent.filter(
+        (item) => item.financial === null
+      ).length,
+      expectedRevenueByCurrency: [...revenue.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([currency, amountMinor]) => ({ currency, amountMinor }))
+    };
   }
 
   async findIdempotency(

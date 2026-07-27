@@ -468,13 +468,17 @@ test("presentation pages authoritative candidate upserts and computes current me
   assert.ok(first.nextAfter);
 
   const replay = await service.get(scope, "run-1", {
-    after: "",
+    after: first.nextAfter,
+    limit: 2
+  });
+  const sameCursorReplay = await service.get(scope, "run-1", {
+    after: first.nextAfter,
     limit: 2
   });
   assert.deepEqual(
+    sameCursorReplay.candidateEvents.map((event) => event.eventId),
     replay.candidateEvents.map((event) => event.eventId),
-    first.candidateEvents.map((event) => event.eventId),
-    "replaying the same page must remain an idempotent candidate merge"
+    "replaying the same signed cursor must remain an idempotent merge"
   );
 
   const second = await service.get(scope, "run-1", {
@@ -542,6 +546,93 @@ test("presentation pages authoritative candidate upserts and computes current me
   assert.deepEqual(candidateOne?.sourcePlatforms, ["baidu", "tavily"]);
   assert.equal(candidateOne?.financialValue?.currency, "CNY");
   assert.equal(candidateTwo?.financialValue, null);
+});
+
+test("presentation uses bounded event pages and batch candidate snapshots", async () => {
+  const base = await fixture();
+  const domainCalls = {
+    auditPages: [] as Array<{ limit: number }>,
+    snapshotBatches: [] as string[][],
+    summaryBatches: [] as string[][]
+  };
+  const runCalls: Array<{ limit: number }> = [];
+  const domain = new Proxy(base.domain, {
+    get(target, property, receiver) {
+      if (property === "listAuditEvents") {
+        return async () => {
+          throw new Error("UNBOUNDED_TENANT_AUDIT_READ");
+        };
+      }
+      if (property === "findCandidate"
+        || property === "findQualificationDecision"
+        || property === "listFinancialValues"
+        || property === "findEvidence") {
+        return async () => {
+          throw new Error("PER_CANDIDATE_PRESENTATION_READ");
+        };
+      }
+      if (property === "listPresentationAuditEvents") {
+        return async (readScope: typeof scope, query: { limit: number }) => {
+          domainCalls.auditPages.push({ limit: query.limit });
+          return (target as any).listPresentationAuditEvents(
+            readScope,
+            query
+          );
+        };
+      }
+      if (property === "getPresentationCandidateSnapshots") {
+        return async (readScope: typeof scope, candidateIds: string[]) => {
+          domainCalls.snapshotBatches.push([...candidateIds]);
+          return (target as any).getPresentationCandidateSnapshots(
+            readScope,
+            candidateIds
+          );
+        };
+      }
+      if (property === "getPresentationCandidateSummary") {
+        return async (readScope: typeof scope, candidateIds: string[]) => {
+          domainCalls.summaryBatches.push([...candidateIds]);
+          return (target as any).getPresentationCandidateSummary(
+            readScope,
+            candidateIds
+          );
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  const planRuns = new Proxy(base.planRuns, {
+    get(target, property, receiver) {
+      if (property === "listRunCandidateEventsPage") {
+        return async (runId: string, query: { limit: number }) => {
+          runCalls.push({ limit: query.limit });
+          return (target as any).listRunCandidateEventsPage(runId, query);
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  const service = new AcquisitionRunPresentationService({
+    planRunRepository: planRuns,
+    domainRepository: domain,
+    cursorSecret: CURSOR_SECRET
+  });
+
+  await service.get(scope, "run-1", { limit: 1 });
+
+  assert.deepEqual(runCalls, [{ limit: 2 }]);
+  assert.deepEqual(domainCalls.auditPages, [{ limit: 2 }]);
+  assert.equal(domainCalls.snapshotBatches.length, 1);
+  assert.deepEqual(domainCalls.snapshotBatches[0], ["candidate-1"]);
+  assert.deepEqual(
+    new Set(domainCalls.summaryBatches[0]),
+    new Set([
+      "candidate-1",
+      "candidate-2",
+      "candidate-3",
+      "candidate-4"
+    ])
+  );
 });
 
 test("presentation cursor rejects tampering and every identity boundary", async () => {

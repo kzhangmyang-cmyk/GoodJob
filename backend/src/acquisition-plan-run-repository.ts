@@ -216,6 +216,20 @@ export interface AcquisitionRunEvent {
   data: Record<string, unknown>;
 }
 
+export interface AcquisitionRunCandidateLink {
+  candidateId: string;
+  createdAt: string;
+  eventId: string;
+}
+
+export interface AcquisitionRunEventPageQuery {
+  after?: {
+    createdAt: string;
+    eventId: string;
+  };
+  limit: number;
+}
+
 export interface AcquisitionAuditEvent {
   id: string;
   ownerId: string;
@@ -339,6 +353,13 @@ export interface AcquisitionPlanRunRepository {
   listRunShards(runId: string): Promise<AcquisitionOperationShard[]>;
   listPlanEvents(planId: string): Promise<AcquisitionPlanEvent[]>;
   listRunEvents(runId: string): Promise<AcquisitionRunEvent[]>;
+  listRunCandidateLinks(
+    runId: string
+  ): Promise<AcquisitionRunCandidateLink[]>;
+  listRunCandidateEventsPage(
+    runId: string,
+    query: AcquisitionRunEventPageQuery
+  ): Promise<AcquisitionRunEvent[]>;
   listRunExecutionIntents(
     runId: string
   ): Promise<AcquisitionExecutionIntent[]>;
@@ -502,6 +523,60 @@ implements AcquisitionPlanRunRepository {
     const state = await this.snapshot();
     return state.runEvents
       .filter((event) => event.runId === runId)
+      .map(clone);
+  }
+
+  async listRunCandidateLinks(runId: string) {
+    const state = await this.snapshot();
+    const links = new Map<string, AcquisitionRunCandidateLink>();
+    for (const event of state.runEvents
+      .filter((item) =>
+        item.runId === runId && item.type === "candidate.discovered"
+      )
+      .sort((left, right) =>
+        left.at.localeCompare(right.at) || left.id.localeCompare(right.id)
+      )) {
+      const candidateId = event.data.candidateId;
+      if (
+        typeof candidateId !== "string"
+        || !candidateId
+        || links.has(candidateId)
+      ) {
+        continue;
+      }
+      links.set(candidateId, {
+        candidateId,
+        createdAt: event.at,
+        eventId: event.id
+      });
+    }
+    return [...links.values()].map(clone);
+  }
+
+  async listRunCandidateEventsPage(
+    runId: string,
+    query: AcquisitionRunEventPageQuery
+  ) {
+    if (!Number.isSafeInteger(query.limit) || query.limit < 1) {
+      throw new Error("RUN_CANDIDATE_EVENT_LIMIT_INVALID");
+    }
+    const state = await this.snapshot();
+    return state.runEvents
+      .filter((event) => {
+        if (event.runId !== runId || event.type !== "candidate.discovered") {
+          return false;
+        }
+        if (!query.after) return true;
+        return event.at > query.after.createdAt
+          || (
+            event.at === query.after.createdAt
+            && event.id > query.after.eventId
+          );
+      })
+      .sort((left, right) =>
+        left.at.localeCompare(right.at) || left.id.localeCompare(right.id)
+      )
+      .slice(0, query.limit)
       .map(clone);
   }
 

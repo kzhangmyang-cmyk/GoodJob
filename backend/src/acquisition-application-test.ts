@@ -862,12 +862,14 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
   const fixture = isolatedMemoryStore();
   const search = fakeSearchPort();
   const model = fakeGateway();
+  const domainRepository = new InMemoryAcquisitionDomainRepository();
   let sequence = 0;
   let timestamp = Date.parse("2026-07-24T00:00:00.000Z");
   const runtime = await createAcquisitionApplication({
     store: fixture.store,
     masterSecret: MASTER_SECRET,
     searchPort: search.port,
+    domainRepository,
     modelGatewayFactory: () => model.gateway,
     idFactory: (prefix) => `${prefix}-${++sequence}`,
     now: () => new Date(timestamp++).toISOString(),
@@ -1172,6 +1174,7 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
     );
     assert.equal(presentation.json.hasMore, false);
     assert.ok(presentation.json.nextAfter);
+    assert.equal(presentation.response.headers.get("etag"), null);
 
     const organizationCandidate = candidates.json.items.find(
       (candidate: { name?: string }) =>
@@ -1179,6 +1182,43 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
     );
     assert.ok(organizationCandidate);
     const candidateId = String(organizationCandidate.id);
+    await domainRepository.appendAuditEvent({
+      id: "application-presentation-audit-update",
+      ownerId: OWNER,
+      teamId: TEAM,
+      candidateId,
+      actorId: OWNER,
+      eventType: "candidate_profile_updated",
+      fromStatus: "qualified",
+      toStatus: "qualified",
+      resourceId: candidateId,
+      idempotencyKey: "application-presentation-audit-key",
+      payloadHash: "sha256:application-presentation-audit",
+      createdAt: "2026-07-24T01:00:00.000Z"
+    });
+    const auditPage = await server.request(
+      `/api/v1/acquisition/runs/${runId}/presentation`
+      + `?after=${encodeURIComponent(presentation.json.nextAfter)}&limit=100`,
+      {
+        headers: {
+          "If-None-Match": presentation.json.run.etag
+        }
+      }
+    );
+    assert.equal(auditPage.response.status, 200);
+    assert.equal(auditPage.response.headers.get("etag"), null);
+    assert.deepEqual(
+      auditPage.json.candidateEvents.map(
+        (event: { eventId: string; candidateId: string }) => ({
+          eventId: event.eventId,
+          candidateId: event.candidateId
+        })
+      ),
+      [{
+        eventId: "application-presentation-audit-update",
+        candidateId
+      }]
+    );
 
     const normalMessage = await server.request(
       `/api/v1/acquisition/copilot/sessions/${sessionId}/messages`,
