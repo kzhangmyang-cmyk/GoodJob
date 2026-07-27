@@ -8,6 +8,10 @@ import {
   ACQUISITION_MODEL_CONTENT_HASHES,
   ACQUISITION_MODEL_PROMPT_VERSION,
   ACQUISITION_MODEL_SCHEMA_VERSION,
+  ACQUISITION_PREVIOUS_MODEL_CONTENT_BUNDLE,
+  ACQUISITION_PREVIOUS_MODEL_CONTENT_HASHES,
+  ACQUISITION_PREVIOUS_MODEL_PROMPT_VERSION,
+  ACQUISITION_PREVIOUS_MODEL_SCHEMA_VERSION,
   ACQUISITION_PLAN_DRAFT_PROMPT_ID,
   ACQUISITION_PLAN_DRAFT_SUBMIT_TOOL,
   ACQUISITION_PLAN_DRAFT_TOOL_SCHEMA_ID,
@@ -29,10 +33,18 @@ const judgmentTools =
 
 assert.equal(
   ACQUISITION_MODEL_PROMPT_VERSION,
-  "acquisition-model-prompt-bundle.v4"
+  "acquisition-model-prompt-bundle.v5"
 );
 assert.equal(
   ACQUISITION_MODEL_SCHEMA_VERSION,
+  "acquisition-model-schema-bundle.v4"
+);
+assert.equal(
+  ACQUISITION_PREVIOUS_MODEL_PROMPT_VERSION,
+  "acquisition-model-prompt-bundle.v4"
+);
+assert.equal(
+  ACQUISITION_PREVIOUS_MODEL_SCHEMA_VERSION,
   "acquisition-model-schema-bundle.v3"
 );
 assert.equal(
@@ -80,6 +92,31 @@ assert.deepEqual(
 assert.equal(
   Array.isArray(judgmentTools?.[0]?.parameters.oneOf),
   true
+);
+const judgmentParameters = judgmentTools?.[0]?.parameters as {
+  oneOf: Array<any>;
+} | undefined;
+const battleCardVariant = judgmentParameters?.oneOf.find(
+  (variant: any) =>
+    variant?.properties?.operation?.const === "build_battle_card"
+);
+assert.ok(battleCardVariant);
+assert.deepEqual(
+  Object.keys(battleCardVariant.properties.result.properties).sort(),
+  [
+    "accountOverview",
+    "buyingCommittee",
+    "connectionStrategies",
+    "doNotActions",
+    "needAssessment",
+    "procurementPreferences",
+    "roleSpecificOpeners",
+    "supplierHypotheses"
+  ]
+);
+assert.equal(
+  "financialSummary" in battleCardVariant.properties.result.properties,
+  false
 );
 
 const planDraftPrompt =
@@ -142,6 +179,14 @@ assert.equal(
     ...ACQUISITION_LEGACY_MODEL_CONTENT_HASHES
   }),
   ACQUISITION_LEGACY_MODEL_CONTENT_BUNDLE
+);
+assert.equal(
+  acquisitionModelContentForSnapshot({
+    promptVersion: ACQUISITION_PREVIOUS_MODEL_PROMPT_VERSION,
+    schemaVersion: ACQUISITION_PREVIOUS_MODEL_SCHEMA_VERSION,
+    ...ACQUISITION_PREVIOUS_MODEL_CONTENT_HASHES
+  }),
+  ACQUISITION_PREVIOUS_MODEL_CONTENT_BUNDLE
 );
 for (const snapshot of [{
   promptVersion: "acquisition-model-prompt-bundle.v999",

@@ -4,7 +4,11 @@ import type {
   AcquisitionAuditEvent,
   AcquisitionCandidate,
   BattleCard,
+  BattleCardClaim,
+  BattleCardIntelligenceV2,
   BattleCardInput,
+  BattleCardV1,
+  BattleCardV2,
   CandidateIdentityResolutionCommitInput,
   CandidateIdentityResolutionResult,
   CandidateStatus,
@@ -221,6 +225,65 @@ function hardGateFailures(gates: QualificationHardGates) {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function battleCardClaim(
+  raw: BattleCardClaim,
+  label: string
+): BattleCardClaim {
+  const kind = raw.kind;
+  if (!["fact", "inference", "unknown"].includes(kind)) {
+    fail("invalid_request", `${label}类型无效`, 400);
+  }
+  const evidenceIds = [...new Set(raw.evidenceIds ?? [])];
+  const confidence = raw.confidence === null
+    ? null
+    : bounded(raw.confidence, 0, 1);
+  if (kind === "fact" && evidenceIds.length === 0) {
+    fail("evidence_required", `${label}事实必须引用原始证据`, 422);
+  }
+  if (kind === "inference"
+    && (evidenceIds.length === 0 || confidence === null)) {
+    fail("evidence_required", `${label}推断必须引用证据并提供置信度`, 422);
+  }
+  if (kind === "unknown"
+    && (evidenceIds.length > 0 || confidence !== null)) {
+    fail("invalid_request", `${label}未知项不得引用证据或声明置信度`, 422);
+  }
+  return {
+    kind,
+    text: requiredText(raw.text, `${label}内容`, 4_000),
+    evidenceIds,
+    confidence
+  };
+}
+
+function v2Claims(intelligence: BattleCardIntelligenceV2) {
+  return [
+    ...intelligence.accountOverview,
+    ...intelligence.needAssessment,
+    ...intelligence.supplierHypotheses,
+    ...intelligence.procurementPreferences,
+    ...intelligence.buyingCommittee.map((role) => role.claim),
+    ...intelligence.connectionStrategies.map((strategy) =>
+      strategy.rationale)
+  ];
+}
+
+function financialSummary(
+  decision: FinancialValueDecision
+): BattleCardIntelligenceV2["financialSummary"] {
+  return {
+    decisionId: decision.id,
+    decisionVersion: decision.version,
+    grade: decision.grade,
+    score: decision.score,
+    currency: decision.currency,
+    expectedRevenueMinor: decision.expectedRevenueMinor,
+    expectedGrossProfitMinor: decision.expectedGrossProfitMinor,
+    expectedContributionMinor: decision.expectedContributionMinor,
+    factors: clone(decision.factors)
+  };
 }
 
 export class AcquisitionDomainService {
@@ -878,71 +941,234 @@ export class AcquisitionDomainService {
           || !["pending_review", "approved"].includes(candidate.status)) {
           fail("invalid_state", "客户作战卡只能基于已评分候选生成");
         }
-        if (!Array.isArray(raw.sections) || raw.sections.length === 0) {
-          fail("invalid_request", "客户作战卡至少需要一个分区", 400);
-        }
-        const sections = raw.sections.map((section) => ({
-          label: requiredText(section.label, "作战卡标签", 120),
-          kind: section.kind,
-          content: requiredText(section.content, "作战卡内容", 4_000),
-          evidenceIds: [...new Set(section.evidenceIds ?? [])],
-          confidence: section.confidence === null
-            ? null
-            : bounded(section.confidence, 0, 1)
-        }));
-        for (const section of sections) {
-          if (!["fact", "inference", "unknown"].includes(section.kind)) {
-            fail("invalid_request", "作战卡分区类型无效", 400);
-          }
-          if ((section.kind === "fact" || section.kind === "inference")
-            && section.evidenceIds.length === 0) {
-            fail(
-              "evidence_required",
-              `${section.kind} 分区必须引用原始证据`,
-              422
-            );
-          }
-          if (section.kind === "inference" && section.confidence === null) {
-            fail("invalid_request", "推断分区必须提供置信度", 422);
-          }
-          for (const evidenceId of section.evidenceIds) {
-            if (!candidate.evidenceIds.includes(evidenceId)) {
-              fail("evidence_required", "作战卡引用了候选之外的证据", 422);
-            }
-            await this.requireEvidence(scope, evidenceId);
-          }
-        }
         const existing = await this.repository.listBattleCards(
           scope,
           candidate.id
         );
-        const evidenceIds = [...new Set(
-          sections.flatMap((section) => section.evidenceIds)
-        )];
+        type StoredFields =
+          "id" | "ownerId" | "teamId" | "version"
+          | "snapshotHash" | "createdAt";
+        let material:
+          | Omit<BattleCardV1, StoredFields>
+          | Omit<BattleCardV2, StoredFields>;
+        if (raw.schemaVersion === "battle-card.v2") {
+          const input = raw.intelligence;
+          const intelligence: Omit<
+            BattleCardIntelligenceV2,
+            "financialSummary"
+          > = {
+            accountOverview: input.accountOverview.map((claim, index) =>
+              battleCardClaim(claim, `客户概况 ${index + 1}`)),
+            needAssessment: input.needAssessment.map((claim, index) =>
+              battleCardClaim(claim, `需求判断 ${index + 1}`)),
+            supplierHypotheses: input.supplierHypotheses.map(
+              (claim, index) =>
+                battleCardClaim(claim, `供应商判断 ${index + 1}`)
+            ),
+            buyingCommittee: input.buyingCommittee.map((role, index) => {
+              if (![1, 2, 3].includes(role.priority)
+                || ![
+                  "decision_maker",
+                  "influencer",
+                  "user",
+                  "gatekeeper"
+                ].includes(role.influence)) {
+                fail("invalid_request", "决策链角色类型或优先级无效", 400);
+              }
+              return {
+                role: requiredText(
+                  role.role,
+                  `决策链角色 ${index + 1}`,
+                  200
+                ),
+                priority: role.priority,
+                influence: role.influence,
+                concerns: [...new Set(role.concerns.map((concern) =>
+                  requiredText(concern, "决策角色关注点", 500)
+                ))],
+                claim: battleCardClaim(
+                  role.claim,
+                  `决策链依据 ${index + 1}`
+                )
+              };
+            }),
+            procurementPreferences: input.procurementPreferences.map(
+              (claim, index) =>
+                battleCardClaim(claim, `采购偏好 ${index + 1}`)
+            ),
+            connectionStrategies: input.connectionStrategies.map(
+              (strategy, index) => {
+                if (![
+                  "public_reply",
+                  "wecom",
+                  "phone",
+                  "email",
+                  "referral"
+                ].includes(strategy.channel)) {
+                  fail("invalid_request", "连接策略渠道无效", 400);
+                }
+                return {
+                  channel: strategy.channel,
+                  targetRole: requiredText(
+                    strategy.targetRole,
+                    `连接策略目标角色 ${index + 1}`,
+                    200
+                  ),
+                  rationale: battleCardClaim(
+                    strategy.rationale,
+                    `连接策略依据 ${index + 1}`
+                  ),
+                  openingDraft: requiredText(
+                    strategy.openingDraft,
+                    `连接策略开场 ${index + 1}`,
+                    8_000
+                  )
+                };
+              }
+            ),
+            roleSpecificOpeners: input.roleSpecificOpeners.map(
+              (opener, index) => {
+                if (![
+                  "public_reply",
+                  "wecom",
+                  "phone",
+                  "email",
+                  "referral"
+                ].includes(opener.channel)) {
+                  fail("invalid_request", "角色话术渠道无效", 400);
+                }
+                return {
+                  role: requiredText(
+                    opener.role,
+                    `角色话术角色 ${index + 1}`,
+                    200
+                  ),
+                  channel: opener.channel,
+                  text: requiredText(
+                    opener.text,
+                    `角色话术内容 ${index + 1}`,
+                    8_000
+                  )
+                };
+              }
+            ),
+            doNotActions: [...new Set(input.doNotActions.map((action) =>
+              requiredText(action, "不建议动作", 1_000)
+            ))]
+          };
+          const values = await this.repository.listFinancialValues(
+            scope,
+            candidate.id
+          );
+          const financial = values
+            .filter((value) =>
+              value.qualificationDecisionId === candidate.latestDecisionId)
+            .sort((left, right) =>
+              left.createdAt.localeCompare(right.createdAt)
+              || left.id.localeCompare(right.id))
+            .at(-1) ?? null;
+          const completeIntelligence: BattleCardIntelligenceV2 = {
+            ...intelligence,
+            financialSummary: financial ? financialSummary(financial) : null
+          };
+          const evidenceIds = [...new Set(
+            v2Claims(completeIntelligence).flatMap((claim) =>
+              claim.evidenceIds)
+          )];
+          material = {
+            candidateId: candidate.id,
+            qualificationDecisionId: candidate.latestDecisionId,
+            partyType: candidate.partyType,
+            schemaVersion: "battle-card.v2",
+            intelligence: completeIntelligence,
+            evidenceIds,
+            confidence: bounded(raw.confidence, 0, 1),
+            modelProvider: requiredText(
+              raw.modelProvider,
+              "模型厂商",
+              100
+            ),
+            model: requiredText(raw.model, "模型", 200),
+            promptVersion: requiredText(
+              raw.promptVersion,
+              "Prompt 版本",
+              100
+            )
+          };
+        } else {
+          if (!Array.isArray(raw.sections) || raw.sections.length === 0) {
+            fail("invalid_request", "客户作战卡至少需要一个分区", 400);
+          }
+          const sections = raw.sections.map((section) => ({
+            label: requiredText(section.label, "作战卡标签", 120),
+            kind: section.kind,
+            content: requiredText(section.content, "作战卡内容", 4_000),
+            evidenceIds: [...new Set(section.evidenceIds ?? [])],
+            confidence: section.confidence === null
+              ? null
+              : bounded(section.confidence, 0, 1)
+          }));
+          for (const section of sections) {
+            if (!["fact", "inference", "unknown"].includes(section.kind)) {
+              fail("invalid_request", "作战卡分区类型无效", 400);
+            }
+            if ((section.kind === "fact" || section.kind === "inference")
+              && section.evidenceIds.length === 0) {
+              fail(
+                "evidence_required",
+                `${section.kind} 分区必须引用原始证据`,
+                422
+              );
+            }
+            if (section.kind === "inference"
+              && section.confidence === null) {
+              fail("invalid_request", "推断分区必须提供置信度", 422);
+            }
+          }
+          material = {
+            candidateId: candidate.id,
+            qualificationDecisionId: candidate.latestDecisionId,
+            partyType: candidate.partyType,
+            sections,
+            evidenceIds: [...new Set(
+              sections.flatMap((section) => section.evidenceIds)
+            )],
+            confidence: bounded(raw.confidence, 0, 1),
+            modelProvider: requiredText(
+              raw.modelProvider,
+              "模型厂商",
+              100
+            ),
+            model: requiredText(raw.model, "模型", 200),
+            promptVersion: requiredText(
+              raw.promptVersion,
+              "Prompt 版本",
+              100
+            )
+          };
+        }
+        const evidenceIds = material.evidenceIds;
         if (evidenceIds.length === 0) {
           fail("evidence_required", "客户作战卡必须至少引用一条证据", 422);
         }
+        for (const evidenceId of evidenceIds) {
+          if (!candidate.evidenceIds.includes(evidenceId)) {
+            fail("evidence_required", "作战卡引用了候选之外的证据", 422);
+          }
+          await this.requireEvidence(scope, evidenceId);
+        }
         const now = validIso(this.clock(), "作战卡创建时间");
-        const material = {
-          candidateId: candidate.id,
-          qualificationDecisionId: candidate.latestDecisionId,
-          partyType: candidate.partyType,
-          sections,
-          evidenceIds,
-          confidence: bounded(raw.confidence, 0, 1),
-          modelProvider: requiredText(raw.modelProvider, "模型厂商", 100),
-          model: requiredText(raw.model, "模型", 200),
-          promptVersion: requiredText(raw.promptVersion, "Prompt 版本", 100)
-        };
-        const card: BattleCard = {
+        const storedBase = {
           id: this.idFactory("battle-card"),
           ownerId: scope.ownerId,
           teamId: scope.teamId,
           version: `battle-card-v${existing.length + 1}`,
-          ...material,
           snapshotHash: hash(material),
           createdAt: now
         };
+        const card: BattleCard = material.schemaVersion === "battle-card.v2"
+          ? { ...storedBase, ...material }
+          : { ...storedBase, ...material };
         await this.repository.appendBattleCard(card);
         await this.audit(scope, {
           candidateId: candidate.id,

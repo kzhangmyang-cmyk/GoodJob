@@ -206,7 +206,7 @@ export class AcquisitionCandidateProcessingPipeline {
         "build_battle_card",
         {
           candidateId,
-          templateVersion: "battle-card.v1"
+          templateVersion: "battle-card.v2"
         },
         result
       );

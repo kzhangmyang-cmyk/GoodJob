@@ -198,7 +198,22 @@ const qualifyBodySchema = z.object({
   financial: financialValueInputSchema
 }).strict();
 
-const battleCardBodySchema = z.object({
+const battleCardClaimBodySchema = z.object({
+  kind: z.enum(["fact", "inference", "unknown"]),
+  text: requiredText(4_000),
+  evidenceIds: z.array(idSchema).max(500),
+  confidence: z.number().min(0).max(1).nullable()
+}).strict();
+
+const battleCardCommonBodyShape = {
+  confidence: z.number().min(0).max(1),
+  modelProvider: requiredText(100),
+  model: requiredText(200),
+  promptVersion: requiredText(100)
+};
+
+const battleCardBodySchema = z.union([z.object({
+  schemaVersion: z.literal("battle-card.v1").optional(),
   sections: z.array(z.object({
     label: requiredText(120),
     kind: z.enum(["fact", "inference", "unknown"]),
@@ -206,11 +221,53 @@ const battleCardBodySchema = z.object({
     evidenceIds: z.array(idSchema).max(500),
     confidence: z.number().min(0).max(1).nullable()
   }).strict()).min(1).max(100),
-  confidence: z.number().min(0).max(1),
-  modelProvider: requiredText(100),
-  model: requiredText(200),
-  promptVersion: requiredText(100)
-}).strict();
+  ...battleCardCommonBodyShape
+}).strict(), z.object({
+  schemaVersion: z.literal("battle-card.v2"),
+  intelligence: z.object({
+    accountOverview: z.array(battleCardClaimBodySchema).max(100),
+    needAssessment: z.array(battleCardClaimBodySchema).max(100),
+    supplierHypotheses: z.array(battleCardClaimBodySchema).max(100),
+    buyingCommittee: z.array(z.object({
+      role: requiredText(200),
+      priority: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+      influence: z.enum([
+        "decision_maker",
+        "influencer",
+        "user",
+        "gatekeeper"
+      ]),
+      concerns: z.array(requiredText(500)).max(100),
+      claim: battleCardClaimBodySchema
+    }).strict()).max(100),
+    procurementPreferences: z.array(battleCardClaimBodySchema).max(100),
+    connectionStrategies: z.array(z.object({
+      channel: z.enum([
+        "public_reply",
+        "wecom",
+        "phone",
+        "email",
+        "referral"
+      ]),
+      targetRole: requiredText(200),
+      rationale: battleCardClaimBodySchema,
+      openingDraft: requiredText(8_000)
+    }).strict()).max(100),
+    roleSpecificOpeners: z.array(z.object({
+      role: requiredText(200),
+      channel: z.enum([
+        "public_reply",
+        "wecom",
+        "phone",
+        "email",
+        "referral"
+      ]),
+      text: requiredText(8_000)
+    }).strict()).max(100),
+    doNotActions: z.array(requiredText(1_000)).max(100)
+  }).strict(),
+  ...battleCardCommonBodyShape
+}).strict()]);
 
 const reviewBodySchema = z.object({
   action: z.enum([
@@ -615,11 +672,27 @@ function publicFinancialValue(decision: FinancialValueDecision) {
 }
 
 function publicBattleCard(card: BattleCard) {
-  return {
+  const common = {
     id: card.id,
     candidateId: card.candidateId,
     qualificationDecisionId: card.qualificationDecisionId,
     partyType: card.partyType,
+    evidenceIds: [...card.evidenceIds],
+    confidence: card.confidence,
+    modelProvider: card.modelProvider,
+    model: card.model,
+    promptVersion: card.promptVersion,
+    createdAt: card.createdAt,
+    schemaVersion: card.schemaVersion ?? "battle-card.v1"
+  };
+  if (card.schemaVersion === "battle-card.v2") {
+    return {
+      ...common,
+      intelligence: structuredClone(card.intelligence)
+    };
+  }
+  return {
+    ...common,
     sections: card.sections.map((section) => ({
       label: section.label,
       kind: section.kind,
@@ -631,12 +704,7 @@ function publicBattleCard(card: BattleCard) {
         ? { confidence: section.confidence }
         : {})
     })),
-    evidenceIds: [...card.evidenceIds],
-    confidence: card.confidence,
-    modelProvider: card.modelProvider,
-    model: card.model,
-    promptVersion: card.promptVersion,
-    createdAt: card.createdAt
+    intelligence: null
   };
 }
 

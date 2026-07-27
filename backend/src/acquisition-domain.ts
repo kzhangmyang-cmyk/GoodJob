@@ -319,7 +319,60 @@ export interface BattleCardSection {
   confidence: number | null;
 }
 
-export interface BattleCardInput {
+export interface BattleCardClaim {
+  kind: "fact" | "inference" | "unknown";
+  text: string;
+  evidenceIds: string[];
+  confidence: number | null;
+}
+
+export interface BuyingRole {
+  role: string;
+  priority: 1 | 2 | 3;
+  influence: "decision_maker" | "influencer" | "user" | "gatekeeper";
+  concerns: string[];
+  claim: BattleCardClaim;
+}
+
+export interface ConnectionStrategy {
+  channel: "public_reply" | "wecom" | "phone" | "email" | "referral";
+  targetRole: string;
+  rationale: BattleCardClaim;
+  openingDraft: string;
+}
+
+export interface RoleOpener {
+  role: string;
+  channel: ConnectionStrategy["channel"];
+  text: string;
+}
+
+export interface FinancialSummary {
+  decisionId: string;
+  decisionVersion: string;
+  grade: FinancialValueDecision["grade"];
+  score: number;
+  currency: string;
+  expectedRevenueMinor: number;
+  expectedGrossProfitMinor: number;
+  expectedContributionMinor: number;
+  factors: FinancialValueDecision["factors"];
+}
+
+export interface BattleCardIntelligenceV2 {
+  accountOverview: BattleCardClaim[];
+  needAssessment: BattleCardClaim[];
+  supplierHypotheses: BattleCardClaim[];
+  buyingCommittee: BuyingRole[];
+  procurementPreferences: BattleCardClaim[];
+  connectionStrategies: ConnectionStrategy[];
+  roleSpecificOpeners: RoleOpener[];
+  doNotActions: string[];
+  financialSummary: FinancialSummary | null;
+}
+
+export interface BattleCardInputV1 {
+  schemaVersion?: "battle-card.v1";
   sections: BattleCardSection[];
   confidence: number;
   modelProvider: string;
@@ -327,7 +380,18 @@ export interface BattleCardInput {
   promptVersion: string;
 }
 
-export interface BattleCard {
+export interface BattleCardInputV2 {
+  schemaVersion: "battle-card.v2";
+  intelligence: Omit<BattleCardIntelligenceV2, "financialSummary">;
+  confidence: number;
+  modelProvider: string;
+  model: string;
+  promptVersion: string;
+}
+
+export type BattleCardInput = BattleCardInputV1 | BattleCardInputV2;
+
+interface BattleCardBase {
   id: string;
   ownerId: string;
   teamId: string;
@@ -335,7 +399,6 @@ export interface BattleCard {
   qualificationDecisionId: string;
   partyType: PartyType;
   version: string;
-  sections: BattleCardSection[];
   evidenceIds: string[];
   confidence: number;
   modelProvider: string;
@@ -344,6 +407,18 @@ export interface BattleCard {
   snapshotHash: string;
   createdAt: string;
 }
+
+export interface BattleCardV1 extends BattleCardBase {
+  schemaVersion?: "battle-card.v1";
+  sections: BattleCardSection[];
+}
+
+export interface BattleCardV2 extends BattleCardBase {
+  schemaVersion: "battle-card.v2";
+  intelligence: BattleCardIntelligenceV2;
+}
+
+export type BattleCard = BattleCardV1 | BattleCardV2;
 
 export type ReviewAction =
   | "approved"

@@ -18,7 +18,10 @@ import {
   ACQUISITION_LEGACY_MODEL_SCHEMA_VERSION,
   ACQUISITION_MODEL_CONTENT_HASHES,
   ACQUISITION_MODEL_PROMPT_VERSION,
-  ACQUISITION_MODEL_SCHEMA_VERSION
+  ACQUISITION_MODEL_SCHEMA_VERSION,
+  ACQUISITION_PREVIOUS_MODEL_CONTENT_HASHES,
+  ACQUISITION_PREVIOUS_MODEL_PROMPT_VERSION,
+  ACQUISITION_PREVIOUS_MODEL_SCHEMA_VERSION
 } from "./acquisition-model-content.js";
 import type {
   ToolCallingRequest,
@@ -131,6 +134,25 @@ const evidence: DiscoveryEvidence[] = [{
   supersedesEvidenceId: null
 }];
 
+const financialSummary = {
+  decisionId: "financial-a",
+  decisionVersion: "financial-v1",
+  grade: "A" as const,
+  score: 82,
+  currency: "CNY",
+  expectedRevenueMinor: 1_000_000,
+  expectedGrossProfitMinor: 600_000,
+  expectedContributionMinor: 500_000,
+  factors: {
+    profitability: 80,
+    cashFlow: 70,
+    creditQuality: 75,
+    repeatPotential: 60,
+    referralPotential: 40,
+    closeProbability: 65
+  }
+};
+
 const successArguments = {
   research: {
     operation: "research",
@@ -199,18 +221,72 @@ const successArguments = {
   build_battle_card: {
     operation: "build_battle_card",
     result: {
+      accountOverview: [{
+        kind: "fact",
+        text: "企业公开比较财税软件方案。",
+        evidenceIds: ["evidence-a"],
+        confidence: 1
+      }],
+      needAssessment: [{
+        kind: "inference",
+        text: "可能处于方案研究阶段。",
+        evidenceIds: ["evidence-a", "evidence-b"],
+        confidence: 0.75
+      }],
+      supplierHypotheses: [{
+        kind: "unknown",
+        text: "暂无公开供应商信息。",
+        evidenceIds: [],
+        confidence: null
+      }],
+      buyingCommittee: [{
+        role: "财务信息化负责人",
+        priority: 1,
+        influence: "decision_maker",
+        concerns: ["投入产出"],
+        claim: {
+          kind: "inference",
+          text: "该角色可能参与决策。",
+          evidenceIds: ["evidence-a"],
+          confidence: 0.65
+        }
+      }],
+      procurementPreferences: [{
+        kind: "unknown",
+        text: "采购偏好尚未公开。",
+        evidenceIds: [],
+        confidence: null
+      }],
+      connectionStrategies: [{
+        channel: "email",
+        targetRole: "财务信息化负责人",
+        rationale: {
+          kind: "fact",
+          text: "公开采购公告适合用邮件提供书面资料。",
+          evidenceIds: ["evidence-a"],
+          confidence: 1
+        },
+        openingDraft: "建议人工审核后，以公开采购需求为背景提供诊断资料。"
+      }],
+      roleSpecificOpeners: [{
+        role: "财务信息化负责人",
+        channel: "email",
+        text: "看到贵司公开采购需求，我们整理了一页诊断供参考。"
+      }],
+      doNotActions: [
+        "不要声称已经确认预算或现有供应商"
+      ]
+    }
+  },
+  build_battle_card_v1: {
+    operation: "build_battle_card",
+    result: {
       sections: [{
         kind: "fact",
         label: "需求",
         content: "企业公开比较财税软件方案。",
         evidenceIds: ["evidence-a"],
         confidence: 1
-      }, {
-        kind: "inference",
-        label: "采购阶段",
-        content: "可能处于方案研究阶段。",
-        evidenceIds: ["evidence-a", "evidence-b"],
-        confidence: 0.75
       }, {
         kind: "unknown",
         label: "决策链",
@@ -312,7 +388,8 @@ test("implements all four judgments with one snapshot-bound structured tool", as
     sessionId: "session-a",
     candidate,
     evidence,
-    templateVersion: "battle-card.v2"
+    templateVersion: "battle-card.v2",
+    financialSummary
   });
   const drafts = await port.draftConnectionStrategy!({
     scope,
@@ -338,13 +415,22 @@ test("implements all four judgments with one snapshot-bound structured tool", as
     qualification.financial.predictedDealAmountMinor,
     1_000_000
   );
+  assert.equal(battleCard.schemaVersion, "battle-card.v2");
+  if (battleCard.schemaVersion !== "battle-card.v2") {
+    assert.fail("expected a v2 battle-card input");
+  }
   assert.deepEqual(
-    battleCard.sections.map((section) => section.kind),
-    ["fact", "inference", "unknown"]
+    battleCard.intelligence.accountOverview,
+    successArguments.build_battle_card.result.accountOverview
   );
   assert.equal(battleCard.modelProvider, snapshot.provider);
   assert.equal(battleCard.model, snapshot.model);
   assert.equal(battleCard.promptVersion, snapshot.promptVersion);
+  assert.equal(
+    (requests[2]?.contentBinding?.dynamicData as any)
+      .operationInput.financialSummary.expectedRevenueMinor,
+    financialSummary.expectedRevenueMinor
+  );
   assert.deepEqual(
     drafts.map((draft) => draft.channel),
     ["email", "meeting"]
@@ -415,6 +501,26 @@ test("rejects invented evidence, invalid claim kinds, and wrong operations", asy
       /MODEL_JUDGMENT_INVALID/
     );
   }
+});
+
+test("rejects invented evidence nested in v2 battle-card roles and strategies", async () => {
+  const unsafe: any = structuredClone(successArguments.build_battle_card);
+  unsafe.result.buyingCommittee[0].claim.evidenceIds = [
+    "invented-evidence"
+  ];
+  const { port } = harness(() => modelResult(unsafe));
+
+  await assert.rejects(
+    port.buildBattleCard!({
+      scope,
+      sessionId: "session-a",
+      candidate,
+      evidence,
+      templateVersion: "battle-card.v2",
+      financialSummary
+    }),
+    /MODEL_JUDGMENT_INVALID/
+  );
 });
 
 test("rejects sensitive contact output, non-minor money, and channel drift", async () => {
@@ -550,6 +656,45 @@ test("legacy content snapshots can still run their registered judgment binding",
 
   assert.equal(calls, 1);
   assert.equal(result.findings[0]?.label, "事实｜公开需求");
+});
+
+test("previous v1 battle-card snapshots keep their registered output contract", async () => {
+  const previousSnapshot: StoredAiJobModelSnapshot = {
+    ...snapshot,
+    jobId: "job-previous-battle-card",
+    promptVersion: ACQUISITION_PREVIOUS_MODEL_PROMPT_VERSION,
+    schemaVersion: ACQUISITION_PREVIOUS_MODEL_SCHEMA_VERSION,
+    ...ACQUISITION_PREVIOUS_MODEL_CONTENT_HASHES
+  };
+  const port = createAcquisitionJudgmentPort({
+    async resolveSession() {
+      return {
+        snapshot: previousSnapshot,
+        gateway: {
+          async callTools() {
+            return modelResult(successArguments.build_battle_card_v1);
+          }
+        }
+      };
+    }
+  });
+
+  const result = await port.buildBattleCard!({
+    scope,
+    sessionId: "session-previous",
+    candidate,
+    evidence,
+    templateVersion: "battle-card.v1",
+    financialSummary
+  });
+
+  assert.equal(result.schemaVersion, "battle-card.v1");
+  if (result.schemaVersion === "battle-card.v1") {
+    assert.deepEqual(
+      result.sections.map((section) => section.kind),
+      ["fact", "unknown"]
+    );
+  }
 });
 
 test("session resolver rehydrates only the persisted tenant snapshot", async () => {

@@ -152,7 +152,7 @@ function processingInput(
   };
 }
 
-test("runs research, qualification, and a v1 battle card in order for an eligible candidate", async () => {
+test("runs research, qualification, and a v2 battle card in order for an eligible candidate", async () => {
   const calls: AcquisitionToolExecutionInput[] = [];
   const executor: AcquisitionAgentToolExecutor = {
     async execute(input) {
@@ -185,7 +185,7 @@ test("runs research, qualification, and a v1 battle card in order for an eligibl
     },
     {
       candidateId: "candidate-a",
-      templateVersion: "battle-card.v1"
+      templateVersion: "battle-card.v2"
     }
   ]);
   assert.equal(

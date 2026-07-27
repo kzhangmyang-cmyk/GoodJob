@@ -10,6 +10,7 @@ import {
   InMemoryAcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
 import type {
+  BattleCardInputV2,
   BattleCardSection,
   DiscoveryEvidenceInput,
   FinancialValueInput,
@@ -499,6 +500,111 @@ test("battle cards require evidence for facts and inferences and remain versione
   assert.equal(
     (await service.listBattleCards(ownerScope, candidate.id)).length,
     1
+  );
+});
+
+test("battle-card v2 persists structured intelligence with the current financial decision", async () => {
+  const { service } = createHarness();
+  const { candidate, evidence } = await createOrganizationCandidate(
+    service,
+    "battle-card-v2"
+  );
+  const qualified = await service.qualifyCandidate(
+    ownerScope,
+    candidate.id,
+    strongQualification(),
+    healthyFinancialValue(),
+    "qualify:battle-card:v2"
+  );
+  const claim = {
+    kind: "fact" as const,
+    text: "企业公开页面显示正在比较获客方案。",
+    evidenceIds: [evidence.id],
+    confidence: 1
+  };
+  const intelligence: BattleCardInputV2["intelligence"] = {
+    accountOverview: [claim],
+    needAssessment: [claim],
+    supplierHypotheses: [{
+      kind: "unknown",
+      text: "没有足够证据确认现有供应商。",
+      evidenceIds: [],
+      confidence: null
+    }],
+    buyingCommittee: [{
+      role: "业务负责人",
+      priority: 1,
+      influence: "decision_maker",
+      concerns: ["投入产出"],
+      claim
+    }],
+    procurementPreferences: [{
+      kind: "inference",
+      text: "可能更关注可量化效果。",
+      evidenceIds: [evidence.id],
+      confidence: 0.72
+    }],
+    connectionStrategies: [{
+      channel: "email",
+      targetRole: "业务负责人",
+      rationale: claim,
+      openingDraft: "建议人工审核后，以公开需求为背景提供诊断。"
+    }],
+    roleSpecificOpeners: [{
+      role: "业务负责人",
+      channel: "email",
+      text: "看到贵司公开的采购需求，我们整理了一页诊断供参考。"
+    }],
+    doNotActions: ["不要声称已经确认现有供应商"]
+  };
+
+  const card = await service.createBattleCard(ownerScope, candidate.id, {
+    schemaVersion: "battle-card.v2",
+    intelligence,
+    modelProvider: "qwen",
+    model: "qwen-plus",
+    promptVersion: "acquisition-model-prompt-bundle.v5",
+    confidence: 0.8
+  }, "battle-card:v2");
+
+  assert.equal(card.schemaVersion, "battle-card.v2");
+  if (card.schemaVersion !== "battle-card.v2") {
+    assert.fail("expected a v2 battle card");
+  }
+  assert.deepEqual(card.intelligence.accountOverview, [claim]);
+  assert.deepEqual(card.intelligence.financialSummary, {
+    decisionId: qualified.financialValue.id,
+    decisionVersion: qualified.financialValue.version,
+    grade: qualified.financialValue.grade,
+    score: qualified.financialValue.score,
+    currency: "CNY",
+    expectedRevenueMinor: qualified.financialValue.expectedRevenueMinor,
+    expectedGrossProfitMinor:
+      qualified.financialValue.expectedGrossProfitMinor,
+    expectedContributionMinor:
+      qualified.financialValue.expectedContributionMinor,
+    factors: qualified.financialValue.factors
+  });
+
+  await assert.rejects(
+    service.createBattleCard(ownerScope, candidate.id, {
+      schemaVersion: "battle-card.v2",
+      intelligence: {
+        ...intelligence,
+        procurementPreferences: [{
+          kind: "unknown",
+          text: "未知项不得伪造证据。",
+          evidenceIds: [evidence.id],
+          confidence: null
+        }]
+      },
+      modelProvider: "qwen",
+      model: "qwen-plus",
+      promptVersion: "acquisition-model-prompt-bundle.v5",
+      confidence: 0.8
+    }, "battle-card:v2:invalid"),
+    (error: unknown) => error instanceof AcquisitionDomainError
+      && error.code === "invalid_request"
   );
 });
 

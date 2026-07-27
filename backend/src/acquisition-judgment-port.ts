@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   AcquisitionCandidate,
   BattleCardInput,
+  BattleCardIntelligenceV2,
   DiscoveryEvidence
 } from "./acquisition-domain.js";
 import type {
@@ -12,6 +13,7 @@ import {
   ACQUISITION_JUDGMENT_PROMPT_ID,
   ACQUISITION_JUDGMENT_SUBMIT_TOOL,
   ACQUISITION_JUDGMENT_TOOL_SCHEMA_ID,
+  ACQUISITION_MODEL_SCHEMA_VERSION,
   acquisitionModelContentForSnapshot
 } from "./acquisition-model-content.js";
 import type {
@@ -120,6 +122,34 @@ const findingSchema = z.object({
   }
 });
 
+const battleCardClaimSchema = z.object({
+  kind: z.enum(["fact", "inference", "unknown"]),
+  text: z.string().trim().min(1).max(4_000),
+  evidenceIds: evidenceIdsSchema,
+  confidence: z.number().min(0).max(1).nullable()
+}).strict().superRefine((claim, context) => {
+  if (claim.kind === "fact" && claim.evidenceIds.length === 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "facts require evidence"
+    });
+  }
+  if (claim.kind === "inference"
+    && (claim.evidenceIds.length === 0 || claim.confidence === null)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "inferences require evidence and confidence"
+    });
+  }
+  if (claim.kind === "unknown"
+    && (claim.evidenceIds.length > 0 || claim.confidence !== null)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "unknowns cannot claim evidence or confidence"
+    });
+  }
+});
+
 const dimensionsSchema = z.object({
   demandStrength: z.number().min(0).max(100),
   fit: z.number().min(0).max(100),
@@ -186,6 +216,56 @@ const battleCardOutputSchema = z.object({
   }).strict()
 }).strict();
 
+const battleCardV2OutputSchema = z.object({
+  operation: z.literal("build_battle_card"),
+  result: z.object({
+    accountOverview: z.array(battleCardClaimSchema).max(100),
+    needAssessment: z.array(battleCardClaimSchema).max(100),
+    supplierHypotheses: z.array(battleCardClaimSchema).max(100),
+    buyingCommittee: z.array(z.object({
+      role: z.string().trim().min(1).max(200),
+      priority: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+      influence: z.enum([
+        "decision_maker",
+        "influencer",
+        "user",
+        "gatekeeper"
+      ]),
+      concerns: z.array(
+        z.string().trim().min(1).max(500)
+      ).max(100).refine((items) => new Set(items).size === items.length),
+      claim: battleCardClaimSchema
+    }).strict()).max(100),
+    procurementPreferences: z.array(battleCardClaimSchema).max(100),
+    connectionStrategies: z.array(z.object({
+      channel: z.enum([
+        "public_reply",
+        "wecom",
+        "phone",
+        "email",
+        "referral"
+      ]),
+      targetRole: z.string().trim().min(1).max(200),
+      rationale: battleCardClaimSchema,
+      openingDraft: z.string().trim().min(1).max(8_000)
+    }).strict()).max(100),
+    roleSpecificOpeners: z.array(z.object({
+      role: z.string().trim().min(1).max(200),
+      channel: z.enum([
+        "public_reply",
+        "wecom",
+        "phone",
+        "email",
+        "referral"
+      ]),
+      text: z.string().trim().min(1).max(8_000)
+    }).strict()).max(100),
+    doNotActions: z.array(
+      z.string().trim().min(1).max(1_000)
+    ).max(100).refine((items) => new Set(items).size === items.length)
+  }).strict()
+}).strict();
+
 const channelSchema = z.enum([
   "public_reply",
   "enterprise_wechat",
@@ -208,10 +288,11 @@ const connectionOutputSchema = z.object({
   }).strict()
 }).strict();
 
-const judgmentOutputSchema = z.discriminatedUnion("operation", [
+const judgmentOutputSchema = z.union([
   researchOutputSchema,
   qualifyOutputSchema,
   battleCardOutputSchema,
+  battleCardV2OutputSchema,
   connectionOutputSchema
 ]);
 
@@ -327,7 +408,17 @@ function assertEvidenceWhitelist(
     : output.operation === "qualify"
       ? output.result.evidenceExcerpts.map((item) => item.evidenceId)
       : output.operation === "build_battle_card"
-        ? output.result.sections.flatMap((item) => item.evidenceIds)
+        ? "sections" in output.result
+          ? output.result.sections.flatMap((item) => item.evidenceIds)
+          : [
+              ...output.result.accountOverview,
+              ...output.result.needAssessment,
+              ...output.result.supplierHypotheses,
+              ...output.result.procurementPreferences,
+              ...output.result.buyingCommittee.map((role) => role.claim),
+              ...output.result.connectionStrategies.map((strategy) =>
+                strategy.rationale)
+            ].flatMap((item) => item.evidenceIds)
         : [];
   if (referenced.some((id) => !allowedEvidenceIds.has(id))) {
     fail("MODEL_JUDGMENT_INVALID");
@@ -432,6 +523,15 @@ export function createAcquisitionJudgmentPort(
     if (!parsed.success || parsed.data.operation !== operation) {
       fail("MODEL_JUDGMENT_INVALID");
     }
+    if (operation === "build_battle_card"
+      && parsed.data.operation === "build_battle_card") {
+      const isV2 = !("sections" in parsed.data.result);
+      if (isV2
+        !== (resolved.snapshot.schemaVersion
+          === ACQUISITION_MODEL_SCHEMA_VERSION)) {
+        fail("MODEL_JUDGMENT_INVALID");
+      }
+    }
     assertNoSensitiveContent(parsed.data);
     assertEvidenceWhitelist(parsed.data, allowedEvidenceIds);
     return {
@@ -492,12 +592,30 @@ export function createAcquisitionJudgmentPort(
       const { output, snapshot } = await run(
         input,
         "build_battle_card",
-        { templateVersion: input.templateVersion }
+        {
+          templateVersion: input.templateVersion,
+          financialSummary: structuredClone(input.financialSummary)
+        }
       );
       if (output.operation !== "build_battle_card") {
         fail("MODEL_JUDGMENT_INVALID");
       }
+      if (!("sections" in output.result)) {
+        return {
+          schemaVersion: "battle-card.v2",
+          intelligence: structuredClone(
+            output.result
+          ) as Omit<BattleCardIntelligenceV2, "financialSummary">,
+          confidence: input.financialSummary
+            ? Math.min(1, Math.max(0, input.financialSummary.score / 100))
+            : 0.5,
+          modelProvider: snapshot.provider,
+          model: snapshot.model,
+          promptVersion: snapshot.promptVersion
+        };
+      }
       return {
+        schemaVersion: "battle-card.v1",
         sections: output.result.sections.map((section) => ({
           label: section.label,
           kind: section.kind,

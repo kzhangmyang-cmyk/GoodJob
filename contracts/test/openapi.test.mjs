@@ -88,6 +88,13 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.deepEqual(Object.keys(document.paths).sort(), Object.keys(section16).sort());
   assert.equal(document.components.schemas.ApiError.additionalProperties, false);
   assert.equal(document.components.schemas.AsyncOperation.$ref, "../json-schema/async-operation.v1.schema.json");
+  assert.deepEqual(
+    document.components.schemas.BattleCard.oneOf.map((branch) => branch.$ref),
+    [
+      "#/components/schemas/BattleCardV1",
+      "#/components/schemas/BattleCardV2"
+    ]
+  );
   assert.equal(document.components.schemas.PagedResult.additionalProperties, false);
   assert.equal(document.components.parameters.idempotencyKey.schema.minLength, 1);
   assert.equal(document.components.parameters.idempotencyKey.schema.maxLength, 200);
@@ -174,6 +181,16 @@ test("every named API resource component accepts a canonical valid instance", as
       continue;
     }
     const schema = document.components.schemas[name];
+    if (name === "BattleCard") {
+      assert.deepEqual(
+        schema.oneOf.map((branch) => branch.$ref),
+        [
+          "../json-schema/battle-card.v1.schema.json",
+          "../json-schema/battle-card.v2.schema.json"
+        ]
+      );
+      continue;
+    }
     assert.equal(schema.$ref, `../json-schema/${toKebab(name)}.v1.schema.json`, name);
     const canonical = schema.$ref ? registry.schemaDocuments.get(schema.$ref.split("/").pop().replace(".v1.schema.json", "")) : schema;
     const validate = ajv.compile(canonical);

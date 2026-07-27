@@ -5,6 +5,8 @@ import type {
   BattleCardInput,
   DiscoveryEvidence,
   DiscoveryEvidenceInput,
+  FinancialSummary,
+  FinancialValueDecision,
   FinancialValueInput,
   OutcomeEventType,
   QualificationHardGates,
@@ -350,6 +352,7 @@ export interface AcquisitionJudgmentPort {
     candidate: AcquisitionCandidate;
     evidence: DiscoveryEvidence[];
     templateVersion: string;
+    financialSummary: FinancialSummary | null;
     signal?: AbortSignal;
   }): Promise<BattleCardInput>;
   draftConnectionStrategy?(input: {
@@ -912,7 +915,56 @@ function defaultBattleCard(
 ): BattleCardInput {
   const first = evidence[0];
   if (!first) throw toolError("EVIDENCE_REQUIRED");
+  if (templateVersion === "battle-card.v2") {
+    const fact = {
+      kind: "fact" as const,
+      text: first.sourceSnippet || first.sourceTitle,
+      evidenceIds: [first.id],
+      confidence: 1
+    };
+    return {
+      schemaVersion: "battle-card.v2",
+      intelligence: {
+        accountOverview: [fact],
+        needAssessment: [fact],
+        supplierHypotheses: [{
+          kind: "unknown",
+          text: "公开证据不足，需由销售或后续研究核验现有供应商。",
+          evidenceIds: [],
+          confidence: null
+        }],
+        buyingCommittee: [],
+        procurementPreferences: [{
+          kind: "unknown",
+          text: "当前没有足够公开商务证据判断采购偏好。",
+          evidenceIds: [],
+          confidence: null
+        }],
+        connectionStrategies: [{
+          channel: "public_reply",
+          targetRole: "公开业务负责人",
+          rationale: fact,
+          openingDraft:
+            "建议人工审核后，基于公开需求做温和澄清并提供诊断资料。"
+        }],
+        roleSpecificOpeners: [{
+          role: "公开业务负责人",
+          channel: "public_reply",
+          text: "看到贵方公开提到相关业务需求，我们整理了一页诊断供参考。"
+        }],
+        doNotActions: [
+          "不要臆测决策人身份、采购偏好或现有供应商",
+          "不要自动私信、加好友或发送消息"
+        ]
+      },
+      confidence: 0.45,
+      modelProvider: "rules",
+      model: "conservative-template",
+      promptVersion: templateVersion
+    };
+  }
   return {
+    schemaVersion: "battle-card.v1",
     sections: [
       {
         label: "公开需求证据",
@@ -940,6 +992,22 @@ function defaultBattleCard(
     modelProvider: "rules",
     model: "conservative-template",
     promptVersion: templateVersion
+  };
+}
+
+function persistedFinancialSummary(
+  decision: FinancialValueDecision
+): FinancialSummary {
+  return {
+    decisionId: decision.id,
+    decisionVersion: decision.version,
+    grade: decision.grade,
+    score: decision.score,
+    currency: decision.currency,
+    expectedRevenueMinor: decision.expectedRevenueMinor,
+    expectedGrossProfitMinor: decision.expectedGrossProfitMinor,
+    expectedContributionMinor: decision.expectedContributionMinor,
+    factors: structuredClone(decision.factors)
   };
 }
 
@@ -1693,6 +1761,12 @@ implements AcquisitionAgentToolExecutor {
       "battle_card"
     );
     const templateVersion = payload.templateVersion ?? "battle-card.v1";
+    const financialSummary = persistedFinancialSummary(
+      await this.domain.getCurrentFinancialValueDecision(
+        scope,
+        candidate.id
+      )
+    );
     const cardInput = this.judgments?.buildBattleCard
       ? await this.judgments.buildBattleCard({
           scope,
@@ -1700,6 +1774,7 @@ implements AcquisitionAgentToolExecutor {
           candidate,
           evidence,
           templateVersion,
+          financialSummary,
           signal: input.signal
         })
       : defaultBattleCard(evidence, templateVersion);

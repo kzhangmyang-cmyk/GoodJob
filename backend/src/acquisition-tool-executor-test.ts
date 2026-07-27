@@ -693,10 +693,15 @@ test("maps all ten controlled tools to domain decisions, conservative drafts, re
 
   const battleCard = await execute(executor, "build_battle_card", {
     candidateId: organization.id,
-    templateVersion: "battle-card.v1"
+    templateVersion: "battle-card.v2"
   });
   assert.equal(battleCard.battleCard.candidateId, organization.id);
   assert.equal(battleCard.battleCard.modelProvider, "rules");
+  assert.equal(battleCard.battleCard.schemaVersion, "battle-card.v2");
+  assert.equal(
+    battleCard.battleCard.intelligence.financialSummary.decisionId,
+    financial.financialValue.id
+  );
 
   const strategy = await execute(executor, "draft_connection_strategy", {
     candidateId: organization.id,

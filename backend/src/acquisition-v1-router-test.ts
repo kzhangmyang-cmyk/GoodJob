@@ -740,6 +740,91 @@ test("v1 router exposes the full evidence-to-outcome workflow without automatic 
     assert.equal("ownerId" in card.json, false);
     assert.equal("snapshotHash" in card.json, false);
     assert.equal("evidenceIds" in card.json.sections[1], false);
+    assert.equal(card.json.schemaVersion, "battle-card.v1");
+    assert.equal(card.json.intelligence, null);
+
+    const v2CardResult = await fixture.request(
+      `/api/v1/acquisition/candidates/${candidateId}/battle-card`,
+      write({
+        schemaVersion: "battle-card.v2",
+        intelligence: {
+          accountOverview: [{
+            kind: "fact",
+            text: "客户公开表达了采购需求。",
+            evidenceIds: [evidenceId],
+            confidence: 1
+          }],
+          needAssessment: [{
+            kind: "inference",
+            text: "客户可能处于方案比较阶段。",
+            evidenceIds: [evidenceId],
+            confidence: 0.76
+          }],
+          supplierHypotheses: [{
+            kind: "unknown",
+            text: "现有供应商尚未公开。",
+            evidenceIds: [],
+            confidence: null
+          }],
+          buyingCommittee: [{
+            role: "业务负责人",
+            priority: 1,
+            influence: "decision_maker",
+            concerns: ["投入产出"],
+            claim: {
+              kind: "inference",
+              text: "业务负责人可能参与决策。",
+              evidenceIds: [evidenceId],
+              confidence: 0.68
+            }
+          }],
+          procurementPreferences: [{
+            kind: "unknown",
+            text: "采购偏好尚未公开。",
+            evidenceIds: [],
+            confidence: null
+          }],
+          connectionStrategies: [{
+            channel: "email",
+            targetRole: "业务负责人",
+            rationale: {
+              kind: "fact",
+              text: "公开采购需求适合使用书面资料回应。",
+              evidenceIds: [evidenceId],
+              confidence: 1
+            },
+            openingDraft: "建议人工审核后提供一页诊断资料。"
+          }],
+          roleSpecificOpeners: [{
+            role: "业务负责人",
+            channel: "email",
+            text: "看到贵司公开采购需求，我们整理了一页诊断供参考。"
+          }],
+          doNotActions: ["不要声称已经确认预算"]
+        },
+        confidence: 0.82,
+        modelProvider: "qwen",
+        model: "qwen-plus",
+        promptVersion: "acquisition-model-prompt-bundle.v5"
+      }, "battle-card-org-v2")
+    );
+    assert.equal(v2CardResult.response.status, 202);
+    const v2Card = await fixture.request(
+      `/api/v1/acquisition/candidates/${candidateId}/battle-card`
+    );
+    assert.equal(v2Card.response.status, 200);
+    assert.equal(v2Card.json.schemaVersion, "battle-card.v2");
+    assert.equal(v2Card.json.intelligence.accountOverview[0].kind, "fact");
+    assert.equal(
+      v2Card.json.intelligence.financialSummary.qualificationDecisionId,
+      undefined
+    );
+    assert.equal(
+      v2Card.json.intelligence.financialSummary.decisionId,
+      financial.json.id
+    );
+    assert.equal("ownerId" in v2Card.json, false);
+    assert.equal("snapshotHash" in v2Card.json, false);
 
     const rawDecision = (
       await fixture.domainService.listQualificationDecisions(

@@ -81,7 +81,12 @@ components:
         nextCursor: { type: [string, 'null'] }
     DiscoveryEvidence: { $ref: ../json-schema/discovery-evidence.v1.schema.json }
     QualificationDecision: { $ref: ../json-schema/qualification-decision.v1.schema.json }
-    BattleCard: { $ref: ../json-schema/battle-card.v1.schema.json }
+    BattleCardV1: { $ref: ../json-schema/battle-card.v1.schema.json }
+    BattleCardV2: { $ref: ../json-schema/battle-card.v2.schema.json }
+    BattleCard:
+      oneOf:
+        - { $ref: '#/components/schemas/BattleCardV1' }
+        - { $ref: '#/components/schemas/BattleCardV2' }
     ReviewEvent: { $ref: ../json-schema/review-event.v1.schema.json }
     OutcomeFeedback: { $ref: ../json-schema/outcome-feedback.v1.schema.json }
     CopilotSession: { $ref: ../json-schema/copilot-session.v1.schema.json }
