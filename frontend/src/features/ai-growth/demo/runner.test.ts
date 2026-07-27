@@ -183,10 +183,79 @@ test("supplies labelled production-shaped demo records for the shared UI", () =>
     ).length >= 2,
     true
   );
-  assert.deepEqual(
-    demoFixture.battleCard.sections.map((section) => section.kind),
-    ["fact", "inference", "unknown"]
+  assert.equal(demoFixture.battleCard.schemaVersion, "battle-card.v2");
+  assert.equal(
+    demoFixture.battleCard.schemaVersion === "battle-card.v2"
+      ? demoFixture.battleCard.intelligence.accountOverview.length
+      : 0,
+    1
   );
   assert.equal(demoFixture.duplicateMerge.demo, true);
   assert.equal(demoFixture.ownerSummary.demoLabel, "演示数据");
+});
+
+test("demo plan uses six canonical provider ids and realistic China search queries", () => {
+  assert.deepEqual(
+    demoFixture.plan.providerConnections.map((item) => item.providerId),
+    [
+      "baidu_ai_search",
+      "tencent_web_search",
+      "tavily",
+      "serper",
+      "brave",
+      "serpapi"
+    ]
+  );
+  assert.deepEqual(
+    demoFixture.plan.operations.map((item) => item.query),
+    [
+      "上海 装备制造 海外市场 招聘 外贸销售",
+      "苏州 工业零部件 扩产 新项目",
+      "宁波 制造企业 寻找供应商 合作",
+      "长三角 制造业 CRM 招标 采购",
+      "site:gov.cn 制造企业 扩产 项目 公示",
+      "site:company-domain.example 英文站 海外业务"
+    ]
+  );
+  assert.deepEqual(
+    demoFixture.runPresentation.providers.map((item) => item.providerId),
+    [
+      "baidu_ai_search",
+      "tencent_web_search",
+      "tavily",
+      "serper",
+      "brave",
+      "serpapi"
+    ]
+  );
+});
+
+test("six demo candidates carry differentiated evidence and confidence", () => {
+  const events = demoFixture.runPresentation.candidateEvents;
+  const expectedSignals = [
+    "招聘外贸销售",
+    "英文站上线",
+    "扩产公告",
+    "CRM 招标",
+    "海外展会",
+    "供应商服务投诉"
+  ];
+
+  assert.deepEqual(
+    events.map((event) => event.qualification?.evidence[0]?.excerpt),
+    expectedSignals.map((signal) => `演示数据：${signal}`)
+  );
+  assert.ok(new Set(
+    events.map((event) => event.qualification?.confidence)
+  ).size > 1);
+  for (const event of events) {
+    const qualification = event.qualification;
+    assert.ok(qualification);
+    assert.equal(
+      qualification.reasons.every((reason) =>
+        reason.includes(qualification.evidence[0]!.evidenceId)
+      ),
+      true
+    );
+  }
 });

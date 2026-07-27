@@ -297,12 +297,70 @@ export interface BattleCardSectionDto {
   confidence?: number;
 }
 
-export interface BattleCardDto {
+export interface BattleCardClaimDto {
+  kind: "fact" | "inference" | "unknown";
+  text: string;
+  evidenceIds: string[];
+  confidence: number | null;
+}
+
+export interface BattleCardBuyingRoleDto {
+  role: string;
+  priority: 1 | 2 | 3;
+  influence: "decision_maker" | "influencer" | "user" | "gatekeeper";
+  concerns: string[];
+  claim: BattleCardClaimDto;
+}
+
+export type BattleCardConnectionChannel =
+  | "public_reply"
+  | "wecom"
+  | "phone"
+  | "email"
+  | "referral";
+
+export interface BattleCardConnectionStrategyDto {
+  channel: BattleCardConnectionChannel;
+  targetRole: string;
+  rationale: BattleCardClaimDto;
+  openingDraft: string;
+}
+
+export interface BattleCardRoleOpenerDto {
+  role: string;
+  channel: BattleCardConnectionChannel;
+  text: string;
+}
+
+export interface BattleCardFinancialSummaryDto {
+  decisionId: string;
+  decisionVersion: string;
+  grade: QualificationGrade;
+  score: number;
+  currency: string;
+  expectedRevenueMinor: number;
+  expectedGrossProfitMinor: number;
+  expectedContributionMinor: number;
+  factors: FinancialValueDto["factors"];
+}
+
+export interface BattleCardIntelligenceDto {
+  accountOverview: BattleCardClaimDto[];
+  needAssessment: BattleCardClaimDto[];
+  supplierHypotheses: BattleCardClaimDto[];
+  buyingCommittee: BattleCardBuyingRoleDto[];
+  procurementPreferences: BattleCardClaimDto[];
+  connectionStrategies: BattleCardConnectionStrategyDto[];
+  roleSpecificOpeners: BattleCardRoleOpenerDto[];
+  doNotActions: string[];
+  financialSummary: BattleCardFinancialSummaryDto | null;
+}
+
+interface BattleCardDtoCommon {
   id: string;
   candidateId: string;
   qualificationDecisionId: string;
   partyType: "organization" | "individual";
-  sections: BattleCardSectionDto[];
   evidenceIds: string[];
   confidence: number;
   modelProvider: string;
@@ -310,6 +368,20 @@ export interface BattleCardDto {
   promptVersion: string;
   createdAt: string;
 }
+
+export interface BattleCardV1Dto extends BattleCardDtoCommon {
+  schemaVersion?: "battle-card.v1";
+  sections: BattleCardSectionDto[];
+  intelligence?: null;
+}
+
+export interface BattleCardV2Dto extends BattleCardDtoCommon {
+  schemaVersion: "battle-card.v2";
+  intelligence: BattleCardIntelligenceDto;
+  sections?: never;
+}
+
+export type BattleCardDto = BattleCardV1Dto | BattleCardV2Dto;
 
 export interface FinancialAmountVm extends FinancialAmountDto {
   formatted: string;
@@ -366,6 +438,14 @@ export interface AdvisorState {
 export interface BattleCardSectionVm {
   label: string;
   kind: BattleCardSectionDto["kind"];
+  content: string;
+  evidenceIds: string[];
+  confidence: number | null;
+  inferenceLabel: "推测" | null;
+}
+
+export interface BattleCardClaimVm {
+  kind: BattleCardClaimDto["kind"];
   content: string;
   evidenceIds: string[];
   confidence: number | null;

@@ -7,6 +7,7 @@ import {
 } from "./templates.js";
 import type {
   AdvisorRunVm,
+  BattleCardClaimDto,
   BattleCardSectionDto,
   CandidatePresentationEventDto,
   CandidateStatus,
@@ -15,10 +16,13 @@ import type {
   RunPresentationDto
 } from "./types.js";
 import {
+  BATTLE_CARD_V2_REGION_ORDER,
+  battleCardClaimVm,
   battleCardSectionsVm,
   financialValueVm,
   mergePresentation,
-  pageStatusForRun
+  pageStatusForRun,
+  searchProviderLabel
 } from "./view-model.js";
 
 const run = {
@@ -291,6 +295,56 @@ test("battleCardSectionsVm labels inference with confidence and evidence referen
     confidence: 0.82,
     evidenceIds: ["evidence-1", "evidence-2"]
   }]);
+});
+
+test("battleCardClaimVm keeps evidence and labels only evidence-backed inference as 推测", () => {
+  const inference: BattleCardClaimDto = {
+    kind: "inference",
+    text: "可能更重视可量化的海外增长结果",
+    confidence: 0.74,
+    evidenceIds: ["evidence-growth"]
+  };
+  const fact: BattleCardClaimDto = {
+    kind: "fact",
+    text: "官网已上线英文站",
+    confidence: 1,
+    evidenceIds: ["evidence-site"]
+  };
+
+  assert.deepEqual(battleCardClaimVm(inference), {
+    kind: "inference",
+    content: "可能更重视可量化的海外增长结果",
+    confidence: 0.74,
+    evidenceIds: ["evidence-growth"],
+    inferenceLabel: "推测"
+  });
+  assert.equal(battleCardClaimVm(fact).inferenceLabel, null);
+});
+
+test("battle-card v2 regions have one stable evidence-led order", () => {
+  assert.deepEqual(BATTLE_CARD_V2_REGION_ORDER, [
+    "客户概况",
+    "需求证据",
+    "供应商",
+    "决策链",
+    "采购偏好",
+    "连接策略",
+    "角色话术",
+    "不建议动作",
+    "财务摘要"
+  ]);
+});
+
+test("canonical search provider ids are translated only in the display layer", () => {
+  assert.equal(searchProviderLabel("baidu_ai_search"), "百度 AI 搜索");
+  assert.equal(
+    searchProviderLabel("tencent_web_search", true),
+    "腾讯云联网搜索（演示数据）"
+  );
+  assert.equal(
+    searchProviderLabel("custom_search", true),
+    "custom_search（演示数据）"
+  );
 });
 
 test("industry templates expose only editable targeting fields", () => {

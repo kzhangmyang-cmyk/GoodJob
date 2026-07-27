@@ -32,6 +32,22 @@ export interface DemoFixture {
 }
 
 const timestamp = "2026-07-26T09:00:00.000Z";
+const providerIds = [
+  "baidu_ai_search",
+  "tencent_web_search",
+  "tavily",
+  "serper",
+  "brave",
+  "serpapi"
+] as const;
+const demoQueries = [
+  "上海 装备制造 海外市场 招聘 外贸销售",
+  "苏州 工业零部件 扩产 新项目",
+  "宁波 制造企业 寻找供应商 合作",
+  "长三角 制造业 CRM 招标 采购",
+  "site:gov.cn 制造企业 扩产 项目 公示",
+  "site:company-domain.example 英文站 海外业务"
+] as const;
 
 const plan: AcquisitionPlanCreateDto = {
   name: "演示数据 · 长三角制造企业增长机会",
@@ -44,21 +60,26 @@ const plan: AcquisitionPlanCreateDto = {
     exclusionRules: ["演示数据：仅公开企业信息", "勿扰名单"]
   },
   subjectChannels: { organization: true, individual: false },
-  providerConnections: [
-    "Bing 公开搜索",
-    "Google 新闻公开索引",
-    "百度公开搜索",
-    "必应新闻公开索引",
-    "企业官网公开页",
-    "行业协会公开目录"
-  ].map((providerId, index) => ({
+  providerConnections: providerIds.map((providerId, index) => ({
     connectionId: `demo-connection-${index + 1}`,
     providerId,
     kind: "search" as const,
     status: "active" as const,
     credentialVersion: 0
   })),
-  operations: [],
+  operations: demoQueries.map((query, index) => ({
+    operationId: `demo-search-${index + 1}`,
+    subjectChannel: "organization" as const,
+    kind: "search" as const,
+    connectionId: `demo-connection-${index + 1}`,
+    query,
+    allocatedBudget: {
+      requests: 10,
+      results: 20,
+      amountMinor: 0,
+      durationSeconds: 15
+    }
+  })),
   budgetSnapshot: {
     billingCurrency: "CNY",
     maxRequests: 60,
@@ -91,7 +112,9 @@ const summary: ExecutiveSummaryDto = {
 const qualification = (
   candidateId: string,
   grade: "S" | "A" | "B" | "C",
-  score: number
+  score: number,
+  signal: string,
+  confidence: number
 ) => ({
   id: `demo-qualification-${candidateId}`,
   candidateId,
@@ -106,12 +129,14 @@ const qualification = (
       : "observe" as const,
   evidence: [{
     evidenceId: `demo-evidence-${candidateId}`,
-    excerpt: "演示数据：来自公开页面的企业动态摘要。"
+    excerpt: `演示数据：${signal}`
   }],
-  positiveSignals: [{ name: "公开增长信号（演示数据）", score }],
+  positiveSignals: [{ name: `${signal}（演示数据）`, score }],
   negativeSignals: [],
-  reasons: ["演示数据：公开信息与目标画像匹配。"],
-  confidence: 0.82,
+  reasons: [
+    `演示数据：证据 demo-evidence-${candidateId} 与目标画像匹配。`
+  ],
+  confidence,
   ruleVersion: "demo-rules-v1",
   promptVersion: null,
   modelProvider: null,
@@ -129,16 +154,16 @@ const presentation: RunPresentationDto = {
     completedAt: timestamp
   },
   providers: [
-    ["Bing 公开搜索", "succeeded", 21, 4, 1, null],
-    ["Google 新闻公开索引", "succeeded", 18, 3, 1, null],
-    ["百度公开搜索", "succeeded", 17, 3, 2, null],
-    ["必应新闻公开索引", "partial_success", 12, 2, 0, "DEMO_PARTIAL_PAGE"],
-    ["企业官网公开页", "succeeded", 11, 2, 0, null],
-    ["行业协会公开目录", "partial_success", 9, 1, 0, "DEMO_RATE_LIMIT" ]
+    ["baidu_ai_search", "succeeded", 21, 4, 1, null],
+    ["tencent_web_search", "succeeded", 18, 3, 1, null],
+    ["tavily", "succeeded", 17, 3, 2, null],
+    ["serper", "partial_success", 12, 2, 0, "DEMO_PARTIAL_PAGE"],
+    ["brave", "succeeded", 11, 2, 0, null],
+    ["serpapi", "partial_success", 9, 1, 0, "DEMO_RATE_LIMIT" ]
   ].map(([providerId, status, rawResultCount, acceptedResultCount, duplicateResultCount, errorCode], index) => ({
     shardId: `demo-shard-${index + 1}`,
     connectionId: `demo-connection-${index + 1}`,
-    providerId: `${providerId}（演示数据）`,
+    providerId: providerId as string,
     status: status as "succeeded" | "partial_success",
     rawResultCount: rawResultCount as number,
     acceptedResultCount: acceptedResultCount as number,
@@ -149,13 +174,24 @@ const presentation: RunPresentationDto = {
   })),
   summary,
   candidateEvents: [
-    ["demo-candidate-1", "远岚智能装备（演示数据）", "上海", "S", 96, "CNY", 1_280_000],
-    ["demo-candidate-2", "海桥工业零部件（演示数据）", "苏州", "A", 88, "USD", 180_000],
-    ["demo-candidate-3", "蓝港供应链科技（演示数据）", "宁波", "B", 76, null, null],
-    ["demo-candidate-4", "晨拓精密制造（演示数据）", "上海", "C", 61, null, null],
-    ["demo-candidate-5", "星港出口服务（演示数据）", "苏州", "A", 84, null, null],
-    ["demo-candidate-6", "新原工业系统（演示数据）", "宁波", "B", 73, "CNY", 1_400_000]
-  ].map(([id, displayName, region, grade, score, currency, amountMinor], index) => {
+    ["demo-candidate-1", "远岚智能装备（演示数据）", "上海", "S", 96, "招聘外贸销售", 0.91, "baidu_ai_search", "CNY", 1_280_000],
+    ["demo-candidate-2", "海桥工业零部件（演示数据）", "苏州", "A", 88, "英文站上线", 0.84, "tencent_web_search", "USD", 180_000],
+    ["demo-candidate-3", "蓝港供应链科技（演示数据）", "宁波", "B", 76, "扩产公告", 0.79, "tavily", null, null],
+    ["demo-candidate-4", "晨拓精密制造（演示数据）", "上海", "C", 61, "CRM 招标", 0.73, "serper", null, null],
+    ["demo-candidate-5", "星港出口服务（演示数据）", "苏州", "A", 84, "海外展会", 0.87, "brave", null, null],
+    ["demo-candidate-6", "新原工业系统（演示数据）", "宁波", "B", 73, "供应商服务投诉", 0.68, "serpapi", "CNY", 1_400_000]
+  ].map(([
+    id,
+    displayName,
+    region,
+    grade,
+    score,
+    signal,
+    confidence,
+    sourcePlatform,
+    currency,
+    amountMinor
+  ], index) => {
     const candidateId = id as string;
     const financialValue = currency === null ? null : {
       id: `demo-financial-${candidateId}`,
@@ -192,9 +228,15 @@ const presentation: RunPresentationDto = {
         status: grade === "C" ? "pending_review" as const : "qualified" as const,
         updatedAt: timestamp
       },
-      qualification: qualification(candidateId, grade as "S" | "A" | "B" | "C", score as number),
+      qualification: qualification(
+        candidateId,
+        grade as "S" | "A" | "B" | "C",
+        score as number,
+        signal as string,
+        confidence as number
+      ),
       financialValue,
-      sourcePlatforms: ["公开搜索（演示数据）"],
+      sourcePlatforms: [sourcePlatform as string],
       evidenceCount: 2 + index
     };
   }),
@@ -219,31 +261,88 @@ export const demoFixture: DemoFixture = {
     candidateId: "demo-candidate-1",
     qualificationDecisionId: "demo-qualification-demo-candidate-1",
     partyType: "organization",
-    sections: [
-      {
-        label: "已确认事实（演示数据）",
+    schemaVersion: "battle-card.v2",
+    intelligence: {
+      accountOverview: [{
         kind: "fact",
-        content: "公开页面显示该企业正在更新出口产品资料。",
-        evidenceIds: ["demo-evidence-demo-candidate-1"]
-      },
-      {
-        label: "下一步推测（演示数据）",
-        kind: "inference",
-        content: "推测其正在比较海外获客与供应链协同方案。",
-        confidence: 0.82,
-        evidenceIds: ["demo-evidence-demo-candidate-1"]
-      },
-      {
-        label: "待人工核实（演示数据）",
+        text: "演示数据：远岚智能装备为上海装备制造企业。",
+        evidenceIds: ["demo-evidence-demo-candidate-1"],
+        confidence: 1
+      }],
+      needAssessment: [{
+        kind: "fact",
+        text: "演示数据：公开招聘信息显示正在招聘外贸销售。",
+        evidenceIds: ["demo-evidence-demo-candidate-1"],
+        confidence: 1
+      }],
+      supplierHypotheses: [{
         kind: "unknown",
-        content: "尚不清楚预算窗口和采购决策节奏。"
+        text: "演示数据：没有充分公开证据确认现有获客供应商。",
+        evidenceIds: [],
+        confidence: null
+      }],
+      buyingCommittee: [{
+        role: "海外业务负责人",
+        priority: 1,
+        influence: "decision_maker",
+        concerns: ["海外询盘质量", "销售转化效率"],
+        claim: {
+          kind: "inference",
+          text: "演示数据：海外业务负责人可能参与方案决策。",
+          evidenceIds: ["demo-evidence-demo-candidate-1"],
+          confidence: 0.76
+        }
+      }],
+      procurementPreferences: [{
+        kind: "inference",
+        text: "演示数据：可能更关注可量化的询盘质量与转化结果。",
+        confidence: 0.72,
+        evidenceIds: ["demo-evidence-demo-candidate-1"]
+      }],
+      connectionStrategies: [{
+        channel: "email",
+        targetRole: "海外业务负责人",
+        rationale: {
+          kind: "fact",
+          text: "演示数据：公开招聘页确认其正在扩充外贸团队。",
+          evidenceIds: ["demo-evidence-demo-candidate-1"],
+          confidence: 1
+        },
+        openingDraft: "建议人工审核后，以外贸团队线索筛选诊断作为切入。"
+      }],
+      roleSpecificOpeners: [{
+        role: "海外业务负责人",
+        channel: "email",
+        text: "看到贵司正在扩充外贸团队，我们整理了一页公开线索筛选诊断，供您评估。"
+      }],
+      doNotActions: [
+        "不要声称已经确认企业预算",
+        "不要未经人工审核直接发送开场草稿"
+      ],
+      financialSummary: {
+        decisionId: "demo-financial-demo-candidate-1",
+        decisionVersion: "demo-financial-v1",
+        grade: "S",
+        score: 96,
+        currency: "CNY",
+        expectedRevenueMinor: 1_280_000,
+        expectedGrossProfitMinor: 537_600,
+        expectedContributionMinor: 256_000,
+        factors: {
+          profitability: 0.76,
+          cashFlow: 0.7,
+          creditQuality: 0.72,
+          repeatPotential: 0.74,
+          referralPotential: 0.64,
+          closeProbability: 0.58
+        }
       }
-    ],
+    },
     evidenceIds: ["demo-evidence-demo-candidate-1"],
-    confidence: 0.82,
-    modelProvider: "演示数据：本地规则",
-    model: "demo-rules-v1",
-    promptVersion: "demo-prompt-v1",
+    confidence: 0.81,
+    modelProvider: "demo-local",
+    model: "demo-rules-v2",
+    promptVersion: "battle-card.v2.demo",
     createdAt: timestamp
   },
   ownerSummary: {

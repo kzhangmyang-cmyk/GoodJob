@@ -4,6 +4,7 @@ import {
   type AdvisorRequest,
   type AiGrowthApi,
   type CandidateConversionDto,
+  type EvidenceDto,
   type PlanDtoWithEtag,
   type ProviderConnectionDto,
   type TodoCreateDto
@@ -46,15 +47,19 @@ import {
 import {
   financialValueVm,
   mergePresentation,
-  pageStatusForRun
+  pageStatusForRun,
+  searchProviderLabel
 } from "./view-model.js";
 import type {
   AdvisorMode,
   AdvisorRunVm,
   AdvisorState,
+  BattleCardDto,
   CandidateCardVm,
   CandidateDto,
+  FinancialValueDto,
   IndustryTemplateId,
+  QualificationDto,
   RunDto
 } from "./types.js";
 
@@ -199,6 +204,51 @@ function candidateCardFromDomain(
   };
 }
 
+function demoCandidateFromPresentation(
+  candidate: CandidateCardVm,
+  qualification: QualificationDto | null,
+  evidence: readonly EvidenceDto[]
+): CandidateDto {
+  const common = {
+    id: candidate.id,
+    status: candidate.status,
+    latestDecisionVersion: qualification?.decisionVersion ?? null,
+    approvedDecisionVersion: candidate.status === "approved"
+      ? qualification?.decisionVersion ?? null
+      : null,
+    updatedAt: candidate.updatedAt,
+    evidenceIds: evidence.map((item) => item.id)
+  };
+  if (candidate.subjectKind === "organization") {
+    return {
+      ...common,
+      subjectKind: "organization",
+      name: candidate.displayName,
+      domain: candidate.domain,
+      region: candidate.region,
+      creditCode: null,
+      createdAt: candidate.updatedAt
+    };
+  }
+  return {
+    ...common,
+    subjectKind: "individual",
+    publicActorKey: candidate.id,
+    publicDisplayName: candidate.displayName,
+    publicProfileUrl: candidate.domain ?? "",
+    sourcePlatform: candidate.sourcePlatforms[0] ?? "demo",
+    demandCategory: "公开需求信号",
+    demandSummary: qualification?.reasons.join("；") ?? "演示数据",
+    locationHint: candidate.region ?? "",
+    buyingStage: "awareness",
+    negativeSignals: qualification?.negativeSignals.map(
+      (item) => item.name
+    ) ?? [],
+    firstSeenAt: candidate.updatedAt,
+    lastSeenAt: candidate.updatedAt
+  };
+}
+
 function healthyConnections(
   connections: readonly ProviderConnectionDto[]
 ): ProviderConnectionDto[] {
@@ -320,6 +370,21 @@ export function createAiGrowthController(
     todo: TodoCreateDto;
   }>();
   const conversionOperations = new Map<string, Promise<void>>();
+  const demoBattleCards = new Map<string, BattleCardDto>();
+  const demoDuplicateMerges: Array<
+    Extract<AdvisorDemoEvent, { type: "duplicate_merged" }>["duplicateMerge"]
+  > = [];
+  const demoQualifications = new Map<string, QualificationDto>();
+  const demoFinancialValues = new Map<string, FinancialValueDto>();
+  const demoEvidence = new Map<string, EvidenceDto[]>();
+
+  const resetDemoArtifacts = () => {
+    demoBattleCards.clear();
+    demoDuplicateMerges.length = 0;
+    demoQualifications.clear();
+    demoFinancialValues.clear();
+    demoEvidence.clear();
+  };
 
   const publish = () => {
     options.onChange?.(cloneState(state));
@@ -389,6 +454,39 @@ export function createAiGrowthController(
         error: null
       };
     } else if (event.type === "presentation") {
+      for (const candidateEvent of event.presentation.candidateEvents) {
+        const qualification = candidateEvent.qualification;
+        if (qualification) {
+          demoQualifications.set(candidateEvent.candidateId, qualification);
+          demoEvidence.set(
+            candidateEvent.candidateId,
+            qualification.evidence.map((item) => ({
+              id: item.evidenceId,
+              targetType: candidateEvent.candidate.subjectKind === "organization"
+                ? "organization"
+                : "individual_signal",
+              sourcePlatform:
+                candidateEvent.sourcePlatforms[0] ?? "demo_search",
+              sourceTitle:
+                `${candidateEvent.candidate.displayName} · 演示公开信号`,
+              sourceSnippet: item.excerpt,
+              publishedAt: candidateEvent.createdAt,
+              fetchedAt: candidateEvent.createdAt,
+              locale: "zh-CN",
+              rawArtifactHash: `demo-raw-${item.evidenceId}`,
+              contentHash: `demo-content-${item.evidenceId}`,
+              provenance: {},
+              accessStatus: "indexed_summary"
+            }))
+          );
+        }
+        if (candidateEvent.financialValue) {
+          demoFinancialValues.set(
+            candidateEvent.candidateId,
+            candidateEvent.financialValue
+          );
+        }
+      }
       runVm = mergePresentation(
         runVm ?? {
           run: event.presentation.run,
@@ -409,6 +507,10 @@ export function createAiGrowthController(
         candidatesById: new Map(runVm.candidatesById),
         summary: runVm.summary
       };
+    } else if (event.type === "battle_card") {
+      demoBattleCards.set(event.battleCard.candidateId, event.battleCard);
+    } else if (event.type === "duplicate_merged") {
+      demoDuplicateMerges.push(event.duplicateMerge);
     } else if (event.type === "summary" && runVm) {
       state = { ...state, summary: runVm.summary };
     }
@@ -515,6 +617,7 @@ export function createAiGrowthController(
       operationGeneration += 1;
       poller.stop();
       stopDemo();
+      resetDemoArtifacts();
       drawer.close();
       runVm = null;
       currentRun = null;
@@ -580,6 +683,8 @@ export function createAiGrowthController(
       if (!taskText) throw new Error("请先填写商机搜索任务");
       if (state.mode === "demo") {
         stopDemo();
+        resetDemoArtifacts();
+        drawer.close();
         ensureDemoRunner().start();
         return;
       }
@@ -733,6 +838,8 @@ export function createAiGrowthController(
     async cancel() {
       if (state.mode === "demo") {
         stopDemo();
+        resetDemoArtifacts();
+        drawer.close();
         state = { ...state, status: "cancelled" };
         publish();
         return;
@@ -766,7 +873,29 @@ export function createAiGrowthController(
 
     async openCandidate(candidateId) {
       if (state.mode === "demo") {
-        options.toast("演示模式只展示内置作战卡，不读取真实候选");
+        const candidate = state.candidatesById.get(candidateId);
+        const card = demoBattleCards.get(candidateId);
+        if (!candidate || !card) {
+          drawer.close();
+          options.toast("演示作战卡尚未生成");
+          publish();
+          return;
+        }
+        const qualification =
+          demoQualifications.get(candidateId) ?? candidate.qualification;
+        const evidence = demoEvidence.get(candidateId) ?? [];
+        drawer.openFixture(
+          demoCandidateFromPresentation(
+            candidate,
+            qualification ?? null,
+            evidence
+          ),
+          card,
+          evidence,
+          qualification ?? null,
+          demoFinancialValues.get(candidateId) ?? null
+        );
+        publish();
         return;
       }
       await drawer.open(candidateId);
@@ -881,7 +1010,7 @@ export function createAiGrowthController(
       const connectionVms: SearchConnectionHealthVm[] =
         connections.map((connection) => ({
           providerId: connection.providerId,
-          label: connection.providerId,
+          label: searchProviderLabel(connection.providerId),
           status: connection.status === "active"
             ? "healthy"
             : connection.status === "inactive"
@@ -958,7 +1087,10 @@ export function createAiGrowthController(
       ) {
         const providers: RunProviderVm[] = (runVm?.providers ?? []).map(
           (provider) => ({
-            providerId: provider.providerId,
+            providerId: searchProviderLabel(
+              provider.providerId,
+              state.mode === "demo"
+            ),
             status: provider.status,
             acceptedResultCount: provider.acceptedResultCount,
             failedResultCount: provider.failedResultCount,
@@ -988,9 +1120,14 @@ export function createAiGrowthController(
           }, {
             onViewPriority: () => undefined,
             onBuildBattleCard: (id) =>
-              void controller.openCandidate(id).then(() =>
-                drawer.generateBattleCard()
-              ),
+              void controller.openCandidate(id).then(() => {
+                if (
+                  state.mode === "real"
+                  && drawer.getState().battleCard.status === "missing"
+                ) {
+                  return drawer.generateBattleCard();
+                }
+              }),
             onPreviewConversion: () =>
               options.toast("演示模式不会写入真实线索或待办"),
             onConvert: (id) =>
@@ -1046,6 +1183,7 @@ export function createAiGrowthController(
       operationGeneration += 1;
       poller.stop();
       stopDemo();
+      resetDemoArtifacts();
       drawer.close();
       publish();
     },
@@ -1162,11 +1300,13 @@ export function createMountedAiGrowthAdvisor(
         break;
       case "build-battle-card":
         if (controller.getState().mode === "demo") {
-          dependencies.toast("演示模式只展示内置作战卡");
+          await controller.openCandidate(candidateId);
           break;
         }
         await controller.openCandidate(candidateId);
-        await controller.getDrawer().generateBattleCard();
+        if (controller.getDrawer().getState().battleCard.status === "missing") {
+          await controller.getDrawer().generateBattleCard();
+        }
         break;
       case "close-battle-card":
         controller.getDrawer().close();

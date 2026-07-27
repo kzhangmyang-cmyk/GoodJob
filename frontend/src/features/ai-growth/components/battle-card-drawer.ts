@@ -5,13 +5,20 @@ import {
   type EvidenceDto
 } from "../api.js";
 import type {
+  BattleCardClaimDto,
+  BattleCardConnectionChannel,
   BattleCardDto,
+  BattleCardFinancialSummaryDto,
   CandidateDto,
   CandidateStatus,
   FinancialValueDto,
   QualificationDto
 } from "../types.js";
-import { battleCardSectionsVm } from "../view-model.js";
+import {
+  battleCardClaimVm,
+  battleCardSectionsVm,
+  formatMinorAmount
+} from "../view-model.js";
 import {
   componentRender,
   escapeHtml,
@@ -44,6 +51,7 @@ export interface BattleCardActionState {
 
 export interface BattleCardDrawerState {
   open: boolean;
+  readOnly: boolean;
   candidateId: string | null;
   candidate: DrawerResource<CandidateDto>;
   evidence: DrawerResource<EvidenceDto[]>;
@@ -78,6 +86,13 @@ export interface BattleCardDrawer {
   getState(): BattleCardDrawerState;
   render(): ComponentRender<BattleCardDrawerCallbacks>;
   open(candidateId: string): Promise<void>;
+  openFixture(
+    candidate: CandidateDto,
+    card: BattleCardDto,
+    evidence: EvidenceDto[],
+    qualification: QualificationDto | null,
+    financialValue: FinancialValueDto | null
+  ): void;
   close(): void;
   runQualification(): Promise<void>;
   generateBattleCard(): Promise<void>;
@@ -119,6 +134,7 @@ function actionState(): BattleCardActionState {
 function initialState(): BattleCardDrawerState {
   return {
     open: false,
+    readOnly: false,
     candidateId: null,
     candidate: emptyResource(),
     evidence: emptyResource(),
@@ -235,27 +251,205 @@ function evidenceReference(
     : `<span class="ai-growth-evidence-ref" data-evidence-id="${escapeHtml(id)}">${escapeHtml(label)}</span>`;
 }
 
-function battleCardContent(state: BattleCardDrawerState): string {
-  if (state.battleCard.status === "loading") {
-    return `<p class="ai-growth-empty-value">正在读取客户作战卡</p>`;
-  }
-  if (state.battleCard.status === "missing") {
-    return `
-      <div class="ai-growth-drawer-empty">
-        <strong>客户作战卡尚未生成</strong>
-        <p>生成动作将交给受控工具执行，并在任务成功后读取结果。</p>
-        <button type="button" class="ai-growth-button ai-growth-button--primary" data-action="generate-battle-card">生成客户作战卡</button>
-      </div>
-    `;
-  }
-  if (state.battleCard.status === "error") {
-    return resourceError(state.battleCard);
-  }
-  if (state.battleCard.data === null) return "";
+function inferenceStatus(
+  kind: BattleCardClaimDto["kind"],
+  confidence: number | null
+): string {
+  return kind === "inference"
+    ? `<span class="ai-growth-inference-label">推测 · ${confidence === null
+      ? "置信度待核验"
+      : `置信度 ${percent(confidence)}`}</span>`
+    : "";
+}
 
-  const items = state.evidence.data ?? [];
-  const index = evidenceIndex(items);
-  const sections = battleCardSectionsVm(state.battleCard.data.sections);
+function claimEvidence(
+  claim: BattleCardClaimDto,
+  index: Map<string, EvidenceDto>
+): string {
+  const vm = battleCardClaimVm(claim);
+  return `
+    <div class="ai-growth-battle-claim__heading">
+      ${inferenceStatus(vm.kind, vm.confidence)}
+    </div>
+    <p>${escapeHtml(vm.content)}</p>
+    <div class="ai-growth-evidence-links">
+      ${vm.evidenceIds.length === 0
+        ? `<span class="ai-growth-empty-value">暂无可链接证据</span>`
+        : vm.evidenceIds.map((id) => evidenceReference(id, index)).join("")}
+    </div>
+  `;
+}
+
+function claimsRegion(
+  id: string,
+  title: string,
+  claims: BattleCardClaimDto[],
+  index: Map<string, EvidenceDto>
+): string {
+  return `
+    <section class="ai-growth-battle-section ai-growth-battle-section--v2" data-v2-region="${id}">
+      <header><h3>${title}</h3></header>
+      ${claims.length === 0
+        ? `<p class="ai-growth-empty-value">暂无可核验结论</p>`
+        : claims.map((claim) => `
+          <article data-claim-kind="${claim.kind}">
+            ${claimEvidence(claim, index)}
+          </article>
+        `).join("")}
+    </section>
+  `;
+}
+
+const CHANNEL_LABELS: Readonly<
+  Record<BattleCardConnectionChannel, string>
+> = {
+  public_reply: "公开回复",
+  wecom: "企业微信",
+  phone: "电话",
+  email: "邮件",
+  referral: "转介绍"
+};
+
+const INFLUENCE_LABELS = {
+  decision_maker: "决策人",
+  influencer: "影响人",
+  user: "使用者",
+  gatekeeper: "把关人"
+} as const;
+
+function financialSummaryContent(
+  value: BattleCardFinancialSummaryDto | null
+): string {
+  if (value === null) {
+    return `<p class="ai-growth-empty-value">待财务评估，不展示推测金额</p>`;
+  }
+  const amounts = [
+    ["预计收入", value.expectedRevenueMinor],
+    ["预计毛利", value.expectedGrossProfitMinor],
+    ["预计贡献", value.expectedContributionMinor]
+  ] as const;
+  return `
+    <div class="ai-growth-battle-financial-grid">
+      ${amounts.map(([label, amountMinor]) => `
+        <div>
+          <span>${label}</span>
+          <strong>${escapeHtml(formatMinorAmount({
+            currency: value.currency,
+            amountMinor
+          }))}</strong>
+        </div>
+      `).join("")}
+    </div>
+    <p>财务等级 ${value.grade} · ${value.score} 分；金额来自当前财务决定，仍需人工确认。</p>
+  `;
+}
+
+function renderBattleCardV2(
+  card: Extract<BattleCardDto, { schemaVersion: "battle-card.v2" }>,
+  index: Map<string, EvidenceDto>
+): string {
+  const intelligence = card.intelligence;
+  return [
+    claimsRegion(
+      "account-overview",
+      "客户概况",
+      intelligence.accountOverview,
+      index
+    ),
+    claimsRegion(
+      "need-assessment",
+      "需求证据",
+      intelligence.needAssessment,
+      index
+    ),
+    claimsRegion(
+      "suppliers",
+      "供应商",
+      intelligence.supplierHypotheses,
+      index
+    ),
+    `
+      <section class="ai-growth-battle-section ai-growth-battle-section--v2" data-v2-region="buying-committee">
+        <header><h3>决策链</h3></header>
+        ${intelligence.buyingCommittee.length === 0
+          ? `<p class="ai-growth-empty-value">尚未识别可核验的商务角色</p>`
+          : intelligence.buyingCommittee.map((item) => `
+            <article>
+              <div class="ai-growth-battle-role">
+                <strong>${escapeHtml(item.role)}</strong>
+                <span>优先级 ${item.priority} · ${INFLUENCE_LABELS[item.influence]}</span>
+              </div>
+              ${item.concerns.length === 0
+                ? ""
+                : `<p>关注：${escapeHtml(item.concerns.join("、"))}</p>`}
+              ${claimEvidence(item.claim, index)}
+            </article>
+          `).join("")}
+      </section>
+    `,
+    claimsRegion(
+      "procurement-preferences",
+      "采购偏好",
+      intelligence.procurementPreferences,
+      index
+    ),
+    `
+      <section class="ai-growth-battle-section ai-growth-battle-section--v2" data-v2-region="connection-strategies">
+        <header><h3>连接策略</h3></header>
+        ${intelligence.connectionStrategies.length === 0
+          ? `<p class="ai-growth-empty-value">暂无建议连接路径</p>`
+          : intelligence.connectionStrategies.map((item) => `
+            <article>
+              <div class="ai-growth-battle-role">
+                <strong>${CHANNEL_LABELS[item.channel]}</strong>
+                <span>目标角色：${escapeHtml(item.targetRole)}</span>
+              </div>
+              ${claimEvidence(item.rationale, index)}
+              <p><strong>开场草稿：</strong>${escapeHtml(item.openingDraft)}</p>
+            </article>
+          `).join("")}
+      </section>
+    `,
+    `
+      <section class="ai-growth-battle-section ai-growth-battle-section--v2" data-v2-region="role-openers">
+        <header><h3>角色话术</h3></header>
+        ${intelligence.roleSpecificOpeners.length === 0
+          ? `<p class="ai-growth-empty-value">暂无分角色开场草稿</p>`
+          : intelligence.roleSpecificOpeners.map((item) => `
+            <article>
+              <div class="ai-growth-battle-role">
+                <strong>${escapeHtml(item.role)}</strong>
+                <span>${CHANNEL_LABELS[item.channel]} · 人工审核后使用</span>
+              </div>
+              <p>${escapeHtml(item.text)}</p>
+            </article>
+          `).join("")}
+      </section>
+    `,
+    `
+      <section class="ai-growth-battle-section ai-growth-battle-section--v2" data-v2-region="do-not-actions">
+        <header><h3>不建议动作</h3></header>
+        ${intelligence.doNotActions.length === 0
+          ? `<p class="ai-growth-empty-value">暂无额外限制</p>`
+          : `<ul class="ai-growth-reason-list">${intelligence.doNotActions
+            .map((item) => `<li>${escapeHtml(item)}</li>`)
+            .join("")}</ul>`}
+      </section>
+    `,
+    `
+      <section class="ai-growth-battle-section ai-growth-battle-section--v2" data-v2-region="financial-summary">
+        <header><h3>财务摘要</h3></header>
+        ${financialSummaryContent(intelligence.financialSummary)}
+      </section>
+    `
+  ].join("");
+}
+
+function renderBattleCardV1(
+  card: Exclude<BattleCardDto, { schemaVersion: "battle-card.v2" }>,
+  index: Map<string, EvidenceDto>
+): string {
+  const sections = battleCardSectionsVm(card.sections);
   const groups = [
     { kind: "fact", title: "事实", note: "来自公开证据，可直接核验" },
     { kind: "inference", title: "推测", note: "基于证据的判断，不等同于事实" },
@@ -290,6 +484,34 @@ function battleCardContent(state: BattleCardDrawerState): string {
       </section>
     `;
   }).join("");
+}
+
+function battleCardContent(state: BattleCardDrawerState): string {
+  if (state.battleCard.status === "loading") {
+    return `<p class="ai-growth-empty-value">正在读取客户作战卡</p>`;
+  }
+  if (state.battleCard.status === "missing") {
+    return `
+      <div class="ai-growth-drawer-empty">
+        <strong>客户作战卡尚未生成</strong>
+        <p>生成动作将交给受控工具执行，并在任务成功后读取结果。</p>
+        ${state.readOnly
+          ? ""
+          : `<button type="button" class="ai-growth-button ai-growth-button--primary" data-action="generate-battle-card">生成客户作战卡</button>`}
+      </div>
+    `;
+  }
+  if (state.battleCard.status === "error") {
+    return resourceError(state.battleCard);
+  }
+  const card = state.battleCard.data;
+  if (card === null) return "";
+
+  const index = evidenceIndex(state.evidence.data ?? []);
+  if (card.schemaVersion === "battle-card.v2" && card.intelligence) {
+    return renderBattleCardV2(card, index);
+  }
+  return renderBattleCardV1(card, index);
 }
 
 function qualificationPanel(state: BattleCardDrawerState): string {
@@ -423,6 +645,7 @@ export function renderBattleCardDrawer(
   if (!state.open) return componentRender("", callbacks);
   const candidate = state.candidate.data;
   const loading = state.candidate.status === "loading";
+  const v2Card = state.battleCard.data?.schemaVersion === "battle-card.v2";
   return componentRender(`
     <div class="ai-growth-drawer-backdrop" data-action="close-battle-card"></div>
     <aside class="ai-growth-battle-drawer" role="dialog" aria-modal="true" aria-labelledby="battleCardTitle" data-candidate-id="${escapeHtml(state.candidateId ?? "")}">
@@ -433,6 +656,9 @@ export function renderBattleCardDrawer(
           <p>${candidate
             ? `${candidate.subjectKind === "organization" ? "企业候选" : "公开需求信号"} · ${escapeHtml(candidate.status)}`
             : loading ? "正在读取候选信息" : "候选信息不可用"}</p>
+          ${state.readOnly
+            ? `<span class="ai-growth-inference-label">演示数据 · 只读</span>`
+            : ""}
         </div>
         <button type="button" class="ai-growth-drawer-close" data-action="close-battle-card" aria-label="关闭客户作战卡">关闭</button>
       </header>
@@ -440,7 +666,7 @@ export function renderBattleCardDrawer(
         ${resourceError(state.candidate)}
         ${resourceError(state.evidence)}
         ${qualificationPanel(state)}
-        ${financialPanel(state)}
+        ${v2Card ? "" : financialPanel(state)}
         <section class="ai-growth-drawer-card">
           <div class="ai-growth-section-heading">
             <div><p class="ai-growth-eyebrow">行动依据</p><h2>客户作战卡</h2></div>
@@ -448,8 +674,8 @@ export function renderBattleCardDrawer(
           </div>
           ${battleCardContent(state)}
         </section>
-        ${reviewPanel(state)}
-        ${approvedActions(state)}
+        ${state.readOnly ? "" : reviewPanel(state)}
+        ${state.readOnly ? "" : approvedActions(state)}
         ${actionStatus(state.action)}
       </div>
     </aside>
@@ -484,7 +710,14 @@ export function createBattleCardDrawer(
     generation: number;
   }
 
+  function assertMutable() {
+    if (state.readOnly) {
+      throw new Error("演示作战卡为只读，不能执行真实写入动作");
+    }
+  }
+
   function captureContext(): ActionContext {
+    assertMutable();
     if (!state.candidateId || !state.open) {
       throw new Error("请先打开候选客户");
     }
@@ -661,6 +894,36 @@ export function createBattleCardDrawer(
       ]);
     },
 
+    openFixture(
+      candidate,
+      card,
+      evidenceItems,
+      qualificationValue,
+      financialValue
+    ) {
+      generation += 1;
+      state = {
+        ...initialState(),
+        open: true,
+        readOnly: true,
+        candidateId: candidate.id,
+        candidate: { status: "ready", data: candidate, error: null },
+        evidence: {
+          status: "ready",
+          data: [...evidenceItems],
+          error: null
+        },
+        qualification: qualificationValue === null
+          ? { status: "missing", data: null, error: null }
+          : { status: "ready", data: qualificationValue, error: null },
+        financialValue: financialValue === null
+          ? { status: "missing", data: null, error: null }
+          : { status: "ready", data: financialValue, error: null },
+        battleCard: { status: "ready", data: card, error: null }
+      };
+      notify();
+    },
+
     close() {
       generation += 1;
       state = initialState();
@@ -692,7 +955,7 @@ export function createBattleCardDrawer(
         "build_battle_card",
         `请调用 build_battle_card 工具生成客户作战卡。参数：${JSON.stringify({
           candidateId: context.candidateId,
-          templateVersion: "battle-card.v1"
+          templateVersion: "battle-card.v2"
         })}`,
         "客户作战卡已生成"
       );
@@ -707,6 +970,7 @@ export function createBattleCardDrawer(
     },
 
     async review(action, reason = null) {
+      assertMutable();
       const candidate = state.candidate.data;
       if (!candidate || !state.candidateId || !state.open) {
         throw new Error("请先读取候选客户");
@@ -760,6 +1024,7 @@ export function createBattleCardDrawer(
     },
 
     async convert() {
+      assertMutable();
       const candidate = state.candidate.data;
       if (!state.candidateId || !state.open
         || !approvedCurrentDecision(candidate)) {
@@ -804,6 +1069,7 @@ export function createBattleCardDrawer(
     },
 
     async createOutreachReviewTask() {
+      assertMutable();
       const candidate = state.candidate.data;
       if (!state.candidateId || !state.open
         || !approvedCurrentDecision(candidate)) {

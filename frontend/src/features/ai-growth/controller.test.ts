@@ -7,6 +7,8 @@ import {
   type AiGrowthControllerApi,
   type AiGrowthControllerOptions
 } from "./controller.js";
+import { createBattleCardDrawer } from "./components/battle-card-drawer.js";
+import { demoFixture } from "./demo/fixture.js";
 import type {
   AcquisitionPlanCreateDto,
   AdvisorState,
@@ -220,6 +222,7 @@ function controllerOptions(
     drawerFactory: () => ({
       getState: () => ({
         open: false,
+        readOnly: false,
         candidateId: null,
         candidate: { status: "idle", data: null, error: null },
         evidence: { status: "idle", data: null, error: null },
@@ -236,6 +239,7 @@ function controllerOptions(
       }),
       render: () => ({ html: "", callbacks: {} as never }),
       open: async () => undefined,
+      openFixture: () => undefined,
       close: () => undefined,
       runQualification: async () => undefined,
       generateBattleCard: async () => undefined,
@@ -512,28 +516,111 @@ test("demo 切到 real 清除演示 runner、候选和运行指针", () => {
   assert.equal(controller.getState().status, "idle");
 });
 
-test("demo 候选动作不会调用真实抽屉或写入接口", async () => {
+test("demo 回放打开内置只读作战卡且没有作战卡时关闭抽屉并提示", async () => {
   const { api, calls } = createApi();
-  let drawerOpen = 0;
+  const reads = {
+    candidate: 0,
+    evidence: 0,
+    qualification: 0,
+    financial: 0,
+    battleCard: 0
+  };
+  const toasts: string[] = [];
   const controller = createAiGrowthController(controllerOptions(api, {
-    drawerFactory: () => ({
-      ...(controllerOptions(api).drawerFactory!({} as never)),
-      open: async () => {
-        drawerOpen += 1;
+    toast: (message) => toasts.push(message),
+    drawerFactory: (options) => createBattleCardDrawer(options),
+    api: {
+      ...api,
+      getCandidate: async () => {
+        reads.candidate += 1;
+        return approvedCandidate;
+      },
+      getEvidence: async () => {
+        reads.evidence += 1;
+        return { items: [], nextCursor: null };
+      },
+      getQualification: async () => {
+        reads.qualification += 1;
+        throw new Error("demo must not read qualification");
+      },
+      getFinancialValue: async () => {
+        reads.financial += 1;
+        throw new Error("demo must not read financial value");
+      },
+      getBattleCard: async () => {
+        reads.battleCard += 1;
+        return demoFixture.battleCard;
       }
-    })
+    } as AiGrowthControllerApi
   }));
   controller.setMode("demo");
+  controller.jumpToDemoResult();
 
-  await controller.openCandidate(approvedCandidate.id);
+  await controller.openCandidate("demo-candidate-1");
+
+  assert.equal(controller.getDrawer().getState().open, true);
+  assert.equal(controller.getDrawer().getState().readOnly, true);
+  assert.match(controller.getDrawer().render().html, /客户作战卡/);
+  assert.match(controller.getDrawer().render().html, /演示数据 · 只读/);
+  assert.deepEqual(reads, {
+    candidate: 0,
+    evidence: 0,
+    qualification: 0,
+    financial: 0,
+    battleCard: 0
+  });
+
+  await controller.openCandidate("demo-candidate-2");
+
+  assert.equal(controller.getDrawer().getState().open, false);
+  assert.equal(toasts.at(-1), "演示作战卡尚未生成");
   await assert.rejects(
-    () => controller.convertAndCreateTodo(approvedCandidate.id),
+    () => controller.convertAndCreateTodo("demo-candidate-1"),
     /演示模式不会写入/
   );
 
-  assert.equal(drawerOpen, 0);
   assert.equal(calls.convert, 0);
   assert.equal(calls.todo, 0);
+});
+
+test("real candidate opening performs the five authoritative GET reads", async () => {
+  const reads: string[] = [];
+  const firstEvent = demoFixture.runPresentation.candidateEvents[0]!;
+  const { api } = createApi({
+    getCandidate: async () => {
+      reads.push("candidate");
+      return approvedCandidate;
+    },
+    getEvidence: async () => {
+      reads.push("evidence");
+      return { items: [], nextCursor: null };
+    },
+    getQualification: async () => {
+      reads.push("qualification");
+      return firstEvent.qualification!;
+    },
+    getFinancialValue: async () => {
+      reads.push("financial");
+      return firstEvent.financialValue!;
+    },
+    getBattleCard: async () => {
+      reads.push("battle-card");
+      return demoFixture.battleCard;
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api, {
+    drawerFactory: (options) => createBattleCardDrawer(options)
+  }));
+
+  await controller.openCandidate("candidate-1");
+
+  assert.deepEqual(reads.sort(), [
+    "battle-card",
+    "candidate",
+    "evidence",
+    "financial",
+    "qualification"
+  ]);
 });
 
 test("demo 隐藏真实最近任务且继续任务不会发请求或启动 poller", async () => {

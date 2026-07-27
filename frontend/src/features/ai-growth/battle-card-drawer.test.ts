@@ -137,6 +137,86 @@ const battleCard: BattleCardDto = {
   createdAt: timestamp
 };
 
+const battleCardV2: BattleCardDto = {
+  id: "battle-card-v2",
+  candidateId: "candidate-1",
+  qualificationDecisionId: "qualification-1",
+  partyType: "organization",
+  schemaVersion: "battle-card.v2",
+  intelligence: {
+    accountOverview: [{
+      kind: "fact",
+      text: "远岚智能装备公开经营主体可核验。",
+      evidenceIds: ["evidence-1"],
+      confidence: 1
+    }],
+    needAssessment: [{
+      kind: "fact",
+      text: "官网公开披露数字化升级计划。",
+      evidenceIds: ["evidence-2"],
+      confidence: 1
+    }],
+    supplierHypotheses: [{
+      kind: "unknown",
+      text: "现有供应商尚无充分公开证据。",
+      evidenceIds: [],
+      confidence: null
+    }],
+    buyingCommittee: [{
+      role: "业务负责人",
+      priority: 1,
+      influence: "decision_maker",
+      concerns: ["投入产出", "交付稳定性"],
+      claim: {
+        kind: "inference",
+        text: "业务负责人可能参与采购决策。",
+        evidenceIds: ["evidence-1"],
+        confidence: 0.72
+      }
+    }],
+    procurementPreferences: [{
+      kind: "inference",
+      text: "可能更看重稳定交付与量化结果。",
+      evidenceIds: ["evidence-1", "evidence-2"],
+      confidence: 0.68
+    }],
+    connectionStrategies: [{
+      channel: "email",
+      targetRole: "业务负责人",
+      rationale: {
+        kind: "fact",
+        text: "公开招聘页面提供业务联系入口。",
+        evidenceIds: ["evidence-1"],
+        confidence: 1
+      },
+      openingDraft: "建议人工审核后，以公开升级计划为背景提供诊断。"
+    }],
+    roleSpecificOpeners: [{
+      role: "业务负责人",
+      channel: "email",
+      text: "看到贵司公开的升级计划，我们整理了一页诊断供参考。"
+    }],
+    doNotActions: ["不要声称已经确认现有供应商"],
+    financialSummary: {
+      decisionId: "financial-1",
+      decisionVersion: "financial-v1",
+      grade: "A",
+      score: 82,
+      currency: "CNY",
+      expectedRevenueMinor: 1_280_000,
+      expectedGrossProfitMinor: 520_000,
+      expectedContributionMinor: 360_000,
+      factors: financialValue.factors
+    }
+  },
+  evidenceIds: ["evidence-1", "evidence-2"],
+  confidence: 0.78,
+  modelProvider: "glm",
+  model: "glm-4",
+  promptVersion: "battle-card.v2",
+  createdAt: timestamp
+};
+
 function httpError(status: number, message: string) {
   return Object.assign(new Error(message), { status });
 }
@@ -365,6 +445,7 @@ test("battle card generation only refreshes after build_battle_card succeeds and
 
   assert.match(messages[0] ?? "", /build_battle_card/);
   assert.match(messages[0] ?? "", /candidate-1/);
+  assert.match(messages[0] ?? "", /"templateVersion":"battle-card\.v2"/);
   assert.equal(cardReads, 2);
   assert.equal(drawer.getState().battleCard.status, "ready");
 });
@@ -418,6 +499,120 @@ test("renderer separates facts, inferences with confidence, and unknowns with ev
   assert.match(html, /data-evidence-id="evidence-1"/);
   assert.match(html, /href="https:\/\/example.com\/evidence-1"/);
   assert.doesNotMatch(html, /确认采购偏好/);
+});
+
+test("renderer keeps all battle-card v2 regions in a fixed order and marks inference with confidence", () => {
+  const drawer = createBattleCardDrawer({
+    api: apiStub(),
+    onCandidateUpdated: () => undefined
+  });
+  const state = drawer.getState();
+  state.open = true;
+  state.candidateId = "candidate-1";
+  state.candidate = { status: "ready", data: candidate(), error: null };
+  state.evidence = { status: "ready", data: evidence, error: null };
+  state.qualification = { status: "ready", data: qualification, error: null };
+  state.financialValue = {
+    status: "ready",
+    data: financialValue,
+    error: null
+  };
+  state.battleCard = { status: "ready", data: battleCardV2, error: null };
+
+  const html = renderBattleCardDrawer(state, drawer.render().callbacks).html;
+  const orderedRegions = [
+    "客户概况",
+    "需求证据",
+    "供应商",
+    "决策链",
+    "采购偏好",
+    "连接策略",
+    "角色话术",
+    "不建议动作",
+    "财务摘要"
+  ];
+  let previous = -1;
+  for (const region of orderedRegions) {
+    const position = html.indexOf(`>${region}<`);
+    assert.ok(position > previous, `${region} should follow the previous region`);
+    previous = position;
+  }
+  assert.match(html, /推测 · 置信度 72%/);
+  assert.match(html, /推测 · 置信度 68%/);
+  assert.match(html, /预计收入[\s\S]*¥12,800\.00/);
+  const roleOpeners = html.match(
+    /data-v2-region="role-openers"[\s\S]*?<\/section>/
+  )?.[0] ?? "";
+  assert.match(roleOpeners, /看到贵司公开的升级计划/);
+  assert.doesNotMatch(roleOpeners, /推测/);
+});
+
+test("openFixture is a read-only path that never calls network or mutation methods", async () => {
+  const calls: string[] = [];
+  const api = apiStub({
+    getCandidate: async () => {
+      calls.push("getCandidate");
+      return candidate();
+    },
+    getEvidence: async () => {
+      calls.push("getEvidence");
+      return { items: evidence, nextCursor: null };
+    },
+    getQualification: async () => {
+      calls.push("getQualification");
+      return qualification;
+    },
+    getFinancialValue: async () => {
+      calls.push("getFinancialValue");
+      return financialValue;
+    },
+    getBattleCard: async () => {
+      calls.push("getBattleCard");
+      return battleCardV2;
+    },
+    requestAssistantAction: async () => {
+      calls.push("requestAssistantAction");
+      return succeededTask("task-1", "build_battle_card");
+    },
+    reviewCandidate: async () => {
+      calls.push("reviewCandidate");
+      return {
+        candidate: candidate("approved"),
+        review: {},
+        research: null
+      };
+    },
+    convertCandidate: async () => {
+      calls.push("convertCandidate");
+      return apiStub().convertCandidate(
+        "candidate-1",
+        { decisionVersion: "decision-v2" },
+        "idempotency-key"
+      );
+    }
+  });
+  const drawer = createBattleCardDrawer({
+    api,
+    onCandidateUpdated: () => undefined
+  });
+
+  drawer.openFixture(
+    candidate(),
+    battleCardV2,
+    evidence,
+    qualification,
+    financialValue
+  );
+
+  assert.equal(drawer.getState().open, true);
+  assert.equal(drawer.getState().readOnly, true);
+  assert.match(drawer.render().html, /演示数据 · 只读/);
+  await assert.rejects(() => drawer.runQualification(), /只读/);
+  await assert.rejects(() => drawer.generateBattleCard(), /只读/);
+  await assert.rejects(() => drawer.review("approved"), /只读/);
+  await assert.rejects(() => drawer.convert(), /只读/);
+  await assert.rejects(() => drawer.createOutreachReviewTask(), /只读/);
+  assert.deepEqual(calls, []);
 });
 
 test("review actions use the current decision version and only exact approval unlocks conversion and outreach review", async () => {

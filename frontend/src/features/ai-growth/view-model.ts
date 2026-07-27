@@ -2,6 +2,8 @@ import type {
   AcquisitionRunStatus,
   AdvisorRunVm,
   AdvisorStatus,
+  BattleCardClaimDto,
+  BattleCardClaimVm,
   BattleCardSectionDto,
   BattleCardSectionVm,
   CandidateCardVm,
@@ -14,13 +16,47 @@ import type {
   RunPresentationDto
 } from "./types.js";
 
-function formatAmount({ currency, amountMinor }: FinancialAmountDto) {
-  const formatted = new Intl.NumberFormat("en-US", {
+export const BATTLE_CARD_V2_REGION_ORDER = [
+  "客户概况",
+  "需求证据",
+  "供应商",
+  "决策链",
+  "采购偏好",
+  "连接策略",
+  "角色话术",
+  "不建议动作",
+  "财务摘要"
+] as const;
+
+const SEARCH_PROVIDER_LABELS: Readonly<Record<string, string>> = {
+  baidu_ai_search: "百度 AI 搜索",
+  tencent_web_search: "腾讯云联网搜索",
+  tavily: "Tavily 搜索",
+  serper: "Serper 搜索",
+  brave: "Brave 搜索",
+  serpapi: "SerpApi 搜索"
+};
+
+export function searchProviderLabel(
+  providerId: string,
+  demo = false
+): string {
+  const label = SEARCH_PROVIDER_LABELS[providerId] ?? providerId;
+  return demo ? `${label}（演示数据）` : label;
+}
+
+export function formatMinorAmount(
+  { currency, amountMinor }: FinancialAmountDto,
+  locale = "en-US"
+) {
+  const formatted = new Intl.NumberFormat(locale, {
     style: "currency",
     currency,
     currencyDisplay: "narrowSymbol"
   }).format(amountMinor / 100);
-  return currency === "USD" ? formatted.replace("$", "US$") : formatted;
+  return currency === "USD" && formatted.startsWith("$")
+    ? formatted.replace("$", "US$")
+    : formatted;
 }
 
 function financialAmountsVm(values: FinancialAmountDto[]): FinancialAmountVm[] {
@@ -32,7 +68,7 @@ function financialAmountsVm(values: FinancialAmountDto[]): FinancialAmountVm[] {
           ? 1
           : left.currency.localeCompare(right.currency)
     )
-    .map((value) => ({ ...value, formatted: formatAmount(value) }));
+    .map((value) => ({ ...value, formatted: formatMinorAmount(value) }));
 }
 
 export function financialValueVm(
@@ -112,6 +148,18 @@ export function battleCardSectionsVm(
     confidence: section.confidence ?? null,
     evidenceIds: [...(section.evidenceIds ?? [])]
   }));
+}
+
+export function battleCardClaimVm(
+  claim: BattleCardClaimDto
+): BattleCardClaimVm {
+  return {
+    kind: claim.kind,
+    content: claim.text,
+    evidenceIds: [...claim.evidenceIds],
+    confidence: claim.confidence,
+    inferenceLabel: claim.kind === "inference" ? "推测" : null
+  };
 }
 
 export function pageStatusForRun(
