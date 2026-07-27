@@ -280,7 +280,7 @@ function financial(
 
 async function fixture() {
   const planRuns = new InMemoryAcquisitionPlanRunRepository();
-  const domain = new InMemoryAcquisitionDomainRepository();
+  const domain = new InMemoryAcquisitionDomainRepository(planRuns);
   await planRuns.transaction((transaction) => {
     transaction.putRun(run("run-1"));
     transaction.putRun({ ...run("run-2"), status: "running" });
@@ -553,9 +553,10 @@ test("presentation uses bounded event pages and batch candidate snapshots", asyn
   const domainCalls = {
     auditPages: [] as Array<{ limit: number }>,
     snapshotBatches: [] as string[][],
-    summaryBatches: [] as string[][]
+    summaryRuns: [] as string[]
   };
   const runCalls: Array<{ limit: number }> = [];
+  const executionRuns: string[] = [];
   const domain = new Proxy(base.domain, {
     get(target, property, receiver) {
       if (property === "listAuditEvents") {
@@ -590,11 +591,11 @@ test("presentation uses bounded event pages and batch candidate snapshots", asyn
         };
       }
       if (property === "getPresentationCandidateSummary") {
-        return async (readScope: typeof scope, candidateIds: string[]) => {
-          domainCalls.summaryBatches.push([...candidateIds]);
+        return async (readScope: typeof scope, runId: string) => {
+          domainCalls.summaryRuns.push(runId);
           return (target as any).getPresentationCandidateSummary(
             readScope,
-            candidateIds
+            runId
           );
         };
       }
@@ -603,10 +604,26 @@ test("presentation uses bounded event pages and batch candidate snapshots", asyn
   });
   const planRuns = new Proxy(base.planRuns, {
     get(target, property, receiver) {
+      if (property === "listRunEvents") {
+        return async () => {
+          throw new Error("UNBOUNDED_RUN_EVENT_READ");
+        };
+      }
+      if (property === "listRunCandidateLinks") {
+        return async () => {
+          throw new Error("UNBOUNDED_RUN_CANDIDATE_LINK_READ");
+        };
+      }
       if (property === "listRunCandidateEventsPage") {
         return async (runId: string, query: { limit: number }) => {
           runCalls.push({ limit: query.limit });
           return (target as any).listRunCandidateEventsPage(runId, query);
+        };
+      }
+      if (property === "getRunPresentationExecution") {
+        return async (runId: string) => {
+          executionRuns.push(runId);
+          return (target as any).getRunPresentationExecution(runId);
         };
       }
       return Reflect.get(target, property, receiver);
@@ -621,18 +638,44 @@ test("presentation uses bounded event pages and batch candidate snapshots", asyn
   await service.get(scope, "run-1", { limit: 1 });
 
   assert.deepEqual(runCalls, [{ limit: 2 }]);
+  assert.deepEqual(executionRuns, ["run-1"]);
   assert.deepEqual(domainCalls.auditPages, [{ limit: 2 }]);
   assert.equal(domainCalls.snapshotBatches.length, 1);
   assert.deepEqual(domainCalls.snapshotBatches[0], ["candidate-1"]);
-  assert.deepEqual(
-    new Set(domainCalls.summaryBatches[0]),
-    new Set([
-      "candidate-1",
-      "candidate-2",
-      "candidate-3",
-      "candidate-4"
-    ])
-  );
+  assert.deepEqual(domainCalls.summaryRuns, ["run-1"]);
+});
+
+test("presentation skips missing candidates and advances its signed cursor", async () => {
+  const { planRuns, service } = await fixture();
+  await planRuns.transaction((transaction) => {
+    transaction.appendRunEvent({
+      id: "event-candidate-missing",
+      runId: "run-1",
+      shardId: "shard-1",
+      ownerId: OWNER,
+      teamId: TEAM,
+      type: "candidate.discovered",
+      actorId: ACTOR,
+      revision: 4,
+      at: "2026-07-26T09:00:02.500Z",
+      data: {
+        candidateId: "candidate-missing",
+        operationId: "operation-shard-1",
+        connectionId: "connection-baidu"
+      }
+    });
+  });
+
+  const first = await service.get(scope, "run-1", { limit: 1 });
+  assert.deepEqual(first.candidateEvents, []);
+  assert.equal(first.hasMore, true);
+  assert.ok(first.nextAfter);
+
+  const second = await service.get(scope, "run-1", {
+    after: first.nextAfter,
+    limit: 1
+  });
+  assert.equal(second.candidateEvents[0]?.candidateId, "candidate-1");
 });
 
 test("presentation cursor rejects tampering and every identity boundary", async () => {

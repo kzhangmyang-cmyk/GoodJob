@@ -23,8 +23,7 @@ import type {
   AcquisitionDomainRepository,
   AcquisitionPresentationCandidateSnapshot,
   AcquisitionPresentationCandidateSummary,
-  AcquisitionPresentationEventCursor,
-  AcquisitionPresentationEventWatermark
+  AcquisitionPresentationEventCursor
 } from "./acquisition-domain-repository.js";
 import type {
   AcquisitionCopilotIdempotencyRecord,
@@ -48,6 +47,7 @@ import type {
   AcquisitionRunCandidateLink,
   AcquisitionRunEvent,
   AcquisitionRunEventPageQuery,
+  AcquisitionRunPresentationExecution,
   AcquisitionUsageIdempotencyRecord
 } from "./acquisition-plan-run-repository.js";
 import {
@@ -1434,7 +1434,7 @@ implements AcquisitionDomainRepository {
   async listPresentationAuditEvents(
     scope: AcquisitionDataScope,
     query: {
-      candidateWatermarks: AcquisitionPresentationEventWatermark[];
+      runId: string;
       after?: AcquisitionPresentationEventCursor;
       limit: number;
     }
@@ -1442,7 +1442,6 @@ implements AcquisitionDomainRepository {
     if (!Number.isSafeInteger(query.limit) || query.limit < 1) {
       throw new Error("PRESENTATION_AUDIT_LIMIT_INVALID");
     }
-    if (query.candidateWatermarks.length === 0) return [];
     const cursorClause = query.after
       ? ` AND (
             a.created_at > ?
@@ -1450,7 +1449,9 @@ implements AcquisitionDomainRepository {
           )`
       : "";
     const values: unknown[] = [
-      json(query.candidateWatermarks),
+      query.runId,
+      scope.ownerId,
+      scope.teamId,
       scope.ownerId,
       scope.teamId
     ];
@@ -1464,16 +1465,34 @@ implements AcquisitionDomainRepository {
     values.push(query.limit);
     const result = await rows(
       this.source(),
-      `SELECT a.*
+      `WITH discovered_candidates AS (
+         SELECT candidate_id, discovered_at, event_id
+         FROM (
+           SELECT
+             JSON_UNQUOTE(
+               JSON_EXTRACT(e.payload_json, '$.data.candidateId')
+             ) AS candidate_id,
+             e.occurred_at AS discovered_at,
+             e.id AS event_id,
+             ROW_NUMBER() OVER (
+               PARTITION BY JSON_UNQUOTE(
+                 JSON_EXTRACT(e.payload_json, '$.data.candidateId')
+               )
+               ORDER BY e.occurred_at, e.id
+             ) AS candidate_row
+           FROM acquisition_run_events e
+           WHERE e.run_id = ?
+             AND e.owner_id = ?
+             AND e.team_id = ?
+             AND JSON_UNQUOTE(
+               JSON_EXTRACT(e.payload_json, '$.type')
+             ) = 'candidate.discovered'
+         ) ranked
+         WHERE candidate_row = 1
+       )
+       SELECT a.*
        FROM acquisition_domain_audit_events a
-       INNER JOIN JSON_TABLE(
-         ?,
-         '$[*]' COLUMNS(
-           candidate_id VARCHAR(120) PATH '$.candidateId',
-           discovered_at DATETIME(3) PATH '$.createdAt',
-           event_id VARCHAR(160) PATH '$.eventId'
-         )
-       ) links
+       INNER JOIN discovered_candidates links
          ON links.candidate_id = a.candidate_id
        WHERE a.owner_id = ? AND a.team_id = ?
          AND (
@@ -1568,8 +1587,11 @@ implements AcquisitionDomainRepository {
       qualifications.map((item) => [item.id, item])
     );
     return candidates.map((candidate) => {
-      const qualification = candidate.latestDecisionId
+      const matchedQualification = candidate.latestDecisionId
         ? qualificationById.get(candidate.latestDecisionId) ?? null
+        : null;
+      const qualification = matchedQualification?.candidateId === candidate.id
+        ? matchedQualification
         : null;
       const financial = qualification
         ? financialValues
@@ -1599,30 +1621,21 @@ implements AcquisitionDomainRepository {
 
   async getPresentationCandidateSummary(
     scope: AcquisitionDataScope,
-    candidateIds: string[]
+    runId: string
   ): Promise<AcquisitionPresentationCandidateSummary> {
-    const ids = [...new Set(candidateIds)];
-    if (ids.length === 0) {
-      return {
-        organizationsFound: 0,
-        dedupedCandidates: 0,
-        validOpportunities: 0,
-        highIntent: 0,
-        financialEvaluatedHighIntentCount: 0,
-        financialPendingHighIntentCount: 0,
-        expectedRevenueByCurrency: []
-      };
-    }
     const result = await rows(
       this.source(),
       `WITH candidate_ids AS (
-         SELECT candidate_id
-         FROM JSON_TABLE(
-           ?,
-           '$[*]' COLUMNS(
-             candidate_id VARCHAR(120) PATH '$.candidateId'
-           )
-         ) ids
+         SELECT DISTINCT JSON_UNQUOTE(
+           JSON_EXTRACT(e.payload_json, '$.data.candidateId')
+         ) AS candidate_id
+         FROM acquisition_run_events e
+         WHERE e.run_id = ?
+           AND e.owner_id = ?
+           AND e.team_id = ?
+           AND JSON_UNQUOTE(
+             JSON_EXTRACT(e.payload_json, '$.type')
+           ) = 'candidate.discovered'
        ),
        current_values AS (
          SELECT
@@ -1725,7 +1738,9 @@ implements AcquisitionDomainRepository {
        GROUP BY revenue_currency
        ORDER BY revenue_currency`,
       [
-        json(ids.map((candidateId) => ({ candidateId }))),
+        runId,
+        scope.ownerId,
+        scope.teamId,
         scope.ownerId,
         scope.teamId
       ]
@@ -3007,6 +3022,125 @@ implements AcquisitionPlanRunRepository {
     );
     return result.map((row) =>
       ownedPayload<AcquisitionRunEvent>(row, "run_event"));
+  }
+
+  async getRunPresentationExecution(
+    runId: string
+  ): Promise<AcquisitionRunPresentationExecution> {
+    const result = await rows(
+      this.pool,
+      `WITH terminal_events AS (
+         SELECT shard_id, payload_json
+         FROM (
+           SELECT
+             e.shard_id,
+             e.payload_json,
+             ROW_NUMBER() OVER (
+               PARTITION BY e.shard_id
+               ORDER BY e.occurred_at DESC, e.id DESC
+             ) AS terminal_row
+           FROM acquisition_run_events e
+           WHERE e.run_id = ?
+             AND JSON_UNQUOTE(
+               JSON_EXTRACT(e.payload_json, '$.type')
+             ) IN (
+               'shard.succeeded',
+               'shard.succeeded_empty',
+               'shard.partial_success',
+               'shard.failed',
+               'shard.cancelled'
+             )
+         ) ranked
+         WHERE terminal_row = 1
+       ),
+       started_shards AS (
+         SELECT DISTINCT e.shard_id
+         FROM acquisition_run_events e
+         WHERE e.run_id = ?
+           AND JSON_UNQUOTE(
+             JSON_EXTRACT(e.payload_json, '$.type')
+           ) = 'shard.started'
+       )
+       SELECT
+         s.*,
+         terminal_events.payload_json AS terminal_payload_json,
+         CASE
+           WHEN started_shards.shard_id IS NULL THEN 0
+           ELSE 1
+         END AS has_started
+       FROM acquisition_operation_shards s
+       INNER JOIN acquisition_runs r
+         ON r.id = s.run_id
+        AND r.owner_id = s.owner_id
+        AND r.team_id = s.team_id
+       LEFT JOIN terminal_events ON terminal_events.shard_id = s.id
+       LEFT JOIN started_shards ON started_shards.shard_id = s.id
+       WHERE s.run_id = ?
+       ORDER BY s.created_at, s.id`,
+      [runId, runId, runId]
+    );
+    const sources = new Set<string>();
+    let pagesAnalyzed = 0;
+    const providers = result.map((row) => {
+      const shard = ownedPayload<AcquisitionOperationShard>(
+        row,
+        "presentation_shard"
+      );
+      const terminal = row.terminal_payload_json === null
+        || row.terminal_payload_json === undefined
+        ? null
+        : parseJson(
+            row.terminal_payload_json,
+            "presentation_terminal_event"
+          ) as unknown as AcquisitionRunEvent;
+      if (
+        terminal
+        && (
+          terminal.runId !== runId
+          || terminal.shardId !== shard.id
+          || terminal.ownerId !== shard.ownerId
+          || terminal.teamId !== shard.teamId
+        )
+      ) {
+        throw new Error(
+          "ACQUISITION_MYSQL_INTEGRITY:presentation_terminal_event:scope_mismatch"
+        );
+      }
+      if (Number(row.has_started) === 1) {
+        sources.add(
+          `${shard.connection.providerId}\u0000`
+          + shard.connection.connectionId
+        );
+      }
+      pagesAnalyzed += shard.consumedBudget.results;
+      const count = (field: string) => {
+        const value = terminal?.data[field];
+        return Number.isSafeInteger(value) && Number(value) >= 0
+          ? Number(value)
+          : 0;
+      };
+      const text = (field: string) => {
+        const value = terminal?.data[field];
+        return typeof value === "string" && value ? value : null;
+      };
+      return {
+        shardId: shard.id,
+        connectionId: shard.connection.connectionId,
+        providerId: shard.connection.providerId,
+        status: shard.status,
+        rawResultCount: count("rawResultCount"),
+        acceptedResultCount: count("acceptedResultCount"),
+        duplicateResultCount: count("duplicateResultCount"),
+        failedResultCount: count("failedResultCount"),
+        errorCode: text("errorCode"),
+        retryAfterAt: text("retryAfterAt")
+      };
+    });
+    return {
+      providers,
+      sourcesSearched: sources.size,
+      pagesAnalyzed
+    };
   }
 
   async listRunExecutionIntents(runId: string) {

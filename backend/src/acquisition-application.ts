@@ -867,10 +867,11 @@ export async function createAcquisitionApplication(
       toolResults = new MysqlAcquisitionToolResultLedger(pool, { now });
       toolAudit = new MysqlAcquisitionToolAuditStore(pool);
     } else {
+      const planRun = new InMemoryAcquisitionPlanRunRepository();
       repositories = {
-        domain: new InMemoryAcquisitionDomainRepository(),
+        domain: new InMemoryAcquisitionDomainRepository(planRun),
         copilot: new InMemoryAcquisitionCopilotRepository(),
-        planRun: new InMemoryAcquisitionPlanRunRepository(),
+        planRun,
         discovery:
           new InMemoryAcquisitionDiscoveryOperationRepository()
       };
@@ -905,6 +906,13 @@ export async function createAcquisitionApplication(
             now,
             identityAliases: repositories.domain
           });
+    }
+    if (
+      repositories.domain instanceof InMemoryAcquisitionDomainRepository
+    ) {
+      repositories.domain.bindPresentationRunRepository(
+        repositories.planRun
+      );
     }
 
     const domainService = new AcquisitionDomainService({

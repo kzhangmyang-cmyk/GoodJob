@@ -15,7 +15,6 @@ import {
   type AcquisitionScope
 } from "./acquisition-plan-run-service.js";
 import type {
-  AcquisitionOperationShard,
   AcquisitionPlanRunRepository,
   AcquisitionRunEvent,
   AcquisitionRunStatus,
@@ -238,49 +237,6 @@ function discoveredCandidateId(event: AcquisitionRunEvent) {
     : null;
 }
 
-function countValue(
-  event: AcquisitionRunEvent | undefined,
-  field:
-    | "rawResultCount"
-    | "acceptedResultCount"
-    | "duplicateResultCount"
-    | "failedResultCount"
-) {
-  const value = event?.data[field];
-  return Number.isSafeInteger(value) && Number(value) >= 0
-    ? Number(value)
-    : 0;
-}
-
-function stringValue(
-  event: AcquisitionRunEvent | undefined,
-  field: "errorCode" | "retryAfterAt"
-) {
-  const value = event?.data[field];
-  return typeof value === "string" && value ? value : null;
-}
-
-function latestShardPresentation(
-  shard: AcquisitionOperationShard,
-  events: AcquisitionRunEvent[]
-) {
-  return events
-    .filter((event) =>
-      event.shardId === shard.id
-      && [
-        "shard.succeeded",
-        "shard.succeeded_empty",
-        "shard.partial_success",
-        "shard.failed",
-        "shard.cancelled"
-      ].includes(event.type)
-    )
-    .sort((left, right) =>
-      right.at.localeCompare(left.at) || right.id.localeCompare(left.id)
-    )
-    .at(0);
-}
-
 export class AcquisitionRunPresentationService {
   private readonly planRuns: AcquisitionPlanRunRepository;
   private readonly domain: AcquisitionDomainRepository;
@@ -341,11 +297,6 @@ export class AcquisitionRunPresentationService {
       );
     }
 
-    const [shards, runEvents, candidateLinks] = await Promise.all([
-      this.planRuns.listRunShards(runId),
-      this.planRuns.listRunEvents(runId),
-      this.planRuns.listRunCandidateLinks(runId)
-    ]);
     const after = cursor
       ? {
           createdAt: cursor.createdAt,
@@ -353,13 +304,14 @@ export class AcquisitionRunPresentationService {
         }
       : undefined;
     const pageLimit = query.limit + 1;
-    const [discoveredPage, auditPage] = await Promise.all([
+    const [execution, discoveredPage, auditPage] = await Promise.all([
+      this.planRuns.getRunPresentationExecution(runId),
       this.planRuns.listRunCandidateEventsPage(runId, {
         after,
         limit: pageLimit
       }),
       this.domain.listPresentationAuditEvents(scope, {
-        candidateWatermarks: candidateLinks,
+        runId,
         after,
         limit: pageLimit
       })
@@ -396,7 +348,7 @@ export class AcquisitionRunPresentationService {
     const [candidateSummary, snapshots] = await Promise.all([
       this.domain.getPresentationCandidateSummary(
         scope,
-        candidateLinks.map((link) => link.candidateId)
+        runId
       ),
       this.domain.getPresentationCandidateSnapshots(
         scope,
@@ -406,9 +358,12 @@ export class AcquisitionRunPresentationService {
     const candidateSnapshots = new Map(
       snapshots.map((snapshot) => [snapshot.candidate.id, snapshot])
     );
-    const candidateEvents = page.map((event): RunCandidatePresentationEvent => {
-      const snapshot = candidateSnapshots.get(event.candidateId)!;
-      return {
+    const candidateEvents = page.flatMap((
+      event
+    ): RunCandidatePresentationEvent[] => {
+      const snapshot = candidateSnapshots.get(event.candidateId);
+      if (!snapshot) return [];
+      return [{
         eventId: event.eventId,
         createdAt: event.createdAt,
         candidateId: event.candidateId,
@@ -417,19 +372,9 @@ export class AcquisitionRunPresentationService {
         financialValue: publicFinancialValue(snapshot.financial),
         sourcePlatforms: [...snapshot.sourcePlatforms],
         evidenceCount: snapshot.candidate.evidenceIds.length
-      };
+      }];
     });
 
-    const sources = new Set<string>();
-    for (const shard of shards) {
-      if (runEvents.some((event) =>
-        event.shardId === shard.id && event.type === "shard.started"
-      )) {
-        sources.add(
-          `${shard.connection.providerId}\u0000${shard.connection.connectionId}`
-        );
-      }
-    }
     const last = page.at(-1);
 
     return {
@@ -440,27 +385,10 @@ export class AcquisitionRunPresentationService {
         updatedAt: run.updatedAt,
         completedAt: run.completedAt
       },
-      providers: shards.map((shard) => {
-        const event = latestShardPresentation(shard, runEvents);
-        return {
-          shardId: shard.id,
-          connectionId: shard.connection.connectionId,
-          providerId: shard.connection.providerId,
-          status: shard.status,
-          rawResultCount: countValue(event, "rawResultCount"),
-          acceptedResultCount: countValue(event, "acceptedResultCount"),
-          duplicateResultCount: countValue(event, "duplicateResultCount"),
-          failedResultCount: countValue(event, "failedResultCount"),
-          errorCode: stringValue(event, "errorCode"),
-          retryAfterAt: stringValue(event, "retryAfterAt")
-        };
-      }),
+      providers: execution.providers,
       summary: {
-        sourcesSearched: sources.size,
-        pagesAnalyzed: shards.reduce(
-          (total, shard) => total + shard.consumedBudget.results,
-          0
-        ),
+        sourcesSearched: execution.sourcesSearched,
+        pagesAnalyzed: execution.pagesAnalyzed,
         ...candidateSummary
       },
       candidateEvents,

@@ -230,6 +230,23 @@ export interface AcquisitionRunEventPageQuery {
   limit: number;
 }
 
+export interface AcquisitionRunPresentationExecution {
+  providers: Array<{
+    shardId: string;
+    connectionId: string;
+    providerId: string;
+    status: AcquisitionShardStatus;
+    rawResultCount: number;
+    acceptedResultCount: number;
+    duplicateResultCount: number;
+    failedResultCount: number;
+    errorCode: string | null;
+    retryAfterAt: string | null;
+  }>;
+  sourcesSearched: number;
+  pagesAnalyzed: number;
+}
+
 export interface AcquisitionAuditEvent {
   id: string;
   ownerId: string;
@@ -360,6 +377,9 @@ export interface AcquisitionPlanRunRepository {
     runId: string,
     query: AcquisitionRunEventPageQuery
   ): Promise<AcquisitionRunEvent[]>;
+  getRunPresentationExecution(
+    runId: string
+  ): Promise<AcquisitionRunPresentationExecution>;
   listRunExecutionIntents(
     runId: string
   ): Promise<AcquisitionExecutionIntent[]>;
@@ -578,6 +598,92 @@ implements AcquisitionPlanRunRepository {
       )
       .slice(0, query.limit)
       .map(clone);
+  }
+
+  async getRunPresentationExecution(
+    runId: string
+  ): Promise<AcquisitionRunPresentationExecution> {
+    const state = await this.snapshot();
+    const terminalTypes = new Set([
+      "shard.succeeded",
+      "shard.succeeded_empty",
+      "shard.partial_success",
+      "shard.failed",
+      "shard.cancelled"
+    ]);
+    const shards = Array.from(state.shards.values())
+      .filter((shard) => shard.runId === runId)
+      .sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id)
+      );
+    const startedShardIds = new Set(state.runEvents.flatMap((event) =>
+      event.runId === runId
+        && event.shardId
+        && event.type === "shard.started"
+        ? [event.shardId]
+        : []
+    ));
+    const value = (
+      event: AcquisitionRunEvent | undefined,
+      field: string
+    ) => event?.data[field];
+    const count = (
+      event: AcquisitionRunEvent | undefined,
+      field: string
+    ) => {
+      const result = value(event, field);
+      return Number.isSafeInteger(result) && Number(result) >= 0
+        ? Number(result)
+        : 0;
+    };
+    const text = (
+      event: AcquisitionRunEvent | undefined,
+      field: string
+    ) => {
+      const result = value(event, field);
+      return typeof result === "string" && result ? result : null;
+    };
+    const providers = shards.map((shard) => {
+      const terminal = state.runEvents
+        .filter((event) =>
+          event.runId === runId
+          && event.shardId === shard.id
+          && terminalTypes.has(event.type)
+        )
+        .sort((left, right) =>
+          right.at.localeCompare(left.at) || right.id.localeCompare(left.id)
+        )
+        .at(0);
+      return {
+        shardId: shard.id,
+        connectionId: shard.connection.connectionId,
+        providerId: shard.connection.providerId,
+        status: shard.status,
+        rawResultCount: count(terminal, "rawResultCount"),
+        acceptedResultCount: count(terminal, "acceptedResultCount"),
+        duplicateResultCount: count(terminal, "duplicateResultCount"),
+        failedResultCount: count(terminal, "failedResultCount"),
+        errorCode: text(terminal, "errorCode"),
+        retryAfterAt: text(terminal, "retryAfterAt")
+      };
+    });
+    const sources = new Set(shards.flatMap((shard) =>
+      startedShardIds.has(shard.id)
+        ? [
+            `${shard.connection.providerId}\u0000`
+            + shard.connection.connectionId
+          ]
+        : []
+    ));
+    return {
+      providers,
+      sourcesSearched: sources.size,
+      pagesAnalyzed: shards.reduce(
+        (total, shard) => total + shard.consumedBudget.results,
+        0
+      )
+    };
   }
 
   async listRunExecutionIntents(runId: string) {

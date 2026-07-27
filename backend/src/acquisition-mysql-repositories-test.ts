@@ -1102,14 +1102,20 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
   const planRepository =
     new MysqlAcquisitionPlanRunRepository(asPool(planPool));
   planPool.enqueue([]);
-  await planRepository.listRunCandidateLinks("run-1");
-  const links = planPool.calls.at(-1)!;
-  assert.match(
-    links.sql,
-    /JSON_EXTRACT\(e\.payload_json, '\$\.type'\)[\s)]*= 'candidate\.discovered'/
+  assert.deepEqual(
+    await planRepository.getRunPresentationExecution("run-1"),
+    {
+      providers: [],
+      sourcesSearched: 0,
+      pagesAnalyzed: 0
+    }
   );
-  assert.match(links.sql, /ROW_NUMBER\(\) OVER/u);
-  assert.deepEqual(links.values, ["run-1"]);
+  const execution = planPool.calls.at(-1)!;
+  assert.match(execution.sql, /WITH terminal_events AS/u);
+  assert.match(execution.sql, /ROW_NUMBER\(\) OVER/u);
+  assert.match(execution.sql, /FROM acquisition_operation_shards s/u);
+  assert.doesNotMatch(execution.sql, /SELECT e\.\*/u);
+  assert.deepEqual(execution.values, ["run-1", "run-1", "run-1"]);
 
   planPool.enqueue([]);
   await planRepository.listRunCandidateEventsPage("run-1", {
@@ -1143,11 +1149,7 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
   const audits = await domainRepository.listPresentationAuditEvents(
     { ownerId: "owner-a", teamId: "team-a" },
     {
-      candidateWatermarks: [{
-        candidateId: "candidate-1",
-        createdAt: "2026-07-24T08:00:00.000Z",
-        eventId: "event-1"
-      }],
+      runId: "run-1",
       after: {
         createdAt: "2026-07-24T08:00:30.000Z",
         eventId: "event-2"
@@ -1157,12 +1159,16 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
   );
   assert.deepEqual(audits, [domainAudit()]);
   const auditPage = domainPool.calls.at(-1)!;
-  assert.match(auditPage.sql, /JSON_TABLE/u);
+  assert.match(auditPage.sql, /WITH discovered_candidates AS/u);
+  assert.match(auditPage.sql, /FROM acquisition_run_events e/u);
   assert.match(auditPage.sql, /a\.owner_id = \? AND a\.team_id = \?/);
   assert.match(auditPage.sql, /a\.created_at > links\.discovered_at/u);
   assert.match(auditPage.sql, /a\.created_at > \?/);
   assert.match(auditPage.sql, /LIMIT \?/);
-  assert.deepEqual(auditPage.values.slice(-6), [
+  assert.deepEqual(auditPage.values, [
+    "run-1",
+    "owner-a",
+    "team-a",
     "owner-a",
     "team-a",
     "2026-07-24 08:00:30.000",
@@ -1186,7 +1192,10 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
     id: "qualification-1",
     owner_id: "owner-a",
     team_id: "team-a",
-    payload_json: JSON.stringify(qualification())
+    payload_json: JSON.stringify({
+      ...qualification(),
+      candidateId: "candidate-2"
+    })
   }]);
   domainPool.enqueue([{
     id: "financial-1",
@@ -1206,8 +1215,8 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
   );
   assert.deepEqual(snapshots, [{
     candidate: currentCandidate,
-    qualification: qualification(),
-    financial: financial(),
+    qualification: null,
+    financial: null,
     sourcePlatforms: ["baidu"]
   }]);
   const batchCalls = domainPool.calls.slice(-4);
@@ -1239,7 +1248,7 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
   assert.deepEqual(
     await domainRepository.getPresentationCandidateSummary(
       { ownerId: "owner-a", teamId: "team-a" },
-      ["candidate-1", "candidate-2"]
+      "run-1"
     ),
     {
       organizationsFound: 1,
@@ -1255,9 +1264,16 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
     }
   );
   const summaryCall = domainPool.calls.at(-1)!;
-  assert.match(summaryCall.sql, /JSON_TABLE/u);
+  assert.match(summaryCall.sql, /FROM acquisition_run_events e/u);
+  assert.doesNotMatch(summaryCall.sql, /JSON_TABLE/u);
   assert.match(summaryCall.sql, /GROUP BY revenue_currency/u);
-  assert.deepEqual(summaryCall.values.slice(-2), ["owner-a", "team-a"]);
+  assert.deepEqual(summaryCall.values, [
+    "run-1",
+    "owner-a",
+    "team-a",
+    "owner-a",
+    "team-a"
+  ]);
 }
 
 async function run() {

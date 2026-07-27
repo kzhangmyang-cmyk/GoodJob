@@ -15,6 +15,9 @@ import type {
   ResearchAttempt,
   ReviewEvent
 } from "./acquisition-domain.js";
+import type {
+  AcquisitionPlanRunRepository
+} from "./acquisition-plan-run-repository.js";
 
 export interface AcquisitionDataScope {
   ownerId: string;
@@ -33,12 +36,6 @@ export interface AcquisitionCandidateListPage {
   items: AcquisitionCandidate[];
   nextCursor: string | null;
   snapshot: string;
-}
-
-export interface AcquisitionPresentationEventWatermark {
-  candidateId: string;
-  createdAt: string;
-  eventId: string;
 }
 
 export interface AcquisitionPresentationEventCursor {
@@ -149,7 +146,7 @@ export interface AcquisitionDomainRepository {
   listPresentationAuditEvents(
     scope: AcquisitionDataScope,
     query: {
-      candidateWatermarks: AcquisitionPresentationEventWatermark[];
+      runId: string;
       after?: AcquisitionPresentationEventCursor;
       limit: number;
     }
@@ -160,7 +157,7 @@ export interface AcquisitionDomainRepository {
   ): Promise<AcquisitionPresentationCandidateSnapshot[]>;
   getPresentationCandidateSummary(
     scope: AcquisitionDataScope,
-    candidateIds: string[]
+    runId: string
   ): Promise<AcquisitionPresentationCandidateSummary>;
   findIdempotency(
     scope: AcquisitionDataScope,
@@ -232,6 +229,29 @@ implements AcquisitionDomainRepository {
   private readonly transactionContext =
     new AsyncLocalStorage<{ active: boolean }>();
   private transactionTail: Promise<void> = Promise.resolve();
+
+  constructor(
+    private presentationRuns?: Pick<
+      AcquisitionPlanRunRepository,
+      "listRunCandidateLinks"
+    >
+  ) {}
+
+  bindPresentationRunRepository(
+    presentationRuns: Pick<
+      AcquisitionPlanRunRepository,
+      "listRunCandidateLinks"
+    >
+  ) {
+    this.presentationRuns = presentationRuns;
+  }
+
+  private async presentationCandidateLinks(runId: string) {
+    if (!this.presentationRuns) {
+      throw new Error("PRESENTATION_RUN_REPOSITORY_REQUIRED");
+    }
+    return this.presentationRuns.listRunCandidateLinks(runId);
+  }
 
   async transaction<T>(work: () => Promise<T>): Promise<T> {
     if (this.transactionContext.getStore()?.active) return work();
@@ -619,7 +639,7 @@ implements AcquisitionDomainRepository {
   async listPresentationAuditEvents(
     scope: AcquisitionDataScope,
     query: {
-      candidateWatermarks: AcquisitionPresentationEventWatermark[];
+      runId: string;
       after?: AcquisitionPresentationEventCursor;
       limit: number;
     }
@@ -627,7 +647,8 @@ implements AcquisitionDomainRepository {
     if (!Number.isSafeInteger(query.limit) || query.limit < 1) {
       throw new Error("PRESENTATION_AUDIT_LIMIT_INVALID");
     }
-    const watermarks = new Map(query.candidateWatermarks.map((item) => [
+    const links = await this.presentationCandidateLinks(query.runId);
+    const watermarks = new Map(links.map((item) => [
       item.candidateId,
       item
     ]));
@@ -704,8 +725,10 @@ implements AcquisitionDomainRepository {
 
   async getPresentationCandidateSummary(
     scope: AcquisitionDataScope,
-    candidateIds: string[]
+    runId: string
   ): Promise<AcquisitionPresentationCandidateSummary> {
+    const candidateIds = (await this.presentationCandidateLinks(runId))
+      .map((link) => link.candidateId);
     const candidates = [...new Set(candidateIds)].flatMap((candidateId) => {
       const candidate = this.candidates.get(candidateId);
       if (!candidate || !belongs(candidate, scope)) return [];
