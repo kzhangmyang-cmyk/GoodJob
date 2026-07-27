@@ -156,7 +156,10 @@ function validResult(
     && Object.values(usage).some((value) => value > 0)
     && (result.status !== "succeeded" || result.evidenceCount > 0)
     && (result.status !== "succeeded_empty" || result.evidenceCount === 0)
-    && (result.status !== "partial_success" || result.evidenceCount > 0)
+    && (result.status !== "partial_success"
+      || result.evidenceCount > 0
+      || (Array.isArray(result.presentation?.candidateFailures)
+        && result.presentation.candidateFailures.length > 0))
     && (result.status !== "failed" || result.evidenceCount === 0)
     && (!result.presentation || validPresentation(
       result.presentation,

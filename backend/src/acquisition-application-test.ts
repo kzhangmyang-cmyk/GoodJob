@@ -61,6 +61,9 @@ import { memoryStore, type CrmStore } from "./store.js";
 import type {
   AiModelConfig
 } from "./types.js";
+import type {
+  StoredAiJobModelSnapshot
+} from "./model-providers/types.js";
 
 const OWNER = "owner-application";
 const TEAM = "team-application";
@@ -960,6 +963,7 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
   const fixture = isolatedMemoryStore();
   const search = fakeSearchPort();
   const model = fakeGateway();
+  const gatewaySnapshots: StoredAiJobModelSnapshot[] = [];
   const domainRepository = new InMemoryAcquisitionDomainRepository();
   let sequence = 0;
   let timestamp = Date.parse("2026-07-24T00:00:00.000Z");
@@ -968,7 +972,10 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
     masterSecret: MASTER_SECRET,
     searchPort: search.port,
     domainRepository,
-    modelGatewayFactory: () => model.gateway,
+    modelGatewayFactory: (snapshot) => {
+      gatewaySnapshots.push(structuredClone(snapshot));
+      return model.gateway;
+    },
     idFactory: (prefix) => `${prefix}-${++sequence}`,
     now: () => new Date(timestamp++).toISOString(),
     nowMs: () => timestamp++
@@ -1163,6 +1170,11 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
       }
     );
     assert.equal(approved.response.status, 200);
+    const approvedModelSnapshot =
+      createdPlan.json.payload.modelSnapshotRef;
+    activeModelConfig.model = "glm-4.6-active-after-approval";
+    activeModelConfig.credentialVersion =
+      (originalCredentialVersion ?? 1) + 2;
 
     fixture.store.providerConnections[0]!.status = "disabled";
     const driftedRun = await server.request(
@@ -1270,6 +1282,25 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
         "research",
         "research"
       ]
+    );
+    assert.equal(gatewaySnapshots.length, 6);
+    assert.equal(
+      gatewaySnapshots.every((snapshot) =>
+        snapshot.jobId === approvedModelSnapshot.jobSnapshotId
+        && snapshot.credentialVersion
+          === approvedModelSnapshot.credentialVersion
+        && snapshot.model === approvedModelSnapshot.model
+        && snapshot.promptVersion === approvedModelSnapshot.promptVersion
+        && snapshot.schemaVersion === approvedModelSnapshot.schemaVersion
+      ),
+      true,
+      JSON.stringify(gatewaySnapshots.map((snapshot) => ({
+        jobId: snapshot.jobId,
+        credentialVersion: snapshot.credentialVersion,
+        model: snapshot.model,
+        promptVersion: snapshot.promptVersion,
+        schemaVersion: snapshot.schemaVersion
+      })))
     );
     const presentation = await server.request(
       `/api/v1/acquisition/runs/${runId}/presentation?limit=100`

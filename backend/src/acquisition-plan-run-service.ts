@@ -313,9 +313,11 @@ function normalTerminalStatus(
   shards: AcquisitionOperationShard[]
 ): AcquisitionRunStatus {
   const acceptedEvidence = evidenceCount(shards);
+  if (shards.some((shard) => shard.status === "partial_success")) {
+    return "partial_success";
+  }
   const degraded = shards.some((shard) =>
     shard.status === "failed"
-    || shard.status === "partial_success"
     || shard.status === "budget_exhausted"
     || shard.status === "cancelled");
   if (degraded) return acceptedEvidence > 0 ? "partial_success" : "failed";

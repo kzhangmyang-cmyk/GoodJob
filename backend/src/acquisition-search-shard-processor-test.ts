@@ -15,6 +15,9 @@ import type {
   AcquisitionAgentToolExecutor,
   AcquisitionToolExecutionInput
 } from "./acquisition-pi-tools.js";
+import {
+  AcquisitionToolExecutorError
+} from "./acquisition-tool-executor.js";
 
 function run(): AcquisitionRun {
   return {
@@ -526,9 +529,7 @@ test("processes sorted search candidates and keeps evidence when one candidate s
       }
       if (input.payload.candidateId === "candidate-a"
         && input.toolName === "research_candidate") {
-        throw Object.assign(new Error("private provider response"), {
-          code: "RESEARCH_FAILED"
-        });
+        throw new AcquisitionToolExecutorError("RESOURCE_NOT_FOUND");
       }
       if (input.toolName === "qualify_candidate") {
         return {
@@ -563,7 +564,7 @@ test("processes sorted search candidates and keeps evidence when one candidate s
   assert.deepEqual(result.presentation?.candidateFailures, [{
     candidateId: "candidate-a",
     stage: "research",
-    errorCode: "RESEARCH_FAILED"
+    errorCode: "RESOURCE_NOT_FOUND"
   }]);
   assert.deepEqual(calls.map((call) => call.toolName), [
     "search_public_sources",
@@ -571,4 +572,42 @@ test("processes sorted search candidates and keeps evidence when one candidate s
     "research_candidate",
     "qualify_candidate"
   ]);
+});
+
+test("returns partial success for a candidate failure even when search accepted no evidence", async () => {
+  const executor: AcquisitionAgentToolExecutor = {
+    async execute(input) {
+      if (input.toolName === "search_public_sources") {
+        return {
+          status: "succeeded",
+          providers: [{
+            providerConnectionId: "official-search-connection",
+            provider: "official-search"
+          }],
+          providerFailures: [],
+          rawResultCount: 0,
+          acceptedResultCount: 0,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          candidateIds: ["candidate-without-evidence"],
+          outreachExecuted: false
+        };
+      }
+      throw new AcquisitionToolExecutorError("EVIDENCE_REQUIRED");
+    }
+  };
+  const processor = new AcquisitionSearchShardProcessor({
+    executor,
+    nowMs: () => 5_000
+  });
+
+  const result = await processor.process(processingInput());
+
+  assert.equal(result.status, "partial_success");
+  assert.equal(result.evidenceCount, 0);
+  assert.deepEqual(result.presentation?.candidateFailures, [{
+    candidateId: "candidate-without-evidence",
+    stage: "research",
+    errorCode: "EVIDENCE_REQUIRED"
+  }]);
 });

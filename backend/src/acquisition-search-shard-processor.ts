@@ -175,9 +175,7 @@ implements AcquisitionShardProcessorPort {
     });
     const completedAt = this.nowMs();
     const status = candidateProcessing.failures.length > 0
-      ? Number(evidenceCount) > 0
-        ? "partial_success"
-        : "failed"
+      ? "partial_success"
       : record.status === "partial"
       ? Number(evidenceCount) > 0
         ? "partial_success"

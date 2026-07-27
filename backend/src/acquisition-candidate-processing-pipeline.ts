@@ -11,6 +11,10 @@ import type {
 import type {
   AcquisitionScope
 } from "./acquisition-plan-run-service.js";
+import {
+  AcquisitionToolExecutorError,
+  type AcquisitionToolExecutorErrorCode
+} from "./acquisition-tool-executor.js";
 
 export interface AcquisitionCandidateProcessingInput {
   scope: AcquisitionScope;
@@ -54,7 +58,28 @@ const HARD_GATE_FAILURES = new Set([
   "stale_evidence",
   "schema_invalid"
 ]);
-const STABLE_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,127}$/u;
+const TRUSTED_TOOL_ERROR_CODES = new Set<AcquisitionToolExecutorErrorCode>([
+  "ABORTED",
+  "INVALID_IDENTITY",
+  "IDENTITY_RESEARCH_REQUIRED",
+  "INVALID_PAYLOAD",
+  "UNKNOWN_TOOL",
+  "SEARCH_PROVIDER_CONNECTION_REQUIRED",
+  "SEARCH_ALL_PROVIDERS_FAILED",
+  "RESOURCE_NOT_FOUND",
+  "IDEMPOTENCY_CONFLICT",
+  "INVALID_STATE",
+  "HARD_GATE_BLOCKED",
+  "EVIDENCE_REQUIRED",
+  "STALE_DECISION",
+  "CONVERSION_FAILED",
+  "ELIGIBILITY_BLOCKED",
+  "ACTION_NOT_EXECUTED",
+  "ACTION_EXECUTION_MISMATCH",
+  "INVALID_JUDGMENT_RESULT",
+  "UNSUPPORTED_CURRENCY",
+  "TOOL_EXECUTION_FAILED"
+]);
 
 function stageKey(input: {
   runId: string;
@@ -98,15 +123,11 @@ function qualificationSnapshot(value: unknown) {
 }
 
 function stableErrorCode(error: unknown) {
-  const record = isRecord(error) ? error : null;
-  const code = record?.code;
-  if (typeof code === "string" && STABLE_ERROR_CODE.test(code)) {
-    return code;
+  if (error instanceof AcquisitionToolExecutorError
+    && TRUSTED_TOOL_ERROR_CODES.has(error.code)) {
+    return error.code;
   }
-  const message = error instanceof Error ? error.message : "";
-  return STABLE_ERROR_CODE.test(message)
-    ? message
-    : "TOOL_EXECUTION_FAILED";
+  return "TOOL_EXECUTION_FAILED";
 }
 
 function abortReason(signal: AbortSignal) {

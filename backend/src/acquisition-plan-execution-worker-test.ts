@@ -475,6 +475,56 @@ test("partial_success remains a first-class processor outcome", async () => {
   await worker.close();
 });
 
+test("zero-evidence partial success is valid only when a candidate stage failed", async () => {
+  const processor: AcquisitionShardProcessorPort = {
+    async process() {
+      return {
+        status: "partial_success",
+        evidenceCount: 0,
+        usage: {
+          requests: 1,
+          results: 0,
+          amountMinor: 0,
+          durationSeconds: 1
+        },
+        presentation: {
+          rawResultCount: 0,
+          acceptedResultCount: 0,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          providers: [{
+            providerConnectionId: "search-connection",
+            provider: "official-search",
+            status: "succeeded"
+          }],
+          providerFailures: [],
+          candidateIds: ["candidate-without-evidence"],
+          processedCandidateIds: [],
+          battleCardCandidateIds: [],
+          candidateFailures: [{
+            candidateId: "candidate-without-evidence",
+            stage: "research",
+            errorCode: "EVIDENCE_REQUIRED"
+          }]
+        }
+      };
+    }
+  };
+  const { repository, service, worker } = createHarness(processor);
+
+  const created = await createApprovedRun(service);
+  await worker.waitForIdle();
+
+  const settled = await service.getRun(scope, created.id);
+  assert.equal(settled.status, "partial_success");
+  assert.ok(
+    (await repository.listRunShards(created.id))
+      .every((shard) => shard.status === "partial_success")
+  );
+  assert.equal(settled.evidenceCount, 0);
+  await worker.close();
+});
+
 test("configured concurrency is used without exceeding the shard limit", async () => {
   let active = 0;
   let peak = 0;

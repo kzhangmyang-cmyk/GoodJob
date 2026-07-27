@@ -11,6 +11,9 @@ import type {
   AcquisitionAgentToolExecutor,
   AcquisitionToolExecutionInput
 } from "./acquisition-pi-tools.js";
+import {
+  AcquisitionToolExecutorError
+} from "./acquisition-tool-executor.js";
 
 const RESEARCH_QUESTIONS = [
   "该主体最近有哪些与目标产品相关的明确需求或经营变化？",
@@ -256,22 +259,15 @@ test("keeps failed candidates, records only stable codes, and continues later ca
       const candidateId = String(input.payload.candidateId);
       if (candidateId === "candidate-research-failure"
         && input.toolName === "research_candidate") {
-        throw Object.assign(
-          new Error("provider secret response must not be persisted"),
-          { code: "RESEARCH_FAILED" }
-        );
+        throw new AcquisitionToolExecutorError("RESOURCE_NOT_FOUND");
       }
       if (candidateId === "candidate-qualification-failure"
         && input.toolName === "qualify_candidate") {
-        throw Object.assign(new Error("apiKey=secret"), {
-          code: "QUALIFICATION_FAILED"
-        });
+        throw new AcquisitionToolExecutorError("INVALID_JUDGMENT_RESULT");
       }
       if (candidateId === "candidate-card-failure"
         && input.toolName === "build_battle_card") {
-        throw Object.assign(new Error("https://private-base-url.test"), {
-          code: "BATTLE_CARD_FAILED"
-        });
+        throw new AcquisitionToolExecutorError("ELIGIBILITY_BLOCKED");
       }
       if (input.toolName === "qualify_candidate") {
         return qualification("A", 78);
@@ -298,17 +294,17 @@ test("keeps failed candidates, records only stable codes, and continues later ca
       {
         candidateId: "candidate-research-failure",
         stage: "research",
-        errorCode: "RESEARCH_FAILED"
+        errorCode: "RESOURCE_NOT_FOUND"
       },
       {
         candidateId: "candidate-qualification-failure",
         stage: "qualification",
-        errorCode: "QUALIFICATION_FAILED"
+        errorCode: "INVALID_JUDGMENT_RESULT"
       },
       {
         candidateId: "candidate-card-failure",
         stage: "battle_card",
-        errorCode: "BATTLE_CARD_FAILED"
+        errorCode: "ELIGIBILITY_BLOCKED"
       }
     ]
   });
@@ -321,6 +317,54 @@ test("keeps failed candidates, records only stable codes, and continues later ca
   );
   assert.equal(JSON.stringify(result).includes("secret"), false);
   assert.equal(JSON.stringify(result).includes("private-base-url"), false);
+});
+
+test("maps untrusted messages and code-shaped properties to a fixed safe fallback", async () => {
+  const executor: AcquisitionAgentToolExecutor = {
+    async execute(input) {
+      const candidateId = String(input.payload.candidateId);
+      if (candidateId === "candidate-message") {
+        throw new Error("API_KEY_SK_PROJ_SUPER_SECRET");
+      }
+      if (candidateId === "candidate-unknown-code") {
+        throw Object.assign(new Error("provider model raw output"), {
+          code: "MODEL_RAW_API_KEY_SECRET"
+        });
+      }
+      throw Object.assign(new Error("not a trusted executor error"), {
+        code: "RESOURCE_NOT_FOUND"
+      });
+    }
+  };
+  const pipeline = new AcquisitionCandidateProcessingPipeline({ executor });
+
+  const result = await pipeline.process(processingInput([
+    "candidate-message",
+    "candidate-unknown-code",
+    "candidate-known-plain-code"
+  ]));
+
+  assert.deepEqual(result.failures, [
+    {
+      candidateId: "candidate-message",
+      stage: "research",
+      errorCode: "TOOL_EXECUTION_FAILED"
+    },
+    {
+      candidateId: "candidate-unknown-code",
+      stage: "research",
+      errorCode: "TOOL_EXECUTION_FAILED"
+    },
+    {
+      candidateId: "candidate-known-plain-code",
+      stage: "research",
+      errorCode: "TOOL_EXECUTION_FAILED"
+    }
+  ]);
+  const serialized = JSON.stringify(result);
+  assert.equal(serialized.includes("API_KEY"), false);
+  assert.equal(serialized.includes("MODEL_RAW"), false);
+  assert.equal(serialized.includes("provider model raw output"), false);
 });
 
 test("rejects a malformed qualification as a stable qualification-stage failure", async () => {
