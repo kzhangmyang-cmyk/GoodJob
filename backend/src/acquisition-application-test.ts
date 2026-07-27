@@ -264,7 +264,9 @@ function fakeSearchPort() {
   return { port, calls };
 }
 
-function fakeGateway() {
+function fakeGateway(
+  battleCardVersion: "v1" | "v2" = "v2"
+) {
   let outcomeToolCalls = 0;
   const judgmentOperations: string[] = [];
   const gateway: AcquisitionPiGatewayPort = {
@@ -333,7 +335,7 @@ function fakeGateway() {
               }
             }
           },
-          build_battle_card: {
+          build_battle_card: battleCardVersion === "v1" ? {
             operation: "build_battle_card",
             result: {
               sections: [{
@@ -350,6 +352,66 @@ function fakeGateway() {
                 confidence: null
               }],
               confidence: 0.8
+            }
+          } : {
+            operation: "build_battle_card",
+            result: {
+              accountOverview: [{
+                kind: "fact",
+                text: "该主体公开表达了目标产品相关需求。",
+                evidenceIds: [evidenceId],
+                confidence: 1
+              }],
+              needAssessment: [{
+                kind: "inference",
+                text: "公开需求与目标产品高度匹配。",
+                evidenceIds: [evidenceId],
+                confidence: 0.8
+              }],
+              supplierHypotheses: [{
+                kind: "unknown",
+                text: "公开证据尚未披露现有供应商。",
+                evidenceIds: [],
+                confidence: null
+              }],
+              buyingCommittee: [{
+                role: "业务负责人",
+                priority: 1,
+                influence: "decision_maker",
+                concerns: ["投入产出"],
+                claim: {
+                  kind: "inference",
+                  text: "业务负责人可能参与采购决策。",
+                  evidenceIds: [evidenceId],
+                  confidence: 0.65
+                }
+              }],
+              procurementPreferences: [{
+                kind: "unknown",
+                text: "采购偏好尚未公开。",
+                evidenceIds: [],
+                confidence: null
+              }],
+              connectionStrategies: [{
+                channel: "email",
+                targetRole: "业务负责人",
+                rationale: {
+                  kind: "fact",
+                  text: "公开需求适合用书面诊断材料切入。",
+                  evidenceIds: [evidenceId],
+                  confidence: 1
+                },
+                openingDraft:
+                  "建议人工审核后，以公开需求为背景提供一页诊断。"
+              }],
+              roleSpecificOpeners: [{
+                role: "业务负责人",
+                channel: "email",
+                text: "看到贵司公开需求，我们整理了一页诊断供参考。"
+              }],
+              doNotActions: [
+                "不要声称已经确认预算或现有供应商"
+              ]
             }
           }
         };
@@ -1053,7 +1115,10 @@ test("approved registered legacy model snapshots remain executable while unknown
     planRunRepository,
     modelGatewayFactory: (snapshot) => {
       gatewaySnapshots.push(structuredClone(snapshot));
-      return model.gateway;
+      return snapshot.schemaVersion
+        === ACQUISITION_LEGACY_MODEL_SCHEMA_VERSION
+        ? fakeGateway("v1").gateway
+        : model.gateway;
     },
     idFactory: (prefix) => `runtime-${prefix}-${++runtimeSequence}`
   });
@@ -1375,6 +1440,7 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
     );
     fixture.store.providerConnections[0]!.status = "active";
 
+    const barriersBeforeSuccessfulRun = fixture.readBarrierCount();
     const run = await server.request(
       `/api/v1/acquisition/plans/${planId}/runs`,
       {
@@ -1395,22 +1461,34 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
     const shardResponse = await server.request(
       `/api/v1/acquisition/runs/${runId}/shards`
     );
+    const runPresentation = await server.request(
+      `/api/v1/acquisition/runs/${runId}/presentation`
+    );
     assert.equal(
       terminalRun.json.status,
       "succeeded",
-      JSON.stringify(shardResponse.json)
+      JSON.stringify({
+        shards: shardResponse.json,
+        presentation: runPresentation.json
+      })
     );
-    assert.equal(search.calls.length, 2);
+    assert.equal(search.calls.length, 8);
     assert.equal(
-      fixture.readBarrierCount() >= 4,
+      fixture.readBarrierCount() - barriersBeforeSuccessfulRun >= 8,
       true,
-      "session binding, plan approval, and shard execution must refresh state"
+      "each shard and each supplemental query must refresh provider state"
     );
     assert.deepEqual(
       new Set(search.calls.map((call) => call.query)),
       new Set([
         "正在寻找 AI 获客供应商",
-        "门店主理人 获客难 AI 解决方案"
+        "门店主理人 获客难 AI 解决方案",
+        "\"示例科技有限公司\" \"example.cn\" 采购 招标 合作",
+        "\"示例科技有限公司\" 招聘 扩张 融资 新项目",
+        "\"示例科技有限公司\" 供应商 系统 服务商",
+        "\"示例门店主理人\" \"https://example.cn/public-profile/operator\" 求购 报价 合作",
+        "\"示例门店主理人\" 采购 寻找供应商 解决方案",
+        "\"示例门店主理人\" 比价 预算 上线"
       ])
     );
     assert.equal(

@@ -12,6 +12,9 @@ import {
   AcquisitionCandidateProcessingPipeline
 } from "./acquisition-candidate-processing-pipeline.js";
 import {
+  AcquisitionCandidateResearchService
+} from "./acquisition-candidate-research.js";
+import {
   InMemoryAcquisitionDomainRepository,
   type AcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
@@ -1075,8 +1078,21 @@ export async function createAcquisitionApplication(
       now
     });
 
+    const candidateResearch = new AcquisitionCandidateResearchService({
+      domain: domainService,
+      search: searchPort,
+      validateConnection: async (input) => {
+        await options.store.readBarrier();
+        assertTrustedSearchConnectionSnapshots(
+          options.store,
+          input.scope,
+          [input.connection]
+        );
+      }
+    });
     const candidatePipeline = new AcquisitionCandidateProcessingPipeline({
-      executor: toolExecutor
+      executor: toolExecutor,
+      research: candidateResearch
     });
     const searchProcessor = new AcquisitionSearchShardProcessor({
       executor: toolExecutor,

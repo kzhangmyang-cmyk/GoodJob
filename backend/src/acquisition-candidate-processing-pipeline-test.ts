@@ -14,6 +14,9 @@ import type {
 import {
   AcquisitionToolExecutorError
 } from "./acquisition-tool-executor.js";
+import type {
+  AcquisitionCandidateResearchPort
+} from "./acquisition-candidate-research.js";
 
 const RESEARCH_QUESTIONS = [
   "该主体最近有哪些与目标产品相关的明确需求或经营变化？",
@@ -443,4 +446,85 @@ test("reuses every stage idempotency key for the same run, shard, and candidate"
   assert.equal(new Set(
     calls.slice(0, 3).map((call) => call.idempotencyKey)
   ).size, 3);
+});
+
+test("runs bounded supplemental research before model research and then uses the refreshed candidate state", async () => {
+  const order: string[] = [];
+  const research: AcquisitionCandidateResearchPort = {
+    async research(input) {
+      order.push(`supplemental:${input.candidateId}`);
+      assert.deepEqual(input.questions, RESEARCH_QUESTIONS);
+      return {
+        status: "completed",
+        queries: [{
+          query: "\"目标公司\" 采购 招标 合作",
+          providerConnectionId: input.shard.connection.connectionId,
+          resultCount: 1
+        }],
+        addedEvidenceIds: ["evidence-new"]
+      };
+    }
+  };
+  const executor: AcquisitionAgentToolExecutor = {
+    async execute(input) {
+      order.push(`${input.toolName}:${input.payload.candidateId}`);
+      return input.toolName === "qualify_candidate"
+        ? qualification("A", 80)
+        : { outreachExecuted: false };
+    }
+  };
+  const pipeline = new AcquisitionCandidateProcessingPipeline({
+    executor,
+    research
+  });
+
+  const result = await pipeline.process(
+    processingInput(["candidate-refresh"])
+  );
+
+  assert.deepEqual(order, [
+    "supplemental:candidate-refresh",
+    "research_candidate:candidate-refresh",
+    "qualify_candidate:candidate-refresh",
+    "build_battle_card:candidate-refresh"
+  ]);
+  assert.deepEqual(result.failures, []);
+});
+
+test("records a supplemental research failure at the research stage without running model tools", async () => {
+  let executorCalls = 0;
+  const research: AcquisitionCandidateResearchPort = {
+    async research() {
+      return {
+        status: "failed",
+        queries: [],
+        addedEvidenceIds: []
+      };
+    }
+  };
+  const executor: AcquisitionAgentToolExecutor = {
+    async execute() {
+      executorCalls += 1;
+      return {};
+    }
+  };
+  const pipeline = new AcquisitionCandidateProcessingPipeline({
+    executor,
+    research
+  });
+
+  const result = await pipeline.process(
+    processingInput(["candidate-research-failed"])
+  );
+
+  assert.deepEqual(result, {
+    processedCandidateIds: [],
+    battleCardCandidateIds: [],
+    failures: [{
+      candidateId: "candidate-research-failed",
+      stage: "research",
+      errorCode: "SUPPLEMENTAL_RESEARCH_FAILED"
+    }]
+  });
+  assert.equal(executorCalls, 0);
 });

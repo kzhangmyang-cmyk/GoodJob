@@ -15,6 +15,9 @@ import {
   AcquisitionToolExecutorError,
   type AcquisitionToolExecutorErrorCode
 } from "./acquisition-tool-executor.js";
+import type {
+  AcquisitionCandidateResearchPort
+} from "./acquisition-candidate-research.js";
 
 export interface AcquisitionCandidateProcessingInput {
   scope: AcquisitionScope;
@@ -36,6 +39,7 @@ export interface AcquisitionCandidateProcessingResult {
 
 export interface AcquisitionCandidateProcessingPipelineOptions {
   executor: AcquisitionAgentToolExecutor;
+  research?: AcquisitionCandidateResearchPort;
 }
 
 type CandidateStage =
@@ -142,9 +146,11 @@ function assertNotAborted(signal: AbortSignal) {
 
 export class AcquisitionCandidateProcessingPipeline {
   private readonly executor: AcquisitionAgentToolExecutor;
+  private readonly research: AcquisitionCandidateResearchPort | null;
 
   constructor(options: AcquisitionCandidateProcessingPipelineOptions) {
     this.executor = options.executor;
+    this.research = options.research ?? null;
   }
 
   async process(
@@ -157,6 +163,35 @@ export class AcquisitionCandidateProcessingPipeline {
     };
     for (const candidateId of input.candidateIds) {
       assertNotAborted(input.signal);
+      if (this.research) {
+        try {
+          const supplemental = await this.research.research({
+            scope: input.scope,
+            run: input.run,
+            shard: input.shard,
+            candidateId,
+            questions: [...RESEARCH_QUESTIONS],
+            signal: input.signal
+          });
+          assertNotAborted(input.signal);
+          if (supplemental.status === "failed") {
+            result.failures.push({
+              candidateId,
+              stage: "research",
+              errorCode: "SUPPLEMENTAL_RESEARCH_FAILED"
+            });
+            continue;
+          }
+        } catch (error) {
+          if (input.signal.aborted) throw abortReason(input.signal);
+          result.failures.push({
+            candidateId,
+            stage: "research",
+            errorCode: "SUPPLEMENTAL_RESEARCH_FAILED"
+          });
+          continue;
+        }
+      }
       const researched = await this.executeStage(
         input,
         candidateId,
