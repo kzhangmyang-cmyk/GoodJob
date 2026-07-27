@@ -130,6 +130,16 @@ function processingInput(
   };
 }
 
+const noOpCandidatePipeline = {
+  async process() {
+    return {
+      processedCandidateIds: [],
+      battleCardCandidateIds: [],
+      failures: []
+    };
+  }
+};
+
 test("maps a search shard to search_public_sources and extracts accepted evidence plus usage", async () => {
   const calls: AcquisitionToolExecutionInput[] = [];
   const executor: AcquisitionAgentToolExecutor = {
@@ -159,6 +169,7 @@ test("maps a search shard to search_public_sources and extracts accepted evidenc
   const times = [1_000, 2_501];
   const processor = new AcquisitionSearchShardProcessor({
     executor,
+    candidatePipeline: noOpCandidatePipeline,
     nowMs: () => times.shift() ?? 2_501
   });
   const input = processingInput();
@@ -396,6 +407,7 @@ test("preserves a partial search outcome when accepted evidence survives ingest 
   };
   const processor = new AcquisitionSearchShardProcessor({
     executor,
+    candidatePipeline: noOpCandidatePipeline,
     nowMs: () => 5_000
   });
 
@@ -456,6 +468,7 @@ test("uses explicit executor usage when the search result supplies a valid accou
   };
   const processor = new AcquisitionSearchShardProcessor({
     executor,
+    candidatePipeline: noOpCandidatePipeline,
     nowMs: () => 10_000
   });
 
@@ -488,4 +501,74 @@ test("rejects corrupt search snapshots before invoking the executor", async () =
       && error.code === "INVALID_SEARCH_SHARD"
   );
   assert.equal(calls, 0);
+});
+
+test("processes sorted search candidates and keeps evidence when one candidate stage fails", async () => {
+  const calls: AcquisitionToolExecutionInput[] = [];
+  const executor: AcquisitionAgentToolExecutor = {
+    async execute(input) {
+      calls.push(input);
+      if (input.toolName === "search_public_sources") {
+        return {
+          status: "succeeded",
+          providers: [{
+            providerConnectionId: "official-search-connection",
+            provider: "official-search"
+          }],
+          providerFailures: [],
+          rawResultCount: 2,
+          acceptedResultCount: 2,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          candidateIds: ["candidate-a", "candidate-b"],
+          outreachExecuted: false
+        };
+      }
+      if (input.payload.candidateId === "candidate-a"
+        && input.toolName === "research_candidate") {
+        throw Object.assign(new Error("private provider response"), {
+          code: "RESEARCH_FAILED"
+        });
+      }
+      if (input.toolName === "qualify_candidate") {
+        return {
+          qualification: {
+            grade: "B",
+            score: 60,
+            hardGateFailures: []
+          },
+          outreachExecuted: false
+        };
+      }
+      return { outreachExecuted: false };
+    }
+  };
+  const processor = new AcquisitionSearchShardProcessor({
+    executor,
+    nowMs: () => 5_000
+  });
+
+  const result = await processor.process(processingInput());
+
+  assert.equal(result.status, "partial_success");
+  assert.equal(result.evidenceCount, 2);
+  assert.deepEqual(result.presentation?.candidateIds, [
+    "candidate-a",
+    "candidate-b"
+  ]);
+  assert.deepEqual(result.presentation?.processedCandidateIds, [
+    "candidate-b"
+  ]);
+  assert.deepEqual(result.presentation?.battleCardCandidateIds, []);
+  assert.deepEqual(result.presentation?.candidateFailures, [{
+    candidateId: "candidate-a",
+    stage: "research",
+    errorCode: "RESEARCH_FAILED"
+  }]);
+  assert.deepEqual(calls.map((call) => call.toolName), [
+    "search_public_sources",
+    "research_candidate",
+    "research_candidate",
+    "qualify_candidate"
+  ]);
 });

@@ -9,6 +9,9 @@ import type {
   AcquisitionCandidate
 } from "./acquisition-domain.js";
 import {
+  AcquisitionCandidateProcessingPipeline
+} from "./acquisition-candidate-processing-pipeline.js";
+import {
   InMemoryAcquisitionDomainRepository,
   type AcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
@@ -92,6 +95,7 @@ import {
 } from "./acquisition-provider-connections-router.js";
 import {
   InMemoryAcquisitionPlanRunRepository,
+  type AcquisitionModelSnapshotRef,
   type AcquisitionProviderConnectionSnapshot,
   type AcquisitionPlanPayload,
   type AcquisitionPlanRunRepository
@@ -119,6 +123,7 @@ import {
 import {
   acquisitionPiModelSnapshotFromStored,
   bindActiveAcquisitionModelSnapshot,
+  createAcquisitionModelGatewayForSnapshot,
   createAcquisitionPiRuntimeFactory
 } from "./acquisition-pi-runtime-factory.js";
 import type {
@@ -758,12 +763,11 @@ function createModelSnapshotResolver(
   };
 }
 
-function assertTrustedPlanSnapshot(
+function trustedPlanSnapshot(
   store: CrmStore,
   scope: { ownerId: string; teamId: string },
-  payload: AcquisitionPlanPayload
+  ref: AcquisitionModelSnapshotRef
 ) {
-  const ref = payload.modelSnapshotRef;
   const stored = store.aiJobModelSnapshots.find((snapshot) =>
     snapshot.jobId === ref.jobSnapshotId
     && snapshot.ownerId === scope.ownerId
@@ -796,6 +800,15 @@ function assertTrustedPlanSnapshot(
   if (!matches) {
     throw new Error("ACQUISITION_PLAN_MODEL_SNAPSHOT_MISMATCH");
   }
+  return stored;
+}
+
+function assertTrustedPlanSnapshot(
+  store: CrmStore,
+  scope: { ownerId: string; teamId: string },
+  payload: AcquisitionPlanPayload
+) {
+  trustedPlanSnapshot(store, scope, payload.modelSnapshotRef);
 }
 
 export async function createAcquisitionApplication(
@@ -948,16 +961,51 @@ export async function createAcquisitionApplication(
       idFactory,
       now
     });
-    const judgmentResolver = createAcquisitionJudgmentSessionResolver({
-      repository: repositories.copilot,
-      store: options.store,
-      gatewayFactory: options.modelGatewayFactory
-        ? (snapshot) => options.modelGatewayFactory!(
-            snapshot,
-            acquisitionModelContentForSnapshot(snapshot)
-          )
-        : undefined
-    });
+    const copilotJudgmentResolver =
+      createAcquisitionJudgmentSessionResolver({
+        repository: repositories.copilot,
+        store: options.store,
+        gatewayFactory: options.modelGatewayFactory
+          ? (snapshot) => options.modelGatewayFactory!(
+              snapshot,
+              acquisitionModelContentForSnapshot(snapshot)
+            )
+          : undefined
+      });
+    const judgmentResolver: Parameters<
+      typeof createAcquisitionJudgmentPort
+    >[0]["resolveSession"] = async (input) => {
+      const prefix = "acquisition-plan:";
+      if (!input.sessionId.startsWith(prefix)) {
+        return copilotJudgmentResolver(input);
+      }
+      const runId = input.sessionId.slice(prefix.length);
+      const run = runId
+        ? await repositories.planRun.getRun(runId)
+        : null;
+      if (!run
+        || run.ownerId !== input.ownerId
+        || run.teamId !== input.teamId) {
+        throw new Error("MODEL_SNAPSHOT_UNAVAILABLE");
+      }
+      const snapshot = trustedPlanSnapshot(
+        options.store,
+        input,
+        run.modelSnapshotRef
+      );
+      return {
+        snapshot,
+        gateway: options.modelGatewayFactory
+          ? options.modelGatewayFactory(
+              snapshot,
+              acquisitionModelContentForSnapshot(snapshot)
+            )
+          : createAcquisitionModelGatewayForSnapshot(
+              options.store,
+              snapshot
+            )
+      };
+    };
     const judgments = createAcquisitionJudgmentPort({
       resolveSession: judgmentResolver
     });
@@ -1028,8 +1076,12 @@ export async function createAcquisitionApplication(
       now
     });
 
+    const candidatePipeline = new AcquisitionCandidateProcessingPipeline({
+      executor: toolExecutor
+    });
     const searchProcessor = new AcquisitionSearchShardProcessor({
       executor: toolExecutor,
+      candidatePipeline,
       nowMs
     });
     const trustedSearchProcessor = {

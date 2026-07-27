@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import {
+  AcquisitionCandidateProcessingPipeline
+} from "./acquisition-candidate-processing-pipeline.js";
 import type {
   AcquisitionAgentToolExecutor
 } from "./acquisition-pi-tools.js";
@@ -10,6 +13,10 @@ import type {
 
 export interface AcquisitionSearchShardProcessorOptions {
   executor: AcquisitionAgentToolExecutor;
+  candidatePipeline?: Pick<
+    AcquisitionCandidateProcessingPipeline,
+    "process"
+  >;
   nowMs?: () => number;
 }
 
@@ -29,10 +36,18 @@ export class AcquisitionSearchShardProcessorError extends Error {
 export class AcquisitionSearchShardProcessor
 implements AcquisitionShardProcessorPort {
   private readonly executor: AcquisitionAgentToolExecutor;
+  private readonly candidatePipeline: Pick<
+    AcquisitionCandidateProcessingPipeline,
+    "process"
+  >;
   private readonly nowMs: () => number;
 
   constructor(options: AcquisitionSearchShardProcessorOptions) {
     this.executor = options.executor;
+    this.candidatePipeline = options.candidatePipeline
+      ?? new AcquisitionCandidateProcessingPipeline({
+        executor: options.executor
+      });
     this.nowMs = options.nowMs ?? (() => Date.now());
   }
 
@@ -100,7 +115,6 @@ implements AcquisitionShardProcessorPort {
       },
       signal: input.signal
     });
-    const completedAt = this.nowMs();
     if (!result || typeof result !== "object" || Array.isArray(result)) {
       throw new AcquisitionSearchShardProcessorError(
         "INVALID_SEARCH_RESULT"
@@ -152,7 +166,19 @@ implements AcquisitionShardProcessorPort {
         "INVALID_SEARCH_RESULT"
       );
     }
-    const status = record.status === "partial"
+    const candidateProcessing = await this.candidatePipeline.process({
+      scope: input.scope,
+      run: input.run,
+      shard: input.shard,
+      candidateIds: candidateIds.map(String),
+      signal: input.signal
+    });
+    const completedAt = this.nowMs();
+    const status = candidateProcessing.failures.length > 0
+      ? Number(evidenceCount) > 0
+        ? "partial_success"
+        : "failed"
+      : record.status === "partial"
       ? Number(evidenceCount) > 0
         ? "partial_success"
         : "failed"
@@ -225,9 +251,10 @@ implements AcquisitionShardProcessorPort {
             : String((failure as Record<string, unknown>).retryAfterAt)
         })),
         candidateIds: candidateIds.map(String),
-        processedCandidateIds: [],
-        battleCardCandidateIds: [],
-        candidateFailures: []
+        processedCandidateIds: candidateProcessing.processedCandidateIds,
+        battleCardCandidateIds:
+          candidateProcessing.battleCardCandidateIds,
+        candidateFailures: candidateProcessing.failures
       },
       usage
     };

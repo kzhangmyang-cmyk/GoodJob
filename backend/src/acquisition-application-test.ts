@@ -4,6 +4,8 @@ import express, { type RequestHandler } from "express";
 import type mysql from "mysql2/promise";
 import {
   ACQUISITION_FINAL_ANSWER_TOOL,
+  ACQUISITION_JUDGMENT_PROMPT_ID,
+  ACQUISITION_JUDGMENT_SUBMIT_TOOL,
   ACQUISITION_PI_PROMPT_ID,
   ACQUISITION_PLAN_DRAFT_PROMPT_ID,
   ACQUISITION_PLAN_DRAFT_SUBMIT_TOOL
@@ -255,12 +257,107 @@ function fakeSearchPort() {
 
 function fakeGateway() {
   let outcomeToolCalls = 0;
+  const judgmentOperations: string[] = [];
   const gateway: AcquisitionPiGatewayPort = {
     async callTools(request) {
       if (!("contentBinding" in request) || !request.contentBinding) {
         throw new Error("expected content-bound model request");
       }
       const binding = request.contentBinding;
+      if (binding.promptId === ACQUISITION_JUDGMENT_PROMPT_ID) {
+        const dynamic = binding.dynamicData as {
+          operation?: string;
+          evidence?: Array<{ id?: string; sourceSnippet?: string }>;
+        };
+        const operation = String(dynamic.operation);
+        const evidenceId = String(dynamic.evidence?.[0]?.id);
+        judgmentOperations.push(operation);
+        const argumentsByOperation: Record<string, Record<string, unknown>> = {
+          research: {
+            operation: "research",
+            result: {
+              summary: "公开证据显示该主体存在明确的获客系统需求。",
+              findings: [{
+                kind: "fact",
+                label: "公开需求",
+                content: String(
+                  dynamic.evidence?.[0]?.sourceSnippet ?? "公开需求信号"
+                ),
+                evidenceIds: [evidenceId],
+                confidence: 1
+              }]
+            }
+          },
+          qualify: {
+            operation: "qualify",
+            result: {
+              dimensions: {
+                demandStrength: 95,
+                fit: 95,
+                identityConfidence: 95,
+                buyingStage: 95,
+                budgetPotential: 95,
+                decisionReachability: 95,
+                freshness: 95,
+                evidenceDiversity: 95,
+                negativeSignalRisk: 0,
+                contactRisk: 0
+              },
+              evidenceExcerpts: [{
+                evidenceId,
+                excerpt: "公开信息显示存在明确需求。"
+              }],
+              reasons: ["公开需求与目标产品高度匹配。"],
+              financial: {
+                currency: "CNY",
+                predictedDealAmountMinor: 1_000_000,
+                grossMarginBps: 4_000,
+                closeProbabilityBps: 5_000,
+                acquisitionCostMinor: 10_000,
+                salesCostMinor: 20_000,
+                serviceCostMinor: 100_000,
+                benchmarkDealAmountMinor: 1_000_000,
+                collectionDays: 60,
+                creditRisk: 20,
+                repeatPotential: 70,
+                referralPotential: 50
+              }
+            }
+          },
+          build_battle_card: {
+            operation: "build_battle_card",
+            result: {
+              sections: [{
+                kind: "fact",
+                label: "公开需求",
+                content: "该主体公开表达了目标产品相关需求。",
+                evidenceIds: [evidenceId],
+                confidence: 1
+              }, {
+                kind: "unknown",
+                label: "决策链",
+                content: "公开证据尚未披露决策链。",
+                evidenceIds: [],
+                confidence: null
+              }],
+              confidence: 0.8
+            }
+          }
+        };
+        return {
+          toolCalls: [{
+            id: `judgment-${operation}`,
+            name: ACQUISITION_JUDGMENT_SUBMIT_TOOL,
+            arguments: argumentsByOperation[operation] ?? {}
+          }],
+          usage: {
+            inputTokens: 30,
+            outputTokens: 20,
+            reasoningTokens: 0
+          },
+          providerRequestId: `fake-model-request-${operation}`
+        };
+      }
       if (binding.promptId !== ACQUISITION_PI_PROMPT_ID) {
         throw new Error("unexpected judgment call in application test");
       }
@@ -315,7 +412,8 @@ function fakeGateway() {
   };
   return {
     gateway,
-    outcomeToolCalls: () => outcomeToolCalls
+    outcomeToolCalls: () => outcomeToolCalls,
+    judgmentOperations: () => [...judgmentOperations]
   };
 }
 
@@ -1154,6 +1252,25 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
       JSON.stringify(candidates.json)
     );
     assert.equal(candidates.json.items.length, 2);
+    assert.equal(
+      candidates.json.items.every(
+        (candidate: { status?: string }) =>
+          candidate.status === "pending_review"
+      ),
+      true,
+      JSON.stringify(candidates.json.items)
+    );
+    assert.deepEqual(
+      model.judgmentOperations().sort(),
+      [
+        "build_battle_card",
+        "build_battle_card",
+        "qualify",
+        "qualify",
+        "research",
+        "research"
+      ]
+    );
     const presentation = await server.request(
       `/api/v1/acquisition/runs/${runId}/presentation?limit=100`
     );
