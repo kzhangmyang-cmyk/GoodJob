@@ -1,10 +1,42 @@
 import { readFileSync } from "node:fs";
+import { strict as assert } from "node:assert";
+import { buildLeadFinderIntentChips, getLeadFinderLayoutMode } from "./lead-finder-layout";
+
+assert.equal(getLeadFinderLayoutMode(0), "entry");
+assert.equal(getLeadFinderLayoutMode(1), "results");
+assert.deepEqual(
+  buildLeadFinderIntentChips({
+    goal: "德国的 LED 工业照明经销商",
+    productKeywords: "LED 工业照明",
+    countries: "德国, 奥地利",
+    industry: "工业照明",
+    customerType: "经销商 / Distributor"
+  }),
+  ["德国", "奥地利", "LED 工业照明", "工业照明", "经销商"]
+);
+assert.deepEqual(
+  buildLeadFinderIntentChips({
+    goal: "寻找北欧工业照明合作伙伴",
+    productKeywords: "",
+    countries: "",
+    industry: "",
+    customerType: ""
+  }),
+  ["寻找北欧工业照明合作伙伴"]
+);
 
 const prototype = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const apiLayer = readFileSync(new URL("./prototype-api.ts", import.meta.url), "utf8");
+const m1Layout = readFileSync(new URL("./m1-layout.css", import.meta.url), "utf8");
+const replicaStyles = readFileSync(new URL("./replica-dashboard.css", import.meta.url), "utf8");
+const replicaBehavior = readFileSync(new URL("./replica-dashboard.ts", import.meta.url), "utf8");
 
 const required = [
   "login-screen",
+  "business-dashboard",
+  "id=\"forecast\"",
+  "data-priority-filter=\"all\"",
+  "dashboardPriorityFilter",
   "todo-board",
   "report-deck",
   "id=\"knowledge\"",
@@ -42,15 +74,86 @@ const required = [
   "/api/commission/products",
   "/api/commission/sales-records",
   "/api/commission/calculations/recalculate",
-  "renderCommission"
+  "renderCommission",
+  "m1-layout.css",
+  "id=\"allToolsMenu\"",
+  "class=\"lead-taskbar\"",
+  "lead-workbench-header",
+  "lead-search-row",
+  "lead-inline-summary",
+  "lead-list-toolbar",
+  "leadFinderTaskButton",
+  "leadMoreConditionsButton",
+  "id=\"leadFinderIntentChips\"",
+  "data-layout-state=\"entry\"",
+  "renderLeadFinderLayout",
+  "buildLeadFinderIntentChips",
+  "replica-shell",
+  "id=\"replicaTaskModal\"",
+  "id=\"replicaSearchInput\"",
+  "id=\"replicaNewTaskButton\"",
+  "marketing-task-flow-stack.jpg",
+  "replica-dashboard.ts",
+  "replica-dashboard.css",
+  "data-replica-scope=\"all\"",
+  "data-replica-scope=\"agent\"",
+  "data-replica-tool=\"filter\"",
+  "replicaCompleteTask",
+  "GoodJob 自动营销系统",
+  "data-replica-view=\"trade-marketing\"",
+  "ACQ-DOUYIN-01",
+  "ACQ-XHS-01",
+  "ACQ-KUAISHOU-01",
+  "ACQ-WECHAT-01",
+  "ACQ-WEIBO-01",
+  "id=\"replicaTaskMode\"",
+  "同步私域"
+];
+
+const leadFinderMarkupRequired = [
+  "class=\"lead-taskbar\"",
+  "class=\"lead-workbench-header\"",
+  "class=\"lead-search-row\"",
+  "class=\"lead-inline-summary\"",
+  "class=\"lead-list-toolbar\"",
+  "id=\"leadFinderTaskButton\"",
+  "id=\"leadMoreConditionsButton\"",
+  "id=\"leadFinderIntentChips\"",
+  "id=\"leadFinderAdvancedSettings\"",
+  "id=\"leadFinderQueuePanel\"",
+  "id=\"leadFinderAiBadge\"",
+  "data-layout-state=\"entry\""
+];
+
+const uniqueLeadFinderIds = [
+  "leadFinderTaskButton",
+  "leadMoreConditionsButton",
+  "leadFinderAdvancedSettings",
+  "leadFinderQueuePanel",
+  "leadFinderAiBadge"
 ];
 
 for (const token of required) {
-  if (!prototype.includes(token) && !apiLayer.includes(token)) throw new Error(`missing ${token}`);
+  if (
+    !prototype.includes(token)
+    && !apiLayer.includes(token)
+    && !m1Layout.includes(token)
+    && !replicaStyles.includes(token)
+    && !replicaBehavior.includes(token)
+  ) throw new Error(`missing ${token}`);
+}
+
+for (const token of leadFinderMarkupRequired) {
+  if (!prototype.includes(token)) throw new Error(`missing lead finder HTML markup ${token}`);
+}
+
+for (const id of uniqueLeadFinderIds) {
+  const matches = prototype.match(new RegExp(`id=["']${id}["']`, "g")) || [];
+  assert.equal(matches.length, 1, `expected exactly one #${id} in HTML`);
 }
 
 if (!prototype.includes(".report-hero") || !prototype.includes(".ocr-workbench") || !prototype.includes(".account-grid")) {
   throw new Error("missing high fidelity prototype styles");
 }
 
-console.log(JSON.stringify({ ok: true, checked: required.length }, null, 2));
+console.log(JSON.stringify({ ok: true, checked: required.length + leadFinderMarkupRequired.length + uniqueLeadFinderIds.length }, null, 2));

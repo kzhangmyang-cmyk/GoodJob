@@ -123,6 +123,36 @@ test.describe("GoodJob CRM prototype pages", () => {
     await expect(page.locator("#roleSwitcher")).toHaveCount(0);
   });
 
+  test("M1 shell keeps six primary routes and opened-page tabs", async ({ page }) => {
+    const primaryRoutes = page.locator(".nav-primary > button[data-view]");
+    await expect(primaryRoutes).toHaveCount(6);
+    await expect(primaryRoutes).toHaveText([
+      /工作台/,
+      /自动获客/,
+      /搜客清单/,
+      /客户/,
+      /商机/,
+      /跟进提醒/
+    ]);
+    await expect(page.locator("#allToolsMenu")).toContainText("全部工具");
+    await expect(page.locator("#allToolsMenu [data-view='leads']")).toContainText("线索池");
+    await expect(page.locator("#allToolsMenu [data-view='memos']")).toContainText("备忘录");
+    for (const view of ["imports", "ai-config", "settings", "profile"]) {
+      await expect(page.locator(`.nav button[data-view="${view}"]`)).toHaveCount(1);
+    }
+
+    const rail = await page.locator(".sidebar").boundingBox();
+    expect(rail?.width).toBeGreaterThanOrEqual(78);
+    expect(rail?.width).toBeLessThanOrEqual(80);
+
+    await openView(page, "lead-finder");
+    await expect(page.locator("#topOpenTabs [data-tab-view='dashboard']")).toBeVisible();
+    await expect(page.locator("#topOpenTabs [data-tab-view='lead-finder']")).toHaveClass(/active/);
+    const topbar = await page.locator(".topbar-main").boundingBox();
+    const tabs = await page.locator("#topOpenTabs").boundingBox();
+    expect(tabs?.y || 0).toBeGreaterThan(topbar?.y || 0);
+  });
+
   test("topbar works as a global command bar with scoped customer actions", async ({ page }) => {
     const topContext = page.locator("#topActionContext");
     const topSearch = page.locator("#topSearchWrap");
@@ -1658,25 +1688,195 @@ test.describe("GoodJob CRM prototype pages", () => {
     const company = `leadfinder-${runId}`;
     await expect(page.locator(".nav button[data-view='dashboard'] + button[data-view='lead-finder']")).toBeVisible();
     await openView(page, "lead-finder");
-    await expect(page.locator("#lead-finder .page-head")).toContainText("自动获客");
+    await expect(page.locator("#leadFinderPageTitle")).toHaveText("自动获客");
+    await expect(page.locator("#lead-finder .eyebrow")).toHaveCount(0);
+    await expect(page.locator("#lead-finder .lead-workbench-header")).toBeVisible();
+    await expect(page.locator("#leadFinderTaskButton")).toHaveText("任务记录");
+    await expect(page.locator("#leadFinderTaskButton")).toHaveAttribute("aria-controls", "leadFinderQueuePanel");
+    await expect(page.locator("#leadFinderTaskButton")).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#leadMoreConditionsButton")).toHaveAttribute("aria-controls", "leadFinderAdvancedSettings");
+    await expect(page.locator("#leadMoreConditionsButton")).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#leadFinderAiBadge")).toBeAttached();
+    await expect(page.locator("#leadFinderAiBadge")).toBeHidden();
+    await expect(page.locator("#lead-finder .lead-inline-summary")).toBeVisible();
+    await expect(page.locator("#lead-finder .lead-command-strip")).toHaveCount(0);
+    await expect(page.locator("#lead-finder .lead-results-panel > .section-head")).toHaveCount(0);
+    const a1Presentation = await page.locator("#lead-finder").evaluate((root) => {
+      const taskbar = root.querySelector<HTMLElement>(".lead-taskbar");
+      const title = root.querySelector<HTMLElement>("#leadFinderPageTitle");
+      const search = root.querySelector<HTMLElement>("#leadFinderGoalInput");
+      if (!taskbar || !title || !search) throw new Error("A1 workbench nodes missing");
+      const taskbarStyle = getComputedStyle(taskbar);
+      const titleStyle = getComputedStyle(title);
+      return {
+        backgroundImage: taskbarStyle.backgroundImage,
+        boxShadow: taskbarStyle.boxShadow,
+        radius: Number.parseFloat(taskbarStyle.borderRadius),
+        titleFontFamily: titleStyle.fontFamily,
+        taskbarHeight: taskbar.getBoundingClientRect().height,
+        searchHeight: search.getBoundingClientRect().height
+      };
+    });
+    expect(a1Presentation.backgroundImage).toBe("none");
+    expect(a1Presentation.boxShadow).toBe("none");
+    expect(a1Presentation.radius).toBeLessThanOrEqual(6);
+    expect(a1Presentation.titleFontFamily).not.toMatch(/Georgia|Songti|STSong/i);
+    expect(a1Presentation.taskbarHeight).toBeLessThan(160);
+    expect(a1Presentation.searchHeight).toBeGreaterThanOrEqual(38);
     await expect(page.locator("#leadFinderSearchLinks a").first()).toContainText(/product supplier|OEM product/);
-    await expect(page.locator(".lead-advanced-settings")).toHaveAttribute("open", "");
-    await expect(page.locator(".lead-queue-panel")).toHaveAttribute("open", "");
+    await expect(page.locator("#lead-finder .lead-taskbar")).toBeVisible();
+    await expect(page.locator("#leadFinderGoalInput")).toHaveAttribute("placeholder", "例如：德国的 LED 工业照明经销商");
+    await expect(page.locator(".lead-advanced-settings")).not.toHaveAttribute("open", "");
+    await expect(page.locator(".lead-queue-panel")).not.toHaveAttribute("open", "");
+    await page.locator("#leadFinderTaskButton").click();
+    await expect(page.locator("#leadFinderQueuePanel")).toHaveAttribute("open", "");
+    await expect(page.locator("#leadFinderTaskButton")).toHaveAttribute("aria-expanded", "true");
+    await page.locator(".lead-queue-panel > summary").click();
+    await expect(page.locator("#leadFinderQueuePanel")).not.toHaveAttribute("open", "");
+    await expect(page.locator("#leadFinderTaskButton")).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#lead-finder .lead-results-workspace")).toBeVisible();
+    await expect(page.locator("#lead-finder")).toHaveAttribute("data-layout-state", /entry|results/);
 
+    await page.locator("#leadMoreConditionsButton").click();
+    await expect(page.locator("#leadFinderAdvancedSettings")).toHaveAttribute("open", "");
+    await expect(page.locator("#leadMoreConditionsButton")).toHaveAttribute("aria-expanded", "true");
+    await page.locator("#leadFinderAdvancedSettings > summary").click();
+    await expect(page.locator("#leadFinderAdvancedSettings")).not.toHaveAttribute("open", "");
+    await expect(page.locator("#leadMoreConditionsButton")).toHaveAttribute("aria-expanded", "false");
+    await page.locator("#leadMoreConditionsButton").click();
+    await expect(page.locator("#leadMoreConditionsButton")).toHaveAttribute("aria-expanded", "true");
+    const aiCheckbox = page.locator("#leadFinderUseAiInput");
+    await aiCheckbox.evaluate((input: HTMLInputElement) => { input.disabled = false; });
+    await page.locator("#leadFinderUrlInput").focus();
+    await page.keyboard.press("Tab");
+    await expect(aiCheckbox).toBeFocused();
+    const aiCheckboxFocus = await aiCheckbox.evaluate((input) => {
+      const style = getComputedStyle(input);
+      const channels = style.outlineColor.match(/[\d.]+/g)?.slice(0, 3).map(Number) || [];
+      return {
+        focused: input.matches(":focus-visible"),
+        outlineStyle: style.outlineStyle,
+        outlineWidth: Number.parseFloat(style.outlineWidth),
+        outlineOffset: Number.parseFloat(style.outlineOffset),
+        neutralOutline: channels.length === 3 && Math.max(...channels) - Math.min(...channels) <= 40,
+        boxShadow: style.boxShadow
+      };
+    });
+    expect(aiCheckboxFocus.focused).toBeTruthy();
+    expect(aiCheckboxFocus.outlineStyle).toBe("solid");
+    expect(aiCheckboxFocus.outlineWidth).toBeGreaterThanOrEqual(2);
+    expect(aiCheckboxFocus.outlineOffset).toBeGreaterThanOrEqual(2);
+    expect(aiCheckboxFocus.neutralOutline).toBeTruthy();
+    expect(aiCheckboxFocus.boxShadow).toBe("none");
+    await page.locator("#leadFinderGoalInput").fill("德国的 LED 工业照明经销商");
+    await page.locator("#leadProductKeywords").fill("LED 工业照明");
+    await page.locator("#leadCountries").fill("德国");
+    await page.locator("#leadIndustryInput").fill("工业照明");
+    await expect(page.locator("#leadFinderIntentChips")).toContainText("德国");
+    await expect(page.locator("#leadFinderIntentChips")).toContainText("LED 工业照明");
     await page.locator("#leadFinderUrlInput").fill(`https://example.org/${company}`);
     await page.route("**/api/tools/website-scrape/preview", async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 500));
       await route.continue();
     });
     await page.locator("#leadFinderStartButton").click();
+    await expect(page.locator("#leadFinderStartButton")).toHaveClass(/is-running/);
+    const runningButtonStyle = await page.locator("#leadFinderStartButton").evaluate((button) => {
+      const style = getComputedStyle(button);
+      const after = getComputedStyle(button, "::after");
+      return {
+        backgroundImage: style.backgroundImage,
+        boxShadow: style.boxShadow,
+        borderRadius: Number.parseFloat(style.borderRadius),
+        afterBackgroundImage: after.backgroundImage,
+        afterBoxShadow: after.boxShadow,
+        afterAnimationName: after.animationName
+      };
+    });
+    expect(runningButtonStyle.backgroundImage).toBe("none");
+    expect(runningButtonStyle.boxShadow).toBe("none");
+    expect(runningButtonStyle.borderRadius).toBeLessThanOrEqual(6);
+    expect(runningButtonStyle.afterBackgroundImage).toBe("none");
+    expect(runningButtonStyle.afterBoxShadow).toBe("none");
+    expect(runningButtonStyle.afterAnimationName).toBe("none");
     const jobCard = page.locator("#leadFinderJobList .lead-job-card").first();
     await expect(jobCard).toContainText("进行中");
+    await page.locator(".lead-queue-panel > summary").click();
+    await expect(page.locator(".lead-queue-panel")).toHaveAttribute("open", "");
     await jobCard.locator("[data-lead-job-toggle]").click();
     await expect(jobCard).toContainText("正在检索公开API");
     await expect(page.locator("#leadFinderResultRows")).toContainText("example.org");
     await expect(page.locator("#leadFinderJobList")).toContainText("已完成");
     await expect(jobCard).toContainText("example.org");
     await expect(page.locator("#leadFinderPendingCount")).not.toHaveText("0");
+    await expect(page.locator("#lead-finder")).toHaveAttribute("data-layout-state", "results");
+    await expect(page.locator("#leadFinderTaskSummary")).toContainText(/候选|待核验/);
+    const flatA1Styles = await page.locator("#lead-finder").evaluate((root) => {
+      const selectors = [
+        "#leadFinderTaskButton",
+        "#leadFinderStartButtonInline",
+        "#leadFinderAdvancedSettings",
+        ".lead-source-box",
+        ".lead-source-chip",
+        "#leadFinderQueuePanel",
+        ".lead-job-card",
+        ".lead-job-metrics div",
+        ".lead-job-detail",
+        ".lead-job-found-list",
+        ".lead-job-found-list button",
+        ".lead-job-progress",
+        ".lead-search-links a",
+        ".lead-score"
+      ];
+      return selectors.map((selector) => {
+        const node = root.querySelector<HTMLElement>(selector);
+        if (!node) throw new Error(`missing style probe ${selector}`);
+        const style = getComputedStyle(node);
+        return {
+          selector,
+          backgroundImage: style.backgroundImage,
+          boxShadow: style.boxShadow,
+          borderRadius: Number.parseFloat(style.borderRadius) || 0
+        };
+      });
+    });
+    for (const style of flatA1Styles) {
+      expect(style.backgroundImage, style.selector).toBe("none");
+      expect(style.boxShadow, style.selector).toBe("none");
+      expect(style.borderRadius, style.selector).toBeLessThanOrEqual(6);
+    }
+    const a1AccentStyles = await page.locator("#lead-finder").evaluate((root) => {
+      const primaryProbe = document.createElement("span");
+      primaryProbe.style.backgroundColor = "var(--a1-blue)";
+      root.append(primaryProbe);
+      const primaryColor = getComputedStyle(primaryProbe).backgroundColor;
+      primaryProbe.remove();
+      const probes = [
+        { selector: ".lead-job-progress i" },
+        { selector: ".lead-score i", pseudo: "::before" },
+        { selector: ".lead-job-card", pseudo: "::before" }
+      ];
+      return probes.map(({ selector, pseudo }) => {
+        const node = root.querySelector<HTMLElement>(selector);
+        if (!node) throw new Error(`missing accent probe ${selector}${pseudo || ""}`);
+        const style = getComputedStyle(node, pseudo);
+        const channels = style.backgroundColor.match(/[\d.]+/g)?.slice(0, 3).map(Number) || [];
+        return {
+          selector: `${selector}${pseudo || ""}`,
+          backgroundImage: style.backgroundImage,
+          boxShadow: style.boxShadow,
+          backgroundColor: style.backgroundColor,
+          primaryColor,
+          neutral: channels.length === 3 && Math.max(...channels) - Math.min(...channels) <= 32
+        };
+      });
+    });
+    for (const style of a1AccentStyles) {
+      expect(style.backgroundImage, style.selector).toBe("none");
+      expect(style.boxShadow, style.selector).toBe("none");
+      expect(style.backgroundColor, style.selector).not.toBe(style.primaryColor);
+      expect(style.neutral, style.selector).toBeTruthy();
+    }
 
     let firstRow = page.locator("#leadFinderResultRows tr[data-lead-id]").first();
     await expect(firstRow.locator("[data-lead-select]")).not.toBeChecked();
@@ -1707,8 +1907,27 @@ test.describe("GoodJob CRM prototype pages", () => {
     await page.reload();
     await openView(page, "lead-finder");
     firstRow = page.locator(`#leadFinderResultRows tr[data-lead-id="${leadFinderCandidateId}"]`);
-    await expect(firstRow.locator("[data-lead-select]")).toBeEnabled();
-    await firstRow.locator("[data-lead-select]").check();
+    const selectionCheckbox = firstRow.locator("[data-lead-select]");
+    await expect(selectionCheckbox).toBeEnabled();
+    await firstRow.locator("[data-lead-field='company']").focus();
+    await page.keyboard.press("Shift+Tab");
+    await expect(selectionCheckbox).toBeFocused();
+    const selectionFocus = await selectionCheckbox.evaluate((input) => {
+      const style = getComputedStyle(input);
+      return {
+        focused: input.matches(":focus-visible"),
+        outlineStyle: style.outlineStyle,
+        outlineWidth: Number.parseFloat(style.outlineWidth),
+        outlineOffset: Number.parseFloat(style.outlineOffset),
+        boxShadow: style.boxShadow
+      };
+    });
+    expect(selectionFocus.focused).toBeTruthy();
+    expect(selectionFocus.outlineStyle).toBe("solid");
+    expect(selectionFocus.outlineWidth).toBeGreaterThanOrEqual(2);
+    expect(selectionFocus.outlineOffset).toBeGreaterThanOrEqual(2);
+    expect(selectionFocus.boxShadow).toBe("none");
+    await selectionCheckbox.check();
     await firstRow.locator("[data-lead-pick]").evaluate((cell: HTMLElement) => cell.click());
     await expect(page.locator("#leadFinderDetail")).toContainText(company);
     await expect(page.locator("#leadFinderDetail")).toContainText("来源与外部编号");
@@ -1756,13 +1975,25 @@ test.describe("GoodJob CRM prototype pages", () => {
     });
     await page.reload();
     await openView(page, "lead-finder");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const resultsWorkspace = await page.locator("#lead-finder .lead-results-workspace").boundingBox();
+    expect(resultsWorkspace?.width || 0).toBeGreaterThan(1100);
+    const desktopTaskbar = await page.locator("#lead-finder .lead-taskbar").boundingBox();
+    const desktopTable = await page.locator("#lead-finder .lead-table-wrap").boundingBox();
+    expect(desktopTaskbar?.height || 999).toBeLessThan(160);
+    expect(desktopTable?.y || 9999).toBeLessThan(430);
+    await expect(page.locator("#lead-finder .lead-taskbar")).toBeVisible();
     await expect(page.locator("#leadFinderPageSummary")).toContainText(/共 \d+ 条/);
     await expect(page.locator("#leadFinderResultRows tr[data-lead-id]")).toHaveCount(10);
     await page.locator("#leadFinderNextPage").click();
     await expect(page.locator("#leadFinderPageNumber")).toContainText("2 /");
 
     await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator("#leadFinderStartButton")).toBeVisible();
+    await expect(page.locator("#lead-finder .lead-inline-summary")).toBeVisible();
     await expect(page.locator("#leadFinderMobileRows")).toBeVisible();
+    await expect(page.locator("#lead-finder .lead-table-wrap")).toBeHidden();
+    await expect(page.locator("#leadFinderMobileRows .lead-mobile-card").first()).toBeVisible();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
     expect(overflow).toBeFalsy();
   });

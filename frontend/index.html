@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>GoodJob CRM 外贸客户管理原型</title>
+  <title>GoodJob 自动营销系统</title>
   <style>
     :root {
       --bg: #f5f7fb;
@@ -10228,6 +10228,9 @@
       #lead-finder .lead-pagination .btn { min-height: 44px; }
     }
   </style>
+  <link rel="stylesheet" href="/src/m1-layout.css" />
+  <link rel="stylesheet" href="/src/vendor/phosphor/regular/style.css" />
+  <link rel="stylesheet" href="/src/replica-dashboard.css" />
 </head>
 <body>
   <section class="login-screen" aria-label="登录">
@@ -10235,12 +10238,12 @@
       <div class="brand" style="border:0; padding:0; margin-bottom:34px">
         <div class="brand-mark">GJ</div>
         <div>
-          <strong>GoodJob CRM</strong>
-          <span>外贸客户增长中台</span>
+          <strong>GoodJob 自动营销系统</strong>
+          <span>多渠道获客与成交自动化</span>
         </div>
       </div>
-      <h1>登录后按账号角色加载对应数据范围。</h1>
-      <p>使用真实账号和密码登录；业务员看本人数据，主管看团队业务，管理员和超级管理员负责账号权限。</p>
+      <h1>登录后进入你的自动营销工作台。</h1>
+      <p>支持 Mac 与 Windows，通过智能体或自动脚本完成获客、沟通、私域沉淀与成交推进。</p>
       <div class="login-proof">
         <div><b>RBAC</b><span>角色权限</span></div>
         <div><b>Data Scope</b><span>数据范围隔离</span></div>
@@ -10256,6 +10259,238 @@
     </div>
   </section>
 
+  <div class="replica-shell" aria-label="GoodJob 多模块自动营销系统">
+    <aside class="replica-sidebar replica-glass">
+      <div class="replica-brand">
+        <div class="replica-brand-mark">GJ</div>
+        <span>GoodJob</span>
+      </div>
+
+      <nav class="replica-nav" aria-label="自动营销系统导航">
+        <button type="button" data-replica-view="dashboard" title="自动营销总览">
+          <i class="ph ph-squares-four" aria-hidden="true"></i><span>自动营销总览</span><i class="ph ph-caret-right replica-nav-caret" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="active" data-replica-view="acquisition" title="获客中心">
+          <i class="ph ph-crosshair" aria-hidden="true"></i><span>获客中心</span><i class="ph ph-caret-right replica-nav-caret" aria-hidden="true"></i>
+        </button>
+        <button type="button" data-replica-view="conversations" title="社媒对话">
+          <i class="ph ph-chats-circle" aria-hidden="true"></i><span>社媒对话</span><i class="ph ph-caret-right replica-nav-caret" aria-hidden="true"></i>
+        </button>
+        <button type="button" data-replica-view="private-domain" title="私域客户池">
+          <i class="ph ph-users-three" aria-hidden="true"></i><span>私域客户池</span><i class="ph ph-caret-right replica-nav-caret" aria-hidden="true"></i>
+        </button>
+        <button type="button" data-replica-view="conversion" title="成交工作台">
+          <i class="ph ph-handshake" aria-hidden="true"></i><span>成交工作台</span><i class="ph ph-caret-right replica-nav-caret" aria-hidden="true"></i>
+        </button>
+        <button type="button" data-replica-view="agents" title="智能体中心">
+          <i class="ph ph-robot" aria-hidden="true"></i><span>智能体中心</span><i class="ph ph-caret-right replica-nav-caret" aria-hidden="true"></i>
+        </button>
+        <button type="button" data-replica-view="scripts" title="自动脚本">
+          <i class="ph ph-terminal-window" aria-hidden="true"></i><span>自动脚本</span><i class="ph ph-caret-right replica-nav-caret" aria-hidden="true"></i>
+        </button>
+        <button type="button" data-replica-view="trade-marketing" title="外贸营销">
+          <i class="ph ph-globe-hemisphere-west" aria-hidden="true"></i><span>外贸营销</span><i class="ph ph-caret-right replica-nav-caret" aria-hidden="true"></i>
+        </button>
+        <button type="button" data-replica-view="settings" title="设置中心">
+          <i class="ph ph-gear-six" aria-hidden="true"></i><span>设置中心</span><i class="ph ph-caret-right replica-nav-caret" aria-hidden="true"></i>
+        </button>
+      </nav>
+
+      <div class="replica-sidebar-bottom">
+        <div class="replica-workspace">
+          <div class="replica-workspace-head"><span>桌面版本</span><i class="ph ph-plus" aria-hidden="true"></i></div>
+          <button type="button" class="replica-workspace-toggle">
+            <i class="ph ph-desktop-tower" aria-hidden="true"></i><span>Mac / Windows</span><i class="ph ph-caret-down" aria-hidden="true"></i>
+          </button>
+        </div>
+        <button type="button" class="replica-user">
+          <span class="replica-avatar">AD</span>
+          <span><strong>Admin</strong><small>系统管理员</small></span>
+          <i class="ph ph-sign-out" aria-hidden="true"></i>
+        </button>
+      </div>
+    </aside>
+
+    <header class="replica-header">
+      <div class="replica-title">
+        <h1>自动营销系统</h1>
+        <p>获客 · 沟通 · 私域沉淀 · 成交</p>
+      </div>
+
+      <label class="replica-search">
+        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+        <input id="replicaSearchInput" type="search" placeholder="搜索平台、客户或获客任务..." autocomplete="off" />
+        <kbd>⌘K</kbd>
+      </label>
+
+      <div class="replica-header-actions">
+        <button type="button" class="replica-icon-button has-dot" title="提醒"><i class="ph ph-bell" aria-hidden="true"></i></button>
+        <button type="button" class="replica-icon-button" title="消息"><i class="ph ph-envelope-simple" aria-hidden="true"></i></button>
+        <button type="button" class="replica-primary-button" id="replicaNewTaskButton">
+          <i class="ph ph-plus" aria-hidden="true"></i><span>新建获客任务</span><i class="ph ph-caret-down" aria-hidden="true"></i>
+        </button>
+      </div>
+    </header>
+
+    <main class="replica-main">
+      <section class="replica-metrics" aria-label="全渠道获客指标">
+        <article class="replica-metric replica-glass">
+          <div class="replica-metric-head"><h2>今日发现</h2><span class="replica-metric-icon"><i class="ph ph-magnifying-glass" aria-hidden="true"></i></span></div>
+          <div class="replica-metric-value"><strong>128</strong><span>位客户</span></div>
+          <div class="replica-metric-change">较昨日 <b>↑ 20%</b></div>
+        </article>
+        <article class="replica-metric replica-glass">
+          <div class="replica-metric-head"><h2>正在沟通</h2><span class="replica-metric-icon"><i class="ph ph-chats" aria-hidden="true"></i></span></div>
+          <div class="replica-metric-value"><strong>46</strong><span>位客户</span></div>
+          <div class="replica-metric-change">较昨日 <b>↑ 8%</b></div>
+        </article>
+        <article class="replica-metric replica-glass">
+          <div class="replica-metric-head"><h2>转入私域</h2><span class="replica-metric-icon"><i class="ph ph-user-switch" aria-hidden="true"></i></span></div>
+          <div class="replica-metric-value"><strong id="replicaCompletedCount">24</strong><span>位客户</span></div>
+          <div class="replica-metric-change">较昨日 <b>↑ 15%</b></div>
+        </article>
+        <article class="replica-metric replica-glass danger">
+          <div class="replica-metric-head"><h2>待人工接管</h2><span class="replica-metric-icon"><i class="ph ph-warning-circle" aria-hidden="true"></i></span></div>
+          <div class="replica-metric-value"><strong>5</strong><span>位客户</span></div>
+          <div class="replica-metric-change">较昨日 <b class="down">↓ 17%</b></div>
+        </article>
+      </section>
+
+      <section class="replica-boardbar" aria-label="任务看板工具栏">
+        <div class="replica-boardbar-left">
+          <h2>全渠道获客任务</h2>
+          <div class="replica-board-tabs" role="tablist" aria-label="运行模式">
+            <button type="button" class="active" role="tab" aria-selected="true" data-replica-scope="all">全部平台</button>
+            <button type="button" role="tab" aria-selected="false" data-replica-scope="agent">智能体</button>
+            <button type="button" role="tab" aria-selected="false" data-replica-scope="script">自动脚本</button>
+            <button type="button" class="replica-compact-button" data-replica-status><i class="ph ph-check-square-offset" aria-hidden="true"></i>运行状态<i class="ph ph-caret-down" aria-hidden="true"></i></button>
+          </div>
+        </div>
+        <div class="replica-boardbar-actions">
+          <button type="button" class="replica-compact-button" data-replica-tool="filter"><i class="ph ph-funnel-simple" aria-hidden="true"></i>有意向</button>
+          <button type="button" class="replica-compact-button" data-replica-tool="sort"><i class="ph ph-arrows-down-up" aria-hidden="true"></i>排序</button>
+          <button type="button" class="replica-compact-button icon-only active" data-replica-tool="view" title="列表视图"><i class="ph ph-list-dashes" aria-hidden="true"></i></button>
+        </div>
+      </section>
+
+      <section class="replica-board">
+        <div class="replica-task-groups">
+          <article class="replica-task-group">
+            <button type="button" class="replica-group-head" data-group-toggle>
+              <span class="dot"></span><strong>短视频平台</strong><small>2</small><i class="ph ph-caret-down" aria-hidden="true"></i>
+            </button>
+            <div class="replica-task-list">
+              <button type="button" class="replica-task-row active" data-task-id="ACQ-DOUYIN-01" data-task-name="抖音需求客户捕捉" data-task-summary="持续扫描抖音相关话题与评论区，识别有明确需求的客户并由智能体发起沟通。" data-task-owner="智能体" data-task-project="抖音" data-task-due="持续运行" data-task-status="正在获客" data-task-priority="高" data-task-tags="话题扫描,评论识别,自动聊天">
+                <span>ACQ-DOUYIN</span><b>抖音话题 / 评论</b><span><span class="priority">智能体</span> 运行中</span>
+              </button>
+              <button type="button" class="replica-task-row" data-task-id="ACQ-KUAISHOU-01" data-task-name="快手评论需求识别" data-task-summary="按关键词扫描快手视频评论，自动脚本提取需求、地区与联系方式线索。" data-task-owner="自动脚本" data-task-project="快手" data-task-due="每 10 分钟" data-task-status="正在扫描" data-task-priority="中" data-task-tags="评论扫描,需求识别,脚本">
+                <span>ACQ-KUAISHOU</span><b>快手评论需求</b><span><span class="priority medium">脚本</span> 运行中</span>
+              </button>
+            </div>
+          </article>
+
+          <article class="replica-task-group blue">
+            <button type="button" class="replica-group-head" data-group-toggle>
+              <span class="dot"></span><strong>内容社区平台</strong><small>2</small><i class="ph ph-caret-down" aria-hidden="true"></i>
+            </button>
+            <div class="replica-task-list">
+              <button type="button" class="replica-task-row" data-task-id="ACQ-XHS-01" data-task-name="小红书需求话题追踪" data-task-summary="追踪小红书笔记、相关话题与评论，智能体判断意向后进行自然对话。" data-task-owner="智能体" data-task-project="小红书" data-task-due="持续运行" data-task-status="正在沟通" data-task-priority="高" data-task-tags="笔记话题,评论识别,智能对话">
+                <span>ACQ-XHS</span><b>小红书话题需求</b><span><span class="priority">智能体</span> 沟通中</span>
+              </button>
+              <button type="button" class="replica-task-row" data-task-id="ACQ-WEIBO-01" data-task-name="微博相关话题获客" data-task-summary="自动脚本订阅微博相关话题和评论，筛选包含购买、咨询和合作意图的用户。" data-task-owner="自动脚本" data-task-project="微博" data-task-due="每 15 分钟" data-task-status="正在扫描" data-task-priority="中" data-task-tags="话题订阅,评论筛选,脚本">
+                <span>ACQ-WEIBO</span><b>微博相关话题</b><span><span class="priority medium">脚本</span> 运行中</span>
+              </button>
+            </div>
+          </article>
+
+          <article class="replica-task-group purple">
+            <button type="button" class="replica-group-head" data-group-toggle>
+              <span class="dot"></span><strong>微信获客与私域</strong><small>1</small><i class="ph ph-caret-down" aria-hidden="true"></i>
+            </button>
+            <div class="replica-task-list">
+              <button type="button" class="replica-task-row" data-task-id="ACQ-WECHAT-01" data-task-name="微信客户承接" data-task-summary="承接从社交平台聊好的意向客户，补充标签与来源后转入企业自己的私域客户池。" data-task-owner="智能体" data-task-project="微信" data-task-due="实时承接" data-task-status="正在承接" data-task-priority="高" data-task-tags="私域承接,客户标签,来源保留">
+                <span>ACQ-WECHAT</span><b>微信客户承接</b><span><span class="priority">智能体</span> 实时</span>
+              </button>
+            </div>
+          </article>
+        </div>
+
+        <div class="replica-flow" id="replicaFlowStage" aria-label="全渠道自动获客任务流">
+          <img src="/src/assets/marketing-task-flow-stack.jpg" alt="层叠的获客任务窗口，从平台发现客户到转入私域" />
+        </div>
+      </section>
+
+      <section class="replica-timeline replica-glass" aria-label="获客转化链路">
+        <div class="replica-timeline-head">
+          <div class="replica-timeline-title"><i class="ph ph-chart-bar-horizontal" aria-hidden="true"></i><h2>获客转化链路</h2><i class="ph ph-calendar-blank" aria-hidden="true"></i><span>今日实时</span></div>
+          <div class="replica-timeline-controls"><button type="button" class="active" data-timeline-scale="week">周</button><button type="button" data-timeline-scale="today">今天</button></div>
+        </div>
+        <div class="replica-timeline-grid">
+          <div class="replica-timeline-labels"><span>话题 / 评论扫描</span><span>发起沟通</span><span>意向确认</span><span>转入私域</span></div>
+          <div class="replica-timeline-canvas">
+            <div class="replica-days"><span>18</span><span>19</span><span>20</span><span>21</span><span>22</span><span>23</span><span>24</span><span>25</span><span>26</span><span>27</span><span>28</span><span>29</span><span>30</span><span>31</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span></div>
+            <div class="replica-timeline-rows">
+              <div class="replica-timeline-bar" style="grid-column:2 / 8; grid-row:1">抖音 / 小红书扫描　09:00 - 10:30</div>
+              <div class="replica-timeline-bar" style="grid-column:7 / 15; grid-row:2">智能体自动沟通　10:10 - 12:20</div>
+              <div class="replica-timeline-bar green" style="grid-column:10 / 19; grid-row:3">确认需求与联系方式　11:00 - 14:00</div>
+              <div class="replica-timeline-bar" style="grid-column:16 / 23; grid-row:4">同步微信私域　13:30 - 15:00</div>
+              <span class="replica-today-line" aria-hidden="true"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside class="replica-inspector replica-glass">
+      <div class="replica-inspector-head">
+        <div class="replica-inspector-title"><i class="ph ph-sparkle" aria-hidden="true"></i><h2>获客任务详情</h2></div>
+        <button type="button" class="replica-icon-button" title="查看来源"><i class="ph ph-crosshair" aria-hidden="true"></i></button>
+      </div>
+
+      <div class="replica-detail-id" id="replicaDetailId">ACQ-DOUYIN-01</div>
+      <h3 class="replica-detail-name"><span id="replicaDetailNameText">抖音需求客户捕捉</span><span id="replicaDetailPriority">高意向</span></h3>
+      <p class="replica-detail-summary" id="replicaDetailSummary">持续扫描抖音相关话题与评论区，识别有明确需求的客户并由智能体发起沟通。</p>
+
+      <dl class="replica-detail-fields">
+        <div><dt>运行模式</dt><dd><span class="replica-avatar" style="width:32px;height:32px;font-size:10px">AI</span><span id="replicaDetailOwner">智能体</span></dd></div>
+        <div><dt>获客平台</dt><dd><i class="ph ph-device-mobile" aria-hidden="true"></i><span id="replicaDetailProject">抖音</span></dd></div>
+        <div><dt>扫描周期</dt><dd><i class="ph ph-clock" aria-hidden="true"></i><span id="replicaDetailDue">持续运行</span></dd></div>
+        <div><dt>运行状态</dt><dd><span class="replica-status-dot"></span><span id="replicaDetailStatus">正在获客</span></dd></div>
+        <div><dt>意向等级</dt><dd><span class="replica-status-dot red"></span><span id="replicaDetailPriorityText">高</span></dd></div>
+        <div><dt>识别方式</dt><dd><span class="replica-tags" id="replicaDetailTags"><span>话题扫描</span><span>评论识别</span><span>自动聊天</span></span></dd></div>
+      </dl>
+
+      <section class="replica-advice">
+        <h3>AI 助手建议</h3>
+        <ul>
+          <li id="replicaAdvicePrimary">建议优先回复包含“价格、购买、合作”等明确需求的评论</li>
+          <li>对话确认意向后，保留来源和聊天记录并转入微信私域</li>
+        </ul>
+        <button type="button" id="replicaAdviceButton">查看建议详情</button>
+      </section>
+
+      <div class="replica-inspector-actions">
+        <button type="button" id="replicaEditTask"><i class="ph ph-pencil-simple" aria-hidden="true"></i>编辑任务</button>
+        <button type="button" class="complete" id="replicaCompleteTask"><i class="ph ph-user-switch" aria-hidden="true"></i>同步私域</button>
+        <button type="button" title="更多操作"><i class="ph ph-dots-three" aria-hidden="true"></i></button>
+      </div>
+    </aside>
+
+    <div class="replica-toast" id="replicaToast" role="status" aria-live="polite"><i class="ph ph-check-circle" aria-hidden="true"></i><span>任务已更新</span></div>
+  </div>
+
+  <dialog class="replica-modal" id="replicaTaskModal">
+    <form method="dialog" id="replicaTaskForm">
+      <div class="replica-modal-head"><h2>新建获客任务</h2><button type="button" id="replicaModalClose" aria-label="关闭"><i class="ph ph-x" aria-hidden="true"></i></button></div>
+      <label>任务名称<input id="replicaTaskName" required placeholder="例如：寻找有装修需求的小红书客户" /></label>
+      <label>获客平台<select id="replicaTaskStage"><option>抖音</option><option>小红书</option><option>快手</option><option>微信</option><option>微博</option></select></label>
+      <label>运行模式<select id="replicaTaskMode"><option>智能体</option><option>自动脚本</option></select></label>
+      <label>启动时间<input id="replicaTaskDue" type="datetime-local" /></label>
+      <label>识别要求<textarea id="replicaTaskSummary" placeholder="填写相关话题、评论关键词和目标客户特征"></textarea></label>
+      <div class="replica-modal-footer"><button type="button" id="replicaModalCancel">取消</button><button type="submit">创建获客任务</button></div>
+    </form>
+  </dialog>
+
   <div class="shell">
     <aside class="sidebar">
       <div class="brand">
@@ -10268,70 +10503,36 @@
 
       <nav class="nav" aria-label="主导航">
         <div class="nav-primary" aria-label="核心业务">
-          <button class="active" data-view="dashboard" title="工作台">
-            <svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6V4h-6zM4 20h6v-3H4z"/></svg><span>工作台</span><em>今日</em>
+          <button class="active" data-view="dashboard" title="首页">
+            <svg viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6V4h-6zM4 20h6v-3H4z"/></svg><span>首页</span>
           </button>
-          <button data-view="lead-finder" title="自动获客">
-            <svg viewBox="0 0 24 24"><path d="M21 21l-4.3-4.3"/><circle cx="11" cy="11" r="7"/><path d="M11 7v4l3 2"/></svg><span>自动获客</span><em>搜索</em>
+          <button data-view="lead-finder" title="全网商机雷达">
+            <svg viewBox="0 0 24 24"><path d="M21 21l-4.3-4.3"/><circle cx="11" cy="11" r="7"/><path d="M11 7v4l3 2"/></svg><span>商机雷达</span>
           </button>
-          <button data-view="prospect-list" title="搜客清单">
-            <svg viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg><span>搜客清单</span><em>跟进</em>
+          <button data-view="leads" title="线索池">
+            <svg viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg><span>线索池</span>
           </button>
-          <button data-view="leads" title="线索管理">
-            <svg viewBox="0 0 24 24"><path d="M3 5h18"/><path d="M3 12h18"/><path d="M3 19h18"/><circle cx="7" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="17" cy="19" r="1.4"/></svg><span>线索</span><em>管理</em>
-          </button>
-          <button data-view="customers" title="客户">
+          <button data-view="customers" title="客户作战室">
             <svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span>客户</span>
           </button>
-          <button data-view="pipeline" title="商机">
-            <svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M7 6v12"/><path d="M17 6v12"/><path d="M3 18h18"/></svg><span>商机</span>
+          <button data-view="reports" title="经营数据">
+            <svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M8 17V9"/><path d="M13 17V5"/><path d="M18 17v-6"/></svg><span>经营</span>
           </button>
-          <button data-view="reminders" title="跟进提醒">
-            <svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg><span>跟进提醒</span><em>规则</em>
-          </button>
-          <button data-view="memos" title="备忘录">
-            <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 8h8"/><path d="M8 12h8"/><path d="M8 16h5"/></svg><span>备忘录</span>
+          <button data-view="forecast" title="销售与回款预测">
+            <svg viewBox="0 0 24 24"><path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M3 19h18"/><path d="m5 7 5-4 6 5 4-3"/></svg><span>预测</span>
           </button>
         </div>
 
-        <details class="nav-section" aria-label="业务工具">
-          <summary class="nav-section-title"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.1-3.1a5 5 0 0 1-6.6 6.6L7.1 20a2 2 0 0 1-2.8-2.8l7.1-7.1a5 5 0 0 1 6.6-6.6z"/></svg><span>业务工具</span><i class="nav-chevron"></i></summary>
-          <div class="nav-secondary-grid">
-            <button class="nav-secondary-button" data-view="plan-growth" title="计划任务"><span>计划任务</span></button>
-            <button class="nav-secondary-button" data-view="documents" title="单据平台"><span>单据平台</span></button>
-            <button class="nav-secondary-button" data-view="commission" title="提成对账"><span>提成对账</span></button>
-            <button class="nav-secondary-button" data-view="reports" title="报表"><span>报表</span></button>
-            <button class="nav-secondary-button" data-view="tools" title="小工具"><span>小工具</span></button>
+        <details class="nav-section nav-tools-menu" id="allToolsMenu">
+          <summary class="nav-section-title" title="全部工具"><span class="nav-tools-icon">⊞</span><span>全部工具</span><i class="nav-chevron"></i></summary>
+          <div class="nav-tool-groups">
+            <section><b>获客与判断</b><button class="nav-secondary-button" data-view="ai-config"><span>行业与产品配置</span></button><button class="nav-secondary-button" data-view="lead-finder"><span>全网商机雷达</span></button><button class="nav-secondary-button" data-view="leads"><span>线索池</span></button><button class="nav-secondary-button" data-view="prospect-list"><span>搜客清单</span></button></section>
+            <section><b>销售转化</b><button class="nav-secondary-button" data-view="customers"><span>客户作战室</span></button><button class="nav-secondary-button" data-view="documents"><span>报价工作台</span></button><button class="nav-secondary-button" data-view="pipeline"><span>商机与审核</span></button><button class="nav-secondary-button" data-view="reminders"><span>CRM 跟进</span></button></section>
+            <section><b>经营决策</b><button class="nav-secondary-button" data-view="reports"><span>渠道 ROI</span></button><button class="nav-secondary-button" data-view="forecast"><span>销售与回款预测</span></button><button class="nav-secondary-button" data-view="commission"><span>客户利润复盘</span></button></section>
+            <section><b>知识与系统</b><button class="nav-secondary-button" data-view="knowledge"><span>知识库</span></button><button class="nav-secondary-button" data-view="imports"><span>数据导入导出</span></button><button class="nav-secondary-button" data-view="ai-config"><span>模型与规则</span></button><button class="nav-secondary-button" data-view="settings"><span>账号权限与审计</span></button></section>
           </div>
         </details>
 
-        <details class="nav-section" aria-label="知识协作">
-          <summary class="nav-section-title"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5z"/><path d="M8 7h8"/><path d="M8 11h6"/></svg><span>知识协作</span><i class="nav-chevron"></i></summary>
-          <div class="nav-secondary-grid">
-            <button class="nav-secondary-button" data-view="knowledge" title="资料维护"><span>资料维护</span></button>
-            <button class="nav-secondary-button" data-view="exam" title="在线考试"><span>在线考试</span></button>
-            <button class="nav-secondary-button" data-view="wecom" title="企业微信"><span>企业微信</span></button>
-          </div>
-        </details>
-
-        <details class="nav-section" aria-label="经营资料库">
-          <summary class="nav-section-title"><svg viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M5 21V7l8-4v18"/><path d="M19 21V11l-6-3"/><path d="M9 9h1"/><path d="M9 13h1"/><path d="M16 15h1"/></svg><span>经营资料库</span><i class="nav-chevron"></i></summary>
-          <div class="nav-secondary-grid">
-            <button class="nav-secondary-button" data-view="competitors" title="竞争公司"><span>竞争公司</span></button>
-            <button class="nav-secondary-button" data-view="cases" title="成功案例"><span>成功案例</span></button>
-            <button class="nav-secondary-button" data-view="problems" title="问题清单"><span>问题清单</span></button>
-          </div>
-        </details>
-
-        <details class="nav-section" aria-label="系统配置">
-          <summary class="nav-section-title"><svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-.4-1 1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1-.4H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1-.4 1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06A2 2 0 1 1 7.13 3.4l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 .4 1 1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.17.37.38.7.6 1 .27.26.62.4 1 .4h.1a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1 .4 1.7 1.7 0 0 0-.6 1z"/></svg><span>系统配置</span><i class="nav-chevron"></i></summary>
-          <div class="nav-secondary-grid">
-            <button class="nav-secondary-button" data-view="imports" title="导入导出"><span>导入导出</span></button>
-            <button class="nav-secondary-button" data-view="ai-config" title="AI配置"><span>AI配置</span></button>
-            <button class="nav-secondary-button" data-view="settings" title="系统设置"><span>系统设置</span></button>
-            <button class="nav-secondary-button" data-view="profile" title="个人设置"><span>个人设置</span></button>
-          </div>
-        </details>
       </nav>
 
       <div class="nav-footer">
@@ -10342,7 +10543,9 @@
 
     <main class="main">
       <header class="topbar">
-        <div class="top-core">
+        <div class="topbar-main">
+          <div class="top-core">
+          <div class="topbar-org"><b>GoodJob</b><span>/ 海外销售部</span></div>
           <label class="command" id="topSearchWrap">
             <svg width="17" height="17" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="m21 21-4.35-4.35M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16Z"/></svg>
             <input id="topSearchInput" placeholder="全局搜索 / 输入模块名后回车跳转" list="topSearchHints" />
@@ -10359,7 +10562,6 @@
               <option value="备忘录"></option>
             </datalist>
           </label>
-          <div class="top-tabs" id="topOpenTabs" aria-label="已打开页面"></div>
           <div class="top-status" aria-label="今日状态">
             <span class="top-pill">待办 <b id="topTodoCount">--</b></span>
             <span class="top-pill">提醒 <b id="topReminderCount">--</b></span>
@@ -10381,135 +10583,153 @@
             <button class="btn" id="logoutButton">退出</button>
           </div>
         </div>
+        </div>
+        <div class="top-tabs" id="topOpenTabs" aria-label="已打开页面"></div>
       </header>
 
       <section class="workspace">
         <div class="view active" id="dashboard">
-          <div class="page-head">
-            <div>
-              <p class="eyebrow">Sales Command Center</p>
-              <h1>外贸客户工作台</h1>
-              <p class="sub">无限进步</p>
-            </div>
-            <div class="head-actions">
-              <span class="badge green">实时行动快照</span>
-              <button class="btn manager-only" id="morningViewButton" type="button">晨会视图</button>
-            </div>
-          </div>
-
-          <div class="scope-banner">
-            <span>当前账号：<b id="scopeUser">登录后加载</b> · 数据范围：<b id="scopeText">登录后按账号权限读取</b></span>
-            <span class="scope-tags"><span class="scope-tag" id="businessScopeTag">本人业务</span><span class="scope-tag personal" id="todoScopeTag">本人待办</span></span>
-          </div>
-
-          <section class="morning-panel" id="morningPanel">
-            <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M12 3v3"/><path d="M12 18v3"/><path d="M4.2 4.2l2.1 2.1"/><path d="M17.7 17.7l2.1 2.1"/><path d="M3 12h3"/><path d="M18 12h3"/><circle cx="12" cy="12" r="4"/></svg></span><div><h2>晨会视图</h2><span id="morningSubtitle">用于 5 分钟晨会同步：风险、成交、协同和今日动作。</span></div></div>
-            <div class="morning-grid">
-              <div class="morning-card"><span>优先级结论</span><b id="morningConclusion">加载中</b></div>
-              <div class="morning-card"><span>高风险金额</span><b id="morningRisk">--</b></div>
-              <div class="morning-card"><span>待协同</span><b id="morningCollab">--</b></div>
-              <div class="morning-card"><span>今日动作</span><b id="morningAction">--</b></div>
-            </div>
-          </section>
-
-          <div class="command-center">
-            <section class="panel focus-panel">
-              <div class="focus-top">
+          <div class="business-dashboard">
+            <header class="business-dashboard-head">
+              <div>
+                <h1>今日经营</h1>
+                <p>先处理影响成交、回款和客户关系的关键事项。</p>
+              </div>
+              <div class="business-head-actions">
                 <div class="dashboard-period-tabs" aria-label="工作台统计周期">
                   <button type="button" class="active" data-dashboard-period="today" aria-pressed="true">今日</button>
                   <button type="button" data-dashboard-period="week" aria-pressed="false">本周</button>
                   <button type="button" data-dashboard-period="month" aria-pressed="false">本月</button>
                 </div>
-                <span id="dashboardUpdatedAt">数据加载中</span>
+                <button class="btn manager-only" id="morningViewButton" type="button">晨会简报</button>
               </div>
-              <div class="focus-title">
-                <h2>正在生成经营建议</h2>
-                <p>系统将根据当前账号可见的客户、商机、待办和线索数据生成建议。</p>
+            </header>
+
+            <div class="business-scope-line">
+              <span>当前账号 <b id="scopeUser">登录后加载</b></span>
+              <span>数据范围 <b id="scopeText">登录后按账号权限读取</b></span>
+              <span class="scope-tag" id="businessScopeTag">本人业务</span>
+              <span class="scope-tag personal" id="todoScopeTag">本人待办</span>
+            </div>
+
+            <section class="morning-panel business-morning" id="morningPanel">
+              <div class="section-title">
+                <span class="icon"><svg viewBox="0 0 24 24"><path d="M12 3v3"/><path d="M12 18v3"/><path d="M4.2 4.2l2.1 2.1"/><path d="M17.7 17.7l2.1 2.1"/><path d="M3 12h3"/><path d="M18 12h3"/><circle cx="12" cy="12" r="4"/></svg></span>
+                <div><h2>晨会简报</h2><span id="morningSubtitle">同步风险、成交、协同和下一步动作。</span></div>
               </div>
-              <div class="briefing-why">
-                <div><b>判断依据</b><span id="briefingBasis">依据待办、客户风险、商机阶段和企微状态生成。</span></div>
-                <div><b>建议动作</b><span id="briefingAction">先处理高优先级待办，再推进金额最高的商机。</span></div>
-                <div><b>业务影响</b><span id="briefingImpact">用于晨会安排、个人今日任务排序和主管协同判断。</span></div>
-              </div>
-              <div class="focus-metrics">
-                <div class="focus-metric"><span>高风险金额</span><b>--</b><small>数据加载中</small></div>
-                <div class="focus-metric"><span>高优先级待办</span><b>--</b><small>数据加载中</small></div>
-                <div class="focus-metric"><span>预计成交金额</span><b>--</b><small>数据加载中</small></div>
-                <div class="focus-metric"><span>新增线索</span><b>--</b><small>数据加载中</small></div>
+              <div class="morning-grid">
+                <div class="morning-card"><span>优先结论</span><b id="morningConclusion">加载中</b></div>
+                <div class="morning-card"><span>风险金额</span><b id="morningRisk">--</b></div>
+                <div class="morning-card"><span>待协同</span><b id="morningCollab">--</b></div>
+                <div class="morning-card"><span>今日动作</span><b id="morningAction">--</b></div>
               </div>
             </section>
 
-            <section class="panel schedule-panel lead-funnel-panel">
-              <div class="section-head">
-                <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M3 5h18"/><path d="M6 10h12"/><path d="M9 15h6"/><path d="M11 20h2"/></svg></span><div><h2>线索漏斗</h2><span>进入、清洗与转化</span></div></div>
-                <span class="lead-funnel-live">实时</span>
-              </div>
-              <div class="lead-funnel" id="dashboardLeadFunnel" aria-live="polite"></div>
+            <section class="business-signal-strip focus-metrics" aria-label="经营信号">
+              <div class="focus-metric"><span>优先线索</span><b>--</b><small>数据加载中</small></div>
+              <div class="focus-metric"><span>待跟进</span><b>--</b><small>数据加载中</small></div>
+              <div class="focus-metric"><span>预计成交</span><b>--</b><small>数据加载中</small></div>
+              <div class="focus-metric"><span>风险金额</span><b>--</b><small>数据加载中</small></div>
             </section>
-          </div>
 
-          <div class="todo-board">
-            <section class="panel section">
-              <div class="section-head">
-                <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M9 11l2 2 4-4"/><path d="M21 12a9 9 0 1 1-9-9"/></svg></span><div><h2>待办清单 <span class="scope-tag personal">本人待办</span></h2><span>集中处理客户跟进、报价追踪、样品反馈和商机推进</span></div></div>
-                <div class="head-actions"><button class="btn">批量完成</button><button class="btn primary">新增待办</button></div>
-              </div>
-              <div class="todo-toolbar">
-                <label class="quick-add">
-                  <svg width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
-                  <input placeholder="快速新增：例如 明天 10 点跟进重点客户报价" />
-                </label>
-                <div class="todo-filters">
-	                  <span class="todo-chip active">今天 --</span><span class="todo-chip">逾期 --</span><span class="todo-chip">我负责 --</span><span class="todo-chip">客户跟进</span><span class="todo-chip">历史清单 --</span>
+            <div class="business-primary-grid">
+              <section class="panel section business-priority-panel">
+                <div class="section-head">
+                  <div class="section-title">
+                    <span class="icon"><svg viewBox="0 0 24 24"><path d="M12 8v5l3 3"/><circle cx="12" cy="12" r="10"/></svg></span>
+                    <div><h2>今天优先处理 <span class="scope-tag" data-business-scope>业务范围</span></h2><span>依据金额、阶段、风险和时效排序</span></div>
+                  </div>
+                  <button class="btn" id="batchPriorityButton">生成跟进待办</button>
                 </div>
-              </div>
-              <div class="todo-list"><div class="todo-history-empty">待办数据加载中</div></div>
-	              <details class="todo-history">
-	                <summary class="todo-history-head">
-	                  <div><h3>历史清单</h3><span>隔天自动归档，当前清单只保留今天及未来待办</span></div>
-	                  <div class="history-stats"><b id="todo-history-count">0 条</b><b id="todo-history-amount">$0k</b></div>
-	                </summary>
-	                <div class="todo-history-list">
-	                  <div class="todo-history-empty">暂无隔天历史待办</div>
-	                </div>
-	              </details>
-	            </section>
-
-            <aside class="panel section">
-              <div class="section-head"><div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M8 17V9"/><path d="M13 17V5"/><path d="M18 17v-6"/></svg></span><div><h2>待办洞察</h2><span>按优先级和业务影响汇总</span></div></div></div>
-              <div class="todo-insights">
-                <div class="todo-score">
-                  <div class="todo-score-card"><span>今日待办</span><b>--</b></div>
-                  <div class="todo-score-card"><span>已逾期</span><b style="color:var(--rose)">--</b></div>
-                  <div class="todo-score-card"><span>完成率</span><b>--</b></div>
-                  <div class="todo-score-card"><span>高影响</span><b>--</b></div>
+                <div class="priority-filter-tabs" aria-label="优先事项筛选">
+                  <button class="active" type="button" data-priority-filter="all">全部</button>
+                  <button type="button" data-priority-filter="red">高风险</button>
+                  <button type="button" data-priority-filter="amber">待推进</button>
+                  <button type="button" data-priority-filter="green">可转化</button>
                 </div>
-                <table class="mini-table">
-                  <thead><tr><th>类型</th><th>数量</th><th>风险</th></tr></thead>
-                  <tbody><tr><td colspan="3">数据加载中</td></tr></tbody>
-                </table>
-                <div class="todo-calendar"><div class="todo-day">加载中</div></div>
-              </div>
-            </aside>
-          </div>
+                <div class="task-list"><div class="todo-history-empty">优先事项加载中</div></div>
+              </section>
 
-          <div class="dashboard-grid">
-            <div class="panel section">
-              <div class="section-head">
-                <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M12 8v5l3 3"/><circle cx="12" cy="12" r="10"/></svg></span><div><h2>跟进优先级队列 <span class="scope-tag" data-business-scope>业务范围</span></h2><span>按金额影响、商机阶段、客户风险、关联待办综合评分</span></div></div>
-                <button class="btn" id="batchPriorityButton">批量生成跟进待办</button>
-              </div>
-              <div class="task-list"><div class="todo-history-empty">跟进任务加载中</div></div>
+              <aside class="panel section business-decision-rail">
+                <div class="decision-rail-head">
+                  <div>
+                    <h2>AI 经营判断</h2>
+                    <span id="dashboardUpdatedAt">数据加载中</span>
+                  </div>
+                  <span class="decision-live">实时</span>
+                </div>
+                <div class="focus-title">
+                  <h2>正在生成经营建议</h2>
+                  <p>系统会根据当前账号可见的客户、商机、待办和线索数据生成建议。</p>
+                </div>
+                <div class="business-decision-list briefing-why">
+                  <div><b>判断依据</b><span id="briefingBasis">依据待办、客户风险、商机阶段和消息状态生成。</span></div>
+                  <div><b>建议动作</b><span id="briefingAction">先处理高优先级待办，再推进金额最高的商机。</span></div>
+                  <div><b>业务影响</b><span id="briefingImpact">用于今日任务排序和主管协同判断。</span></div>
+                </div>
+              </aside>
             </div>
 
-            <div class="panel section">
-              <div class="section-head">
-                <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M7 6v12"/><path d="M17 6v12"/><path d="M3 18h18"/></svg></span><div><h2>管道健康度 <span class="scope-tag" data-business-scope>业务范围</span></h2><span>按真实商机阶段统计数量、金额和风险</span></div></div>
-              </div>
-              <div class="bars"><div class="todo-history-empty">商机管道加载中</div></div>
+            <div class="business-secondary-grid">
+              <section class="panel section lead-funnel-panel">
+                <div class="section-head">
+                  <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M3 5h18"/><path d="M6 10h12"/><path d="M9 15h6"/><path d="M11 20h2"/></svg></span><div><h2>商机转化漏斗</h2><span>从发现线索到进入商机</span></div></div>
+                  <span class="lead-funnel-live">实时</span>
+                </div>
+                <div class="lead-funnel" id="dashboardLeadFunnel" aria-live="polite"></div>
+              </section>
+
+              <section class="panel section business-pipeline-panel">
+                <div class="section-head">
+                  <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M7 6v12"/><path d="M17 6v12"/><path d="M3 18h18"/></svg></span><div><h2>销售管道</h2><span>金额、阶段和风险分布</span></div></div>
+                </div>
+                <div class="bars"><div class="todo-history-empty">管道数据加载中</div></div>
+              </section>
+            </div>
+
+            <div class="business-todo-layout">
+              <section class="panel section business-todo-panel">
+                <div class="section-head">
+                  <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M9 11l2 2 4-4"/><path d="M21 12a9 9 0 1 1-9-9"/></svg></span><div><h2>执行清单</h2><span>把经营判断落到今天可完成的动作</span></div></div>
+                  <div class="head-actions"><button class="btn">批量完成</button><button class="btn primary">新增待办</button></div>
+                </div>
+                <div class="todo-toolbar">
+                  <label class="quick-add">
+                    <svg width="14" height="14" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>
+                    <input placeholder="输入待办后按回车，例如 明天 10 点跟进重点客户报价" />
+                  </label>
+                  <div class="todo-filters">
+                    <span class="todo-chip active">今天 --</span><span class="todo-chip">逾期 --</span><span class="todo-chip">我负责 --</span><span class="todo-chip">客户跟进</span><span class="todo-chip">历史清单 --</span>
+                  </div>
+                </div>
+                <div class="todo-list"><div class="todo-history-empty">待办数据加载中</div></div>
+                <details class="todo-history">
+                  <summary class="todo-history-head">
+                    <div><h3>历史清单</h3><span>隔天自动归档，当前清单只保留今天及未来待办</span></div>
+                    <div class="history-stats"><b id="todo-history-count">0 条</b><b id="todo-history-amount">$0k</b></div>
+                  </summary>
+                  <div class="todo-history-list"><div class="todo-history-empty">暂无隔天历史待办</div></div>
+                </details>
+              </section>
+
+              <aside class="panel section business-todo-insights">
+                <div class="section-head"><div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M8 17V9"/><path d="M13 17V5"/><path d="M18 17v-6"/></svg></span><div><h2>执行洞察</h2><span>任务负荷与业务影响</span></div></div></div>
+                <div class="todo-insights">
+                  <div class="todo-score">
+                    <div class="todo-score-card"><span>今日待办</span><b>--</b></div>
+                    <div class="todo-score-card"><span>已逾期</span><b>--</b></div>
+                    <div class="todo-score-card"><span>完成率</span><b>--</b></div>
+                    <div class="todo-score-card"><span>高影响</span><b>--</b></div>
+                  </div>
+                  <table class="mini-table">
+                    <thead><tr><th>类型</th><th>数量</th><th>风险</th></tr></thead>
+                    <tbody><tr><td colspan="3">数据加载中</td></tr></tbody>
+                  </table>
+                  <div class="todo-calendar"><div class="todo-day">加载中</div></div>
+                </div>
+              </aside>
             </div>
           </div>
-
         </div>
 
         <div class="view" id="plan-growth">
@@ -10587,96 +10807,97 @@
           </div>
         </div>
 
-        <div class="view" id="lead-finder">
-          <div class="page-head">
-            <div><p class="eyebrow">Auto Prospecting</p><h1>自动获客</h1><p class="sub">功能持续优化中...</p></div>
-            <div class="head-actions"><button class="btn primary" id="leadFinderStartButton">开始搜客</button></div>
-          </div>
-
-          <div class="lead-command-strip">
-            <div class="lead-command-item"><span>候选结果</span><b id="leadFinderTotalCount">0</b><small>来自公开源与导入链接</small></div>
-            <div class="lead-command-item"><span>待确认</span><b id="leadFinderPendingCount">0</b><small>核实后进入线索中心</small></div>
-            <div class="lead-command-item"><span>已入线索</span><b id="leadFinderSyncedCount">0</b><small>进入统一跟进流程</small></div>
-            <div class="lead-command-item lead-parser-state"><span>当前解析</span><b id="leadFinderAiState">规则</b><small id="leadFinderAiSub">高级设置中可启用 AI</small></div>
-          </div>
-
-          <div class="lead-workbench">
-            <section class="panel section lead-build-panel">
-              <div class="section-head">
-                <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M21 21l-4.3-4.3"/><circle cx="11" cy="11" r="7"/><path d="M11 7v4l3 2"/></svg></span><div><h2>创建搜客任务</h2><span>不用先有官网，先把客户画像说清楚</span></div></div>
-                <span class="badge" id="leadFinderAiBadge">规则解析</span>
+        <div class="view m1-view" id="lead-finder" data-layout-state="entry">
+          <section class="lead-taskbar" aria-labelledby="leadFinderPageTitle">
+            <div class="lead-workbench-header">
+              <div>
+                <h1 id="leadFinderPageTitle">自动获客</h1>
+                <p>按目标市场查找并核验潜在客户</p>
               </div>
+              <button class="btn" id="leadFinderTaskButton" type="button" aria-controls="leadFinderQueuePanel" aria-expanded="false">任务记录</button>
+            </div>
+            <div class="lead-search-row">
+              <div class="lead-natural-command">
+                <label for="leadFinderGoalInput">目标客户</label>
+                <textarea id="leadFinderGoalInput" rows="1" placeholder="例如：德国的 LED 工业照明经销商"></textarea>
+              </div>
+              <button class="btn primary lead-search-primary" id="leadFinderStartButton">开始搜索</button>
+            </div>
+            <div class="lead-intent-row">
+              <span>筛选条件</span>
+              <div id="leadFinderIntentChips" class="lead-intent-chips"></div>
+              <button class="lead-more-conditions" id="leadMoreConditionsButton" type="button" aria-controls="leadFinderAdvancedSettings" aria-expanded="false">更多条件</button>
+            </div>
+          </section>
+
+          <section class="lead-results-workspace">
+            <div class="lead-results-heading">
+              <div class="lead-inline-summary" aria-label="候选摘要">
+                <span>候选客户 <b id="leadFinderTotalCount">0</b></span>
+                <span>待核验 <b id="leadFinderPendingCount">0</b></span>
+                <span>已入线索 <b id="leadFinderSyncedCount">0</b></span>
+                <small id="leadFinderTaskSummary">填写目标后开始搜索</small>
+              </div>
+            </div>
+
+            <details class="lead-advanced-settings" id="leadFinderAdvancedSettings">
+              <summary>调整条件 <span>产品、国家、行业、客户类型、来源与链接导入</span></summary>
               <div class="lead-form-grid">
                 <div class="lead-field"><label>产品关键词</label><input id="leadProductKeywords" placeholder="输入产品关键词"></div>
                 <div class="lead-field"><label>国家/地区</label><input id="leadCountries" placeholder="输入目标国家或地区"></div>
                 <div class="lead-field"><label>行业/应用场景</label><input id="leadIndustryInput" placeholder="输入目标行业或应用场景"></div>
                 <div class="lead-field"><label>客户类型</label><select id="leadCustomerTypes"><option>经销商 / Distributor</option><option>系统集成商 / System Integrator</option><option>OEM 设备厂</option><option>EPC 工程承包商</option><option>MRO 服务商</option><option>终端工厂</option></select></div>
                 <div class="lead-field"><label>排除词</label><input id="leadExcludeKeywords" placeholder="输入需要排除的关键词"></div>
-              </div>
-              <details class="lead-advanced-settings" open>
-                <summary>高级设置 <span>数据源、AI、目标数量与链接导入</span></summary>
-                <div class="lead-field lead-goal-field"><label>补充获客目标</label><textarea id="leadFinderGoalInput" placeholder="例如：优先寻找有水处理项目经验的德国分销商。"></textarea></div>
                 <div class="lead-field"><label>单次目标数量</label><select id="leadLimit"><option>10</option><option selected>20</option><option>30</option></select></div>
-                <div class="lead-source-box">
-                  <div class="lead-source-head"><b>获客数据源</b><span>免费源默认启用，计费源在运行前再次确认</span><button class="btn tiny" id="leadSourceManageInline" type="button">配置</button></div>
-                  <div class="lead-source-chips" id="leadSourceChips"><span class="empty-inline">数据源加载中…</span></div>
-                  <div class="lead-entry-head"><b>人工搜索入口</b><span>生成平台检索链接，核实后导入</span></div>
-                  <div class="lead-entry-chips">
-                    <button type="button" class="lead-entry-chip active" data-lead-entry="google">Google/Web</button>
-                    <button type="button" class="lead-entry-chip active" data-lead-entry="alibaba">Alibaba RFQ</button>
-                    <button type="button" class="lead-entry-chip active" data-lead-entry="madein">Made-in-China</button>
-                    <button type="button" class="lead-entry-chip" data-lead-entry="globalsources">Global Sources</button>
-                    <button type="button" class="lead-entry-chip active" data-lead-entry="europages">Europages</button>
-                  </div>
+              </div>
+              <div class="lead-source-box">
+                <div class="lead-source-head"><b>获客数据源</b><span>免费源默认启用，计费源在运行前再次确认</span><button class="btn tiny" id="leadSourceManageInline" type="button">配置</button></div>
+                <div class="lead-source-chips" id="leadSourceChips"><span class="empty-inline">数据源加载中</span></div>
+                <div class="lead-entry-head"><b>人工搜索入口</b><span>生成平台检索链接，核实后导入</span></div>
+                <div class="lead-entry-chips">
+                  <button type="button" class="lead-entry-chip active" data-lead-entry="google">Google/Web</button>
+                  <button type="button" class="lead-entry-chip active" data-lead-entry="alibaba">Alibaba RFQ</button>
+                  <button type="button" class="lead-entry-chip active" data-lead-entry="madein">Made-in-China</button>
+                  <button type="button" class="lead-entry-chip" data-lead-entry="globalsources">Global Sources</button>
+                  <button type="button" class="lead-entry-chip active" data-lead-entry="europages">Europages</button>
                 </div>
-                <div class="lead-field lead-url-field"><label>官网/平台结果链接</label><textarea id="leadFinderUrlInput" placeholder="每行一个链接，最多 12 条。留空时使用已启用数据源搜索。"></textarea></div>
-                <div class="lead-advanced-actions">
-                  <label class="ai-toggle-line"><input id="leadFinderUseAiInput" type="checkbox">使用 AI 解析与评分</label>
-                  <button class="btn" id="leadSourceCenterButton" type="button">数据源中心</button>
-                  <button class="btn" id="leadFinderAiConfigButton" type="button">AI配置</button>
-                  <button class="btn" id="leadFinderExportButton" type="button">导出结果</button>
+              </div>
+              <div class="lead-field lead-url-field"><label>官网/平台结果链接</label><textarea id="leadFinderUrlInput" placeholder="每行一个链接，最多 12 条。留空时使用已启用数据源搜索。"></textarea></div>
+              <div class="lead-advanced-actions">
+                <div class="lead-parser-detail" aria-label="解析方式">
+                  <span>解析方式</span>
+                  <b id="leadFinderAiState">规则</b>
+                  <small id="leadFinderAiSub">高级设置中可启用 AI</small>
+                  <span id="leadFinderAiBadge" hidden aria-hidden="true">规则解析</span>
                 </div>
-              </details>
-              <div class="lead-runbar">
-                <span>新候选默认不勾选，请核验后再加入线索。</span>
-                <button class="btn primary" id="leadFinderStartButtonInline">开始搜客</button>
+                <label class="ai-toggle-line"><input id="leadFinderUseAiInput" type="checkbox">使用 AI 解析与评分</label>
+                <button class="btn" id="leadSourceCenterButton" type="button">数据源中心</button>
+                <button class="btn" id="leadFinderAiConfigButton" type="button">AI配置</button>
+                <button class="btn" id="leadFinderExportButton" type="button">导出结果</button>
               </div>
-            </section>
-
-            <details class="panel section lead-queue-panel" open>
-              <summary class="lead-queue-summary">任务记录与人工搜索入口</summary>
-              <div class="section-head">
-                <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg></span><div><h2>任务队列</h2><span>记录搜索进度、启用渠道和后续导入动作</span></div></div>
-                <button class="btn" id="leadFinderExportButtonQueue">导出Excel</button>
-              </div>
-              <div class="lead-job-list" id="leadFinderJobList">
-                <div class="empty-cell">还没有搜客任务。填写条件后点击“生成并运行任务”。</div>
-              </div>
-              <div class="lead-query-panel">
-                <div class="section-title compact"><span class="icon"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></span><div><h2>搜索入口</h2><span>复制/打开后把有效官网再导入</span></div></div>
-                <div class="lead-search-links" id="leadFinderSearchLinks"></div>
-              </div>
+              <div class="lead-runbar"><span>新候选默认不勾选，请核验后再加入线索。</span><button class="btn primary" id="leadFinderStartButtonInline">按当前条件搜索</button></div>
             </details>
-          </div>
 
-          <div class="lead-result-layout">
-            <section class="panel section lead-results-panel">
-              <div class="section-head">
-                <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg></span><div><h2>候选客户结果库</h2><span>先核验来源、重复和归属，再加入线索中心</span></div></div>
-                <div class="lead-bulkbar" id="leadFinderBulkbar"><span id="leadFinderSelectedCount">已选 0 条</span><button class="btn primary" id="leadFinderSyncButton">确认并加入线索</button><button class="btn" id="leadFinderTodoButton">创建首个待办</button></div>
-              </div>
-              <div class="lead-filter-tabs">
-                <button class="active" data-lead-filter="all">全部</button>
-                <button data-lead-filter="pending">待确认</button>
-                <button data-lead-filter="high">高匹配</button>
-                <button data-lead-filter="duplicate">可能重复</button>
-                <button data-lead-filter="synced">已同步</button>
+            <section class="lead-results-panel">
+              <div class="lead-list-toolbar">
+                <div class="lead-filter-tabs">
+                  <button class="active" data-lead-filter="all">全部</button>
+                  <button data-lead-filter="pending">待核验</button>
+                  <button data-lead-filter="high">高匹配</button>
+                  <button data-lead-filter="duplicate">可能重复</button>
+                  <button data-lead-filter="synced">已同步</button>
+                </div>
+                <div class="lead-bulkbar" id="leadFinderBulkbar">
+                  <span id="leadFinderSelectedCount">已选 0 条</span>
+                  <button class="btn primary" id="leadFinderSyncButton">确认并加入线索</button>
+                  <button class="btn" id="leadFinderTodoButton">创建首个待办</button>
+                </div>
               </div>
               <div class="lead-table-wrap">
                 <table class="lead-table">
                   <colgroup><col class="col-pick"><col class="col-company"><col class="col-source"><col><col class="col-country"><col><col><col class="col-score"><col class="col-status"></colgroup>
                   <thead><tr><th>选</th><th>公司 / 官网</th><th>来源</th><th>业务</th><th>国家</th><th>联系人</th><th>联系方式</th><th>评分</th><th>状态</th></tr></thead>
-                  <tbody id="leadFinderResultRows"><tr><td colspan="9" class="empty-cell">暂无候选客户。填写画像、选好数据源后点击“生成并运行任务”。</td></tr></tbody>
+                  <tbody id="leadFinderResultRows"><tr><td colspan="9" class="empty-cell">暂无候选客户。填写目标、调整必要条件后开始搜索。</td></tr></tbody>
                 </table>
               </div>
               <div class="lead-mobile-list" id="leadFinderMobileRows"></div>
@@ -10689,9 +10910,21 @@
                 <div id="leadFinderDetail" class="lead-detail-card"><span>未选择</span><b>点击候选列表中的公司行查看详情。</b></div>
               </details>
             </section>
-          </div>
-        </div>
 
+            <details class="panel section lead-queue-panel" id="leadFinderQueuePanel">
+              <summary class="lead-queue-summary">任务记录与人工搜索入口</summary>
+              <div class="section-head">
+                <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg></span><div><h2>任务队列</h2><span>记录搜索进度、启用渠道和后续导入动作</span></div></div>
+                <button class="btn" id="leadFinderExportButtonQueue">导出Excel</button>
+              </div>
+              <div class="lead-job-list" id="leadFinderJobList"><div class="empty-cell">还没有搜索任务。填写条件后点击“开始搜索”。</div></div>
+              <div class="lead-query-panel">
+                <div class="section-title compact"><span class="icon"><svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg></span><div><h2>搜索入口</h2><span>复制或打开后，把有效官网再导入</span></div></div>
+                <div class="lead-search-links" id="leadFinderSearchLinks"></div>
+              </div>
+            </details>
+          </section>
+        </div>
         <div class="view" id="prospect-list">
           <div class="page-head">
             <div><p class="eyebrow">Prospect Verification Queue</p><h1>搜客清单</h1><p class="sub">先核验联系方式，再触达和入线索；按下一步动作处理候选客户。</p></div>
@@ -11374,6 +11607,74 @@
           </div>
         </div>
 
+        <div class="view" id="forecast">
+          <div class="page-head forecast-page-head">
+            <div>
+              <h1>销售与回款预测</h1>
+              <p class="sub">查看预测区间、目标概率、重点客户、回款风险和数据质量。</p>
+            </div>
+            <span class="badge green">页面结构已完成，数据待接入</span>
+          </div>
+
+          <section class="panel forecast-summary-panel">
+            <div class="forecast-summary-copy">
+              <span>本月经营预测</span>
+              <h2>先判断结果是否可信，再决定追加线索或推动重点客户。</h2>
+              <p>预测模型尚未接入。当前页面仅用于确认内容层级、字段和交互位置。</p>
+            </div>
+            <div class="forecast-summary-signals">
+              <div><span>预测成交区间</span><b>--</b><small>待模型接入</small></div>
+              <div><span>目标达成概率</span><b>--</b><small>待模型接入</small></div>
+              <div><span>未来 30 天回款</span><b>--</b><small>待财务数据接入</small></div>
+              <div><span>数据质量</span><b>待检查</b><small>字段完整度与最小样本</small></div>
+            </div>
+          </section>
+
+          <div class="forecast-main-grid">
+            <section class="panel section forecast-range-panel">
+              <div class="section-head">
+                <div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M6 16l4-5 4 2 5-7"/></svg></span><div><h2>预测区间与目标</h2><span>成交额、回款和目标概率使用统一时间口径</span></div></div>
+              </div>
+              <div class="forecast-empty-chart">
+                <b>等待真实预测数据</b>
+                <span>接入后显示基线、预测区间、目标线和回测误差。</span>
+              </div>
+              <div class="forecast-axis" aria-hidden="true"><span>本周</span><span>未来 30 天</span><span>未来 90 天</span></div>
+            </section>
+
+            <aside class="panel section forecast-quality-panel">
+              <div class="section-head"><div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span><div><h2>数据质量门</h2><span>数据不足时不输出伪精确结果</span></div></div></div>
+              <div class="forecast-quality-list">
+                <div><span>最小样本</span><b>待检查</b></div>
+                <div><span>关键字段完整度</span><b>待检查</b></div>
+                <div><span>异常值</span><b>待检查</b></div>
+                <div><span>最近回测</span><b>未执行</b></div>
+              </div>
+            </aside>
+          </div>
+
+          <div class="forecast-bottom-grid">
+            <section class="panel section">
+              <div class="section-head"><div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></span><div><h2>重点客户与回款风险</h2><span>从预测结果下钻到客户和证据</span></div></div></div>
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th>客户</th><th>当前阶段</th><th>预计金额</th><th>回款窗口</th><th>主要风险</th><th>建议动作</th></tr></thead>
+                  <tbody><tr><td colspan="6" class="empty-cell">真实客户预测数据待接入</td></tr></tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside class="panel section">
+              <div class="section-head"><div class="section-title"><span class="icon"><svg viewBox="0 0 24 24"><path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M3 19h18"/></svg></span><div><h2>目标缺口</h2><span>把预测差距转换成可执行动作</span></div></div></div>
+              <div class="forecast-gap-list">
+                <div><span>新增优先线索</span><b>待计算</b></div>
+                <div><span>重点推进客户</span><b>待计算</b></div>
+                <div><span>高风险回款</span><b>待计算</b></div>
+              </div>
+            </aside>
+          </div>
+        </div>
+
         <div class="view" id="wecom">
           <div class="page-head">
             <div><p class="eyebrow">WeCom Collaboration</p><h1>企业微信</h1><p class="sub">企微用于团队提醒、会话摘要归档和内部协同，不替代海外邮件主流程。</p></div>
@@ -12052,5 +12353,6 @@
     renderTopbarForView("dashboard");
   </script>
   <script type="module" src="/src/prototype-api.ts"></script>
+  <script type="module" src="/src/replica-dashboard.ts"></script>
 </body>
 </html>

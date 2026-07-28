@@ -6,6 +6,7 @@ import * as echarts from "echarts/core";
 import { LineChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import { SVGRenderer } from "echarts/renderers";
+import { buildLeadFinderIntentChips, getLeadFinderLayoutMode } from "./lead-finder-layout";
 
 echarts.use([LineChart, GridComponent, TooltipComponent, SVGRenderer]);
 
@@ -1006,6 +1007,7 @@ interface AppState {
   executiveReport: ExecutiveReport | null;
   reportNote: string;
   dashboardPeriod: DashboardPeriod;
+  dashboardPriorityFilter: "all" | "red" | "amber" | "green";
   morningView: boolean;
   todoFilter: "all" | "today" | "overdue" | "mine" | "customer" | "history";
   openTodoMenuId: string | null;
@@ -1118,6 +1120,7 @@ const state: AppState = {
   executiveReport: null,
   reportNote: "",
   dashboardPeriod: "today",
+  dashboardPriorityFilter: "all",
   morningView: false,
   todoFilter: "all",
   openTodoMenuId: null,
@@ -1162,16 +1165,18 @@ let openWorkspaceTabs = ["dashboard"];
 let workspaceTabHistory = ["dashboard"];
 
 const viewLabels: Record<string, string> = {
-  dashboard: "工作台",
-  "lead-finder": "自动获客",
+  dashboard: "首页",
+  "lead-finder": "全网商机雷达",
   "prospect-list": "搜客清单",
-  customers: "客户",
+  leads: "线索池",
+  customers: "客户作战室",
   pipeline: "商机",
   reminders: "跟进提醒",
   "plan-growth": "计划任务",
   documents: "单据平台",
   commission: "提成对账",
-  reports: "报表",
+  reports: "经营数据",
+  forecast: "销售与回款预测",
   knowledge: "资料维护",
   exam: "在线考试",
   "question-bank": "题库维护",
@@ -1920,11 +1925,13 @@ function renderDashboard(summary: DashboardSummary, todos: Todo[], customers: Cu
   if (basis) basis.textContent = period.briefing.basis;
   if (action) action.textContent = period.briefing.action;
   if (impact) impact.textContent = period.briefing.impact;
+  const validLeadCount = summary.leadFunnel?.stages?.find((stage) => stage.key === "valid")?.count || 0;
+  const pendingLeadCount = summary.leadFunnel?.stages?.find((stage) => stage.key === "pending")?.count || 0;
   const focusMetrics = qsa<HTMLElement>(".focus-metric");
-  if (focusMetrics[0]) focusMetrics[0].innerHTML = `<span>当前高风险金额 · ${escapeHtml(scopeLabels.business)}</span><b>${money(summary.briefing.riskAmount)}</b><small>${escapeHtml(summary.briefing.riskLabel)} · 实时快照</small>`;
-  if (focusMetrics[1]) focusMetrics[1].innerHTML = `<span>${escapeHtml(period.label)}高优先级待办 · ${escapeHtml(scopeLabels.todos)}</span><b>${period.highPriorityTodos} 项</b><small>${period.pendingTodos} 个周期待办</small>`;
-  if (focusMetrics[2]) focusMetrics[2].innerHTML = `<span>${escapeHtml(period.label)}预计成交金额 · ${escapeHtml(scopeLabels.business)}</span><b>${escapeHtml(dashboardMoneyText(period.expectedAmounts))}</b><small>${period.expectedDeals} 个预计成交商机 · ${escapeHtml(periodDateText(period.start, period.end))}</small>`;
-  if (focusMetrics[3]) focusMetrics[3].innerHTML = `<span>${escapeHtml(period.label)}新增线索 · ${escapeHtml(scopeLabels.business)}</span><b>${period.newLeads} 条</b><small>当前另有 ${summary.briefing.unreadWecom} 条客户消息待处理</small>`;
+  if (focusMetrics[0]) focusMetrics[0].innerHTML = `<span>优先线索 · ${escapeHtml(scopeLabels.business)}</span><b>${validLeadCount} 条</b><small>${pendingLeadCount} 条待清洗</small>`;
+  if (focusMetrics[1]) focusMetrics[1].innerHTML = `<span>${escapeHtml(period.label)}待跟进 · ${escapeHtml(scopeLabels.todos)}</span><b>${period.pendingTodos} 项</b><small>${period.highPriorityTodos} 项高优先级</small>`;
+  if (focusMetrics[2]) focusMetrics[2].innerHTML = `<span>${escapeHtml(period.label)}预计成交 · ${escapeHtml(scopeLabels.business)}</span><b>${escapeHtml(dashboardMoneyText(period.expectedAmounts))}</b><small>${period.expectedDeals} 个商机，${escapeHtml(periodDateText(period.start, period.end))}</small>`;
+  if (focusMetrics[3]) focusMetrics[3].innerHTML = `<span>风险金额 · ${escapeHtml(scopeLabels.business)}</span><b>${money(summary.briefing.riskAmount)}</b><small>${escapeHtml(summary.briefing.riskLabel)}，实时快照</small>`;
   renderLeadFunnel(summary);
   renderPipelineHealth(summary);
   renderTodoInsights(summary);
@@ -2013,11 +2020,11 @@ function renderLeadFunnel(summary: DashboardSummary) {
     return;
   }
   const colors: Record<string, string> = {
-    entered: "#3157d5",
-    pending: "#d58a12",
-    valid: "#168f86",
-    customer: "#2f8f67",
-    deal: "#237451"
+    entered: "#c8d2cc",
+    pending: "#9ab5a4",
+    valid: "#62d78c",
+    customer: "#39ef79",
+    deal: "#25f070"
   };
   funnel.innerHTML = `
     <div class="lead-funnel-chart-wrap">
@@ -2064,10 +2071,11 @@ function renderLeadFunnel(summary: DashboardSummary) {
       tooltip: {
         trigger: "item",
         confine: true,
-        backgroundColor: "#172033",
-        borderWidth: 0,
+        backgroundColor: "rgba(5, 12, 8, .96)",
+        borderColor: "rgba(37, 240, 112, .28)",
+        borderWidth: 1,
         padding: [8, 10],
-        textStyle: { color: "#ffffff", fontSize: 12 },
+        textStyle: { color: "#effff4", fontSize: 12 },
         formatter: (params: { data: { label: string; value: number; conversionRate: number } }) =>
           `${escapeHtml(params.data.label)}<br/><b>${params.data.value} 条</b> · 占进入 ${params.data.conversionRate}%`
       },
@@ -2096,24 +2104,24 @@ function renderLeadFunnel(summary: DashboardSummary) {
         connectNulls: true,
         lineStyle: {
           width: 2,
-          color: "#8197c8",
+          color: "#55ed86",
           cap: "round",
-          shadowBlur: 3,
-          shadowColor: "rgba(64, 88, 145, .11)"
+          shadowBlur: 5,
+          shadowColor: "rgba(37, 240, 112, .2)"
         },
         areaStyle: {
           opacity: 1,
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: "rgba(81, 106, 170, .075)" },
-            { offset: 0.72, color: "rgba(81, 106, 170, .018)" },
-            { offset: 1, color: "rgba(49, 87, 213, 0)" }
+            { offset: 0, color: "rgba(37, 240, 112, .1)" },
+            { offset: 0.72, color: "rgba(37, 240, 112, .025)" },
+            { offset: 1, color: "rgba(37, 240, 112, 0)" }
           ])
         },
         label: {
           show: true,
           position: "top",
           distance: 7,
-          color: "#172033",
+          color: "#dff7e7",
           fontSize: 13,
           fontWeight: 700,
           formatter: (params: { value: number }) => String(params.value)
@@ -2123,9 +2131,9 @@ function renderLeadFunnel(summary: DashboardSummary) {
           focus: "self",
           itemStyle: {
             borderWidth: 3,
-            borderColor: "#ffffff",
+            borderColor: "#effff4",
             shadowBlur: 12,
-            shadowColor: "rgba(23, 32, 51, .22)"
+            shadowColor: "rgba(37, 240, 112, .28)"
           }
         },
         data: data.stages.map((stage) => ({
@@ -2135,11 +2143,11 @@ function renderLeadFunnel(summary: DashboardSummary) {
           label: stage.label,
           conversionRate: stage.conversionRate,
           itemStyle: {
-            color: colors[stage.key] || "#3157d5",
+            color: colors[stage.key] || "#25f070",
             borderWidth: 2,
-            borderColor: "#ffffff",
+            borderColor: "#effff4",
             shadowBlur: stage.key === "pending" ? 8 : 4,
-            shadowColor: `${colors[stage.key] || "#3157d5"}55`
+            shadowColor: `${colors[stage.key] || "#25f070"}55`
           }
         }))
       }]
@@ -2288,12 +2296,34 @@ function renderTodoInsights(summary: DashboardSummary) {
 function renderPriorityTasks(summary: DashboardSummary) {
   const list = qs<HTMLElement>("#dashboard .task-list");
   if (!list) return;
-  list.innerHTML = summary.priorityTasks.length ? summary.priorityTasks.map((task) => `<article class="task" data-priority-task-id="${escapeHtml(task.id)}" style="--accent: var(--${task.tone === "red" ? "rose" : task.tone})">
+  list.innerHTML = summary.priorityTasks.length ? summary.priorityTasks.map((task) => `<article class="task" data-priority-task-id="${escapeHtml(task.id)}" data-priority-tone="${escapeHtml(task.tone)}" style="--accent: var(--${task.tone === "red" ? "rose" : task.tone})">
     <i class="task-line"></i>
     <div><h3>${escapeHtml(task.action)}</h3><p>${escapeHtml(task.subtitle)}</p><div class="priority-task-meta"><span>${escapeHtml(task.reason)}</span></div></div>
     <div class="priority-score">${task.score}<br>分</div>
     ${badge(task.badge, task.tone === "red" ? "red" : task.tone === "amber" ? "amber" : "")}
   </article>`).join("") : `<div class="todo-history-empty">暂无高优先级跟进任务</div>`;
+  applyDashboardPriorityFilter();
+}
+
+function applyDashboardPriorityFilter() {
+  const filter = state.dashboardPriorityFilter;
+  const tasks = qsa<HTMLElement>("#dashboard .task[data-priority-tone]");
+  let visibleCount = 0;
+  tasks.forEach((task) => {
+    const tone = task.dataset.priorityTone || "";
+    task.hidden = filter !== "all" && (filter === "green" ? !["green", "aqua"].includes(tone) : tone !== filter);
+    if (!task.hidden) visibleCount += 1;
+  });
+  qs<HTMLElement>("#dashboard .priority-filter-empty")?.remove();
+  if (tasks.length && visibleCount === 0) {
+    const empty = document.createElement("div");
+    empty.className = "todo-history-empty priority-filter-empty";
+    empty.textContent = "当前筛选条件下暂无事项";
+    qs<HTMLElement>("#dashboard .task-list")?.append(empty);
+  }
+  qsa<HTMLButtonElement>("[data-priority-filter]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.priorityFilter === filter);
+  });
 }
 
 async function batchProcessPriorityTasks(button?: HTMLButtonElement) {
@@ -9153,8 +9183,8 @@ function renderLeadFinderJobDetails(job: LeadFinderJob) {
     <div class="lead-job-found-list">
       ${found.map((item) => `
         <button type="button" data-lead-job-pick="${escapeHtml(item.id)}">
-          <b>${escapeHtml(item.company || "公司待确认")}</b>
-          <span>${escapeHtml(item.country || "国家待确认")} · ${escapeHtml(websiteDomain(item.website || ""))}</span>
+          <b>${escapeHtml(item.company || "公司待核验")}</b>
+          <span>${escapeHtml(item.country || "国家待核验")} · ${escapeHtml(websiteDomain(item.website || ""))}</span>
           <em>${leadFinderScore(item)}分</em>
         </button>
       `).join("")}
@@ -9172,7 +9202,7 @@ function renderLeadFinderJobs() {
   const box = qs<HTMLElement>("#leadFinderJobList");
   if (!box) return;
   if (!leadFinderJobs.length) {
-    box.innerHTML = `<div class="empty-cell">还没有搜客任务。填写条件后点击“生成并运行任务”。</div>`;
+    box.innerHTML = `<div class="empty-cell">还没有搜索任务。填写条件后点击“开始搜索”。</div>`;
     return;
   }
   box.innerHTML = leadFinderJobs.map((job) => `
@@ -9318,7 +9348,7 @@ function renderLeadFinderDetail(item?: WebsiteOpportunity) {
   const externalId = item.id || `website_${domain}`;
   box.innerHTML = `
     <div class="lead-profile-head">
-      <div><h3>${escapeHtml(item.company)}</h3><p>${escapeHtml(item.country || "国家待确认")} · ${escapeHtml(domain)} · ${escapeHtml(item.business || "业务待维护")}</p></div>
+      <div><h3>${escapeHtml(item.company)}</h3><p>${escapeHtml(item.country || "国家待核验")} · ${escapeHtml(domain)} · ${escapeHtml(item.business || "业务待维护")}</p></div>
       <div class="lead-profile-score">${score}</div>
     </div>
     <div class="lead-detail-stack">
@@ -9579,17 +9609,48 @@ function leadFinderMobileCard(item: WebsiteOpportunity) {
     <article class="lead-mobile-card ${state.selectedLeadFinderId === item.id ? "selected" : ""}" data-lead-mobile-id="${escapeHtml(item.id)}">
       <div class="lead-mobile-card-head">
         <input type="checkbox" data-lead-select data-lead-select-id="${escapeHtml(item.id)}" ${item.selected ? "checked" : ""} ${disabled ? "disabled" : ""} aria-label="选择 ${escapeHtml(item.company)}">
-        <div><h3>${escapeHtml(item.company)}</h3><p>${escapeHtml(item.country || "国家待确认")} · ${escapeHtml(websiteDomain(item.website) || "官网待补")}</p></div>
+      <div><h3>${escapeHtml(item.company)}</h3><p>${escapeHtml(item.country || "国家待核验")} · ${escapeHtml(websiteDomain(item.website) || "官网待补")}</p></div>
         <span class="lead-mobile-score">${score}</span>
       </div>
-      <div class="lead-mobile-meta">${leadSourceTag(item)}${badge(item.status === "synced" ? "已同步" : "待确认", item.status === "synced" ? "green" : "amber")}${badge(duplicate.text, duplicate.tone)}</div>
+      <div class="lead-mobile-meta">${leadSourceTag(item)}${badge(item.status === "synced" ? "已同步" : "待核验", item.status === "synced" ? "green" : "amber")}${badge(duplicate.text, duplicate.tone)}</div>
       <div class="lead-mobile-contact">${escapeHtml(item.business || "业务待维护")}<br>${escapeHtml(item.contactInfo || item.contact || "联系方式待补齐")}</div>
       <button class="btn lead-mobile-open" type="button" data-lead-mobile-open="${escapeHtml(item.id)}">查看核验信息</button>
     </article>
   `;
 }
 
+function renderLeadFinderLayout(opportunities: WebsiteOpportunity[]) {
+  const root = qs<HTMLElement>("#lead-finder");
+  if (!root) return;
+  const mode = getLeadFinderLayoutMode(opportunities.length);
+  root.dataset.layoutState = mode;
+  root.classList.toggle("has-results", mode === "results");
+
+  const chips = buildLeadFinderIntentChips({
+    goal: qs<HTMLTextAreaElement>("#leadFinderGoalInput")?.value || "",
+    productKeywords: qs<HTMLInputElement>("#leadProductKeywords")?.value || "",
+    countries: qs<HTMLInputElement>("#leadCountries")?.value || "",
+    industry: qs<HTMLInputElement>("#leadIndustryInput")?.value || "",
+    customerType: qs<HTMLSelectElement>("#leadCustomerTypes")?.value || ""
+  });
+  const chipBox = qs<HTMLElement>("#leadFinderIntentChips");
+  if (chipBox) {
+    chipBox.innerHTML = chips.length
+      ? chips.map((chip) => `<span class="lead-intent-chip">${escapeHtml(chip)}</span>`).join("")
+      : `<span class="lead-intent-empty">输入一句话后，系统会展示识别条件</span>`;
+  }
+
+  const summary = qs<HTMLElement>("#leadFinderTaskSummary");
+  if (summary) {
+    const pendingCount = opportunities.filter((item) => item.status !== "synced").length;
+    summary.textContent = opportunities.length
+      ? `${opportunities.length} 家候选 · ${pendingCount} 家待核验`
+      : "填写目标后开始搜索";
+  }
+}
+
 function renderLeadFinder(opportunities = state.websiteOpportunities) {
+  renderLeadFinderLayout(opportunities);
   const rows = qs<HTMLElement>("#leadFinderResultRows");
   const mobileRows = qs<HTMLElement>("#leadFinderMobileRows");
   const total = qs<HTMLElement>("#leadFinderTotalCount");
@@ -9649,10 +9710,10 @@ function renderLeadFinder(opportunities = state.websiteOpportunities) {
         <td><input data-lead-field="contact" value="${escapeHtml(item.contact)}"></td>
         <td><input data-lead-field="contactInfo" value="${escapeHtml(item.contactInfo)}"></td>
         <td><div class="lead-score"><b>${score}</b><i style="--p:${score}%"></i></div></td>
-        <td class="lead-status-cell">${badge(item.status === "synced" ? "已同步" : "待确认", item.status === "synced" ? "green" : "amber")}${badge(duplicate.text, duplicate.tone)}${badge(item.parseMode === "ai" ? "AI" : "规则", item.parseMode === "ai" ? "green" : "")}</td>
+        <td class="lead-status-cell">${badge(item.status === "synced" ? "已同步" : "待核验", item.status === "synced" ? "green" : "amber")}${badge(duplicate.text, duplicate.tone)}${badge(item.parseMode === "ai" ? "AI" : "规则", item.parseMode === "ai" ? "green" : "")}</td>
       </tr>
     `;
-  }).join("") : `<tr><td colspan="9" class="empty-cell">暂无候选客户。填写画像、选好数据源后点击“生成并运行任务”。</td></tr>`;
+  }).join("") : `<tr><td colspan="9" class="empty-cell">暂无候选客户。填写目标、选好数据源后开始搜索。</td></tr>`;
   if (mobileRows) mobileRows.innerHTML = pageRows.length ? pageRows.map(leadFinderMobileCard).join("") : `<div class="empty-cell">暂无匹配候选。</div>`;
   const pageSummary = qs<HTMLElement>("#leadFinderPageSummary");
   const pageNumber = qs<HTMLElement>("#leadFinderPageNumber");
@@ -9691,7 +9752,7 @@ function renderLeadFinder(opportunities = state.websiteOpportunities) {
 }
 
 async function runLeadFinder(button?: HTMLButtonElement) {
-  const originalText = button?.textContent || "生成并运行任务";
+  const originalText = button?.textContent || "开始搜索";
   const input = qs<HTMLTextAreaElement>("#leadFinderUrlInput");
   const urls = (input?.value || "").split(/\n|,|，/).map((item) => item.trim()).filter(Boolean).slice(0, Number(qs<HTMLSelectElement>("#leadLimit")?.value || 20));
   const useAi = Boolean(qs<HTMLInputElement>("#leadFinderUseAiInput")?.checked);
@@ -9712,7 +9773,7 @@ async function runLeadFinder(button?: HTMLButtonElement) {
       const lines = billed.map((p) => p.tier === "ai"
         ? `· ${p.name}：消耗你配置的 AI 模型 token`
         : `· ${p.name}：约 ${Math.min(limit, 15)} 次调用${p.usage ? `（${p.usage}）` : ""}`).join("\n");
-      if (!window.confirm(`本次将使用计费数据源：\n${lines}\n\n确认开始搜客吗？`)) return;
+      if (!window.confirm(`本次将使用计费数据源：\n${lines}\n\n确认开始搜索吗？`)) return;
     }
   }
 
@@ -9720,7 +9781,7 @@ async function runLeadFinder(button?: HTMLButtonElement) {
   if (button) {
     button.disabled = true;
     button.classList.add("is-running");
-    button.textContent = useAi ? "AI搜客中" : "搜客任务运行中";
+    button.textContent = useAi ? "AI 搜索中" : "搜索中";
   }
   try {
     if (!urls.length) {
@@ -9892,7 +9953,7 @@ function exportLeadFinderRows() {
     "联系方式": item.contactInfo,
     "说明": item.description,
     "评分": "status" in item ? leadFinderScore(item as WebsiteOpportunity) : "",
-    "状态": "status" in item ? ((item as WebsiteOpportunity).status === "synced" ? "已同步" : "待确认") : "待确认"
+    "状态": "status" in item ? ((item as WebsiteOpportunity).status === "synced" ? "已同步" : "待核验") : "待核验"
   })));
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "智能搜客结果");
@@ -11141,6 +11202,12 @@ function installEvents() {
       if (state.summary) renderDashboard(state.summary, state.todos, state.customers);
     });
   });
+  qsa<HTMLButtonElement>("[data-priority-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.dashboardPriorityFilter = (button.dataset.priorityFilter || "all") as AppState["dashboardPriorityFilter"];
+      applyDashboardPriorityFilter();
+    });
+  });
   qsa<HTMLButtonElement>("#dashboard .section-head .btn").forEach((button) => {
     if (button.textContent?.includes("新增待办")) button.addEventListener("click", () => openTodoModal());
     if (button.textContent?.includes("批量完成")) button.addEventListener("click", async () => {
@@ -11341,9 +11408,29 @@ function installEvents() {
   });
   qs<HTMLButtonElement>("#leadFilterReset")?.addEventListener("click", resetLeadFilters);
   qs("#leadDrawerBackdrop")?.addEventListener("click", closeLeadDrawer);
+  function bindLeadFinderDisclosure(panelId: "leadFinderAdvancedSettings" | "leadFinderQueuePanel", controlId: "leadMoreConditionsButton" | "leadFinderTaskButton") {
+    const panel = qs<HTMLDetailsElement>(`#${panelId}`);
+    const control = qs<HTMLButtonElement>(`#${controlId}`);
+    if (!panel || !control) return;
+    const syncExpanded = () => control.setAttribute("aria-expanded", String(panel.open));
+    panel.addEventListener("toggle", syncExpanded);
+    syncExpanded();
+  }
+  function openLeadFinderPanel(panelId: "leadFinderAdvancedSettings" | "leadFinderQueuePanel") {
+    const panel = qs<HTMLDetailsElement>(`#${panelId}`);
+    if (!panel) return;
+    panel.open = true;
+    panel.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+  bindLeadFinderDisclosure("leadFinderAdvancedSettings", "leadMoreConditionsButton");
+  bindLeadFinderDisclosure("leadFinderQueuePanel", "leadFinderTaskButton");
   ["#leadFinderGoalInput", "#leadProductKeywords", "#leadCountries", "#leadIndustryInput", "#leadCustomerTypes", "#leadExcludeKeywords"].forEach((selector) => {
-    qs<HTMLElement>(selector)?.addEventListener("input", renderLeadFinderSearchLinks);
-    qs<HTMLElement>(selector)?.addEventListener("change", renderLeadFinderSearchLinks);
+    const updateLeadFinderDraft = () => {
+      renderLeadFinderSearchLinks();
+      renderLeadFinderLayout(state.websiteOpportunities);
+    };
+    qs<HTMLElement>(selector)?.addEventListener("input", updateLeadFinderDraft);
+    qs<HTMLElement>(selector)?.addEventListener("change", updateLeadFinderDraft);
   });
   qsa<HTMLButtonElement>(".lead-entry-chip").forEach((chip) => {
     chip.addEventListener("click", () => {
@@ -11355,6 +11442,12 @@ function installEvents() {
   qs<HTMLButtonElement>("#leadSourceManageInline")?.addEventListener("click", () => openLeadSourceCenter());
   qs<HTMLButtonElement>("#leadFinderStartButton")?.addEventListener("click", (event) => void runLeadFinder(event.currentTarget as HTMLButtonElement));
   qs<HTMLButtonElement>("#leadFinderStartButtonInline")?.addEventListener("click", (event) => void runLeadFinder(event.currentTarget as HTMLButtonElement));
+  qs<HTMLButtonElement>("#leadFinderTaskButton")?.addEventListener("click", () => {
+    openLeadFinderPanel("leadFinderQueuePanel");
+  });
+  qs<HTMLButtonElement>("#leadMoreConditionsButton")?.addEventListener("click", () => {
+    openLeadFinderPanel("leadFinderAdvancedSettings");
+  });
   qs<HTMLButtonElement>("#leadFinderSyncButton")?.addEventListener("click", (event) => void syncLeadFinderRows(event.currentTarget as HTMLButtonElement));
   qs<HTMLButtonElement>("#leadFinderTodoButton")?.addEventListener("click", (event) => void createLeadFinderTodos(event.currentTarget as HTMLButtonElement));
   qs<HTMLButtonElement>("#leadFinderExportButton")?.addEventListener("click", exportLeadFinderRows);
@@ -11621,7 +11714,12 @@ function renderOpenWorkspaceTabs(activeView: string) {
 function openSecondaryDropdownForView(view: string) {
   const activeButton = qs<HTMLButtonElement>(`.sidebar button[data-view="${CSS.escape(view)}"]`);
   const section = activeButton?.closest<HTMLDetailsElement>(".nav-section");
-  if (section) section.open = true;
+  if (!section) return;
+  if (section.classList.contains("nav-tools-menu")) {
+    section.open = false;
+    return;
+  }
+  section.open = true;
 }
 
 function activateNavView(view: string, after?: () => void) {
