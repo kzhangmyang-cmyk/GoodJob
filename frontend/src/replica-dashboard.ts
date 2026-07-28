@@ -12,6 +12,13 @@ type ReplicaTaskRow = HTMLButtonElement & {
   };
 };
 
+type ReplicaFlowCard = HTMLButtonElement & {
+  dataset: DOMStringMap & {
+    flowTaskId?: string;
+    flowState?: string;
+  };
+};
+
 const replica = document.querySelector<HTMLElement>(".replica-shell");
 
 if (replica) {
@@ -20,10 +27,17 @@ if (replica) {
   const flow = document.querySelector<HTMLElement>("#replicaFlowStage");
   const modal = document.querySelector<HTMLDialogElement>("#replicaTaskModal");
   const taskForm = document.querySelector<HTMLFormElement>("#replicaTaskForm");
+  const flowPosition = document.querySelector<HTMLElement>("#replicaFlowPosition");
   let activeScope = "all";
   let activeFilter = "all";
   let searchQuery = "";
   let selectedTask = document.querySelector<ReplicaTaskRow>(".replica-task-row.active");
+  let selectedFlowIndex = 0;
+  let flowDragStartX: number | null = null;
+  let flowDragPointerId: number | null = null;
+  let flowPointerCardIndex: number | null = null;
+  let suppressFlowClickUntil = 0;
+  let lastFlowWheelAt = 0;
   let toastTimer = 0;
 
   const detail = {
@@ -63,6 +77,75 @@ if (replica) {
     return Array.from(document.querySelectorAll<ReplicaTaskRow>(".replica-task-row"));
   }
 
+  function flowCards() {
+    return Array.from(flow?.querySelectorAll<ReplicaFlowCard>(".replica-flow-card") || []);
+  }
+
+  function setFlowDragOffset(offset: number) {
+    flow?.style.setProperty("--flow-drag-x", `${offset}px`);
+  }
+
+  function updateFlowLayout(nextIndex: number) {
+    const cards = flowCards();
+    if (!flow || cards.length === 0) return;
+    selectedFlowIndex = ((nextIndex % cards.length) + cards.length) % cards.length;
+    const half = Math.floor(cards.length / 2);
+    const compact = flow.clientWidth < 620;
+    const firstStep = compact ? 68 : 96;
+    const nextStep = compact ? 48 : 72;
+
+    cards.forEach((card, index) => {
+      let offset = index - selectedFlowIndex;
+      if (offset > half) offset -= cards.length;
+      if (offset < -half) offset += cards.length;
+      const distance = Math.abs(offset);
+      const direction = Math.sign(offset);
+      const x = offset === 0 ? 0 : direction * (firstStep + Math.max(0, distance - 1) * nextStep);
+      const z = offset === 0 ? 88 : -44 * distance;
+      const rotation = offset === 0 ? 0 : direction * -13;
+      const scale = offset === 0 ? 1.07 : Math.max(0.82, 1 - distance * 0.055);
+      const opacity = offset === 0 ? 1 : Math.max(0.34, 1 - distance * 0.16);
+      const selected = index === selectedFlowIndex;
+      card.style.setProperty("--flow-x", `${x}px`);
+      card.style.setProperty("--flow-z", `${z}px`);
+      card.style.setProperty("--flow-rotate", `${rotation}deg`);
+      card.style.setProperty("--flow-scale", String(scale));
+      card.style.setProperty("--flow-opacity", String(opacity));
+      card.style.setProperty("--flow-layer", String(20 - distance));
+      card.classList.toggle("is-selected", selected);
+      card.setAttribute("aria-selected", String(selected));
+      card.tabIndex = selected ? 0 : -1;
+      const state = card.querySelector<HTMLElement>(".replica-flow-card-state");
+      if (state) state.textContent = selected ? "当前选择" : card.dataset.flowState || "";
+    });
+
+    const selectedCard = cards[selectedFlowIndex];
+    flow.setAttribute("aria-activedescendant", selectedCard.id);
+    if (flowPosition) flowPosition.textContent = `${selectedFlowIndex + 1} / ${cards.length}`;
+  }
+
+  function syncFlowToTask(row: ReplicaTaskRow) {
+    const cards = flowCards();
+    const exactIndex = cards.findIndex((card) => card.dataset.flowTaskId === row.dataset.taskId);
+    const platformIndex = exactIndex >= 0
+      ? exactIndex
+      : cards.findIndex((card) => {
+        const linkedRow = taskRows().find((task) => task.dataset.taskId === card.dataset.flowTaskId);
+        return linkedRow?.dataset.taskProject === row.dataset.taskProject;
+      });
+    if (platformIndex >= 0) updateFlowLayout(platformIndex);
+  }
+
+  function selectFlowProject(index: number, focusCard = false) {
+    const cards = flowCards();
+    if (cards.length === 0) return;
+    updateFlowLayout(index);
+    const selectedCard = cards[selectedFlowIndex];
+    const row = taskRows().find((task) => task.dataset.taskId === selectedCard.dataset.flowTaskId);
+    if (row) renderTaskDetail(row, false);
+    if (focusCard) selectedCard.focus({ preventScroll: true });
+  }
+
   function updateGroupCounts() {
     document.querySelectorAll<HTMLElement>(".replica-task-group").forEach((group) => {
       const count = Array.from(group.querySelectorAll<HTMLElement>(".replica-task-row")).filter((row) => !row.hidden).length;
@@ -87,7 +170,7 @@ if (replica) {
     updateGroupCounts();
   }
 
-  function renderTaskDetail(row: ReplicaTaskRow) {
+  function renderTaskDetail(row: ReplicaTaskRow, syncFlow = true) {
     selectedTask?.classList.remove("active");
     selectedTask = row;
     selectedTask.classList.add("active");
@@ -109,12 +192,28 @@ if (replica) {
     if (detail.advice) {
       detail.advice.textContent = `建议优先处理“${row.dataset.taskProject || "当前平台"}”中包含明确购买、咨询或合作意图的内容`;
     }
+    if (syncFlow) syncFlowToTask(row);
     flow?.classList.add("is-focused");
     window.setTimeout(() => flow?.classList.remove("is-focused"), 460);
   }
 
   replica.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
+    const flowControl = target.closest<HTMLButtonElement>("[data-flow-direction]");
+    if (flowControl) {
+      const direction = Number(flowControl.dataset.flowDirection || "0");
+      selectFlowProject(selectedFlowIndex + direction);
+      return;
+    }
+
+    const flowCard = target.closest<ReplicaFlowCard>(".replica-flow-card");
+    if (flowCard) {
+      if (Date.now() < suppressFlowClickUntil) return;
+      const index = flowCards().indexOf(flowCard);
+      if (index >= 0) selectFlowProject(index);
+      return;
+    }
+
     const task = target.closest<ReplicaTaskRow>(".replica-task-row");
     if (task) {
       renderTaskDetail(task);
@@ -194,6 +293,74 @@ if (replica) {
     }
   });
 
+  flow?.addEventListener("pointerdown", (event) => {
+    if ((event.target as HTMLElement).closest(".replica-flow-control")) return;
+    flowDragStartX = event.clientX;
+    flowDragPointerId = event.pointerId;
+    const pressedCard = (event.target as HTMLElement).closest<ReplicaFlowCard>(".replica-flow-card");
+    flowPointerCardIndex = pressedCard ? flowCards().indexOf(pressedCard) : null;
+    flow.classList.add("is-dragging");
+    flow.setPointerCapture(event.pointerId);
+  });
+
+  flow?.addEventListener("pointermove", (event) => {
+    if (flowDragStartX === null || event.pointerId !== flowDragPointerId) return;
+    const offset = Math.max(-72, Math.min(72, event.clientX - flowDragStartX));
+    setFlowDragOffset(offset);
+  });
+
+  function finishFlowDrag(event: PointerEvent) {
+    if (flowDragStartX === null || event.pointerId !== flowDragPointerId) return;
+    const offset = event.clientX - flowDragStartX;
+    if (Math.abs(offset) >= 34) {
+      suppressFlowClickUntil = Date.now() + 260;
+      selectFlowProject(selectedFlowIndex + (offset < 0 ? 1 : -1));
+    } else if (flowPointerCardIndex !== null && flowPointerCardIndex !== selectedFlowIndex) {
+      suppressFlowClickUntil = Date.now() + 260;
+      selectFlowProject(flowPointerCardIndex);
+    } else if (flow) {
+      const bounds = flow.getBoundingClientRect();
+      const sideOffset = event.clientX - (bounds.left + bounds.width / 2);
+      if (Math.abs(sideOffset) >= 74) {
+        suppressFlowClickUntil = Date.now() + 260;
+        selectFlowProject(selectedFlowIndex + (sideOffset > 0 ? 1 : -1));
+      }
+    }
+    flowDragStartX = null;
+    flowDragPointerId = null;
+    flowPointerCardIndex = null;
+    setFlowDragOffset(0);
+    flow?.classList.remove("is-dragging");
+  }
+
+  flow?.addEventListener("pointerup", finishFlowDrag);
+  flow?.addEventListener("pointercancel", finishFlowDrag);
+
+  flow?.addEventListener("wheel", (event) => {
+    const horizontalDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+      ? event.deltaX
+      : event.shiftKey
+        ? event.deltaY
+        : 0;
+    if (Math.abs(horizontalDelta) < 10 || Date.now() - lastFlowWheelAt < 420) return;
+    event.preventDefault();
+    lastFlowWheelAt = Date.now();
+    selectFlowProject(selectedFlowIndex + (horizontalDelta > 0 ? 1 : -1));
+  }, { passive: false });
+
+  flow?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      selectFlowProject(selectedFlowIndex + (event.key === "ArrowRight" ? 1 : -1), true);
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      selectFlowProject(event.key === "Home" ? 0 : flowCards().length - 1, true);
+    }
+  });
+
+  window.addEventListener("resize", () => updateFlowLayout(selectedFlowIndex));
+
   document.querySelector("#replicaNewTaskButton")?.addEventListener("click", () => modal?.showModal());
   document.querySelector("#replicaModalClose")?.addEventListener("click", () => modal?.close());
   document.querySelector("#replicaModalCancel")?.addEventListener("click", () => modal?.close());
@@ -264,4 +431,6 @@ if (replica) {
       searchInput?.focus();
     }
   });
+
+  updateFlowLayout(selectedFlowIndex);
 }

@@ -10415,8 +10415,54 @@
           </article>
         </div>
 
-        <div class="replica-flow" id="replicaFlowStage" aria-label="全渠道自动获客任务流">
-          <img src="/src/assets/marketing-task-flow-stack.jpg" alt="层叠的获客任务窗口，从平台发现客户到转入私域" />
+        <div class="replica-flow" id="replicaFlowStage" aria-label="可滑动选择的获客项目" tabindex="0" aria-describedby="replicaFlowHint">
+          <button type="button" class="replica-flow-control previous" data-flow-direction="-1" aria-label="选择上一个项目">
+            <i class="ph ph-caret-left" aria-hidden="true"></i>
+          </button>
+          <div class="replica-flow-track" id="replicaFlowTrack" role="listbox" aria-label="获客项目">
+            <button type="button" class="replica-flow-card is-selected" id="replicaFlowCardDouyin" role="option" aria-selected="true" data-flow-task-id="ACQ-DOUYIN-01" data-flow-state="话题 / 评论">
+              <span class="replica-flow-card-code">01 · DOUYIN</span>
+              <span class="replica-flow-card-icon"><i class="ph ph-video" aria-hidden="true"></i></span>
+              <span class="replica-flow-card-count"><strong>42</strong><small>位客户</small></span>
+              <span class="replica-flow-card-name">抖音获客</span>
+              <span class="replica-flow-card-state">当前选择</span>
+            </button>
+            <button type="button" class="replica-flow-card" id="replicaFlowCardKuaishou" role="option" aria-selected="false" data-flow-task-id="ACQ-KUAISHOU-01" data-flow-state="评论扫描">
+              <span class="replica-flow-card-code">02 · KUAISHOU</span>
+              <span class="replica-flow-card-icon"><i class="ph ph-play-circle" aria-hidden="true"></i></span>
+              <span class="replica-flow-card-count"><strong>31</strong><small>位客户</small></span>
+              <span class="replica-flow-card-name">快手获客</span>
+              <span class="replica-flow-card-state">评论扫描</span>
+            </button>
+            <button type="button" class="replica-flow-card" id="replicaFlowCardXhs" role="option" aria-selected="false" data-flow-task-id="ACQ-XHS-01" data-flow-state="话题追踪">
+              <span class="replica-flow-card-code">03 · XHS</span>
+              <span class="replica-flow-card-icon"><i class="ph ph-note-pencil" aria-hidden="true"></i></span>
+              <span class="replica-flow-card-count"><strong>38</strong><small>位客户</small></span>
+              <span class="replica-flow-card-name">小红书获客</span>
+              <span class="replica-flow-card-state">话题追踪</span>
+            </button>
+            <button type="button" class="replica-flow-card" id="replicaFlowCardWeibo" role="option" aria-selected="false" data-flow-task-id="ACQ-WEIBO-01" data-flow-state="话题订阅">
+              <span class="replica-flow-card-code">04 · WEIBO</span>
+              <span class="replica-flow-card-icon"><i class="ph ph-hash-straight" aria-hidden="true"></i></span>
+              <span class="replica-flow-card-count"><strong>17</strong><small>位客户</small></span>
+              <span class="replica-flow-card-name">微博获客</span>
+              <span class="replica-flow-card-state">话题订阅</span>
+            </button>
+            <button type="button" class="replica-flow-card" id="replicaFlowCardWechat" role="option" aria-selected="false" data-flow-task-id="ACQ-WECHAT-01" data-flow-state="转入私域">
+              <span class="replica-flow-card-code">05 · WECHAT</span>
+              <span class="replica-flow-card-icon"><i class="ph ph-wechat-logo" aria-hidden="true"></i></span>
+              <span class="replica-flow-card-count"><strong>24</strong><small>位客户</small></span>
+              <span class="replica-flow-card-name">微信承接</span>
+              <span class="replica-flow-card-state">转入私域</span>
+            </button>
+          </div>
+          <button type="button" class="replica-flow-control next" data-flow-direction="1" aria-label="选择下一个项目">
+            <i class="ph ph-caret-right" aria-hidden="true"></i>
+          </button>
+          <div class="replica-flow-footer">
+            <span id="replicaFlowHint"><i class="ph ph-arrows-horizontal" aria-hidden="true"></i>左右滑动选择项目</span>
+            <span class="replica-flow-position" id="replicaFlowPosition">1 / 5</span>
+          </div>
         </div>
       </section>
 

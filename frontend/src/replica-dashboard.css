@@ -745,16 +745,31 @@ body.is-authenticated .replica-shell {
 }
 
 .replica-flow {
+  --flow-drag-x: 0px;
   min-width: 0;
   min-height: 390px;
   display: grid;
   place-items: center;
   position: relative;
-  overflow: visible;
+  overflow: hidden;
   border-radius: 18px;
+  outline: none;
+  perspective: 1500px;
+  touch-action: pan-y;
+  user-select: none;
+  cursor: grab;
   background:
-    radial-gradient(ellipse at 55% 50%, rgba(26, 57, 39, 0.12), transparent 46%),
+    radial-gradient(ellipse at 50% 48%, rgba(30, 87, 50, 0.16), transparent 45%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.012), transparent 30%),
     #030404;
+}
+
+.replica-flow:focus-visible {
+  box-shadow: inset 0 0 0 1px rgba(91, 255, 130, 0.2);
+}
+
+.replica-flow.is-dragging {
+  cursor: grabbing;
 }
 
 .replica-flow::before,
@@ -762,37 +777,272 @@ body.is-authenticated .replica-shell {
   position: absolute;
   top: 0;
   bottom: 0;
-  z-index: 2;
-  width: 90px;
+  z-index: 30;
+  width: 110px;
   content: "";
   pointer-events: none;
 }
 
 .replica-flow::before {
   left: 0;
-  background: linear-gradient(90deg, #030404 10%, transparent);
+  background: linear-gradient(90deg, #030404 12%, rgba(3, 4, 4, 0.72) 42%, transparent);
 }
 
 .replica-flow::after {
   right: 0;
-  background: linear-gradient(-90deg, #030404 10%, transparent);
+  background: linear-gradient(-90deg, #030404 12%, rgba(3, 4, 4, 0.72) 42%, transparent);
 }
 
-.replica-flow img {
-  width: 930px;
-  max-width: none;
-  height: auto;
-  display: block;
-  object-fit: contain;
-  filter: contrast(1.04) saturate(1.04);
+.replica-flow-track {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  transform-style: preserve-3d;
+}
+
+.replica-flow-card {
+  width: 156px;
+  height: 258px;
+  padding: 18px 17px 16px;
+  display: flex;
+  align-items: stretch;
+  flex-direction: column;
+  position: absolute;
+  left: 50%;
+  top: 48%;
+  z-index: var(--flow-layer, 1);
+  overflow: hidden;
+  color: rgba(21, 26, 23, 0.82);
+  border: 1px solid rgba(245, 255, 249, 0.5);
+  border-radius: 21px;
+  cursor: pointer;
+  transform:
+    translate3d(
+      calc(-50% + var(--flow-x, 0px) + var(--flow-drag-x, 0px)),
+      -50%,
+      var(--flow-z, 0px)
+    )
+    rotateY(var(--flow-rotate, 0deg))
+    scale(var(--flow-scale, 1));
+  transform-origin: center;
+  transform-style: preserve-3d;
+  opacity: var(--flow-opacity, 1);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.84), rgba(184, 198, 190, 0.44) 46%, rgba(81, 91, 86, 0.22)),
+    rgba(223, 232, 227, 0.35);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.94),
+    inset -18px -22px 36px rgba(18, 23, 20, 0.17),
+    0 18px 38px rgba(0, 0, 0, 0.46),
+    0 0 0 1px rgba(255, 255, 255, 0.12);
+  -webkit-backdrop-filter: blur(17px) saturate(1.35);
+  backdrop-filter: blur(17px) saturate(1.35);
+  transition:
+    transform 480ms cubic-bezier(0.2, 0.76, 0.16, 1),
+    opacity 320ms ease,
+    color 320ms ease,
+    border-color 320ms ease,
+    background 320ms ease,
+    box-shadow 320ms ease;
+  will-change: transform;
+}
+
+.replica-flow.is-dragging .replica-flow-card {
+  transition: opacity 180ms ease;
+}
+
+.replica-flow-card::before {
+  width: 118px;
+  height: 160px;
+  position: absolute;
+  top: -68px;
+  right: -48px;
+  border-radius: 50%;
+  content: "";
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.42);
+  filter: blur(22px);
+}
+
+.replica-flow-card::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(115deg, rgba(255, 255, 255, 0.62), transparent 24%, transparent 72%, rgba(255, 255, 255, 0.13));
   mix-blend-mode: screen;
-  transform: translate(-13px, -26px);
-  transition: transform 420ms cubic-bezier(0.2, 0.72, 0.2, 1), filter 220ms ease;
 }
 
-.replica-flow.is-focused img {
-  transform: translate(-13px, -31px) scale(1.018);
-  filter: contrast(1.08) saturate(1.12) brightness(1.05);
+.replica-flow-card:hover {
+  border-color: rgba(255, 255, 255, 0.78);
+}
+
+.replica-flow-card:focus-visible {
+  outline: 2px solid rgba(119, 255, 153, 0.76);
+  outline-offset: 4px;
+}
+
+.replica-flow-card.is-selected {
+  color: #e8ffed;
+  border-color: rgba(134, 255, 162, 0.82);
+  background:
+    linear-gradient(145deg, rgba(25, 226, 77, 0.92), rgba(5, 117, 43, 0.9) 58%, rgba(2, 45, 21, 0.92)),
+    #086d30;
+  box-shadow:
+    inset 0 1px 1px rgba(220, 255, 229, 0.88),
+    inset -20px -24px 36px rgba(0, 39, 17, 0.38),
+    0 20px 42px rgba(0, 0, 0, 0.54),
+    0 0 34px rgba(29, 244, 86, 0.23),
+    0 0 0 1px rgba(91, 255, 130, 0.28);
+}
+
+.replica-flow.is-focused .replica-flow-card.is-selected {
+  box-shadow:
+    inset 0 1px 1px rgba(220, 255, 229, 0.92),
+    inset -20px -24px 36px rgba(0, 39, 17, 0.34),
+    0 24px 48px rgba(0, 0, 0, 0.58),
+    0 0 46px rgba(29, 244, 86, 0.32),
+    0 0 0 1px rgba(91, 255, 130, 0.34);
+}
+
+.replica-flow-card-code,
+.replica-flow-card-icon,
+.replica-flow-card-count,
+.replica-flow-card-name,
+.replica-flow-card-state {
+  position: relative;
+  z-index: 1;
+}
+
+.replica-flow-card-code {
+  overflow: hidden;
+  color: rgba(13, 18, 15, 0.58);
+  font-size: 8px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replica-flow-card.is-selected .replica-flow-card-code {
+  color: rgba(233, 255, 239, 0.68);
+}
+
+.replica-flow-card-icon {
+  width: 38px;
+  height: 38px;
+  margin-top: 36px;
+  display: grid;
+  place-items: center;
+  align-self: center;
+  border: 1px solid rgba(15, 21, 17, 0.18);
+  border-radius: 50%;
+  font-size: 20px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.replica-flow-card.is-selected .replica-flow-card-icon {
+  border-color: rgba(237, 255, 242, 0.26);
+  background: rgba(3, 58, 23, 0.2);
+}
+
+.replica-flow-card-count {
+  margin-top: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.replica-flow-card-count strong {
+  font-size: 32px;
+  font-weight: 520;
+  letter-spacing: -0.05em;
+}
+
+.replica-flow-card-count small {
+  font-size: 9px;
+  font-weight: 560;
+}
+
+.replica-flow-card-name {
+  margin-top: 7px;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.replica-flow-card-state {
+  margin-top: 4px;
+  color: rgba(13, 18, 15, 0.52);
+  font-size: 9px;
+}
+
+.replica-flow-card.is-selected .replica-flow-card-state {
+  color: rgba(233, 255, 239, 0.66);
+}
+
+.replica-flow-control {
+  width: 38px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  position: absolute;
+  top: 48%;
+  z-index: 40;
+  color: #aab1ad;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 13px;
+  cursor: pointer;
+  background: rgba(12, 15, 13, 0.62);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.05), 0 12px 26px rgba(0, 0, 0, 0.28);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  transform: translateY(-50%);
+  transition: color 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.replica-flow-control:hover,
+.replica-flow-control:focus-visible {
+  color: var(--replica-accent);
+  border-color: rgba(80, 255, 123, 0.24);
+  background: rgba(14, 28, 19, 0.78);
+  outline: none;
+}
+
+.replica-flow-control.previous {
+  left: 14px;
+}
+
+.replica-flow-control.next {
+  right: 14px;
+}
+
+.replica-flow-footer {
+  padding: 0 66px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: absolute;
+  right: 0;
+  bottom: 16px;
+  left: 0;
+  z-index: 40;
+  color: #656c68;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+.replica-flow-footer > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.replica-flow-position {
+  color: #8d9590;
+  font-variant-numeric: tabular-nums;
 }
 
 .replica-timeline {
@@ -1341,13 +1591,9 @@ body.is-authenticated .replica-shell {
     overflow: hidden;
   }
 
-  .replica-flow img {
-    width: min(930px, 108%);
-    transform: translate(-8px, -18px);
-  }
-
-  .replica-flow.is-focused img {
-    transform: translate(-8px, -23px) scale(1.018);
+  .replica-flow-card {
+    width: 146px;
+    height: 242px;
   }
 
   .replica-inspector {
@@ -1516,9 +1762,44 @@ body.is-authenticated .replica-shell {
     overflow: hidden;
   }
 
-  .replica-flow img {
-    width: 100%;
-    transform: translateY(-8px);
+  .replica-flow-card {
+    width: 122px;
+    height: 204px;
+    padding: 14px 13px 12px;
+    border-radius: 17px;
+  }
+
+  .replica-flow-card-icon {
+    width: 32px;
+    height: 32px;
+    margin-top: 24px;
+    font-size: 17px;
+  }
+
+  .replica-flow-card-count strong {
+    font-size: 26px;
+  }
+
+  .replica-flow-card-name {
+    font-size: 12px;
+  }
+
+  .replica-flow-control {
+    width: 34px;
+    height: 48px;
+  }
+
+  .replica-flow-control.previous {
+    left: 8px;
+  }
+
+  .replica-flow-control.next {
+    right: 8px;
+  }
+
+  .replica-flow-footer {
+    padding-inline: 48px;
+    bottom: 12px;
   }
 
   .replica-timeline {
