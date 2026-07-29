@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { parseFollowUpAt } from "./demo-app";
-import { renderConversionView } from "./demo-conversion-view";
+import { getConversionMetrics, renderConversionView } from "./demo-conversion-view";
 import { renderPrivateDomainView } from "./demo-private-domain-view";
 import { createDemoStore } from "./demo-store";
 import type { DemoState } from "./demo-types";
@@ -131,6 +131,18 @@ const opportunityId = store.createOpportunity(customerId, {
   title: "办公空间设计合作",
   amount: 86000
 });
+store.updateOpportunity(opportunityId, { amount: 96000 });
+assert.equal(store.getState().opportunities.find((item) => item.id === opportunityId)?.amount, 96000);
+assert.deepEqual(getConversionMetrics(store.getState()), {
+  totalCount: 4,
+  totalAmount: 472000,
+  expectedAmount: 292800,
+  pendingQuoteCount: 2,
+  wonCount: 0,
+  receivableAmount: 0
+});
+store.updateOpportunity(opportunityId, { amount: 0 });
+assert.equal(store.getState().opportunities.find((item) => item.id === opportunityId)?.amount, 96000);
 store.selectOpportunity(opportunityId);
 store.moveOpportunity(opportunityId, "negotiating");
 store.createQuote(opportunityId, 81800);

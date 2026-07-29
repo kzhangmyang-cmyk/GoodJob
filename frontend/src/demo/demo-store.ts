@@ -492,6 +492,7 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
       });
     },
     updateOpportunity(opportunityId, patch) {
+      if (patch.amount !== undefined && (!Number.isFinite(patch.amount) || patch.amount < 1)) return;
       commit((current) => {
         const opportunity = current.opportunities.find((item) => item.id === opportunityId);
         if (!opportunity || Object.keys(patch).length === 0) return null;

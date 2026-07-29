@@ -308,13 +308,14 @@ export function startDemoApp(): void {
     }
     if (action === "update-opportunity" && opportunityId) {
       event.preventDefault();
+      const amount = Number(form.querySelector<HTMLInputElement>('input[name="opportunity-amount"]')?.value);
       const probability = Number(form.querySelector<HTMLInputElement>('input[name="opportunity-probability"]')?.value);
       const nextAction = form.querySelector<HTMLInputElement>('input[name="opportunity-next-action"]')?.value.trim() ?? "";
-      if (!Number.isFinite(probability) || probability < 0 || probability > 100 || !nextAction) {
-        showDemoToast("请填写 0–100 的概率和下一步行动");
+      if (!Number.isFinite(amount) || amount < 1 || !Number.isFinite(probability) || probability < 0 || probability > 100 || !nextAction) {
+        showDemoToast("请填写有效金额、0–100 的概率和下一步行动");
         return;
       }
-      store.updateOpportunity(opportunityId, { probability, nextAction });
+      store.updateOpportunity(opportunityId, { amount, probability, nextAction });
       showDemoToast("已更新演示商机");
       return;
     }

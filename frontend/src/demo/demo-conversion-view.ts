@@ -16,6 +16,28 @@ export function isOpportunityStage(value: string | undefined): value is Opportun
   return stages.some((stage) => stage.id === value);
 }
 
+export function getConversionMetrics(state: DemoState): {
+  totalCount: number;
+  totalAmount: number;
+  expectedAmount: number;
+  pendingQuoteCount: number;
+  wonCount: number;
+  receivableAmount: number;
+} {
+  const totalAmount = state.opportunities.reduce((sum, opportunity) => sum + opportunity.amount, 0);
+  const expectedAmount = state.opportunities.reduce((sum, opportunity) => sum + opportunity.amount * opportunity.probability / 100, 0);
+  const pendingQuoteCount = state.opportunities.filter((opportunity) => opportunity.stage === "new" || opportunity.stage === "qualified").length;
+  const won = state.opportunities.filter((opportunity) => opportunity.stage === "won");
+  return {
+    totalCount: state.opportunities.length,
+    totalAmount,
+    expectedAmount,
+    pendingQuoteCount,
+    wonCount: won.length,
+    receivableAmount: won.reduce((sum, opportunity) => sum + opportunity.amount, 0)
+  };
+}
+
 function stageLabel(stage: string): string {
   return stages.find((item) => item.id === stage)?.label ?? "未知阶段";
 }
@@ -63,25 +85,21 @@ function renderInspector(state: DemoState, opportunity: DemoOpportunity): string
     <div class="demo-conversion-detail-grid"><div><b>当前报价</b><span>${quoteLabel(opportunity)}</span></div><div><b>当前概率</b><span>${escapeHtml(String(opportunity.probability))}%</span></div></div>
     <form class="demo-conversion-form" data-demo-action="create-quote" data-opportunity-id="${escapeHtml(opportunity.id)}"><label>创建报价<input name="quote-amount" type="number" min="1" step="100" inputmode="decimal" value="${escapeHtml(String(opportunity.quoteAmount ?? opportunity.amount))}"></label><button type="submit">创建报价</button></form>
     <div class="demo-quote-actions"><button type="button" data-demo-action="mark-quote-sent" data-opportunity-id="${escapeHtml(opportunity.id)}" ${opportunity.quoteAmount ? "" : "disabled"}>标记报价已发送</button>${opportunity.quoteSentAt ? `<small>已于 ${escapeHtml(formatRelativeTime(opportunity.quoteSentAt))} 发送</small>` : ""}</div>
-    <form class="demo-conversion-form demo-probability-form" data-demo-action="update-opportunity" data-opportunity-id="${escapeHtml(opportunity.id)}"><label>成交概率<input name="opportunity-probability" type="number" min="0" max="100" step="5" value="${escapeHtml(String(opportunity.probability))}"></label><label>下一步行动<input name="opportunity-next-action" maxlength="40" value="${escapeHtml(opportunity.nextAction)}"></label><button type="submit">更新下一步行动</button></form>
+    <form class="demo-conversion-form demo-probability-form" data-demo-action="update-opportunity" data-opportunity-id="${escapeHtml(opportunity.id)}"><label>商机金额<input name="opportunity-amount" type="number" min="1" step="100" inputmode="decimal" value="${escapeHtml(String(opportunity.amount))}"></label><label>成交概率<input name="opportunity-probability" type="number" min="0" max="100" step="5" value="${escapeHtml(String(opportunity.probability))}"></label><label>下一步行动<input name="opportunity-next-action" maxlength="40" value="${escapeHtml(opportunity.nextAction)}"></label><button type="submit">更新商机</button></form>
     <div class="demo-stage-controls" role="group" aria-label="移动商机阶段"><b>阶段推进</b><div>${stages.map((stage) => `<button type="button" data-demo-action="move-opportunity" data-opportunity-id="${escapeHtml(opportunity.id)}" data-opportunity-stage="${stage.id}" ${opportunity.stage === stage.id ? "disabled" : ""}>${stage.label}</button>`).join("")}</div></div>
     <div class="demo-close-actions"><button type="button" class="demo-primary" data-demo-action="close-won" data-opportunity-id="${escapeHtml(opportunity.id)}" ${opportunity.stage === "won" ? "disabled" : ""}>标记模拟成交</button><form data-demo-action="close-lost" data-opportunity-id="${escapeHtml(opportunity.id)}"><label>流失原因<select name="loss-reason">${lossReasons.map((reason) => `<option value="${reason}" ${opportunity.lossReason === reason ? "selected" : ""}>${reason}</option>`).join("")}</select></label><button type="submit" ${opportunity.stage === "lost" ? "disabled" : ""}>标记流失</button></form></div>
   </section>`;
 }
 
 export function renderConversionView(state: DemoState, main: HTMLElement, inspector: HTMLElement): void {
-  const totalAmount = state.opportunities.reduce((sum, opportunity) => sum + opportunity.amount, 0);
-  const expectedAmount = state.opportunities.reduce((sum, opportunity) => sum + opportunity.amount * opportunity.probability / 100, 0);
-  const pendingQuote = state.opportunities.filter((opportunity) => opportunity.stage === "new" || opportunity.stage === "qualified").length;
-  const won = state.opportunities.filter((opportunity) => opportunity.stage === "won");
-  const receivable = won.reduce((sum, opportunity) => sum + opportunity.amount, 0);
+  const conversionMetrics = getConversionMetrics(state);
   const metrics = [
-    { label: "商机总数", value: String(state.opportunities.length), hint: "当前全部商机" },
-    { label: "商机总金额", value: formatMoney(totalAmount), hint: "预计合同金额" },
-    { label: "预计成交", value: formatMoney(expectedAmount), hint: "按当前概率加权" },
-    { label: "待报价", value: String(pendingQuote), hint: "新商机与需求确认" },
-    { label: "已成交", value: String(won.length), hint: "已标记模拟成交" },
-    { label: "待回款", value: formatMoney(receivable), hint: "演示估算" }
+    { label: "商机总数", value: String(conversionMetrics.totalCount), hint: "当前全部商机" },
+    { label: "商机总金额", value: formatMoney(conversionMetrics.totalAmount), hint: "预计合同金额" },
+    { label: "预计成交", value: formatMoney(conversionMetrics.expectedAmount), hint: "按当前概率加权" },
+    { label: "待报价", value: String(conversionMetrics.pendingQuoteCount), hint: "新商机与需求确认" },
+    { label: "已成交", value: String(conversionMetrics.wonCount), hint: "已标记模拟成交" },
+    { label: "待回款", value: formatMoney(conversionMetrics.receivableAmount), hint: "演示估算" }
   ];
   const selected = state.opportunities.find((opportunity) => opportunity.id === state.selectedOpportunityId) ?? state.opportunities[0];
 
