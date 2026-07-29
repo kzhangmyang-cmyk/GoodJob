@@ -374,15 +374,18 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
     },
     createFollowUp(customerId, note, dueAt) {
       const text = note.trim();
-      if (!text) return;
+      const scheduledAt = dueAt.trim();
+      const timestamp = Date.parse(scheduledAt);
+      if (!text || !scheduledAt || !Number.isFinite(timestamp)) return;
+      const normalizedDueAt = new Date(timestamp).toISOString();
       commit((current) => {
         const customer = current.customers.find((item) => item.id === customerId);
         if (!customer) return null;
         const createdAt = now();
-        const task = { id: `task-follow-up-${current.tasks.length + 1}`, title: text, priority: "中" as const, module: "private-domain" as const, relatedId: customerId, done: false, dueAt, createdAt };
+        const task = { id: `task-follow-up-${current.tasks.length + 1}`, title: text, priority: "中" as const, module: "private-domain" as const, relatedId: customerId, done: false, dueAt: normalizedDueAt, createdAt };
         const next = {
           ...current,
-          customers: current.customers.map((item) => item.id === customerId ? { ...item, nextFollowUpAt: dueAt } : item),
+          customers: current.customers.map((item) => item.id === customerId ? { ...item, nextFollowUpAt: normalizedDueAt } : item),
           tasks: [...current.tasks, task]
         };
         return activity(next, "follow-up", "创建跟进", `${customer.name}：${text}`);

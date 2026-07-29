@@ -38,6 +38,14 @@ unsafeState.tasks.push({ id: "task-no-time", title: "历史跟进计划", priori
 renderPrivateDomainView(unsafeState, unsafeMain, unsafeInspector);
 assert.equal(unsafeInspector.innerHTML.includes("历史跟进计划"), true);
 assert.equal(unsafeInspector.innerHTML.includes("未记录时间"), true);
+const fallbackTimelineState: DemoState = {
+  ...unsafeState,
+  activities: [],
+  tasks: [{ id: "task-invalid-due", title: "回退创建时间", priority: "中", module: "private-domain", relatedId: unsafeCustomer.id, done: false, dueAt: "invalid-date", createdAt: "2026-07-29T09:00:00.000Z" }]
+};
+renderPrivateDomainView(fallbackTimelineState, unsafeMain, unsafeInspector);
+assert.equal(unsafeInspector.innerHTML.includes("回退创建时间"), true);
+assert.equal(unsafeInspector.innerHTML.includes("未记录时间"), false);
 
 const conversationId = initial.conversations[0].id;
 store.selectConversation(conversationId);
@@ -71,7 +79,13 @@ store.updateCustomer(customerId, {
   group: "重点客户",
   nextFollowUpAt: "2026-07-30T10:00:00.000Z"
 });
-store.createFollowUp(customerId, "发送案例与报价范围", "2026-07-30T10:00:00.000Z");
+const beforeInvalidFollowUpTasks = store.getState().tasks.length;
+const beforeInvalidFollowUpActivities = store.getState().activities.length;
+store.createFollowUp(customerId, "不应创建：空时间", "");
+store.createFollowUp(customerId, "不应创建：非法时间", "not-a-date");
+assert.equal(store.getState().tasks.length, beforeInvalidFollowUpTasks);
+assert.equal(store.getState().activities.length, beforeInvalidFollowUpActivities);
+store.createFollowUp(customerId, "发送案例与报价范围", "2026-07-30T18:00:00.000+08:00");
 store.createFollowUp(customerId, "确认预算与决策人", "2026-08-01T10:00:00.000Z");
 const updatedCustomer = store.getState().customers.find((item) => item.id === customerId);
 assert.equal(updatedCustomer?.tags.includes("预算明确"), true);
