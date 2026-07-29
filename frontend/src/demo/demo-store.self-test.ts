@@ -46,6 +46,14 @@ const fallbackTimelineState: DemoState = {
 renderPrivateDomainView(fallbackTimelineState, unsafeMain, unsafeInspector);
 assert.equal(unsafeInspector.innerHTML.includes("回退创建时间"), true);
 assert.equal(unsafeInspector.innerHTML.includes("未记录时间"), false);
+const overflowTimelineState: DemoState = {
+  ...unsafeState,
+  activities: [],
+  tasks: [{ id: "task-overflow-due", title: "拒绝溢出时间", priority: "中", module: "private-domain", relatedId: unsafeCustomer.id, done: false, dueAt: "2026-02-30T10:00:00.000Z" }]
+};
+renderPrivateDomainView(overflowTimelineState, unsafeMain, unsafeInspector);
+assert.equal(unsafeInspector.innerHTML.includes("拒绝溢出时间"), true);
+assert.equal(unsafeInspector.innerHTML.includes("未记录时间"), true);
 
 const conversationId = initial.conversations[0].id;
 store.selectConversation(conversationId);
@@ -81,10 +89,25 @@ store.updateCustomer(customerId, {
 });
 const beforeInvalidFollowUpTasks = store.getState().tasks.length;
 const beforeInvalidFollowUpActivities = store.getState().activities.length;
+let invalidFollowUpNotifications = 0;
+const unsubscribeInvalidFollowUps = store.subscribe(() => {
+  invalidFollowUpNotifications += 1;
+});
 store.createFollowUp(customerId, "不应创建：空时间", "");
 store.createFollowUp(customerId, "不应创建：非法时间", "not-a-date");
+for (const invalidDueAt of [
+  "2026-02-30T10:00:00.000Z",
+  "2025-02-29T10:00:00.000Z",
+  "2026-13-01T10:00:00.000Z",
+  "2026-01-32T10:00:00.000Z"
+]) {
+  store.createFollowUp(customerId, `不应创建：${invalidDueAt}`, invalidDueAt);
+}
+unsubscribeInvalidFollowUps();
 assert.equal(store.getState().tasks.length, beforeInvalidFollowUpTasks);
 assert.equal(store.getState().activities.length, beforeInvalidFollowUpActivities);
+assert.equal(invalidFollowUpNotifications, 0);
+store.createFollowUp(customerId, "确认闰年日期", "2028-02-29T18:00:00.000+08:00");
 store.createFollowUp(customerId, "发送案例与报价范围", "2026-07-30T18:00:00.000+08:00");
 store.createFollowUp(customerId, "确认预算与决策人", "2026-08-01T10:00:00.000Z");
 const updatedCustomer = store.getState().customers.find((item) => item.id === customerId);
@@ -92,8 +115,8 @@ assert.equal(updatedCustomer?.tags.includes("预算明确"), true);
 assert.equal(updatedCustomer?.group, "重点客户");
 assert.equal(store.getState().tasks.some((item) => item.relatedId === customerId), true);
 const followUpTasks = store.getState().tasks.filter((item) => item.relatedId === customerId);
-assert.deepEqual(followUpTasks.map((item) => item.dueAt), ["2026-07-30T10:00:00.000Z", "2026-08-01T10:00:00.000Z"]);
-assert.deepEqual(followUpTasks.map((item) => item.createdAt), ["2026-07-29T09:00:00.000Z", "2026-07-29T09:00:00.000Z"]);
+assert.deepEqual(followUpTasks.map((item) => item.dueAt), ["2028-02-29T10:00:00.000Z", "2026-07-30T10:00:00.000Z", "2026-08-01T10:00:00.000Z"]);
+assert.deepEqual(followUpTasks.map((item) => item.createdAt), ["2026-07-29T09:00:00.000Z", "2026-07-29T09:00:00.000Z", "2026-07-29T09:00:00.000Z"]);
 renderPrivateDomainView(store.getState(), unsafeMain, unsafeInspector);
 const timelineMarkup = unsafeInspector.innerHTML.slice(unsafeInspector.innerHTML.indexOf("跟进时间线"));
 assert.equal(timelineMarkup.indexOf("确认预算与决策人") < timelineMarkup.indexOf("发送案例与报价范围"), true);

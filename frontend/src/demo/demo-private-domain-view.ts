@@ -1,5 +1,6 @@
 import type { DemoCustomer, DemoState, IntentLevel, Platform } from "./demo-types";
 import { escapeHtml, formatRelativeTime } from "./demo-ui";
+import { normalizeIsoDateTime } from "./demo-store";
 
 type CustomerGroupFilter = "all" | DemoCustomer["group"];
 
@@ -51,10 +52,9 @@ function timelineTimestamp(value: string | null): number {
 }
 
 function taskTimelineTime(task: DemoState["tasks"][number]): string | null {
-  const dueAt = task.dueAt?.trim();
-  if (dueAt && Number.isFinite(Date.parse(dueAt))) return dueAt;
-  const createdAt = task.createdAt?.trim();
-  return createdAt && Number.isFinite(Date.parse(createdAt)) ? createdAt : null;
+  const dueAt = task.dueAt ? normalizeIsoDateTime(task.dueAt) : null;
+  if (dueAt) return dueAt;
+  return task.createdAt ? normalizeIsoDateTime(task.createdAt) : null;
 }
 
 function customerMatches(customer: DemoCustomer): boolean {

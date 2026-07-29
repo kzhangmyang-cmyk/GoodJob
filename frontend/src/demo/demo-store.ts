@@ -8,6 +8,7 @@ import type {
 } from "./demo-types";
 
 const STORAGE_KEY = "goodjob.frontend-demo.v1";
+const ISO_DATE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-](\d{2}):(\d{2}))$/;
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -167,6 +168,28 @@ function isSettings(value: unknown): boolean {
   const platforms = ["抖音", "小红书", "快手", "微信", "微博"];
   return agentNames.every((name) => typeof agentSettings[name] === "boolean")
     && platforms.every((platform) => typeof scriptSettings[platform] === "boolean");
+}
+
+export function normalizeIsoDateTime(value: string): string | null {
+  const candidate = value.trim();
+  const match = ISO_DATE_TIME_PATTERN.exec(candidate);
+  if (!match) return null;
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, offsetHourText, offsetMinuteText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const offsetHour = offsetHourText === undefined ? 0 : Number(offsetHourText);
+  const offsetMinute = offsetMinuteText === undefined ? 0 : Number(offsetMinuteText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0;
+  if (day < 1 || day > daysInMonth || hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) return null;
+
+  const timestamp = Date.parse(candidate);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
 export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
@@ -374,10 +397,8 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
     },
     createFollowUp(customerId, note, dueAt) {
       const text = note.trim();
-      const scheduledAt = dueAt.trim();
-      const timestamp = Date.parse(scheduledAt);
-      if (!text || !scheduledAt || !Number.isFinite(timestamp)) return;
-      const normalizedDueAt = new Date(timestamp).toISOString();
+      const normalizedDueAt = normalizeIsoDateTime(dueAt);
+      if (!text || !normalizedDueAt) return;
       commit((current) => {
         const customer = current.customers.find((item) => item.id === customerId);
         if (!customer) return null;
