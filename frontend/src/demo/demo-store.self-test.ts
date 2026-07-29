@@ -15,6 +15,19 @@ assert.equal(initial.customers.length >= 4, true);
 assert.equal(initial.opportunities.length >= 3, true);
 
 const conversationId = initial.conversations[0].id;
+store.selectConversation(conversationId);
+store.sendMessage(conversationId, "演示消息");
+const afterSend = store.getState().conversations.find((item) => item.id === conversationId);
+assert.equal(afterSend?.unread, 0);
+assert.equal(afterSend?.messages.at(-1)?.sender, "operator");
+
+store.setConversationMode(conversationId, "paused");
+assert.equal(store.getState().conversations.find((item) => item.id === conversationId)?.mode, "paused");
+
+store.setConversationMode(conversationId, "agent");
+store.sendAgentReply(conversationId);
+assert.equal(store.getState().conversations.find((item) => item.id === conversationId)?.messages.at(-1)?.sender, "agent");
+
 store.sendMessage(conversationId, "请问您预计什么时候采购？");
 assert.equal(store.getState().conversations[0].messages.at(-1)?.body, "请问您预计什么时候采购？");
 

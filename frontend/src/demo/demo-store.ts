@@ -27,6 +27,7 @@ export interface DemoStore {
   selectCustomer(id: string): void;
   selectOpportunity(id: string): void;
   sendMessage(conversationId: string, body: string): void;
+  sendAgentReply(conversationId: string): void;
   setConversationMode(conversationId: string, mode: ConversationMode): void;
   addConversationTag(conversationId: string, tag: string): void;
   addCustomerTag(customerId: string, tag: string): void;
@@ -270,6 +271,27 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
           conversations: current.conversations.map((item) => item.id === conversationId ? { ...item, unread: 0, messages: [...item.messages, message], updatedAt: sentAt } : item)
         };
         return activity(next, "message", "发送社媒消息", `已向${conversation.customerName}发送消息：${text}`);
+      });
+    },
+    sendAgentReply(conversationId) {
+      commit((current) => {
+        const conversation = current.conversations.find((item) => item.id === conversationId);
+        if (!conversation || conversation.mode !== "agent") return null;
+        const sentAt = now();
+        const message = {
+          id: `message-${current.conversations.reduce((count, item) => count + item.messages.length, 0) + 1}`,
+          sender: "agent" as const,
+          body: "已收到您的问题，我先为您整理适合的演示方案，稍后继续为您说明。",
+          sentAt,
+          simulated: true as const
+        };
+        const next = {
+          ...current,
+          conversations: current.conversations.map((item) => item.id === conversationId
+            ? { ...item, messages: [...item.messages, message], updatedAt: sentAt }
+            : item)
+        };
+        return activity(next, "message", "智能体回复社媒消息", `已向${conversation.customerName}发送演示自动回复。`);
       });
     },
     setConversationMode(conversationId, mode) {
