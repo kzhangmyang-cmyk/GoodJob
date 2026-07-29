@@ -383,3 +383,43 @@ final result: passed
 3. 手机端是基于同一视觉系统的响应式延展；原参考图只提供桌面状态。
 
 final result: passed
+
+## 核心业务前端演示·端到端与响应式 QA
+
+### 范围与视觉证据
+
+- 视觉参考：`/Users/adminmima0000/Downloads/IMG_9242.jpg`
+- 自动营销总览：`tmp/design-qa/demo-dashboard-1460x1000.png`
+- 社媒对话：`tmp/design-qa/demo-conversations-1460x1000.png`
+- 私域客户池：`tmp/design-qa/demo-private-domain-1460x1000.png`
+- 成交工作台：`tmp/design-qa/demo-conversion-1460x1000.png`
+- 移动端成交工作台：`tmp/design-qa/demo-core-mobile-390x844.png`
+
+参考图与五张最终截图均已用原始分辨率复查。桌面页面继续采用左侧导航、中央业务工作区和右侧详情的三栏网格；信息密度、近黑玻璃材质、绿色选中/主操作、紧凑字体层级、细边框、圆角与 Phosphor 线性图标延续既有视觉语言。390 × 844 下改为纵向延展，横向导航、主操作、指标、选中卡片与下方详情仍属于同一工作流。
+
+### 文案差异与有意偏差
+
+- 参考图的 WenXiBuddy 任务管理文案替换为 GoodJob 的获客、沟通、私域和成交业务文案。
+- 四个核心模块使用数据表格、对话历史、客户详情和商机阶段看板，没有复制参考图只适用于任务管理的中央 3D 卡片堆叠。
+- 手机端采用单列纵向延展；参考图只提供桌面状态。
+- 所有消息、触达、报价、阶段和成交操作均标记为本地演示，不接生产后端、不发送真实消息。
+
+### 交互与浏览器结果
+
+- 九个导航入口逐一点击并验证激活状态：通过。
+- `conversation-douyin-lin` → 人工接管 → 转入私域 → 创建 `¥86,000` 商机 → 标记模拟成交：通过。
+- 刷新后 `¥86,000` 和已成交状态持续存在：通过。
+- “设置中心 → 重置演示数据”恢复默认三条商机，新增金额不再出现：通过。
+- dashboard 优先客户按会话/客户关联去重；同一位转入私域的客户只占一个位置。
+- 390 × 844 下总览、对话、私域、成交的主操作、选中项和详情均可用；`document.documentElement.scrollWidth === 390`。
+- Playwright 捕获的 `console.error` 与 `pageerror` 均为 0。
+- Codex 内置浏览器运行时没有可用 browser binding，因此未宣称内置浏览器人工检查通过；上述 UI 证据由仓库 Playwright Chrome 项目完成。
+
+### 自动检查
+
+- 前端自检：107 项通过。
+- TypeScript：通过。
+- Vite 生产构建：通过，638 个模块；保留既有的单个主包大于 500 kB 提示。
+- Focused Playwright：1 项通过。
+
+final result: passed

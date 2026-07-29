@@ -123,6 +123,93 @@ test.describe("GoodJob CRM prototype pages", () => {
     await expect(page.locator("#roleSwitcher")).toHaveCount(0);
   });
 
+  test("core frontend demo journey", async ({ page }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") consoleErrors.push(message.text());
+    });
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.reload();
+    await expect(page.locator("body")).toHaveClass(/is-authenticated/);
+    await page.setViewportSize({ width: 1460, height: 1000 });
+
+    const modules = [
+      ["dashboard", "自动营销总览"],
+      ["acquisition", "获客中心"],
+      ["conversations", "社媒对话"],
+      ["private-domain", "私域客户池"],
+      ["conversion", "成交工作台"],
+      ["agents", "智能体中心"],
+      ["scripts", "自动脚本"],
+      ["trade-marketing", "外贸营销"],
+      ["settings", "设置中心"]
+    ] as const;
+    for (const [module, title] of modules) {
+      await page.getByTitle(title).click();
+      await expect(page.locator(`button[data-replica-view="${module}"]`)).toHaveClass(/active/);
+    }
+
+    await page.getByTitle("自动营销总览").click();
+    await expect(page.locator(".demo-dashboard")).toBeVisible();
+    await page.screenshot({ path: "../tmp/design-qa/demo-dashboard-1460x1000.png" });
+
+    await page.getByTitle("社媒对话").click();
+    await page.locator('.demo-conversation-row[data-conversation-id="conversation-douyin-lin"]').click();
+    await page.locator('textarea[name="demo-message"]').fill("预算大约是多少？");
+    await page.locator('form[data-demo-action="send-message"] button[type="submit"]').click();
+    await page.getByRole("button", { name: "人工接管", exact: true }).click();
+    await page.locator('button[data-demo-action="transfer-to-private"][data-conversation-id="conversation-douyin-lin"]').click();
+    await page.screenshot({ path: "../tmp/design-qa/demo-conversations-1460x1000.png" });
+
+    await page.getByTitle("私域客户池").click();
+    await page.locator('tr[data-customer-source="conversation-douyin-lin"]').click();
+    await page.locator('#demoModuleInspector button[data-demo-action="open-opportunity-form"]').click();
+    await page.locator('#demoModuleInspector input[name="opportunity-amount"]').fill("86000");
+    await page.locator('#demoModuleInspector button[type="submit"]', { hasText: "确认创建商机" }).click();
+    await page.getByTitle("私域客户池").click();
+    await page.locator('tr[data-customer-source="conversation-douyin-lin"]').click();
+    await page.screenshot({ path: "../tmp/design-qa/demo-private-domain-1460x1000.png" });
+
+    await page.getByTitle("成交工作台").click();
+    await expect(page.locator("#demoModuleInspector")).toContainText("¥86,000");
+    await page.locator('#demoModuleInspector button[data-demo-action="close-won"]').click();
+    await expect(page.locator("#demoModuleInspector")).toContainText("已成交");
+    await page.screenshot({ path: "../tmp/design-qa/demo-conversion-1460x1000.png" });
+
+    await page.reload();
+    await expect(page.locator("body")).toHaveClass(/is-authenticated/);
+    await page.getByTitle("成交工作台").click();
+    await expect(page.locator("#demoModuleInspector")).toContainText("¥86,000");
+    await expect(page.locator("#demoModuleInspector")).toContainText("已成交");
+
+    await page.getByTitle("设置中心").click();
+    await page.locator('button[data-demo-action="open-reset-dialog"]').click();
+    await page.locator('button[data-demo-action="confirm-reset"]').click();
+    await expect(page.locator(".demo-dashboard")).toBeVisible();
+    await page.getByTitle("成交工作台").click();
+    await expect(page.locator("#demoModuleInspector")).not.toContainText("¥86,000");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByTitle("自动营销总览").click();
+    await expect(page.locator("#replicaNewTaskButton")).toBeVisible();
+    await expect(page.locator(".demo-dashboard")).toBeVisible();
+    await page.getByTitle("社媒对话").click();
+    await expect(page.locator(".demo-conversation-row.selected")).toBeVisible();
+    await expect(page.locator("#demoModuleInspector .demo-conversation-inspector")).toBeVisible();
+    await page.getByTitle("私域客户池").click();
+    await expect(page.locator(".demo-customer-table tr.selected")).toBeVisible();
+    await expect(page.locator("#demoModuleInspector .demo-customer-inspector")).toBeVisible();
+    await page.getByTitle("成交工作台").click();
+    await expect(page.locator(".demo-opportunity-card.selected")).toBeVisible();
+    await expect(page.locator("#demoModuleInspector .demo-conversion-inspector")).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+    await page.screenshot({ path: "../tmp/design-qa/demo-core-mobile-390x844.png" });
+
+    expect(consoleErrors).toEqual([]);
+    expect(pageErrors).toEqual([]);
+  });
+
   test("M1 shell keeps six primary routes and opened-page tabs", async ({ page }) => {
     const primaryRoutes = page.locator(".nav-primary > button[data-view]");
     await expect(primaryRoutes).toHaveCount(6);

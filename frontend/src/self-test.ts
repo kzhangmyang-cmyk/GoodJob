@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { strict as assert } from "node:assert";
 import "./demo/demo-store.self-test";
+import { renderDashboardView } from "./demo/demo-dashboard-view";
+import { createDemoStore } from "./demo/demo-store";
 import { buildLeadFinderIntentChips, getLeadFinderLayoutMode } from "./lead-finder-layout";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");
@@ -25,6 +27,19 @@ assert.deepEqual(
   }),
   ["寻找北欧工业照明合作伙伴"]
 );
+
+const dashboardStore = createDemoStore({ storage: null, now: () => "2026-07-29T09:00:00.000Z" });
+dashboardStore.transferConversationToPrivate("conversation-douyin-lin");
+const dashboardMain = { innerHTML: "", querySelectorAll: () => [] } as unknown as HTMLElement;
+const dashboardInspector = { innerHTML: "" } as HTMLElement;
+renderDashboardView(dashboardStore.getState(), dashboardMain, dashboardInspector);
+assert.equal(
+  dashboardMain.innerHTML.match(/<b>林女士<\/b>/g)?.length,
+  1,
+  "a transferred conversation and its private customer must occupy one priority position"
+);
+assert.equal(dashboardInspector.innerHTML.includes("设置中心 → 重置演示数据"), true);
+assert.equal(dashboardInspector.innerHTML.includes("清除本站点存储"), false);
 
 const prototype = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const apiLayer = readFileSync(new URL("./prototype-api.ts", import.meta.url), "utf8");

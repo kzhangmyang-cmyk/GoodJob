@@ -54,7 +54,8 @@ function quoteLabel(opportunity: DemoOpportunity): string {
 
 function renderOpportunityCard(state: DemoState, opportunity: DemoOpportunity): string {
   const terminalClass = opportunity.stage === "won" ? " won" : opportunity.stage === "lost" ? " lost" : "";
-  return `<button type="button" class="demo-opportunity-card${terminalClass}" draggable="true" data-demo-action="select-opportunity" data-opportunity-id="${escapeHtml(opportunity.id)}" aria-label="查看${escapeHtml(customerName(state, opportunity))}的${escapeHtml(opportunity.title)}">
+  const selectedClass = opportunity.id === state.selectedOpportunityId ? " selected" : "";
+  return `<button type="button" class="demo-opportunity-card${terminalClass}${selectedClass}" draggable="true" data-demo-action="select-opportunity" data-opportunity-id="${escapeHtml(opportunity.id)}" aria-label="查看${escapeHtml(customerName(state, opportunity))}的${escapeHtml(opportunity.title)}">
     <span class="demo-opportunity-card-top"><b>${escapeHtml(customerName(state, opportunity))}</b>${opportunity.stage === "lost" ? '<i class="demo-lost-dot" aria-label="已流失"></i>' : ""}</span>
     <strong>${escapeHtml(opportunity.title)}</strong>
     <span class="demo-opportunity-amount">${formatMoney(opportunity.amount)}</span>

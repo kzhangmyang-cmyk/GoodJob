@@ -64,14 +64,38 @@ export function renderDashboardView(
     { label: "进入私域", value: state.customers.length, module: "private-domain" as const },
     { label: "形成商机", value: state.opportunities.length, module: "conversion" as const }
   ];
-  const priorityCustomers = [
-    ...state.conversations
-      .filter((item) => item.intent === "高")
-      .map((item) => ({ name: item.customerName, platform: item.platform, summary: item.needSummary, module: "conversations" as const, updatedAt: item.updatedAt })),
-    ...state.customers
-      .filter((item) => item.intent === "高")
-      .map((item) => ({ name: item.name, platform: item.platform, summary: item.needSummary, module: "private-domain" as const, updatedAt: item.lastContactAt }))
-  ].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, 3);
+  const priorityCustomerByConversation = new Map<string, {
+    name: string;
+    platform: string;
+    summary: string;
+    module: "conversations" | "private-domain";
+    updatedAt: string;
+  }>();
+  state.conversations
+    .filter((item) => item.intent === "高")
+    .forEach((item) => {
+      priorityCustomerByConversation.set(item.id, {
+        name: item.customerName,
+        platform: item.platform,
+        summary: item.needSummary,
+        module: "conversations",
+        updatedAt: item.updatedAt
+      });
+    });
+  state.customers
+    .filter((item) => item.intent === "高")
+    .forEach((item) => {
+      priorityCustomerByConversation.set(item.conversationId, {
+        name: item.name,
+        platform: item.platform,
+        summary: item.needSummary,
+        module: "private-domain",
+        updatedAt: item.lastContactAt
+      });
+    });
+  const priorityCustomers = [...priorityCustomerByConversation.values()]
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+    .slice(0, 3);
   const tasks = state.tasks
     .filter((item) => !item.done)
     .sort((a, b) => taskPriority[a.priority] - taskPriority[b.priority] || a.title.localeCompare(b.title, "zh-CN"));
@@ -135,7 +159,7 @@ export function renderDashboardView(
       <h3>自动营销保持运行</h3>
       <p>当前有 <b>${activeConversations}</b> 个沟通会话、<b>${manualTakeover}</b> 个需要人工关注的节点，预计成交 ${formatMoney(expectedRevenue)}。</p>
       <div class="demo-inspector-note"><b>演示模式</b><span>数据只保存在当前浏览器，不会请求后端或发送真实消息。</span></div>
-      <div class="demo-inspector-note"><b>重置提示</b><span>如需恢复初始演示数据，请在浏览器中清除本站点存储后刷新页面。</span></div>
+      <div class="demo-inspector-note"><b>重置提示</b><span>如需恢复初始演示数据，请前往设置中心 → 重置演示数据。</span></div>
     </section>`;
 
   main.querySelectorAll<HTMLButtonElement>("[data-dashboard-period]").forEach((button) => {
