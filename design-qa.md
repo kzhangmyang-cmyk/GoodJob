@@ -409,9 +409,12 @@ final result: passed
 - 九个导航入口逐一点击并验证激活状态：通过。
 - `conversation-douyin-lin` → 人工接管 → 转入私域 → 创建 `¥86,000` 商机 → 标记模拟成交：通过。
 - 刷新后 `¥86,000` 和已成交状态持续存在：通过。
-- “设置中心 → 重置演示数据”恢复默认三条商机，新增金额不再出现：通过。
+- “设置中心 → 重置演示数据”恢复默认三条商机；全应用不再出现 `¥86,000`，商机卡片数严格为 3：通过。
 - dashboard 优先客户按会话/客户关联去重；同一位转入私域的客户只占一个位置。
-- 390 × 844 下总览、对话、私域、成交的主操作、选中项和详情均可用；`document.documentElement.scrollWidth === 390`。
+- 1460 × 1000 成交 inspector 的金额、概率、下一步行动和更新按钮采用两列两行布局；下一步输入宽度不小于 110px，四个控件 bounding boxes 不重叠。
+- 桌面端实际把金额更新为 `¥86,500`、概率更新为 65%、下一步行动更新为“发送合同草案”，UI 同步后再恢复 `¥86,000`。
+- 390 × 844 下实际滚动到对话、私域和成交详情，分别添加“移动复查”标签、“移动端客户”标签，并提交 `¥121,000 / 60% / 移动端确认合同`；UI 均同步成功。
+- 移动成交表单输入与按钮 bounding boxes 不重叠；`document.documentElement.scrollWidth === 390`。
 - Playwright 捕获的 `console.error` 与 `pageerror` 均为 0。
 - Codex 内置浏览器运行时没有可用 browser binding，因此未宣称内置浏览器人工检查通过；上述 UI 证据由仓库 Playwright Chrome 项目完成。
 
@@ -420,6 +423,6 @@ final result: passed
 - 前端自检：107 项通过。
 - TypeScript：通过。
 - Vite 生产构建：通过，638 个模块；保留既有的单个主包大于 500 kB 提示。
-- Focused Playwright：1 项通过。
+- Focused Playwright：1 项通过；包含桌面/移动真实写入、滚动、非重叠与 reset 全局断言。
 
-final result: passed
+final result: passed (Playwright); in-app browser: unavailable

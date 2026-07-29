@@ -35,6 +35,29 @@ async function openView(page: import("@playwright/test").Page, view: string) {
   await expect(page.locator(`#${view}`)).toHaveClass(/active/);
 }
 
+async function expectControlsNotToOverlap(locator: import("@playwright/test").Locator) {
+  const boxes = await locator.evaluateAll((elements) => elements.map((element) => {
+    const rect = element.getBoundingClientRect();
+    return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height };
+  }));
+  expect(boxes.length).toBeGreaterThan(1);
+  for (const box of boxes) {
+    expect(box.width).toBeGreaterThanOrEqual(60);
+    expect(box.height).toBeGreaterThanOrEqual(32);
+  }
+  for (let leftIndex = 0; leftIndex < boxes.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < boxes.length; rightIndex += 1) {
+      const left = boxes[leftIndex];
+      const right = boxes[rightIndex];
+      const overlaps = left.left < right.right
+        && left.right > right.left
+        && left.top < right.bottom
+        && left.bottom > right.top;
+      expect(overlaps, `controls ${leftIndex} and ${rightIndex} overlap`).toBe(false);
+    }
+  }
+}
+
 async function apiFromPage<T>(
   page: import("@playwright/test").Page,
   path: string,
@@ -173,6 +196,24 @@ test.describe("GoodJob CRM prototype pages", () => {
 
     await page.getByTitle("成交工作台").click();
     await expect(page.locator("#demoModuleInspector")).toContainText("¥86,000");
+    const desktopOpportunityForm = page.locator('#demoModuleInspector form[data-demo-action="update-opportunity"]');
+    const desktopOpportunityControls = desktopOpportunityForm.locator("input, button");
+    const desktopNextAction = desktopOpportunityForm.locator('input[name="opportunity-next-action"]');
+    const desktopNextActionBox = await desktopNextAction.boundingBox();
+    expect(desktopNextActionBox?.width).toBeGreaterThanOrEqual(110);
+    await expect(desktopOpportunityControls).toHaveCount(4);
+    await expectControlsNotToOverlap(desktopOpportunityControls);
+    await desktopOpportunityForm.locator('input[name="opportunity-amount"]').fill("86500");
+    await desktopOpportunityForm.locator('input[name="opportunity-probability"]').fill("65");
+    await desktopNextAction.fill("发送合同草案");
+    await desktopOpportunityForm.getByRole("button", { name: "更新商机" }).click();
+    await expect(page.locator("#replicaToast")).toContainText("已更新演示商机");
+    await expect(page.locator(".demo-opportunity-card.selected")).toContainText("¥86,500");
+    await expect(page.locator(".demo-opportunity-card.selected")).toContainText("概率 65%");
+    await expect(page.locator(".demo-opportunity-card.selected")).toContainText("下一步：发送合同草案");
+    await desktopOpportunityForm.locator('input[name="opportunity-amount"]').fill("86000");
+    await desktopOpportunityForm.getByRole("button", { name: "更新商机" }).click();
+    await expect(page.locator(".demo-opportunity-card.selected")).toContainText("¥86,000");
     await page.locator('#demoModuleInspector button[data-demo-action="close-won"]').click();
     await expect(page.locator("#demoModuleInspector")).toContainText("已成交");
     await page.screenshot({ path: "../tmp/design-qa/demo-conversion-1460x1000.png" });
@@ -188,6 +229,8 @@ test.describe("GoodJob CRM prototype pages", () => {
     await page.locator('button[data-demo-action="confirm-reset"]').click();
     await expect(page.locator(".demo-dashboard")).toBeVisible();
     await page.getByTitle("成交工作台").click();
+    await expect(page.locator(".demo-opportunity-card")).toHaveCount(3);
+    await expect(page.locator(".replica-shell")).not.toContainText("¥86,000");
     await expect(page.locator("#demoModuleInspector")).not.toContainText("¥86,000");
 
     await page.setViewportSize({ width: 390, height: 844 });
@@ -197,12 +240,36 @@ test.describe("GoodJob CRM prototype pages", () => {
     await page.getByTitle("社媒对话").click();
     await expect(page.locator(".demo-conversation-row.selected")).toBeVisible();
     await expect(page.locator("#demoModuleInspector .demo-conversation-inspector")).toBeVisible();
+    const mobileConversationTag = page.locator('#demoModuleInspector form[data-demo-action="add-conversation-tag"]');
+    await mobileConversationTag.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    await mobileConversationTag.locator('input[name="demo-tag"]').fill("移动复查");
+    await mobileConversationTag.getByRole("button", { name: "添加" }).click();
+    await expect(page.locator("#demoModuleInspector .demo-tag-list")).toContainText("移动复查");
     await page.getByTitle("私域客户池").click();
     await expect(page.locator(".demo-customer-table tr.selected")).toBeVisible();
     await expect(page.locator("#demoModuleInspector .demo-customer-inspector")).toBeVisible();
+    const mobileCustomerTag = page.locator('#demoModuleInspector form[data-demo-action="add-customer-tag"]');
+    await mobileCustomerTag.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    await mobileCustomerTag.locator('input[name="customer-tag"]').fill("移动端客户");
+    await mobileCustomerTag.getByRole("button", { name: "添加标签" }).click();
+    await expect(page.locator("#demoModuleInspector .demo-customer-tags")).toContainText("移动端客户");
     await page.getByTitle("成交工作台").click();
     await expect(page.locator(".demo-opportunity-card.selected")).toBeVisible();
     await expect(page.locator("#demoModuleInspector .demo-conversion-inspector")).toBeVisible();
+    const mobileOpportunityForm = page.locator('#demoModuleInspector form[data-demo-action="update-opportunity"]');
+    await mobileOpportunityForm.scrollIntoViewIfNeeded();
+    expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    await mobileOpportunityForm.locator('input[name="opportunity-amount"]').fill("121000");
+    await mobileOpportunityForm.locator('input[name="opportunity-probability"]').fill("60");
+    await mobileOpportunityForm.locator('input[name="opportunity-next-action"]').fill("移动端确认合同");
+    await mobileOpportunityForm.getByRole("button", { name: "更新商机" }).click();
+    await expect(page.locator(".demo-opportunity-card.selected")).toContainText("¥121,000");
+    await expect(page.locator(".demo-opportunity-card.selected")).toContainText("概率 60%");
+    await expect(page.locator(".demo-opportunity-card.selected")).toContainText("下一步：移动端确认合同");
+    await mobileOpportunityForm.scrollIntoViewIfNeeded();
+    await expectControlsNotToOverlap(mobileOpportunityForm.locator("input, button"));
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
     await page.screenshot({ path: "../tmp/design-qa/demo-core-mobile-390x844.png" });
 

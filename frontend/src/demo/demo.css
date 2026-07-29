@@ -1689,6 +1689,7 @@
 .demo-conversion-form label,
 .demo-close-actions label {
   display: grid;
+  min-width: 0;
   gap: 4px;
   color: rgba(222, 255, 233, 0.62);
   font-size: 10px;
@@ -1730,7 +1731,7 @@
 .demo-quote-actions button:disabled,
 .demo-stage-controls button:disabled,
 .demo-close-actions button:disabled { cursor: not-allowed; opacity: 0.45; }
-.demo-probability-form { grid-template-columns: 82px 72px minmax(0, 1fr) auto; }
+.demo-probability-form { grid-template-columns: minmax(0, 1fr) 84px; }
 .demo-quote-actions { justify-content: flex-start; }
 .demo-quote-actions small { color: var(--replica-muted); font-size: 10px; }
 
