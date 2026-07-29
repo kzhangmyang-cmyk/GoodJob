@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { strict as assert } from "node:assert";
+import "./demo/demo-store.self-test";
 import { buildLeadFinderIntentChips, getLeadFinderLayoutMode } from "./lead-finder-layout";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");
