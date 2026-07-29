@@ -321,8 +321,8 @@ final result: passed
 
 - 智能体筛选只显示抖音、小红书、微信；自动脚本筛选只显示快手、微博。
 - 五个平台任务选择均可同步更新右侧详情。
-- “同步私域”可更新任务状态和私域客户数量。
-- 新建获客任务弹窗可选择五个平台与两种运行模式。
+- “模拟同步私域”通过统一 DemoStore 幂等关联同平台会话与私域客户；不再使用仅修改 DOM 状态和计数的旧路径。
+- 新建演示获客任务弹窗可选择五个平台与两种模拟运行模式。
 - 390 × 844 下无文档级横向溢出。
 - 浏览器控制台无新增 error。
 - TypeScript、自检与 Vite 生产构建通过；仅保留既有的大包体积提示。
@@ -426,3 +426,37 @@ final result: passed
 - Focused Playwright：1 项通过；包含桌面/移动真实写入、滚动、非重叠与 reset 全局断言。
 
 final result: passed (Playwright); in-app browser: unavailable
+
+## 最终审查修复 QA
+
+### 修复范围与截图复查
+
+- 自动营销总览：`tmp/design-qa/demo-dashboard-1460x1000.png`
+- 社媒对话：`tmp/design-qa/demo-conversations-1460x1000.png`
+- 私域客户池：`tmp/design-qa/demo-private-domain-1460x1000.png`
+- 成交工作台：`tmp/design-qa/demo-conversion-1460x1000.png`
+- 移动端成交详情：`tmp/design-qa/demo-core-mobile-390x844.png`
+
+五张截图在最终核心旅程通过后重新生成，并逐张用 `view_image` 检查。三栏工作台密度、近黑玻璃面板、绿色选中/终态边缘、紧凑字体层级、冷白细边、圆角与 Phosphor 图标保持一致。成交页的普通阶段按钮不再包含已成交/已流失；独立关闭区保留明确的模拟成交按钮与流失原因占位选项。390 × 844 详情仍为单列、输入和按钮无重叠，文档宽度严格等于 390px。
+
+### 行为与安全复查
+
+- 种子会话/客户关系双向一致；旧单向持久化状态会在加载时补齐，重复 transfer 不增加客户、活动或通知。
+- 通用 stage 按钮/store 不能进入或离开终态；拖入已成交调用 close-won 语义并固定 100%，拖入已流失只选择商机并提示在右侧明确选择原因。
+- localStorage 对平台、意向、模式、发送方、阶段、活动类型、任务模块/优先级、客户分组/状态等联合类型使用 allowlist；金额、概率、未读数和日期受范围/格式检查，选择和跨实体引用必须存在且匹配。
+- 恶意真实 localStorage payload 会回退确定性 seed；会话和 dashboard 渲染 HTML 不包含原始 payload。
+- dashboard 重点客户与待办携带受控 entity type/id，点击先选择实体再导航；ID 不存在或类型/模块不匹配时安全 no-op。
+- 获客中心所有运行、扫描、智能体和同步文案均显著标注演示/模拟；“模拟同步私域”写入统一 DemoStore，缺少同平台会话时明确显示“演示版暂未接入”。
+- 设置确认 reset 会清空 dashboard 周期、会话筛选、私域筛选/搜索/勾选/商机表单、拖放状态和已打开 dialog/form，再导航自动营销总览。
+- Task 3 关系去重、Task 7 重置文案和 conversion 桌面/390px 响应式断言继续通过。
+
+### 自动检查
+
+- Focused store/render：通过。
+- 全量前端自检：`checked: 107`。
+- TypeScript：通过，无诊断。
+- Vite 生产构建：638 个模块，保留既有大包体积 warning。
+- Focused Playwright：1 项通过；同时断言 `console.error` 与 `pageerror` 均为 0。
+- Codex 内置浏览器仍无可用 binding，未声称内置浏览器通过。
+
+final result: passed (Playwright); in-app browser unavailable

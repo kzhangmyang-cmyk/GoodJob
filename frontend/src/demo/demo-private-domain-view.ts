@@ -161,6 +161,15 @@ export function closeOpportunityForm(): void {
   opportunityFormCustomerId = "";
 }
 
+export function resetPrivateDomainViewState(): void {
+  activeGroup = "all";
+  activeIntent = "全部";
+  activePlatform = "全部";
+  activeSearch = "";
+  selectedCustomerIds.clear();
+  opportunityFormCustomerId = "";
+}
+
 export function renderPrivateDomainView(state: DemoState, main: HTMLElement, inspector: HTMLElement): void {
   const selected = state.customers.find((customer) => customer.id === state.selectedCustomerId) ?? state.customers[0];
   selectedCustomerIds = new Set([...selectedCustomerIds].filter((id) => state.customers.some((customer) => customer.id === id)));

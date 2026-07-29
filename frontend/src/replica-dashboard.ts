@@ -82,6 +82,8 @@ if (replica) {
     return Array.from(document.querySelectorAll<ReplicaTaskRow>(".replica-task-row"));
   }
 
+  const initialTaskPlacements = taskRows().map((row) => ({ row, parent: row.parentElement }));
+
   function flowCards() {
     return Array.from(flow?.querySelectorAll<ReplicaFlowCard>(".replica-flow-card") || []);
   }
@@ -195,7 +197,7 @@ if (replica) {
         .join("");
     }
     if (detail.advice) {
-      detail.advice.textContent = `建议优先处理“${row.dataset.taskProject || "当前平台"}”中包含明确购买、咨询或合作意图的内容`;
+      detail.advice.textContent = `演示建议：优先处理“${row.dataset.taskProject || "当前平台"}”中包含明确购买、咨询或合作意图的内容`;
     }
     if (syncFlow) syncFlowToTask(row);
     flow?.classList.add("is-focused");
@@ -379,18 +381,8 @@ if (replica) {
     modal?.showModal();
   });
 
-  document.querySelector("#replicaCompleteTask")?.addEventListener("click", () => {
-    if (!selectedTask) return;
-    selectedTask.dataset.taskStatus = "已同步私域";
-    selectedTask.style.opacity = "0.5";
-    if (detail.status) detail.status.textContent = "已同步私域";
-    const count = document.querySelector<HTMLElement>("#replicaCompletedCount");
-    if (count) count.textContent = String(Number(count.textContent || "24") + 1);
-    showToast(`“${selectedTask.dataset.taskName || "获客任务"}”已同步到私域客户池`);
-  });
-
   document.querySelector("#replicaAdviceButton")?.addEventListener("click", () => {
-    showToast("已展开 AI 建议：确认需求和联系方式后，再将客户转入微信私域");
+    showToast("演示：已展开 AI 建议；不会读取或操作真实平台数据");
   });
 
   taskForm?.addEventListener("submit", (event) => {
@@ -399,8 +391,8 @@ if (replica) {
       modal?.close();
       return;
     }
-    const name = document.querySelector<HTMLInputElement>("#replicaTaskName")?.value.trim() || "新获客任务";
-    const summary = document.querySelector<HTMLTextAreaElement>("#replicaTaskSummary")?.value.trim() || "扫描相关话题和评论，识别有需求的客户并发起沟通。";
+    const name = document.querySelector<HTMLInputElement>("#replicaTaskName")?.value.trim() || "新演示获客任务";
+    const summary = document.querySelector<HTMLTextAreaElement>("#replicaTaskSummary")?.value.trim() || "演示扫描相关话题和评论，模拟识别需求客户并生成沟通记录。";
     const stage = document.querySelector<HTMLSelectElement>("#replicaTaskStage")?.value || "抖音";
     const mode = document.querySelector<HTMLSelectElement>("#replicaTaskMode")?.value || "智能体";
     const due = document.querySelector<HTMLInputElement>("#replicaTaskDue")?.value.replace("T", " ") || "立即启动";
@@ -416,18 +408,54 @@ if (replica) {
       row.dataset.taskOwner = mode;
       row.dataset.taskProject = stage;
       row.dataset.taskDue = due;
-      row.dataset.taskStatus = "准备启动";
+      row.dataset.taskStatus = "演示：模拟待启动";
       row.dataset.taskPriority = "中";
       row.dataset.taskTags = `${stage},${mode},新建`;
-      row.innerHTML = `<span>${escapeText(nextId)}</span><b>${escapeText(name)}</b><span><span class="priority medium">${escapeText(mode === "智能体" ? "智能体" : "脚本")}</span> 待启动</span>`;
+      row.dataset.demoCreated = "true";
+      row.innerHTML = `<span>${escapeText(nextId)}</span><b>${escapeText(name)}</b><span><span class="priority medium">${escapeText(mode === "智能体" ? "智能体" : "脚本")}</span> 模拟待启动</span>`;
       list.prepend(row);
       renderTaskDetail(row);
       applyFilters();
     }
     taskForm.reset();
     modal?.close();
-    showToast(`“${name}”已创建`);
+    showToast(`演示：“${name}”已创建`);
   });
+
+  function resetAcquisitionTransientState() {
+    taskRows().filter((row) => row.dataset.demoCreated === "true").forEach((row) => row.remove());
+    initialTaskPlacements.forEach(({ row, parent }) => parent?.append(row));
+    activeScope = "all";
+    activeFilter = "all";
+    searchQuery = "";
+    if (searchInput) searchInput.value = "";
+    document.querySelectorAll<HTMLButtonElement>("[data-replica-scope]").forEach((button) => {
+      const active = button.dataset.replicaScope === "all";
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+    document.querySelectorAll<HTMLButtonElement>("[data-replica-tool]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.replicaTool === "view");
+    });
+    document.querySelectorAll<HTMLElement>(".replica-task-list").forEach((list) => {
+      list.hidden = false;
+    });
+    document.querySelectorAll<HTMLButtonElement>("[data-group-toggle]").forEach((button) => {
+      button.querySelector("i")?.classList.remove("ph-caret-right");
+      button.querySelector("i")?.classList.add("ph-caret-down");
+    });
+    document.querySelectorAll<HTMLButtonElement>("[data-timeline-scale]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.timelineScale === "week");
+    });
+    taskForm?.reset();
+    if (modal?.open) modal.close();
+    selectedTask = initialTaskPlacements[0]?.row ?? null;
+    if (selectedTask) renderTaskDetail(selectedTask);
+    applyFilters();
+    updateFlowLayout(0);
+  }
+
+  document.addEventListener("goodjob:demo-reset", resetAcquisitionTransientState);
 
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {

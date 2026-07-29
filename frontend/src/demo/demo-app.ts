@@ -1,12 +1,13 @@
 import { createDemoRouter, demoModuleMeta } from "./demo-router";
-import { renderConversationsView, setConversationFilter } from "./demo-conversations-view";
-import { renderDashboardView } from "./demo-dashboard-view";
+import { renderConversationsView, resetConversationViewState, setConversationFilter } from "./demo-conversations-view";
+import { renderDashboardView, resetDashboardViewState } from "./demo-dashboard-view";
 import { renderCapabilityDemoView } from "./demo-capabilities-view";
 import { isOpportunityStage, lossReasons, renderConversionView } from "./demo-conversion-view";
 import {
   clearCustomerBatchSelection,
   closeOpportunityForm,
   openOpportunityForm,
+  resetPrivateDomainViewState,
   renderPrivateDomainView,
   selectedCustomerBatchIds,
   setPrivateDomainFilter,
@@ -75,6 +76,24 @@ export function startDemoApp(): void {
     const moduleButton = target.closest<HTMLButtonElement>("[data-demo-action=\"open-module\"]");
     const module = moduleButton?.dataset.demoModule;
     if (module && Object.prototype.hasOwnProperty.call(demoModuleMeta, module)) {
+      const entityType = moduleButton?.dataset.demoEntityType;
+      const entityId = moduleButton?.dataset.demoEntityId;
+      if (entityType !== undefined || entityId !== undefined) {
+        const state = store.getState();
+        const validConversation = entityType === "conversation"
+          && module === "conversations"
+          && state.conversations.some((item) => item.id === entityId);
+        const validCustomer = entityType === "customer"
+          && module === "private-domain"
+          && state.customers.some((item) => item.id === entityId);
+        const validOpportunity = entityType === "opportunity"
+          && module === "conversion"
+          && state.opportunities.some((item) => item.id === entityId);
+        if (!entityId || (!validConversation && !validCustomer && !validOpportunity)) return;
+        if (validConversation) store.selectConversation(entityId);
+        if (validCustomer) store.selectCustomer(entityId);
+        if (validOpportunity) store.selectOpportunity(entityId);
+      }
       router.navigate(module as DemoModule);
       return;
     }
@@ -87,6 +106,24 @@ export function startDemoApp(): void {
     const action = actionTarget?.dataset.demoAction;
     const conversationId = actionTarget?.dataset.conversationId;
     const opportunityId = actionTarget?.dataset.opportunityId;
+    if (action === "simulate-acquisition-sync") {
+      if (router.current() !== "acquisition") return;
+      const selectedTask = shell.querySelector<HTMLElement>(".replica-task-row.active");
+      const platform = selectedTask?.dataset.taskProject;
+      const conversation = store.getState().conversations.find((item) => item.platform === platform);
+      if (!conversation) {
+        showDemoToast("演示版暂未接入：当前项目没有对应会话");
+        return;
+      }
+      const customerId = store.transferConversationToPrivate(conversation.id);
+      if (!customerId) {
+        showDemoToast("演示版暂未接入：当前项目无法模拟同步");
+        return;
+      }
+      router.navigate("private-domain");
+      showDemoToast("模拟同步完成，已打开私域客户");
+      return;
+    }
     if (action === "select-conversation" && conversationId) {
       store.selectConversation(conversationId);
       return;
@@ -160,7 +197,17 @@ export function startDemoApp(): void {
       return;
     }
     if (action === "move-opportunity" && opportunityId && isOpportunityStage(actionTarget?.dataset.opportunityStage)) {
-      store.moveOpportunity(opportunityId, actionTarget.dataset.opportunityStage);
+      const stage = actionTarget.dataset.opportunityStage;
+      if (stage === "won") {
+        showDemoToast("请使用“标记模拟成交”关闭商机");
+        return;
+      }
+      if (stage === "lost") {
+        store.selectOpportunity(opportunityId);
+        showDemoToast("请在右侧选择流失原因");
+        return;
+      }
+      store.moveOpportunity(opportunityId, stage);
       showDemoToast("已移动演示商机阶段");
       return;
     }
@@ -203,7 +250,13 @@ export function startDemoApp(): void {
       const dialog = actionTarget?.closest<HTMLDialogElement>("dialog");
       if (!dialog?.open || resetInProgress) return;
       resetInProgress = true;
-      dialog.close();
+      shell.querySelectorAll<HTMLDialogElement>("dialog[open]").forEach((openDialog) => openDialog.close());
+      shell.querySelectorAll<HTMLFormElement>("form").forEach((form) => form.reset());
+      resetDashboardViewState();
+      resetConversationViewState();
+      resetPrivateDomainViewState();
+      draggedOpportunityId = "";
+      document.dispatchEvent(new Event("goodjob:demo-reset"));
       store.reset();
       router.navigate("dashboard");
       showDemoToast("演示：已恢复初始数据");
@@ -238,6 +291,16 @@ export function startDemoApp(): void {
     draggedOpportunityId = "";
     if (!opportunityId || !isOpportunityStage(stage)) return;
     event.preventDefault();
+    if (stage === "won") {
+      store.closeOpportunity(opportunityId, "won");
+      showDemoToast("演示：商机已按成交语义关闭");
+      return;
+    }
+    if (stage === "lost") {
+      store.selectOpportunity(opportunityId);
+      showDemoToast("请在右侧选择流失原因");
+      return;
+    }
     store.moveOpportunity(opportunityId, stage);
     showDemoToast("已拖动更新演示阶段");
   });

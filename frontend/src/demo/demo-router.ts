@@ -22,9 +22,9 @@ export const demoModuleMeta: Record<DemoModule, ModuleMeta> = {
   },
   acquisition: {
     title: "自动营销系统",
-    subtitle: "获客 · 沟通 · 私域沉淀 · 成交",
+    subtitle: "演示模式 · 获客 · 沟通 · 私域沉淀 · 成交",
     searchPlaceholder: "搜索平台、客户或获客任务...",
-    primaryAction: "新建获客任务"
+    primaryAction: "新建演示获客任务"
   },
   conversations: {
     title: "社媒对话",

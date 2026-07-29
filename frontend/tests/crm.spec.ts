@@ -58,6 +58,16 @@ async function expectControlsNotToOverlap(locator: import("@playwright/test").Lo
   }
 }
 
+async function dragOpportunityTo(page: import("@playwright/test").Page, stage: "won" | "lost") {
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+  const source = page.locator(".demo-opportunity-card.selected");
+  const target = page.locator(`.demo-stage-lane.stage-${stage}`);
+  await source.dispatchEvent("dragstart", { dataTransfer });
+  await target.dispatchEvent("dragover", { dataTransfer });
+  await target.dispatchEvent("drop", { dataTransfer });
+  await dataTransfer.dispose();
+}
+
 async function apiFromPage<T>(
   page: import("@playwright/test").Page,
   path: string,
@@ -157,6 +167,23 @@ test.describe("GoodJob CRM prototype pages", () => {
     await expect(page.locator("body")).toHaveClass(/is-authenticated/);
     await page.setViewportSize({ width: 1460, height: 1000 });
 
+    const maliciousPayload = 'evil"><img src=x onerror=alert(1)>';
+    await page.evaluate((payload) => {
+      const state = JSON.parse(localStorage.getItem("goodjob.frontend-demo.v1") || "{}");
+      state.conversations[0].customerName = payload;
+      state.conversations[0].mode = payload;
+      state.conversations[0].messages[0].sender = payload;
+      state.tasks[0].module = payload;
+      state.tasks[0].priority = payload;
+      localStorage.setItem("goodjob.frontend-demo.v1", JSON.stringify(state));
+    }, maliciousPayload);
+    await page.reload();
+    await expect(page.locator("body")).toHaveClass(/is-authenticated/);
+    const repairedBrowserState = await page.evaluate(() => JSON.parse(localStorage.getItem("goodjob.frontend-demo.v1") || "{}"));
+    expect(repairedBrowserState.conversations[0].customerName).toBe("林女士");
+    expect(repairedBrowserState.conversations[0].mode).toBe("agent");
+    expect(await page.locator(".replica-shell").evaluate((element) => element.innerHTML)).not.toContain(maliciousPayload);
+
     const modules = [
       ["dashboard", "自动营销总览"],
       ["acquisition", "获客中心"],
@@ -173,17 +200,69 @@ test.describe("GoodJob CRM prototype pages", () => {
       await expect(page.locator(`button[data-replica-view="${module}"]`)).toHaveClass(/active/);
     }
 
+    await page.getByTitle("获客中心").click();
+    const acquisitionMain = page.locator('main[data-replica-module-panel="acquisition"]');
+    await expect(acquisitionMain).toContainText("演示模式");
+    await expect(page.locator("#replicaCompleteTask")).toContainText("模拟同步私域");
+    await expect(page.locator("#replicaDetailStatus")).toContainText("演示");
+    const acquisitionStateBefore = await page.evaluate(() => JSON.parse(localStorage.getItem("goodjob.frontend-demo.v1") || "{}"));
+    await page.locator("#replicaCompleteTask").click();
+    await expect(page.locator('button[data-replica-view="private-domain"]')).toHaveClass(/active/);
+    await expect(page.locator("#demoModuleInspector .demo-customer-inspector")).toContainText("孙女士");
+    const acquisitionStateAfter = await page.evaluate(() => JSON.parse(localStorage.getItem("goodjob.frontend-demo.v1") || "{}"));
+    expect(acquisitionStateAfter.customers).toHaveLength(acquisitionStateBefore.customers.length);
+    expect(acquisitionStateAfter.activities).toHaveLength(acquisitionStateBefore.activities.length);
+    expect(acquisitionStateAfter.selectedCustomerId).toBe("customer-douyin-sun");
+    expect(acquisitionStateAfter.conversations.find((item: { id: string }) => item.id === "conversation-douyin-lin")?.customerId).toBe("customer-douyin-sun");
+
+    await page.getByTitle("获客中心").click();
+    const repeatStateBefore = await page.evaluate(() => localStorage.getItem("goodjob.frontend-demo.v1"));
+    await page.locator("#replicaCompleteTask").click();
+    const repeatStateAfter = await page.evaluate(() => localStorage.getItem("goodjob.frontend-demo.v1"));
+    expect(repeatStateAfter).toBe(repeatStateBefore);
+    await page.getByTitle("获客中心").click();
+    const activeAcquisitionTask = page.locator(".replica-task-row.active");
+    const originalPlatform = await activeAcquisitionTask.getAttribute("data-task-project");
+    await activeAcquisitionTask.evaluate((element) => {
+      (element as HTMLElement).dataset.taskProject = "未接入平台";
+    });
+    await page.locator("#replicaCompleteTask").click();
+    await expect(page.locator('button[data-replica-view="acquisition"]')).toHaveClass(/active/);
+    await expect(page.locator("#replicaToast")).toContainText("演示版暂未接入");
+    await activeAcquisitionTask.evaluate((element, platform) => {
+      (element as HTMLElement).dataset.taskProject = platform || "";
+    }, originalPlatform);
+
     await page.getByTitle("自动营销总览").click();
     await expect(page.locator(".demo-dashboard")).toBeVisible();
     await page.screenshot({ path: "../tmp/design-qa/demo-dashboard-1460x1000.png" });
+    await page.locator('.demo-priority-item[data-demo-entity-type="conversation"][data-demo-entity-id="conversation-kuaishou-wang"]').click();
+    await expect(page.locator('button[data-replica-view="conversations"]')).toHaveClass(/active/);
+    await expect(page.locator("#demoModuleInspector .demo-conversation-inspector")).toContainText("王女士");
+    await page.getByTitle("自动营销总览").click();
+    await page.locator('.demo-task-item[data-demo-entity-type="opportunity"][data-demo-entity-id="opportunity-office"]').click();
+    await expect(page.locator('button[data-replica-view="conversion"]')).toHaveClass(/active/);
+    await expect(page.locator("#demoModuleInspector .demo-conversion-inspector")).toContainText("办公空间设计");
+    await page.getByTitle("自动营销总览").click();
+    const invalidEntityAction = page.locator('.demo-priority-item[data-demo-entity-id]').first();
+    await invalidEntityAction.evaluate((element) => {
+      const button = element as HTMLElement;
+      button.dataset.demoModule = "conversations";
+      button.dataset.demoEntityType = "customer";
+      button.dataset.demoEntityId = "opportunity-office";
+    });
+    await invalidEntityAction.click();
+    await expect(page.locator('button[data-replica-view="dashboard"]')).toHaveClass(/active/);
 
     await page.getByTitle("社媒对话").click();
     await page.locator('.demo-conversation-row[data-conversation-id="conversation-douyin-lin"]').click();
     await page.locator('textarea[name="demo-message"]').fill("预算大约是多少？");
     await page.locator('form[data-demo-action="send-message"] button[type="submit"]').click();
     await page.getByRole("button", { name: "人工接管", exact: true }).click();
-    await page.locator('button[data-demo-action="transfer-to-private"][data-conversation-id="conversation-douyin-lin"]').click();
+    await expect(page.locator('button[data-demo-action="open-private-customer"][data-customer-id="customer-douyin-sun"]')).toBeVisible();
     await page.screenshot({ path: "../tmp/design-qa/demo-conversations-1460x1000.png" });
+    await page.locator('button[data-demo-action="open-private-customer"][data-customer-id="customer-douyin-sun"]').click();
+    await expect(page.locator('button[data-replica-view="private-domain"]')).toHaveClass(/active/);
 
     await page.getByTitle("私域客户池").click();
     await page.locator('tr[data-customer-source="conversation-douyin-lin"]').click();
@@ -214,7 +293,21 @@ test.describe("GoodJob CRM prototype pages", () => {
     await desktopOpportunityForm.locator('input[name="opportunity-amount"]').fill("86000");
     await desktopOpportunityForm.getByRole("button", { name: "更新商机" }).click();
     await expect(page.locator(".demo-opportunity-card.selected")).toContainText("¥86,000");
+    const stageControls = page.locator('#demoModuleInspector .demo-stage-controls');
+    await expect(stageControls.locator('button[data-opportunity-stage="won"]')).toHaveCount(0);
+    await expect(stageControls.locator('button[data-opportunity-stage="lost"]')).toHaveCount(0);
+    await stageControls.locator('button[data-opportunity-stage="quoted"]').click();
+    await expect(page.locator('.stage-quoted .demo-opportunity-card.selected')).toBeVisible();
+    await dragOpportunityTo(page, "lost");
+    await expect(page.locator("#replicaToast")).toContainText("请在右侧选择流失原因");
+    await expect(page.locator('.stage-quoted .demo-opportunity-card.selected')).toBeVisible();
     await page.locator('#demoModuleInspector button[data-demo-action="close-won"]').click();
+    await expect(page.locator('.stage-won .demo-opportunity-card.selected')).toContainText("概率 100%");
+    await page.locator('.demo-opportunity-card[data-opportunity-id="opportunity-office"]').click();
+    await dragOpportunityTo(page, "won");
+    await expect(page.locator('.stage-won .demo-opportunity-card.selected')).toBeVisible();
+    await expect(page.locator("#demoModuleInspector")).toContainText("100%");
+    await page.locator('.stage-won .demo-opportunity-card', { hasText: "¥86,000" }).click();
     await expect(page.locator("#demoModuleInspector")).toContainText("已成交");
     await page.screenshot({ path: "../tmp/design-qa/demo-conversion-1460x1000.png" });
 
@@ -224,10 +317,32 @@ test.describe("GoodJob CRM prototype pages", () => {
     await expect(page.locator("#demoModuleInspector")).toContainText("¥86,000");
     await expect(page.locator("#demoModuleInspector")).toContainText("已成交");
 
+    await page.getByTitle("自动营销总览").click();
+    await page.locator('.demo-period-tabs button[data-dashboard-period="month"]').click();
+    await expect(page.locator('.demo-period-tabs button[data-dashboard-period="month"]')).toHaveClass(/active/);
+    await page.getByTitle("社媒对话").click();
+    await page.locator('.demo-conversation-tabs button[data-conversation-filter="unread"]').click();
+    await expect(page.locator('.demo-conversation-tabs button[data-conversation-filter="unread"]')).toHaveClass(/active/);
+    await page.getByTitle("私域客户池").click();
+    await page.locator('button[data-customer-group="重点客户"]').click();
+    await page.locator(".demo-customer-table input[type='checkbox']").first().check();
+    await page.locator('#demoModuleInspector button[data-demo-action="open-opportunity-form"]').click();
+    await expect(page.locator('#demoModuleInspector form[data-demo-action="create-opportunity"]')).toBeVisible();
     await page.getByTitle("设置中心").click();
     await page.locator('button[data-demo-action="open-reset-dialog"]').click();
     await page.locator('button[data-demo-action="confirm-reset"]').click();
     await expect(page.locator(".demo-dashboard")).toBeVisible();
+    await expect(page.locator('.demo-period-tabs button[data-dashboard-period="today"]')).toHaveClass(/active/);
+    await page.getByTitle("社媒对话").click();
+    await expect(page.locator('.demo-conversation-tabs button[data-conversation-filter="all"]')).toHaveClass(/active/);
+    await expect(page.locator('.demo-platform-filters button[data-platform="全部"]')).toHaveClass(/active/);
+    await expect(page.locator(".demo-conversation-row")).toHaveCount(5);
+    await page.getByTitle("私域客户池").click();
+    await expect(page.locator('button[data-customer-group="all"]')).toHaveClass(/active/);
+    await expect(page.locator('input[name="customer-search"]')).toHaveValue("");
+    await expect(page.locator(".demo-customer-table tbody tr")).toHaveCount(4);
+    await expect(page.locator(".demo-customer-table input[type='checkbox']:checked")).toHaveCount(0);
+    await expect(page.locator('#demoModuleInspector form[data-demo-action="create-opportunity"]')).toHaveCount(0);
     await page.getByTitle("成交工作台").click();
     await expect(page.locator(".demo-opportunity-card")).toHaveCount(3);
     await expect(page.locator(".replica-shell")).not.toContainText("¥86,000");

@@ -10328,7 +10328,7 @@
         <button type="button" class="replica-icon-button has-dot" title="提醒"><i class="ph ph-bell" aria-hidden="true"></i></button>
         <button type="button" class="replica-icon-button" title="消息"><i class="ph ph-envelope-simple" aria-hidden="true"></i></button>
         <button type="button" class="replica-primary-button" id="replicaNewTaskButton">
-          <i class="ph ph-plus" aria-hidden="true"></i><span>新建获客任务</span><i class="ph ph-caret-down" aria-hidden="true"></i>
+          <i class="ph ph-plus" aria-hidden="true"></i><span>新建演示获客任务</span><i class="ph ph-caret-down" aria-hidden="true"></i>
         </button>
       </div>
     </header>
@@ -10359,12 +10359,12 @@
 
       <section class="replica-boardbar" aria-label="任务看板工具栏">
         <div class="replica-boardbar-left">
-          <h2>全渠道获客任务</h2>
+          <h2>全渠道获客任务 <span class="demo-status">演示模式</span></h2>
           <div class="replica-board-tabs" role="tablist" aria-label="运行模式">
             <button type="button" class="active" role="tab" aria-selected="true" data-replica-scope="all">全部平台</button>
-            <button type="button" role="tab" aria-selected="false" data-replica-scope="agent">智能体</button>
-            <button type="button" role="tab" aria-selected="false" data-replica-scope="script">自动脚本</button>
-            <button type="button" class="replica-compact-button" data-replica-status><i class="ph ph-check-square-offset" aria-hidden="true"></i>运行状态<i class="ph ph-caret-down" aria-hidden="true"></i></button>
+            <button type="button" role="tab" aria-selected="false" data-replica-scope="agent">模拟智能体</button>
+            <button type="button" role="tab" aria-selected="false" data-replica-scope="script">模拟脚本</button>
+            <button type="button" class="replica-compact-button" data-replica-status><i class="ph ph-check-square-offset" aria-hidden="true"></i>模拟状态<i class="ph ph-caret-down" aria-hidden="true"></i></button>
           </div>
         </div>
         <div class="replica-boardbar-actions">
@@ -10381,11 +10381,11 @@
               <span class="dot"></span><strong>短视频平台</strong><small>2</small><i class="ph ph-caret-down" aria-hidden="true"></i>
             </button>
             <div class="replica-task-list">
-              <button type="button" class="replica-task-row active" data-task-id="ACQ-DOUYIN-01" data-task-name="抖音需求客户捕捉" data-task-summary="持续扫描抖音相关话题与评论区，识别有明确需求的客户并由智能体发起沟通。" data-task-owner="智能体" data-task-project="抖音" data-task-due="持续运行" data-task-status="正在获客" data-task-priority="高" data-task-tags="话题扫描,评论识别,自动聊天">
-                <span>ACQ-DOUYIN</span><b>抖音话题 / 评论</b><span><span class="priority">智能体</span> 运行中</span>
+              <button type="button" class="replica-task-row active" data-task-id="ACQ-DOUYIN-01" data-task-name="抖音需求客户捕捉" data-task-summary="演示扫描抖音相关话题与评论区，模拟识别有明确需求的客户并发起沟通。" data-task-owner="智能体" data-task-project="抖音" data-task-due="模拟持续运行" data-task-status="演示：模拟获客中" data-task-priority="高" data-task-tags="模拟话题扫描,模拟评论识别,模拟聊天">
+                <span>ACQ-DOUYIN</span><b>抖音话题 / 评论</b><span><span class="priority">智能体</span> 模拟运行中</span>
               </button>
-              <button type="button" class="replica-task-row" data-task-id="ACQ-KUAISHOU-01" data-task-name="快手评论需求识别" data-task-summary="按关键词扫描快手视频评论，自动脚本提取需求、地区与联系方式线索。" data-task-owner="自动脚本" data-task-project="快手" data-task-due="每 10 分钟" data-task-status="正在扫描" data-task-priority="中" data-task-tags="评论扫描,需求识别,脚本">
-                <span>ACQ-KUAISHOU</span><b>快手评论需求</b><span><span class="priority medium">脚本</span> 运行中</span>
+              <button type="button" class="replica-task-row" data-task-id="ACQ-KUAISHOU-01" data-task-name="快手评论需求识别" data-task-summary="演示按关键词扫描快手视频评论，由模拟脚本整理需求、地区与联系方式线索。" data-task-owner="自动脚本" data-task-project="快手" data-task-due="模拟每 10 分钟" data-task-status="演示：模拟扫描中" data-task-priority="中" data-task-tags="模拟评论扫描,模拟需求识别,模拟脚本">
+                <span>ACQ-KUAISHOU</span><b>快手评论需求</b><span><span class="priority medium">脚本</span> 模拟运行中</span>
               </button>
             </div>
           </article>
@@ -10395,11 +10395,11 @@
               <span class="dot"></span><strong>内容社区平台</strong><small>2</small><i class="ph ph-caret-down" aria-hidden="true"></i>
             </button>
             <div class="replica-task-list">
-              <button type="button" class="replica-task-row" data-task-id="ACQ-XHS-01" data-task-name="小红书需求话题追踪" data-task-summary="追踪小红书笔记、相关话题与评论，智能体判断意向后进行自然对话。" data-task-owner="智能体" data-task-project="小红书" data-task-due="持续运行" data-task-status="正在沟通" data-task-priority="高" data-task-tags="笔记话题,评论识别,智能对话">
-                <span>ACQ-XHS</span><b>小红书话题需求</b><span><span class="priority">智能体</span> 沟通中</span>
+              <button type="button" class="replica-task-row" data-task-id="ACQ-XHS-01" data-task-name="小红书需求话题追踪" data-task-summary="演示追踪小红书笔记、相关话题与评论，由模拟智能体判断意向并生成对话。" data-task-owner="智能体" data-task-project="小红书" data-task-due="模拟持续运行" data-task-status="演示：模拟沟通中" data-task-priority="高" data-task-tags="模拟笔记话题,模拟评论识别,模拟对话">
+                <span>ACQ-XHS</span><b>小红书话题需求</b><span><span class="priority">智能体</span> 模拟沟通中</span>
               </button>
-              <button type="button" class="replica-task-row" data-task-id="ACQ-WEIBO-01" data-task-name="微博相关话题获客" data-task-summary="自动脚本订阅微博相关话题和评论，筛选包含购买、咨询和合作意图的用户。" data-task-owner="自动脚本" data-task-project="微博" data-task-due="每 15 分钟" data-task-status="正在扫描" data-task-priority="中" data-task-tags="话题订阅,评论筛选,脚本">
-                <span>ACQ-WEIBO</span><b>微博相关话题</b><span><span class="priority medium">脚本</span> 运行中</span>
+              <button type="button" class="replica-task-row" data-task-id="ACQ-WEIBO-01" data-task-name="微博相关话题获客" data-task-summary="模拟脚本展示微博相关话题和评论的订阅结果，不会登录平台或执行真实筛选。" data-task-owner="自动脚本" data-task-project="微博" data-task-due="模拟每 15 分钟" data-task-status="演示：模拟扫描中" data-task-priority="中" data-task-tags="模拟话题订阅,模拟评论筛选,模拟脚本">
+                <span>ACQ-WEIBO</span><b>微博相关话题</b><span><span class="priority medium">脚本</span> 模拟运行中</span>
               </button>
             </div>
           </article>
@@ -10409,8 +10409,8 @@
               <span class="dot"></span><strong>微信获客与私域</strong><small>1</small><i class="ph ph-caret-down" aria-hidden="true"></i>
             </button>
             <div class="replica-task-list">
-              <button type="button" class="replica-task-row" data-task-id="ACQ-WECHAT-01" data-task-name="微信客户承接" data-task-summary="承接从社交平台聊好的意向客户，补充标签与来源后转入企业自己的私域客户池。" data-task-owner="智能体" data-task-project="微信" data-task-due="实时承接" data-task-status="正在承接" data-task-priority="高" data-task-tags="私域承接,客户标签,来源保留">
-                <span>ACQ-WECHAT</span><b>微信客户承接</b><span><span class="priority">智能体</span> 实时</span>
+              <button type="button" class="replica-task-row" data-task-id="ACQ-WECHAT-01" data-task-name="微信客户承接" data-task-summary="演示承接社交平台意向客户，补充标签与来源后写入本地私域客户池，不连接真实微信。" data-task-owner="智能体" data-task-project="微信" data-task-due="模拟实时承接" data-task-status="演示：模拟承接中" data-task-priority="高" data-task-tags="模拟私域承接,客户标签,来源保留">
+                <span>ACQ-WECHAT</span><b>微信客户承接</b><span><span class="priority">智能体</span> 模拟承接</span>
               </button>
             </div>
           </article>
@@ -10469,7 +10469,7 @@
 
       <section class="replica-timeline replica-glass" aria-label="获客转化链路">
         <div class="replica-timeline-head">
-          <div class="replica-timeline-title"><i class="ph ph-chart-bar-horizontal" aria-hidden="true"></i><h2>获客转化链路</h2><i class="ph ph-calendar-blank" aria-hidden="true"></i><span>今日实时</span></div>
+          <div class="replica-timeline-title"><i class="ph ph-chart-bar-horizontal" aria-hidden="true"></i><h2>获客转化链路（演示）</h2><i class="ph ph-calendar-blank" aria-hidden="true"></i><span>今日模拟节奏</span></div>
           <div class="replica-timeline-controls"><button type="button" class="active" data-timeline-scale="week">周</button><button type="button" data-timeline-scale="today">今天</button></div>
         </div>
         <div class="replica-timeline-grid">
@@ -10477,10 +10477,10 @@
           <div class="replica-timeline-canvas">
             <div class="replica-days"><span>18</span><span>19</span><span>20</span><span>21</span><span>22</span><span>23</span><span>24</span><span>25</span><span>26</span><span>27</span><span>28</span><span>29</span><span>30</span><span>31</span><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span></div>
             <div class="replica-timeline-rows">
-              <div class="replica-timeline-bar" style="grid-column:2 / 8; grid-row:1">抖音 / 小红书扫描　09:00 - 10:30</div>
-              <div class="replica-timeline-bar" style="grid-column:7 / 15; grid-row:2">智能体自动沟通　10:10 - 12:20</div>
-              <div class="replica-timeline-bar green" style="grid-column:10 / 19; grid-row:3">确认需求与联系方式　11:00 - 14:00</div>
-              <div class="replica-timeline-bar" style="grid-column:16 / 23; grid-row:4">同步微信私域　13:30 - 15:00</div>
+              <div class="replica-timeline-bar" style="grid-column:2 / 8; grid-row:1">模拟平台扫描　09:00 - 10:30</div>
+              <div class="replica-timeline-bar" style="grid-column:7 / 15; grid-row:2">模拟智能体沟通　10:10 - 12:20</div>
+              <div class="replica-timeline-bar green" style="grid-column:10 / 19; grid-row:3">模拟确认需求　11:00 - 14:00</div>
+              <div class="replica-timeline-bar" style="grid-column:16 / 23; grid-row:4">模拟同步私域　13:30 - 15:00</div>
               <span class="replica-today-line" aria-hidden="true"></span>
             </div>
           </div>
@@ -10490,35 +10490,35 @@
 
     <aside class="replica-inspector replica-glass" data-replica-module-panel="acquisition">
       <div class="replica-inspector-head">
-        <div class="replica-inspector-title"><i class="ph ph-sparkle" aria-hidden="true"></i><h2>获客任务详情</h2></div>
+        <div class="replica-inspector-title"><i class="ph ph-sparkle" aria-hidden="true"></i><h2>获客任务详情 · 演示模式</h2></div>
         <button type="button" class="replica-icon-button" title="查看来源"><i class="ph ph-crosshair" aria-hidden="true"></i></button>
       </div>
 
       <div class="replica-detail-id" id="replicaDetailId">ACQ-DOUYIN-01</div>
       <h3 class="replica-detail-name"><span id="replicaDetailNameText">抖音需求客户捕捉</span><span id="replicaDetailPriority">高意向</span></h3>
-      <p class="replica-detail-summary" id="replicaDetailSummary">持续扫描抖音相关话题与评论区，识别有明确需求的客户并由智能体发起沟通。</p>
+      <p class="replica-detail-summary" id="replicaDetailSummary">演示扫描抖音相关话题与评论区，模拟识别有明确需求的客户并发起沟通。</p>
 
       <dl class="replica-detail-fields">
-        <div><dt>运行模式</dt><dd><span class="replica-avatar" style="width:32px;height:32px;font-size:10px">AI</span><span id="replicaDetailOwner">智能体</span></dd></div>
+        <div><dt>运行模式（演示）</dt><dd><span class="replica-avatar" style="width:32px;height:32px;font-size:10px">AI</span><span id="replicaDetailOwner">智能体</span></dd></div>
         <div><dt>获客平台</dt><dd><i class="ph ph-device-mobile" aria-hidden="true"></i><span id="replicaDetailProject">抖音</span></dd></div>
-        <div><dt>扫描周期</dt><dd><i class="ph ph-clock" aria-hidden="true"></i><span id="replicaDetailDue">持续运行</span></dd></div>
-        <div><dt>运行状态</dt><dd><span class="replica-status-dot"></span><span id="replicaDetailStatus">正在获客</span></dd></div>
+        <div><dt>模拟周期</dt><dd><i class="ph ph-clock" aria-hidden="true"></i><span id="replicaDetailDue">模拟持续运行</span></dd></div>
+        <div><dt>模拟状态</dt><dd><span class="replica-status-dot"></span><span id="replicaDetailStatus">演示：模拟获客中</span></dd></div>
         <div><dt>意向等级</dt><dd><span class="replica-status-dot red"></span><span id="replicaDetailPriorityText">高</span></dd></div>
         <div><dt>识别方式</dt><dd><span class="replica-tags" id="replicaDetailTags"><span>话题扫描</span><span>评论识别</span><span>自动聊天</span></span></dd></div>
       </dl>
 
       <section class="replica-advice">
-        <h3>AI 助手建议</h3>
+        <h3>AI 助手建议（演示）</h3>
         <ul>
           <li id="replicaAdvicePrimary">建议优先回复包含“价格、购买、合作”等明确需求的评论</li>
           <li>对话确认意向后，保留来源和聊天记录并转入微信私域</li>
         </ul>
-        <button type="button" id="replicaAdviceButton">查看建议详情</button>
+        <button type="button" id="replicaAdviceButton">查看演示建议</button>
       </section>
 
       <div class="replica-inspector-actions">
-        <button type="button" id="replicaEditTask"><i class="ph ph-pencil-simple" aria-hidden="true"></i>编辑任务</button>
-        <button type="button" class="complete" id="replicaCompleteTask"><i class="ph ph-user-switch" aria-hidden="true"></i>同步私域</button>
+        <button type="button" id="replicaEditTask"><i class="ph ph-pencil-simple" aria-hidden="true"></i>编辑演示任务</button>
+        <button type="button" class="complete" id="replicaCompleteTask" data-demo-action="simulate-acquisition-sync"><i class="ph ph-user-switch" aria-hidden="true"></i>模拟同步私域</button>
         <button type="button" title="更多操作"><i class="ph ph-dots-three" aria-hidden="true"></i></button>
       </div>
     </aside>
@@ -10531,13 +10531,13 @@
 
   <dialog class="replica-modal" id="replicaTaskModal">
     <form method="dialog" id="replicaTaskForm">
-      <div class="replica-modal-head"><h2>新建获客任务</h2><button type="button" id="replicaModalClose" aria-label="关闭"><i class="ph ph-x" aria-hidden="true"></i></button></div>
+      <div class="replica-modal-head"><h2>新建演示获客任务</h2><button type="button" id="replicaModalClose" aria-label="关闭"><i class="ph ph-x" aria-hidden="true"></i></button></div>
       <label>任务名称<input id="replicaTaskName" required placeholder="例如：寻找有装修需求的小红书客户" /></label>
       <label>获客平台<select id="replicaTaskStage"><option>抖音</option><option>小红书</option><option>快手</option><option>微信</option><option>微博</option></select></label>
       <label>运行模式<select id="replicaTaskMode"><option>智能体</option><option>自动脚本</option></select></label>
       <label>启动时间<input id="replicaTaskDue" type="datetime-local" /></label>
       <label>识别要求<textarea id="replicaTaskSummary" placeholder="填写相关话题、评论关键词和目标客户特征"></textarea></label>
-      <div class="replica-modal-footer"><button type="button" id="replicaModalCancel">取消</button><button type="submit">创建获客任务</button></div>
+      <div class="replica-modal-footer"><button type="button" id="replicaModalCancel">取消</button><button type="submit">创建演示任务</button></div>
     </form>
   </dialog>
 

@@ -10,6 +10,17 @@ import type {
 const STORAGE_KEY = "goodjob.frontend-demo.v1";
 const ISO_DATE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-](\d{2}):(\d{2}))$/;
 const LOSS_REASONS = ["预算延期", "需求取消", "选择其他供应商", "无法联系"] as const;
+const PLATFORMS = ["抖音", "小红书", "快手", "微信", "微博"] as const;
+const INTENT_LEVELS = ["高", "中", "低"] as const;
+const CONVERSATION_MODES = ["agent", "manual", "paused"] as const;
+const MESSAGE_SENDERS = ["customer", "agent", "operator"] as const;
+const CUSTOMER_GROUPS = ["重点客户", "待跟进", "沉默客户", "已创建商机"] as const;
+const CUSTOMER_STATUSES = ["跟进中", "待跟进", "已沉默", "已有商机"] as const;
+const OPPORTUNITY_STAGES = ["new", "qualified", "quoted", "negotiating", "won", "lost"] as const;
+const ACTIVE_OPPORTUNITY_STAGES = ["new", "qualified", "quoted", "negotiating"] as const;
+const ACTIVITY_KINDS = ["message", "transfer", "follow-up", "opportunity", "quote", "stage"] as const;
+const TASK_PRIORITIES = ["高", "中", "低"] as const;
+const DEMO_MODULES = ["dashboard", "acquisition", "conversations", "private-domain", "conversion", "agents", "scripts", "trade-marketing", "settings"] as const;
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -56,11 +67,11 @@ function browserStorage(): StorageLike | null {
   }
 }
 
-function isValidState(value: unknown): value is DemoState {
+function isValidStateShape(value: unknown): value is DemoState {
   if (!isRecord(value) || value.version !== 1) return false;
-  return typeof value.selectedConversationId === "string"
-    && typeof value.selectedCustomerId === "string"
-    && typeof value.selectedOpportunityId === "string"
+  return isNonEmptyString(value.selectedConversationId)
+    && isNonEmptyString(value.selectedCustomerId)
+    && isNonEmptyString(value.selectedOpportunityId)
     && Array.isArray(value.conversations)
     && value.conversations.every(isConversation)
     && Array.isArray(value.customers)
@@ -82,93 +93,177 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isAllowed<T extends readonly string[]>(value: unknown, allowed: T): value is T[number] {
+  return typeof value === "string" && allowed.includes(value as T[number]);
+}
+
+function isFiniteInRange(value: unknown, minimum: number, maximum = Number.POSITIVE_INFINITY): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum;
+}
+
+function isIsoDateTime(value: unknown): value is string {
+  return typeof value === "string" && normalizeIsoDateTime(value) !== null;
+}
+
 function isConversation(value: unknown): boolean {
   return isRecord(value)
-    && typeof value.id === "string"
-    && (value.customerId === undefined || typeof value.customerId === "string")
+    && isNonEmptyString(value.id)
+    && (value.customerId === undefined || isNonEmptyString(value.customerId))
     && typeof value.customerName === "string"
-    && typeof value.platform === "string"
-    && typeof value.intent === "string"
-    && typeof value.unread === "number"
-    && typeof value.mode === "string"
+    && isAllowed(value.platform, PLATFORMS)
+    && isAllowed(value.intent, INTENT_LEVELS)
+    && Number.isInteger(value.unread)
+    && isFiniteInRange(value.unread, 0)
+    && isAllowed(value.mode, CONVERSATION_MODES)
     && typeof value.needSummary === "string"
     && typeof value.risk === "string"
     && isStringArray(value.tags)
     && Array.isArray(value.messages)
     && value.messages.every(isMessage)
-    && typeof value.updatedAt === "string";
+    && isIsoDateTime(value.updatedAt);
 }
 
 function isMessage(value: unknown): boolean {
   return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.sender === "string"
+    && isNonEmptyString(value.id)
+    && isAllowed(value.sender, MESSAGE_SENDERS)
     && typeof value.body === "string"
-    && typeof value.sentAt === "string"
+    && isIsoDateTime(value.sentAt)
     && value.simulated === true;
 }
 
 function isCustomer(value: unknown): boolean {
   return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.conversationId === "string"
+    && isNonEmptyString(value.id)
+    && isNonEmptyString(value.conversationId)
     && typeof value.name === "string"
-    && typeof value.platform === "string"
-    && typeof value.intent === "string"
-    && typeof value.group === "string"
+    && isAllowed(value.platform, PLATFORMS)
+    && isAllowed(value.intent, INTENT_LEVELS)
+    && isAllowed(value.group, CUSTOMER_GROUPS)
     && isStringArray(value.tags)
     && typeof value.owner === "string"
     && typeof value.needSummary === "string"
-    && typeof value.lastContactAt === "string"
-    && typeof value.nextFollowUpAt === "string"
-    && typeof value.status === "string";
+    && isIsoDateTime(value.lastContactAt)
+    && isIsoDateTime(value.nextFollowUpAt)
+    && isAllowed(value.status, CUSTOMER_STATUSES);
 }
 
 function isOpportunity(value: unknown): boolean {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.customerId === "string"
-    && typeof value.title === "string"
-    && typeof value.amount === "number"
-    && typeof value.probability === "number"
-    && typeof value.stage === "string"
-    && typeof value.source === "string"
-    && typeof value.nextAction === "string"
-    && (value.quoteAmount === undefined || typeof value.quoteAmount === "number")
-    && (value.quoteSentAt === undefined || typeof value.quoteSentAt === "string")
-    && (value.lossReason === undefined || typeof value.lossReason === "string")
-    && typeof value.updatedAt === "string";
+  if (!isRecord(value)
+    || !isNonEmptyString(value.id)
+    || !isNonEmptyString(value.customerId)
+    || typeof value.title !== "string"
+    || !isFiniteInRange(value.amount, 1)
+    || !isFiniteInRange(value.probability, 0, 100)
+    || !isAllowed(value.stage, OPPORTUNITY_STAGES)
+    || !isAllowed(value.source, PLATFORMS)
+    || typeof value.nextAction !== "string"
+    || (value.quoteAmount !== undefined && !isFiniteInRange(value.quoteAmount, 1))
+    || (value.quoteSentAt !== undefined && !isIsoDateTime(value.quoteSentAt))
+    || (value.lossReason !== undefined && !isAllowed(value.lossReason, LOSS_REASONS))
+    || !isIsoDateTime(value.updatedAt)) {
+    return false;
+  }
+  if (value.quoteSentAt !== undefined && value.quoteAmount === undefined) return false;
+  if (value.stage === "won") return value.probability === 100 && value.lossReason === undefined;
+  if (value.stage === "lost") return value.probability === 0 && isAllowed(value.lossReason, LOSS_REASONS);
+  return value.lossReason === undefined;
 }
 
 function isActivity(value: unknown): boolean {
   return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.kind === "string"
+    && isNonEmptyString(value.id)
+    && isAllowed(value.kind, ACTIVITY_KINDS)
     && typeof value.title === "string"
     && typeof value.detail === "string"
-    && typeof value.createdAt === "string";
+    && isIsoDateTime(value.createdAt);
 }
 
 function isTask(value: unknown): boolean {
   return isRecord(value)
-    && typeof value.id === "string"
+    && isNonEmptyString(value.id)
     && typeof value.title === "string"
-    && typeof value.priority === "string"
-    && typeof value.module === "string"
-    && typeof value.relatedId === "string"
+    && isAllowed(value.priority, TASK_PRIORITIES)
+    && isAllowed(value.module, DEMO_MODULES)
+    && isNonEmptyString(value.relatedId)
     && typeof value.done === "boolean"
-    && (value.dueAt === undefined || typeof value.dueAt === "string")
-    && (value.createdAt === undefined || typeof value.createdAt === "string");
+    && (value.dueAt === undefined || isIsoDateTime(value.dueAt))
+    && (value.createdAt === undefined || isIsoDateTime(value.createdAt));
 }
 
 function isSettings(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const { agents: agentSettings, scripts: scriptSettings } = value;
   if (!isRecord(agentSettings) || !isRecord(scriptSettings)) return false;
-  const agentNames = ["获客识别智能体", "社媒沟通智能体", "客户跟进智能体"];
-  const platforms = ["抖音", "小红书", "快手", "微信", "微博"];
+  const agentNames = ["获客识别智能体", "社媒沟通智能体", "客户跟进智能体"] as const;
   return agentNames.every((name) => typeof agentSettings[name] === "boolean")
-    && platforms.every((platform) => typeof scriptSettings[platform] === "boolean");
+    && PLATFORMS.every((platform) => typeof scriptSettings[platform] === "boolean");
+}
+
+function hasUniqueIds(items: Array<{ id: string }>): boolean {
+  return new Set(items.map((item) => item.id)).size === items.length;
+}
+
+function normalizeStateRelationships(value: DemoState): DemoState | null {
+  if (!hasUniqueIds(value.conversations)
+    || !hasUniqueIds(value.customers)
+    || !hasUniqueIds(value.opportunities)
+    || !hasUniqueIds(value.activities)
+    || !hasUniqueIds(value.tasks)) {
+    return null;
+  }
+  const conversationsById = new Map(value.conversations.map((item) => [item.id, item]));
+  const customersById = new Map(value.customers.map((item) => [item.id, item]));
+  const customersByConversationId = new Map<string, DemoCustomer>();
+  for (const customer of value.customers) {
+    const conversation = conversationsById.get(customer.conversationId);
+    if (!conversation || conversation.platform !== customer.platform || customersByConversationId.has(customer.conversationId)) return null;
+    customersByConversationId.set(customer.conversationId, customer);
+  }
+
+  const conversations = value.conversations.map((conversation) => {
+    const reverseCustomer = customersByConversationId.get(conversation.id);
+    if (conversation.customerId) {
+      const forwardCustomer = customersById.get(conversation.customerId);
+      if (!forwardCustomer || forwardCustomer.conversationId !== conversation.id || (reverseCustomer && reverseCustomer.id !== forwardCustomer.id)) {
+        return null;
+      }
+      return conversation;
+    }
+    return reverseCustomer ? { ...conversation, customerId: reverseCustomer.id } : conversation;
+  });
+  if (conversations.some((item) => item === null)) return null;
+  const normalizedConversations = conversations as DemoState["conversations"];
+  const normalizedConversationsById = new Map(normalizedConversations.map((item) => [item.id, item]));
+
+  if (!normalizedConversationsById.has(value.selectedConversationId)
+    || !customersById.has(value.selectedCustomerId)
+    || !value.opportunities.some((item) => item.id === value.selectedOpportunityId)) {
+    return null;
+  }
+  for (const customer of value.customers) {
+    if (normalizedConversationsById.get(customer.conversationId)?.customerId !== customer.id) return null;
+  }
+  const opportunitiesById = new Map(value.opportunities.map((item) => [item.id, item]));
+  for (const opportunity of value.opportunities) {
+    const customer = customersById.get(opportunity.customerId);
+    if (!customer || customer.platform !== opportunity.source) return null;
+  }
+  for (const task of value.tasks) {
+    if (task.module === "conversations" && !normalizedConversationsById.has(task.relatedId)) return null;
+    if (task.module === "private-domain" && !customersById.has(task.relatedId)) return null;
+    if (task.module === "conversion" && !opportunitiesById.has(task.relatedId)) return null;
+  }
+  return { ...value, conversations: normalizedConversations };
+}
+
+function parseValidState(value: unknown): DemoState | null {
+  if (!isValidStateShape(value)) return null;
+  return normalizeStateRelationships(value);
 }
 
 export function normalizeIsoDateTime(value: string): string | null {
@@ -205,7 +300,11 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
       const raw = candidateStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed: unknown = JSON.parse(raw);
-        if (isValidState(parsed)) return parsed;
+        const normalized = parseValidState(parsed);
+        if (normalized) {
+          candidateStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+          return normalized;
+        }
       }
     } catch {
       // Invalid or unavailable browser storage falls back to the deterministic demo.
@@ -321,6 +420,7 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
       });
     },
     setConversationMode(conversationId, mode) {
+      if (!isAllowed(mode, CONVERSATION_MODES)) return;
       commit((current) => {
         const conversation = current.conversations.find((item) => item.id === conversationId);
         if (!conversation || conversation.mode === mode) return null;
@@ -357,7 +457,27 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
     transferConversationToPrivate(conversationId) {
       const conversation = state.conversations.find((item) => item.id === conversationId);
       if (!conversation) return "";
-      if (conversation.customerId) return conversation.customerId;
+      const existingCustomer = (conversation.customerId
+        ? state.customers.find((item) => item.id === conversation.customerId && item.conversationId === conversationId)
+        : undefined) ?? state.customers.find((item) => item.conversationId === conversationId);
+      if (existingCustomer) {
+        commit((current) => {
+          const currentConversation = current.conversations.find((item) => item.id === conversationId);
+          const currentCustomer = current.customers.find((item) => item.id === existingCustomer.id && item.conversationId === conversationId);
+          if (!currentConversation || !currentCustomer) return null;
+          const needsConversationLink = currentConversation.customerId !== currentCustomer.id;
+          const needsSelection = current.selectedCustomerId !== currentCustomer.id;
+          if (!needsConversationLink && !needsSelection) return null;
+          return {
+            ...current,
+            selectedCustomerId: currentCustomer.id,
+            conversations: needsConversationLink
+              ? current.conversations.map((item) => item.id === conversationId ? { ...item, customerId: currentCustomer.id } : item)
+              : current.conversations
+          };
+        });
+        return existingCustomer.id;
+      }
       const customerId = `customer-${conversationId.replace(/^conversation-/, "")}`;
       commit((current) => {
         const currentConversation = current.conversations.find((item) => item.id === conversationId);
@@ -389,6 +509,9 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
       return customerId;
     },
     updateCustomer(customerId, patch) {
+      if (patch.group !== undefined && !isAllowed(patch.group, CUSTOMER_GROUPS)) return;
+      if (patch.status !== undefined && !isAllowed(patch.status, CUSTOMER_STATUSES)) return;
+      if (patch.nextFollowUpAt !== undefined && !isIsoDateTime(patch.nextFollowUpAt)) return;
       commit((current) => {
         const customer = current.customers.find((item) => item.id === customerId);
         if (!customer || Object.keys(patch).length === 0) return null;
@@ -442,7 +565,7 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
     },
     createOpportunity(customerId, input) {
       const title = input.title.trim();
-      if (!title) return "";
+      if (!title || !isFiniteInRange(input.amount, 1)) return "";
       const customer = state.customers.find((item) => item.id === customerId);
       if (!customer) return "";
       const opportunityId = `opportunity-${currentIdPart(customerId)}-${state.opportunities.length + 1}`;
@@ -465,9 +588,10 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
       return opportunityId;
     },
     moveOpportunity(opportunityId, stage) {
+      if (!isAllowed(stage, ACTIVE_OPPORTUNITY_STAGES)) return;
       commit((current) => {
         const opportunity = current.opportunities.find((item) => item.id === opportunityId);
-        if (!opportunity || opportunity.stage === stage) return null;
+        if (!opportunity || opportunity.stage === stage || opportunity.stage === "won" || opportunity.stage === "lost") return null;
         const next = { ...current, opportunities: current.opportunities.map((item) => item.id === opportunityId ? { ...item, stage, updatedAt: now() } : item) };
         return activity(next, "stage", "移动商机阶段", `${opportunity.title}已进入${stage}阶段。`);
       });
@@ -493,9 +617,13 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
     },
     updateOpportunity(opportunityId, patch) {
       if (patch.amount !== undefined && (!Number.isFinite(patch.amount) || patch.amount < 1)) return;
+      if (patch.probability !== undefined && (!Number.isFinite(patch.probability) || patch.probability < 0 || patch.probability > 100)) return;
+      if (patch.nextAction !== undefined && !patch.nextAction.trim()) return;
       commit((current) => {
         const opportunity = current.opportunities.find((item) => item.id === opportunityId);
         if (!opportunity || Object.keys(patch).length === 0) return null;
+        if (opportunity.stage === "won" && patch.probability !== undefined && patch.probability !== 100) return null;
+        if (opportunity.stage === "lost" && patch.probability !== undefined && patch.probability !== 0) return null;
         const next = { ...current, opportunities: current.opportunities.map((item) => item.id === opportunityId ? { ...item, ...patch, updatedAt: now() } : item) };
         return activity(next, "opportunity", "更新商机", `已更新${opportunity.title}的成交信息。`);
       });
@@ -506,13 +634,19 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
       commit((current) => {
         const opportunity = current.opportunities.find((item) => item.id === opportunityId);
         if (!opportunity) return null;
+        const probability = result === "won" ? 100 : 0;
+        if (opportunity.stage === result
+          && opportunity.probability === probability
+          && (result === "won" ? opportunity.lossReason === undefined : opportunity.lossReason === lossReason)) {
+          return null;
+        }
         const next = {
           ...current,
           opportunities: current.opportunities.map((item) => item.id === opportunityId ? {
             ...item,
             stage: result,
-            probability: result === "won" ? 100 : 0,
-            ...(result === "lost" && lossReason ? { lossReason } : {}),
+            probability,
+            lossReason: result === "lost" ? lossReason : undefined,
             updatedAt: now()
           } : item)
         };

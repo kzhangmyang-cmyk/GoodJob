@@ -9,6 +9,7 @@ export function createSeedDemoState(): DemoState {
     conversations: [
       {
         id: "conversation-douyin-lin",
+        customerId: "customer-douyin-sun",
         customerName: "林女士",
         platform: "抖音",
         intent: "高",
@@ -24,7 +25,7 @@ export function createSeedDemoState(): DemoState {
         ]
       },
       {
-        id: "conversation-xhs-chen", customerName: "陈先生", platform: "小红书", intent: "中", unread: 0, mode: "manual",
+        id: "conversation-xhs-chen", customerId: "customer-xhs-gu", customerName: "陈先生", platform: "小红书", intent: "中", unread: 0, mode: "manual",
         needSummary: "关注品牌视觉升级方案和案例。", risk: "预算范围尚未明确。", tags: ["品牌升级"], updatedAt: "2026-07-29T08:20:00.000Z",
         messages: [{ id: "message-3", sender: "customer", body: "能看看餐饮品牌改造案例吗？", sentAt: "2026-07-29T08:20:00.000Z", simulated: true }]
       },
@@ -34,12 +35,12 @@ export function createSeedDemoState(): DemoState {
         messages: [{ id: "message-4", sender: "customer", body: "新店十月开业，设计周期来得及吗？", sentAt: "2026-07-29T08:12:00.000Z", simulated: true }]
       },
       {
-        id: "conversation-weibo-zhao", customerName: "赵先生", platform: "微博", intent: "低", unread: 0, mode: "agent",
+        id: "conversation-weibo-zhao", customerId: "customer-weibo-he", customerName: "赵先生", platform: "微博", intent: "低", unread: 0, mode: "agent",
         needSummary: "浏览过办公改造内容，需求待进一步确认。", risk: "暂无明确采购时间。", tags: ["内容互动"], updatedAt: "2026-07-29T07:55:00.000Z",
         messages: [{ id: "message-5", sender: "agent", body: "您好，可以为您推荐适合的空间案例。", sentAt: "2026-07-29T07:55:00.000Z", simulated: true }]
       },
       {
-        id: "conversation-wechat-li", customerName: "李女士", platform: "微信", intent: "中", unread: 0, mode: "agent",
+        id: "conversation-wechat-li", customerId: "customer-wechat-zhou", customerName: "李女士", platform: "微信", intent: "中", unread: 0, mode: "agent",
         needSummary: "需要企业培训与空间服务的组合方案。", risk: "需要确认决策人和采购流程。", tags: ["企业服务"], updatedAt: "2026-07-29T07:40:00.000Z",
         messages: [{ id: "message-6", sender: "customer", body: "请把服务方案发到微信。", sentAt: "2026-07-29T07:40:00.000Z", simulated: true }]
       }

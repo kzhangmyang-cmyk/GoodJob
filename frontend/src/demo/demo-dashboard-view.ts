@@ -2,6 +2,7 @@ import type { DemoActivity, DemoModule, DemoState } from "./demo-types";
 import { escapeHtml, formatMoney } from "./demo-ui";
 
 type DashboardPeriod = "today" | "week" | "month";
+type DashboardEntityType = "conversation" | "customer" | "opportunity";
 
 const periods: Record<DashboardPeriod, { label: string; multiplier: number; note: string }> = {
   today: { label: "今日", multiplier: 1, note: "截至今日 16:45 的演示快照" },
@@ -20,6 +21,7 @@ const activityMark: Record<DemoActivity["kind"], string> = {
 };
 
 let activePeriod: DashboardPeriod = "today";
+const modules = new Set<DemoModule>(["dashboard", "acquisition", "conversations", "private-domain", "conversion", "agents", "scripts", "trade-marketing", "settings"]);
 
 function scaledCount(value: number, multiplier: number): string {
   return new Intl.NumberFormat("zh-CN").format(Math.round(value * multiplier));
@@ -37,8 +39,32 @@ function formatActivityTime(iso: string): string {
   }).format(date);
 }
 
-function actionButton(module: DemoModule, content: string, className = ""): string {
-  return `<button type="button" class="${className}" data-demo-action="open-module" data-demo-module="${module}">${content}</button>`;
+function actionButton(
+  module: DemoModule,
+  content: string,
+  className = "",
+  entity?: { type: DashboardEntityType; id: string }
+): string {
+  if (!modules.has(module)) return `<button type="button" class="${className}" disabled>${content}</button>`;
+  const entityAttributes = entity && entity.id
+    ? ` data-demo-entity-type="${entity.type}" data-demo-entity-id="${escapeHtml(entity.id)}"`
+    : "";
+  return `<button type="button" class="${className}" data-demo-action="open-module" data-demo-module="${module}"${entityAttributes}>${content}</button>`;
+}
+
+function taskEntity(task: DemoState["tasks"][number]): { type: DashboardEntityType; id: string } | undefined {
+  if (task.module === "conversations") return { type: "conversation", id: task.relatedId };
+  if (task.module === "private-domain") return { type: "customer", id: task.relatedId };
+  if (task.module === "conversion") return { type: "opportunity", id: task.relatedId };
+  return undefined;
+}
+
+function safePriority(priority: string): keyof typeof taskPriority | null {
+  return priority === "高" || priority === "中" || priority === "低" ? priority : null;
+}
+
+export function resetDashboardViewState(): void {
+  activePeriod = "today";
 }
 
 export function renderDashboardView(
@@ -69,6 +95,7 @@ export function renderDashboardView(
     platform: string;
     summary: string;
     module: "conversations" | "private-domain";
+    entity: { type: "conversation" | "customer"; id: string };
     updatedAt: string;
   }>();
   state.conversations
@@ -79,6 +106,7 @@ export function renderDashboardView(
         platform: item.platform,
         summary: item.needSummary,
         module: "conversations",
+        entity: { type: "conversation", id: item.id },
         updatedAt: item.updatedAt
       });
     });
@@ -90,6 +118,7 @@ export function renderDashboardView(
         platform: item.platform,
         summary: item.needSummary,
         module: "private-domain",
+        entity: { type: "customer", id: item.id },
         updatedAt: item.lastContactAt
       });
     });
@@ -98,7 +127,9 @@ export function renderDashboardView(
     .slice(0, 3);
   const tasks = state.tasks
     .filter((item) => !item.done)
-    .sort((a, b) => taskPriority[a.priority] - taskPriority[b.priority] || a.title.localeCompare(b.title, "zh-CN"));
+    .sort((a, b) => (safePriority(a.priority) ? taskPriority[safePriority(a.priority)!] : 3)
+      - (safePriority(b.priority) ? taskPriority[safePriority(b.priority)!] : 3)
+      || a.title.localeCompare(b.title, "zh-CN"));
   const activities = [...state.activities]
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
     .slice(0, 8);
@@ -134,13 +165,16 @@ export function renderDashboardView(
         <section class="demo-panel demo-priority-panel">
           <div class="demo-section-heading"><div><span class="demo-chip">高意向</span><h3>优先跟进客户</h3></div><small>${priorityCustomers.length} 位待推进</small></div>
           <div class="demo-priority-list">
-            ${priorityCustomers.map((customer, index) => actionButton(customer.module, `<span class="demo-priority-index">0${index + 1}</span><span><b>${escapeHtml(customer.name)}</b><small>${escapeHtml(customer.platform)} · ${escapeHtml(customer.summary)}</small></span><span class="demo-arrow">→</span>`, "demo-priority-item")).join("")}
+            ${priorityCustomers.map((customer, index) => actionButton(customer.module, `<span class="demo-priority-index">0${index + 1}</span><span><b>${escapeHtml(customer.name)}</b><small>${escapeHtml(customer.platform)} · ${escapeHtml(customer.summary)}</small></span><span class="demo-arrow">→</span>`, "demo-priority-item", customer.entity)).join("")}
           </div>
         </section>
         <section class="demo-panel demo-task-panel">
           <div class="demo-section-heading"><div><span class="demo-chip">待办</span><h3>待处理任务</h3></div><small>按优先级排序</small></div>
           <div class="demo-task-list">
-            ${tasks.map((task) => actionButton(task.module, `<span class="demo-task-priority priority-${task.priority}">${task.priority}</span><span>${escapeHtml(task.title)}</span><span class="demo-arrow">→</span>`, "demo-task-item")).join("")}
+            ${tasks.map((task) => {
+              const priority = safePriority(task.priority);
+              return actionButton(task.module, `<span class="demo-task-priority priority-${priority ?? "unknown"}">${priority ?? "未知"}</span><span>${escapeHtml(task.title)}</span><span class="demo-arrow">→</span>`, "demo-task-item", taskEntity(task));
+            }).join("")}
           </div>
         </section>
       </div>
@@ -148,7 +182,7 @@ export function renderDashboardView(
       <section class="demo-panel demo-activity-panel">
         <div class="demo-section-heading"><div><span class="demo-chip">实时动态</span><h3>最近业务活动</h3></div><small>最新 ${activities.length} 条记录</small></div>
         <div class="demo-activity-rail">
-          ${activities.map((activity) => `<article class="demo-activity-item"><span class="demo-activity-kind">${activityMark[activity.kind]}</span><b>${escapeHtml(activity.title)}</b><p>${escapeHtml(activity.detail)}</p><time>${formatActivityTime(activity.createdAt)}</time></article>`).join("")}
+          ${activities.map((activity) => `<article class="demo-activity-item"><span class="demo-activity-kind">${activityMark[activity.kind] ?? "动态"}</span><b>${escapeHtml(activity.title)}</b><p>${escapeHtml(activity.detail)}</p><time>${formatActivityTime(activity.createdAt)}</time></article>`).join("")}
         </div>
       </section>
     </section>`;

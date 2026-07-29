@@ -12,8 +12,22 @@ const quickReplies = [
   "预算和预计启动时间大约在什么范围？"
 ];
 
-function modeLabel(mode: DemoConversation["mode"]): string {
-  return { agent: "智能体跟进", manual: "人工接管", paused: "已暂停" }[mode];
+function knownMode(mode: string): DemoConversation["mode"] | null {
+  return mode === "agent" || mode === "manual" || mode === "paused" ? mode : null;
+}
+
+function knownIntent(intent: string): DemoConversation["intent"] | null {
+  return intent === "高" || intent === "中" || intent === "低" ? intent : null;
+}
+
+function modeLabel(mode: string): string {
+  const safeMode = knownMode(mode);
+  return safeMode ? { agent: "智能体跟进", manual: "人工接管", paused: "已暂停" }[safeMode] : "未知模式";
+}
+
+function intentBadge(intent: string): string {
+  const safeIntent = knownIntent(intent);
+  return `<span class="demo-intent intent-${safeIntent ?? "unknown"}">${safeIntent ? `${safeIntent}意向` : "未知意向"}</span>`;
 }
 
 function filterLabel(filter: ConversationFilter): string {
@@ -32,22 +46,31 @@ function renderConversationRow(conversation: DemoConversation, selected: boolean
   const latest = conversation.messages.at(-1);
   return `<button type="button" class="demo-conversation-row ${selected ? "selected" : ""}" data-demo-action="select-conversation" data-conversation-id="${escapeHtml(conversation.id)}">
     <span class="demo-conversation-row-top"><b>${escapeHtml(conversation.customerName)}</b><time>${formatRelativeTime(conversation.updatedAt)}</time></span>
-    <span class="demo-conversation-row-meta"><span>${escapeHtml(conversation.platform)}</span><span class="demo-intent intent-${conversation.intent}">${conversation.intent}意向</span>${conversation.unread ? `<em>${conversation.unread}</em>` : ""}</span>
+    <span class="demo-conversation-row-meta"><span>${escapeHtml(conversation.platform)}</span>${intentBadge(conversation.intent)}${conversation.unread ? `<em>${conversation.unread}</em>` : ""}</span>
     <small>${escapeHtml(latest?.body ?? conversation.needSummary)}</small>
   </button>`;
 }
 
 function renderMessage(conversation: DemoConversation): string {
-  return conversation.messages.map((message) => `<article class="demo-message sender-${message.sender}">
-    <span>${message.sender === "customer" ? escapeHtml(conversation.customerName) : message.sender === "agent" ? "沟通智能体" : "顾问"}</span>
+  return conversation.messages.map((message) => {
+    const sender = message.sender === "customer" || message.sender === "agent" || message.sender === "operator" ? message.sender : "unknown";
+    const senderLabel = sender === "customer" ? escapeHtml(conversation.customerName) : sender === "agent" ? "沟通智能体" : sender === "operator" ? "顾问" : "未知发送方";
+    return `<article class="demo-message sender-${sender}">
+    <span>${senderLabel}</span>
     <p>${escapeHtml(message.body)}</p>
     <time>${formatRelativeTime(message.sentAt)} · 演示</time>
-  </article>`).join("");
+  </article>`;
+  }).join("");
 }
 
 export function setConversationFilter(filter: string, platform?: string): void {
   if (filter === "all" || filter === "unread" || filter === "high-intent" || filter === "manual") activeFilter = filter;
   if (platform) activePlatform = platform;
+}
+
+export function resetConversationViewState(): void {
+  activeFilter = "all";
+  activePlatform = "全部";
 }
 
 export function renderConversationsView(
@@ -84,8 +107,8 @@ export function renderConversationsView(
 
       <section class="demo-chat-panel demo-panel">
         <header class="demo-chat-header">
-          <div><span class="demo-status">演示模式</span><h2>${escapeHtml(selected.customerName)}</h2><p>${escapeHtml(selected.platform)} · ${modeLabel(selected.mode)} · ${selected.intent}意向</p></div>
-          <div class="demo-chat-header-actions"><span class="demo-chip">${selected.messages.length} 条消息</span><span class="demo-mode-badge mode-${selected.mode}">${modeLabel(selected.mode)}</span></div>
+          <div><span class="demo-status">演示模式</span><h2>${escapeHtml(selected.customerName)}</h2><p>${escapeHtml(selected.platform)} · ${modeLabel(selected.mode)} · ${knownIntent(selected.intent) ? `${knownIntent(selected.intent)}意向` : "未知意向"}</p></div>
+          <div class="demo-chat-header-actions"><span class="demo-chip">${selected.messages.length} 条消息</span><span class="demo-mode-badge mode-${knownMode(selected.mode) ?? "unknown"}">${modeLabel(selected.mode)}</span></div>
         </header>
         <div class="demo-message-history" aria-live="polite">${renderMessage(selected)}</div>
         <div class="demo-quick-replies"><span>演示模式快捷回复</span>${quickReplies.map((reply) => `<button type="button" data-demo-action="quick-reply" data-conversation-id="${escapeHtml(selected.id)}" data-reply="${escapeHtml(reply)}">${escapeHtml(reply)}</button>`).join("")}</div>
@@ -99,13 +122,13 @@ export function renderConversationsView(
 
   inspector.innerHTML = `
     <section class="demo-panel demo-conversation-inspector">
-      <header><div><span class="demo-status">演示模式</span><h3>对话分析</h3></div><span class="demo-intent intent-${selected.intent}">${selected.intent}意向</span></header>
+      <header><div><span class="demo-status">演示模式</span><h3>${escapeHtml(selected.customerName)} · 对话分析</h3></div>${intentBadge(selected.intent)}</header>
       <div class="demo-analysis-block"><b>需求摘要</b><p>${escapeHtml(selected.needSummary)}</p></div>
       <div class="demo-analysis-block risk"><b>风险提示</b><p>${escapeHtml(selected.risk)}</p></div>
       <div class="demo-analysis-block"><b>客户标签</b><div class="demo-tag-list">${selected.tags.map((tag) => `<span>${escapeHtml(tag)}</span>`).join("") || "<small>暂无标签</small>"}</div></div>
       <form class="demo-add-tag" data-demo-action="add-conversation-tag" data-conversation-id="${escapeHtml(selected.id)}"><label>添加演示标签<input name="demo-tag" maxlength="16" placeholder="如：已确认预算"></label><button type="submit">添加</button></form>
       <div class="demo-mode-controls"><span>对话模式 <small>演示模式</small></span><div>${(["agent", "manual", "paused"] as const).map((mode) => `<button type="button" class="${selected.mode === mode ? "active" : ""}" data-demo-action="set-conversation-mode" data-conversation-id="${escapeHtml(selected.id)}" data-mode="${mode}">${modeLabel(mode)}</button>`).join("")}</div></div>
-      <div class="demo-takeover-note"><b>${selected.mode === "agent" ? "智能体正在接待" : selected.mode === "manual" ? "人工已接管" : "自动回复已暂停"}</b><span>所有切换只影响本地演示状态。</span></div>
+      <div class="demo-takeover-note"><b>${selected.mode === "agent" ? "智能体正在接待" : selected.mode === "manual" ? "人工已接管" : selected.mode === "paused" ? "自动回复已暂停" : "未知对话状态"}</b><span>所有切换只影响本地演示状态。</span></div>
       <div class="demo-transfer-panel"><div><b>${customer ? "已转入私域客户池" : "转入私域"}</b><span>${customer ? `已关联 ${escapeHtml(customer.name)} 的演示客户档案。` : "沉淀客户资料，继续完成后续跟进。"}</span></div>${customer ? `<button type="button" class="demo-primary" data-demo-action="open-private-customer" data-customer-id="${escapeHtml(customer.id)}">查看私域客户 <span>演示模式</span></button>` : `<button type="button" class="demo-primary" data-demo-action="transfer-to-private" data-conversation-id="${escapeHtml(selected.id)}">转入私域 <span>演示模式</span></button>`}</div>
     </section>`;
 }

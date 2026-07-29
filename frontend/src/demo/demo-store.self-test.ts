@@ -1,7 +1,9 @@
 import { strict as assert } from "node:assert";
 import { parseFollowUpAt } from "./demo-app";
 import { renderCapabilityDemoView } from "./demo-capabilities-view";
+import { renderConversationsView } from "./demo-conversations-view";
 import { getConversionMetrics, renderConversionView } from "./demo-conversion-view";
+import { renderDashboardView } from "./demo-dashboard-view";
 import { renderPrivateDomainView } from "./demo-private-domain-view";
 import { createDemoStore } from "./demo-store";
 import type { DemoState } from "./demo-types";
@@ -18,6 +20,147 @@ const initial = store.getState();
 assert.equal(initial.conversations.length >= 5, true);
 assert.equal(initial.customers.length >= 4, true);
 assert.equal(initial.opportunities.length >= 3, true);
+
+const reviewFailures: string[] = [];
+function checkReviewFinding(name: string, check: () => void): void {
+  try {
+    check();
+  } catch (error) {
+    reviewFailures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+checkReviewFinding("default conversation/customer links are reciprocal and transfer is idempotent", () => {
+  const linkedCustomer = initial.customers.find((item) => item.conversationId === "conversation-douyin-lin");
+  const linkedConversation = initial.conversations.find((item) => item.id === "conversation-douyin-lin");
+  assert.ok(linkedCustomer);
+  assert.equal(linkedConversation?.customerId, linkedCustomer.id);
+
+  const relationMemory = new Map<string, string>();
+  const relationStore = createDemoStore({
+    storage: {
+      getItem: (key) => relationMemory.get(key) ?? null,
+      setItem: (key, value) => void relationMemory.set(key, value),
+      removeItem: (key) => void relationMemory.delete(key)
+    },
+    now: () => "2026-07-29T09:00:00.000Z"
+  });
+  let notifications = 0;
+  relationStore.subscribe(() => {
+    notifications += 1;
+  });
+  const before = relationStore.getState();
+  const firstCustomerId = relationStore.transferConversationToPrivate("conversation-douyin-lin");
+  const afterFirst = relationStore.getState();
+  const notificationsAfterFirst = notifications;
+  const secondCustomerId = relationStore.transferConversationToPrivate("conversation-douyin-lin");
+  const afterSecond = relationStore.getState();
+  assert.equal(firstCustomerId, linkedCustomer.id);
+  assert.equal(secondCustomerId, linkedCustomer.id);
+  assert.equal(afterFirst.selectedCustomerId, linkedCustomer.id);
+  assert.equal(afterFirst.customers.length, before.customers.length);
+  assert.equal(afterFirst.activities.length, before.activities.length);
+  assert.equal(afterSecond.customers.length, afterFirst.customers.length);
+  assert.equal(afterSecond.activities.length, afterFirst.activities.length);
+  assert.equal(notifications, notificationsAfterFirst);
+});
+
+checkReviewFinding("legacy one-way links normalize without duplicating customers", () => {
+  const legacyState = JSON.parse(JSON.stringify(initial)) as DemoState;
+  const linkedCustomer = legacyState.customers.find((item) => item.conversationId === "conversation-douyin-lin");
+  const linkedConversation = legacyState.conversations.find((item) => item.id === "conversation-douyin-lin");
+  assert.ok(linkedCustomer);
+  assert.ok(linkedConversation);
+  delete linkedConversation.customerId;
+  const legacyStore = createDemoStore({
+    storage: {
+      getItem: () => JSON.stringify(legacyState),
+      setItem: () => undefined,
+      removeItem: () => undefined
+    }
+  });
+  assert.equal(
+    legacyStore.getState().conversations.find((item) => item.id === linkedConversation.id)?.customerId,
+    linkedCustomer.id
+  );
+  assert.equal(legacyStore.getState().customers.length, legacyState.customers.length);
+});
+
+checkReviewFinding("generic stage movement cannot enter or reopen terminal stages", () => {
+  const terminalStore = createDemoStore({ storage: null, now: () => "2026-07-29T09:00:00.000Z" });
+  const opportunityId = "opportunity-office";
+  const before = terminalStore.getState();
+  let notifications = 0;
+  terminalStore.subscribe(() => {
+    notifications += 1;
+  });
+  terminalStore.moveOpportunity(opportunityId, "won");
+  terminalStore.moveOpportunity(opportunityId, "lost");
+  assert.equal(terminalStore.getState().opportunities.find((item) => item.id === opportunityId)?.stage, "qualified");
+  assert.equal(terminalStore.getState().activities.length, before.activities.length);
+  assert.equal(notifications, 0);
+  terminalStore.closeOpportunity(opportunityId, "won");
+  assert.equal(terminalStore.getState().opportunities.find((item) => item.id === opportunityId)?.probability, 100);
+  terminalStore.moveOpportunity(opportunityId, "negotiating");
+  assert.equal(terminalStore.getState().opportunities.find((item) => item.id === opportunityId)?.stage, "won");
+
+  const terminalMain = { innerHTML: "" } as HTMLElement;
+  const terminalInspector = { innerHTML: "" } as HTMLElement;
+  renderConversionView(terminalStore.getState(), terminalMain, terminalInspector);
+  assert.equal(terminalInspector.innerHTML.includes('data-demo-action="move-opportunity" data-opportunity-id="opportunity-office" data-opportunity-stage="won"'), false);
+  assert.equal(terminalInspector.innerHTML.includes('data-demo-action="move-opportunity" data-opportunity-id="opportunity-office" data-opportunity-stage="lost"'), false);
+});
+
+checkReviewFinding("malicious persisted unions, ranges, and relationships fall back to seed", () => {
+  const payload = 'evil"><img src=x onerror=alert(1)>';
+  const maliciousEnums = JSON.parse(JSON.stringify(initial)) as DemoState;
+  maliciousEnums.conversations[0].customerName = payload;
+  Object.assign(maliciousEnums.conversations[0], { platform: payload, intent: payload, mode: payload });
+  Object.assign(maliciousEnums.conversations[0].messages[0], { sender: payload });
+  Object.assign(maliciousEnums.customers[0], { platform: payload, intent: payload, group: payload, status: payload });
+  Object.assign(maliciousEnums.opportunities[0], { stage: payload, source: payload, lossReason: payload });
+  Object.assign(maliciousEnums.activities[0], { kind: payload });
+  Object.assign(maliciousEnums.tasks[0], { priority: payload, module: payload });
+
+  const invalidProbability = JSON.parse(JSON.stringify(initial)) as DemoState;
+  invalidProbability.opportunities[0].probability = 101;
+  const brokenRelationship = JSON.parse(JSON.stringify(initial)) as DemoState;
+  brokenRelationship.opportunities[0].customerId = "missing-customer";
+
+  for (const candidate of [maliciousEnums, invalidProbability, brokenRelationship]) {
+    const repairedStore = createDemoStore({
+      storage: {
+        getItem: () => JSON.stringify(candidate),
+        setItem: () => undefined,
+        removeItem: () => undefined
+      }
+    });
+    assert.equal(repairedStore.getState().conversations[0].id, "conversation-douyin-lin");
+    assert.equal(repairedStore.getState().conversations[0].customerName, "林女士");
+    assert.equal(repairedStore.getState().opportunities[0].probability, 55);
+  }
+
+  const unsafeConversationMain = { innerHTML: "" } as HTMLElement;
+  const unsafeConversationInspector = { innerHTML: "" } as HTMLElement;
+  renderConversationsView(maliciousEnums, unsafeConversationMain, unsafeConversationInspector);
+  const unsafeDashboardMain = { innerHTML: "", querySelectorAll: () => [] } as unknown as HTMLElement;
+  const unsafeDashboardInspector = { innerHTML: "" } as HTMLElement;
+  renderDashboardView(maliciousEnums, unsafeDashboardMain, unsafeDashboardInspector);
+  assert.equal(unsafeConversationMain.innerHTML.includes(payload), false);
+  assert.equal(unsafeConversationInspector.innerHTML.includes(payload), false);
+  assert.equal(unsafeDashboardMain.innerHTML.includes(payload), false);
+});
+
+checkReviewFinding("dashboard entity actions retain safe entity type and id", () => {
+  const dashboardMain = { innerHTML: "", querySelectorAll: () => [] } as unknown as HTMLElement;
+  const dashboardInspector = { innerHTML: "" } as HTMLElement;
+  renderDashboardView(initial, dashboardMain, dashboardInspector);
+  assert.equal(dashboardMain.innerHTML.includes('data-demo-entity-type="conversation" data-demo-entity-id="conversation-kuaishou-wang"'), true);
+  assert.equal(dashboardMain.innerHTML.includes('data-demo-entity-type="customer" data-demo-entity-id="customer-wechat-zhou"'), true);
+  assert.equal(dashboardMain.innerHTML.includes('data-demo-entity-type="opportunity" data-demo-entity-id="opportunity-office"'), true);
+});
+
+assert.deepEqual(reviewFailures, [], reviewFailures.join("\n"));
 
 const capabilityMain = { innerHTML: "" } as HTMLElement;
 const capabilityInspector = { innerHTML: "" } as HTMLElement;
@@ -133,7 +276,7 @@ const updatedCustomer = store.getState().customers.find((item) => item.id === cu
 assert.equal(updatedCustomer?.tags.includes("预算明确"), true);
 assert.equal(updatedCustomer?.group, "重点客户");
 assert.equal(store.getState().tasks.some((item) => item.relatedId === customerId), true);
-const followUpTasks = store.getState().tasks.filter((item) => item.relatedId === customerId);
+const followUpTasks = store.getState().tasks.filter((item) => item.relatedId === customerId && item.id.startsWith("task-follow-up-"));
 assert.deepEqual(followUpTasks.map((item) => item.dueAt), ["2028-02-29T10:00:00.000Z", "2026-07-30T10:00:00.000Z", "2026-08-01T10:00:00.000Z"]);
 assert.deepEqual(followUpTasks.map((item) => item.createdAt), ["2026-07-29T09:00:00.000Z", "2026-07-29T09:00:00.000Z", "2026-07-29T09:00:00.000Z"]);
 renderPrivateDomainView(store.getState(), unsafeMain, unsafeInspector);
