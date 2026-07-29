@@ -109,7 +109,12 @@ const required = [
   "ACQ-WECHAT-01",
   "ACQ-WEIBO-01",
   "id=\"replicaTaskMode\"",
-  "同步私域"
+  "同步私域",
+  "id=\"demoModuleMain\"",
+  "id=\"demoModuleInspector\"",
+  "data-replica-module-panel=\"acquisition\"",
+  "src/demo/demo-app.ts",
+  "src/demo/demo.css"
 ];
 
 const leadFinderMarkupRequired = [

@@ -220,14 +220,6 @@ if (replica) {
       return;
     }
 
-    const navButton = target.closest<HTMLButtonElement>("[data-replica-view]");
-    if (navButton) {
-      document.querySelectorAll("[data-replica-view]").forEach((button) => button.classList.toggle("active", button === navButton));
-      const label = navButton.querySelector("span")?.textContent?.trim() || "当前模块";
-      showToast(`${label}入口已选中，业务内容待继续完善`);
-      return;
-    }
-
     const scopeButton = target.closest<HTMLButtonElement>("[data-replica-scope]");
     if (scopeButton) {
       activeScope = scopeButton.dataset.replicaScope || "all";

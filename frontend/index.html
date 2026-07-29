@@ -10231,6 +10231,7 @@
   <link rel="stylesheet" href="/src/m1-layout.css" />
   <link rel="stylesheet" href="/src/vendor/phosphor/regular/style.css" />
   <link rel="stylesheet" href="/src/replica-dashboard.css" />
+  <link rel="stylesheet" href="/src/demo/demo.css" />
 </head>
 <body>
   <section class="login-screen" aria-label="登录">
@@ -10313,8 +10314,8 @@
 
     <header class="replica-header">
       <div class="replica-title">
-        <h1>自动营销系统</h1>
-        <p>获客 · 沟通 · 私域沉淀 · 成交</p>
+        <h1 id="replicaHeaderTitle">自动营销系统</h1>
+        <p id="replicaHeaderSubtitle">获客 · 沟通 · 私域沉淀 · 成交</p>
       </div>
 
       <label class="replica-search">
@@ -10332,7 +10333,7 @@
       </div>
     </header>
 
-    <main class="replica-main">
+    <main class="replica-main" data-replica-module-panel="acquisition">
       <section class="replica-metrics" aria-label="全渠道获客指标">
         <article class="replica-metric replica-glass">
           <div class="replica-metric-head"><h2>今日发现</h2><span class="replica-metric-icon"><i class="ph ph-magnifying-glass" aria-hidden="true"></i></span></div>
@@ -10487,7 +10488,7 @@
       </section>
     </main>
 
-    <aside class="replica-inspector replica-glass">
+    <aside class="replica-inspector replica-glass" data-replica-module-panel="acquisition">
       <div class="replica-inspector-head">
         <div class="replica-inspector-title"><i class="ph ph-sparkle" aria-hidden="true"></i><h2>获客任务详情</h2></div>
         <button type="button" class="replica-icon-button" title="查看来源"><i class="ph ph-crosshair" aria-hidden="true"></i></button>
@@ -10521,6 +10522,9 @@
         <button type="button" title="更多操作"><i class="ph ph-dots-three" aria-hidden="true"></i></button>
       </div>
     </aside>
+
+    <main class="replica-demo-main" id="demoModuleMain" hidden aria-live="polite"></main>
+    <aside class="replica-demo-inspector replica-glass" id="demoModuleInspector" hidden></aside>
 
     <div class="replica-toast" id="replicaToast" role="status" aria-live="polite"><i class="ph ph-check-circle" aria-hidden="true"></i><span>任务已更新</span></div>
   </div>
@@ -12400,5 +12404,6 @@
   </script>
   <script type="module" src="/src/prototype-api.ts"></script>
   <script type="module" src="/src/replica-dashboard.ts"></script>
+  <script type="module" src="/src/demo/demo-app.ts"></script>
 </body>
 </html>

@@ -1,0 +1,132 @@
+.replica-demo-main {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.replica-demo-inspector {
+  grid-column: 3;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 280px;
+  align-self: start;
+  padding: 22px;
+  border-radius: var(--replica-radius-lg);
+}
+
+.demo-toolbar,
+.demo-panel,
+.demo-metric,
+.demo-list,
+.demo-row,
+.demo-empty {
+  border: 1px solid var(--replica-line-soft);
+  border-radius: var(--replica-radius-md);
+  background: var(--replica-surface-soft);
+}
+
+.demo-toolbar,
+.demo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.demo-panel,
+.demo-metric,
+.demo-list,
+.demo-empty {
+  padding: 20px;
+}
+
+.demo-panel,
+.demo-list {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012)),
+    var(--replica-surface);
+  box-shadow: var(--replica-shadow);
+}
+
+.demo-metric strong,
+.demo-row b {
+  color: var(--replica-text);
+  font-weight: 720;
+}
+
+.demo-list {
+  display: grid;
+  gap: 8px;
+}
+
+.demo-row {
+  padding: 12px 14px;
+}
+
+.demo-empty {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  min-height: 184px;
+  color: var(--replica-muted);
+  line-height: 1.6;
+}
+
+.demo-empty h2,
+.demo-empty p {
+  margin: 0;
+}
+
+.demo-empty h2 {
+  color: var(--replica-text);
+  font-size: 22px;
+}
+
+.demo-chip,
+.demo-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid rgba(24, 237, 120, 0.3);
+  border-radius: 999px;
+  color: #cffff0;
+  background: var(--replica-accent-soft);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.demo-status {
+  color: #f4f6f3;
+  border-color: var(--replica-line);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.demo-primary {
+  min-height: 40px;
+  padding: 0 15px;
+  border: 1px solid rgba(24, 237, 120, 0.42);
+  border-radius: var(--replica-radius-sm);
+  color: #deffe9;
+  background: rgba(16, 91, 52, 0.35);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 680;
+}
+
+@media (max-width: 900px) {
+  .replica-demo-main,
+  .replica-demo-inspector {
+    grid-column: 1;
+    grid-row: auto;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .replica-demo-inspector {
+    min-height: 0;
+  }
+}
