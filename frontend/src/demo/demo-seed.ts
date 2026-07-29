@@ -67,7 +67,7 @@ export function createSeedDemoState(): DemoState {
     ],
     tasks: [
       { id: "task-conversation-lin", title: "确认林女士项目面积", priority: "高", module: "conversations", relatedId: "conversation-douyin-lin", done: false },
-      { id: "task-private-sun", title: "跟进孙女士预算范围", priority: "中", module: "private-domain", relatedId: "customer-douyin-sun", done: false },
+      { id: "task-private-sun", title: "跟进孙女士预算范围", priority: "中", module: "private-domain", relatedId: "customer-douyin-sun", done: false, dueAt: "2026-07-30T14:00:00.000Z", createdAt: "2026-07-28T16:30:00.000Z" },
       { id: "task-conversion-office", title: "收集办公空间平面图", priority: "高", module: "conversion", relatedId: "opportunity-office", done: false },
       { id: "task-conversion-retail", title: "准备零售门店合同评审", priority: "低", module: "conversion", relatedId: "opportunity-retail", done: false }
     ],

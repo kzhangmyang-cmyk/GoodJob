@@ -72,10 +72,17 @@ store.updateCustomer(customerId, {
   nextFollowUpAt: "2026-07-30T10:00:00.000Z"
 });
 store.createFollowUp(customerId, "发送案例与报价范围", "2026-07-30T10:00:00.000Z");
+store.createFollowUp(customerId, "确认预算与决策人", "2026-08-01T10:00:00.000Z");
 const updatedCustomer = store.getState().customers.find((item) => item.id === customerId);
 assert.equal(updatedCustomer?.tags.includes("预算明确"), true);
 assert.equal(updatedCustomer?.group, "重点客户");
 assert.equal(store.getState().tasks.some((item) => item.relatedId === customerId), true);
+const followUpTasks = store.getState().tasks.filter((item) => item.relatedId === customerId);
+assert.deepEqual(followUpTasks.map((item) => item.dueAt), ["2026-07-30T10:00:00.000Z", "2026-08-01T10:00:00.000Z"]);
+assert.deepEqual(followUpTasks.map((item) => item.createdAt), ["2026-07-29T09:00:00.000Z", "2026-07-29T09:00:00.000Z"]);
+renderPrivateDomainView(store.getState(), unsafeMain, unsafeInspector);
+const timelineMarkup = unsafeInspector.innerHTML.slice(unsafeInspector.innerHTML.indexOf("跟进时间线"));
+assert.equal(timelineMarkup.indexOf("确认预算与决策人") < timelineMarkup.indexOf("发送案例与报价范围"), true);
 
 store.simulateOutreach(["customer-wechat-zhou"]);
 const contactedCustomer = store.getState().customers.find((item) => item.id === "customer-wechat-zhou");
@@ -116,6 +123,14 @@ const malformedStorage = {
 const repaired = createDemoStore({ storage: malformedStorage, now: () => "2026-07-29T10:00:00.000Z" });
 assert.equal(repaired.getState().conversations.length >= 5, true);
 assert.equal(repaired.getState().customers.length >= 4, true);
+
+const invalidTaskStorage = {
+  getItem: () => JSON.stringify({ ...initial, tasks: [{ ...initial.tasks[0], dueAt: 123 }] }),
+  setItem: () => undefined,
+  removeItem: () => undefined
+};
+const repairedTaskState = createDemoStore({ storage: invalidTaskStorage, now: () => "2026-07-29T10:00:00.000Z" });
+assert.equal(repairedTaskState.getState().tasks[0]?.dueAt, undefined);
 
 const reloaded = createDemoStore({ storage, now: () => "2026-07-29T10:00:00.000Z" });
 assert.equal(reloaded.getState().opportunities.some((item) => item.id === opportunityId), true);

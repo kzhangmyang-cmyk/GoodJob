@@ -154,7 +154,9 @@ function isTask(value: unknown): boolean {
     && typeof value.priority === "string"
     && typeof value.module === "string"
     && typeof value.relatedId === "string"
-    && typeof value.done === "boolean";
+    && typeof value.done === "boolean"
+    && (value.dueAt === undefined || typeof value.dueAt === "string")
+    && (value.createdAt === undefined || typeof value.createdAt === "string");
 }
 
 function isSettings(value: unknown): boolean {
@@ -376,7 +378,8 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
       commit((current) => {
         const customer = current.customers.find((item) => item.id === customerId);
         if (!customer) return null;
-        const task = { id: `task-follow-up-${current.tasks.length + 1}`, title: text, priority: "中" as const, module: "private-domain" as const, relatedId: customerId, done: false };
+        const createdAt = now();
+        const task = { id: `task-follow-up-${current.tasks.length + 1}`, title: text, priority: "中" as const, module: "private-domain" as const, relatedId: customerId, done: false, dueAt, createdAt };
         const next = {
           ...current,
           customers: current.customers.map((item) => item.id === customerId ? { ...item, nextFollowUpAt: dueAt } : item),

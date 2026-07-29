@@ -44,6 +44,12 @@ function escapedDate(value: string): string {
   return escapeHtml(value);
 }
 
+function timelineTimestamp(value: string | null): number {
+  if (!value) return 0;
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
 function customerMatches(customer: DemoCustomer): boolean {
   if (activeGroup !== "all" && customer.group !== activeGroup) return false;
   if (activeIntent !== "全部" && customer.intent !== activeIntent) return false;
@@ -96,8 +102,8 @@ function renderTimeline(state: DemoState, customer: DemoCustomer): string {
   const conversation = state.conversations.find((item) => item.id === customer.conversationId);
   const items = [
     ...state.activities.filter((item) => item.detail.includes(customer.name) || (conversation && item.detail.includes(conversation.customerName))).map((item) => ({ title: item.title, detail: item.detail, at: item.createdAt })),
-    ...state.tasks.filter((item) => item.relatedId === customer.id).map((item) => ({ title: "跟进计划", detail: item.title, at: null as string | null }))
-  ].sort((left, right) => Date.parse(right.at ?? "0") - Date.parse(left.at ?? "0")).slice(0, 5);
+    ...state.tasks.filter((item) => item.relatedId === customer.id).map((item) => ({ title: "跟进计划", detail: item.title, at: item.dueAt ?? item.createdAt ?? null }))
+  ].sort((left, right) => timelineTimestamp(right.at) - timelineTimestamp(left.at)).slice(0, 5);
   return items.length ? items.map((item) => `<li><time>${item.at ? formatRelativeTime(item.at) : "未记录时间"}</time><span><b>${escapeHtml(item.title)}</b>${escapeHtml(item.detail)}</span></li>`).join("")
     : "<li><span><b>待补充</b>该客户暂无演示跟进记录。</span></li>";
 }

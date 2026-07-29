@@ -82,6 +82,8 @@ export interface DemoTask {
   module: DemoModule;
   relatedId: string;
   done: boolean;
+  dueAt?: string;
+  createdAt?: string;
 }
 
 export interface DemoSettings {
