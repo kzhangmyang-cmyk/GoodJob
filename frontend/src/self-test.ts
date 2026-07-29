@@ -32,6 +32,7 @@ const m1Layout = readFileSync(new URL("./m1-layout.css", import.meta.url), "utf8
 const replicaStyles = readFileSync(new URL("./replica-dashboard.css", import.meta.url), "utf8");
 const replicaBehavior = readFileSync(new URL("./replica-dashboard.ts", import.meta.url), "utf8");
 const demoApp = readFileSync(new URL("./demo/demo-app.ts", import.meta.url), "utf8");
+const demoDashboardView = readFileSync(new URL("./demo/demo-dashboard-view.ts", import.meta.url), "utf8");
 
 const required = [
   "login-screen",
@@ -115,7 +116,11 @@ const required = [
   "id=\"demoModuleInspector\"",
   "data-replica-module-panel=\"acquisition\"",
   "src/demo/demo-app.ts",
-  "src/demo/demo.css"
+  "src/demo/demo.css",
+  "renderDashboardView",
+  "data-demo-action=\"open-module\"",
+  "今日业务漏斗",
+  "最近业务活动"
 ];
 
 const leadFinderMarkupRequired = [
@@ -148,6 +153,7 @@ for (const token of required) {
     && !m1Layout.includes(token)
     && !replicaStyles.includes(token)
     && !replicaBehavior.includes(token)
+    && !demoDashboardView.includes(token)
   ) throw new Error(`missing ${token}`);
 }
 

@@ -1,9 +1,14 @@
 import { createDemoRouter, demoModuleMeta } from "./demo-router";
+import { renderDashboardView } from "./demo-dashboard-view";
 import { createDemoStore } from "./demo-store";
 import type { DemoModule, DemoState } from "./demo-types";
 import { showDemoToast } from "./demo-ui";
 
 function renderModule(module: DemoModule, state: DemoState, host: HTMLElement, inspector: HTMLElement): void {
+  if (module === "dashboard") {
+    renderDashboardView(state, host, inspector);
+    return;
+  }
   if (module === "acquisition") return;
   const meta = demoModuleMeta[module];
   host.innerHTML = `
@@ -33,6 +38,12 @@ export function startDemoApp(): void {
 
   shell.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
+    const moduleButton = target.closest<HTMLButtonElement>("[data-demo-action=\"open-module\"]");
+    const module = moduleButton?.dataset.demoModule;
+    if (module && Object.prototype.hasOwnProperty.call(demoModuleMeta, module)) {
+      router.navigate(module as DemoModule);
+      return;
+    }
     const nav = target.closest<HTMLButtonElement>("[data-replica-view]");
     if (nav?.dataset.replicaView) {
       router.navigate(nav.dataset.replicaView as DemoModule);
