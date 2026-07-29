@@ -1,6 +1,7 @@
 import { createDemoRouter, demoModuleMeta } from "./demo-router";
 import { renderConversationsView, setConversationFilter } from "./demo-conversations-view";
 import { renderDashboardView } from "./demo-dashboard-view";
+import { renderCapabilityDemoView } from "./demo-capabilities-view";
 import { isOpportunityStage, lossReasons, renderConversionView } from "./demo-conversion-view";
 import {
   clearCustomerBatchSelection,
@@ -32,20 +33,10 @@ function renderModule(module: DemoModule, state: DemoState, host: HTMLElement, i
     renderConversionView(state, host, inspector);
     return;
   }
-  if (module === "acquisition") return;
-  const meta = demoModuleMeta[module];
-  host.innerHTML = `
-    <section class="demo-panel demo-empty">
-      <span class="demo-status">演示模块</span>
-      <h2>${meta.title}</h2>
-      <p>${meta.subtitle}</p>
-      <small>已载入 ${state.tasks.filter((task) => task.module === module && !task.done).length} 条待处理演示任务。</small>
-    </section>`;
-  inspector.innerHTML = `
-    <section class="demo-panel demo-empty">
-      <span class="demo-chip">演示数据</span>
-      <p>在左侧选择其他模块，体验共享工作区外壳。</p>
-    </section>`;
+  if (module === "agents" || module === "scripts" || module === "trade-marketing" || module === "settings") {
+    renderCapabilityDemoView(module, state, host, inspector);
+    return;
+  }
 }
 
 export function parseFollowUpAt(value: string): string | null {
@@ -64,6 +55,7 @@ export function startDemoApp(): void {
   const router = createDemoRouter();
   const render = () => renderModule(router.current(), store.getState(), host, inspector);
   let draggedOpportunityId = "";
+  let resetInProgress = false;
 
   function sendConversationMessage(conversationId: string, body: string): void {
     const text = body.trim();
@@ -180,6 +172,42 @@ export function startDemoApp(): void {
     if (action === "close-won" && opportunityId) {
       store.closeOpportunity(opportunityId, "won");
       showDemoToast("演示：商机已标记成交");
+      return;
+    }
+    if (action === "toggle-agent") {
+      const name = actionTarget?.dataset.agentName;
+      if (name === "获客识别智能体" || name === "社媒沟通智能体" || name === "客户跟进智能体") {
+        store.toggleAgent(name);
+        showDemoToast("演示：状态已切换");
+      }
+      return;
+    }
+    if (action === "toggle-script") {
+      const platform = actionTarget?.dataset.scriptPlatform;
+      if (platform === "抖音" || platform === "小红书" || platform === "快手" || platform === "微信" || platform === "微博") {
+        store.toggleScript(platform);
+        showDemoToast("演示：状态已切换");
+      }
+      return;
+    }
+    if (action === "open-reset-dialog") {
+      const dialog = host.querySelector<HTMLDialogElement>("#demoResetDialog");
+      if (dialog && !dialog.open) dialog.showModal();
+      return;
+    }
+    if (action === "cancel-reset") {
+      actionTarget?.closest<HTMLDialogElement>("dialog")?.close();
+      return;
+    }
+    if (action === "confirm-reset") {
+      const dialog = actionTarget?.closest<HTMLDialogElement>("dialog");
+      if (!dialog?.open || resetInProgress) return;
+      resetInProgress = true;
+      dialog.close();
+      store.reset();
+      router.navigate("dashboard");
+      showDemoToast("演示：已恢复初始数据");
+      resetInProgress = false;
       return;
     }
     if (target.closest("#replicaNewTaskButton") && router.current() !== "acquisition") {

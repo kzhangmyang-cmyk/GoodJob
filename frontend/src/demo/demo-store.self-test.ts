@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { parseFollowUpAt } from "./demo-app";
+import { renderCapabilityDemoView } from "./demo-capabilities-view";
 import { getConversionMetrics, renderConversionView } from "./demo-conversion-view";
 import { renderPrivateDomainView } from "./demo-private-domain-view";
 import { createDemoStore } from "./demo-store";
@@ -17,6 +18,23 @@ const initial = store.getState();
 assert.equal(initial.conversations.length >= 5, true);
 assert.equal(initial.customers.length >= 4, true);
 assert.equal(initial.opportunities.length >= 3, true);
+
+const capabilityMain = { innerHTML: "" } as HTMLElement;
+const capabilityInspector = { innerHTML: "" } as HTMLElement;
+const unsafeCapabilityState = JSON.parse(JSON.stringify(initial)) as DemoState;
+unsafeCapabilityState.tasks[0].title = '<img src=x onerror=alert(1)>';
+for (const module of ["agents", "scripts", "trade-marketing", "settings"] as const) {
+  renderCapabilityDemoView(module, unsafeCapabilityState, capabilityMain, capabilityInspector);
+  assert.equal(capabilityMain.innerHTML.includes('<img src=x onerror=alert(1)>'), false);
+}
+renderCapabilityDemoView("agents", unsafeCapabilityState, capabilityMain, capabilityInspector);
+assert.equal(capabilityMain.innerHTML.includes("智能体"), true);
+renderCapabilityDemoView("scripts", unsafeCapabilityState, capabilityMain, capabilityInspector);
+assert.equal(capabilityMain.innerHTML.includes("抖音"), true);
+renderCapabilityDemoView("trade-marketing", unsafeCapabilityState, capabilityMain, capabilityInspector);
+assert.equal(capabilityMain.innerHTML.includes("演示版暂未接入"), true);
+renderCapabilityDemoView("settings", unsafeCapabilityState, capabilityMain, capabilityInspector);
+assert.equal(capabilityMain.innerHTML.includes("重置演示数据"), true);
 
 const unsafeState = JSON.parse(JSON.stringify(initial)) as DemoState;
 const unsafeCustomer = unsafeState.customers[0];
@@ -228,3 +246,7 @@ reloaded.reset();
 assert.equal(reloaded.getState().opportunities.some((item) => item.id === opportunityId), false);
 assert.equal(reloaded.getState().activities.length, 9);
 assert.equal(reloaded.getState().activities.at(-1)?.title, "重置演示数据");
+const resetState = reloaded.getState();
+assert.equal(resetState.version, 1);
+assert.equal(resetState.conversations[0].id, "conversation-douyin-lin");
+assert.equal(memory.has("goodjob.frontend-demo.v1"), true);
