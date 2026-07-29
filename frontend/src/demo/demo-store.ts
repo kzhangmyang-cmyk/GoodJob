@@ -54,7 +54,116 @@ function browserStorage(): StorageLike | null {
 }
 
 function isValidState(value: unknown): value is DemoState {
-  return typeof value === "object" && value !== null && (value as { version?: unknown }).version === 1;
+  if (!isRecord(value) || value.version !== 1) return false;
+  return typeof value.selectedConversationId === "string"
+    && typeof value.selectedCustomerId === "string"
+    && typeof value.selectedOpportunityId === "string"
+    && Array.isArray(value.conversations)
+    && value.conversations.every(isConversation)
+    && Array.isArray(value.customers)
+    && value.customers.every(isCustomer)
+    && Array.isArray(value.opportunities)
+    && value.opportunities.every(isOpportunity)
+    && Array.isArray(value.activities)
+    && value.activities.every(isActivity)
+    && Array.isArray(value.tasks)
+    && value.tasks.every(isTask)
+    && isSettings(value.demoSettings);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isConversation(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && (value.customerId === undefined || typeof value.customerId === "string")
+    && typeof value.customerName === "string"
+    && typeof value.platform === "string"
+    && typeof value.intent === "string"
+    && typeof value.unread === "number"
+    && typeof value.mode === "string"
+    && typeof value.needSummary === "string"
+    && typeof value.risk === "string"
+    && isStringArray(value.tags)
+    && Array.isArray(value.messages)
+    && value.messages.every(isMessage)
+    && typeof value.updatedAt === "string";
+}
+
+function isMessage(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.sender === "string"
+    && typeof value.body === "string"
+    && typeof value.sentAt === "string"
+    && value.simulated === true;
+}
+
+function isCustomer(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.conversationId === "string"
+    && typeof value.name === "string"
+    && typeof value.platform === "string"
+    && typeof value.intent === "string"
+    && typeof value.group === "string"
+    && isStringArray(value.tags)
+    && typeof value.owner === "string"
+    && typeof value.needSummary === "string"
+    && typeof value.lastContactAt === "string"
+    && typeof value.nextFollowUpAt === "string"
+    && typeof value.status === "string";
+}
+
+function isOpportunity(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.customerId === "string"
+    && typeof value.title === "string"
+    && typeof value.amount === "number"
+    && typeof value.probability === "number"
+    && typeof value.stage === "string"
+    && typeof value.source === "string"
+    && typeof value.nextAction === "string"
+    && (value.quoteAmount === undefined || typeof value.quoteAmount === "number")
+    && (value.quoteSentAt === undefined || typeof value.quoteSentAt === "string")
+    && (value.lossReason === undefined || typeof value.lossReason === "string")
+    && typeof value.updatedAt === "string";
+}
+
+function isActivity(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.kind === "string"
+    && typeof value.title === "string"
+    && typeof value.detail === "string"
+    && typeof value.createdAt === "string";
+}
+
+function isTask(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.title === "string"
+    && typeof value.priority === "string"
+    && typeof value.module === "string"
+    && typeof value.relatedId === "string"
+    && typeof value.done === "boolean";
+}
+
+function isSettings(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const { agents: agentSettings, scripts: scriptSettings } = value;
+  if (!isRecord(agentSettings) || !isRecord(scriptSettings)) return false;
+  const agentNames = ["获客识别智能体", "社媒沟通智能体", "客户跟进智能体"];
+  const platforms = ["抖音", "小红书", "快手", "微信", "微博"];
+  return agentNames.every((name) => typeof agentSettings[name] === "boolean")
+    && platforms.every((platform) => typeof scriptSettings[platform] === "boolean");
 }
 
 export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
@@ -264,7 +373,8 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
         if (targetIds.size === 0) return null;
         let messageNumber = current.conversations.reduce((count, item) => count + item.messages.length, 0);
         const conversations = current.conversations.map((conversation) => {
-          const matchingCustomer = current.customers.find((customer) => customer.id === conversation.customerId && targetIds.has(customer.id));
+          const matchingCustomer = current.customers.find((customer) => targetIds.has(customer.id)
+            && (conversation.customerId === customer.id || conversation.id === customer.conversationId));
           if (!matchingCustomer) return conversation;
           messageNumber += 1;
           const message = { id: `message-${messageNumber}`, sender: "agent" as const, body: "您好，想了解一下您目前的项目进展，方便继续为您提供方案支持吗？", sentAt, simulated: true as const };
@@ -366,9 +476,7 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
       });
     },
     reset() {
-      state = createSeedDemoState();
-      save(state);
-      listeners.forEach((listener) => listener(state));
+      commit(() => activity(createSeedDemoState(), "stage", "重置演示数据", "已恢复初始演示数据。"));
     }
   };
 }

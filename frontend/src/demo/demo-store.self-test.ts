@@ -47,8 +47,25 @@ store.toggleScript("抖音");
 assert.equal(store.getState().demoSettings.agents["社媒沟通智能体"], false);
 assert.equal(store.getState().demoSettings.scripts["抖音"], false);
 
+store.simulateOutreach(["customer-wechat-zhou"]);
+assert.equal(
+  store.getState().conversations.find((item) => item.id === "conversation-wechat-li")?.messages.at(-1)?.sender,
+  "agent"
+);
+
+const malformedStorage = {
+  getItem: () => '{"version":1}',
+  setItem: () => undefined,
+  removeItem: () => undefined
+};
+const repaired = createDemoStore({ storage: malformedStorage, now: () => "2026-07-29T10:00:00.000Z" });
+assert.equal(repaired.getState().conversations.length >= 5, true);
+assert.equal(repaired.getState().customers.length >= 4, true);
+
 const reloaded = createDemoStore({ storage, now: () => "2026-07-29T10:00:00.000Z" });
 assert.equal(reloaded.getState().opportunities.some((item) => item.id === opportunityId), true);
 
 reloaded.reset();
 assert.equal(reloaded.getState().opportunities.some((item) => item.id === opportunityId), false);
+assert.equal(reloaded.getState().activities.length, 9);
+assert.equal(reloaded.getState().activities.at(-1)?.title, "重置演示数据");
