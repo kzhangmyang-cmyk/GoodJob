@@ -1,6 +1,15 @@
 import { createDemoRouter, demoModuleMeta } from "./demo-router";
 import { renderConversationsView, setConversationFilter } from "./demo-conversations-view";
 import { renderDashboardView } from "./demo-dashboard-view";
+import {
+  clearCustomerBatchSelection,
+  closeOpportunityForm,
+  openOpportunityForm,
+  renderPrivateDomainView,
+  selectedCustomerBatchIds,
+  setPrivateDomainFilter,
+  toggleCustomerBatchSelection
+} from "./demo-private-domain-view";
 import { createDemoStore } from "./demo-store";
 import type { DemoModule, DemoState } from "./demo-types";
 import { showDemoToast } from "./demo-ui";
@@ -12,6 +21,10 @@ function renderModule(module: DemoModule, state: DemoState, host: HTMLElement, i
   }
   if (module === "conversations") {
     renderConversationsView(state, host, inspector);
+    return;
+  }
+  if (module === "private-domain") {
+    renderPrivateDomainView(state, host, inspector);
     return;
   }
   if (module === "acquisition") return;
@@ -104,6 +117,40 @@ export function startDemoApp(): void {
       }
       return;
     }
+    if (action === "filter-customers" && actionTarget instanceof HTMLButtonElement) {
+      setPrivateDomainFilter({ group: actionTarget.dataset.customerGroup });
+      render();
+      return;
+    }
+    if (action === "toggle-customer-batch" && actionTarget instanceof HTMLInputElement) {
+      const customerId = actionTarget.dataset.customerId;
+      if (customerId) {
+        toggleCustomerBatchSelection(customerId, actionTarget.checked);
+        render();
+      }
+      return;
+    }
+    if (action === "select-customer") {
+      const customerId = actionTarget?.dataset.customerId;
+      if (customerId) store.selectCustomer(customerId);
+      return;
+    }
+    if (action === "simulate-outreach") {
+      const customerIds = selectedCustomerBatchIds();
+      if (!customerIds.length) return;
+      store.simulateOutreach(customerIds);
+      clearCustomerBatchSelection();
+      showDemoToast("演示：已模拟触达");
+      return;
+    }
+    if (action === "open-opportunity-form") {
+      const customerId = actionTarget?.dataset.customerId;
+      if (customerId) {
+        openOpportunityForm(customerId);
+        render();
+      }
+      return;
+    }
     if (target.closest("#replicaNewTaskButton") && router.current() !== "acquisition") {
       event.preventDefault();
       event.stopPropagation();
@@ -130,6 +177,65 @@ export function startDemoApp(): void {
       }
       store.addConversationTag(conversationId, tag);
       showDemoToast("已添加演示标签");
+      return;
+    }
+    const customerId = form.dataset.customerId;
+    if (action === "filter-customers") {
+      event.preventDefault();
+      setPrivateDomainFilter({
+        search: form.querySelector<HTMLInputElement>('input[name="customer-search"]')?.value,
+        intent: form.querySelector<HTMLSelectElement>('select[name="customer-intent"]')?.value,
+        platform: form.querySelector<HTMLSelectElement>('select[name="customer-platform"]')?.value
+      });
+      render();
+      return;
+    }
+    if (action === "add-customer-tag" && customerId) {
+      event.preventDefault();
+      const tag = form.querySelector<HTMLInputElement>('input[name="customer-tag"]')?.value ?? "";
+      if (!tag.trim()) {
+        showDemoToast("请输入演示标签");
+        return;
+      }
+      store.addCustomerTag(customerId, tag);
+      showDemoToast("已添加客户标签");
+      return;
+    }
+    if (action === "change-customer-group" && customerId) {
+      event.preventDefault();
+      const group = form.querySelector<HTMLSelectElement>('select[name="customer-group"]')?.value;
+      if (group === "重点客户" || group === "待跟进" || group === "沉默客户" || group === "已创建商机") {
+        store.updateCustomer(customerId, { group });
+        showDemoToast("已更新客户分组");
+      }
+      return;
+    }
+    if (action === "create-follow-up" && customerId) {
+      event.preventDefault();
+      const note = form.querySelector<HTMLInputElement>('input[name="follow-up-note"]')?.value ?? "";
+      const dueValue = form.querySelector<HTMLInputElement>('input[name="follow-up-at"]')?.value ?? "";
+      const dueAt = new Date(dueValue).toISOString();
+      if (!note.trim() || Number.isNaN(Date.parse(dueAt))) {
+        showDemoToast("请补全跟进内容和时间");
+        return;
+      }
+      store.createFollowUp(customerId, note, dueAt);
+      showDemoToast("已创建跟进计划");
+      return;
+    }
+    if (action === "create-opportunity" && customerId) {
+      event.preventDefault();
+      const title = form.querySelector<HTMLInputElement>('input[name="opportunity-title"]')?.value ?? "";
+      const amount = Number(form.querySelector<HTMLInputElement>('input[name="opportunity-amount"]')?.value);
+      if (!title.trim() || !Number.isFinite(amount) || amount <= 0) {
+        showDemoToast("请填写商机名称和有效金额");
+        return;
+      }
+      const opportunityId = store.createOpportunity(customerId, { title, amount });
+      if (!opportunityId) return;
+      closeOpportunityForm();
+      router.navigate("conversion");
+      showDemoToast("已创建演示商机");
       return;
     }
     event.preventDefault();

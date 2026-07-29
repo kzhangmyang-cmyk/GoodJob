@@ -236,7 +236,7 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
         const selectionChanged = current.selectedConversationId !== id;
         const unreadChanged = conversation.unread !== 0;
         if (!selectionChanged && !unreadChanged) return null;
-        const next: DemoState = {
+        const next = {
           ...current,
           selectedConversationId: id,
           conversations: current.conversations.map((item) => item.id === id ? { ...item, unread: 0 } : item)
@@ -405,7 +405,9 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
         const next = {
           ...current,
           conversations,
-          customers: current.customers.map((customer) => targetIds.has(customer.id) ? { ...customer, lastContactAt: sentAt } : customer)
+          customers: current.customers.map((customer) => targetIds.has(customer.id)
+            ? { ...customer, group: "待跟进" as const, status: "待跟进" as const, lastContactAt: sentAt }
+            : customer)
         };
         return activity(next, "message", "执行批量触达", `已向${targetIds.size}位私域客户发送模拟触达。`);
       });

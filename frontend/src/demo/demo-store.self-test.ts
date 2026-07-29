@@ -40,6 +40,23 @@ const customerId = store.transferConversationToPrivate(conversationId);
 assert.equal(store.getState().customers.some((item) => item.id === customerId), true);
 assert.equal(store.transferConversationToPrivate(conversationId), customerId);
 
+store.selectCustomer(customerId);
+store.addCustomerTag(customerId, "预算明确");
+store.updateCustomer(customerId, {
+  group: "重点客户",
+  nextFollowUpAt: "2026-07-30T10:00:00.000Z"
+});
+store.createFollowUp(customerId, "发送案例与报价范围", "2026-07-30T10:00:00.000Z");
+const updatedCustomer = store.getState().customers.find((item) => item.id === customerId);
+assert.equal(updatedCustomer?.tags.includes("预算明确"), true);
+assert.equal(updatedCustomer?.group, "重点客户");
+assert.equal(store.getState().tasks.some((item) => item.relatedId === customerId), true);
+
+store.simulateOutreach(["customer-wechat-zhou"]);
+const contactedCustomer = store.getState().customers.find((item) => item.id === "customer-wechat-zhou");
+assert.equal(contactedCustomer?.group, "待跟进");
+assert.equal(store.getState().activities.at(-1)?.title, "执行批量触达");
+
 const opportunityId = store.createOpportunity(customerId, {
   title: "办公空间设计合作",
   amount: 86000
