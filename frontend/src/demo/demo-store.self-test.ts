@@ -141,8 +141,18 @@ assert.deepEqual(getConversionMetrics(store.getState()), {
   wonCount: 0,
   receivableAmount: 0
 });
-store.updateOpportunity(opportunityId, { amount: 0 });
+const invalidAmountBeforeActivities = store.getState().activities.length;
+let invalidAmountNotifications = 0;
+const unsubscribeInvalidAmounts = store.subscribe(() => {
+  invalidAmountNotifications += 1;
+});
+for (const invalidAmount of [0, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+  store.updateOpportunity(opportunityId, { amount: invalidAmount });
+}
+unsubscribeInvalidAmounts();
 assert.equal(store.getState().opportunities.find((item) => item.id === opportunityId)?.amount, 96000);
+assert.equal(store.getState().activities.length, invalidAmountBeforeActivities);
+assert.equal(invalidAmountNotifications, 0);
 store.selectOpportunity(opportunityId);
 store.moveOpportunity(opportunityId, "negotiating");
 store.createQuote(opportunityId, 81800);
