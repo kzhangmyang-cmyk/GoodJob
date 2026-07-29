@@ -73,6 +73,11 @@ if (replica) {
     toastTimer = window.setTimeout(() => toast.classList.remove("show"), 2200);
   }
 
+  function isAcquisitionActive(): boolean {
+    const panel = document.querySelector<HTMLElement>("[data-replica-module-panel=\"acquisition\"]");
+    return !panel || !panel.hidden;
+  }
+
   function taskRows() {
     return Array.from(document.querySelectorAll<ReplicaTaskRow>(".replica-task-row"));
   }
@@ -353,7 +358,10 @@ if (replica) {
 
   window.addEventListener("resize", () => updateFlowLayout(selectedFlowIndex));
 
-  document.querySelector("#replicaNewTaskButton")?.addEventListener("click", () => modal?.showModal());
+  document.querySelector("#replicaNewTaskButton")?.addEventListener("click", () => {
+    if (!isAcquisitionActive()) return;
+    modal?.showModal();
+  });
   document.querySelector("#replicaModalClose")?.addEventListener("click", () => modal?.close());
   document.querySelector("#replicaModalCancel")?.addEventListener("click", () => modal?.close());
   document.querySelector("#replicaEditTask")?.addEventListener("click", () => {
@@ -387,6 +395,10 @@ if (replica) {
 
   taskForm?.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!isAcquisitionActive()) {
+      modal?.close();
+      return;
+    }
     const name = document.querySelector<HTMLInputElement>("#replicaTaskName")?.value.trim() || "新获客任务";
     const summary = document.querySelector<HTMLTextAreaElement>("#replicaTaskSummary")?.value.trim() || "扫描相关话题和评论，识别有需求的客户并发起沟通。";
     const stage = document.querySelector<HTMLSelectElement>("#replicaTaskStage")?.value || "抖音";

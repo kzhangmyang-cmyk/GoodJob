@@ -44,7 +44,6 @@ export function startDemoApp(): void {
       showDemoToast(`${demoModuleMeta[router.current()].primaryAction}已模拟完成`);
     }
   });
-  shell.addEventListener("change", () => render());
   shell.addEventListener("submit", (event) => {
     if (router.current() === "acquisition") return;
     event.preventDefault();

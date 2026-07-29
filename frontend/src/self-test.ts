@@ -31,6 +31,7 @@ const apiLayer = readFileSync(new URL("./prototype-api.ts", import.meta.url), "u
 const m1Layout = readFileSync(new URL("./m1-layout.css", import.meta.url), "utf8");
 const replicaStyles = readFileSync(new URL("./replica-dashboard.css", import.meta.url), "utf8");
 const replicaBehavior = readFileSync(new URL("./replica-dashboard.ts", import.meta.url), "utf8");
+const demoApp = readFileSync(new URL("./demo/demo-app.ts", import.meta.url), "utf8");
 
 const required = [
   "login-screen",
@@ -163,4 +164,13 @@ if (!prototype.includes(".report-hero") || !prototype.includes(".ocr-workbench")
   throw new Error("missing high fidelity prototype styles");
 }
 
-console.log(JSON.stringify({ ok: true, checked: required.length + leadFinderMarkupRequired.length + uniqueLeadFinderIds.length }, null, 2));
+assert.match(replicaBehavior, /function isAcquisitionActive\(\): boolean/,
+  "missing acquisition active-panel guard");
+assert.match(replicaBehavior, /#replicaNewTaskButton[\s\S]*if \(!isAcquisitionActive\(\)\) return;/,
+  "missing acquisition guard for the legacy primary action");
+assert.match(replicaBehavior, /taskForm\?\.addEventListener\("submit", \(event\) => \{[\s\S]*if \(!isAcquisitionActive\(\)\) \{\s*modal\?\.close\(\);\s*return;/,
+  "missing acquisition guard for legacy task submission");
+assert.ok(!demoApp.includes('shell.addEventListener("change"'),
+  "demo app must not rerender on every native change event");
+
+console.log(JSON.stringify({ ok: true, checked: required.length + leadFinderMarkupRequired.length + uniqueLeadFinderIds.length + 4 }, null, 2));
