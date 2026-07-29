@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { parseFollowUpAt } from "./demo-app";
+import { renderConversionView } from "./demo-conversion-view";
 import { renderPrivateDomainView } from "./demo-private-domain-view";
 import { createDemoStore } from "./demo-store";
 import type { DemoState } from "./demo-types";
@@ -130,6 +131,35 @@ const opportunityId = store.createOpportunity(customerId, {
   title: "办公空间设计合作",
   amount: 86000
 });
+store.selectOpportunity(opportunityId);
+store.moveOpportunity(opportunityId, "negotiating");
+store.createQuote(opportunityId, 81800);
+let conversionOpportunity = store.getState().opportunities.find((item) => item.id === opportunityId);
+assert.equal(conversionOpportunity?.stage, "negotiating");
+assert.equal(conversionOpportunity?.quoteAmount, 81800);
+store.createQuote(opportunityId, 0);
+assert.equal(store.getState().opportunities.find((item) => item.id === opportunityId)?.quoteAmount, 81800);
+
+store.closeOpportunity(opportunityId, "lost", "不明确原因");
+assert.equal(store.getState().opportunities.find((item) => item.id === opportunityId)?.stage, "negotiating");
+store.closeOpportunity(opportunityId, "lost", "预算延期");
+conversionOpportunity = store.getState().opportunities.find((item) => item.id === opportunityId);
+assert.equal(conversionOpportunity?.stage, "lost");
+assert.equal(conversionOpportunity?.lossReason, "预算延期");
+
+const unsafeConversionState = JSON.parse(JSON.stringify(initial)) as DemoState;
+unsafeConversionState.opportunities[0].title = '"><img src=x onerror=alert(1)>';
+unsafeConversionState.opportunities[0].nextAction = '<svg onload=alert(1)>';
+const unsafeConversionMain = { innerHTML: "" } as HTMLElement;
+const unsafeConversionInspector = { innerHTML: "" } as HTMLElement;
+renderConversionView(unsafeConversionState, unsafeConversionMain, unsafeConversionInspector);
+assert.equal(unsafeConversionMain.innerHTML.includes("商机总数"), true);
+assert.equal(unsafeConversionMain.innerHTML.includes("预计成交"), true);
+assert.equal(unsafeConversionMain.innerHTML.includes("待回款"), true);
+assert.equal(unsafeConversionMain.innerHTML.includes('"><img src=x onerror=alert(1)>'), false);
+assert.equal(unsafeConversionInspector.innerHTML.includes("创建报价"), true);
+assert.equal(unsafeConversionInspector.innerHTML.includes("下一步行动"), true);
+
 store.moveOpportunity(opportunityId, "quoted");
 store.createQuote(opportunityId, 82000);
 store.markQuoteSent(opportunityId);

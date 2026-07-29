@@ -9,6 +9,7 @@ import type {
 
 const STORAGE_KEY = "goodjob.frontend-demo.v1";
 const ISO_DATE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-](\d{2}):(\d{2}))$/;
+const LOSS_REASONS = ["预算延期", "需求取消", "选择其他供应商", "无法联系"] as const;
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -472,10 +473,12 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
       });
     },
     createQuote(opportunityId, amount) {
+      if (!Number.isFinite(amount) || amount < 1) return;
       commit((current) => {
         const opportunity = current.opportunities.find((item) => item.id === opportunityId);
         if (!opportunity) return null;
-        const next: DemoState = { ...current, opportunities: current.opportunities.map((item) => item.id === opportunityId ? { ...item, quoteAmount: amount, stage: "quoted" as const, updatedAt: now() } : item) };
+        const stage = opportunity.stage === "new" || opportunity.stage === "qualified" ? "quoted" as const : opportunity.stage;
+        const next: DemoState = { ...current, opportunities: current.opportunities.map((item) => item.id === opportunityId ? { ...item, quoteAmount: amount, stage, updatedAt: now() } : item) };
         return activity(next, "quote", "创建报价", `已为${opportunity.title}创建¥${amount}报价。`);
       });
     },
@@ -497,10 +500,11 @@ export function createDemoStore(options: DemoStoreOptions = {}): DemoStore {
       });
     },
     closeOpportunity(opportunityId, result, reason) {
+      const lossReason = reason?.trim();
+      if (result === "lost" && (!lossReason || !LOSS_REASONS.includes(lossReason as typeof LOSS_REASONS[number]))) return;
       commit((current) => {
         const opportunity = current.opportunities.find((item) => item.id === opportunityId);
         if (!opportunity) return null;
-        const lossReason = reason?.trim();
         const next = {
           ...current,
           opportunities: current.opportunities.map((item) => item.id === opportunityId ? {

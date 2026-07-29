@@ -1,6 +1,7 @@
 import { createDemoRouter, demoModuleMeta } from "./demo-router";
 import { renderConversationsView, setConversationFilter } from "./demo-conversations-view";
 import { renderDashboardView } from "./demo-dashboard-view";
+import { isOpportunityStage, lossReasons, renderConversionView } from "./demo-conversion-view";
 import {
   clearCustomerBatchSelection,
   closeOpportunityForm,
@@ -25,6 +26,10 @@ function renderModule(module: DemoModule, state: DemoState, host: HTMLElement, i
   }
   if (module === "private-domain") {
     renderPrivateDomainView(state, host, inspector);
+    return;
+  }
+  if (module === "conversion") {
+    renderConversionView(state, host, inspector);
     return;
   }
   if (module === "acquisition") return;
@@ -58,6 +63,7 @@ export function startDemoApp(): void {
   const store = createDemoStore();
   const router = createDemoRouter();
   const render = () => renderModule(router.current(), store.getState(), host, inspector);
+  let draggedOpportunityId = "";
 
   function sendConversationMessage(conversationId: string, body: string): void {
     const text = body.trim();
@@ -88,6 +94,7 @@ export function startDemoApp(): void {
     const actionTarget = target.closest<HTMLElement>("[data-demo-action]");
     const action = actionTarget?.dataset.demoAction;
     const conversationId = actionTarget?.dataset.conversationId;
+    const opportunityId = actionTarget?.dataset.opportunityId;
     if (action === "select-conversation" && conversationId) {
       store.selectConversation(conversationId);
       return;
@@ -156,11 +163,55 @@ export function startDemoApp(): void {
       }
       return;
     }
+    if (action === "select-opportunity" && opportunityId) {
+      store.selectOpportunity(opportunityId);
+      return;
+    }
+    if (action === "move-opportunity" && opportunityId && isOpportunityStage(actionTarget?.dataset.opportunityStage)) {
+      store.moveOpportunity(opportunityId, actionTarget.dataset.opportunityStage);
+      showDemoToast("已移动演示商机阶段");
+      return;
+    }
+    if (action === "mark-quote-sent" && opportunityId) {
+      store.markQuoteSent(opportunityId);
+      showDemoToast("演示：报价已标记发送");
+      return;
+    }
+    if (action === "close-won" && opportunityId) {
+      store.closeOpportunity(opportunityId, "won");
+      showDemoToast("演示：商机已标记成交");
+      return;
+    }
     if (target.closest("#replicaNewTaskButton") && router.current() !== "acquisition") {
       event.preventDefault();
       event.stopPropagation();
       showDemoToast(`${demoModuleMeta[router.current()].primaryAction}已模拟完成`);
     }
+  });
+  shell.addEventListener("dragstart", (event) => {
+    if (router.current() !== "conversion") return;
+    const card = (event.target as HTMLElement).closest<HTMLElement>('[data-demo-action="select-opportunity"][draggable="true"]');
+    const opportunityId = card?.dataset.opportunityId;
+    if (!opportunityId) return;
+    draggedOpportunityId = opportunityId;
+    event.dataTransfer?.setData("text/plain", opportunityId);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  });
+  shell.addEventListener("dragover", (event) => {
+    if (router.current() !== "conversion" || !(event.target as HTMLElement).closest("[data-opportunity-stage]")) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  });
+  shell.addEventListener("drop", (event) => {
+    if (router.current() !== "conversion") return;
+    const lane = (event.target as HTMLElement).closest<HTMLElement>("[data-opportunity-stage]");
+    const stage = lane?.dataset.opportunityStage;
+    const opportunityId = event.dataTransfer?.getData("text/plain") || draggedOpportunityId;
+    draggedOpportunityId = "";
+    if (!opportunityId || !isOpportunityStage(stage)) return;
+    event.preventDefault();
+    store.moveOpportunity(opportunityId, stage);
+    showDemoToast("已拖动更新演示阶段");
   });
   shell.addEventListener("submit", (event) => {
     if (router.current() === "acquisition") return;
@@ -185,6 +236,7 @@ export function startDemoApp(): void {
       return;
     }
     const customerId = form.dataset.customerId;
+    const opportunityId = form.dataset.opportunityId;
     if (action === "filter-customers") {
       event.preventDefault();
       setPrivateDomainFilter({
@@ -241,6 +293,40 @@ export function startDemoApp(): void {
       closeOpportunityForm();
       router.navigate("conversion");
       showDemoToast("已创建演示商机");
+      return;
+    }
+    if (action === "create-quote" && opportunityId) {
+      event.preventDefault();
+      const amount = Number(form.querySelector<HTMLInputElement>('input[name="quote-amount"]')?.value);
+      if (!Number.isFinite(amount) || amount < 1) {
+        showDemoToast("报价金额需大于 0");
+        return;
+      }
+      store.createQuote(opportunityId, amount);
+      showDemoToast("已创建演示报价");
+      return;
+    }
+    if (action === "update-opportunity" && opportunityId) {
+      event.preventDefault();
+      const probability = Number(form.querySelector<HTMLInputElement>('input[name="opportunity-probability"]')?.value);
+      const nextAction = form.querySelector<HTMLInputElement>('input[name="opportunity-next-action"]')?.value.trim() ?? "";
+      if (!Number.isFinite(probability) || probability < 0 || probability > 100 || !nextAction) {
+        showDemoToast("请填写 0–100 的概率和下一步行动");
+        return;
+      }
+      store.updateOpportunity(opportunityId, { probability, nextAction });
+      showDemoToast("已更新演示商机");
+      return;
+    }
+    if (action === "close-lost" && opportunityId) {
+      event.preventDefault();
+      const reason = form.querySelector<HTMLSelectElement>('select[name="loss-reason"]')?.value;
+      if (!reason || !lossReasons.includes(reason as typeof lossReasons[number])) {
+        showDemoToast("请选择有效的流失原因");
+        return;
+      }
+      store.closeOpportunity(opportunityId, "lost", reason);
+      showDemoToast("演示：商机已标记流失");
       return;
     }
     event.preventDefault();
