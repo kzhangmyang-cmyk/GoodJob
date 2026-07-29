@@ -43,6 +43,11 @@ function renderModule(module: DemoModule, state: DemoState, host: HTMLElement, i
     </section>`;
 }
 
+export function parseFollowUpAt(value: string): string | null {
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? null : new Date(timestamp).toISOString();
+}
+
 export function startDemoApp(): void {
   const shell = document.querySelector<HTMLElement>(".replica-shell");
   const host = document.querySelector<HTMLElement>("#demoModuleMain");
@@ -214,8 +219,8 @@ export function startDemoApp(): void {
       event.preventDefault();
       const note = form.querySelector<HTMLInputElement>('input[name="follow-up-note"]')?.value ?? "";
       const dueValue = form.querySelector<HTMLInputElement>('input[name="follow-up-at"]')?.value ?? "";
-      const dueAt = new Date(dueValue).toISOString();
-      if (!note.trim() || Number.isNaN(Date.parse(dueAt))) {
+      const dueAt = parseFollowUpAt(dueValue);
+      if (!note.trim() || !dueAt) {
         showDemoToast("请补全跟进内容和时间");
         return;
       }

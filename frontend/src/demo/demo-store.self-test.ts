@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
+import { parseFollowUpAt } from "./demo-app";
+import { renderPrivateDomainView } from "./demo-private-domain-view";
 import { createDemoStore } from "./demo-store";
+import type { DemoState } from "./demo-types";
 
 const memory = new Map<string, string>();
 const storage = {
@@ -13,6 +16,28 @@ const initial = store.getState();
 assert.equal(initial.conversations.length >= 5, true);
 assert.equal(initial.customers.length >= 4, true);
 assert.equal(initial.opportunities.length >= 3, true);
+
+const unsafeState = JSON.parse(JSON.stringify(initial)) as DemoState;
+const unsafeCustomer = unsafeState.customers[0];
+unsafeCustomer.intent = 'high"><img src=x onerror=alert(1)>' as typeof unsafeCustomer.intent;
+unsafeCustomer.group = '"><svg onload=alert(1)>' as typeof unsafeCustomer.group;
+unsafeCustomer.status = '"><img src=x onerror=alert(1)>' as typeof unsafeCustomer.status;
+unsafeCustomer.platform = '"><option selected>unsafe</option>' as typeof unsafeCustomer.platform;
+const unsafeMain = { innerHTML: "" } as HTMLElement;
+const unsafeInspector = { innerHTML: "" } as HTMLElement;
+renderPrivateDomainView(unsafeState, unsafeMain, unsafeInspector);
+assert.equal(unsafeMain.innerHTML.includes('intent-high"><img'), false);
+assert.equal(unsafeMain.innerHTML.includes('status-"><img'), false);
+assert.equal(unsafeMain.innerHTML.includes('<svg onload=alert(1)>'), false);
+assert.equal(unsafeMain.innerHTML.includes('<option selected>unsafe</option>'), false);
+assert.equal(unsafeInspector.innerHTML.includes('<img src=x onerror=alert(1)>'), false);
+assert.doesNotThrow(() => parseFollowUpAt(""));
+assert.equal(parseFollowUpAt(""), null);
+assert.equal(parseFollowUpAt("2026-07-30T10:00:00.000Z"), "2026-07-30T10:00:00.000Z");
+unsafeState.tasks.push({ id: "task-no-time", title: "历史跟进计划", priority: "中", module: "private-domain", relatedId: unsafeCustomer.id, done: false });
+renderPrivateDomainView(unsafeState, unsafeMain, unsafeInspector);
+assert.equal(unsafeInspector.innerHTML.includes("历史跟进计划"), true);
+assert.equal(unsafeInspector.innerHTML.includes("未记录时间"), true);
 
 const conversationId = initial.conversations[0].id;
 store.selectConversation(conversationId);

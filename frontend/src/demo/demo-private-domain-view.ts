@@ -18,6 +18,32 @@ const groups: Array<{ id: CustomerGroupFilter; label: string }> = [
   { id: "已创建商机", label: "已创建商机" }
 ];
 
+const platforms: Platform[] = ["抖音", "小红书", "快手", "微信", "微博"];
+const intents: IntentLevel[] = ["高", "中", "低"];
+const customerStatuses = ["跟进中", "待跟进", "已沉默", "已有商机"] as const;
+
+function knownIntent(value: string): IntentLevel | null {
+  return intents.find((intent) => intent === value) ?? null;
+}
+
+function knownStatus(value: string): typeof customerStatuses[number] | null {
+  return customerStatuses.find((status) => status === value) ?? null;
+}
+
+function intentBadge(value: string): string {
+  const intent = knownIntent(value);
+  return `<span class="demo-intent intent-${intent ?? "unknown"}">${intent ? `${intent}意向` : "未知意向"}</span>`;
+}
+
+function statusBadge(value: string): string {
+  const status = knownStatus(value);
+  return `<span class="demo-customer-status status-${status ?? "unknown"}">${escapeHtml(status ?? value)}</span>`;
+}
+
+function escapedDate(value: string): string {
+  return escapeHtml(value);
+}
+
 function customerMatches(customer: DemoCustomer): boolean {
   if (activeGroup !== "all" && customer.group !== activeGroup) return false;
   if (activeIntent !== "全部" && customer.intent !== activeIntent) return false;
@@ -28,7 +54,7 @@ function customerMatches(customer: DemoCustomer): boolean {
 }
 
 function customerStatusLabel(customer: DemoCustomer): string {
-  return customer.status === "已有商机" ? "已有商机" : customer.status;
+  return knownStatus(customer.status) ?? customer.status;
 }
 
 function renderGroupRail(state: DemoState): string {
@@ -55,13 +81,13 @@ function renderCustomerRows(customers: DemoCustomer[], selectedCustomerId: strin
       <td data-label="批量选择"><input type="checkbox" aria-label="选择${escapeHtml(customer.name)}" data-demo-action="toggle-customer-batch" data-customer-id="${escapeHtml(customer.id)}" ${selectedCustomerIds.has(customer.id) ? "checked" : ""}></td>
       <td data-label="客户名称"><b>${escapeHtml(customer.name)}</b><small>${escapeHtml(customer.needSummary)}</small></td>
       <td data-label="来源平台">${escapeHtml(customer.platform)}</td>
-      <td data-label="意向等级"><span class="demo-intent intent-${customer.intent}">${customer.intent}意向</span></td>
+      <td data-label="意向等级">${intentBadge(customer.intent)}</td>
       <td data-label="客户标签">${renderTags(customer)}</td>
-      <td data-label="所属分组"><span class="demo-customer-group-chip">${customer.group}</span></td>
+      <td data-label="所属分组"><span class="demo-customer-group-chip">${escapeHtml(customer.group)}</span></td>
       <td data-label="负责人">${escapeHtml(customer.owner)}</td>
-      <td data-label="最后沟通"><time datetime="${customer.lastContactAt}">${formatRelativeTime(customer.lastContactAt)}</time></td>
-      <td data-label="下一步跟进"><time datetime="${customer.nextFollowUpAt}">${formatRelativeTime(customer.nextFollowUpAt)}</time></td>
-      <td data-label="当前状态"><span class="demo-customer-status status-${customer.status}">${customerStatusLabel(customer)}</span></td>
+      <td data-label="最后沟通"><time datetime="${escapedDate(customer.lastContactAt)}">${formatRelativeTime(customer.lastContactAt)}</time></td>
+      <td data-label="下一步跟进"><time datetime="${escapedDate(customer.nextFollowUpAt)}">${formatRelativeTime(customer.nextFollowUpAt)}</time></td>
+      <td data-label="当前状态">${statusBadge(customer.status)}</td>
     </tr>`).join("")}</tbody>
   </table></div>`;
 }
@@ -70,9 +96,9 @@ function renderTimeline(state: DemoState, customer: DemoCustomer): string {
   const conversation = state.conversations.find((item) => item.id === customer.conversationId);
   const items = [
     ...state.activities.filter((item) => item.detail.includes(customer.name) || (conversation && item.detail.includes(conversation.customerName))).map((item) => ({ title: item.title, detail: item.detail, at: item.createdAt })),
-    ...state.tasks.filter((item) => item.relatedId === customer.id).map((item) => ({ title: "跟进计划", detail: item.title, at: customer.nextFollowUpAt }))
-  ].sort((left, right) => Date.parse(right.at) - Date.parse(left.at)).slice(0, 5);
-  return items.length ? items.map((item) => `<li><time>${formatRelativeTime(item.at)}</time><span><b>${escapeHtml(item.title)}</b>${escapeHtml(item.detail)}</span></li>`).join("")
+    ...state.tasks.filter((item) => item.relatedId === customer.id).map((item) => ({ title: "跟进计划", detail: item.title, at: null as string | null }))
+  ].sort((left, right) => Date.parse(right.at ?? "0") - Date.parse(left.at ?? "0")).slice(0, 5);
+  return items.length ? items.map((item) => `<li><time>${item.at ? formatRelativeTime(item.at) : "未记录时间"}</time><span><b>${escapeHtml(item.title)}</b>${escapeHtml(item.detail)}</span></li>`).join("")
     : "<li><span><b>待补充</b>该客户暂无演示跟进记录。</span></li>";
 }
 
@@ -80,8 +106,8 @@ function renderInspector(state: DemoState, customer: DemoCustomer): string {
   const conversation = state.conversations.find((item) => item.id === customer.conversationId);
   const showOpportunityForm = opportunityFormCustomerId === customer.id;
   return `<section class="demo-panel demo-customer-inspector">
-    <header><div><span class="demo-status">演示模式</span><h3>${escapeHtml(customer.name)}</h3><p>${escapeHtml(customer.owner)} · ${customerStatusLabel(customer)}</p></div><span class="demo-intent intent-${customer.intent}">${customer.intent}意向</span></header>
-    <div class="demo-customer-detail-grid"><div><b>客户来源</b><span>${escapeHtml(customer.platform)} · ${escapeHtml(customer.conversationId)}</span></div><div><b>下一步计划</b><time datetime="${customer.nextFollowUpAt}">${formatRelativeTime(customer.nextFollowUpAt)}</time></div></div>
+    <header><div><span class="demo-status">演示模式</span><h3>${escapeHtml(customer.name)}</h3><p>${escapeHtml(customer.owner)} · ${escapeHtml(customerStatusLabel(customer))}</p></div>${intentBadge(customer.intent)}</header>
+    <div class="demo-customer-detail-grid"><div><b>客户来源</b><span>${escapeHtml(customer.platform)} · ${escapeHtml(customer.conversationId)}</span></div><div><b>下一步计划</b><time datetime="${escapedDate(customer.nextFollowUpAt)}">${formatRelativeTime(customer.nextFollowUpAt)}</time></div></div>
     <div class="demo-analysis-block"><b>需求摘要</b><p>${escapeHtml(customer.needSummary)}</p></div>
     <div class="demo-analysis-block"><b>聊天摘要</b><p>${escapeHtml(conversation?.messages.at(-1)?.body ?? "暂无关联聊天记录")}</p></div>
     <div class="demo-analysis-block"><b>标签与分组</b>${renderTags(customer)}<form class="demo-customer-group-form" data-demo-action="change-customer-group" data-customer-id="${escapeHtml(customer.id)}"><select name="customer-group" aria-label="客户分组">${groups.slice(1).map((group) => `<option value="${group.id}" ${customer.group === group.id ? "selected" : ""}>${group.label}</option>`).join("")}</select><button type="submit">更新分组</button></form></div>
@@ -132,11 +158,11 @@ export function renderPrivateDomainView(state: DemoState, main: HTMLElement, ins
   }
   const customers = state.customers.filter(customerMatches);
   const transferredCustomerIds = new Set(state.conversations.flatMap((conversation) => conversation.customerId ? [conversation.customerId] : []));
-  const platforms = ["全部", ...new Set(state.customers.map((customer) => customer.platform))];
+  const availablePlatforms = ["全部", ...platforms.filter((platform) => state.customers.some((customer) => customer.platform === platform))];
   main.innerHTML = `<section class="demo-private-domain" aria-label="私域客户池">
     ${renderGroupRail(state)}
     <section class="demo-customer-list demo-panel"><header><div><span class="demo-status">演示模式</span><h2>客户资产池</h2><p>筛选、分组与触达均只更新本地演示数据。</p></div><button type="button" class="demo-primary" data-demo-action="simulate-outreach" ${selectedCustomerIds.size ? "" : "disabled"}>模拟批量触达 <span>${selectedCustomerIds.size ? `${selectedCustomerIds.size} 位客户` : "请选择客户"}</span></button></header>
-      <form class="demo-customer-filters" data-demo-action="filter-customers"><label>搜索客户<input name="customer-search" value="${escapeHtml(activeSearch)}" placeholder="客户、标签或需求"></label><label>意向<select name="customer-intent">${(["全部", "高", "中", "低"] as const).map((intent) => `<option value="${intent}" ${activeIntent === intent ? "selected" : ""}>${intent === "全部" ? "全部意向" : `${intent}意向`}</option>`).join("")}</select></label><label>来源<select name="customer-platform">${platforms.map((platform) => `<option value="${platform}" ${activePlatform === platform ? "selected" : ""}>${platform === "全部" ? "全部来源" : platform}</option>`).join("")}</select></label><button type="submit">筛选</button></form>
+      <form class="demo-customer-filters" data-demo-action="filter-customers"><label>搜索客户<input name="customer-search" value="${escapeHtml(activeSearch)}" placeholder="客户、标签或需求"></label><label>意向<select name="customer-intent">${(["全部", ...intents] as const).map((intent) => `<option value="${intent}" ${activeIntent === intent ? "selected" : ""}>${intent === "全部" ? "全部意向" : `${intent}意向`}</option>`).join("")}</select></label><label>来源<select name="customer-platform">${availablePlatforms.map((platform) => `<option value="${platform}" ${activePlatform === platform ? "selected" : ""}>${platform === "全部" ? "全部来源" : platform}</option>`).join("")}</select></label><button type="submit">筛选</button></form>
       <div class="demo-customer-list-meta"><span>${customers.length} 位匹配客户</span><small>勾选客户后可模拟批量触达</small></div>${renderCustomerRows(customers, selected.id, transferredCustomerIds)}
     </section>
   </section>`;
