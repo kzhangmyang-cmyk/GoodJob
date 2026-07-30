@@ -14,6 +14,7 @@ let dashboardLeadFunnelChart: ReturnType<typeof echarts.init> | null = null;
 let dashboardLeadFunnelResizeObserver: ResizeObserver | null = null;
 let dashboardRefreshPromise: Promise<void> | null = null;
 const DASHBOARD_LIVE_REFRESH_MS = 10_000;
+const FRONTEND_DEMO_MODE = import.meta.env.DEV && !import.meta.env.VITE_API_TARGET?.trim();
 
 interface User {
   id: string;
@@ -1407,6 +1408,22 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 async function loginWithPassword(email: string, password: string) {
+  if (FRONTEND_DEMO_MODE) {
+    const user: User = {
+      id: "demo-admin",
+      name: "Admin",
+      email: email || "admin@goodjob.com",
+      role: "admin",
+      teamId: "demo-team",
+      avatar: "AD"
+    };
+    localStorage.setItem(storage.user, JSON.stringify(user));
+    state.user = user;
+    applyAuthedUser(user);
+    document.body.classList.add("is-authenticated");
+    toast("已进入前端演示系统");
+    return;
+  }
   const result = await api<{ user: User }>("/api/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password })
@@ -11130,9 +11147,11 @@ async function saveReportNote() {
 
 function installEvents() {
   ensureUiLayer();
-  window.setInterval(refreshVisibleDashboard, DASHBOARD_LIVE_REFRESH_MS);
-  window.addEventListener("focus", refreshVisibleDashboard);
-  document.addEventListener("visibilitychange", refreshVisibleDashboard);
+  if (!FRONTEND_DEMO_MODE) {
+    window.setInterval(refreshVisibleDashboard, DASHBOARD_LIVE_REFRESH_MS);
+    window.addEventListener("focus", refreshVisibleDashboard);
+    document.addEventListener("visibilitychange", refreshVisibleDashboard);
+  }
   window.addEventListener("pagehide", () => {
     const memo = state.memos.find((item) => item.id === state.selectedMemoId);
     if (memo && memoDirty) writeMemoDraft(memo);
@@ -11848,16 +11867,26 @@ async function restoreSession() {
   localStorage.removeItem("gj_token");
   if (!rawUser) return;
   let user: User;
-  try {
-    ({ user } = await api<{ user: User }>("/api/auth/me"));
-  } catch {
-    localStorage.removeItem(storage.user);
-    return;
+  if (FRONTEND_DEMO_MODE) {
+    try {
+      user = JSON.parse(rawUser) as User;
+    } catch {
+      localStorage.removeItem(storage.user);
+      return;
+    }
+  } else {
+    try {
+      ({ user } = await api<{ user: User }>("/api/auth/me"));
+    } catch {
+      localStorage.removeItem(storage.user);
+      return;
+    }
   }
   localStorage.setItem(storage.user, JSON.stringify(user));
   state.user = user;
   applyAuthedUser(user);
   document.body.classList.add("is-authenticated");
+  if (FRONTEND_DEMO_MODE) return;
   try {
     await refreshAll(user);
   } catch (error) {
