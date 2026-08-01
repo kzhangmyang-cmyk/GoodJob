@@ -16,7 +16,7 @@ export default defineConfig({
     }
   ],
   webServer: {
-    command: "node ../node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5388",
+    command: "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5388",
     cwd: ".",
     url: "http://127.0.0.1:5388/",
     reuseExistingServer: false,
