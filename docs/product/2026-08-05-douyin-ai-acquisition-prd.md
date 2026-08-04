@@ -1,9 +1,13 @@
 # AI 全自动获客与销售转化系统——抖音首发版 PRD
 
-日期：2026-08-05  
-状态：已确认方向，待发布为 GitHub 父 Issue  
-适用基线：GoodJob 1.09 + GoodJob Marketing System Frontend  
-项目负责人：用户本人  
+日期：2026-08-05
+
+状态：已确认方向，待发布为 GitHub 父 Issue
+
+适用基线：GoodJob 1.09 + GoodJob Marketing System Frontend
+
+项目负责人：用户本人
+
 开发方式：用户统一决策与验收，Codex 按 GitHub Issue 分支实现、测试和提交
 
 ## Problem Statement
@@ -298,16 +302,20 @@ Plan → Run → Platform/Search Evidence → Signal Aggregate
 
 ### 发布阶段
 
-1. **阶段 A：真实展示闭环**  
+1. **阶段 A：真实展示闭环**
+
    统一契约，接入新前端，完成公开搜索和用户链接的抖音商机发现、评分、作战卡与 CRM 闭环。
 
-2. **阶段 B：授权数据闭环**  
+2. **阶段 B：授权数据闭环**
+
    接入抖音官方 OAuth、能力探测、授权数据/事件同步、游标和 Webhook。
 
-3. **阶段 C：受控自动转化**  
+3. **阶段 C：受控自动转化**
+
    上线动作策略、任务队列、官方动作执行、回执、人工例外接管和撤销授权。
 
-4. **阶段 D：经营学习闭环**  
+4. **阶段 D：经营学习闭环**
+
    完成对话跟进、渠道 ROI、成交回款归因和版本化效果评估。
 
 ### 成功指标
