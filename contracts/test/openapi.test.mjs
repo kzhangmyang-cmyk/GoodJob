@@ -25,7 +25,7 @@ const section16 = {
   "/api/v1/acquisition/evidence/{id}": ["get"],
   "/api/v1/acquisition/plans": ["get", "post"],
   "/api/v1/acquisition/plans/{id}": ["get", "patch"],
-  "/api/v1/acquisition/plans/{id}/approve": ["post"],
+  "/api/v1/acquisition/plans/{id}/approval": ["post"],
   "/api/v1/acquisition/runs": ["get", "post"],
   "/api/v1/acquisition/runs/{id}": ["get"],
   "/api/v1/acquisition/runs/{id}/operation-shards": ["get"],
@@ -88,7 +88,9 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(document.servers[0].url, "/");
   assert.equal(new URL("/api/v1/acquisition/runs", `https://contract.test${document.servers[0].url}`).pathname, "/api/v1/acquisition/runs");
   assert.deepEqual(Object.keys(document.paths).sort(), Object.keys(section16).sort());
-  assert.equal(document.components.schemas.ApiError.additionalProperties, false);
+  assert.equal(document.components.schemas.ApiError.oneOf.length, 2);
+  assert.equal(document.components.schemas.ApiError.oneOf[0].additionalProperties, false);
+  assert.equal(document.components.schemas.ApiError.oneOf[1].additionalProperties, false);
   assert.equal(document.components.schemas.AsyncOperation.$ref, "../json-schema/async-operation.v1.schema.json");
   assert.deepEqual(
     document.components.schemas.BattleCard.oneOf.map((branch) => branch.$ref),
@@ -105,10 +107,20 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
     assert.deepEqual(actualMethods, [...methods].sort(), path);
     for (const method of methods) {
       const operation = document.paths[path][method];
-      assert.deepEqual(operation.security, [{ bearerAuth: [] }], `${method.toUpperCase()} ${path}`);
+      const isPlanApproval = path === "/api/v1/acquisition/plans/{id}/approval";
+      assert.deepEqual(
+        operation.security,
+        isPlanApproval
+          ? [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+          : [{ bearerAuth: [] }],
+        `${method.toUpperCase()} ${path}`
+      );
       assert.equal(operation.responses["401"].content["application/json"].schema.$ref, "#/components/schemas/ApiError");
       if (["post", "patch", "delete"].includes(method)) {
-        assert.equal(operation.parameters.some((parameter) => parameter.$ref === "#/components/parameters/idempotencyKey" || (parameter.name === "Idempotency-Key" && parameter.in === "header" && parameter.required)), true);
+        assert.equal(
+          operation.parameters.some((parameter) => parameter.$ref === "#/components/parameters/idempotencyKey" || (parameter.name === "Idempotency-Key" && parameter.in === "header" && parameter.required)),
+          !isPlanApproval
+        );
       }
     }
   }
@@ -152,6 +164,10 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   const resume = document.paths["/api/v1/acquisition/runs/{id}/resume"].post.responses["409"];
   assert.equal(resume.content["application/json"].schema.$ref, "#/components/schemas/ApiError");
   assert.deepEqual(resume.headers["X-Error-Code"].schema.enum, ["budget_revision_requires_new_run"]);
+  const approval = document.paths["/api/v1/acquisition/plans/{id}/approval"].post;
+  assert.deepEqual(approval.requestBody.content["application/json"].schema.required, ["decision", "reason"]);
+  assert.ok(approval.responses["200"].headers.ETag);
+  assert.deepEqual(Object.keys(approval.responses).sort(), ["200", "400", "401", "404", "409", "412", "428", "500"]);
 });
 
 test("every named API resource component accepts a canonical valid instance", async () => {

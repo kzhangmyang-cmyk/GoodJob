@@ -1,4 +1,6 @@
 import jwt from "jsonwebtoken";
+import { Value } from "typebox/value";
+import apiErrorSchema from "../../contracts/json-schema/api-error.v1.schema.json" with { type: "json" };
 import { app } from "./server.js";
 import { completeAgentJob, enqueueAgentJob, failAgentJob, startAgentJob } from "./agent-jobs.js";
 import {
@@ -53,6 +55,15 @@ async function expectStatus(label: string, actual: number, expected: number) {
   if (actual !== expected) throw new Error(`${label}: expected ${expected}, got ${actual}`);
 }
 
+function expectApiError(label: string, value: unknown, code: string) {
+  if (!Value.Check(apiErrorSchema, value)) {
+    throw new Error(`${label}: response does not match ApiError`);
+  }
+  if ((value as { code?: string }).code !== code) {
+    throw new Error(`${label}: expected code ${code}`);
+  }
+}
+
 try {
   const results: Record<string, number | boolean> = {};
 
@@ -93,6 +104,24 @@ try {
   const unauthenticated = await request("/api/customers");
   await expectStatus("protected endpoint", unauthenticated.response.status, 401);
   results.unauthenticated = unauthenticated.response.status;
+  const anonymousAcquisition = await request(
+    "/api/v1/acquisition/providers",
+    { headers: { "X-Request-Id": "security-anonymous-acquisition" } }
+  );
+  await expectStatus(
+    "acquisition endpoint without login",
+    anonymousAcquisition.response.status,
+    401
+  );
+  expectApiError(
+    "acquisition endpoint without login",
+    anonymousAcquisition.json,
+    "unauthorized"
+  );
+  if (anonymousAcquisition.json.requestId
+    !== "security-anonymous-acquisition") {
+    throw new Error("acquisition 401 must preserve the correlation ID");
+  }
   const anonymousProviderCatalog = await request("/api/lead-finder/provider-catalog");
   await expectStatus("provider catalog without login", anonymousProviderCatalog.response.status, 401);
   const anonymousProviderList = await request("/api/lead-finder/providers");
@@ -222,6 +251,34 @@ try {
   });
   await expectStatus("cookie write without CSRF", noCsrfWrite.response.status, 403);
   results.csrfBlocked = noCsrfWrite.response.status;
+
+  const acquisitionNoCsrf = await request(
+    "/api/v1/acquisition/plans/missing/approval",
+    {
+      method: "POST",
+      headers: {
+        cookie: shirley.cookies,
+        "X-Request-Id": "security-acquisition-csrf"
+      },
+      body: JSON.stringify({
+        decision: "approve",
+        reason: "must be blocked before routing"
+      })
+    }
+  );
+  await expectStatus(
+    "acquisition cookie write without CSRF",
+    acquisitionNoCsrf.response.status,
+    403
+  );
+  expectApiError(
+    "acquisition cookie write without CSRF",
+    acquisitionNoCsrf.json,
+    "csrf_validation_failed"
+  );
+  if (acquisitionNoCsrf.json.requestId !== "security-acquisition-csrf") {
+    throw new Error("acquisition 403 must preserve the correlation ID");
+  }
 
   const csrfWrite = await request("/api/todos", {
     method: "POST",
@@ -360,6 +417,14 @@ try {
     ).length,
     0
   );
+  const documentedTopLevelOperations = Object.entries(
+    docsAsAdmin.json.paths || {}
+  ).reduce((total: number, [path, pathItem]) => {
+    if (path.startsWith("/api/v1/acquisition")) return total;
+    return total + Object.keys(pathItem as object).filter((method) =>
+      ["get", "post", "put", "patch", "delete"].includes(method)
+    ).length;
+  }, 0);
   const routeLayers: Array<{ route?: { path?: string; methods?: Record<string, boolean> } }> = ((app as typeof app & {
     _router?: { stack?: Array<{ route?: { path?: string; methods?: Record<string, boolean> } }> };
   })._router?.stack || []);
@@ -371,8 +436,8 @@ try {
       .filter(([method, enabled]) => enabled && ["get", "post", "put", "patch", "delete"].includes(method))
       .length;
   }, 0);
-  if (documentedOperations !== registeredOperations) {
-    throw new Error(`OpenAPI coverage mismatch: ${documentedOperations}/${registeredOperations}`);
+  if (documentedTopLevelOperations !== registeredOperations) {
+    throw new Error(`OpenAPI coverage mismatch: ${documentedTopLevelOperations}/${registeredOperations}`);
   }
   const docsUi = await fetch(`${baseUrl}/api/docs/`, {
     headers: { authorization: `Bearer ${admin.json.token}` }

@@ -1,6 +1,6 @@
 import jwt from "jsonwebtoken";
 import type { NextFunction, Request, Response } from "express";
-import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import { getStore } from "./store.js";
 import type { SessionUser } from "./types.js";
@@ -108,10 +108,30 @@ function requestToken(req: Request) {
   return { token, source: "cookie" as const };
 }
 
+function sendAuthError(
+  req: Request,
+  res: Response,
+  status: 401 | 403,
+  code: string,
+  message: string
+) {
+  const provided = String(req.header("X-Request-Id") || "").trim();
+  const requestId = provided.slice(0, 100) || `request_${randomUUID()}`;
+  res.setHeader("X-Request-Id", requestId);
+  res.setHeader("Cache-Control", "no-store");
+  res.status(status).json({
+    code,
+    message,
+    details: null,
+    requestId,
+    retryable: false
+  });
+}
+
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const { token, source } = requestToken(req);
   if (!token) {
-    res.status(401).json({ message: "未登录" });
+    sendAuthError(req, res, 401, "unauthorized", "未登录");
     return;
   }
   try {
@@ -122,7 +142,13 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     }) as TokenClaims;
     const user = getStore().users.find((item) => item.id === claims.sub);
     if (!user || user.status !== "active" || Number(user.authVersion || 1) !== Number(claims.ver || 1)) {
-      res.status(401).json({ message: "登录状态已失效，请重新登录" });
+      sendAuthError(
+        req,
+        res,
+        401,
+        "session_invalid",
+        "登录状态已失效，请重新登录"
+      );
       return;
     }
     req.user = publicUser(user);
@@ -132,13 +158,19 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
       const csrfHeader = String(req.headers["x-csrf-token"] || "");
       if (!csrfCookie || !csrfHeader || csrfCookie.length !== csrfHeader.length
         || !timingSafeEqual(Buffer.from(csrfCookie), Buffer.from(csrfHeader))) {
-        res.status(403).json({ message: "安全校验失败，请刷新页面后重试" });
+        sendAuthError(
+          req,
+          res,
+          403,
+          "csrf_validation_failed",
+          "安全校验失败，请刷新页面后重试"
+        );
         return;
       }
     }
     next();
   } catch {
-    res.status(401).json({ message: "登录已过期" });
+    sendAuthError(req, res, 401, "session_expired", "登录已过期");
   }
 }
 

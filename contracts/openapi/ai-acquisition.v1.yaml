@@ -13,6 +13,14 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: gj_session
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
   parameters:
     id:
       name: id
@@ -40,15 +48,29 @@ components:
   schemas:
     AsyncOperation: { $ref: ../json-schema/async-operation.v1.schema.json }
     ApiError:
-      type: object
-      additionalProperties: false
-      required: [code, message, details, requestId, retryable]
-      properties:
-        code: { type: string }
-        message: { type: string }
-        details: {}
-        requestId: { type: string }
-        retryable: { type: boolean }
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [code, message, details, requestId, retryable]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: {}
+            requestId: { type: string }
+            retryable: { type: boolean }
+        - type: object
+          additionalProperties: false
+          required: [error]
+          properties:
+            error:
+              type: object
+              additionalProperties: false
+              required: [code, message]
+              properties:
+                code: { type: string }
+                message: { type: string }
+                details: {}
+                requestId: { type: string }
     PagedResult:
       type: object
       additionalProperties: false
@@ -199,9 +221,51 @@ paths:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get: { <<: *read, summary: Get acquisition plan, responses: { '200': { description: Acquisition plan, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionPlan' } } } }, '401': *apiError } }
     patch: { <<: *write, summary: Update acquisition plan }
-  /api/v1/acquisition/plans/{id}/approve:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *write, summary: Approve acquisition plan }
+  /api/v1/acquisition/plans/{id}/approval:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, minLength: 1, maxLength: 255 }
+    post:
+      summary: Approve acquisition plan
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          schema: { type: string, minLength: 1 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, reason]
+              properties:
+                decision: { type: string, enum: [approve] }
+                reason: { type: string, minLength: 1, maxLength: 2000 }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Acquisition plan approved
+          headers:
+            ETag:
+              required: true
+              schema: { type: string, minLength: 1 }
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '412': *apiError
+        '428': *apiError
+        '500': *apiError
   /api/v1/acquisition/runs:
     get: { <<: *list, summary: List acquisition runs }
     post: { <<: *asyncWrite, summary: Create acquisition run }

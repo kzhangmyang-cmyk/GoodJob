@@ -1646,6 +1646,14 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
         responses["412"] = response("资源版本不匹配", errorSchema);
       }
       responses["428"] = response("缺少 If-Match 版本条件", errorSchema);
+      if (path === "/api/v1/acquisition/plans/{id}/approval") {
+        (responses["200"] as Record<string, unknown>).headers = {
+          ETag: {
+            required: true,
+            schema: { type: "string", minLength: 1 }
+          }
+        };
+      }
     }
     add(
       paths,
