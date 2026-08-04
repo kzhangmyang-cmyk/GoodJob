@@ -180,6 +180,18 @@ paths:
   /api/v1/acquisition/import-operations/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get: { <<: *read, summary: Get import operation, responses: { '200': { description: Import operation, content: { application/json: { schema: { $ref: '#/components/schemas/ImportOperation' } } } }, '401': *apiError } }
+  /api/v1/acquisition/evidence/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      summary: Get discovery evidence
+      responses:
+        '200':
+          description: Discovery evidence
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoveryEvidence' }
+        '401': *apiError
   /api/v1/acquisition/plans:
     get: { <<: *list, summary: List acquisition plans }
     post: { <<: *write, summary: Create acquisition plan }
