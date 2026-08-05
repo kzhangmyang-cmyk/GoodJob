@@ -121,7 +121,12 @@ const service = new AcquisitionCopilotService({
           summary: `已分析：${input.prompt}`,
           toolNames: [],
           ...(input.responseMode === "plan_draft"
-            ? { planDraft: structuredClone(planDraft) }
+            ? {
+                planDraft: {
+                  ...structuredClone(planDraft),
+                  targetPlatform: input.targetPlatform
+                }
+              }
             : {})
         }
       };
@@ -221,6 +226,16 @@ assert.equal(
   "assistant",
   "omitting responseMode must preserve the legacy assistant behavior"
 );
+assert.equal(
+  queued.targetPlatform,
+  "web",
+  "omitting targetPlatform must preserve the legacy web behavior"
+);
+assert.equal(
+  (await service.getTask(scope, queued.id)).targetPlatform,
+  "web",
+  "the target platform must round-trip through task persistence"
+);
 
 await assert.rejects(
   service.enqueueMessage(
@@ -229,6 +244,20 @@ await assert.rejects(
     "分析今天最值得跟进的客户",
     "message-a",
     "plan_draft"
+  ),
+  (error: unknown) =>
+    error instanceof AcquisitionCopilotError
+    && error.code === "idempotency_conflict"
+);
+
+await assert.rejects(
+  service.enqueueMessage(
+    scope,
+    created.id,
+    "分析今天最值得跟进的客户",
+    "message-a",
+    "assistant",
+    "douyin"
   ),
   (error: unknown) =>
     error instanceof AcquisitionCopilotError
@@ -245,6 +274,7 @@ assert.equal(runs[0]?.actorId, "owner-a");
 assert.equal(runs[0]?.snapshot.connectionId, "connection-a");
 assert.deepEqual(runs[0]?.transcript, []);
 assert.equal(runs[0]?.responseMode, "assistant");
+assert.equal(runs[0]?.targetPlatform, "web");
 assert.equal((await service.listMessages(scope, created.id)).length, 2);
 assert.equal(
   (await service.runTask(scope, queued.id)).id,
@@ -300,16 +330,22 @@ const draftTask = await service.enqueueMessage(
   created.id,
   "生成计划草稿",
   "message-plan-draft",
-  "plan_draft"
+  "plan_draft",
+  "douyin"
 );
 assert.equal(draftTask.responseMode, "plan_draft");
+assert.equal(draftTask.targetPlatform, "douyin");
 const generatedDraft = await service.runTask(scope, draftTask.id);
 assert.equal(generatedDraft.status, "succeeded");
 assert.deepEqual(
   acquisitionPublicPlanCreateSchema.parse(
     generatedDraft.result?.planDraft
   ),
-  planDraft
+  { ...planDraft, targetPlatform: "douyin" }
+);
+assert.equal(
+  runs.find((input) => input.prompt === "生成计划草稿")?.targetPlatform,
+  "douyin"
 );
 
 const failedDraftTask = await service.enqueueMessage(

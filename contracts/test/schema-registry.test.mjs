@@ -547,3 +547,18 @@ test("copilot messages preserve identity, session, content, and linkage", async 
   assert.ok(toolResult.required.includes("toolCallId"));
   assert.equal(schema.properties.taskId, undefined);
 });
+
+test("acquisition plan and copilot task schemas expose the optional target platform", async () => {
+  const registry = await loadSchemaRegistry();
+  const plan = registry.schemaDocuments.get("acquisition-plan");
+  const task = registry.schemaDocuments.get("copilot-task");
+
+  assert.deepEqual(plan.$defs.payload.properties.targetPlatform, {
+    enum: ["douyin", "web"]
+  });
+  assert.equal(plan.$defs.payload.required.includes("targetPlatform"), false);
+  assert.deepEqual(task.properties.targetPlatform, {
+    enum: ["douyin", "web"]
+  });
+  assert.equal(task.required.includes("targetPlatform"), false);
+});

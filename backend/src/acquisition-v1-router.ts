@@ -370,7 +370,8 @@ const createBoundCopilotSessionBodySchema = z.object({
 
 const copilotMessageBodySchema = z.object({
   message: requiredText(20_000),
-  responseMode: z.enum(["assistant", "plan_draft"]).default("assistant")
+  responseMode: z.enum(["assistant", "plan_draft"]).default("assistant"),
+  targetPlatform: z.enum(["douyin", "web"]).default("web")
 }).strict();
 
 const paginationQuerySchema = z.object({
@@ -812,6 +813,7 @@ function publicTask(task: AcquisitionCopilotTask) {
     kind: task.kind,
     status: task.status,
     responseMode: task.responseMode ?? "assistant",
+    targetPlatform: task.targetPlatform ?? "web",
     result: task.result ? structuredClone(task.result) : null,
     errorCode: task.errorCode,
     createdAt: task.createdAt,
@@ -1595,7 +1597,8 @@ export function createAcquisitionV1Router(
         parse(idSchema, req.params.id),
         body.message,
         idempotencyKey(req),
-        body.responseMode
+        body.responseMode,
+        body.targetPlatform
       );
       const claimed = await options.copilotService.claimTaskDispatch(
         scope,

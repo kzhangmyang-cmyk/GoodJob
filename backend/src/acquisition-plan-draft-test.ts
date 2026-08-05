@@ -192,13 +192,15 @@ function generatorReturning(
 }
 
 function generateWith(
-  generator: ReturnType<typeof createAcquisitionPlanDraftGenerator>
+  generator: ReturnType<typeof createAcquisitionPlanDraftGenerator>,
+  targetPlatform?: "douyin" | "web"
 ) {
   return generator.generate({
     ...scope,
     sessionId: "session-plan-draft",
     transcript,
-    prompt: "请生成一个可批准的获客计划"
+    prompt: "请生成一个可批准的获客计划",
+    ...(targetPlatform ? { targetPlatform } : {})
   });
 }
 
@@ -326,7 +328,8 @@ test("generates a trusted, ready plan with stable cartesian operations and conse
     ...scope,
     sessionId: "session-plan-draft",
     transcript,
-    prompt: "请生成一个可批准的获客计划"
+    prompt: "请生成一个可批准的获客计划",
+    targetPlatform: "douyin"
   });
 
   assert.deepEqual(listedScopes, [{
@@ -340,7 +343,8 @@ test("generates a trusted, ready plan with stable cartesian operations and conse
       toolSchemaId: ACQUISITION_PLAN_DRAFT_TOOL_SCHEMA_ID,
       dynamicData: {
         conversation: transcript,
-        prompt: "请生成一个可批准的获客计划"
+        prompt: "请生成一个可批准的获客计划",
+        targetPlatform: "douyin"
       }
     },
     parallelToolCalls: false
@@ -358,6 +362,7 @@ test("generates a trusted, ready plan with stable cartesian operations and conse
     status: "active",
     credentialVersion: 3
   }]);
+  assert.equal(generated.planDraft.targetPlatform, "douyin");
   assert.deepEqual(
     generated.planDraft.operations.map((operation) => ({
       operationId: operation.operationId,
@@ -468,6 +473,15 @@ test("generates a trusted, ready plan with stable cartesian operations and conse
   assert.equal(approved.status, "approved");
   assert.match(generated.summary, /企业服务双主体公开获客计划/);
   assert.equal(generated.assistantMessage.role, "assistant");
+});
+
+test("generated plans default omitted legacy target platform to web", async () => {
+  let sequence = 0;
+  const generated = await generateWith(generatorReturning(validIntent(), {
+    idFactory: (prefix) => `${prefix}-${++sequence}`
+  }));
+
+  assert.equal(generated.planDraft.targetPlatform, "web");
 });
 
 test("rejects model attempts to inject trusted connection, snapshot, operation, or allocation fields", async () => {

@@ -1291,6 +1291,7 @@ test("v1 copilot messages return 202 tasks and remain owner-and-team scoped", as
     assert.equal(queued.json.kind, "message");
     assert.equal(queued.json.status, "queued");
     assert.equal(queued.json.responseMode, "assistant");
+    assert.equal(queued.json.targetPlatform, "web");
 
     const invalidMode = await fixture.request(
       `/api/v1/acquisition/copilot/sessions/${session.json.id}/messages`,
@@ -1300,6 +1301,16 @@ test("v1 copilot messages return 202 tasks and remain owner-and-team scoped", as
       }, "copilot-message-invalid-mode")
     );
     assert.equal(invalidMode.response.status, 400);
+
+    const invalidPlatform = await fixture.request(
+      `/api/v1/acquisition/copilot/sessions/${session.json.id}/messages`,
+      write({
+        message: "生成平台计划草稿",
+        responseMode: "plan_draft",
+        targetPlatform: "xiaohongshu"
+      }, "copilot-message-invalid-platform")
+    );
+    assert.equal(invalidPlatform.response.status, 400);
 
     const extraProperty = await fixture.request(
       `/api/v1/acquisition/copilot/sessions/${session.json.id}/messages`,
@@ -1331,13 +1342,36 @@ test("v1 copilot messages return 202 tasks and remain owner-and-team scoped", as
     assert.equal(task.response.status, 200);
     assert.equal(task.json.status, "succeeded");
     assert.equal(task.json.responseMode, "assistant");
+    assert.equal(task.json.targetPlatform, "web");
     assert.equal(task.json.result.summary, "分析完成：分析今天值得人工跟进的客户");
+
+    const douyinTask = await fixture.request(
+      `/api/v1/acquisition/copilot/sessions/${session.json.id}/messages`,
+      write({
+        message: "生成抖音公开商机计划草稿",
+        responseMode: "plan_draft",
+        targetPlatform: "douyin"
+      }, "copilot-message-douyin")
+    );
+    assert.equal(douyinTask.response.status, 202);
+    assert.equal(douyinTask.json.targetPlatform, "douyin");
+    let completedDouyinTask = douyinTask;
+    for (let index = 0;
+      index < 20 && completedDouyinTask.json.status === "queued";
+      index++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      completedDouyinTask = await fixture.request(
+        `/api/v1/acquisition/copilot/tasks/${douyinTask.json.id}`
+      );
+    }
+    assert.equal(completedDouyinTask.json.status, "succeeded");
+    assert.equal(completedDouyinTask.json.targetPlatform, "douyin");
 
     const messages = await fixture.request(
       `/api/v1/acquisition/copilot/sessions/${session.json.id}/messages`
     );
     assert.equal(messages.response.status, 200);
-    assert.equal(messages.json.items.length, 2);
+    assert.equal(messages.json.items.length, 4);
     assert.equal("ownerId" in messages.json.items[0], false);
 
     const hidden = await fixture.request(

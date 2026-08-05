@@ -1288,6 +1288,10 @@ const planCreateWriteSchema = {
     "stopConditions"
   ],
   properties: {
+    targetPlatform: {
+      type: "string",
+      enum: ["douyin", "web"]
+    },
     name: { type: "string", minLength: 1, maxLength: 200 },
     objective: { type: "string", minLength: 1, maxLength: 2_000 },
     icp: {
@@ -1532,6 +1536,11 @@ const copilotMessageWriteSchema = {
       type: "string",
       enum: ["assistant", "plan_draft"],
       default: "assistant"
+    },
+    targetPlatform: {
+      type: "string",
+      enum: ["douyin", "web"],
+      default: "web"
     }
   },
   additionalProperties: false
@@ -1574,6 +1583,7 @@ const planMutationWriteSchema = {
   type: "object",
   minProperties: 1,
   properties: {
+    targetPlatform: planCreateWriteSchema.properties.targetPlatform,
     name: planCreateWriteSchema.properties.name,
     objective: planCreateWriteSchema.properties.objective,
     icp: planCreateWriteSchema.properties.icp,

@@ -1,4 +1,5 @@
 export type AcquisitionSubjectChannel = "organization" | "individual";
+export type AcquisitionTargetPlatform = "douyin" | "web";
 export type AcquisitionOperationKind =
   | "search"
   | "content_fetch"
@@ -81,6 +82,7 @@ export interface AcquisitionPlanOperation {
 }
 
 export interface AcquisitionPlanPayload {
+  targetPlatform?: AcquisitionTargetPlatform;
   name: string;
   objective: string;
   icp: {

@@ -181,6 +181,7 @@ assert.equal(
     AcquisitionPlanDraftGenerator["generate"]
   >[0][] = [];
   const draft = {
+    targetPlatform: "douyin" as const,
     name: "Runner 计划草稿",
     objective: "发现公开企业需求",
     icp: {
@@ -284,7 +285,8 @@ assert.equal(
     snapshot,
     transcript: previousTranscript,
     prompt: "生成获客计划草稿",
-    responseMode: "plan_draft"
+    responseMode: "plan_draft",
+    targetPlatform: "douyin"
   });
   assert.equal(assistantCalls.length, 1);
   assert.equal(generatorCalls.length, 1);
@@ -294,7 +296,8 @@ assert.equal(
     actorId: "sales-a",
     sessionId: "session-plan-draft",
     transcript: previousTranscript,
-    prompt: "生成获客计划草稿"
+    prompt: "生成获客计划草稿",
+    targetPlatform: "douyin"
   });
   assert.deepEqual(
     draftResponse.newMessages.map((message) => message.role),

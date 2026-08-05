@@ -71,6 +71,25 @@ test("public plan create accepts model connection, ICP, operations, and budget",
   assert.deepEqual(acquisitionPublicPlanCreateSchema.parse(input), input);
 });
 
+test("public plan create accepts an explicit acquisition target platform", () => {
+  const input = {
+    ...publicPlanInput(),
+    targetPlatform: "douyin" as const
+  };
+
+  assert.deepEqual(acquisitionPublicPlanCreateSchema.parse(input), input);
+});
+
+test("public plan create rejects unsupported acquisition target platforms", () => {
+  assert.throws(
+    () => acquisitionPublicPlanCreateSchema.parse({
+      ...publicPlanInput(),
+      targetPlatform: "xiaohongshu"
+    }),
+    /Invalid enum value/
+  );
+});
+
 test("public plan create rejects client supplied model snapshot", () => {
   assert.throws(
     () => acquisitionPublicPlanCreateSchema.parse({

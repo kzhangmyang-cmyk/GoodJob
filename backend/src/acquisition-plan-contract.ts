@@ -5,6 +5,8 @@ export const requiredText = (max: number) =>
 
 export const idSchema = requiredText(255);
 
+export const acquisitionTargetPlatformSchema = z.enum(["douyin", "web"]);
+
 export const acquisitionUsageSchema = z.object({
   requests: z.number().int().nonnegative(),
   results: z.number().int().nonnegative(),
@@ -52,6 +54,7 @@ export const acquisitionModelSnapshotSchema = z.object({
 }).strict();
 
 export const acquisitionPlanPayloadSchema = z.object({
+  targetPlatform: acquisitionTargetPlatformSchema.optional(),
   name: requiredText(200),
   objective: requiredText(2_000),
   icp: z.object({

@@ -1552,6 +1552,8 @@ export interface components {
             schemaHash: string;
         };
         payload: {
+            /** @enum {unknown} */
+            targetPlatform?: "douyin" | "web";
             name: string;
             objective: string;
             icp: {
@@ -1645,6 +1647,8 @@ export interface components {
                     allocatedBudget: components["schemas"]["budgetUsage"];
                 };
                 payload: {
+                    /** @enum {unknown} */
+                    targetPlatform?: "douyin" | "web";
                     name: string;
                     objective: string;
                     icp: {
@@ -2452,6 +2456,8 @@ export interface components {
             status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
             /** @enum {unknown} */
             responseMode: "assistant" | "plan_draft";
+            /** @enum {unknown} */
+            targetPlatform?: "douyin" | "web";
             result: {
                 [key: string]: unknown;
             } | null;
@@ -3857,6 +3863,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @enum {string} */
+                    targetPlatform?: "douyin" | "web";
                     name: string;
                     objective: string;
                     icp: {
@@ -4051,6 +4059,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @enum {string} */
+                    targetPlatform?: "douyin" | "web";
                     name?: string;
                     objective?: string;
                     icp?: {
@@ -4205,6 +4215,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @enum {string} */
+                    targetPlatform?: "douyin" | "web";
                     name?: string;
                     objective?: string;
                     icp?: {
@@ -6039,6 +6051,11 @@ export interface operations {
                      * @enum {string}
                      */
                     responseMode?: "assistant" | "plan_draft";
+                    /**
+                     * @default web
+                     * @enum {string}
+                     */
+                    targetPlatform?: "douyin" | "web";
                 };
             };
         };

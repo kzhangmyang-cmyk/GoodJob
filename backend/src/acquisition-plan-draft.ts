@@ -24,7 +24,8 @@ import type {
   AcquisitionBudgetSnapshot,
   AcquisitionPlanPayload,
   AcquisitionProviderConnectionSnapshot,
-  AcquisitionSubjectChannel
+  AcquisitionSubjectChannel,
+  AcquisitionTargetPlatform
 } from "./acquisition-plan-run-repository.js";
 import {
   ACQUISITION_SEARCH_PROVIDER_IDS
@@ -105,6 +106,7 @@ export interface AcquisitionPlanDraftGenerator {
     sessionId: string;
     transcript: AgentMessage[];
     prompt: string;
+    targetPlatform?: AcquisitionTargetPlatform;
   }): Promise<{
     summary: string;
     planDraft: AcquisitionPublicPlanCreateInput;
@@ -277,6 +279,7 @@ export function createAcquisitionPlanDraftGenerator(options: {
     ?? ((prefix: string) => `${prefix}_${randomUUID()}`);
   return {
     async generate(input) {
+      const targetPlatform = input.targetPlatform ?? "web";
       const resolved = await options.resolveSession({
         ownerId: input.ownerId,
         teamId: input.teamId,
@@ -315,7 +318,8 @@ export function createAcquisitionPlanDraftGenerator(options: {
           toolSchemaId: ACQUISITION_PLAN_DRAFT_TOOL_SCHEMA_ID,
           dynamicData: {
             conversation: structuredClone(input.transcript),
-            prompt: input.prompt
+            prompt: input.prompt,
+            targetPlatform
           }
         },
         parallelToolCalls: false
@@ -379,6 +383,7 @@ export function createAcquisitionPlanDraftGenerator(options: {
         })
       );
       const candidate: AcquisitionPublicPlanCreateInput = {
+        targetPlatform,
         name: intent.data.name,
         objective: intent.data.objective,
         icp: structuredClone(intent.data.icp),

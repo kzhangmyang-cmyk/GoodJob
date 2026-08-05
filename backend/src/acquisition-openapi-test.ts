@@ -338,6 +338,8 @@ test("plan creation binds a server model snapshot behind an idempotent contract"
   const schema = create.requestBody.content["application/json"].schema;
   assert.equal(schema.additionalProperties, false);
   assert.ok(schema.properties.modelConnectionId);
+  assert.deepEqual(schema.properties.targetPlatform.enum, ["douyin", "web"]);
+  assert.equal(schema.required.includes("targetPlatform"), false);
   assert.equal(
     "modelSnapshotRef" in schema.properties,
     false,
@@ -424,6 +426,11 @@ test("human review, conversion, and copilot writes mirror runtime schemas", () =
   assert.deepEqual(
     message.requestBody.content["application/json"].schema.required,
     ["message"]
+  );
+  assert.deepEqual(
+    message.requestBody.content["application/json"].schema
+      .properties.targetPlatform.enum,
+    ["douyin", "web"]
   );
   assert.deepEqual(
     message.parameters.map(

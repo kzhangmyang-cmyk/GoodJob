@@ -269,6 +269,21 @@ async function main() {
   assert.equal((await overview.listTasks(ownerB, { platform: "douyin" })).length, 1);
   assert.equal(await overview.getTask(ownerB, visiblePlan.id), null);
   assert.equal(await overview.getTask(ownerA, otherTeamPlan.id), null);
+
+  const explicitWebWithDouyinQuery = await service.createPlan(ownerA, {
+    ...planInput("显式全网计划优先于旧查询推断", "douyin"),
+    targetPlatform: "web"
+  });
+  assert.equal(
+    (await overview.getTask(ownerA, explicitWebWithDouyinQuery.id))?.platform,
+    "web",
+    "explicit target platform must take precedence over legacy query inference"
+  );
+  assert.equal(
+    (await overview.getTask(ownerA, visiblePlan.id))?.platform,
+    "douyin",
+    "legacy plans without targetPlatform must retain query inference"
+  );
 }
 
 await main();

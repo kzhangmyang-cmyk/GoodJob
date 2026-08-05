@@ -23,6 +23,7 @@
       "enum": ["queued", "running", "succeeded", "failed", "cancelled"]
     },
     "responseMode": { "enum": ["assistant", "plan_draft"] },
+    "targetPlatform": { "enum": ["douyin", "web"] },
     "result": {
       "type": ["object", "null"],
       "additionalProperties": {}

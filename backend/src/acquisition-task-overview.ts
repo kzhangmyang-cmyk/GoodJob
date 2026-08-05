@@ -4,11 +4,12 @@ import type {
   AcquisitionPlanRunRepository,
   AcquisitionPlanStatus,
   AcquisitionRun,
-  AcquisitionRunStatus
+  AcquisitionRunStatus,
+  AcquisitionTargetPlatform
 } from "./acquisition-plan-run-repository.js";
 import type { AcquisitionScope } from "./acquisition-plan-run-service.js";
 
-export type AcquisitionTaskPlatform = "douyin" | "web";
+export type AcquisitionTaskPlatform = AcquisitionTargetPlatform;
 export type AcquisitionDiscoveryMethod =
   | "public_search"
   | "user_import"
@@ -53,6 +54,7 @@ export interface AcquisitionTaskListQuery {
 }
 
 function platformFor(plan: AcquisitionPlan): AcquisitionTaskPlatform {
+  if (plan.payload.targetPlatform) return plan.payload.targetPlatform;
   const references = plan.payload.operations.flatMap((operation) => [
     operation.query ?? "",
     operation.sourceRef ?? ""

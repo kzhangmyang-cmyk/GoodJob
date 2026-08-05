@@ -213,7 +213,8 @@ export function createRoutedAcquisitionCopilotRunner(options: {
         transcript: input.transcript.map((message) =>
           structuredClone(message)
         ),
-        prompt: input.prompt
+        prompt: input.prompt,
+        targetPlatform: input.targetPlatform ?? "web"
       }).then((generated) => ({
         newMessages: [{
           role: "user" as const,

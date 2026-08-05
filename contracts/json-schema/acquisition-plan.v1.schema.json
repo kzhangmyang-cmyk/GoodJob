@@ -159,6 +159,7 @@
         "stopConditions"
       ],
       "properties": {
+        "targetPlatform": { "enum": ["douyin", "web"] },
         "name": { "type": "string", "minLength": 1 },
         "objective": { "type": "string", "minLength": 1 },
         "icp": {

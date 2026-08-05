@@ -13,6 +13,9 @@ import {
   acquisitionPublicPlanCreateSchema,
   type AcquisitionPublicPlanCreateInput
 } from "./acquisition-plan-contract.js";
+import type {
+  AcquisitionTargetPlatform
+} from "./acquisition-plan-run-repository.js";
 
 export type AcquisitionCopilotResponseMode = "assistant" | "plan_draft";
 
@@ -44,6 +47,7 @@ export interface AcquisitionCopilotTask {
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   prompt: string;
   responseMode?: AcquisitionCopilotResponseMode;
+  targetPlatform?: AcquisitionTargetPlatform;
   inputMessageId?: string;
   result: {
     summary: string;
@@ -395,6 +399,7 @@ export interface AcquisitionCopilotRunInput {
   transcript: AgentMessage[];
   prompt: string;
   responseMode: AcquisitionCopilotResponseMode;
+  targetPlatform?: AcquisitionTargetPlatform;
   signal?: AbortSignal;
 }
 
@@ -617,7 +622,8 @@ export class AcquisitionCopilotService {
     sessionId: string,
     rawPrompt: string,
     idempotencyKey: string,
-    responseMode: AcquisitionCopilotResponseMode = "assistant"
+    responseMode: AcquisitionCopilotResponseMode = "assistant",
+    targetPlatform: AcquisitionTargetPlatform = "web"
   ) {
     validScope(scope);
     const prompt = requiredText(rawPrompt, "message", 20_000);
@@ -633,7 +639,7 @@ export class AcquisitionCopilotService {
       scope,
       "enqueue_message",
       idempotencyKey,
-      { sessionId: session.id, prompt, responseMode },
+      { sessionId: session.id, prompt, responseMode, targetPlatform },
       "task",
       async () => {
         const now = this.#now();
@@ -649,6 +655,7 @@ export class AcquisitionCopilotService {
           status: "queued",
           prompt,
           responseMode,
+          targetPlatform,
           inputMessageId,
           result: null,
           errorCode: null,
@@ -868,7 +875,8 @@ export class AcquisitionCopilotService {
           .filter((record) => !pendingInputMessageIds.has(record.id))
           .map((record) => clone(record.message)),
         prompt: task.prompt,
-        responseMode: task.responseMode ?? "assistant"
+        responseMode: task.responseMode ?? "assistant",
+        targetPlatform: task.targetPlatform ?? "web"
       });
       this.#validateNewMessages(response.newMessages, task.prompt);
       const startSequence = existing.length;
