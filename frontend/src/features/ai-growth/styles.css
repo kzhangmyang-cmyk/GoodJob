@@ -1737,6 +1737,191 @@
   margin-top: 12px;
 }
 
+.ai-growth-identity-panel {
+  border-color: #b8c9df;
+}
+
+.ai-growth-identity-panel.is-resolved {
+  border-color: #9fc8b2;
+}
+
+.ai-growth-identity-boundary {
+  padding: 10px 12px;
+  color: #5b4308 !important;
+  background: #fff8df;
+  border-left: 3px solid #d49a17;
+}
+
+.ai-growth-identity-origin {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin-top: 14px;
+  padding: 12px;
+  background: #f5f8fc;
+  border: 1px solid var(--ag-line-soft);
+  border-radius: 6px;
+}
+
+.ai-growth-identity-origin > div {
+  display: grid;
+  gap: 3px;
+}
+
+.ai-growth-identity-origin span,
+.ai-growth-identity-evidence small {
+  color: var(--ag-muted);
+  font-size: 11px;
+}
+
+.ai-growth-identity-origin strong {
+  color: var(--ag-ink);
+  font-size: 12px;
+}
+
+.ai-growth-identity-origin p,
+.ai-growth-identity-origin a {
+  grid-column: 1 / -1;
+  color: var(--ag-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.ai-growth-identity-origin a,
+.ai-growth-identity-evidence a {
+  color: var(--ag-blue);
+  font-weight: 750;
+}
+
+.ai-growth-identity-form,
+.ai-growth-identity-rationale {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.ai-growth-identity-form label,
+.ai-growth-identity-rationale {
+  color: var(--ag-ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ai-growth-identity-form input,
+.ai-growth-identity-rationale textarea {
+  width: 100%;
+  min-width: 0;
+  margin-top: 6px;
+  padding: 10px 11px;
+  color: var(--ag-text);
+  background: #fff;
+  border: 1px solid #aebdd1;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 500;
+}
+
+.ai-growth-identity-form input:focus-visible,
+.ai-growth-identity-rationale textarea:focus-visible {
+  outline: 3px solid rgba(26, 91, 171, .2);
+  outline-offset: 1px;
+  border-color: var(--ag-blue);
+}
+
+.ai-growth-identity-form > p {
+  color: var(--ag-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.ai-growth-identity-evidence-list {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 16px;
+  padding: 0;
+  border: 0;
+}
+
+.ai-growth-identity-evidence-list legend {
+  margin-bottom: 8px;
+  color: var(--ag-ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ai-growth-identity-evidence {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 11px;
+  background: #f8fafc;
+  border: 1px solid var(--ag-line-soft);
+  border-radius: 6px;
+}
+
+.ai-growth-identity-evidence.is-ineligible {
+  opacity: .72;
+}
+
+.ai-growth-identity-evidence > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-growth-identity-evidence strong,
+.ai-growth-identity-evidence p,
+.ai-growth-identity-evidence em,
+.ai-growth-identity-evidence a {
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ai-growth-identity-evidence em {
+  color: #8a4a12;
+  font-style: normal;
+}
+
+.ai-growth-identity-progress {
+  margin-top: 12px;
+}
+
+.ai-growth-identity-progress > strong {
+  display: block;
+  color: #1e6a48;
+  font-size: 13px;
+}
+
+.ai-growth-identity-progress ol {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.ai-growth-identity-progress li {
+  padding: 7px;
+  color: var(--ag-muted);
+  background: #f4f6f9;
+  border: 1px solid var(--ag-line-soft);
+  border-radius: 5px;
+  font-size: 10px;
+  text-align: center;
+}
+
+.ai-growth-identity-progress li[data-state="complete"],
+.ai-growth-identity-progress li[data-state="active"] {
+  color: #18583d;
+  background: #eef8f2;
+  border-color: #a7cfb8;
+}
+
 .ai-growth-drawer-facts {
   display: grid;
   gap: 7px;
@@ -2371,6 +2556,11 @@ a.ai-growth-evidence-ref:hover {
 
   .ai-growth-connection-secret__field .ai-growth-button {
     justify-self: start;
+  }
+
+  .ai-growth-identity-origin,
+  .ai-growth-identity-progress ol {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .ai-growth-battle-section > header,

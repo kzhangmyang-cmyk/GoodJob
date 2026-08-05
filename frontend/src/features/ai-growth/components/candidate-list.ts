@@ -105,6 +105,12 @@ function reviewActions(candidate: CandidateCardVm, mode: AdvisorMode): string {
   const common = `
     <button type="button" class="ai-growth-text-action" data-action="open-battle-card" data-candidate-id="${id}">查看客户作战卡</button>
   `;
+  if (candidate.status === "unresolvable" && mode === "real") {
+    return `
+      <button type="button" class="ai-growth-button ai-growth-button--primary ai-growth-button--compact" data-action="verify-identity" data-candidate-id="${id}">核验主体</button>
+      ${common}
+    `;
+  }
   if (mode === "demo") {
     return `${common}<button type="button" class="ai-growth-text-action" data-action="preview-review" data-candidate-id="${id}">预览人工审核</button>`;
   }

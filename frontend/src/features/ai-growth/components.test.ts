@@ -439,6 +439,36 @@ test("candidate cards expose finance pending and actionable review states", () =
   assert.doesNotMatch(doNotContactCard, /data-action="reopen"/);
 });
 
+test("unresolved candidate exposes identity verification as the primary action", () => {
+  const rendered = renderCandidateList({
+    mode: "real",
+    candidates: [candidate("unresolvable", {
+      id: "candidate-douyin-unresolved",
+      subjectKind: "individual",
+      displayName: "抖音公开需求信号",
+      sourcePlatforms: ["douyin"],
+      qualification: null,
+      isHighIntent: false,
+      isValidOpportunity: false
+    })]
+  }, {
+    onOpenBattleCard: noop,
+    onPreviewReview: noop,
+    onApprove: noop,
+    onReject: noop,
+    onDoNotContact: noop,
+    onRequestResearch: noop,
+    onReopen: noop,
+    onConvert: noop
+  });
+
+  assert.match(rendered.html, /主体待核实/);
+  assert.match(rendered.html, /data-action="verify-identity"/);
+  assert.match(rendered.html, />核验主体</);
+  assert.doesNotMatch(rendered.html, /data-action="approve"/);
+  assert.doesNotMatch(rendered.html, /data-action="convert"/);
+});
+
 test("partial runs distinguish successful, partially successful, and failed sources in text", () => {
   const rendered = renderRunConsole({
     mode: "real",
