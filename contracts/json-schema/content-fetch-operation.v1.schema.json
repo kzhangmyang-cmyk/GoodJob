@@ -1,1 +1,66 @@
-{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://goodjob.example/contracts/json-schema/content-fetch-operation.v1.schema.json","title":"ContentFetchOperation","type":"object","additionalProperties":false,"required":["id","ownerId","sourceUrl","status","createdAt"],"properties":{"id":{"type":"string"},"ownerId":{"type":"string"},"sourceUrl":{"type":"string","format":"uri"},"status":{"enum":["queued","running","succeeded","failed","access_restricted"]},"accessStatus":{"enum":["indexed_summary","public_content","user_supplied","access_restricted"]},"createdAt":{"type":"string","format":"date-time"}}}
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goodjob.example/contracts/json-schema/content-fetch-operation.v1.schema.json",
+  "title": "ContentFetchOperation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "ownerId",
+    "teamId",
+    "actorId",
+    "sourceUrl",
+    "finalUrl",
+    "subjectChannel",
+    "status",
+    "accessStatus",
+    "httpStatus",
+    "contentType",
+    "title",
+    "rawArtifactHash",
+    "contentHash",
+    "evidenceCount",
+    "evidenceIds",
+    "errorCode",
+    "createdAt",
+    "startedAt",
+    "completedAt"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "ownerId": { "type": "string", "minLength": 1 },
+    "teamId": { "type": "string", "minLength": 1 },
+    "actorId": { "type": "string", "minLength": 1 },
+    "sourceUrl": { "type": "string", "format": "uri" },
+    "finalUrl": { "type": ["string", "null"], "format": "uri" },
+    "subjectChannel": { "enum": ["organization", "individual"] },
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed",
+        "access_restricted"
+      ]
+    },
+    "accessStatus": {
+      "type": ["string", "null"],
+      "enum": ["public_content", "access_restricted", null]
+    },
+    "httpStatus": { "type": ["integer", "null"], "minimum": 100, "maximum": 599 },
+    "contentType": { "type": ["string", "null"] },
+    "title": { "type": ["string", "null"] },
+    "rawArtifactHash": { "type": ["string", "null"] },
+    "contentHash": { "type": ["string", "null"] },
+    "evidenceCount": { "type": "integer", "minimum": 0 },
+    "evidenceIds": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "errorCode": { "type": ["string", "null"] },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "startedAt": { "type": ["string", "null"], "format": "date-time" },
+    "completedAt": { "type": ["string", "null"], "format": "date-time" }
+  }
+}

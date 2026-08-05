@@ -700,7 +700,8 @@ function evidenceInput(
       provider: response.provider,
       queryText: query,
       sourceUrl: result.sourceUrl,
-      resultRank: rank
+      resultRank: rank,
+      sourceType: result.sourceType
     },
     accessStatus: result.accessStatus,
     supersedesEvidenceId: null

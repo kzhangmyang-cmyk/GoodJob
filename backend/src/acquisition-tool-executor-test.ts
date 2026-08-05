@@ -613,6 +613,13 @@ test("keeps a Douyin comment-like profile result unresolved at the executor boun
     reasonCode: "insufficient_provider_public_actor_identity",
     resolverVersion: "acquisition-public-identity-v1"
   });
+  const individualEvidence = discovery.evidence.find(
+    (item: any) => item.targetType === "individual_signal"
+  );
+  assert.equal(
+    individualEvidence?.provenance.sourceType,
+    "comment_signal"
+  );
 });
 
 test("automatically uses the tenant's active search connections when the agent omits internal connection ids", async () => {

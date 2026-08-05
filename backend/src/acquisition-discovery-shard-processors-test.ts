@@ -136,6 +136,7 @@ function fetchOperation(
     rawArtifactHash: `sha256:${"a".repeat(64)}`,
     contentHash: `sha256:${"b".repeat(64)}`,
     evidenceCount: 1,
+    evidenceIds: ["evidence-1"],
     errorCode: null,
     createdAt: "2026-07-24T08:00:00.000Z",
     startedAt: "2026-07-24T08:00:00.000Z",

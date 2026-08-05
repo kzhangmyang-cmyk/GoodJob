@@ -125,6 +125,14 @@ components:
     DiscoveryProvider: { $ref: ../json-schema/discovery-provider.v1.schema.json }
     ProviderConnection: { $ref: ../json-schema/provider-connection.v1.schema.json }
     ContentFetchOperation: { $ref: ../json-schema/content-fetch-operation.v1.schema.json }
+    ContentFetchOperationList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ContentFetchOperation' }
     ImportOperation: { $ref: ../json-schema/import-operation.v1.schema.json }
     AcquisitionPlan: { $ref: ../json-schema/acquisition-plan.v1.schema.json }
     AcquisitionRun: { $ref: ../json-schema/acquisition-run.v1.schema.json }
@@ -481,7 +489,7 @@ paths:
       parameters: [{ name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }]
       responses:
         <<: *acquisitionStandardResponses
-        '200': { description: Content fetch operations, content: { application/json: { schema: *discoveryOperationListSchema } } }
+        '200': { description: Content fetch operations, content: { application/json: { schema: { $ref: '#/components/schemas/ContentFetchOperationList' } } } }
     post:
       operationId: createAcquisitionContentFetchOperation
       summary: Create content fetch operation
@@ -490,7 +498,7 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: *contentFetchWriteSchema } } }
       responses:
         <<: *acquisitionStandardResponses
-        '202': { description: Content fetch operation accepted, content: { application/json: { schema: *acquisitionResourceSchema } } }
+        '202': { description: Content fetch operation accepted, content: { application/json: { schema: { $ref: '#/components/schemas/ContentFetchOperation' } } } }
   /api/v1/acquisition/content-fetch-operations/{id}:
     parameters: [{ name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }]
     get:
@@ -499,7 +507,7 @@ paths:
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
         <<: *acquisitionStandardResponses
-        '200': { description: Content fetch operation, content: { application/json: { schema: *acquisitionResourceSchema } } }
+        '200': { description: Content fetch operation, content: { application/json: { schema: { $ref: '#/components/schemas/ContentFetchOperation' } } } }
   /api/v1/acquisition/import-operations:
     get:
       operationId: listAcquisitionImportOperations

@@ -38,6 +38,7 @@ export type EvidenceProvenance =
       queryText: string;
       sourceUrl: string;
       resultRank: number | null;
+      sourceType?: string;
     }
   | {
       kind: "user_submitted_url";
@@ -161,6 +162,31 @@ export interface AcquisitionCandidate {
   createdAt: string;
   updatedAt: string;
   version: number;
+}
+
+export function acquisitionCandidateIdentityResolved(
+  candidate: AcquisitionCandidate
+) {
+  if (candidate.profile.kind === "organization"
+    && candidate.partyRef.partyType === "organization") {
+    return Boolean(
+      candidate.profile.name
+      && candidate.partyRef.organizationId
+      && !candidate.partyRef.organizationId.startsWith("unresolved-org-")
+    );
+  }
+  if (candidate.profile.kind === "individual"
+    && candidate.partyRef.partyType === "individual") {
+    return Boolean(
+      candidate.profile.publicActorKey
+      && candidate.profile.publicProfileUrl
+      && candidate.partyRef.individualPartyId
+      && !candidate.partyRef.individualPartyId.startsWith(
+        "unresolved-individual-"
+      )
+    );
+  }
+  return false;
 }
 
 export interface OrganizationCandidateInput {

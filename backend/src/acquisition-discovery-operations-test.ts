@@ -214,6 +214,7 @@ test("content fetch operation is idempotent, tenant scoped, and appends public e
   );
   assert.equal(created.status, "queued");
   assert.equal(created.ownerId, scope.ownerId);
+  assert.deepEqual(created.evidenceIds, []);
 
   const duplicate = await fixture.service.createContentFetchOperation(
     scope,
@@ -246,6 +247,7 @@ test("content fetch operation is idempotent, tenant scoped, and appends public e
   assert.equal(completed.status, "succeeded");
   assert.equal(completed.accessStatus, "public_content");
   assert.equal(completed.evidenceCount, 1);
+  assert.deepEqual(completed.evidenceIds, ["evidence-1"]);
   assert.match(completed.contentHash ?? "", /^sha256:[a-f0-9]{64}$/);
   assert.equal(fixture.sink.appended.length, 1);
   assert.deepEqual(

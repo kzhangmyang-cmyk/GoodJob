@@ -2,10 +2,11 @@ import {
   createHmac,
   timingSafeEqual
 } from "node:crypto";
-import type {
-  AcquisitionCandidate,
-  FinancialValueDecision,
-  QualificationDecision
+import {
+  acquisitionCandidateIdentityResolved,
+  type AcquisitionCandidate,
+  type FinancialValueDecision,
+  type QualificationDecision
 } from "./acquisition-domain.js";
 import type {
   AcquisitionDomainRepository
@@ -44,6 +45,8 @@ export interface RunCandidatePresentationEvent {
     region: string | null;
     domain: string | null;
     status: AcquisitionCandidate["status"];
+    version: number;
+    identityResolved: boolean;
     updatedAt: string;
   };
   qualification: {
@@ -206,6 +209,8 @@ function publicCandidate(candidate: AcquisitionCandidate) {
       region: candidate.profile.region,
       domain: candidate.profile.domain,
       status: candidate.status,
+      version: candidate.version,
+      identityResolved: acquisitionCandidateIdentityResolved(candidate),
       updatedAt: candidate.updatedAt
     };
   }
@@ -217,6 +222,8 @@ function publicCandidate(candidate: AcquisitionCandidate) {
     region: candidate.profile.locationHint || null,
     domain: null,
     status: candidate.status,
+    version: candidate.version,
+    identityResolved: acquisitionCandidateIdentityResolved(candidate),
     updatedAt: candidate.updatedAt
   };
 }

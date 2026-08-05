@@ -13,6 +13,8 @@
     "evidenceIds",
     "subjectKind",
     "status",
+    "version",
+    "identityResolved",
     "latestDecisionVersion",
     "approvedDecisionVersion",
     "updatedAt",
@@ -30,6 +32,8 @@
       "items": { "type": "string", "minLength": 1 }
     },
     "subjectKind": { "const": "organization" },
+    "version": { "type": "integer", "minimum": 1 },
+    "identityResolved": { "type": "boolean" },
     "status": {
       "enum": [
         "discovered",

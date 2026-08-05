@@ -60,6 +60,7 @@ export interface AcquisitionContentFetchOperation {
   rawArtifactHash: string | null;
   contentHash: string | null;
   evidenceCount: number;
+  evidenceIds: string[];
   errorCode: string | null;
   createdAt: string;
   startedAt: string | null;
@@ -1637,6 +1638,7 @@ export class AcquisitionDiscoveryOperationService {
       rawArtifactHash: null,
       contentHash: null,
       evidenceCount: 0,
+      evidenceIds: [],
       errorCode: null,
       idempotencyKeyHash: keyHash(key),
       requestHash,
@@ -1771,6 +1773,7 @@ export class AcquisitionDiscoveryOperationService {
       operation.rawArtifactHash = result.rawArtifactHash;
       operation.contentHash = result.contentHash;
       operation.evidenceCount = evidence ? 1 : 0;
+      operation.evidenceIds = evidence ? [evidence.id] : [];
       operation.errorCode = null;
       operation.completedAt = this.now();
       await this.repository.putContentFetchOperation(

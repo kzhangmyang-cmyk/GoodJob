@@ -172,6 +172,14 @@ function parsedFetch(row: MysqlRow) {
       "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:fetch_status"
     );
   }
+  if (payload.evidenceIds === undefined) {
+    payload.evidenceIds = [];
+  } else if (!Array.isArray(payload.evidenceIds)
+    || payload.evidenceIds.some((id) => typeof id !== "string" || !id)) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_ids"
+    );
+  }
   return payload as unknown as AcquisitionContentFetchOperationRecord;
 }
 

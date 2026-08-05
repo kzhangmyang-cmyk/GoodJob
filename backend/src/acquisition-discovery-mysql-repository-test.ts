@@ -49,6 +49,7 @@ const fetchOperation: AcquisitionContentFetchOperationRecord = {
   rawArtifactHash: null,
   contentHash: null,
   evidenceCount: 0,
+  evidenceIds: [],
   errorCode: null,
   idempotencyKeyHash: "a".repeat(64),
   requestHash: `sha256:${"b".repeat(64)}`,
@@ -136,6 +137,24 @@ test("mysql repository persists encrypted import artifacts and tenant-scoped fet
   const serialized = JSON.stringify(importInsert.values);
   assert.match(serialized, /artifact-v1\.iv\.tag\.ciphertext/);
   assert.doesNotMatch(serialized, /contentBase64/);
+});
+
+test("mysql repository defaults evidence ids for legacy content-fetch payloads", async () => {
+  const pool = new FakePool();
+  const repository =
+    new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool));
+  const legacyPayload = structuredClone(fetchOperation) as Partial<
+    AcquisitionContentFetchOperationRecord
+  >;
+  delete legacyPayload.evidenceIds;
+  pool.enqueue([{ payload_json: JSON.stringify(legacyPayload) }]);
+
+  const loaded = await repository.getContentFetchOperation(
+    { ownerId: "owner-a", teamId: "team-a" },
+    fetchOperation.id
+  );
+
+  assert.deepEqual(loaded?.evidenceIds, []);
 });
 
 test("mysql repository lists tenant operations by created time and id with a bounded limit", async () => {

@@ -545,6 +545,10 @@ const providerConnectionSchema = loadContractSchema(
   "provider-connection"
 );
 
+const contentFetchOperationResponseSchema = loadContractSchema(
+  "content-fetch-operation"
+);
+
 const providerConnectionHealthSchema = {
   type: "object",
   additionalProperties: false,
@@ -1044,7 +1048,18 @@ function addProviderPaths(paths: AcquisitionOpenApiPaths) {
 }
 
 function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
-  const listSchema = {
+  const contentFetchListSchema = {
+    type: "object",
+    required: ["items"],
+    properties: {
+      items: {
+        type: "array",
+        items: contentFetchOperationResponseSchema
+      }
+    },
+    additionalProperties: false
+  };
+  const importOperationListSchema = {
     type: "object",
     required: ["items"],
     properties: {
@@ -1061,7 +1076,7 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
     "get",
     operation("get", "列出受控公开网页抓取任务", {
       parameters: [boundedLimitParameter()],
-      responses: standardResponses(200, "任务列表", listSchema)
+      responses: standardResponses(200, "任务列表", contentFetchListSchema)
     })
   );
   add(
@@ -1092,7 +1107,11 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
         },
         additionalProperties: false
       }),
-      responses: standardResponses(202, "任务已排队")
+      responses: standardResponses(
+        202,
+        "任务已排队",
+        contentFetchOperationResponseSchema
+      )
     })
   );
   add(
@@ -1100,7 +1119,12 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/content-fetch-operations/{id}",
     "get",
     operation("get", "读取网页抓取任务", {
-      parameters: [idParameter(160)]
+      parameters: [idParameter(160)],
+      responses: standardResponses(
+        200,
+        "网页抓取任务",
+        contentFetchOperationResponseSchema
+      )
     })
   );
   const importParameters = [
@@ -1139,7 +1163,7 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
     "get",
     operation("get", "列出客户授权文件导入任务", {
       parameters: [boundedLimitParameter()],
-      responses: standardResponses(200, "任务列表", listSchema)
+      responses: standardResponses(200, "任务列表", importOperationListSchema)
     })
   );
   add(
@@ -1800,6 +1824,8 @@ const runPresentationSchema = {
               "region",
               "domain",
               "status",
+              "version",
+              "identityResolved",
               "updatedAt"
             ],
             properties: {
@@ -1813,6 +1839,8 @@ const runPresentationSchema = {
               region: { type: "string", nullable: true },
               domain: { type: "string", nullable: true },
               status: { type: "string" },
+              version: { type: "integer", minimum: 1 },
+              identityResolved: { type: "boolean" },
               updatedAt: { type: "string", format: "date-time" }
             },
             additionalProperties: false

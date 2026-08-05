@@ -218,10 +218,40 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(importOperation.requestBody.content["application/json"], undefined);
   assert.ok(importOperation.responses["415"]);
   assert.equal(document.components.schemas.AcquisitionRunPresentation.$ref, "../json-schema/acquisition-run-presentation.v1.schema.json");
+  assert.equal(
+    document.paths["/api/v1/acquisition/content-fetch-operations"]
+      .get.responses["200"].content["application/json"].schema.$ref,
+    "#/components/schemas/ContentFetchOperationList"
+  );
+  assert.equal(
+    document.paths["/api/v1/acquisition/content-fetch-operations"]
+      .post.responses["202"].content["application/json"].schema.$ref,
+    "#/components/schemas/ContentFetchOperation"
+  );
+  assert.equal(
+    document.paths["/api/v1/acquisition/content-fetch-operations/{id}"]
+      .get.responses["200"].content["application/json"].schema.$ref,
+    "#/components/schemas/ContentFetchOperation"
+  );
   assert.equal(document.components.schemas.FinancialValueDecision.$ref, "../json-schema/financial-value-decision.v1.schema.json");
   assert.equal(document.components.schemas.CopilotMessage.$ref, "../json-schema/copilot-message.v1.schema.json");
   const presentation = registry.schemaDocuments.get("acquisition-run-presentation");
   assert.deepEqual(presentation.required, ["run", "providers", "summary", "candidateEvents", "nextAfter", "hasMore"]);
+  assert.deepEqual(
+    presentation.properties.candidateEvents.items.properties.candidate.required,
+    [
+      "id",
+      "subjectKind",
+      "displayName",
+      "industry",
+      "region",
+      "domain",
+      "status",
+      "version",
+      "identityResolved",
+      "updatedAt"
+    ]
+  );
   assert.deepEqual(presentation.properties.candidateEvents.items.properties.financialValue.type, ["null", "object"]);
   assert.equal(presentation.properties.summary.properties.expectedRevenueByCurrency.type, "array");
 });

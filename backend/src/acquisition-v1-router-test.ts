@@ -586,14 +586,18 @@ test("v1 router exposes the full evidence-to-outcome workflow without automatic 
       "domain",
       "evidenceIds",
       "id",
+      "identityResolved",
       "latestDecisionVersion",
       "name",
       "region",
       "status",
       "subjectKind",
-      "updatedAt"
+      "updatedAt",
+      "version"
     ]);
     assert.equal(candidateResult.json.subjectKind, "organization");
+    assert.equal(candidateResult.json.identityResolved, true);
+    assert.equal(candidateResult.json.version, 1);
     assert.equal(candidateResult.json.latestDecisionVersion, null);
     assert.equal(candidateResult.json.approvedDecisionVersion, null);
     const candidateId = candidateResult.json.id as string;
@@ -919,6 +923,56 @@ test("v1 router exposes the full evidence-to-outcome workflow without automatic 
   }
 });
 
+test("v1 candidate DTO exposes unresolved individual identity and version", async () => {
+  const fixture = await createFixture({
+    injectedQueryCandidates: [{
+      id: "candidate-unresolved-individual",
+      ownerId: OWNER_A,
+      teamId: TEAM_A,
+      partyType: "individual",
+      partyRef: {
+        partyType: "individual",
+        individualPartyId: "unresolved-individual-public-signal",
+        demandSignalId: "demand-signal-public-video"
+      },
+      profile: {
+        kind: "individual",
+        publicActorKey: "unresolved-public-signal:video",
+        publicDisplayName: "待核验抖音主体",
+        publicProfileUrl: "https://www.douyin.com/video/1234567890",
+        sourcePlatform: "douyin",
+        demandCategory: "获客系统",
+        demandSummary: "视频评论摘要中出现采购信号",
+        locationHint: "厦门",
+        buyingStage: "solution_research",
+        negativeSignals: []
+      },
+      evidenceIds: ["evidence-public-video"],
+      status: "normalized",
+      latestDecisionId: null,
+      latestDecisionVersion: null,
+      approvedDecisionVersion: null,
+      hardGateFailures: [],
+      leadId: null,
+      createdAt: "2026-07-24T00:00:00.000Z",
+      updatedAt: "2026-07-24T00:00:00.000Z",
+      version: 7
+    }]
+  });
+  try {
+    const listed = await fixture.request(
+      "/api/v1/acquisition/candidates?subjectKind=individual"
+    );
+
+    assert.equal(listed.response.status, 200);
+    assert.equal(listed.json.items.length, 1);
+    assert.equal(listed.json.items[0].version, 7);
+    assert.equal(listed.json.items[0].identityResolved, false);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("v1 router supports individual demand signals and research start", async () => {
   const fixture = await createFixture();
   try {
@@ -953,6 +1007,7 @@ test("v1 router supports individual demand signals and research start", async ()
       "evidenceIds",
       "firstSeenAt",
       "id",
+      "identityResolved",
       "lastSeenAt",
       "latestDecisionVersion",
       "locationHint",
@@ -963,9 +1018,12 @@ test("v1 router supports individual demand signals and research start", async ()
       "sourcePlatform",
       "status",
       "subjectKind",
-      "updatedAt"
+      "updatedAt",
+      "version"
     ]);
     assert.equal(candidate.json.subjectKind, "individual");
+    assert.equal(candidate.json.identityResolved, true);
+    assert.equal(candidate.json.version, 1);
     assert.equal(candidate.json.status, "normalized");
     assert.equal(candidate.json.latestDecisionVersion, null);
     assert.equal(candidate.json.approvedDecisionVersion, null);

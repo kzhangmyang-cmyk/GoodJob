@@ -82,7 +82,7 @@
           "candidate": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "subjectKind", "displayName", "industry", "region", "domain", "status", "updatedAt"],
+            "required": ["id", "subjectKind", "displayName", "industry", "region", "domain", "status", "version", "identityResolved", "updatedAt"],
             "properties": {
               "id": { "type": "string" },
               "subjectKind": { "type": "string", "enum": ["organization", "individual"] },
@@ -91,6 +91,8 @@
               "region": { "type": ["null", "string"] },
               "domain": { "type": ["null", "string"] },
               "status": { "type": "string" },
+              "version": { "type": "integer", "minimum": 1 },
+              "identityResolved": { "type": "boolean" },
               "updatedAt": { "type": "string", "format": "date-time" }
             }
           },

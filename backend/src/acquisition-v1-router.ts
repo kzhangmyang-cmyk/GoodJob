@@ -13,18 +13,19 @@ import {
   type Response
 } from "express";
 import { z, ZodError, type ZodType } from "zod";
-import type {
-  AcquisitionAuditEvent,
-  AcquisitionCandidate,
-  BattleCard,
-  CandidateStatus,
-  DiscoveryEvidence,
-  FinancialValueDecision,
-  LeadConversionRecord,
-  LiveOutcomeFeedbackEvent,
-  QualificationDecision,
-  ResearchAttempt,
-  ReviewEvent
+import {
+  acquisitionCandidateIdentityResolved,
+  type AcquisitionAuditEvent,
+  type AcquisitionCandidate,
+  type BattleCard,
+  type CandidateStatus,
+  type DiscoveryEvidence,
+  type FinancialValueDecision,
+  type LeadConversionRecord,
+  type LiveOutcomeFeedbackEvent,
+  type QualificationDecision,
+  type ResearchAttempt,
+  type ReviewEvent
 } from "./acquisition-domain.js";
 import {
   AcquisitionDomainError,
@@ -74,7 +75,8 @@ const provenanceSchema = z.discriminatedUnion("kind", [
     provider: requiredText(100),
     queryText: requiredText(1_000),
     sourceUrl: z.string().url().max(2_000),
-    resultRank: z.number().int().min(1).nullable()
+    resultRank: z.number().int().min(1).nullable(),
+    sourceType: requiredText(100).optional()
   }).strict(),
   z.object({
     kind: z.literal("user_submitted_url"),
@@ -598,6 +600,8 @@ function publicCandidate(candidate: AcquisitionCandidate) {
   const common = {
     subjectKind: candidate.profile.kind,
     status: candidate.status,
+    version: candidate.version,
+    identityResolved: acquisitionCandidateIdentityResolved(candidate),
     latestDecisionVersion: candidate.latestDecisionVersion,
     approvedDecisionVersion: candidate.approvedDecisionVersion,
     updatedAt: candidate.updatedAt

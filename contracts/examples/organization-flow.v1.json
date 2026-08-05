@@ -34,6 +34,8 @@
         "evidenceIds": ["ev_org_001"],
         "subjectKind": "organization",
         "status": "pending_review",
+        "version": 1,
+        "identityResolved": true,
         "latestDecisionVersion": null,
         "approvedDecisionVersion": null,
         "updatedAt": "2026-07-23T09:00:00.000Z",

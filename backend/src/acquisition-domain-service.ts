@@ -2205,6 +2205,13 @@ export class AcquisitionDomainService {
       provenance.provider = requiredText(provenance.provider, "搜索 Provider", 100);
       provenance.queryText = requiredText(provenance.queryText, "搜索查询", 1_000);
       provenance.sourceUrl = validUrl(provenance.sourceUrl, "来源 URL");
+      if (provenance.sourceType !== undefined) {
+        provenance.sourceType = requiredText(
+          provenance.sourceType,
+          "公开来源类型",
+          100
+        );
+      }
       if (provenance.resultRank !== null
         && (!Number.isInteger(provenance.resultRank)
           || provenance.resultRank < 1)) {

@@ -1249,6 +1249,9 @@ export interface components {
         DiscoveryProvider: components["schemas"]["discovery-provider.v1.schema"];
         ProviderConnection: components["schemas"]["provider-connection.v1.schema"];
         ContentFetchOperation: components["schemas"]["content-fetch-operation.v1.schema"];
+        ContentFetchOperationList: {
+            items: components["schemas"]["content-fetch-operation.v1.schema"][];
+        };
         ImportOperation: components["schemas"]["import-operation.v1.schema"];
         AcquisitionPlan: components["schemas"]["acquisition-plan.v1.schema"];
         AcquisitionRun: components["schemas"]["acquisition-run.v1.schema"];
@@ -1466,6 +1469,37 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
+        /** ContentFetchOperation */
+        "content-fetch-operation.v1.schema": {
+            id: string;
+            ownerId: string;
+            teamId: string;
+            actorId: string;
+            /** Format: uri */
+            sourceUrl: string;
+            /** Format: uri */
+            finalUrl: string | null;
+            /** @enum {unknown} */
+            subjectChannel: "organization" | "individual";
+            /** @enum {unknown} */
+            status: "queued" | "running" | "succeeded" | "failed" | "access_restricted";
+            /** @enum {string|null} */
+            accessStatus: "public_content" | "access_restricted" | null;
+            httpStatus: number | null;
+            contentType: string | null;
+            title: string | null;
+            rawArtifactHash: string | null;
+            contentHash: string | null;
+            evidenceCount: number;
+            evidenceIds: string[];
+            errorCode: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            startedAt: string | null;
+            /** Format: date-time */
+            completedAt: string | null;
+        };
         /** DiscoveryEvidence */
         "discovery-evidence.v1.schema": {
             id: string;
@@ -1489,6 +1523,7 @@ export interface components {
                 /** Format: uri */
                 sourceUrl: string;
                 resultRank: number | null;
+                sourceType?: string;
             } | {
                 /** @constant */
                 kind: "user_submitted_url";
@@ -1788,6 +1823,8 @@ export interface components {
                     region: null | string;
                     domain: null | string;
                     status: string;
+                    version: number;
+                    identityResolved: boolean;
                     /** Format: date-time */
                     updatedAt: string;
                 };
@@ -1863,6 +1900,8 @@ export interface components {
             evidenceIds: string[];
             /** @constant */
             subjectKind: "organization";
+            version: number;
+            identityResolved: boolean;
             /** @enum {unknown} */
             status: "discovered" | "unresolvable" | "normalized" | "qualified" | "pending_review" | "approved" | "rejected" | "do_not_contact" | "needs_research" | "converted_to_lead";
             latestDecisionVersion: string | null;
@@ -1889,6 +1928,8 @@ export interface components {
             negativeSignals: string[];
             /** @constant */
             subjectKind: "individual";
+            version: number;
+            identityResolved: boolean;
             /** @enum {unknown} */
             status: "discovered" | "unresolvable" | "normalized" | "qualified" | "pending_review" | "approved" | "rejected" | "do_not_contact" | "needs_research" | "converted_to_lead";
             latestDecisionVersion: string | null;
@@ -2481,19 +2522,6 @@ export interface components {
             kind: "search" | "content_fetch" | "import";
             displayName: string;
             capabilities: string[];
-        };
-        /** ContentFetchOperation */
-        "content-fetch-operation.v1.schema": {
-            id: string;
-            ownerId: string;
-            /** Format: uri */
-            sourceUrl: string;
-            /** @enum {unknown} */
-            status: "queued" | "running" | "succeeded" | "failed" | "access_restricted";
-            /** @enum {unknown} */
-            accessStatus?: "indexed_summary" | "public_content" | "user_supplied" | "access_restricted";
-            /** Format: date-time */
-            createdAt: string;
         };
         /** ImportOperation */
         "import-operation.v1.schema": {
@@ -3341,11 +3369,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        items: {
-                            [key: string]: unknown;
-                        }[];
-                    };
+                    "application/json": components["schemas"]["ContentFetchOperationList"];
                 };
             };
             /** @description Unified API error */
@@ -3424,9 +3448,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["content-fetch-operation.v1.schema"];
                 };
             };
             /** @description Unified API error */
@@ -3493,9 +3515,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["content-fetch-operation.v1.schema"];
                 };
             };
             /** @description Unified API error */

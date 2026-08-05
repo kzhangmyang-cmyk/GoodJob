@@ -162,11 +162,13 @@ function candidate(
   grade: QualificationDecision["grade"],
   options: {
     individual?: boolean;
+    identityResolved?: boolean;
     status?: AcquisitionCandidate["status"];
     evidenceIds?: string[];
   } = {}
 ): AcquisitionCandidate {
   const individual = options.individual ?? false;
+  const identityResolved = options.identityResolved ?? true;
   return {
     id,
     ownerId: OWNER,
@@ -175,7 +177,9 @@ function candidate(
     partyRef: individual
       ? {
           partyType: "individual",
-          individualPartyId: `individual-${id}`,
+          individualPartyId: identityResolved
+            ? `individual-${id}`
+            : `unresolved-individual-${id}`,
           demandSignalId: `signal-${id}`
         }
       : {
@@ -188,8 +192,10 @@ function candidate(
           kind: "individual",
           publicActorKey: `actor-${id}`,
           publicDisplayName: `个人 ${id}`,
-          publicProfileUrl: `https://example.test/people/${id}`,
-          sourcePlatform: "xiaohongshu",
+          publicProfileUrl: identityResolved
+            ? `https://example.test/people/${id}`
+            : `https://www.douyin.com/video/${id}`,
+          sourcePlatform: identityResolved ? "xiaohongshu" : "douyin",
           demandCategory: "获客",
           demandSummary: "公开表达获客需求",
           locationHint: "深圳",
@@ -401,7 +407,10 @@ async function fixture() {
       evidenceIds: ["evidence-candidate-1", "evidence-candidate-1-tavily"]
     }),
     candidate("candidate-2", "A"),
-    candidate("candidate-3", "B", { individual: true }),
+    candidate("candidate-3", "B", {
+      individual: true,
+      identityResolved: false
+    }),
     candidate("candidate-4", "S", { status: "do_not_contact" }),
     candidate("candidate-unrelated", "S")
   ];
@@ -543,6 +552,13 @@ test("presentation pages authoritative candidate upserts and computes current me
   const candidateTwo = allEvents.find(
     (event) => event.candidateId === "candidate-2"
   );
+  const candidateThree = allEvents.find(
+    (event) => event.candidateId === "candidate-3"
+  );
+  assert.equal(candidateOne?.candidate.version, 2);
+  assert.equal(candidateOne?.candidate.identityResolved, true);
+  assert.equal(candidateThree?.candidate.status, "qualified");
+  assert.equal(candidateThree?.candidate.identityResolved, false);
   assert.deepEqual(candidateOne?.sourcePlatforms, ["baidu", "tavily"]);
   assert.equal(candidateOne?.financialValue?.currency, "CNY");
   assert.equal(candidateTwo?.financialValue, null);

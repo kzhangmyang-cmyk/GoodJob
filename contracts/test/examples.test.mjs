@@ -12,6 +12,75 @@ test("personal evidence cannot omit provenance or masquerade as a company", asyn
   }).valid, false);
 });
 
+test("identity workbench contracts accept versioned identity state and exact evidence ids", async () => {
+  const { validateCase } = await loadContractHarness();
+  assert.equal(validateCase("individual-demand-signal", {
+    id: "candidate-individual-1",
+    publicActorKey: "unresolved-public-signal:video",
+    publicDisplayName: "待核验抖音主体",
+    publicProfileUrl: "https://www.douyin.com/video/1234567890",
+    sourcePlatform: "douyin",
+    evidenceIds: ["evidence-video-1"],
+    demandCategory: "获客系统",
+    demandSummary: "公开视频摘要包含需求信号",
+    locationHint: "厦门",
+    buyingStage: "solution_research",
+    negativeSignals: [],
+    subjectKind: "individual",
+    status: "normalized",
+    latestDecisionVersion: null,
+    approvedDecisionVersion: null,
+    version: 7,
+    identityResolved: false,
+    updatedAt: "2026-08-06T00:00:00.000Z",
+    firstSeenAt: "2026-08-06T00:00:00.000Z",
+    lastSeenAt: "2026-08-06T00:00:00.000Z"
+  }).valid, true);
+  assert.equal(validateCase("discovery-evidence", {
+    id: "evidence-video-1",
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: "公开视频",
+    sourceSnippet: "评论摘要",
+    publishedAt: null,
+    fetchedAt: "2026-08-06T00:00:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: `sha256:${"a".repeat(64)}`,
+    contentHash: `sha256:${"b".repeat(64)}`,
+    provenance: {
+      kind: "search_result",
+      provider: "baidu_ai_search",
+      queryText: "site:douyin.com 获客",
+      sourceUrl: "https://www.douyin.com/video/1234567890",
+      resultRank: 1,
+      sourceType: "video"
+    },
+    accessStatus: "indexed_summary"
+  }).valid, true);
+  assert.equal(validateCase("content-fetch-operation", {
+    id: "fetch-1",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "user-a",
+    sourceUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    finalUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    subjectChannel: "individual",
+    status: "succeeded",
+    accessStatus: "public_content",
+    httpStatus: 200,
+    contentType: "text/html; charset=utf-8",
+    title: "公开主页",
+    rawArtifactHash: `sha256:${"c".repeat(64)}`,
+    contentHash: `sha256:${"d".repeat(64)}`,
+    evidenceCount: 1,
+    evidenceIds: ["evidence-profile-1"],
+    errorCode: null,
+    createdAt: "2026-08-06T00:00:00.000Z",
+    startedAt: "2026-08-06T00:00:01.000Z",
+    completedAt: "2026-08-06T00:00:02.000Z"
+  }).valid, true);
+});
+
 test("outcome feedback rejects untyped live parties and legacy individual parties", async () => {
   const { validateCase } = await loadContractHarness();
   const live = {
