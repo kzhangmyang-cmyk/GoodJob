@@ -942,6 +942,7 @@ export function createAiGrowthController(
       if (!isTargetPlatform(platform) || state.targetPlatform === platform) {
         return;
       }
+      operationGeneration += 1;
       state = {
         ...state,
         targetPlatform: platform,

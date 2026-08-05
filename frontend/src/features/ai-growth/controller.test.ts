@@ -391,6 +391,55 @@ test("真实方案请求传递当前目标平台", async () => {
   assert.equal(controller.getState().planDraft?.targetPlatform, "web");
 });
 
+test("切换目标平台会废弃仍在生成的旧平台方案", async () => {
+  let markRequestStarted!: () => void;
+  const requestStarted = new Promise<void>((resolve) => {
+    markRequestStarted = resolve;
+  });
+  let releaseRequest!: (
+    value: Awaited<ReturnType<AiGrowthControllerApi["requestPlanDraft"]>>
+  ) => void;
+  const deferredRequest = new Promise<
+    Awaited<ReturnType<AiGrowthControllerApi["requestPlanDraft"]>>
+  >((resolve) => {
+    releaseRequest = resolve;
+  });
+  const { api } = createApi({
+    requestPlanDraft: async () => {
+      markRequestStarted();
+      return deferredRequest;
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+
+  const submission = controller.submit();
+  await requestStarted;
+  controller.setTargetPlatform("web");
+  releaseRequest({
+    id: "task-stale-douyin",
+    sessionId: "session-1",
+    kind: "message",
+    status: "succeeded",
+    responseMode: "plan_draft",
+    targetPlatform: "douyin",
+    result: {
+      planDraft: { ...planDraft, targetPlatform: "douyin" }
+    },
+    errorCode: null,
+    createdAt: "2026-08-05T00:00:00.000Z",
+    completedAt: "2026-08-05T00:00:01.000Z"
+  });
+  await submission;
+
+  assert.equal(controller.getState().targetPlatform, "web");
+  assert.equal(controller.getState().status, "idle");
+  assert.equal(controller.getState().planDraft, null);
+  await assert.rejects(
+    controller.approve(),
+    /当前没有等待批准的搜索方案/
+  );
+});
+
 test("打开旧任务时优先恢复方案平台并回退任务平台", async () => {
   const detail = (
     payload: AcquisitionPlanCreateDto,
