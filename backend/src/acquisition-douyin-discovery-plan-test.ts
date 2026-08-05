@@ -210,6 +210,32 @@ test("Unicode format characters cannot hide a site operator or survive a safe qu
   );
 });
 
+test("default-ignorable Unicode marks cannot hide a site operator", () => {
+  for (const invisible of ["\u034f", "\ufe0f", "\u180b"]) {
+    const compiled = compileAcquisitionDiscoveryQueries({
+      targetPlatform: "douyin",
+      queryIntents: [{
+        subjectChannel: "individual",
+        query: `s${invisible}ite:evil.example \u8001\u677f \u83b7\u5ba2\u96be`
+      }]
+    });
+    assert.deepEqual(compiled, [{
+      subjectChannel: "individual",
+      query: "site:douyin.com \u8001\u677f \u83b7\u5ba2\u96be"
+    }, {
+      subjectChannel: "individual",
+      query: "site:iesdouyin.com \u8001\u677f \u83b7\u5ba2\u96be"
+    }], `U+${invisible.codePointAt(0)?.toString(16).toUpperCase()}`);
+    assert.equal(
+      isSafeDouyinSearchQuery(
+        `site:douyin.com \u8001\u677f s${invisible}ite:evil.example`
+      ),
+      false,
+      `U+${invisible.codePointAt(0)?.toString(16).toUpperCase()}`
+    );
+  }
+});
+
 test("web truncation rejects a bounded result with no semantic content", () => {
   assert.throws(() => compileAcquisitionDiscoveryQueries({
     targetPlatform: "web",

@@ -8,9 +8,11 @@ const DOUYIN_ROOT_PREFIXES = [
   "site:douyin.com ",
   "site:iesdouyin.com "
 ] as const;
-const FORMAT_CHARACTERS = /\p{Cf}/gu;
+const DEFAULT_IGNORABLE_CODE_POINTS =
+  /\p{Default_Ignorable_Code_Point}/gu;
 const CONTROL_CHARACTERS = /\p{Cc}/gu;
-const FORMAT_CHARACTER_PRESENT = /\p{Cf}/u;
+const DEFAULT_IGNORABLE_CODE_POINT_PRESENT =
+  /\p{Default_Ignorable_Code_Point}/u;
 const CONTROL_CHARACTER_PRESENT = /\p{Cc}/u;
 const SITE_CLAUSES =
   /(?<![\p{L}\p{N}_])[-+]?\s*site\s*:\s*(?:"[^"]*"|'[^']*'|[^\s)\]}>'",;\uff0c\u3002!?\uff01\uff1f]+)/giu;
@@ -26,7 +28,7 @@ export interface AcquisitionDiscoveryQueryIntent {
 function normalizedQuery(value: string) {
   return value
     .normalize("NFKC")
-    .replace(FORMAT_CHARACTERS, "")
+    .replace(DEFAULT_IGNORABLE_CODE_POINTS, "")
     .replace(CONTROL_CHARACTERS, " ")
     .replace(/\s+/gu, " ")
     .trim();
@@ -113,7 +115,7 @@ export function isSafeDouyinSearchQuery(query: string) {
   if (!query
     || query.length > SEARCH_TOOL_QUERY_MAX_LENGTH
     || query !== query.normalize("NFKC")
-    || FORMAT_CHARACTER_PRESENT.test(query)
+    || DEFAULT_IGNORABLE_CODE_POINT_PRESENT.test(query)
     || CONTROL_CHARACTER_PRESENT.test(query)) {
     return false;
   }

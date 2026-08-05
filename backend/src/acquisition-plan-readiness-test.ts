@@ -152,7 +152,10 @@ test("Douyin plan readiness rejects every search query outside exact approved ro
     "site:douyin.com \u53a6\u95e8[site:evil.example] \u88c5\u4fee",
     "site:douyin.com \u53a6\u95e8\"site:evil.example\" \u88c5\u4fee",
     "site:douyin.com \u53a6\u95e8{site:evil.example} \u88c5\u4fee",
-    "site:douyin.com \u53a6\u95e8\u061c \u88c5\u4fee"
+    "site:douyin.com \u53a6\u95e8\u061c \u88c5\u4fee",
+    "site:douyin.com \u53a6\u95e8 s\u034fite:evil.example",
+    "site:douyin.com \u53a6\u95e8 s\ufe0fite:evil.example",
+    "site:douyin.com \u53a6\u95e8 s\u180bite:evil.example"
   ]) {
     const payload = readyPayload();
     payload.targetPlatform = "douyin";
