@@ -37,11 +37,11 @@
 - `testProviderConnection(id)` → `POST /api/v1/acquisition/provider-connections/:id/test`。
 - 所有 DTO 均从生成的 OpenAPI 类型推导，不手写漂移结构。
 
-- [ ] **Step 1: write failing request-contract tests** for exact method/path/body/header semantics and success/failure health payloads.
-- [ ] **Step 2: run RED**.
-- [ ] **Step 3: implement the smallest typed API methods** using existing request helpers and error mapping.
-- [ ] **Step 4: run GREEN**, frontend typecheck/tests and `git diff --check`.
-- [ ] **Step 5: commit** as `feat: connect acquisition provider lifecycle api`.
+- [x] **Step 1: write failing request-contract tests** for exact method/path/body/header semantics and success/failure health payloads.
+- [x] **Step 2: run RED**.
+- [x] **Step 3: implement the smallest typed API methods** using existing request helpers and error mapping.
+- [x] **Step 4: run GREEN**, frontend typecheck/tests and `git diff --check`.
+- [x] **Step 5: commit** as `feat: connect acquisition provider lifecycle api`.
 
 ### Task 2: 连接中心状态机与密钥安全边界
 
