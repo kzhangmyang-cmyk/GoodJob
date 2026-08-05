@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { AiGrowthApi } from "./api.js";
+import type { AiGrowthApi, ProviderConnectionDto } from "./api.js";
 import type { RunPresentationPollerOptions } from "./poll-run.js";
 import {
   createAiGrowthController,
@@ -75,6 +75,27 @@ const approvedCandidate: CandidateDto = {
   updatedAt: "2026-07-26T09:00:00.000Z"
 };
 
+function providerConnection(
+  overrides: Partial<ProviderConnectionDto> = {}
+): ProviderConnectionDto {
+  return {
+    id: "conn-search",
+    ownerId: "user-1",
+    teamId: null,
+    providerId: "baidu",
+    kind: "search",
+    status: "active",
+    credentialVersion: 1,
+    lastHealthAt: "2026-08-06T00:00:00.000Z",
+    lastHealthStatus: "passed",
+    lastErrorCode: null,
+    lastHealthMessage: "连接正常",
+    usage: "search",
+    createdAt: "2026-08-06T00:00:00.000Z",
+    ...overrides
+  };
+}
+
 function run(status: RunDto["status"] = "running"): RunDto {
   return {
     id: "run-1",
@@ -99,14 +120,17 @@ function createApi(overrides: Partial<AiGrowthControllerApi> = {}) {
     cancel: 0
   };
   const api = {
-    listProviderConnections: async () => ({
+    listProviders: async () => ({
       items: [{
-        id: "conn-search",
-        providerId: "baidu",
+        id: "baidu",
         kind: "search" as const,
-        status: "active" as const,
-        credentialVersion: 1
+        displayName: "百度 AI 搜索",
+        capabilities: ["web_search"]
       }],
+      nextCursor: null
+    }),
+    listProviderConnections: async () => ({
+      items: [providerConnection()],
       nextCursor: null
     }),
     createSession: async () => ({
@@ -639,6 +663,640 @@ test("缺少真实搜索连接时保留用户输入", async () => {
     controller.getState().taskText,
     "寻找厦门近期有获客需求的企业"
   );
+});
+
+test("只有 active 且 passed 的搜索连接允许生成方案", async () => {
+  let draftRequests = 0;
+  const untested = createApi({
+    listProviderConnections: async () => ({
+      items: [providerConnection({ lastHealthStatus: "untested" })],
+      nextCursor: null
+    }),
+    requestPlanDraft: async () => {
+      draftRequests += 1;
+      return {
+        id: "task-untested",
+        status: "succeeded",
+        result: { planDraft }
+      } as never;
+    }
+  });
+  const blocked = createAiGrowthController(controllerOptions(untested.api));
+
+  await blocked.submit();
+
+  assert.equal(blocked.getState().status, "connection_required");
+  assert.equal(draftRequests, 0);
+
+  const passed = createApi({
+    requestPlanDraft: async () => {
+      draftRequests += 1;
+      return {
+        id: "task-passed",
+        status: "succeeded",
+        result: { planDraft }
+      } as never;
+    }
+  });
+  const allowed = createAiGrowthController(controllerOptions(passed.api));
+
+  await allowed.submit();
+
+  assert.equal(allowed.getState().status, "awaiting_approval");
+  assert.equal(draftRequests, 1);
+});
+
+test("打开连接中心并发加载且只保留搜索来源和当前任务", async () => {
+  let releaseCatalog!: () => void;
+  let releaseConnections!: () => void;
+  const catalogGate = new Promise<void>((resolve) => {
+    releaseCatalog = resolve;
+  });
+  const connectionsGate = new Promise<void>((resolve) => {
+    releaseConnections = resolve;
+  });
+  const reads: string[] = [];
+  const { api } = createApi({
+    listProviders: async () => {
+      reads.push("catalog");
+      await catalogGate;
+      return {
+        items: [{
+          id: "baidu",
+          kind: "search",
+          displayName: "百度 AI 搜索",
+          capabilities: ["web_search"]
+        }, {
+          id: "reader",
+          kind: "content_fetch",
+          displayName: "网页读取",
+          capabilities: ["content_fetch"]
+        }],
+        nextCursor: null
+      };
+    },
+    listProviderConnections: async () => {
+      reads.push("connections");
+      await connectionsGate;
+      return {
+        items: [
+          providerConnection(),
+          providerConnection({
+            id: "conn-content",
+            providerId: "reader",
+            kind: "content_fetch"
+          })
+        ],
+        nextCursor: null
+      };
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  controller.selectTemplate("beauty");
+  controller.setTaskText("寻找抖音上的上海美业采购需求");
+  controller.setTargetPlatform("web");
+  const before = controller.getState();
+
+  const opening = controller.openConnectionCenter();
+
+  assert.deepEqual(reads.sort(), ["catalog", "connections"]);
+  assert.equal(controller.getConnectionCenter().open, true);
+  assert.equal(controller.getConnectionCenter().status, "loading");
+  releaseCatalog();
+  releaseConnections();
+  await opening;
+
+  const center = controller.getConnectionCenter();
+  assert.equal(center.status, "ready");
+  assert.deepEqual(center.providers.map((item) => item.id), ["baidu"]);
+  assert.deepEqual(center.connections.map((item) => item.id), ["conn-search"]);
+  assert.equal(controller.getState().taskText, before.taskText);
+  assert.equal(controller.getState().targetPlatform, before.targetPlatform);
+  assert.equal(controller.getState().templateId, before.templateId);
+  assert.equal(controller.getView(), "workflow");
+});
+
+test("关闭后重开连接中心会忽略第一次打开的迟到响应", async () => {
+  const catalogResolvers: Array<(value: {
+    items: Array<{
+      id: string;
+      kind: "search";
+      displayName: string;
+      capabilities: string[];
+    }>;
+    nextCursor: null;
+  }) => void> = [];
+  const connectionResolvers: Array<(value: {
+    items: ProviderConnectionDto[];
+    nextCursor: null;
+  }) => void> = [];
+  const { api } = createApi({
+    listProviders: () => new Promise((resolve) => {
+      catalogResolvers.push(resolve);
+    }),
+    listProviderConnections: () => new Promise((resolve) => {
+      connectionResolvers.push(resolve);
+    })
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+
+  const first = controller.openConnectionCenter();
+  controller.closeConnectionCenter();
+  assert.equal(controller.getConnectionCenter().open, false);
+  const second = controller.openConnectionCenter();
+  catalogResolvers[1]!({
+    items: [{
+      id: "second-provider",
+      kind: "search",
+      displayName: "第二次目录",
+      capabilities: []
+    }],
+    nextCursor: null
+  });
+  connectionResolvers[1]!({
+    items: [providerConnection({ id: "second-connection" })],
+    nextCursor: null
+  });
+  await second;
+
+  catalogResolvers[0]!({
+    items: [{
+      id: "stale-provider",
+      kind: "search",
+      displayName: "过期目录",
+      capabilities: []
+    }],
+    nextCursor: null
+  });
+  connectionResolvers[0]!({
+    items: [providerConnection({ id: "stale-connection" })],
+    nextCursor: null
+  });
+  await first;
+
+  const center = controller.getConnectionCenter();
+  assert.equal(center.open, true);
+  assert.deepEqual(center.providers.map((item) => item.id), ["second-provider"]);
+  assert.deepEqual(
+    center.connections.map((item) => item.id),
+    ["second-connection"]
+  );
+});
+
+test("新建连接强制 disabled 且任何公开状态都不保留 API Key", async () => {
+  const fixtureKey = "fixture-provider-key-never-store";
+  let createInput: unknown;
+  let createKey = "";
+  let connectionReads = 0;
+  const disabled = providerConnection({
+    id: "conn-created",
+    status: "disabled",
+    lastHealthAt: null,
+    lastHealthStatus: "untested",
+    lastHealthMessage: "尚未测试"
+  });
+  const { api } = createApi({
+    listProviderConnections: async () => {
+      connectionReads += 1;
+      return {
+        items: connectionReads === 1 ? [] : [disabled],
+        nextCursor: null
+      };
+    },
+    createProviderConnection: async (input, key) => {
+      createInput = input;
+      createKey = key;
+      return disabled;
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  await controller.openConnectionCenter();
+  controller.selectConnectionCenterProvider("baidu");
+
+  await controller.saveProviderConnection(fixtureKey);
+
+  assert.deepEqual(createInput, {
+    providerId: "baidu",
+    apiKey: fixtureKey,
+    status: "disabled"
+  });
+  assert.match(createKey, /^ai-growth-provider-connection:/);
+  assert.equal(connectionReads, 2);
+  assert.equal(controller.getConnectionCenter().mutationStatus, "idle");
+  assert.equal(
+    controller.getConnectionCenter().selectedConnectionId,
+    "conn-created"
+  );
+  assert.doesNotMatch(JSON.stringify(controller.getState()), /fixture-provider-key/);
+  assert.doesNotMatch(
+    JSON.stringify(controller.getConnectionCenter()),
+    /fixture-provider-key/
+  );
+});
+
+test("关闭重开会废弃保存锁且迟到保存不能覆盖新一轮状态", async () => {
+  let releaseFirstSave!: () => void;
+  const firstSaveGate = new Promise<void>((resolve) => {
+    releaseFirstSave = resolve;
+  });
+  let saves = 0;
+  const { api } = createApi({
+    listProviderConnections: async () => ({ items: [], nextCursor: null }),
+    createProviderConnection: async () => {
+      saves += 1;
+      const current = saves;
+      if (current === 1) await firstSaveGate;
+      return providerConnection({
+        id: `conn-save-${current}`,
+        status: "disabled",
+        lastHealthAt: null,
+        lastHealthStatus: "untested"
+      });
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  await controller.openConnectionCenter();
+  controller.selectConnectionCenterProvider("baidu");
+  const staleSave = controller.saveProviderConnection("fixture-stale-key");
+
+  controller.closeConnectionCenter();
+  await controller.openConnectionCenter();
+  controller.selectConnectionCenterProvider("baidu");
+  const currentSave = controller.saveProviderConnection("fixture-current-key");
+  releaseFirstSave();
+  await Promise.all([staleSave, currentSave]);
+
+  assert.equal(saves, 2);
+  assert.equal(
+    controller.getConnectionCenter().selectedConnectionId,
+    "conn-save-2"
+  );
+  assert.doesNotMatch(
+    JSON.stringify(controller.getConnectionCenter()),
+    /fixture-(?:stale|current)-key/
+  );
+});
+
+test("测试失败不能启用而测试通过后才能成为健康连接", async () => {
+  let current = providerConnection({
+    status: "disabled",
+    lastHealthAt: null,
+    lastHealthStatus: "untested",
+    lastHealthMessage: "尚未测试"
+  });
+  let tests = 0;
+  const updates: unknown[] = [];
+  const { api } = createApi({
+    listProviderConnections: async () => ({
+      items: [current],
+      nextCursor: null
+    }),
+    testProviderConnection: async () => {
+      tests += 1;
+      const ok = tests === 2;
+      current = providerConnection({
+        ...current,
+        lastHealthAt: "2026-08-06T01:00:00.000Z",
+        lastHealthStatus: ok ? "passed" : "failed",
+        lastErrorCode: ok ? null : "invalid_api_key",
+        lastHealthMessage: ok ? "连接正常" : "凭据无效"
+      });
+      return {
+        ok,
+        message: current.lastHealthMessage,
+        errorCode: current.lastErrorCode,
+        retryable: false,
+        retryAfterAt: null,
+        usage: "search"
+      };
+    },
+    updateProviderConnection: async (_id, input) => {
+      updates.push(input);
+      current = providerConnection({ ...current, status: "active" });
+      return current;
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  await controller.openConnectionCenter();
+  controller.selectConnectionCenterConnection("conn-search");
+
+  await controller.testProviderConnection();
+
+  assert.equal(controller.getConnectionCenter().health?.ok, false);
+  assert.equal(
+    controller.getConnectionCenter().connections[0]?.lastHealthStatus,
+    "failed"
+  );
+  await assert.rejects(
+    () => controller.setProviderConnectionEnabled(true),
+    /测试通过/
+  );
+  assert.deepEqual(updates, []);
+
+  await controller.testProviderConnection();
+  await controller.setProviderConnectionEnabled(true);
+
+  assert.equal(controller.getConnectionCenter().health?.ok, true);
+  assert.deepEqual(updates, [{ status: "active" }]);
+  assert.equal(controller.getConnectionCenter().connections[0]?.status, "active");
+  assert.equal(
+    controller.getConnectionCenter().connections[0]?.lastHealthStatus,
+    "passed"
+  );
+});
+
+test("禁用仅提交状态、轮换回到未测试 disabled、删除后刷新", async () => {
+  const fixtureKey = "fixture-rotation-key-never-store";
+  let current: ProviderConnectionDto | null = providerConnection();
+  const updates: unknown[] = [];
+  const deletions: string[] = [];
+  const { api } = createApi({
+    listProviderConnections: async () => ({
+      items: current ? [current] : [],
+      nextCursor: null
+    }),
+    updateProviderConnection: async (_id, input) => {
+      updates.push(input);
+      if ("apiKey" in input) {
+        current = providerConnection({
+          credentialVersion: 2,
+          status: "disabled",
+          lastHealthAt: null,
+          lastHealthStatus: "untested",
+          lastHealthMessage: "尚未测试"
+        });
+      } else {
+        current = providerConnection({ status: input.status });
+      }
+      return current;
+    },
+    deleteProviderConnection: async (id) => {
+      deletions.push(id);
+      current = null;
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  await controller.openConnectionCenter();
+  controller.selectConnectionCenterConnection("conn-search");
+
+  await controller.setProviderConnectionEnabled(false);
+  assert.deepEqual(updates[0], { status: "disabled" });
+
+  await controller.saveProviderConnection(fixtureKey);
+  assert.deepEqual(updates[1], {
+    apiKey: fixtureKey,
+    status: "disabled"
+  });
+  assert.equal(
+    controller.getConnectionCenter().connections[0]?.lastHealthStatus,
+    "untested"
+  );
+  assert.doesNotMatch(
+    JSON.stringify(controller.getConnectionCenter()),
+    /fixture-rotation-key/
+  );
+
+  await controller.deleteProviderConnection();
+  assert.deepEqual(deletions, ["conn-search"]);
+  assert.deepEqual(controller.getConnectionCenter().connections, []);
+  assert.equal(controller.getConnectionCenter().selectedConnectionId, null);
+});
+
+test("系统托管搜索连接在客户端拒绝密钥轮换", async () => {
+  let updates = 0;
+  const { api } = createApi({
+    listProviderConnections: async () => ({
+      items: [providerConnection({
+        id: "conn-system",
+        ownerId: "system",
+        teamId: null,
+        lastHealthAt: null,
+        lastHealthStatus: "untested",
+        lastHealthMessage: "系统托管来源"
+      })],
+      nextCursor: null
+    }),
+    updateProviderConnection: async () => {
+      updates += 1;
+      return providerConnection();
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  await controller.openConnectionCenter();
+  controller.selectConnectionCenterConnection("conn-system");
+
+  await assert.rejects(
+    () => controller.saveProviderConnection("fixture-system-key"),
+    /只读/
+  );
+
+  assert.equal(updates, 0);
+  assert.doesNotMatch(
+    JSON.stringify(controller.getConnectionCenter()),
+    /fixture-system-key/
+  );
+});
+
+test("健康连接就绪后沿原方案路径继续并保留抖音任务载荷", async () => {
+  let current: ProviderConnectionDto[] = [];
+  let requestedMessage = "";
+  let requestedPlatform = "";
+  const { api } = createApi({
+    listProviderConnections: async () => ({ items: current, nextCursor: null }),
+    requestPlanDraft: async (
+      _sessionId,
+      message,
+      _idempotencyKey,
+      targetPlatform
+    ) => {
+      requestedMessage = message;
+      requestedPlatform = targetPlatform;
+      return {
+        id: "task-after-connection",
+        status: "succeeded",
+        result: { planDraft: { ...planDraft, targetPlatform } }
+      } as never;
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  controller.selectTemplate("beauty");
+  controller.setTaskText("寻找抖音上的上海美业采购需求");
+
+  await controller.submit();
+  assert.equal(controller.getState().status, "connection_required");
+  current = [providerConnection()];
+  await controller.openConnectionCenter();
+
+  await controller.continueAfterConnection();
+
+  assert.equal(controller.getConnectionCenter().open, false);
+  assert.equal(controller.getState().status, "awaiting_approval");
+  assert.equal(requestedMessage, "寻找抖音上的上海美业采购需求");
+  assert.equal(requestedPlatform, "douyin");
+  assert.equal(controller.getState().templateId, "beauty");
+  assert.equal(controller.getView(), "workflow");
+});
+
+test("保存、测试、更新和删除在进行中都会合并重复点击", async (t) => {
+  await t.test("保存", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const idempotencyKeys: string[] = [];
+    const { api } = createApi({
+      listProviderConnections: async () => ({ items: [], nextCursor: null }),
+      createProviderConnection: async (_input, key) => {
+        calls += 1;
+        idempotencyKeys.push(key);
+        await gate;
+        return providerConnection({ status: "disabled" });
+      }
+    });
+    const controller = createAiGrowthController(controllerOptions(api));
+    await controller.openConnectionCenter();
+    controller.selectConnectionCenterProvider("baidu");
+    const first = controller.saveProviderConnection("fixture-dedup-key");
+    const duplicate = controller.saveProviderConnection("fixture-dedup-key");
+    assert.equal(first, duplicate);
+    assert.equal(calls, 1);
+    release();
+    await first;
+    controller.selectConnectionCenterProvider("baidu");
+    await controller.saveProviderConnection("fixture-distinct-save-key");
+    assert.equal(calls, 2);
+    assert.notEqual(idempotencyKeys[0], idempotencyKeys[1]);
+  });
+
+  await t.test("测试", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const { api } = createApi({
+      testProviderConnection: async () => {
+        calls += 1;
+        await gate;
+        return {
+          ok: true,
+          message: "连接正常",
+          errorCode: null,
+          retryable: false,
+          retryAfterAt: null,
+          usage: "search"
+        };
+      }
+    });
+    const controller = createAiGrowthController(controllerOptions(api));
+    await controller.openConnectionCenter();
+    controller.selectConnectionCenterConnection("conn-search");
+    const first = controller.testProviderConnection();
+    const duplicate = controller.testProviderConnection();
+    assert.equal(first, duplicate);
+    assert.equal(calls, 1);
+    release();
+    await first;
+  });
+
+  await t.test("更新", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const { api } = createApi({
+      updateProviderConnection: async () => {
+        calls += 1;
+        await gate;
+        return providerConnection({ status: "disabled" });
+      }
+    });
+    const controller = createAiGrowthController(controllerOptions(api));
+    await controller.openConnectionCenter();
+    controller.selectConnectionCenterConnection("conn-search");
+    const first = controller.setProviderConnectionEnabled(false);
+    const duplicate = controller.setProviderConnectionEnabled(false);
+    assert.equal(first, duplicate);
+    assert.equal(calls, 1);
+    release();
+    await first;
+  });
+
+  await t.test("删除", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const { api } = createApi({
+      deleteProviderConnection: async () => {
+        calls += 1;
+        await gate;
+      }
+    });
+    const controller = createAiGrowthController(controllerOptions(api));
+    await controller.openConnectionCenter();
+    controller.selectConnectionCenterConnection("conn-search");
+    const first = controller.deleteProviderConnection();
+    const duplicate = controller.deleteProviderConnection();
+    assert.equal(first, duplicate);
+    assert.equal(calls, 1);
+    release();
+    await first;
+  });
+});
+
+test("保存错误只暴露安全文案且可在失败后重试", async () => {
+  const fixtureKey = "fixture-upstream-echo-key";
+  let attempts = 0;
+  let connectionReads = 0;
+  const saved = providerConnection({ status: "disabled" });
+  const { api } = createApi({
+    listProviderConnections: async () => {
+      connectionReads += 1;
+      return {
+        items: connectionReads === 1 ? [] : [saved],
+        nextCursor: null
+      };
+    },
+    createProviderConnection: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error(`upstream echoed ${fixtureKey}`) as Error & {
+          status: number;
+        };
+        error.status = 422;
+        throw error;
+      }
+      return saved;
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  await controller.openConnectionCenter();
+  controller.selectConnectionCenterProvider("baidu");
+
+  await assert.rejects(
+    () => controller.saveProviderConnection(fixtureKey),
+    /连接配置无效/
+  );
+
+  assert.equal(controller.getConnectionCenter().mutationStatus, "idle");
+  assert.equal(
+    controller.getConnectionCenter().error?.message,
+    "连接配置无效，请检查后重试"
+  );
+  assert.doesNotMatch(
+    JSON.stringify(controller.getConnectionCenter()),
+    /fixture-upstream-echo-key|upstream echoed/
+  );
+
+  await controller.saveProviderConnection("fixture-retry-key");
+
+  assert.equal(attempts, 2);
+  assert.equal(controller.getConnectionCenter().error, null);
+  assert.equal(controller.getConnectionCenter().message, "连接已保存，请测试后再启用");
 });
 
 test("候选更新按 candidateId 合并并校验当前批准版本后才转换", async () => {

@@ -7,6 +7,8 @@
 | Task | Status | Implementation | Review |
 |---|---|---|---|
 | 1. Provider lifecycle frontend API | complete | Facade, focused tests and 204 transport handling | passed; no findings |
-| 2. Connection center state machine | pending | — | — |
+| 2. Connection center state machine | complete | Safe controller state, guarded lifecycle mutations, preserved task continuation | passed; no findings |
 | 3. Accessible in-workspace drawer | pending | — | — |
 | 4. Full E2E and docs | pending | — | — |
+
+Task 2: complete (review clean; commit `feat: manage acquisition provider connections`).

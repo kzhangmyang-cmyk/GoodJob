@@ -8,7 +8,9 @@ import {
   type CandidateConversionDto,
   type EvidenceDto,
   type PlanDtoWithEtag,
+  type ProviderCatalogPageDto,
   type ProviderConnectionDto,
+  type ProviderConnectionTestDto,
   type TodoCreateDto
 } from "./api.js";
 import {
@@ -118,13 +120,49 @@ export interface AiGrowthControllerOptions {
   onChange?(state: AdvisorState): void;
 }
 
+export type ProviderConnectionCenterStatus =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "error";
+
+export type ProviderConnectionCenterMutationStatus =
+  | "idle"
+  | "saving"
+  | "testing"
+  | "updating"
+  | "deleting";
+
+export interface ProviderConnectionCenterState {
+  open: boolean;
+  status: ProviderConnectionCenterStatus;
+  providers: ProviderCatalogPageDto["items"];
+  connections: ProviderConnectionDto[];
+  selectedProviderId: string | null;
+  selectedConnectionId: string | null;
+  mutationStatus: ProviderConnectionCenterMutationStatus;
+  health: ProviderConnectionTestDto | null;
+  message: string | null;
+  error: AdvisorState["error"];
+}
+
 export interface AiGrowthController {
   getState(): AdvisorState;
+  getConnectionCenter(): ProviderConnectionCenterState;
   getDrawer(): BattleCardDrawer;
   getConnections(): readonly ProviderConnectionDto[];
   getRecentTasks(): readonly RecentAdvisorPointer[];
   getView(): "overview" | "workflow" | "task";
   getTaskOverview(): TaskOverviewVm;
+  openConnectionCenter(): Promise<void>;
+  closeConnectionCenter(): void;
+  selectConnectionCenterProvider(providerId: string | null): void;
+  selectConnectionCenterConnection(connectionId: string | null): void;
+  saveProviderConnection(apiKey: string, baseUrl?: string): Promise<void>;
+  testProviderConnection(): Promise<void>;
+  setProviderConnectionEnabled(enabled: boolean): Promise<void>;
+  deleteProviderConnection(): Promise<void>;
+  continueAfterConnection(): Promise<void>;
   showOverview(): Promise<void>;
   showNewTask(): void;
   openTask(planId: string): Promise<void>;
@@ -201,6 +239,62 @@ function initialState(): AdvisorState {
     candidatesById: new Map(),
     summary: null,
     error: null
+  };
+}
+
+function initialConnectionCenter(): ProviderConnectionCenterState {
+  return {
+    open: false,
+    status: "idle",
+    providers: [],
+    connections: [],
+    selectedProviderId: null,
+    selectedConnectionId: null,
+    mutationStatus: "idle",
+    health: null,
+    message: null,
+    error: null
+  };
+}
+
+function cloneConnectionCenter(
+  state: ProviderConnectionCenterState
+): ProviderConnectionCenterState {
+  return {
+    ...state,
+    providers: state.providers.map((provider) => ({
+      ...provider,
+      capabilities: [...provider.capabilities]
+    })),
+    connections: state.connections.map((connection) => ({ ...connection })),
+    error: state.error ? { ...state.error } : null
+  };
+}
+
+function connectionCenterError(
+  error: unknown,
+  code: string
+): NonNullable<AdvisorState["error"]> {
+  const status = advisorHttpStatus(error);
+  const message = status === 401
+    ? "登录已失效，请重新登录"
+    : status === 403
+      ? "当前搜索来源不可修改"
+      : status === 404
+        ? "搜索来源不存在或已删除"
+        : status === 409
+          ? "搜索来源状态已变化，请刷新后重试"
+          : status === 422
+            ? "连接配置无效，请检查后重试"
+            : status === 429
+              ? "请求过于频繁，请稍后重试"
+              : status !== null && status >= 500
+                ? "连接服务暂时不可用，请稍后重试"
+                : "操作失败，请稍后重试";
+  return {
+    code,
+    message,
+    retryable: status === null || status === 429 || status >= 500
   };
 }
 
@@ -325,6 +419,7 @@ function healthyConnections(
   return connections.filter((connection) =>
     connection.status === "active"
     && connection.kind === "search"
+    && connection.lastHealthStatus === "passed"
   );
 }
 
@@ -425,6 +520,10 @@ export function createAiGrowthController(
   const makeDrawer = options.drawerFactory ?? createBattleCardDrawer;
   const makeDemoRunner = options.demoRunnerFactory ?? createDemoRunner;
   let state = initialState();
+  let connectionCenter = initialConnectionCenter();
+  let connectionCenterGeneration = 0;
+  let connectionCenterMutationToken = 0;
+  let connectionCenterMutation: Promise<void> | null = null;
   let workspaceView: "overview" | "workflow" | "task" =
     options.initialView ?? "workflow";
   let taskOverview = initialTaskOverview(state.mode);
@@ -682,8 +781,91 @@ export function createAiGrowthController(
     return task;
   };
 
+  type ConnectionCenterMutationPatch = Partial<Pick<
+    ProviderConnectionCenterState,
+    | "selectedProviderId"
+    | "selectedConnectionId"
+    | "health"
+    | "message"
+  >>;
+
+  const currentConnectionCenterMutation = (
+    generation: number,
+    mutationToken: number
+  ) => !disposed
+    && connectionCenter.open
+    && generation === connectionCenterGeneration
+    && mutationToken === connectionCenterMutationToken;
+
+  const runConnectionCenterMutation = (
+    mutationStatus: Exclude<
+      ProviderConnectionCenterMutationStatus,
+      "idle"
+    >,
+    errorCode: string,
+    action: () => Promise<(
+      searchConnections: ProviderConnectionDto[]
+    ) => ConnectionCenterMutationPatch>,
+    startPatch: ConnectionCenterMutationPatch = {}
+  ): Promise<void> => {
+    if (connectionCenterMutation) return connectionCenterMutation;
+    const generation = connectionCenterGeneration;
+    const mutationToken = ++connectionCenterMutationToken;
+    connectionCenter = {
+      ...connectionCenter,
+      mutationStatus,
+      message: null,
+      error: null,
+      ...startPatch
+    };
+    publish();
+    const operation = (async () => {
+      try {
+        const resultPatch = await action();
+        const listed = await options.api.listProviderConnections();
+        if (!currentConnectionCenterMutation(generation, mutationToken)) {
+          return;
+        }
+        connections = [...listed.items];
+        const searchConnections = listed.items.filter((connection) =>
+          connection.kind === "search");
+        connectionCenter = {
+          ...connectionCenter,
+          connections: searchConnections,
+          mutationStatus: "idle",
+          message: null,
+          error: null,
+          ...resultPatch(searchConnections)
+        };
+        publish();
+      } catch (error) {
+        if (!currentConnectionCenterMutation(generation, mutationToken)) {
+          return;
+        }
+        const safeError = connectionCenterError(error, errorCode);
+        connectionCenter = {
+          ...connectionCenter,
+          mutationStatus: "idle",
+          message: null,
+          error: safeError
+        };
+        publish();
+        throw new Error(safeError.message);
+      }
+    })();
+    connectionCenterMutation = operation;
+    const clearMutation = () => {
+      if (connectionCenterMutation === operation) {
+        connectionCenterMutation = null;
+      }
+    };
+    void operation.then(clearMutation, clearMutation);
+    return operation;
+  };
+
   const controller: AiGrowthController = {
     getState: () => cloneState(state),
+    getConnectionCenter: () => cloneConnectionCenter(connectionCenter),
     getDrawer: () => drawer,
     getConnections: () => connections,
     getRecentTasks: () => recentTasks,
@@ -696,6 +878,249 @@ export function createAiGrowthController(
       discoveryMethodCounts: { ...taskOverview.discoveryMethodCounts },
       connections: [...taskOverview.connections]
     }),
+
+    async openConnectionCenter() {
+      if (disposed) return;
+      const generation = ++connectionCenterGeneration;
+      connectionCenterMutationToken += 1;
+      connectionCenterMutation = null;
+      connectionCenter = {
+        ...initialConnectionCenter(),
+        open: true,
+        status: "loading"
+      };
+      publish();
+      const [providersResult, connectionsResult] = await Promise.allSettled([
+        options.api.listProviders(),
+        options.api.listProviderConnections()
+      ]);
+      if (
+        disposed
+        || generation !== connectionCenterGeneration
+        || !connectionCenter.open
+      ) return;
+      if (connectionsResult.status === "fulfilled") {
+        connections = [...connectionsResult.value.items];
+      }
+      connectionCenter = {
+        ...connectionCenter,
+        status: providersResult.status === "fulfilled"
+          && connectionsResult.status === "fulfilled"
+          ? "ready"
+          : "error",
+        providers: providersResult.status === "fulfilled"
+          ? providersResult.value.items.filter((provider) =>
+              provider.kind === "search")
+          : [],
+        connections: connectionsResult.status === "fulfilled"
+          ? connectionsResult.value.items.filter((connection) =>
+              connection.kind === "search")
+          : [],
+        error: providersResult.status === "fulfilled"
+          && connectionsResult.status === "fulfilled"
+          ? null
+          : {
+              code: "connection_center_load_failed",
+              message: "搜索来源暂时无法加载，请稍后重试",
+              retryable: true
+            }
+      };
+      publish();
+    },
+
+    closeConnectionCenter() {
+      connectionCenterGeneration += 1;
+      connectionCenterMutationToken += 1;
+      connectionCenterMutation = null;
+      connectionCenter = initialConnectionCenter();
+      publish();
+    },
+
+    selectConnectionCenterProvider(providerId) {
+      if (!connectionCenter.open || connectionCenter.mutationStatus !== "idle") {
+        return;
+      }
+      const selected = providerId === null
+        ? null
+        : connectionCenter.providers.find((provider) =>
+            provider.id === providerId && provider.kind === "search")?.id
+          ?? null;
+      connectionCenter = {
+        ...connectionCenter,
+        selectedProviderId: selected,
+        selectedConnectionId: null,
+        health: null,
+        message: null,
+        error: null
+      };
+      publish();
+    },
+
+    selectConnectionCenterConnection(connectionId) {
+      if (!connectionCenter.open || connectionCenter.mutationStatus !== "idle") {
+        return;
+      }
+      const selected = connectionId === null
+        ? null
+        : connectionCenter.connections.find((connection) =>
+            connection.id === connectionId && connection.kind === "search")
+          ?? null;
+      connectionCenter = {
+        ...connectionCenter,
+        selectedProviderId: selected?.providerId
+          ?? connectionCenter.selectedProviderId,
+        selectedConnectionId: selected?.id ?? null,
+        health: null,
+        message: null,
+        error: null
+      };
+      publish();
+    },
+
+    saveProviderConnection(apiKey, baseUrl) {
+      if (connectionCenterMutation) {
+        apiKey = "";
+        baseUrl = undefined;
+        return connectionCenterMutation;
+      }
+      const providerId = connectionCenter.selectedProviderId;
+      const selectedConnectionId = connectionCenter.selectedConnectionId;
+      const selectedConnection = connectionCenter.connections.find(
+        (connection) => connection.id === selectedConnectionId
+      );
+      if (!connectionCenter.open || !providerId || !apiKey.trim()) {
+        apiKey = "";
+        baseUrl = undefined;
+        return Promise.reject(new Error("请选择搜索来源并填写 API Key"));
+      }
+      if (selectedConnection?.ownerId === "system") {
+        apiKey = "";
+        baseUrl = undefined;
+        return Promise.reject(new Error("系统托管来源为只读连接"));
+      }
+      const operationKey = idempotencyKey("ai-growth-provider-connection");
+      return runConnectionCenterMutation(
+        "saving",
+        "connection_save_failed",
+        async () => {
+          try {
+            const saved = selectedConnectionId
+              ? await options.api.updateProviderConnection(
+                  selectedConnectionId,
+                  baseUrl === undefined
+                    ? { apiKey, status: "disabled" }
+                    : { apiKey, baseUrl, status: "disabled" }
+                )
+              : await options.api.createProviderConnection(
+                  baseUrl === undefined
+                    ? { providerId, apiKey, status: "disabled" }
+                    : { providerId, apiKey, baseUrl, status: "disabled" },
+                  operationKey
+                );
+            return () => ({
+              selectedProviderId: saved.providerId,
+              selectedConnectionId: saved.id,
+              health: null,
+              message: "连接已保存，请测试后再启用"
+            });
+          } finally {
+            apiKey = "";
+            baseUrl = undefined;
+          }
+        },
+        { health: null }
+      );
+    },
+
+    testProviderConnection() {
+      if (connectionCenterMutation) return connectionCenterMutation;
+      const selected = connectionCenter.connections.find((connection) =>
+        connection.id === connectionCenter.selectedConnectionId);
+      if (!connectionCenter.open || !selected) {
+        return Promise.reject(new Error("请选择要测试的搜索连接"));
+      }
+      if (selected.ownerId === "system") {
+        return Promise.reject(new Error("系统托管来源为只读连接"));
+      }
+      return runConnectionCenterMutation(
+        "testing",
+        "connection_test_failed",
+        async () => {
+          const health = await options.api.testProviderConnection(selected.id);
+          return () => ({
+            health,
+            message: health.message
+          });
+        },
+        { health: null }
+      );
+    },
+
+    setProviderConnectionEnabled(enabled) {
+      if (connectionCenterMutation) return connectionCenterMutation;
+      const selected = connectionCenter.connections.find((connection) =>
+        connection.id === connectionCenter.selectedConnectionId);
+      if (!connectionCenter.open || !selected) {
+        return Promise.reject(new Error("请选择要更新的搜索连接"));
+      }
+      if (selected.ownerId === "system") {
+        return Promise.reject(new Error("系统托管来源为只读连接"));
+      }
+      if (enabled && selected.lastHealthStatus !== "passed") {
+        return Promise.reject(new Error("连接测试通过后才能启用"));
+      }
+      return runConnectionCenterMutation(
+        "updating",
+        "connection_update_failed",
+        async () => {
+          await options.api.updateProviderConnection(selected.id, {
+            status: enabled ? "active" : "disabled"
+          });
+          return () => ({
+            message: enabled ? "连接已启用" : "连接已禁用"
+          });
+        }
+      );
+    },
+
+    deleteProviderConnection() {
+      if (connectionCenterMutation) return connectionCenterMutation;
+      const selected = connectionCenter.connections.find((connection) =>
+        connection.id === connectionCenter.selectedConnectionId);
+      if (!connectionCenter.open || !selected) {
+        return Promise.reject(new Error("请选择要删除的搜索连接"));
+      }
+      if (selected.ownerId === "system") {
+        return Promise.reject(new Error("系统托管来源为只读连接"));
+      }
+      return runConnectionCenterMutation(
+        "deleting",
+        "connection_delete_failed",
+        async () => {
+          await options.api.deleteProviderConnection(selected.id);
+          return (searchConnections) => ({
+            selectedConnectionId: searchConnections.some((connection) =>
+              connection.id === selected.id)
+              ? selected.id
+              : null,
+            health: null,
+            message: "连接已删除"
+          });
+        },
+        { health: null }
+      );
+    },
+
+    async continueAfterConnection() {
+      if (connectionCenterMutation) {
+        throw new Error("请等待当前连接操作完成");
+      }
+      if (healthyConnections(connectionCenter.connections).length === 0) {
+        throw new Error("请先测试并启用一个搜索连接");
+      }
+      controller.closeConnectionCenter();
+      await controller.submit();
+    },
 
     async showOverview() {
       if (disposed) return;
