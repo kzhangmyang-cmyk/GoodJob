@@ -43,11 +43,11 @@
 - Copilot idempotency includes target platform.
 - Task overview prefers explicit `plan.payload.targetPlatform`, then falls back to legacy query inference.
 
-- [ ] **Step 1: write failing contract/service/router tests** for schema validation, Copilot persistence and replay, runner propagation, generator defaulting, overview precedence, and legacy payload compatibility.
-- [ ] **Step 2: run RED** with the focused plan/Copilot/overview test files.
-- [ ] **Step 3: implement the smallest end-to-end field propagation**, update OpenAPI, and regenerate frontend contract types using repository scripts.
-- [ ] **Step 4: run GREEN**, contract checks, backend build, and generated-type drift check.
-- [ ] **Step 5: commit** as `feat: add acquisition target platform`.
+- [x] **Step 1: write failing contract/service/router tests** for schema validation, Copilot persistence and replay, runner propagation, generator defaulting, overview precedence, and legacy payload compatibility.
+- [x] **Step 2: run RED** with the focused plan/Copilot/overview test files.
+- [x] **Step 3: implement the smallest end-to-end field propagation**, update OpenAPI, and regenerate frontend contract types using repository scripts.
+- [x] **Step 4: run GREEN**, contract checks, backend build, and generated-type drift check.
+- [x] **Step 5: commit** as `feat: add acquisition target platform`.
 
 ### Task 2: 确定性抖音查询编译器与审批边界
 
