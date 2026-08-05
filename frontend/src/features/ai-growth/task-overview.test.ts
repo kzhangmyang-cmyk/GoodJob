@@ -9,6 +9,7 @@ import {
   createAiGrowthController,
   type AiGrowthControllerApi
 } from "./controller.js";
+import type { RunPresentationPollerOptions } from "./poll-run.js";
 import type {
   AcquisitionTaskOverviewDto,
   AcquisitionTaskSummaryDto
@@ -67,6 +68,25 @@ const overview: AcquisitionTaskOverviewDto = {
   discoveryMethodCounts: { public_search: 2 },
   tasks: [task, stoppedTask]
 };
+
+const authoritativeAggregates = {
+  totals: { tasks: 14 },
+  statusCounts: {
+    queued: 1,
+    running: 2,
+    pause_requested: 1,
+    paused: 1,
+    cancel_requested: 1,
+    succeeded: 2,
+    succeeded_empty: 1,
+    partial_success: 1,
+    failed: 1,
+    cancelled: 1,
+    budget_exhausted: 1,
+    not_started: 1
+  },
+  discoveryMethodCounts: { public_search: 12, user_import: 2 }
+} as const;
 
 const connection: ProviderConnectionDto = {
   id: "connection-1",
@@ -249,21 +269,29 @@ function makeController(
   options: { user?: boolean; initialView?: "overview" | "workflow" } = {}
 ) {
   const pollerStarts: Array<[string, string]> = [];
+  let pollerUpdate: RunPresentationPollerOptions["onUpdate"] | undefined;
   const controller = createAiGrowthController({
     api,
     user: () => options.user === false ? null : { id: "user-1" },
     toast: () => undefined,
     navigate: () => undefined,
     initialView: options.initialView,
-    pollerFactory: () => ({
-      start: (runId: string, mode: "real" | "demo") =>
-        pollerStarts.push([runId, mode]),
-      stop: () => undefined,
-      dispose: () => undefined,
-      cursor: () => null
-    })
+    pollerFactory: (pollerOptions: RunPresentationPollerOptions) => {
+      pollerUpdate = pollerOptions.onUpdate;
+      return {
+        start: (runId: string, mode: "real" | "demo") =>
+          pollerStarts.push([runId, mode]),
+        stop: () => undefined,
+        dispose: () => undefined,
+        cursor: () => null
+      };
+    }
   } as never);
-  return { controller, pollerStarts };
+  return {
+    controller,
+    pollerStarts,
+    pollerUpdate: () => pollerUpdate
+  };
 }
 
 test("overview API reads use the three exact GET paths", async () => {
@@ -297,6 +325,8 @@ test("task overview renderer derives real metrics and escapes task facts", async
     mode: "real",
     status: "ready",
     tasks: [task, stoppedTask],
+    ...authoritativeAggregates,
+    aggregationSource: "overview",
     connections: [connection],
     connectionStatus: "ready",
     generatedAt: overview.generatedAt,
@@ -308,8 +338,19 @@ test("task overview renderer derives real metrics and escapes task facts", async
   assert.match(rendered, /微信公众号[\s\S]*待接入/);
   assert.match(rendered, /微博[\s\S]*待接入/);
   assert.match(rendered, /小红书[\s\S]*待接入/);
-  assert.match(rendered, />2<\/strong>/);
+  assert.match(
+    rendered,
+    /data-metric="tasks"[\s\S]*?<strong>14<\/strong>/
+  );
   assert.match(rendered, />12<\/strong>/);
+  assert.match(
+    rendered,
+    /data-metric="active"[\s\S]*?<strong>6<\/strong>/
+  );
+  assert.match(
+    rendered,
+    /完成 3 · 部分 1 · 失败 1 · 已取消 1 · 预算耗尽 1 · 待启动 1/
+  );
   assert.doesNotMatch(rendered, /<script>/);
   assert.match(rendered, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(rendered, /128|42 位客户|模拟运行中|假收入/);
@@ -370,10 +411,41 @@ test("overview renderer keeps empty, error, partial, no-connection, and demo sta
   for (const item of cases) {
     const rendered = renderTaskOverview({
       ...item,
+      totals: { tasks: item.tasks.length },
+      statusCounts: {},
+      discoveryMethodCounts: {},
+      aggregationSource: "overview",
       generatedAt: null
     }, {} as never).html;
     assert.match(rendered, new RegExp(item.expected), item.status);
     if (item.tasks.length > 0) assert.match(rendered, /打开任务/);
+  }
+});
+
+test("every acquisition run status maps to one explicit operational bucket", async () => {
+  const module = await import("./components/task-overview.js") as unknown as {
+    classifyAcquisitionRunStatus?: (status: string) => string;
+  };
+  assert.equal(typeof module.classifyAcquisitionRunStatus, "function");
+  const cases = [
+    ["queued", "active"],
+    ["running", "active"],
+    ["pause_requested", "active"],
+    ["paused", "active"],
+    ["cancel_requested", "active"],
+    ["succeeded", "completed"],
+    ["succeeded_empty", "completed"],
+    ["partial_success", "partial"],
+    ["failed", "failed"],
+    ["cancelled", "cancelled"],
+    ["budget_exhausted", "budget_exhausted"]
+  ] as const;
+  for (const [status, expected] of cases) {
+    assert.equal(
+      module.classifyAcquisitionRunStatus!(status),
+      expected,
+      status
+    );
   }
 });
 
@@ -412,11 +484,61 @@ test("default real overview loads tasks and connections, including partial sourc
   assert.equal(overviewReads, 1);
   assert.equal((controller as never as { getView(): string }).getView(), "overview");
   const vm = (controller as never as {
-    getTaskOverview(): { status: string; tasks: unknown[]; connectionStatus: string };
+    getTaskOverview(): {
+      status: string;
+      tasks: unknown[];
+      connectionStatus: string;
+      aggregationSource: string;
+      totals: { tasks: number };
+      statusCounts: Record<string, number>;
+      discoveryMethodCounts: Record<string, number>;
+    };
   }).getTaskOverview();
   assert.equal(vm.status, "partial_error");
   assert.equal(vm.tasks.length, 2);
   assert.equal(vm.connectionStatus, "ready");
+  assert.equal(vm.aggregationSource, "task_list");
+  assert.deepEqual(vm.totals, { tasks: 2 });
+  assert.deepEqual(vm.statusCounts, { running: 1, succeeded: 1 });
+  assert.deepEqual(vm.discoveryMethodCounts, { public_search: 2 });
+  const root = { innerHTML: "" } as HTMLElement;
+  controller.render(root);
+  assert.match(
+    root.innerHTML,
+    /聚合总览不可用，指标按任务列表降级计算/
+  );
+});
+
+test("overview aggregates remain authoritative while task list supplies rows", async () => {
+  const authoritativeOverview = {
+    ...overview,
+    ...authoritativeAggregates,
+    tasks: [noRunTask]
+  };
+  const { controller } = makeController(controllerApi({
+    getTaskOverview: async () => authoritativeOverview
+  }));
+
+  await (controller as never as { showOverview(): Promise<void> })
+    .showOverview();
+
+  const vm = (controller as never as {
+    getTaskOverview(): {
+      aggregationSource: string;
+      tasks: AcquisitionTaskSummaryDto[];
+      totals: { tasks: number };
+      statusCounts: Record<string, number>;
+      discoveryMethodCounts: Record<string, number>;
+    };
+  }).getTaskOverview();
+  assert.equal(vm.aggregationSource, "overview");
+  assert.deepEqual(vm.tasks.map((item) => item.planId), ["plan-1", "plan-2"]);
+  assert.deepEqual(vm.totals, { tasks: 14 });
+  assert.deepEqual(vm.statusCounts, authoritativeAggregates.statusCounts);
+  assert.deepEqual(
+    vm.discoveryMethodCounts,
+    authoritativeAggregates.discoveryMethodCounts
+  );
 });
 
 test("overview does not read APIs before login", async () => {
@@ -475,6 +597,45 @@ test("opening an authoritative task hydrates plan.payload and polls only a non-t
     openTask(planId: string): Promise<void>;
   }).openTask("plan-2");
   assert.deepEqual(terminal.pollerStarts, []);
+});
+
+test("task detail heading follows the latest poller run status", async () => {
+  const { controller, pollerUpdate } = makeController(controllerApi());
+  await (controller as never as {
+    openTask(planId: string): Promise<void>;
+  }).openTask("plan-1");
+  const root = { innerHTML: "" } as HTMLElement;
+  controller.render(root);
+  const initialDetail = root.innerHTML.match(
+    /<section class="ai-growth-task-detail"[\s\S]*?<\/section>/
+  )?.[0] ?? "";
+  assert.match(initialDetail, />正在执行<\/strong>/);
+
+  const completedRun = {
+    ...presentation.run,
+    status: "succeeded" as const,
+    etag: "\"run-1:2\"",
+    updatedAt: "2026-08-05T09:10:00.000Z",
+    completedAt: "2026-08-05T09:10:00.000Z"
+  };
+  assert.ok(pollerUpdate());
+  pollerUpdate()!({
+    run: completedRun,
+    providers: [],
+    summary: null,
+    candidatesById: new Map(),
+    nextAfter: "cursor-2",
+    hasMore: false
+  }, {
+    ...presentation,
+    run: completedRun
+  } as never);
+  controller.render(root);
+  const completedDetail = root.innerHTML.match(
+    /<section class="ai-growth-task-detail"[\s\S]*?<\/section>/
+  )?.[0] ?? "";
+  assert.match(completedDetail, />已完成<\/strong>/);
+  assert.doesNotMatch(completedDetail, />正在执行<\/strong>/);
 });
 
 test("task detail without a run renders a real not-started state instead of the create form", async () => {

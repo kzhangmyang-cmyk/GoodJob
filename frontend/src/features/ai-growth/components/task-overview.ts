@@ -3,6 +3,7 @@ import type {
   AcquisitionRunStatus,
   AcquisitionTaskDetailDto,
   AcquisitionTaskDiscoveryMethod,
+  AcquisitionTaskOverviewDto,
   AcquisitionTaskSummaryDto,
   AdvisorMode
 } from "../types.js";
@@ -29,6 +30,10 @@ export interface TaskOverviewVm {
   mode: AdvisorMode;
   status: TaskOverviewStatus;
   tasks: readonly AcquisitionTaskSummaryDto[];
+  totals: AcquisitionTaskOverviewDto["totals"];
+  statusCounts: AcquisitionTaskOverviewDto["statusCounts"];
+  discoveryMethodCounts: AcquisitionTaskOverviewDto["discoveryMethodCounts"];
+  aggregationSource: "overview" | "task_list" | "none";
   connections: readonly ProviderConnectionDto[];
   connectionStatus: "loading" | "ready" | "error";
   generatedAt: string | null;
@@ -44,6 +49,7 @@ export interface TaskOverviewCallbacks {
 export interface TaskDetailVm {
   status: "loading" | "ready" | "error";
   detail: AcquisitionTaskDetailDto | null;
+  runStatus: AcquisitionRunStatus | null;
   errorMessage: string | null;
 }
 
@@ -74,6 +80,66 @@ const DISCOVERY_LABELS: Readonly<
   official_authorized: "官方授权"
 };
 
+export type AcquisitionRunOperationalBucket =
+  | "active"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "cancelled"
+  | "budget_exhausted";
+
+export function classifyAcquisitionRunStatus(
+  status: AcquisitionRunStatus
+): AcquisitionRunOperationalBucket {
+  switch (status) {
+    case "queued":
+    case "running":
+    case "pause_requested":
+    case "paused":
+    case "cancel_requested":
+      return "active";
+    case "succeeded":
+    case "succeeded_empty":
+      return "completed";
+    case "partial_success":
+      return "partial";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "budget_exhausted":
+      return "budget_exhausted";
+    default: {
+      const exhaustiveStatus: never = status;
+      throw new Error(`Unknown acquisition run status: ${exhaustiveStatus}`);
+    }
+  }
+}
+
+export function deriveTaskOverviewAggregates(
+  tasks: readonly AcquisitionTaskSummaryDto[]
+): Pick<
+  TaskOverviewVm,
+  "totals" | "statusCounts" | "discoveryMethodCounts"
+> {
+  const statusCounts: AcquisitionTaskOverviewDto["statusCounts"] = {};
+  const discoveryMethodCounts:
+    AcquisitionTaskOverviewDto["discoveryMethodCounts"] = {};
+  for (const task of tasks) {
+    const status = task.latestRun?.status ?? "not_started";
+    statusCounts[status] = (statusCounts[status] ?? 0) + 1;
+    for (const method of task.discoveryMethods) {
+      discoveryMethodCounts[method] =
+        (discoveryMethodCounts[method] ?? 0) + 1;
+    }
+  }
+  return {
+    totals: { tasks: tasks.length },
+    statusCounts,
+    discoveryMethodCounts
+  };
+}
+
 export function parseAiGrowthHash(hash: string): AiGrowthRoute {
   if (hash === "#ai-growth/new") return { name: "new" };
   const prefix = "#ai-growth/task/";
@@ -96,33 +162,63 @@ export function buildAiGrowthHash(route: AiGrowthRoute): string {
   return "#ai-growth";
 }
 
-function metricCounts(tasks: readonly AcquisitionTaskSummaryDto[]) {
-  let evidence = 0;
+function metricCounts(vm: TaskOverviewVm) {
+  const evidence = vm.tasks.reduce(
+    (total, task) => total + (task.latestRun?.evidenceCount ?? 0),
+    0
+  );
   let active = 0;
   let completed = 0;
   let partial = 0;
   let failed = 0;
-  let notStarted = 0;
-  for (const task of tasks) {
-    const run = task.latestRun;
-    if (!run) {
-      notStarted += 1;
-      continue;
-    }
-    evidence += run.evidenceCount;
-    if (["running", "pause_requested", "paused"]
-      .includes(run.status)) {
-      active += 1;
-    } else if (run.status === "partial_success") {
-      partial += 1;
-    } else if (["failed", "cancelled", "budget_exhausted"]
-      .includes(run.status)) {
-      failed += 1;
-    } else {
-      completed += 1;
+  let cancelled = 0;
+  let budgetExhausted = 0;
+  const statuses: readonly AcquisitionRunStatus[] = [
+    "queued",
+    "running",
+    "pause_requested",
+    "paused",
+    "cancel_requested",
+    "cancelled",
+    "succeeded",
+    "succeeded_empty",
+    "partial_success",
+    "failed",
+    "budget_exhausted"
+  ];
+  for (const status of statuses) {
+    const count = vm.statusCounts[status] ?? 0;
+    switch (classifyAcquisitionRunStatus(status)) {
+      case "active":
+        active += count;
+        break;
+      case "completed":
+        completed += count;
+        break;
+      case "partial":
+        partial += count;
+        break;
+      case "failed":
+        failed += count;
+        break;
+      case "cancelled":
+        cancelled += count;
+        break;
+      case "budget_exhausted":
+        budgetExhausted += count;
+        break;
     }
   }
-  return { evidence, active, completed, partial, failed, notStarted };
+  return {
+    evidence,
+    active,
+    completed,
+    partial,
+    failed,
+    cancelled,
+    budgetExhausted,
+    notStarted: vm.statusCounts.not_started ?? 0
+  };
 }
 
 function connectionHealth(vm: TaskOverviewVm): string {
@@ -184,26 +280,29 @@ export function renderTaskOverview(
   vm: TaskOverviewVm,
   callbacks: TaskOverviewCallbacks
 ): ComponentRender<TaskOverviewCallbacks> {
-  const counts = metricCounts(vm.tasks);
+  const counts = metricCounts(vm);
   const settled = counts.completed + counts.partial + counts.failed
-    + counts.notStarted;
+    + counts.cancelled + counts.budgetExhausted + counts.notStarted;
   const modeNotice = vm.mode === "demo" || vm.status === "demo"
     ? `<div class="ai-growth-overview-notice" data-tone="demo" role="status"><strong>演示模式 · 演示数据</strong><span>仅用于预览；未经现有批准流程，不会调用正式获客写接口。</span></div>`
     : "";
   const errorNotice = vm.errorMessage
     ? `<div class="ai-growth-overview-notice" data-tone="${vm.status === "error" ? "error" : "warning"}" role="alert"><strong>${vm.status === "error" ? "任务数据加载失败" : "部分数据加载失败"}</strong><span>${escapeHtml(vm.errorMessage)}</span>${vm.status === "error" ? `<button type="button" class="ai-growth-button ai-growth-button--quiet ai-growth-button--compact" data-action="retry-overview">重试</button>` : ""}</div>`
     : "";
+  const aggregationNotice = vm.aggregationSource === "task_list"
+    ? `<div class="ai-growth-overview-notice" data-tone="warning" role="status"><strong>聚合总览不可用，指标按任务列表降级计算</strong><span>任务行仍来自真实任务列表。</span></div>`
+    : "";
   const body = vm.status === "loading"
     ? `<div class="ai-growth-overview-state" role="status" aria-live="polite"><strong>正在加载真实任务总览…</strong></div>`
     : vm.status === "error"
       ? errorNotice
       : `
-        ${modeNotice}${errorNotice}
+        ${modeNotice}${errorNotice}${aggregationNotice}
         <div class="ai-growth-metric-grid">
-          <article><span>真实任务</span><strong>${vm.tasks.length}</strong><small>仅统计当前列表</small></article>
+          <article data-metric="tasks"><span>真实任务</span><strong>${vm.totals.tasks}</strong><small>${vm.aggregationSource === "overview" ? "来自权威总览" : "按当前任务列表降级计算"}</small></article>
           <article><span>公开证据</span><strong>${counts.evidence}</strong><small>来自 latest Run</small></article>
-          <article><span>执行中 / 已暂停</span><strong>${counts.active}</strong><small>需持续关注</small></article>
-          <article><span>已收口 / 待启动</span><strong>${settled}</strong><small>完成 ${counts.completed} · 部分 ${counts.partial} · 失败 ${counts.failed} · 待启动 ${counts.notStarted}</small></article>
+          <article data-metric="active"><span>执行中 / 已暂停</span><strong>${counts.active}</strong><small>需持续关注</small></article>
+          <article><span>已收口 / 待启动</span><strong>${settled}</strong><small>完成 ${counts.completed} · 部分 ${counts.partial} · 失败 ${counts.failed} · 已取消 ${counts.cancelled} · 预算耗尽 ${counts.budgetExhausted} · 待启动 ${counts.notStarted}</small></article>
         </div>
         <div class="ai-growth-overview-grid">
           <section class="ai-growth-task-table-panel" aria-labelledby="aiGrowthOverviewTasks">
@@ -252,7 +351,7 @@ export function renderTaskDetail(
   return componentRender(`
     <section class="ai-growth-task-detail" data-plan-id="${escapeHtml(task.planId)}">
       ${back}
-      <header><div><p class="ai-growth-eyebrow">AUTHORITATIVE TASK</p><h2>${escapeHtml(task.name)}</h2><p>${escapeHtml(task.objective)}</p></div><div><span>${escapeHtml(methods)}</span><strong>${latestRun ? RUN_LABELS[latestRun.status] : "尚未启动"}</strong></div></header>
+      <header><div><p class="ai-growth-eyebrow">AUTHORITATIVE TASK</p><h2>${escapeHtml(task.name)}</h2><p>${escapeHtml(task.objective)}</p></div><div><span>${escapeHtml(methods)}</span><strong>${vm.runStatus ? RUN_LABELS[vm.runStatus] : "尚未启动"}</strong></div></header>
       ${noRun}
     </section>
   `, callbacks);

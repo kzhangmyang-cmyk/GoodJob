@@ -44,6 +44,7 @@ import {
 import { renderExecutiveSummary } from "./components/executive-summary.js";
 import {
   buildAiGrowthHash,
+  deriveTaskOverviewAggregates,
   parseAiGrowthHash,
   renderTaskDetail,
   renderTaskOverview,
@@ -171,6 +172,10 @@ function initialTaskOverview(mode: AdvisorMode): TaskOverviewVm {
     mode,
     status: mode === "demo" ? "demo" : "loading",
     tasks: [],
+    totals: { tasks: 0 },
+    statusCounts: {},
+    discoveryMethodCounts: {},
+    aggregationSource: "none",
     connections: [],
     connectionStatus: mode === "demo" ? "ready" : "loading",
     generatedAt: null,
@@ -416,7 +421,7 @@ export function createAiGrowthController(
   let workspaceView: "overview" | "workflow" | "task" =
     options.initialView ?? "workflow";
   let taskOverview = initialTaskOverview(state.mode);
-  let taskDetail: TaskDetailVm = {
+  let taskDetail: Omit<TaskDetailVm, "runStatus"> = {
     status: "loading",
     detail: null,
     errorMessage: null
@@ -678,6 +683,9 @@ export function createAiGrowthController(
     getTaskOverview: () => ({
       ...taskOverview,
       tasks: [...taskOverview.tasks],
+      totals: { ...taskOverview.totals },
+      statusCounts: { ...taskOverview.statusCounts },
+      discoveryMethodCounts: { ...taskOverview.discoveryMethodCounts },
       connections: [...taskOverview.connections]
     }),
 
@@ -722,6 +730,20 @@ export function createAiGrowthController(
         : overviewResult.status === "fulfilled"
           ? overviewResult.value.tasks
           : [];
+      const aggregates = overviewResult.status === "fulfilled"
+        ? {
+            totals: overviewResult.value.totals,
+            statusCounts: overviewResult.value.statusCounts,
+            discoveryMethodCounts:
+              overviewResult.value.discoveryMethodCounts
+          }
+        : tasksResult.status === "fulfilled"
+          ? deriveTaskOverviewAggregates(tasksResult.value.items)
+          : {
+              totals: { tasks: 0 },
+              statusCounts: {},
+              discoveryMethodCounts: {}
+            };
       if (connectionsResult.status === "fulfilled") {
         connections = [...connectionsResult.value.items];
       } else {
@@ -738,6 +760,12 @@ export function createAiGrowthController(
         mode: "real",
         status: dataStatus,
         tasks: [...availableTasks],
+        totals: { ...aggregates.totals },
+        statusCounts: { ...aggregates.statusCounts },
+        discoveryMethodCounts: { ...aggregates.discoveryMethodCounts },
+        aggregationSource: overviewResult.status === "fulfilled"
+          ? "overview"
+          : tasksResult.status === "fulfilled" ? "task_list" : "none",
         connections: [...connections],
         connectionStatus: connectionsResult.status === "fulfilled"
           ? "ready"
@@ -1284,7 +1312,10 @@ export function createAiGrowthController(
       }
 
       const detailHeader = workspaceView === "task"
-        ? renderTaskDetail(taskDetail, {
+        ? renderTaskDetail({
+            ...taskDetail,
+            runStatus: currentRun?.status ?? null
+          }, {
             onBack: () => void controller.showOverview(),
             onRetry: (planId) => void controller.openTask(planId)
           }).html
