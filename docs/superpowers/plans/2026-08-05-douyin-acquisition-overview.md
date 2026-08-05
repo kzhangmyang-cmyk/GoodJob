@@ -80,27 +80,27 @@
   - `GET /api/v1/acquisition/tasks/:planId`
 - 任务详情固定字段：`task`、`plan`、`latestRun`、`shards`、`presentation`；没有 Run 时后三项分别为 `null`、`[]`、`null`。
 
-- [ ] **Step 1: 先写挂载路由失败测试**
+- [x] **Step 1: 先写挂载路由失败测试**
 
   用真实 Express router 和内存 repositories 断言 200 结构、无 Run、部分成功 Run、未知平台 400、跨租户 404、未登录 401，以及任务详情中的 presentation 候选来自权威服务。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-task-overview-router-test.ts`
 
   Expected: FAIL，因为路由尚不存在。
 
-- [ ] **Step 3: 实现路由并挂载应用**
+- [x] **Step 3: 实现路由并挂载应用**
 
   错误信封沿用现有 `{ error: { code, message, details, requestId } }`，所有响应 `Cache-Control: no-store`。不得新建写接口。
 
-- [ ] **Step 4: 运行 GREEN、专项测试与构建**
+- [x] **Step 4: 运行 GREEN、专项测试与构建**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-task-overview-test.ts src/acquisition-task-overview-router-test.ts && npm run build --workspace backend`
 
   Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
   ```bash
   git add backend/src/acquisition-task-overview-router.ts backend/src/acquisition-task-overview-router-test.ts backend/src/acquisition-application.ts
