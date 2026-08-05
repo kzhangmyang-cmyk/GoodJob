@@ -111,11 +111,11 @@
 - Draft review and task details visibly distinguish target platform from search Provider and state the public-index boundary.
 - Existing task overview continues to load explicit `platform=douyin` without demo metrics or formal writes.
 
-- [ ] **Step 1: write failing API/controller/render/accessibility tests** for default Douyin, web switch, disabled future channels, request payload, draft display and keyboard selection.
-- [ ] **Step 2: run RED**.
-- [ ] **Step 3: implement the platform selector and explicit payload**, preserving current responsive design and hash routes.
-- [ ] **Step 4: run GREEN**, frontend tests and production build.
-- [ ] **Step 5: commit** as `feat: select acquisition target platform`.
+- [x] **Step 1: write failing API/controller/render/accessibility tests** for default Douyin, web switch, disabled future channels, request payload, draft display and keyboard selection.
+- [x] **Step 2: run RED**.
+- [x] **Step 3: implement the platform selector and explicit payload**, preserving current responsive design and hash routes.
+- [x] **Step 4: run GREEN**, frontend tests and production build.
+- [x] **Step 5: commit** as `feat: select acquisition target platform`.
 
 ### Task 5: 抖音公开商机完整链路 E2E 与产品文档
 
