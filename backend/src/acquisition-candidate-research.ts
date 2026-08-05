@@ -176,7 +176,7 @@ function evidenceInput(
     targetType: result.subject.kind === "organization"
       ? "organization"
       : "individual_signal",
-    sourcePlatform: response.provider,
+    sourcePlatform: result.sourcePlatform ?? response.provider,
     sourceTitle: result.title,
     sourceSnippet: result.snippet,
     publishedAt: result.publishedAt,
@@ -238,6 +238,7 @@ function matchingOrganization(
     teamId: scope.teamId,
     provider: response.provider,
     sourceUrl: result.sourceUrl,
+    sourceType: result.sourceType,
     subject: result.subject
   });
   if (resolution.status !== "resolved") return false;
@@ -293,6 +294,7 @@ function matchingIndividual(
     teamId: scope.teamId,
     provider: response.provider,
     sourceUrl: result.sourceUrl,
+    sourceType: result.sourceType,
     subject: result.subject
   });
   return resolution.status === "resolved"

@@ -39,6 +39,11 @@ import {
   normalizeAcquisitionPublicUrl,
   resolveAcquisitionPublicIdentity
 } from "./acquisition-public-identity-resolver.js";
+import {
+  classifyDouyinPublicSource,
+  isDouyinBoundPublicSearchQuery,
+  type DouyinPublicSourceType
+} from "./acquisition-douyin-public-source.js";
 
 export const ACQUISITION_PUBLIC_SEARCH_PROVIDER_IDS = [
   "baidu_ai_search",
@@ -225,6 +230,21 @@ function demandCategory(query: string) {
   return clipped(query, 100) || "公开需求信号";
 }
 
+function contentSource(
+  source: URL,
+  title: string,
+  snippet: string
+): { sourcePlatform: string; sourceType: DouyinPublicSourceType } {
+  const douyin = classifyDouyinPublicSource(source, title, snippet);
+  if (douyin) return douyin;
+  return {
+    sourcePlatform: source.hostname
+      .toLocaleLowerCase("en-US")
+      .replace(/^www\./u, ""),
+    sourceType: "other"
+  };
+}
+
 function toPublicResult(
   providerId: string,
   record: ProviderRecord,
@@ -235,22 +255,30 @@ function toPublicResult(
   const title = clipped(record.company, 500);
   const snippet = publicSnippet(record);
   if (!title && !snippet) return null;
-  const individual = isPublicIndividualSignal(record);
+  const classifiedSource = contentSource(source, title, snippet);
+  const individual = classifiedSource.sourceType === "comment_signal"
+    || isPublicIndividualSignal(record);
 
   if (individual) {
     if (!request.subjectKinds.includes("individual")) return null;
     const signalText = [title, snippet, record.evidenceSummary || ""].join(" ");
     const verifiedPublicProfile =
-      isVerifiedAcquisitionPublicProfileUrl(source);
+      isVerifiedAcquisitionPublicProfileUrl(source)
+      && (
+        classifiedSource.sourcePlatform !== "douyin"
+        || classifiedSource.sourceType === "profile"
+      );
     const publicActorKey = `${
       verifiedPublicProfile ? "public" : "unresolved-public-signal"
-    }:${providerId}:sha256:${sha256(source.toString())}`;
+    }:${classifiedSource.sourcePlatform}:sha256:${sha256(source.toString())}`;
     const subject = {
       kind: "individual" as const,
       publicActorKey,
-      publicDisplayName: title || "公开商务账号",
+      publicDisplayName: classifiedSource.sourceType === "comment_signal"
+        ? "抖音公开评论式信号（身份待核实）"
+        : title || "公开商务账号",
       publicProfileUrl: source.toString(),
-      sourcePlatform: providerId,
+      sourcePlatform: classifiedSource.sourcePlatform,
       demandCategory: demandCategory(request.query),
       demandSummary:
         clipped(snippet || "搜索索引仅返回标题，具体需求需人工核实。", 2_000),
@@ -263,10 +291,12 @@ function toPublicResult(
       teamId: request.teamId,
       provider: providerId,
       sourceUrl: source.toString(),
+      sourceType: classifiedSource.sourceType,
       subject
     });
     return {
       sourceUrl: source.toString(),
+      ...classifiedSource,
       title,
       snippet,
       publishedAt: null,
@@ -297,10 +327,12 @@ function toPublicResult(
     teamId: request.teamId,
     provider: providerId,
     sourceUrl: source.toString(),
+    sourceType: classifiedSource.sourceType,
     subject
   });
   return {
     sourceUrl: source.toString(),
+    ...classifiedSource,
     title,
     snippet,
     publishedAt: null,
@@ -577,10 +609,12 @@ implements SearchPublicSourcesPort {
     }
     assertNotAborted(request.signal);
 
+    const douyinBound = isDouyinBoundPublicSearchQuery(request.query);
     const results = page!.records
       .map((record) => toPublicResult(provider.id, record, request))
       .filter((result): result is SearchPublicSourceResult =>
         result !== null
+        && (!douyinBound || result.sourcePlatform === "douyin")
       )
       .slice(0, request.maxResults);
     return {

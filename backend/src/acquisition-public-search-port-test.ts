@@ -265,7 +265,13 @@ test("uses an authorized official BYOK connection and maps public organization a
     (result) => result.subject.kind === "individual"
   );
   assert(individual && individual.subject.kind === "individual");
-  assert.match(individual.subject.publicActorKey, /^public:baidu_ai_search:sha256:/);
+  assert.match(
+    individual.subject.publicActorKey,
+    /^public:xiaohongshu\.com:sha256:/
+  );
+  assert.equal(individual.sourcePlatform, "xiaohongshu.com");
+  assert.equal(individual.sourceType, "other");
+  assert.equal(individual.subject.sourcePlatform, "xiaohongshu.com");
   assert.equal(
     individual.subject.publicProfileUrl,
     "https://www.xiaohongshu.com/user/profile/public-actor"
@@ -282,6 +288,143 @@ test("uses an authorized official BYOK connection and maps public organization a
   assert.equal(serialized.includes("13800000000"), false);
   assert.equal(serialized.includes("不应输出"), false);
   assert.equal(store.providerRequestLogs.length, 1);
+});
+
+test("classifies a non-bound Douyin result as content while retaining the search provider", async () => {
+  const store = createStore();
+  const executeSearch: AcquisitionProviderSearchExecutor = async (input) => {
+    input.onLogs([
+      requestLog({
+        provider: input.provider,
+        connection: input.connection,
+        runId: input.context.runId
+      })
+    ]);
+    const source = providerPage().records[1]!;
+    return {
+      ...providerPage(),
+      records: [{
+        ...source,
+        sourceUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+        providerRecordId: "douyin-profile"
+      }],
+      rawCount: 1,
+      validCount: 1
+    };
+  };
+
+  const response = await createAcquisitionPublicSearchPort(store, {
+    executeSearch
+  }).search(searchInput({ query: "厦门 美业 获客" }));
+
+  assert.equal(response.provider, "baidu_ai_search");
+  assert.equal(response.results.length, 1);
+  assert.equal(response.results[0]?.sourcePlatform, "douyin");
+  assert.equal(response.results[0]?.sourceType, "profile");
+  assert.equal(response.results[0]?.subject.kind, "individual");
+  if (response.results[0]?.subject.kind === "individual") {
+    assert.equal(response.results[0].subject.sourcePlatform, "douyin");
+    assert.match(
+      response.results[0].subject.individualPartyId || "",
+      /^public-individual-/u
+    );
+  }
+});
+
+test("a Douyin-bound search drops off-platform leakage and never verifies video or comment-like identities", async () => {
+  const store = createStore();
+  const executeSearch: AcquisitionProviderSearchExecutor = async (input) => {
+    input.onLogs([
+      requestLog({
+        provider: input.provider,
+        connection: input.connection,
+        runId: input.context.runId
+      })
+    ]);
+    const source = providerPage().records[1]!;
+    const record = (
+      providerRecordId: string,
+      sourceUrl: string,
+      description: string
+    ) => ({
+      ...source,
+      company: "门店主理人林女士",
+      sourceUrl,
+      description,
+      providerRecordId,
+      payloadHash: providerRecordId[0]!.repeat(64)
+    });
+    return {
+      ...providerPage(),
+      records: [
+        record(
+          "1-profile",
+          "https://www.douyin.com/user/MS4wLjABAAAA",
+          "公开商务主页：正在寻找获客方案。"
+        ),
+        record(
+          "2-video",
+          "https://www.douyin.com/video/7521000000000000000",
+          "公开视频摘要：正在寻找获客方案。"
+        ),
+        record(
+          "3-comment",
+          "https://www.iesdouyin.com/share/video/7521000000000000001",
+          "搜索索引摘要显示评论区回复：想了解报价。"
+        ),
+        record(
+          "4-short",
+          "https://v.douyin.com/AbCdEfGh/",
+          "公开短链接索引摘要。"
+        ),
+        record(
+          "5-off-platform",
+          "https://news.example.cn/douyin/lead",
+          "搜索引擎混入的站外结果。"
+        ),
+        record(
+          "6-lookalike",
+          "https://douyin.com.evil.example/user/MS4wLjABAAAA",
+          "伪造的域名。"
+        )
+      ],
+      rawCount: 6,
+      validCount: 6
+    };
+  };
+
+  const response = await createAcquisitionPublicSearchPort(store, {
+    executeSearch
+  }).search(searchInput({
+    query: "site:douyin.com 厦门 美业 获客",
+    subjectKinds: ["individual"]
+  }));
+
+  assert.deepEqual(
+    response.results.map((result) => result.sourceType),
+    ["profile", "video", "comment_signal", "short_link"]
+  );
+  assert.equal(
+    response.results.every((result) => result.sourcePlatform === "douyin"),
+    true
+  );
+  const byType = new Map(response.results.map((result) => [
+    result.sourceType,
+    result
+  ]));
+  for (const sourceType of [
+    "video",
+    "comment_signal",
+    "short_link"
+  ] as const) {
+    const result = byType.get(sourceType);
+    assert(result?.subject.kind === "individual");
+    assert.equal(result.subject.individualPartyId, null, sourceType);
+    assert.match(result.subject.publicActorKey, /^unresolved-public-signal:/u);
+  }
+  const profile = byType.get("profile");
+  assert(profile?.subject.kind === "individual");
+  assert.match(profile.subject.individualPartyId || "", /^public-individual-/u);
 });
 
 test("keeps public organization identities stable across providers but scopes individuals to the provider", async () => {

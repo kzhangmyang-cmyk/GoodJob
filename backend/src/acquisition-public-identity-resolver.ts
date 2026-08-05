@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { domainToASCII } from "node:url";
+import {
+  classifyDouyinPublicSource,
+  type DouyinPublicSourceType
+} from "./acquisition-douyin-public-source.js";
 
 export const ACQUISITION_PUBLIC_IDENTITY_RESOLVER_VERSION =
   "acquisition-public-identity-v1";
@@ -62,6 +66,7 @@ export interface ResolveAcquisitionPublicIdentityInput {
   teamId: string;
   provider: string;
   sourceUrl: string;
+  sourceType?: DouyinPublicSourceType;
   subject: AcquisitionPublicIdentitySubject;
 }
 
@@ -184,13 +189,13 @@ export function normalizeAcquisitionPublicUrl(value: string) {
       decodedPath = next;
     }
     if (/[^\s/@]+@[^\s/]+\.[^\s/]+/u.test(decodedPath)
-      || /\+?\d(?:[\s().-]*\d){6,14}/u.test(decodedPath)) {
+      || /(?<!\d)\+?\d(?:[\s().-]*\d){6,14}(?!\d)/u.test(decodedPath)) {
       return null;
     }
     if ([...url.searchParams].some(([key, nested]) =>
       PRIVATE_URL_PARAMETER.test(key)
       || /[^\s@]+@[^\s@]+\.[^\s@]+/u.test(nested)
-      || /\+?\d(?:[\s().-]*\d){6,14}/u.test(nested)
+      || /(?<!\d)\+?\d(?:[\s().-]*\d){6,14}(?!\d)/u.test(nested)
     )) {
       return null;
     }
@@ -350,7 +355,21 @@ export function resolveAcquisitionPublicIdentity(
   const actorKey = safePublicActorKey(input.subject.publicActorKey);
   const provider = normalizedProvider(input.provider);
   const sourcePlatform = normalizedProvider(input.subject.sourcePlatform);
-  if (provider && sourcePlatform && actorKey && normalizedProfileUrl) {
+  const douyinClassification = normalizedProfileUrl
+    ? classifyDouyinPublicSource(normalizedProfileUrl)
+    : null;
+  const isDouyinSource = sourcePlatform === "douyin"
+    || douyinClassification !== null;
+  const isStableDouyinProfile = !isDouyinSource || (
+    douyinClassification?.sourceType === "profile"
+    && (input.sourceType === undefined || input.sourceType === "profile")
+    && isVerifiedAcquisitionPublicProfileUrl(normalizedProfileUrl || "")
+  );
+  if (provider
+    && sourcePlatform
+    && actorKey
+    && normalizedProfileUrl
+    && isStableDouyinProfile) {
     const digest = scopedDigest(
       input,
       "provider_public_actor",

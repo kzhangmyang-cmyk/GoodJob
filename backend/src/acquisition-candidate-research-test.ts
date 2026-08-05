@@ -167,9 +167,12 @@ function organizationResult(input: {
   domain: string | null;
   creditCode?: string | null;
   accessStatus?: SearchPublicSourceResult["accessStatus"];
+  sourcePlatform?: string;
 }): SearchPublicSourceResult {
   return {
     sourceUrl: input.sourceUrl,
+    sourcePlatform: input.sourcePlatform ?? "public_registry",
+    sourceType: "other",
     title: "目标科技有限公司",
     snippet: "公开发布新的采购、合作与供应商需求。",
     publishedAt: "2026-07-26T00:00:00.000Z",
@@ -468,6 +471,7 @@ test("organization research accepts only non-conflicting strong identity matches
     sourceUrl: "https://news.example.cn/target?a=1&b=2",
     resultRank: 1
   });
+  assert.equal(firstAdded.sourcePlatform, "public_registry");
 });
 
 test("individual research requires an exact normalized public profile and the resolved party id", async () => {

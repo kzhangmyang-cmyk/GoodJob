@@ -32,6 +32,9 @@ import {
   resolveAcquisitionPublicIdentity,
   type AcquisitionPublicIdentityDisposition
 } from "./acquisition-public-identity-resolver.js";
+import type {
+  DouyinPublicSourceType
+} from "./acquisition-douyin-public-source.js";
 
 const TOOL_NAMES = new Set<string>(ACQUISITION_AGENT_TOOL_NAMES);
 const GRADE_RANK = { S: 0, A: 1, B: 2, C: 3, D: 4 } as const;
@@ -118,6 +121,8 @@ export type SearchPublicSourceSubject =
 
 export interface SearchPublicSourceResult {
   sourceUrl: string;
+  sourcePlatform?: string;
+  sourceType?: DouyinPublicSourceType;
   title: string;
   snippet: string;
   publishedAt: string | null;
@@ -516,6 +521,14 @@ const individualSubjectSchema = z.object({
 
 const searchResultSchema = z.object({
   sourceUrl: publicHttpUrl,
+  sourcePlatform: z.string().trim().min(1).max(100).optional(),
+  sourceType: z.enum([
+    "profile",
+    "video",
+    "comment_signal",
+    "short_link",
+    "other"
+  ]).optional(),
   title: z.string().trim().max(500),
   snippet: z.string().trim().max(4_000),
   publishedAt: z.string().datetime({ offset: true }).nullable(),
@@ -671,7 +684,7 @@ function evidenceInput(
     targetType: result.subject.kind === "organization"
       ? "organization"
       : "individual_signal",
-    sourcePlatform: response.provider,
+    sourcePlatform: result.sourcePlatform ?? response.provider,
     sourceTitle: result.title,
     sourceSnippet: result.snippet,
     publishedAt: result.publishedAt,
@@ -1446,6 +1459,7 @@ implements AcquisitionAgentToolExecutor {
           teamId: scope.teamId,
           provider: response.provider,
           sourceUrl: result.sourceUrl,
+          sourceType: result.sourceType,
           subject: result.subject
         });
         const dedupeKey = identityResolution.dedupeKey;

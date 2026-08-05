@@ -295,7 +295,10 @@ class TestSearchPort implements SearchPublicSourcesPort {
     private readonly organizationDomain: string | null = "growth.example.cn",
     private readonly individualActorKey = "public:store-owner",
     private readonly individualProfileUrl =
-      "https://example.cn/profile/store-owner"
+      "https://example.cn/profile/store-owner",
+    private readonly individualPlatform = "public_forum",
+    private readonly individualSourceType:
+      SearchPublicSourceResult["sourceType"] = "other"
   ) {}
 
   async search(
@@ -317,6 +320,8 @@ class TestSearchPort implements SearchPublicSourcesPort {
     const results: SearchPublicSourceResult[] = [
       {
         sourceUrl: "https://example.cn/company/growth",
+        sourcePlatform: "company_registry",
+        sourceType: "other",
         title: "厦门增长科技正在寻找获客系统",
         snippet: "公开采购需求：需要全网商机识别、客户评分和渠道 ROI。",
         publishedAt: "2026-07-23T03:00:00.000Z",
@@ -334,6 +339,8 @@ class TestSearchPort implements SearchPublicSourcesPort {
       },
       {
         sourceUrl: "https://example.cn/profile/store-owner",
+        sourcePlatform: this.individualPlatform,
+        sourceType: this.individualSourceType,
         title: "厦门门店主理人公开咨询获客方案",
         snippet: "正在比较获客系统，希望近期上线，关注投入产出。",
         publishedAt: "2026-07-23T04:00:00.000Z",
@@ -345,7 +352,7 @@ class TestSearchPort implements SearchPublicSourcesPort {
           publicActorKey: this.individualActorKey,
           publicDisplayName: "厦门门店主理人",
           publicProfileUrl: this.individualProfileUrl,
-          sourcePlatform: "baidu",
+          sourcePlatform: this.individualPlatform,
           demandCategory: "获客系统",
           demandSummary: "正在比较获客系统，希望近期上线",
           locationHint: "厦门",
@@ -410,6 +417,8 @@ function createHarness(options: {
   organizationDomain?: string | null;
   individualActorKey?: string;
   individualProfileUrl?: string;
+  individualPlatform?: string;
+  individualSourceType?: SearchPublicSourceResult["sourceType"];
   searchConnectionIds?: string[];
   candidateIdFactory?: () => string;
 } = {}) {
@@ -440,7 +449,9 @@ function createHarness(options: {
     options.resolvedIdentities,
     options.organizationDomain,
     options.individualActorKey,
-    options.individualProfileUrl
+    options.individualProfileUrl,
+    options.individualPlatform,
+    options.individualSourceType
   );
   const searchConnections = new TestSearchConnectionDirectory(
     options.searchConnectionIds
@@ -528,6 +539,16 @@ test("searches authorized providers, survives a partial failure, and idempotentl
     new Set(["organization", "individual"])
   );
   assert.equal(first.evidence.length, 2);
+  assert.deepEqual(
+    first.evidence.map((item: any) => item.sourcePlatform),
+    ["company_registry", "public_forum"]
+  );
+  assert.equal(
+    first.evidence.every(
+      (item: any) => item.provenance.provider === "baidu_ai_search"
+    ),
+    true
+  );
   assert.equal(search.calls.length, 2);
   assert.equal(
     first.candidates.find((item: any) => item.partyType === "organization")
@@ -566,6 +587,32 @@ test("searches authorized providers, survives a partial failure, and idempotentl
       error instanceof AcquisitionToolExecutorError
       && error.code === "IDEMPOTENCY_CONFLICT"
   );
+});
+
+test("keeps a Douyin comment-like profile result unresolved at the executor boundary", async () => {
+  const { executor } = createHarness({
+    resolvedIdentities: false,
+    individualActorKey: `public:douyin:sha256:${"d".repeat(64)}`,
+    individualProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    individualPlatform: "douyin",
+    individualSourceType: "comment_signal"
+  });
+
+  const discovery = await discover(executor, ["search-ok"]);
+  const individual = discovery.candidates.find(
+    (item: any) => item.partyType === "individual"
+  );
+  assert.ok(individual);
+  assert.match(
+    individual.partyRef.individualPartyId,
+    /^unresolved-individual-/u
+  );
+  assert.deepEqual(individual.identityResolution, {
+    status: "needs_research",
+    basis: null,
+    reasonCode: "insufficient_provider_public_actor_identity",
+    resolverVersion: "acquisition-public-identity-v1"
+  });
 });
 
 test("automatically uses the tenant's active search connections when the agent omits internal connection ids", async () => {
