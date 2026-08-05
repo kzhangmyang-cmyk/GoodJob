@@ -393,6 +393,7 @@ test("battle-card.v2 enforces evidence-bound structured intelligence", async () 
   const valid = {
     id: "battle-card-2",
     candidateId: "candidate-1",
+    qualificationDecisionId: "decision-1",
     partyType: "organization",
     schemaVersion: "battle-card.v2",
     intelligence: {

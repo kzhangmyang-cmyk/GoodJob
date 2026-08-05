@@ -523,89 +523,13 @@ const auditPagedResponseSchema = typedPagedResponseSchema(
   auditEventResponseSchema
 );
 
-const acquisitionPlanResponseSchema = {
-  $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://goodjob.example/contracts/json-schema/acquisition-plan.v1.schema.json",
-  title: "AcquisitionPlan",
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "id",
-    "ownerId",
-    "status",
-    "version",
-    "budgetSnapshot",
-    "createdAt"
-  ],
-  properties: {
-    id: { type: "string" },
-    ownerId: { type: "string" },
-    teamId: { type: ["string", "null"] },
-    status: { enum: ["draft", "approved", "archived"] },
-    version: { type: "integer", minimum: 1 },
-    budgetSnapshot: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "billingCurrency",
-        "maxRequests",
-        "maxResults",
-        "maxAmountMinor",
-        "maxDurationSeconds"
-      ],
-      properties: {
-        billingCurrency: { type: "string", minLength: 3, maxLength: 3 },
-        maxRequests: { type: "integer", minimum: 0 },
-        maxResults: { type: "integer", minimum: 0 },
-        maxAmountMinor: { type: "integer", minimum: 0 },
-        maxDurationSeconds: { type: "integer", minimum: 0 }
-      }
-    },
-    createdAt: { type: "string", format: "date-time" }
-  }
-};
+const acquisitionPlanResponseSchema = loadContractSchema(
+  "acquisition-plan"
+);
 
-const acquisitionRunResponseSchema = {
-  $schema: "https://json-schema.org/draft/2020-12/schema",
-  $id: "https://goodjob.example/contracts/json-schema/acquisition-run.v1.schema.json",
-  title: "AcquisitionRun",
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "id",
-    "ownerId",
-    "planId",
-    "status",
-    "budgetSnapshotId",
-    "billingCurrency",
-    "createdAt"
-  ],
-  properties: {
-    id: { type: "string" },
-    ownerId: { type: "string" },
-    teamId: { type: ["string", "null"] },
-    planId: { type: "string" },
-    parentRunId: { type: ["string", "null"] },
-    status: {
-      enum: [
-        "queued",
-        "running",
-        "pause_requested",
-        "paused",
-        "cancel_requested",
-        "cancelled",
-        "succeeded",
-        "succeeded_empty",
-        "partial_success",
-        "failed",
-        "budget_exhausted"
-      ]
-    },
-    budgetSnapshotId: { type: "string" },
-    billingCurrency: { type: "string", minLength: 3, maxLength: 3 },
-    createdAt: { type: "string", format: "date-time" }
-  }
-};
+const acquisitionRunResponseSchema = loadContractSchema(
+  "acquisition-run"
+);
 
 const pagedResultResponseSchema = {
   type: "object",
@@ -617,35 +541,35 @@ const pagedResultResponseSchema = {
   }
 };
 
-const providerConnectionSchema = {
+const providerConnectionSchema = loadContractSchema(
+  "provider-connection"
+);
+
+const providerConnectionHealthSchema = {
   type: "object",
+  additionalProperties: false,
   required: [
-    "id",
-    "ownerId",
-    "teamId",
-    "providerId",
-    "kind",
-    "status",
-    "credentialVersion",
-    "createdAt"
+    "ok",
+    "message",
+    "errorCode",
+    "retryable",
+    "retryAfterAt",
+    "usage"
   ],
   properties: {
-    id: { type: "string" },
-    ownerId: { type: "string" },
-    teamId: { type: "string", nullable: true },
-    providerId: { type: "string" },
-    kind: {
-      type: "string",
-      enum: ["search", "content_fetch", "import"]
+    ok: { type: "boolean" },
+    message: { type: "string", minLength: 1, maxLength: 2_000 },
+    errorCode: {
+      type: ["string", "null"],
+      maxLength: 120
     },
-    status: {
-      type: "string",
-      enum: ["active", "inactive", "disabled", "error"]
+    retryable: { type: "boolean" },
+    retryAfterAt: {
+      type: ["string", "null"],
+      format: "date-time"
     },
-    credentialVersion: { type: "integer", minimum: 1 },
-    createdAt: { type: "string", format: "date-time" }
-  },
-  additionalProperties: false
+    usage: { type: "string", maxLength: 2_000 }
+  }
 };
 
 const acquisitionProviderSchema = {
@@ -1110,7 +1034,11 @@ function addProviderPaths(paths: AcquisitionOpenApiPaths) {
     "post",
     operation("post", "执行受控健康检查", {
       parameters: [idParameter()],
-      responses: standardResponses(200, "健康检查结果")
+      responses: standardResponses(
+        200,
+        "健康检查结果",
+        providerConnectionHealthSchema
+      )
     })
   );
 }

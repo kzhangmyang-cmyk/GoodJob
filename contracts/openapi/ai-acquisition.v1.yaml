@@ -372,7 +372,9 @@ x-acquisition-resource-schema: &acquisitionResourceSchema
 x-discovery-provider-schema: &discoveryProviderSchema
   { type: object, required: [id, kind, displayName, capabilities], properties: { id: { type: string }, kind: { type: string, enum: [search, content_fetch, import] }, displayName: { type: string }, officialDocsUrl: { type: string, format: uri }, defaultBaseUrl: { type: string, format: uri }, requiresKey: { type: boolean }, keyHint: { type: string }, costNote: { type: string }, capabilities: { type: array, items: { type: string } } }, additionalProperties: false }
 x-provider-connection-schema: &providerConnectionSchema
-  { type: object, required: [id, ownerId, teamId, providerId, kind, status, credentialVersion, createdAt], properties: { id: { type: string }, ownerId: { type: string }, teamId: { type: string, nullable: true }, providerId: { type: string }, kind: { type: string, enum: [search, content_fetch, import] }, status: { type: string, enum: [active, inactive, disabled, error] }, credentialVersion: { type: integer, minimum: 1 }, createdAt: { type: string, format: date-time } }, additionalProperties: false }
+  { $ref: '#/components/schemas/ProviderConnection' }
+x-provider-connection-health-schema: &providerConnectionHealthSchema
+  { type: object, additionalProperties: false, required: [ok, message, errorCode, retryable, retryAfterAt, usage], properties: { ok: { type: boolean }, message: { type: string, minLength: 1, maxLength: 2000 }, errorCode: { type: string, nullable: true, maxLength: 120 }, retryable: { type: boolean }, retryAfterAt: { type: string, nullable: true, format: date-time }, usage: { type: string, maxLength: 2000 } } }
 x-provider-connection-write-schema: &providerConnectionWriteSchema
   { type: object, required: [providerId, apiKey], properties: { providerId: { type: string, minLength: 1, maxLength: 64, pattern: '^[a-z0-9_]+$' }, apiKey: { type: string, minLength: 1, maxLength: 4000, writeOnly: true, description: 客户自己的官方 API Key，仅加密保存且永不回显。 }, baseUrl: { type: string, format: uri, maxLength: 2000 }, status: { type: string, enum: [active, disabled], default: active } }, additionalProperties: false }
 x-provider-connection-patch-schema: &providerConnectionPatchSchema
@@ -470,7 +472,7 @@ paths:
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       responses:
         <<: *acquisitionStandardResponses
-        '200': { description: Provider connection health check, content: { application/json: { schema: *acquisitionResourceSchema } } }
+        '200': { description: Provider connection health check, content: { application/json: { schema: *providerConnectionHealthSchema } } }
   /api/v1/acquisition/content-fetch-operations:
     get:
       operationId: listAcquisitionContentFetchOperations

@@ -35,6 +35,11 @@
         "locationHint": "厦门",
         "buyingStage": "comparison",
         "negativeSignals": [],
+        "subjectKind": "individual",
+        "status": "pending_review",
+        "latestDecisionVersion": null,
+        "approvedDecisionVersion": null,
+        "updatedAt": "2026-07-23T09:00:00.000Z",
         "firstSeenAt": "2026-07-21T09:00:00.000Z",
         "lastSeenAt": "2026-07-23T09:00:00.000Z"
       }

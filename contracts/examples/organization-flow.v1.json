@@ -32,7 +32,11 @@
         "region": "Shanghai",
         "creditCode": null,
         "evidenceIds": ["ev_org_001"],
+        "subjectKind": "organization",
         "status": "pending_review",
+        "latestDecisionVersion": null,
+        "approvedDecisionVersion": null,
+        "updatedAt": "2026-07-23T09:00:00.000Z",
         "createdAt": "2026-07-23T09:00:00.000Z"
       }
     },
