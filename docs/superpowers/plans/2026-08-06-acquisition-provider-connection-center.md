@@ -57,11 +57,11 @@
 - Test maps `ok`, health/error code and retryability honestly; active+passed refresh allows the preserved acquisition task to continue.
 - Close/reopen and every connection mutation preserve `taskText`, `targetPlatform`, `templateId`, and current workflow route.
 
-- [ ] **Step 1: write failing controller tests** for zero-connection setup, stale responses, secret clearing, save/test/enable/disable/delete, task preservation and error recovery.
-- [ ] **Step 2: run RED**.
-- [ ] **Step 3: implement the state machine and mutations** without persisting plaintext credentials.
-- [ ] **Step 4: run GREEN** and focused controller tests.
-- [ ] **Step 5: commit** as `feat: manage acquisition provider connections`.
+- [x] **Step 1: write failing controller tests** for zero-connection setup, stale responses, secret clearing, save/test/enable/disable/delete, task preservation and error recovery.
+- [x] **Step 2: run RED**.
+- [x] **Step 3: implement the state machine and mutations** without persisting plaintext credentials.
+- [x] **Step 4: run GREEN** and focused controller tests.
+- [x] **Step 5: commit** as `feat: manage acquisition provider connections`.
 
 ### Task 3: 工作区内可访问的搜索来源抽屉
 
