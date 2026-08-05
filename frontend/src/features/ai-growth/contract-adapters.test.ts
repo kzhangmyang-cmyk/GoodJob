@@ -3,6 +3,26 @@ import type {
   operations,
   paths
 } from "./generated/ai-acquisition.js";
+import type {
+  CopilotSessionCreateOperationDto,
+  CopilotTaskDto,
+  ProviderConnectionDto
+} from "./api.js";
+
+type Assert<T extends true> = T;
+
+type IsRequired<T, K extends keyof T> =
+  {} extends Pick<T, K> ? false : true;
+
+type ProviderOwnerIsRequired = Assert<
+  IsRequired<ProviderConnectionDto, "ownerId">
+>;
+type ProviderIncludesRuntimeError = Assert<
+  "error" extends ProviderConnectionDto["status"] ? true : false
+>;
+type ProviderRejectsStaleUpdatedAt = Assert<
+  "updatedAt" extends keyof ProviderConnectionDto ? false : true
+>;
 
 const evidence: components["schemas"]["DiscoveryEvidence"] = {
   id: "evidence_1",
@@ -45,7 +65,64 @@ const invalidApproval: typeof approval = {
   reason: "不通过"
 };
 
+const providerConnection: ProviderConnectionDto = {
+  id: "connection_1",
+  ownerId: "owner_1",
+  teamId: null,
+  providerId: "serper",
+  kind: "search",
+  status: "error",
+  credentialVersion: 2,
+  lastHealthAt: "2026-08-05T00:00:00Z",
+  lastHealthStatus: "failed",
+  lastErrorCode: "PROVIDER_UNAVAILABLE",
+  lastHealthMessage: "Provider unavailable",
+  usage: "search",
+  createdAt: "2026-08-05T00:00:00Z"
+};
+
+const sessionCreation: CopilotSessionCreateOperationDto = {
+  id: "operation_1",
+  kind: "copilot_session_creation",
+  status: "succeeded",
+  resourceId: "session_1",
+  createdAt: "2026-08-05T00:00:00Z",
+  completedAt: "2026-08-05T00:00:00Z"
+};
+
+const assistantToolCall: components["schemas"]["toolCall"] = {
+  type: "toolCall",
+  id: "tool_call_1",
+  name: "query_candidates",
+  arguments: {
+    candidateId: "candidate_1",
+    limit: 10
+  }
+};
+
+const copilotTask: CopilotTaskDto = {
+  id: "task_1",
+  sessionId: "session_1",
+  kind: "message",
+  status: "succeeded",
+  responseMode: "plan_draft",
+  result: {
+    planDraft: { objective: "Find public buying signals" },
+    toolNames: ["query_candidates"]
+  },
+  errorCode: null,
+  createdAt: "2026-08-05T00:00:00Z",
+  completedAt: "2026-08-05T00:00:01Z"
+};
+
 void evidence;
 void approval;
 void approvalOperation;
 void invalidApproval;
+void providerConnection;
+void sessionCreation;
+void assistantToolCall;
+void copilotTask;
+void (null as unknown as ProviderOwnerIsRequired);
+void (null as unknown as ProviderIncludesRuntimeError);
+void (null as unknown as ProviderRejectsStaleUpdatedAt);

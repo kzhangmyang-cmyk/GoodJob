@@ -1,6 +1,8 @@
 import {
   createAiGrowthApi,
   advisorHttpStatus,
+  copilotSessionResourceId,
+  copilotTaskPlanDraft,
   type AdvisorRequest,
   type AiGrowthApi,
   type CandidateConversionDto,
@@ -727,10 +729,12 @@ export function createAiGrowthController(
           return;
         }
         if (!sessionId) {
-          sessionId = (await options.api.createSession(
-            {},
-            idempotencyKey("ai-growth-session")
-          )).id;
+          sessionId = copilotSessionResourceId(
+            await options.api.createSession(
+              {},
+              idempotencyKey("ai-growth-session")
+            )
+          );
         }
         if (generation !== operationGeneration) return;
         const requested = await options.api.requestPlanDraft(
@@ -740,7 +744,10 @@ export function createAiGrowthController(
         );
         const task = await pollCopilotTask(requested, generation);
         if (!task || generation !== operationGeneration) return;
-        if (task.status !== "succeeded" || !task.result?.planDraft) {
+        const planDraft = task.status === "succeeded"
+          ? copilotTaskPlanDraft(task)
+          : null;
+        if (!planDraft) {
           throw new Error(
             task.status === "cancelled"
               ? "方案生成已取消"
@@ -750,7 +757,7 @@ export function createAiGrowthController(
         state = {
           ...state,
           status: "awaiting_approval",
-          planDraft: task.result.planDraft,
+          planDraft,
           error: null
         };
         publish();

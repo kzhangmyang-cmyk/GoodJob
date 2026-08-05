@@ -1445,6 +1445,27 @@ export interface components {
             /** Format: date-time */
             createdAt: string;
         };
+        /** ProviderConnection */
+        "provider-connection.v1.schema": {
+            id: string;
+            ownerId: string;
+            teamId: string | null;
+            providerId: string;
+            /** @enum {unknown} */
+            kind: "search" | "content_fetch" | "import";
+            /** @enum {unknown} */
+            status: "active" | "inactive" | "disabled" | "error";
+            credentialVersion: number;
+            /** Format: date-time */
+            lastHealthAt: string | null;
+            /** @enum {unknown} */
+            lastHealthStatus: "untested" | "passed" | "failed";
+            lastErrorCode: string | null;
+            lastHealthMessage: string;
+            usage: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
         /** DiscoveryEvidence */
         "discovery-evidence.v1.schema": {
             id: string;
@@ -1485,37 +1506,228 @@ export interface components {
             /** @enum {unknown} */
             accessStatus: "indexed_summary" | "public_content" | "user_supplied" | "access_restricted";
         };
+        budgetUsage: {
+            requests: number;
+            results: number;
+            amountMinor: number;
+            durationSeconds: number;
+        };
+        providerConnection: {
+            connectionId: string;
+            providerId: string;
+            /** @enum {unknown} */
+            kind: "search" | "content_fetch" | "import";
+            /** @enum {unknown} */
+            status: "active" | "inactive" | "disabled";
+            credentialVersion: number;
+        };
+        operation: {
+            operationId: string;
+            /** @enum {unknown} */
+            subjectChannel: "organization" | "individual";
+            /** @enum {unknown} */
+            kind: "search" | "content_fetch" | "import_rows";
+            connectionId: string;
+            query?: string;
+            sourceRef?: string;
+            allocatedBudget: components["schemas"]["budgetUsage"];
+        };
+        budgetSnapshot: {
+            billingCurrency: string;
+            maxRequests: number;
+            maxResults: number;
+            maxAmountMinor: number;
+            maxDurationSeconds: number;
+        };
+        modelSnapshot: {
+            jobSnapshotId: string;
+            connectionId: string;
+            credentialVersion: number;
+            provider: string;
+            model: string;
+            capabilitySnapshotHash: string;
+            promptVersion: string;
+            schemaVersion: string;
+            promptHash: string;
+            schemaHash: string;
+        };
+        payload: {
+            name: string;
+            objective: string;
+            icp: {
+                industries: string[];
+                regions: string[];
+                organizationCriteria: string[];
+                individualCriteria: string[];
+                exclusionRules: string[];
+            };
+            subjectChannels: {
+                organization: boolean;
+                individual: boolean;
+            };
+            providerConnections: components["schemas"]["providerConnection"][];
+            operations: components["schemas"]["operation"][];
+            budgetSnapshot: components["schemas"]["budgetSnapshot"];
+            modelSnapshotRef: components["schemas"]["modelSnapshot"];
+            stopConditions: {
+                stopWhenBudgetExhausted: boolean;
+                stopWhenNoMoreResults: boolean;
+            };
+        };
         /** AcquisitionPlan */
         "acquisition-plan.v1.schema": {
             id: string;
             ownerId: string;
-            teamId?: string | null;
+            teamId: string;
             /** @enum {unknown} */
             status: "draft" | "approved" | "archived";
             version: number;
-            budgetSnapshot: {
-                billingCurrency: string;
-                maxRequests: number;
-                maxResults: number;
-                maxAmountMinor: number;
-                maxDurationSeconds: number;
-            };
+            revision: number;
+            etag: string;
+            currentVersionId: string;
+            approvedVersionId: string | null;
+            approvedSnapshotHash: string | null;
+            approvedBy: string | null;
+            /** Format: date-time */
+            approvedAt: string | null;
+            budgetSnapshot: components["schemas"]["budgetSnapshot"];
+            payload: components["schemas"]["payload"];
+            createdBy: string;
             /** Format: date-time */
             createdAt: string;
+            updatedBy: string;
+            /** Format: date-time */
+            updatedAt: string;
+            $defs: {
+                budgetUsage: {
+                    requests: number;
+                    results: number;
+                    amountMinor: number;
+                    durationSeconds: number;
+                };
+                budgetSnapshot: {
+                    billingCurrency: string;
+                    maxRequests: number;
+                    maxResults: number;
+                    maxAmountMinor: number;
+                    maxDurationSeconds: number;
+                };
+                modelSnapshot: {
+                    jobSnapshotId: string;
+                    connectionId: string;
+                    credentialVersion: number;
+                    provider: string;
+                    model: string;
+                    capabilitySnapshotHash: string;
+                    promptVersion: string;
+                    schemaVersion: string;
+                    promptHash: string;
+                    schemaHash: string;
+                };
+                providerConnection: {
+                    connectionId: string;
+                    providerId: string;
+                    /** @enum {unknown} */
+                    kind: "search" | "content_fetch" | "import";
+                    /** @enum {unknown} */
+                    status: "active" | "inactive" | "disabled";
+                    credentialVersion: number;
+                };
+                operation: {
+                    operationId: string;
+                    /** @enum {unknown} */
+                    subjectChannel: "organization" | "individual";
+                    /** @enum {unknown} */
+                    kind: "search" | "content_fetch" | "import_rows";
+                    connectionId: string;
+                    query?: string;
+                    sourceRef?: string;
+                    allocatedBudget: components["schemas"]["budgetUsage"];
+                };
+                payload: {
+                    name: string;
+                    objective: string;
+                    icp: {
+                        industries: string[];
+                        regions: string[];
+                        organizationCriteria: string[];
+                        individualCriteria: string[];
+                        exclusionRules: string[];
+                    };
+                    subjectChannels: {
+                        organization: boolean;
+                        individual: boolean;
+                    };
+                    providerConnections: components["schemas"]["providerConnection"][];
+                    operations: components["schemas"]["operation"][];
+                    budgetSnapshot: components["schemas"]["budgetSnapshot"];
+                    modelSnapshotRef: components["schemas"]["modelSnapshot"];
+                    stopConditions: {
+                        stopWhenBudgetExhausted: boolean;
+                        stopWhenNoMoreResults: boolean;
+                    };
+                };
+            };
         };
         /** AcquisitionRun */
         "acquisition-run.v1.schema": {
             id: string;
             ownerId: string;
-            teamId?: string | null;
+            teamId: string;
             planId: string;
-            parentRunId?: string | null;
+            planVersionId: string;
+            planVersion: number;
+            planSnapshotHash: string;
+            parentRunId: string | null;
             /** @enum {unknown} */
             status: "queued" | "running" | "pause_requested" | "paused" | "cancel_requested" | "cancelled" | "succeeded" | "succeeded_empty" | "partial_success" | "failed" | "budget_exhausted";
+            /** @enum {unknown} */
+            terminationIntent: "cancelled" | "budget_exhausted" | null;
+            revision: number;
+            etag: string;
             budgetSnapshotId: string;
+            budgetSnapshot: components["schemas"]["budgetSnapshot"];
+            budgetSnapshotHash: string;
             billingCurrency: string;
+            modelSnapshotRef: components["schemas"]["modelSnapshot"];
+            consumedBudget: components["schemas"]["budgetUsage"];
+            evidenceCount: number;
+            reason: string | null;
+            createdBy: string;
             /** Format: date-time */
             createdAt: string;
+            updatedBy: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            completedAt: string | null;
+            $defs: {
+                budgetUsage: {
+                    requests: number;
+                    results: number;
+                    amountMinor: number;
+                    durationSeconds: number;
+                };
+                budgetSnapshot: {
+                    billingCurrency: string;
+                    maxRequests: number;
+                    maxResults: number;
+                    maxAmountMinor: number;
+                    maxDurationSeconds: number;
+                };
+                modelSnapshot: {
+                    jobSnapshotId: string;
+                    connectionId: string;
+                    credentialVersion: number;
+                    provider: string;
+                    model: string;
+                    capabilitySnapshotHash: string;
+                    promptVersion: string;
+                    schemaVersion: string;
+                    promptHash: string;
+                    schemaHash: string;
+                };
+            };
         };
         /** AcquisitionRunPresentation */
         "acquisition-run-presentation.v1.schema": {
@@ -1641,12 +1853,18 @@ export interface components {
         "organization-candidate.v1.schema": {
             id: string;
             name: string;
-            domain?: string | null;
-            region?: string | null;
-            creditCode?: string | null;
+            domain: string | null;
+            region: string | null;
+            creditCode: string | null;
             evidenceIds: string[];
+            /** @constant */
+            subjectKind: "organization";
             /** @enum {unknown} */
             status: "discovered" | "unresolvable" | "normalized" | "qualified" | "pending_review" | "approved" | "rejected" | "do_not_contact" | "needs_research" | "converted_to_lead";
+            latestDecisionVersion: string | null;
+            approvedDecisionVersion: string | null;
+            /** Format: date-time */
+            updatedAt: string;
             /** Format: date-time */
             createdAt: string;
         };
@@ -1665,6 +1883,14 @@ export interface components {
             /** @enum {unknown} */
             buyingStage: "awareness" | "problem_defined" | "solution_research" | "comparison" | "purchase_ready";
             negativeSignals: string[];
+            /** @constant */
+            subjectKind: "individual";
+            /** @enum {unknown} */
+            status: "discovered" | "unresolvable" | "normalized" | "qualified" | "pending_review" | "approved" | "rejected" | "do_not_contact" | "needs_research" | "converted_to_lead";
+            latestDecisionVersion: string | null;
+            approvedDecisionVersion: string | null;
+            /** Format: date-time */
+            updatedAt: string;
             /** Format: date-time */
             firstSeenAt: string;
             /** Format: date-time */
@@ -1726,11 +1952,12 @@ export interface components {
         "battle-card.v1.schema": {
             id: string;
             candidateId: string;
+            qualificationDecisionId: string;
             /** @enum {unknown} */
             partyType: "organization" | "individual";
             /** @constant */
-            schemaVersion?: "battle-card.v1";
-            intelligence?: null;
+            schemaVersion: "battle-card.v1";
+            intelligence: null;
             sections: ({
                 label: string;
                 /** @enum {unknown} */
@@ -1811,6 +2038,7 @@ export interface components {
         "battle-card.v2.schema": {
             id: string;
             candidateId: string;
+            qualificationDecisionId: string;
             /** @enum {unknown} */
             partyType: "organization" | "individual";
             /** @constant */
@@ -2102,7 +2330,9 @@ export interface components {
             type: "toolCall";
             id: string;
             name: string;
-            arguments: Record<string, never>;
+            arguments: {
+                [key: string]: unknown;
+            };
             thoughtSignature?: string;
         };
         inputContent: components["schemas"]["textContent"] | components["schemas"]["imageContent"];
@@ -2187,7 +2417,9 @@ export interface components {
                     type: "toolCall";
                     id: string;
                     name: string;
-                    arguments: Record<string, never>;
+                    arguments: {
+                        [key: string]: unknown;
+                    };
                     thoughtSignature?: string;
                 };
                 inputContent: components["schemas"]["textContent"] | components["schemas"]["imageContent"];
@@ -2214,10 +2446,15 @@ export interface components {
         "copilot-task.v1.schema": {
             id: string;
             sessionId: string;
-            kind: string;
+            /** @constant */
+            kind: "message";
             /** @enum {unknown} */
             status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
-            result: Record<string, never> | null;
+            /** @enum {unknown} */
+            responseMode: "assistant" | "plan_draft";
+            result: {
+                [key: string]: unknown;
+            } | null;
             errorCode: string | null;
             /** Format: date-time */
             createdAt: string;
@@ -2238,20 +2475,6 @@ export interface components {
             kind: "search" | "content_fetch" | "import";
             displayName: string;
             capabilities: string[];
-        };
-        /** ProviderConnection */
-        "provider-connection.v1.schema": {
-            id: string;
-            ownerId: string;
-            teamId?: string | null;
-            providerId: string;
-            /** @enum {unknown} */
-            kind: "search" | "content_fetch" | "import";
-            /** @enum {unknown} */
-            status: "active" | "inactive" | "disabled";
-            credentialVersion: number;
-            /** Format: date-time */
-            createdAt: string;
         };
         /** ContentFetchOperation */
         "content-fetch-operation.v1.schema": {
@@ -2663,19 +2886,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        items: {
-                            id: string;
-                            ownerId: string;
-                            teamId: string | null;
-                            providerId: string;
-                            /** @enum {string} */
-                            kind: "search" | "content_fetch" | "import";
-                            /** @enum {string} */
-                            status: "active" | "inactive" | "disabled" | "error";
-                            credentialVersion: number;
-                            /** Format: date-time */
-                            createdAt: string;
-                        }[];
+                        items: components["schemas"]["provider-connection.v1.schema"][];
                         nextCursor: string | null;
                     };
                 };
@@ -2760,19 +2971,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        id: string;
-                        ownerId: string;
-                        teamId: string | null;
-                        providerId: string;
-                        /** @enum {string} */
-                        kind: "search" | "content_fetch" | "import";
-                        /** @enum {string} */
-                        status: "active" | "inactive" | "disabled" | "error";
-                        credentialVersion: number;
-                        /** Format: date-time */
-                        createdAt: string;
-                    };
+                    "application/json": components["schemas"]["provider-connection.v1.schema"];
                 };
             };
             /** @description Provider connection created */
@@ -2781,19 +2980,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        id: string;
-                        ownerId: string;
-                        teamId: string | null;
-                        providerId: string;
-                        /** @enum {string} */
-                        kind: "search" | "content_fetch" | "import";
-                        /** @enum {string} */
-                        status: "active" | "inactive" | "disabled" | "error";
-                        credentialVersion: number;
-                        /** Format: date-time */
-                        createdAt: string;
-                    };
+                    "application/json": components["schemas"]["provider-connection.v1.schema"];
                 };
             };
             /** @description Unified API error */
@@ -2860,19 +3047,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        id: string;
-                        ownerId: string;
-                        teamId: string | null;
-                        providerId: string;
-                        /** @enum {string} */
-                        kind: "search" | "content_fetch" | "import";
-                        /** @enum {string} */
-                        status: "active" | "inactive" | "disabled" | "error";
-                        credentialVersion: number;
-                        /** Format: date-time */
-                        createdAt: string;
-                    };
+                    "application/json": components["schemas"]["provider-connection.v1.schema"];
                 };
             };
             /** @description Unified API error */
@@ -3018,19 +3193,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        id: string;
-                        ownerId: string;
-                        teamId: string | null;
-                        providerId: string;
-                        /** @enum {string} */
-                        kind: "search" | "content_fetch" | "import";
-                        /** @enum {string} */
-                        status: "active" | "inactive" | "disabled" | "error";
-                        credentialVersion: number;
-                        /** Format: date-time */
-                        createdAt: string;
-                    };
+                    "application/json": components["schemas"]["provider-connection.v1.schema"];
                 };
             };
             /** @description Unified API error */
@@ -3098,7 +3261,13 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        [key: string]: unknown;
+                        ok: boolean;
+                        message: string;
+                        errorCode: string | null;
+                        retryable: boolean;
+                        /** Format: date-time */
+                        retryAfterAt: string | null;
+                        usage: string;
                     };
                 };
             };

@@ -109,7 +109,14 @@ function createApi(overrides: Partial<AiGrowthControllerApi> = {}) {
       }],
       nextCursor: null
     }),
-    createSession: async () => ({ id: "session-1" }),
+    createSession: async () => ({
+      id: "operation-session-1",
+      kind: "copilot_session_creation",
+      status: "succeeded" as const,
+      resourceId: "session-1",
+      createdAt: "2026-08-05T00:00:00.000Z",
+      completedAt: "2026-08-05T00:00:00.000Z"
+    }),
     requestPlanDraft: async () => ({
       id: "task-1",
       status: "succeeded" as const,
@@ -294,6 +301,33 @@ test("真实流程按 idle 到 completed 的服务状态推进", async () => {
     run: run("succeeded")
   } as never);
   assert.equal(latest!.status, "completed");
+});
+
+test("Copilot 会话创建使用异步操作的 resourceId", async () => {
+  let requestedSessionId: string | null = null;
+  const { api } = createApi({
+    createSession: async () => ({
+      id: "operation-1",
+      kind: "copilot_session_creation",
+      status: "succeeded",
+      resourceId: "session-resource-1",
+      createdAt: "2026-08-05T00:00:00.000Z",
+      completedAt: "2026-08-05T00:00:00.000Z"
+    }) as never,
+    requestPlanDraft: async (sessionId) => {
+      requestedSessionId = sessionId;
+      return {
+        id: "task-1",
+        status: "succeeded",
+        result: { planDraft }
+      } as never;
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+
+  await controller.submit();
+
+  assert.equal(requestedSessionId, "session-resource-1");
 });
 
 test("未批准时不会创建运行", async () => {

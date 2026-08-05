@@ -227,8 +227,31 @@ function succeededTask(
 ): CopilotTaskDto {
   return {
     id,
+    sessionId: "session-1",
+    kind: "message",
     status: "succeeded",
-    result: { toolNames: [toolName] }
+    responseMode: "assistant",
+    result: { toolNames: [toolName] },
+    errorCode: null,
+    createdAt: timestamp,
+    completedAt: timestamp
+  };
+}
+
+function pendingTask(
+  id: string,
+  status: "queued" | "running"
+): CopilotTaskDto {
+  return {
+    id,
+    sessionId: "session-1",
+    kind: "message",
+    status,
+    responseMode: "assistant",
+    result: null,
+    errorCode: null,
+    createdAt: timestamp,
+    completedAt: null
   };
 }
 
@@ -236,7 +259,14 @@ function apiStub(
   overrides: Partial<AiGrowthApi> = {}
 ): AiGrowthApi {
   const base = {
-    createSession: async () => ({ id: "session-1" }),
+    createSession: async () => ({
+      id: "operation-session-1",
+      kind: "copilot_session_creation",
+      status: "succeeded" as const,
+      resourceId: "session-1",
+      createdAt: timestamp,
+      completedAt: timestamp
+    }),
     getCandidate: async () => candidate(),
     getEvidence: async () => ({ items: evidence, nextCursor: null }),
     getQualification: async () => qualification,
@@ -360,12 +390,12 @@ test("qualification requires an explicit Copilot tool task before refreshing qua
     },
     requestAssistantAction: async (_sessionId, message) => {
       messages.push(message);
-      return { id: "task-qualify", status: "queued", result: null };
+      return pendingTask("task-qualify", "queued");
     },
     getCopilotTask: async () => {
       taskReads += 1;
       return taskReads === 1
-        ? { id: "task-qualify", status: "running", result: null }
+        ? pendingTask("task-qualify", "running")
         : succeededTask("task-qualify", "qualify_candidate");
     }
   });
@@ -395,15 +425,12 @@ test("real Copilot task states are observable without a fabricated timer state",
       getBattleCard: async () => {
         throw httpError(404, "missing");
       },
-      requestAssistantAction: async () => ({
-        id: "task-card",
-        status: "queued",
-        result: null
-      }),
+      requestAssistantAction: async () =>
+        pendingTask("task-card", "queued"),
       getCopilotTask: async () => {
         taskReads += 1;
         return taskReads === 1
-          ? { id: "task-card", status: "running", result: null }
+          ? pendingTask("task-card", "running")
           : succeededTask("task-card", "build_battle_card");
       }
     }),

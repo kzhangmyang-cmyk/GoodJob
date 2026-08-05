@@ -23,7 +23,10 @@
       "enum": ["queued", "running", "succeeded", "failed", "cancelled"]
     },
     "responseMode": { "enum": ["assistant", "plan_draft"] },
-    "result": { "type": ["object", "null"] },
+    "result": {
+      "type": ["object", "null"],
+      "additionalProperties": {}
+    },
     "errorCode": {
       "type": ["string", "null"],
       "pattern": "^[A-Z][A-Z0-9_]{2,63}$"

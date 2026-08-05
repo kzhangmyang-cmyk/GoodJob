@@ -135,7 +135,10 @@
         "type": { "const": "toolCall" },
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string", "minLength": 1 },
-        "arguments": { "type": "object" },
+        "arguments": {
+          "type": "object",
+          "additionalProperties": {}
+        },
         "thoughtSignature": { "type": "string" }
       }
     },

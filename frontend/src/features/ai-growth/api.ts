@@ -7,7 +7,10 @@ import type {
   RunDto,
   RunPresentationDto
 } from "./types.js";
-import type { components, paths } from "./generated/ai-acquisition.js";
+import type {
+  components,
+  operations
+} from "./generated/ai-acquisition.js";
 
 export interface AdvisorRequest {
   <T>(path: string, init?: RequestInit): Promise<T>;
@@ -18,41 +21,28 @@ export interface PageDto<T> {
   nextCursor: string | null;
 }
 
-type GeneratedProviderConnectionDto =
-  components["schemas"]["ProviderConnection"];
+export type ProviderConnectionPageDto = operations[
+  "listAcquisitionProviderConnections"
+]["responses"][200]["content"]["application/json"];
 
-export type ProviderConnectionDto = Omit<
-  GeneratedProviderConnectionDto,
-  "ownerId" | "createdAt"
-> & {
-  ownerId?: GeneratedProviderConnectionDto["ownerId"];
-  createdAt?: GeneratedProviderConnectionDto["createdAt"];
-  updatedAt?: string;
-};
+export type ProviderConnectionDto =
+  ProviderConnectionPageDto["items"][number];
 
-type GeneratedCopilotSessionDto = components["schemas"]["CopilotSession"];
+export type CopilotSessionCreateOperationDto = operations[
+  "createAcquisitionCopilotSession"
+]["responses"][202]["content"]["application/json"];
 
-export type CopilotSessionDto = Pick<GeneratedCopilotSessionDto, "id"> &
-  Partial<Omit<GeneratedCopilotSessionDto, "id" | "modelSnapshot">> & {
-    modelSnapshot?: Record<string, unknown>;
-  };
+export type CopilotSessionDto = operations[
+  "getAcquisitionCopilotSession"
+]["responses"][200]["content"]["application/json"];
 
-type GeneratedCopilotTaskDto = components["schemas"]["CopilotTask"];
+type QueuedCopilotTaskDto = operations[
+  "sendAcquisitionCopilotMessage"
+]["responses"][202]["content"]["application/json"];
 
-export type CopilotTaskDto = Pick<GeneratedCopilotTaskDto, "id" | "status"> &
-  Partial<
-    Pick<
-      GeneratedCopilotTaskDto,
-      "sessionId" | "kind" | "errorCode" | "createdAt" | "completedAt"
-    >
-  > & {
-    responseMode?: "assistant" | "plan_draft";
-    result: {
-      planDraft?: AcquisitionPlanCreateDto;
-      toolNames?: string[];
-      [key: string]: unknown;
-    } | null;
-  };
+export type CopilotTaskDto = operations[
+  "getAcquisitionCopilotTask"
+]["responses"][200]["content"]["application/json"];
 
 export type PlanDtoWithEtag = AcquisitionPlanCreateDto &
   Pick<
@@ -70,8 +60,9 @@ export type EvidenceDto = Omit<GeneratedEvidenceDto, "provenance"> & {
   provenance: Record<string, unknown>;
 };
 
-type GeneratedCandidateReviewDto =
-  paths["/api/v1/acquisition/candidates/{id}/review"]["post"]["requestBody"]["content"]["application/json"];
+type GeneratedCandidateReviewDto = operations[
+  "reviewAcquisitionCandidate"
+]["requestBody"]["content"]["application/json"];
 
 export type CandidateReviewDto = {
   action: GeneratedCandidateReviewDto["action"];
@@ -92,12 +83,119 @@ export type CandidateConversionDto = Omit<
   partyRef: Record<string, unknown>;
 };
 
-type PlanApprovalDto =
-  paths["/api/v1/acquisition/plans/{id}/approval"]["post"]["requestBody"]["content"]["application/json"];
-type CopilotSessionCreateDto =
-  paths["/api/v1/acquisition/copilot/sessions"]["post"]["requestBody"]["content"]["application/json"];
-type CandidateConversionCreateDto =
-  paths["/api/v1/acquisition/candidates/{id}/convert"]["post"]["requestBody"]["content"]["application/json"];
+type PlanApprovalDto = operations[
+  "approveAcquisitionPlan"
+]["requestBody"]["content"]["application/json"];
+type CopilotSessionCreateDto = operations[
+  "createAcquisitionCopilotSession"
+]["requestBody"]["content"]["application/json"];
+type CandidateConversionCreateDto = operations[
+  "convertAcquisitionCandidate"
+]["requestBody"]["content"]["application/json"];
+
+export function copilotSessionResourceId(
+  operation: CopilotSessionCreateOperationDto
+): string {
+  if (!operation.resourceId) {
+    throw new Error("Copilot 会话创建未返回 resourceId");
+  }
+  return operation.resourceId;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.every((item) => typeof item === "string");
+}
+
+function isNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isBudgetUsage(value: unknown): boolean {
+  return isRecord(value)
+    && isNumber(value.requests)
+    && isNumber(value.results)
+    && isNumber(value.amountMinor)
+    && isNumber(value.durationSeconds);
+}
+
+function isPlanDraft(value: unknown): value is AcquisitionPlanCreateDto {
+  if (!isRecord(value)) return false;
+  const icp = value.icp;
+  const channels = value.subjectChannels;
+  const budget = value.budgetSnapshot;
+  const stop = value.stopConditions;
+  return typeof value.name === "string"
+    && typeof value.objective === "string"
+    && isRecord(icp)
+    && isStringArray(icp.industries)
+    && isStringArray(icp.regions)
+    && isStringArray(icp.organizationCriteria)
+    && isStringArray(icp.individualCriteria)
+    && isStringArray(icp.exclusionRules)
+    && isRecord(channels)
+    && typeof channels.organization === "boolean"
+    && typeof channels.individual === "boolean"
+    && Array.isArray(value.providerConnections)
+    && value.providerConnections.every((connection) =>
+      isRecord(connection)
+      && typeof connection.connectionId === "string"
+      && typeof connection.providerId === "string"
+      && ["search", "content_fetch", "import"].includes(
+        String(connection.kind)
+      )
+      && ["active", "inactive", "disabled"].includes(
+        String(connection.status)
+      )
+      && isNumber(connection.credentialVersion))
+    && Array.isArray(value.operations)
+    && value.operations.every((operation) =>
+      isRecord(operation)
+      && typeof operation.operationId === "string"
+      && ["organization", "individual"].includes(
+        String(operation.subjectChannel)
+      )
+      && ["search", "content_fetch", "import_rows"].includes(
+        String(operation.kind)
+      )
+      && typeof operation.connectionId === "string"
+      && (operation.query === undefined
+        || typeof operation.query === "string")
+      && (operation.sourceRef === undefined
+        || typeof operation.sourceRef === "string")
+      && isBudgetUsage(operation.allocatedBudget))
+    && isRecord(budget)
+    && typeof budget.billingCurrency === "string"
+    && isNumber(budget.maxRequests)
+    && isNumber(budget.maxResults)
+    && isNumber(budget.maxAmountMinor)
+    && isNumber(budget.maxDurationSeconds)
+    && (value.modelConnectionId === undefined
+      || value.modelConnectionId === null
+      || typeof value.modelConnectionId === "string")
+    && isRecord(stop)
+    && typeof stop.stopWhenBudgetExhausted === "boolean"
+    && typeof stop.stopWhenNoMoreResults === "boolean";
+}
+
+export function copilotTaskPlanDraft(
+  task: CopilotTaskDto
+): AcquisitionPlanCreateDto | null {
+  const value = task.result?.planDraft;
+  return isPlanDraft(value) ? value : null;
+}
+
+export function copilotTaskIncludesToolName(
+  task: CopilotTaskDto,
+  toolName: string
+): boolean {
+  const toolNames = task.result?.toolNames;
+  return isStringArray(toolNames) && toolNames.includes(toolName);
+}
 
 export interface TodoCreateDto {
   title: string;
@@ -245,7 +343,7 @@ export function createAiGrowthApi(request: AdvisorRequest) {
     createSession(
       input: CopilotSessionCreateDto,
       idempotencyKey: string
-    ): Promise<CopilotSessionDto> {
+    ): Promise<CopilotSessionCreateOperationDto> {
       return post(
         "/api/v1/acquisition/copilot/sessions",
         input,
@@ -253,7 +351,7 @@ export function createAiGrowthApi(request: AdvisorRequest) {
       );
     },
 
-    listProviderConnections(): Promise<PageDto<ProviderConnectionDto>> {
+    listProviderConnections(): Promise<ProviderConnectionPageDto> {
       return mapConflict(() =>
         request("/api/v1/acquisition/provider-connections")
       );
@@ -263,7 +361,7 @@ export function createAiGrowthApi(request: AdvisorRequest) {
       sessionId: string,
       message: string,
       idempotencyKey: string
-    ): Promise<CopilotTaskDto> {
+    ): Promise<QueuedCopilotTaskDto> {
       return post(
         `/api/v1/acquisition/copilot/sessions/${segment(sessionId)}/messages`,
         { message, responseMode: "plan_draft" },
@@ -275,7 +373,7 @@ export function createAiGrowthApi(request: AdvisorRequest) {
       sessionId: string,
       message: string,
       idempotencyKey: string
-    ): Promise<CopilotTaskDto> {
+    ): Promise<QueuedCopilotTaskDto> {
       return post(
         `/api/v1/acquisition/copilot/sessions/${segment(sessionId)}/messages`,
         { message, responseMode: "assistant" },

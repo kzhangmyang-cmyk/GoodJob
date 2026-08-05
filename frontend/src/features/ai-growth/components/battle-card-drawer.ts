@@ -1,5 +1,7 @@
 import {
   advisorHttpStatus,
+  copilotSessionResourceId,
+  copilotTaskIncludesToolName,
   type AiGrowthApi,
   type CopilotTaskDto,
   type EvidenceDto
@@ -742,7 +744,9 @@ export function createBattleCardDrawer(
 
   async function ensureSession(): Promise<string> {
     if (sessionId) return sessionId;
-    sessionId = (await api.createSession({}, key())).id;
+    sessionId = copilotSessionResourceId(
+      await api.createSession({}, key())
+    );
     return sessionId;
   }
 
@@ -798,7 +802,7 @@ export function createBattleCardDrawer(
         });
         return false;
       }
-      if (!complete.result?.toolNames?.includes(toolName)) {
+      if (!copilotTaskIncludesToolName(complete, toolName)) {
         publishAction(context, {
           ...state.action,
           status: "failed",
