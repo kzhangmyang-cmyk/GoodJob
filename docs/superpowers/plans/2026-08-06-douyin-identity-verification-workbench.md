@@ -77,7 +77,7 @@
 - [x] Prove: Douyin comment/video candidate → identity unresolved → exact `/user/...` fetch → evidence returned → versioned human confirmation → research/qualification/financial/card complete.
 - [x] Prove video/short-link URL, access-restricted fetch, mismatched evidence and stale candidate version remain blocked.
 - [x] Prove no comment/message/friend/group/outreach/CRM write occurs.
-- [ ] Run focused tests, frontend suite/build, acquisition backend/contracts/generated drift, E2E and `git diff --check`.
+- [x] Run focused tests, frontend suite/build, acquisition backend/contracts/generated drift, E2E and `git diff --check`.
 
 ## Acceptance Outcome
 
