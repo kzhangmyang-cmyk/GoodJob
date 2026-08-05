@@ -128,11 +128,11 @@
 - Proves: select Douyin → submit intent → receive explicit Douyin plan → approve → compiled allowed-site queries → run → Douyin-classified evidence/candidate → S/A battle card or honest no-candidate state → refresh task detail.
 - Fixture rejects undeclared acquisition traffic and records formal writes.
 
-- [ ] **Step 1: write failing end-to-end test** asserting exact targetPlatform payload, allowed query prefixes, provider/content-source separation, public-index disclosure, and no unsafe outreach writes.
-- [ ] **Step 2: run RED and make only minimal integration corrections**.
-- [ ] **Step 3: update product documentation** with capability, evidence, limitations, and workflow/skill architecture.
-- [ ] **Step 4: run full GREEN**: target E2E, acquisition backend suite, root tests, production build, generated contract drift and `git diff --check`.
-- [ ] **Step 5: commit** as `test: verify douyin platform discovery`.
+- [x] **Step 1: write failing end-to-end test** asserting exact targetPlatform payload, allowed query prefixes, provider/content-source separation, public-index disclosure, and no unsafe outreach writes.
+- [x] **Step 2: run RED and make only minimal integration corrections**.
+- [x] **Step 3: update product documentation** with capability, evidence, limitations, and workflow/skill architecture.
+- [x] **Step 4: run full GREEN**: target E2E, acquisition backend suite, root tests, production build, generated contract drift and `git diff --check`.
+- [x] **Step 5: commit** as `test: verify douyin platform discovery`.
 
 ## Acceptance Outcome
 
