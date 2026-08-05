@@ -160,21 +160,21 @@
 - Consumes: Tasks 1–3 的真实 API 与 UI。
 - Produces: 登录 → 抖音任务列表 → 任务详情 → 候选/作战卡 → 刷新保留的浏览器级证明。
 
-- [ ] **Step 1: 先写 E2E 失败测试**
+- [x] **Step 1: 先写 E2E 失败测试**
 
   Fixture 必须按 method + pathname 拦截，未声明的获客请求返回 501；记录所有写请求。测试 1440、1366、1024 宽度无横向溢出，Tab 可聚焦任务和返回按钮，刷新 `#ai-growth/task/<id>` 仍显示同一真实任务。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm run test:e2e --workspace frontend -- ai-acquisition-overview.spec.ts`
 
   Expected: FAIL，直到 hash 恢复、响应式或 fixture 完成。
 
-- [ ] **Step 3: 完成最小集成修正和运行文档**
+- [x] **Step 3: 完成最小集成修正和运行文档**
 
   文档增加三个只读 API、任务身份、平台/Provider 区分以及演示模式零写请求说明。
 
-- [ ] **Step 4: 运行 GREEN 与完整验收**
+- [x] **Step 4: 运行 GREEN 与完整验收**
 
   Run:
 
@@ -187,7 +187,7 @@
 
   Expected: 全部 PASS；只允许既有 Vite chunk warning。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
   ```bash
   git add frontend/tests/ai-acquisition-overview.spec.ts frontend/playwright.config.ts docs/product/ai-acquisition-agent.md
