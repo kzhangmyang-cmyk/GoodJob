@@ -4,9 +4,9 @@ import express from "express";
 import {
   createAcquisitionDiscoveryOperationsRouter
 } from "./acquisition-discovery-operations-router.js";
-import { createAcquisitionOpenApiPaths } from "./acquisition-openapi.js";
 import {
   loadPublishedAcquisitionPaths,
+  loadValidatedProductionAcquisitionPaths,
   mergeOperationParameters,
   operationSurface
 } from "./acquisition-openapi-contract-test-helpers.js";
@@ -96,7 +96,7 @@ test("published acquisition operations can be normalized", async () => {
 
 test("published plan approval matches the production contract", async () => {
   const published = await loadPublishedAcquisitionPaths();
-  const production = createAcquisitionOpenApiPaths();
+  const production = await loadValidatedProductionAcquisitionPaths();
   const path = "/api/v1/acquisition/plans/{id}/approval";
   assert.equal(published["/api/v1/acquisition/plans/{id}/approve"], undefined);
   assert.deepEqual(
@@ -112,7 +112,7 @@ test("published plan approval matches the production contract", async () => {
 
 test("published plan and run operations exactly match production", async () => {
   const published = await loadPublishedAcquisitionPaths();
-  const production = createAcquisitionOpenApiPaths();
+  const production = await loadValidatedProductionAcquisitionPaths();
 
   for (const [path, methods] of Object.entries(planRunOperations)) {
     const publishedPath = published[path];
@@ -130,7 +130,7 @@ test("published plan and run operations exactly match production", async () => {
 
 test("published discovery operations exactly match production", async () => {
   const published = await loadPublishedAcquisitionPaths();
-  const production = createAcquisitionOpenApiPaths();
+  const production = await loadValidatedProductionAcquisitionPaths();
 
   assert.equal(published["/api/v1/acquisition/fetch-operations"], undefined);
   assert.equal(
@@ -153,7 +153,7 @@ test("published discovery operations exactly match production", async () => {
 
 test("published candidate and copilot operations exactly match production", async () => {
   const published = await loadPublishedAcquisitionPaths();
-  const production = createAcquisitionOpenApiPaths();
+  const production = await loadValidatedProductionAcquisitionPaths();
 
   for (const [path, methods] of Object.entries(candidateCopilotOperations)) {
     const publishedPath = published[path];
@@ -174,7 +174,7 @@ test("published candidate and copilot operations exactly match production", asyn
 
 test("workflow-internal candidate and outcome writes stay unpublished", async () => {
   const published = await loadPublishedAcquisitionPaths();
-  const production = createAcquisitionOpenApiPaths();
+  const production = await loadValidatedProductionAcquisitionPaths();
 
   for (const path of blockedDirectWrites) {
     assert.equal(published[path]?.post, undefined, `published POST ${path}`);

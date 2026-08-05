@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import SwaggerParser from "@apidevtools/swagger-parser";
+import { Ajv } from "ajv";
 import express from "express";
 import {
   createAcquisitionOpenApiPaths
@@ -7,6 +9,53 @@ import {
 import {
   createOpenApiDocument
 } from "./swagger.js";
+
+const unsupportedOpenApi30SchemaKeywords = new Set([
+  "$schema",
+  "$id",
+  "$defs",
+  "const",
+  "if",
+  "then",
+  "else",
+  "unevaluatedProperties",
+  "dependentRequired",
+  "dependentSchemas",
+  "prefixItems",
+  "minContains",
+  "maxContains",
+  "propertyNames"
+]);
+
+function unsupportedOpenApi30SchemaLocations(
+  value: unknown,
+  path = "$"
+): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) =>
+      unsupportedOpenApi30SchemaLocations(item, `${path}[${index}]`));
+  }
+  if (!value || typeof value !== "object") return [];
+
+  const locations: string[] = [];
+  for (const [key, item] of Object.entries(value)) {
+    const itemPath = `${path}.${key}`;
+    if (unsupportedOpenApi30SchemaKeywords.has(key)) {
+      locations.push(itemPath);
+    }
+    if (key === "type" && (
+      Array.isArray(item) || item === "null"
+    )) {
+      locations.push(itemPath);
+    }
+    if (key === "$ref" && typeof item === "string"
+      && item.includes("/$defs/")) {
+      locations.push(itemPath);
+    }
+    locations.push(...unsupportedOpenApi30SchemaLocations(item, itemPath));
+  }
+  return locations;
+}
 
 test("acquisition OpenAPI publishes the complete agent control surface", () => {
   const paths = createAcquisitionOpenApiPaths();
@@ -743,6 +792,62 @@ test("error responses describe both runtime envelopes used by acquisition router
       variant.required?.includes("error")
     )
   );
+});
+
+test("acquisition schemas are converted to valid OpenAPI 3.0 without weakening constraints", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  assert.deepEqual(
+    unsupportedOpenApi30SchemaLocations(paths),
+    []
+  );
+
+  const evidenceSchema = (paths[
+    "/api/v1/acquisition/evidence/{id}"
+  ]!.get as Record<string, any>).responses["200"]
+    .content["application/json"].schema;
+  assert.equal(evidenceSchema.properties.publishedAt.type, "string");
+  assert.equal(evidenceSchema.properties.publishedAt.nullable, true);
+  assert.deepEqual(
+    evidenceSchema.properties.provenance.oneOf[0]
+      .properties.kind.enum,
+    ["search_result"]
+  );
+
+  const battleCardSchema = (paths[
+    "/api/v1/acquisition/candidates/{id}/battle-card"
+  ]!.get as Record<string, any>).responses["200"]
+    .content["application/json"].schema.oneOf[0];
+  assert.deepEqual(
+    battleCardSchema.properties.schemaVersion.enum,
+    ["battle-card.v1"]
+  );
+  const sectionSchema = battleCardSchema.properties.sections.items;
+  const validateSection = new Ajv({ strict: false }).compile(sectionSchema);
+  assert.equal(validateSection({
+    label: "公开事实",
+    kind: "fact",
+    content: "来自公开证据"
+  }), true);
+  assert.equal(validateSection({
+    label: "推断",
+    kind: "inference",
+    content: "需要证据"
+  }), false);
+  assert.equal(validateSection({
+    label: "推断",
+    kind: "inference",
+    content: "有证据支持",
+    evidenceIds: ["evidence-1"],
+    confidence: 0.8
+  }), true);
+});
+
+test("the complete production document validates in its declared OpenAPI dialect", async () => {
+  const document = createOpenApiDocument(express());
+  assert.equal(document.openapi, "3.0.3");
+  await assert.doesNotReject(() => SwaggerParser.validate(
+    structuredClone(document) as never
+  ));
 });
 
 test("the main Swagger document includes runtime-bridged acquisition routes", () => {

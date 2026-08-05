@@ -11,6 +11,196 @@ export type AcquisitionOpenApiPaths = Record<
   Partial<Record<AcquisitionHttpMethod, Record<string, unknown>>>
 >;
 
+const unsupportedJsonSchema202012Keywords = new Set([
+  "$anchor",
+  "$dynamicAnchor",
+  "$dynamicRef",
+  "$vocabulary",
+  "contains",
+  "contentEncoding",
+  "contentMediaType",
+  "dependentRequired",
+  "dependentSchemas",
+  "maxContains",
+  "minContains",
+  "prefixItems",
+  "propertyNames",
+  "unevaluatedItems",
+  "unevaluatedProperties"
+]);
+
+function openApi30NullOnlySchema() {
+  return {
+    type: "string",
+    nullable: true,
+    enum: [null]
+  };
+}
+
+/**
+ * Converts the JSON Schema 2020-12 subset used by acquisition contracts to
+ * an equivalent OpenAPI 3.0 Schema Object. Unknown 2020-12-only keywords are
+ * rejected so a future contract cannot silently lose validation semantics.
+ */
+export function convertJsonSchema202012ToOpenApi30(value: any): any {
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    throw new TypeError("Expected a JSON Schema object, received an array");
+  }
+
+  for (const keyword of unsupportedJsonSchema202012Keywords) {
+    if (Object.hasOwn(value, keyword)) {
+      throw new TypeError(
+        `Cannot safely represent JSON Schema keyword in OpenAPI 3.0: ${keyword}`
+      );
+    }
+  }
+  if (typeof value.$ref === "string" && value.$ref.includes("/$defs/")) {
+    throw new TypeError(
+      `JSON Schema $defs reference must be dereferenced before OpenAPI 3.0 conversion: ${value.$ref}`
+    );
+  }
+
+  const converted: Record<string, any> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if ([
+      "$schema",
+      "$id",
+      "$defs",
+      "if",
+      "then",
+      "else",
+      "const",
+      "type"
+    ].includes(key)) {
+      continue;
+    }
+    if (key === "properties" || key === "patternProperties") {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new TypeError(`JSON Schema ${key} must be an object`);
+      }
+      converted[key] = Object.fromEntries(
+        Object.entries(item).map(([name, propertySchema]) => [
+          name,
+          convertJsonSchema202012ToOpenApi30(propertySchema)
+        ])
+      );
+    } else if (["allOf", "anyOf", "oneOf"].includes(key)) {
+      if (!Array.isArray(item)) {
+        throw new TypeError(`JSON Schema ${key} must be an array`);
+      }
+      converted[key] = item.map(convertJsonSchema202012ToOpenApi30);
+    } else if (key === "items") {
+      if (Array.isArray(item)) {
+        throw new TypeError(
+          "JSON Schema tuple items cannot be represented safely in OpenAPI 3.0"
+        );
+      }
+      converted[key] = convertJsonSchema202012ToOpenApi30(item);
+    } else if (key === "additionalProperties" || key === "not") {
+      converted[key] = typeof item === "boolean"
+        ? item
+        : convertJsonSchema202012ToOpenApi30(item);
+    } else {
+      converted[key] = structuredClone(item);
+    }
+  }
+
+  if (Object.hasOwn(value, "type")) {
+    const sourceTypes = Array.isArray(value.type)
+      ? [...new Set(value.type)]
+      : [value.type];
+    if (!sourceTypes.every((type) => typeof type === "string")) {
+      throw new TypeError("JSON Schema type must be a string or string array");
+    }
+    const allowsNull = sourceTypes.includes("null");
+    const nonNullTypes = sourceTypes.filter((type) => type !== "null");
+    if (nonNullTypes.length === 0) {
+      Object.assign(converted, openApi30NullOnlySchema());
+    } else if (nonNullTypes.length === 1) {
+      converted.type = nonNullTypes[0];
+      if (allowsNull) converted.nullable = true;
+    } else {
+      converted.oneOf = [
+        ...(converted.oneOf ?? []),
+        ...nonNullTypes.map((type, index) => ({
+          type,
+          ...(allowsNull && index === 0 ? { nullable: true } : {})
+        }))
+      ];
+    }
+  }
+
+  if (Object.hasOwn(value, "const")) {
+    const constant = structuredClone(value.const);
+    if (Array.isArray(converted.enum)) {
+      converted.enum = converted.enum.filter((item: unknown) =>
+        Object.is(item, constant));
+      if (converted.enum.length === 0) {
+        converted.not = {};
+      }
+    } else {
+      converted.enum = [constant];
+    }
+    if (constant === null && converted.type === undefined) {
+      Object.assign(converted, openApi30NullOnlySchema(), {
+        ...converted,
+        enum: [null]
+      });
+    }
+  }
+
+  const hasIf = Object.hasOwn(value, "if");
+  const hasThen = Object.hasOwn(value, "then");
+  const hasElse = Object.hasOwn(value, "else");
+  if ((hasThen || hasElse) && !hasIf) {
+    throw new TypeError(
+      "JSON Schema then/else requires if before OpenAPI 3.0 conversion"
+    );
+  }
+  if (hasIf && (hasThen || hasElse)) {
+    const condition = convertJsonSchema202012ToOpenApi30(value.if);
+    const thenSchema = hasThen
+      ? convertJsonSchema202012ToOpenApi30(value.then)
+      : {};
+    const elseSchema = hasElse
+      ? convertJsonSchema202012ToOpenApi30(value.else)
+      : {};
+    const implication = hasElse
+      ? {
+          oneOf: [
+            { allOf: [condition, thenSchema] },
+            { allOf: [{ not: condition }, elseSchema] }
+          ]
+        }
+      : {
+          anyOf: [
+            { not: condition },
+            { allOf: [condition, thenSchema] }
+          ]
+        };
+    converted.allOf = [
+      ...(Array.isArray(converted.allOf) ? converted.allOf : []),
+      implication
+    ];
+  }
+
+  return converted;
+}
+
+function convertEmbeddedSchemasToOpenApi30(value: any): any {
+  if (Array.isArray(value)) {
+    return value.map(convertEmbeddedSchemasToOpenApi30);
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    key === "schema"
+      ? convertJsonSchema202012ToOpenApi30(item)
+      : convertEmbeddedSchemasToOpenApi30(item)
+  ]));
+}
+
 const readSecurity = [{ bearerAuth: [] }, { cookieAuth: [] }];
 const writeSecurity = [
   { bearerAuth: [] },
@@ -2216,5 +2406,5 @@ AcquisitionOpenApiPaths {
   addDiscoveryOperationPaths(paths);
   addCoreAgentPaths(paths);
   addAcquisitionOperationIds(paths);
-  return paths;
+  return convertEmbeddedSchemasToOpenApi30(paths);
 }

@@ -1,7 +1,12 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import express from "express";
 import { parse } from "yaml";
+import {
+  convertJsonSchema202012ToOpenApi30
+} from "./acquisition-openapi.js";
+import { createOpenApiDocument } from "./swagger.js";
 
 type ContractHttpMethod = "get" | "post" | "patch" | "delete";
 type ContractOperation = Record<string, any>;
@@ -20,17 +25,20 @@ const httpMethods: ContractHttpMethod[] = [
   "patch",
   "delete"
 ];
+let validatedProductionPaths: Promise<
+  Record<string, ContractPathItem>
+> | undefined;
 
-function canonicalizeSchema(value: any): any {
+function canonicalizeOpenApi30Schema(value: any): any {
   if (Array.isArray(value)) {
-    return value.map(canonicalizeSchema);
+    return value.map(canonicalizeOpenApi30Schema);
   }
   if (!value || typeof value !== "object") return value;
 
   const normalized = Object.fromEntries(
     Object.entries(value)
       .filter(([key]) => key !== "nullable")
-      .map(([key, item]) => [key, canonicalizeSchema(item)])
+      .map(([key, item]) => [key, canonicalizeOpenApi30Schema(item)])
   ) as Record<string, any>;
   if (value.nullable !== true) return normalized;
 
@@ -56,6 +64,24 @@ function canonicalizeSchema(value: any): any {
     }
   }
   return normalized;
+}
+
+function canonicalizeSchema(value: any): any {
+  let openApi30 = value;
+  try {
+    openApi30 = convertJsonSchema202012ToOpenApi30(value);
+  } catch (error) {
+    if (!(error instanceof TypeError)
+      || !error.message.startsWith(
+        "Cannot safely represent JSON Schema keyword in OpenAPI 3.0:"
+      )) {
+      throw error;
+    }
+    // Synthetic harness fixtures can contain order-sensitive 3.1 keywords
+    // that are absent from the production acquisition schema subset. Keep
+    // those fixtures intact so the normalizer still proves it preserves them.
+  }
+  return canonicalizeOpenApi30Schema(openApi30);
 }
 
 function mediaSurface(content: Record<string, any> = {}) {
@@ -180,6 +206,43 @@ export async function loadPublishedAcquisitionPaths(): Promise<
     paths[path] = normalizedPathItem;
   }
   return paths;
+}
+
+export function loadValidatedProductionAcquisitionPaths(): Promise<
+  Record<string, ContractPathItem>
+> {
+  validatedProductionPaths ??= (async () => {
+    const source = createOpenApiDocument(express()) as any;
+    if (source.openapi !== "3.0.3") {
+      throw new Error(
+        `Unexpected production OpenAPI dialect: ${String(source.openapi)}`
+      );
+    }
+    const document = await SwaggerParser.validate(
+      structuredClone(source)
+    ) as any;
+    const paths: Record<string, ContractPathItem> = {};
+    for (const [path, pathItem] of Object.entries(
+      document.paths ?? {}
+    ) as Array<[string, Record<string, any>]>) {
+      if (!path.startsWith("/api/v1/acquisition/")) continue;
+      const normalizedPathItem: ContractPathItem = {};
+      for (const method of httpMethods) {
+        const operation = pathItem[method];
+        if (!operation) continue;
+        normalizedPathItem[method] = {
+          ...operation,
+          parameters: mergeOperationParameters(
+            pathItem.parameters,
+            operation.parameters
+          )
+        };
+      }
+      paths[path] = normalizedPathItem;
+    }
+    return paths;
+  })();
+  return validatedProductionPaths;
 }
 
 export function operationSurface(operation: ContractOperation) {
