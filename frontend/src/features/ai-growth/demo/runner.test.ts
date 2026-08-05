@@ -195,6 +195,7 @@ test("supplies labelled production-shaped demo records for the shared UI", () =>
 });
 
 test("demo plan uses six canonical provider ids and realistic China search queries", () => {
+  assert.equal(demoFixture.plan.targetPlatform, "web");
   assert.deepEqual(
     demoFixture.plan.providerConnections.map((item) => item.providerId),
     [

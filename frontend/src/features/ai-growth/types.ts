@@ -330,6 +330,7 @@ export interface AdvisorState {
   status: AdvisorStatus;
   taskText: string;
   templateId: IndustryTemplateId;
+  targetPlatform: AcquisitionTaskPlatform;
   planDraft: AcquisitionPlanCreateDto | null;
   runId: string | null;
   cursor: string | null;

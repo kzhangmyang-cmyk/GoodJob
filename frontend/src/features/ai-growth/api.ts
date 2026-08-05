@@ -1,5 +1,6 @@
 import type {
   AcquisitionPlanCreateDto,
+  AcquisitionTaskPlatform,
   AcquisitionTaskDetailDto,
   AcquisitionTaskListDto,
   AcquisitionTaskOverviewDto,
@@ -381,11 +382,12 @@ export function createAiGrowthApi(request: AdvisorRequest) {
     requestPlanDraft(
       sessionId: string,
       message: string,
-      idempotencyKey: string
+      idempotencyKey: string,
+      targetPlatform: AcquisitionTaskPlatform
     ): Promise<QueuedCopilotTaskDto> {
       return post(
         `/api/v1/acquisition/copilot/sessions/${segment(sessionId)}/messages`,
-        { message, responseMode: "plan_draft" },
+        { message, responseMode: "plan_draft", targetPlatform },
         idempotencyKey
       );
     },

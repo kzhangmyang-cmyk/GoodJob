@@ -660,6 +660,27 @@ test("task detail without a run renders a real not-started state instead of the 
   assert.doesNotMatch(root.innerHTML, /自然语言任务/);
 });
 
+test("任务详情显示显式目标平台而不会把全网任务标成抖音", async () => {
+  const { renderTaskDetail } = await import(
+    "./components/task-overview.js"
+  );
+  const rendered = renderTaskDetail({
+    status: "ready",
+    detail: {
+      task: { ...task, platform: "web" },
+      plan: authoritativePlan,
+      latestRun: null,
+      shards: [],
+      presentation: null
+    } as never,
+    runStatus: null,
+    errorMessage: null
+  }, {} as never).html;
+
+  assert.match(rendered, /目标平台：全网公开网页/);
+  assert.doesNotMatch(rendered, /目标平台：抖音公开商机/);
+});
+
 test("leaving overview suppresses a stale async completion", async () => {
   let release!: (value: typeof overview) => void;
   const deferred = new Promise<typeof overview>((resolve) => {

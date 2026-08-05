@@ -86,6 +86,7 @@ function demoState(status: AdvisorStatus): AdvisorState {
     status,
     taskText: demoFixture.plan.objective,
     templateId: "export-manufacturing",
+    targetPlatform: demoFixture.plan.targetPlatform ?? "web",
     planDraft: demoFixture.plan,
     runId: status === "running" || status === "paused" || status === "completed"
       ? demoFixture.runPresentation.run.id

@@ -162,6 +162,7 @@ test("task input renders six templates, connections, recent work, and explicit m
   const demo = renderTaskInput({
     mode: "demo",
     taskText: "寻找上海制造企业",
+    targetPlatform: "douyin",
     templates: industryTemplates,
     selectedTemplateId: "enterprise-services",
     connections: [{
@@ -178,6 +179,7 @@ test("task input renders six templates, connections, recent work, and explicit m
     }]
   }, {
     onModeChange: noop,
+    onTargetPlatformChange: noop,
     onTaskTextChange: noop,
     onTemplateSelect: noop,
     onSubmit: noop,
@@ -194,10 +196,73 @@ test("task input renders six templates, connections, recent work, and explicit m
   }
 });
 
+test("任务输入用原生按钮区分可选平台和待接入平台", () => {
+  const rendered = renderTaskInput({
+    mode: "real",
+    taskText: "寻找有采购需求的公开线索",
+    targetPlatform: "douyin",
+    templates: industryTemplates,
+    selectedTemplateId: "enterprise-services",
+    connections: [],
+    recentTasks: []
+  } as never, {
+    onModeChange: noop,
+    onTargetPlatformChange: noop,
+    onTaskTextChange: noop,
+    onTemplateSelect: noop,
+    onSubmit: noop,
+    onContinueTask: noop
+  } as never);
+
+  assert.match(
+    rendered.html,
+    /data-platform="douyin"[^>]*aria-pressed="true"/
+  );
+  assert.match(
+    rendered.html,
+    /data-platform="web"[^>]*aria-pressed="false"/
+  );
+  for (const platform of ["快手", "微信公众号", "微博", "小红书"]) {
+    assert.match(
+      rendered.html,
+      new RegExp(`<button[^>]*disabled[^>]*>[\\s\\S]*?${platform}[\\s\\S]*?待接入[\\s\\S]*?<\\/button>`)
+    );
+  }
+  assert.doesNotMatch(rendered.html, /tabindex=/);
+});
+
+test("审批页分开目标内容平台与搜索服务商并说明公开索引边界", () => {
+  const rendered = renderPlanApproval({
+    mode: "real",
+    approvalStatus: "awaiting_approval",
+    targetPlatform: "douyin",
+    plan: {
+      ...planDraftForTest(),
+      targetPlatform: "douyin"
+    },
+    targetProfile: "制造企业",
+    companySize: "50 人以上",
+    demandSignals: ["采购需求"],
+    searchTopics: ["公开搜索"]
+  } as never, { onApprove: noop, onEdit: noop, onCancel: noop });
+
+  for (const text of [
+    "目标内容平台",
+    "抖音公开内容",
+    "搜索服务商",
+    "百度公开搜索",
+    "公开索引页面",
+    "不代表扫描抖音全站或全部评论"
+  ]) {
+    assert.match(rendered.html, new RegExp(text));
+  }
+});
+
 test("approval renders the complete search plan and budget before execution", () => {
   const rendered = renderPlanApproval({
     mode: "real",
     approvalStatus: "awaiting_approval",
+    targetPlatform: "douyin",
     plan: {
       name: "长三角制造企业增长机会",
       objective: "寻找近期有数字化采购需求的制造企业",
@@ -273,6 +338,7 @@ test("approval submission disables every plan action while the run starts", () =
   const rendered = renderPlanApproval({
     mode: "real",
     approvalStatus: "submitting",
+    targetPlatform: "web",
     plan: planDraftForTest(),
     targetProfile: "制造企业",
     companySize: "50 人以上",

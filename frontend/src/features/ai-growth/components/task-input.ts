@@ -1,4 +1,8 @@
-import type { AdvisorMode, IndustryTemplateId } from "../types.js";
+import type {
+  AcquisitionTaskPlatform,
+  AdvisorMode,
+  IndustryTemplateId
+} from "../types.js";
 import type { IndustryTemplate } from "../templates.js";
 import {
   componentRender,
@@ -23,6 +27,7 @@ export interface RecentAdvisorTaskVm {
 export interface TaskInputVm {
   mode: AdvisorMode;
   taskText: string;
+  targetPlatform: AcquisitionTaskPlatform;
   templates: readonly IndustryTemplate[];
   selectedTemplateId: IndustryTemplateId;
   connections: readonly SearchConnectionHealthVm[];
@@ -31,6 +36,7 @@ export interface TaskInputVm {
 
 export interface TaskInputCallbacks {
   onModeChange(mode: AdvisorMode): void;
+  onTargetPlatformChange(platform: AcquisitionTaskPlatform): void;
   onTaskTextChange(value: string): void;
   onTemplateSelect(templateId: IndustryTemplateId): void;
   onSubmit(): void;
@@ -43,10 +49,65 @@ const CONNECTION_LABELS: Readonly<Record<SearchConnectionHealthVm["status"], str
   unavailable: "连接不可用"
 };
 
+const TARGET_PLATFORMS = [{
+  id: "douyin",
+  label: "抖音公开商机",
+  detail: "限定抖音公开索引页面",
+  mark: "抖",
+  enabled: true
+}, {
+  id: "web",
+  label: "全网公开网页",
+  detail: "公开网站与企业资料",
+  mark: "网",
+  enabled: true
+}, {
+  id: "kuaishou",
+  label: "快手",
+  detail: "待接入",
+  mark: "快",
+  enabled: false
+}, {
+  id: "wechat_official_account",
+  label: "微信公众号",
+  detail: "待接入",
+  mark: "微",
+  enabled: false
+}, {
+  id: "weibo",
+  label: "微博",
+  detail: "待接入",
+  mark: "博",
+  enabled: false
+}, {
+  id: "xiaohongshu",
+  label: "小红书",
+  detail: "待接入",
+  mark: "红",
+  enabled: false
+}] as const;
+
 export function renderTaskInput(
   vm: TaskInputVm,
   callbacks: TaskInputCallbacks
 ): ComponentRender<TaskInputCallbacks> {
+  const platformButtons = TARGET_PLATFORMS.map((platform) => {
+    const selected = platform.enabled && platform.id === vm.targetPlatform;
+    const enabledAttributes = platform.enabled
+      ? `data-action="set-target-platform" data-platform="${platform.id}"`
+      : `data-future-platform="${platform.id}" disabled`;
+    return `
+      <button
+        type="button"
+        class="ai-growth-target-platform${selected ? " is-selected" : ""}"
+        ${enabledAttributes}
+        aria-pressed="${selected}"
+      >
+        <span aria-hidden="true">${platform.mark}</span>
+        <span><strong>${platform.label}</strong><small>${platform.detail}</small></span>
+      </button>
+    `;
+  }).join("");
   const templateButtons = vm.templates.map((template) => `
     <button
       class="ai-growth-template${template.id === vm.selectedTemplateId ? " is-selected" : ""}"
@@ -98,6 +159,13 @@ export function renderTaskInput(
             <button type="button" data-action="set-mode" data-mode="demo" aria-pressed="${vm.mode === "demo"}">演示模式 · 演示数据</button>
           </div>
         </div>
+        <section class="ai-growth-target-platform-picker" aria-labelledby="aiGrowthTargetPlatformTitle">
+          <div>
+            <h3 id="aiGrowthTargetPlatformTitle">目标内容平台</h3>
+            <p>平台决定内容范围，搜索服务商只负责检索公开页面。</p>
+          </div>
+          <div class="ai-growth-target-platform-grid">${platformButtons}</div>
+        </section>
         <div class="ai-growth-template-grid" aria-label="行业模板">${templateButtons}</div>
         <label class="ai-growth-command-composer">
           <span>自然语言任务</span>

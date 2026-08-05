@@ -330,6 +330,120 @@ test("Copilot 会话创建使用异步操作的 resourceId", async () => {
   assert.equal(requestedSessionId, "session-resource-1");
 });
 
+test("获客任务默认选择抖音且忽略非法平台值", () => {
+  const { api } = createApi();
+  const controller = createAiGrowthController(controllerOptions(api));
+  const target = controller as unknown as {
+    getState(): AdvisorState & { targetPlatform?: string };
+    setTargetPlatform(platform: string): void;
+  };
+
+  assert.equal(target.getState().targetPlatform, "douyin");
+  target.setTargetPlatform("web");
+  assert.equal(target.getState().targetPlatform, "web");
+  target.setTargetPlatform("kuaishou");
+  assert.equal(target.getState().targetPlatform, "web");
+});
+
+test("目标平台在模式、模板和新建视图切换后保留", () => {
+  const { api } = createApi();
+  const controller = createAiGrowthController(controllerOptions(api));
+  const target = controller as unknown as {
+    getState(): AdvisorState & { targetPlatform?: string };
+    setTargetPlatform(platform: string): void;
+    showNewTask(): void;
+  };
+
+  target.setTargetPlatform("web");
+  controller.setMode("demo");
+  controller.selectTemplate("renovation");
+  target.showNewTask();
+
+  assert.equal(target.getState().targetPlatform, "web");
+});
+
+test("真实方案请求传递当前目标平台", async () => {
+  let requestedPlatform: string | undefined;
+  const { api } = createApi({
+    requestPlanDraft: async (
+      _sessionId,
+      _message,
+      _idempotencyKey,
+      targetPlatform
+    ) => {
+      requestedPlatform = targetPlatform;
+      return {
+        id: "task-1",
+        status: "succeeded",
+        result: { planDraft: { ...planDraft, targetPlatform } }
+      } as never;
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  const target = controller as unknown as {
+    setTargetPlatform(platform: string): void;
+  };
+  target.setTargetPlatform("web");
+
+  await controller.submit();
+
+  assert.equal(requestedPlatform, "web");
+  assert.equal(controller.getState().planDraft?.targetPlatform, "web");
+});
+
+test("打开旧任务时优先恢复方案平台并回退任务平台", async () => {
+  const detail = (
+    payload: AcquisitionPlanCreateDto,
+    taskPlatform: "douyin" | "web"
+  ) => ({
+    task: {
+      id: "plan-legacy",
+      planId: "plan-legacy",
+      name: "历史获客任务",
+      objective: payload.objective,
+      platform: taskPlatform,
+      discoveryMethods: ["public_search"],
+      planStatus: "approved",
+      latestRun: null,
+      updatedAt: "2026-08-05T09:00:00.000Z"
+    },
+    plan: { payload },
+    latestRun: null,
+    shards: [],
+    presentation: null
+  });
+  const explicit = createApi({
+    getAcquisitionTask: async () => detail(
+      { ...planDraft, targetPlatform: "web" },
+      "douyin"
+    ) as never
+  });
+  const explicitController = createAiGrowthController(
+    controllerOptions(explicit.api)
+  );
+  await explicitController.openTask("plan-explicit");
+  assert.equal(
+    (explicitController.getState() as AdvisorState & {
+      targetPlatform?: string;
+    }).targetPlatform,
+    "web"
+  );
+
+  const legacy = createApi({
+    getAcquisitionTask: async () => detail(planDraft, "douyin") as never
+  });
+  const legacyController = createAiGrowthController(
+    controllerOptions(legacy.api)
+  );
+  await legacyController.openTask("plan-legacy");
+  assert.equal(
+    (legacyController.getState() as AdvisorState & {
+      targetPlatform?: string;
+    }).targetPlatform,
+    "douyin"
+  );
+});
+
 test("未批准时不会创建运行", async () => {
   const { api, calls } = createApi();
   const controller = createAiGrowthController(controllerOptions(api));

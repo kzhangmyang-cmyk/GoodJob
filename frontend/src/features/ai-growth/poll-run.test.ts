@@ -382,7 +382,17 @@ test("API writes use the fixed paths, modes, bodies, idempotency keys, and ETags
   const api = createAiGrowthApi(request);
 
   await api.createSession({ connectionId: null }, "session-key-123");
-  await api.requestPlanDraft("session 1", "find buyers", "draft-key-123");
+  await (api.requestPlanDraft as unknown as (
+    sessionId: string,
+    message: string,
+    idempotencyKey: string,
+    targetPlatform: "douyin" | "web"
+  ) => Promise<unknown>)(
+    "session 1",
+    "find buyers",
+    "draft-key-123",
+    "douyin"
+  );
   await api.requestAssistantAction(
     "session 1",
     "qualify candidate-1",
@@ -419,7 +429,11 @@ test("API writes use the fixed paths, modes, bodies, idempotency keys, and ETags
     {
       path: "/api/v1/acquisition/copilot/sessions/session%201/messages",
       method: "POST",
-      body: { message: "find buyers", responseMode: "plan_draft" },
+      body: {
+        message: "find buyers",
+        responseMode: "plan_draft",
+        targetPlatform: "douyin"
+      },
       idempotencyKey: "draft-key-123",
       ifMatch: null
     },

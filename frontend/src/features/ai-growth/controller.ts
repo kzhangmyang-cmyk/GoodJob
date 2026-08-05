@@ -66,6 +66,7 @@ import type {
   AdvisorMode,
   AdvisorRunVm,
   AdvisorState,
+  AcquisitionTaskPlatform,
   BattleCardDto,
   CandidateCardVm,
   CandidateDto,
@@ -128,6 +129,7 @@ export interface AiGrowthController {
   showNewTask(): void;
   openTask(planId: string): Promise<void>;
   setMode(mode: AdvisorMode): void;
+  setTargetPlatform(platform: AcquisitionTaskPlatform): void;
   setTaskText(value: string, notify?: boolean): void;
   selectTemplate(templateId: IndustryTemplateId): void;
   editPlan(): void;
@@ -192,6 +194,7 @@ function initialState(): AdvisorState {
     status: "idle",
     taskText: template.taskText,
     templateId: template.id,
+    targetPlatform: "douyin",
     planDraft: null,
     runId: null,
     cursor: null,
@@ -232,6 +235,10 @@ function messageOf(error: unknown) {
   return error instanceof Error && error.message.trim()
     ? error.message
     : "操作失败，请稍后重试";
+}
+
+function isTargetPlatform(value: unknown): value is AcquisitionTaskPlatform {
+  return value === "douyin" || value === "web";
 }
 
 function candidateCardFromDomain(
@@ -519,6 +526,7 @@ export function createAiGrowthController(
       state = {
         ...state,
         status: event.state.status,
+        targetPlatform: event.state.targetPlatform,
         planDraft: event.state.planDraft,
         runId: event.state.runId,
         cursor: event.state.cursor,
@@ -705,7 +713,8 @@ export function createAiGrowthController(
         ...initialState(),
         mode: state.mode,
         taskText: state.taskText,
-        templateId: state.templateId
+        templateId: state.templateId,
+        targetPlatform: state.targetPlatform
       };
       taskOverview = initialTaskOverview(state.mode);
       publish();
@@ -799,7 +808,8 @@ export function createAiGrowthController(
         ...initialState(),
         mode: state.mode,
         taskText: state.taskText,
-        templateId: state.templateId
+        templateId: state.templateId,
+        targetPlatform: state.targetPlatform
       };
       publish();
     },
@@ -820,7 +830,8 @@ export function createAiGrowthController(
         ...initialState(),
         mode: "real",
         taskText: state.taskText,
-        templateId: state.templateId
+        templateId: state.templateId,
+        targetPlatform: state.targetPlatform
       };
       publish();
       if (!options.user()) {
@@ -856,6 +867,7 @@ export function createAiGrowthController(
           ...state,
           status: currentRun ? pageStatusForRun(currentRun.status) : "idle",
           taskText: draft.objective,
+          targetPlatform: draft.targetPlatform ?? detail.task.platform,
           planDraft: draft,
           runId: currentRun?.id ?? null,
           cursor: runVm?.nextAfter ?? null,
@@ -914,7 +926,8 @@ export function createAiGrowthController(
         ...initialState(),
         mode,
         taskText: state.taskText,
-        templateId: state.templateId
+        templateId: state.templateId,
+        targetPlatform: state.targetPlatform
       };
       if (mode === "demo") ensureDemoRunner();
       publish();
@@ -923,6 +936,20 @@ export function createAiGrowthController(
     setTaskText(value, notify = true) {
       state = { ...state, taskText: value };
       if (notify) publish();
+    },
+
+    setTargetPlatform(platform) {
+      if (!isTargetPlatform(platform) || state.targetPlatform === platform) {
+        return;
+      }
+      state = {
+        ...state,
+        targetPlatform: platform,
+        planDraft: null,
+        status: "idle",
+        error: null
+      };
+      publish();
     },
 
     selectTemplate(templateId) {
@@ -1003,7 +1030,8 @@ export function createAiGrowthController(
         const requested = await options.api.requestPlanDraft(
           sessionId,
           taskText,
-          idempotencyKey("ai-growth-plan-draft")
+          idempotencyKey("ai-growth-plan-draft"),
+          state.targetPlatform
         );
         const task = await pollCopilotTask(requested, generation);
         if (!task || generation !== operationGeneration) return;
@@ -1020,6 +1048,7 @@ export function createAiGrowthController(
         state = {
           ...state,
           status: "awaiting_approval",
+          targetPlatform: planDraft.targetPlatform ?? state.targetPlatform,
           planDraft,
           error: null
         };
@@ -1285,6 +1314,7 @@ export function createAiGrowthController(
         mode: "real",
         status: pageStatusForRun(currentRun.status),
         taskText: plan.objective,
+        targetPlatform: plan.targetPlatform ?? state.targetPlatform,
         planDraft: plan,
         runId: currentRun.id,
         cursor: null,
@@ -1376,12 +1406,15 @@ export function createAiGrowthController(
         const input = renderTaskInput({
           mode: state.mode,
           taskText: state.taskText,
+          targetPlatform: state.targetPlatform,
           templates: industryTemplates,
           selectedTemplateId: state.templateId,
           connections: connectionVms,
           recentTasks: recentVms
         }, {
           onModeChange: (mode) => controller.setMode(mode),
+          onTargetPlatformChange: (platform) =>
+            controller.setTargetPlatform(platform),
           onTaskTextChange: (value) => controller.setTaskText(value),
           onTemplateSelect: (id) => controller.selectTemplate(id),
           onSubmit: () => void controller.submit(),
@@ -1402,6 +1435,7 @@ export function createAiGrowthController(
             ? "submitting"
             : "awaiting_approval",
           plan: state.planDraft,
+          targetPlatform: state.targetPlatform,
           targetProfile: selectedTemplate.draft.targetProfile,
           companySize: selectedTemplate.draft.companySize,
           demandSignals: selectedTemplate.draft.demandSignals,
@@ -1471,12 +1505,15 @@ export function createAiGrowthController(
         stage = renderTaskInput({
           mode: state.mode,
           taskText: state.taskText,
+          targetPlatform: state.targetPlatform,
           templates: industryTemplates,
           selectedTemplateId: state.templateId,
           connections: connectionVms,
           recentTasks: recentVms
         }, {
           onModeChange: (mode) => controller.setMode(mode),
+          onTargetPlatformChange: (platform) =>
+            controller.setTargetPlatform(platform),
           onTaskTextChange: (value) => controller.setTaskText(value),
           onTemplateSelect: (id) => controller.selectTemplate(id),
           onSubmit: () => void controller.submit(),
@@ -1636,6 +1673,11 @@ export function createMountedAiGrowthAdvisor(
         break;
       case "set-mode":
         controller.setMode(element.dataset.mode as AdvisorMode);
+        break;
+      case "set-target-platform":
+        controller.setTargetPlatform(
+          element.dataset.platform as AcquisitionTaskPlatform
+        );
         break;
       case "select-template":
         controller.selectTemplate(

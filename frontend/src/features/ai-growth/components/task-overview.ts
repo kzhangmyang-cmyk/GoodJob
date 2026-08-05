@@ -80,6 +80,11 @@ const DISCOVERY_LABELS: Readonly<
   official_authorized: "官方授权"
 };
 
+const PLATFORM_LABELS = {
+  douyin: "抖音公开商机",
+  web: "全网公开网页"
+} as const;
+
 export type AcquisitionRunOperationalBucket =
   | "active"
   | "completed"
@@ -351,7 +356,7 @@ export function renderTaskDetail(
   return componentRender(`
     <section class="ai-growth-task-detail" data-plan-id="${escapeHtml(task.planId)}">
       ${back}
-      <header><div><p class="ai-growth-eyebrow">AUTHORITATIVE TASK</p><h2>${escapeHtml(task.name)}</h2><p>${escapeHtml(task.objective)}</p></div><div><span>${escapeHtml(methods)}</span><strong>${vm.runStatus ? RUN_LABELS[vm.runStatus] : "尚未启动"}</strong></div></header>
+      <header><div><p class="ai-growth-eyebrow">AUTHORITATIVE TASK</p><h2>${escapeHtml(task.name)}</h2><p>${escapeHtml(task.objective)}</p></div><div><span>目标平台：${PLATFORM_LABELS[task.platform]}</span><span>${escapeHtml(methods)}</span><strong>${vm.runStatus ? RUN_LABELS[vm.runStatus] : "尚未启动"}</strong></div></header>
       ${noRun}
     </section>
   `, callbacks);

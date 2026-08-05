@@ -50,6 +50,7 @@ const demoQueries = [
 ] as const;
 
 const plan: AcquisitionPlanCreateDto = {
+  targetPlatform: "web",
   name: "演示数据 · 长三角制造企业增长机会",
   objective: "演示数据：识别近期有海外增长和供应链协同需求的制造企业。",
   icp: {

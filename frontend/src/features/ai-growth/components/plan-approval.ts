@@ -1,5 +1,6 @@
 import type {
   AcquisitionPlanCreateDto,
+  AcquisitionTaskPlatform,
   AdvisorMode
 } from "../types.js";
 import {
@@ -13,6 +14,7 @@ export interface PlanApprovalVm {
   mode: AdvisorMode;
   approvalStatus: "awaiting_approval" | "submitting" | "approved";
   plan: AcquisitionPlanCreateDto;
+  targetPlatform: AcquisitionTaskPlatform;
   targetProfile: string;
   companySize: string;
   demandSignals: readonly string[];
@@ -33,6 +35,10 @@ function money(currency: string, amountMinor: number): string {
   }).format(amountMinor / 100);
 }
 
+function targetPlatformLabel(platform: AcquisitionTaskPlatform): string {
+  return platform === "douyin" ? "抖音公开内容" : "全网公开网页";
+}
+
 export function renderPlanApproval(
   vm: PlanApprovalVm,
   callbacks: PlanApprovalCallbacks
@@ -48,6 +54,7 @@ export function renderPlanApproval(
       ? "正在启动搜索"
       : "等待人工批准";
   const providerNames = plan.providerConnections.map((provider) => provider.providerId);
+  const targetPlatform = plan.targetPlatform ?? vm.targetPlatform;
   const operationQueries = plan.operations
     .map((operation) => operation.query ?? operation.sourceRef)
     .filter((value): value is string => Boolean(value));
@@ -87,10 +94,11 @@ export function renderPlanApproval(
         </article>
         <article class="ai-growth-plan-card">
           <span class="ai-growth-plan-card__number">03</span>
-          <h3>搜索主题与来源</h3>
+          <h3>目标平台与搜索路径</h3>
           <dl>
+            <div><dt>目标内容平台</dt><dd>${targetPlatformLabel(targetPlatform)}</dd></div>
             <div><dt>搜索主题</dt><dd class="ai-growth-chip-list">${visibleList(vm.searchTopics)}</dd></div>
-            <div><dt>数据来源</dt><dd class="ai-growth-chip-list">${visibleList(providerNames)}</dd></div>
+            <div><dt>搜索服务商</dt><dd class="ai-growth-chip-list">${visibleList(providerNames)}</dd></div>
             <div><dt>查询任务</dt><dd class="ai-growth-query-list">${visibleList(operationQueries, "将在批准后生成")}</dd></div>
           </dl>
         </article>
@@ -104,6 +112,12 @@ export function renderPlanApproval(
             <li><strong>${plan.budgetSnapshot.maxDurationSeconds} 秒</strong><span>时长上限</span></li>
           </ul>
         </article>
+      </div>
+      <div class="ai-growth-public-index-boundary" role="note">
+        <strong>公开索引边界</strong>
+        <span>${targetPlatform === "douyin"
+          ? "结果来自搜索服务商可访问的公开索引页面，不代表扫描抖音全站或全部评论。"
+          : "结果来自搜索服务商可访问的公开索引页面，不代表覆盖所有网站内容。"}</span>
       </div>
       <footer class="ai-growth-plan__footer">
         <p><strong>批准前不会执行搜索。</strong> 方案、来源与预算可以继续修改。</p>
