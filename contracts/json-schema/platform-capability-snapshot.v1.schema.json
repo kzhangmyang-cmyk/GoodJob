@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goodjob.example/contracts/json-schema/platform-capability-snapshot.v1.schema.json",
+  "title": "PlatformCapabilitySnapshot",
+  "$defs": {
+    "boundedString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "scopes", "limitRefs", "reasonCode"],
+      "properties": {
+        "status": {
+          "enum": ["available", "unavailable", "authorization_required", "temporarily_unavailable"]
+        },
+        "scopes": {
+          "type": "array",
+          "maxItems": 500,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+        },
+        "limitRefs": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        },
+        "reasonCode": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 100 },
+            { "type": "null" }
+          ]
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "tenantId",
+    "teamId",
+    "connectionId",
+    "credentialVersion",
+    "snapshotHash",
+    "capturedAt",
+    "expiresAt",
+    "capturedBy",
+    "capabilities"
+  ],
+  "properties": {
+    "id": { "$ref": "#/$defs/boundedString" },
+    "tenantId": { "$ref": "#/$defs/boundedString" },
+    "teamId": {
+      "oneOf": [
+        { "$ref": "#/$defs/boundedString" },
+        { "type": "null" }
+      ]
+    },
+    "connectionId": { "$ref": "#/$defs/boundedString" },
+    "credentialVersion": { "type": "integer", "minimum": 1 },
+    "snapshotHash": { "$ref": "#/$defs/boundedString" },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "capturedBy": { "$ref": "#/$defs/boundedString" },
+    "capabilities": {
+      "type": "object",
+      "propertyNames": { "type": "string", "minLength": 1, "maxLength": 100 },
+      "patternProperties": {
+        "^.{1,100}$": { "$ref": "#/$defs/capability" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
-import { loadSchemaRegistry } from "./helpers.mjs";
+import { loadOpenApiSource, loadSchemaRegistry } from "./helpers.mjs";
 
 const expected = [
   "api-error", "paged-result", "async-operation", "model-provider",
@@ -17,8 +17,148 @@ const expected = [
   "organization-candidate", "individual-demand-signal",
   "qualification-decision", "battle-card", "review-event",
   "outcome-feedback", "financial-value-decision", "copilot-session",
-  "copilot-message", "copilot-task"
+  "copilot-message", "copilot-task", "platform-connection",
+  "platform-capability-snapshot", "platform-event", "action-policy",
+  "action-receipt"
 ];
+
+const platformContracts = {
+  "platform-connection": {
+    id: "platform-connection-1",
+    tenantId: "tenant-1",
+    teamId: "team-1",
+    connectorId: "douyin-official-v1",
+    platform: "douyin",
+    platformAccountRef: "douyin-account-1",
+    scopes: ["video.list", "event.read"],
+    credentialVersion: 3,
+    sync: {
+      mode: "hybrid",
+      cursor: "cursor-1"
+    },
+    status: "active",
+    authorizationExpiresAt: "2026-09-05T00:00:00.000Z",
+    limits: {
+      api_requests_per_day: {
+        limit: 1000,
+        remaining: 875,
+        resetsAt: "2026-08-06T00:00:00.000Z"
+      }
+    },
+    capabilitySnapshotRef: {
+      id: "platform-capability-snapshot-1",
+      hash: "sha256:capability-snapshot-1"
+    },
+    createdBy: "user-1",
+    createdAt: "2026-08-05T00:00:00.000Z",
+    updatedAt: "2026-08-05T00:05:00.000Z"
+  },
+  "platform-capability-snapshot": {
+    id: "platform-capability-snapshot-1",
+    tenantId: "tenant-1",
+    teamId: "team-1",
+    connectionId: "platform-connection-1",
+    credentialVersion: 3,
+    snapshotHash: "sha256:capability-snapshot-1",
+    capturedAt: "2026-08-05T00:05:00.000Z",
+    expiresAt: "2026-08-05T01:05:00.000Z",
+    capturedBy: "connector-worker-1",
+    capabilities: {
+      future_official_capability: {
+        status: "available",
+        scopes: ["future.scope"],
+        limitRefs: ["api_requests_per_day"],
+        reasonCode: null
+      }
+    }
+  },
+  "platform-event": {
+    id: "platform-event-1",
+    tenantId: "tenant-1",
+    teamId: "team-1",
+    platform: "douyin",
+    platformAccountRef: "douyin-account-1",
+    platformContentRef: "douyin-video-1",
+    platformEventRef: "douyin-event-1",
+    platformSubjectRef: "douyin-subject-1",
+    eventType: "comment.created",
+    rawPayloadHash: "sha256:raw-payload-1",
+    normalizedEventHash: "sha256:normalized-event-1",
+    occurredAt: "2026-08-05T00:10:00.000Z",
+    capturedAt: "2026-08-05T00:11:00.000Z",
+    authorizationSnapshot: {
+      connectionId: "platform-connection-1",
+      credentialVersion: 3,
+      scopeHash: "sha256:scope-1",
+      capabilitySnapshotRef: {
+        id: "platform-capability-snapshot-1",
+        hash: "sha256:capability-snapshot-1"
+      }
+    },
+    dedupeKey: "douyin:douyin-account-1:douyin-event-1",
+    accessStatus: "available",
+    capturedBy: "connector-worker-1"
+  },
+  "action-policy": {
+    id: "action-policy-1",
+    tenantId: "tenant-1",
+    teamId: "team-1",
+    version: 1,
+    planRef: {
+      id: "acquisition-plan-1",
+      version: 4,
+      hash: "sha256:plan-4"
+    },
+    ruleBundleRef: {
+      id: "action-rules-1",
+      version: "1.0.0",
+      hash: "sha256:action-rules-1.0.0"
+    },
+    policyHash: "sha256:action-policy-1",
+    actions: {
+      future_official_capability: "review_required"
+    },
+    effectiveAt: "2026-08-05T00:00:00.000Z",
+    expiresAt: "2026-09-05T00:00:00.000Z",
+    createdBy: "user-1",
+    createdAt: "2026-08-05T00:00:00.000Z"
+  },
+  "action-receipt": {
+    id: "action-receipt-1",
+    tenantId: "tenant-1",
+    teamId: "team-1",
+    intentRef: {
+      id: "action-intent-1",
+      hash: "sha256:action-intent-1"
+    },
+    decisionRef: {
+      id: "action-decision-1",
+      hash: "sha256:action-decision-1"
+    },
+    jobRef: {
+      id: "action-job-1",
+      attempt: 1
+    },
+    connectionRef: {
+      id: "platform-connection-1",
+      credentialVersion: 3
+    },
+    capabilitySnapshotRef: {
+      id: "platform-capability-snapshot-1",
+      hash: "sha256:capability-snapshot-1"
+    },
+    idempotencyKey: "action-idempotency-1",
+    externalId: "douyin-action-1",
+    outcome: "succeeded",
+    error: null,
+    requestHash: "sha256:action-request-1",
+    resultHash: "sha256:action-result-1",
+    requestedAt: "2026-08-05T00:15:00.000Z",
+    completedAt: "2026-08-05T00:15:01.000Z",
+    recordedAt: "2026-08-05T00:15:01.000Z",
+    recordedBy: "connector-worker-1"
+  }
+};
 
 test("ai-acquisition.v1 exposes the complete unique schema registry", async () => {
   const registry = await loadSchemaRegistry();
@@ -27,6 +167,98 @@ test("ai-acquisition.v1 exposes the complete unique schema registry", async () =
   for (const validate of registry.validators.values()) {
     assert.equal(typeof validate, "function");
   }
+});
+
+test("platform and action placeholder components are published without routes", async () => {
+  const document = await loadOpenApiSource();
+  const componentRefs = {
+    PlatformConnection: "../json-schema/platform-connection.v1.schema.json",
+    PlatformCapabilitySnapshot: "../json-schema/platform-capability-snapshot.v1.schema.json",
+    PlatformEvent: "../json-schema/platform-event.v1.schema.json",
+    ActionPolicy: "../json-schema/action-policy.v1.schema.json",
+    ActionReceipt: "../json-schema/action-receipt.v1.schema.json"
+  };
+  for (const [name, ref] of Object.entries(componentRefs)) {
+    assert.equal(document.components.schemas[name]?.$ref, ref);
+  }
+  assert.equal(
+    Object.keys(document.paths).some((route) => /platform|action/i.test(route)),
+    false
+  );
+});
+
+test("platform and action contracts accept canonical objects and reject unknown fields", async () => {
+  const registry = await loadSchemaRegistry();
+  for (const [name, value] of Object.entries(platformContracts)) {
+    const validate = registry.validators.get(name);
+    assert.equal(validate(value), true, `${name}: ${JSON.stringify(validate.errors)}`);
+    assert.equal(validate({ ...value, unexpected: true }), false, name);
+  }
+});
+
+test("capability and action keys remain extensible but reject empty keys", async () => {
+  const registry = await loadSchemaRegistry();
+  const capability = registry.validators.get("platform-capability-snapshot");
+  const policy = registry.validators.get("action-policy");
+
+  assert.equal(capability(platformContracts["platform-capability-snapshot"]), true);
+  assert.equal(capability({
+    ...platformContracts["platform-capability-snapshot"],
+    capabilities: {
+      "": platformContracts["platform-capability-snapshot"].capabilities.future_official_capability
+    }
+  }), false);
+  assert.equal(policy(platformContracts["action-policy"]), true);
+  assert.equal(policy({
+    ...platformContracts["action-policy"],
+    actions: { "": "blocked" }
+  }), false);
+});
+
+test("action policy decisions are exactly the three fail-closed outcomes", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("action-policy");
+  for (const decision of ["auto_allowed", "review_required", "blocked"]) {
+    assert.equal(validate({
+      ...platformContracts["action-policy"],
+      actions: { future_official_capability: decision }
+    }), true, decision);
+  }
+  assert.equal(validate({
+    ...platformContracts["action-policy"],
+    actions: { future_official_capability: "allowed" }
+  }), false);
+});
+
+test("action receipts require immutable request/result hashes and normalized outcomes", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("action-receipt");
+  const { requestHash, ...withoutRequestHash } = platformContracts["action-receipt"];
+  const { resultHash, ...withoutResultHash } = platformContracts["action-receipt"];
+
+  assert.equal(validate(platformContracts["action-receipt"]), true);
+  assert.equal(validate({
+    ...platformContracts["action-receipt"],
+    externalId: null,
+    outcome: "failed",
+    error: {
+      category: "rate_limited",
+      code: "PLATFORM_RATE_LIMITED",
+      message: "The official platform rate limit was reached.",
+      retryable: true
+    }
+  }), true, JSON.stringify(validate.errors));
+  assert.equal(validate(withoutRequestHash), false);
+  assert.equal(validate(withoutResultHash), false);
+  assert.equal(validate({
+    ...platformContracts["action-receipt"],
+    outcome: "ok"
+  }), false);
+  assert.equal(validate({
+    ...platformContracts["action-receipt"],
+    outcome: "failed",
+    error: "RATE_LIMITED"
+  }), false);
 });
 
 test("battle-card.v2 enforces evidence-bound structured intelligence", async () => {

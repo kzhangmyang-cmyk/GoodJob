@@ -158,6 +158,11 @@ components:
     CopilotSession: { $ref: ../json-schema/copilot-session.v1.schema.json }
     CopilotMessage: { $ref: ../json-schema/copilot-message.v1.schema.json }
     CopilotTask: { $ref: ../json-schema/copilot-task.v1.schema.json }
+    PlatformConnection: { $ref: ../json-schema/platform-connection.v1.schema.json }
+    PlatformCapabilitySnapshot: { $ref: ../json-schema/platform-capability-snapshot.v1.schema.json }
+    PlatformEvent: { $ref: ../json-schema/platform-event.v1.schema.json }
+    ActionPolicy: { $ref: ../json-schema/action-policy.v1.schema.json }
+    ActionReceipt: { $ref: ../json-schema/action-receipt.v1.schema.json }
     DiscoveryEvidencePagedResult:
       type: object
       additionalProperties: false

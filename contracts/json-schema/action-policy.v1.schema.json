@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goodjob.example/contracts/json-schema/action-policy.v1.schema.json",
+  "title": "ActionPolicy",
+  "$defs": {
+    "boundedString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "planRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "hash"],
+      "properties": {
+        "id": { "$ref": "#/$defs/boundedString" },
+        "version": { "type": "integer", "minimum": 1 },
+        "hash": { "$ref": "#/$defs/boundedString" }
+      }
+    },
+    "ruleBundleRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "hash"],
+      "properties": {
+        "id": { "$ref": "#/$defs/boundedString" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "hash": { "$ref": "#/$defs/boundedString" }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "tenantId",
+    "teamId",
+    "version",
+    "planRef",
+    "ruleBundleRef",
+    "policyHash",
+    "actions",
+    "effectiveAt",
+    "expiresAt",
+    "createdBy",
+    "createdAt"
+  ],
+  "properties": {
+    "id": { "$ref": "#/$defs/boundedString" },
+    "tenantId": { "$ref": "#/$defs/boundedString" },
+    "teamId": {
+      "oneOf": [
+        { "$ref": "#/$defs/boundedString" },
+        { "type": "null" }
+      ]
+    },
+    "version": { "type": "integer", "minimum": 1 },
+    "planRef": { "$ref": "#/$defs/planRef" },
+    "ruleBundleRef": { "$ref": "#/$defs/ruleBundleRef" },
+    "policyHash": { "$ref": "#/$defs/boundedString" },
+    "actions": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "type": "string", "minLength": 1, "maxLength": 100 },
+      "patternProperties": {
+        "^.{1,100}$": { "enum": ["auto_allowed", "review_required", "blocked"] }
+      },
+      "additionalProperties": false
+    },
+    "effectiveAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": ["string", "null"], "format": "date-time" },
+    "createdBy": { "$ref": "#/$defs/boundedString" },
+    "createdAt": { "type": "string", "format": "date-time" }
+  }
+}
