@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   classifyDouyinPublicSource,
@@ -116,4 +117,102 @@ test("resolves only stable Douyin profiles while video, short-link, and comment 
     ).status,
     "needs_research"
   );
+});
+
+test("adapter-generated content-platform identities preserve legacy provider-scoped v1 deduplication", () => {
+  const provider = "baidu_ai_search";
+  const profileUrl =
+    "https://www.xiaohongshu.com/user/profile/public-business-owner";
+  const digest = createHash("sha256").update(profileUrl).digest("hex");
+  const resolve = (
+    actorNamespace: "public" | "unresolved-public-signal",
+    actorPlatform: string,
+    sourcePlatform: string,
+    url = profileUrl
+  ) => resolveAcquisitionPublicIdentity({
+    ownerId: "owner-compat",
+    teamId: "team-compat",
+    provider,
+    sourceUrl: url,
+    subject: {
+      kind: "individual",
+      publicActorKey:
+        `${actorNamespace}:${actorPlatform}:sha256:${digest}`,
+      publicProfileUrl: url,
+      sourcePlatform
+    }
+  });
+
+  const legacyResolved = resolve("public", provider, provider);
+  const contentResolved = resolve(
+    "public",
+    "xiaohongshu.com",
+    "xiaohongshu.com"
+  );
+  assert.equal(legacyResolved.status, "resolved");
+  assert.equal(contentResolved.status, "resolved");
+  assert.equal(contentResolved.partyId, legacyResolved.partyId);
+  assert.equal(contentResolved.dedupeKey, legacyResolved.dedupeKey);
+
+  const unresolvedUrl = "https://news.example.cn/public-demand-signal";
+  const unresolvedDigest = createHash("sha256")
+    .update(unresolvedUrl)
+    .digest("hex");
+  const legacyUnresolved = resolveAcquisitionPublicIdentity({
+    ownerId: "owner-compat",
+    teamId: "team-compat",
+    provider,
+    sourceUrl: unresolvedUrl,
+    subject: {
+      kind: "individual",
+      publicActorKey:
+        `unresolved-public-signal:${provider}:sha256:${unresolvedDigest}`,
+      publicProfileUrl: unresolvedUrl,
+      sourcePlatform: provider
+    }
+  });
+  const contentUnresolved = resolveAcquisitionPublicIdentity({
+    ownerId: "owner-compat",
+    teamId: "team-compat",
+    provider,
+    sourceUrl: unresolvedUrl,
+    subject: {
+      kind: "individual",
+      publicActorKey:
+        `unresolved-public-signal:news.example.cn:sha256:${unresolvedDigest}`,
+      publicProfileUrl: unresolvedUrl,
+      sourcePlatform: "news.example.cn"
+    }
+  });
+  assert.equal(legacyUnresolved.status, "needs_research");
+  assert.equal(contentUnresolved.status, "needs_research");
+  assert.equal(contentUnresolved.partyId, legacyUnresolved.partyId);
+  assert.equal(contentUnresolved.dedupeKey, legacyUnresolved.dedupeKey);
+});
+
+test("custom public actor keys are not rewritten by the compatibility bridge", () => {
+  const base = {
+    ownerId: "owner-custom",
+    teamId: "team-custom",
+    provider: "baidu_ai_search",
+    sourceUrl: "https://news.example.cn/custom-actor",
+    subject: {
+      kind: "individual" as const,
+      publicActorKey: "public:customer-owned-actor",
+      publicProfileUrl:
+        "https://www.xiaohongshu.com/user/profile/customer-owned-actor"
+    }
+  };
+  const providerScoped = resolveAcquisitionPublicIdentity({
+    ...base,
+    subject: { ...base.subject, sourcePlatform: "baidu_ai_search" }
+  });
+  const contentScoped = resolveAcquisitionPublicIdentity({
+    ...base,
+    subject: { ...base.subject, sourcePlatform: "xiaohongshu.com" }
+  });
+
+  assert.equal(providerScoped.status, "resolved");
+  assert.equal(contentScoped.status, "resolved");
+  assert.notEqual(contentScoped.dedupeKey, providerScoped.dedupeKey);
 });

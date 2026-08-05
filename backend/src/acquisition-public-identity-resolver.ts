@@ -269,6 +269,35 @@ function safePublicActorKey(value: string) {
   return actorKey.toLocaleLowerCase("en-US");
 }
 
+const ADAPTER_GENERATED_PUBLIC_ACTOR_KEY =
+  /^(public|unresolved-public-signal):([a-z0-9._-]+):sha256:([a-f0-9]{64})$/iu;
+
+function publicActorIdentityMaterial(input: {
+  publicActorKey: string;
+  provider: string;
+  sourcePlatform: string;
+  sourceUrl: string;
+}) {
+  const normalizedActorKey = normalizedText(input.publicActorKey)
+    .toLocaleLowerCase("en-US");
+  const match = ADAPTER_GENERATED_PUBLIC_ACTOR_KEY.exec(normalizedActorKey);
+  const keyPlatform = normalizedProvider(match?.[2] || "");
+  const expectedHash = sha256(input.sourceUrl);
+  if (match
+    && match[3] === expectedHash
+    && (keyPlatform === input.provider
+      || keyPlatform === input.sourcePlatform)) {
+    return {
+      actorKey: `${match[1]}:${input.provider}:sha256:${expectedHash}`,
+      sourcePlatform: input.provider
+    };
+  }
+  return {
+    actorKey: input.publicActorKey,
+    sourcePlatform: input.sourcePlatform
+  };
+}
+
 export function isSafeAcquisitionPublicActorKey(value: string) {
   return safePublicActorKey(value) !== null;
 }
@@ -352,9 +381,16 @@ export function resolveAcquisitionPublicIdentity(
   const normalizedProfileUrl = normalizeAcquisitionPublicUrl(
     input.subject.publicProfileUrl
   );
-  const actorKey = safePublicActorKey(input.subject.publicActorKey);
   const provider = normalizedProvider(input.provider);
   const sourcePlatform = normalizedProvider(input.subject.sourcePlatform);
+  const identityMaterial = publicActorIdentityMaterial({
+    publicActorKey: input.subject.publicActorKey,
+    provider,
+    sourcePlatform,
+    sourceUrl: input.sourceUrl
+  });
+  const actorKey = safePublicActorKey(identityMaterial.actorKey);
+  const identitySourcePlatform = identityMaterial.sourcePlatform;
   const douyinClassification = normalizedProfileUrl
     ? classifyDouyinPublicSource(normalizedProfileUrl)
     : null;
@@ -373,7 +409,12 @@ export function resolveAcquisitionPublicIdentity(
     const digest = scopedDigest(
       input,
       "provider_public_actor",
-      [provider, sourcePlatform, actorKey, normalizedProfileUrl].join("\u0000"),
+      [
+        provider,
+        identitySourcePlatform,
+        actorKey,
+        normalizedProfileUrl
+      ].join("\u0000"),
       "owner_team"
     );
     return {
@@ -394,7 +435,7 @@ export function resolveAcquisitionPublicIdentity(
     "unresolved_individual",
     [
       provider,
-      sourcePlatform,
+      identitySourcePlatform,
       actorKey || "",
       normalizedProfileUrl || "",
       normalizeAcquisitionPublicUrl(input.sourceUrl)
