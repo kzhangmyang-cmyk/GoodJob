@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 type AcquisitionHttpMethod =
   | "get"
   | "post"
@@ -60,6 +62,276 @@ const resourceSchema = {
   type: "object",
   additionalProperties: true
 };
+
+function dereferenceContractSchema(
+  value: any,
+  root: Record<string, any>,
+  baseUrl: URL
+): any {
+  if (Array.isArray(value)) {
+    return value.map((item) =>
+      dereferenceContractSchema(item, root, baseUrl));
+  }
+  if (!value || typeof value !== "object") return value;
+  if (typeof value.$ref === "string") {
+    const reference = value.$ref as string;
+    if (reference.startsWith("#/")) {
+      const target = reference.slice(2).split("/").reduce(
+        (current: any, part) => current[
+          part.replace(/~1/gu, "/").replace(/~0/gu, "~")
+        ],
+        root
+      );
+      return dereferenceContractSchema(target, root, baseUrl);
+    }
+    const targetUrl = new URL(reference, baseUrl);
+    const targetRoot = JSON.parse(
+      readFileSync(targetUrl, "utf8")
+    ) as Record<string, any>;
+    return dereferenceContractSchema(targetRoot, targetRoot, targetUrl);
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    dereferenceContractSchema(item, root, baseUrl)
+  ]));
+}
+
+function loadContractSchema(name: string): Record<string, any> {
+  const filename = name === "battle-card.v2"
+    ? "battle-card.v2.schema.json"
+    : `${name}.v1.schema.json`;
+  const schemaUrl = new URL(
+    `../../contracts/json-schema/${filename}`,
+    import.meta.url
+  );
+  const root = JSON.parse(
+    readFileSync(schemaUrl, "utf8")
+  ) as Record<string, any>;
+  return dereferenceContractSchema(root, root, schemaUrl);
+}
+
+const asyncOperationResponseSchema = loadContractSchema("async-operation");
+const discoveryEvidenceResponseSchema = loadContractSchema(
+  "discovery-evidence"
+);
+const organizationCandidateResponseSchema = loadContractSchema(
+  "organization-candidate"
+);
+const individualCandidateResponseSchema = loadContractSchema(
+  "individual-demand-signal"
+);
+const candidateResponseSchema = {
+  oneOf: [
+    organizationCandidateResponseSchema,
+    individualCandidateResponseSchema
+  ]
+};
+const qualificationDecisionResponseSchema = loadContractSchema(
+  "qualification-decision"
+);
+const financialValueDecisionResponseSchema = loadContractSchema(
+  "financial-value-decision"
+);
+const battleCardResponseSchema = {
+  oneOf: [
+    loadContractSchema("battle-card"),
+    loadContractSchema("battle-card.v2")
+  ]
+};
+const reviewEventResponseSchema = loadContractSchema("review-event");
+const outcomeFeedbackResponseSchema = loadContractSchema("outcome-feedback");
+const partyRefResponseSchema = loadContractSchema("party-ref");
+const copilotSessionResponseSchema = loadContractSchema("copilot-session");
+const copilotMessageResponseSchema = loadContractSchema("copilot-message");
+const copilotTaskResponseSchema = loadContractSchema("copilot-task");
+
+function typedPagedResponseSchema(itemSchema: Record<string, unknown>) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["items", "nextCursor"],
+    properties: {
+      items: { type: "array", items: itemSchema },
+      nextCursor: { type: ["string", "null"] }
+    }
+  };
+}
+
+const candidatePagedResponseSchema = typedPagedResponseSchema(
+  candidateResponseSchema
+);
+const evidencePagedResponseSchema = typedPagedResponseSchema(
+  discoveryEvidenceResponseSchema
+);
+const reviewPagedResponseSchema = typedPagedResponseSchema(
+  reviewEventResponseSchema
+);
+const outcomePagedResponseSchema = typedPagedResponseSchema(
+  outcomeFeedbackResponseSchema
+);
+const copilotMessagePagedResponseSchema = typedPagedResponseSchema(
+  copilotMessageResponseSchema
+);
+
+const identityResolutionResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "status",
+    "basis",
+    "resolverVersion",
+    "evidenceIds",
+    "resolvedAt",
+    "resolvedBy"
+  ],
+  properties: {
+    status: { const: "resolved" },
+    basis: {
+      enum: [
+        "organization_domain",
+        "organization_credit_code",
+        "provider_public_actor"
+      ]
+    },
+    resolverVersion: { type: "string", minLength: 1 },
+    evidenceIds: {
+      type: "array",
+      items: { type: "string", minLength: 1 }
+    },
+    resolvedAt: { type: "string", format: "date-time" },
+    resolvedBy: { type: "string", minLength: 1 }
+  }
+};
+
+const identityConfirmationResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["candidate", "resolution"],
+  properties: {
+    candidate: candidateResponseSchema,
+    resolution: identityResolutionResponseSchema
+  }
+};
+
+const researchAttemptResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id",
+    "candidateId",
+    "requestReason",
+    "budgetVersion",
+    "status",
+    "newEvidenceIds",
+    "terminationReason",
+    "createdAt",
+    "startedAt",
+    "completedAt"
+  ],
+  properties: {
+    id: { type: "string" },
+    candidateId: { type: "string" },
+    requestReason: { type: "string" },
+    budgetVersion: { type: "string" },
+    status: {
+      enum: [
+        "pending",
+        "running",
+        "completed",
+        "no_new_evidence",
+        "access_restricted",
+        "failed"
+      ]
+    },
+    newEvidenceIds: {
+      type: "array",
+      items: { type: "string" }
+    },
+    terminationReason: { type: ["string", "null"] },
+    createdAt: { type: "string", format: "date-time" },
+    startedAt: { type: ["string", "null"], format: "date-time" },
+    completedAt: { type: ["string", "null"], format: "date-time" }
+  }
+};
+
+const reviewResultResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["candidate", "review", "research"],
+  properties: {
+    candidate: candidateResponseSchema,
+    review: reviewEventResponseSchema,
+    research: {
+      oneOf: [researchAttemptResponseSchema, { type: "null" }]
+    }
+  }
+};
+
+const leadConversionResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id",
+    "candidateId",
+    "decisionVersion",
+    "partyRef",
+    "leadId",
+    "reviewerId",
+    "evidenceSnapshotHash",
+    "createdAt"
+  ],
+  properties: {
+    id: { type: "string" },
+    candidateId: { type: "string" },
+    decisionVersion: { type: "string" },
+    partyRef: partyRefResponseSchema,
+    leadId: { type: "string" },
+    reviewerId: { type: "string" },
+    evidenceSnapshotHash: { type: "string" },
+    createdAt: { type: "string", format: "date-time" }
+  }
+};
+
+const candidateStatuses = [
+  "discovered",
+  "unresolvable",
+  "normalized",
+  "qualified",
+  "pending_review",
+  "approved",
+  "rejected",
+  "do_not_contact",
+  "needs_research",
+  "converted_to_lead"
+];
+
+const auditEventResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id",
+    "candidateId",
+    "actorId",
+    "eventType",
+    "fromStatus",
+    "toStatus",
+    "resourceId",
+    "createdAt"
+  ],
+  properties: {
+    id: { type: "string" },
+    candidateId: { type: ["string", "null"] },
+    actorId: { type: "string" },
+    eventType: { type: "string" },
+    fromStatus: { enum: [...candidateStatuses, null] },
+    toStatus: { enum: [...candidateStatuses, null] },
+    resourceId: { type: "string" },
+    createdAt: { type: "string", format: "date-time" }
+  }
+};
+const auditPagedResponseSchema = typedPagedResponseSchema(
+  auditEventResponseSchema
+);
 
 const acquisitionPlanResponseSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
@@ -1040,6 +1312,11 @@ const copilotMessageWriteSchema = {
       type: "string",
       minLength: 1,
       maxLength: 20_000
+    },
+    responseMode: {
+      type: "string",
+      enum: ["assistant", "plan_draft"],
+      default: "assistant"
     }
   },
   additionalProperties: false
@@ -1509,6 +1786,7 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     ["/api/v1/acquisition/candidates/{id}/evidence", "get", "列出候选证据"],
     ["/api/v1/acquisition/candidates/{id}/identity-confirmation", "post", "人工确认公开主体身份"],
     ["/api/v1/acquisition/candidates/{id}/qualification", "get", "读取资格判断"],
+    ["/api/v1/acquisition/candidates/{id}/financial-value", "get", "读取财务价值判断"],
     ["/api/v1/acquisition/candidates/{id}/battle-card", "get", "读取客户作战卡"],
     ["/api/v1/acquisition/candidates/{id}/reviews", "get", "读取人工审核历史"],
     ["/api/v1/acquisition/candidates/{id}/review", "post", "提交人工审核"],
@@ -1635,6 +1913,40 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/runs/{id}/resume",
     "/api/v1/acquisition/runs/{id}/cancel"
   ]);
+  const coreResponseSchemas: Record<string, Record<string, unknown>> = {
+    "get /api/v1/acquisition/evidence/{id}":
+      discoveryEvidenceResponseSchema,
+    "get /api/v1/acquisition/candidates": candidatePagedResponseSchema,
+    "get /api/v1/acquisition/candidates/{id}": candidateResponseSchema,
+    "get /api/v1/acquisition/candidates/{id}/evidence":
+      evidencePagedResponseSchema,
+    "post /api/v1/acquisition/candidates/{id}/identity-confirmation":
+      identityConfirmationResponseSchema,
+    "get /api/v1/acquisition/candidates/{id}/qualification":
+      qualificationDecisionResponseSchema,
+    "get /api/v1/acquisition/candidates/{id}/financial-value":
+      financialValueDecisionResponseSchema,
+    "get /api/v1/acquisition/candidates/{id}/battle-card":
+      battleCardResponseSchema,
+    "get /api/v1/acquisition/candidates/{id}/reviews":
+      reviewPagedResponseSchema,
+    "post /api/v1/acquisition/candidates/{id}/review":
+      reviewResultResponseSchema,
+    "post /api/v1/acquisition/candidates/{id}/convert":
+      leadConversionResponseSchema,
+    "get /api/v1/acquisition/outcomes": outcomePagedResponseSchema,
+    "get /api/v1/acquisition/audit-events": auditPagedResponseSchema,
+    "post /api/v1/acquisition/copilot/sessions":
+      asyncOperationResponseSchema,
+    "get /api/v1/acquisition/copilot/sessions/{id}":
+      copilotSessionResponseSchema,
+    "get /api/v1/acquisition/copilot/sessions/{id}/messages":
+      copilotMessagePagedResponseSchema,
+    "post /api/v1/acquisition/copilot/sessions/{id}/messages":
+      copilotTaskResponseSchema,
+    "get /api/v1/acquisition/copilot/tasks/{id}":
+      copilotTaskResponseSchema
+  };
 
   for (const [path, method, summary] of definitions) {
     const hasId = path.includes("{id}");
@@ -1669,16 +1981,7 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
             schema: {
               type: "string",
               enum: [
-                "discovered",
-                "unresolvable",
-                "normalized",
-                "qualified",
-                "pending_review",
-                "approved",
-                "rejected",
-                "do_not_contact",
-                "needs_research",
-                "converted_to_lead"
+                ...candidateStatuses
               ]
             }
           }
@@ -1757,15 +2060,16 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       throw new Error(`Missing OpenAPI write body for ${method} ${path}`);
     }
     const successStatus = body?.successStatus ?? 200;
-    const successSchema = planResponsePaths.has(path)
-      ? acquisitionPlanResponseSchema
-      : runResponsePaths.has(path)
-        ? acquisitionRunResponseSchema
-        : path === "/api/v1/acquisition/runs/{id}/shards"
-          ? pagedResultResponseSchema
-          : path === "/api/v1/acquisition/runs/{id}/presentation"
-            ? runPresentationSchema
-            : resourceSchema;
+    const successSchema = coreResponseSchemas[`${method} ${path}`]
+      ?? (planResponsePaths.has(path)
+        ? acquisitionPlanResponseSchema
+        : runResponsePaths.has(path)
+          ? acquisitionRunResponseSchema
+          : path === "/api/v1/acquisition/runs/{id}/shards"
+            ? pagedResultResponseSchema
+            : path === "/api/v1/acquisition/runs/{id}/presentation"
+              ? runPresentationSchema
+              : resourceSchema);
     const responses = standardResponses(
       successStatus,
       body?.successDescription ?? "操作成功",

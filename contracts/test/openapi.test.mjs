@@ -37,16 +37,17 @@ const section16 = {
   "/api/v1/acquisition/candidates": ["get"],
   "/api/v1/acquisition/candidates/{id}": ["get"],
   "/api/v1/acquisition/candidates/{id}/evidence": ["get"],
-  "/api/v1/acquisition/candidates/{id}/research": ["post"],
-  "/api/v1/acquisition/candidates/{id}/qualification": ["get", "post"],
-  "/api/v1/acquisition/candidates/{id}/battle-card": ["get", "post"],
+  "/api/v1/acquisition/candidates/{id}/identity-confirmation": ["post"],
+  "/api/v1/acquisition/candidates/{id}/qualification": ["get"],
+  "/api/v1/acquisition/candidates/{id}/financial-value": ["get"],
+  "/api/v1/acquisition/candidates/{id}/battle-card": ["get"],
   "/api/v1/acquisition/candidates/{id}/reviews": ["get"],
   "/api/v1/acquisition/candidates/{id}/review": ["post"],
   "/api/v1/acquisition/candidates/{id}/convert": ["post"],
-  "/api/v1/acquisition/outcomes": ["get", "post"],
+  "/api/v1/acquisition/outcomes": ["get"],
   "/api/v1/acquisition/copilot/sessions": ["post"],
   "/api/v1/acquisition/copilot/sessions/{id}": ["get"],
-  "/api/v1/acquisition/copilot/sessions/{id}/messages": ["post"],
+  "/api/v1/acquisition/copilot/sessions/{id}/messages": ["get", "post"],
   "/api/v1/acquisition/copilot/tasks/{id}": ["get"],
   "/api/v1/acquisition/audit-events": ["get"]
 };
@@ -54,15 +55,19 @@ const section16 = {
 const listPaths = [
   "/api/v1/ai/providers", "/api/v1/ai/connections", "/api/v1/ai/connections/{id}/models",
   "/api/v1/ai/calls",
-  "/api/v1/acquisition/runs/{id}/shards",
-  "/api/v1/acquisition/candidates/{id}/evidence", "/api/v1/acquisition/candidates/{id}/reviews",
-  "/api/v1/acquisition/outcomes", "/api/v1/acquisition/audit-events"
+  "/api/v1/acquisition/runs/{id}/shards"
 ];
+
+const typedListReads = {
+  "/api/v1/acquisition/candidates/{id}/evidence": "DiscoveryEvidencePagedResult",
+  "/api/v1/acquisition/candidates/{id}/reviews": "ReviewEventPagedResult",
+  "/api/v1/acquisition/outcomes": "OutcomeFeedbackPagedResult",
+  "/api/v1/acquisition/audit-events": "AuditEventPagedResult",
+  "/api/v1/acquisition/copilot/sessions/{id}/messages": "CopilotMessagePagedResult"
+};
 
 const asyncPosts = [
   "/api/v1/ai/connections/{id}/test",
-  "/api/v1/acquisition/candidates/{id}/research",
-  "/api/v1/acquisition/candidates/{id}/qualification", "/api/v1/acquisition/candidates/{id}/battle-card",
   "/api/v1/acquisition/copilot/sessions"
 ];
 
@@ -75,6 +80,7 @@ const reads = {
   "/api/v1/acquisition/runs/{id}/presentation": "AcquisitionRunPresentation",
   "/api/v1/acquisition/candidates/{id}": "Candidate",
   "/api/v1/acquisition/candidates/{id}/qualification": "QualificationDecision",
+  "/api/v1/acquisition/candidates/{id}/financial-value": "FinancialValueDecision",
   "/api/v1/acquisition/candidates/{id}/battle-card": "BattleCard",
   "/api/v1/acquisition/copilot/sessions/{id}": "CopilotSession",
   "/api/v1/acquisition/copilot/tasks/{id}": "CopilotTask"
@@ -112,9 +118,12 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
         || path.startsWith("/api/v1/acquisition/provider-connections")
         || path.startsWith("/api/v1/acquisition/content-fetch-operations")
         || path.startsWith("/api/v1/acquisition/import-operations");
+      const isAcquisitionOperation = path.startsWith(
+        "/api/v1/acquisition/"
+      );
       assert.deepEqual(
         operation.security,
-        isPlanRunOperation || isDiscoveryOperation
+        isAcquisitionOperation
           ? method === "get"
             ? [{ bearerAuth: [] }, { cookieAuth: [] }]
             : [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
@@ -142,6 +151,9 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   }
   for (const path of listPaths) {
     assert.equal(document.paths[path].get.responses["200"].content["application/json"].schema.$ref, "#/components/schemas/PagedResult", path);
+  }
+  for (const [path, schema] of Object.entries(typedListReads)) {
+    assert.equal(document.paths[path].get.responses["200"].content["application/json"].schema.$ref, `#/components/schemas/${schema}`, path);
   }
   assert.equal(document.paths["/api/v1/acquisition/candidates"].get.responses["200"].content["application/json"].schema.$ref, "#/components/schemas/CandidatePagedResult");
   for (const [path, schema] of Object.entries(reads)) {
@@ -206,16 +218,37 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(importOperation.requestBody.content["application/json"], undefined);
   assert.ok(importOperation.responses["415"]);
   assert.equal(document.components.schemas.AcquisitionRunPresentation.$ref, "../json-schema/acquisition-run-presentation.v1.schema.json");
+  assert.equal(document.components.schemas.FinancialValueDecision.$ref, "../json-schema/financial-value-decision.v1.schema.json");
+  assert.equal(document.components.schemas.CopilotMessage.$ref, "../json-schema/copilot-message.v1.schema.json");
   const presentation = registry.schemaDocuments.get("acquisition-run-presentation");
   assert.deepEqual(presentation.required, ["run", "providers", "summary", "candidateEvents", "nextAfter", "hasMore"]);
   assert.deepEqual(presentation.properties.candidateEvents.items.properties.financialValue.type, ["null", "object"]);
   assert.equal(presentation.properties.summary.properties.expectedRevenueByCurrency.type, "array");
 });
 
+test("workflow-internal candidate and outcome writes stay outside the release contract", async () => {
+  const document = await loadOpenApiSource();
+  const blockedDirectWrites = [
+    "/api/v1/acquisition/evidence",
+    "/api/v1/acquisition/candidates",
+    "/api/v1/acquisition/candidates/{id}/evidence",
+    "/api/v1/acquisition/candidates/{id}/research",
+    "/api/v1/acquisition/candidates/{id}/qualification",
+    "/api/v1/acquisition/candidates/{id}/battle-card",
+    "/api/v1/acquisition/outcomes"
+  ];
+  for (const path of blockedDirectWrites) {
+    assert.equal(document.paths[path]?.post, undefined, path);
+  }
+  assert.ok(document.paths["/api/v1/acquisition/evidence/{id}"].get);
+  assert.ok(document.paths["/api/v1/acquisition/candidates/{id}/financial-value"].get);
+  assert.ok(document.paths["/api/v1/acquisition/copilot/sessions/{id}/messages"].get);
+});
+
 test("every named API resource component accepts a canonical valid instance", async () => {
   const document = await loadOpenApi();
   const registry = await loadSchemaRegistry();
-  const names = ["ModelProvider", "ModelConnection", "ModelCallRecord", "DiscoveryProvider", "ProviderConnection", "ContentFetchOperation", "ImportOperation", "AcquisitionPlan", "AcquisitionRun", "AcquisitionOperationShard", "AcquisitionRunPresentation", "DiscoveryEvidence", "QualificationDecision", "BattleCard", "ReviewEvent", "OutcomeFeedback", "CopilotSession", "CopilotTask"];
+  const names = ["ModelProvider", "ModelConnection", "ModelCallRecord", "DiscoveryProvider", "ProviderConnection", "ContentFetchOperation", "ImportOperation", "AcquisitionPlan", "AcquisitionRun", "AcquisitionOperationShard", "AcquisitionRunPresentation", "DiscoveryEvidence", "QualificationDecision", "BattleCard", "ReviewEvent", "OutcomeFeedback", "FinancialValueDecision", "CopilotSession", "CopilotMessage", "CopilotTask"];
   const examples = Object.fromEntries(names.map((name) => [name, buildCanonicalExample(registry.schemaDocuments.get(toKebab(name)))]));
   examples.Candidate = [
     buildCanonicalExample(registry.schemaDocuments.get("organization-candidate")),

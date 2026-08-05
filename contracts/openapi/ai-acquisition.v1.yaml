@@ -39,7 +39,7 @@ components:
       name: candidateId
       in: query
       required: true
-      schema: { type: string, minLength: 1 }
+      schema: { type: string, minLength: 1, maxLength: 255 }
     idempotencyKey:
       name: Idempotency-Key
       in: header
@@ -56,6 +56,26 @@ components:
       in: header
       required: true
       schema: { type: string, minLength: 1 }
+    acquisitionId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 255 }
+    acquisitionCursor:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string, minLength: 1, maxLength: 8192 }
+    acquisitionLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    candidateIfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: { type: string, pattern: '^"candidate-v[1-9]\d*"$' }
     presentationAfter:
       name: after
       in: query
@@ -133,9 +153,116 @@ components:
         - { $ref: '#/components/schemas/BattleCardV2' }
     ReviewEvent: { $ref: ../json-schema/review-event.v1.schema.json }
     OutcomeFeedback: { $ref: ../json-schema/outcome-feedback.v1.schema.json }
+    FinancialValueDecision: { $ref: ../json-schema/financial-value-decision.v1.schema.json }
+    PartyRef: { $ref: ../json-schema/party-ref.v1.schema.json }
     CopilotSession: { $ref: ../json-schema/copilot-session.v1.schema.json }
+    CopilotMessage: { $ref: ../json-schema/copilot-message.v1.schema.json }
     CopilotTask: { $ref: ../json-schema/copilot-task.v1.schema.json }
-    AuditEvent: { type: object, additionalProperties: false, required: [id], properties: { id: { type: string } } }
+    DiscoveryEvidencePagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/DiscoveryEvidence' } }
+        nextCursor: { type: [string, 'null'] }
+    ReviewEventPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ReviewEvent' } }
+        nextCursor: { type: [string, 'null'] }
+    OutcomeFeedbackPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OutcomeFeedback' } }
+        nextCursor: { type: [string, 'null'] }
+    CopilotMessagePagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/CopilotMessage' } }
+        nextCursor: { type: [string, 'null'] }
+    IdentityResolution:
+      type: object
+      additionalProperties: false
+      required: [status, basis, resolverVersion, evidenceIds, resolvedAt, resolvedBy]
+      properties:
+        status: { const: resolved }
+        basis: { enum: [organization_domain, organization_credit_code, provider_public_actor] }
+        resolverVersion: { type: string, minLength: 1 }
+        evidenceIds: { type: array, items: { type: string, minLength: 1 } }
+        resolvedAt: { type: string, format: date-time }
+        resolvedBy: { type: string, minLength: 1 }
+    IdentityConfirmationResult:
+      type: object
+      additionalProperties: false
+      required: [candidate, resolution]
+      properties:
+        candidate: { $ref: '#/components/schemas/Candidate' }
+        resolution: { $ref: '#/components/schemas/IdentityResolution' }
+    ResearchAttempt:
+      type: object
+      additionalProperties: false
+      required: [id, candidateId, requestReason, budgetVersion, status, newEvidenceIds, terminationReason, createdAt, startedAt, completedAt]
+      properties:
+        id: { type: string }
+        candidateId: { type: string }
+        requestReason: { type: string }
+        budgetVersion: { type: string }
+        status: { enum: [pending, running, completed, no_new_evidence, access_restricted, failed] }
+        newEvidenceIds: { type: array, items: { type: string } }
+        terminationReason: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: [string, 'null'], format: date-time }
+        completedAt: { type: [string, 'null'], format: date-time }
+    CandidateReviewResult:
+      type: object
+      additionalProperties: false
+      required: [candidate, review, research]
+      properties:
+        candidate: { $ref: '#/components/schemas/Candidate' }
+        review: { $ref: '#/components/schemas/ReviewEvent' }
+        research:
+          oneOf:
+            - { $ref: '#/components/schemas/ResearchAttempt' }
+            - { type: 'null' }
+    LeadConversion:
+      type: object
+      additionalProperties: false
+      required: [id, candidateId, decisionVersion, partyRef, leadId, reviewerId, evidenceSnapshotHash, createdAt]
+      properties:
+        id: { type: string }
+        candidateId: { type: string }
+        decisionVersion: { type: string }
+        partyRef: { $ref: '#/components/schemas/PartyRef' }
+        leadId: { type: string }
+        reviewerId: { type: string }
+        evidenceSnapshotHash: { type: string }
+        createdAt: { type: string, format: date-time }
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required: [id, candidateId, actorId, eventType, fromStatus, toStatus, resourceId, createdAt]
+      properties:
+        id: { type: string }
+        candidateId: { type: [string, 'null'] }
+        actorId: { type: string }
+        eventType: { type: string }
+        fromStatus: { enum: [discovered, unresolvable, normalized, qualified, pending_review, approved, rejected, do_not_contact, needs_research, converted_to_lead, null] }
+        toStatus: { enum: [discovered, unresolvable, normalized, qualified, pending_review, approved, rejected, do_not_contact, needs_research, converted_to_lead, null] }
+        resourceId: { type: string }
+        createdAt: { type: string, format: date-time }
+    AuditEventPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextCursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } }
+        nextCursor: { type: [string, 'null'] }
 x-error-response: &apiError
   description: Unified API error
   content:
@@ -186,6 +313,49 @@ x-plan-run-schema: &planRunSchema
   { type: object, properties: { parentRunId: { type: string, minLength: 1, maxLength: 255 }, reason: { type: string, maxLength: 2000 } }, additionalProperties: false }
 x-plan-control-schema: &planControlSchema
   { type: object, required: [reason], properties: { reason: { type: string, minLength: 1, maxLength: 2000 } }, additionalProperties: false }
+x-identity-confirmation-schema: &identityConfirmationSchema
+  oneOf:
+    - type: object
+      additionalProperties: false
+      required: [subjectKind, domain, creditCode, evidenceIds, rationale]
+      properties:
+        subjectKind: { type: string, enum: [organization] }
+        domain: { type: string, nullable: true, maxLength: 255 }
+        creditCode: { type: string, nullable: true, maxLength: 50 }
+        evidenceIds: { type: array, minItems: 1, maxItems: 100, items: { type: string, minLength: 1, maxLength: 255 } }
+        rationale: { type: string, minLength: 1, maxLength: 2000 }
+    - type: object
+      additionalProperties: false
+      required: [subjectKind, publicProfileUrl, sourcePlatform, evidenceIds, rationale]
+      properties:
+        subjectKind: { type: string, enum: [individual] }
+        publicProfileUrl: { type: string, format: uri, maxLength: 2000 }
+        sourcePlatform: { type: string, minLength: 1, maxLength: 100 }
+        evidenceIds: { type: array, minItems: 1, maxItems: 100, items: { type: string, minLength: 1, maxLength: 255 } }
+        rationale: { type: string, minLength: 1, maxLength: 2000 }
+  discriminator: { propertyName: subjectKind }
+x-review-schema: &reviewSchema
+  oneOf:
+    - type: object
+      additionalProperties: false
+      required: [action, decisionVersion, reason]
+      properties:
+        action: { type: string, enum: [approved, do_not_contact] }
+        decisionVersion: { type: string, minLength: 1, maxLength: 100 }
+        reason: { type: string, nullable: true, maxLength: 2000 }
+    - type: object
+      additionalProperties: false
+      required: [action, decisionVersion, reason]
+      properties:
+        action: { type: string, enum: [rejected, needs_research, reopen] }
+        decisionVersion: { type: string, minLength: 1, maxLength: 100 }
+        reason: { type: string, minLength: 1, maxLength: 2000 }
+x-convert-schema: &convertSchema
+  { type: object, additionalProperties: false, required: [decisionVersion], properties: { decisionVersion: { type: string, minLength: 1, maxLength: 100 } } }
+x-copilot-session-schema: &copilotSessionSchema
+  { type: object, additionalProperties: false, properties: { connectionId: { type: string, nullable: true, minLength: 1, maxLength: 255 } } }
+x-copilot-message-schema: &copilotMessageSchema
+  { type: object, additionalProperties: false, required: [message], properties: { message: { type: string, minLength: 1, maxLength: 20000 }, responseMode: { type: string, enum: [assistant, plan_draft], default: assistant } } }
 x-acquisition-standard-responses: &acquisitionStandardResponses
   '400': *apiError
   '401': *apiError
@@ -350,17 +520,17 @@ paths:
         <<: *acquisitionStandardResponses
         '200': { description: Import operation, content: { application/json: { schema: *acquisitionResourceSchema } } }
   /api/v1/acquisition/evidence/{id}:
-    parameters: [{ $ref: '#/components/parameters/id' }]
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
-      <<: *read
       summary: Get discovery evidence
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
+        <<: *acquisitionStandardResponses
         '200':
           description: Discovery evidence
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DiscoveryEvidence' }
-        '401': *apiError
   /api/v1/acquisition/plans:
     post:
       summary: Create acquisition plan
@@ -535,70 +705,166 @@ paths:
     post: { <<: *runControl, summary: Cancel acquisition run }
   /api/v1/acquisition/candidates:
     get:
-      <<: *list
       summary: List candidates
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/acquisitionCursor' }
+        - { $ref: '#/components/parameters/acquisitionLimit' }
+        - { name: subjectKind, in: query, required: false, schema: { type: string, enum: [organization, individual] } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [discovered, unresolvable, normalized, qualified, pending_review, approved, rejected, do_not_contact, needs_research, converted_to_lead] } }
       responses:
+        <<: *acquisitionStandardResponses
         '200':
           description: Cursor-paginated candidates
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CandidatePagedResult' }
-        '401': *apiError
   /api/v1/acquisition/candidates/{id}:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get candidate, responses: { '200': { description: Candidate, content: { application/json: { schema: { $ref: '#/components/schemas/Candidate' } } } }, '401': *apiError } }
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    get:
+      summary: Get candidate
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Candidate, content: { application/json: { schema: { $ref: '#/components/schemas/Candidate' } } } }
   /api/v1/acquisition/candidates/{id}/evidence:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *list, summary: List candidate evidence }
-  /api/v1/acquisition/candidates/{id}/research:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *asyncWrite, summary: Request candidate research }
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    get:
+      summary: List candidate evidence
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/acquisitionCursor' }, { $ref: '#/components/parameters/acquisitionLimit' }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Candidate evidence, content: { application/json: { schema: { $ref: '#/components/schemas/DiscoveryEvidencePagedResult' } } } }
+  /api/v1/acquisition/candidates/{id}/identity-confirmation:
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    post:
+      summary: Confirm candidate identity
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/candidateIfMatch' }]
+      requestBody: { required: true, content: { application/json: { schema: *identityConfirmationSchema } } }
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Candidate identity confirmed, content: { application/json: { schema: { $ref: '#/components/schemas/IdentityConfirmationResult' } } } }
+        '428': *apiError
   /api/v1/acquisition/candidates/{id}/qualification:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get qualification decision, responses: { '200': { description: Qualification decision, content: { application/json: { schema: { $ref: '#/components/schemas/QualificationDecision' } } } }, '401': *apiError } }
-    post: { <<: *asyncWrite, summary: Create qualification decision }
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    get:
+      summary: Get qualification decision
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Qualification decision, content: { application/json: { schema: { $ref: '#/components/schemas/QualificationDecision' } } } }
+  /api/v1/acquisition/candidates/{id}/financial-value:
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    get:
+      summary: Get financial value decision
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Financial value decision, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialValueDecision' } } } }
   /api/v1/acquisition/candidates/{id}/battle-card:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get battle card, responses: { '200': { description: Battle card, content: { application/json: { schema: { $ref: '#/components/schemas/BattleCard' } } } }, '401': *apiError } }
-    post: { <<: *asyncWrite, summary: Create battle card }
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    get:
+      summary: Get battle card
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Battle card, content: { application/json: { schema: { $ref: '#/components/schemas/BattleCard' } } } }
   /api/v1/acquisition/candidates/{id}/reviews:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *list, summary: List review events }
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    get:
+      summary: List review events
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/acquisitionCursor' }, { $ref: '#/components/parameters/acquisitionLimit' }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Review events, content: { application/json: { schema: { $ref: '#/components/schemas/ReviewEventPagedResult' } } } }
   /api/v1/acquisition/candidates/{id}/review:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *write, summary: Review candidate }
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    post:
+      summary: Review candidate
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: *reviewSchema } } }
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Candidate reviewed, content: { application/json: { schema: { $ref: '#/components/schemas/CandidateReviewResult' } } } }
   /api/v1/acquisition/candidates/{id}/convert:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *write, summary: Convert candidate }
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    post:
+      summary: Convert candidate
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: *convertSchema } } }
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Candidate converted, content: { application/json: { schema: { $ref: '#/components/schemas/LeadConversion' } } } }
   /api/v1/acquisition/outcomes:
     get:
-      <<: *list
       summary: List outcome feedback
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters:
-        - { $ref: '#/components/parameters/cursor' }
-        - { $ref: '#/components/parameters/limit' }
+        - { $ref: '#/components/parameters/acquisitionCursor' }
+        - { $ref: '#/components/parameters/acquisitionLimit' }
         - { $ref: '#/components/parameters/candidateId' }
-    post: { <<: *write, summary: Append outcome feedback }
-  /api/v1/acquisition/copilot/sessions:
-    post: { <<: *asyncWrite, summary: Create copilot session }
-  /api/v1/acquisition/copilot/sessions/{id}:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get copilot session, responses: { '200': { description: Copilot session, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotSession' } } } }, '401': *apiError } }
-  /api/v1/acquisition/copilot/sessions/{id}/messages:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    post:
-      <<: *asyncWrite
-      summary: Send copilot message
       responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Outcome feedback, content: { application/json: { schema: { $ref: '#/components/schemas/OutcomeFeedbackPagedResult' } } } }
+  /api/v1/acquisition/copilot/sessions:
+    post:
+      summary: Create copilot session
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: *copilotSessionSchema } } }
+      responses:
+        <<: *acquisitionStandardResponses
+        '202': { description: Copilot session creation accepted, content: { application/json: { schema: { $ref: '#/components/schemas/AsyncOperation' } } } }
+  /api/v1/acquisition/copilot/sessions/{id}:
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    get:
+      summary: Get copilot session
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Copilot session, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotSession' } } } }
+  /api/v1/acquisition/copilot/sessions/{id}/messages:
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    get:
+      summary: List copilot messages
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/acquisitionCursor' }, { $ref: '#/components/parameters/acquisitionLimit' }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Copilot messages, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotMessagePagedResult' } } } }
+    post:
+      summary: Send copilot message
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: *copilotMessageSchema } } }
+      responses:
+        <<: *acquisitionStandardResponses
         '202':
           description: Queued copilot task
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CopilotTask' }
-        '400': *apiError
-        '401': *apiError
   /api/v1/acquisition/copilot/tasks/{id}:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get copilot task, responses: { '200': { description: Copilot task, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotTask' } } } }, '401': *apiError } }
+    parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
+    get:
+      summary: Get copilot task
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Copilot task, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotTask' } } } }
   /api/v1/acquisition/audit-events:
-    get: { <<: *list, summary: List audit events }
+    get:
+      summary: List audit events
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/acquisitionCursor' }
+        - { $ref: '#/components/parameters/acquisitionLimit' }
+        - { name: candidateId, in: query, required: false, schema: { type: string, minLength: 1, maxLength: 255 } }
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Audit events, content: { application/json: { schema: { $ref: '#/components/schemas/AuditEventPagedResult' } } } }

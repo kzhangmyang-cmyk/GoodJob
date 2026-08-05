@@ -40,6 +40,36 @@ const discoveryOperations = {
   "/api/v1/acquisition/import-operations/{id}": ["get"]
 } as const;
 
+const candidateCopilotOperations = {
+  "/api/v1/acquisition/evidence/{id}": ["get"],
+  "/api/v1/acquisition/candidates": ["get"],
+  "/api/v1/acquisition/candidates/{id}": ["get"],
+  "/api/v1/acquisition/candidates/{id}/evidence": ["get"],
+  "/api/v1/acquisition/candidates/{id}/identity-confirmation": ["post"],
+  "/api/v1/acquisition/candidates/{id}/qualification": ["get"],
+  "/api/v1/acquisition/candidates/{id}/financial-value": ["get"],
+  "/api/v1/acquisition/candidates/{id}/battle-card": ["get"],
+  "/api/v1/acquisition/candidates/{id}/reviews": ["get"],
+  "/api/v1/acquisition/candidates/{id}/review": ["post"],
+  "/api/v1/acquisition/candidates/{id}/convert": ["post"],
+  "/api/v1/acquisition/outcomes": ["get"],
+  "/api/v1/acquisition/audit-events": ["get"],
+  "/api/v1/acquisition/copilot/sessions": ["post"],
+  "/api/v1/acquisition/copilot/sessions/{id}": ["get"],
+  "/api/v1/acquisition/copilot/sessions/{id}/messages": ["get", "post"],
+  "/api/v1/acquisition/copilot/tasks/{id}": ["get"]
+} as const;
+
+const blockedDirectWrites = [
+  "/api/v1/acquisition/evidence",
+  "/api/v1/acquisition/candidates",
+  "/api/v1/acquisition/candidates/{id}/evidence",
+  "/api/v1/acquisition/candidates/{id}/research",
+  "/api/v1/acquisition/candidates/{id}/qualification",
+  "/api/v1/acquisition/candidates/{id}/battle-card",
+  "/api/v1/acquisition/outcomes"
+] as const;
+
 function hasRequiredHeader(
   operation: Record<string, any>,
   name: string
@@ -119,6 +149,104 @@ test("published discovery operations exactly match production", async () => {
       );
     }
   }
+});
+
+test("published candidate and copilot operations exactly match production", async () => {
+  const published = await loadPublishedAcquisitionPaths();
+  const production = createAcquisitionOpenApiPaths();
+
+  for (const [path, methods] of Object.entries(candidateCopilotOperations)) {
+    const publishedPath = published[path];
+    const productionPath = production[path];
+    assert.ok(publishedPath, path);
+    assert.ok(productionPath, `production ${path}`);
+    assert.deepEqual(Object.keys(publishedPath).sort(), [...methods].sort(), path);
+    assert.deepEqual(Object.keys(productionPath).sort(), [...methods].sort(), `production ${path}`);
+    for (const method of methods) {
+      assert.deepEqual(
+        operationSurface(publishedPath[method]!),
+        operationSurface(productionPath[method]!),
+        `${method.toUpperCase()} ${path}`
+      );
+    }
+  }
+});
+
+test("workflow-internal candidate and outcome writes stay unpublished", async () => {
+  const published = await loadPublishedAcquisitionPaths();
+  const production = createAcquisitionOpenApiPaths();
+
+  for (const path of blockedDirectWrites) {
+    assert.equal(published[path]?.post, undefined, `published POST ${path}`);
+    assert.equal(production[path]?.post, undefined, `production POST ${path}`);
+  }
+  assert.ok(published["/api/v1/acquisition/evidence/{id}"]?.get);
+  assert.ok(
+    published["/api/v1/acquisition/candidates/{id}/financial-value"]?.get
+  );
+  assert.ok(
+    published["/api/v1/acquisition/copilot/sessions/{id}/messages"]?.get
+  );
+});
+
+test("candidate and copilot operations preserve runtime headers and statuses", async () => {
+  const published = await loadPublishedAcquisitionPaths();
+  const identity = published[
+    "/api/v1/acquisition/candidates/{id}/identity-confirmation"
+  ]!.post!;
+  assert.equal(hasRequiredHeader(identity, "Idempotency-Key"), true);
+  assert.equal(hasRequiredHeader(identity, "If-Match"), true);
+  const ifMatch = identity.parameters.find((parameter: Record<string, any>) =>
+    parameter.name === "If-Match"
+  );
+  assert.equal(ifMatch.schema.pattern, '^"candidate-v[1-9]\\d*"$');
+  assert.ok(identity.responses["200"]);
+  assert.ok(identity.responses["428"]);
+  assert.equal(identity.responses["412"], undefined);
+
+  const financial = published[
+    "/api/v1/acquisition/candidates/{id}/financial-value"
+  ]!.get!;
+  assert.ok(financial.responses["200"]);
+  assert.ok(financial.responses["404"]);
+  const financialSchema = financial.responses["200"]
+    .content["application/json"].schema;
+  assert.equal(financialSchema.additionalProperties, false);
+  assert.deepEqual(financialSchema.required, [
+    "id",
+    "candidateId",
+    "qualificationDecisionId",
+    "version",
+    "grade",
+    "score",
+    "currency",
+    "expectedRevenueMinor",
+    "expectedGrossProfitMinor",
+    "expectedContributionMinor",
+    "factors",
+    "createdAt"
+  ]);
+  for (const field of [
+    "expectedRevenueMinor",
+    "expectedGrossProfitMinor",
+    "expectedContributionMinor"
+  ]) {
+    assert.equal(financialSchema.properties[field].type, "integer");
+  }
+  for (const invented of ["status", "risk", "riskLevel"]) {
+    assert.equal(financialSchema.properties[invented], undefined);
+  }
+
+  const sessionCreate = published[
+    "/api/v1/acquisition/copilot/sessions"
+  ]!.post!;
+  const messageCreate = published[
+    "/api/v1/acquisition/copilot/sessions/{id}/messages"
+  ]!.post!;
+  assert.ok(sessionCreate.responses["202"]);
+  assert.ok(messageCreate.responses["202"]);
+  assert.equal(hasRequiredHeader(sessionCreate, "Idempotency-Key"), true);
+  assert.equal(hasRequiredHeader(messageCreate, "Idempotency-Key"), true);
 });
 
 test("published provider operations preserve runtime status and header semantics", async () => {

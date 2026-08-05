@@ -16,7 +16,8 @@ const expected = [
   "acquisition-operation-shard", "discovery-evidence", "party-ref",
   "organization-candidate", "individual-demand-signal",
   "qualification-decision", "battle-card", "review-event",
-  "outcome-feedback", "copilot-session", "copilot-task"
+  "outcome-feedback", "financial-value-decision", "copilot-session",
+  "copilot-message", "copilot-task"
 ];
 
 test("ai-acquisition.v1 exposes the complete unique schema registry", async () => {
@@ -138,4 +139,70 @@ test("battle-card.v2 enforces evidence-bound structured intelligence", async () 
       }
     }), false);
   }
+});
+
+test("financial values expose only the current closed public projection", async () => {
+  const registry = await loadSchemaRegistry();
+  const schema = registry.schemaDocuments.get("financial-value-decision");
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, [
+    "id",
+    "candidateId",
+    "qualificationDecisionId",
+    "version",
+    "grade",
+    "score",
+    "currency",
+    "expectedRevenueMinor",
+    "expectedGrossProfitMinor",
+    "expectedContributionMinor",
+    "factors",
+    "createdAt"
+  ]);
+  assert.deepEqual(Object.keys(schema.properties), schema.required);
+  for (const name of [
+    "expectedRevenueMinor",
+    "expectedGrossProfitMinor",
+    "expectedContributionMinor"
+  ]) {
+    assert.equal(schema.properties[name].type, "integer");
+  }
+  assert.deepEqual(schema.properties.factors.required, [
+    "profitability",
+    "cashFlow",
+    "creditQuality",
+    "repeatPotential",
+    "referralPotential",
+    "closeProbability"
+  ]);
+  assert.equal(schema.properties.factors.additionalProperties, false);
+});
+
+test("copilot messages preserve identity, session, content, and linkage", async () => {
+  const registry = await loadSchemaRegistry();
+  const schema = registry.schemaDocuments.get("copilot-message");
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, [
+    "id",
+    "sessionId",
+    "sequence",
+    "message",
+    "createdAt"
+  ]);
+  const variants = schema.properties.message.oneOf;
+  assert.deepEqual(
+    variants.map((variant) => variant.properties.role.const),
+    ["user", "assistant", "toolResult"]
+  );
+  for (const variant of variants) {
+    assert.equal(variant.additionalProperties, false);
+    assert.ok(variant.required.includes("role"));
+    assert.ok(variant.required.includes("content"));
+    assert.ok(variant.required.includes("timestamp"));
+  }
+  const toolResult = variants.find(
+    (variant) => variant.properties.role.const === "toolResult"
+  );
+  assert.ok(toolResult.required.includes("toolCallId"));
+  assert.equal(schema.properties.taskId, undefined);
 });
