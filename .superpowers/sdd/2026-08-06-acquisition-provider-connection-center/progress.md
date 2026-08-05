@@ -1,0 +1,12 @@
+# Acquisition Provider Connection Center — SDD Progress
+
+- Base: `b7c2178`
+- Branch: `feature/acquisition-provider-connection-center`
+- Protected user file: `docs/superpowers/plans/2026-07-23-ai-model-adapters-and-pi.md`
+
+| Task | Status | Implementation | Review |
+|---|---|---|---|
+| 1. Provider lifecycle frontend API | complete | Facade, focused tests and 204 transport handling | passed; no findings |
+| 2. Connection center state machine | pending | — | — |
+| 3. Accessible in-workspace drawer | pending | — | — |
+| 4. Full E2E and docs | pending | — | — |

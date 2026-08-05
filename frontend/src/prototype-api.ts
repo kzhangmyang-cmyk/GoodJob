@@ -12,6 +12,7 @@ import {
   type BlockedLeadSource
 } from "./lead-source-selection";
 import type { CustomerMapController, CustomerMapRegion } from "./customer-map";
+import { readAdvisorResponse } from "./features/ai-growth/api.js";
 import { mountAiGrowthAdvisor } from "./features/ai-growth/index.js";
 import "./features/ai-growth/styles.css";
 
@@ -2090,7 +2091,7 @@ async function advisorRequest<T>(
     error.response = { status: response.status };
     throw error;
   }
-  return response.json() as Promise<T>;
+  return readAdvisorResponse<T>(response);
 }
 
 function ensureAiGrowthAdvisor() {

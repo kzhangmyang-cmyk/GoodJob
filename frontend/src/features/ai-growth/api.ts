@@ -20,10 +20,21 @@ export interface AdvisorRequest {
   <T>(path: string, init?: RequestInit): Promise<T>;
 }
 
+export function readAdvisorResponse<T>(response: Response): Promise<T> {
+  if (response.status === 204) {
+    return Promise.resolve(undefined as T);
+  }
+  return response.json() as Promise<T>;
+}
+
 export interface PageDto<T> {
   items: T[];
   nextCursor: string | null;
 }
+
+export type ProviderCatalogPageDto = operations[
+  "listAcquisitionProviders"
+]["responses"][200]["content"]["application/json"];
 
 export type ProviderConnectionPageDto = operations[
   "listAcquisitionProviderConnections"
@@ -31,6 +42,18 @@ export type ProviderConnectionPageDto = operations[
 
 export type ProviderConnectionDto =
   ProviderConnectionPageDto["items"][number];
+
+export type ProviderConnectionCreateDto = operations[
+  "createAcquisitionProviderConnection"
+]["requestBody"]["content"]["application/json"];
+
+export type ProviderConnectionUpdateDto = operations[
+  "updateAcquisitionProviderConnection"
+]["requestBody"]["content"]["application/json"];
+
+export type ProviderConnectionTestDto = operations[
+  "testAcquisitionProviderConnection"
+]["responses"][200]["content"]["application/json"];
 
 export type CopilotSessionCreateOperationDto = operations[
   "createAcquisitionCopilotSession"
@@ -373,10 +396,57 @@ export function createAiGrowthApi(request: AdvisorRequest) {
       );
     },
 
+    listProviders(): Promise<ProviderCatalogPageDto> {
+      return mapConflict(() =>
+        request("/api/v1/acquisition/providers")
+      );
+    },
+
     listProviderConnections(): Promise<ProviderConnectionPageDto> {
       return mapConflict(() =>
         request("/api/v1/acquisition/provider-connections")
       );
+    },
+
+    createProviderConnection(
+      input: ProviderConnectionCreateDto,
+      idempotencyKey: string
+    ): Promise<ProviderConnectionDto> {
+      return post(
+        "/api/v1/acquisition/provider-connections",
+        input,
+        idempotencyKey
+      );
+    },
+
+    getProviderConnection(id: string): Promise<ProviderConnectionDto> {
+      return mapConflict(() => request(
+        `/api/v1/acquisition/provider-connections/${segment(id)}`
+      ));
+    },
+
+    updateProviderConnection(
+      id: string,
+      input: ProviderConnectionUpdateDto
+    ): Promise<ProviderConnectionDto> {
+      return mapConflict(() => request(
+        `/api/v1/acquisition/provider-connections/${segment(id)}`,
+        jsonInit("PATCH", input)
+      ));
+    },
+
+    deleteProviderConnection(id: string): Promise<void> {
+      return mapConflict(() => request<void>(
+        `/api/v1/acquisition/provider-connections/${segment(id)}`,
+        { method: "DELETE" }
+      ));
+    },
+
+    testProviderConnection(id: string): Promise<ProviderConnectionTestDto> {
+      return mapConflict(() => request(
+        `/api/v1/acquisition/provider-connections/${segment(id)}/test`,
+        { method: "POST" }
+      ));
     },
 
     requestPlanDraft(
