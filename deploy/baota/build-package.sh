@@ -21,10 +21,16 @@ command -v rsync >/dev/null 2>&1 || {
   exit 1
 }
 
-mkdir -p "$OUTPUT_DIR" "$STAGING_DIR/backend" "$STAGING_DIR/frontend" "$STAGING_DIR/database"
+mkdir -p \
+  "$OUTPUT_DIR" \
+  "$STAGING_DIR/backend" \
+  "$STAGING_DIR/frontend" \
+  "$STAGING_DIR/contracts/json-schema" \
+  "$STAGING_DIR/database"
 
 cp "$PROJECT_ROOT/package.json" "$PROJECT_ROOT/package-lock.json" "$STAGING_DIR/"
 cp "$PROJECT_ROOT/backend/package.json" "$PROJECT_ROOT/backend/tsconfig.json" "$STAGING_DIR/backend/"
+cp "$PROJECT_ROOT/contracts/package.json" "$STAGING_DIR/contracts/"
 cp "$PROJECT_ROOT/frontend/package.json" \
   "$PROJECT_ROOT/frontend/index.html" \
   "$PROJECT_ROOT/frontend/tsconfig.json" \
@@ -42,6 +48,9 @@ rsync -a \
   --exclude='*.test.*' \
   --exclude='self-test.ts' \
   "$PROJECT_ROOT/frontend/src/" "$STAGING_DIR/frontend/src/"
+rsync -a \
+  "$PROJECT_ROOT/contracts/json-schema/" \
+  "$STAGING_DIR/contracts/json-schema/"
 
 sanitized_data="$(mktemp)"
 awk '
