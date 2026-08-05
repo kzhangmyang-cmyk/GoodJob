@@ -663,6 +663,10 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
       parameters: importParameters,
       requestBody: {
         required: true,
+        description: [
+          "仅接受原始 CSV/XLSX 二进制内容；",
+          "application/json 返回 415 unsupported_media_type。"
+        ].join(""),
         content: {
           "text/csv": { schema: binarySchema },
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {

@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import express from "express";
+import {
+  createAcquisitionDiscoveryOperationsRouter
+} from "./acquisition-discovery-operations-router.js";
 import { createAcquisitionOpenApiPaths } from "./acquisition-openapi.js";
 import {
   loadPublishedAcquisitionPaths,
@@ -19,6 +23,21 @@ const planRunOperations = {
   "/api/v1/acquisition/runs/{id}/pause": ["post"],
   "/api/v1/acquisition/runs/{id}/resume": ["post"],
   "/api/v1/acquisition/runs/{id}/cancel": ["post"]
+} as const;
+
+const discoveryOperations = {
+  "/api/v1/acquisition/providers": ["get"],
+  "/api/v1/acquisition/provider-connections": ["get", "post"],
+  "/api/v1/acquisition/provider-connections/{id}": [
+    "get",
+    "patch",
+    "delete"
+  ],
+  "/api/v1/acquisition/provider-connections/{id}/test": ["post"],
+  "/api/v1/acquisition/content-fetch-operations": ["get", "post"],
+  "/api/v1/acquisition/content-fetch-operations/{id}": ["get"],
+  "/api/v1/acquisition/import-operations": ["get", "post"],
+  "/api/v1/acquisition/import-operations/{id}": ["get"]
 } as const;
 
 function hasRequiredHeader(
@@ -76,6 +95,121 @@ test("published plan and run operations exactly match production", async () => {
         `${method.toUpperCase()} ${path}`
       );
     }
+  }
+});
+
+test("published discovery operations exactly match production", async () => {
+  const published = await loadPublishedAcquisitionPaths();
+  const production = createAcquisitionOpenApiPaths();
+
+  assert.equal(published["/api/v1/acquisition/fetch-operations"], undefined);
+  assert.equal(
+    published["/api/v1/acquisition/fetch-operations/{id}"],
+    undefined
+  );
+  for (const [path, methods] of Object.entries(discoveryOperations)) {
+    const publishedPath = published[path];
+    assert.ok(publishedPath, path);
+    assert.deepEqual(Object.keys(publishedPath).sort(), [...methods].sort(), path);
+    for (const method of methods) {
+      assert.deepEqual(
+        operationSurface(publishedPath[method]!),
+        operationSurface(production[path]![method]!),
+        `${method.toUpperCase()} ${path}`
+      );
+    }
+  }
+});
+
+test("published provider operations preserve runtime status and header semantics", async () => {
+  const published = await loadPublishedAcquisitionPaths();
+  const collection = published[
+    "/api/v1/acquisition/provider-connections"
+  ]!;
+  const detail = published[
+    "/api/v1/acquisition/provider-connections/{id}"
+  ]!;
+  const connectionTest = published[
+    "/api/v1/acquisition/provider-connections/{id}/test"
+  ]!.post!;
+
+  assert.ok(collection.post!.responses["201"]);
+  assert.ok(collection.post!.responses["200"]);
+  assert.ok(
+    collection.post!.responses["200"].headers["Idempotency-Replayed"]
+  );
+  assert.ok(detail.delete!.responses["204"]);
+  assert.equal(detail.delete!.responses["204"].headers, undefined);
+  assert.equal(hasRequiredHeader(detail.patch!, "If-Match"), false);
+  assert.equal(hasRequiredHeader(detail.delete!, "Idempotency-Key"), false);
+  assert.ok(connectionTest.responses["200"]);
+  assert.equal(connectionTest.responses["202"], undefined);
+});
+
+test("published imports accept only the raw media types supported by runtime", async () => {
+  const published = await loadPublishedAcquisitionPaths();
+  const operation = published[
+    "/api/v1/acquisition/import-operations"
+  ]!.post!;
+
+  assert.deepEqual(
+    Object.keys(operation.requestBody.content).sort(),
+    [
+      "application/octet-stream",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "text/csv"
+    ]
+  );
+  assert.equal(operation.requestBody.content["application/json"], undefined);
+  assert.ok(operation.responses["415"]);
+});
+
+test("mounted import router rejects JSON as unsupported media", async () => {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    req.user = {
+      id: "contract-owner",
+      teamId: "contract-team",
+      name: "Contract Owner",
+      email: "contract-owner@example.test",
+      role: "sales",
+      avatar: "",
+      authVersion: 1
+    };
+    next();
+  });
+  app.use(createAcquisitionDiscoveryOperationsRouter({
+    service: {} as never,
+    dispatchContentFetchOperation: async () => {},
+    dispatchImportOperation: async () => {},
+    requestIdFactory: () => "contract-request"
+  }));
+  const server = app.listen(0);
+  try {
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/acquisition/import-operations?fileName=leads.csv&subjectChannel=organization&mapping=${encodeURIComponent(JSON.stringify({ sourceTitle: "title", sourceSnippet: "snippet" }))}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "contract-import-json"
+        },
+        body: "{}"
+      }
+    );
+    const body = await response.json() as { code?: string };
+
+    assert.equal(response.status, 415);
+    assert.equal(body.code, "unsupported_media_type");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    }));
   }
 });
 

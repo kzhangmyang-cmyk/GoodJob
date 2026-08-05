@@ -18,9 +18,9 @@ const section16 = {
   "/api/v1/acquisition/provider-connections": ["get", "post"],
   "/api/v1/acquisition/provider-connections/{id}": ["get", "patch", "delete"],
   "/api/v1/acquisition/provider-connections/{id}/test": ["post"],
-  "/api/v1/acquisition/fetch-operations": ["post"],
-  "/api/v1/acquisition/fetch-operations/{id}": ["get"],
-  "/api/v1/acquisition/import-operations": ["post"],
+  "/api/v1/acquisition/content-fetch-operations": ["get", "post"],
+  "/api/v1/acquisition/content-fetch-operations/{id}": ["get"],
+  "/api/v1/acquisition/import-operations": ["get", "post"],
   "/api/v1/acquisition/import-operations/{id}": ["get"],
   "/api/v1/acquisition/evidence/{id}": ["get"],
   "/api/v1/acquisition/plans": ["post"],
@@ -53,15 +53,14 @@ const section16 = {
 
 const listPaths = [
   "/api/v1/ai/providers", "/api/v1/ai/connections", "/api/v1/ai/connections/{id}/models",
-  "/api/v1/ai/calls", "/api/v1/acquisition/providers", "/api/v1/acquisition/provider-connections",
+  "/api/v1/ai/calls",
   "/api/v1/acquisition/runs/{id}/shards",
   "/api/v1/acquisition/candidates/{id}/evidence", "/api/v1/acquisition/candidates/{id}/reviews",
   "/api/v1/acquisition/outcomes", "/api/v1/acquisition/audit-events"
 ];
 
 const asyncPosts = [
-  "/api/v1/ai/connections/{id}/test", "/api/v1/acquisition/provider-connections/{id}/test",
-  "/api/v1/acquisition/fetch-operations", "/api/v1/acquisition/import-operations",
+  "/api/v1/ai/connections/{id}/test",
   "/api/v1/acquisition/candidates/{id}/research",
   "/api/v1/acquisition/candidates/{id}/qualification", "/api/v1/acquisition/candidates/{id}/battle-card",
   "/api/v1/acquisition/copilot/sessions"
@@ -70,9 +69,6 @@ const asyncPosts = [
 const reads = {
   "/api/v1/ai/connections/{id}": "ModelConnection",
   "/api/v1/ai/calls/{id}": "ModelCallRecord",
-  "/api/v1/acquisition/provider-connections/{id}": "ProviderConnection",
-  "/api/v1/acquisition/fetch-operations/{id}": "ContentFetchOperation",
-  "/api/v1/acquisition/import-operations/{id}": "ImportOperation",
   "/api/v1/acquisition/evidence/{id}": "DiscoveryEvidence",
   "/api/v1/acquisition/plans/{id}": "AcquisitionPlan",
   "/api/v1/acquisition/runs/{id}": "AcquisitionRun",
@@ -112,9 +108,13 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
       const operation = document.paths[path][method];
       const isPlanRunOperation = path.startsWith("/api/v1/acquisition/plans")
         || path.startsWith("/api/v1/acquisition/runs");
+      const isDiscoveryOperation = path.startsWith("/api/v1/acquisition/providers")
+        || path.startsWith("/api/v1/acquisition/provider-connections")
+        || path.startsWith("/api/v1/acquisition/content-fetch-operations")
+        || path.startsWith("/api/v1/acquisition/import-operations");
       assert.deepEqual(
         operation.security,
-        isPlanRunOperation
+        isPlanRunOperation || isDiscoveryOperation
           ? method === "get"
             ? [{ bearerAuth: [] }, { cookieAuth: [] }]
             : [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
@@ -123,14 +123,19 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
       );
       assert.equal(operation.responses["401"].content["application/json"].schema.$ref, "#/components/schemas/ApiError");
       if (["post", "patch", "delete"].includes(method)) {
+        const requiresDiscoveryIdempotency = path === "/api/v1/acquisition/provider-connections"
+          || path === "/api/v1/acquisition/content-fetch-operations"
+          || path === "/api/v1/acquisition/import-operations";
         assert.equal(
-          operation.parameters.some((parameter) => [
+          (operation.parameters ?? []).some((parameter) => [
             "#/components/parameters/idempotencyKey",
             "#/components/parameters/planIdempotencyKey"
           ].includes(parameter.$ref) || (parameter.name === "Idempotency-Key" && parameter.in === "header" && parameter.required)),
-          !isPlanRunOperation
-            || path === "/api/v1/acquisition/plans"
-            || path === "/api/v1/acquisition/plans/{id}/runs"
+          isDiscoveryOperation
+            ? requiresDiscoveryIdempotency
+            : !isPlanRunOperation
+              || path === "/api/v1/acquisition/plans"
+              || path === "/api/v1/acquisition/plans/{id}/runs"
         );
       }
     }
@@ -182,6 +187,24 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(document.paths["/api/v1/acquisition/plans"].post.responses["201"].content["application/json"].schema.$ref, "#/components/schemas/AcquisitionPlan");
   assert.equal(document.paths["/api/v1/acquisition/plans/{id}/revisions"].post.responses["201"].content["application/json"].schema.$ref, "#/components/schemas/AcquisitionPlan");
   assert.equal(document.paths["/api/v1/acquisition/plans/{id}/runs"].post.responses["202"].content["application/json"].schema.$ref, "#/components/schemas/AcquisitionRun");
+  const providerCreate = document.paths["/api/v1/acquisition/provider-connections"].post;
+  assert.ok(providerCreate.responses["201"]);
+  assert.ok(providerCreate.responses["200"].headers["Idempotency-Replayed"]);
+  const providerDelete = document.paths["/api/v1/acquisition/provider-connections/{id}"].delete;
+  assert.ok(providerDelete.responses["204"]);
+  assert.equal(providerDelete.responses["204"].headers, undefined);
+  assert.equal((providerDelete.parameters ?? []).some((parameter) => parameter.name === "Idempotency-Key"), false);
+  const providerTest = document.paths["/api/v1/acquisition/provider-connections/{id}/test"].post;
+  assert.ok(providerTest.responses["200"]);
+  assert.equal(providerTest.responses["202"], undefined);
+  const importOperation = document.paths["/api/v1/acquisition/import-operations"].post;
+  assert.deepEqual(Object.keys(importOperation.requestBody.content).sort(), [
+    "application/octet-stream",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/csv"
+  ]);
+  assert.equal(importOperation.requestBody.content["application/json"], undefined);
+  assert.ok(importOperation.responses["415"]);
   assert.equal(document.components.schemas.AcquisitionRunPresentation.$ref, "../json-schema/acquisition-run-presentation.v1.schema.json");
   const presentation = registry.schemaDocuments.get("acquisition-run-presentation");
   assert.deepEqual(presentation.required, ["run", "providers", "summary", "candidateEvents", "nextAfter", "hasMore"]);

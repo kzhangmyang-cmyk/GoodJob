@@ -186,6 +186,28 @@ x-plan-run-schema: &planRunSchema
   { type: object, properties: { parentRunId: { type: string, minLength: 1, maxLength: 255 }, reason: { type: string, maxLength: 2000 } }, additionalProperties: false }
 x-plan-control-schema: &planControlSchema
   { type: object, required: [reason], properties: { reason: { type: string, minLength: 1, maxLength: 2000 } }, additionalProperties: false }
+x-acquisition-standard-responses: &acquisitionStandardResponses
+  '400': *apiError
+  '401': *apiError
+  '404': *apiError
+  '409': *apiError
+  '500': *apiError
+x-acquisition-resource-schema: &acquisitionResourceSchema
+  { type: object, additionalProperties: true }
+x-discovery-provider-schema: &discoveryProviderSchema
+  { type: object, required: [id, kind, displayName, capabilities], properties: { id: { type: string }, kind: { type: string, enum: [search, content_fetch, import] }, displayName: { type: string }, officialDocsUrl: { type: string, format: uri }, defaultBaseUrl: { type: string, format: uri }, requiresKey: { type: boolean }, keyHint: { type: string }, costNote: { type: string }, capabilities: { type: array, items: { type: string } } }, additionalProperties: false }
+x-provider-connection-schema: &providerConnectionSchema
+  { type: object, required: [id, ownerId, teamId, providerId, kind, status, credentialVersion, createdAt], properties: { id: { type: string }, ownerId: { type: string }, teamId: { type: string, nullable: true }, providerId: { type: string }, kind: { type: string, enum: [search, content_fetch, import] }, status: { type: string, enum: [active, inactive, disabled, error] }, credentialVersion: { type: integer, minimum: 1 }, createdAt: { type: string, format: date-time } }, additionalProperties: false }
+x-provider-connection-write-schema: &providerConnectionWriteSchema
+  { type: object, required: [providerId, apiKey], properties: { providerId: { type: string, minLength: 1, maxLength: 64, pattern: '^[a-z0-9_]+$' }, apiKey: { type: string, minLength: 1, maxLength: 4000, writeOnly: true, description: 客户自己的官方 API Key，仅加密保存且永不回显。 }, baseUrl: { type: string, format: uri, maxLength: 2000 }, status: { type: string, enum: [active, disabled], default: active } }, additionalProperties: false }
+x-provider-connection-patch-schema: &providerConnectionPatchSchema
+  { oneOf: [{ type: object, required: [apiKey], properties: { apiKey: { type: string, minLength: 1, maxLength: 4000, writeOnly: true, description: 客户自己的官方 API Key，仅加密保存且永不回显。 }, baseUrl: { type: string, format: uri, maxLength: 2000 }, status: { type: string, enum: [active, disabled] } }, additionalProperties: false }, { type: object, required: [status], properties: { status: { type: string, enum: [active, disabled] } }, additionalProperties: false }] }
+x-discovery-operation-list-schema: &discoveryOperationListSchema
+  { type: object, required: [items], properties: { items: { type: array, items: *acquisitionResourceSchema } }, additionalProperties: false }
+x-content-fetch-write-schema: &contentFetchWriteSchema
+  { type: object, required: [sourceUrl, subjectChannel], properties: { sourceUrl: { type: string, format: uri, pattern: '^[Hh][Tt][Tt][Pp][Ss]://', minLength: 1, maxLength: 4096, description: 仅允许公开 HTTPS URL。 运行时还会拒绝凭据、非默认端口、内网地址和敏感查询参数。 }, subjectChannel: { type: string, enum: [organization, individual] } }, additionalProperties: false }
+x-import-binary-schema: &importBinarySchema
+  { type: string, format: binary, maxLength: 5242880 }
 paths:
   /api/v1/ai/providers:
     get: { <<: *list, summary: List model providers }
@@ -212,28 +234,121 @@ paths:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get: { <<: *read, summary: Get model call record, responses: { '200': { description: Model call record, content: { application/json: { schema: { $ref: '#/components/schemas/ModelCallRecord' } } } }, '401': *apiError } }
   /api/v1/acquisition/providers:
-    get: { <<: *list, summary: List discovery providers }
+    get:
+      summary: List discovery providers
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Discovery provider catalog, content: { application/json: { schema: { type: object, required: [items, nextCursor], properties: { items: { type: array, items: *discoveryProviderSchema }, nextCursor: { type: string, nullable: true } }, additionalProperties: false } } } }
   /api/v1/acquisition/provider-connections:
-    get: { <<: *list, summary: List provider connections }
-    post: { <<: *write, summary: Create provider connection }
+    get:
+      summary: List provider connections
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Provider connections, content: { application/json: { schema: { type: object, required: [items, nextCursor], properties: { items: { type: array, items: *providerConnectionSchema }, nextCursor: { type: string, nullable: true } }, additionalProperties: false } } } }
+    post:
+      summary: Create provider connection
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: *providerConnectionWriteSchema } } }
+      responses:
+        <<: *acquisitionStandardResponses
+        '201': { description: Provider connection created, content: { application/json: { schema: *providerConnectionSchema } } }
+        '200': { description: Idempotent replay, headers: { Idempotency-Replayed: { schema: { type: string, enum: ['true'] } } }, content: { application/json: { schema: *providerConnectionSchema } } }
   /api/v1/acquisition/provider-connections/{id}:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get provider connection, responses: { '200': { description: Provider connection, content: { application/json: { schema: { $ref: '#/components/schemas/ProviderConnection' } } } }, '401': *apiError } }
-    patch: { <<: *write, summary: Update provider connection }
-    delete: { <<: *write, summary: Delete provider connection }
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }]
+    get:
+      summary: Get provider connection
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Provider connection, content: { application/json: { schema: *providerConnectionSchema } } }
+    patch:
+      summary: Update provider connection
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: *providerConnectionPatchSchema } } }
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Provider connection updated, content: { application/json: { schema: *providerConnectionSchema } } }
+    delete:
+      summary: Delete provider connection
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      responses:
+        '204': { description: Provider connection deleted }
+        '400': *apiError
+        '401': *apiError
+        '403': *apiError
+        '404': *apiError
+        '500': *apiError
   /api/v1/acquisition/provider-connections/{id}/test:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *asyncWrite, summary: Test provider connection }
-  /api/v1/acquisition/fetch-operations:
-    post: { <<: *asyncWrite, summary: Create content fetch operation }
-  /api/v1/acquisition/fetch-operations/{id}:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get content fetch operation, responses: { '200': { description: Content fetch operation, content: { application/json: { schema: { $ref: '#/components/schemas/ContentFetchOperation' } } } }, '401': *apiError } }
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }]
+    post:
+      summary: Test provider connection
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Provider connection health check, content: { application/json: { schema: *acquisitionResourceSchema } } }
+  /api/v1/acquisition/content-fetch-operations:
+    get:
+      summary: List content fetch operations
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Content fetch operations, content: { application/json: { schema: *discoveryOperationListSchema } } }
+    post:
+      summary: Create content fetch operation
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: *contentFetchWriteSchema } } }
+      responses:
+        <<: *acquisitionStandardResponses
+        '202': { description: Content fetch operation accepted, content: { application/json: { schema: *acquisitionResourceSchema } } }
+  /api/v1/acquisition/content-fetch-operations/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }]
+    get:
+      summary: Get content fetch operation
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Content fetch operation, content: { application/json: { schema: *acquisitionResourceSchema } } }
   /api/v1/acquisition/import-operations:
-    post: { <<: *asyncWrite, summary: Create import operation }
+    get:
+      summary: List import operations
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Import operations, content: { application/json: { schema: *discoveryOperationListSchema } } }
+    post:
+      summary: Create import operation
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/idempotencyKey' }
+        - { name: fileName, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+        - { name: subjectChannel, in: query, required: true, schema: { type: string, enum: [organization, individual] } }
+        - { name: mapping, in: query, required: true, schema: { type: string, minLength: 2, maxLength: 4096 } }
+      requestBody:
+        required: true
+        description: Raw CSV/XLSX only; application/json returns 415 unsupported_media_type.
+        content:
+          text/csv: { schema: *importBinarySchema }
+          application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: { schema: *importBinarySchema }
+          application/octet-stream: { schema: *importBinarySchema }
+      responses:
+        <<: *acquisitionStandardResponses
+        '202': { description: Import operation accepted, content: { application/json: { schema: *acquisitionResourceSchema } } }
+        '413': *apiError
+        '415': *apiError
   /api/v1/acquisition/import-operations/{id}:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get import operation, responses: { '200': { description: Import operation, content: { application/json: { schema: { $ref: '#/components/schemas/ImportOperation' } } } }, '401': *apiError } }
+    parameters: [{ name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }]
+    get:
+      summary: Get import operation
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Import operation, content: { application/json: { schema: *acquisitionResourceSchema } } }
   /api/v1/acquisition/evidence/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get:
