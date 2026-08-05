@@ -122,27 +122,27 @@
 - Produces: `TaskOverviewVm`、`renderTaskOverview()`；控制器首次进入真实模式时加载 overview 和抖音 task list；`新建获客任务` 切到既有自然语言输入；`打开任务` 加载任务详情并恢复 latest Run；`返回任务总览` 返回真实列表。
 - URL hash 固定为 `#ai-growth`、`#ai-growth/new`、`#ai-growth/task/<encoded-planId>`。
 
-- [ ] **Step 1: 写 API、ViewModel、hash 与渲染失败测试**
+- [x] **Step 1: 写 API、ViewModel、hash 与渲染失败测试**
 
   测试真实/空/失败/部分成功/无连接状态，断言正式数据不从 HTML `data-*` 读取；平台卡明确显示“抖音 · 公开搜索”，其他平台标记“待接入”；演示数据有独立标识。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm run test:unit --workspace frontend`
 
   Expected: FAIL，因为 overview API/组件/控制器状态尚不存在。
 
-- [ ] **Step 3: 实现真实页面**
+- [x] **Step 3: 实现真实页面**
 
   复用 `GoodJob-marketing-system-frontend` 的暖白背景、深色侧栏、平台卡片、指标卡、任务表格和时间线设计语言；禁止直接复制其 demo store。正式模式只渲染后端 ViewModel。
 
-- [ ] **Step 4: 运行 GREEN、前端测试与构建**
+- [x] **Step 4: 运行 GREEN、前端测试与构建**
 
   Run: `npm run test --workspace frontend && npm run build --workspace frontend`
 
   Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
   ```bash
   git add frontend/src/features/ai-growth/components/task-overview.ts frontend/src/features/ai-growth/task-overview.test.ts frontend/src/features/ai-growth/api.ts frontend/src/features/ai-growth/types.ts frontend/src/features/ai-growth/controller.ts frontend/src/features/ai-growth/styles.css
