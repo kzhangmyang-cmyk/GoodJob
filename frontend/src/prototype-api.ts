@@ -16864,11 +16864,11 @@ async function restoreSession() {
   state.user = user;
   applyAuthedUser(user);
   document.body.classList.add("is-authenticated");
+  if (qs<HTMLElement>(".view.active")?.id === "ai-growth") {
+    ensureAiGrowthAdvisor()?.enter();
+  }
   try {
     await refreshAll(user);
-    if (qs<HTMLElement>(".view.active")?.id === "ai-growth") {
-      ensureAiGrowthAdvisor()?.enter();
-    }
   } catch (error) {
     toast(error instanceof Error ? `数据加载失败：${error.message}` : "数据加载失败，请稍后重试", "error");
   }

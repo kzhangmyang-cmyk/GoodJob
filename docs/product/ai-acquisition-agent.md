@@ -294,6 +294,11 @@ If-Match: "candidate-v<当前候选版本>"
 主要接口：
 
 ```text
+# 只读获客任务总览
+GET    /api/v1/acquisition/overview?platform=douyin|web
+GET    /api/v1/acquisition/tasks?platform=douyin|web&limit=<1..100>
+GET    /api/v1/acquisition/tasks/:planId
+
 # 计划与运行
 POST   /api/v1/acquisition/plans
 GET    /api/v1/acquisition/plans/:id
@@ -354,7 +359,28 @@ GET    /api/v1/acquisition/import-operations/:id
 查询参数或文档指定的请求头传入，不使用 `multipart/form-data`。公开网页 URL
 和文件内容会在持久化前执行安全校验。
 
-### 7.1 Presentation 指标口径
+### 7.1 任务总览、身份与页面恢复
+
+上述三个任务总览接口全部只读，不会启动搜索、模型、审核或
+CRM 写入。正式获客任务的唯一身份是 `planId`；任务状态来自该
+Plan 的 latest Run。latest Run 先按 `createdAt` 降序，同一时刻再按
+`id` 降序选择，不依赖前端缓存或演示状态。
+
+`platform` 与 `provider` 必须分开：平台只有 `douyin|web`；
+`baidu_ai_search`、`tencent_web_search`、`tavily` 等是执行搜索的
+Provider，不是抖音平台状态。发现方式只允许
+`public_search|user_import|official_authorized`。当前未配置官方抖音
+授权时，页面必须标记为“抖音 · 公开搜索”，不得声称
+`official_authorized` 已连接。
+
+前端使用可恢复的 URL hash：`#ai-growth` 打开真实任务总览，
+`#ai-growth/new` 打开新建流程，
+`#ai-growth/task/<encodeURIComponent(planId)>` 恢复指定任务详情。
+刷新任务详情后必须重新读取权威 Plan、latest Run 和 Presentation。
+演示模式必须显示“演示数据”，只做本地回放，向正式获客和
+`/api/todos` 写接口发出的请求数必须为零。
+
+### 7.2 Presentation 指标口径
 
 `GET /api/v1/acquisition/runs/:id/presentation?after=<cursor>&limit=<1..100>`
 是前端真实运行模式的唯一进度来源。它是只读增量投影，不触发搜索、模型或写入。

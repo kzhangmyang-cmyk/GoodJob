@@ -16,7 +16,7 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: "NODE_ENV=e2e CRM_STORE=memory PORT=4288 npm run dev --workspace backend",
+      command: "NODE_ENV=e2e CRM_STORE=memory PORT=4288 ACQUISITION_MASTER_SECRET=goodjob-e2e-master-secret-at-least-32-bytes npm run dev --workspace backend",
       cwd: "..",
       url: "http://127.0.0.1:4288/api/health",
       reuseExistingServer: false,
