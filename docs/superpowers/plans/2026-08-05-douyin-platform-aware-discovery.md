@@ -65,11 +65,11 @@
 - Operation count and budget allocation use compiled operations, not pre-compilation model intents.
 - `planReadinessIssues` rejects every Douyin plan containing an unbound or lookalike-domain search query.
 
-- [ ] **Step 1: write failing security/behavior tests** for malicious site injection, Unicode variants, dedupe, length, allowed prefixes, operation/budget counts, and approval/run bypass attempts.
-- [ ] **Step 2: run RED**.
-- [ ] **Step 3: implement compiler and wire it before operation/budget calculation plus readiness enforcement**.
-- [ ] **Step 4: run GREEN**, focused acquisition plan suites and backend build.
-- [ ] **Step 5: commit** as `feat: compile safe douyin discovery queries`.
+- [x] **Step 1: write failing security/behavior tests** for malicious site injection, Unicode variants, dedupe, length, allowed prefixes, operation/budget counts, and approval/run bypass attempts.
+- [x] **Step 2: run RED**.
+- [x] **Step 3: implement compiler and wire it before operation/budget calculation plus readiness enforcement**.
+- [x] **Step 4: run GREEN**, focused acquisition plan suites and backend build.
+- [x] **Step 5: commit** as `feat: compile safe douyin discovery queries`.
 
 ### Task 3: 抖音公开来源分类与 Provider/内容来源分离
 
