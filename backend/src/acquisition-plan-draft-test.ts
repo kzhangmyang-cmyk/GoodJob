@@ -375,45 +375,89 @@ test("generates a trusted, ready plan with stable cartesian operations and conse
       operationId: "operation-1",
       subjectChannel: "organization",
       connectionId: "connection-brave",
-      query: "企业服务 采购 OR 招聘销售",
+      query: "site:douyin.com 企业服务 采购 OR 招聘销售",
       allocatedBudget: {
-        requests: 3,
-        results: 3,
+        requests: 2,
+        results: 2,
         amountMinor: 1,
-        durationSeconds: 3
+        durationSeconds: 2
       }
     }, {
       operationId: "operation-2",
       subjectChannel: "organization",
       connectionId: "connection-serper",
-      query: "企业服务 采购 OR 招聘销售",
-      allocatedBudget: {
-        requests: 3,
-        results: 3,
-        amountMinor: 1,
-        durationSeconds: 2
-      }
-    }, {
-      operationId: "operation-3",
-      subjectChannel: "individual",
-      connectionId: "connection-brave",
-      query: "经营者 公开表达 获客难",
-      allocatedBudget: {
-        requests: 2,
-        results: 3,
-        amountMinor: 1,
-        durationSeconds: 2
-      }
-    }, {
-      operationId: "operation-4",
-      subjectChannel: "individual",
-      connectionId: "connection-serper",
-      query: "经营者 公开表达 获客难",
+      query: "site:douyin.com 企业服务 采购 OR 招聘销售",
       allocatedBudget: {
         requests: 2,
         results: 2,
+        amountMinor: 1,
+        durationSeconds: 1
+      }
+    }, {
+      operationId: "operation-3",
+      subjectChannel: "organization",
+      connectionId: "connection-brave",
+      query: "site:iesdouyin.com 企业服务 采购 OR 招聘销售",
+      allocatedBudget: {
+        requests: 1,
+        results: 2,
+        amountMinor: 1,
+        durationSeconds: 1
+      }
+    }, {
+      operationId: "operation-4",
+      subjectChannel: "organization",
+      connectionId: "connection-serper",
+      query: "site:iesdouyin.com 企业服务 采购 OR 招聘销售",
+      allocatedBudget: {
+        requests: 1,
+        results: 1,
         amountMinor: 0,
-        durationSeconds: 2
+        durationSeconds: 1
+      }
+    }, {
+      operationId: "operation-5",
+      subjectChannel: "individual",
+      connectionId: "connection-brave",
+      query: "site:douyin.com 经营者 公开表达 获客难",
+      allocatedBudget: {
+        requests: 1,
+        results: 1,
+        amountMinor: 0,
+        durationSeconds: 1
+      }
+    }, {
+      operationId: "operation-6",
+      subjectChannel: "individual",
+      connectionId: "connection-serper",
+      query: "site:douyin.com 经营者 公开表达 获客难",
+      allocatedBudget: {
+        requests: 1,
+        results: 1,
+        amountMinor: 0,
+        durationSeconds: 1
+      }
+    }, {
+      operationId: "operation-7",
+      subjectChannel: "individual",
+      connectionId: "connection-brave",
+      query: "site:iesdouyin.com 经营者 公开表达 获客难",
+      allocatedBudget: {
+        requests: 1,
+        results: 1,
+        amountMinor: 0,
+        durationSeconds: 1
+      }
+    }, {
+      operationId: "operation-8",
+      subjectChannel: "individual",
+      connectionId: "connection-serper",
+      query: "site:iesdouyin.com 经营者 公开表达 获客难",
+      allocatedBudget: {
+        requests: 1,
+        results: 1,
+        amountMinor: 0,
+        durationSeconds: 1
       }
     }]
   );
@@ -559,9 +603,14 @@ test("enforces the 500-operation cartesian-product boundary without truncation",
   }));
   assert.equal(accepted.planDraft.operations.length, 500);
 
+  const threeConnections = [...twoConnections, {
+    ...activeConnection,
+    connectionId: "connection-brave-backup",
+    credentialVersion: 4
+  }];
   const tooMany = {
     ...intentAtLimit,
-    queryIntents: Array.from({ length: 251 }, (_, index) => ({
+    queryIntents: Array.from({ length: 167 }, (_, index) => ({
       subjectChannel: index % 2 === 0
         ? "organization" as const
         : "individual" as const,
@@ -570,8 +619,88 @@ test("enforces the 500-operation cartesian-product boundary without truncation",
   };
   await assert.rejects(
     generateWith(generatorReturning(tooMany, {
-      connectionRows: twoConnections
+      connectionRows: threeConnections
     })),
+    (error: unknown) =>
+      isDraftError(error, "PLAN_DRAFT_TOO_MANY_OPERATIONS")
+  );
+});
+
+test("Douyin expansion happens before the 500-operation ceiling and conserves all budgets", async () => {
+  const intentAtLimit = {
+    ...validIntent(),
+    queryIntents: Array.from({ length: 250 }, (_, index) => ({
+      subjectChannel: index % 2 === 0
+        ? "organization" as const
+        : "individual" as const,
+      query: `douyin intent ${index + 1}`
+    })),
+    budgetIntent: {
+      billingCurrency: "CNY",
+      maxRequests: 503,
+      maxResults: 509,
+      maxAmountMinor: 257,
+      maxDurationSeconds: 521
+    }
+  };
+  let sequence = 0;
+  const accepted = await generateWith(generatorReturning(intentAtLimit, {
+    idFactory: (prefix) => `${prefix}-${++sequence}`
+  }), "douyin");
+
+  assert.equal(accepted.planDraft.operations.length, 500);
+  assert.deepEqual(
+    accepted.planDraft.operations.slice(0, 4).map((operation) => ({
+      subjectChannel: operation.subjectChannel,
+      query: operation.query
+    })),
+    [{
+      subjectChannel: "organization",
+      query: "site:douyin.com douyin intent 1"
+    }, {
+      subjectChannel: "organization",
+      query: "site:iesdouyin.com douyin intent 1"
+    }, {
+      subjectChannel: "individual",
+      query: "site:douyin.com douyin intent 2"
+    }, {
+      subjectChannel: "individual",
+      query: "site:iesdouyin.com douyin intent 2"
+    }]
+  );
+  assert.deepEqual(
+    accepted.planDraft.operations.reduce((total, operation) => ({
+      requests: total.requests + operation.allocatedBudget.requests,
+      results: total.results + operation.allocatedBudget.results,
+      amountMinor:
+        total.amountMinor + operation.allocatedBudget.amountMinor,
+      durationSeconds:
+        total.durationSeconds + operation.allocatedBudget.durationSeconds
+    }), {
+      requests: 0,
+      results: 0,
+      amountMinor: 0,
+      durationSeconds: 0
+    }),
+    {
+      requests: 503,
+      results: 509,
+      amountMinor: 257,
+      durationSeconds: 521
+    }
+  );
+
+  const tooMany = {
+    ...intentAtLimit,
+    queryIntents: Array.from({ length: 251 }, (_, index) => ({
+      subjectChannel: index % 2 === 0
+        ? "organization" as const
+        : "individual" as const,
+      query: `douyin overflow ${index + 1}`
+    }))
+  };
+  await assert.rejects(
+    generateWith(generatorReturning(tooMany), "douyin"),
     (error: unknown) =>
       isDraftError(error, "PLAN_DRAFT_TOO_MANY_OPERATIONS")
   );

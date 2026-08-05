@@ -844,6 +844,15 @@ export class AcquisitionPlanRunService {
           "已审批计划快照不完整或哈希不匹配"
         );
       }
+      const readinessIssues = planReadinessIssues(version.payload);
+      if (readinessIssues.length > 0) {
+        throw new AcquisitionPlanRunError(
+          409,
+          "plan_not_ready",
+          "已审批计划快照不再满足运行条件",
+          { issues: readinessIssues }
+        );
+      }
 
       let parentRun: AcquisitionRun | null = null;
       if (input.parentRunId) {

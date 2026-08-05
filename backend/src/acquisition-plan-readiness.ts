@@ -3,6 +3,9 @@ import type {
   AcquisitionBudgetUsage,
   AcquisitionPlanPayload
 } from "./acquisition-plan-run-repository.js";
+import {
+  isSafeDouyinSearchQuery
+} from "./acquisition-douyin-discovery-plan.js";
 
 function nonNegativeInteger(value: number) {
   return Number.isSafeInteger(value) && value >= 0;
@@ -86,6 +89,9 @@ export function planReadinessIssues(payload: AcquisitionPlanPayload): string[] {
       searchChannels.add(operation.subjectChannel);
       if (!operation.query?.trim()) {
         issues.push(`search_query_required:${operation.operationId}`);
+      } else if (payload.targetPlatform === "douyin"
+        && !isSafeDouyinSearchQuery(operation.query)) {
+        issues.push(`douyin_search_query_unsafe:${operation.operationId}`);
       }
     } else if (!operation.sourceRef?.trim()) {
       issues.push(`source_ref_required:${operation.operationId}`);

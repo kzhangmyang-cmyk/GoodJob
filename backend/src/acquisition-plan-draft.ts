@@ -30,6 +30,9 @@ import type {
 import {
   ACQUISITION_SEARCH_PROVIDER_IDS
 } from "./acquisition-discovery-providers.js";
+import {
+  compileAcquisitionDiscoveryQueries
+} from "./acquisition-douyin-discovery-plan.js";
 import type {
   CreateAcquisitionJudgmentPortOptions
 } from "./acquisition-judgment-port.js";
@@ -336,8 +339,19 @@ export function createAcquisitionPlanDraftGenerator(options: {
         fail("PLAN_DRAFT_INTENT_INVALID");
       }
 
+      let compiledQueryIntents: ReturnType<
+        typeof compileAcquisitionDiscoveryQueries
+      >;
+      try {
+        compiledQueryIntents = compileAcquisitionDiscoveryQueries({
+          targetPlatform,
+          queryIntents: intent.data.queryIntents
+        });
+      } catch {
+        fail("PLAN_DRAFT_INTENT_INVALID");
+      }
       const operationCount =
-        intent.data.queryIntents.length * connections.length;
+        compiledQueryIntents.length * connections.length;
       if (!Number.isSafeInteger(operationCount)
         || operationCount > 500) {
         fail("PLAN_DRAFT_TOO_MANY_OPERATIONS");
@@ -363,7 +377,7 @@ export function createAcquisitionPlanDraftGenerator(options: {
         operationCount
       );
       let operationIndex = 0;
-      const operations = intent.data.queryIntents.flatMap((queryIntent) =>
+      const operations = compiledQueryIntents.flatMap((queryIntent) =>
         connections.map((connection) => {
           const index = operationIndex;
           operationIndex += 1;

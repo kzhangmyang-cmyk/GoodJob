@@ -274,6 +274,38 @@ extends InMemoryAcquisitionPlanRunRepository {
   }
 }
 
+class ReadinessBypassRepository
+extends InMemoryAcquisitionPlanRunRepository {
+  tamperApprovedSnapshot = false;
+
+  override transaction<T>(
+    work: (transaction: AcquisitionPlanRunRepositoryTransaction) => Promise<T> | T
+  ): Promise<T> {
+    return super.transaction((transaction) => work({
+      ...transaction,
+      getPlan: (id) => {
+        const plan = transaction.getPlan(id);
+        if (this.tamperApprovedSnapshot && plan?.approvedVersionId) {
+          plan.approvedSnapshotHash = "forged-safe-looking-hash";
+        }
+        return plan;
+      },
+      getPlanVersion: (id) => {
+        const version = transaction.getPlanVersion(id);
+        if (this.tamperApprovedSnapshot && version) {
+          version.payload.targetPlatform = "douyin";
+          const search = version.payload.operations.find(
+            (operation) => operation.kind === "search"
+          );
+          if (search) search.query = "site:evil.example \u7ed5\u8fc7\u5ba1\u6279";
+          version.payloadHash = "forged-safe-looking-hash";
+        }
+        return version;
+      }
+    }));
+  }
+}
+
 test("plan updates append immutable versions and enforce ETag plus owner/team isolation", async () => {
   const { repository, service } = harness();
   const created = await service.createPlan(ownerA, planInput());
@@ -435,6 +467,55 @@ test("explicit approval freezes dual-channel ICP, connections, queries, budget a
     approvedVersion.payload.modelSnapshotRef.schemaHash,
     /^sha256:/
   );
+});
+
+test("Douyin query safety cannot be bypassed by direct plan approval or a tampered approved snapshot", async () => {
+  const repository = new ReadinessBypassRepository();
+  const executionPort = new RecordingExecutionPort();
+  let id = 0;
+  const service = new AcquisitionPlanRunService({
+    repository,
+    executionPort,
+    now: () => "2026-08-06T00:00:00.000Z",
+    idFactory: (prefix) => `${prefix}_douyin_boundary_${++id}`
+  });
+
+  const unsafe = await service.createPlan(ownerA, planInput({
+    targetPlatform: "douyin"
+  }));
+  await rejectsCode(
+    () => service.approvePlan(ownerA, unsafe.id, unsafe.etag, {
+      decision: "approve",
+      reason: "\u4e0d\u5e94\u6279\u51c6\u672a\u7ed1\u5b9a\u7684\u67e5\u8be2"
+    }),
+    "plan_not_ready"
+  );
+
+  const safeInput = planInput({ targetPlatform: "douyin" });
+  safeInput.operations = safeInput.operations.map((operation) => {
+    if (operation.kind !== "search") return operation;
+    return {
+      ...operation,
+      query: operation.subjectChannel === "organization"
+        ? "site:douyin.com \u62db\u8058\u9500\u552e \u65b0\u5e97\u5f00\u4e1a"
+        : "site:iesdouyin.com \u8001\u677f \u83b7\u5ba2\u96be"
+    };
+  });
+  const safe = await service.createPlan(ownerA, safeInput);
+  const approved = await service.approvePlan(
+    ownerA,
+    safe.id,
+    safe.etag,
+    { decision: "approve", reason: "\u5df2\u6838\u5bf9\u6296\u97f3\u7ad9\u70b9\u67e5\u8be2" }
+  );
+  repository.tamperApprovedSnapshot = true;
+  await rejectsCode(
+    () => service.createRun(ownerA, approved.id, {
+      idempotencyKey: "douyin-run-readiness-bypass"
+    }),
+    "plan_not_ready"
+  );
+  assert.equal(executionPort.enqueueCalls.length, 0);
 });
 
 test("approval delegates trusted model snapshot validation and accepts the bound schema bundle", async () => {

@@ -141,3 +141,43 @@ test("plan readiness rejects invalid allocation fields and allocations over plan
     ]);
   }
 });
+
+test("Douyin plan readiness rejects every search query outside exact approved roots", () => {
+  for (const query of [
+    "\u53a6\u95e8 \u88c5\u4fee\u83b7\u5ba2",
+    "site:evil.example \u53a6\u95e8 \u88c5\u4fee\u83b7\u5ba2",
+    "site:douyin.com.evil.example \u53a6\u95e8 \u88c5\u4fee\u83b7\u5ba2",
+    "site:douyin.com site:evil.example \u53a6\u95e8 \u88c5\u4fee\u83b7\u5ba2"
+  ]) {
+    const payload = readyPayload();
+    payload.targetPlatform = "douyin";
+    payload.operations[0].query = query;
+    payload.operations[1].query = "site:iesdouyin.com \u8001\u677f \u83b7\u5ba2\u96be";
+    assert.deepEqual(planReadinessIssues(payload), [
+      "douyin_search_query_unsafe:organization-search"
+    ], query);
+  }
+});
+
+test("Douyin plan readiness accepts compiler-shaped queries and web keeps legacy queries", () => {
+  const douyin = readyPayload();
+  douyin.targetPlatform = "douyin";
+  douyin.operations[0].query =
+    "site:douyin.com \u62db\u8058\u9500\u552e OR \u5bfb\u627e\u4f9b\u5e94\u5546";
+  douyin.operations[1].query =
+    "site:iesdouyin.com \u8001\u677f \u83b7\u5ba2\u96be OR \u8be2\u4ef7";
+  assert.deepEqual(planReadinessIssues(douyin), []);
+
+  const web = readyPayload();
+  web.targetPlatform = "web";
+  assert.deepEqual(planReadinessIssues(web), []);
+});
+
+test("Douyin plan readiness reports each unsafe search operation", () => {
+  const payload = readyPayload();
+  payload.targetPlatform = "douyin";
+  assert.deepEqual(planReadinessIssues(payload), [
+    "douyin_search_query_unsafe:organization-search",
+    "douyin_search_query_unsafe:individual-search"
+  ]);
+});
