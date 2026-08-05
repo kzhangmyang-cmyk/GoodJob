@@ -659,34 +659,39 @@ function missing(message: string): FixtureResponse {
 }
 
 function contentFetchOperation(
-  status: "queued" | "running" | "succeeded",
+  status: "queued" | "running" | "succeeded" | "access_restricted",
   evidenceIds = [profileEvidenceId]
 ) {
+  const completed = status === "succeeded" || status === "access_restricted";
   return {
     id: contentFetchId,
     ownerId: "u_manager_alex",
     teamId: "europe",
     actorId: "u_manager_alex",
     sourceUrl: profileUrl,
-    finalUrl: status === "succeeded" ? profileUrl : null,
+    finalUrl: completed ? profileUrl : null,
     subjectChannel: "individual",
     status,
-    accessStatus: status === "succeeded" ? "public_content" : null,
-    httpStatus: status === "succeeded" ? 200 : null,
-    contentType: status === "succeeded" ? "text/html" : null,
-    title: status === "succeeded" ? profileEvidence.sourceTitle : null,
-    rawArtifactHash: status === "succeeded"
+    accessStatus: status === "succeeded"
+      ? "public_content"
+      : status === "access_restricted" ? "access_restricted" : null,
+    httpStatus: status === "succeeded"
+      ? 200
+      : status === "access_restricted" ? 403 : null,
+    contentType: completed ? "text/html" : null,
+    title: completed ? profileEvidence.sourceTitle : null,
+    rawArtifactHash: completed
       ? profileEvidence.rawArtifactHash
       : null,
-    contentHash: status === "succeeded"
+    contentHash: completed
       ? profileEvidence.contentHash
       : null,
-    evidenceCount: status === "succeeded" ? evidenceIds.length : 0,
-    evidenceIds: status === "succeeded" ? evidenceIds : [],
+    evidenceCount: completed ? evidenceIds.length : 0,
+    evidenceIds: completed ? evidenceIds : [],
     errorCode: null,
     createdAt: timestamp,
     startedAt: status === "queued" ? null : timestamp,
-    completedAt: status === "succeeded" ? timestamp : null
+    completedAt: completed ? timestamp : null
   };
 }
 
@@ -1015,16 +1020,20 @@ test("blocks video and short links, then refuses restricted or mismatched profil
   const fixture = configureNavigation(new StrictIdentityFixture());
   configureInitialCandidateReads(fixture);
   fixture
-    .on("POST", "/api/v1/acquisition/content-fetch-operations", {
-      status: 202,
-      body: contentFetchOperation("succeeded", [
-        restrictedEvidence.id,
-        mismatchedEvidence.id
-      ])
-    })
-    .on("GET", `/api/v1/acquisition/evidence/${restrictedEvidence.id}`, {
-      body: restrictedEvidence
-    })
+    .on(
+      "POST",
+      "/api/v1/acquisition/content-fetch-operations",
+      {
+        status: 202,
+        body: contentFetchOperation("access_restricted", [
+          restrictedEvidence.id
+        ])
+      },
+      {
+        status: 202,
+        body: contentFetchOperation("succeeded", [mismatchedEvidence.id])
+      }
+    )
     .on("GET", `/api/v1/acquisition/evidence/${mismatchedEvidence.id}`, {
       body: mismatchedEvidence
     });
@@ -1052,21 +1061,16 @@ test("blocks video and short links, then refuses restricted or mismatched profil
   await input.fill(profileUrl);
   await expect(fetch).toBeEnabled();
   await fetch.click();
-  const restricted = drawer.locator(
-    `[data-field="identity-evidence"][data-evidence-id="${restrictedEvidence.id}"]`
-  );
+  await expect(drawer).toContainText("公开主页访问受限");
+  await expect(fetch).toBeEnabled();
+  await fetch.click();
   const mismatched = drawer.locator(
     `[data-field="identity-evidence"][data-evidence-id="${mismatchedEvidence.id}"]`
   );
-  await expect(restricted).toBeDisabled();
   await expect(mismatched).toBeDisabled();
-  const restrictedRow = restricted.locator(
-    "xpath=ancestor::div[contains(@class, 'ai-growth-identity-evidence')]"
-  );
   const mismatchedRow = mismatched.locator(
     "xpath=ancestor::div[contains(@class, 'ai-growth-identity-evidence')]"
   );
-  await expect(restrictedRow).toContainText("access_restricted");
   await expect(mismatchedRow.getByRole("link", { name: "打开公开证据" }))
     .toHaveAttribute("href", "https://www.douyin.com/user/DIFFERENT");
   await drawer.locator('[data-field="identity-rationale"]').fill(
@@ -1077,6 +1081,7 @@ test("blocks video and short links, then refuses restricted or mismatched profil
 
   expect(fixture.calls("POST", identityConfirmationPath)).toHaveLength(0);
   expect(fixture.writes().map((request) => request.pathname)).toEqual([
+    "/api/v1/acquisition/content-fetch-operations",
     "/api/v1/acquisition/content-fetch-operations"
   ]);
   assertNoForbiddenWrites(fixture);
