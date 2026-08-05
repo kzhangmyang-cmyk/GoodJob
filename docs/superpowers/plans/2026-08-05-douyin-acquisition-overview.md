@@ -38,27 +38,27 @@
 - `latestRun` 固定字段：`id`、`status`、`updatedAt`、`completedAt`、`evidenceCount`、`consumedBudget`；无 Run 时为 `null`。
 - `AcquisitionTaskOverview` 固定字段：`generatedAt`、`platform`、`totals`、`statusCounts`、`discoveryMethodCounts`、`tasks`；`tasks` 取最近 20 项。
 
-- [ ] **Step 1: 先写聚合行为失败测试**
+- [x] **Step 1: 先写聚合行为失败测试**
 
   在 `acquisition-task-overview-test.ts` 创建不同租户的 Plan 和多个 Run，断言：跨租户不可见；每个 Plan 只取 latest Run；`site:douyin.com`/`iesdouyin.com` 推断为 `douyin`；search/import/content-fetch 分别映射为公开搜索/用户导入；空财务数据不产生金额字段。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-task-overview-test.ts`
 
   Expected: FAIL，因为服务与 repository 只读查询尚不存在。
 
-- [ ] **Step 3: 实现最小读模型与内存/MySQL 查询**
+- [x] **Step 3: 实现最小读模型与内存/MySQL 查询**
 
   Repository 查询必须显式接收 scope，并在 SQL `WHERE owner_id = ? AND team_id = ?` 中过滤。聚合服务只读取并 `structuredClone`，不得改变 Plan/Run。
 
-- [ ] **Step 4: 运行 GREEN 与后端构建**
+- [x] **Step 4: 运行 GREEN 与后端构建**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-task-overview-test.ts && npm run build --workspace backend`
 
   Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
   ```bash
   git add backend/src/acquisition-task-overview.ts backend/src/acquisition-task-overview-test.ts backend/src/acquisition-plan-run-repository.ts backend/src/acquisition-mysql-repositories.ts
