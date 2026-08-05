@@ -95,7 +95,7 @@ test("eligible exact-profile evidence is selectable and enables human confirmati
         id: "evidence-profile",
         title: "厦门装修获客公开主页",
         url: "https://www.douyin.com/user/MS4wLjABAAAA",
-        sourcePlatform: "douyin",
+        sourcePlatform: "www.douyin.com",
         sourceType: "profile",
         excerpt: "公开主页简介",
         accessStatus: "public",

@@ -627,6 +627,112 @@ test("renderer separates facts, inferences with confidence, and unknowns with ev
   assert.doesNotMatch(html, /确认采购偏好/);
 });
 
+test("renderer embeds the Douyin identity workbench and locks downstream decisions until the subject is confirmed", () => {
+  const drawer = createBattleCardDrawer({
+    api: apiStub(),
+    onCandidateUpdated: () => undefined
+  });
+  const state = drawer.getState();
+  const discoveryEvidence: EvidenceDto = {
+    ...profileEvidence,
+    id: "evidence-1",
+    sourceTitle: "抖音视频中的公开需求信号",
+    sourceSnippet: "想了解一下获客系统",
+    provenance: {
+      kind: "search_result",
+      provider: "baidu",
+      queryText: "site:douyin.com 获客系统",
+      sourceUrl: "https://www.douyin.com/video/123456",
+      resultRank: 1,
+      sourceType: "video"
+    }
+  };
+  state.open = true;
+  state.candidateId = "candidate-1";
+  state.candidate = {
+    status: "ready",
+    data: unresolvedIndividualCandidate(),
+    error: null
+  };
+  state.evidence = {
+    status: "ready",
+    data: [discoveryEvidence, profileEvidence],
+    error: null
+  };
+  state.qualification = { status: "ready", data: qualification, error: null };
+  state.financialValue = {
+    status: "ready",
+    data: financialValue,
+    error: null
+  };
+  state.battleCard = { status: "ready", data: battleCardV2, error: null };
+  state.identityVerification = {
+    ...state.identityVerification,
+    status: "ready_to_confirm",
+    profileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    rationale: "公开主页昵称、地区与原始需求信号一致。",
+    fetchedEvidenceIds: ["evidence-profile-1"],
+    selectedEvidenceIds: ["evidence-profile-1"]
+  };
+
+  const html = renderBattleCardDrawer(state, drawer.render().callbacks).html;
+
+  assert.match(html, /主体核验/);
+  assert.match(html, /抖音视频页/);
+  assert.match(html, /百度搜索/);
+  assert.match(
+    html,
+    /data-action="confirm-candidate-identity"(?![^>]*disabled)/
+  );
+  assert.doesNotMatch(html, /data-action="run-qualification"/);
+  assert.doesNotMatch(html, /data-action="generate-battle-card"/);
+  assert.doesNotMatch(html, /data-v2-region="account-overview"/);
+  assert.match(html, /主体确认后自动继续/);
+});
+
+test("renderer reveals qualification and the battle card after Douyin identity is resolved", () => {
+  const drawer = createBattleCardDrawer({
+    api: apiStub(),
+    onCandidateUpdated: () => undefined
+  });
+  const state = drawer.getState();
+  state.open = true;
+  state.candidateId = "candidate-1";
+  state.candidate = {
+    status: "ready",
+    data: unresolvedIndividualCandidate("candidate-1", {
+      status: "pending_review",
+      identityResolved: true,
+      publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+    }),
+    error: null
+  };
+  state.evidence = {
+    status: "ready",
+    data: [profileEvidence],
+    error: null
+  };
+  state.qualification = { status: "ready", data: qualification, error: null };
+  state.financialValue = {
+    status: "ready",
+    data: financialValue,
+    error: null
+  };
+  state.battleCard = { status: "ready", data: battleCardV2, error: null };
+  state.identityVerification = {
+    ...state.identityVerification,
+    status: "complete",
+    profileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    message: "作战资料已生成，等待人工审核"
+  };
+
+  const html = renderBattleCardDrawer(state, drawer.render().callbacks).html;
+
+  assert.match(html, /主体已确认/);
+  assert.match(html, /A 级 · 88 分/);
+  assert.match(html, /data-v2-region="account-overview"/);
+});
+
 test("renderer keeps all battle-card v2 regions in a fixed order and marks inference with confidence", () => {
   const drawer = createBattleCardDrawer({
     api: apiStub(),

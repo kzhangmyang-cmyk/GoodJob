@@ -148,7 +148,9 @@ function eligibleIdentityEvidence(
   return item.eligible
     && declared !== null
     && evidence === declared
-    && item.sourcePlatform.toLowerCase() === "douyin"
+    && ["douyin", "douyin.com", "www.douyin.com"].includes(
+      item.sourcePlatform.trim().toLowerCase()
+    )
     && item.sourceType === "profile"
     && item.accessStatus !== "access_restricted"
     && item.fetchedAt !== null;

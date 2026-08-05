@@ -2052,6 +2052,7 @@ export function createMountedAiGrowthAdvisor(
     candidateId: string;
     providerId: string;
     connectionId: string;
+    evidenceId: string;
     reviewReason: boolean;
   } | null = null;
   let entered = false;
@@ -2094,6 +2095,7 @@ export function createMountedAiGrowthAdvisor(
       candidateId: element.dataset.candidateId ?? "",
       providerId: element.dataset.providerId ?? "",
       connectionId: element.dataset.connectionId ?? "",
+      evidenceId: element.dataset.evidenceId ?? "",
       reviewReason
     };
   };
@@ -2122,6 +2124,7 @@ export function createMountedAiGrowthAdvisor(
         && candidate.candidateId === descriptor.candidateId
         && candidate.providerId === descriptor.providerId
         && candidate.connectionId === descriptor.connectionId
+        && candidate.evidenceId === descriptor.evidenceId
         && candidate.reviewReason === descriptor.reviewReason;
     }) ?? null;
   };
@@ -2261,6 +2264,7 @@ export function createMountedAiGrowthAdvisor(
     if (
       action === "configure-connections"
       || action === "open-battle-card"
+      || action === "verify-identity"
       || action === "approve"
       || action === "reject"
       || action === "do-not-contact"
@@ -2387,12 +2391,46 @@ export function createMountedAiGrowthAdvisor(
         controller.setMode("demo");
         break;
       case "open-battle-card":
+      case "verify-identity":
       case "approve":
       case "reject":
       case "do-not-contact":
       case "request-research":
       case "reopen":
         await controller.openCandidate(candidateId);
+        break;
+      case "fetch-identity-profile": {
+        const profileUrl = root.querySelector<HTMLInputElement>(
+          ".ai-growth-battle-drawer [data-field='identity-profile-url']"
+        )?.value ?? "";
+        controller.getDrawer().setIdentityDraft({ profileUrl });
+        await controller.getDrawer().fetchIdentityProfile(profileUrl);
+        break;
+      }
+      case "confirm-candidate-identity": {
+        const drawer = controller.getDrawer();
+        const profileUrl = root.querySelector<HTMLInputElement>(
+          ".ai-growth-battle-drawer [data-field='identity-profile-url']"
+        )?.value ?? "";
+        const rationale = root.querySelector<HTMLTextAreaElement>(
+          ".ai-growth-battle-drawer [data-field='identity-rationale']"
+        )?.value ?? "";
+        const evidenceIds = [
+          ...root.querySelectorAll<HTMLInputElement>(
+            ".ai-growth-battle-drawer [data-field='identity-evidence']:checked"
+          )
+        ].map((input) => input.dataset.evidenceId ?? "")
+          .filter(Boolean);
+        drawer.setIdentityDraft({ profileUrl, rationale });
+        await drawer.confirmCandidateIdentity({
+          profileUrl,
+          rationale,
+          evidenceIds
+        });
+        break;
+      }
+      case "retry-identity-continuation":
+        await controller.getDrawer().retryIdentityContinuation();
         break;
       case "preview-review":
         dependencies.toast("演示模式仅预览人工审核");
@@ -2457,9 +2495,25 @@ export function createMountedAiGrowthAdvisor(
     );
   };
   const onInput = (event: Event) => {
-    const field = event.target as HTMLTextAreaElement;
+    const field = event.target as HTMLInputElement | HTMLTextAreaElement;
     if (field.matches("[data-field='task-text']")) {
       controller.setTaskText(field.value, false);
+    } else if (field.matches("[data-field='identity-profile-url']")) {
+      controller.getDrawer().setIdentityDraft({ profileUrl: field.value });
+    } else if (field.matches("[data-field='identity-rationale']")) {
+      controller.getDrawer().setIdentityDraft({ rationale: field.value });
+    }
+  };
+  const onChange = (event: Event) => {
+    const field = event.target;
+    if (
+      field instanceof HTMLInputElement
+      && field.matches("[data-field='identity-evidence']")
+    ) {
+      controller.getDrawer().toggleIdentityEvidence(
+        field.dataset.evidenceId ?? "",
+        field.checked
+      );
     }
   };
   const onKeydown = (event: KeyboardEvent) => {
@@ -2494,6 +2548,7 @@ export function createMountedAiGrowthAdvisor(
 
   root.addEventListener("click", onClick);
   root.addEventListener("input", onInput);
+  root.addEventListener("change", onChange);
   doc.addEventListener("keydown", onKeydown);
   win?.addEventListener("hashchange", onHashChange);
   controller.render(root);
@@ -2513,6 +2568,7 @@ export function createMountedAiGrowthAdvisor(
       controller.dispose();
       root.removeEventListener("click", onClick);
       root.removeEventListener("input", onInput);
+      root.removeEventListener("change", onChange);
       doc.removeEventListener("keydown", onKeydown);
       win?.removeEventListener("hashchange", onHashChange);
       if (lockedDrawer !== null) {

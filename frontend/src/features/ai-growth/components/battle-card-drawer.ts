@@ -34,6 +34,8 @@ import {
 import {
   isExactDouyinProfileUrl,
   normalizeExactDouyinProfileUrl,
+  renderIdentityVerificationPanel,
+  type IdentityEvidenceVm,
   type IdentityVerificationStatus
 } from "./identity-verification-panel.js";
 
@@ -125,6 +127,13 @@ export interface CandidateReviewSubmission {
 
 export interface BattleCardDrawerCallbacks {
   onClose(): void;
+  onFetchIdentityProfile(profileUrl: string): Promise<void>;
+  onIdentityDraftChange(
+    input: Partial<Pick<CandidateIdentitySubmission, "profileUrl" | "rationale">>
+  ): void;
+  onToggleIdentityEvidence(evidenceId: string, selected: boolean): void;
+  onConfirmCandidateIdentity(input: CandidateIdentitySubmission): Promise<void>;
+  onRetryIdentityContinuation(): Promise<void>;
   onRunQualification(): Promise<void>;
   onGenerateBattleCard(): Promise<void>;
   onReview(input: CandidateReviewSubmission): Promise<void>;
@@ -291,6 +300,14 @@ function identityResolved(candidate: CandidateDto | null): boolean {
   return candidate?.identityResolved === true;
 }
 
+function requiresDouyinIdentityVerification(
+  candidate: CandidateDto | null
+): boolean {
+  return candidate?.subjectKind === "individual"
+    && isDouyinEvidencePlatform(candidate.sourcePlatform)
+    && !identityResolved(candidate);
+}
+
 function exactDouyinProfileUrl(value: string): string {
   const normalized = normalizeExactDouyinProfileUrl(value);
   if (normalized === null) {
@@ -332,6 +349,107 @@ function eligibleIdentityEvidence(
     && typeof evidence.fetchedAt === "string"
     && evidence.fetchedAt.trim().length > 0
     && canonicalSource === declaredProfileUrl;
+}
+
+function provenanceText(
+  evidence: EvidenceDto | null,
+  field: "sourceUrl" | "provider"
+): string | null {
+  const value = evidence?.provenance[field];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function identityEvidenceVm(
+  evidence: EvidenceDto,
+  state: BattleCardDrawerState
+): IdentityEvidenceVm {
+  const url = provenanceText(evidence, "sourceUrl");
+  const sourceType = evidenceSourceType(evidence);
+  const fetchedByCurrentOperation =
+    state.identityVerification.fetchedEvidenceIds.includes(evidence.id);
+  const exactProfile = url !== null
+    && normalizeExactDouyinProfileUrl(url)
+      === normalizeExactDouyinProfileUrl(state.identityVerification.profileUrl);
+  const eligible = fetchedByCurrentOperation
+    && evidence.targetType === "individual_signal"
+    && isDouyinEvidencePlatform(evidence.sourcePlatform)
+    && sourceType === "profile"
+    && evidence.accessStatus !== "access_restricted"
+    && Boolean(evidence.fetchedAt)
+    && exactProfile;
+  let ineligibleReason: string | null = null;
+  if (!eligible) {
+    if (!fetchedByCurrentOperation) {
+      ineligibleReason = "原始发现证据仅用于判断需求，不能直接确认主体";
+    } else if (evidence.accessStatus === "access_restricted") {
+      ineligibleReason = "公开主页访问受限，不能用于主体核验";
+    } else if (!exactProfile || sourceType !== "profile") {
+      ineligibleReason = "证据页面与声明的精确抖音主页不一致";
+    } else {
+      ineligibleReason = "证据缺少可核验的公开抓取信息";
+    }
+  }
+  return {
+    id: evidence.id,
+    title: evidence.sourceTitle,
+    url,
+    sourcePlatform: evidence.sourcePlatform,
+    sourceType,
+    excerpt: evidence.sourceSnippet,
+    accessStatus: evidence.accessStatus,
+    fetchedAt: evidence.fetchedAt,
+    eligible,
+    ineligibleReason
+  };
+}
+
+function identityVerificationPanel(
+  state: BattleCardDrawerState,
+  callbacks: BattleCardDrawerCallbacks
+): string {
+  const candidate = state.candidate.data;
+  if (
+    candidate?.subjectKind !== "individual"
+    || !isDouyinEvidencePlatform(candidate.sourcePlatform)
+  ) {
+    return "";
+  }
+  const evidence = state.evidence.data ?? [];
+  const original = candidate.evidenceIds
+    .map((id) => evidence.find((item) => item.id === id) ?? null)
+    .find((item): item is EvidenceDto => item !== null)
+    ?? evidence[0]
+    ?? null;
+  return renderIdentityVerificationPanel({
+    identityResolved: identityResolved(candidate),
+    candidateVersion: candidateVersion(candidate),
+    sourcePlatform: candidate.sourcePlatform,
+    originalSourceUrl: provenanceText(original, "sourceUrl"),
+    originalSourceType: original ? evidenceSourceType(original) : null,
+    originalProvider: provenanceText(original, "provider"),
+    originalExcerpt: original?.sourceSnippet ?? null,
+    profileUrl: state.identityVerification.profileUrl,
+    rationale: state.identityVerification.rationale,
+    selectedEvidenceIds: state.identityVerification.selectedEvidenceIds,
+    evidence: evidence.map((item) => identityEvidenceVm(item, state)),
+    status: state.identityVerification.status,
+    message: state.identityVerification.message,
+    error: state.identityVerification.error
+  }, {
+    onFetchProfile: callbacks.onFetchIdentityProfile,
+    onToggleEvidence: callbacks.onToggleIdentityEvidence,
+    onConfirm: callbacks.onConfirmCandidateIdentity,
+    onRetryContinuation: callbacks.onRetryIdentityContinuation
+  }).html;
+}
+
+function identityLockedPanel(): string {
+  return `
+    <section class="ai-growth-drawer-panel ai-growth-identity-lock" role="status">
+      <header><h3>判断与作战资料暂未开放</h3><span>等待主体确认</span></header>
+      <p>主体确认后自动继续客户研究、意向与财务价值评估，并生成客户作战卡。</p>
+    </section>
+  `;
 }
 
 function identityStateForLoadedCandidate(
@@ -819,6 +937,7 @@ export function renderBattleCardDrawer(
   const candidate = state.candidate.data;
   const loading = state.candidate.status === "loading";
   const v2Card = state.battleCard.data?.schemaVersion === "battle-card.v2";
+  const identityBlocked = requiresDouyinIdentityVerification(candidate);
   return componentRender(`
     <div class="ai-growth-drawer-backdrop" data-action="close-battle-card"></div>
     <aside class="ai-growth-battle-drawer" role="dialog" aria-modal="true" aria-labelledby="battleCardTitle" data-candidate-id="${escapeHtml(state.candidateId ?? "")}">
@@ -838,17 +957,22 @@ export function renderBattleCardDrawer(
       <div class="ai-growth-battle-drawer__body">
         ${resourceError(state.candidate)}
         ${resourceError(state.evidence)}
-        ${qualificationPanel(state)}
-        ${v2Card ? "" : financialPanel(state)}
-        <section class="ai-growth-drawer-card">
-          <div class="ai-growth-section-heading">
-            <div><p class="ai-growth-eyebrow">行动依据</p><h2>客户作战卡</h2></div>
-            <span>${state.battleCard.data ? `整体置信度 ${percent(state.battleCard.data.confidence)}` : ""}</span>
-          </div>
-          ${battleCardContent(state)}
-        </section>
-        ${state.readOnly ? "" : reviewPanel(state)}
-        ${state.readOnly ? "" : approvedActions(state)}
+        ${identityVerificationPanel(state, callbacks)}
+        ${identityBlocked
+          ? identityLockedPanel()
+          : `
+            ${qualificationPanel(state)}
+            ${v2Card ? "" : financialPanel(state)}
+            <section class="ai-growth-drawer-card">
+              <div class="ai-growth-section-heading">
+                <div><p class="ai-growth-eyebrow">行动依据</p><h2>客户作战卡</h2></div>
+                <span>${state.battleCard.data ? `整体置信度 ${percent(state.battleCard.data.confidence)}` : ""}</span>
+              </div>
+              ${battleCardContent(state)}
+            </section>
+            ${state.readOnly ? "" : reviewPanel(state)}
+            ${state.readOnly ? "" : approvedActions(state)}
+          `}
         ${actionStatus(state.action)}
       </div>
     </aside>
@@ -873,6 +997,14 @@ export function createBattleCardDrawer(
 
   const callbacks: BattleCardDrawerCallbacks = {
     onClose: () => drawer.close(),
+    onFetchIdentityProfile: (profileUrl) =>
+      drawer.fetchIdentityProfile(profileUrl),
+    onIdentityDraftChange: (input) => drawer.setIdentityDraft(input),
+    onToggleIdentityEvidence: (evidenceId, selected) =>
+      drawer.toggleIdentityEvidence(evidenceId, selected),
+    onConfirmCandidateIdentity: (input) =>
+      drawer.confirmCandidateIdentity(input),
+    onRetryIdentityContinuation: () => drawer.retryIdentityContinuation(),
     onRunQualification: () => drawer.runQualification(),
     onGenerateBattleCard: () => drawer.generateBattleCard(),
     onReview: ({ action, reason }) => drawer.review(action, reason),
