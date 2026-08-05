@@ -43,6 +43,15 @@ import {
 } from "./components/run-console.js";
 import { renderExecutiveSummary } from "./components/executive-summary.js";
 import {
+  buildAiGrowthHash,
+  parseAiGrowthHash,
+  renderTaskDetail,
+  renderTaskOverview,
+  type AiGrowthRoute,
+  type TaskDetailVm,
+  type TaskOverviewVm
+} from "./components/task-overview.js";
+import {
   defaultIndustryTemplateId,
   industryTemplates
 } from "./templates.js";
@@ -103,6 +112,7 @@ export interface AiGrowthControllerOptions {
   pollerFactory?(options: RunPresentationPollerOptions): RunPresentationPoller;
   drawerFactory?(options: BattleCardDrawerOptions): BattleCardDrawer;
   demoRunnerFactory?(options: CreateDemoRunnerOptions): DemoRunner;
+  initialView?: "overview" | "workflow";
   onChange?(state: AdvisorState): void;
 }
 
@@ -111,6 +121,11 @@ export interface AiGrowthController {
   getDrawer(): BattleCardDrawer;
   getConnections(): readonly ProviderConnectionDto[];
   getRecentTasks(): readonly RecentAdvisorPointer[];
+  getView(): "overview" | "workflow" | "task";
+  getTaskOverview(): TaskOverviewVm;
+  showOverview(): Promise<void>;
+  showNewTask(): void;
+  openTask(planId: string): Promise<void>;
   setMode(mode: AdvisorMode): void;
   setTaskText(value: string, notify?: boolean): void;
   selectTemplate(templateId: IndustryTemplateId): void;
@@ -142,6 +157,26 @@ const TERMINAL_COPILOT_STATUSES = new Set([
   "failed",
   "cancelled"
 ]);
+
+const ACTIVE_ACQUISITION_RUN_STATUSES = new Set([
+  "queued",
+  "running",
+  "pause_requested",
+  "paused",
+  "cancel_requested"
+]);
+
+function initialTaskOverview(mode: AdvisorMode): TaskOverviewVm {
+  return {
+    mode,
+    status: mode === "demo" ? "demo" : "loading",
+    tasks: [],
+    connections: [],
+    connectionStatus: mode === "demo" ? "ready" : "loading",
+    generatedAt: null,
+    errorMessage: null
+  };
+}
 
 function initialState(): AdvisorState {
   const template = industryTemplates.find(
@@ -378,6 +413,14 @@ export function createAiGrowthController(
   const makeDrawer = options.drawerFactory ?? createBattleCardDrawer;
   const makeDemoRunner = options.demoRunnerFactory ?? createDemoRunner;
   let state = initialState();
+  let workspaceView: "overview" | "workflow" | "task" =
+    options.initialView ?? "workflow";
+  let taskOverview = initialTaskOverview(state.mode);
+  let taskDetail: TaskDetailVm = {
+    status: "loading",
+    detail: null,
+    errorMessage: null
+  };
   let connections: ProviderConnectionDto[] = [];
   let recentTasks: RecentAdvisorPointer[] = [];
   let runVm: AdvisorRunVm | null = null;
@@ -631,6 +674,198 @@ export function createAiGrowthController(
     getDrawer: () => drawer,
     getConnections: () => connections,
     getRecentTasks: () => recentTasks,
+    getView: () => workspaceView,
+    getTaskOverview: () => ({
+      ...taskOverview,
+      tasks: [...taskOverview.tasks],
+      connections: [...taskOverview.connections]
+    }),
+
+    async showOverview() {
+      if (disposed) return;
+      const generation = ++operationGeneration;
+      poller.stop();
+      stopDemo();
+      drawer.close();
+      runVm = null;
+      currentRun = null;
+      plan = null;
+      sessionId = null;
+      workspaceView = "overview";
+      taskDetail = { status: "loading", detail: null, errorMessage: null };
+      state = {
+        ...initialState(),
+        mode: state.mode,
+        taskText: state.taskText,
+        templateId: state.templateId
+      };
+      taskOverview = initialTaskOverview(state.mode);
+      publish();
+      if (state.mode === "demo" || !options.user()) return;
+
+      const [overviewResult, tasksResult, connectionsResult] =
+        await Promise.allSettled([
+          options.api.getTaskOverview(),
+          options.api.listAcquisitionTasks(),
+          options.api.listProviderConnections()
+        ]);
+      if (
+        disposed
+        || generation !== operationGeneration
+        || workspaceView !== "overview"
+      ) return;
+
+      const overviewFailed = overviewResult.status === "rejected";
+      const tasksFailed = tasksResult.status === "rejected";
+      const availableTasks = tasksResult.status === "fulfilled"
+        ? tasksResult.value.items
+        : overviewResult.status === "fulfilled"
+          ? overviewResult.value.tasks
+          : [];
+      if (connectionsResult.status === "fulfilled") {
+        connections = [...connectionsResult.value.items];
+      } else {
+        connections = [];
+      }
+      const dataStatus = overviewFailed && tasksFailed
+        ? "error" as const
+        : overviewFailed || tasksFailed
+          ? "partial_error" as const
+          : availableTasks.length === 0
+            ? "empty" as const
+            : "ready" as const;
+      taskOverview = {
+        mode: "real",
+        status: dataStatus,
+        tasks: [...availableTasks],
+        connections: [...connections],
+        connectionStatus: connectionsResult.status === "fulfilled"
+          ? "ready"
+          : "error",
+        generatedAt: overviewResult.status === "fulfilled"
+          ? overviewResult.value.generatedAt
+          : null,
+        errorMessage: dataStatus === "error"
+          ? "任务总览暂时不可用，请稍后重试"
+          : dataStatus === "partial_error"
+            ? "部分数据加载失败，已保留可用的真实任务数据"
+            : null
+      };
+      publish();
+    },
+
+    showNewTask() {
+      if (disposed) return;
+      operationGeneration += 1;
+      poller.stop();
+      stopDemo();
+      drawer.close();
+      runVm = null;
+      currentRun = null;
+      plan = null;
+      sessionId = null;
+      workspaceView = "workflow";
+      taskOverview = initialTaskOverview(state.mode);
+      taskDetail = { status: "loading", detail: null, errorMessage: null };
+      state = {
+        ...initialState(),
+        mode: state.mode,
+        taskText: state.taskText,
+        templateId: state.templateId
+      };
+      publish();
+    },
+
+    async openTask(planId) {
+      if (disposed) return;
+      const generation = ++operationGeneration;
+      poller.stop();
+      stopDemo();
+      drawer.close();
+      runVm = null;
+      currentRun = null;
+      plan = null;
+      sessionId = null;
+      workspaceView = "task";
+      taskDetail = { status: "loading", detail: null, errorMessage: null };
+      state = {
+        ...initialState(),
+        mode: "real",
+        taskText: state.taskText,
+        templateId: state.templateId
+      };
+      publish();
+      if (!options.user()) {
+        taskDetail = {
+          status: "error",
+          detail: null,
+          errorMessage: "请登录后查看获客任务"
+        };
+        publish();
+        return;
+      }
+      try {
+        const detail = await options.api.getAcquisitionTask(planId);
+        if (
+          disposed
+          || generation !== operationGeneration
+          || workspaceView !== "task"
+        ) return;
+        taskDetail = { status: "ready", detail, errorMessage: null };
+        const draft = detail.plan.payload;
+        currentRun = detail.latestRun;
+        if (detail.presentation) {
+          runVm = mergePresentation({
+            run: detail.presentation.run,
+            providers: [],
+            summary: null,
+            candidatesById: new Map(),
+            nextAfter: "",
+            hasMore: false
+          }, detail.presentation);
+        }
+        state = {
+          ...state,
+          status: currentRun ? pageStatusForRun(currentRun.status) : "idle",
+          taskText: draft.objective,
+          planDraft: draft,
+          runId: currentRun?.id ?? null,
+          cursor: runVm?.nextAfter ?? null,
+          candidatesById: new Map(runVm?.candidatesById ?? []),
+          summary: runVm?.summary ?? null,
+          error: null
+        };
+        publish();
+        if (
+          currentRun
+          && ACTIVE_ACQUISITION_RUN_STATUSES.has(currentRun.status)
+        ) {
+          poller.start(currentRun.id, "real");
+        }
+      } catch (error) {
+        if (
+          disposed
+          || generation !== operationGeneration
+          || workspaceView !== "task"
+        ) return;
+        taskDetail = {
+          status: "error",
+          detail: null,
+          errorMessage: messageOf(error)
+        };
+        state = {
+          ...state,
+          status: "failed",
+          error: {
+            code: "task_detail_failed",
+            message: messageOf(error),
+            retryable: advisorHttpStatus(error) === null
+              || advisorHttpStatus(error)! >= 500
+          }
+        };
+        publish();
+      }
+    },
 
     setMode(mode) {
       if (state.mode === mode) {
@@ -1032,6 +1267,45 @@ export function createAiGrowthController(
     },
 
     render(root) {
+      if (workspaceView === "overview") {
+        const overview = renderTaskOverview(taskOverview, {
+          onCreateTask: () => controller.showNewTask(),
+          onOpenTask: (planId) => void controller.openTask(planId),
+          onRetry: () => void controller.showOverview()
+        });
+        const shell = renderAdvisorShell({
+          mode: taskOverview.mode,
+          status: state.status,
+          stageHtml: overview.html,
+          statusDetail: taskOverview.errorMessage ?? undefined
+        }, { onContinue: () => undefined });
+        root.innerHTML = shell.html + drawer.render().html;
+        return;
+      }
+
+      const detailHeader = workspaceView === "task"
+        ? renderTaskDetail(taskDetail, {
+            onBack: () => void controller.showOverview(),
+            onRetry: (planId) => void controller.openTask(planId)
+          }).html
+        : "";
+      if (
+        workspaceView === "task"
+        && (
+          taskDetail.status !== "ready"
+          || taskDetail.detail?.latestRun === null
+        )
+      ) {
+        const shell = renderAdvisorShell({
+          mode: state.mode,
+          status: state.status,
+          stageHtml: detailHeader,
+          statusDetail: taskDetail.errorMessage ?? undefined
+        }, { onContinue: () => undefined });
+        root.innerHTML = shell.html + drawer.render().html;
+        return;
+      }
+
       const selectedTemplate = industryTemplates.find(
         (item) => item.id === state.templateId
       ) ?? industryTemplates[0]!;
@@ -1178,6 +1452,7 @@ export function createAiGrowthController(
           onContinueTask: (id) => void controller.continueRecent(id)
         }).html;
       }
+      if (workspaceView === "task") stage = detailHeader + stage;
       const shell = renderAdvisorShell({
         mode: state.mode,
         status: state.status,
@@ -1193,6 +1468,10 @@ export function createAiGrowthController(
 
     enter() {
       if (disposed) return;
+      if (workspaceView === "overview") {
+        void controller.showOverview();
+        return;
+      }
       readRecent();
       const generation = operationGeneration;
       if (state.mode === "real") void validateRecent(generation);
@@ -1233,9 +1512,16 @@ export function createMountedAiGrowthAdvisor(
   dependencies: AiGrowthDependencies
 ) {
   const doc = dependencies.document ?? root.ownerDocument;
+  const win = doc.defaultView;
+  const initialRoute = parseAiGrowthHash(win?.location.hash ?? "");
+  const initialHash = buildAiGrowthHash(initialRoute);
+  if (win && win.location.hash !== initialHash) {
+    win.history.replaceState(null, "", initialHash);
+  }
   const api = createAiGrowthApi(dependencies.request);
   let previousFocus: HTMLElement | null = null;
   let drawerLocked = false;
+  let entered = false;
   let controller!: AiGrowthController;
   function syncDrawerA11y() {
     const drawerOpen = controller.getDrawer().getState().open;
@@ -1262,6 +1548,7 @@ export function createMountedAiGrowthAdvisor(
     user: dependencies.currentUser,
     toast: dependencies.toast,
     navigate: dependencies.navigate,
+    initialView: initialRoute.name === "overview" ? "overview" : "workflow",
     recentStorage: doc.defaultView?.localStorage,
     validateSession: (sessionId) =>
       dependencies.request(
@@ -1273,9 +1560,49 @@ export function createMountedAiGrowthAdvisor(
     }
   });
 
+  const applyRoute = async (route: AiGrowthRoute) => {
+    if (route.name === "overview") {
+      await controller.showOverview();
+    } else if (route.name === "new") {
+      controller.showNewTask();
+      controller.enter();
+    } else {
+      await controller.openTask(route.planId);
+    }
+  };
+
+  const setRoute = (route: AiGrowthRoute) => {
+    const nextHash = buildAiGrowthHash(route);
+    if (win && win.location.hash !== nextHash) {
+      win.location.hash = nextHash;
+      return;
+    }
+    if (entered) void applyRoute(route);
+  };
+
+  const onHashChange = () => {
+    controller.leave();
+    if (entered) void applyRoute(parseAiGrowthHash(win?.location.hash ?? ""));
+  };
+
   const runAction = async (action: string, element: HTMLElement) => {
     const candidateId = element.dataset.candidateId ?? "";
     switch (action) {
+      case "new-task":
+        setRoute({ name: "new" });
+        break;
+      case "open-task":
+        setRoute({
+          name: "task",
+          planId: element.dataset.planId ?? ""
+        });
+        break;
+      case "back-overview":
+        setRoute({ name: "overview" });
+        break;
+      case "retry-overview":
+        await controller.showOverview();
+        break;
       case "set-mode":
         controller.setMode(element.dataset.mode as AdvisorMode);
         break;
@@ -1418,19 +1745,26 @@ export function createMountedAiGrowthAdvisor(
   root.addEventListener("click", onClick);
   root.addEventListener("input", onInput);
   doc.addEventListener("keydown", onKeydown);
+  win?.addEventListener("hashchange", onHashChange);
   controller.render(root);
 
   return {
-    enter: () => controller.enter(),
+    enter() {
+      entered = true;
+      void applyRoute(parseAiGrowthHash(win?.location.hash ?? ""));
+    },
     leave() {
+      entered = false;
       controller.leave();
       syncDrawerA11y();
     },
     dispose() {
+      entered = false;
       controller.dispose();
       root.removeEventListener("click", onClick);
       root.removeEventListener("input", onInput);
       doc.removeEventListener("keydown", onKeydown);
+      win?.removeEventListener("hashchange", onHashChange);
       if (drawerLocked) doc.body.style.removeProperty("overflow");
     }
   };

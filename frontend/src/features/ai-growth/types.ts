@@ -2,6 +2,74 @@ import type { components, paths } from "./generated/ai-acquisition.js";
 
 export type AdvisorMode = "demo" | "real";
 
+export type AcquisitionTaskPlatform = "douyin" | "web";
+export type AcquisitionTaskDiscoveryMethod =
+  | "public_search"
+  | "user_import"
+  | "official_authorized";
+export type AcquisitionTaskPlanStatus = "draft" | "approved" | "archived";
+
+export interface AcquisitionTaskLatestRunDto {
+  id: string;
+  status: AcquisitionRunStatus;
+  updatedAt: string;
+  completedAt: string | null;
+  evidenceCount: number;
+  consumedBudget: {
+    requests: number;
+    results: number;
+    amountMinor?: number;
+    durationSeconds: number;
+  };
+}
+
+export interface AcquisitionTaskSummaryDto {
+  id: string;
+  planId: string;
+  name: string;
+  objective: string;
+  platform: AcquisitionTaskPlatform;
+  discoveryMethods: AcquisitionTaskDiscoveryMethod[];
+  planStatus: AcquisitionTaskPlanStatus;
+  latestRun: AcquisitionTaskLatestRunDto | null;
+  updatedAt: string;
+}
+
+export interface AcquisitionTaskOverviewDto {
+  generatedAt: string;
+  platform: AcquisitionTaskPlatform;
+  totals: { tasks: number };
+  statusCounts: Partial<Record<AcquisitionRunStatus | "not_started", number>>;
+  discoveryMethodCounts: Partial<
+    Record<AcquisitionTaskDiscoveryMethod, number>
+  >;
+  tasks: AcquisitionTaskSummaryDto[];
+}
+
+export interface AcquisitionTaskListDto {
+  items: AcquisitionTaskSummaryDto[];
+  nextCursor: string | null;
+}
+
+export type AcquisitionTaskPlanDto = Omit<
+  components["schemas"]["AcquisitionPlan"],
+  "$defs"
+>;
+export type AcquisitionTaskRunDto = Omit<
+  components["schemas"]["AcquisitionRun"],
+  "$defs"
+>;
+export type AcquisitionTaskShardDto =
+  components["schemas"]["AcquisitionOperationShard"];
+
+export interface AcquisitionTaskDetailDto {
+  task: AcquisitionTaskSummaryDto;
+  plan: AcquisitionTaskPlanDto;
+  latestRun: AcquisitionTaskRunDto | null;
+  shards: AcquisitionTaskShardDto[];
+  presentation: RunPresentationDto | null;
+}
+
 export type AdvisorStatus =
   | "idle"
   | "planning"

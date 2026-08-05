@@ -1,5 +1,8 @@
 import type {
   AcquisitionPlanCreateDto,
+  AcquisitionTaskDetailDto,
+  AcquisitionTaskListDto,
+  AcquisitionTaskOverviewDto,
   BattleCardDto,
   CandidateDto,
   FinancialValueDto,
@@ -340,6 +343,24 @@ export function createAiGrowthApi(request: AdvisorRequest) {
   };
 
   return {
+    getTaskOverview(): Promise<AcquisitionTaskOverviewDto> {
+      return mapConflict(() => request(
+        "/api/v1/acquisition/overview?platform=douyin"
+      ));
+    },
+
+    listAcquisitionTasks(): Promise<AcquisitionTaskListDto> {
+      return mapConflict(() => request(
+        "/api/v1/acquisition/tasks?platform=douyin&limit=20"
+      ));
+    },
+
+    getAcquisitionTask(planId: string): Promise<AcquisitionTaskDetailDto> {
+      return mapConflict(() => request(
+        `/api/v1/acquisition/tasks/${segment(planId)}`
+      ));
+    },
+
     createSession(
       input: CopilotSessionCreateDto,
       idempotencyKey: string

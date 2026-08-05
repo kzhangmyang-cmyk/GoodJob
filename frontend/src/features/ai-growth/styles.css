@@ -1858,3 +1858,488 @@ a.ai-growth-evidence-ref:hover {
     backdrop-filter: none;
   }
 }
+
+/* Authoritative acquisition overview */
+.ai-growth-task-overview,
+.ai-growth-task-detail {
+  --ag-overview-bg: #070a08;
+  --ag-overview-panel: rgba(19, 24, 20, .9);
+  --ag-overview-line: rgba(207, 255, 75, .17);
+  --ag-overview-muted: #89948c;
+  --ag-overview-accent: #cfff4b;
+  min-width: 0;
+  padding: clamp(18px, 2.4vw, 32px);
+  color: #f4f8f4;
+  background:
+    radial-gradient(circle at 82% -18%, rgba(207, 255, 75, .12), transparent 34%),
+    linear-gradient(145deg, #0b0f0c, var(--ag-overview-bg));
+  border: 1px solid #202821;
+  border-radius: 12px;
+  box-shadow: 0 28px 70px rgba(3, 6, 4, .24);
+  overflow: hidden;
+}
+
+.ai-growth-task-overview .ai-growth-eyebrow,
+.ai-growth-task-detail .ai-growth-eyebrow {
+  color: var(--ag-overview-accent);
+}
+
+.ai-growth-task-overview button:focus-visible,
+.ai-growth-task-detail button:focus-visible {
+  outline-color: rgba(207, 255, 75, .78);
+}
+
+.ai-growth-overview-header,
+.ai-growth-task-detail > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+}
+
+.ai-growth-overview-header h2,
+.ai-growth-task-detail > header h2 {
+  margin-top: 6px;
+  color: #fff;
+  font-size: clamp(25px, 3vw, 42px);
+  letter-spacing: -.045em;
+  line-height: 1.06;
+}
+
+.ai-growth-overview-header p:last-child,
+.ai-growth-task-detail > header p {
+  margin-top: 9px;
+  color: var(--ag-overview-muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.ai-growth-task-overview .ai-growth-button--primary {
+  color: #10140f;
+  background: var(--ag-overview-accent);
+  border-color: var(--ag-overview-accent);
+  box-shadow: 0 0 28px rgba(207, 255, 75, .12);
+}
+
+.ai-growth-platform-grid {
+  display: grid;
+  grid-template-columns: 1.35fr repeat(4, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 25px;
+}
+
+.ai-growth-platform-card {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 13px 14px;
+  background: rgba(17, 22, 18, .76);
+  border: 1px solid #262d27;
+  border-radius: 9px;
+}
+
+.ai-growth-platform-card > span {
+  display: grid;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  color: #11150f;
+  background: #4b564c;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.ai-growth-platform-card div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.ai-growth-platform-card strong {
+  color: #dce3dd;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ai-growth-platform-card small {
+  color: #6f7b72;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.ai-growth-platform-card.is-active {
+  background: linear-gradient(135deg, rgba(207, 255, 75, .1), rgba(19, 24, 20, .92));
+  border-color: rgba(207, 255, 75, .42);
+}
+
+.ai-growth-platform-card.is-active > span {
+  background: var(--ag-overview-accent);
+}
+
+.ai-growth-platform-card.is-active strong {
+  color: #fff;
+}
+
+.ai-growth-platform-card.is-active small {
+  color: #b8c2ba;
+}
+
+.ai-growth-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ai-growth-metric-grid article {
+  display: grid;
+  min-width: 0;
+  min-height: 116px;
+  align-content: space-between;
+  padding: 16px;
+  background: var(--ag-overview-panel);
+  border: 1px solid #252d26;
+  border-radius: 9px;
+}
+
+.ai-growth-metric-grid span,
+.ai-growth-metric-grid small {
+  color: var(--ag-overview-muted);
+  font-size: 10px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ai-growth-metric-grid strong {
+  color: #fff;
+  font-size: clamp(26px, 3vw, 38px);
+  letter-spacing: -.045em;
+}
+
+.ai-growth-overview-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-top: 12px;
+  padding: 11px 13px;
+  color: #d9dfda;
+  background: rgba(52, 44, 20, .58);
+  border: 1px solid rgba(245, 192, 57, .32);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.ai-growth-overview-notice[data-tone="error"] {
+  background: rgba(60, 24, 24, .7);
+  border-color: rgba(255, 112, 99, .35);
+}
+
+.ai-growth-overview-notice[data-tone="demo"] {
+  background: rgba(28, 50, 29, .65);
+  border-color: rgba(207, 255, 75, .28);
+}
+
+.ai-growth-overview-notice span {
+  flex: 1 1 280px;
+  color: #aab3ac;
+}
+
+.ai-growth-overview-notice .ai-growth-button {
+  color: #fff;
+  background: rgba(255, 255, 255, .05);
+  border-color: #465047;
+}
+
+.ai-growth-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 10px;
+  margin-top: 10px;
+  min-width: 0;
+}
+
+.ai-growth-task-table-panel,
+.ai-growth-lifecycle {
+  min-width: 0;
+  background: var(--ag-overview-panel);
+  border: 1px solid #252d26;
+  border-radius: 9px;
+}
+
+.ai-growth-task-table-panel .ai-growth-list-heading,
+.ai-growth-lifecycle .ai-growth-aside-heading {
+  padding: 15px 16px;
+  border-bottom: 1px solid #252d26;
+}
+
+.ai-growth-task-table-panel .ai-growth-list-heading h2,
+.ai-growth-lifecycle .ai-growth-aside-heading h3 {
+  color: #f2f6f2;
+}
+
+.ai-growth-task-table-panel .ai-growth-list-heading > span,
+.ai-growth-lifecycle .ai-growth-aside-heading > span {
+  color: var(--ag-overview-muted);
+}
+
+.ai-growth-task-table-scroll {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.ai-growth-task-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.ai-growth-task-table th,
+.ai-growth-task-table td {
+  padding: 11px 10px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid #202721;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.ai-growth-task-table th {
+  color: #78827a;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+
+.ai-growth-task-table th:first-child { width: 26%; }
+.ai-growth-task-table th:nth-child(2) { width: 9%; }
+.ai-growth-task-table th:nth-child(3) { width: 13%; }
+.ai-growth-task-table th:nth-child(4) { width: 13%; }
+.ai-growth-task-table th:nth-child(5) { width: 7%; }
+.ai-growth-task-table th:nth-child(6) { width: 18%; }
+.ai-growth-task-table th:last-child { width: 14%; }
+
+.ai-growth-task-table td {
+  color: #b7c0b9;
+}
+
+.ai-growth-task-table td:first-child strong,
+.ai-growth-task-table td:first-child small {
+  display: block;
+}
+
+.ai-growth-task-table td:first-child strong {
+  color: #f5f8f5;
+  font-size: 12px;
+}
+
+.ai-growth-task-table td:first-child small {
+  margin-top: 4px;
+  color: #78827a;
+  line-height: 1.45;
+}
+
+.ai-growth-task-table time {
+  color: #949f97;
+}
+
+.ai-growth-task-table .ai-growth-text-action,
+.ai-growth-task-back {
+  color: var(--ag-overview-accent);
+}
+
+.ai-growth-task-status {
+  display: inline-flex;
+  padding: 4px 6px;
+  color: #c8d1ca;
+  background: #202721;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ai-growth-task-status[data-tone="running"],
+.ai-growth-task-status[data-tone="paused"],
+.ai-growth-task-status[data-tone="plan"] {
+  color: #ddf7a0;
+  background: rgba(116, 146, 41, .2);
+}
+
+.ai-growth-lifecycle ol {
+  display: grid;
+  padding: 9px 16px 15px !important;
+}
+
+.ai-growth-lifecycle li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.ai-growth-lifecycle li:not(:last-child)::after {
+  position: absolute;
+  top: 33px;
+  bottom: -5px;
+  left: 13px;
+  width: 1px;
+  background: #394139;
+  content: "";
+}
+
+.ai-growth-lifecycle li > b {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: #11150f;
+  background: var(--ag-overview-accent);
+  border-radius: 50%;
+  font-size: 9px;
+}
+
+.ai-growth-lifecycle li > span {
+  display: grid;
+  gap: 3px;
+}
+
+.ai-growth-lifecycle li strong {
+  color: #dce3dd;
+  font-size: 12px;
+}
+
+.ai-growth-lifecycle li small {
+  color: var(--ag-overview-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.ai-growth-overview-state,
+.ai-growth-not-started {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  min-height: 150px;
+  align-content: center;
+  padding: 28px;
+  color: #e9eeea;
+}
+
+.ai-growth-overview-state span,
+.ai-growth-not-started p {
+  color: var(--ag-overview-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.ai-growth-task-detail {
+  display: grid;
+  gap: 18px;
+}
+
+.ai-growth-task-detail > header > div:last-child {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  color: var(--ag-overview-muted);
+  font-size: 11px;
+}
+
+.ai-growth-task-detail > header > div:last-child strong {
+  color: var(--ag-overview-accent);
+  font-size: 13px;
+}
+
+.ai-growth-not-started {
+  grid-template-columns: auto minmax(0, 1fr);
+  border: 1px dashed #39423a;
+  border-radius: 9px;
+}
+
+.ai-growth-not-started > span {
+  color: var(--ag-overview-accent);
+  font-size: 28px;
+  font-weight: 800;
+}
+
+@media (max-width: 1099px) {
+  .ai-growth-platform-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ai-growth-platform-card.is-active {
+    grid-column: 1 / -1;
+  }
+
+  .ai-growth-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ai-growth-overview-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .ai-growth-overview-header,
+  .ai-growth-task-detail > header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ai-growth-task-detail > header > div:last-child {
+    justify-items: start;
+  }
+
+  .ai-growth-task-table,
+  .ai-growth-task-table tbody,
+  .ai-growth-task-table tr,
+  .ai-growth-task-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .ai-growth-task-table thead {
+    display: none;
+  }
+
+  .ai-growth-task-table tr {
+    padding: 10px 12px;
+    border-bottom: 1px solid #252d26;
+  }
+
+  .ai-growth-task-table td {
+    padding: 5px 0;
+    border: 0;
+  }
+}
+
+@media (max-width: 600px) {
+  .ai-growth-task-overview,
+  .ai-growth-task-detail {
+    padding: 15px;
+  }
+
+  .ai-growth-platform-grid,
+  .ai-growth-metric-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-growth-platform-card.is-active {
+    grid-column: auto;
+  }
+
+  .ai-growth-not-started {
+    grid-template-columns: 1fr;
+  }
+}
