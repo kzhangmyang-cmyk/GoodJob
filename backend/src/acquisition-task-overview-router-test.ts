@@ -346,6 +346,37 @@ test("global requireAuth preserves the overview nested unauthenticated envelope"
   }
 });
 
+test("global requireAuth follows Express route matching for overview path variants", async () => {
+  const app = await fixture({ requireAuthFirst: true });
+  try {
+    for (const [index, path] of [
+      "/api/v1/acquisition/overview/",
+      "/API/v1/acquisition/Overview",
+      "/api/v1/acquisition/tasks/",
+      "/API/v1/acquisition/Tasks",
+      "/api/v1/acquisition/tasks/plan-id/",
+      "/API/v1/acquisition/Tasks/Plan-Id"
+    ].entries()) {
+      const requestId = `overview-auth-variant-${index}`;
+      const result = await app.request(path, {
+        headers: { "X-Request-Id": requestId }
+      }, null);
+      assert.equal(result.response.status, 401, path);
+      assertHeaders(result.response);
+      assert.deepEqual(result.json, {
+        error: {
+          code: "unauthorized",
+          message: "未登录",
+          details: null,
+          requestId
+        }
+      }, path);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
 test("overview returns the real tenant-scoped task aggregate", async () => {
   const app = await fixture();
   try {

@@ -112,7 +112,7 @@ function usesAcquisitionTaskOverviewErrorEnvelope(req: Request) {
   const pathname = new URL(
     req.originalUrl || req.url,
     "http://localhost"
-  ).pathname;
+  ).pathname.toLowerCase().replace(/\/+$/, "") || "/";
   return pathname === "/api/v1/acquisition/overview"
     || pathname === "/api/v1/acquisition/tasks"
     || pathname.startsWith("/api/v1/acquisition/tasks/");
