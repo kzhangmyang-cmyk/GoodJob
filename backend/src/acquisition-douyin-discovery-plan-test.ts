@@ -89,16 +89,16 @@ test("compiler limits every final query to the search tool maximum", () => {
   assert.equal(compiled.every((item) => isSafeDouyinSearchQuery(item.query)), true);
 });
 
-test("web compilation normalizes and removes supplied site constraints without forcing a root", () => {
+test("web compilation normalizes without rewriting a lawful site constraint", () => {
   assert.deepEqual(compileAcquisitionDiscoveryQueries({
     targetPlatform: "web",
     queryIntents: [{
       subjectChannel: "individual",
-      query: "\uff53\uff49\uff54\uff45\uff1aevil.example  \u8001\u677f\u0007  \u83b7\u5ba2\u96be"
+      query: "\uff53\uff49\uff54\uff45\uff1agov.cn  \u8001\u677f\u0007  \u83b7\u5ba2\u96be"
     }]
   }), [{
     subjectChannel: "individual",
-    query: "\u8001\u677f \u83b7\u5ba2\u96be"
+    query: "site:gov.cn \u8001\u677f \u83b7\u5ba2\u96be"
   }]);
 });
 
@@ -152,4 +152,70 @@ test("Douyin safety rejects repeated zero-width and control-character probes det
     isSafeDouyinSearchQuery("site:iesdouyin.com \u0001\u83b7\u5ba2"),
     false
   );
+});
+
+test("Douyin compilation strips site operators adjacent to punctuation but preserves website words", () => {
+  for (const query of [
+    "\u53a6\u95e8,site:evil.example \u88c5\u4fee",
+    "\u53a6\u95e8[site:evil.example] \u88c5\u4fee",
+    "\u53a6\u95e8{site:evil.example} \u88c5\u4fee",
+    "\u53a6\u95e8\"site:evil.example\" \u88c5\u4fee",
+    "\u53a6\u95e8'site:evil.example' \u88c5\u4fee"
+  ]) {
+    const compiled = compileAcquisitionDiscoveryQueries({
+      targetPlatform: "douyin",
+      queryIntents: [{ subjectChannel: "organization", query }]
+    });
+    assert.equal(compiled.length, 2, query);
+    assert.equal(compiled.every((item) => !item.query.includes("evil.example")), true, query);
+    assert.equal(compiled.every((item) => isSafeDouyinSearchQuery(item.query)), true, query);
+  }
+
+  assert.equal(
+    isSafeDouyinSearchQuery("site:douyin.com website:\u5b98\u7f51 \u88c5\u4fee"),
+    true
+  );
+});
+
+test("Douyin safety rejects residual site operators after punctuation", () => {
+  for (const query of [
+    "site:douyin.com \u53a6\u95e8,site:evil.example \u88c5\u4fee",
+    "site:douyin.com \u53a6\u95e8[site:evil.example] \u88c5\u4fee",
+    "site:douyin.com \u53a6\u95e8{site:evil.example} \u88c5\u4fee",
+    "site:douyin.com \u53a6\u95e8\"site:evil.example\" \u88c5\u4fee",
+    "site:douyin.com \u53a6\u95e8'site:evil.example' \u88c5\u4fee"
+  ]) {
+    assert.equal(isSafeDouyinSearchQuery(query), false, query);
+  }
+});
+
+test("Unicode format characters cannot hide a site operator or survive a safe query", () => {
+  const compiled = compileAcquisitionDiscoveryQueries({
+    targetPlatform: "douyin",
+    queryIntents: [{
+      subjectChannel: "individual",
+      query: "s\u00adite:evil.example \u8001\u677f\u061c \u83b7\u5ba2\u96be"
+    }]
+  });
+  assert.deepEqual(compiled, [{
+    subjectChannel: "individual",
+    query: "site:douyin.com \u8001\u677f \u83b7\u5ba2\u96be"
+  }, {
+    subjectChannel: "individual",
+    query: "site:iesdouyin.com \u8001\u677f \u83b7\u5ba2\u96be"
+  }]);
+  assert.equal(
+    isSafeDouyinSearchQuery("site:douyin.com \u8001\u677f\u061c \u83b7\u5ba2\u96be"),
+    false
+  );
+});
+
+test("web truncation rejects a bounded result with no semantic content", () => {
+  assert.throws(() => compileAcquisitionDiscoveryQueries({
+    targetPlatform: "web",
+    queryIntents: [{
+      subjectChannel: "organization",
+      query: `${".".repeat(1_000)}\u6709\u6548\u5185\u5bb9`
+    }]
+  }), /ACQUISITION_DISCOVERY_QUERY_EMPTY/);
 });

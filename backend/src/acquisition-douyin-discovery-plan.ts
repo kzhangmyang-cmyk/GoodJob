@@ -8,16 +8,14 @@ const DOUYIN_ROOT_PREFIXES = [
   "site:douyin.com ",
   "site:iesdouyin.com "
 ] as const;
-const ZERO_WIDTH_CHARACTERS =
-  /[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/gu;
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/gu;
-const ZERO_WIDTH_CHARACTER_PRESENT =
-  /[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/u;
-const CONTROL_CHARACTER_PRESENT = /[\u0000-\u001f\u007f-\u009f]/u;
+const FORMAT_CHARACTERS = /\p{Cf}/gu;
+const CONTROL_CHARACTERS = /\p{Cc}/gu;
+const FORMAT_CHARACTER_PRESENT = /\p{Cf}/u;
+const CONTROL_CHARACTER_PRESENT = /\p{Cc}/u;
 const SITE_CLAUSES =
-  /(?:^|(?<=[\s(]))[-+]?\s*site\s*:\s*(?:"[^"]*"|'[^']*'|[^\s)]+)/giu;
+  /(?<![\p{L}\p{N}_])[-+]?\s*site\s*:\s*(?:"[^"]*"|'[^']*'|[^\s)\]}>'",;\uff0c\u3002!?\uff01\uff1f]+)/giu;
 const SITE_CLAUSE_REMAINS =
-  /(?:^|(?<=[\s(]))[-+]?\s*site\s*:/iu;
+  /(?<![\p{L}\p{N}_])[-+]?\s*site\s*:/iu;
 const SEMANTIC_CONTENT = /[\p{L}\p{N}]/u;
 
 export interface AcquisitionDiscoveryQueryIntent {
@@ -25,11 +23,17 @@ export interface AcquisitionDiscoveryQueryIntent {
   query: string;
 }
 
-function normalizedSemanticQuery(value: string) {
+function normalizedQuery(value: string) {
   return value
     .normalize("NFKC")
-    .replace(ZERO_WIDTH_CHARACTERS, "")
+    .replace(FORMAT_CHARACTERS, "")
     .replace(CONTROL_CHARACTERS, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function stripSiteClauses(value: string) {
+  return value
     .replace(SITE_CLAUSES, " ")
     .replace(/\s+/gu, " ")
     .trim();
@@ -63,16 +67,26 @@ export function compileAcquisitionDiscoveryQueries(input: {
   const output: AcquisitionDiscoveryQueryIntent[] = [];
   const seen = new Set<string>();
   for (const intent of input.queryIntents) {
-    const semanticQuery = normalizedSemanticQuery(intent.query);
+    const normalized = normalizedQuery(intent.query);
+    const semanticQuery = input.targetPlatform === "douyin"
+      ? stripSiteClauses(normalized)
+      : normalized;
     if (!semanticQuery || !SEMANTIC_CONTENT.test(semanticQuery)) {
       throw new Error("ACQUISITION_DISCOVERY_QUERY_EMPTY");
     }
     if (input.targetPlatform === "web") {
+      const boundedSemantic = boundedQuery(
+        semanticQuery,
+        SEARCH_TOOL_QUERY_MAX_LENGTH
+      );
+      if (!boundedSemantic || !SEMANTIC_CONTENT.test(boundedSemantic)) {
+        throw new Error("ACQUISITION_DISCOVERY_QUERY_EMPTY");
+      }
       addUnique(
         output,
         seen,
         intent.subjectChannel,
-        boundedQuery(semanticQuery, SEARCH_TOOL_QUERY_MAX_LENGTH)
+        boundedSemantic
       );
       continue;
     }
@@ -99,7 +113,7 @@ export function isSafeDouyinSearchQuery(query: string) {
   if (!query
     || query.length > SEARCH_TOOL_QUERY_MAX_LENGTH
     || query !== query.normalize("NFKC")
-    || ZERO_WIDTH_CHARACTER_PRESENT.test(query)
+    || FORMAT_CHARACTER_PRESENT.test(query)
     || CONTROL_CHARACTER_PRESENT.test(query)) {
     return false;
   }
