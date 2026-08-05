@@ -2054,6 +2054,9 @@ export function createMountedAiGrowthAdvisor(
     connectionId: string;
     evidenceId: string;
     reviewReason: boolean;
+    selectionStart: number | null;
+    selectionEnd: number | null;
+    selectionDirection: "forward" | "backward" | "none" | null;
   } | null = null;
   let entered = false;
   let controller!: AiGrowthController;
@@ -2089,6 +2092,14 @@ export function createMountedAiGrowthAdvisor(
     const field = element.dataset.field ?? null;
     const reviewReason = element.hasAttribute("data-review-reason");
     if (!action && !field && !reviewReason) return null;
+    const textControl = element as HTMLInputElement | HTMLTextAreaElement;
+    const selectionStart = typeof textControl.selectionStart === "number"
+      ? textControl.selectionStart
+      : null;
+    const selectionEnd = typeof textControl.selectionEnd === "number"
+      ? textControl.selectionEnd
+      : null;
+    const selectionDirection = textControl.selectionDirection ?? null;
     return {
       action,
       field,
@@ -2096,7 +2107,10 @@ export function createMountedAiGrowthAdvisor(
       providerId: element.dataset.providerId ?? "",
       connectionId: element.dataset.connectionId ?? "",
       evidenceId: element.dataset.evidenceId ?? "",
-      reviewReason
+      reviewReason,
+      selectionStart,
+      selectionEnd,
+      selectionDirection
     };
   };
   const captureDrawerFocus = () => {
@@ -2178,12 +2192,25 @@ export function createMountedAiGrowthAdvisor(
           focusableInDrawer(active.selector)[0]?.focus();
           return;
         }
+        const descriptor = drawerFocusDescriptor;
         const matching = matchingDrawerFocus(drawerElement);
         const disabled = matching !== null
           && "disabled" in matching
           && Boolean((matching as HTMLButtonElement | HTMLInputElement).disabled);
-        if (matching && !disabled) {
+        if (matching && !disabled && descriptor) {
           matching.focus({ preventScroll: true });
+          if (
+            descriptor.selectionStart !== null
+            && descriptor.selectionEnd !== null
+            && "setSelectionRange" in matching
+          ) {
+            (matching as HTMLInputElement | HTMLTextAreaElement)
+              .setSelectionRange(
+                descriptor.selectionStart,
+                descriptor.selectionEnd,
+                descriptor.selectionDirection ?? undefined
+              );
+          }
           return;
         }
         drawerElement.setAttribute("tabindex", "-1");
