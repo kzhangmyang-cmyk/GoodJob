@@ -8,8 +8,12 @@ import type {
 } from "./acquisition-plan-run-repository.js";
 import type { AcquisitionScope } from "./acquisition-plan-run-service.js";
 
-export type AcquisitionTaskPlatform = "douyin" | "unknown";
-export type AcquisitionDiscoveryMethod = "公开搜索" | "用户导入";
+export type AcquisitionTaskPlatform = "douyin" | "web";
+export type AcquisitionDiscoveryMethod =
+  | "public_search"
+  | "user_import"
+  | "official_authorized";
+export type AcquisitionTaskStatus = AcquisitionRunStatus | "not_started";
 
 export interface AcquisitionTaskLatestRun {
   id: string;
@@ -38,7 +42,7 @@ export interface AcquisitionTaskOverview {
   generatedAt: string;
   platform: AcquisitionTaskPlatform;
   totals: { tasks: number };
-  statusCounts: Partial<Record<AcquisitionPlanStatus, number>>;
+  statusCounts: Partial<Record<AcquisitionTaskStatus, number>>;
   discoveryMethodCounts: Partial<Record<AcquisitionDiscoveryMethod, number>>;
   tasks: AcquisitionTaskSummary[];
 }
@@ -57,7 +61,7 @@ function platformFor(plan: AcquisitionPlan): AcquisitionTaskPlatform {
     /(?:^|[^a-z0-9-])(?:www\.)?(?:ies)?douyin\.com\b/i.test(reference)
   )
     ? "douyin"
-    : "unknown";
+    : "web";
 }
 
 function discoveryMethodsFor(
@@ -66,9 +70,9 @@ function discoveryMethodsFor(
   const methods = new Set<AcquisitionDiscoveryMethod>();
   for (const operation of plan.payload.operations) {
     if (operation.kind === "import_rows") {
-      methods.add("用户导入");
+      methods.add("user_import");
     } else {
-      methods.add("公开搜索");
+      methods.add("public_search");
     }
   }
   return [...methods];
@@ -77,7 +81,7 @@ function discoveryMethodsFor(
 function latestRunFor(plan: AcquisitionPlan, runs: AcquisitionRun[]) {
   return runs
     .filter((run) => run.planId === plan.id)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt)
       || right.id.localeCompare(left.id))[0] ?? null;
 }
 
@@ -134,8 +138,9 @@ export class AcquisitionTaskOverviewService {
     const statusCounts: AcquisitionTaskOverview["statusCounts"] = {};
     const discoveryMethodCounts:
       AcquisitionTaskOverview["discoveryMethodCounts"] = {};
-    for (const task of recentTasks) {
-      statusCounts[task.planStatus] = (statusCounts[task.planStatus] ?? 0) + 1;
+    for (const task of tasks) {
+      const status = task.latestRun?.status ?? "not_started";
+      statusCounts[status] = (statusCounts[status] ?? 0) + 1;
       for (const method of task.discoveryMethods) {
         discoveryMethodCounts[method] = (discoveryMethodCounts[method] ?? 0) + 1;
       }
@@ -143,7 +148,7 @@ export class AcquisitionTaskOverviewService {
     return structuredClone({
       generatedAt: this.now(),
       platform,
-      totals: { tasks: recentTasks.length },
+      totals: { tasks: tasks.length },
       statusCounts,
       discoveryMethodCounts,
       tasks: recentTasks

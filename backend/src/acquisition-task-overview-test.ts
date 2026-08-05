@@ -24,6 +24,12 @@ const ownerB: AcquisitionScope = {
   actorId: "bob"
 };
 
+const otherTeam: AcquisitionScope = {
+  ownerId: "owner-a",
+  teamId: "team-b",
+  actorId: "mallory"
+};
+
 const executionPort: AcquisitionExecutionPort = {
   async enqueue() {},
   async requestPause() {},
@@ -31,7 +37,11 @@ const executionPort: AcquisitionExecutionPort = {
   async requestCancel() {}
 };
 
-function planInput(name: string): AcquisitionPlanDraftInput {
+function planInput(
+  name: string,
+  platform: "douyin" | "web" = "douyin"
+): AcquisitionPlanDraftInput {
+  const isDouyin = platform === "douyin";
   return {
     name,
     objective: "发现可验证的抖音公开商机",
@@ -72,7 +82,7 @@ function planInput(name: string): AcquisitionPlanDraftInput {
         subjectChannel: "organization",
         kind: "search",
         connectionId: "search-1",
-        query: "site:douyin.com 企业服务",
+        query: isDouyin ? "site:douyin.com 企业服务" : "企业服务公开商机",
         allocatedBudget: {
           requests: 1,
           results: 10,
@@ -85,7 +95,9 @@ function planInput(name: string): AcquisitionPlanDraftInput {
         subjectChannel: "organization",
         kind: "content_fetch",
         connectionId: "fetch-1",
-        sourceRef: "https://www.iesdouyin.com/public-source",
+        sourceRef: isDouyin
+          ? "https://www.iesdouyin.com/public-source"
+          : "https://example.test/public-source",
         allocatedBudget: {
           requests: 1,
           results: 10,
@@ -98,7 +110,7 @@ function planInput(name: string): AcquisitionPlanDraftInput {
         subjectChannel: "individual",
         kind: "search",
         connectionId: "search-1",
-        query: "site:douyin.com 采购需求",
+        query: isDouyin ? "site:douyin.com 采购需求" : "采购需求",
         allocatedBudget: {
           requests: 1,
           results: 10,
@@ -149,9 +161,10 @@ function planInput(name: string): AcquisitionPlanDraftInput {
 async function createApprovedPlan(
   service: AcquisitionPlanRunService,
   scope: AcquisitionScope,
-  name: string
+  name: string,
+  platform: "douyin" | "web" = "douyin"
 ) {
-  const draft = await service.createPlan(scope, planInput(name));
+  const draft = await service.createPlan(scope, planInput(name, platform));
   return service.approvePlan(scope, draft.id, draft.etag, {
     decision: "approve",
     reason: "已核对公开数据源"
@@ -171,6 +184,9 @@ async function main() {
   });
   const overview = new AcquisitionTaskOverviewService({ repository });
 
+  for (let index = 0; index < 20; index += 1) {
+    await createApprovedPlan(service, ownerA, `抖音获客 ${index + 1}`);
+  }
   const visiblePlan = await createApprovedPlan(service, ownerA, "抖音获客");
   const olderRun = await service.createRun(ownerA, visiblePlan.id, {
     idempotencyKey: "visible-run-0001"
@@ -189,7 +205,7 @@ async function main() {
         amountMinor: 800,
         durationSeconds: 90
       },
-      updatedAt: "2026-08-05T00:00:00.000Z",
+      updatedAt: "2026-08-05T10:00:00.000Z",
       completedAt: "2026-08-05T00:00:00.000Z"
     });
     transaction.putRun({
@@ -205,27 +221,54 @@ async function main() {
       updatedAt: "2026-08-05T01:00:00.000Z"
     });
   });
+  const webPlan = await createApprovedPlan(service, ownerA, "网页获客", "web");
   await createApprovedPlan(service, ownerB, "其他租户的抖音获客");
+  const otherTeamPlan = await createApprovedPlan(
+    service,
+    otherTeam,
+    "同一所有者的其他团队抖音获客"
+  );
+
+  const plansBeforeRead = await repository.listPlans(ownerA);
+  const runsBeforeRead = await repository.listRuns(ownerA);
 
   const result = await overview.getOverview(ownerA, "douyin");
   assert.equal(result.platform, "douyin");
-  assert.equal(result.totals.tasks, 1);
-  assert.deepEqual(result.statusCounts, { approved: 1 });
+  assert.equal(result.totals.tasks, 21);
+  assert.deepEqual(result.statusCounts, { running: 1, not_started: 20 });
   assert.deepEqual(result.discoveryMethodCounts, {
-    "公开搜索": 1,
-    "用户导入": 1
+    public_search: 21,
+    user_import: 21
   });
-  assert.equal(result.tasks.length, 1);
-  assert.deepEqual(result.tasks[0]?.discoveryMethods, ["公开搜索", "用户导入"]);
-  assert.equal(result.tasks[0]?.latestRun?.id, latestRun.id);
-  assert.equal(result.tasks[0]?.latestRun?.evidenceCount, 3);
+  assert.equal(result.tasks.length, 20);
+  assert.ok(result.tasks.every((task) => task.platform === "douyin"));
+  assert.ok(result.tasks.every((task) => task.discoveryMethods.every(
+    (method) => method === "public_search" || method === "user_import"
+  )));
+
+  const visibleTask = await overview.getTask(ownerA, visiblePlan.id);
+  assert.equal(visibleTask?.platform, "douyin");
+  assert.deepEqual(visibleTask?.discoveryMethods, [
+    "public_search",
+    "user_import"
+  ]);
+  assert.equal(visibleTask?.latestRun?.id, latestRun.id);
+  assert.equal(visibleTask?.latestRun?.evidenceCount, 3);
   assert.equal(
-    Object.hasOwn(result.tasks[0]?.latestRun?.consumedBudget ?? {}, "amountMinor"),
+    Object.hasOwn(visibleTask?.latestRun?.consumedBudget ?? {}, "amountMinor"),
     false
   );
 
+  const web = await overview.getOverview(ownerA, "web");
+  assert.equal(web.totals.tasks, 1);
+  assert.equal(web.tasks[0]?.planId, webPlan.id);
+  assert.deepEqual(web.statusCounts, { not_started: 1 });
+
+  assert.deepEqual(await repository.listPlans(ownerA), plansBeforeRead);
+  assert.deepEqual(await repository.listRuns(ownerA), runsBeforeRead);
   assert.equal((await overview.listTasks(ownerB, { platform: "douyin" })).length, 1);
   assert.equal(await overview.getTask(ownerB, visiblePlan.id), null);
+  assert.equal(await overview.getTask(ownerA, otherTeamPlan.id), null);
 }
 
 await main();
