@@ -38,6 +38,7 @@ import {
 } from "./components/task-input.js";
 import { renderPlanApproval } from "./components/plan-approval.js";
 import { renderConnectionRequired } from "./components/connection-required.js";
+import { renderProviderConnectionCenter } from "./components/provider-connection-center.js";
 import {
   renderRunConsole,
   type RunProviderVm,
@@ -1751,6 +1752,20 @@ export function createAiGrowthController(
     },
 
     render(root) {
+      const overlays = () => drawer.render().html
+        + renderProviderConnectionCenter(connectionCenter, {
+          onClose: () => controller.closeConnectionCenter(),
+          onSelectProvider: (providerId) =>
+            controller.selectConnectionCenterProvider(providerId),
+          onSelectConnection: (connectionId) =>
+            controller.selectConnectionCenterConnection(connectionId),
+          onSave: (apiKey) => controller.saveProviderConnection(apiKey),
+          onTest: () => controller.testProviderConnection(),
+          onEnable: () => controller.setProviderConnectionEnabled(true),
+          onDisable: () => controller.setProviderConnectionEnabled(false),
+          onDelete: () => controller.deleteProviderConnection(),
+          onContinue: () => controller.continueAfterConnection()
+        }).html;
       if (workspaceView === "overview") {
         const overview = renderTaskOverview(taskOverview, {
           onCreateTask: () => controller.showNewTask(),
@@ -1763,7 +1778,7 @@ export function createAiGrowthController(
           stageHtml: overview.html,
           statusDetail: taskOverview.errorMessage ?? undefined
         }, { onContinue: () => undefined });
-        root.innerHTML = shell.html + drawer.render().html;
+        root.innerHTML = shell.html + overlays();
         return;
       }
 
@@ -1789,7 +1804,7 @@ export function createAiGrowthController(
           stageHtml: detailHeader,
           statusDetail: taskDetail.errorMessage ?? undefined
         }, { onContinue: () => undefined });
-        root.innerHTML = shell.html + drawer.render().html;
+        root.innerHTML = shell.html + overlays();
         return;
       }
 
@@ -1797,15 +1812,24 @@ export function createAiGrowthController(
         (item) => item.id === state.templateId
       ) ?? industryTemplates[0]!;
       const connectionVms: SearchConnectionHealthVm[] =
-        connections.map((connection) => ({
+        connections
+          .filter((connection) => connection.kind === "search")
+          .map((connection) => ({
           providerId: connection.providerId,
           label: searchProviderLabel(connection.providerId),
           status: connection.status === "active"
+            && connection.lastHealthStatus === "passed"
             ? "healthy"
-            : connection.status === "inactive"
+            : connection.lastHealthStatus === "passed"
               ? "degraded"
               : "unavailable",
-          detail: `${connection.kind} · 凭据版本 ${connection.credentialVersion}`
+          detail: `${connection.status === "active" ? "已启用" : "未启用"} · ${
+            connection.lastHealthStatus === "passed"
+              ? "测试通过"
+              : connection.lastHealthStatus === "failed"
+                ? "测试失败"
+                : "尚未测试"
+          } · 凭据版本 ${connection.credentialVersion}`
         }));
       const recentVms: RecentAdvisorTaskVm[] = state.mode === "real"
         ? recentTasks.map((item) => ({
@@ -1850,7 +1874,7 @@ export function createAiGrowthController(
           missingKinds: ["搜索 API"],
           message: "真实搜索需要至少一个已启用的官方搜索来源。你的任务内容已保留。"
         }, {
-          onConfigure: () => options.navigate("settings"),
+          onConfigure: () => void controller.openConnectionCenter(),
           onUseDemo: () => controller.setMode("demo")
         });
         stage = input.html + required.html;
@@ -1957,7 +1981,7 @@ export function createAiGrowthController(
           if (state.status === "paused") void controller.resume();
         }
       });
-      root.innerHTML = shell.html + drawer.render().html;
+      root.innerHTML = shell.html + overlays();
     },
 
     enter() {
@@ -1985,6 +2009,7 @@ export function createAiGrowthController(
       poller.stop();
       stopDemo();
       resetDemoArtifacts();
+      controller.closeConnectionCenter();
       drawer.close();
       publish();
     },
@@ -2014,26 +2039,161 @@ export function createMountedAiGrowthAdvisor(
   }
   const api = createAiGrowthApi(dependencies.request);
   let previousFocus: HTMLElement | null = null;
-  let drawerLocked = false;
+  let previousFocusAction: { action: string; candidateId: string } | null = null;
+  let previousBodyOverflow = "";
+  let lockedDrawer: "provider" | "battle" | null = null;
+  let drawerFocusDescriptor: {
+    action: string | null;
+    field: string | null;
+    candidateId: string;
+    providerId: string;
+    connectionId: string;
+    reviewReason: boolean;
+  } | null = null;
   let entered = false;
   let controller!: AiGrowthController;
+  const activeDrawer = () => {
+    if (controller.getConnectionCenter().open) {
+      return {
+        kind: "provider" as const,
+        selector: ".ai-growth-provider-drawer"
+      };
+    }
+    if (controller.getDrawer().getState().open) {
+      return {
+        kind: "battle" as const,
+        selector: ".ai-growth-battle-drawer"
+      };
+    }
+    return null;
+  };
+  const focusableInDrawer = (selector: string) => [
+    ...root.querySelectorAll<HTMLElement>(
+      `${selector} a[href],`
+      + `${selector} button:not([disabled]),`
+      + `${selector} input:not([disabled]),`
+      + `${selector} textarea:not([disabled]),`
+      + `${selector} select:not([disabled]),`
+      + `${selector} [tabindex]:not([tabindex='-1'])`
+    )
+  ];
+  const describeDrawerFocus = (
+    element: HTMLElement
+  ): NonNullable<typeof drawerFocusDescriptor> | null => {
+    const action = element.dataset.action ?? null;
+    const field = element.dataset.field ?? null;
+    const reviewReason = element.hasAttribute("data-review-reason");
+    if (!action && !field && !reviewReason) return null;
+    return {
+      action,
+      field,
+      candidateId: element.dataset.candidateId ?? "",
+      providerId: element.dataset.providerId ?? "",
+      connectionId: element.dataset.connectionId ?? "",
+      reviewReason
+    };
+  };
+  const captureDrawerFocus = () => {
+    const element = doc.activeElement;
+    if (!(element instanceof HTMLElement)) return;
+    const drawerElement = element.closest(
+      ".ai-growth-provider-drawer, .ai-growth-battle-drawer"
+    );
+    if (!drawerElement || !root.contains(drawerElement)) return;
+    drawerFocusDescriptor = describeDrawerFocus(element)
+      ?? drawerFocusDescriptor;
+  };
+  const matchingDrawerFocus = (
+    drawerElement: HTMLElement
+  ): HTMLElement | null => {
+    const descriptor = drawerFocusDescriptor;
+    if (!descriptor) return null;
+    return [...drawerElement.querySelectorAll<HTMLElement>(
+      "[data-action], [data-field], [data-review-reason]"
+    )].find((element) => {
+      const candidate = describeDrawerFocus(element);
+      return candidate !== null
+        && candidate.action === descriptor.action
+        && candidate.field === descriptor.field
+        && candidate.candidateId === descriptor.candidateId
+        && candidate.providerId === descriptor.providerId
+        && candidate.connectionId === descriptor.connectionId
+        && candidate.reviewReason === descriptor.reviewReason;
+    }) ?? null;
+  };
+  const restorePreviousFocus = () => {
+    const connected = previousFocus?.isConnected ? previousFocus : null;
+    const origin = previousFocusAction;
+    const matching = origin
+      ? [...root.querySelectorAll<HTMLElement>("[data-action]")].find(
+          (element) => element.dataset.action === origin.action
+            && (element.dataset.candidateId ?? "")
+              === origin.candidateId
+        ) ?? null
+      : null;
+    (connected ?? matching)?.focus();
+  };
+  const rememberDrawerTrigger = (element: HTMLElement) => {
+    if (lockedDrawer !== null) return;
+    previousFocus = element;
+    previousFocusAction = element.dataset.action
+      ? {
+          action: element.dataset.action,
+          candidateId: element.dataset.candidateId ?? ""
+        }
+      : null;
+  };
   function syncDrawerA11y() {
-    const drawerOpen = controller.getDrawer().getState().open;
-    if (drawerOpen && !drawerLocked) {
-      previousFocus = doc.activeElement instanceof HTMLElement
-        ? doc.activeElement
-        : null;
+    const active = activeDrawer();
+    const initialFocus = active !== null && lockedDrawer !== active.kind;
+    if (active && lockedDrawer === null) {
+      if (previousFocus === null && previousFocusAction === null) {
+        previousFocus = doc.activeElement instanceof HTMLElement
+          ? doc.activeElement
+          : null;
+        previousFocusAction = previousFocus?.dataset.action
+          ? {
+              action: previousFocus.dataset.action,
+              candidateId: previousFocus.dataset.candidateId ?? ""
+            }
+          : null;
+      }
+      previousBodyOverflow = doc.body.style.overflow;
       doc.body.style.overflow = "hidden";
-      drawerLocked = true;
-      queueMicrotask(() =>
-        root.querySelector<HTMLElement>(".ai-growth-battle-drawer button")
-          ?.focus()
-      );
-    } else if (!drawerOpen && drawerLocked) {
-      doc.body.style.removeProperty("overflow");
-      drawerLocked = false;
-      previousFocus?.focus();
+    }
+    if (active) {
+      lockedDrawer = active.kind;
+      queueMicrotask(() => {
+        const drawerElement = root.querySelector<HTMLElement>(active.selector);
+        if (!drawerElement || drawerElement.contains(doc.activeElement)) return;
+        if (initialFocus) {
+          drawerFocusDescriptor = null;
+          focusableInDrawer(active.selector)[0]?.focus();
+          return;
+        }
+        const matching = matchingDrawerFocus(drawerElement);
+        const disabled = matching !== null
+          && "disabled" in matching
+          && Boolean((matching as HTMLButtonElement | HTMLInputElement).disabled);
+        if (matching && !disabled) {
+          matching.focus({ preventScroll: true });
+          return;
+        }
+        drawerElement.setAttribute("tabindex", "-1");
+        drawerElement.focus({ preventScroll: true });
+      });
+    } else if (lockedDrawer !== null) {
+      if (previousBodyOverflow) {
+        doc.body.style.overflow = previousBodyOverflow;
+      } else {
+        doc.body.style.removeProperty("overflow");
+      }
+      lockedDrawer = null;
+      restorePreviousFocus();
       previousFocus = null;
+      previousFocusAction = null;
+      previousBodyOverflow = "";
+      drawerFocusDescriptor = null;
     }
   }
 
@@ -2047,8 +2207,9 @@ export function createMountedAiGrowthAdvisor(
     validateSession: (sessionId) =>
       dependencies.request(
         `/api/v1/acquisition/copilot/sessions/${encodeURIComponent(sessionId)}`
-      ),
+    ),
     onChange() {
+      captureDrawerFocus();
       controller.render(root);
       syncDrawerA11y();
     }
@@ -2079,8 +2240,32 @@ export function createMountedAiGrowthAdvisor(
     if (entered) void applyRoute(parseAiGrowthHash(win?.location.hash ?? ""));
   };
 
+  const takeProviderApiKey = () => {
+    const input = root.querySelector<HTMLInputElement>(
+      ".ai-growth-provider-drawer [data-field='provider-api-key']"
+    );
+    const apiKey = input?.value ?? "";
+    if (input) {
+      input.value = "";
+      input.type = "password";
+    }
+    return apiKey;
+  };
+
   const runAction = async (action: string, element: HTMLElement) => {
     const candidateId = element.dataset.candidateId ?? "";
+    if (
+      action === "configure-connections"
+      || action === "open-battle-card"
+      || action === "approve"
+      || action === "reject"
+      || action === "do-not-contact"
+      || action === "request-research"
+      || action === "reopen"
+      || action === "build-battle-card"
+    ) {
+      rememberDrawerTrigger(element);
+    }
     switch (action) {
       case "new-task":
         setRoute({ name: "new" });
@@ -2136,8 +2321,64 @@ export function createMountedAiGrowthAdvisor(
         await controller.cancel();
         break;
       case "configure-connections":
-        dependencies.navigate("settings");
+        await controller.openConnectionCenter();
         break;
+      case "select-connection-provider":
+        controller.selectConnectionCenterProvider(
+          element.dataset.providerId ?? null
+        );
+        break;
+      case "select-provider-connection":
+        controller.selectConnectionCenterConnection(
+          element.dataset.connectionId ?? null
+        );
+        break;
+      case "save-provider-connection": {
+        await controller.saveProviderConnection(takeProviderApiKey());
+        break;
+      }
+      case "rotate-provider-connection": {
+        if (!win?.confirm("轮换后旧 API Key 将立即失效，确认继续？")) {
+          break;
+        }
+        await controller.saveProviderConnection(takeProviderApiKey());
+        break;
+      }
+      case "delete-provider-connection":
+        if (win?.confirm("确认删除这个搜索来源连接？此操作无法撤销。")) {
+          await controller.deleteProviderConnection();
+        }
+        break;
+      case "test-provider-connection":
+        await controller.testProviderConnection();
+        break;
+      case "enable-provider-connection":
+        await controller.setProviderConnectionEnabled(true);
+        break;
+      case "disable-provider-connection":
+        await controller.setProviderConnectionEnabled(false);
+        break;
+      case "continue-after-connection":
+        await controller.continueAfterConnection();
+        break;
+      case "close-provider-connections":
+        controller.closeConnectionCenter();
+        break;
+      case "toggle-provider-secret": {
+        const input = element
+          .closest(".ai-growth-connection-editor")
+          ?.querySelector<HTMLInputElement>("[data-field='provider-api-key']");
+        if (!input) break;
+        const visible = input.type === "password";
+        input.type = visible ? "text" : "password";
+        element.setAttribute("aria-pressed", String(visible));
+        element.setAttribute(
+          "aria-label",
+          visible ? "隐藏 API Key" : "显示 API Key"
+        );
+        element.textContent = visible ? "隐藏" : "显示";
+        break;
+      }
       case "use-demo":
         controller.setMode("demo");
         break;
@@ -2218,21 +2459,27 @@ export function createMountedAiGrowthAdvisor(
     }
   };
   const onKeydown = (event: KeyboardEvent) => {
-    if (!controller.getDrawer().getState().open) return;
+    const active = activeDrawer();
+    if (!active) return;
     if (event.key === "Escape") {
-      controller.getDrawer().close();
+      event.preventDefault();
+      if (active.kind === "provider") {
+        controller.closeConnectionCenter();
+      } else {
+        controller.getDrawer().close();
+      }
       return;
     }
     if (event.key !== "Tab") return;
-    const focusable = [...root.querySelectorAll<HTMLElement>(
-      ".ai-growth-battle-drawer button:not([disabled]),"
-      + ".ai-growth-battle-drawer textarea:not([disabled]),"
-      + ".ai-growth-battle-drawer a[href]"
-    )];
+    const focusable = focusableInDrawer(active.selector);
     if (focusable.length === 0) return;
     const first = focusable[0]!;
     const last = focusable[focusable.length - 1]!;
-    if (event.shiftKey && doc.activeElement === first) {
+    const drawerElement = root.querySelector<HTMLElement>(active.selector);
+    if (!drawerElement?.contains(doc.activeElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && doc.activeElement === first) {
       event.preventDefault();
       last.focus();
     } else if (!event.shiftKey && doc.activeElement === last) {
@@ -2264,7 +2511,13 @@ export function createMountedAiGrowthAdvisor(
       root.removeEventListener("input", onInput);
       doc.removeEventListener("keydown", onKeydown);
       win?.removeEventListener("hashchange", onHashChange);
-      if (drawerLocked) doc.body.style.removeProperty("overflow");
+      if (lockedDrawer !== null) {
+        if (previousBodyOverflow) {
+          doc.body.style.overflow = previousBodyOverflow;
+        } else {
+          doc.body.style.removeProperty("overflow");
+        }
+      }
     }
   };
 }

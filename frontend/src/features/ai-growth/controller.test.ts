@@ -706,6 +706,48 @@ test("只有 active 且 passed 的搜索连接允许生成方案", async () => {
   assert.equal(draftRequests, 1);
 });
 
+test("任务输入只统计搜索连接且 active failed 不得显示为健康", async () => {
+  const { api } = createApi({
+    listProviderConnections: async () => ({
+      items: [
+        providerConnection({
+          id: "connection-content",
+          providerId: "internal_reader",
+          kind: "content_fetch",
+          status: "active",
+          lastHealthStatus: "passed"
+        }),
+        providerConnection({
+          id: "connection-import",
+          providerId: "spreadsheet_import",
+          kind: "import",
+          status: "active",
+          lastHealthStatus: "passed"
+        }),
+        providerConnection({
+          id: "connection-search-failed",
+          providerId: "baidu",
+          kind: "search",
+          status: "active",
+          lastHealthStatus: "failed",
+          lastHealthMessage: "凭据已失效"
+        })
+      ],
+      nextCursor: null
+    })
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  await controller.submit();
+  const root = { innerHTML: "" } as HTMLElement;
+
+  controller.render(root);
+
+  assert.match(root.innerHTML, /搜索来源健康状态[\s\S]*1 个来源/);
+  assert.match(root.innerHTML, /data-health="unavailable"/);
+  assert.match(root.innerHTML, /连接不可用/);
+  assert.doesNotMatch(root.innerHTML, /internal_reader|spreadsheet_import/);
+});
+
 test("打开连接中心并发加载且只保留搜索来源和当前任务", async () => {
   let releaseCatalog!: () => void;
   let releaseConnections!: () => void;
@@ -1656,7 +1698,7 @@ test("最近任务校验在 leave 或 dispose 后不得写存储或发布", asyn
   }
 });
 
-test("leave 和 dispose 清理 poller、演示 runner与 drawer", () => {
+test("leave 和 dispose 清理 poller、演示 runner与 drawers", async () => {
   const { api } = createApi();
   const calls = { pollerStop: 0, pollerDispose: 0, demoDispose: 0, close: 0 };
   const controller = createAiGrowthController(controllerOptions(api, {
@@ -1688,7 +1730,11 @@ test("leave 和 dispose 清理 poller、演示 runner与 drawer", () => {
     })
   }));
   controller.setMode("demo");
+  const openingConnections = controller.openConnectionCenter();
+  assert.equal(controller.getConnectionCenter().open, true);
   controller.leave();
+  assert.equal(controller.getConnectionCenter().open, false);
+  await openingConnections;
   controller.dispose();
   assert.ok(calls.pollerStop >= 1);
   assert.equal(calls.pollerDispose, 1);

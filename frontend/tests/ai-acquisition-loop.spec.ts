@@ -626,6 +626,333 @@ test.describe("AI acquisition loop", () => {
     fixture.assertNoUnexpected();
   });
 
+  test("opens the provider connection center in place and preserves the current task", async ({ page }) => {
+    const fixture = new StrictAcquisitionFixture();
+    await fixture.install(page);
+    fixture
+      .on("GET", "/api/v1/acquisition/overview", {
+        body: {
+          tasks: [],
+          totals: { tasks: 0 },
+          statusCounts: {},
+          discoveryMethodCounts: {},
+          generatedAt: timestamp
+        }
+      })
+      .on("GET", "/api/v1/acquisition/tasks", {
+        body: { items: [], nextCursor: null }
+      })
+      .on("GET", "/api/v1/acquisition/provider-connections", {
+        body: { items: [], nextCursor: null }
+      })
+      .on("GET", "/api/v1/acquisition/providers", {
+        body: {
+          items: [{
+            id: "baidu_ai_search",
+            kind: "search",
+            displayName: "百度 AI 搜索",
+            officialDocsUrl: "https://cloud.baidu.com/doc/",
+            requiresKey: true,
+            costNote: "按官方用量计费",
+            capabilities: ["web_search"]
+          }],
+          nextCursor: null
+        }
+      });
+    await openAdvisor(page);
+    await page.locator('[data-action="new-task"]').click();
+
+    const taskText = "寻找苏州近期扩产、但采购预算尚未公开的制造企业";
+    await page.locator('[data-field="task-text"]').fill(taskText);
+    await page.locator('[data-action="submit-task"]').click();
+    const configure = page.locator('[data-action="configure-connections"]');
+    await expect(configure).toBeVisible();
+    const hashBefore = await page.evaluate(() => location.hash);
+
+    await configure.click();
+
+    await expect(page.getByRole("dialog", { name: "搜索来源连接中心" }))
+      .toBeVisible();
+    expect(await page.evaluate(() => location.hash)).toBe(hashBefore);
+    await expect(page.locator("#ai-growth")).toHaveClass(/active/);
+    await expect(page.locator('[data-field="task-text"]')).toHaveValue(taskText);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileLayout = await page.evaluate(() => {
+      const drawer = document.querySelector(".ai-growth-provider-drawer");
+      const catalog = document.querySelector(".ai-growth-provider-catalog");
+      const footer = document.querySelector(".ai-growth-provider-drawer__footer");
+      return {
+        drawerWidth: drawer?.getBoundingClientRect().width,
+        catalogColumns: catalog
+          ? getComputedStyle(catalog).gridTemplateColumns.split(" ").length
+          : 0,
+        footerPosition: footer ? getComputedStyle(footer).position : null,
+        horizontalOverflow: document.documentElement.scrollWidth > innerWidth
+      };
+    });
+    expect(mobileLayout).toEqual({
+      drawerWidth: 390,
+      catalogColumns: 1,
+      footerPosition: "static",
+      horizontalOverflow: false
+    });
+    fixture.assertNoUnexpected();
+  });
+
+  test("traps provider drawer focus and restores the trigger on Escape", async ({ page }) => {
+    const fixture = new StrictAcquisitionFixture();
+    await fixture.install(page);
+    fixture
+      .on("GET", "/api/v1/acquisition/overview", {
+        body: {
+          tasks: [],
+          totals: { tasks: 0 },
+          statusCounts: {},
+          discoveryMethodCounts: {},
+          generatedAt: timestamp
+        }
+      })
+      .on("GET", "/api/v1/acquisition/tasks", {
+        body: { items: [], nextCursor: null }
+      })
+      .on("GET", "/api/v1/acquisition/provider-connections", {
+        body: { items: [], nextCursor: null }
+      })
+      .on("GET", "/api/v1/acquisition/providers", {
+        body: {
+          items: [{
+            id: "baidu_ai_search",
+            kind: "search",
+            displayName: "百度 AI 搜索",
+            capabilities: ["web_search"]
+          }],
+          nextCursor: null
+        }
+      });
+    await openAdvisor(page);
+    await page.locator('[data-action="new-task"]').click();
+    await page.locator('[data-field="task-text"]').fill("验证抽屉焦点");
+    await page.locator('[data-action="submit-task"]').click();
+    const trigger = page.locator('[data-action="configure-connections"]');
+    await trigger.click();
+    const drawer = page.getByRole("dialog", { name: "搜索来源连接中心" });
+    await expect(drawer).toBeVisible();
+
+    expect(await page.evaluate(() => document.body.style.overflow))
+      .toBe("hidden");
+    expect(await drawer.evaluate((element) =>
+      element.contains(document.activeElement)
+    )).toBe(true);
+    const providerTrigger = drawer.locator(
+      '[data-action="select-connection-provider"][data-provider-id="baidu_ai_search"]'
+    );
+    await providerTrigger.click();
+    expect(await drawer.locator(
+      '[data-action="select-connection-provider"][data-provider-id="baidu_ai_search"]'
+    ).evaluate((element) => element === document.activeElement)).toBe(true);
+    const focusable = drawer.locator(
+      'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    );
+    const first = focusable.first();
+    const last = focusable.last();
+    await last.evaluate((element: HTMLElement) => element.focus());
+    await page.keyboard.press("Tab");
+    expect(await first.evaluate((element) =>
+      element === document.activeElement
+    )).toBe(true);
+    await first.evaluate((element: HTMLElement) => element.focus());
+    await page.keyboard.press("Shift+Tab");
+    expect(await last.evaluate((element) =>
+      element === document.activeElement
+    )).toBe(true);
+
+    await page.keyboard.press("Escape");
+    await expect(drawer).toHaveCount(0);
+    expect(await trigger.evaluate((element) =>
+      element === document.activeElement
+    )).toBe(true);
+    expect(await page.evaluate(() => document.body.style.overflow)).toBe("");
+    fixture.assertNoUnexpected();
+  });
+
+  test("clears the live API key input before a save request settles", async ({ page }) => {
+    const fixture = new StrictAcquisitionFixture();
+    let releaseSave!: () => void;
+    const saveGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    await fixture.install(page);
+    fixture
+      .on("GET", "/api/v1/acquisition/overview", {
+        body: {
+          tasks: [],
+          totals: { tasks: 0 },
+          statusCounts: {},
+          discoveryMethodCounts: {},
+          generatedAt: timestamp
+        }
+      })
+      .on("GET", "/api/v1/acquisition/tasks", {
+        body: { items: [], nextCursor: null }
+      })
+      .on("GET", "/api/v1/acquisition/provider-connections", {
+        body: { items: [], nextCursor: null }
+      })
+      .on("GET", "/api/v1/acquisition/providers", {
+        body: {
+          items: [{
+            id: "baidu_ai_search",
+            kind: "search",
+            displayName: "百度 AI 搜索",
+            capabilities: ["web_search"]
+          }],
+          nextCursor: null
+        }
+      })
+      .on(
+        "POST",
+        "/api/v1/acquisition/provider-connections",
+        async () => {
+          await saveGate;
+          return {
+            body: {
+              id: "connection-new",
+              ownerId: "u_manager_alex",
+              teamId: "europe",
+              providerId: "baidu_ai_search",
+              kind: "search",
+              status: "disabled",
+              credentialVersion: 1,
+              lastHealthAt: null,
+              lastHealthStatus: "untested",
+              lastErrorCode: null,
+              lastHealthMessage: "尚未测试",
+              usage: "search",
+              createdAt: timestamp
+            }
+          };
+        }
+      );
+    await openAdvisor(page);
+    await page.locator('[data-action="new-task"]').click();
+    await page.locator('[data-field="task-text"]').fill("保存输入清理时序");
+    await page.locator('[data-action="submit-task"]').click();
+    await page.locator('[data-action="configure-connections"]').click();
+    await page.locator('[data-action="select-connection-provider"]').click();
+
+    const secret = "fixture-secret-must-not-survive";
+    const input = page.locator('[data-field="provider-api-key"]');
+    await input.fill(secret);
+    await page.locator('[data-action="save-provider-connection"]').click();
+    await expect.poll(() => fixture.calls(
+      "POST",
+      "/api/v1/acquisition/provider-connections"
+    ).length).toBe(1);
+
+    await expect(input).toHaveValue("");
+    await expect(input).not.toHaveAttribute("value", secret);
+    expect(await page.locator(".ai-growth-provider-drawer").evaluate(
+      (element) => element.outerHTML
+    )).not.toContain(secret);
+    const storageSnapshot = await page.evaluate(() => ({
+      local: JSON.stringify(localStorage),
+      session: JSON.stringify(sessionStorage)
+    }));
+    expect(storageSnapshot.local).not.toContain(secret);
+    expect(storageSnapshot.session).not.toContain(secret);
+
+    releaseSave();
+    await expect(page.locator(".ai-growth-provider-drawer"))
+      .toContainText("连接已保存，请测试后再启用");
+    fixture.assertNoUnexpected();
+  });
+
+  test("cancelled confirmation blocks credential rotation and deletion", async ({ page }) => {
+    const fixture = new StrictAcquisitionFixture();
+    const existingConnection = {
+      id: "connection-existing",
+      ownerId: "u_manager_alex",
+      teamId: "europe",
+      providerId: "baidu_ai_search",
+      kind: "search",
+      status: "disabled",
+      credentialVersion: 2,
+      lastHealthAt: timestamp,
+      lastHealthStatus: "passed",
+      lastErrorCode: null,
+      lastHealthMessage: "测试通过",
+      usage: "search",
+      createdAt: timestamp
+    };
+    await fixture.install(page);
+    fixture
+      .on("GET", "/api/v1/acquisition/overview", {
+        body: {
+          tasks: [],
+          totals: { tasks: 0 },
+          statusCounts: {},
+          discoveryMethodCounts: {},
+          generatedAt: timestamp
+        }
+      })
+      .on("GET", "/api/v1/acquisition/tasks", {
+        body: { items: [], nextCursor: null }
+      })
+      .on(
+        "GET",
+        "/api/v1/acquisition/provider-connections",
+        { body: { items: [], nextCursor: null } },
+        { body: { items: [], nextCursor: null } },
+        { body: { items: [existingConnection], nextCursor: null } }
+      )
+      .on("GET", "/api/v1/acquisition/providers", {
+        body: {
+          items: [{
+            id: "baidu_ai_search",
+            kind: "search",
+            displayName: "百度 AI 搜索",
+            capabilities: ["web_search"]
+          }],
+          nextCursor: null
+        }
+      });
+    await openAdvisor(page);
+    await page.locator('[data-action="new-task"]').click();
+    await page.locator('[data-field="task-text"]').fill("确认取消不写入");
+    await page.locator('[data-action="submit-task"]').click();
+    await page.locator('[data-action="configure-connections"]').click();
+    await page.locator('[data-action="select-provider-connection"]').click();
+    await page.evaluate(() => {
+      (window as typeof window & { __providerConfirms: string[] })
+        .__providerConfirms = [];
+      window.confirm = (message?: string) => {
+        (window as typeof window & { __providerConfirms: string[] })
+          .__providerConfirms.push(message ?? "");
+        return false;
+      };
+    });
+
+    await page.locator('[data-field="provider-api-key"]')
+      .fill("rotation-secret");
+    await page.locator('[data-action="rotate-provider-connection"]').click();
+    await page.locator('[data-action="delete-provider-connection"]').click();
+
+    expect(await page.evaluate(() =>
+      (window as typeof window & { __providerConfirms: string[] })
+        .__providerConfirms
+    )).toHaveLength(2);
+    expect(fixture.calls(
+      "PATCH",
+      "/api/v1/acquisition/provider-connections/connection-existing"
+    )).toHaveLength(0);
+    expect(fixture.calls(
+      "DELETE",
+      "/api/v1/acquisition/provider-connections/connection-existing"
+    )).toHaveLength(0);
+    fixture.assertNoUnexpected();
+  });
+
   test("demo replay stays local and read-only without acquisition or todo writes", async ({ page }) => {
     const fixture = new StrictAcquisitionFixture();
     await fixture.install(page);
