@@ -228,8 +228,27 @@ DELETE /api/v1/acquisition/provider-connections/:id
 POST   /api/v1/acquisition/provider-connections/:id/test
 ```
 
+### 4.1 搜索来源连接中心
+
+连接中心支持当前 Provider Catalog 中的官方搜索 Provider ID：
+`baidu_ai_search`、`tencent_web_search`、`tavily`、`serper`、`brave` 和
+`serpapi`。首次使用真实获客时，客户在当前工作区选择 Provider、填写自己的
+官方 API Key 并保存；新连接默认保存为 `disabled`，必须先完成真实连接测试，
+再由客户明确启用。只有 `status=active` 且 `lastHealthStatus=passed` 的搜索连接
+可以继续生成和运行获客方案，测试返回 `ok:false` 时仍保持禁用。
+
+API Key 在服务端加密保存，在前端与 API 安全投影中均为只写：保存后不会回显，
+也不得进入页面 HTML、URL、浏览器存储、日志或错误消息。连接只能使用服务端登记
+的官方 Base URL；不接受任意地址冒充官方 Provider，修改受支持的连接地址时也
+必须重新提交 Key 并重新测试。
+
+搜索 Provider 与目标内容平台是两个概念：例如 `baidu_ai_search` 负责检索，
+`douyin` 表示方案限定的内容平台。配置搜索 Provider 只会启用对公开、已索引页面
+的检索，不代表获得抖音全站、私域内容或完整评论访问权，也不会自动评论、私信、
+加好友或执行其他自动触达。
+
 以上接口只返回连接 ID、厂商、状态和凭据版本等安全投影，不回传 API Key、
-密文或内部凭据引用。客户在设置页配置一次官方 Key 后，`search_public_sources`
+密文或内部凭据引用。客户在连接中心配置一次官方 Key 后，`search_public_sources`
 未指定 `providerConnectionIds` 时会自动使用该客户已启用的全部官方搜索连接；
 若客户明确选择了连接，则只使用所选连接。没有可用连接时返回稳定的
 `SEARCH_PROVIDER_CONNECTION_REQUIRED`，前端应引导客户进入连接设置页。

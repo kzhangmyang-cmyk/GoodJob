@@ -96,11 +96,11 @@
 - Also proves test `ok:false`, disabled connection and delete/rotate paths are honest and do not leak the fixture Key into DOM, URL, storage or console.
 - Fixture rejects undeclared network traffic and records formal API writes.
 
-- [ ] **Step 1: write failing deterministic E2E** for the full zero-to-plan path and secret non-disclosure.
-- [ ] **Step 2: run RED and make only minimal integration corrections**.
-- [ ] **Step 3: update product documentation** with supported providers, setup flow, security model and limitations.
-- [ ] **Step 4: run full GREEN**: target E2E, frontend suite, acquisition backend suite, root tests, production build, generated contract drift and `git diff --check`.
-- [ ] **Step 5: commit** as `test: verify acquisition provider connection flow`.
+- [x] **Step 1: write failing deterministic E2E** for the full zero-to-plan path and secret non-disclosure.
+- [x] **Step 2: run RED and make only minimal integration corrections**.
+- [x] **Step 3: update product documentation** with supported providers, setup flow, security model and limitations.
+- [x] **Step 4: run full GREEN**: target E2E, frontend suite, acquisition backend suite, root tests, production build, generated contract drift and `git diff --check`.
+- [x] **Step 5: commit** as `test: verify acquisition provider connection flow`.
 
 ## Acceptance Outcome
 
