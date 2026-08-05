@@ -76,6 +76,81 @@ Pi 使用 `@earendil-works/pi-agent-core@0.81.1`，不使用其环境变量密�
 两道门之间的搜索、归一、补充研究、资格判断、财务评估和作战卡生成由
 GoodJob Worker 自动串联；不要求用户逐条点击“评分”或“生成作战卡”。
 
+### 2.2 抖音平台化发现工作流与 Skill 边界
+
+新建获客任务必须显式携带 `targetPlatform`。当前只有两个可执行值：
+
+- `douyin`：抖音公开商机，只使用搜索服务商已索引的抖音公开页面；
+- `web`：全网公开网页，按通用公开搜索规则执行。
+
+抖音链路不是一个可以自由操作网页的巨型 Agent，而是“大模型语义规划、
+确定性 Skill 与可恢复工作流”：
+
+```text
+用户选择抖音公开商机
+  → Pi / 模型生成行业、地区、需求信号与语义查询意图
+  → Douyin Query Compiler Skill 移除模型/用户提供的 site: 条件
+  → 编译为 site:douyin.com 与 site:iesdouyin.com 的确定性查询
+  → 人工审批平台、查询、搜索 Provider 和预算
+  → 已授权搜索 Provider 执行公开搜索
+  → Douyin Public Source Classifier Skill 分类抖音公开页面
+  → 证据归一、候选研究、意向/财务评分和作战卡
+  → 人工复核后才能转 CRM 或创建人工跟进任务
+```
+
+#### Douyin Query Compiler Skill
+
+- 对语义查询先执行 NFKC 规范化、空白折叠和去重；
+- 先移除所有外部提供的 `site:` 表达式，包括全角冒号和不可见
+  Unicode 变体；
+- 只能生成以 `site:douyin.com ` 或 `site:iesdouyin.com ` 精确开头的
+  搜索操作，单条不超过 1000 字符；
+- 在操作数、分片和预算分配之前完成编译；
+- 计划创建、更新、审批和运行都会重新执行 readiness 检查，
+  直接调用 Plan API 也不能绕过允许域名边界。
+
+#### Douyin Public Source Classifier Skill
+
+分类器只接受精确根域或其合法子域，拒绝伪装成抖音的相似域名，并将公开结果分为：
+
+| `sourceType` | 含义 | 身份处理 |
+|---|---|---|
+| `profile` | 稳定的 `/user/<id>` 公开主页 | 精确 URL 通过验证时可参与公开身份归一 |
+| `video` | 抖音公开视频页 | 作为内容证据，不把视频 URL 当成评论用户身份 |
+| `comment_signal` | 搜索索引中呈现的评论式摘要 | 只是 `needs_research` 信号，不得声称已扫描全部评论或已验证留言人 |
+| `short_link` | `v.douyin.com` 短链接 | 在解析到稳定公开页前保持待研究 |
+| `other` | 其他合法抖音公开页 | 只作为普通公开证据 |
+
+抖音限定查询会丢弃搜索 Provider 返回的站外泄漏结果。这只是证据
+边界，不代表可以通过搜索摘要获得抖音账号权限、私信能力或全量评论。
+
+#### 搜索 Provider 与内容来源必须分开
+
+- `provider` 表示谁完成了检索，例如 `baidu_ai_search` 或
+  `tencent_web_search`；
+- `sourcePlatform` 表示最终内容属于哪个平台，抖音公开页面必须为
+  `douyin`；
+- `sourceType` 表示公开页面类型，`provenance` 继续保存 Provider、连接
+  ID、原始 URL、查询和访问状态。
+
+因此“百度 AI 搜索找到一个抖音视频”应记为搜索 Provider
+`baidu_ai_search` + 内容来源 `douyin` + 页面类型 `video`，不得把
+百度记为内容平台。
+
+#### 后续平台适配
+
+快手、微信公众号、微博和小红书当前在界面中只显示“待接入”，不能选择或执行。
+后续每个平台应实现同一套适配接口：
+
+1. 平台 ID 与可见选择器状态；
+2. 允许域名、确定性查询编译与 readiness 校验；
+3. 页面类型、内容来源与站外结果过滤；
+4. 平台特有的公开身份解析规则；
+5. 独立 fixture、安全边界测试和端到端验收。
+
+不应复制一整套 Agent，更不应接入模拟点击、自动私信、自动加好友或规避检测的
+平台脚本。
+
 ## 3. 已支持的官方 BYOK 模型
 
 每个用户填写自己的官方 API Key。Key 在服务端加密保存，读取接口只返回掩码；团队成员不能读取彼此的 Key。同一用户可以保存多个连接，但同一时间只启用一个连接。
@@ -589,6 +664,17 @@ ACQUISITION_MASTER_SECRET='goodjob-e2e-master-secret-at-least-32-bytes' \
 npm run test:e2e --workspace frontend -- ai-acquisition-loop.spec.ts
 ```
 
+抖音平台化公开商机 E2E 使用严格 method + pathname fixture，任何未声明的
+获客请求都返回 `501`。它验证默认/键盘平台选择、显式
+`targetPlatform=douyin`、只允许站点查询、审批与 Run、Provider/
+`sourcePlatform` 分离、S/A 作战卡、任务 hash 恢复、响应式无溢出和无自动外联写入：
+
+```bash
+JWT_SECRET='goodjob-e2e-jwt-secret-at-least-32-characters' \
+ACQUISITION_MASTER_SECRET='goodjob-e2e-master-secret-at-least-32-bytes' \
+npm run test:e2e --workspace frontend -- ai-douyin-platform-discovery.spec.ts
+```
+
 完整交接验收命令：
 
 ```bash
@@ -599,6 +685,7 @@ npm run test --workspace frontend
 JWT_SECRET='goodjob-e2e-jwt-secret-at-least-32-characters' \
 ACQUISITION_MASTER_SECRET='goodjob-e2e-master-secret-at-least-32-bytes' \
 npm run test:e2e --workspace frontend -- ai-acquisition-loop.spec.ts
+npm run test:e2e --workspace frontend -- ai-douyin-platform-discovery.spec.ts
 npm run build
 git diff --check
 ```
@@ -623,6 +710,9 @@ git diff --check
 - [ ] 实际使用的搜索连接已测试，预算和配额已设置
 - [ ] 计划审批、版本漂移拒绝、暂停/恢复/取消已演练
 - [ ] 企业与个人各完成一条“搜索到人工审核”的样例链路
+- [ ] 抖音任务只产生 `site:douyin.com` / `site:iesdouyin.com` 限定查询
+- [ ] 证据同时保留搜索 Provider、`sourcePlatform=douyin`、页面类型和原始 URL
+- [ ] 视频、短链和评论式摘要不会被当成已验证个人身份
 - [ ] 未解析身份、勿扰、明确拒绝、敏感数据和过期证据能被阻断
 - [ ] CRM 转换必须依赖人工批准和准确 decision version
 - [ ] `npm run test:acquisition --workspace backend` 与 TypeScript 编译通过
