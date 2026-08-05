@@ -2903,6 +2903,17 @@ implements AcquisitionPlanRunRepository {
     return result[0] ? ownedPayload<T>(result[0], resource) : null;
   }
 
+  async listPlans(scope: { ownerId: string; teamId: string }) {
+    const result = await rows(
+      this.pool,
+      `SELECT * FROM acquisition_plans
+       WHERE owner_id = ? AND team_id = ?
+       ORDER BY updated_at DESC, id DESC`,
+      [scope.ownerId, scope.teamId]
+    );
+    return result.map((row) => ownedPayload<AcquisitionPlan>(row, "plan"));
+  }
+
   getPlan(id: string) {
     return this.findOwned<AcquisitionPlan>("acquisition_plans", id, "plan");
   }
@@ -2930,6 +2941,17 @@ implements AcquisitionPlanRunRepository {
     );
     return result.map((row) =>
       ownedPayload<AcquisitionPlanVersion>(row, "plan_version"));
+  }
+
+  async listRuns(scope: { ownerId: string; teamId: string }) {
+    const result = await rows(
+      this.pool,
+      `SELECT * FROM acquisition_runs
+       WHERE owner_id = ? AND team_id = ?
+       ORDER BY updated_at DESC, id DESC`,
+      [scope.ownerId, scope.teamId]
+    );
+    return result.map((row) => ownedPayload<AcquisitionRun>(row, "run"));
   }
 
   getRun(id: string) {

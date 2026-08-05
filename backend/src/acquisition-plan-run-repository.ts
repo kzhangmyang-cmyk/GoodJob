@@ -363,9 +363,11 @@ export interface AcquisitionPlanRunRepository {
       transaction: AcquisitionPlanRunRepositoryTransaction
     ) => Promise<T> | T
   ): Promise<T>;
+  listPlans(scope: { ownerId: string; teamId: string }): Promise<AcquisitionPlan[]>;
   getPlan(id: string): Promise<AcquisitionPlan | null>;
   getPlanVersion(id: string): Promise<AcquisitionPlanVersion | null>;
   listPlanVersions(planId: string): Promise<AcquisitionPlanVersion[]>;
+  listRuns(scope: { ownerId: string; teamId: string }): Promise<AcquisitionRun[]>;
   getRun(id: string): Promise<AcquisitionRun | null>;
   listRunShards(runId: string): Promise<AcquisitionOperationShard[]>;
   listPlanEvents(planId: string): Promise<AcquisitionPlanEvent[]>;
@@ -505,6 +507,16 @@ implements AcquisitionPlanRunRepository {
     return clone(state.plans.get(id) ?? null);
   }
 
+  async listPlans(scope: { ownerId: string; teamId: string }) {
+    const state = await this.snapshot();
+    return Array.from(state.plans.values())
+      .filter((plan) => plan.ownerId === scope.ownerId
+        && plan.teamId === scope.teamId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
+        || right.id.localeCompare(left.id))
+      .map(clone);
+  }
+
   async getPlanVersion(id: string) {
     const state = await this.snapshot();
     return clone(state.planVersions.get(id) ?? null);
@@ -521,6 +533,16 @@ implements AcquisitionPlanRunRepository {
   async getRun(id: string) {
     const state = await this.snapshot();
     return clone(state.runs.get(id) ?? null);
+  }
+
+  async listRuns(scope: { ownerId: string; teamId: string }) {
+    const state = await this.snapshot();
+    return Array.from(state.runs.values())
+      .filter((run) => run.ownerId === scope.ownerId
+        && run.teamId === scope.teamId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
+        || right.id.localeCompare(left.id))
+      .map(clone);
   }
 
   async listRunShards(runId: string) {
