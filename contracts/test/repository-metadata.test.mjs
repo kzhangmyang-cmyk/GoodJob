@@ -47,3 +47,30 @@ test("public Node selection surfaces stay pinned and synchronized", () => {
   assert.equal(setupNodeSteps[0].uses, "actions/setup-node@v4");
   assert.equal(setupNodeSteps[0].with["node-version-file"], ".nvmrc");
 });
+
+test("the acquisition contract gate runs focused security and OpenAPI guards", () => {
+  const packageJson = JSON.parse(
+    readFileSync(path.join(repositoryRoot, "package.json"), "utf8")
+  );
+  const backendPackageJson = JSON.parse(
+    readFileSync(
+      path.join(repositoryRoot, "backend/package.json"),
+      "utf8"
+    )
+  );
+  const gate = packageJson.scripts["check:acquisition-contracts"];
+  const openApiGuard =
+    backendPackageJson.scripts["test:acquisition-openapi"];
+
+  assert.match(gate, /npm run test:security --workspace backend/);
+  assert.match(
+    gate,
+    /npm run test:acquisition-openapi --workspace backend/
+  );
+  assert.doesNotMatch(gate, /npm run test --workspace backend/);
+  assert.match(openApiGuard, /src\/acquisition-openapi-test\.ts/);
+  assert.match(
+    openApiGuard,
+    /src\/acquisition-openapi-response-conformance-test\.ts/
+  );
+});
