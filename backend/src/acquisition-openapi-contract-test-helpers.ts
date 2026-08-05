@@ -70,12 +70,41 @@ function mediaSurface(content: Record<string, any> = {}) {
 }
 
 function parametersSurface(parameters: any[] = []) {
-  return parameters.map((parameter) => ({
-    name: parameter.name,
-    in: parameter.in,
-    required: parameter.required ?? false,
-    schema: canonicalizeSchema(parameter.schema ?? {})
-  }));
+  return parameters
+    .map((parameter) => ({
+      name: parameter.name,
+      in: parameter.in,
+      required: parameter.required ?? false,
+      schema: canonicalizeSchema(parameter.schema ?? {})
+    }))
+    .sort((left, right) => {
+      const identityOrder = compareText(
+        JSON.stringify([left.in, left.name]),
+        JSON.stringify([right.in, right.name])
+      );
+      return identityOrder || compareText(
+        JSON.stringify(left),
+        JSON.stringify(right)
+      );
+    });
+}
+
+function compareText(left: string, right: string) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function securitySurface(security: any[] = []) {
+  return security
+    .map((requirement) => Object.fromEntries(
+      Object.keys(requirement).sort(compareText).map((name) => [
+        name,
+        [...(requirement[name] ?? [])].sort(compareText)
+      ])
+    ))
+    .sort((left, right) => compareText(
+      JSON.stringify(left),
+      JSON.stringify(right)
+    ));
 }
 
 function headersSurface(headers: Record<string, any> = {}) {
@@ -86,6 +115,26 @@ function headersSurface(headers: Record<string, any> = {}) {
       schema: canonicalizeSchema(headers[name]?.schema ?? {})
     }
   ]));
+}
+
+export function mergeOperationParameters(
+  pathParameters: any[] = [],
+  operationParameters: any[] = []
+) {
+  const parameters = new Map<string, any>();
+  for (const parameter of pathParameters) {
+    parameters.set(
+      JSON.stringify([parameter.name, parameter.in]),
+      parameter
+    );
+  }
+  for (const parameter of operationParameters) {
+    parameters.set(
+      JSON.stringify([parameter.name, parameter.in]),
+      parameter
+    );
+  }
+  return [...parameters.values()];
 }
 
 export async function loadPublishedAcquisitionPaths(): Promise<
@@ -122,10 +171,10 @@ export async function loadPublishedAcquisitionPaths(): Promise<
       if (!operation) continue;
       normalizedPathItem[method] = {
         ...operation,
-        parameters: [
-          ...(pathItem.parameters ?? []),
-          ...(operation.parameters ?? [])
-        ]
+        parameters: mergeOperationParameters(
+          pathItem.parameters,
+          operation.parameters
+        )
       };
     }
     paths[path] = normalizedPathItem;
@@ -144,7 +193,7 @@ export function operationSurface(operation: ContractOperation) {
     })
   );
   return {
-    security: canonicalizeSchema(operation.security ?? []),
+    security: securitySurface(operation.security),
     parameters: parametersSurface(operation.parameters),
     requestBody: operation.requestBody
       ? {
