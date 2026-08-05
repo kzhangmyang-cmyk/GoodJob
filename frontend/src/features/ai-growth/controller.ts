@@ -355,6 +355,8 @@ function candidateCardFromDomain(
       ? candidate.domain
       : candidate.publicProfileUrl,
     status: candidate.status,
+    version: candidate.version,
+    identityResolved: candidate.identityResolved,
     updatedAt: candidate.updatedAt,
     qualification: previous?.qualification ?? null,
     financialValue: previous?.financialValue ?? financialValueVm(null),
@@ -377,6 +379,8 @@ function demoCandidateFromPresentation(
   const common = {
     id: candidate.id,
     status: candidate.status,
+    version: candidate.version,
+    identityResolved: candidate.identityResolved,
     latestDecisionVersion: qualification?.decisionVersion ?? null,
     approvedDecisionVersion: candidate.status === "approved"
       ? qualification?.decisionVersion ?? null

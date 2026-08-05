@@ -51,6 +51,8 @@ function candidate(
     region: "上海",
     domain: null,
     status,
+    version: 1,
+    identityResolved: true,
     updatedAt: "2026-07-26T09:00:00.000Z",
     qualification: {
       id: `qualification-${status}`,
@@ -442,9 +444,10 @@ test("candidate cards expose finance pending and actionable review states", () =
 test("unresolved candidate exposes identity verification as the primary action", () => {
   const rendered = renderCandidateList({
     mode: "real",
-    candidates: [candidate("unresolvable", {
+    candidates: [candidate("normalized", {
       id: "candidate-douyin-unresolved",
       subjectKind: "individual",
+      identityResolved: false,
       displayName: "抖音公开需求信号",
       sourcePlatforms: ["douyin"],
       qualification: null,

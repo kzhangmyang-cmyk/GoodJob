@@ -105,7 +105,7 @@ function reviewActions(candidate: CandidateCardVm, mode: AdvisorMode): string {
   const common = `
     <button type="button" class="ai-growth-text-action" data-action="open-battle-card" data-candidate-id="${id}">查看客户作战卡</button>
   `;
-  if (candidate.status === "unresolvable" && mode === "real") {
+  if (!candidate.identityResolved && mode === "real") {
     return `
       <button type="button" class="ai-growth-button ai-growth-button--primary ai-growth-button--compact" data-action="verify-identity" data-candidate-id="${id}">核验主体</button>
       ${common}
@@ -137,7 +137,9 @@ function reviewActions(candidate: CandidateCardVm, mode: AdvisorMode): string {
 }
 
 function candidateCard(candidate: CandidateCardVm, mode: AdvisorMode): string {
-  const review = REVIEW_PRESENTATION[candidate.status];
+  const review = candidate.identityResolved
+    ? REVIEW_PRESENTATION[candidate.status]
+    : REVIEW_PRESENTATION.unresolvable;
   const qualification = candidate.qualification;
   const signals = qualification?.positiveSignals.map((signal) => signal.name) ?? [];
   const reason = qualification?.reasons[0] ?? "等待更多公开证据";
