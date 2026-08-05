@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import type {
   AgentMessage
 } from "@earendil-works/pi-agent-core";
@@ -61,6 +62,8 @@ const planDraft = {
 };
 
 const repository = new InMemoryAcquisitionCopilotRepository();
+const idempotencySecret =
+  "copilot-idempotency-test-secret-at-least-32-characters";
 const runs: AcquisitionCopilotRunInput[] = [];
 let releaseRun: (() => void) | undefined;
 const waitForRelease = new Promise<void>((resolve) => {
@@ -69,8 +72,7 @@ const waitForRelease = new Promise<void>((resolve) => {
 
 const service = new AcquisitionCopilotService({
   repository,
-  idempotencySecret:
-    "copilot-idempotency-test-secret-at-least-32-characters",
+  idempotencySecret,
   runner: {
     async run(input) {
       runs.push(input);
@@ -185,6 +187,88 @@ assert.equal(
   false,
   "session snapshots must never persist credentials"
 );
+
+function legacyDigest(value: unknown) {
+  const stableJson = (input: unknown): string => {
+    if (input === null || typeof input !== "object") {
+      return JSON.stringify(input);
+    }
+    if (Array.isArray(input)) {
+      return `[${input.map((item) => stableJson(item)).join(",")}]`;
+    }
+    const record = input as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) =>
+      `${JSON.stringify(key)}:${stableJson(record[key])}`
+    ).join(",")}}`;
+  };
+  return createHmac("sha256", idempotencySecret)
+    .update(stableJson(value))
+    .digest("hex");
+}
+
+const legacyTask = {
+  id: "copilot-task-pre-platform-upgrade",
+  ownerId: scope.ownerId,
+  teamId: scope.teamId,
+  actorId: scope.actorId,
+  sessionId: created.id,
+  kind: "message" as const,
+  status: "queued" as const,
+  prompt: "兼容升级前的默认网页任务",
+  responseMode: "assistant" as const,
+  result: null,
+  errorCode: null,
+  createdAt: "2026-07-23T23:59:59.000Z",
+  startedAt: null,
+  completedAt: null
+};
+await repository.transaction(async () => {
+  await repository.insertTask(legacyTask);
+  await repository.appendIdempotency({
+    ownerId: scope.ownerId,
+    teamId: scope.teamId,
+    operation: "enqueue_message",
+    keyHash: legacyDigest("message-pre-platform-upgrade"),
+    requestHash: legacyDigest({
+      sessionId: created.id,
+      prompt: legacyTask.prompt,
+      responseMode: "assistant"
+    }),
+    resourceType: "task",
+    resourceId: legacyTask.id,
+    createdAt: legacyTask.createdAt
+  });
+});
+const legacyTaskReplay = await service.enqueueMessage(
+  scope,
+  created.id,
+  legacyTask.prompt,
+  "message-pre-platform-upgrade"
+);
+assert.equal(
+  legacyTaskReplay.id,
+  legacyTask.id,
+  "default web requests must replay idempotency records created before targetPlatform existed"
+);
+await assert.rejects(
+  service.enqueueMessage(
+    scope,
+    created.id,
+    legacyTask.prompt,
+    "message-pre-platform-upgrade",
+    "assistant",
+    "douyin"
+  ),
+  (error: unknown) =>
+    error instanceof AcquisitionCopilotError
+    && error.code === "idempotency_conflict",
+  "douyin must remain distinct from a legacy default-web idempotency record"
+);
+await repository.saveTask({
+  ...legacyTask,
+  status: "cancelled",
+  completedAt: "2026-07-24T00:00:00.000Z"
+});
 
 await assert.rejects(
   service.createSession(

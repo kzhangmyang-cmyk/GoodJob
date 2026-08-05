@@ -1123,7 +1123,9 @@ test("v1 copilot dispatch failures are terminal, observable, and never redispatc
 
       let observed = queued;
       for (let index = 0;
-        index < 20 && observed.json.status === "queued";
+        index < 20
+          && (observed.json.status === "queued"
+            || observed.json.status === "running");
         index++) {
         await new Promise((resolve) => setTimeout(resolve, 5));
         observed = await fixture.request(
@@ -1333,7 +1335,11 @@ test("v1 copilot messages return 202 tasks and remain owner-and-team scoped", as
     assert.equal(conflictingMode.json.code, "idempotency_conflict");
 
     let task = queued;
-    for (let index = 0; index < 20 && task.json.status === "queued"; index++) {
+    for (let index = 0;
+      index < 20
+        && (task.json.status === "queued"
+          || task.json.status === "running");
+      index++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
       task = await fixture.request(
         `/api/v1/acquisition/copilot/tasks/${queued.json.id}`
@@ -1357,7 +1363,9 @@ test("v1 copilot messages return 202 tasks and remain owner-and-team scoped", as
     assert.equal(douyinTask.json.targetPlatform, "douyin");
     let completedDouyinTask = douyinTask;
     for (let index = 0;
-      index < 20 && completedDouyinTask.json.status === "queued";
+      index < 20
+        && (completedDouyinTask.json.status === "queued"
+          || completedDouyinTask.json.status === "running");
       index++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
       completedDouyinTask = await fixture.request(

@@ -639,7 +639,9 @@ export class AcquisitionCopilotService {
       scope,
       "enqueue_message",
       idempotencyKey,
-      { sessionId: session.id, prompt, responseMode, targetPlatform },
+      targetPlatform === "web"
+        ? { sessionId: session.id, prompt, responseMode }
+        : { sessionId: session.id, prompt, responseMode, targetPlatform },
       "task",
       async () => {
         const now = this.#now();
