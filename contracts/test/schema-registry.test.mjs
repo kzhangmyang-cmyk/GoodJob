@@ -22,6 +22,8 @@ const expected = [
   "action-receipt"
 ];
 
+const validSha256 = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 const platformContracts = {
   "platform-connection": {
     id: "platform-connection-1",
@@ -47,7 +49,7 @@ const platformContracts = {
     },
     capabilitySnapshotRef: {
       id: "platform-capability-snapshot-1",
-      hash: "sha256:capability-snapshot-1"
+      hash: validSha256
     },
     createdBy: "user-1",
     createdAt: "2026-08-05T00:00:00.000Z",
@@ -59,7 +61,7 @@ const platformContracts = {
     teamId: "team-1",
     connectionId: "platform-connection-1",
     credentialVersion: 3,
-    snapshotHash: "sha256:capability-snapshot-1",
+    snapshotHash: validSha256,
     capturedAt: "2026-08-05T00:05:00.000Z",
     expiresAt: "2026-08-05T01:05:00.000Z",
     capturedBy: "connector-worker-1",
@@ -82,17 +84,17 @@ const platformContracts = {
     platformEventRef: "douyin-event-1",
     platformSubjectRef: "douyin-subject-1",
     eventType: "comment.created",
-    rawPayloadHash: "sha256:raw-payload-1",
-    normalizedEventHash: "sha256:normalized-event-1",
+    rawPayloadHash: validSha256,
+    normalizedEventHash: validSha256,
     occurredAt: "2026-08-05T00:10:00.000Z",
     capturedAt: "2026-08-05T00:11:00.000Z",
     authorizationSnapshot: {
       connectionId: "platform-connection-1",
       credentialVersion: 3,
-      scopeHash: "sha256:scope-1",
+      scopeHash: validSha256,
       capabilitySnapshotRef: {
         id: "platform-capability-snapshot-1",
-        hash: "sha256:capability-snapshot-1"
+        hash: validSha256
       }
     },
     dedupeKey: "douyin:douyin-account-1:douyin-event-1",
@@ -107,14 +109,14 @@ const platformContracts = {
     planRef: {
       id: "acquisition-plan-1",
       version: 4,
-      hash: "sha256:plan-4"
+      hash: validSha256
     },
     ruleBundleRef: {
       id: "action-rules-1",
       version: "1.0.0",
-      hash: "sha256:action-rules-1.0.0"
+      hash: validSha256
     },
-    policyHash: "sha256:action-policy-1",
+    policyHash: validSha256,
     actions: {
       future_official_capability: "review_required"
     },
@@ -129,11 +131,11 @@ const platformContracts = {
     teamId: "team-1",
     intentRef: {
       id: "action-intent-1",
-      hash: "sha256:action-intent-1"
+      hash: validSha256
     },
     decisionRef: {
       id: "action-decision-1",
-      hash: "sha256:action-decision-1"
+      hash: validSha256
     },
     jobRef: {
       id: "action-job-1",
@@ -145,14 +147,14 @@ const platformContracts = {
     },
     capabilitySnapshotRef: {
       id: "platform-capability-snapshot-1",
-      hash: "sha256:capability-snapshot-1"
+      hash: validSha256
     },
     idempotencyKey: "action-idempotency-1",
     externalId: "douyin-action-1",
     outcome: "succeeded",
     error: null,
-    requestHash: "sha256:action-request-1",
-    resultHash: "sha256:action-result-1",
+    requestHash: validSha256,
+    resultHash: validSha256,
     requestedAt: "2026-08-05T00:15:00.000Z",
     completedAt: "2026-08-05T00:15:01.000Z",
     recordedAt: "2026-08-05T00:15:01.000Z",
@@ -212,6 +214,112 @@ test("capability and action keys remain extensible but reject empty keys", async
   assert.equal(policy({
     ...platformContracts["action-policy"],
     actions: { "": "blocked" }
+  }), false);
+});
+
+test("capability and action keys reject whitespace, controls, and unsupported punctuation", async () => {
+  const registry = await loadSchemaRegistry();
+  const capability = registry.validators.get("platform-capability-snapshot");
+  const policy = registry.validators.get("action-policy");
+  const capabilityEntry = platformContracts["platform-capability-snapshot"]
+    .capabilities.future_official_capability;
+
+  for (const invalidKey of [
+    " ",
+    "\t",
+    "\u0001",
+    "future official capability",
+    "future/capability",
+    "!future"
+  ]) {
+    assert.equal(capability({
+      ...platformContracts["platform-capability-snapshot"],
+      capabilities: { [invalidKey]: capabilityEntry }
+    }), false, `capability key ${JSON.stringify(invalidKey)}`);
+    assert.equal(policy({
+      ...platformContracts["action-policy"],
+      actions: { [invalidKey]: "blocked" }
+    }), false, `action key ${JSON.stringify(invalidKey)}`);
+  }
+});
+
+test("all immutable digest fields require canonical lowercase SHA-256 values", async () => {
+  const registry = await loadSchemaRegistry();
+  const digestPaths = {
+    "platform-connection": [
+      ["capabilitySnapshotRef", "hash"]
+    ],
+    "platform-capability-snapshot": [
+      ["snapshotHash"]
+    ],
+    "platform-event": [
+      ["rawPayloadHash"],
+      ["normalizedEventHash"],
+      ["authorizationSnapshot", "scopeHash"],
+      ["authorizationSnapshot", "capabilitySnapshotRef", "hash"]
+    ],
+    "action-policy": [
+      ["planRef", "hash"],
+      ["ruleBundleRef", "hash"],
+      ["policyHash"]
+    ],
+    "action-receipt": [
+      ["intentRef", "hash"],
+      ["decisionRef", "hash"],
+      ["capabilitySnapshotRef", "hash"],
+      ["requestHash"],
+      ["resultHash"]
+    ]
+  };
+
+  for (const [name, paths] of Object.entries(digestPaths)) {
+    const validate = registry.validators.get(name);
+    for (const pathParts of paths) {
+      for (const invalidDigest of [
+        " ",
+        "sha256:abc",
+        "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "md5:0123456789abcdef0123456789abcdef"
+      ]) {
+        const value = structuredClone(platformContracts[name]);
+        const target = pathParts.slice(0, -1)
+          .reduce((object, part) => object[part], value);
+        target[pathParts.at(-1)] = invalidDigest;
+        assert.equal(
+          validate(value),
+          false,
+          `${name}.${pathParts.join(".")}: ${JSON.stringify(invalidDigest)}`
+        );
+      }
+    }
+  }
+});
+
+test("action receipt idempotency keys are bounded and contain non-whitespace", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("action-receipt");
+
+  for (const idempotencyKey of ["short", "        ", "x".repeat(201)]) {
+    assert.equal(validate({
+      ...platformContracts["action-receipt"],
+      idempotencyKey
+    }), false, JSON.stringify(idempotencyKey));
+  }
+});
+
+test("pending connections may precede capability capture but active connections may not", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("platform-connection");
+
+  assert.equal(validate({
+    ...platformContracts["platform-connection"],
+    status: "pending",
+    capabilitySnapshotRef: null
+  }), true, JSON.stringify(validate.errors));
+  assert.equal(validate({
+    ...platformContracts["platform-connection"],
+    status: "active",
+    capabilitySnapshotRef: null
   }), false);
 });
 

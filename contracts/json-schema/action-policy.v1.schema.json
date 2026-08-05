@@ -8,6 +8,16 @@
       "minLength": 1,
       "maxLength": 255
     },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Canonical immutable SHA-256 digest: sha256: followed by exactly 64 lowercase hexadecimal characters."
+    },
+    "extensibleIdentifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$",
+      "description": "Extensible identifier: 1-100 ASCII characters, starting with alphanumeric and continuing with alphanumeric, dot, underscore, colon, or hyphen."
+    },
     "planRef": {
       "type": "object",
       "additionalProperties": false,
@@ -15,7 +25,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/boundedString" },
         "version": { "type": "integer", "minimum": 1 },
-        "hash": { "$ref": "#/$defs/boundedString" }
+        "hash": { "$ref": "#/$defs/digest" }
       }
     },
     "ruleBundleRef": {
@@ -25,7 +35,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/boundedString" },
         "version": { "type": "string", "minLength": 1, "maxLength": 100 },
-        "hash": { "$ref": "#/$defs/boundedString" }
+        "hash": { "$ref": "#/$defs/digest" }
       }
     }
   },
@@ -57,13 +67,13 @@
     "version": { "type": "integer", "minimum": 1 },
     "planRef": { "$ref": "#/$defs/planRef" },
     "ruleBundleRef": { "$ref": "#/$defs/ruleBundleRef" },
-    "policyHash": { "$ref": "#/$defs/boundedString" },
+    "policyHash": { "$ref": "#/$defs/digest" },
     "actions": {
       "type": "object",
       "minProperties": 1,
-      "propertyNames": { "type": "string", "minLength": 1, "maxLength": 100 },
+      "propertyNames": { "$ref": "#/$defs/extensibleIdentifier" },
       "patternProperties": {
-        "^.{1,100}$": { "enum": ["auto_allowed", "review_required", "blocked"] }
+        "^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$": { "enum": ["auto_allowed", "review_required", "blocked"] }
       },
       "additionalProperties": false
     },

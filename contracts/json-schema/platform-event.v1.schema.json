@@ -8,13 +8,18 @@
       "minLength": 1,
       "maxLength": 255
     },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Canonical immutable SHA-256 digest: sha256: followed by exactly 64 lowercase hexadecimal characters."
+    },
     "snapshotRef": {
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "hash"],
       "properties": {
         "id": { "$ref": "#/$defs/boundedString" },
-        "hash": { "$ref": "#/$defs/boundedString" }
+        "hash": { "$ref": "#/$defs/digest" }
       }
     }
   },
@@ -54,8 +59,8 @@
     "platformEventRef": { "$ref": "#/$defs/boundedString" },
     "platformSubjectRef": { "$ref": "#/$defs/boundedString" },
     "eventType": { "type": "string", "minLength": 1, "maxLength": 100 },
-    "rawPayloadHash": { "$ref": "#/$defs/boundedString" },
-    "normalizedEventHash": { "$ref": "#/$defs/boundedString" },
+    "rawPayloadHash": { "$ref": "#/$defs/digest" },
+    "normalizedEventHash": { "$ref": "#/$defs/digest" },
     "occurredAt": { "type": "string", "format": "date-time" },
     "capturedAt": { "type": "string", "format": "date-time" },
     "authorizationSnapshot": {
@@ -65,7 +70,7 @@
       "properties": {
         "connectionId": { "$ref": "#/$defs/boundedString" },
         "credentialVersion": { "type": "integer", "minimum": 1 },
-        "scopeHash": { "$ref": "#/$defs/boundedString" },
+        "scopeHash": { "$ref": "#/$defs/digest" },
         "capabilitySnapshotRef": { "$ref": "#/$defs/snapshotRef" }
       }
     },

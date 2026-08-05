@@ -8,6 +8,16 @@
       "minLength": 1,
       "maxLength": 255
     },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Canonical immutable SHA-256 digest: sha256: followed by exactly 64 lowercase hexadecimal characters."
+    },
+    "extensibleIdentifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$",
+      "description": "Extensible identifier: 1-100 ASCII characters, starting with alphanumeric and continuing with alphanumeric, dot, underscore, colon, or hyphen."
+    },
     "capability": {
       "type": "object",
       "additionalProperties": false,
@@ -62,15 +72,15 @@
     },
     "connectionId": { "$ref": "#/$defs/boundedString" },
     "credentialVersion": { "type": "integer", "minimum": 1 },
-    "snapshotHash": { "$ref": "#/$defs/boundedString" },
+    "snapshotHash": { "$ref": "#/$defs/digest" },
     "capturedAt": { "type": "string", "format": "date-time" },
     "expiresAt": { "type": "string", "format": "date-time" },
     "capturedBy": { "$ref": "#/$defs/boundedString" },
     "capabilities": {
       "type": "object",
-      "propertyNames": { "type": "string", "minLength": 1, "maxLength": 100 },
+      "propertyNames": { "$ref": "#/$defs/extensibleIdentifier" },
       "patternProperties": {
-        "^.{1,100}$": { "$ref": "#/$defs/capability" }
+        "^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$": { "$ref": "#/$defs/capability" }
       },
       "additionalProperties": false
     }

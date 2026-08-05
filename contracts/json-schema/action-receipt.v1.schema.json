@@ -8,13 +8,18 @@
       "minLength": 1,
       "maxLength": 255
     },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Canonical immutable SHA-256 digest: sha256: followed by exactly 64 lowercase hexadecimal characters."
+    },
     "immutableRef": {
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "hash"],
       "properties": {
         "id": { "$ref": "#/$defs/boundedString" },
-        "hash": { "$ref": "#/$defs/boundedString" }
+        "hash": { "$ref": "#/$defs/digest" }
       }
     },
     "normalizedError": {
@@ -91,7 +96,13 @@
       }
     },
     "capabilitySnapshotRef": { "$ref": "#/$defs/immutableRef" },
-    "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 200,
+      "pattern": "\\S",
+      "description": "Bounded idempotency key containing at least one non-whitespace character."
+    },
     "externalId": {
       "oneOf": [
         { "$ref": "#/$defs/boundedString" },
@@ -105,8 +116,8 @@
         { "type": "null" }
       ]
     },
-    "requestHash": { "$ref": "#/$defs/boundedString" },
-    "resultHash": { "$ref": "#/$defs/boundedString" },
+    "requestHash": { "$ref": "#/$defs/digest" },
+    "resultHash": { "$ref": "#/$defs/digest" },
     "requestedAt": { "type": "string", "format": "date-time" },
     "completedAt": { "type": "string", "format": "date-time" },
     "recordedAt": { "type": "string", "format": "date-time" },

@@ -8,10 +8,10 @@
       "minLength": 1,
       "maxLength": 255
     },
-    "hash": {
+    "digest": {
       "type": "string",
-      "minLength": 1,
-      "maxLength": 255
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Canonical immutable SHA-256 digest: sha256: followed by exactly 64 lowercase hexadecimal characters."
     },
     "snapshotRef": {
       "type": "object",
@@ -19,7 +19,7 @@
       "required": ["id", "hash"],
       "properties": {
         "id": { "$ref": "#/$defs/boundedString" },
-        "hash": { "$ref": "#/$defs/hash" }
+        "hash": { "$ref": "#/$defs/digest" }
       }
     },
     "limit": {
@@ -98,9 +98,26 @@
       },
       "additionalProperties": false
     },
-    "capabilitySnapshotRef": { "$ref": "#/$defs/snapshotRef" },
+    "capabilitySnapshotRef": {
+      "oneOf": [
+        { "$ref": "#/$defs/snapshotRef" },
+        { "type": "null" }
+      ],
+      "description": "Null only before the first capability capture; active connections require a current snapshot reference."
+    },
     "createdBy": { "$ref": "#/$defs/boundedString" },
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "active" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": { "capabilitySnapshotRef": { "$ref": "#/$defs/snapshotRef" } }
+      }
+    }
+  ]
 }
