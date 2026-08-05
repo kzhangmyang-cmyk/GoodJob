@@ -86,6 +86,9 @@ import {
   createAcquisitionPlanRouter
 } from "./acquisition-plan-router.js";
 import {
+  createAcquisitionTaskOverviewRouter
+} from "./acquisition-task-overview-router.js";
+import {
   createAcquisitionPlanDraftGenerator,
   type AcquisitionActiveSearchConnectionDirectory,
   type AcquisitionPlanDraftGenerator
@@ -109,6 +112,9 @@ import {
 import {
   AcquisitionRunPresentationService
 } from "./acquisition-run-presentation.js";
+import {
+  AcquisitionTaskOverviewService
+} from "./acquisition-task-overview.js";
 import {
   createPiAcquisitionCopilotRunner,
   createRoutedAcquisitionCopilotRunner
@@ -1155,6 +1161,10 @@ export async function createAcquisitionApplication(
         "run-presentation-cursor"
       )
     });
+    const taskOverviewService = new AcquisitionTaskOverviewService({
+      repository: repositories.planRun,
+      now
+    });
     worker.attachService(planService);
     planExecutionRecoverySweeper =
       new AcquisitionPlanExecutionRecoverySweeper({
@@ -1290,6 +1300,12 @@ export async function createAcquisitionApplication(
           schemaHash: snapshot.schemaHash
         };
       },
+      requestIdFactory: () => idFactory("request")
+    }));
+    router.use(createAcquisitionTaskOverviewRouter({
+      overviewService: taskOverviewService,
+      planService,
+      presentationService: runPresentationService,
       requestIdFactory: () => idFactory("request")
     }));
 
