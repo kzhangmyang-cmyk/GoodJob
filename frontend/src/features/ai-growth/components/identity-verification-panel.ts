@@ -109,7 +109,7 @@ function safeHttpsUrl(value: string | null): string | null {
   }
 }
 
-function canonicalDouyinProfileUrl(value: string): string | null {
+export function normalizeExactDouyinProfileUrl(value: string): string | null {
   try {
     const parsed = new URL(value.trim());
     const host = parsed.hostname.toLowerCase();
@@ -134,16 +134,16 @@ function canonicalDouyinProfileUrl(value: string): string | null {
 }
 
 export function isExactDouyinProfileUrl(value: string): boolean {
-  return canonicalDouyinProfileUrl(value) !== null;
+  return normalizeExactDouyinProfileUrl(value) !== null;
 }
 
 function eligibleIdentityEvidence(
   item: IdentityEvidenceVm,
   declaredProfileUrl: string
 ): boolean {
-  const declared = canonicalDouyinProfileUrl(declaredProfileUrl);
+  const declared = normalizeExactDouyinProfileUrl(declaredProfileUrl);
   const evidence = item.url
-    ? canonicalDouyinProfileUrl(item.url)
+    ? normalizeExactDouyinProfileUrl(item.url)
     : null;
   return item.eligible
     && declared !== null

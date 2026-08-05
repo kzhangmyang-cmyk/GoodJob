@@ -154,6 +154,8 @@ export type RunPresentationDto = Omit<
 
 interface CandidateDtoCommon {
   id: string;
+  version: number;
+  identityResolved: boolean;
   status: CandidateStatus;
   latestDecisionVersion: string | null;
   approvedDecisionVersion: string | null;

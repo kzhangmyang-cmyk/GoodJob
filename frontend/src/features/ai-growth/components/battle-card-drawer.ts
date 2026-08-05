@@ -1,8 +1,12 @@
 import {
+  AdvisorConflictError,
+  AdvisorPreconditionRequiredError,
   advisorHttpStatus,
   copilotSessionResourceId,
   copilotTaskIncludesToolName,
   type AiGrowthApi,
+  type CandidateIdentityConfirmationResultDto,
+  type ContentFetchOperationDto,
   type CopilotTaskDto,
   type EvidenceDto
 } from "../api.js";
@@ -27,6 +31,11 @@ import {
   percent,
   type ComponentRender
 } from "./rendering.js";
+import {
+  isExactDouyinProfileUrl,
+  normalizeExactDouyinProfileUrl,
+  type IdentityVerificationStatus
+} from "./identity-verification-panel.js";
 
 type ResourceStatus = "idle" | "loading" | "ready" | "missing" | "error";
 
@@ -51,6 +60,38 @@ export interface BattleCardActionState {
   error: string | null;
 }
 
+export type IdentityActionStatus =
+  | "idle"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "conflict";
+
+export interface IdentityActionResource<T> {
+  status: IdentityActionStatus;
+  data: T | null;
+  error: string | null;
+}
+
+export interface IdentityContinuationResult {
+  completedTools: Array<
+    "research_candidate" | "qualify_candidate" | "build_battle_card"
+  >;
+}
+
+export interface IdentityVerificationState {
+  status: IdentityVerificationStatus;
+  profileUrl: string;
+  rationale: string;
+  fetchedEvidenceIds: string[];
+  selectedEvidenceIds: string[];
+  fetch: IdentityActionResource<ContentFetchOperationDto>;
+  confirmation: IdentityActionResource<CandidateIdentityConfirmationResultDto>;
+  continuation: IdentityActionResource<IdentityContinuationResult>;
+  message: string | null;
+  error: string | null;
+}
+
 export interface BattleCardDrawerState {
   open: boolean;
   readOnly: boolean;
@@ -61,6 +102,13 @@ export interface BattleCardDrawerState {
   financialValue: DrawerResource<FinancialValueDto>;
   battleCard: DrawerResource<BattleCardDto>;
   action: BattleCardActionState;
+  identityVerification: IdentityVerificationState;
+}
+
+export interface CandidateIdentitySubmission {
+  profileUrl: string;
+  rationale: string;
+  evidenceIds: string[];
 }
 
 export type CandidateReviewAction =
@@ -96,6 +144,13 @@ export interface BattleCardDrawer {
     financialValue: FinancialValueDto | null
   ): void;
   close(): void;
+  setIdentityDraft(
+    input: Partial<Pick<CandidateIdentitySubmission, "profileUrl" | "rationale">>
+  ): void;
+  toggleIdentityEvidence(evidenceId: string, selected: boolean): void;
+  fetchIdentityProfile(profileUrl: string): Promise<void>;
+  confirmCandidateIdentity(input: CandidateIdentitySubmission): Promise<void>;
+  retryIdentityContinuation(): Promise<void>;
   runQualification(): Promise<void>;
   generateBattleCard(): Promise<void>;
   review(
@@ -133,6 +188,25 @@ function actionState(): BattleCardActionState {
   };
 }
 
+function identityActionResource<T>(): IdentityActionResource<T> {
+  return { status: "idle", data: null, error: null };
+}
+
+function identityVerificationState(): IdentityVerificationState {
+  return {
+    status: "needs_profile",
+    profileUrl: "",
+    rationale: "",
+    fetchedEvidenceIds: [],
+    selectedEvidenceIds: [],
+    fetch: identityActionResource(),
+    confirmation: identityActionResource(),
+    continuation: identityActionResource(),
+    message: null,
+    error: null
+  };
+}
+
 function initialState(): BattleCardDrawerState {
   return {
     open: false,
@@ -143,7 +217,8 @@ function initialState(): BattleCardDrawerState {
     qualification: emptyResource(),
     financialValue: emptyResource(),
     battleCard: emptyResource(),
-    action: actionState()
+    action: actionState(),
+    identityVerification: identityVerificationState()
   };
 }
 
@@ -199,6 +274,102 @@ const TERMINAL_TASK_STATUSES = new Set<CopilotTaskDto["status"]>([
   "failed",
   "cancelled"
 ]);
+
+const TERMINAL_CONTENT_FETCH_STATUSES = new Set<
+  ContentFetchOperationDto["status"]
+>(["succeeded", "failed", "access_restricted"]);
+
+function candidateVersion(candidate: CandidateDto | null): number | null {
+  if (!candidate) return null;
+  const value: unknown = candidate.version;
+  return Number.isSafeInteger(value) && Number(value) > 0
+    ? Number(value)
+    : null;
+}
+
+function identityResolved(candidate: CandidateDto | null): boolean {
+  return candidate?.identityResolved === true;
+}
+
+function exactDouyinProfileUrl(value: string): string {
+  const normalized = normalizeExactDouyinProfileUrl(value);
+  if (normalized === null) {
+    throw new Error("仅支持 HTTPS 的抖音 /user/ 精确公开主页");
+  }
+  return normalized;
+}
+
+function evidenceSourceType(evidence: EvidenceDto): string | null {
+  const value = evidence.provenance.sourceType;
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return evidence.provenance.kind === "user_submitted_url"
+    ? "profile"
+    : null;
+}
+
+function isDouyinEvidencePlatform(value: string): boolean {
+  return ["douyin", "douyin.com", "www.douyin.com"].includes(
+    value.trim().toLowerCase()
+  );
+}
+
+function eligibleIdentityEvidence(
+  evidence: EvidenceDto,
+  declaredProfileUrl: string
+): boolean {
+  const sourceUrl = evidence.provenance.sourceUrl;
+  if (typeof sourceUrl !== "string") return false;
+  let canonicalSource: string;
+  try {
+    canonicalSource = exactDouyinProfileUrl(sourceUrl);
+  } catch {
+    return false;
+  }
+  return evidence.targetType === "individual_signal"
+    && isDouyinEvidencePlatform(evidence.sourcePlatform)
+    && evidenceSourceType(evidence) === "profile"
+    && evidence.accessStatus !== "access_restricted"
+    && typeof evidence.fetchedAt === "string"
+    && evidence.fetchedAt.trim().length > 0
+    && canonicalSource === declaredProfileUrl;
+}
+
+function identityStateForLoadedCandidate(
+  current: IdentityVerificationState,
+  candidate: CandidateDto
+): IdentityVerificationState {
+  if (!identityResolved(candidate)) return current;
+  return {
+    ...current,
+    status: "confirmed",
+    profileUrl: candidate.subjectKind === "individual"
+      ? candidate.publicProfileUrl
+      : current.profileUrl,
+    message: "主体已确认",
+    error: null
+  };
+}
+
+function eligibleForBattleCard(
+  qualification: QualificationDto | null
+): boolean | null {
+  if (qualification === null) return null;
+  return qualification.hardGateFailures.length === 0
+    && (
+      qualification.grade === "S"
+      || qualification.grade === "A"
+      || qualification.score >= 70
+    );
+}
+
+function mergeEvidence(
+  current: EvidenceDto[],
+  incoming: EvidenceDto[]
+): EvidenceDto[] {
+  const byId = new Map(current.map((item) => [item.id, item]));
+  for (const item of incoming) byId.set(item.id, item);
+  return [...byId.values()];
+}
 
 const REVIEWABLE_ACTIONS: Readonly<
   Partial<Record<CandidateStatus, readonly CandidateReviewAction[]>>
@@ -695,6 +866,9 @@ export function createBattleCardDrawer(
   let state = initialState();
   let sessionId: string | null = null;
   let generation = 0;
+  let identityFetchPromise: Promise<void> | null = null;
+  let identityConfirmationPromise: Promise<void> | null = null;
+  let identityContinuationPromise: Promise<void> | null = null;
   const notify = () => options.onStateChange?.(state);
 
   const callbacks: BattleCardDrawerCallbacks = {
@@ -742,6 +916,16 @@ export function createBattleCardDrawer(
     return true;
   }
 
+  function publishIdentity(
+    context: ActionContext,
+    update: (current: IdentityVerificationState) => IdentityVerificationState
+  ): boolean {
+    if (!isActive(context)) return false;
+    state.identityVerification = update(state.identityVerification);
+    notify();
+    return true;
+  }
+
   async function ensureSession(): Promise<string> {
     if (sessionId) return sessionId;
     sessionId = copilotSessionResourceId(
@@ -765,6 +949,125 @@ export function createBattleCardDrawer(
     if (!isActive(context)) return null;
     publishAction(context, { ...state.action, status: current.status });
     return current;
+  }
+
+  async function pollContentFetch(
+    context: ActionContext,
+    operation: ContentFetchOperationDto
+  ): Promise<ContentFetchOperationDto | null> {
+    let current = operation;
+    while (!TERMINAL_CONTENT_FETCH_STATUSES.has(current.status)) {
+      if (!isActive(context)) return null;
+      await wait(pollMs);
+      if (!isActive(context)) return null;
+      current = await api.getContentFetchOperation(current.id);
+    }
+    return isActive(context) ? current : null;
+  }
+
+  async function pollIdentityTask(
+    context: ActionContext,
+    task: CopilotTaskDto
+  ): Promise<CopilotTaskDto | null> {
+    let current = task;
+    while (!TERMINAL_TASK_STATUSES.has(current.status)) {
+      if (!isActive(context)) return null;
+      await wait(pollMs);
+      if (!isActive(context)) return null;
+      current = await api.getCopilotTask(current.id);
+    }
+    return isActive(context) ? current : null;
+  }
+
+  async function runIdentityFetch(
+    context: ActionContext,
+    profileUrl: string
+  ): Promise<void> {
+    publishIdentity(context, (current) => ({
+      ...current,
+      status: "fetching_profile",
+      profileUrl,
+      selectedEvidenceIds: [],
+      fetchedEvidenceIds: [],
+      fetch: { status: "running", data: null, error: null },
+      confirmation: identityActionResource(),
+      message: "正在受控抓取公开主页",
+      error: null
+    }));
+    try {
+      const created = await api.createContentFetchOperation(
+        { sourceUrl: profileUrl, subjectChannel: "individual" },
+        key()
+      );
+      if (!isActive(context)) return;
+      const completed = await pollContentFetch(context, created);
+      if (completed === null || !isActive(context)) return;
+      if (completed.status === "access_restricted") {
+        publishIdentity(context, (current) => ({
+          ...current,
+          status: "fetch_failed",
+          fetch: {
+            status: "failed",
+            data: completed,
+            error: "公开主页访问受限"
+          },
+          message: null,
+          error: "公开主页访问受限，系统未绕过登录、验证码或访问控制。"
+        }));
+        return;
+      }
+      if (completed.status !== "succeeded") {
+        const detail = completed.errorCode
+          ? `公开主页抓取失败（${completed.errorCode}）`
+          : "公开主页抓取失败";
+        publishIdentity(context, (current) => ({
+          ...current,
+          status: "fetch_failed",
+          fetch: { status: "failed", data: completed, error: detail },
+          message: null,
+          error: detail
+        }));
+        return;
+      }
+      const fetchedEvidence = await Promise.all(
+        completed.evidenceIds.map((id) => api.getEvidenceById(id))
+      );
+      if (!isActive(context)) return;
+      const eligibleEvidenceIds = fetchedEvidence
+        .filter((item) => eligibleIdentityEvidence(item, profileUrl))
+        .map((item) => item.id);
+      state.evidence = {
+        status: "ready",
+        data: mergeEvidence(state.evidence.data ?? [], fetchedEvidence),
+        error: null
+      };
+      publishIdentity(context, (current) => ({
+        ...current,
+        status: eligibleEvidenceIds.length > 0
+          ? "ready_to_confirm"
+          : "fetched_no_eligible",
+        fetchedEvidenceIds: eligibleEvidenceIds,
+        selectedEvidenceIds: [],
+        fetch: { status: "succeeded", data: completed, error: null },
+        message: eligibleEvidenceIds.length > 0
+          ? "公开主页已抓取，请人工核验证据"
+          : null,
+        error: eligibleEvidenceIds.length > 0
+          ? null
+          : "抓取完成，但没有返回可核验的公开证据"
+      }));
+    } catch (error) {
+      if (!isActive(context)) return;
+      const detail = errorMessage(error);
+      publishIdentity(context, (current) => ({
+        ...current,
+        status: "fetch_failed",
+        fetch: { status: "failed", data: null, error: detail },
+        message: null,
+        error: detail
+      }));
+      throw error;
+    }
   }
 
   async function runTool(
@@ -855,12 +1158,379 @@ export function createBattleCardDrawer(
     notify();
   }
 
+  async function refreshCandidateAndEvidence(context: ActionContext) {
+    const [candidateResult, evidenceResult] = await Promise.all([
+      settleResource(() => api.getCandidate(context.candidateId)),
+      settleResource(() =>
+        api.getEvidence(context.candidateId).then((page) => page.items)
+      )
+    ]);
+    if (!isActive(context)) return;
+    state.candidate = candidateResult;
+    state.evidence = evidenceResult;
+    if (candidateResult.data) onCandidateUpdated(candidateResult.data);
+    notify();
+  }
+
+  async function refreshCandidateQualificationAndFinance(
+    context: ActionContext
+  ) {
+    const [candidateResult, qualificationResult, financialResult] =
+      await Promise.all([
+        settleResource(() => api.getCandidate(context.candidateId)),
+        settleResource(() => api.getQualification(context.candidateId)),
+        settleResource(() => api.getFinancialValue(context.candidateId))
+      ]);
+    if (!isActive(context)) return;
+    state.candidate = candidateResult;
+    state.qualification = qualificationResult;
+    state.financialValue = financialResult;
+    if (candidateResult.data) onCandidateUpdated(candidateResult.data);
+    notify();
+  }
+
+  async function refreshAllAfterIdentity(context: ActionContext) {
+    const [
+      candidateResult,
+      evidenceResult,
+      qualificationResult,
+      financialResult,
+      battleCardResult
+    ] = await Promise.all([
+      settleResource(() => api.getCandidate(context.candidateId)),
+      settleResource(() =>
+        api.getEvidence(context.candidateId).then((page) => page.items)
+      ),
+      settleResource(() => api.getQualification(context.candidateId)),
+      settleResource(() => api.getFinancialValue(context.candidateId)),
+      settleResource(() => api.getBattleCard(context.candidateId))
+    ]);
+    if (!isActive(context)) return;
+    state.candidate = candidateResult;
+    state.evidence = evidenceResult;
+    state.qualification = qualificationResult;
+    state.financialValue = financialResult;
+    state.battleCard = battleCardResult;
+    if (candidateResult.data) onCandidateUpdated(candidateResult.data);
+    notify();
+  }
+
+  async function runIdentityTool(
+    context: ActionContext,
+    toolName:
+      | "research_candidate"
+      | "qualify_candidate"
+      | "build_battle_card",
+    message: string
+  ): Promise<boolean> {
+    try {
+      const activeSessionId = await ensureSession();
+      if (!isActive(context)) return false;
+      const task = await api.requestAssistantAction(
+        activeSessionId,
+        message,
+        key()
+      );
+      if (!isActive(context)) return false;
+      const completed = await pollIdentityTask(context, task);
+      if (completed === null || !isActive(context)) return false;
+      return completed.status === "succeeded"
+        && copilotTaskIncludesToolName(completed, toolName);
+    } catch {
+      return false;
+    }
+  }
+
+  async function runIdentityContinuation(
+    context: ActionContext
+  ): Promise<void> {
+    const completedTools = [
+      ...(state.identityVerification.continuation.data?.completedTools ?? [])
+    ];
+    publishIdentity(context, (current) => ({
+      ...current,
+      continuation: {
+        status: "running",
+        data: { completedTools: [...completedTools] },
+        error: null
+      },
+      error: null
+    }));
+    const steps = [
+      {
+        toolName: "research_candidate" as const,
+        status: "researching" as const,
+        message: "正在补充客户研究",
+        prompt: `请调用 research_candidate 工具补充候选研究。参数：${JSON.stringify({
+          candidateId: context.candidateId,
+          depth: "standard"
+        })}`,
+        refresh: () => refreshCandidateAndEvidence(context)
+      },
+      {
+        toolName: "qualify_candidate" as const,
+        status: "qualifying" as const,
+        message: "正在重新计算意向与财务价值",
+        prompt: `请调用 qualify_candidate 工具评估候选。参数：${JSON.stringify({
+          candidateId: context.candidateId,
+          policyVersion: "qualification.v1"
+        })}`,
+        refresh: () => refreshCandidateQualificationAndFinance(context)
+      },
+      {
+        toolName: "build_battle_card" as const,
+        status: "building_card" as const,
+        message: "正在生成客户作战卡",
+        prompt: `请调用 build_battle_card 工具生成客户作战卡。参数：${JSON.stringify({
+          candidateId: context.candidateId,
+          templateVersion: "battle-card.v2"
+        })}`,
+        refresh: () => refreshAllAfterIdentity(context)
+      }
+    ];
+    for (const step of steps) {
+      if (completedTools.includes(step.toolName)) continue;
+      if (!publishIdentity(context, (current) => ({
+        ...current,
+        status: step.status,
+        message: step.message,
+        error: null
+      }))) return;
+      const ok = await runIdentityTool(
+        context,
+        step.toolName,
+        step.prompt
+      );
+      if (!isActive(context)) return;
+      if (!ok) {
+        const detail = `${step.message}失败，请重试后续生成`;
+        publishIdentity(context, (current) => ({
+          ...current,
+          status: "continuation_partial",
+          continuation: {
+            status: "failed",
+            data: { completedTools: [...completedTools] },
+            error: detail
+          },
+          message: "主体已确认，后续生成未全部完成",
+          error: detail
+        }));
+        return;
+      }
+      completedTools.push(step.toolName);
+      publishIdentity(context, (current) => ({
+        ...current,
+        continuation: {
+          status: "running",
+          data: { completedTools: [...completedTools] },
+          error: null
+        }
+      }));
+      await step.refresh();
+      if (!isActive(context)) return;
+      if (step.toolName === "qualify_candidate") {
+        const eligible = eligibleForBattleCard(state.qualification.data);
+        if (eligible === false) {
+          publishIdentity(context, (current) => ({
+            ...current,
+            status: "complete",
+            continuation: {
+              status: "succeeded",
+              data: { completedTools: [...completedTools] },
+              error: null
+            },
+            message: "资格评估已完成；当前不满足作战卡生成条件",
+            error: null
+          }));
+          return;
+        }
+      }
+    }
+    publishIdentity(context, (current) => ({
+      ...current,
+      status: "complete",
+      continuation: {
+        status: "succeeded",
+        data: { completedTools: [...completedTools] },
+        error: null
+      },
+      message: "作战资料已生成，等待人工审核",
+      error: null
+    }));
+  }
+
+  function startIdentityContinuation(
+    context: ActionContext
+  ): Promise<void> {
+    if (identityContinuationPromise) return identityContinuationPromise;
+    const promise = runIdentityContinuation(context);
+    identityContinuationPromise = promise;
+    void promise.then(
+      () => {
+        if (identityContinuationPromise === promise) {
+          identityContinuationPromise = null;
+        }
+      },
+      () => {
+        if (identityContinuationPromise === promise) {
+          identityContinuationPromise = null;
+        }
+      }
+    );
+    return promise;
+  }
+
+  function validateIdentitySubmission(
+    input: CandidateIdentitySubmission
+  ): {
+    profileUrl: string;
+    rationale: string;
+    evidenceIds: string[];
+    version: number;
+  } {
+    if (state.identityVerification.status !== "ready_to_confirm") {
+      throw new Error("请先完成公开主页抓取并取得可核验证据");
+    }
+    const profileUrl = exactDouyinProfileUrl(input.profileUrl);
+    if (profileUrl !== state.identityVerification.profileUrl) {
+      throw new Error("确认主页与已抓取的公开主页不一致");
+    }
+    const rationale = input.rationale.trim();
+    if (!rationale) throw new Error("请填写人工核验说明");
+    const evidenceIds = [...new Set(
+      input.evidenceIds.map((id) => id.trim()).filter(Boolean)
+    )];
+    if (evidenceIds.length === 0) {
+      throw new Error("请至少选择一条公开证据");
+    }
+    const allowed = new Set(state.identityVerification.fetchedEvidenceIds);
+    if (evidenceIds.some((id) => !allowed.has(id))) {
+      throw new Error("所选证据不是本次受控抓取返回的公开证据");
+    }
+    const version = candidateVersion(state.candidate.data);
+    if (version === null) {
+      throw new AdvisorPreconditionRequiredError(
+        Object.assign(new Error("候选版本缺失"), { status: 428 })
+      );
+    }
+    return { profileUrl, rationale, evidenceIds, version };
+  }
+
+  async function runIdentityConfirmation(
+    context: ActionContext,
+    input: CandidateIdentitySubmission
+  ): Promise<void> {
+    let validated: ReturnType<typeof validateIdentitySubmission>;
+    try {
+      validated = validateIdentitySubmission(input);
+    } catch (error) {
+      const detail = errorMessage(error);
+      publishIdentity(context, (current) => ({
+        ...current,
+        status: "validation_error",
+        confirmation: { status: "failed", data: null, error: detail },
+        message: null,
+        error: detail
+      }));
+      throw error;
+    }
+    publishIdentity(context, (current) => ({
+      ...current,
+      status: "confirming",
+      confirmation: { status: "running", data: null, error: null },
+      message: "正在保存主体确认",
+      error: null
+    }));
+    try {
+      const result = await api.confirmCandidateIdentity(
+        context.candidateId,
+        validated.version,
+        {
+          subjectKind: "individual",
+          publicProfileUrl: validated.profileUrl,
+          sourcePlatform: "douyin",
+          evidenceIds: validated.evidenceIds,
+          rationale: validated.rationale
+        },
+        key()
+      );
+      if (!isActive(context)) return;
+      state.candidate = { status: "ready", data: result.candidate, error: null };
+      onCandidateUpdated(result.candidate);
+      publishIdentity(context, (current) => ({
+        ...current,
+        status: "confirmed",
+        profileUrl: validated.profileUrl,
+        rationale: validated.rationale,
+        selectedEvidenceIds: [...validated.evidenceIds],
+        confirmation: { status: "succeeded", data: result, error: null },
+        continuation: identityActionResource(),
+        message: "主体已确认",
+        error: null
+      }));
+      await startIdentityContinuation(context);
+    } catch (error) {
+      if (!isActive(context)) return;
+      if (error instanceof AdvisorConflictError) {
+        await refreshCandidateAndEvidence(context);
+        if (!isActive(context)) return;
+        if (identityResolved(state.candidate.data)) {
+          publishIdentity(context, (current) => ({
+            ...current,
+            status: "confirmed",
+            profileUrl: state.candidate.data?.subjectKind === "individual"
+              ? state.candidate.data.publicProfileUrl
+              : validated.profileUrl,
+            rationale: validated.rationale,
+            selectedEvidenceIds: [...validated.evidenceIds],
+            confirmation: {
+              status: "succeeded",
+              data: null,
+              error: null
+            },
+            continuation: identityActionResource(),
+            message: "主体已由其他成员确认，继续生成作战资料",
+            error: null
+          }));
+          await startIdentityContinuation(context);
+          return;
+        }
+        publishIdentity(context, (current) => ({
+          ...current,
+          status: "conflict",
+          confirmation: {
+            status: "conflict",
+            data: null,
+            error: "候选已被其他成员更新"
+          },
+          message: null,
+          error: "候选已被其他成员更新，请核对最新版本后重试。"
+        }));
+        throw error;
+      }
+      const detail = error instanceof AdvisorPreconditionRequiredError
+        ? "候选版本信息缺失，请刷新后重试。"
+        : errorMessage(error);
+      publishIdentity(context, (current) => ({
+        ...current,
+        status: "validation_error",
+        confirmation: { status: "failed", data: null, error: detail },
+        message: null,
+        error: detail
+      }));
+      throw error;
+    }
+  }
+
   const drawer: BattleCardDrawer = {
     getState: () => state,
 
     render: () => renderBattleCardDrawer(state, callbacks),
 
     async open(candidateId) {
+      identityFetchPromise = null;
+      identityConfirmationPromise = null;
+      identityContinuationPromise = null;
       const currentGeneration = ++generation;
       state = {
         ...initialState(),
@@ -896,6 +1566,17 @@ export function createBattleCardDrawer(
         publish("financialValue", () => api.getFinancialValue(candidateId)),
         publish("battleCard", () => api.getBattleCard(candidateId))
       ]);
+      if (
+        currentGeneration === generation
+        && state.candidateId === candidateId
+        && state.candidate.data
+      ) {
+        state.identityVerification = identityStateForLoadedCandidate(
+          state.identityVerification,
+          state.candidate.data
+        );
+        notify();
+      }
     },
 
     openFixture(
@@ -905,6 +1586,9 @@ export function createBattleCardDrawer(
       qualificationValue,
       financialValue
     ) {
+      identityFetchPromise = null;
+      identityConfirmationPromise = null;
+      identityContinuationPromise = null;
       generation += 1;
       state = {
         ...initialState(),
@@ -925,13 +1609,173 @@ export function createBattleCardDrawer(
           : { status: "ready", data: financialValue, error: null },
         battleCard: { status: "ready", data: card, error: null }
       };
+      state.identityVerification = identityStateForLoadedCandidate(
+        state.identityVerification,
+        candidate
+      );
       notify();
     },
 
     close() {
+      identityFetchPromise = null;
+      identityConfirmationPromise = null;
+      identityContinuationPromise = null;
       generation += 1;
       state = initialState();
       notify();
+    },
+
+    setIdentityDraft(input) {
+      const context = captureContext();
+      publishIdentity(context, (current) => {
+        const profileUrl = input.profileUrl ?? current.profileUrl;
+        const profileChanged = profileUrl !== current.profileUrl;
+        const canRetryConfirmation = !profileChanged
+          && current.status === "validation_error"
+          && current.fetchedEvidenceIds.length > 0;
+        let transition: Partial<IdentityVerificationState> = {};
+        if (profileChanged) {
+          transition = {
+            status: isExactDouyinProfileUrl(profileUrl)
+              ? "ready_to_fetch"
+              : "needs_profile",
+            fetchedEvidenceIds: [],
+            selectedEvidenceIds: [],
+            fetch: identityActionResource<ContentFetchOperationDto>(),
+            confirmation:
+              identityActionResource<CandidateIdentityConfirmationResultDto>(),
+            continuation: identityActionResource<IdentityContinuationResult>(),
+            message: null,
+            error: null
+          };
+        } else if (canRetryConfirmation) {
+          transition = {
+            status: "ready_to_confirm",
+            confirmation:
+              identityActionResource<CandidateIdentityConfirmationResultDto>(),
+            message: "请核验公开主页证据并确认主体",
+            error: null
+          };
+        }
+        return {
+          ...current,
+          profileUrl,
+          rationale: input.rationale ?? current.rationale,
+          ...transition
+        };
+      });
+    },
+
+    toggleIdentityEvidence(evidenceId, selected) {
+      const context = captureContext();
+      const normalizedId = evidenceId.trim();
+      if (!normalizedId) throw new Error("证据 ID 不能为空");
+      if (
+        selected
+        && !state.identityVerification.fetchedEvidenceIds.includes(normalizedId)
+      ) {
+        throw new Error("该证据不属于本次可核验的公开主页证据");
+      }
+      publishIdentity(context, (current) => {
+        const selectedEvidenceIds = new Set(current.selectedEvidenceIds);
+        if (selected) selectedEvidenceIds.add(normalizedId);
+        else selectedEvidenceIds.delete(normalizedId);
+        return {
+          ...current,
+          selectedEvidenceIds: [...selectedEvidenceIds],
+          ...(current.status === "validation_error"
+            && current.fetchedEvidenceIds.length > 0
+            ? {
+                status: "ready_to_confirm" as const,
+                confirmation:
+                  identityActionResource<CandidateIdentityConfirmationResultDto>(),
+                message: "请核验公开主页证据并确认主体",
+                error: null
+              }
+            : {})
+        };
+      });
+    },
+
+    fetchIdentityProfile(rawProfileUrl) {
+      if (identityFetchPromise) return identityFetchPromise;
+      let context: ActionContext;
+      let profileUrl: string;
+      try {
+        context = captureContext();
+        profileUrl = exactDouyinProfileUrl(rawProfileUrl);
+      } catch (error) {
+        if (state.open && state.candidateId) {
+          state.identityVerification = {
+            ...state.identityVerification,
+            status: "validation_error",
+            error: errorMessage(error),
+            message: null
+          };
+          notify();
+        }
+        return Promise.reject(error);
+      }
+      const promise = runIdentityFetch(context, profileUrl);
+      identityFetchPromise = promise;
+      void promise.then(
+        () => {
+          if (identityFetchPromise === promise) {
+            identityFetchPromise = null;
+          }
+        },
+        () => {
+          if (identityFetchPromise === promise) {
+            identityFetchPromise = null;
+          }
+        }
+      );
+      return promise;
+    },
+
+    confirmCandidateIdentity(input) {
+      if (identityConfirmationPromise) return identityConfirmationPromise;
+      let context: ActionContext;
+      try {
+        context = captureContext();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      const promise = runIdentityConfirmation(context, input);
+      identityConfirmationPromise = promise;
+      void promise.then(
+        () => {
+          if (identityConfirmationPromise === promise) {
+            identityConfirmationPromise = null;
+          }
+        },
+        () => {
+          if (identityConfirmationPromise === promise) {
+            identityConfirmationPromise = null;
+          }
+        }
+      );
+      return promise;
+    },
+
+    retryIdentityContinuation() {
+      if (identityContinuationPromise) return identityContinuationPromise;
+      let context: ActionContext;
+      try {
+        context = captureContext();
+        if (!identityResolved(state.candidate.data)) {
+          throw new Error("请先完成主体核验");
+        }
+        if (![
+          "confirmed",
+          "continuation_partial"
+        ].includes(state.identityVerification.status)) {
+          throw new Error("当前没有可重试的主体核验续跑任务");
+        }
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return startIdentityContinuation(context);
     },
 
     async runQualification() {

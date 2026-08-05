@@ -71,6 +71,21 @@ export type CopilotTaskDto = operations[
   "getAcquisitionCopilotTask"
 ]["responses"][200]["content"]["application/json"];
 
+export type ContentFetchCreateDto = operations[
+  "createAcquisitionContentFetchOperation"
+]["requestBody"]["content"]["application/json"];
+
+export type ContentFetchOperationDto =
+  components["schemas"]["ContentFetchOperation"];
+
+export type CandidateIdentityConfirmationDto = operations[
+  "confirmAcquisitionCandidateIdentity"
+]["requestBody"]["content"]["application/json"];
+
+export type CandidateIdentityConfirmationResultDto = operations[
+  "confirmAcquisitionCandidateIdentity"
+]["responses"][200]["content"]["application/json"];
+
 export type PlanDtoWithEtag = AcquisitionPlanCreateDto &
   Pick<
     components["schemas"]["AcquisitionPlan"],
@@ -272,6 +287,18 @@ export class AdvisorConflictError extends Error {
   }
 }
 
+export class AdvisorPreconditionRequiredError extends Error {
+  readonly code = "advisor_precondition_required";
+  readonly status = 428;
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super("候选版本信息缺失，请刷新后重试。");
+    this.name = "AdvisorPreconditionRequiredError";
+    this.cause = cause;
+  }
+}
+
 function requireIdempotencyKey(key: string) {
   const normalized = key.trim();
   if (normalized.length < 8 || normalized.length > 200) {
@@ -282,6 +309,13 @@ function requireIdempotencyKey(key: string) {
 
 function newIdempotencyKey() {
   return requireIdempotencyKey(globalThis.crypto.randomUUID());
+}
+
+function requireCandidateVersion(version: number) {
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw new Error("候选版本必须为正整数");
+  }
+  return version;
 }
 
 function segment(value: string) {
@@ -310,6 +344,19 @@ async function mapConflict<T>(operation: () => Promise<T>): Promise<T> {
     const status = advisorHttpStatus(error);
     if (status === 409 || status === 412) {
       throw new AdvisorConflictError(status, error);
+    }
+    throw error;
+  }
+}
+
+async function mapIdentityConfirmationPrecondition<T>(
+  operation: () => Promise<T>
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (advisorHttpStatus(error) === 428) {
+      throw new AdvisorPreconditionRequiredError(error);
     }
     throw error;
   }
@@ -446,6 +493,29 @@ export function createAiGrowthApi(request: AdvisorRequest) {
       return mapConflict(() => request(
         `/api/v1/acquisition/provider-connections/${segment(id)}/test`,
         { method: "POST" }
+      ));
+    },
+
+    createContentFetchOperation(
+      input: ContentFetchCreateDto,
+      idempotencyKey: string
+    ): Promise<ContentFetchOperationDto> {
+      return post(
+        "/api/v1/acquisition/content-fetch-operations",
+        input,
+        idempotencyKey
+      );
+    },
+
+    getContentFetchOperation(id: string): Promise<ContentFetchOperationDto> {
+      return mapConflict(() => request(
+        `/api/v1/acquisition/content-fetch-operations/${segment(id)}`
+      ));
+    },
+
+    getEvidenceById(id: string): Promise<EvidenceDto> {
+      return mapConflict(() => request(
+        `/api/v1/acquisition/evidence/${segment(id)}`
       ));
     },
 
@@ -608,6 +678,22 @@ export function createAiGrowthApi(request: AdvisorRequest) {
     getBattleCard(candidateId: string): Promise<BattleCardDto> {
       return mapConflict(() => request(
         `/api/v1/acquisition/candidates/${segment(candidateId)}/battle-card`
+      ));
+    },
+
+    async confirmCandidateIdentity(
+      candidateId: string,
+      candidateVersion: number,
+      input: CandidateIdentityConfirmationDto,
+      idempotencyKey: string
+    ): Promise<CandidateIdentityConfirmationResultDto> {
+      return mapIdentityConfirmationPrecondition(() => post(
+        `/api/v1/acquisition/candidates/${segment(candidateId)}/identity-confirmation`,
+        input,
+        idempotencyKey,
+        {
+          "If-Match": `"candidate-v${requireCandidateVersion(candidateVersion)}"`
+        }
       ));
     },
 
