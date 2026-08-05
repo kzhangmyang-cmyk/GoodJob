@@ -3,6 +3,9 @@ import test from "node:test";
 import type { Server } from "node:http";
 import express from "express";
 import {
+  requireAuth
+} from "./auth.js";
+import {
   InMemoryAcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
 import type {
@@ -177,7 +180,7 @@ function evidence(): DiscoveryEvidence {
   };
 }
 
-async function fixture() {
+async function fixture(options: { requireAuthFirst?: boolean } = {}) {
   const repository = new InMemoryAcquisitionPlanRunRepository();
   const domain = new InMemoryAcquisitionDomainRepository(repository);
   let id = 0;
@@ -245,6 +248,7 @@ async function fixture() {
     }
     next();
   });
+  if (options.requireAuthFirst) app.use(requireAuth);
   let requestId = 0;
   app.use(createAcquisitionTaskOverviewRouter({
     overviewService,
@@ -311,6 +315,36 @@ function assertHeaders(response: Response) {
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.ok(response.headers.get("x-request-id"));
 }
+
+function assertErrorEnvelope(value: unknown) {
+  assert.deepEqual(Object.keys(value as object), ["error"]);
+  assert.deepEqual(
+    Object.keys((value as { error: object }).error).sort(),
+    ["code", "details", "message", "requestId"]
+  );
+  assert.equal((value as { error: { details: unknown } }).error.details, null);
+}
+
+test("global requireAuth preserves the overview nested unauthenticated envelope", async () => {
+  const app = await fixture({ requireAuthFirst: true });
+  try {
+    const result = await app.request("/api/v1/acquisition/overview", {
+      headers: { "X-Request-Id": "overview-auth-boundary" }
+    }, null);
+    assert.equal(result.response.status, 401);
+    assertHeaders(result.response);
+    assert.deepEqual(result.json, {
+      error: {
+        code: "unauthorized",
+        message: "未登录",
+        details: null,
+        requestId: "overview-auth-boundary"
+      }
+    });
+  } finally {
+    await app.close();
+  }
+});
 
 test("overview returns the real tenant-scoped task aggregate", async () => {
   const app = await fixture();
@@ -453,6 +487,10 @@ test("overview endpoints reject invalid queries, unauthenticated access, and wri
       "/api/v1/acquisition/overview?platform=unknown",
       "/api/v1/acquisition/overview?platform=douyin&platform=web",
       "/api/v1/acquisition/overview?platform=douyin&extra=true",
+      "/api/v1/acquisition/overview?limit=1",
+      "/api/v1/acquisition/tasks?platform=unknown",
+      "/api/v1/acquisition/tasks?platform=douyin&platform=web",
+      "/api/v1/acquisition/tasks?platform=douyin&extra=true",
       "/api/v1/acquisition/tasks?limit=0",
       "/api/v1/acquisition/tasks?limit=101",
       "/api/v1/acquisition/tasks?limit=1.5"
@@ -460,8 +498,17 @@ test("overview endpoints reject invalid queries, unauthenticated access, and wri
       const result = await app.request(path);
       assert.equal(result.response.status, 400, path);
       assertHeaders(result.response);
-      assert.deepEqual(result.json.error.details, null);
+      assertErrorEnvelope(result.json);
       assert.ok(result.json.error.requestId);
+    }
+    const plan = await app.createApprovedPlan("严格详情查询", "douyin");
+    for (const query of ["?platform=douyin", "?limit=1"]) {
+      const result = await app.request(
+        `/api/v1/acquisition/tasks/${plan.id}${query}`
+      );
+      assert.equal(result.response.status, 400, query);
+      assertHeaders(result.response);
+      assertErrorEnvelope(result.json);
     }
     const anonymous = await app.request(
       "/api/v1/acquisition/overview",
@@ -470,14 +517,14 @@ test("overview endpoints reject invalid queries, unauthenticated access, and wri
     );
     assert.equal(anonymous.response.status, 401);
     assertHeaders(anonymous.response);
-    assert.deepEqual(anonymous.json.error.details, null);
+    assertErrorEnvelope(anonymous.json);
 
     const write = await app.request("/api/v1/acquisition/tasks", {
       method: "POST"
     });
     assert.equal(write.response.status, 404);
     assertHeaders(write.response);
-    assert.deepEqual(write.json.error.details, null);
+    assertErrorEnvelope(write.json);
   } finally {
     await app.close();
   }
@@ -494,7 +541,7 @@ test("cross-tenant task ids return the same not-found response", async () => {
     );
     assert.equal(result.response.status, 404);
     assertHeaders(result.response);
-    assert.deepEqual(result.json.error.details, null);
+    assertErrorEnvelope(result.json);
   } finally {
     await app.close();
   }

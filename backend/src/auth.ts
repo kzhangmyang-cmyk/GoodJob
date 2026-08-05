@@ -108,6 +108,16 @@ function requestToken(req: Request) {
   return { token, source: "cookie" as const };
 }
 
+function usesAcquisitionTaskOverviewErrorEnvelope(req: Request) {
+  const pathname = new URL(
+    req.originalUrl || req.url,
+    "http://localhost"
+  ).pathname;
+  return pathname === "/api/v1/acquisition/overview"
+    || pathname === "/api/v1/acquisition/tasks"
+    || pathname.startsWith("/api/v1/acquisition/tasks/");
+}
+
 function sendAuthError(
   req: Request,
   res: Response,
@@ -119,11 +129,13 @@ function sendAuthError(
   const requestId = provided.slice(0, 100) || `request_${randomUUID()}`;
   res.setHeader("X-Request-Id", requestId);
   res.setHeader("Cache-Control", "no-store");
+  const error = { code, message, details: null, requestId };
+  if (usesAcquisitionTaskOverviewErrorEnvelope(req)) {
+    res.status(status).json({ error });
+    return;
+  }
   res.status(status).json({
-    code,
-    message,
-    details: null,
-    requestId,
+    ...error,
     retryable: false
   });
 }

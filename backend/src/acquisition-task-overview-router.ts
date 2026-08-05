@@ -27,6 +27,7 @@ const overviewQuerySchema = z.object({
 const taskListQuerySchema = overviewQuerySchema.extend({
   limit: z.coerce.number().int().min(1).max(100).default(20)
 }).strict();
+const taskDetailQuerySchema = z.object({}).strict();
 
 export interface AcquisitionTaskOverviewRouterOptions {
   overviewService: Pick<
@@ -151,6 +152,7 @@ export function createAcquisitionTaskOverviewRouter(
   router.get(
     "/api/v1/acquisition/tasks/:planId",
     asyncRoute(async (req, res) => {
+      taskDetailQuerySchema.parse(req.query);
       const scope = scopeFromRequest(req);
       const planId = idSchema.parse(req.params.planId);
       const task = await options.overviewService.getTask(scope, planId);
