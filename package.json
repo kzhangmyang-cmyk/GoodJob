@@ -9,6 +9,8 @@
     "dev": "concurrently \"npm run dev:mysql --workspace backend\" \"npm run dev --workspace frontend\"",
     "dev:mysql": "concurrently \"npm run dev:mysql --workspace backend\" \"npm run dev --workspace frontend\"",
     "build": "npm run build --workspace backend && npm run build --workspace frontend",
+    "generate:frontend-contract-types": "npm run generate:types --workspace contracts",
+    "check:generated-acquisition-types": "npm run check:types --workspace contracts",
     "test:contracts": "npm run test --workspace contracts",
     "test": "npm run test:contracts && npm run test --workspace backend && npm run test --workspace frontend",
     "test:e2e": "npm run test:e2e --workspace frontend"

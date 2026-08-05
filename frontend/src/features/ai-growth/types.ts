@@ -1,3 +1,5 @@
+import type { components, paths } from "./generated/ai-acquisition.js";
+
 export type AdvisorMode = "demo" | "real";
 
 export type AdvisorStatus =
@@ -21,233 +23,66 @@ export type IndustryTemplateId =
   | "education"
   | "custom";
 
-export interface AcquisitionUsageDto {
-  requests: number;
-  results: number;
-  amountMinor: number;
-  durationSeconds: number;
-}
-
-export interface AcquisitionBudgetDto {
-  billingCurrency: string;
-  maxRequests: number;
-  maxResults: number;
-  maxAmountMinor: number;
-  maxDurationSeconds: number;
-}
-
-export interface AcquisitionProviderConnectionDto {
-  connectionId: string;
-  providerId: string;
-  kind: "search" | "content_fetch" | "import";
-  status: "active" | "inactive" | "disabled";
-  credentialVersion: number;
-}
-
-export interface AcquisitionPlanOperationDto {
-  operationId: string;
-  subjectChannel: "organization" | "individual";
-  kind: "search" | "content_fetch" | "import_rows";
-  connectionId: string;
-  query?: string;
-  sourceRef?: string;
-  allocatedBudget: AcquisitionUsageDto;
-}
-
 /**
  * The public plan-create request. Immutable model snapshots are server-bound
  * and therefore deliberately absent from this DTO.
  */
-export interface AcquisitionPlanCreateDto {
-  name: string;
-  objective: string;
-  icp: {
-    industries: string[];
-    regions: string[];
-    organizationCriteria: string[];
-    individualCriteria: string[];
-    exclusionRules: string[];
-  };
-  subjectChannels: {
-    organization: boolean;
-    individual: boolean;
-  };
-  providerConnections: AcquisitionProviderConnectionDto[];
-  operations: AcquisitionPlanOperationDto[];
-  budgetSnapshot: AcquisitionBudgetDto;
-  stopConditions: {
-    stopWhenBudgetExhausted: boolean;
-    stopWhenNoMoreResults: boolean;
-  };
-  modelConnectionId?: string | null;
-}
+export type AcquisitionPlanCreateDto =
+  paths["/api/v1/acquisition/plans"]["post"]["requestBody"]["content"]["application/json"];
+export type AcquisitionUsageDto =
+  AcquisitionPlanCreateDto["operations"][number]["allocatedBudget"];
+export type AcquisitionBudgetDto = AcquisitionPlanCreateDto["budgetSnapshot"];
+export type AcquisitionProviderConnectionDto =
+  AcquisitionPlanCreateDto["providerConnections"][number];
+export type AcquisitionPlanOperationDto =
+  AcquisitionPlanCreateDto["operations"][number];
 
-export type AcquisitionRunStatus =
-  | "queued"
-  | "running"
-  | "pause_requested"
-  | "paused"
-  | "cancel_requested"
-  | "cancelled"
-  | "succeeded"
-  | "succeeded_empty"
-  | "partial_success"
-  | "failed"
-  | "budget_exhausted";
+type GeneratedRunPresentationDto =
+  components["schemas"]["AcquisitionRunPresentation"];
+type GeneratedProviderShardDto =
+  GeneratedRunPresentationDto["providers"][number];
+type GeneratedCandidatePresentationEventDto =
+  GeneratedRunPresentationDto["candidateEvents"][number];
 
+export type RunDto = GeneratedRunPresentationDto["run"];
+export type AcquisitionRunStatus = RunDto["status"];
 export type AcquisitionShardStatus =
-  | "queued"
-  | "running"
-  | "retry_scheduled"
-  | "pause_requested"
-  | "paused"
-  | "cancel_requested"
-  | "cancelled"
-  | "succeeded"
-  | "succeeded_empty"
-  | "partial_success"
-  | "failed"
-  | "budget_exhausted";
-
-export type CandidateStatus =
-  | "discovered"
-  | "unresolvable"
-  | "normalized"
-  | "qualified"
-  | "pending_review"
-  | "approved"
-  | "rejected"
-  | "do_not_contact"
-  | "needs_research"
-  | "converted_to_lead";
-
-export interface RunDto {
-  id: string;
-  status: AcquisitionRunStatus;
-  etag: string;
-  updatedAt: string;
-  completedAt: string | null;
-}
-
-export interface ProviderShardDto {
-  shardId: string;
-  connectionId: string;
-  providerId: string;
+  components["schemas"]["AcquisitionOperationShard"]["status"];
+export type ProviderShardDto = Omit<GeneratedProviderShardDto, "status"> & {
   status: AcquisitionShardStatus;
-  rawResultCount: number;
-  acceptedResultCount: number;
-  duplicateResultCount: number;
-  failedResultCount: number;
-  errorCode: string | null;
-  retryAfterAt: string | null;
-}
-
-export interface FinancialAmountDto {
-  currency: string;
-  amountMinor: number;
-}
-
-export interface ExecutiveSummaryDto {
-  sourcesSearched: number;
-  pagesAnalyzed: number;
-  organizationsFound: number;
-  dedupedCandidates: number;
-  validOpportunities: number;
-  highIntent: number;
-  financialEvaluatedHighIntentCount: number;
-  financialPendingHighIntentCount: number;
-  expectedRevenueByCurrency: FinancialAmountDto[];
-}
-
-export type QualificationGrade = "S" | "A" | "B" | "C" | "D";
-
-export type HardGateFailure =
-  | "missing_original_source"
-  | "identity_unresolved"
-  | "do_not_contact"
-  | "explicit_rejection"
-  | "non_public_or_sensitive_data"
-  | "stale_evidence"
-  | "schema_invalid";
-
-export interface QualificationDto {
-  id: string;
-  candidateId: string;
-  decisionVersion: string;
-  decisionEngine: "model" | "rules";
-  grade: QualificationGrade;
-  score: number;
-  recommendedAction:
-    | "priority_review"
-    | "public_response"
-    | "nurture"
-    | "observe"
-    | "do_not_contact";
-  evidence: Array<{ evidenceId: string; excerpt: string }>;
-  positiveSignals: Array<{ name: string; score: number }>;
-  negativeSignals: Array<{ name: string; score: number }>;
-  reasons: string[];
-  confidence: number;
-  ruleVersion: string;
-  promptVersion: string | null;
-  modelProvider: string | null;
-  model: string | null;
-  hardGateFailures: HardGateFailure[];
-  createdAt: string;
-}
-
-export interface FinancialValueDto {
-  id: string;
-  candidateId: string;
-  qualificationDecisionId: string;
-  version: string;
-  grade: QualificationGrade;
-  score: number;
-  currency: string;
-  expectedRevenueMinor: number;
-  expectedGrossProfitMinor: number;
-  expectedContributionMinor: number;
-  factors: {
-    profitability: number;
-    cashFlow: number;
-    creditQuality: number;
-    repeatPotential: number;
-    referralPotential: number;
-    closeProbability: number;
-  };
-  createdAt: string;
-}
-
-export interface CandidatePresentationDto {
-  id: string;
-  subjectKind: "organization" | "individual";
-  displayName: string;
-  industry: string | null;
-  region: string | null;
-  domain: string | null;
+};
+export type ExecutiveSummaryDto = GeneratedRunPresentationDto["summary"];
+export type FinancialAmountDto =
+  ExecutiveSummaryDto["expectedRevenueByCurrency"][number];
+export type CandidateStatus =
+  components["schemas"]["OrganizationCandidate"]["status"];
+export type CandidatePresentationDto = Omit<
+  GeneratedCandidatePresentationEventDto["candidate"],
+  "status"
+> & {
   status: CandidateStatus;
-  updatedAt: string;
-}
-
-export interface CandidatePresentationEventDto {
-  eventId: string;
-  createdAt: string;
-  candidateId: string;
+};
+export type CandidatePresentationEventDto = Omit<
+  GeneratedCandidatePresentationEventDto,
+  "candidate"
+> & {
   candidate: CandidatePresentationDto;
-  qualification: QualificationDto | null;
-  financialValue: FinancialValueDto | null;
-  sourcePlatforms: string[];
-  evidenceCount: number;
-}
-
-export interface RunPresentationDto {
-  run: RunDto;
+};
+export type QualificationDto = NonNullable<
+  CandidatePresentationEventDto["qualification"]
+>;
+export type QualificationGrade = QualificationDto["grade"];
+export type HardGateFailure = QualificationDto["hardGateFailures"][number];
+export type FinancialValueDto = NonNullable<
+  CandidatePresentationEventDto["financialValue"]
+>;
+export type RunPresentationDto = Omit<
+  GeneratedRunPresentationDto,
+  "providers" | "candidateEvents"
+> & {
   providers: ProviderShardDto[];
-  summary: ExecutiveSummaryDto;
   candidateEvents: CandidatePresentationEventDto[];
-  nextAfter: string;
-  hasMore: boolean;
-}
+};
 
 interface CandidateDtoCommon {
   id: string;

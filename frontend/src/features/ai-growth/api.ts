@@ -7,6 +7,7 @@ import type {
   RunDto,
   RunPresentationDto
 } from "./types.js";
+import type { components, paths } from "./generated/ai-acquisition.js";
 
 export interface AdvisorRequest {
   <T>(path: string, init?: RequestInit): Promise<T>;
@@ -17,81 +18,66 @@ export interface PageDto<T> {
   nextCursor: string | null;
 }
 
-export interface ProviderConnectionDto {
-  id: string;
-  ownerId?: string;
-  teamId?: string | null;
-  providerId: string;
-  kind: "search" | "content_fetch" | "import";
-  status: "active" | "inactive" | "disabled";
-  credentialVersion: number;
-  createdAt?: string;
+type GeneratedProviderConnectionDto =
+  components["schemas"]["ProviderConnection"];
+
+export type ProviderConnectionDto = Omit<
+  GeneratedProviderConnectionDto,
+  "ownerId" | "createdAt"
+> & {
+  ownerId?: GeneratedProviderConnectionDto["ownerId"];
+  createdAt?: GeneratedProviderConnectionDto["createdAt"];
   updatedAt?: string;
-}
+};
 
-export interface CopilotSessionDto {
-  id: string;
-  ownerId?: string;
-  teamId?: string;
-  status?: "active" | "completed" | "failed";
-  modelSnapshot?: Record<string, unknown>;
-  createdAt?: string;
-}
+type GeneratedCopilotSessionDto = components["schemas"]["CopilotSession"];
 
-export interface CopilotTaskDto {
-  id: string;
-  sessionId?: string;
-  kind?: string;
-  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
-  responseMode?: "assistant" | "plan_draft";
-  result: {
-    planDraft?: AcquisitionPlanCreateDto;
-    toolNames?: string[];
-    [key: string]: unknown;
-  } | null;
-  errorCode?: string | null;
-  createdAt?: string;
-  completedAt?: string | null;
-}
+export type CopilotSessionDto = Pick<GeneratedCopilotSessionDto, "id"> &
+  Partial<Omit<GeneratedCopilotSessionDto, "id" | "modelSnapshot">> & {
+    modelSnapshot?: Record<string, unknown>;
+  };
 
-export interface PlanDtoWithEtag extends AcquisitionPlanCreateDto {
-  id: string;
-  etag: string;
-  status: "draft" | "approved" | "archived";
-  version: number;
-}
+type GeneratedCopilotTaskDto = components["schemas"]["CopilotTask"];
+
+export type CopilotTaskDto = Pick<GeneratedCopilotTaskDto, "id" | "status"> &
+  Partial<
+    Pick<
+      GeneratedCopilotTaskDto,
+      "sessionId" | "kind" | "errorCode" | "createdAt" | "completedAt"
+    >
+  > & {
+    responseMode?: "assistant" | "plan_draft";
+    result: {
+      planDraft?: AcquisitionPlanCreateDto;
+      toolNames?: string[];
+      [key: string]: unknown;
+    } | null;
+  };
+
+export type PlanDtoWithEtag = AcquisitionPlanCreateDto &
+  Pick<
+    components["schemas"]["AcquisitionPlan"],
+    "id" | "status" | "version"
+  > & {
+    etag: string;
+  };
 
 export type RunDtoWithEtag = RunDto;
 
-export interface EvidenceDto {
-  id: string;
-  targetType: "organization" | "individual_signal";
-  sourcePlatform: string;
-  sourceTitle: string;
-  sourceSnippet: string;
-  publishedAt: string | null;
-  fetchedAt: string;
-  locale: string;
-  rawArtifactHash: string;
-  contentHash: string;
-  provenance: Record<string, unknown>;
-  accessStatus:
-    | "indexed_summary"
-    | "public_content"
-    | "user_supplied"
-    | "access_restricted";
-}
+type GeneratedEvidenceDto = components["schemas"]["DiscoveryEvidence"];
 
-export interface CandidateReviewDto {
-  action:
-    | "approved"
-    | "rejected"
-    | "do_not_contact"
-    | "needs_research"
-    | "reopen";
-  decisionVersion: string;
+export type EvidenceDto = Omit<GeneratedEvidenceDto, "provenance"> & {
+  provenance: Record<string, unknown>;
+};
+
+type GeneratedCandidateReviewDto =
+  paths["/api/v1/acquisition/candidates/{id}/review"]["post"]["requestBody"]["content"]["application/json"];
+
+export type CandidateReviewDto = {
+  action: GeneratedCandidateReviewDto["action"];
+  decisionVersion: GeneratedCandidateReviewDto["decisionVersion"];
   reason: string | null;
-}
+};
 
 export interface CandidateReviewResultDto {
   candidate: CandidateDto;
@@ -99,16 +85,19 @@ export interface CandidateReviewResultDto {
   research: Record<string, unknown> | null;
 }
 
-export interface CandidateConversionDto {
-  id: string;
-  candidateId: string;
-  decisionVersion: string;
+export type CandidateConversionDto = Omit<
+  components["schemas"]["LeadConversion"],
+  "partyRef"
+> & {
   partyRef: Record<string, unknown>;
-  leadId: string;
-  reviewerId: string;
-  evidenceSnapshotHash: string;
-  createdAt: string;
-}
+};
+
+type PlanApprovalDto =
+  paths["/api/v1/acquisition/plans/{id}/approval"]["post"]["requestBody"]["content"]["application/json"];
+type CopilotSessionCreateDto =
+  paths["/api/v1/acquisition/copilot/sessions"]["post"]["requestBody"]["content"]["application/json"];
+type CandidateConversionCreateDto =
+  paths["/api/v1/acquisition/candidates/{id}/convert"]["post"]["requestBody"]["content"]["application/json"];
 
 export interface TodoCreateDto {
   title: string;
@@ -254,7 +243,7 @@ export function createAiGrowthApi(request: AdvisorRequest) {
 
   return {
     createSession(
-      input: { connectionId?: string | null },
+      input: CopilotSessionCreateDto,
       idempotencyKey: string
     ): Promise<CopilotSessionDto> {
       return post(
@@ -327,7 +316,7 @@ export function createAiGrowthApi(request: AdvisorRequest) {
     approvePlan(
       planId: string,
       etag: string,
-      input: { decision: "approve"; reason: string }
+      input: PlanApprovalDto
     ): Promise<PlanDtoWithEtag> {
       return post(
         `/api/v1/acquisition/plans/${segment(planId)}/approval`,
@@ -445,7 +434,7 @@ export function createAiGrowthApi(request: AdvisorRequest) {
 
     convertCandidate(
       candidateId: string,
-      input: { decisionVersion: string },
+      input: CandidateConversionCreateDto,
       idempotencyKey: string
     ): Promise<CandidateConversionDto> {
       return post(
