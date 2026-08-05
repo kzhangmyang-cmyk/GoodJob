@@ -88,11 +88,11 @@
 - Douyin-bound searches drop off-platform result URLs.
 - Only stable `/user/` profile URLs may enter verified public identity resolution; videos, short links, and comment-like indexed snippets remain `needs_research` evidence.
 
-- [ ] **Step 1: write failing classifier and pipeline tests** for profile/video/short URL/comment-signal/lookalike/off-platform/provider separation and identity safety.
-- [ ] **Step 2: run RED**.
-- [ ] **Step 3: implement classification/filtering and update both evidence construction paths** without breaking legacy providers.
-- [ ] **Step 4: run GREEN**, focused executor/search/research suites and backend build.
-- [ ] **Step 5: commit** as `feat: classify douyin public sources`.
+- [x] **Step 1: write failing classifier and pipeline tests** for profile/video/short URL/comment-signal/lookalike/off-platform/provider separation and identity safety.
+- [x] **Step 2: run RED**.
+- [x] **Step 3: implement classification/filtering and update both evidence construction paths** without breaking legacy providers.
+- [x] **Step 4: run GREEN**, focused executor/search/research suites and backend build.
+- [x] **Step 5: commit** as `feat: classify douyin public sources`.
 
 ### Task 4: 前端平台选择与显式抖音计划体验
 
