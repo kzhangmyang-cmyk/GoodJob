@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://goodjob.example/contracts/json-schema/acquisition-run-presentation.v1.schema.json",
+  "title": "AcquisitionRunPresentation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run", "providers", "summary", "candidateEvents", "nextAfter", "hasMore"],
+  "properties": {
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "etag", "updatedAt", "completedAt"],
+      "properties": {
+        "id": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["queued", "running", "pause_requested", "paused", "cancel_requested", "cancelled", "succeeded", "succeeded_empty", "partial_success", "failed", "budget_exhausted"]
+        },
+        "etag": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "completedAt": { "type": ["null", "string"], "format": "date-time" }
+      }
+    },
+    "providers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["shardId", "connectionId", "providerId", "status", "rawResultCount", "acceptedResultCount", "duplicateResultCount", "failedResultCount", "errorCode", "retryAfterAt"],
+        "properties": {
+          "shardId": { "type": "string" },
+          "connectionId": { "type": "string" },
+          "providerId": { "type": "string" },
+          "status": { "type": "string" },
+          "rawResultCount": { "type": "integer", "minimum": 0 },
+          "acceptedResultCount": { "type": "integer", "minimum": 0 },
+          "duplicateResultCount": { "type": "integer", "minimum": 0 },
+          "failedResultCount": { "type": "integer", "minimum": 0 },
+          "errorCode": { "type": ["null", "string"] },
+          "retryAfterAt": { "type": ["null", "string"], "format": "date-time" }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourcesSearched", "pagesAnalyzed", "organizationsFound", "dedupedCandidates", "validOpportunities", "highIntent", "financialEvaluatedHighIntentCount", "financialPendingHighIntentCount", "expectedRevenueByCurrency"],
+      "properties": {
+        "sourcesSearched": { "type": "integer", "minimum": 0 },
+        "pagesAnalyzed": { "type": "integer", "minimum": 0, "description": "所有运行分片持久化的执行结果页数。" },
+        "organizationsFound": { "type": "integer", "minimum": 0 },
+        "dedupedCandidates": { "type": "integer", "minimum": 0 },
+        "validOpportunities": { "type": "integer", "minimum": 0 },
+        "highIntent": { "type": "integer", "minimum": 0 },
+        "financialEvaluatedHighIntentCount": { "type": "integer", "minimum": 0 },
+        "financialPendingHighIntentCount": { "type": "integer", "minimum": 0 },
+        "expectedRevenueByCurrency": {
+          "type": "array",
+          "description": "仅合计高意向且绑定当前资格决定的财务值；币种不换算。",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["currency", "amountMinor"],
+            "properties": {
+              "currency": { "type": "string" },
+              "amountMinor": { "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+    "candidateEvents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["eventId", "createdAt", "candidateId", "candidate", "qualification", "financialValue", "sourcePlatforms", "evidenceCount"],
+        "properties": {
+          "eventId": { "type": "string" },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "candidateId": { "type": "string" },
+          "candidate": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "subjectKind", "displayName", "industry", "region", "domain", "status", "updatedAt"],
+            "properties": {
+              "id": { "type": "string" },
+              "subjectKind": { "type": "string", "enum": ["organization", "individual"] },
+              "displayName": { "type": "string" },
+              "industry": { "type": ["null", "string"] },
+              "region": { "type": ["null", "string"] },
+              "domain": { "type": ["null", "string"] },
+              "status": { "type": "string" },
+              "updatedAt": { "type": "string", "format": "date-time" }
+            }
+          },
+          "qualification": {
+            "type": ["null", "object"],
+            "additionalProperties": false,
+            "required": ["id", "candidateId", "decisionVersion", "decisionEngine", "grade", "score", "recommendedAction", "evidence", "positiveSignals", "negativeSignals", "reasons", "confidence", "ruleVersion", "promptVersion", "modelProvider", "model", "hardGateFailures", "createdAt"],
+            "properties": {
+              "id": { "type": "string" },
+              "candidateId": { "type": "string" },
+              "decisionVersion": { "type": "string" },
+              "decisionEngine": { "type": "string", "enum": ["model", "rules"] },
+              "grade": { "type": "string", "enum": ["S", "A", "B", "C", "D"] },
+              "score": { "type": "number" },
+              "recommendedAction": { "type": "string", "enum": ["priority_review", "public_response", "nurture", "observe", "do_not_contact"] },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["evidenceId", "excerpt"],
+                  "properties": {
+                    "evidenceId": { "type": "string" },
+                    "excerpt": { "type": "string" }
+                  }
+                }
+              },
+              "positiveSignals": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "score"],
+                  "properties": {
+                    "name": { "type": "string" },
+                    "score": { "type": "number" }
+                  }
+                }
+              },
+              "negativeSignals": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["name", "score"],
+                  "properties": {
+                    "name": { "type": "string" },
+                    "score": { "type": "number" }
+                  }
+                }
+              },
+              "reasons": { "type": "array", "items": { "type": "string" } },
+              "confidence": { "type": "number" },
+              "ruleVersion": { "type": "string" },
+              "promptVersion": { "type": ["null", "string"] },
+              "modelProvider": { "type": ["null", "string"] },
+              "model": { "type": ["null", "string"] },
+              "hardGateFailures": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["missing_original_source", "identity_unresolved", "do_not_contact", "explicit_rejection", "non_public_or_sensitive_data", "stale_evidence", "schema_invalid"]
+                }
+              },
+              "createdAt": { "type": "string", "format": "date-time" }
+            }
+          },
+          "financialValue": {
+            "type": ["null", "object"],
+            "additionalProperties": false,
+            "required": ["id", "candidateId", "qualificationDecisionId", "version", "grade", "score", "currency", "expectedRevenueMinor", "expectedGrossProfitMinor", "expectedContributionMinor", "factors", "createdAt"],
+            "properties": {
+              "id": { "type": "string" },
+              "candidateId": { "type": "string" },
+              "qualificationDecisionId": { "type": "string" },
+              "version": { "type": "string" },
+              "grade": { "type": "string", "enum": ["S", "A", "B", "C", "D"] },
+              "score": { "type": "number" },
+              "currency": { "type": "string" },
+              "expectedRevenueMinor": { "type": "integer" },
+              "expectedGrossProfitMinor": { "type": "integer" },
+              "expectedContributionMinor": { "type": "integer" },
+              "factors": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["profitability", "cashFlow", "creditQuality", "repeatPotential", "referralPotential", "closeProbability"],
+                "properties": {
+                  "profitability": { "type": "number" },
+                  "cashFlow": { "type": "number" },
+                  "creditQuality": { "type": "number" },
+                  "repeatPotential": { "type": "number" },
+                  "referralPotential": { "type": "number" },
+                  "closeProbability": { "type": "number" }
+                }
+              },
+              "createdAt": { "type": "string", "format": "date-time" }
+            }
+          },
+          "sourcePlatforms": { "type": "array", "items": { "type": "string" } },
+          "evidenceCount": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "nextAfter": { "type": "string" },
+    "hasMore": { "type": "boolean" }
+  }
+}

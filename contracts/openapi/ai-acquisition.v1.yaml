@@ -45,6 +45,27 @@ components:
       in: header
       required: true
       schema: { type: string, minLength: 1, maxLength: 200 }
+    planIdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 租户作用域内的写入幂等键；原文不会持久化。
+      schema: { type: string, minLength: 8, maxLength: 200 }
+    ifMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
+    presentationAfter:
+      name: after
+      in: query
+      required: false
+      schema: { type: string, minLength: 1, maxLength: 8192 }
+    presentationLimit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
   schemas:
     AsyncOperation: { $ref: ../json-schema/async-operation.v1.schema.json }
     ApiError:
@@ -88,6 +109,7 @@ components:
     AcquisitionPlan: { $ref: ../json-schema/acquisition-plan.v1.schema.json }
     AcquisitionRun: { $ref: ../json-schema/acquisition-run.v1.schema.json }
     AcquisitionOperationShard: { $ref: ../json-schema/acquisition-operation-shard.v1.schema.json }
+    AcquisitionRunPresentation: { $ref: ../json-schema/acquisition-run-presentation.v1.schema.json }
     OrganizationCandidate: { $ref: ../json-schema/organization-candidate.v1.schema.json }
     IndividualDemandSignal: { $ref: ../json-schema/individual-demand-signal.v1.schema.json }
     Candidate:
@@ -154,6 +176,16 @@ x-async-write: &asyncWrite
     '202': *asyncResponse
     '400': *apiError
     '401': *apiError
+x-plan-create-schema: &planCreateSchema
+  { type: object, required: [name, objective, icp, subjectChannels, providerConnections, operations, budgetSnapshot, stopConditions], properties: { name: { type: string, minLength: 1, maxLength: 200 }, objective: { type: string, minLength: 1, maxLength: 2000 }, icp: { type: object, required: [industries, regions, organizationCriteria, individualCriteria, exclusionRules], properties: { industries: { type: array, minItems: 1, maxItems: 100, items: { type: string, minLength: 1, maxLength: 120 } }, regions: { type: array, minItems: 1, maxItems: 100, items: { type: string, minLength: 1, maxLength: 120 } }, organizationCriteria: { type: array, minItems: 1, maxItems: 100, items: { type: string, minLength: 1, maxLength: 500 } }, individualCriteria: { type: array, minItems: 1, maxItems: 100, items: { type: string, minLength: 1, maxLength: 500 } }, exclusionRules: { type: array, maxItems: 200, items: { type: string, minLength: 1, maxLength: 500 } } }, additionalProperties: false }, subjectChannels: { type: object, required: [organization, individual], properties: { organization: { type: boolean }, individual: { type: boolean } }, additionalProperties: false }, providerConnections: { type: array, minItems: 1, maxItems: 100, items: { type: object, required: [connectionId, providerId, kind, status, credentialVersion], properties: { connectionId: { type: string, minLength: 1, maxLength: 255 }, providerId: { type: string, minLength: 1, maxLength: 100 }, kind: { type: string, enum: [search, content_fetch, import] }, status: { type: string, enum: [active, inactive, disabled] }, credentialVersion: { type: integer, minimum: 1 } }, additionalProperties: false } }, operations: { type: array, minItems: 1, maxItems: 500, items: { type: object, required: [operationId, subjectChannel, kind, connectionId, allocatedBudget], properties: { operationId: { type: string, minLength: 1, maxLength: 255 }, subjectChannel: { type: string, enum: [organization, individual] }, kind: { type: string, enum: [search, content_fetch, import_rows] }, connectionId: { type: string, minLength: 1, maxLength: 255 }, query: { type: string, minLength: 1, maxLength: 4000 }, sourceRef: { type: string, minLength: 1, maxLength: 4000 }, allocatedBudget: { type: object, required: [requests, results, amountMinor, durationSeconds], properties: { requests: { type: integer, minimum: 0 }, results: { type: integer, minimum: 0 }, amountMinor: { type: integer, minimum: 0 }, durationSeconds: { type: integer, minimum: 0 } }, additionalProperties: false } }, additionalProperties: false } }, budgetSnapshot: { type: object, required: [billingCurrency, maxRequests, maxResults, maxAmountMinor, maxDurationSeconds], properties: { billingCurrency: { type: string, minLength: 3, maxLength: 3 }, maxRequests: { type: integer, minimum: 0 }, maxResults: { type: integer, minimum: 0 }, maxAmountMinor: { type: integer, minimum: 0 }, maxDurationSeconds: { type: integer, minimum: 0 } }, additionalProperties: false }, modelConnectionId: { type: string, nullable: true, minLength: 1, maxLength: 255, description: 可选 BYOK 模型连接；服务端据此绑定不可伪造的模型快照。 }, stopConditions: { type: object, required: [stopWhenBudgetExhausted, stopWhenNoMoreResults], properties: { stopWhenBudgetExhausted: { type: boolean }, stopWhenNoMoreResults: { type: boolean } }, additionalProperties: false } }, additionalProperties: false }
+x-plan-mutation-schema: &planMutationSchema
+  { type: object, minProperties: 1, properties: { name: { type: string, minLength: 1, maxLength: 200 }, objective: { type: string, minLength: 1, maxLength: 2000 }, icp: { type: object, required: [industries, regions, organizationCriteria, individualCriteria, exclusionRules], properties: { industries: { type: array, minItems: 1, maxItems: 100, items: { type: string, minLength: 1, maxLength: 120 } }, regions: { type: array, minItems: 1, maxItems: 100, items: { type: string, minLength: 1, maxLength: 120 } }, organizationCriteria: { type: array, minItems: 1, maxItems: 100, items: { type: string, minLength: 1, maxLength: 500 } }, individualCriteria: { type: array, minItems: 1, maxItems: 100, items: { type: string, minLength: 1, maxLength: 500 } }, exclusionRules: { type: array, maxItems: 200, items: { type: string, minLength: 1, maxLength: 500 } } }, additionalProperties: false }, subjectChannels: { type: object, required: [organization, individual], properties: { organization: { type: boolean }, individual: { type: boolean } }, additionalProperties: false }, providerConnections: { type: array, minItems: 1, maxItems: 100, items: { type: object, required: [connectionId, providerId, kind, status, credentialVersion], properties: { connectionId: { type: string, minLength: 1, maxLength: 255 }, providerId: { type: string, minLength: 1, maxLength: 100 }, kind: { type: string, enum: [search, content_fetch, import] }, status: { type: string, enum: [active, inactive, disabled] }, credentialVersion: { type: integer, minimum: 1 } }, additionalProperties: false } }, operations: { type: array, minItems: 1, maxItems: 500, items: { type: object, required: [operationId, subjectChannel, kind, connectionId, allocatedBudget], properties: { operationId: { type: string, minLength: 1, maxLength: 255 }, subjectChannel: { type: string, enum: [organization, individual] }, kind: { type: string, enum: [search, content_fetch, import_rows] }, connectionId: { type: string, minLength: 1, maxLength: 255 }, query: { type: string, minLength: 1, maxLength: 4000 }, sourceRef: { type: string, minLength: 1, maxLength: 4000 }, allocatedBudget: { type: object, required: [requests, results, amountMinor, durationSeconds], properties: { requests: { type: integer, minimum: 0 }, results: { type: integer, minimum: 0 }, amountMinor: { type: integer, minimum: 0 }, durationSeconds: { type: integer, minimum: 0 } }, additionalProperties: false } }, additionalProperties: false } }, budgetSnapshot: { type: object, required: [billingCurrency, maxRequests, maxResults, maxAmountMinor, maxDurationSeconds], properties: { billingCurrency: { type: string, minLength: 3, maxLength: 3 }, maxRequests: { type: integer, minimum: 0 }, maxResults: { type: integer, minimum: 0 }, maxAmountMinor: { type: integer, minimum: 0 }, maxDurationSeconds: { type: integer, minimum: 0 } }, additionalProperties: false }, modelSnapshotRef: { type: object, required: [jobSnapshotId, connectionId, credentialVersion, provider, model, capabilitySnapshotHash, promptVersion, schemaVersion, promptHash, schemaHash], properties: { jobSnapshotId: { type: string, minLength: 1, maxLength: 255 }, connectionId: { type: string, minLength: 1, maxLength: 255 }, credentialVersion: { type: integer, minimum: 1 }, provider: { type: string, minLength: 1, maxLength: 100 }, model: { type: string, minLength: 1, maxLength: 200 }, capabilitySnapshotHash: { type: string, minLength: 1, maxLength: 200 }, promptVersion: { type: string, minLength: 1, maxLength: 100 }, schemaVersion: { type: string, minLength: 1, maxLength: 100 }, promptHash: { type: string, minLength: 1, maxLength: 200 }, schemaHash: { type: string, minLength: 1, maxLength: 200 } }, additionalProperties: false }, stopConditions: { type: object, required: [stopWhenBudgetExhausted, stopWhenNoMoreResults], properties: { stopWhenBudgetExhausted: { type: boolean }, stopWhenNoMoreResults: { type: boolean } }, additionalProperties: false } }, additionalProperties: false }
+x-plan-approval-schema: &planApprovalSchema
+  { type: object, required: [decision, reason], properties: { decision: { type: string, enum: [approve] }, reason: { type: string, minLength: 1, maxLength: 2000 } }, additionalProperties: false }
+x-plan-run-schema: &planRunSchema
+  { type: object, properties: { parentRunId: { type: string, minLength: 1, maxLength: 255 }, reason: { type: string, maxLength: 2000 } }, additionalProperties: false }
+x-plan-control-schema: &planControlSchema
+  { type: object, required: [reason], properties: { reason: { type: string, minLength: 1, maxLength: 2000 } }, additionalProperties: false }
 paths:
   /api/v1/ai/providers:
     get: { <<: *list, summary: List model providers }
@@ -215,12 +247,62 @@ paths:
               schema: { $ref: '#/components/schemas/DiscoveryEvidence' }
         '401': *apiError
   /api/v1/acquisition/plans:
-    get: { <<: *list, summary: List acquisition plans }
-    post: { <<: *write, summary: Create acquisition plan }
+    post:
+      summary: Create acquisition plan
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/planIdempotencyKey' }]
+      requestBody: { required: true, content: { application/json: { schema: *planCreateSchema } } }
+      responses:
+        '201': { description: Acquisition plan created, headers: { ETag: { required: true, schema: { type: string, minLength: 1 } } }, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionPlan' } } } }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '500': *apiError
   /api/v1/acquisition/plans/{id}:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get acquisition plan, responses: { '200': { description: Acquisition plan, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionPlan' } } } }, '401': *apiError } }
-    patch: { <<: *write, summary: Update acquisition plan }
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+    get:
+      summary: Get acquisition plan
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        '200': { description: Acquisition plan, headers: { ETag: { required: true, schema: { type: string, minLength: 1 } } }, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionPlan' } } } }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '500': *apiError
+    patch:
+      summary: Update acquisition plan
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ifMatch' }]
+      requestBody: { required: true, content: { application/json: { schema: *planMutationSchema } } }
+      responses:
+        '200': { description: Acquisition plan updated, headers: { ETag: { required: true, schema: { type: string, minLength: 1 } } }, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionPlan' } } } }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '412': *apiError
+        '428': *apiError
+        '500': *apiError
+  /api/v1/acquisition/plans/{id}/revisions:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+    post:
+      summary: Create acquisition plan revision
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ifMatch' }]
+      requestBody: { required: true, content: { application/json: { schema: *planMutationSchema } } }
+      responses:
+        '201': { description: Acquisition plan revision created, headers: { ETag: { required: true, schema: { type: string, minLength: 1 } } }, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionPlan' } } } }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '412': *apiError
+        '428': *apiError
+        '500': *apiError
   /api/v1/acquisition/plans/{id}/approval:
     parameters:
       - name: id
@@ -238,17 +320,7 @@ paths:
           in: header
           required: true
           schema: { type: string, minLength: 1 }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [decision, reason]
-              properties:
-                decision: { type: string, enum: [approve] }
-                reason: { type: string, minLength: 1, maxLength: 2000 }
-              additionalProperties: false
+      requestBody: { required: true, content: { application/json: { schema: *planApprovalSchema } } }
       responses:
         '200':
           description: Acquisition plan approved
@@ -258,7 +330,7 @@ paths:
               schema: { type: string, minLength: 1 }
           content:
             application/json:
-              schema: { type: object, additionalProperties: true }
+              schema: { $ref: '#/components/schemas/AcquisitionPlan' }
         '400': *apiError
         '401': *apiError
         '404': *apiError
@@ -266,24 +338,86 @@ paths:
         '412': *apiError
         '428': *apiError
         '500': *apiError
-  /api/v1/acquisition/runs:
-    get: { <<: *list, summary: List acquisition runs }
-    post: { <<: *asyncWrite, summary: Create acquisition run }
+  /api/v1/acquisition/plans/{id}/runs:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+    post:
+      summary: Create acquisition run
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/planIdempotencyKey' }]
+      requestBody: { required: false, content: { application/json: { schema: *planRunSchema } } }
+      responses:
+        '202': { description: Acquisition run accepted, headers: { ETag: { required: true, schema: { type: string, minLength: 1 } } }, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionRun' } } } }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '500': *apiError
   /api/v1/acquisition/runs/{id}:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *read, summary: Get acquisition run, responses: { '200': { description: Acquisition run, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionRun' } } } }, '401': *apiError } }
-  /api/v1/acquisition/runs/{id}/operation-shards:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    get: { <<: *list, summary: List operation shards }
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+    get:
+      summary: Get acquisition run
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        '200': { description: Acquisition run, headers: { ETag: { required: true, schema: { type: string, minLength: 1 } } }, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionRun' } } } }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '500': *apiError
+  /api/v1/acquisition/runs/{id}/shards:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+    get:
+      summary: List acquisition run shards
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        '200': { description: Acquisition run shards, content: { application/json: { schema: { $ref: '#/components/schemas/PagedResult' } } } }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '500': *apiError
+  /api/v1/acquisition/runs/{id}/presentation:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+    get:
+      summary: Get acquisition run presentation
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/presentationAfter' }, { $ref: '#/components/parameters/presentationLimit' }]
+      responses:
+        '200': { description: Acquisition run presentation, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionRunPresentation' } } } }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '500': *apiError
   /api/v1/acquisition/runs/{id}/pause:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *write, summary: Pause acquisition run }
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+    post: &runControl
+      summary: Pause acquisition run
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/ifMatch' }]
+      requestBody: { required: true, content: { application/json: { schema: *planControlSchema } } }
+      responses:
+        '200': { description: Acquisition run updated, headers: { ETag: { required: true, schema: { type: string, minLength: 1 } } }, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionRun' } } } }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '412': *apiError
+        '428': *apiError
+        '500': *apiError
   /api/v1/acquisition/runs/{id}/resume:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *write, summary: Resume paused acquisition run, responses: { '200': { description: Successful response, content: { application/json: { schema: { type: object, additionalProperties: false } } } }, '400': *apiError, '401': *apiError, '409': { description: Budget exhausted runs require a new approved budget and parent run, headers: { X-Error-Code: { required: true, schema: { type: string, enum: [budget_revision_requires_new_run] } } }, content: { application/json: { schema: { $ref: '#/components/schemas/ApiError' } } } } } }
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+    post: { <<: *runControl, summary: Resume acquisition run }
   /api/v1/acquisition/runs/{id}/cancel:
-    parameters: [{ $ref: '#/components/parameters/id' }]
-    post: { <<: *write, summary: Cancel acquisition run }
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
+    post: { <<: *runControl, summary: Cancel acquisition run }
   /api/v1/acquisition/candidates:
     get:
       <<: *list

@@ -23,12 +23,14 @@ const section16 = {
   "/api/v1/acquisition/import-operations": ["post"],
   "/api/v1/acquisition/import-operations/{id}": ["get"],
   "/api/v1/acquisition/evidence/{id}": ["get"],
-  "/api/v1/acquisition/plans": ["get", "post"],
+  "/api/v1/acquisition/plans": ["post"],
   "/api/v1/acquisition/plans/{id}": ["get", "patch"],
+  "/api/v1/acquisition/plans/{id}/revisions": ["post"],
   "/api/v1/acquisition/plans/{id}/approval": ["post"],
-  "/api/v1/acquisition/runs": ["get", "post"],
+  "/api/v1/acquisition/plans/{id}/runs": ["post"],
   "/api/v1/acquisition/runs/{id}": ["get"],
-  "/api/v1/acquisition/runs/{id}/operation-shards": ["get"],
+  "/api/v1/acquisition/runs/{id}/shards": ["get"],
+  "/api/v1/acquisition/runs/{id}/presentation": ["get"],
   "/api/v1/acquisition/runs/{id}/pause": ["post"],
   "/api/v1/acquisition/runs/{id}/resume": ["post"],
   "/api/v1/acquisition/runs/{id}/cancel": ["post"],
@@ -52,8 +54,7 @@ const section16 = {
 const listPaths = [
   "/api/v1/ai/providers", "/api/v1/ai/connections", "/api/v1/ai/connections/{id}/models",
   "/api/v1/ai/calls", "/api/v1/acquisition/providers", "/api/v1/acquisition/provider-connections",
-  "/api/v1/acquisition/plans", "/api/v1/acquisition/runs",
-  "/api/v1/acquisition/runs/{id}/operation-shards",
+  "/api/v1/acquisition/runs/{id}/shards",
   "/api/v1/acquisition/candidates/{id}/evidence", "/api/v1/acquisition/candidates/{id}/reviews",
   "/api/v1/acquisition/outcomes", "/api/v1/acquisition/audit-events"
 ];
@@ -61,7 +62,7 @@ const listPaths = [
 const asyncPosts = [
   "/api/v1/ai/connections/{id}/test", "/api/v1/acquisition/provider-connections/{id}/test",
   "/api/v1/acquisition/fetch-operations", "/api/v1/acquisition/import-operations",
-  "/api/v1/acquisition/runs", "/api/v1/acquisition/candidates/{id}/research",
+  "/api/v1/acquisition/candidates/{id}/research",
   "/api/v1/acquisition/candidates/{id}/qualification", "/api/v1/acquisition/candidates/{id}/battle-card",
   "/api/v1/acquisition/copilot/sessions"
 ];
@@ -75,6 +76,7 @@ const reads = {
   "/api/v1/acquisition/evidence/{id}": "DiscoveryEvidence",
   "/api/v1/acquisition/plans/{id}": "AcquisitionPlan",
   "/api/v1/acquisition/runs/{id}": "AcquisitionRun",
+  "/api/v1/acquisition/runs/{id}/presentation": "AcquisitionRunPresentation",
   "/api/v1/acquisition/candidates/{id}": "Candidate",
   "/api/v1/acquisition/candidates/{id}/qualification": "QualificationDecision",
   "/api/v1/acquisition/candidates/{id}/battle-card": "BattleCard",
@@ -85,8 +87,9 @@ const reads = {
 test("OpenAPI exactly covers Section 16 with typed, authenticated responses", async () => {
   await loadOpenApi();
   const document = await loadOpenApiSource();
+  const registry = await loadSchemaRegistry();
   assert.equal(document.servers[0].url, "/");
-  assert.equal(new URL("/api/v1/acquisition/runs", `https://contract.test${document.servers[0].url}`).pathname, "/api/v1/acquisition/runs");
+  assert.equal(new URL("/api/v1/acquisition/plans/plan-1/runs", `https://contract.test${document.servers[0].url}`).pathname, "/api/v1/acquisition/plans/plan-1/runs");
   assert.deepEqual(Object.keys(document.paths).sort(), Object.keys(section16).sort());
   assert.equal(document.components.schemas.ApiError.oneOf.length, 2);
   assert.equal(document.components.schemas.ApiError.oneOf[0].additionalProperties, false);
@@ -107,19 +110,27 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
     assert.deepEqual(actualMethods, [...methods].sort(), path);
     for (const method of methods) {
       const operation = document.paths[path][method];
-      const isPlanApproval = path === "/api/v1/acquisition/plans/{id}/approval";
+      const isPlanRunOperation = path.startsWith("/api/v1/acquisition/plans")
+        || path.startsWith("/api/v1/acquisition/runs");
       assert.deepEqual(
         operation.security,
-        isPlanApproval
-          ? [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+        isPlanRunOperation
+          ? method === "get"
+            ? [{ bearerAuth: [] }, { cookieAuth: [] }]
+            : [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
           : [{ bearerAuth: [] }],
         `${method.toUpperCase()} ${path}`
       );
       assert.equal(operation.responses["401"].content["application/json"].schema.$ref, "#/components/schemas/ApiError");
       if (["post", "patch", "delete"].includes(method)) {
         assert.equal(
-          operation.parameters.some((parameter) => parameter.$ref === "#/components/parameters/idempotencyKey" || (parameter.name === "Idempotency-Key" && parameter.in === "header" && parameter.required)),
-          !isPlanApproval
+          operation.parameters.some((parameter) => [
+            "#/components/parameters/idempotencyKey",
+            "#/components/parameters/planIdempotencyKey"
+          ].includes(parameter.$ref) || (parameter.name === "Idempotency-Key" && parameter.in === "header" && parameter.required)),
+          !isPlanRunOperation
+            || path === "/api/v1/acquisition/plans"
+            || path === "/api/v1/acquisition/plans/{id}/runs"
         );
       }
     }
@@ -163,17 +174,25 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.deepEqual(connectionDelete.headers["X-Error-Code"].schema.enum, ["connection_in_use"]);
   const resume = document.paths["/api/v1/acquisition/runs/{id}/resume"].post.responses["409"];
   assert.equal(resume.content["application/json"].schema.$ref, "#/components/schemas/ApiError");
-  assert.deepEqual(resume.headers["X-Error-Code"].schema.enum, ["budget_revision_requires_new_run"]);
+  assert.equal(resume.headers, undefined);
   const approval = document.paths["/api/v1/acquisition/plans/{id}/approval"].post;
   assert.deepEqual(approval.requestBody.content["application/json"].schema.required, ["decision", "reason"]);
   assert.ok(approval.responses["200"].headers.ETag);
   assert.deepEqual(Object.keys(approval.responses).sort(), ["200", "400", "401", "404", "409", "412", "428", "500"]);
+  assert.equal(document.paths["/api/v1/acquisition/plans"].post.responses["201"].content["application/json"].schema.$ref, "#/components/schemas/AcquisitionPlan");
+  assert.equal(document.paths["/api/v1/acquisition/plans/{id}/revisions"].post.responses["201"].content["application/json"].schema.$ref, "#/components/schemas/AcquisitionPlan");
+  assert.equal(document.paths["/api/v1/acquisition/plans/{id}/runs"].post.responses["202"].content["application/json"].schema.$ref, "#/components/schemas/AcquisitionRun");
+  assert.equal(document.components.schemas.AcquisitionRunPresentation.$ref, "../json-schema/acquisition-run-presentation.v1.schema.json");
+  const presentation = registry.schemaDocuments.get("acquisition-run-presentation");
+  assert.deepEqual(presentation.required, ["run", "providers", "summary", "candidateEvents", "nextAfter", "hasMore"]);
+  assert.deepEqual(presentation.properties.candidateEvents.items.properties.financialValue.type, ["null", "object"]);
+  assert.equal(presentation.properties.summary.properties.expectedRevenueByCurrency.type, "array");
 });
 
 test("every named API resource component accepts a canonical valid instance", async () => {
   const document = await loadOpenApi();
   const registry = await loadSchemaRegistry();
-  const names = ["ModelProvider", "ModelConnection", "ModelCallRecord", "DiscoveryProvider", "ProviderConnection", "ContentFetchOperation", "ImportOperation", "AcquisitionPlan", "AcquisitionRun", "AcquisitionOperationShard", "DiscoveryEvidence", "QualificationDecision", "BattleCard", "ReviewEvent", "OutcomeFeedback", "CopilotSession", "CopilotTask"];
+  const names = ["ModelProvider", "ModelConnection", "ModelCallRecord", "DiscoveryProvider", "ProviderConnection", "ContentFetchOperation", "ImportOperation", "AcquisitionPlan", "AcquisitionRun", "AcquisitionOperationShard", "AcquisitionRunPresentation", "DiscoveryEvidence", "QualificationDecision", "BattleCard", "ReviewEvent", "OutcomeFeedback", "CopilotSession", "CopilotTask"];
   const examples = Object.fromEntries(names.map((name) => [name, buildCanonicalExample(registry.schemaDocuments.get(toKebab(name)))]));
   examples.Candidate = [
     buildCanonicalExample(registry.schemaDocuments.get("organization-candidate")),

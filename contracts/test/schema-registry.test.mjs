@@ -12,6 +12,7 @@ const expected = [
   "model-connection", "model-capability", "model-call-record",
   "discovery-provider", "provider-connection", "content-fetch-operation",
   "import-operation", "acquisition-plan", "acquisition-run",
+  "acquisition-run-presentation",
   "acquisition-operation-shard", "discovery-evidence", "party-ref",
   "organization-candidate", "individual-demand-signal",
   "qualification-decision", "battle-card", "review-event",

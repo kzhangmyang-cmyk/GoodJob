@@ -61,6 +61,100 @@ const resourceSchema = {
   additionalProperties: true
 };
 
+const acquisitionPlanResponseSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://goodjob.example/contracts/json-schema/acquisition-plan.v1.schema.json",
+  title: "AcquisitionPlan",
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id",
+    "ownerId",
+    "status",
+    "version",
+    "budgetSnapshot",
+    "createdAt"
+  ],
+  properties: {
+    id: { type: "string" },
+    ownerId: { type: "string" },
+    teamId: { type: ["string", "null"] },
+    status: { enum: ["draft", "approved", "archived"] },
+    version: { type: "integer", minimum: 1 },
+    budgetSnapshot: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "billingCurrency",
+        "maxRequests",
+        "maxResults",
+        "maxAmountMinor",
+        "maxDurationSeconds"
+      ],
+      properties: {
+        billingCurrency: { type: "string", minLength: 3, maxLength: 3 },
+        maxRequests: { type: "integer", minimum: 0 },
+        maxResults: { type: "integer", minimum: 0 },
+        maxAmountMinor: { type: "integer", minimum: 0 },
+        maxDurationSeconds: { type: "integer", minimum: 0 }
+      }
+    },
+    createdAt: { type: "string", format: "date-time" }
+  }
+};
+
+const acquisitionRunResponseSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://goodjob.example/contracts/json-schema/acquisition-run.v1.schema.json",
+  title: "AcquisitionRun",
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id",
+    "ownerId",
+    "planId",
+    "status",
+    "budgetSnapshotId",
+    "billingCurrency",
+    "createdAt"
+  ],
+  properties: {
+    id: { type: "string" },
+    ownerId: { type: "string" },
+    teamId: { type: ["string", "null"] },
+    planId: { type: "string" },
+    parentRunId: { type: ["string", "null"] },
+    status: {
+      enum: [
+        "queued",
+        "running",
+        "pause_requested",
+        "paused",
+        "cancel_requested",
+        "cancelled",
+        "succeeded",
+        "succeeded_empty",
+        "partial_success",
+        "failed",
+        "budget_exhausted"
+      ]
+    },
+    budgetSnapshotId: { type: "string" },
+    billingCurrency: { type: "string", minLength: 3, maxLength: 3 },
+    createdAt: { type: "string", format: "date-time" }
+  }
+};
+
+const pagedResultResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["items", "nextCursor"],
+  properties: {
+    items: { type: "array", items: { type: "object" } },
+    nextCursor: { type: ["string", "null"] }
+  }
+};
+
 const providerConnectionSchema = {
   type: "object",
   required: [
@@ -1045,6 +1139,9 @@ const planControlWriteSchema = {
 };
 
 const runPresentationSchema = {
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://goodjob.example/contracts/json-schema/acquisition-run-presentation.v1.schema.json",
+  title: "AcquisitionRunPresentation",
   type: "object",
   required: [
     "run",
@@ -1510,6 +1607,30 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/runs/{id}/resume",
     "/api/v1/acquisition/runs/{id}/cancel"
   ]);
+  const etagResponses = new Set([
+    "/api/v1/acquisition/plans",
+    "/api/v1/acquisition/plans/{id}",
+    "/api/v1/acquisition/plans/{id}/revisions",
+    "/api/v1/acquisition/plans/{id}/approval",
+    "/api/v1/acquisition/plans/{id}/runs",
+    "/api/v1/acquisition/runs/{id}",
+    "/api/v1/acquisition/runs/{id}/pause",
+    "/api/v1/acquisition/runs/{id}/resume",
+    "/api/v1/acquisition/runs/{id}/cancel"
+  ]);
+  const planResponsePaths = new Set([
+    "/api/v1/acquisition/plans",
+    "/api/v1/acquisition/plans/{id}",
+    "/api/v1/acquisition/plans/{id}/revisions",
+    "/api/v1/acquisition/plans/{id}/approval"
+  ]);
+  const runResponsePaths = new Set([
+    "/api/v1/acquisition/plans/{id}/runs",
+    "/api/v1/acquisition/runs/{id}",
+    "/api/v1/acquisition/runs/{id}/pause",
+    "/api/v1/acquisition/runs/{id}/resume",
+    "/api/v1/acquisition/runs/{id}/cancel"
+  ]);
 
   for (const [path, method, summary] of definitions) {
     const hasId = path.includes("{id}");
@@ -1631,14 +1752,30 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     if (method !== "get" && !body) {
       throw new Error(`Missing OpenAPI write body for ${method} ${path}`);
     }
+    const successStatus = body?.successStatus ?? 200;
+    const successSchema = planResponsePaths.has(path)
+      ? acquisitionPlanResponseSchema
+      : runResponsePaths.has(path)
+        ? acquisitionRunResponseSchema
+        : path === "/api/v1/acquisition/runs/{id}/shards"
+          ? pagedResultResponseSchema
+          : path === "/api/v1/acquisition/runs/{id}/presentation"
+            ? runPresentationSchema
+            : resourceSchema;
     const responses = standardResponses(
-      body?.successStatus ?? 200,
+      successStatus,
       body?.successDescription ?? "操作成功",
-      path === "/api/v1/acquisition/runs/{id}/presentation"
-        ? runPresentationSchema
-        : resourceSchema
+      successSchema
     );
-    if (etagWrites.has(path)) {
+    if (etagResponses.has(path)) {
+      (responses[String(successStatus)] as Record<string, unknown>).headers = {
+        ETag: {
+          required: true,
+          schema: { type: "string", minLength: 1 }
+        }
+      };
+    }
+    if (method !== "get" && etagWrites.has(path)) {
       if (
         path
         !== "/api/v1/acquisition/candidates/{id}/identity-confirmation"
@@ -1646,14 +1783,6 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
         responses["412"] = response("资源版本不匹配", errorSchema);
       }
       responses["428"] = response("缺少 If-Match 版本条件", errorSchema);
-      if (path === "/api/v1/acquisition/plans/{id}/approval") {
-        (responses["200"] as Record<string, unknown>).headers = {
-          ETag: {
-            required: true,
-            schema: { type: "string", minLength: 1 }
-          }
-        };
-      }
     }
     add(
       paths,
