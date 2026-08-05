@@ -34,11 +34,11 @@
 - Modify: `backend/src/acquisition-v1-router.ts`
 - Modify/Create: focused contract/backend tests
 
-- [ ] Add explicit candidate `version` and `identityResolved` to public DTOs.
-- [ ] Preserve optional public `sourceType` in search-result evidence provenance.
-- [ ] Return exact evidence IDs from completed content-fetch operations.
-- [ ] Type content-fetch OpenAPI responses with the real operation schema and regenerate frontend types.
-- [ ] Prove old stored evidence/operations remain readable and all new fields are tenant-safe.
+- [x] Add explicit candidate `version` and `identityResolved` to public DTOs.
+- [x] Preserve optional public `sourceType` in search-result evidence provenance.
+- [x] Return exact evidence IDs from completed content-fetch operations.
+- [x] Type content-fetch OpenAPI responses with the real operation schema and regenerate frontend types.
+- [x] Prove old stored evidence/operations remain readable and all new fields are tenant-safe.
 
 ### Task 2: 前端主体核验 API 与可取消状态机
 
@@ -47,10 +47,10 @@
 - Modify: `frontend/src/features/ai-growth/components/battle-card-drawer.ts`
 - Modify/Create: focused API/controller tests
 
-- [ ] Add typed create/poll content-fetch and identity-confirmation calls with exact headers.
-- [ ] Implement `idle → fetching → ready_for_confirmation → confirming → researching → qualifying → building_card → completed|failed|conflict`.
-- [ ] Ignore stale completions after close/candidate switch; coalesce duplicate submits.
-- [ ] After identity confirmation, sequentially use controlled Copilot tools and refresh candidate/evidence/qualification/financial/card resources.
+- [x] Add typed create/poll content-fetch and identity-confirmation calls with exact headers.
+- [x] Implement `idle → fetching → ready_for_confirmation → confirming → researching → qualifying → building_card → completed|failed|conflict`.
+- [x] Ignore stale completions after close/candidate switch; coalesce duplicate submits.
+- [x] After identity confirmation, sequentially use controlled Copilot tools and refresh candidate/evidence/qualification/financial/card resources.
 
 ### Task 3: 候选作战抽屉内的主体核验工作台
 
@@ -61,12 +61,12 @@
 - Modify: `frontend/src/features/ai-growth/styles.css`
 - Modify/Create: focused rendering/accessibility tests
 
-- [ ] Candidate card must show unresolved identity honestly and expose “核验主体”.
-- [ ] Drawer shows original URL, page type, search Provider, evidence excerpt and why identity is blocked.
-- [ ] Form supports exact public profile/official website, optional credit code for organizations, and required rationale.
-- [ ] Confirm only after controlled fetch succeeds and evidence URL matches the declared identity.
-- [ ] Show deterministic progress, access restrictions, stale-version conflicts and safe retry.
-- [ ] Preserve focus, Escape close, narrow-screen layout and existing task/candidate context.
+- [x] Candidate card must show unresolved identity honestly and expose “核验主体”.
+- [x] Drawer shows original URL, page type, search Provider, evidence excerpt and why identity is blocked.
+- [x] The Douyin individual path accepts only an exact public `/user/...` profile and requires a human rationale; organization identity keeps the existing organization resolver path.
+- [x] Confirm only after controlled fetch succeeds and evidence URL matches the declared identity.
+- [x] Show deterministic progress, access restrictions, stale-version conflicts and safe retry.
+- [x] Preserve focus, Escape close, narrow-screen layout and existing task/candidate context.
 
 ### Task 4: 评论/视频到作战卡的完整 E2E 与文档
 
@@ -74,9 +74,9 @@
 - Create: `frontend/tests/ai-acquisition-identity-verification.spec.ts`
 - Modify: `docs/product/ai-acquisition-agent.md`
 
-- [ ] Prove: Douyin comment/video candidate → identity unresolved → exact `/user/...` fetch → evidence returned → versioned human confirmation → research/qualification/financial/card complete.
-- [ ] Prove video/short-link URL, access-restricted fetch, mismatched evidence and stale candidate version remain blocked.
-- [ ] Prove no comment/message/friend/group/outreach/CRM write occurs.
+- [x] Prove: Douyin comment/video candidate → identity unresolved → exact `/user/...` fetch → evidence returned → versioned human confirmation → research/qualification/financial/card complete.
+- [x] Prove video/short-link URL, access-restricted fetch, mismatched evidence and stale candidate version remain blocked.
+- [x] Prove no comment/message/friend/group/outreach/CRM write occurs.
 - [ ] Run focused tests, frontend suite/build, acquisition backend/contracts/generated drift, E2E and `git diff --check`.
 
 ## Acceptance Outcome
