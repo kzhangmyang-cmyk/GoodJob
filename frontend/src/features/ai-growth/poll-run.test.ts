@@ -58,6 +58,8 @@ const candidateEvent = (
     region: "上海",
     domain: null,
     status: "qualified",
+    version: 1,
+    identityResolved: true,
     updatedAt: "2026-07-26T09:00:00.000Z"
   },
   qualification: null,

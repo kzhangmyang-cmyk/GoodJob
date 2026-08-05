@@ -227,6 +227,8 @@ const presentation: RunPresentationDto = {
         region: region as string,
         domain: `https://demo-company-${index + 1}.example.invalid`,
         status: grade === "C" ? "pending_review" as const : "qualified" as const,
+        version: 1,
+        identityResolved: true,
         updatedAt: timestamp
       },
       qualification: qualification(
