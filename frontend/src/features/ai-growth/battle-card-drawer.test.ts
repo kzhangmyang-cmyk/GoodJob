@@ -379,7 +379,7 @@ function contentFetchOperation(
     startedAt: status === "queued" ? null : timestamp,
     completedAt: status === "succeeded" ? timestamp : null,
     ...overrides
-  };
+  } as ContentFetchOperationDto;
 }
 
 const profileEvidence: EvidenceDto = {
@@ -731,6 +731,58 @@ test("renderer reveals qualification and the battle card after Douyin identity i
   assert.match(html, /主体已确认/);
   assert.match(html, /A 级 · 88 分/);
   assert.match(html, /data-v2-region="account-overview"/);
+});
+
+test("renderer fails closed while the candidate identity is still loading", () => {
+  const drawer = createBattleCardDrawer({
+    api: apiStub(),
+    onCandidateUpdated: () => undefined
+  });
+  const state = drawer.getState();
+  state.open = true;
+  state.candidateId = "candidate-1";
+  state.candidate = { status: "loading", data: null, error: null };
+  state.evidence = { status: "ready", data: evidence, error: null };
+  state.qualification = { status: "ready", data: qualification, error: null };
+  state.financialValue = {
+    status: "ready",
+    data: financialValue,
+    error: null
+  };
+  state.battleCard = { status: "ready", data: battleCardV2, error: null };
+
+  const html = renderBattleCardDrawer(state, drawer.render().callbacks).html;
+
+  assert.match(html, /正在读取候选主体/);
+  assert.doesNotMatch(html, /A 级 · 88 分/);
+  assert.doesNotMatch(html, /data-v2-region="account-overview"/);
+  assert.doesNotMatch(html, /预计收入/);
+});
+
+test("unresolved Douyin candidates reject direct downstream tool calls", async () => {
+  let assistantActions = 0;
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => unresolvedIndividualCandidate(),
+      getQualification: async () => {
+        throw httpError(404, "missing");
+      },
+      getBattleCard: async () => {
+        throw httpError(404, "missing");
+      },
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        return succeededTask("task-1", "qualify_candidate");
+      }
+    }),
+    onCandidateUpdated: () => undefined
+  });
+  await drawer.open("candidate-1");
+
+  await assert.rejects(drawer.runQualification(), /先完成抖音公开主体核验/);
+  await assert.rejects(drawer.generateBattleCard(), /先完成抖音公开主体核验/);
+
+  assert.equal(assistantActions, 0);
 });
 
 test("renderer keeps all battle-card v2 regions in a fixed order and marks inference with confidence", () => {
@@ -1323,6 +1375,61 @@ test("identity profile fetch uses the shared canonical URL when a trailing slash
   assert.equal(
     drawer.getState().identityVerification.status,
     "ready_to_confirm"
+  );
+});
+
+test("identity profile fetch discards a result for a URL superseded while it was running", async () => {
+  const previousFetch = deferred<ContentFetchOperationDto>();
+  const previousUrl = "https://www.douyin.com/user/MS4wLjABAAAA";
+  const replacementUrl = "https://www.douyin.com/user/MS4wLjABBBBB";
+  const replacementEvidence: EvidenceDto = {
+    ...profileEvidence,
+    id: "evidence-profile-2",
+    provenance: {
+      ...profileEvidence.provenance,
+      sourceUrl: replacementUrl
+    }
+  };
+  let fetches = 0;
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => unresolvedIndividualCandidate(),
+      createContentFetchOperation: async () => {
+        fetches += 1;
+        return fetches === 1
+          ? previousFetch.promise
+          : contentFetchOperation("succeeded", {
+              sourceUrl: replacementUrl,
+              finalUrl: replacementUrl,
+              evidenceIds: [replacementEvidence.id]
+            });
+      },
+      getContentFetchOperation: async () => contentFetchOperation("succeeded"),
+      getEvidenceById: async (id) =>
+        id === replacementEvidence.id ? replacementEvidence : profileEvidence
+    }),
+    wait: async () => undefined,
+    onCandidateUpdated: () => undefined
+  });
+  await drawer.open("candidate-1");
+
+  const oldRequest = drawer.fetchIdentityProfile(previousUrl);
+  await Promise.resolve();
+  drawer.setIdentityDraft({ profileUrl: replacementUrl });
+  const replacementRequest = drawer.fetchIdentityProfile(replacementUrl);
+  await replacementRequest;
+
+  previousFetch.resolve(contentFetchOperation("succeeded"));
+  await oldRequest;
+
+  assert.equal(drawer.getState().identityVerification.profileUrl, replacementUrl);
+  assert.deepEqual(
+    drawer.getState().identityVerification.fetchedEvidenceIds,
+    [replacementEvidence.id]
+  );
+  assert.equal(
+    drawer.getState().evidence.data?.some((item) => item.id === profileEvidence.id),
+    false
   );
 });
 

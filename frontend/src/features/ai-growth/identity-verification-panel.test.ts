@@ -84,6 +84,19 @@ test("unresolved panel explains the evidence boundary and blocks premature confi
   );
 });
 
+test("read-only data shows the identity boundary without mutable controls", () => {
+  const rendered = renderIdentityVerificationPanel(viewModel({
+    readOnly: true
+  }), callbacks);
+
+  assert.match(rendered.html, /演示数据 · 只读/);
+  assert.match(rendered.html, /不会抓取公开主页、保存主体确认或启动后续判断/);
+  assert.doesNotMatch(rendered.html, /data-field="identity-profile-url"/);
+  assert.doesNotMatch(rendered.html, /data-field="identity-evidence"/);
+  assert.doesNotMatch(rendered.html, /data-action="fetch-identity-profile"/);
+  assert.doesNotMatch(rendered.html, /data-action="confirm-candidate-identity"/);
+});
+
 test("eligible exact-profile evidence is selectable and enables human confirmation", () => {
   const rendered = renderIdentityVerificationPanel(viewModel({
     profileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",

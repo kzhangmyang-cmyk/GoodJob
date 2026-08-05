@@ -35,6 +35,7 @@ export interface IdentityEvidenceVm {
 }
 
 export interface IdentityVerificationPanelVm {
+  readOnly?: boolean;
   identityResolved: boolean;
   candidateVersion: number | null;
   sourcePlatform: string;
@@ -247,6 +248,19 @@ export function renderIdentityVerificationPanel(
 ): ComponentRender<IdentityVerificationPanelCallbacks> {
   if (vm.identityResolved) {
     return componentRender(continuationStatus(vm), callbacks);
+  }
+
+  if (vm.readOnly) {
+    return componentRender(`
+      <section class="ai-growth-drawer-panel ai-growth-identity-panel" aria-labelledby="identityVerificationTitle">
+        <header>
+          <h3 id="identityVerificationTitle">主体核验</h3>
+          <span>演示数据 · 只读</span>
+        </header>
+        <p class="ai-growth-identity-boundary">演示数据不会抓取公开主页、保存主体确认或启动后续判断。请切换到真实模式后执行主体核验。</p>
+        ${originalSignal(vm)}
+      </section>
+    `, callbacks);
   }
 
   const pending = ["fetching_profile", "confirming"].includes(vm.status);

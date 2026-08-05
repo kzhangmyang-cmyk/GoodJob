@@ -421,6 +421,7 @@ function identityVerificationPanel(
     ?? evidence[0]
     ?? null;
   return renderIdentityVerificationPanel({
+    readOnly: state.readOnly,
     identityResolved: identityResolved(candidate),
     candidateVersion: candidateVersion(candidate),
     sourcePlatform: candidate.sourcePlatform,
@@ -443,11 +444,13 @@ function identityVerificationPanel(
   }).html;
 }
 
-function identityLockedPanel(): string {
+function identityLockedPanel(candidatePending: boolean): string {
   return `
     <section class="ai-growth-drawer-panel ai-growth-identity-lock" role="status">
-      <header><h3>判断与作战资料暂未开放</h3><span>等待主体确认</span></header>
-      <p>主体确认后自动继续客户研究、意向与财务价值评估，并生成客户作战卡。</p>
+      <header><h3>判断与作战资料暂未开放</h3><span>${candidatePending ? "正在读取候选主体" : "等待主体确认"}</span></header>
+      <p>${candidatePending
+        ? "候选主体尚未读取完成；为避免展示过期判断与作战资料，系统会在身份状态明确后再开放下游信息。"
+        : "主体确认后自动继续客户研究、意向与财务价值评估，并生成客户作战卡。"}</p>
     </section>
   `;
 }
@@ -937,7 +940,9 @@ export function renderBattleCardDrawer(
   const candidate = state.candidate.data;
   const loading = state.candidate.status === "loading";
   const v2Card = state.battleCard.data?.schemaVersion === "battle-card.v2";
-  const identityBlocked = requiresDouyinIdentityVerification(candidate);
+  const candidatePending = state.candidate.status !== "ready" || candidate === null;
+  const identityBlocked = candidatePending
+    || requiresDouyinIdentityVerification(candidate);
   return componentRender(`
     <div class="ai-growth-drawer-backdrop" data-action="close-battle-card"></div>
     <aside class="ai-growth-battle-drawer" role="dialog" aria-modal="true" aria-labelledby="battleCardTitle" data-candidate-id="${escapeHtml(state.candidateId ?? "")}">
@@ -959,7 +964,7 @@ export function renderBattleCardDrawer(
         ${resourceError(state.evidence)}
         ${identityVerificationPanel(state, callbacks)}
         ${identityBlocked
-          ? identityLockedPanel()
+          ? identityLockedPanel(candidatePending)
           : `
             ${qualificationPanel(state)}
             ${v2Card ? "" : financialPanel(state)}
@@ -991,6 +996,9 @@ export function createBattleCardDrawer(
   let sessionId: string | null = null;
   let generation = 0;
   let identityFetchPromise: Promise<void> | null = null;
+  let identityFetchProfileUrl: string | null = null;
+  let identityFetchRevision = 0;
+  let identityDraftRevision = 0;
   let identityConfirmationPromise: Promise<void> | null = null;
   let identityContinuationPromise: Promise<void> | null = null;
   const notify = () => options.onStateChange?.(state);
@@ -1058,6 +1066,23 @@ export function createBattleCardDrawer(
     return true;
   }
 
+  function assertIdentityVerificationResolvedForDownstream() {
+    if (requiresDouyinIdentityVerification(state.candidate.data)) {
+      throw new Error("请先完成抖音公开主体核验，再运行资格评估或生成客户作战卡");
+    }
+  }
+
+  function isCurrentIdentityFetch(
+    context: ActionContext,
+    profileUrl: string,
+    revision: number
+  ): boolean {
+    return isActive(context)
+      && identityDraftRevision === revision
+      && normalizeExactDouyinProfileUrl(state.identityVerification.profileUrl)
+        === profileUrl;
+  }
+
   async function ensureSession(): Promise<string> {
     if (sessionId) return sessionId;
     sessionId = copilotSessionResourceId(
@@ -1113,7 +1138,8 @@ export function createBattleCardDrawer(
 
   async function runIdentityFetch(
     context: ActionContext,
-    profileUrl: string
+    profileUrl: string,
+    revision: number
   ): Promise<void> {
     publishIdentity(context, (current) => ({
       ...current,
@@ -1131,9 +1157,9 @@ export function createBattleCardDrawer(
         { sourceUrl: profileUrl, subjectChannel: "individual" },
         key()
       );
-      if (!isActive(context)) return;
+      if (!isCurrentIdentityFetch(context, profileUrl, revision)) return;
       const completed = await pollContentFetch(context, created);
-      if (completed === null || !isActive(context)) return;
+      if (completed === null || !isCurrentIdentityFetch(context, profileUrl, revision)) return;
       if (completed.status === "access_restricted") {
         publishIdentity(context, (current) => ({
           ...current,
@@ -1164,7 +1190,7 @@ export function createBattleCardDrawer(
       const fetchedEvidence = await Promise.all(
         completed.evidenceIds.map((id) => api.getEvidenceById(id))
       );
-      if (!isActive(context)) return;
+      if (!isCurrentIdentityFetch(context, profileUrl, revision)) return;
       const eligibleEvidenceIds = fetchedEvidence
         .filter((item) => eligibleIdentityEvidence(item, profileUrl))
         .map((item) => item.id);
@@ -1189,7 +1215,7 @@ export function createBattleCardDrawer(
           : "抓取完成，但没有返回可核验的公开证据"
       }));
     } catch (error) {
-      if (!isActive(context)) return;
+      if (!isCurrentIdentityFetch(context, profileUrl, revision)) return;
       const detail = errorMessage(error);
       publishIdentity(context, (current) => ({
         ...current,
@@ -1661,6 +1687,9 @@ export function createBattleCardDrawer(
 
     async open(candidateId) {
       identityFetchPromise = null;
+      identityFetchProfileUrl = null;
+      identityFetchRevision = 0;
+      identityDraftRevision += 1;
       identityConfirmationPromise = null;
       identityContinuationPromise = null;
       const currentGeneration = ++generation;
@@ -1719,6 +1748,9 @@ export function createBattleCardDrawer(
       financialValue
     ) {
       identityFetchPromise = null;
+      identityFetchProfileUrl = null;
+      identityFetchRevision = 0;
+      identityDraftRevision += 1;
       identityConfirmationPromise = null;
       identityContinuationPromise = null;
       generation += 1;
@@ -1750,6 +1782,9 @@ export function createBattleCardDrawer(
 
     close() {
       identityFetchPromise = null;
+      identityFetchProfileUrl = null;
+      identityFetchRevision = 0;
+      identityDraftRevision += 1;
       identityConfirmationPromise = null;
       identityContinuationPromise = null;
       generation += 1;
@@ -1767,6 +1802,7 @@ export function createBattleCardDrawer(
           && current.fetchedEvidenceIds.length > 0;
         let transition: Partial<IdentityVerificationState> = {};
         if (profileChanged) {
+          identityDraftRevision += 1;
           transition = {
             status: isExactDouyinProfileUrl(profileUrl)
               ? "ready_to_fetch"
@@ -1830,7 +1866,6 @@ export function createBattleCardDrawer(
     },
 
     fetchIdentityProfile(rawProfileUrl) {
-      if (identityFetchPromise) return identityFetchPromise;
       let context: ActionContext;
       let profileUrl: string;
       try {
@@ -1848,17 +1883,34 @@ export function createBattleCardDrawer(
         }
         return Promise.reject(error);
       }
-      const promise = runIdentityFetch(context, profileUrl);
+      if (state.identityVerification.profileUrl !== profileUrl) {
+        drawer.setIdentityDraft({ profileUrl });
+      }
+      const revision = identityDraftRevision;
+      if (
+        identityFetchPromise
+        && identityFetchProfileUrl === profileUrl
+        && identityFetchRevision === revision
+      ) {
+        return identityFetchPromise;
+      }
+      const promise = runIdentityFetch(context, profileUrl, revision);
       identityFetchPromise = promise;
+      identityFetchProfileUrl = profileUrl;
+      identityFetchRevision = revision;
       void promise.then(
         () => {
           if (identityFetchPromise === promise) {
             identityFetchPromise = null;
+            identityFetchProfileUrl = null;
+            identityFetchRevision = 0;
           }
         },
         () => {
           if (identityFetchPromise === promise) {
             identityFetchPromise = null;
+            identityFetchProfileUrl = null;
+            identityFetchRevision = 0;
           }
         }
       );
@@ -1911,6 +1963,7 @@ export function createBattleCardDrawer(
     },
 
     async runQualification() {
+      assertIdentityVerificationResolvedForDownstream();
       const context = captureContext();
       const ok = await runTool(
         context,
@@ -1928,6 +1981,7 @@ export function createBattleCardDrawer(
     },
 
     async generateBattleCard() {
+      assertIdentityVerificationResolvedForDownstream();
       const context = captureContext();
       const ok = await runTool(
         context,

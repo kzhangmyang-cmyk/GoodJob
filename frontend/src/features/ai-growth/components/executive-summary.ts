@@ -36,6 +36,18 @@ function conversionAction(vm: ExecutiveSummaryComponentVm): string {
   return `<button type="button" class="ai-growth-button ai-growth-button--primary" data-action="convert" data-candidate-id="${id}">转为线索并创建跟进任务</button>`;
 }
 
+function requiresDouyinIdentityVerification(
+  candidate: CandidateCardVm | null
+): boolean {
+  return candidate?.subjectKind === "individual"
+    && !candidate.identityResolved
+    && candidate.sourcePlatforms.some((platform) =>
+      ["douyin", "douyin.com", "www.douyin.com"].includes(
+        platform.trim().toLowerCase()
+      )
+    );
+}
+
 export function renderExecutiveSummary(
   vm: ExecutiveSummaryComponentVm,
   callbacks: ExecutiveSummaryCallbacks
@@ -47,6 +59,8 @@ export function renderExecutiveSummary(
       <span><b>${escapeHtml(amount.currency)}</b><strong>${escapeHtml(amount.formatted)}</strong></span>
     `).join("");
   const topId = vm.topCandidate === null ? "" : escapeHtml(vm.topCandidate.id);
+  const battleCardBlocked = vm.topCandidate === null
+    || requiresDouyinIdentityVerification(vm.topCandidate);
 
   return componentRender(`
     <section class="ai-growth-executive-summary" aria-labelledby="aiGrowthSummaryTitle">
@@ -77,7 +91,7 @@ export function renderExecutiveSummary(
           <h3>建议现在做三件事</h3>
           <ol>
             <li><span>01</span><button type="button" data-action="view-priority">查看优先客户</button></li>
-            <li><span>02</span><button type="button" data-action="build-battle-card" data-candidate-id="${topId}"${vm.topCandidate === null ? " disabled" : ""}>为首位客户生成作战卡</button></li>
+            <li><span>02</span><button type="button" data-action="build-battle-card" data-candidate-id="${topId}"${battleCardBlocked ? " disabled" : ""}>为首位客户生成作战卡</button></li>
             <li><span>03</span>${conversionAction(vm)}</li>
           </ol>
         </article>

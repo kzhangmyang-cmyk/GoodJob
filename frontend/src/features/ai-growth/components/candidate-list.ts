@@ -100,12 +100,22 @@ function finance(candidate: CandidateCardVm): string {
   `;
 }
 
+function requiresDouyinIdentityVerification(candidate: CandidateCardVm): boolean {
+  return candidate.subjectKind === "individual"
+    && !candidate.identityResolved
+    && candidate.sourcePlatforms.some((platform) =>
+      ["douyin", "douyin.com", "www.douyin.com"].includes(
+        platform.trim().toLowerCase()
+      )
+    );
+}
+
 function reviewActions(candidate: CandidateCardVm, mode: AdvisorMode): string {
   const id = escapeHtml(candidate.id);
   const common = `
     <button type="button" class="ai-growth-text-action" data-action="open-battle-card" data-candidate-id="${id}">查看客户作战卡</button>
   `;
-  if (!candidate.identityResolved && mode === "real") {
+  if (requiresDouyinIdentityVerification(candidate) && mode === "real") {
     return `
       <button type="button" class="ai-growth-button ai-growth-button--primary ai-growth-button--compact" data-action="verify-identity" data-candidate-id="${id}">核验主体</button>
       ${common}
@@ -137,9 +147,11 @@ function reviewActions(candidate: CandidateCardVm, mode: AdvisorMode): string {
 }
 
 function candidateCard(candidate: CandidateCardVm, mode: AdvisorMode): string {
-  const review = candidate.identityResolved
+  const review = requiresDouyinIdentityVerification(candidate)
+    ? REVIEW_PRESENTATION.unresolvable
+    : candidate.identityResolved
     ? REVIEW_PRESENTATION[candidate.status]
-    : REVIEW_PRESENTATION.unresolvable;
+    : REVIEW_PRESENTATION[candidate.status];
   const qualification = candidate.qualification;
   const signals = qualification?.positiveSignals.map((signal) => signal.name) ?? [];
   const reason = qualification?.reasons[0] ?? "等待更多公开证据";

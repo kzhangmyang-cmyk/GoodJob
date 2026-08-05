@@ -472,6 +472,34 @@ test("unresolved candidate exposes identity verification as the primary action",
   assert.doesNotMatch(rendered.html, /data-action="convert"/);
 });
 
+test("identity verification entry remains scoped to unresolved Douyin individuals", () => {
+  const rendered = renderCandidateList({
+    mode: "real",
+    candidates: [candidate("normalized", {
+      id: "candidate-web-unresolved",
+      subjectKind: "individual",
+      identityResolved: false,
+      displayName: "公开网页需求信号",
+      sourcePlatforms: ["web"],
+      qualification: null,
+      isHighIntent: false,
+      isValidOpportunity: false
+    })]
+  }, {
+    onOpenBattleCard: noop,
+    onPreviewReview: noop,
+    onApprove: noop,
+    onReject: noop,
+    onDoNotContact: noop,
+    onRequestResearch: noop,
+    onReopen: noop,
+    onConvert: noop
+  });
+
+  assert.doesNotMatch(rendered.html, /data-action="verify-identity"/);
+  assert.match(rendered.html, /待资格判断/);
+});
+
 test("partial runs distinguish successful, partially successful, and failed sources in text", () => {
   const rendered = renderRunConsole({
     mode: "real",
@@ -571,4 +599,30 @@ test("executive summary keeps currencies separate and gates conversion by mode a
     assert.match(rendered.html, value.expected);
     assert.doesNotMatch(rendered.html, value.forbidden);
   }
+});
+
+test("executive summary disables the shortcut while its top Douyin candidate is unverified", () => {
+  const rendered = renderExecutiveSummary({
+    mode: "real",
+    summary,
+    topCandidate: candidate("normalized", {
+      id: "candidate-douyin-unresolved",
+      subjectKind: "individual",
+      identityResolved: false,
+      sourcePlatforms: ["douyin"],
+      qualification: null,
+      isHighIntent: false,
+      isValidOpportunity: false
+    })
+  }, {
+    onViewPriority: noop,
+    onBuildBattleCard: noop,
+    onPreviewConversion: noop,
+    onConvert: noop
+  });
+
+  assert.match(
+    rendered.html,
+    /data-action="build-battle-card"[^>]*disabled/
+  );
 });

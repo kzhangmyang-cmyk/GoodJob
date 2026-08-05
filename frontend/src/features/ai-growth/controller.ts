@@ -336,6 +336,16 @@ function isTargetPlatform(value: unknown): value is AcquisitionTaskPlatform {
   return value === "douyin" || value === "web";
 }
 
+function requiresDouyinIdentityVerification(
+  candidate: CandidateDto | null
+): boolean {
+  return candidate?.subjectKind === "individual"
+    && !candidate.identityResolved
+    && ["douyin", "douyin.com", "www.douyin.com"].includes(
+      candidate.sourcePlatform.trim().toLowerCase()
+    );
+}
+
 function candidateCardFromDomain(
   candidate: CandidateDto,
   previous?: CandidateCardVm
@@ -2468,8 +2478,15 @@ export function createMountedAiGrowthAdvisor(
           break;
         }
         await controller.openCandidate(candidateId);
-        if (controller.getDrawer().getState().battleCard.status === "missing") {
-          await controller.getDrawer().generateBattleCard();
+        { const drawer = controller.getDrawer();
+          const candidate = drawer.getState().candidate.data;
+          if (requiresDouyinIdentityVerification(candidate)) {
+            dependencies.toast("请先完成抖音公开主体核验，再生成客户作战卡");
+            break;
+          }
+          if (drawer.getState().battleCard.status === "missing") {
+            await drawer.generateBattleCard();
+          }
         }
         break;
       case "close-battle-card":
@@ -2525,6 +2542,8 @@ export function createMountedAiGrowthAdvisor(
     const field = event.target as HTMLInputElement | HTMLTextAreaElement;
     if (field.matches("[data-field='task-text']")) {
       controller.setTaskText(field.value, false);
+    } else if (controller.getDrawer().getState().readOnly) {
+      return;
     } else if (field.matches("[data-field='identity-profile-url']")) {
       controller.getDrawer().setIdentityDraft({ profileUrl: field.value });
     } else if (field.matches("[data-field='identity-rationale']")) {
@@ -2537,6 +2556,7 @@ export function createMountedAiGrowthAdvisor(
       field instanceof HTMLInputElement
       && field.matches("[data-field='identity-evidence']")
     ) {
+      if (controller.getDrawer().getState().readOnly) return;
       controller.getDrawer().toggleIdentityEvidence(
         field.dataset.evidenceId ?? "",
         field.checked
