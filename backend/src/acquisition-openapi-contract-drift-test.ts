@@ -453,6 +453,23 @@ test("operation parameters override path parameters by name and location", () =>
   ));
 });
 
+test("operation surfaces preserve operationId for semantic drift", () => {
+  const operation = {
+    operationId: "getAcquisitionPlan",
+    security: [],
+    parameters: [],
+    responses: {}
+  };
+
+  assert.notDeepEqual(
+    operationSurface(operation),
+    operationSurface({
+      ...operation,
+      operationId: "readAcquisitionPlan"
+    })
+  );
+});
+
 test("operation surfaces ignore semantic collection order only", () => {
   const schema = {
     type: "array",

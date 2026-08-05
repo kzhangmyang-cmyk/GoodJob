@@ -1,4 +1,8 @@
-import type { components, paths } from "./generated/ai-acquisition.js";
+import type {
+  components,
+  operations,
+  paths
+} from "./generated/ai-acquisition.js";
 
 const evidence: components["schemas"]["DiscoveryEvidence"] = {
   id: "evidence_1",
@@ -27,6 +31,14 @@ const approval: PlanApproval = {
   reason: "人工确认"
 };
 
+type ApprovalOperationRequest =
+  operations["approveAcquisitionPlan"]["requestBody"]["content"]["application/json"];
+
+const approvalOperation: ApprovalOperationRequest = {
+  decision: "approve",
+  reason: "人工确认"
+};
+
 const invalidApproval: typeof approval = {
   // @ts-expect-error The release contract accepts only an approval decision.
   decision: "reject",
@@ -35,4 +47,5 @@ const invalidApproval: typeof approval = {
 
 void evidence;
 void approval;
+void approvalOperation;
 void invalidApproval;

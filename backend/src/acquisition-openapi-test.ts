@@ -52,6 +52,33 @@ test("acquisition OpenAPI publishes the complete agent control surface", () => {
   }
 });
 
+test("every published acquisition operation has a unique stable camelCase id", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  const ids: string[] = [];
+
+  for (const [path, pathItem] of Object.entries(paths)) {
+    for (const method of ["get", "post", "patch", "delete"] as const) {
+      const operation = pathItem[method];
+      if (!operation) continue;
+      const id = operation.operationId;
+      assert.equal(typeof id, "string", `${method.toUpperCase()} ${path}`);
+      assert.match(
+        id as string,
+        /^[a-z][A-Za-z0-9]+$/u,
+        `${method.toUpperCase()} ${path}`
+      );
+      ids.push(id as string);
+    }
+  }
+
+  assert.equal(ids.length, 43);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.equal(
+    paths["/api/v1/acquisition/plans/{id}/approval"]?.post?.operationId,
+    "approveAcquisitionPlan"
+  );
+});
+
 test("run presentation publishes a strict read-only paginated DTO", () => {
   const paths = createAcquisitionOpenApiPaths();
   const path = paths[

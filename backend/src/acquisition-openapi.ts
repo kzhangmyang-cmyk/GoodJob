@@ -642,6 +642,103 @@ function add(
   paths[path]![method] = value;
 }
 
+const acquisitionOperationIds: Record<string, string> = {
+  "get /api/v1/acquisition/providers": "listAcquisitionProviders",
+  "get /api/v1/acquisition/provider-connections":
+    "listAcquisitionProviderConnections",
+  "post /api/v1/acquisition/provider-connections":
+    "createAcquisitionProviderConnection",
+  "get /api/v1/acquisition/provider-connections/{id}":
+    "getAcquisitionProviderConnection",
+  "patch /api/v1/acquisition/provider-connections/{id}":
+    "updateAcquisitionProviderConnection",
+  "delete /api/v1/acquisition/provider-connections/{id}":
+    "deleteAcquisitionProviderConnection",
+  "post /api/v1/acquisition/provider-connections/{id}/test":
+    "testAcquisitionProviderConnection",
+  "get /api/v1/acquisition/content-fetch-operations":
+    "listAcquisitionContentFetchOperations",
+  "post /api/v1/acquisition/content-fetch-operations":
+    "createAcquisitionContentFetchOperation",
+  "get /api/v1/acquisition/content-fetch-operations/{id}":
+    "getAcquisitionContentFetchOperation",
+  "get /api/v1/acquisition/import-operations":
+    "listAcquisitionImportOperations",
+  "post /api/v1/acquisition/import-operations":
+    "createAcquisitionImportOperation",
+  "get /api/v1/acquisition/import-operations/{id}":
+    "getAcquisitionImportOperation",
+  "get /api/v1/acquisition/evidence/{id}": "getAcquisitionEvidence",
+  "get /api/v1/acquisition/candidates": "listAcquisitionCandidates",
+  "get /api/v1/acquisition/candidates/{id}": "getAcquisitionCandidate",
+  "get /api/v1/acquisition/candidates/{id}/evidence":
+    "listAcquisitionCandidateEvidence",
+  "post /api/v1/acquisition/candidates/{id}/identity-confirmation":
+    "confirmAcquisitionCandidateIdentity",
+  "get /api/v1/acquisition/candidates/{id}/qualification":
+    "getAcquisitionCandidateQualification",
+  "get /api/v1/acquisition/candidates/{id}/financial-value":
+    "getAcquisitionCandidateFinancialValue",
+  "get /api/v1/acquisition/candidates/{id}/battle-card":
+    "getAcquisitionCandidateBattleCard",
+  "get /api/v1/acquisition/candidates/{id}/reviews":
+    "listAcquisitionCandidateReviews",
+  "post /api/v1/acquisition/candidates/{id}/review":
+    "reviewAcquisitionCandidate",
+  "post /api/v1/acquisition/candidates/{id}/convert":
+    "convertAcquisitionCandidate",
+  "get /api/v1/acquisition/outcomes": "listAcquisitionOutcomes",
+  "get /api/v1/acquisition/audit-events": "listAcquisitionAuditEvents",
+  "post /api/v1/acquisition/copilot/sessions":
+    "createAcquisitionCopilotSession",
+  "get /api/v1/acquisition/copilot/sessions/{id}":
+    "getAcquisitionCopilotSession",
+  "get /api/v1/acquisition/copilot/sessions/{id}/messages":
+    "listAcquisitionCopilotMessages",
+  "post /api/v1/acquisition/copilot/sessions/{id}/messages":
+    "sendAcquisitionCopilotMessage",
+  "get /api/v1/acquisition/copilot/tasks/{id}":
+    "getAcquisitionCopilotTask",
+  "post /api/v1/acquisition/plans": "createAcquisitionPlan",
+  "get /api/v1/acquisition/plans/{id}": "getAcquisitionPlan",
+  "patch /api/v1/acquisition/plans/{id}": "updateAcquisitionPlan",
+  "post /api/v1/acquisition/plans/{id}/revisions":
+    "createAcquisitionPlanRevision",
+  "post /api/v1/acquisition/plans/{id}/approval":
+    "approveAcquisitionPlan",
+  "post /api/v1/acquisition/plans/{id}/runs": "createAcquisitionRun",
+  "get /api/v1/acquisition/runs/{id}": "getAcquisitionRun",
+  "get /api/v1/acquisition/runs/{id}/shards":
+    "listAcquisitionRunShards",
+  "get /api/v1/acquisition/runs/{id}/presentation":
+    "getAcquisitionRunPresentation",
+  "post /api/v1/acquisition/runs/{id}/pause": "pauseAcquisitionRun",
+  "post /api/v1/acquisition/runs/{id}/resume": "resumeAcquisitionRun",
+  "post /api/v1/acquisition/runs/{id}/cancel": "cancelAcquisitionRun"
+};
+
+function addAcquisitionOperationIds(paths: AcquisitionOpenApiPaths) {
+  const unused = new Set(Object.keys(acquisitionOperationIds));
+  for (const [path, pathItem] of Object.entries(paths)) {
+    for (const method of ["get", "post", "patch", "delete"] as const) {
+      const operation = pathItem[method];
+      if (!operation) continue;
+      const key = `${method} ${path}`;
+      const operationId = acquisitionOperationIds[key];
+      if (!operationId) {
+        throw new Error(`Missing acquisition operationId: ${key}`);
+      }
+      operation.operationId = operationId;
+      unused.delete(key);
+    }
+  }
+  if (unused.size > 0) {
+    throw new Error(
+      `Unused acquisition operationId mappings: ${[...unused].join(", ")}`
+    );
+  }
+}
+
 const providerConnectionStatusSchema = {
   type: "string",
   enum: ["active", "disabled"]
@@ -2118,5 +2215,6 @@ AcquisitionOpenApiPaths {
   addProviderPaths(paths);
   addDiscoveryOperationPaths(paths);
   addCoreAgentPaths(paths);
+  addAcquisitionOperationIds(paths);
   return paths;
 }

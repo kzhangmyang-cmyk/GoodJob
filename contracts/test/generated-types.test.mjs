@@ -46,6 +46,7 @@ test("generated frontend contract types detect absent and stale outputs without 
     assert.match(generated, /export interface paths/);
     assert.match(generated, /export interface components/);
     assert.match(generated, /export (?:interface|type) operations/);
+    assert.match(generated, /approveAcquisitionPlan:/);
 
     const unchanged = runGenerator(output, "--check");
     assert.equal(unchanged.status, 0, unchanged.stderr);

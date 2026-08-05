@@ -410,6 +410,7 @@ paths:
     get: { <<: *read, summary: Get model call record, responses: { '200': { description: Model call record, content: { application/json: { schema: { $ref: '#/components/schemas/ModelCallRecord' } } } }, '401': *apiError } }
   /api/v1/acquisition/providers:
     get:
+      operationId: listAcquisitionProviders
       summary: List discovery providers
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -417,12 +418,14 @@ paths:
         '200': { description: Discovery provider catalog, content: { application/json: { schema: { type: object, required: [items, nextCursor], properties: { items: { type: array, items: *discoveryProviderSchema }, nextCursor: { type: string, nullable: true } }, additionalProperties: false } } } }
   /api/v1/acquisition/provider-connections:
     get:
+      operationId: listAcquisitionProviderConnections
       summary: List provider connections
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
         <<: *acquisitionStandardResponses
         '200': { description: Provider connections, content: { application/json: { schema: { type: object, required: [items, nextCursor], properties: { items: { type: array, items: *providerConnectionSchema }, nextCursor: { type: string, nullable: true } }, additionalProperties: false } } } }
     post:
+      operationId: createAcquisitionProviderConnection
       summary: Create provider connection
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
@@ -434,12 +437,14 @@ paths:
   /api/v1/acquisition/provider-connections/{id}:
     parameters: [{ name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }]
     get:
+      operationId: getAcquisitionProviderConnection
       summary: Get provider connection
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
         <<: *acquisitionStandardResponses
         '200': { description: Provider connection, content: { application/json: { schema: *providerConnectionSchema } } }
     patch:
+      operationId: updateAcquisitionProviderConnection
       summary: Update provider connection
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       requestBody: { required: true, content: { application/json: { schema: *providerConnectionPatchSchema } } }
@@ -447,6 +452,7 @@ paths:
         <<: *acquisitionStandardResponses
         '200': { description: Provider connection updated, content: { application/json: { schema: *providerConnectionSchema } } }
     delete:
+      operationId: deleteAcquisitionProviderConnection
       summary: Delete provider connection
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       responses:
@@ -459,6 +465,7 @@ paths:
   /api/v1/acquisition/provider-connections/{id}/test:
     parameters: [{ name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }]
     post:
+      operationId: testAcquisitionProviderConnection
       summary: Test provider connection
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       responses:
@@ -466,6 +473,7 @@ paths:
         '200': { description: Provider connection health check, content: { application/json: { schema: *acquisitionResourceSchema } } }
   /api/v1/acquisition/content-fetch-operations:
     get:
+      operationId: listAcquisitionContentFetchOperations
       summary: List content fetch operations
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters: [{ name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }]
@@ -473,6 +481,7 @@ paths:
         <<: *acquisitionStandardResponses
         '200': { description: Content fetch operations, content: { application/json: { schema: *discoveryOperationListSchema } } }
     post:
+      operationId: createAcquisitionContentFetchOperation
       summary: Create content fetch operation
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
@@ -483,6 +492,7 @@ paths:
   /api/v1/acquisition/content-fetch-operations/{id}:
     parameters: [{ name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }]
     get:
+      operationId: getAcquisitionContentFetchOperation
       summary: Get content fetch operation
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -490,6 +500,7 @@ paths:
         '200': { description: Content fetch operation, content: { application/json: { schema: *acquisitionResourceSchema } } }
   /api/v1/acquisition/import-operations:
     get:
+      operationId: listAcquisitionImportOperations
       summary: List import operations
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters: [{ name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }]
@@ -497,6 +508,7 @@ paths:
         <<: *acquisitionStandardResponses
         '200': { description: Import operations, content: { application/json: { schema: *discoveryOperationListSchema } } }
     post:
+      operationId: createAcquisitionImportOperation
       summary: Create import operation
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters:
@@ -519,6 +531,7 @@ paths:
   /api/v1/acquisition/import-operations/{id}:
     parameters: [{ name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }]
     get:
+      operationId: getAcquisitionImportOperation
       summary: Get import operation
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -527,6 +540,7 @@ paths:
   /api/v1/acquisition/evidence/{id}:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
+      operationId: getAcquisitionEvidence
       summary: Get discovery evidence
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -538,6 +552,7 @@ paths:
               schema: { $ref: '#/components/schemas/DiscoveryEvidence' }
   /api/v1/acquisition/plans:
     post:
+      operationId: createAcquisitionPlan
       summary: Create acquisition plan
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/planIdempotencyKey' }]
@@ -553,6 +568,7 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
     get:
+      operationId: getAcquisitionPlan
       summary: Get acquisition plan
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -563,6 +579,7 @@ paths:
         '409': *apiError
         '500': *apiError
     patch:
+      operationId: updateAcquisitionPlan
       summary: Update acquisition plan
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/ifMatch' }]
@@ -580,6 +597,7 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
     post:
+      operationId: createAcquisitionPlanRevision
       summary: Create acquisition plan revision
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/ifMatch' }]
@@ -600,6 +618,7 @@ paths:
         required: true
         schema: { type: string, minLength: 1, maxLength: 255 }
     post:
+      operationId: approveAcquisitionPlan
       summary: Approve acquisition plan
       security:
         - bearerAuth: []
@@ -632,6 +651,7 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
     post:
+      operationId: createAcquisitionRun
       summary: Create acquisition run
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/planIdempotencyKey' }]
@@ -647,6 +667,7 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
     get:
+      operationId: getAcquisitionRun
       summary: Get acquisition run
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -660,6 +681,7 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
     get:
+      operationId: listAcquisitionRunShards
       summary: List acquisition run shards
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -673,6 +695,7 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
     get:
+      operationId: getAcquisitionRunPresentation
       summary: Get acquisition run presentation
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/presentationAfter' }, { $ref: '#/components/parameters/presentationLimit' }]
@@ -687,6 +710,7 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
     post: &runControl
+      operationId: pauseAcquisitionRun
       summary: Pause acquisition run
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/ifMatch' }]
@@ -703,13 +727,14 @@ paths:
   /api/v1/acquisition/runs/{id}/resume:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
-    post: { <<: *runControl, summary: Resume acquisition run }
+    post: { <<: *runControl, operationId: resumeAcquisitionRun, summary: Resume acquisition run }
   /api/v1/acquisition/runs/{id}/cancel:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
-    post: { <<: *runControl, summary: Cancel acquisition run }
+    post: { <<: *runControl, operationId: cancelAcquisitionRun, summary: Cancel acquisition run }
   /api/v1/acquisition/candidates:
     get:
+      operationId: listAcquisitionCandidates
       summary: List candidates
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters:
@@ -727,6 +752,7 @@ paths:
   /api/v1/acquisition/candidates/{id}:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
+      operationId: getAcquisitionCandidate
       summary: Get candidate
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -735,6 +761,7 @@ paths:
   /api/v1/acquisition/candidates/{id}/evidence:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
+      operationId: listAcquisitionCandidateEvidence
       summary: List candidate evidence
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/acquisitionCursor' }, { $ref: '#/components/parameters/acquisitionLimit' }]
@@ -744,6 +771,7 @@ paths:
   /api/v1/acquisition/candidates/{id}/identity-confirmation:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     post:
+      operationId: confirmAcquisitionCandidateIdentity
       summary: Confirm candidate identity
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/idempotencyKey' }, { $ref: '#/components/parameters/candidateIfMatch' }]
@@ -755,6 +783,7 @@ paths:
   /api/v1/acquisition/candidates/{id}/qualification:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
+      operationId: getAcquisitionCandidateQualification
       summary: Get qualification decision
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -763,6 +792,7 @@ paths:
   /api/v1/acquisition/candidates/{id}/financial-value:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
+      operationId: getAcquisitionCandidateFinancialValue
       summary: Get financial value decision
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -771,6 +801,7 @@ paths:
   /api/v1/acquisition/candidates/{id}/battle-card:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
+      operationId: getAcquisitionCandidateBattleCard
       summary: Get battle card
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -779,6 +810,7 @@ paths:
   /api/v1/acquisition/candidates/{id}/reviews:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
+      operationId: listAcquisitionCandidateReviews
       summary: List review events
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/acquisitionCursor' }, { $ref: '#/components/parameters/acquisitionLimit' }]
@@ -788,6 +820,7 @@ paths:
   /api/v1/acquisition/candidates/{id}/review:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     post:
+      operationId: reviewAcquisitionCandidate
       summary: Review candidate
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
@@ -798,6 +831,7 @@ paths:
   /api/v1/acquisition/candidates/{id}/convert:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     post:
+      operationId: convertAcquisitionCandidate
       summary: Convert candidate
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
@@ -807,6 +841,7 @@ paths:
         '200': { description: Candidate converted, content: { application/json: { schema: { $ref: '#/components/schemas/LeadConversion' } } } }
   /api/v1/acquisition/outcomes:
     get:
+      operationId: listAcquisitionOutcomes
       summary: List outcome feedback
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters:
@@ -818,6 +853,7 @@ paths:
         '200': { description: Outcome feedback, content: { application/json: { schema: { $ref: '#/components/schemas/OutcomeFeedbackPagedResult' } } } }
   /api/v1/acquisition/copilot/sessions:
     post:
+      operationId: createAcquisitionCopilotSession
       summary: Create copilot session
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
@@ -828,6 +864,7 @@ paths:
   /api/v1/acquisition/copilot/sessions/{id}:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
+      operationId: getAcquisitionCopilotSession
       summary: Get copilot session
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -836,6 +873,7 @@ paths:
   /api/v1/acquisition/copilot/sessions/{id}/messages:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
+      operationId: listAcquisitionCopilotMessages
       summary: List copilot messages
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/acquisitionCursor' }, { $ref: '#/components/parameters/acquisitionLimit' }]
@@ -843,6 +881,7 @@ paths:
         <<: *acquisitionStandardResponses
         '200': { description: Copilot messages, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotMessagePagedResult' } } } }
     post:
+      operationId: sendAcquisitionCopilotMessage
       summary: Send copilot message
       security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
       parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
@@ -857,6 +896,7 @@ paths:
   /api/v1/acquisition/copilot/tasks/{id}:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
+      operationId: getAcquisitionCopilotTask
       summary: Get copilot task
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
@@ -864,6 +904,7 @@ paths:
         '200': { description: Copilot task, content: { application/json: { schema: { $ref: '#/components/schemas/CopilotTask' } } } }
   /api/v1/acquisition/audit-events:
     get:
+      operationId: listAcquisitionAuditEvents
       summary: List audit events
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters:

@@ -193,6 +193,7 @@ export function operationSurface(operation: ContractOperation) {
     })
   );
   return {
+    operationId: operation.operationId ?? null,
     security: securitySurface(operation.security),
     parameters: parametersSurface(operation.parameters),
     requestBody: operation.requestBody
