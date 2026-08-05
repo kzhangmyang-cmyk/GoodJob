@@ -269,6 +269,9 @@ test("every published JSON write body is a closed object contract", () => {
 
 test("identity confirmation publishes a strict human-review contract", () => {
   const paths = createAcquisitionOpenApiPaths();
+  const candidateDetail = paths[
+    "/api/v1/acquisition/candidates/{id}"
+  ]!.get as Record<string, any>;
   const operation = paths[
     "/api/v1/acquisition/candidates/{id}/identity-confirmation"
   ]!.post as Record<string, any>;
@@ -320,6 +323,14 @@ test("identity confirmation publishes a strict human-review contract", () => {
     (parameter: { name: string }) => parameter.name === "If-Match"
   );
   assert.equal(ifMatch.schema.pattern, '^"candidate-v[1-9]\\d*"$');
+  assert.equal(
+    candidateDetail.responses["200"].headers.ETag.schema.pattern,
+    '^"candidate-v[1-9]\\d*"$'
+  );
+  assert.equal(
+    operation.responses["200"].headers.ETag.schema.pattern,
+    '^"candidate-v[1-9]\\d*"$'
+  );
   assert.ok(operation.responses["428"]);
   assert.equal(operation.responses["412"], undefined);
 });

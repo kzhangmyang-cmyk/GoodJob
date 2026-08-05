@@ -1499,7 +1499,19 @@ export interface components {
             startedAt: string | null;
             /** Format: date-time */
             completedAt: string | null;
-        };
+        } & ({
+            /** @enum {unknown} */
+            status?: "succeeded" | "access_restricted";
+            /** @constant */
+            evidenceCount?: 1;
+            evidenceIds?: unknown[];
+        } | {
+            /** @enum {unknown} */
+            status?: "queued" | "running" | "failed";
+            /** @constant */
+            evidenceCount?: 0;
+            evidenceIds?: unknown[];
+        });
         /** DiscoveryEvidence */
         "discovery-evidence.v1.schema": {
             id: string;
@@ -5122,6 +5134,7 @@ export interface operations {
             /** @description Candidate */
             200: {
                 headers: {
+                    ETag: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -5281,6 +5294,7 @@ export interface operations {
             /** @description Candidate identity confirmed */
             200: {
                 headers: {
+                    ETag: string;
                     [name: string]: unknown;
                 };
                 content: {

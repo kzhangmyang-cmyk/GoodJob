@@ -973,6 +973,85 @@ test("v1 candidate DTO exposes unresolved individual identity and version", asyn
   }
 });
 
+test("candidate identity confirmation publishes canonical version ETags for safe retries", async () => {
+  const fixture = await createFixture();
+  const profileUrl = "https://www.douyin.com/user/MS4wLjABAAAA";
+  try {
+    const rawEvidence = evidenceBody(
+      "individual_signal",
+      "identity-etag"
+    );
+    const evidence = await fixture.request(
+      "/api/v1/acquisition/evidence",
+      write({
+        ...rawEvidence,
+        sourcePlatform: "douyin",
+        provenance: {
+          ...rawEvidence.provenance,
+          provider: "douyin",
+          sourceUrl: profileUrl
+        }
+      }, "evidence-identity-etag")
+    );
+    assert.equal(evidence.response.status, 201);
+
+    const created = await fixture.request(
+      "/api/v1/acquisition/candidates",
+      write({
+        subjectKind: "individual",
+        publicActorKey: "unresolved-public-signal:douyin-profile",
+        publicDisplayName: "待核验抖音主体",
+        publicProfileUrl: profileUrl,
+        sourcePlatform: "douyin",
+        demandSignalId: "signal-identity-etag",
+        demandCategory: "获客系统",
+        demandSummary: "公开主页包含采购信号",
+        locationHint: "厦门",
+        buyingStage: "solution_research",
+        negativeSignals: [],
+        individualPartyId: "unresolved-individual-identity-etag",
+        evidenceIds: [evidence.json.id]
+      }, "candidate-identity-etag")
+    );
+    assert.equal(created.response.status, 201);
+    assert.equal(created.json.version, 1);
+    assert.equal(created.json.identityResolved, false);
+
+    const detail = await fixture.request(
+      `/api/v1/acquisition/candidates/${created.json.id}`
+    );
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.response.headers.get("etag"), '"candidate-v1"');
+
+    const confirmed = await fixture.request(
+      `/api/v1/acquisition/candidates/${created.json.id}/identity-confirmation`,
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": "confirm-identity-etag",
+          "If-Match": detail.response.headers.get("etag")!
+        },
+        body: JSON.stringify({
+          subjectKind: "individual",
+          publicProfileUrl: profileUrl,
+          sourcePlatform: "douyin",
+          evidenceIds: [evidence.json.id],
+          rationale: "公开主页 URL 与抖音来源证据完全一致"
+        })
+      }
+    );
+    assert.equal(confirmed.response.status, 200);
+    assert.equal(confirmed.json.candidate.version, 2);
+    assert.equal(confirmed.json.candidate.identityResolved, true);
+    assert.equal(
+      confirmed.response.headers.get("etag"),
+      '"candidate-v2"'
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("v1 router supports individual demand signals and research start", async () => {
   const fixture = await createFixture();
   try {

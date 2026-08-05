@@ -167,7 +167,8 @@ export interface AcquisitionCandidate {
 export function acquisitionCandidateIdentityResolved(
   candidate: AcquisitionCandidate
 ) {
-  if (candidate.profile.kind === "organization"
+  if (candidate.partyType === "organization"
+    && candidate.profile.kind === "organization"
     && candidate.partyRef.partyType === "organization") {
     return Boolean(
       candidate.profile.name
@@ -175,7 +176,8 @@ export function acquisitionCandidateIdentityResolved(
       && !candidate.partyRef.organizationId.startsWith("unresolved-org-")
     );
   }
-  if (candidate.profile.kind === "individual"
+  if (candidate.partyType === "individual"
+    && candidate.profile.kind === "individual"
     && candidate.partyRef.partyType === "individual") {
     return Boolean(
       candidate.profile.publicActorKey

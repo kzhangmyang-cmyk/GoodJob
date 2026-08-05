@@ -767,7 +767,13 @@ paths:
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
         <<: *acquisitionStandardResponses
-        '200': { description: Candidate, content: { application/json: { schema: { $ref: '#/components/schemas/Candidate' } } } }
+        '200':
+          description: Candidate
+          headers:
+            ETag: { required: true, schema: { type: string, pattern: '^"candidate-v[1-9]\d*"$' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Candidate' }
   /api/v1/acquisition/candidates/{id}/evidence:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:
@@ -788,7 +794,13 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: *identityConfirmationSchema } } }
       responses:
         <<: *acquisitionStandardResponses
-        '200': { description: Candidate identity confirmed, content: { application/json: { schema: { $ref: '#/components/schemas/IdentityConfirmationResult' } } } }
+        '200':
+          description: Candidate identity confirmed
+          headers:
+            ETag: { required: true, schema: { type: string, pattern: '^"candidate-v[1-9]\d*"$' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IdentityConfirmationResult' }
         '428': *apiError
   /api/v1/acquisition/candidates/{id}/qualification:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]

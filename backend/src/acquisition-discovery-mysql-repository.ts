@@ -172,12 +172,51 @@ function parsedFetch(row: MysqlRow) {
       "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:fetch_status"
     );
   }
+  if (!Number.isSafeInteger(payload.evidenceCount)
+    || Number(payload.evidenceCount) < 0) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_count"
+    );
+  }
   if (payload.evidenceIds === undefined) {
-    payload.evidenceIds = [];
+    if ([
+      "succeeded",
+      "access_restricted"
+    ].includes(String(payload.status))
+      || Number(payload.evidenceCount) > 0) {
+      payload.status = "failed";
+      payload.evidenceCount = 0;
+      payload.evidenceIds = [];
+      payload.errorCode =
+        "LEGACY_EVIDENCE_IDS_UNAVAILABLE_REFETCH_REQUIRED";
+    } else {
+      payload.evidenceIds = [];
+    }
   } else if (!Array.isArray(payload.evidenceIds)
     || payload.evidenceIds.some((id) => typeof id !== "string" || !id)) {
     throw new Error(
       "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_ids"
+    );
+  }
+  const evidenceIds = payload.evidenceIds as string[];
+  if (new Set(evidenceIds).size !== evidenceIds.length) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_ids_duplicate"
+    );
+  }
+  if (Number(payload.evidenceCount) !== evidenceIds.length) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_count_mismatch"
+    );
+  }
+  const successful = [
+    "succeeded",
+    "access_restricted"
+  ].includes(String(payload.status));
+  if ((successful && evidenceIds.length !== 1)
+    || (!successful && evidenceIds.length !== 0)) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_status_mismatch"
     );
   }
   return payload as unknown as AcquisitionContentFetchOperationRecord;

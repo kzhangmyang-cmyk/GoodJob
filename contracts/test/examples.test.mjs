@@ -81,6 +81,72 @@ test("identity workbench contracts accept versioned identity state and exact evi
   }).valid, true);
 });
 
+test("content fetch operations keep status, evidence count, and evidence ids consistent", async () => {
+  const { validateCase } = await loadContractHarness();
+  const operation = {
+    id: "fetch-invariant-1",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "user-a",
+    sourceUrl: "https://example.test/public-source",
+    finalUrl: null,
+    subjectChannel: "organization",
+    status: "queued",
+    accessStatus: null,
+    httpStatus: null,
+    contentType: null,
+    title: null,
+    rawArtifactHash: null,
+    contentHash: null,
+    evidenceCount: 0,
+    evidenceIds: [],
+    errorCode: null,
+    createdAt: "2026-08-06T00:00:00.000Z",
+    startedAt: null,
+    completedAt: null
+  };
+
+  for (const status of ["queued", "running", "failed"]) {
+    assert.equal(validateCase("content-fetch-operation", {
+      ...operation,
+      status
+    }).valid, true, `${status} with no evidence must be valid`);
+  }
+  for (const status of ["succeeded", "access_restricted"]) {
+    assert.equal(validateCase("content-fetch-operation", {
+      ...operation,
+      status,
+      evidenceCount: 1,
+      evidenceIds: ["evidence-current-operation"]
+    }).valid, true, `${status} with one evidence id must be valid`);
+  }
+
+  const invalid = [
+    { status: "succeeded", evidenceCount: 1, evidenceIds: [] },
+    {
+      status: "access_restricted",
+      evidenceCount: 0,
+      evidenceIds: ["evidence-current-operation"]
+    },
+    {
+      status: "failed",
+      evidenceCount: 1,
+      evidenceIds: ["evidence-current-operation"]
+    },
+    {
+      status: "succeeded",
+      evidenceCount: 2,
+      evidenceIds: ["evidence-duplicate", "evidence-duplicate"]
+    }
+  ];
+  for (const values of invalid) {
+    assert.equal(validateCase("content-fetch-operation", {
+      ...operation,
+      ...values
+    }).valid, false, JSON.stringify(values));
+  }
+});
+
 test("outcome feedback rejects untyped live parties and legacy individual parties", async () => {
   const { validateCase } = await loadContractHarness();
   const live = {

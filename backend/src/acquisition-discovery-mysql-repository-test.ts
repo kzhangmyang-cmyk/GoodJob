@@ -157,6 +157,79 @@ test("mysql repository defaults evidence ids for legacy content-fetch payloads",
   assert.deepEqual(loaded?.evidenceIds, []);
 });
 
+test("mysql repository marks legacy terminal fetches without evidence ids as refetch-required failures", async () => {
+  const pool = new FakePool();
+  const repository =
+    new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool));
+  const legacyPayload = {
+    ...structuredClone(fetchOperation),
+    status: "succeeded" as const,
+    finalUrl: "https://example.com/opportunity",
+    accessStatus: "public_content" as const,
+    httpStatus: 200,
+    contentType: "text/html",
+    title: "公开商机",
+    rawArtifactHash: `sha256:${"c".repeat(64)}`,
+    contentHash: `sha256:${"d".repeat(64)}`,
+    evidenceCount: 1,
+    startedAt: "2026-07-24T08:00:01.000Z",
+    completedAt: "2026-07-24T08:00:02.000Z"
+  } as Partial<AcquisitionContentFetchOperationRecord>;
+  delete legacyPayload.evidenceIds;
+  pool.enqueue([{ payload_json: JSON.stringify(legacyPayload) }]);
+
+  const loaded = await repository.getContentFetchOperation(
+    { ownerId: "owner-a", teamId: "team-a" },
+    fetchOperation.id
+  );
+
+  assert.equal(loaded?.status, "failed");
+  assert.equal(loaded?.evidenceCount, 0);
+  assert.deepEqual(loaded?.evidenceIds, []);
+  assert.equal(
+    loaded?.errorCode,
+    "LEGACY_EVIDENCE_IDS_UNAVAILABLE_REFETCH_REQUIRED"
+  );
+});
+
+test("mysql repository rejects duplicate and inconsistent content-fetch evidence references", async () => {
+  const invalidPayloads = [
+    {
+      ...fetchOperation,
+      status: "succeeded",
+      evidenceCount: 2,
+      evidenceIds: ["evidence-1", "evidence-1"]
+    },
+    {
+      ...fetchOperation,
+      status: "succeeded",
+      evidenceCount: 1,
+      evidenceIds: []
+    },
+    {
+      ...fetchOperation,
+      status: "failed",
+      evidenceCount: 1,
+      evidenceIds: ["evidence-1"]
+    }
+  ];
+
+  for (const payload of invalidPayloads) {
+    const pool = new FakePool();
+    const repository =
+      new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool));
+    pool.enqueue([{ payload_json: JSON.stringify(payload) }]);
+
+    await assert.rejects(
+      repository.getContentFetchOperation(
+        { ownerId: "owner-a", teamId: "team-a" },
+        fetchOperation.id
+      ),
+      /ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_/u
+    );
+  }
+});
+
 test("mysql repository lists tenant operations by created time and id with a bounded limit", async () => {
   const pool = new FakePool();
   const repository =

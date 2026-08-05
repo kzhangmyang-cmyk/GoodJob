@@ -62,5 +62,25 @@
     "createdAt": { "type": "string", "format": "date-time" },
     "startedAt": { "type": ["string", "null"], "format": "date-time" },
     "completedAt": { "type": ["string", "null"], "format": "date-time" }
-  }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "status": { "enum": ["succeeded", "access_restricted"] },
+        "evidenceCount": { "type": "integer", "const": 1 },
+        "evidenceIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1
+        }
+      }
+    },
+    {
+      "properties": {
+        "status": { "enum": ["queued", "running", "failed"] },
+        "evidenceCount": { "type": "integer", "const": 0 },
+        "evidenceIds": { "type": "array", "maxItems": 0 }
+      }
+    }
+  ]
 }

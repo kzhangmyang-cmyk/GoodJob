@@ -2143,6 +2143,8 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/runs/{id}/cancel"
   ]);
   const etagResponses = new Set([
+    "/api/v1/acquisition/candidates/{id}",
+    "/api/v1/acquisition/candidates/{id}/identity-confirmation",
     "/api/v1/acquisition/plans",
     "/api/v1/acquisition/plans/{id}",
     "/api/v1/acquisition/plans/{id}/revisions",
@@ -2332,7 +2334,12 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       (responses[String(successStatus)] as Record<string, unknown>).headers = {
         ETag: {
           required: true,
-          schema: { type: "string", minLength: 1 }
+          schema: path.startsWith("/api/v1/acquisition/candidates/")
+            ? {
+                type: "string",
+                pattern: '^"candidate-v[1-9]\\d*"$'
+              }
+            : { type: "string", minLength: 1 }
         }
       };
     }

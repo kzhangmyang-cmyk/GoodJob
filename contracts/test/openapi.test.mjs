@@ -195,6 +195,12 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   const approval = document.paths["/api/v1/acquisition/plans/{id}/approval"].post;
   assert.deepEqual(approval.requestBody.content["application/json"].schema.required, ["decision", "reason"]);
   assert.ok(approval.responses["200"].headers.ETag);
+  const candidateDetail = document.paths["/api/v1/acquisition/candidates/{id}"].get;
+  const identityConfirmation = document.paths["/api/v1/acquisition/candidates/{id}/identity-confirmation"].post;
+  assert.equal(candidateDetail.responses["200"].headers.ETag.required, true);
+  assert.equal(candidateDetail.responses["200"].headers.ETag.schema.pattern, '^"candidate-v[1-9]\\d*"$');
+  assert.equal(identityConfirmation.responses["200"].headers.ETag.required, true);
+  assert.equal(identityConfirmation.responses["200"].headers.ETag.schema.pattern, '^"candidate-v[1-9]\\d*"$');
   assert.deepEqual(Object.keys(approval.responses).sort(), ["200", "400", "401", "404", "409", "412", "428", "500"]);
   assert.equal(document.paths["/api/v1/acquisition/plans"].post.responses["201"].content["application/json"].schema.$ref, "#/components/schemas/AcquisitionPlan");
   assert.equal(document.paths["/api/v1/acquisition/plans/{id}/revisions"].post.responses["201"].content["application/json"].schema.$ref, "#/components/schemas/AcquisitionPlan");
@@ -280,6 +286,16 @@ test("every named API resource component accepts a canonical valid instance", as
   const registry = await loadSchemaRegistry();
   const names = ["ModelProvider", "ModelConnection", "ModelCallRecord", "DiscoveryProvider", "ProviderConnection", "ContentFetchOperation", "ImportOperation", "AcquisitionPlan", "AcquisitionRun", "AcquisitionOperationShard", "AcquisitionRunPresentation", "DiscoveryEvidence", "QualificationDecision", "BattleCard", "ReviewEvent", "OutcomeFeedback", "FinancialValueDecision", "CopilotSession", "CopilotMessage", "CopilotTask"];
   const examples = Object.fromEntries(names.map((name) => [name, buildCanonicalExample(registry.schemaDocuments.get(toKebab(name)))]));
+  const {
+    oneOf: _contentFetchStates,
+    ...contentFetchBase
+  } = registry.schemaDocuments.get("content-fetch-operation");
+  examples.ContentFetchOperation = {
+    ...buildCanonicalExample(contentFetchBase),
+    status: "queued",
+    evidenceCount: 0,
+    evidenceIds: []
+  };
   examples.Candidate = [
     buildCanonicalExample(registry.schemaDocuments.get("organization-candidate")),
     buildCanonicalExample(registry.schemaDocuments.get("individual-demand-signal"))

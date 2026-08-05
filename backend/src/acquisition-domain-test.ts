@@ -16,6 +16,9 @@ import type {
   FinancialValueInput,
   QualificationInput
 } from "./acquisition-domain.js";
+import {
+  acquisitionCandidateIdentityResolved
+} from "./acquisition-domain.js";
 
 const ownerScope: AcquisitionActorScope = {
   ownerId: "owner-1",
@@ -185,6 +188,35 @@ async function createIndividualCandidate(
   );
   return { candidate, evidence };
 }
+
+test("identity resolution rejects candidates whose top-level party type contradicts their identity payload", async () => {
+  const { service } = createHarness();
+  const organization = await createOrganizationCandidate(service);
+  const individual = await createIndividualCandidate(service);
+
+  assert.equal(
+    acquisitionCandidateIdentityResolved(organization.candidate),
+    true
+  );
+  assert.equal(
+    acquisitionCandidateIdentityResolved(individual.candidate),
+    true
+  );
+  assert.equal(
+    acquisitionCandidateIdentityResolved({
+      ...organization.candidate,
+      partyType: "individual"
+    }),
+    false
+  );
+  assert.equal(
+    acquisitionCandidateIdentityResolved({
+      ...individual.candidate,
+      partyType: "organization"
+    }),
+    false
+  );
+});
 
 test("organization and individual candidates keep separate party identities and immutable evidence", async () => {
   const { service } = createHarness();

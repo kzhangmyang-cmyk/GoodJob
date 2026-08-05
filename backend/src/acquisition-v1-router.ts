@@ -528,6 +528,13 @@ function expectedCandidateVersion(req: Request) {
   return version;
 }
 
+function setCandidateEtag(
+  res: Response,
+  candidate: Pick<AcquisitionCandidate, "version">
+) {
+  res.setHeader("ETag", `"candidate-v${candidate.version}"`);
+}
+
 function requestId(res: Response) {
   return String(res.locals.acquisitionRequestId);
 }
@@ -1200,6 +1207,7 @@ export function createAcquisitionV1Router(
         scope,
         parse(idSchema, req.params.id)
       );
+      setCandidateEtag(res, candidate);
       res.json(publicCandidate(candidate));
     })
   );
@@ -1261,6 +1269,7 @@ export function createAcquisitionV1Router(
               },
           idempotencyKey(req)
         );
+      setCandidateEtag(res, result.candidate);
       res.json({
         candidate: publicCandidate(result.candidate),
         resolution: result.resolution
