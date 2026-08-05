@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.22.3 <23"
   },
   "scripts": {
     "dev": "concurrently \"npm run dev:mysql --workspace backend\" \"npm run dev --workspace frontend\"",
@@ -11,8 +11,10 @@
     "build": "npm run build --workspace backend && npm run build --workspace frontend",
     "generate:frontend-contract-types": "npm run generate:types --workspace contracts",
     "check:generated-acquisition-types": "npm run check:types --workspace contracts",
+    "check:acquisition-contracts": "npm run test:contracts && npm run test:contract-drift --workspace backend && npm run check:generated-acquisition-types && npm run build --workspace frontend && npm run test --workspace frontend && npm run test:baota-package",
     "test:contracts": "npm run test --workspace contracts",
-    "test": "npm run test:contracts && npm run test --workspace backend && npm run test --workspace frontend",
+    "test:baota-package": "node --test deploy/baota/build-package.test.mjs",
+    "test": "npm run test:contracts && npm run test --workspace backend && npm run test --workspace frontend && npm run test:baota-package",
     "test:e2e": "npm run test:e2e --workspace frontend"
   },
   "workspaces": [
