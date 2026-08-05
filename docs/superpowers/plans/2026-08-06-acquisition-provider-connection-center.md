@@ -78,11 +78,11 @@
 - 已连接项支持测试、启停、轮换 Key 和删除；危险动作有确认，系统来源为只读。
 - 抽屉具备对话框语义、标题关联、焦点管理、Escape 关闭、键盘操作和窄屏布局。
 
-- [ ] **Step 1: write failing component/integration tests** for catalog rendering, safe secret handling, actions, status/error states and accessibility.
-- [ ] **Step 2: run RED**.
-- [ ] **Step 3: implement the drawer and wire all controller callbacks**.
-- [ ] **Step 4: run GREEN**, frontend suite and production build.
-- [ ] **Step 5: commit** as `feat: add acquisition connection center`.
+- [x] **Step 1: write failing component/integration tests** for catalog rendering, safe secret handling, actions, status/error states and accessibility.
+- [x] **Step 2: run RED**.
+- [x] **Step 3: implement the drawer and wire all controller callbacks**.
+- [x] **Step 4: run GREEN**, frontend suite and production build.
+- [x] **Step 5: commit** as `feat: add acquisition connection center`.
 
 ### Task 4: 首次配置到抖音方案的完整 E2E 与文档
 
