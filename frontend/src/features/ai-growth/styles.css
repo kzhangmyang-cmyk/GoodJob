@@ -1866,10 +1866,22 @@
   opacity: .72;
 }
 
-.ai-growth-identity-evidence > span {
+.ai-growth-identity-evidence > label {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+}
+
+.ai-growth-identity-evidence > label > span {
   display: grid;
   gap: 4px;
   min-width: 0;
+}
+
+.ai-growth-identity-evidence > a {
+  grid-column: 2;
 }
 
 .ai-growth-identity-evidence strong,

@@ -72,7 +72,9 @@ const SOURCE_TYPE_LABELS: Readonly<Record<string, string>> = {
 
 const PROVIDER_LABELS: Readonly<Record<string, string>> = {
   baidu: "百度搜索",
+  baidu_ai_search: "百度搜索",
   tencent: "腾讯联网搜索",
+  tencent_web_search: "腾讯联网搜索",
   tavily: "Tavily",
   serper: "Serper",
   brave: "Brave Search",
@@ -107,20 +109,49 @@ function safeHttpsUrl(value: string | null): string | null {
   }
 }
 
-export function isExactDouyinProfileUrl(value: string): boolean {
+function canonicalDouyinProfileUrl(value: string): string | null {
   try {
     const parsed = new URL(value.trim());
     const host = parsed.hostname.toLowerCase();
-    const supportedHost = host === "douyin.com" || host.endsWith(".douyin.com");
+    const supportedHost = host === "douyin.com" || host === "www.douyin.com";
     const segments = parsed.pathname.split("/").filter(Boolean);
-    return parsed.protocol === "https:"
-      && supportedHost
-      && segments.length === 2
-      && segments[0] === "user"
-      && segments[1]!.length > 0;
+    if (parsed.protocol !== "https:"
+      || !supportedHost
+      || parsed.username
+      || parsed.password
+      || parsed.port
+      || parsed.search
+      || parsed.hash
+      || segments.length !== 2
+      || segments[0] !== "user"
+      || !segments[1]) {
+      return null;
+    }
+    return `https://${host}/user/${segments[1]}`;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function isExactDouyinProfileUrl(value: string): boolean {
+  return canonicalDouyinProfileUrl(value) !== null;
+}
+
+function eligibleIdentityEvidence(
+  item: IdentityEvidenceVm,
+  declaredProfileUrl: string
+): boolean {
+  const declared = canonicalDouyinProfileUrl(declaredProfileUrl);
+  const evidence = item.url
+    ? canonicalDouyinProfileUrl(item.url)
+    : null;
+  return item.eligible
+    && declared !== null
+    && evidence === declared
+    && item.sourcePlatform.toLowerCase() === "douyin"
+    && item.sourceType === "profile"
+    && item.accessStatus !== "access_restricted"
+    && item.fetchedAt !== null;
 }
 
 function originalSignal(vm: IdentityVerificationPanelVm): string {
@@ -153,26 +184,33 @@ function originalSignal(vm: IdentityVerificationPanelVm): string {
 
 function evidenceItem(
   item: IdentityEvidenceVm,
-  selected: boolean
+  selected: boolean,
+  eligible: boolean
 ): string {
   const url = safeHttpsUrl(item.url);
-  const disabled = item.eligible ? "" : " disabled";
-  const checked = item.eligible && selected ? " checked" : "";
+  const disabled = eligible ? "" : " disabled";
+  const checked = eligible && selected ? " checked" : "";
+  const ineligibleReason = item.ineligibleReason
+    ?? (eligible
+      ? null
+      : "证据必须来自已抓取的精确抖音公开主页，并与声明主页一致");
   return `
-    <label class="ai-growth-identity-evidence${item.eligible ? " is-eligible" : " is-ineligible"}">
-      <input type="checkbox" data-field="identity-evidence" data-evidence-id="${escapeHtml(item.id)}"${disabled}${checked}>
-      <span>
-        <strong>${escapeHtml(item.title)}</strong>
-        <small>${escapeHtml(item.sourcePlatform)} · ${escapeHtml(item.sourceType ?? "页面类型待确认")} · ${escapeHtml(item.accessStatus)}</small>
-        ${item.excerpt ? `<p>${escapeHtml(item.excerpt)}</p>` : ""}
-        ${item.ineligibleReason
-          ? `<em>${escapeHtml(item.ineligibleReason)}</em>`
-          : ""}
-        ${url
-          ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">打开公开证据</a>`
-          : ""}
-      </span>
-    </label>
+    <div class="ai-growth-identity-evidence${eligible ? " is-eligible" : " is-ineligible"}">
+      <label>
+        <input type="checkbox" data-field="identity-evidence" data-evidence-id="${escapeHtml(item.id)}"${disabled}${checked}>
+        <span>
+          <strong>${escapeHtml(item.title)}</strong>
+          <small>${escapeHtml(item.sourcePlatform)} · ${escapeHtml(item.sourceType ?? "页面类型待确认")} · ${escapeHtml(item.accessStatus)}</small>
+          ${item.excerpt ? `<p>${escapeHtml(item.excerpt)}</p>` : ""}
+          ${ineligibleReason
+            ? `<em>${escapeHtml(ineligibleReason)}</em>`
+            : ""}
+        </span>
+      </label>
+      ${url
+        ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">打开公开证据</a>`
+        : ""}
+    </div>
   `;
 }
 
@@ -212,7 +250,8 @@ export function renderIdentityVerificationPanel(
   const pending = ["fetching_profile", "confirming"].includes(vm.status);
   const profileReady = isExactDouyinProfileUrl(vm.profileUrl);
   const selectedEligible = vm.evidence.some((item) =>
-    item.eligible && vm.selectedEvidenceIds.includes(item.id)
+    eligibleIdentityEvidence(item, vm.profileUrl)
+    && vm.selectedEvidenceIds.includes(item.id)
   );
   const canConfirm = vm.status === "ready_to_confirm"
     && profileReady
@@ -241,10 +280,14 @@ export function renderIdentityVerificationPanel(
         <legend>选择用于主体核验的公开证据</legend>
         ${vm.evidence.length === 0
           ? `<p class="ai-growth-empty-value">抓取精确公开主页后，可核验证据会显示在这里。</p>`
-          : vm.evidence.map((item) => evidenceItem(
-              item,
-              vm.selectedEvidenceIds.includes(item.id)
-            )).join("")}
+          : vm.evidence.map((item) => {
+              const eligible = eligibleIdentityEvidence(item, vm.profileUrl);
+              return evidenceItem(
+                item,
+                vm.selectedEvidenceIds.includes(item.id),
+                eligible
+              );
+            }).join("")}
       </fieldset>
       <label class="ai-growth-identity-rationale" for="candidateIdentityRationale">
         <span>人工核验说明</span>

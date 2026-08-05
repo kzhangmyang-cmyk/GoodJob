@@ -52,6 +52,18 @@ test("exact Douyin profile validation accepts public user pages only", () => {
   );
   assert.equal(isExactDouyinProfileUrl("https://v.douyin.com/abc"), false);
   assert.equal(
+    isExactDouyinProfileUrl("https://evil.douyin.com/user/MS4wLjABAAAA"),
+    false
+  );
+  assert.equal(
+    isExactDouyinProfileUrl("https://www.douyin.com:8443/user/MS4wLjABAAAA"),
+    false
+  );
+  assert.equal(
+    isExactDouyinProfileUrl("https://www.douyin.com/user/MS4wLjABAAAA?share=1"),
+    false
+  );
+  assert.equal(
     isExactDouyinProfileUrl("javascript:alert(1)"),
     false
   );
@@ -131,6 +143,36 @@ test("restricted or mismatched evidence stays disabled and unsafe values are esc
   assert.match(
     rendered.html,
     /data-evidence-id="restricted-evidence"[^>]*disabled/
+  );
+  assert.match(
+    rendered.html,
+    /data-action="confirm-candidate-identity"[^>]*disabled/
+  );
+});
+
+test("confirmation recomputes exact evidence eligibility instead of trusting its flag", () => {
+  const rendered = renderIdentityVerificationPanel(viewModel({
+    profileUrl: "https://www.douyin.com/user/expected",
+    rationale: "已人工检查",
+    selectedEvidenceIds: ["video-marked-eligible"],
+    status: "ready_to_confirm",
+    evidence: [{
+      id: "video-marked-eligible",
+      title: "错误标记为 eligible 的视频页",
+      url: "https://www.douyin.com/video/123456",
+      sourcePlatform: "douyin",
+      sourceType: "video",
+      excerpt: "视频摘要",
+      accessStatus: "public_content",
+      fetchedAt: "2026-08-06T09:00:00.000Z",
+      eligible: true,
+      ineligibleReason: null
+    }]
+  }), callbacks);
+
+  assert.match(
+    rendered.html,
+    /data-evidence-id="video-marked-eligible"[^>]*disabled/
   );
   assert.match(
     rendered.html,
