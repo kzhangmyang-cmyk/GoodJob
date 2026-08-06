@@ -11,6 +11,9 @@ import {
   type AcquisitionDomainService
 } from "./acquisition-domain-service.js";
 import {
+  classifyDouyinPublicSource
+} from "./acquisition-douyin-public-source.js";
+import {
   ACQUISITION_PUBLIC_IDENTITY_RESOLVER_VERSION,
   extractAcquisitionPublicCreditCode,
   isVerifiedAcquisitionPublicProfileUrl,
@@ -117,6 +120,20 @@ function providerForEvidence(evidence: DiscoveryEvidence) {
   return evidence.provenance.kind === "search_result"
     ? evidence.provenance.provider
     : evidence.sourcePlatform;
+}
+
+function platformsForEvidence(evidence: DiscoveryEvidence) {
+  const sourceUrl = evidenceUrl(evidence);
+  const classified = sourceUrl
+    ? classifyDouyinPublicSource(sourceUrl)
+    : null;
+  return new Set([
+    evidence.sourcePlatform,
+    providerForEvidence(evidence),
+    classified?.sourcePlatform
+  ].filter((value): value is string => Boolean(value)).map((value) =>
+    value.toLocaleLowerCase("en-US")
+  ));
 }
 
 function publicActorKey(platform: string, profileUrl: string) {
@@ -368,12 +385,7 @@ export class AcquisitionIdentityResolutionService {
     ).toLocaleLowerCase("en-US");
     const matchingEvidence = evidence.find((item) =>
       evidenceUrl(item) === profileUrl
-      && [
-        item.sourcePlatform,
-        providerForEvidence(item)
-      ].some((value) =>
-        value.toLocaleLowerCase("en-US") === sourcePlatform
-      )
+      && platformsForEvidence(item).has(sourcePlatform)
     );
     if (!matchingEvidence) {
       domainError(

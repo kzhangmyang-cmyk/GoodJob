@@ -769,6 +769,14 @@ function evidenceSourceUrl(evidence: DiscoveryEvidence) {
     : null;
 }
 
+function publicDecisionEvidence(evidence: DiscoveryEvidence[]) {
+  return evidence.filter((item) =>
+    ["indexed_summary", "public_content"].includes(item.accessStatus)
+    && item.provenance.kind !== "import_artifact_row"
+    && evidenceSourceUrl(item) !== null
+  );
+}
+
 function candidateIdentityDisposition(
   candidate: AcquisitionCandidate
 ): AcquisitionPublicIdentityDisposition {
@@ -828,6 +836,7 @@ function deterministicHardGates(
   now: string,
   maxEvidenceAgeDays: number
 ): QualificationHardGates {
+  const decisionEvidence = publicDecisionEvidence(evidence);
   const negativeSignals = candidate.profile.kind === "individual"
     ? candidate.profile.negativeSignals
     : [];
@@ -837,28 +846,30 @@ function deterministicHardGates(
   ) || evidence.some((item) => rejectionPattern.test(item.sourceSnippet));
   const nowMs = new Date(now).getTime();
   const maxAgeMs = maxEvidenceAgeDays * 86_400_000;
-  const evidenceFresh = evidence.length > 0 && evidence.every((item) => {
-    const sourceTime = new Date(item.publishedAt ?? item.fetchedAt).getTime();
-    return Number.isFinite(sourceTime)
-      && Number.isFinite(nowMs)
-      && nowMs >= sourceTime
-      && nowMs - sourceTime <= maxAgeMs;
-  });
-  const schemaValid = evidence.length > 0 && evidence.every((item) => {
-    const sourceUrl = evidenceSourceUrl(item);
-    if (!sourceUrl
-      || !/^sha256:[a-f0-9]{64}$/iu.test(item.rawArtifactHash)
-      || !/^sha256:[a-f0-9]{64}$/iu.test(item.contentHash)) {
-      return false;
-    }
-    try {
-      return ["http:", "https:"].includes(new URL(sourceUrl).protocol);
-    } catch {
-      return false;
-    }
-  });
+  const evidenceFresh = decisionEvidence.length > 0
+    && decisionEvidence.every((item) => {
+      const sourceTime = new Date(item.publishedAt ?? item.fetchedAt).getTime();
+      return Number.isFinite(sourceTime)
+        && Number.isFinite(nowMs)
+        && nowMs >= sourceTime
+        && nowMs - sourceTime <= maxAgeMs;
+    });
+  const schemaValid = decisionEvidence.length > 0
+    && decisionEvidence.every((item) => {
+      const sourceUrl = evidenceSourceUrl(item);
+      if (!sourceUrl
+        || !/^sha256:[a-f0-9]{64}$/iu.test(item.rawArtifactHash)
+        || !/^sha256:[a-f0-9]{64}$/iu.test(item.contentHash)) {
+        return false;
+      }
+      try {
+        return ["http:", "https:"].includes(new URL(sourceUrl).protocol);
+      } catch {
+        return false;
+      }
+    });
   return {
-    hasOriginalSource: evidence.some((item) => Boolean(evidenceSourceUrl(item))),
+    hasOriginalSource: decisionEvidence.length > 0,
     identityResolved: candidate.profile.kind === "organization"
       && candidate.partyRef.partyType === "organization"
       ? Boolean(
@@ -879,10 +890,7 @@ function deterministicHardGates(
         : false,
     notDoNotContact: candidate.status !== "do_not_contact",
     noExplicitRejection: !explicitRejection,
-    publicDataOnly: evidence.every((item) =>
-      item.accessStatus !== "user_supplied"
-      && item.provenance.kind !== "import_artifact_row"
-    ),
+    publicDataOnly: decisionEvidence.length > 0,
     evidenceFresh,
     schemaValid
   };
@@ -1302,7 +1310,7 @@ implements AcquisitionAgentToolExecutor {
   ) {
     const scope = this.scope(input);
     const candidate = await this.domain.getCandidate(scope, candidateId);
-    const evidence = await this.evidenceForCandidate(scope, candidate);
+    const allEvidence = await this.evidenceForCandidate(scope, candidate);
     const allowedStatuses: Record<typeof operation, Set<string>> = {
       research: new Set([
         "normalized",
@@ -1323,12 +1331,12 @@ implements AcquisitionAgentToolExecutor {
       review_task: new Set(["approved"])
     };
     if (!allowedStatuses[operation].has(candidate.status)
-      || evidence.length === 0) {
+      || allEvidence.length === 0) {
       throw toolError("ELIGIBILITY_BLOCKED");
     }
     const hardGates = deterministicHardGates(
       candidate,
-      evidence,
+      allEvidence,
       this.now(),
       this.maxEvidenceAgeDays
     );
@@ -1355,6 +1363,7 @@ implements AcquisitionAgentToolExecutor {
       && candidate.approvedDecisionVersion !== candidate.latestDecisionVersion) {
       throw toolError("ELIGIBILITY_BLOCKED");
     }
+    const evidence = publicDecisionEvidence(allEvidence);
     return { scope, candidate, evidence, hardGates };
   }
 
