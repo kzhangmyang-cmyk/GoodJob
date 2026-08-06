@@ -157,6 +157,7 @@ export interface AcquisitionCandidateIntelligenceOperationRepository {
     command: AcquisitionCandidateIntelligenceRetryCommand
   ): Promise<{
     command: AcquisitionCandidateIntelligenceRetryCommand;
+    operation: AcquisitionCandidateIntelligenceOperationRecord;
     created: boolean;
   }>;
   listRecoverableOperations(
@@ -351,6 +352,25 @@ function idempotencyMapKey(input: {
   ].join("\u001f");
 }
 
+function queuedForRetry(
+  operation: AcquisitionCandidateIntelligenceOperationRecord,
+  updatedAt: string
+) {
+  if (operation.status !== "failed") return clone(operation);
+  return clone({
+    ...operation,
+    status: "queued" as const,
+    currentStage: null,
+    failure: null,
+    updatedAt,
+    completedAt: null,
+    failedAt: null,
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null
+  });
+}
+
 export class InMemoryAcquisitionCandidateIntelligenceOperationRepository
 implements AcquisitionCandidateIntelligenceOperationRepository {
   private readonly operations = new Map<
@@ -429,10 +449,36 @@ implements AcquisitionCandidateIntelligenceOperationRepository {
           "IDEMPOTENCY_CONFLICT"
         );
       }
-      return { command: clone(existing), created: false };
+      const operation = this.operations.get(existing.operationId);
+      if (!operation
+        || operation.ownerId !== command.ownerId
+        || operation.teamId !== command.teamId) {
+        throw new AcquisitionCandidateIntelligenceOperationError(
+          "RESOURCE_NOT_FOUND"
+        );
+      }
+      return {
+        command: clone(existing),
+        operation: clone(operation),
+        created: false
+      };
     }
+    const operation = this.operations.get(command.operationId);
+    if (!operation
+      || operation.ownerId !== command.ownerId
+      || operation.teamId !== command.teamId) {
+      throw new AcquisitionCandidateIntelligenceOperationError(
+        "RESOURCE_NOT_FOUND"
+      );
+    }
+    const retried = queuedForRetry(operation, command.createdAt);
     this.retryIdempotency.set(key, clone(command));
-    return { command: clone(command), created: true };
+    this.operations.set(operation.id, clone(retried));
+    return {
+      command: clone(command),
+      operation: retried,
+      created: true
+    };
   }
 
   async listRecoverableOperations(
@@ -545,6 +591,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
     && !Array.isArray(value);
 }
 
+function uniqueNormalizedStrings(
+  values: string[],
+  maxItems: number,
+  maxLength: number
+) {
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const item = value.slice(0, maxLength);
+    if (seen.has(item)) continue;
+    seen.add(item);
+    normalized.push(item);
+    if (normalized.length >= maxItems) break;
+  }
+  return normalized;
+}
+
 function researchResult(value: unknown): AcquisitionCandidateIntelligenceResearch {
   if (!isRecord(value)
     || typeof value.summary !== "string"
@@ -572,9 +635,11 @@ function researchResult(value: unknown): AcquisitionCandidateIntelligenceResearc
       return {
         label: raw.label.slice(0, MAX_RESEARCH_LABEL_LENGTH),
         content: raw.content.slice(0, MAX_RESEARCH_CONTENT_LENGTH),
-        evidenceIds: (raw.evidenceIds as string[])
-          .slice(0, MAX_RESEARCH_EVIDENCE_IDS)
-          .map((id) => id.slice(0, MAX_REFERENCE_ID_LENGTH)),
+        evidenceIds: uniqueNormalizedStrings(
+          raw.evidenceIds as string[],
+          MAX_RESEARCH_EVIDENCE_IDS,
+          MAX_REFERENCE_ID_LENGTH
+        ),
         confidence: raw.confidence as number | null
       };
     });
@@ -610,9 +675,11 @@ function qualificationResult(
   return {
     grade: grade as AcquisitionCandidateIntelligenceQualification["grade"],
     score,
-    hardGateFailures: (hardGateFailures as string[])
-      .slice(0, 20)
-      .map((failure) => failure.slice(0, 100)),
+    hardGateFailures: uniqueNormalizedStrings(
+      hardGateFailures as string[],
+      20,
+      100
+    ),
     financialValueId: financialValueId.slice(0, MAX_REFERENCE_ID_LENGTH)
   };
 }
@@ -866,12 +933,6 @@ export class AcquisitionCandidateIntelligenceOperationService {
     const scope = validScope(rawScope);
     const operationId = requiredText(operationIdInput, 160);
     const idempotencyKey = requiredText(idempotencyKeyInput, 200);
-    const operation = await this.repository.getOperation(scope, operationId);
-    if (!operation) {
-      throw new AcquisitionCandidateIntelligenceOperationError(
-        "RESOURCE_NOT_FOUND"
-      );
-    }
     const command: AcquisitionCandidateIntelligenceRetryCommand = {
       ownerId: scope.ownerId,
       teamId: scope.teamId,
@@ -882,7 +943,7 @@ export class AcquisitionCandidateIntelligenceOperationService {
     };
     const registered = await this.repository.registerRetryCommand(command);
     return {
-      operation: publicOperation(operation),
+      operation: publicOperation(registered.operation),
       shouldDispatch: registered.created
     };
   }

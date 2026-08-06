@@ -106,9 +106,21 @@ async function fixture(options: { dispatchError?: Error } = {}) {
           "IDEMPOTENCY_CONFLICT"
         );
       }
+      const retried = existingOperationId === undefined
+        && value.status === "failed"
+        ? {
+            ...value,
+            status: "queued" as const,
+            currentStage: null,
+            failure: null,
+            failedAt: null,
+            updatedAt: NOW
+          }
+        : value;
       retryIdempotency.set(ledgerKey, operationId);
+      records.set(operationId, structuredClone(retried));
       return {
-        operation: value,
+        operation: structuredClone(retried),
         shouldDispatch: existingOperationId === undefined
       };
     },
@@ -289,6 +301,11 @@ test("retry validates the idempotency header and dispatches the existing operati
       }
     );
     state.dispatches.length = 0;
+    state.records.set(String(created.json.id), operation({
+      id: String(created.json.id),
+      candidateId: "candidate-retry",
+      status: "failed"
+    }));
     const missingKey = await state.request(
       `/api/v1/acquisition/candidate-intelligence-operations/${created.json.id}/retry`,
       { method: "POST", body: "{}" }
@@ -306,6 +323,7 @@ test("retry validates the idempotency header and dispatches the existing operati
     );
     assert.equal(retried.response.status, 202);
     assert.equal(retried.json.id, created.json.id);
+    assert.equal(retried.json.status, "queued");
     assert.deepEqual(state.dispatches, [{
       scope: { ownerId: OWNER, teamId: TEAM, actorId: OWNER },
       operationId: created.json.id
@@ -411,6 +429,38 @@ test("dispatch failures are sanitized and leave the durable operation retrievabl
     );
     assert.equal(loaded.response.status, 200);
     assert.equal(loaded.json.status, "queued");
+  } finally {
+    await state.close();
+  }
+});
+
+test("retry dispatch failure leaves a queued operation that an idempotent replay can observe", async () => {
+  const state = await fixture({ dispatchError: new Error("secret queue error") });
+  try {
+    const failed = operation({
+      id: "candidate-intelligence-retry-crash",
+      candidateId: "candidate-retry-crash",
+      status: "failed"
+    });
+    state.records.set(failed.id, failed);
+    const path =
+      `/api/v1/acquisition/candidate-intelligence-operations/${failed.id}/retry`;
+
+    const first = await state.request(path, {
+      method: "POST",
+      headers: { "Idempotency-Key": "retry-crash-window" },
+      body: "{}"
+    });
+    assert.equal(first.response.status, 500);
+    assert.equal(state.records.get(failed.id)?.status, "queued");
+
+    const replay = await state.request(path, {
+      method: "POST",
+      headers: { "Idempotency-Key": "retry-crash-window" },
+      body: "{}"
+    });
+    assert.equal(replay.response.status, 202);
+    assert.equal(replay.json.status, "queued");
   } finally {
     await state.close();
   }

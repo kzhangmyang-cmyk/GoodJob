@@ -292,6 +292,46 @@ test("registers retry commands durably and rejects one tenant key reused for ano
   );
 });
 
+test("retry atomically requeues a failed operation and makes it recoverable", async () => {
+  const executor: AcquisitionAgentToolExecutor = {
+    async execute() {
+      throw new AcquisitionToolExecutorError("INVALID_JUDGMENT_RESULT");
+    }
+  };
+  const state = fixture({ executor });
+  const created = await state.service.createAfterIdentity(
+    scope,
+    "candidate-a",
+    "create-retry-requeue"
+  );
+  const failed = await state.service.execute(scope, created.id);
+  assert.equal(failed.status, "failed");
+
+  const registered = await state.service.requestRetry(
+    scope,
+    created.id,
+    "retry-requeue-key"
+  );
+  assert.equal(registered.shouldDispatch, true);
+  assert.equal(registered.operation.status, "queued");
+  assert.equal(registered.operation.failure, null);
+  assert.equal(registered.operation.failedAt, null);
+  assert.equal(registered.operation.currentStage, null);
+  assert.deepEqual(
+    (await state.service.listRecoverableOperations())
+      .map((operation) => operation.id),
+    [created.id]
+  );
+
+  const replayed = await state.service.requestRetry(
+    scope,
+    created.id,
+    "retry-requeue-key"
+  );
+  assert.equal(replayed.shouldDispatch, false);
+  assert.equal(replayed.operation.status, "queued");
+});
+
 test("persists research, qualification with finance, and a battle card in stage order", async () => {
   const state = fixture();
   const created = await state.service.createAfterIdentity(
@@ -639,6 +679,56 @@ test("records a stable stage failure and retry resumes without rerunning complet
   assert.equal(calls.every((call) =>
     call.identity.sessionId === created.sessionId
   ), true);
+});
+
+test("normalizes repeated public evidence and hard-gate values to unique arrays", async () => {
+  const executor: AcquisitionAgentToolExecutor = {
+    async execute(input) {
+      if (input.toolName === "research_candidate") {
+        return {
+          summary: "研究已完成",
+          findings: [{
+            label: "采购信号",
+            content: "存在重复来源",
+            evidenceIds: [
+              "evidence-1",
+              "evidence-1",
+              `${"e".repeat(255)}-first`,
+              `${"e".repeat(255)}-second`
+            ],
+            confidence: 0.8
+          }],
+          outreachExecuted: false
+        };
+      }
+      if (input.toolName === "qualify_candidate") {
+        return qualification("D", 10, [
+          "DO_NOT_CONTACT",
+          "DO_NOT_CONTACT",
+          `${"g".repeat(100)}-first`,
+          `${"g".repeat(100)}-second`
+        ]);
+      }
+      throw new Error("battle card should be skipped");
+    }
+  };
+  const state = fixture({ executor });
+  const created = await state.service.createAfterIdentity(
+    scope,
+    "candidate-a",
+    "unique-public-arrays"
+  );
+
+  const completed = await state.service.execute(scope, created.id);
+
+  assert.deepEqual(
+    completed.research?.findings[0]?.evidenceIds,
+    ["evidence-1", "e".repeat(255)]
+  );
+  assert.deepEqual(
+    completed.qualification?.hardGateFailures,
+    ["DO_NOT_CONTACT", "g".repeat(100)]
+  );
 });
 
 test("recovers an expired running lease and keeps tenant reads isolated", async () => {

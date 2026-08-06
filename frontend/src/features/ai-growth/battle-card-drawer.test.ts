@@ -2409,7 +2409,7 @@ test("failed durable identity continuation exposes stage and code then coalesces
   const retry = drawer.retryIdentityContinuation();
   const duplicateRetry = drawer.retryIdentityContinuation();
   assert.equal(retry, duplicateRetry);
-  retryOperation.resolve(candidateIntelligenceOperation("succeeded"));
+  retryOperation.resolve(candidateIntelligenceOperation("queued"));
   await retry;
 
   assert.equal(confirmations, 1);

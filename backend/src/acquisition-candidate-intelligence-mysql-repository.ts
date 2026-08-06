@@ -287,6 +287,42 @@ async function selectedRows(
   return Array.isArray(rows) ? rows as MysqlRow[] : [];
 }
 
+async function operationById(
+  source: Pick<mysql.Pool, "query">,
+  scope: OperationScope,
+  id: string,
+  forUpdate = false
+) {
+  const rows = await selectedRows(
+    source,
+    `SELECT ${OPERATION_SELECT_COLUMNS}
+     FROM acquisition_candidate_intelligence_operations
+     WHERE id = ? AND owner_id = ? AND team_id = ?
+     LIMIT 1${forUpdate ? " FOR UPDATE" : ""}`,
+    [id, scope.ownerId, scope.teamId]
+  );
+  return rows[0] ? parseOperation(rows[0]) : null;
+}
+
+function queuedForRetry(
+  operation: AcquisitionCandidateIntelligenceOperationRecord,
+  updatedAt: string
+) {
+  if (operation.status !== "failed") return clone(operation);
+  return clone({
+    ...operation,
+    status: "queued" as const,
+    currentStage: null,
+    failure: null,
+    updatedAt,
+    completedAt: null,
+    failedAt: null,
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null
+  });
+}
+
 function parseRetryCommand(row: MysqlRow) {
   const command: AcquisitionCandidateIntelligenceRetryCommand = {
     ownerId: rowString(row, "owner_id"),
@@ -303,6 +339,56 @@ function parseRetryCommand(row: MysqlRow) {
     integrity("retry_request_hash");
   }
   return command;
+}
+
+async function retryCommandByIdempotency(
+  source: Pick<mysql.Pool, "query">,
+  command: AcquisitionCandidateIntelligenceRetryCommand
+) {
+  const rows = await selectedRows(
+    source,
+    `SELECT owner_id, team_id, operation_id,
+            idempotency_key_hash, request_hash,
+            DATE_FORMAT(
+              created_at,
+              '%Y-%m-%dT%H:%i:%s.%fZ'
+            ) AS created_at
+     FROM acquisition_candidate_intelligence_retry_commands
+     WHERE owner_id = ? AND team_id = ?
+       AND idempotency_key_hash = ?
+     LIMIT 1`,
+    [command.ownerId, command.teamId, command.idempotencyKeyHash]
+  );
+  return rows[0] ? parseRetryCommand(rows[0]) : null;
+}
+
+async function committedRetryReplay(
+  source: Pick<mysql.Pool, "query">,
+  command: AcquisitionCandidateIntelligenceRetryCommand
+) {
+  const existing = await retryCommandByIdempotency(source, command);
+  if (!existing) return null;
+  if (existing.requestHash !== command.requestHash
+    || existing.operationId !== command.operationId) {
+    throw new AcquisitionCandidateIntelligenceOperationError(
+      "IDEMPOTENCY_CONFLICT"
+    );
+  }
+  const operation = await operationById(
+    source,
+    command,
+    existing.operationId
+  );
+  if (!operation) {
+    throw new AcquisitionCandidateIntelligenceOperationError(
+      "RESOURCE_NOT_FOUND"
+    );
+  }
+  return {
+    command: existing,
+    operation,
+    created: false
+  };
 }
 
 export class MysqlAcquisitionCandidateIntelligenceOperationRepository
@@ -372,15 +458,7 @@ implements AcquisitionCandidateIntelligenceOperationRepository {
   }
 
   async getOperation(scope: OperationScope, id: string) {
-    const rows = await selectedRows(
-      this.pool,
-      `SELECT ${OPERATION_SELECT_COLUMNS}
-       FROM acquisition_candidate_intelligence_operations
-       WHERE id = ? AND owner_id = ? AND team_id = ?
-       LIMIT 1`,
-      [id, scope.ownerId, scope.teamId]
-    );
-    return rows[0] ? parseOperation(rows[0]) : null;
+    return operationById(this.pool, scope, id);
   }
 
   async findLatestForCandidate(
@@ -402,8 +480,26 @@ implements AcquisitionCandidateIntelligenceOperationRepository {
   async registerRetryCommand(
     command: AcquisitionCandidateIntelligenceRetryCommand
   ) {
+    const connection = await this.pool.getConnection();
     try {
-      await this.pool.query(
+      await connection.beginTransaction();
+      const operation = await operationById(
+        connection,
+        command,
+        command.operationId,
+        true
+      );
+      if (!operation) {
+        throw new AcquisitionCandidateIntelligenceOperationError(
+          "RESOURCE_NOT_FOUND"
+        );
+      }
+      const replay = await committedRetryReplay(connection, command);
+      if (replay) {
+        await connection.commit();
+        return replay;
+      }
+      await connection.query(
         `INSERT INTO acquisition_candidate_intelligence_retry_commands (
           owner_id, team_id, idempotency_key_hash,
           operation_id, request_hash, created_at
@@ -417,31 +513,47 @@ implements AcquisitionCandidateIntelligenceOperationRepository {
           mysqlDate(command.createdAt)
         ]
       );
-      return { command: clone(command), created: true };
-    } catch (error) {
-      if (!duplicateEntry(error)) throw error;
-      const rows = await selectedRows(
-        this.pool,
-        `SELECT owner_id, team_id, operation_id,
-                idempotency_key_hash, request_hash,
-                DATE_FORMAT(
-                  created_at,
-                  '%Y-%m-%dT%H:%i:%s.%fZ'
-                ) AS created_at
-         FROM acquisition_candidate_intelligence_retry_commands
-         WHERE owner_id = ? AND team_id = ?
-           AND idempotency_key_hash = ?
-         LIMIT 1`,
-        [command.ownerId, command.teamId, command.idempotencyKeyHash]
-      );
-      if (!rows[0]) throw error;
-      const existing = parseRetryCommand(rows[0]);
-      if (existing.requestHash !== command.requestHash) {
-        throw new AcquisitionCandidateIntelligenceOperationError(
-          "IDEMPOTENCY_CONFLICT"
+      const retried = queuedForRetry(operation, command.createdAt);
+      if (retried.status !== operation.status) {
+        const [result] = await connection.query(
+          `UPDATE acquisition_candidate_intelligence_operations
+           SET status = 'queued',
+               lease_owner = NULL,
+               lease_token = NULL,
+               lease_expires_at = NULL,
+               payload_json = ?,
+               updated_at = ?
+           WHERE id = ? AND owner_id = ? AND team_id = ?
+             AND status = 'failed'`,
+          [
+            JSON.stringify(retried),
+            mysqlDate(retried.updatedAt),
+            retried.id,
+            retried.ownerId,
+            retried.teamId
+          ]
         );
+        if (affectedRows(result) !== 1) {
+          throw new AcquisitionCandidateIntelligenceOperationError(
+            "OPERATION_ALREADY_RUNNING"
+          );
+        }
       }
-      return { command: existing, created: false };
+      await connection.commit();
+      return {
+        command: clone(command),
+        operation: retried,
+        created: true
+      };
+    } catch (error) {
+      await connection.rollback();
+      if (duplicateEntry(error)) {
+        const replay = await committedRetryReplay(connection, command);
+        if (replay) return replay;
+      }
+      throw error;
+    } finally {
+      connection.release();
     }
   }
 

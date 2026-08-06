@@ -14,6 +14,7 @@ import {
 class FakePool {
   readonly calls: Array<{ sql: string; values: unknown[] }> = [];
   readonly queue: Array<[unknown, unknown]> = [];
+  readonly transactions: string[] = [];
 
   enqueue(rows: unknown) {
     this.queue.push([rows, []]);
@@ -25,6 +26,26 @@ class FakePool {
       values
     });
     return this.queue.shift() ?? [{ affectedRows: 1 }, []];
+  }
+
+  async getConnection() {
+    return this;
+  }
+
+  async beginTransaction() {
+    this.transactions.push("begin");
+  }
+
+  async commit() {
+    this.transactions.push("commit");
+  }
+
+  async rollback() {
+    this.transactions.push("rollback");
+  }
+
+  release() {
+    this.transactions.push("release");
   }
 }
 
@@ -300,12 +321,35 @@ test("retry command idempotency is tenant-scoped, durable, and conflicts across 
   const pool = new FakePool();
   const repository =
     new MysqlAcquisitionCandidateIntelligenceOperationRepository(asPool(pool));
+  const failedOperation = {
+    ...queuedOperation,
+    status: "failed" as const,
+    currentStage: "qualification" as const,
+    failure: {
+      stage: "qualification" as const,
+      errorCode: "MODEL_TIMEOUT"
+    },
+    failedAt: command.createdAt,
+    updatedAt: command.createdAt
+  };
+  const retriedOperation = {
+    ...failedOperation,
+    status: "queued" as const,
+    currentStage: null,
+    failure: null,
+    failedAt: null
+  };
+  pool.enqueue([mysqlRow(failedOperation)]);
+  pool.enqueue([]);
 
   assert.deepEqual(await repository.registerRetryCommand(command), {
     command,
+    operation: retriedOperation,
     created: true
   });
-  const insert = pool.calls.at(-1)!;
+  const insert = pool.calls.find((call) =>
+    /INSERT INTO acquisition_candidate_intelligence_retry_commands/u
+      .test(call.sql))!;
   assert.match(
     insert.sql,
     /INSERT INTO acquisition_candidate_intelligence_retry_commands/u
@@ -318,11 +362,11 @@ test("retry command idempotency is tenant-scoped, durable, and conflicts across 
     command.requestHash,
     mysqlDate(command.createdAt)
   ]);
+  const requeue = pool.calls.find((call) =>
+    /UPDATE acquisition_candidate_intelligence_operations/u.test(call.sql))!;
+  assert.match(requeue.sql, /status = 'queued'/u);
+  assert.deepEqual(pool.transactions, ["begin", "commit", "release"]);
 
-  const duplicate = Object.assign(new Error("duplicate"), {
-    errno: 1062,
-    code: "ER_DUP_ENTRY"
-  });
   for (const sameRequest of [true, false]) {
     const replayPool = new FakePool();
     replayPool.query = async function query(
@@ -333,19 +377,21 @@ test("retry command idempotency is tenant-scoped, durable, and conflicts across 
         sql: sql.replace(/\s+/gu, " ").trim(),
         values
       });
-      if (sql.includes("INSERT INTO")) throw duplicate;
-      return [[{
-        owner_id: command.ownerId,
-        team_id: command.teamId,
-        operation_id: sameRequest
-          ? command.operationId
-          : "candidate-intelligence-other",
-        idempotency_key_hash: command.idempotencyKeyHash,
-        request_hash: sameRequest
-          ? command.requestHash
-          : `sha256:${"1".repeat(64)}`,
-        created_at: mysqlDate(command.createdAt)
-      }], []];
+      if (sql.includes("FROM acquisition_candidate_intelligence_retry_commands")) {
+        return [[{
+          owner_id: command.ownerId,
+          team_id: command.teamId,
+          operation_id: sameRequest
+            ? command.operationId
+            : "candidate-intelligence-other",
+          idempotency_key_hash: command.idempotencyKeyHash,
+          request_hash: sameRequest
+            ? command.requestHash
+            : `sha256:${"1".repeat(64)}`,
+          created_at: mysqlDate(command.createdAt)
+        }], []];
+      }
+      return [[mysqlRow(retriedOperation)], []];
     };
     const replayRepository =
       new MysqlAcquisitionCandidateIntelligenceOperationRepository(
@@ -354,7 +400,7 @@ test("retry command idempotency is tenant-scoped, durable, and conflicts across 
     if (sameRequest) {
       assert.deepEqual(
         await replayRepository.registerRetryCommand(command),
-        { command, created: false }
+        { command, operation: retriedOperation, created: false }
       );
     } else {
       await assert.rejects(
@@ -364,13 +410,90 @@ test("retry command idempotency is tenant-scoped, durable, and conflicts across 
           && error.code === "IDEMPOTENCY_CONFLICT"
       );
     }
-    const lookup = replayPool.calls.at(-1)!;
+    const lookup = replayPool.calls.find((call) =>
+      /FROM acquisition_candidate_intelligence_retry_commands/u
+        .test(call.sql))!;
     assert.match(lookup.sql, /owner_id = \? AND team_id = \?/u);
     assert.deepEqual(lookup.values, [
       command.ownerId,
       command.teamId,
       command.idempotencyKeyHash
     ]);
+    assert.deepEqual(
+      replayPool.transactions,
+      sameRequest
+        ? ["begin", "commit", "release"]
+        : ["begin", "rollback", "release"]
+    );
+  }
+});
+
+test("concurrent retry-key insertion replays the committed winner instead of leaking duplicate-key errors", async () => {
+  const duplicate = Object.assign(new Error("duplicate"), {
+    errno: 1062,
+    code: "ER_DUP_ENTRY"
+  });
+  const command = {
+    ownerId: "owner-a",
+    teamId: "team-a",
+    operationId: queuedOperation.id,
+    idempotencyKeyHash: "9".repeat(64),
+    requestHash: `sha256:${"8".repeat(64)}`,
+    createdAt: "2026-08-07T02:06:00.000Z"
+  };
+  for (const sameRequest of [true, false]) {
+    const pool = new FakePool();
+    let retryLookups = 0;
+    pool.query = async function query(
+      sql: string,
+      values: unknown[] = []
+    ) {
+      const normalized = sql.replace(/\s+/gu, " ").trim();
+      this.calls.push({ sql: normalized, values });
+      if (sql.includes("FROM acquisition_candidate_intelligence_operations")) {
+        return [[mysqlRow(queuedOperation)], []];
+      }
+      if (sql.includes("FROM acquisition_candidate_intelligence_retry_commands")) {
+        retryLookups += 1;
+        if (retryLookups === 1) return [[], []];
+        return [[{
+          owner_id: command.ownerId,
+          team_id: command.teamId,
+          operation_id: sameRequest
+            ? command.operationId
+            : "candidate-intelligence-other",
+          idempotency_key_hash: command.idempotencyKeyHash,
+          request_hash: sameRequest
+            ? command.requestHash
+            : `sha256:${"7".repeat(64)}`,
+          created_at: mysqlDate(command.createdAt)
+        }], []];
+      }
+      if (sql.includes("INSERT INTO acquisition_candidate_intelligence_retry_commands")) {
+        throw duplicate;
+      }
+      return [{ affectedRows: 1 }, []];
+    };
+    const repository =
+      new MysqlAcquisitionCandidateIntelligenceOperationRepository(
+        asPool(pool)
+      );
+
+    if (sameRequest) {
+      assert.deepEqual(await repository.registerRetryCommand(command), {
+        command,
+        operation: queuedOperation,
+        created: false
+      });
+    } else {
+      await assert.rejects(
+        repository.registerRetryCommand(command),
+        (error: unknown) =>
+          error instanceof AcquisitionCandidateIntelligenceOperationError
+          && error.code === "IDEMPOTENCY_CONFLICT"
+      );
+    }
+    assert.deepEqual(pool.transactions, ["begin", "rollback", "release"]);
   }
 });
 
