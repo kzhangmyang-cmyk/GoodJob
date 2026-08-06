@@ -319,6 +319,7 @@ class TestSearchPort implements SearchPublicSourcesPort {
       : "baidu_ai_search";
     const results: SearchPublicSourceResult[] = [
       {
+        providerRecordId: "provider-record-organization-growth",
         sourceUrl: "https://example.cn/company/growth",
         sourcePlatform: "company_registry",
         sourceType: "other",
@@ -338,6 +339,7 @@ class TestSearchPort implements SearchPublicSourcesPort {
         }
       },
       {
+        providerRecordId: "provider-record-individual-store-owner",
         sourceUrl: "https://example.cn/profile/store-owner",
         sourcePlatform: this.individualPlatform,
         sourceType: this.individualSourceType,
@@ -548,6 +550,25 @@ test("searches authorized providers, survives a partial failure, and idempotentl
       (item: any) => item.provenance.provider === "baidu_ai_search"
     ),
     true
+  );
+  assert.deepEqual(
+    first.evidence.map((item: any) => ({
+      providerConnectionId: item.provenance.providerConnectionId,
+      requestId: item.provenance.requestId,
+      providerRecordId: item.provenance.providerRecordId
+    })),
+    [
+      {
+        providerConnectionId: "search-ok",
+        requestId: "request-search-ok",
+        providerRecordId: "provider-record-organization-growth"
+      },
+      {
+        providerConnectionId: "search-ok",
+        requestId: "request-search-ok",
+        providerRecordId: "provider-record-individual-store-owner"
+      }
+    ]
   );
   assert.equal(search.calls.length, 2);
   assert.equal(

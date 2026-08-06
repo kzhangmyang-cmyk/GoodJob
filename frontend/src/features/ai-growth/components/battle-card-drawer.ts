@@ -1722,7 +1722,28 @@ export function createBattleCardDrawer(
         publish("candidate", () => api.getCandidate(candidateId)),
         publish("evidence", () =>
           api.getEvidence(candidateId).then((page) => page.items)
-        ),
+        )
+      ]);
+      if (
+        currentGeneration !== generation
+        || state.candidateId !== candidateId
+      ) return;
+      const loadedCandidate = state.candidate.data;
+      if (
+        loadedCandidate
+        && requiresDouyinIdentityVerification(loadedCandidate)
+      ) {
+        state.qualification = { status: "missing", data: null, error: null };
+        state.financialValue = { status: "missing", data: null, error: null };
+        state.battleCard = { status: "missing", data: null, error: null };
+        state.identityVerification = identityStateForLoadedCandidate(
+          state.identityVerification,
+          loadedCandidate
+        );
+        notify();
+        return;
+      }
+      await Promise.all([
         publish("qualification", () => api.getQualification(candidateId)),
         publish("financialValue", () => api.getFinancialValue(candidateId)),
         publish("battleCard", () => api.getBattleCard(candidateId))

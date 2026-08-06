@@ -182,6 +182,18 @@ function isPublicIndividualSignal(record: ProviderRecord) {
     );
 }
 
+function isUnresolvedDouyinIndividualSignal(source: {
+  sourcePlatform: string;
+  sourceType: DouyinPublicSourceType;
+}) {
+  return source.sourcePlatform === "douyin"
+    && (
+      source.sourceType === "video"
+      || source.sourceType === "comment_signal"
+      || source.sourceType === "short_link"
+    );
+}
+
 function buyingStage(text: string): Extract<
   SearchPublicSourceResult["subject"],
   { kind: "individual" }
@@ -256,7 +268,7 @@ function toPublicResult(
   const snippet = publicSnippet(record);
   if (!title && !snippet) return null;
   const classifiedSource = contentSource(source, title, snippet);
-  const individual = classifiedSource.sourceType === "comment_signal"
+  const individual = isUnresolvedDouyinIndividualSignal(classifiedSource)
     || isPublicIndividualSignal(record);
 
   if (individual) {
@@ -295,6 +307,7 @@ function toPublicResult(
       subject
     });
     return {
+      providerRecordId: record.providerRecordId,
       sourceUrl: source.toString(),
       ...classifiedSource,
       title,
@@ -331,6 +344,7 @@ function toPublicResult(
     subject
   });
   return {
+    providerRecordId: record.providerRecordId,
     sourceUrl: source.toString(),
     ...classifiedSource,
     title,

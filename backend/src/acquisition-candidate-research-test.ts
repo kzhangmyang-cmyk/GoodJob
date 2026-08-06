@@ -170,6 +170,7 @@ function organizationResult(input: {
   sourcePlatform?: string;
 }): SearchPublicSourceResult {
   return {
+    providerRecordId: `research:${input.sourceUrl}`,
     sourceUrl: input.sourceUrl,
     sourcePlatform: input.sourcePlatform ?? "public_registry",
     sourceType: "other",
@@ -196,6 +197,7 @@ function individualResult(input: {
   actorKey: string;
 }): SearchPublicSourceResult {
   return {
+    providerRecordId: `research:${input.sourceUrl}`,
     sourceUrl: input.sourceUrl,
     title: "Alice",
     snippet: "公开寻找供应商和 AI 增长解决方案。",
@@ -466,6 +468,10 @@ test("organization research accepts only non-conflicting strong identity matches
   assert.deepEqual(firstAdded.provenance, {
     kind: "search_result",
     provider: "brave",
+    providerConnectionId: "search-connection",
+    requestId: "request-1",
+    providerRecordId:
+      "research:https://news.example.cn/target?a=1&b=2",
     queryText:
       "\"目标科技有限公司\" \"target.example.cn\" 采购 招标 合作",
     sourceUrl: "https://news.example.cn/target?a=1&b=2",

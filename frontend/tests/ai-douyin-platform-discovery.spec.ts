@@ -283,15 +283,17 @@ const evidence = {
   rawArtifactHash: "sha256:raw-douyin-evidence-001",
   contentHash: "sha256:content-douyin-evidence-001",
   provenance: {
-    kind: "provider_search",
+    kind: "search_result",
     provider: "baidu_ai_search",
     providerConnectionId: connection.id,
+    requestId: "preq-douyin-public-001",
+    providerRecordId: "baidu-result-douyin-public-001",
     sourceUrl: "https://www.douyin.com/video/7390012345678901234",
-    query: allowedQueries[0],
-    sourceType: "video",
-    accessStatus: "public_indexed_summary"
+    queryText: allowedQueries[0],
+    resultRank: 1,
+    sourceType: "video"
   },
-  accessStatus: "public_content"
+  accessStatus: "indexed_summary"
 };
 
 const qualification = {
@@ -348,6 +350,8 @@ const candidate = {
   region: "苏州",
   creditCode: null,
   status: "pending_review",
+  version: 1,
+  identityResolved: true,
   latestDecisionVersion: qualification.decisionVersion,
   approvedDecisionVersion: null,
   evidenceIds: [evidenceId],
@@ -483,6 +487,8 @@ const presentation = {
       region: candidate.region,
       domain: candidate.domain,
       status: candidate.status,
+      version: candidate.version,
+      identityResolved: candidate.identityResolved,
       updatedAt: timestamp
     },
     qualification,
@@ -519,6 +525,127 @@ const taskDetail = {
   latestRun: run,
   shards: [],
   presentation
+};
+
+const unresolvedPlanDraft = {
+  ...planDraft,
+  name: "抖音门店公开需求信号发现",
+  objective: "发现抖音公开索引页面中表达获客困难的厦门门店经营者",
+  icp: {
+    ...planDraft.icp,
+    industries: ["本地生活"],
+    regions: ["厦门"],
+    organizationCriteria: [],
+    individualCriteria: ["公开视频或评论摘要中出现明确获客困难"],
+    exclusionRules: ["身份未核验不得评分", "勿扰名单"]
+  },
+  subjectChannels: { organization: false, individual: true },
+  operations: [{
+    operationId: "douyin-search-individual-1",
+    subjectChannel: "individual",
+    kind: "search",
+    connectionId: connection.id,
+    query: "site:douyin.com 厦门 门店 获客",
+    allocatedBudget: {
+      requests: 4,
+      results: 20,
+      amountMinor: 1_000,
+      durationSeconds: 45
+    }
+  }]
+};
+
+const unresolvedPlan = {
+  ...plan,
+  payload: unresolvedPlanDraft
+};
+
+const unresolvedApprovedPlan = {
+  ...approvedPlan,
+  payload: unresolvedPlanDraft
+};
+
+const unresolvedEvidence = {
+  ...evidence,
+  targetType: "individual_signal",
+  sourceTitle: "夏季门店经营复盘",
+  sourceSnippet: "公开搜索摘要：咨询量不少，但有效到店客户不多。",
+  publishedAt: null,
+  provenance: {
+    ...evidence.provenance,
+    providerRecordId: "baidu-result-douyin-unresolved-001",
+    sourceUrl: "https://www.douyin.com/video/7521000000000000010",
+    queryText: unresolvedPlanDraft.operations[0].query
+  }
+};
+
+const unresolvedCandidate = {
+  id: candidateId,
+  publicActorKey: "unresolved-public-signal:douyin:sha256:fixture",
+  publicDisplayName: "抖音公开需求信号（身份待核实）",
+  publicProfileUrl: unresolvedEvidence.provenance.sourceUrl,
+  sourcePlatform: "douyin",
+  evidenceIds: [evidenceId],
+  demandCategory: "门店获客",
+  demandSummary: unresolvedEvidence.sourceSnippet,
+  locationHint: "厦门",
+  buyingStage: "problem_defined",
+  negativeSignals: [],
+  subjectKind: "individual",
+  status: "unresolvable",
+  version: 1,
+  identityResolved: false,
+  latestDecisionVersion: null,
+  approvedDecisionVersion: null,
+  updatedAt: timestamp,
+  firstSeenAt: timestamp,
+  lastSeenAt: timestamp
+};
+
+const unresolvedPresentation = {
+  ...presentation,
+  summary: {
+    ...presentation.summary,
+    organizationsFound: 0,
+    validOpportunities: 0,
+    highIntent: 0,
+    financialEvaluatedHighIntentCount: 0,
+    expectedRevenueByCurrency: []
+  },
+  candidateEvents: [{
+    eventId: "candidate-event-douyin-unresolved-001",
+    createdAt: timestamp,
+    candidateId,
+    candidate: {
+      id: candidateId,
+      subjectKind: "individual",
+      displayName: unresolvedCandidate.publicDisplayName,
+      industry: null,
+      region: unresolvedCandidate.locationHint,
+      domain: unresolvedCandidate.publicProfileUrl,
+      status: unresolvedCandidate.status,
+      version: unresolvedCandidate.version,
+      identityResolved: unresolvedCandidate.identityResolved,
+      updatedAt: timestamp
+    },
+    qualification: null,
+    financialValue: null,
+    sourcePlatforms: ["douyin"],
+    evidenceCount: 1
+  }]
+};
+
+const unresolvedTask = {
+  ...task,
+  name: unresolvedPlanDraft.name,
+  objective: unresolvedPlanDraft.objective
+};
+
+const unresolvedTaskDetail = {
+  ...taskDetail,
+  task: unresolvedTask,
+  plan: unresolvedApprovedPlan,
+  presentation: unresolvedPresentation
 };
 
 function configureFixture(fixture: StrictDouyinFixture) {
@@ -600,6 +727,43 @@ function configureFixture(fixture: StrictDouyinFixture) {
       `/api/v1/acquisition/candidates/${candidateId}/battle-card`,
       { body: battleCard }
     );
+}
+
+function configureUnresolvedFixture(fixture: StrictDouyinFixture) {
+  configureFixture(fixture);
+  fixture
+    .on(
+      "POST",
+      "/api/v1/acquisition/copilot/sessions/copilot-session-douyin-001/messages",
+      {
+        body: {
+          id: "copilot-task-douyin-unresolved-001",
+          sessionId: "copilot-session-douyin-001",
+          kind: "message",
+          status: "succeeded",
+          responseMode: "plan_draft",
+          targetPlatform: "douyin",
+          result: { planDraft: unresolvedPlanDraft },
+          errorCode: null,
+          createdAt: timestamp,
+          completedAt: timestamp
+        }
+      }
+    )
+    .on("POST", "/api/v1/acquisition/plans", { body: unresolvedPlan })
+    .on("POST", `/api/v1/acquisition/plans/${encodedPlanId}/approval`, {
+      body: unresolvedApprovedPlan
+    })
+    .on("GET", `/api/v1/acquisition/runs/${runId}/presentation`, {
+      body: unresolvedPresentation
+    })
+    .on("GET", taskPath, { body: unresolvedTaskDetail })
+    .on("GET", `/api/v1/acquisition/candidates/${candidateId}`, {
+      body: unresolvedCandidate
+    })
+    .on("GET", `/api/v1/acquisition/candidates/${candidateId}/evidence`, {
+      body: { items: [unresolvedEvidence], nextCursor: null }
+    });
 }
 
 async function login(page: Page) {
@@ -795,6 +959,85 @@ test("Douyin discovery compiles safe public queries and keeps provider, source a
   expect(writePaths.some((path) =>
     /comment|reply|direct-message|private-message|friend|group|outreach/iu
       .test(path)
+  )).toBe(false);
+  expect(fixture.calls("POST", "/api/todos")).toHaveLength(0);
+  fixture.assertNoUnexpected();
+});
+
+test("Douyin search presents ordinary video signals as unresolved and blocks downstream decisions", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1_000 });
+  await login(page);
+  const fixture = new StrictDouyinFixture();
+  configureUnresolvedFixture(fixture);
+  await fixture.install(page);
+
+  await openAdvisor(page);
+  await page.getByRole("button", { name: "新建获客任务" }).click();
+  const intent = "寻找厦门在抖音公开视频中表达获客困难的门店经营者";
+  await page.locator('[data-field="task-text"]').fill(intent);
+  await page.getByRole("button", { name: "生成商机搜索方案" }).click();
+
+  const planPanel = page.locator(".ai-growth-plan");
+  await expect(planPanel).toContainText(unresolvedPlanDraft.operations[0].query);
+  await page.getByRole("button", { name: "批准并开始执行" }).click();
+
+  const runConsole = page.locator(".ai-growth-run-console");
+  await expect(runConsole).toHaveAttribute("data-status", "completed");
+  await expect(runConsole).toContainText(
+    "发现 1 个公开需求信号待核验；不是已确认客户"
+  );
+  const candidateCard = page.locator(
+    `.ai-growth-candidate-card[data-candidate-id="${candidateId}"]`
+  );
+  await expect(candidateCard).toHaveAttribute(
+    "data-review-status",
+    "unresolvable"
+  );
+  await expect(candidateCard).toHaveAttribute(
+    "data-identity-state",
+    "unresolved"
+  );
+  await expect(candidateCard).toContainText("主体确认后评估");
+  await expect(candidateCard.locator(".ai-growth-character-icon"))
+    .toHaveText("需");
+  await expect(candidateCard.locator(".ai-growth-candidate-score"))
+    .toHaveCount(0);
+  await expect(candidateCard.getByText("查看客户作战卡", { exact: true }))
+    .toHaveCount(0);
+  await expect(candidateCard.getByRole("button", { name: "核验主体" }))
+    .toBeVisible();
+  await expect(candidateCard.getByRole("button", { name: "查看发现依据" }))
+    .toBeVisible();
+
+  await candidateCard.getByRole("button", { name: "查看发现依据" }).click();
+  const drawer = page.getByRole("dialog", {
+    name: unresolvedCandidate.publicDisplayName
+  });
+  await expect(drawer.getByRole("heading", { name: "主体核验" }))
+    .toBeVisible();
+  await expect(drawer).toContainText("搜索结果不是已核验的客户身份");
+  await expect(drawer).toContainText(unresolvedEvidence.sourceTitle);
+  await expect(drawer).toContainText("百度搜索");
+  await expect(drawer.locator('[data-field="identity-profile-url"]'))
+    .toHaveValue("");
+  await expect(drawer.getByRole("button", { name: "确认主体并继续" }))
+    .toBeDisabled();
+
+  expect(fixture.calls(
+    "GET",
+    `/api/v1/acquisition/candidates/${candidateId}/qualification`
+  )).toHaveLength(0);
+  expect(fixture.calls(
+    "GET",
+    `/api/v1/acquisition/candidates/${candidateId}/financial-value`
+  )).toHaveLength(0);
+  expect(fixture.calls(
+    "GET",
+    `/api/v1/acquisition/candidates/${candidateId}/battle-card`
+  )).toHaveLength(0);
+  expect(fixture.writes().some((request) =>
+    /qualification|financial-value|battle-card|review|convert|outreach/iu
+      .test(request.pathname)
   )).toBe(false);
   expect(fixture.calls("POST", "/api/todos")).toHaveLength(0);
   fixture.assertNoUnexpected();

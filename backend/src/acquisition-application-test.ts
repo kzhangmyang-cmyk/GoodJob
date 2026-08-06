@@ -220,6 +220,9 @@ function fakeSearchPort() {
         provider: "fake-official-search",
         requestId: "search-request-application",
         results: [{
+          providerRecordId: individual
+            ? "application-individual-record"
+            : "application-organization-record",
           sourceUrl: individual
             ? "https://example.cn/public-profile/operator"
             : "https://example.cn/public-demand",

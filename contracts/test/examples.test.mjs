@@ -81,6 +81,46 @@ test("identity workbench contracts accept versioned identity state and exact evi
   }).valid, true);
 });
 
+test("search evidence accepts exact provider trace without breaking legacy records", async () => {
+  const { validateCase } = await loadContractHarness();
+  const legacyEvidence = {
+    id: "evidence-search-trace-1",
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: "公开视频",
+    sourceSnippet: "搜索索引摘要",
+    publishedAt: null,
+    fetchedAt: "2026-08-07T00:00:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: `sha256:${"a".repeat(64)}`,
+    contentHash: `sha256:${"b".repeat(64)}`,
+    provenance: {
+      kind: "search_result",
+      provider: "baidu_ai_search",
+      queryText: "site:douyin.com 获客",
+      sourceUrl: "https://www.douyin.com/video/1234567890",
+      resultRank: 1,
+      sourceType: "video"
+    },
+    accessStatus: "indexed_summary"
+  };
+
+  assert.equal(
+    validateCase("discovery-evidence", legacyEvidence).valid,
+    true,
+    "existing search evidence must remain readable"
+  );
+  assert.equal(validateCase("discovery-evidence", {
+    ...legacyEvidence,
+    provenance: {
+      ...legacyEvidence.provenance,
+      providerConnectionId: "connection-baidu-1",
+      requestId: "provider-request-1",
+      providerRecordId: "urlh:provider-record-1"
+    }
+  }).valid, true);
+});
+
 test("content fetch operations keep status, evidence count, and evidence ids consistent", async () => {
   const { validateCase } = await loadContractHarness();
   const operation = {

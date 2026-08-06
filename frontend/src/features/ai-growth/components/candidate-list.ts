@@ -100,7 +100,9 @@ function finance(candidate: CandidateCardVm): string {
   `;
 }
 
-function requiresDouyinIdentityVerification(candidate: CandidateCardVm): boolean {
+export function requiresDouyinIdentityVerification(
+  candidate: CandidateCardVm
+): boolean {
   return candidate.subjectKind === "individual"
     && !candidate.identityResolved
     && candidate.sourcePlatforms.some((platform) =>
@@ -112,15 +114,15 @@ function requiresDouyinIdentityVerification(candidate: CandidateCardVm): boolean
 
 function reviewActions(candidate: CandidateCardVm, mode: AdvisorMode): string {
   const id = escapeHtml(candidate.id);
-  const common = `
-    <button type="button" class="ai-growth-text-action" data-action="open-battle-card" data-candidate-id="${id}">查看客户作战卡</button>
-  `;
   if (requiresDouyinIdentityVerification(candidate) && mode === "real") {
     return `
       <button type="button" class="ai-growth-button ai-growth-button--primary ai-growth-button--compact" data-action="verify-identity" data-candidate-id="${id}">核验主体</button>
-      ${common}
+      <button type="button" class="ai-growth-text-action" data-action="open-battle-card" data-candidate-id="${id}">查看发现依据</button>
     `;
   }
+  const common = `
+    <button type="button" class="ai-growth-text-action" data-action="open-battle-card" data-candidate-id="${id}">查看客户作战卡</button>
+  `;
   if (mode === "demo") {
     return `${common}<button type="button" class="ai-growth-text-action" data-action="preview-review" data-candidate-id="${id}">预览人工审核</button>`;
   }
@@ -147,11 +149,15 @@ function reviewActions(candidate: CandidateCardVm, mode: AdvisorMode): string {
 }
 
 function candidateCard(candidate: CandidateCardVm, mode: AdvisorMode): string {
-  const review = requiresDouyinIdentityVerification(candidate)
+  const identityPending = requiresDouyinIdentityVerification(candidate);
+  const review = identityPending
     ? REVIEW_PRESENTATION.unresolvable
-    : candidate.identityResolved
-    ? REVIEW_PRESENTATION[candidate.status]
     : REVIEW_PRESENTATION[candidate.status];
+  const effectiveStatus = identityPending ? "unresolvable" : candidate.status;
+  const identityState = identityPending ? "unresolved" : "resolved";
+  const subjectMark = identityPending
+    ? "需"
+    : candidate.subjectKind === "individual" ? "人" : "企";
   const qualification = candidate.qualification;
   const signals = qualification?.positiveSignals.map((signal) => signal.name) ?? [];
   const reason = qualification?.reasons[0] ?? "等待更多公开证据";
@@ -159,11 +165,24 @@ function candidateCard(candidate: CandidateCardVm, mode: AdvisorMode): string {
   const confidence = qualification === null
     ? "置信度待评估"
     : `置信度 ${percent(qualification.confidence)}`;
+  const decisionPanel = identityPending
+    ? `
+      <div class="ai-growth-candidate-identity-gate" role="status">
+        <strong>主体确认后评估</strong>
+        <span>完成主体核验后，再计算意向等级与财务价值。</span>
+      </div>
+    `
+    : `
+      <div class="ai-growth-candidate-score">
+        <span class="ai-growth-grade" data-grade="${grade}"><small>意向等级</small><strong>${grade}</strong></span>
+        ${finance(candidate)}
+      </div>
+    `;
 
   return `
-    <article class="ai-growth-candidate-card" data-candidate-id="${escapeHtml(candidate.id)}" data-review-status="${candidate.status}">
+    <article class="ai-growth-candidate-card" data-candidate-id="${escapeHtml(candidate.id)}" data-review-status="${effectiveStatus}" data-identity-state="${identityState}">
       <header>
-        <span class="ai-growth-character-icon" aria-hidden="true">企</span>
+        <span class="ai-growth-character-icon" aria-hidden="true">${subjectMark}</span>
         <div>
           <h3>${escapeHtml(candidate.displayName)}</h3>
           <p>${escapeHtml(candidate.industry ?? "行业待核实")} · ${escapeHtml(candidate.region ?? "地区待核实")}</p>
@@ -179,10 +198,7 @@ function candidateCard(candidate: CandidateCardVm, mode: AdvisorMode): string {
         <span><b>${candidate.sourcePlatforms.length} 个来源</b>${escapeHtml(candidate.sourcePlatforms.join("、") || "来源待补充")}</span>
         <span><b>${candidate.evidenceCount} 条证据</b>${confidence}</span>
       </div>
-      <div class="ai-growth-candidate-score">
-        <span class="ai-growth-grade" data-grade="${grade}"><small>意向等级</small><strong>${grade}</strong></span>
-        ${finance(candidate)}
-      </div>
+      ${decisionPanel}
       <footer>
         <span class="ai-growth-review-guidance">${review.guidance}</span>
         <div class="ai-growth-candidate-actions">${reviewActions(candidate, mode)}</div>
@@ -208,8 +224,8 @@ export function renderCandidateList(
     <section class="ai-growth-candidate-list" aria-labelledby="aiGrowthCandidatesTitle">
       <div class="ai-growth-list-heading">
         <div>
-          <p class="ai-growth-eyebrow">优先客户</p>
-          <h2 id="aiGrowthCandidatesTitle">今天最值得跟进的客户</h2>
+          <p class="ai-growth-eyebrow">候选队列</p>
+          <h2 id="aiGrowthCandidatesTitle">搜索发现与待审核候选</h2>
         </div>
         <span>${vm.candidates.length} 个候选</span>
       </div>

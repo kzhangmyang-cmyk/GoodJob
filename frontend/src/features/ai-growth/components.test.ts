@@ -441,7 +441,7 @@ test("candidate cards expose finance pending and actionable review states", () =
   assert.doesNotMatch(doNotContactCard, /data-action="reopen"/);
 });
 
-test("unresolved candidate exposes identity verification as the primary action", () => {
+test("unresolved Douyin signal is presented honestly before identity verification", () => {
   const rendered = renderCandidateList({
     mode: "real",
     candidates: [candidate("normalized", {
@@ -465,9 +465,20 @@ test("unresolved candidate exposes identity verification as the primary action",
     onConvert: noop
   });
 
+  assert.match(rendered.html, /搜索发现与待审核候选/);
   assert.match(rendered.html, /主体待核实/);
+  assert.match(rendered.html, /data-review-status="unresolvable"/);
+  assert.match(rendered.html, /data-identity-state="unresolved"/);
+  assert.match(rendered.html, />需<\/span>/);
+  assert.doesNotMatch(rendered.html, />企<\/span>/);
+  assert.match(rendered.html, /主体确认后评估/);
+  assert.doesNotMatch(rendered.html, /ai-growth-candidate-score/);
+  assert.doesNotMatch(rendered.html, /ai-growth-grade/);
+  assert.doesNotMatch(rendered.html, /ai-growth-finance/);
   assert.match(rendered.html, /data-action="verify-identity"/);
   assert.match(rendered.html, />核验主体</);
+  assert.match(rendered.html, />查看发现依据</);
+  assert.doesNotMatch(rendered.html, />查看客户作战卡</);
   assert.doesNotMatch(rendered.html, /data-action="approve"/);
   assert.doesNotMatch(rendered.html, /data-action="convert"/);
 });
@@ -498,6 +509,47 @@ test("identity verification entry remains scoped to unresolved Douyin individual
 
   assert.doesNotMatch(rendered.html, /data-action="verify-identity"/);
   assert.match(rendered.html, /待资格判断/);
+});
+
+test("run console reports unresolved Douyin signals as unconfirmed customers", () => {
+  const rendered = renderRunConsole({
+    mode: "real",
+    status: "completed",
+    timeline: [],
+    queryStream: ["site:douyin.com 厦门 获客系统"],
+    providers: [],
+    candidates: [candidate("unresolvable", {
+      id: "candidate-douyin-unresolved",
+      subjectKind: "individual",
+      identityResolved: false,
+      displayName: "抖音公开需求信号",
+      sourcePlatforms: ["douyin"],
+      qualification: null,
+      financialValue: { status: "pending", label: "待评估", amounts: [] },
+      isHighIntent: false,
+      isValidOpportunity: false
+    })]
+  }, {
+    onPause: noop,
+    onResume: noop,
+    onCancel: noop,
+    candidateCallbacks: {
+      onOpenBattleCard: noop,
+      onPreviewReview: noop,
+      onApprove: noop,
+      onReject: noop,
+      onDoNotContact: noop,
+      onRequestResearch: noop,
+      onReopen: noop,
+      onConvert: noop
+    }
+  });
+
+  assert.match(
+    rendered.html,
+    /发现 1 个公开需求信号待核验；不是已确认客户/
+  );
+  assert.match(rendered.html, /data-notice="identity-verification-required"/);
 });
 
 test("partial runs distinguish successful, partially successful, and failed sources in text", () => {

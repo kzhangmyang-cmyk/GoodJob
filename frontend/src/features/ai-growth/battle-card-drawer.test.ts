@@ -436,6 +436,7 @@ test("open publishes each completed resource while slower reads remain loading",
   const opening = drawer.open("candidate-1");
   await Promise.resolve();
   await Promise.resolve();
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   assert.equal(drawer.getState().candidate.status, "ready");
   assert.equal(drawer.getState().qualification.status, "ready");
@@ -761,13 +762,20 @@ test("renderer fails closed while the candidate identity is still loading", () =
 
 test("unresolved Douyin candidates reject direct downstream tool calls", async () => {
   let assistantActions = 0;
+  let downstreamReads = 0;
   const drawer = createBattleCardDrawer({
     api: apiStub({
       getCandidate: async () => unresolvedIndividualCandidate(),
       getQualification: async () => {
+        downstreamReads += 1;
+        throw httpError(404, "missing");
+      },
+      getFinancialValue: async () => {
+        downstreamReads += 1;
         throw httpError(404, "missing");
       },
       getBattleCard: async () => {
+        downstreamReads += 1;
         throw httpError(404, "missing");
       },
       requestAssistantAction: async () => {
@@ -783,6 +791,10 @@ test("unresolved Douyin candidates reject direct downstream tool calls", async (
   await assert.rejects(drawer.generateBattleCard(), /先完成抖音公开主体核验/);
 
   assert.equal(assistantActions, 0);
+  assert.equal(downstreamReads, 0);
+  assert.equal(drawer.getState().qualification.status, "missing");
+  assert.equal(drawer.getState().financialValue.status, "missing");
+  assert.equal(drawer.getState().battleCard.status, "missing");
 });
 
 test("renderer keeps all battle-card v2 regions in a fixed order and marks inference with confidence", () => {
@@ -1729,17 +1741,14 @@ test("identity confirmation coalesces duplicates then runs research, qualificati
       }),
       getQualification: async () => {
         qualificationReads += 1;
-        if (qualificationReads === 1) throw httpError(404, "missing");
         return qualification;
       },
       getFinancialValue: async () => {
         financeReads += 1;
-        if (financeReads === 1) throw httpError(404, "missing");
         return financialValue;
       },
       getBattleCard: async () => {
         cardReads += 1;
-        if (cardReads === 1) throw httpError(404, "missing");
         return battleCardV2;
       },
       createContentFetchOperation: async () =>
@@ -1903,7 +1912,7 @@ test("identity continuation stops successfully after an ineligible qualification
 
   assert.equal(messages.length, 2);
   assert.doesNotMatch(messages.join("\n"), /build_battle_card/);
-  assert.equal(cardReads, 1);
+  assert.equal(cardReads, 0);
   assert.equal(drawer.getState().identityVerification.status, "complete");
   assert.equal(
     drawer.getState().identityVerification.continuation.status,

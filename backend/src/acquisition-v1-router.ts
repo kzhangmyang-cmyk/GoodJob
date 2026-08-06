@@ -73,6 +73,9 @@ const provenanceSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("search_result"),
     provider: requiredText(100),
+    providerConnectionId: requiredText(255).optional(),
+    requestId: requiredText(500).optional(),
+    providerRecordId: requiredText(255).optional(),
     queryText: requiredText(1_000),
     sourceUrl: z.string().url().max(2_000),
     resultRank: z.number().int().min(1).nullable(),

@@ -186,6 +186,9 @@ function evidenceInput(
     provenance: {
       kind: "search_result",
       provider: response.provider,
+      providerConnectionId: response.providerConnectionId,
+      requestId: response.requestId,
+      providerRecordId: result.providerRecordId,
       queryText,
       sourceUrl: result.sourceUrl,
       resultRank

@@ -1531,6 +1531,9 @@ export interface components {
                 /** @constant */
                 kind: "search_result";
                 provider: string;
+                providerConnectionId?: string;
+                requestId?: string;
+                providerRecordId?: string;
                 queryText: string;
                 /** Format: uri */
                 sourceUrl: string;

@@ -120,6 +120,7 @@ export type SearchPublicSourceSubject =
     };
 
 export interface SearchPublicSourceResult {
+  providerRecordId: string;
   sourceUrl: string;
   sourcePlatform?: string;
   sourceType?: DouyinPublicSourceType;
@@ -138,7 +139,7 @@ export interface SearchPublicSourceResult {
 export interface SearchPublicSourcesResponse {
   providerConnectionId: string;
   provider: string;
-  requestId: string | null;
+  requestId: string;
   results: SearchPublicSourceResult[];
 }
 
@@ -520,6 +521,7 @@ const individualSubjectSchema = z.object({
 }).strict();
 
 const searchResultSchema = z.object({
+  providerRecordId: z.string().trim().min(1).max(255),
   sourceUrl: publicHttpUrl,
   sourcePlatform: z.string().trim().min(1).max(100).optional(),
   sourceType: z.enum([
@@ -551,7 +553,7 @@ const searchResultSchema = z.object({
 const searchResponseEnvelopeSchema = z.object({
   providerConnectionId: z.string().trim().min(1).max(255),
   provider: z.string().trim().min(1).max(100),
-  requestId: z.string().trim().min(1).max(500).nullable(),
+  requestId: z.string().trim().min(1).max(500),
   results: z.array(z.unknown()).max(100)
 }).strict();
 
@@ -698,6 +700,9 @@ function evidenceInput(
     provenance: {
       kind: "search_result",
       provider: response.provider,
+      providerConnectionId: response.providerConnectionId,
+      requestId: response.requestId,
+      providerRecordId: result.providerRecordId,
       queryText: query,
       sourceUrl: result.sourceUrl,
       resultRank: rank,

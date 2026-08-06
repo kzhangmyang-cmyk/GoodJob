@@ -35,6 +35,9 @@ export type EvidenceProvenance =
   | {
       kind: "search_result";
       provider: string;
+      providerConnectionId?: string;
+      requestId?: string;
+      providerRecordId?: string;
       queryText: string;
       sourceUrl: string;
       resultRank: number | null;

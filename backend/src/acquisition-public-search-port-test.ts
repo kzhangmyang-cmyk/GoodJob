@@ -237,6 +237,10 @@ test("uses an authorized official BYOK connection and maps public organization a
   assert.equal(response.providerConnectionId, "connection_baidu_ai_search");
   assert.match(response.requestId || "", /^preq_/);
   assert.equal(response.results.length, 2);
+  assert.deepEqual(
+    response.results.map((result) => result.providerRecordId),
+    ["public-company-1", "public-profile-1"]
+  );
 
   const organization = response.results.find(
     (result) => result.subject.kind === "organization"
@@ -425,6 +429,66 @@ test("a Douyin-bound search drops off-platform leakage and never verifies video 
   const profile = byType.get("profile");
   assert(profile?.subject.kind === "individual");
   assert.match(profile.subject.individualPartyId || "", /^public-individual-/u);
+});
+
+test("keeps ordinary Douyin video and short-link results as unresolved individual signals", async () => {
+  const store = createStore();
+  const executeSearch: AcquisitionProviderSearchExecutor = async (input) => {
+    input.onLogs([
+      requestLog({
+        provider: input.provider,
+        connection: input.connection,
+        runId: input.context.runId
+      })
+    ]);
+    const source = providerPage().records[1]!;
+    return {
+      ...providerPage(),
+      records: [
+        {
+          ...source,
+          company: "夏季门店经营复盘",
+          sourceUrl: "https://www.douyin.com/video/7521000000000000010",
+          description: "公开搜索摘要：咨询量不少，但有效到店客户不多。",
+          providerRecordId: "ordinary-video",
+          payloadHash: "7".repeat(64)
+        },
+        {
+          ...source,
+          company: "门店经营经验分享",
+          sourceUrl: "https://v.douyin.com/OrdinaryLink/",
+          description: "公开短链接索引摘要，具体账号主体仍需人工核验。",
+          providerRecordId: "ordinary-short-link",
+          payloadHash: "8".repeat(64)
+        }
+      ],
+      rawCount: 2,
+      validCount: 2
+    };
+  };
+
+  const response = await createAcquisitionPublicSearchPort(store, {
+    executeSearch
+  }).search(searchInput({
+    query: "site:douyin.com 厦门 门店 获客",
+    subjectKinds: ["individual"]
+  }));
+
+  assert.deepEqual(
+    response.results.map((result) => result.sourceType),
+    ["video", "short_link"]
+  );
+  for (const result of response.results) {
+    assert.equal(result.sourcePlatform, "douyin");
+    assert.equal(result.subject.kind, "individual");
+    if (result.subject.kind === "individual") {
+      assert.equal(result.subject.individualPartyId, null);
+      assert.match(
+        result.subject.publicActorKey,
+        /^unresolved-public-signal:douyin:/u
+      );
+    }
+  }
 });
 
 test("keeps public organization identities stable across providers but scopes individuals to the provider", async () => {

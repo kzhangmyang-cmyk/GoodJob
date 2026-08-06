@@ -9,6 +9,7 @@ import {
 } from "./shell.js";
 import {
   renderCandidateList,
+  requiresDouyinIdentityVerification,
   type CandidateListCallbacks
 } from "./candidate-list.js";
 import {
@@ -115,6 +116,9 @@ export function renderRunConsole(
     : vm.status === "running"
       ? `<button type="button" class="ai-growth-button ai-growth-button--secondary ai-growth-button--compact" data-action="pause-run">暂停</button>`
       : "";
+  const unresolvedDouyinSignals = vm.mode === "real"
+    ? vm.candidates.filter(requiresDouyinIdentityVerification).length
+    : 0;
 
   return componentRender(`
     <section class="ai-growth-run-console" aria-labelledby="aiGrowthRunTitle" data-status="${vm.status}">
@@ -133,6 +137,12 @@ export function renderRunConsole(
         <div class="ai-growth-partial-notice" role="status">
           <strong>部分完成</strong>
           <span>已有来源返回有效客户，同时存在失败或受限来源。现有结果可继续人工审核。</span>
+        </div>
+      ` : ""}
+      ${unresolvedDouyinSignals > 0 ? `
+        <div class="ai-growth-identity-notice" data-notice="identity-verification-required" role="status">
+          <strong>待核验</strong>
+          <span>发现 ${unresolvedDouyinSignals} 个公开需求信号待核验；不是已确认客户</span>
         </div>
       ` : ""}
       <div class="ai-growth-run-grid">

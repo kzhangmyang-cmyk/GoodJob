@@ -44,6 +44,21 @@
           "properties": {
             "kind": { "const": "search_result" },
             "provider": { "type": "string", "minLength": 1 },
+            "providerConnectionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "requestId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 500
+            },
+            "providerRecordId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
             "queryText": { "type": "string", "minLength": 1 },
             "sourceUrl": { "type": "string", "format": "uri" },
             "resultRank": { "type": ["integer", "null"], "minimum": 1 },
