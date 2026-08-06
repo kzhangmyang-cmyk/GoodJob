@@ -1508,26 +1508,283 @@ test("identity verification keeps controlled profile, rationale, and evidence se
 
 test("opening an already resolved individual synchronizes identity verification state", async () => {
   const resolved = unresolvedIndividualCandidate("candidate-1", {
-    status: "normalized",
+    status: "pending_review",
     identityResolved: true,
     publicActorKey: "public:douyin:sha256:actor",
-    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
   });
   const drawer = createBattleCardDrawer({
-    api: apiStub({ getCandidate: async () => resolved }),
+    api: apiStub({
+      getCandidate: async () => resolved,
+      getBattleCard: async () => battleCardV2
+    }),
     onCandidateUpdated: () => undefined
   });
 
   await drawer.open("candidate-1");
 
-  assert.equal(drawer.getState().identityVerification.status, "confirmed");
+  assert.equal(drawer.getState().identityVerification.status, "complete");
   assert.equal(
     drawer.getState().identityVerification.profileUrl,
     "https://www.douyin.com/user/MS4wLjABAAAA"
   );
   assert.equal(
     drawer.getState().identityVerification.message,
-    "主体已确认"
+    "作战资料已生成，等待人工审核"
+  );
+});
+
+test("reopening a resolved Douyin individual restores a complete current workflow without duplicate tasks", async () => {
+  let assistantActions = 0;
+  const resolved = unresolvedIndividualCandidate("candidate-1", {
+    status: "pending_review",
+    version: 5,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
+  });
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => resolved,
+      getQualification: async () => qualification,
+      getFinancialValue: async () => financialValue,
+      getBattleCard: async () => battleCardV2,
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        return succeededTask("unexpected-task", "build_battle_card");
+      }
+    }),
+    wait: async () => undefined,
+    onCandidateUpdated: () => undefined
+  });
+
+  await drawer.open("candidate-1");
+
+  assert.equal(assistantActions, 0);
+  assert.equal(drawer.getState().identityVerification.status, "complete");
+  assert.equal(
+    drawer.getState().identityVerification.continuation.status,
+    "succeeded"
+  );
+  assert.deepEqual(
+    drawer.getState().identityVerification.continuation.data?.completedTools,
+    ["research_candidate", "qualify_candidate", "build_battle_card"]
+  );
+});
+
+test("reopening a resolved Douyin individual resumes only the missing battle-card stage", async () => {
+  const messages: string[] = [];
+  let cardReads = 0;
+  const resolved = unresolvedIndividualCandidate("candidate-1", {
+    status: "pending_review",
+    version: 5,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
+  });
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => resolved,
+      getQualification: async () => qualification,
+      getFinancialValue: async () => financialValue,
+      getBattleCard: async () => {
+        cardReads += 1;
+        if (cardReads === 1) throw httpError(404, "battle card missing");
+        return battleCardV2;
+      },
+      requestAssistantAction: async (_sessionId, message) => {
+        messages.push(message);
+        return succeededTask("task-card-resume", "build_battle_card");
+      }
+    }),
+    wait: async () => undefined,
+    onCandidateUpdated: () => undefined
+  });
+
+  await drawer.open("candidate-1");
+
+  assert.equal(messages.length, 1);
+  assert.match(messages[0] ?? "", /build_battle_card/);
+  assert.doesNotMatch(messages[0] ?? "", /research_candidate|qualify_candidate/);
+  assert.equal(drawer.getState().identityVerification.status, "complete");
+  assert.deepEqual(
+    drawer.getState().identityVerification.continuation.data?.completedTools,
+    ["research_candidate", "qualify_candidate", "build_battle_card"]
+  );
+  assert.equal(drawer.getState().battleCard.status, "ready");
+});
+
+test("reopening an ineligible resolved Douyin individual marks the battle card skipped", async () => {
+  let assistantActions = 0;
+  const ineligibleQualification: QualificationDto = {
+    ...qualification,
+    grade: "C",
+    score: 58,
+    hardGateFailures: []
+  };
+  const resolved = unresolvedIndividualCandidate("candidate-1", {
+    status: "pending_review",
+    version: 5,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: ineligibleQualification.decisionVersion
+  });
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => resolved,
+      getQualification: async () => ineligibleQualification,
+      getFinancialValue: async () => financialValue,
+      getBattleCard: async () => {
+        throw httpError(404, "battle card missing");
+      },
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        return succeededTask("unexpected-task", "build_battle_card");
+      }
+    }),
+    wait: async () => undefined,
+    onCandidateUpdated: () => undefined
+  });
+
+  await drawer.open("candidate-1");
+
+  assert.equal(assistantActions, 0);
+  assert.equal(drawer.getState().identityVerification.status, "complete");
+  assert.deepEqual(
+    drawer.getState().identityVerification.continuation.data?.completedTools,
+    ["research_candidate", "qualify_candidate"]
+  );
+  assert.deepEqual(
+    drawer.getState().identityVerification.continuation.data?.skippedTools,
+    ["build_battle_card"]
+  );
+  assert.match(
+    drawer.getState().identityVerification.message ?? "",
+    /不满足作战卡生成条件/
+  );
+});
+
+test("reopening a resolved Douyin individual with only current qualification resumes qualification and card", async () => {
+  const messages: string[] = [];
+  let financeReads = 0;
+  let cardReads = 0;
+  const resolved = unresolvedIndividualCandidate("candidate-1", {
+    status: "pending_review",
+    version: 5,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
+  });
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => resolved,
+      getQualification: async () => qualification,
+      getFinancialValue: async () => {
+        financeReads += 1;
+        if (financeReads === 1) throw httpError(404, "financial value missing");
+        return financialValue;
+      },
+      getBattleCard: async () => {
+        cardReads += 1;
+        if (cardReads === 1) throw httpError(404, "battle card missing");
+        return battleCardV2;
+      },
+      requestAssistantAction: async (_sessionId, message) => {
+        messages.push(message);
+        return message.includes("qualify_candidate")
+          ? succeededTask("task-qualification-resume", "qualify_candidate")
+          : succeededTask("task-card-resume", "build_battle_card");
+      }
+    }),
+    wait: async () => undefined,
+    onCandidateUpdated: () => undefined
+  });
+
+  await drawer.open("candidate-1");
+
+  assert.equal(messages.length, 2);
+  assert.match(messages[0] ?? "", /qualify_candidate/);
+  assert.match(messages[1] ?? "", /build_battle_card/);
+  assert.doesNotMatch(messages.join("\n"), /research_candidate/);
+  assert.equal(drawer.getState().identityVerification.status, "complete");
+  assert.deepEqual(
+    drawer.getState().identityVerification.continuation.data?.completedTools,
+    ["research_candidate", "qualify_candidate", "build_battle_card"]
+  );
+});
+
+test("reopening a newly resolved Douyin individual resumes the full missing workflow", async () => {
+  const messages: string[] = [];
+  let candidateReads = 0;
+  let qualificationReads = 0;
+  let financeReads = 0;
+  let cardReads = 0;
+  const resolved = unresolvedIndividualCandidate("candidate-1", {
+    status: "normalized",
+    version: 4,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+  });
+  const qualified = unresolvedIndividualCandidate("candidate-1", {
+    status: "pending_review",
+    version: 5,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
+  });
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => {
+        candidateReads += 1;
+        return candidateReads === 1 ? resolved : qualified;
+      },
+      getQualification: async () => {
+        qualificationReads += 1;
+        if (qualificationReads === 1) throw httpError(404, "qualification missing");
+        return qualification;
+      },
+      getFinancialValue: async () => {
+        financeReads += 1;
+        if (financeReads === 1) throw httpError(404, "financial value missing");
+        return financialValue;
+      },
+      getBattleCard: async () => {
+        cardReads += 1;
+        if (cardReads === 1) throw httpError(404, "battle card missing");
+        return battleCardV2;
+      },
+      requestAssistantAction: async (_sessionId, message) => {
+        messages.push(message);
+        if (message.includes("research_candidate")) {
+          return succeededTask("task-research-resume", "research_candidate");
+        }
+        if (message.includes("qualify_candidate")) {
+          return succeededTask("task-qualification-resume", "qualify_candidate");
+        }
+        return succeededTask("task-card-resume", "build_battle_card");
+      }
+    }),
+    wait: async () => undefined,
+    onCandidateUpdated: () => undefined
+  });
+
+  await drawer.open("candidate-1");
+
+  assert.equal(messages.length, 3);
+  assert.match(messages[0] ?? "", /research_candidate/);
+  assert.match(messages[1] ?? "", /qualify_candidate/);
+  assert.match(messages[2] ?? "", /build_battle_card/);
+  assert.equal(drawer.getState().identityVerification.status, "complete");
+  assert.deepEqual(
+    drawer.getState().identityVerification.continuation.data?.completedTools,
+    ["research_candidate", "qualify_candidate", "build_battle_card"]
   );
 });
 
@@ -1597,19 +1854,26 @@ test("identity confirmation treats a conflict refresh with resolved identity as 
     publicActorKey: "public:douyin:sha256:actor",
     publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
   });
+  const qualified = unresolvedIndividualCandidate("candidate-1", {
+    ...resolved,
+    status: "pending_review",
+    version: 5,
+    latestDecisionVersion: qualification.decisionVersion
+  });
   const drawer = createBattleCardDrawer({
     api: apiStub({
       getCandidate: async () => {
         candidateReads += 1;
-        return candidateReads === 1
-          ? unresolvedIndividualCandidate()
-          : resolved;
+        if (candidateReads === 1) return unresolvedIndividualCandidate();
+        if (candidateReads < 4) return resolved;
+        return qualified;
       },
       createContentFetchOperation: async () =>
         contentFetchOperation("succeeded"),
       getContentFetchOperation: async () =>
         contentFetchOperation("succeeded"),
       getEvidenceById: async () => profileEvidence,
+      getBattleCard: async () => battleCardV2,
       confirmCandidateIdentity: async () => {
         confirmations += 1;
         throw new AdvisorConflictError(
@@ -1717,7 +1981,8 @@ test("identity confirmation coalesces duplicates then runs research, qualificati
     version: 4,
     identityResolved: true,
     publicActorKey: "public:douyin:sha256:actor",
-    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
   });
   const reviewed = unresolvedIndividualCandidate("candidate-1", {
     status: "pending_review",
@@ -1849,7 +2114,8 @@ test("identity continuation stops successfully after an ineligible qualification
     version: 4,
     identityResolved: true,
     publicActorKey: "public:douyin:sha256:actor",
-    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
   });
   const ineligibleQualification: QualificationDto = {
     ...qualification,
@@ -1936,7 +2202,8 @@ test("identity continuation does not build a card when qualification hard gates 
     version: 4,
     identityResolved: true,
     publicActorKey: "public:douyin:sha256:actor",
-    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
   });
   const drawer = createBattleCardDrawer({
     api: apiStub({
@@ -1966,14 +2233,16 @@ test("identity continuation does not build a card when qualification hard gates 
   });
   await drawer.open("candidate-1");
 
-  await drawer.retryIdentityContinuation();
-
   assert.equal(messages.length, 2);
   assert.doesNotMatch(messages.join("\n"), /build_battle_card/);
   assert.equal(drawer.getState().identityVerification.status, "complete");
   assert.deepEqual(
     drawer.getState().identityVerification.continuation.data?.completedTools,
     ["research_candidate", "qualify_candidate"]
+  );
+  assert.deepEqual(
+    drawer.getState().identityVerification.continuation.data?.skippedTools,
+    ["build_battle_card"]
   );
 });
 
@@ -1990,7 +2259,8 @@ test("failed identity continuation keeps confirmation and retries from the first
     version: 4,
     identityResolved: true,
     publicActorKey: "public:douyin:sha256:actor",
-    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
   });
   const drawer = createBattleCardDrawer({
     api: apiStub({
@@ -2002,17 +2272,14 @@ test("failed identity continuation keeps confirmation and retries from the first
       },
       getQualification: async () => {
         qualificationReads += 1;
-        if (qualificationReads === 1) throw httpError(404, "missing");
         return qualification;
       },
       getFinancialValue: async () => {
         financeReads += 1;
-        if (financeReads === 1) throw httpError(404, "missing");
         return financialValue;
       },
       getBattleCard: async () => {
         cardReads += 1;
-        if (cardReads === 1) throw httpError(404, "missing");
         return battleCardV2;
       },
       createContentFetchOperation: async () =>
@@ -2083,18 +2350,198 @@ test("failed identity continuation keeps confirmation and retries from the first
 
   assert.equal(confirmations, 1);
   assert.equal(
-    messages.filter((message) => message.includes("research_candidate")).length,
-    1
+    drawer.getState().identityVerification.status,
+    "complete",
+    drawer.getState().identityVerification.error ?? undefined
   );
-  assert.equal(
-    messages.filter((message) => message.includes("qualify_candidate")).length,
-    2
+  assert.deepEqual(
+    messages.map((message) => message.includes("research_candidate")
+      ? "research_candidate"
+      : message.includes("qualify_candidate")
+        ? "qualify_candidate"
+        : "build_battle_card"),
+    [
+      "research_candidate",
+      "qualify_candidate",
+      "qualify_candidate",
+      "build_battle_card"
+    ]
   );
+});
+
+test("a succeeded qualification task cannot advance without a persisted current financial decision", async () => {
+  const messages: string[] = [];
+  let candidateReads = 0;
+  const resolved = unresolvedIndividualCandidate("candidate-1", {
+    status: "normalized",
+    version: 4,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+  });
+  const qualified = unresolvedIndividualCandidate("candidate-1", {
+    status: "pending_review",
+    version: 5,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
+  });
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => {
+        candidateReads += 1;
+        if (candidateReads === 1) return unresolvedIndividualCandidate();
+        if (candidateReads === 2) return resolved;
+        return qualified;
+      },
+      getQualification: async () => qualification,
+      getFinancialValue: async () => {
+        throw httpError(404, "financial value missing");
+      },
+      createContentFetchOperation: async () =>
+        contentFetchOperation("succeeded"),
+      getContentFetchOperation: async () =>
+        contentFetchOperation("succeeded"),
+      getEvidenceById: async () => profileEvidence,
+      confirmCandidateIdentity: async () => ({
+        candidate: resolved,
+        resolution: {
+          status: "resolved",
+          basis: "provider_public_actor",
+          resolverVersion: "identity-resolver.v1",
+          evidenceIds: [profileEvidence.id],
+          resolvedAt: timestamp,
+          resolvedBy: "actor-1"
+        }
+      }),
+      requestAssistantAction: async (_sessionId, message) => {
+        messages.push(message);
+        if (message.includes("research_candidate")) {
+          return succeededTask("task-research", "research_candidate");
+        }
+        if (message.includes("qualify_candidate")) {
+          return succeededTask("task-qualification", "qualify_candidate");
+        }
+        return succeededTask("task-card", "build_battle_card");
+      }
+    }),
+    wait: async () => undefined,
+    onCandidateUpdated: () => undefined
+  });
+  await drawer.open("candidate-1");
+  await drawer.fetchIdentityProfile(
+    "https://www.douyin.com/user/MS4wLjABAAAA"
+  );
+
+  await drawer.confirmCandidateIdentity({
+    profileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    rationale: "已人工核验公开主页与原始需求信号一致。",
+    evidenceIds: [profileEvidence.id]
+  });
+
   assert.equal(
     messages.filter((message) => message.includes("build_battle_card")).length,
-    1
+    0
   );
-  assert.equal(drawer.getState().identityVerification.status, "complete");
+  assert.equal(
+    drawer.getState().identityVerification.status,
+    "continuation_partial"
+  );
+  assert.deepEqual(
+    drawer.getState().identityVerification.continuation.data?.completedTools,
+    ["research_candidate"]
+  );
+  assert.equal(drawer.getState().financialValue.status, "missing");
+});
+
+test("a succeeded battle-card task cannot complete with a stale persisted card", async () => {
+  const messages: string[] = [];
+  let candidateReads = 0;
+  const resolved = unresolvedIndividualCandidate("candidate-1", {
+    status: "normalized",
+    version: 4,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+  });
+  const qualified = unresolvedIndividualCandidate("candidate-1", {
+    status: "pending_review",
+    version: 5,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
+  });
+  const staleCard: BattleCardDto = {
+    ...battleCardV2,
+    qualificationDecisionId: "qualification-stale"
+  };
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => {
+        candidateReads += 1;
+        if (candidateReads === 1) return unresolvedIndividualCandidate();
+        if (candidateReads === 2) return resolved;
+        return qualified;
+      },
+      getQualification: async () => qualification,
+      getFinancialValue: async () => financialValue,
+      getBattleCard: async () => staleCard,
+      createContentFetchOperation: async () =>
+        contentFetchOperation("succeeded"),
+      getContentFetchOperation: async () =>
+        contentFetchOperation("succeeded"),
+      getEvidenceById: async () => profileEvidence,
+      confirmCandidateIdentity: async () => ({
+        candidate: resolved,
+        resolution: {
+          status: "resolved",
+          basis: "provider_public_actor",
+          resolverVersion: "identity-resolver.v1",
+          evidenceIds: [profileEvidence.id],
+          resolvedAt: timestamp,
+          resolvedBy: "actor-1"
+        }
+      }),
+      requestAssistantAction: async (_sessionId, message) => {
+        messages.push(message);
+        if (message.includes("research_candidate")) {
+          return succeededTask("task-research", "research_candidate");
+        }
+        if (message.includes("qualify_candidate")) {
+          return succeededTask("task-qualification", "qualify_candidate");
+        }
+        return succeededTask("task-card", "build_battle_card");
+      }
+    }),
+    wait: async () => undefined,
+    onCandidateUpdated: () => undefined
+  });
+  await drawer.open("candidate-1");
+  await drawer.fetchIdentityProfile(
+    "https://www.douyin.com/user/MS4wLjABAAAA"
+  );
+
+  await drawer.confirmCandidateIdentity({
+    profileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    rationale: "已人工核验公开主页与原始需求信号一致。",
+    evidenceIds: [profileEvidence.id]
+  });
+
+  assert.equal(messages.length, 3);
+  assert.equal(
+    drawer.getState().identityVerification.status,
+    "continuation_partial"
+  );
+  assert.deepEqual(
+    drawer.getState().identityVerification.continuation.data?.completedTools,
+    ["research_candidate", "qualify_candidate"]
+  );
+  assert.match(
+    drawer.getState().identityVerification.error ?? "",
+    /作战卡未绑定当前资格决定/
+  );
 });
 
 test("candidate switches and drawer close ignore stale identity completions", async () => {

@@ -79,6 +79,9 @@ export interface IdentityContinuationResult {
   completedTools: Array<
     "research_candidate" | "qualify_candidate" | "build_battle_card"
   >;
+  skippedTools?: Array<
+    "research_candidate" | "qualify_candidate" | "build_battle_card"
+  >;
 }
 
 export interface IdentityVerificationState {
@@ -308,6 +311,12 @@ function requiresDouyinIdentityVerification(
     && !identityResolved(candidate);
 }
 
+function isResolvedDouyinIndividual(candidate: CandidateDto | null): boolean {
+  return candidate?.subjectKind === "individual"
+    && isDouyinEvidencePlatform(candidate.sourcePlatform)
+    && identityResolved(candidate);
+}
+
 function exactDouyinProfileUrl(value: string): string {
   const normalized = normalizeExactDouyinProfileUrl(value);
   if (normalized === null) {
@@ -480,7 +489,77 @@ function eligibleForBattleCard(
       qualification.grade === "S"
       || qualification.grade === "A"
       || qualification.score >= 70
-    );
+  );
+}
+
+function currentQualificationProblem(
+  state: BattleCardDrawerState,
+  candidateId: string
+): string | null {
+  const candidate = state.candidate.data;
+  const qualification = state.qualification.data;
+  if (state.candidate.status !== "ready" || candidate === null) {
+    return "候选主体刷新失败";
+  }
+  if (state.qualification.status !== "ready" || qualification === null) {
+    return "资格结论尚未持久化";
+  }
+  if (qualification.candidateId !== candidateId) {
+    return "资格结论不属于当前候选";
+  }
+  if (candidate.latestDecisionVersion !== qualification.decisionVersion) {
+    return "资格结论不是候选当前决定版本";
+  }
+  return null;
+}
+
+function currentQualificationAndFinanceProblem(
+  state: BattleCardDrawerState,
+  candidateId: string
+): string | null {
+  const qualificationProblem = currentQualificationProblem(state, candidateId);
+  if (qualificationProblem) return qualificationProblem;
+  const qualification = state.qualification.data!;
+  const financialValue = state.financialValue.data;
+  if (state.financialValue.status !== "ready" || financialValue === null) {
+    return "财务价值结论尚未持久化";
+  }
+  if (financialValue.candidateId !== candidateId) {
+    return "财务结论不属于当前候选";
+  }
+  if (financialValue.qualificationDecisionId !== qualification.id) {
+    return "财务价值结论未绑定当前资格决定";
+  }
+  return null;
+}
+
+function currentBattleCardProblem(
+  state: BattleCardDrawerState,
+  candidateId: string
+): string | null {
+  const qualificationProblem = currentQualificationAndFinanceProblem(
+    state,
+    candidateId
+  );
+  if (qualificationProblem) return qualificationProblem;
+  const qualification = state.qualification.data!;
+  const financialValue = state.financialValue.data!;
+  const card = state.battleCard.data;
+  if (state.battleCard.status !== "ready" || card === null) {
+    return "客户作战卡尚未持久化";
+  }
+  if (card.candidateId !== candidateId
+    || card.qualificationDecisionId !== qualification.id) {
+    return "客户作战卡未绑定当前资格决定";
+  }
+  if (card.schemaVersion !== "battle-card.v2"
+    || card.intelligence.financialSummary === null
+    || card.intelligence.financialSummary.decisionId !== financialValue.id
+    || card.intelligence.financialSummary.decisionVersion
+      !== financialValue.version) {
+    return "客户作战卡未绑定当前财务决定";
+  }
+  return null;
 }
 
 function mergeEvidence(
@@ -1475,6 +1554,69 @@ export function createBattleCardDrawer(
         }));
         return;
       }
+      await step.refresh();
+      if (!isActive(context)) return;
+      if (step.toolName === "qualify_candidate") {
+        const persistedProblem = currentQualificationAndFinanceProblem(
+          state,
+          context.candidateId
+        );
+        if (persistedProblem) {
+          const detail = `${step.message}已执行，但${persistedProblem}`;
+          publishIdentity(context, (current) => ({
+            ...current,
+            status: "continuation_partial",
+            continuation: {
+              status: "failed",
+              data: { completedTools: [...completedTools] },
+              error: detail
+            },
+            message: "主体已确认，后续生成未全部完成",
+            error: detail
+          }));
+          return;
+        }
+        const eligible = eligibleForBattleCard(state.qualification.data);
+        if (eligible === false) {
+          completedTools.push(step.toolName);
+          publishIdentity(context, (current) => ({
+            ...current,
+            status: "complete",
+            continuation: {
+              status: "succeeded",
+              data: {
+                completedTools: [...completedTools],
+                skippedTools: ["build_battle_card"]
+              },
+              error: null
+            },
+            message: "资格评估已完成；当前不满足作战卡生成条件",
+            error: null
+          }));
+          return;
+        }
+      }
+      if (step.toolName === "build_battle_card") {
+        const persistedProblem = currentBattleCardProblem(
+          state,
+          context.candidateId
+        );
+        if (persistedProblem) {
+          const detail = `${step.message}已执行，但${persistedProblem}`;
+          publishIdentity(context, (current) => ({
+            ...current,
+            status: "continuation_partial",
+            continuation: {
+              status: "failed",
+              data: { completedTools: [...completedTools] },
+              error: detail
+            },
+            message: "主体已确认，后续生成未全部完成",
+            error: detail
+          }));
+          return;
+        }
+      }
       completedTools.push(step.toolName);
       publishIdentity(context, (current) => ({
         ...current,
@@ -1484,25 +1626,6 @@ export function createBattleCardDrawer(
           error: null
         }
       }));
-      await step.refresh();
-      if (!isActive(context)) return;
-      if (step.toolName === "qualify_candidate") {
-        const eligible = eligibleForBattleCard(state.qualification.data);
-        if (eligible === false) {
-          publishIdentity(context, (current) => ({
-            ...current,
-            status: "complete",
-            continuation: {
-              status: "succeeded",
-              data: { completedTools: [...completedTools] },
-              error: null
-            },
-            message: "资格评估已完成；当前不满足作战卡生成条件",
-            error: null
-          }));
-          return;
-        }
-      }
     }
     publishIdentity(context, (current) => ({
       ...current,
@@ -1757,7 +1880,101 @@ export function createBattleCardDrawer(
           state.identityVerification,
           state.candidate.data
         );
+        let resumeIdentityContinuation = false;
+        if (isResolvedDouyinIndividual(state.candidate.data)) {
+          if (currentBattleCardProblem(state, candidateId) === null) {
+            state.identityVerification = {
+              ...state.identityVerification,
+              status: "complete",
+              continuation: {
+                status: "succeeded",
+                data: {
+                  completedTools: [
+                    "research_candidate",
+                    "qualify_candidate",
+                    "build_battle_card"
+                  ]
+                },
+                error: null
+              },
+              message: "作战资料已生成，等待人工审核",
+              error: null
+            };
+          } else if (currentQualificationAndFinanceProblem(
+            state,
+            candidateId
+          ) === null) {
+            if (eligibleForBattleCard(state.qualification.data) === false) {
+              state.identityVerification = {
+                ...state.identityVerification,
+                status: "complete",
+                continuation: {
+                  status: "succeeded",
+                  data: {
+                    completedTools: [
+                      "research_candidate",
+                      "qualify_candidate"
+                    ],
+                    skippedTools: ["build_battle_card"]
+                  },
+                  error: null
+                },
+                message: "主体已确认；当前资格不满足作战卡生成条件",
+                error: null
+              };
+            } else {
+              state.identityVerification = {
+                ...state.identityVerification,
+                continuation: {
+                  status: "idle",
+                  data: {
+                    completedTools: [
+                      "research_candidate",
+                      "qualify_candidate"
+                    ]
+                  },
+                  error: null
+                },
+                message: "已恢复当前资格与财务决定，继续生成作战卡",
+                error: null
+              };
+              resumeIdentityContinuation = true;
+            }
+          } else if (currentQualificationProblem(state, candidateId) === null) {
+            state.identityVerification = {
+              ...state.identityVerification,
+              continuation: {
+                status: "idle",
+                data: {
+                  completedTools: ["research_candidate"]
+                },
+                error: null
+              },
+              message: "已恢复当前资格决定，继续补齐财务价值与作战卡",
+              error: null
+            };
+            resumeIdentityContinuation = true;
+          } else {
+            state.identityVerification = {
+              ...state.identityVerification,
+              continuation: {
+                status: "idle",
+                data: { completedTools: [] },
+                error: null
+              },
+              message: "主体已确认，继续补齐研究、资格与作战资料",
+              error: null
+            };
+            resumeIdentityContinuation = true;
+          }
+        }
         notify();
+        if (resumeIdentityContinuation) {
+          await startIdentityContinuation({
+            candidateId,
+            generation: currentGeneration
+          });
+        }
       }
     },
 
