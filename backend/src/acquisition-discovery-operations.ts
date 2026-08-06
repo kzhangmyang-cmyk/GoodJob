@@ -16,6 +16,10 @@ import {
   isForbiddenNetworkHostname,
   normalizeNetworkHostname
 } from "./provider-network-security.js";
+import {
+  individualSignalSubjectFromDouyinSource,
+  type AcquisitionIndividualSignalIngestionPort
+} from "./acquisition-individual-signal-ingestion.js";
 
 export type AcquisitionDiscoverySubjectChannel =
   | "organization"
@@ -61,6 +65,8 @@ export interface AcquisitionContentFetchOperation {
   contentHash: string | null;
   evidenceCount: number;
   evidenceIds: string[];
+  candidateCount: number;
+  candidateIds: string[];
   errorCode: string | null;
   createdAt: string;
   startedAt: string | null;
@@ -97,6 +103,10 @@ export interface AcquisitionImportOperation {
   status: AcquisitionImportStatus;
   rowCount: number;
   acceptedRowCount: number;
+  evidenceCount: number;
+  evidenceIds: string[];
+  candidateCount: number;
+  candidateIds: string[];
   errorRows: AcquisitionImportRowError[];
   errorCode: string | null;
   createdAt: string;
@@ -1479,27 +1489,20 @@ function validPublishedAt(value: string) {
 
 function validImportedSourceUrl(value: string) {
   if (!value) return "";
-  let url: URL;
   try {
-    url = new URL(value);
+    return validatePublicSourceUrl(value).toString();
   } catch {
     throw new AcquisitionDiscoveryOperationError(
-      "IMPORT_ARTIFACT_INVALID",
-      "来源链接格式无效"
+      "UNSAFE_SOURCE_URL",
+      "来源链接必须是公开 HTTPS，且不得包含凭据、内网地址或敏感查询参数"
     );
   }
-  if (!["http:", "https:"].includes(url.protocol)) {
-    throw new AcquisitionDiscoveryOperationError(
-      "IMPORT_ARTIFACT_INVALID",
-      "来源链接必须是 HTTP(S)"
-    );
-  }
-  return url.toString();
 }
 
 export interface AcquisitionDiscoveryOperationServiceOptions {
   repository: AcquisitionDiscoveryOperationRepository;
   evidence: AcquisitionDiscoveryEvidencePort;
+  individualSignals?: AcquisitionIndividualSignalIngestionPort;
   fetcher?: AcquisitionContentFetcherPort;
   masterSecret: string;
   workerId?: string;
@@ -1522,6 +1525,8 @@ export type AcquisitionImportOperationInput = {
 export class AcquisitionDiscoveryOperationService {
   private readonly repository: AcquisitionDiscoveryOperationRepository;
   private readonly evidence: AcquisitionDiscoveryEvidencePort;
+  private readonly individualSignals:
+    AcquisitionIndividualSignalIngestionPort | null;
   private readonly fetcher: AcquisitionContentFetcherPort;
   private readonly artifactKey: Buffer;
   private readonly idFactory: (prefix: string) => string;
@@ -1541,6 +1546,7 @@ export class AcquisitionDiscoveryOperationService {
   constructor(options: AcquisitionDiscoveryOperationServiceOptions) {
     this.repository = options.repository;
     this.evidence = options.evidence;
+    this.individualSignals = options.individualSignals ?? null;
     this.fetcher = options.fetcher ?? new ControlledPublicContentFetcher();
     this.artifactKey = artifactCipherKey(options.masterSecret);
     this.idFactory = options.idFactory
@@ -1639,6 +1645,8 @@ export class AcquisitionDiscoveryOperationService {
       contentHash: null,
       evidenceCount: 0,
       evidenceIds: [],
+      candidateCount: 0,
+      candidateIds: [],
       errorCode: null,
       idempotencyKeyHash: keyHash(key),
       requestHash,
@@ -1764,6 +1772,27 @@ export class AcquisitionDiscoveryOperationService {
         },
         `fetch:${operation.id}:evidence:${result.contentHash}`
       );
+      operation.evidenceCount = 1;
+      operation.evidenceIds = [evidence.id];
+      if (operation.subjectChannel === "individual") {
+        const candidateId = await this.ingestDouyinIndividualSignal({
+          scope,
+          sourceUrl: result.finalUrl,
+          title: restricted
+            ? "公开页面访问受限"
+            : result.title || new URL(result.finalUrl).hostname,
+          snippet: restricted
+            ? "目标公开页面限制访问；主体和需求需人工核验。"
+            : normalizedWhitespace(result.text, 4_000),
+          demandCategory: "用户提交的抖音公开链接",
+          evidence,
+          idempotencyKey: `fetch:${operation.id}:candidate`
+        });
+        if (candidateId) {
+          operation.candidateCount = 1;
+          operation.candidateIds = [candidateId];
+        }
+      }
       operation.finalUrl = result.finalUrl;
       operation.status = restricted ? "access_restricted" : "succeeded";
       operation.accessStatus = result.accessStatus;
@@ -1772,8 +1801,6 @@ export class AcquisitionDiscoveryOperationService {
       operation.title = result.title || null;
       operation.rawArtifactHash = result.rawArtifactHash;
       operation.contentHash = result.contentHash;
-      operation.evidenceCount = evidence ? 1 : 0;
-      operation.evidenceIds = evidence ? [evidence.id] : [];
       operation.errorCode = null;
       operation.completedAt = this.now();
       await this.repository.putContentFetchOperation(
@@ -1837,6 +1864,10 @@ export class AcquisitionDiscoveryOperationService {
       status: "queued",
       rowCount: 0,
       acceptedRowCount: 0,
+      evidenceCount: 0,
+      evidenceIds: [],
+      candidateCount: 0,
+      candidateIds: [],
       errorRows: [],
       errorCode: null,
       idempotencyKeyHash: keyHash(key),
@@ -1942,6 +1973,11 @@ export class AcquisitionDiscoveryOperationService {
     if (!leaseToken) {
       throw new Error("ACQUISITION_DISCOVERY_MISSING_LEASE_TOKEN");
     }
+    let rowCount = 0;
+    let acceptedRowCount = 0;
+    const evidenceIds = new Set<string>();
+    const candidateIds = new Set<string>();
+    const errorRows: AcquisitionImportRowError[] = [];
     try {
       const content = openArtifact(
         this.artifactKey,
@@ -1956,9 +1992,6 @@ export class AcquisitionDiscoveryOperationService {
         ? parseCsv(content)
         : parseXlsx(content);
       validateImportShape(sheets);
-      let rowCount = 0;
-      let acceptedRowCount = 0;
-      const errorRows: AcquisitionImportRowError[] = [];
       for (const sheet of sheets) {
         abortIfRequested(signal);
         const [headerRow = [], ...rows] = sheet.rows;
@@ -2044,7 +2077,7 @@ export class AcquisitionDiscoveryOperationService {
               publishedAt,
               locale
             });
-            await this.evidence.appendEvidence(
+            const evidence = await this.evidence.appendEvidence(
               scope,
               {
                 targetType:
@@ -2063,13 +2096,31 @@ export class AcquisitionDiscoveryOperationService {
                   importBatchId: operation.id,
                   artifactHash: operation.artifactHash,
                   sheetName: sheet.name,
-                  rowNumber
+                  rowNumber,
+                  ...(importedSourceUrl ? {
+                    sourceUrl: importedSourceUrl
+                  } : {})
                 },
                 accessStatus: "user_supplied",
                 supersedesEvidenceId: null
               },
               `import:${operation.id}:${sheet.name}:${rowNumber}:${contentHash}`
             );
+            evidenceIds.add(evidence.id);
+            if (operation.subjectChannel === "individual"
+              && importedSourceUrl) {
+              const candidateId = await this.ingestDouyinIndividualSignal({
+                scope,
+                sourceUrl: importedSourceUrl,
+                title,
+                snippet,
+                demandCategory: "客户授权导入的抖音公开信号",
+                evidence,
+                idempotencyKey:
+                  `import:${operation.id}:${sheet.name}:${rowNumber}:candidate`
+              });
+              if (candidateId) candidateIds.add(candidateId);
+            }
             acceptedRowCount += 1;
           } catch (error) {
             errorRows.push({
@@ -2085,6 +2136,10 @@ export class AcquisitionDiscoveryOperationService {
       }
       operation.rowCount = rowCount;
       operation.acceptedRowCount = acceptedRowCount;
+      operation.evidenceCount = evidenceIds.size;
+      operation.evidenceIds = [...evidenceIds];
+      operation.candidateCount = candidateIds.size;
+      operation.candidateIds = [...candidateIds];
       operation.errorRows = errorRows.slice(0, MAX_IMPORT_ROWS);
       operation.status = acceptedRowCount === 0
         ? "failed"
@@ -2101,11 +2156,47 @@ export class AcquisitionDiscoveryOperationService {
       if (isLeaseLostError(error)) {
         throw error;
       }
+      operation.rowCount = rowCount;
+      operation.acceptedRowCount = acceptedRowCount;
+      operation.evidenceCount = evidenceIds.size;
+      operation.evidenceIds = [...evidenceIds];
+      operation.candidateCount = candidateIds.size;
+      operation.candidateIds = [...candidateIds];
+      operation.errorRows = errorRows.slice(0, MAX_IMPORT_ROWS);
       operation.status = "failed";
       operation.errorCode = operationErrorCode(error);
       operation.completedAt = this.now();
       await this.repository.putImportOperation(operation, leaseToken);
       throw error;
     }
+  }
+
+  private async ingestDouyinIndividualSignal(input: {
+    scope: AcquisitionDiscoveryScope;
+    sourceUrl: string;
+    title: string;
+    snippet: string;
+    demandCategory: string;
+    evidence: DiscoveryEvidence;
+    idempotencyKey: string;
+  }) {
+    if (!this.individualSignals) return null;
+    const signal = individualSignalSubjectFromDouyinSource({
+      sourceUrl: input.sourceUrl,
+      title: input.title,
+      snippet: input.snippet,
+      demandCategory: input.demandCategory
+    });
+    if (!signal) return null;
+    const result = await this.individualSignals.ingest({
+      scope: input.scope,
+      provider: "customer_submission",
+      sourceUrl: input.sourceUrl,
+      sourceType: signal.sourceType,
+      subject: signal.subject,
+      evidence: input.evidence,
+      idempotencyKey: input.idempotencyKey
+    });
+    return result.candidate.id;
   }
 }

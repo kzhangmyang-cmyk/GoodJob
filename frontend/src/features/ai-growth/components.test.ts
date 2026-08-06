@@ -5,6 +5,7 @@ import { renderCandidateList } from "./components/candidate-list.js";
 import { renderConnectionRequired } from "./components/connection-required.js";
 import { renderExecutiveSummary } from "./components/executive-summary.js";
 import { renderPlanApproval } from "./components/plan-approval.js";
+import { renderPublicLeadImport } from "./components/public-lead-import.js";
 import { renderRunConsole } from "./components/run-console.js";
 import { renderAdvisorShell } from "./components/shell.js";
 import { renderTaskInput } from "./components/task-input.js";
@@ -231,6 +232,120 @@ test("任务输入用原生按钮区分可选平台和待接入平台", () => {
     );
   }
   assert.doesNotMatch(rendered.html, /tabindex=/);
+});
+
+test("公开抶音线索导入入口明示数据边界并提供 URL 与文件两种方式", () => {
+  const rendered = renderPublicLeadImport({
+    urlText: "",
+    urlStatus: "idle",
+    urlResults: [],
+    file: null,
+    fileStatus: "idle",
+    fileOperationId: null,
+    message: null
+  }, {
+    onUrlTextChange: noop,
+    onSubmitUrls: noop,
+    onFileSelect: noop,
+    onSubmitFile: noop
+  });
+
+  for (const text of [
+    "导入公开抖音线索",
+    "仅支持公开页面",
+    "导入后先形成用户提交证据",
+    "粘贴公开链接",
+    "导入公开链接",
+    "CSV / XLSX",
+    "上传并导入"
+  ]) {
+    assert.match(rendered.html, new RegExp(text));
+  }
+  assert.match(rendered.html, /accept="\.csv,\.xlsx,text\/csv,application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet"/);
+  assert.match(rendered.html, /data-field="public-import-urls"/);
+  assert.match(rendered.html, /data-field="public-import-file"/);
+  assert.match(rendered.html, /disabled/);
+  assert.doesNotMatch(rendered.html, /已确认客户/);
+});
+
+test("导入结果只展示 operation 返回的数量与候选 ID 入口", () => {
+  const rendered = renderPublicLeadImport({
+    urlText: "https://www.douyin.com/video/1",
+    urlStatus: "completed",
+    urlResults: [{
+      sourceUrl: "https://www.douyin.com/video/1",
+      status: "succeeded",
+      operationId: "import-url-1",
+      evidenceCount: null,
+      errorMessage: null
+    }],
+    urlOutcome: {
+      acceptedRowCount: 1,
+      evidenceCount: 1,
+      candidateCount: 1,
+      candidateIds: ["candidate-<unsafe>"],
+      rowErrors: []
+    },
+    file: null,
+    fileStatus: "idle",
+    fileOperationId: null,
+    fileOutcome: null,
+    message: "导入已完成"
+  }, {
+    onUrlTextChange: noop,
+    onSubmitUrls: noop,
+    onFileSelect: noop,
+    onSubmitFile: noop
+  });
+
+  for (const text of [
+    "导入已完成",
+    "接收 1 行",
+    "形成 1 条证据",
+    "生成 1 个待核验候选",
+    "打开待核验候选 1"
+  ]) {
+    assert.match(rendered.html, new RegExp(text));
+  }
+  assert.match(rendered.html, /data-action="verify-identity"/);
+  assert.match(rendered.html, /data-candidate-id="candidate-&lt;unsafe&gt;"/);
+  assert.doesNotMatch(rendered.html, /candidate-<unsafe>/);
+});
+
+test("文件导入结果逐行显示后端返回的错误且进行转义", () => {
+  const rendered = renderPublicLeadImport({
+    urlText: "",
+    urlStatus: "idle",
+    urlResults: [],
+    file: { name: "douyin.xlsx", size: 2_048 },
+    fileStatus: "accepted",
+    fileOperationId: "import-file-partial",
+    fileOutcome: {
+      acceptedRowCount: 2,
+      evidenceCount: 2,
+      candidateCount: 1,
+      candidateIds: ["candidate-1"],
+      rowErrors: [{
+        sheetName: "线索<1>",
+        rowNumber: 4,
+        code: "invalid_source_url",
+        message: "链接不可读<script>"
+      }]
+    },
+    message: "部分行需要修正"
+  }, {
+    onUrlTextChange: noop,
+    onSubmitUrls: noop,
+    onFileSelect: noop,
+    onSubmitFile: noop
+  });
+
+  assert.match(rendered.html, /<section class="ai-growth-import-outcome" aria-label="导入结果">/);
+  assert.match(rendered.html, /第 4 行/);
+  assert.match(rendered.html, /线索&lt;1&gt;/);
+  assert.match(rendered.html, /invalid_source_url/);
+  assert.match(rendered.html, /链接不可读&lt;script&gt;/);
+  assert.doesNotMatch(rendered.html, /<script>/);
 });
 
 test("审批页分开目标内容平台与搜索服务商并说明公开索引边界", () => {

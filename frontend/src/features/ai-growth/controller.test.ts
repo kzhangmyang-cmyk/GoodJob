@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { AiGrowthApi, ProviderConnectionDto } from "./api.js";
+import type {
+  AiGrowthApi,
+  ImportOperationDto,
+  ProviderConnectionDto
+} from "./api.js";
 import type { RunPresentationPollerOptions } from "./poll-run.js";
 import {
   createAiGrowthController,
@@ -107,6 +111,34 @@ function run(status: RunDto["status"] = "running"): RunDto {
     completedAt: status === "succeeded"
       ? "2026-07-26T09:10:00.000Z"
       : null
+  };
+}
+
+function importOperation(
+  overrides: Partial<ImportOperationDto> = {}
+): ImportOperationDto {
+  return {
+    id: "import-1",
+    ownerId: "user-1",
+    teamId: "team-1",
+    actorId: "user-1",
+    fileName: "douyin-public-leads.csv",
+    mediaType: "text/csv",
+    subjectChannel: "individual",
+    artifactHash: "artifact-import-1",
+    status: "queued",
+    rowCount: 0,
+    acceptedRowCount: 0,
+    errorRows: [],
+    evidenceCount: 0,
+    evidenceIds: [],
+    candidateCount: 0,
+    candidateIds: [],
+    errorCode: null,
+    createdAt: "2026-08-07T00:00:00.000Z",
+    startedAt: null,
+    completedAt: null,
+    ...overrides
   };
 }
 
@@ -1787,6 +1819,299 @@ test("真实模式不会因演示 timer 改变业务状态", async () => {
   });
   await submit;
   assert.equal(controller.getState().status, "awaiting_approval");
+});
+
+test("公开抖音 URL 导入去重后只用一个受控 CSV 任务提交安全链接", async () => {
+  const submitted: Array<Parameters<
+    AiGrowthControllerApi["createImportOperation"]
+  >[0]> = [];
+  const { api } = createApi({
+    createImportOperation: async (input) => {
+      submitted.push(input);
+      return importOperation({ id: "import-url-1" });
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+
+  controller.setPublicImportUrls([
+    "https://www.douyin.com/video/123",
+    "https://www.douyin.com/video/123",
+    "http://www.douyin.com/video/456",
+    "https://example.com/not-douyin",
+    "https://v.douyin.com/abc123/"
+  ].join("\n"));
+  await controller.submitPublicImportUrls();
+
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0]?.mediaType, "text/csv");
+  assert.equal(submitted[0]?.subjectChannel, "individual");
+  assert.deepEqual(submitted[0]?.mapping, {
+    sourceTitle: "标题",
+    sourceSnippet: "摘要",
+    sourcePlatform: "平台",
+    sourceUrl: "链接"
+  });
+  const csv = new TextDecoder().decode(submitted[0]?.content);
+  assert.match(csv, /^标题,摘要,平台,链接\r?\n/u);
+  assert.match(csv, /https:\/\/www\.douyin\.com\/video\/123/u);
+  assert.match(csv, /https:\/\/v\.douyin\.com\/abc123\//u);
+  assert.doesNotMatch(csv, /example\.com|http:\/\//u);
+  const state = controller.getPublicImport();
+  assert.equal(state.urlStatus, "uploading");
+  assert.deepEqual(
+    state.urlResults.map((item) => item.status),
+    ["queued", "failed", "failed", "queued"]
+  );
+  assert.equal(state.urlResults[0]?.operationId, "import-url-1");
+  assert.equal(state.urlResults[0]?.evidenceCount, null);
+  assert.match(state.urlResults[1]?.errorMessage ?? "", /HTTPS/);
+  assert.match(state.urlResults[2]?.errorMessage ?? "", /抖音/);
+});
+
+test("新建抖音任务展示真实导入入口而全网任务不误用抖音文案", () => {
+  const { api } = createApi();
+  const controller = createAiGrowthController(controllerOptions(api));
+  const root = { innerHTML: "" } as HTMLElement;
+
+  controller.render(root);
+  assert.match(root.innerHTML, /导入公开抖音线索/);
+  assert.match(root.innerHTML, /submit-public-import-urls/);
+  assert.match(root.innerHTML, /submit-public-import-file/);
+
+  controller.setMode("demo");
+  controller.render(root);
+  assert.doesNotMatch(root.innerHTML, /导入公开抖音线索/);
+
+  controller.setMode("real");
+
+  controller.setTargetPlatform("web");
+  controller.render(root);
+  assert.doesNotMatch(root.innerHTML, /导入公开抖音线索/);
+});
+
+test("CSV / XLSX 文件导入保留原始字节并只展示 operation 返回的待核验结果", async () => {
+  const submitted: Array<Parameters<
+    AiGrowthControllerApi["createImportOperation"]
+  >[0]> = [];
+  const { api } = createApi({
+    createImportOperation: async (input) => {
+      submitted.push(input);
+      return importOperation({
+        id: "import-file-1",
+        status: "succeeded",
+        acceptedRowCount: 2,
+        evidenceCount: 2,
+        candidateCount: 2,
+        candidateIds: ["candidate-import-1", "candidate-import-2"],
+        errorRows: []
+      });
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  const file = new File([
+    "标题,摘要,平台,链接\nA,需求 A,douyin,https://www.douyin.com/video/1"
+  ], "douyin-leads.csv", { type: "text/csv" });
+
+  controller.selectPublicImportFile(file);
+  assert.equal(controller.getPublicImport().fileStatus, "ready");
+  await controller.submitPublicImportFile();
+
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0]?.fileName, "douyin-leads.csv");
+  assert.equal(submitted[0]?.mediaType, "text/csv");
+  assert.equal(submitted[0]?.subjectChannel, "individual");
+  assert.deepEqual(submitted[0]?.mapping, {
+    sourceTitle: "标题",
+    sourceSnippet: "摘要",
+    sourcePlatform: "平台",
+    sourceUrl: "链接",
+    publishedAt: "发布时间",
+    locale: "语言"
+  });
+  assert.equal(
+    new TextDecoder().decode(submitted[0]?.content),
+    await file.text()
+  );
+  const state = controller.getPublicImport() as ReturnType<
+    typeof controller.getPublicImport
+  > & {
+    fileOutcome?: {
+      acceptedRowCount: number | null;
+      evidenceCount: number | null;
+      candidateCount: number | null;
+      candidateIds: string[];
+    } | null;
+  };
+  assert.equal(state.fileStatus, "accepted");
+  assert.equal(state.fileOperationId, "import-file-1");
+  assert.deepEqual(state.fileOutcome, {
+    acceptedRowCount: 2,
+    evidenceCount: 2,
+    candidateCount: 2,
+    candidateIds: ["candidate-import-1", "candidate-import-2"],
+    rowErrors: []
+  });
+});
+
+test("partial_success 把导入行错误映射回对应公开 URL", async () => {
+  const { api } = createApi({
+    createImportOperation: async () => importOperation({
+      id: "import-url-partial",
+      status: "partial_success",
+      acceptedRowCount: 1,
+      evidenceCount: 1,
+      candidateCount: 1,
+      candidateIds: ["candidate-partial-1"],
+      errorRows: [{
+        sheetName: "CSV",
+        rowNumber: 3,
+        code: "invalid_source_url",
+        message: "第二条链接无法解析"
+      }]
+    })
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  controller.setPublicImportUrls([
+    "https://www.douyin.com/video/first",
+    "https://www.douyin.com/video/second"
+  ].join("\n"));
+
+  await controller.submitPublicImportUrls();
+
+  const state = controller.getPublicImport();
+  assert.equal(state.urlStatus, "partial");
+  assert.deepEqual(
+    state.urlResults.map(({ status, errorMessage }) => ({
+      status,
+      errorMessage
+    })),
+    [
+      { status: "succeeded", errorMessage: null },
+      { status: "failed", errorMessage: "第二条链接无法解析" }
+    ]
+  );
+  assert.deepEqual(state.urlOutcome?.rowErrors, [{
+    sheetName: "CSV",
+    rowNumber: 3,
+    code: "invalid_source_url",
+    message: "第二条链接无法解析"
+  }]);
+});
+
+test("导入任务轮询 queued / running 直到终态才显示待核验候选入口", async () => {
+  const statuses: ImportOperationDto[] = [
+    importOperation({ id: "import-poll-1", status: "running" }),
+    importOperation({
+      id: "import-poll-1",
+      status: "succeeded",
+      acceptedRowCount: 1,
+      evidenceCount: 1,
+      candidateCount: 1,
+      candidateIds: ["candidate-polled-1"]
+    })
+  ];
+  let reads = 0;
+  const { api } = createApi({
+    createImportOperation: async () => importOperation({
+      id: "import-poll-1",
+      status: "queued"
+    }),
+    getImportOperation: async () => {
+      reads += 1;
+      return statuses.shift() ?? importOperation({
+        id: "import-poll-1",
+        status: "succeeded"
+      });
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  controller.setPublicImportUrls("https://www.douyin.com/video/123");
+
+  await controller.submitPublicImportUrls();
+
+  assert.equal(reads, 2);
+  const state = controller.getPublicImport();
+  assert.equal(state.urlStatus, "completed");
+  assert.equal(state.urlResults[0]?.status, "succeeded");
+  assert.deepEqual(state.urlOutcome?.candidateIds, ["candidate-polled-1"]);
+});
+
+test("导入任务长时间运行时持续查询而不会永久卡在上传中", async () => {
+  let reads = 0;
+  const { api } = createApi({
+    createImportOperation: async () => importOperation({
+      id: "import-long-running-1",
+      status: "queued"
+    }),
+    getImportOperation: async () => {
+      reads += 1;
+      return reads <= 121
+        ? importOperation({
+            id: "import-long-running-1",
+            status: "running"
+          })
+        : importOperation({
+            id: "import-long-running-1",
+            status: "succeeded",
+            acceptedRowCount: 1,
+            evidenceCount: 1,
+            candidateCount: 1,
+            candidateIds: ["candidate-long-running-1"]
+          });
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  controller.setPublicImportUrls("https://www.douyin.com/video/123");
+
+  await controller.submitPublicImportUrls();
+
+  assert.equal(reads, 122);
+  assert.equal(controller.getPublicImport().urlStatus, "completed");
+  assert.deepEqual(
+    controller.getPublicImport().urlOutcome?.candidateIds,
+    ["candidate-long-running-1"]
+  );
+});
+
+test("离开工作区会废弃迟到的导入轮询终态", async () => {
+  let release!: (value: ImportOperationDto) => void;
+  let markRead!: () => void;
+  const readStarted = new Promise<void>((resolve) => {
+    markRead = resolve;
+  });
+  const deferred = new Promise<ImportOperationDto>((resolve) => {
+    release = resolve;
+  });
+  const { api } = createApi({
+    createImportOperation: async () => importOperation({
+      id: "import-stale-1",
+      status: "queued"
+    }),
+    getImportOperation: async () => {
+      markRead();
+      return deferred;
+    }
+  });
+  const controller = createAiGrowthController(controllerOptions(api));
+  controller.setPublicImportUrls("https://www.douyin.com/video/123");
+
+  const submission = controller.submitPublicImportUrls();
+  await readStarted;
+  controller.leave();
+  release(importOperation({
+    id: "import-stale-1",
+    status: "succeeded",
+    candidateCount: 1,
+    candidateIds: ["candidate-stale-1"]
+  }));
+  await submission;
+
+  assert.equal(controller.getPublicImport().urlStatus, "idle");
+  assert.equal(
+    controller.getPublicImport().urlText,
+    "https://www.douyin.com/video/123"
+  );
+  assert.deepEqual(controller.getPublicImport().urlOutcome, null);
 });
 
 void (undefined as unknown as AiGrowthApi);

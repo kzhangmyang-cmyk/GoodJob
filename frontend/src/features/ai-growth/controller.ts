@@ -40,6 +40,11 @@ import { renderPlanApproval } from "./components/plan-approval.js";
 import { renderConnectionRequired } from "./components/connection-required.js";
 import { renderProviderConnectionCenter } from "./components/provider-connection-center.js";
 import {
+  renderPublicLeadImport,
+  type PublicLeadImportItemStatus,
+  type PublicLeadImportVm
+} from "./components/public-lead-import.js";
+import {
   renderRunConsole,
   type RunProviderVm,
   type RunTimelineItemVm
@@ -149,6 +154,7 @@ export interface ProviderConnectionCenterState {
 
 export interface AiGrowthController {
   getState(): AdvisorState;
+  getPublicImport(): PublicLeadImportVm;
   getConnectionCenter(): ProviderConnectionCenterState;
   getDrawer(): BattleCardDrawer;
   getConnections(): readonly ProviderConnectionDto[];
@@ -170,6 +176,10 @@ export interface AiGrowthController {
   setMode(mode: AdvisorMode): void;
   setTargetPlatform(platform: AcquisitionTaskPlatform): void;
   setTaskText(value: string, notify?: boolean): void;
+  setPublicImportUrls(value: string, notify?: boolean): void;
+  selectPublicImportFile(file: File | null): void;
+  submitPublicImportUrls(): Promise<void>;
+  submitPublicImportFile(): Promise<void>;
   selectTemplate(templateId: IndustryTemplateId): void;
   editPlan(): void;
   cancelPlan(): void;
@@ -240,6 +250,20 @@ function initialState(): AdvisorState {
     candidatesById: new Map(),
     summary: null,
     error: null
+  };
+}
+
+function initialPublicImport(): PublicLeadImportVm {
+  return {
+    urlText: "",
+    urlStatus: "idle",
+    urlResults: [],
+    file: null,
+    fileStatus: "idle",
+    fileOperationId: null,
+    urlOutcome: null,
+    fileOutcome: null,
+    message: null
   };
 }
 
@@ -445,6 +469,138 @@ function cloneState(state: AdvisorState): AdvisorState {
   };
 }
 
+function clonePublicImport(state: PublicLeadImportVm): PublicLeadImportVm {
+  return {
+    ...state,
+    urlResults: state.urlResults.map((item) => ({ ...item })),
+    file: state.file ? { ...state.file } : null,
+    urlOutcome: state.urlOutcome
+      ? {
+          ...state.urlOutcome,
+          candidateIds: [...state.urlOutcome.candidateIds],
+          rowErrors: state.urlOutcome.rowErrors.map((error) => ({ ...error }))
+        }
+      : null,
+    fileOutcome: state.fileOutcome
+      ? {
+          ...state.fileOutcome,
+          candidateIds: [...state.fileOutcome.candidateIds],
+          rowErrors: state.fileOutcome.rowErrors.map((error) => ({ ...error }))
+        }
+      : null
+  };
+}
+
+function publicDouyinUrl(value: string):
+  | { ok: true; value: string }
+  | { ok: false; message: string } {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return { ok: false, message: "链接格式无效" };
+  }
+  if (url.protocol !== "https:") {
+    return { ok: false, message: "仅支持 HTTPS 公开链接" };
+  }
+  if (url.username || url.password || (url.port && url.port !== "443")) {
+    return { ok: false, message: "链接不得包含凭据或非标准端口" };
+  }
+  const host = url.hostname.toLowerCase().replace(/\.$/u, "");
+  const isDouyin = host === "douyin.com"
+    || host.endsWith(".douyin.com")
+    || host === "iesdouyin.com"
+    || host.endsWith(".iesdouyin.com");
+  if (!isDouyin) {
+    return { ok: false, message: "仅支持抖音公开域名链接" };
+  }
+  return { ok: true, value: url.toString() };
+}
+
+function csvCell(value: string): string {
+  return /[",\r\n]/u.test(value)
+    ? `"${value.replace(/"/gu, '""')}"`
+    : value;
+}
+
+function publicUrlsCsv(urls: readonly string[]): ArrayBuffer {
+  const rows = ["标题,摘要,平台,链接", ...urls.map((url) => [
+    "用户导入的公开抖音链接",
+    "用户提交公开链接，主体待核验",
+    "douyin",
+    url
+  ].map(csvCell).join(","))];
+  return new TextEncoder().encode(rows.join("\r\n")).buffer;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function importItemStatus(value: unknown): PublicLeadImportItemStatus {
+  const status = recordValue(value).status;
+  if (status === "running") return "running";
+  if (status === "succeeded" || status === "partial_success") {
+    return "succeeded";
+  }
+  if (status === "failed") return "failed";
+  return "queued";
+}
+
+function importOperationStatus(value: unknown): string | null {
+  const status = recordValue(value).status;
+  return typeof status === "string" ? status : null;
+}
+
+function importOperationIsActive(value: unknown): boolean {
+  return ["queued", "running"].includes(importOperationStatus(value) ?? "");
+}
+
+function optionalNonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number"
+    && Number.isSafeInteger(value)
+    && value >= 0
+    ? value
+    : null;
+}
+
+function importOutcome(value: unknown): NonNullable<
+  PublicLeadImportVm["fileOutcome"]
+> {
+  const record = recordValue(value);
+  const rowErrors = Array.isArray(record.errorRows)
+    ? record.errorRows.flatMap((item) => {
+        const error = recordValue(item);
+        const rowNumber = optionalNonNegativeInteger(error.rowNumber);
+        if (
+          rowNumber === null
+          || rowNumber < 1
+          || typeof error.sheetName !== "string"
+          || typeof error.code !== "string"
+          || typeof error.message !== "string"
+        ) return [];
+        return [{
+          sheetName: error.sheetName,
+          rowNumber,
+          code: error.code,
+          message: error.message
+        }];
+      })
+    : [];
+  return {
+    acceptedRowCount: optionalNonNegativeInteger(record.acceptedRowCount),
+    evidenceCount: optionalNonNegativeInteger(record.evidenceCount),
+    candidateCount: optionalNonNegativeInteger(record.candidateCount),
+    candidateIds: Array.isArray(record.candidateIds)
+      ? record.candidateIds.filter((id): id is string =>
+          typeof id === "string" && id.trim().length > 0)
+      : [],
+    rowErrors
+  };
+}
+
 function recentKey(userId: string) {
   return `goodjob.ai-growth.recent.${userId}`;
 }
@@ -535,6 +691,10 @@ export function createAiGrowthController(
   const makeDrawer = options.drawerFactory ?? createBattleCardDrawer;
   const makeDemoRunner = options.demoRunnerFactory ?? createDemoRunner;
   let state = initialState();
+  let publicImport = initialPublicImport();
+  let selectedPublicImportFile: File | null = null;
+  let urlImportOperation: Promise<void> | null = null;
+  let fileImportOperation: Promise<void> | null = null;
   let connectionCenter = initialConnectionCenter();
   let connectionCenterGeneration = 0;
   let connectionCenterMutationToken = 0;
@@ -580,6 +740,28 @@ export function createAiGrowthController(
 
   const publish = () => {
     options.onChange?.(cloneState(state));
+  };
+
+  const waitForImportTerminal = async (
+    initial: unknown,
+    generation: number,
+    onProgress: (operation: unknown) => void
+  ): Promise<unknown | null> => {
+    let current = initial;
+    for (let attempt = 0; ; attempt += 1) {
+      if (disposed || generation !== operationGeneration) return null;
+      if (!importOperationIsActive(current)) return current;
+      onProgress(current);
+      const record = recordValue(current);
+      if (
+        typeof record.id !== "string"
+        || typeof options.api.getImportOperation !== "function"
+      ) return current;
+      await wait(attempt < 120 ? 500 : 5_000);
+      if (disposed || generation !== operationGeneration) return null;
+      current = await options.api.getImportOperation(record.id);
+    }
+    return current;
   };
 
   const setError = (error: unknown, fallbackCode = "advisor_error") => {
@@ -880,6 +1062,7 @@ export function createAiGrowthController(
 
   const controller: AiGrowthController = {
     getState: () => cloneState(state),
+    getPublicImport: () => clonePublicImport(publicImport),
     getConnectionCenter: () => cloneConnectionCenter(connectionCenter),
     getDrawer: () => drawer,
     getConnections: () => connections,
@@ -893,6 +1076,332 @@ export function createAiGrowthController(
       discoveryMethodCounts: { ...taskOverview.discoveryMethodCounts },
       connections: [...taskOverview.connections]
     }),
+
+    setPublicImportUrls(value, notify = true) {
+      if (publicImport.urlStatus === "uploading") return;
+      publicImport = {
+        ...publicImport,
+        urlText: value,
+        urlStatus: "idle",
+        urlResults: [],
+        urlOutcome: null,
+        message: null
+      };
+      if (notify) publish();
+    },
+
+    selectPublicImportFile(file) {
+      if (publicImport.fileStatus === "uploading") return;
+      selectedPublicImportFile = file;
+      publicImport = {
+        ...publicImport,
+        file: file ? { name: file.name, size: file.size } : null,
+        fileStatus: file ? "ready" : "idle",
+        fileOperationId: null,
+        fileOutcome: null,
+        message: null
+      };
+      publish();
+    },
+
+    submitPublicImportUrls() {
+      if (urlImportOperation) return urlImportOperation;
+      const rawRows = publicImport.urlText
+        .split(/\r?\n/u)
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const uniqueRows = [...new Set(rawRows)];
+      if (uniqueRows.length === 0) {
+        return Promise.reject(new Error("请至少粘贴一个公开抖音链接"));
+      }
+      const checked = uniqueRows.map((sourceUrl) => ({
+        sourceUrl,
+        result: publicDouyinUrl(sourceUrl)
+      }));
+      const validUrls = checked.flatMap(({ result }) =>
+        result.ok ? [result.value] : []);
+      const initialResults = checked.map(({ sourceUrl, result }) => ({
+        sourceUrl: result.ok ? result.value : sourceUrl,
+        status: result.ok ? "queued" as const : "failed" as const,
+        operationId: null,
+        evidenceCount: null,
+        errorMessage: result.ok ? null : result.message
+      }));
+      if (validUrls.length === 0) {
+        publicImport = {
+          ...publicImport,
+          urlStatus: "failed",
+          urlResults: initialResults,
+          urlOutcome: null,
+          message: "没有可提交的公开抖音链接"
+        };
+        publish();
+        return Promise.resolve();
+      }
+      publicImport = {
+        ...publicImport,
+        urlStatus: "uploading",
+        urlResults: initialResults,
+        urlOutcome: null,
+        message: "正在形成用户提交证据，主体仍待核验"
+      };
+      publish();
+      const generation = operationGeneration;
+      const operation = (async () => {
+        try {
+          const created = await options.api.createImportOperation({
+            fileName: `douyin-public-urls-${Date.now()}.csv`,
+            mediaType: "text/csv",
+            content: publicUrlsCsv(validUrls),
+            subjectChannel: "individual",
+            mapping: {
+              sourceTitle: "标题",
+              sourceSnippet: "摘要",
+              sourcePlatform: "平台",
+              sourceUrl: "链接"
+            }
+          }, idempotencyKey("ai-growth-public-url-import"));
+          const response = await waitForImportTerminal(
+            created,
+            generation,
+            (progress) => {
+              const progressRecord = recordValue(progress);
+              const progressId = typeof progressRecord.id === "string"
+                ? progressRecord.id
+                : null;
+              const progressStatus = importItemStatus(progress);
+              publicImport = {
+                ...publicImport,
+                urlStatus: "uploading",
+                urlResults: initialResults.map((item) =>
+                  item.status === "failed"
+                    ? item
+                    : {
+                        ...item,
+                        status: progressStatus,
+                        operationId: progressId
+                }),
+                urlOutcome: null,
+                message: "正在形成用户提交证据，主体仍待核验"
+              };
+              publish();
+            }
+          );
+          if (response === null) return;
+          const record = recordValue(response);
+          const operationId = typeof record.id === "string"
+            ? record.id
+            : null;
+          const status = importItemStatus(response);
+          if (importOperationIsActive(response)) {
+            publicImport = {
+              ...publicImport,
+              urlStatus: "uploading",
+              message: "导入任务仍在处理，主体仍待核验"
+            };
+            publish();
+            return;
+          }
+          const terminalStatus = importOperationStatus(response);
+          const outcome = importOutcome(response);
+          const errorsByUrl = new Map<string, string>();
+          for (const error of outcome.rowErrors) {
+            const sourceUrl = validUrls[error.rowNumber - 2];
+            if (sourceUrl) errorsByUrl.set(sourceUrl, error.message);
+          }
+          publicImport = {
+            ...publicImport,
+            urlStatus: terminalStatus === "failed"
+              ? "failed"
+              : initialResults.some((item) => item.status === "failed")
+                || terminalStatus === "partial_success"
+                ? "partial"
+                : "completed",
+            urlResults: initialResults.map((item) =>
+              item.status === "failed"
+                ? item
+                : errorsByUrl.has(item.sourceUrl)
+                  ? {
+                      ...item,
+                      status: "failed",
+                      operationId,
+                      errorMessage: errorsByUrl.get(item.sourceUrl) ?? null
+                    }
+                  : {
+                      ...item,
+                      status,
+                      operationId,
+                      errorMessage: status === "failed"
+                        ? "导入任务处理失败"
+                        : null
+                    }),
+            urlOutcome: outcome,
+            message: terminalStatus === "failed"
+              ? "公开链接导入任务处理失败"
+              : "导入完成，已形成用户提交证据；主体仍待核验"
+          };
+          publish();
+        } catch (error) {
+          if (disposed || generation !== operationGeneration) return;
+          publicImport = {
+            ...publicImport,
+            urlStatus: "failed",
+            urlResults: initialResults.map((item) =>
+              item.status === "failed"
+                ? item
+                : {
+                    ...item,
+                    status: "failed",
+                    errorMessage: "导入请求失败，请稍后重试"
+                  }),
+            urlOutcome: null,
+            message: "公开链接导入失败"
+          };
+          publish();
+          throw error;
+        }
+      })();
+      urlImportOperation = operation;
+      const clear = () => {
+        if (urlImportOperation === operation) urlImportOperation = null;
+      };
+      void operation.then(clear, clear);
+      return operation;
+    },
+
+    submitPublicImportFile() {
+      if (fileImportOperation) return fileImportOperation;
+      const file = selectedPublicImportFile;
+      if (!file) {
+        return Promise.reject(new Error("请先选择 CSV 或 XLSX 文件"));
+      }
+      const lowerName = file.name.toLowerCase();
+      const mediaType = lowerName.endsWith(".csv")
+        ? "text/csv" as const
+        : lowerName.endsWith(".xlsx")
+          ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" as const
+          : null;
+      if (!mediaType) {
+        publicImport = {
+          ...publicImport,
+          fileStatus: "failed",
+          fileOutcome: null,
+          message: "仅支持 .csv 或 .xlsx 文件"
+        };
+        publish();
+        return Promise.resolve();
+      }
+      if (file.size === 0 || file.size > 5 * 1_024 * 1_024) {
+        publicImport = {
+          ...publicImport,
+          fileStatus: "failed",
+          fileOutcome: null,
+          message: file.size === 0
+            ? "导入文件不能为空"
+            : "导入文件不能超过 5 MB"
+        };
+        publish();
+        return Promise.resolve();
+      }
+      publicImport = {
+        ...publicImport,
+        fileStatus: "uploading",
+        fileOperationId: null,
+        fileOutcome: null,
+        message: "正在形成用户提交证据，主体仍待核验"
+      };
+      publish();
+      const generation = operationGeneration;
+      const operation = (async () => {
+        try {
+          const created = await options.api.createImportOperation({
+            fileName: file.name,
+            mediaType,
+            content: await file.arrayBuffer(),
+            subjectChannel: "individual",
+            mapping: {
+              sourceTitle: "标题",
+              sourceSnippet: "摘要",
+              sourcePlatform: "平台",
+              sourceUrl: "链接",
+              publishedAt: "发布时间",
+              locale: "语言"
+            }
+          }, idempotencyKey("ai-growth-public-file-import"));
+          const response = await waitForImportTerminal(
+            created,
+            generation,
+            (progress) => {
+              const record = recordValue(progress);
+              publicImport = {
+                ...publicImport,
+                fileStatus: "uploading",
+                fileOperationId: typeof record.id === "string"
+                  ? record.id
+                  : null,
+                fileOutcome: null,
+                message: "正在形成用户提交证据，主体仍待核验"
+              };
+              publish();
+            }
+          );
+          if (response === null) return;
+          const record = recordValue(response);
+          if (importOperationIsActive(response)) {
+            publicImport = {
+              ...publicImport,
+              fileStatus: "uploading",
+              fileOperationId: typeof record.id === "string"
+                ? record.id
+                : null,
+              message: "导入任务仍在处理，主体仍待核验"
+            };
+            publish();
+            return;
+          }
+          if (importOperationStatus(response) === "failed") {
+            publicImport = {
+              ...publicImport,
+              fileStatus: "failed",
+              fileOperationId: typeof record.id === "string"
+                ? record.id
+                : null,
+              fileOutcome: importOutcome(response),
+              message: "文件导入任务处理失败"
+            };
+            publish();
+            return;
+          }
+          publicImport = {
+            ...publicImport,
+            fileStatus: "accepted",
+            fileOperationId: typeof record.id === "string"
+              ? record.id
+              : null,
+            fileOutcome: importOutcome(response),
+            message: "导入完成，已形成用户提交证据；主体仍待核验"
+          };
+          publish();
+        } catch (error) {
+          if (disposed || generation !== operationGeneration) return;
+          publicImport = {
+            ...publicImport,
+            fileStatus: "failed",
+            fileOperationId: null,
+            fileOutcome: null,
+            message: "文件导入失败，请核对列名和文件内容后重试"
+          };
+          publish();
+          throw error;
+        }
+      })();
+      fileImportOperation = operation;
+      const clear = () => {
+        if (fileImportOperation === operation) fileImportOperation = null;
+      };
+      void operation.then(clear, clear);
+      return operation;
+    },
 
     async openConnectionCenter() {
       if (disposed) return;
@@ -1854,6 +2363,16 @@ export function createAiGrowthController(
           }))
         : [];
       const candidates = [...state.candidatesById.values()];
+      const publicImportHtml = state.mode === "real"
+        && state.targetPlatform === "douyin"
+        ? renderPublicLeadImport(publicImport, {
+            onUrlTextChange: (value) =>
+              controller.setPublicImportUrls(value),
+            onSubmitUrls: () => void controller.submitPublicImportUrls(),
+            onFileSelect: (file) => controller.selectPublicImportFile(file),
+            onSubmitFile: () => void controller.submitPublicImportFile()
+          }).html
+        : "";
       const candidateCallbacks = {
         onOpenBattleCard: (id: string) => void controller.openCandidate(id),
         onPreviewReview: () => options.toast("演示模式仅预览人工审核"),
@@ -1891,7 +2410,7 @@ export function createAiGrowthController(
           onConfigure: () => void controller.openConnectionCenter(),
           onUseDemo: () => controller.setMode("demo")
         });
-        stage = input.html + required.html;
+        stage = input.html + publicImportHtml + required.html;
       } else if (state.status === "awaiting_approval" && state.planDraft) {
         stage = renderPlanApproval({
           mode: state.mode,
@@ -1982,7 +2501,7 @@ export function createAiGrowthController(
           onTemplateSelect: (id) => controller.selectTemplate(id),
           onSubmit: () => void controller.submit(),
           onContinueTask: (id) => void controller.continueRecent(id)
-        }).html;
+        }).html + publicImportHtml;
       }
       if (workspaceView === "task") stage = detailHeader + stage;
       const shell = renderAdvisorShell({
@@ -2020,6 +2539,22 @@ export function createAiGrowthController(
 
     leave() {
       operationGeneration += 1;
+      const importWasActive = publicImport.urlStatus === "uploading"
+        || publicImport.fileStatus === "uploading";
+      publicImport = {
+        ...publicImport,
+        urlStatus: publicImport.urlStatus === "uploading"
+          ? "idle"
+          : publicImport.urlStatus,
+        fileStatus: publicImport.fileStatus === "uploading"
+          ? publicImport.file === null ? "idle" : "ready"
+          : publicImport.fileStatus,
+        message: importWasActive
+          ? "已停止本页查询；服务端导入任务不受影响，可重新进入后查询或提交。"
+          : publicImport.message
+      };
+      urlImportOperation = null;
+      fileImportOperation = null;
       poller.stop();
       stopDemo();
       resetDemoArtifacts();
@@ -2343,6 +2878,12 @@ export function createMountedAiGrowthAdvisor(
       case "submit-task":
         await controller.submit();
         break;
+      case "submit-public-import-urls":
+        await controller.submitPublicImportUrls();
+        break;
+      case "submit-public-import-file":
+        await controller.submitPublicImportFile();
+        break;
       case "continue-task":
         await controller.continueRecent(element.dataset.taskId ?? "");
         break;
@@ -2542,6 +3083,14 @@ export function createMountedAiGrowthAdvisor(
     const field = event.target as HTMLInputElement | HTMLTextAreaElement;
     if (field.matches("[data-field='task-text']")) {
       controller.setTaskText(field.value, false);
+    } else if (field.matches("[data-field='public-import-urls']")) {
+      controller.setPublicImportUrls(field.value, false);
+      const submit = field
+        .closest(".ai-growth-public-import__method")
+        ?.querySelector<HTMLButtonElement>(
+          "[data-action='submit-public-import-urls']"
+        );
+      if (submit) submit.disabled = field.value.trim().length === 0;
     } else if (controller.getDrawer().getState().readOnly) {
       return;
     } else if (field.matches("[data-field='identity-profile-url']")) {
@@ -2552,6 +3101,13 @@ export function createMountedAiGrowthAdvisor(
   };
   const onChange = (event: Event) => {
     const field = event.target;
+    if (
+      field instanceof HTMLInputElement
+      && field.matches("[data-field='public-import-file']")
+    ) {
+      controller.selectPublicImportFile(field.files?.[0] ?? null);
+      return;
+    }
     if (
       field instanceof HTMLInputElement
       && field.matches("[data-field='identity-evidence']")

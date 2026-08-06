@@ -10,6 +10,7 @@ import {
   type CandidateIdentityConfirmationDto,
   type ContentFetchCreateDto,
   type ContentFetchOperationDto,
+  type ImportOperationCreateDto,
   type ProviderCatalogPageDto,
   type ProviderConnectionCreateDto,
   type ProviderConnectionDto,
@@ -231,6 +232,8 @@ const contentFetchOperation: ContentFetchOperationDto = {
   contentHash: "sha256:content",
   evidenceCount: 1,
   evidenceIds: ["evidence-profile-1"],
+  candidateCount: 0,
+  candidateIds: [],
   errorCode: null,
   createdAt: "2026-08-06T00:00:00.000Z",
   startedAt: "2026-08-06T00:00:01.000Z",
@@ -281,6 +284,72 @@ test("getContentFetchOperation URL-encodes the operation id", async () => {
   assert.deepEqual(result, contentFetchOperation);
   assert.deepEqual(calls, [{
     path: "/api/v1/acquisition/content-fetch-operations/fetch%2Fwith%20%3F",
+    init: undefined
+  }]);
+});
+
+test("createImportOperation uploads raw CSV bytes with generated query metadata", async () => {
+  const content = new TextEncoder().encode(
+    "标题,摘要,链接\n公开需求,正在寻找 CRM,https://www.douyin.com/video/1"
+  ).buffer;
+  const input: ImportOperationCreateDto = {
+    fileName: "抖音 线索.csv",
+    mediaType: "text/csv",
+    content,
+    subjectChannel: "individual",
+    mapping: {
+      sourceTitle: "标题",
+      sourceSnippet: "摘要",
+      sourcePlatform: "平台",
+      sourceUrl: "链接",
+      publishedAt: "发布时间",
+      locale: "语言"
+    }
+  };
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const request = (async (path: string, init?: RequestInit) => {
+    calls.push({ path, init });
+    return { id: "import-1", status: "queued" };
+  }) as AdvisorRequest;
+
+  const result = await createAiGrowthApi(request).createImportOperation(
+    input,
+    "fixture-import-key"
+  );
+
+  assert.deepEqual(result, { id: "import-1", status: "queued" });
+  const expectedQuery = new URLSearchParams({
+    fileName: input.fileName,
+    subjectChannel: input.subjectChannel,
+    mapping: JSON.stringify(input.mapping)
+  });
+  assert.deepEqual(calls, [{
+    path: `/api/v1/acquisition/import-operations?${expectedQuery}`,
+    init: {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/csv",
+        "Idempotency-Key": "fixture-import-key"
+      },
+      body: content
+    }
+  }]);
+});
+
+test("getImportOperation URL-encodes the operation id for truthful status polling", async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const request = (async (path: string, init?: RequestInit) => {
+    calls.push({ path, init });
+    return { id: "import-1", status: "running" };
+  }) as AdvisorRequest;
+
+  const result = await createAiGrowthApi(request).getImportOperation(
+    "import/with ?"
+  );
+
+  assert.deepEqual(result, { id: "import-1", status: "running" });
+  assert.deepEqual(calls, [{
+    path: "/api/v1/acquisition/import-operations/import%2Fwith%20%3F",
     init: undefined
   }]);
 });

@@ -1918,6 +1918,8 @@ test("application startup recovers queued discovery operations", async () => {
     contentHash: null,
     evidenceCount: 0,
     evidenceIds: [],
+    candidateCount: 0,
+    candidateIds: [],
     errorCode: null,
     idempotencyKeyHash: "f".repeat(64),
     requestHash: `sha256:${"e".repeat(64)}`,

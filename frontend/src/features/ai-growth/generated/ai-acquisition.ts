@@ -1253,6 +1253,9 @@ export interface components {
             items: components["schemas"]["content-fetch-operation.v1.schema"][];
         };
         ImportOperation: components["schemas"]["import-operation.v1.schema"];
+        ImportOperationList: {
+            items: components["schemas"]["import-operation.v1.schema"][];
+        };
         AcquisitionPlan: components["schemas"]["acquisition-plan.v1.schema"];
         AcquisitionRun: components["schemas"]["acquisition-run.v1.schema"];
         AcquisitionOperationShard: components["schemas"]["acquisition-operation-shard.v1.schema"];
@@ -1470,7 +1473,7 @@ export interface components {
             createdAt: string;
         };
         /** ContentFetchOperation */
-        "content-fetch-operation.v1.schema": {
+        "content-fetch-operation.v1.schema": ({
             id: string;
             ownerId: string;
             teamId: string;
@@ -1492,6 +1495,8 @@ export interface components {
             contentHash: string | null;
             evidenceCount: number;
             evidenceIds: string[];
+            candidateCount: number;
+            candidateIds: string[];
             errorCode: string | null;
             /** Format: date-time */
             createdAt: string;
@@ -1499,7 +1504,15 @@ export interface components {
             startedAt: string | null;
             /** Format: date-time */
             completedAt: string | null;
-        } & ({
+        } & (unknown & unknown & ({
+            /** @constant */
+            candidateCount: 0;
+            candidateIds: unknown[];
+        } | {
+            /** @constant */
+            candidateCount: 1;
+            candidateIds: unknown[];
+        } | unknown))) & ({
             /** @enum {unknown} */
             status?: "succeeded" | "access_restricted";
             /** @constant */
@@ -1507,11 +1520,71 @@ export interface components {
             evidenceIds?: unknown[];
         } | {
             /** @enum {unknown} */
-            status?: "queued" | "running" | "failed";
+            status?: "queued" | "running";
             /** @constant */
             evidenceCount?: 0;
             evidenceIds?: unknown[];
+        } | {
+            /** @constant */
+            status?: "failed";
+            /** @constant */
+            evidenceCount?: 0;
+            evidenceIds?: unknown[];
+        } | {
+            /** @constant */
+            status?: "failed";
+            /** @constant */
+            evidenceCount?: 1;
+            evidenceIds?: unknown[];
         });
+        /** ImportOperation */
+        "import-operation.v1.schema": {
+            id: string;
+            ownerId: string;
+            teamId: string;
+            actorId: string;
+            fileName: string;
+            /** @enum {unknown} */
+            mediaType: "text/csv" | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+            /** @enum {unknown} */
+            subjectChannel: "organization" | "individual";
+            artifactHash: string;
+            /** @enum {unknown} */
+            status: "queued" | "running" | "succeeded" | "partial_success" | "failed";
+            rowCount: number;
+            acceptedRowCount: number;
+            errorRows: {
+                sheetName: string;
+                rowNumber: number;
+                code: string;
+                message: string;
+            }[];
+            evidenceCount: number;
+            evidenceIds: string[];
+            candidateCount: number;
+            candidateIds: string[];
+            errorCode: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            startedAt: string | null;
+            /** Format: date-time */
+            completedAt: string | null;
+        } & (unknown & unknown & (unknown | {
+            /** @constant */
+            evidenceCount: 0;
+            evidenceIds: unknown[];
+        } | {
+            evidenceCount: number;
+            evidenceIds: unknown[];
+        }) & (unknown | {
+            /** @constant */
+            candidateCount: 0;
+            candidateIds: unknown[];
+        } | {
+            candidateCount: number;
+            candidateIds: unknown[];
+        }));
         /** DiscoveryEvidence */
         "discovery-evidence.v1.schema": {
             id: string;
@@ -1552,6 +1625,8 @@ export interface components {
                 artifactHash: string;
                 sheetName: string;
                 rowNumber: number;
+                /** Format: uri */
+                sourceUrl?: string;
             };
             /** @enum {unknown} */
             accessStatus: "indexed_summary" | "public_content" | "user_supplied" | "access_restricted";
@@ -2537,17 +2612,6 @@ export interface components {
             kind: "search" | "content_fetch" | "import";
             displayName: string;
             capabilities: string[];
-        };
-        /** ImportOperation */
-        "import-operation.v1.schema": {
-            id: string;
-            ownerId: string;
-            artifactHash: string;
-            /** @enum {unknown} */
-            status: "queued" | "running" | "succeeded" | "partial_success" | "failed";
-            rowCount?: number;
-            /** Format: date-time */
-            createdAt: string;
         };
         /** AcquisitionOperationShard */
         "acquisition-operation-shard.v1.schema": {
@@ -3597,11 +3661,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        items: {
-                            [key: string]: unknown;
-                        }[];
-                    };
+                    "application/json": components["schemas"]["ImportOperationList"];
                 };
             };
             /** @description Unified API error */
@@ -3679,9 +3739,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["import-operation.v1.schema"];
                 };
             };
             /** @description Unified API error */
@@ -3766,9 +3824,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["import-operation.v1.schema"];
                 };
             };
             /** @description Unified API error */

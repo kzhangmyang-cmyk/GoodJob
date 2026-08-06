@@ -90,7 +90,8 @@
             "importBatchId": { "type": "string", "minLength": 1 },
             "artifactHash": { "type": "string", "minLength": 1 },
             "sheetName": { "type": "string", "minLength": 1 },
-            "rowNumber": { "type": "integer", "minimum": 1 }
+            "rowNumber": { "type": "integer", "minimum": 1 },
+            "sourceUrl": { "type": "string", "format": "uri" }
           }
         }
       ]

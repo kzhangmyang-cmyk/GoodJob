@@ -50,6 +50,8 @@ const fetchOperation: AcquisitionContentFetchOperationRecord = {
   contentHash: null,
   evidenceCount: 0,
   evidenceIds: [],
+  candidateCount: 0,
+  candidateIds: [],
   errorCode: null,
   idempotencyKeyHash: "a".repeat(64),
   requestHash: `sha256:${"b".repeat(64)}`,
@@ -75,6 +77,10 @@ const importOperation: AcquisitionImportOperationRecord = {
   status: "queued",
   rowCount: 0,
   acceptedRowCount: 0,
+  evidenceCount: 0,
+  evidenceIds: [],
+  candidateCount: 0,
+  candidateIds: [],
   errorRows: [],
   errorCode: null,
   idempotencyKeyHash: "d".repeat(64),
@@ -205,12 +211,6 @@ test("mysql repository rejects duplicate and inconsistent content-fetch evidence
       status: "succeeded",
       evidenceCount: 1,
       evidenceIds: []
-    },
-    {
-      ...fetchOperation,
-      status: "failed",
-      evidenceCount: 1,
-      evidenceIds: ["evidence-1"]
     }
   ];
 
@@ -228,6 +228,30 @@ test("mysql repository rejects duplicate and inconsistent content-fetch evidence
       /ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_/u
     );
   }
+});
+
+test("mysql repository preserves evidence association when candidate ingestion fails after fetch", async () => {
+  const pool = new FakePool();
+  const repository =
+    new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool));
+  pool.enqueue([{ payload_json: JSON.stringify({
+    ...fetchOperation,
+    status: "failed",
+    evidenceCount: 1,
+    evidenceIds: ["evidence-1"],
+    candidateCount: 0,
+    candidateIds: [],
+    errorCode: "CONTENT_FETCH_FAILED"
+  }) }]);
+
+  const loaded = await repository.getContentFetchOperation(
+    { ownerId: "owner-a", teamId: "team-a" },
+    fetchOperation.id
+  );
+
+  assert.equal(loaded?.status, "failed");
+  assert.deepEqual(loaded?.evidenceIds, ["evidence-1"]);
+  assert.deepEqual(loaded?.candidateIds, []);
 });
 
 test("mysql repository lists tenant operations by created time and id with a bounded limit", async () => {

@@ -78,6 +78,33 @@ export type ContentFetchCreateDto = operations[
 export type ContentFetchOperationDto =
   components["schemas"]["ContentFetchOperation"];
 
+type ImportOperationQuery = operations[
+  "createAcquisitionImportOperation"
+]["parameters"]["query"];
+
+type ImportOperationMediaType = keyof operations[
+  "createAcquisitionImportOperation"
+]["requestBody"]["content"];
+
+export type ImportOperationDto = operations[
+  "createAcquisitionImportOperation"
+]["responses"][202]["content"]["application/json"];
+
+export interface ImportOperationCreateDto {
+  fileName: ImportOperationQuery["fileName"];
+  subjectChannel: ImportOperationQuery["subjectChannel"];
+  mapping: {
+    sourceTitle: string;
+    sourceSnippet: string;
+    sourcePlatform?: string;
+    sourceUrl?: string;
+    publishedAt?: string;
+    locale?: string;
+  };
+  mediaType: ImportOperationMediaType;
+  content: ArrayBuffer;
+}
+
 export type CandidateIdentityConfirmationDto = operations[
   "confirmAcquisitionCandidateIdentity"
 ]["requestBody"]["content"]["application/json"];
@@ -510,6 +537,34 @@ export function createAiGrowthApi(request: AdvisorRequest) {
     getContentFetchOperation(id: string): Promise<ContentFetchOperationDto> {
       return mapConflict(() => request(
         `/api/v1/acquisition/content-fetch-operations/${segment(id)}`
+      ));
+    },
+
+    createImportOperation(
+      input: ImportOperationCreateDto,
+      idempotencyKey: string
+    ): Promise<ImportOperationDto> {
+      const query = new URLSearchParams({
+        fileName: input.fileName,
+        subjectChannel: input.subjectChannel,
+        mapping: JSON.stringify(input.mapping)
+      });
+      return mapConflict(() => request(
+        `/api/v1/acquisition/import-operations?${query}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": input.mediaType,
+            "Idempotency-Key": requireIdempotencyKey(idempotencyKey)
+          },
+          body: input.content
+        }
+      ));
+    },
+
+    getImportOperation(id: string): Promise<ImportOperationDto> {
+      return mapConflict(() => request(
+        `/api/v1/acquisition/import-operations/${segment(id)}`
       ));
     },
 

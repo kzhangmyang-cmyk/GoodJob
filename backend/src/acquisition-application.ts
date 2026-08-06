@@ -63,6 +63,9 @@ import {
   AcquisitionIdentityResolutionService
 } from "./acquisition-identity-resolution-service.js";
 import {
+  AcquisitionIndividualSignalIngestionService
+} from "./acquisition-individual-signal-ingestion.js";
+import {
   ACQUISITION_MODEL_CONTENT_HASHES,
   ACQUISITION_MODEL_PROMPT_VERSION,
   ACQUISITION_MODEL_SCHEMA_VERSION,
@@ -958,9 +961,15 @@ export async function createAcquisitionApplication(
       ?? createAcquisitionPublicSearchPort(options.store, {
         credentialSecret: providerCredentialSecret
       });
+    const individualSignals =
+      new AcquisitionIndividualSignalIngestionService({
+        domain: domainService,
+        candidateDirectory
+      });
     const discoveryOperations = new AcquisitionDiscoveryOperationService({
       repository: repositories.discovery,
       evidence: domainService,
+      individualSignals,
       fetcher: options.contentFetcher
         ?? new ControlledPublicContentFetcher(),
       masterSecret: derivedSecret(masterSecret, "discovery-artifacts"),
@@ -1053,6 +1062,7 @@ export async function createAcquisitionApplication(
       reviewTasks,
       actionExecutions,
       toolResults,
+      individualSignals,
       judgments,
       now
     });

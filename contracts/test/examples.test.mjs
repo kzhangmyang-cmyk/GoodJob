@@ -74,6 +74,8 @@ test("identity workbench contracts accept versioned identity state and exact evi
     contentHash: `sha256:${"d".repeat(64)}`,
     evidenceCount: 1,
     evidenceIds: ["evidence-profile-1"],
+    candidateCount: 0,
+    candidateIds: [],
     errorCode: null,
     createdAt: "2026-08-06T00:00:00.000Z",
     startedAt: "2026-08-06T00:00:01.000Z",
@@ -140,6 +142,8 @@ test("content fetch operations keep status, evidence count, and evidence ids con
     contentHash: null,
     evidenceCount: 0,
     evidenceIds: [],
+    candidateCount: 0,
+    candidateIds: [],
     errorCode: null,
     createdAt: "2026-08-06T00:00:00.000Z",
     startedAt: null,
@@ -152,6 +156,20 @@ test("content fetch operations keep status, evidence count, and evidence ids con
       status
     }).valid, true, `${status} with no evidence must be valid`);
   }
+  assert.equal(validateCase("content-fetch-operation", {
+    ...operation,
+    status: "failed",
+    evidenceCount: 1,
+    evidenceIds: ["evidence-preserved-after-failure"]
+  }).valid, true, "failed fetch must preserve evidence formed before failure");
+  assert.equal(validateCase("content-fetch-operation", {
+    ...operation,
+    status: "failed",
+    evidenceCount: 1,
+    evidenceIds: ["evidence-preserved-after-failure"],
+    candidateCount: 1,
+    candidateIds: ["candidate-preserved-after-failure"]
+  }).valid, true, "failed fetch must preserve a candidate formed before failure");
   for (const status of ["succeeded", "access_restricted"]) {
     assert.equal(validateCase("content-fetch-operation", {
       ...operation,
@@ -170,13 +188,25 @@ test("content fetch operations keep status, evidence count, and evidence ids con
     },
     {
       status: "failed",
-      evidenceCount: 1,
-      evidenceIds: ["evidence-current-operation"]
+      candidateCount: 1,
+      candidateIds: ["candidate-without-evidence"]
     },
     {
       status: "succeeded",
       evidenceCount: 2,
       evidenceIds: ["evidence-duplicate", "evidence-duplicate"]
+    },
+    {
+      status: "succeeded",
+      evidenceCount: 1,
+      evidenceIds: ["evidence-current-operation"],
+      candidateCount: 1,
+      candidateIds: []
+    },
+    {
+      status: "queued",
+      candidateCount: 1,
+      candidateIds: ["candidate-too-early"]
     }
   ];
   for (const values of invalid) {
@@ -185,6 +215,130 @@ test("content fetch operations keep status, evidence count, and evidence ids con
       ...values
     }).valid, false, JSON.stringify(values));
   }
+  const missingCandidateAssociation = structuredClone(operation);
+  delete missingCandidateAssociation.candidateCount;
+  delete missingCandidateAssociation.candidateIds;
+  assert.equal(
+    validateCase(
+      "content-fetch-operation",
+      missingCandidateAssociation
+    ).valid,
+    false,
+    "public fetch responses must always expose candidate associations"
+  );
+});
+
+test("import operations expose row outcomes and downstream evidence and candidate links", async () => {
+  const { validateCase } = await loadContractHarness();
+  const operation = {
+    id: "import-contract-1",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "user-a",
+    fileName: "douyin-links.csv",
+    mediaType: "text/csv",
+    subjectChannel: "individual",
+    artifactHash: `sha256:${"a".repeat(64)}`,
+    status: "partial_success",
+    rowCount: 3,
+    acceptedRowCount: 2,
+    errorRows: [{
+      sheetName: "CSV",
+      rowNumber: 3,
+      code: "UNSUPPORTED_SOURCE_URL",
+      message: "不支持的公开链接"
+    }],
+    evidenceCount: 2,
+    evidenceIds: ["evidence-import-1", "evidence-import-2"],
+    candidateCount: 1,
+    candidateIds: ["candidate-import-1"],
+    errorCode: null,
+    createdAt: "2026-08-07T00:00:00.000Z",
+    startedAt: "2026-08-07T00:00:01.000Z",
+    completedAt: "2026-08-07T00:00:02.000Z"
+  };
+
+  assert.equal(
+    validateCase("import-operation", operation).valid,
+    true
+  );
+
+  const queued = {
+    ...operation,
+    status: "queued",
+    rowCount: 0,
+    acceptedRowCount: 0,
+    errorRows: [],
+    evidenceCount: 0,
+    evidenceIds: [],
+    candidateCount: 0,
+    candidateIds: [],
+    startedAt: null,
+    completedAt: null
+  };
+  assert.equal(validateCase("import-operation", queued).valid, true);
+
+  const legacy = {
+    id: operation.id,
+    ownerId: operation.ownerId,
+    artifactHash: operation.artifactHash,
+    status: "queued",
+    createdAt: operation.createdAt
+  };
+  assert.equal(
+    validateCase("import-operation", legacy).valid,
+    false,
+    "public import responses may not omit runtime outcome fields"
+  );
+
+  const invalid = [
+    { ...queued, evidenceCount: 1, evidenceIds: ["evidence-too-early"] },
+    { ...queued, candidateCount: 1, candidateIds: ["candidate-too-early"] },
+    { ...operation, evidenceCount: 0, evidenceIds: ["evidence-mismatch"] },
+    { ...operation, candidateCount: 0, candidateIds: ["candidate-mismatch"] },
+    { ...operation, evidenceCount: 2, evidenceIds: undefined },
+    { ...operation, candidateCount: undefined, candidateIds: ["candidate-1"] }
+  ];
+  for (const values of invalid) {
+    const candidate = structuredClone(values);
+    if (candidate.evidenceIds === undefined) delete candidate.evidenceIds;
+    if (candidate.candidateCount === undefined) delete candidate.candidateCount;
+    assert.equal(validateCase("import-operation", candidate).valid, false);
+  }
+});
+
+test("import evidence can retain its original public source URL", async () => {
+  const { validateCase } = await loadContractHarness();
+  const evidence = {
+    id: "evidence-import-source-1",
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: "用户提交的公开抖音链接",
+    sourceSnippet: "公开内容中包含需求信号",
+    publishedAt: null,
+    fetchedAt: "2026-08-07T00:00:02.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: `sha256:${"a".repeat(64)}`,
+    contentHash: `sha256:${"b".repeat(64)}`,
+    provenance: {
+      kind: "import_artifact_row",
+      importBatchId: "import-contract-1",
+      artifactHash: `sha256:${"a".repeat(64)}`,
+      sheetName: "CSV",
+      rowNumber: 2,
+      sourceUrl: "https://www.douyin.com/video/1234567890"
+    },
+    accessStatus: "user_supplied"
+  };
+
+  assert.equal(validateCase("discovery-evidence", evidence).valid, true);
+  const legacy = structuredClone(evidence);
+  delete legacy.provenance.sourceUrl;
+  assert.equal(
+    validateCase("discovery-evidence", legacy).valid,
+    true,
+    "existing import evidence without sourceUrl must remain readable"
+  );
 });
 
 test("outcome feedback rejects untyped live parties and legacy individual parties", async () => {

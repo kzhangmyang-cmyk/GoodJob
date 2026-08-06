@@ -19,7 +19,7 @@ const scope = {
   actorId: "user-a"
 };
 
-function evidenceSink() {
+function evidenceSink(onAppend?: (count: number) => void) {
   const appended: Array<{
     scope: typeof scope;
     input: DiscoveryEvidenceInput;
@@ -38,6 +38,7 @@ function evidenceSink() {
           input: structuredClone(input),
           idempotencyKey
         });
+        onAppend?.(appended.length);
         return {
           ...input,
           id: `evidence-${appended.length}`,
@@ -63,8 +64,9 @@ function serviceFixture(input: {
     rawArtifactHash: string;
     contentHash: string;
   }>;
+  onEvidenceAppend?: (count: number) => void;
 } = {}) {
-  const sink = evidenceSink();
+  const sink = evidenceSink(input.onEvidenceAppend);
   const repository =
     new InMemoryAcquisitionDiscoveryOperationRepository();
   const service = new AcquisitionDiscoveryOperationService({
@@ -635,7 +637,8 @@ test("CSV import preserves artifact and row provenance with partial row errors",
       importBatchId: created.id,
       artifactHash: created.artifactHash,
       sheetName: "CSV",
-      rowNumber: 4
+      rowNumber: 4,
+      sourceUrl: "https://example.cn/c"
     }
   );
   assert.match(
@@ -649,6 +652,97 @@ test("CSV import preserves artifact and row provenance with partial row errors",
   );
   assert.equal(replay.acceptedRowCount, 2);
   assert.equal(fixture.sink.appended.length, 2);
+});
+
+test("cancelled import preserves evidence formed before the abort", async () => {
+  const abortController = new AbortController();
+  const fixture = serviceFixture({
+    onEvidenceAppend(count) {
+      if (count === 1) abortController.abort();
+    }
+  });
+  const csv = [
+    "标题,摘要",
+    "第一条公开信号,已形成证据后取消任务",
+    "第二条公开信号,取消后不应继续导入"
+  ].join("\r\n");
+  const created = await fixture.service.createImportOperation(
+    scope,
+    {
+      fileName: "取消保留证据.csv",
+      mediaType: "text/csv",
+      content: Buffer.from(csv),
+      subjectChannel: "organization",
+      columnMapping: {
+        sourceTitle: "标题",
+        sourceSnippet: "摘要"
+      }
+    },
+    "import-cancel-preserves-evidence"
+  );
+
+  await assert.rejects(
+    fixture.service.executeImportOperation(
+      scope,
+      created.id,
+      abortController.signal
+    ),
+    (error: unknown) =>
+      error instanceof AcquisitionDiscoveryOperationError
+      && error.code === "ABORTED"
+  );
+
+  const failed = await fixture.service.getImportOperation(scope, created.id);
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.acceptedRowCount, 1);
+  assert.equal(failed.evidenceCount, 1);
+  assert.deepEqual(failed.evidenceIds, ["evidence-1"]);
+  assert.equal(fixture.sink.appended.length, 1);
+});
+
+test("imported source URLs must satisfy the same public HTTPS boundary as fetched URLs", async () => {
+  const fixture = serviceFixture();
+  const csv = [
+    "标题,摘要,链接",
+    "公开线索,可保留的公开来源,https://public.example.cn/opportunity",
+    "HTTP 链接,不允许明文链接,http://public.example.cn/plain",
+    "内网链接,不允许内网地址,https://127.0.0.1/private",
+    "带凭据链接,不允许 URL 凭据,https://user:pass@public.example.cn/private",
+    "带密钥链接,不允许敏感查询参数,https://public.example.cn/path?api_key=secret"
+  ].join("\r\n");
+  const created = await fixture.service.createImportOperation(
+    scope,
+    {
+      fileName: "公开链接边界.csv",
+      mediaType: "text/csv",
+      content: Buffer.from(csv),
+      subjectChannel: "organization",
+      columnMapping: {
+        sourceTitle: "标题",
+        sourceSnippet: "摘要",
+        sourceUrl: "链接"
+      }
+    },
+    "import-public-url-boundary"
+  );
+
+  const completed = await fixture.service.executeImportOperation(
+    scope,
+    created.id
+  );
+
+  assert.equal(completed.status, "partial_success");
+  assert.equal(completed.rowCount, 5);
+  assert.equal(completed.acceptedRowCount, 1);
+  assert.equal(completed.evidenceCount, 1);
+  assert.equal(completed.errorRows.length, 4);
+  assert.deepEqual(
+    fixture.sink.appended.map((item) =>
+      item.input.provenance.kind === "import_artifact_row"
+        ? item.input.provenance.sourceUrl
+        : null),
+    ["https://public.example.cn/opportunity"]
+  );
 });
 
 test("XLSX import reads bounded worksheets and keeps sheet provenance", async () => {

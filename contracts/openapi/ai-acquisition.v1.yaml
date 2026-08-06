@@ -134,6 +134,14 @@ components:
           type: array
           items: { $ref: '#/components/schemas/ContentFetchOperation' }
     ImportOperation: { $ref: ../json-schema/import-operation.v1.schema.json }
+    ImportOperationList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ImportOperation' }
     AcquisitionPlan: { $ref: ../json-schema/acquisition-plan.v1.schema.json }
     AcquisitionRun: { $ref: ../json-schema/acquisition-run.v1.schema.json }
     AcquisitionOperationShard: { $ref: ../json-schema/acquisition-operation-shard.v1.schema.json }
@@ -516,7 +524,7 @@ paths:
       parameters: [{ name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100 } }]
       responses:
         <<: *acquisitionStandardResponses
-        '200': { description: Import operations, content: { application/json: { schema: *discoveryOperationListSchema } } }
+        '200': { description: Import operations, content: { application/json: { schema: { $ref: '#/components/schemas/ImportOperationList' } } } }
     post:
       operationId: createAcquisitionImportOperation
       summary: Create import operation
@@ -535,7 +543,7 @@ paths:
           application/octet-stream: { schema: *importBinarySchema }
       responses:
         <<: *acquisitionStandardResponses
-        '202': { description: Import operation accepted, content: { application/json: { schema: *acquisitionResourceSchema } } }
+        '202': { description: Import operation accepted, content: { application/json: { schema: { $ref: '#/components/schemas/ImportOperation' } } } }
         '413': *apiError
         '415': *apiError
   /api/v1/acquisition/import-operations/{id}:
@@ -546,7 +554,7 @@ paths:
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       responses:
         <<: *acquisitionStandardResponses
-        '200': { description: Import operation, content: { application/json: { schema: *acquisitionResourceSchema } } }
+        '200': { description: Import operation, content: { application/json: { schema: { $ref: '#/components/schemas/ImportOperation' } } } }
   /api/v1/acquisition/evidence/{id}:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:

@@ -2239,6 +2239,12 @@ export class AcquisitionDomainService {
       if (!Number.isInteger(provenance.rowNumber) || provenance.rowNumber < 1) {
         fail("invalid_request", "导入行号无效", 400);
       }
+      if (provenance.sourceUrl !== undefined) {
+        provenance.sourceUrl = validUrl(
+          provenance.sourceUrl,
+          "导入行公开来源 URL"
+        );
+      }
     } else {
       fail("invalid_request", "证据 provenance 类型无效", 400);
     }

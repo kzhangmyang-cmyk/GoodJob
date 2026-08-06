@@ -2061,16 +2061,20 @@ async function advisorRequest<T>(
 ): Promise<T> {
   const method = (init.method || "GET").toUpperCase();
   const csrfToken = cookieValue("gj_csrf");
+  const headers = new Headers(init.headers);
+  if (!headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  if (
+    !["GET", "HEAD", "OPTIONS"].includes(method)
+    && csrfToken
+  ) {
+    headers.set("x-csrf-token", csrfToken);
+  }
   const response = await fetch(path, {
     ...init,
     credentials: "same-origin",
-    headers: {
-      "content-type": "application/json",
-      ...(!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken
-        ? { "x-csrf-token": csrfToken }
-        : {}),
-      ...(init.headers || {})
-    }
+    headers
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ message: "请求失败" }));

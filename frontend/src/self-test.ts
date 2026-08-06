@@ -120,6 +120,20 @@ assert.deepEqual(
 );
 assert.match(apiLayer, /let openWorkspaceTabs = \["ai-growth"\]/);
 assert.match(apiLayer, /advisorRequest[\s\S]*statusCode[\s\S]*response/);
+const advisorRequestSource = apiLayer.slice(
+  apiLayer.indexOf("async function advisorRequest"),
+  apiLayer.indexOf("function ensureAiGrowthAdvisor")
+);
+assert.match(
+  advisorRequestSource,
+  /const headers = new Headers\(init\.headers\);[\s\S]*if \(!headers\.has\("content-type"\)\)/,
+  "advisor requests must normalize caller headers before applying JSON defaults"
+);
+assert.doesNotMatch(
+  advisorRequestSource,
+  /headers:\s*\{[\s\S]*content-type/,
+  "advisor requests must not emit duplicate case-variant content-type headers"
+);
 assert.match(
   prototype,
   /goodjob:legacy-view-change/,

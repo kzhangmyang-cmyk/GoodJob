@@ -239,6 +239,25 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
       .get.responses["200"].content["application/json"].schema.$ref,
     "#/components/schemas/ContentFetchOperation"
   );
+  assert.equal(
+    document.paths["/api/v1/acquisition/import-operations"]
+      .get.responses["200"].content["application/json"].schema.$ref,
+    "#/components/schemas/ImportOperationList"
+  );
+  assert.equal(
+    document.paths["/api/v1/acquisition/import-operations"]
+      .post.responses["202"].content["application/json"].schema.$ref,
+    "#/components/schemas/ImportOperation"
+  );
+  assert.equal(
+    document.paths["/api/v1/acquisition/import-operations/{id}"]
+      .get.responses["200"].content["application/json"].schema.$ref,
+    "#/components/schemas/ImportOperation"
+  );
+  assert.equal(
+    document.components.schemas.ImportOperationList.properties.items.items.$ref,
+    "#/components/schemas/ImportOperation"
+  );
   assert.equal(document.components.schemas.FinancialValueDecision.$ref, "../json-schema/financial-value-decision.v1.schema.json");
   assert.equal(document.components.schemas.CopilotMessage.$ref, "../json-schema/copilot-message.v1.schema.json");
   const presentation = registry.schemaDocuments.get("acquisition-run-presentation");
@@ -294,7 +313,23 @@ test("every named API resource component accepts a canonical valid instance", as
     ...buildCanonicalExample(contentFetchBase),
     status: "queued",
     evidenceCount: 0,
-    evidenceIds: []
+    evidenceIds: [],
+    candidateCount: 0,
+    candidateIds: []
+  };
+  examples.ImportOperation = {
+    ...examples.ImportOperation,
+    status: "queued",
+    rowCount: 0,
+    acceptedRowCount: 0,
+    errorRows: [],
+    evidenceCount: 0,
+    evidenceIds: [],
+    candidateCount: 0,
+    candidateIds: [],
+    errorCode: null,
+    startedAt: null,
+    completedAt: null
   };
   examples.Candidate = [
     buildCanonicalExample(registry.schemaDocuments.get("organization-candidate")),

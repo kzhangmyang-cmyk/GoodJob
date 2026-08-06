@@ -35,6 +35,10 @@ import {
 import type {
   DouyinPublicSourceType
 } from "./acquisition-douyin-public-source.js";
+import {
+  AcquisitionIndividualSignalIngestionService,
+  type AcquisitionIndividualSignalIngestionPort
+} from "./acquisition-individual-signal-ingestion.js";
 
 const TOOL_NAMES = new Set<string>(ACQUISITION_AGENT_TOOL_NAMES);
 const GRADE_RANK = { S: 0, A: 1, B: 2, C: 3, D: 4 } as const;
@@ -381,6 +385,7 @@ export interface ProductionAcquisitionAgentToolExecutorOptions {
   reviewTasks: AcquisitionReviewTaskPort;
   actionExecutions: AcquisitionActionExecutionPort;
   toolResults: AcquisitionToolResultLedgerPort;
+  individualSignals?: AcquisitionIndividualSignalIngestionPort;
   judgments?: AcquisitionJudgmentPort;
   now?: () => string;
   maxEvidenceAgeDays?: number;
@@ -1141,6 +1146,7 @@ implements AcquisitionAgentToolExecutor {
   private readonly reviewTasks: AcquisitionReviewTaskPort;
   private readonly actionExecutions: AcquisitionActionExecutionPort;
   private readonly toolResults: AcquisitionToolResultLedgerPort;
+  private readonly individualSignals: AcquisitionIndividualSignalIngestionPort;
   private readonly judgments?: AcquisitionJudgmentPort;
   private readonly now: () => string;
   private readonly maxEvidenceAgeDays: number;
@@ -1154,6 +1160,11 @@ implements AcquisitionAgentToolExecutor {
     this.reviewTasks = options.reviewTasks;
     this.actionExecutions = options.actionExecutions;
     this.toolResults = options.toolResults;
+    this.individualSignals = options.individualSignals
+      ?? new AcquisitionIndividualSignalIngestionService({
+        domain: options.domain,
+        candidateDirectory: options.candidateDirectory
+      });
     this.judgments = options.judgments;
     this.now = options.now ?? (() => new Date().toISOString());
     this.maxEvidenceAgeDays = options.maxEvidenceAgeDays ?? 90;
@@ -1325,8 +1336,7 @@ implements AcquisitionAgentToolExecutor {
       .filter(([, passed]) => !passed)
       .map(([gate]) => gate as keyof QualificationHardGates);
     if (operation === "qualify"
-      && failedGates.length === 1
-      && failedGates[0] === "identityResolved") {
+      && failedGates.includes("identityResolved")) {
       throw toolError("IDENTITY_RESEARCH_REQUIRED");
     }
     const researchCanResolveIdentity = operation === "research"
@@ -1500,26 +1510,56 @@ implements AcquisitionAgentToolExecutor {
         acceptedResultCount += 1;
 
         let candidate: AcquisitionCandidate;
+        let candidateCreated = false;
+        let candidateIdentityResolution = identityResolution;
         try {
-          const upsert = await this.directory.upsertCandidate({
-            ownerId: scope.ownerId,
-            teamId: scope.teamId,
-            dedupeKey,
-            partyType: result.subject.kind,
-            idempotencyKey: childIdempotencyKey(
-              input.idempotencyKey,
-              "candidate-upsert",
-              { dedupeKey }
-            ),
-            createCandidate: async () => {
-              const stable = hash(dedupeKey).slice(0, 24);
-              if (result.subject.kind === "organization") {
-                return this.domain.createOrganizationCandidate(
+          if (result.subject.kind === "individual") {
+            const ingested = await this.individualSignals.ingest({
+              scope,
+              provider: response.provider,
+              sourceUrl: result.sourceUrl,
+              sourceType: result.sourceType,
+              subject: {
+                publicActorKey: result.subject.publicActorKey,
+                publicDisplayName: result.subject.publicDisplayName,
+                publicProfileUrl: result.subject.publicProfileUrl,
+                sourcePlatform: result.subject.sourcePlatform,
+                demandCategory: result.subject.demandCategory,
+                demandSummary: result.subject.demandSummary,
+                locationHint: normalizeAcquisitionRegion(
+                  result.subject.locationHint
+                ) ?? "",
+                buyingStage: result.subject.buyingStage,
+                negativeSignals: [...result.subject.negativeSignals]
+              },
+              evidence: createdEvidence,
+              idempotencyKey: input.idempotencyKey
+            });
+            candidate = ingested.candidate;
+            candidateCreated = ingested.created;
+            candidateIdentityResolution = ingested.identityResolution;
+          } else {
+            const organizationSubject = result.subject;
+            const stable = hash(dedupeKey).slice(0, 24);
+            const upsert = await this.directory.upsertCandidate({
+              ownerId: scope.ownerId,
+              teamId: scope.teamId,
+              dedupeKey,
+              partyType: "organization",
+              idempotencyKey: childIdempotencyKey(
+                input.idempotencyKey,
+                "candidate-upsert",
+                { dedupeKey }
+              ),
+              createCandidate: async () =>
+                this.domain.createOrganizationCandidate(
                   scope,
                   {
-                    name: result.subject.name,
+                    name: organizationSubject.name,
                     domain: identityResolution.normalizedDomain,
-                    region: normalizeAcquisitionRegion(result.subject.region),
+                    region: normalizeAcquisitionRegion(
+                      organizationSubject.region
+                    ),
                     creditCode: identityResolution.normalizedCreditCode,
                     organizationId: identityResolution.partyId,
                     tenantProspectId: `prospect-${stable}`,
@@ -1529,51 +1569,30 @@ implements AcquisitionAgentToolExecutor {
                     dedupeKey,
                     partyType: "organization"
                   })
-                );
-              }
-              return this.domain.createIndividualCandidate(
+                )
+            });
+            candidateCreated = upsert.created;
+            candidate = await this.domain.getCandidate(
+              scope,
+              upsert.entry.candidateId
+            );
+            if (!upsert.created) {
+              candidate = await this.domain.attachEvidenceToCandidate(
                 scope,
-                {
-                  publicActorKey: result.subject.publicActorKey,
-                  publicDisplayName: result.subject.publicDisplayName,
-                  publicProfileUrl: result.subject.publicProfileUrl,
-                  sourcePlatform: result.subject.sourcePlatform,
-                  demandSignalId: `signal-${hash(
-                    `${dedupeKey}\u0000${result.sourceUrl}`
-                  ).slice(0, 24)}`,
-                  demandCategory: result.subject.demandCategory,
-                  demandSummary: result.subject.demandSummary,
-                  locationHint: normalizeAcquisitionRegion(
-                    result.subject.locationHint
-                  ) ?? "",
-                  buyingStage: result.subject.buyingStage,
-                  negativeSignals: [...result.subject.negativeSignals],
-                  individualPartyId: identityResolution.partyId,
-                  evidenceIds: [createdEvidence.id]
-                },
-                childIdempotencyKey(input.idempotencyKey, "candidate", {
-                  dedupeKey,
-                  partyType: "individual"
-                })
+                candidate.id,
+                createdEvidence.id,
+                childIdempotencyKey(
+                  input.idempotencyKey,
+                  "attach-evidence",
+                  {
+                    candidateId: candidate.id,
+                    evidenceId: createdEvidence.id
+                  }
+                )
               );
             }
-          });
-          if (!upsert.created) duplicateResultCount += 1;
-          candidate = await this.domain.getCandidate(
-            scope,
-            upsert.entry.candidateId
-          );
-          if (!upsert.created) {
-            candidate = await this.domain.attachEvidenceToCandidate(
-              scope,
-              candidate.id,
-              createdEvidence.id,
-              childIdempotencyKey(input.idempotencyKey, "attach-evidence", {
-                candidateId: candidate.id,
-                evidenceId: createdEvidence.id
-              })
-            );
           }
+          if (!candidateCreated) duplicateResultCount += 1;
         } catch (error) {
           if (input.signal?.aborted || isAbort(error)) throw abortError();
           ingestFailures.push({
@@ -1587,7 +1606,7 @@ implements AcquisitionAgentToolExecutor {
         candidateIds.add(candidate.id);
         identityResolutions.set(
           candidate.id,
-          acquisitionPublicIdentityDisposition(identityResolution)
+          acquisitionPublicIdentityDisposition(candidateIdentityResolution)
         );
       }
       if (acceptedResultCount >= payload.maxResults) break;

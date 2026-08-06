@@ -54,6 +54,7 @@ export type EvidenceProvenance =
       artifactHash: string;
       sheetName: string;
       rowNumber: number;
+      sourceUrl?: string;
     };
 
 export interface DiscoveryEvidenceInput {

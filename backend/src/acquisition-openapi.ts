@@ -549,6 +549,10 @@ const contentFetchOperationResponseSchema = loadContractSchema(
   "content-fetch-operation"
 );
 
+const importOperationResponseSchema = loadContractSchema(
+  "import-operation"
+);
+
 const providerConnectionHealthSchema = {
   type: "object",
   additionalProperties: false,
@@ -1065,7 +1069,7 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
     properties: {
       items: {
         type: "array",
-        items: resourceSchema
+        items: importOperationResponseSchema
       }
     },
     additionalProperties: false
@@ -1187,7 +1191,11 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
         }
       },
       responses: {
-        ...standardResponses(202, "导入任务已排队"),
+        ...standardResponses(
+          202,
+          "导入任务已排队",
+          importOperationResponseSchema
+        ),
         "413": response("文件超过 5 MB 限制", errorSchema),
         "415": response("文件类型不受支持", errorSchema)
       }
@@ -1198,7 +1206,12 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/import-operations/{id}",
     "get",
     operation("get", "读取文件导入任务", {
-      parameters: [idParameter(160)]
+      parameters: [idParameter(160)],
+      responses: standardResponses(
+        200,
+        "文件导入任务",
+        importOperationResponseSchema
+      )
     })
   );
 }

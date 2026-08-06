@@ -209,12 +209,26 @@ function parsedFetch(row: MysqlRow) {
       "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_count_mismatch"
     );
   }
+  if (payload.candidateIds === undefined) payload.candidateIds = [];
+  if (payload.candidateCount === undefined) payload.candidateCount = 0;
+  if (!Array.isArray(payload.candidateIds)
+    || payload.candidateIds.some((id) => typeof id !== "string" || !id)
+    || new Set(payload.candidateIds).size !== payload.candidateIds.length
+    || !Number.isSafeInteger(payload.candidateCount)
+    || Number(payload.candidateCount) !== payload.candidateIds.length
+    || Number(payload.candidateCount) > evidenceIds.length) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:candidate_association"
+    );
+  }
   const successful = [
     "succeeded",
     "access_restricted"
   ].includes(String(payload.status));
+  const pending = ["queued", "running"].includes(String(payload.status));
   if ((successful && evidenceIds.length !== 1)
-    || (!successful && evidenceIds.length !== 0)) {
+    || (pending && (evidenceIds.length !== 0
+      || Number(payload.candidateCount) !== 0))) {
     throw new Error(
       "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_status_mismatch"
     );
@@ -242,6 +256,32 @@ function parsedImport(row: MysqlRow) {
   ].includes(String(payload.status))) {
     throw new Error(
       "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:import_status"
+    );
+  }
+  if (payload.evidenceIds === undefined) payload.evidenceIds = [];
+  if (payload.evidenceCount === undefined) payload.evidenceCount = 0;
+  if (payload.candidateIds === undefined) payload.candidateIds = [];
+  if (payload.candidateCount === undefined) payload.candidateCount = 0;
+  if (!Array.isArray(payload.evidenceIds)
+    || payload.evidenceIds.some((id) => typeof id !== "string" || !id)
+    || new Set(payload.evidenceIds).size !== payload.evidenceIds.length
+    || !Number.isSafeInteger(payload.evidenceCount)
+    || Number(payload.evidenceCount) !== payload.evidenceIds.length
+    || !Array.isArray(payload.candidateIds)
+    || payload.candidateIds.some((id) => typeof id !== "string" || !id)
+    || new Set(payload.candidateIds).size !== payload.candidateIds.length
+    || !Number.isSafeInteger(payload.candidateCount)
+    || Number(payload.candidateCount) !== payload.candidateIds.length
+    || Number(payload.candidateCount) > Number(payload.evidenceCount)) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:import_association"
+    );
+  }
+  if (["queued", "running"].includes(String(payload.status))
+    && (Number(payload.evidenceCount) !== 0
+      || Number(payload.candidateCount) !== 0)) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:import_pending_association"
     );
   }
   return payload as unknown as AcquisitionImportOperationRecord;
