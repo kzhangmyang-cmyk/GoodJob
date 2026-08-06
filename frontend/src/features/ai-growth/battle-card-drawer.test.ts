@@ -5,6 +5,7 @@ import {
   AdvisorConflictError,
   AdvisorPreconditionRequiredError,
   type AiGrowthApi,
+  type CandidateIntelligenceOperationDto,
   type ContentFetchOperationDto,
   type CopilotTaskDto,
   type EvidenceDto
@@ -276,6 +277,41 @@ function failedTask(id: string): CopilotTaskDto {
   };
 }
 
+function candidateIntelligenceOperation(
+  status: CandidateIntelligenceOperationDto["status"],
+  overrides: Partial<CandidateIntelligenceOperationDto> = {}
+): CandidateIntelligenceOperationDto {
+  return {
+    id: "intelligence-operation-1",
+    candidateId: "candidate-1",
+    status,
+    currentStage: status === "running" ? "research" : null,
+    completedStages: status === "succeeded"
+      ? ["research", "qualification", "battle_card"]
+      : [],
+    skippedStages: [],
+    research: status === "succeeded"
+      ? { summary: "已完成公开客户研究", findings: [] }
+      : null,
+    qualification: status === "succeeded"
+      ? {
+          grade: "A",
+          score: 88,
+          hardGateFailures: [],
+          financialValueId: "financial-1"
+        }
+      : null,
+    battleCardId: status === "succeeded" ? "battle-card-v2" : null,
+    failure: null,
+    createdAt: timestamp,
+    startedAt: status === "queued" ? null : timestamp,
+    updatedAt: timestamp,
+    completedAt: status === "succeeded" ? timestamp : null,
+    failedAt: status === "failed" ? timestamp : null,
+    ...overrides
+  };
+}
+
 function apiStub(
   overrides: Partial<AiGrowthApi> = {}
 ): AiGrowthApi {
@@ -293,6 +329,15 @@ function apiStub(
     getQualification: async () => qualification,
     getFinancialValue: async () => financialValue,
     getBattleCard: async () => battleCard,
+    createCandidateIntelligenceOperation: async () =>
+      candidateIntelligenceOperation("succeeded"),
+    getCandidateIntelligenceOperation: async () =>
+      candidateIntelligenceOperation("succeeded"),
+    getLatestCandidateIntelligenceOperation: async () => {
+      throw httpError(404, "candidate intelligence operation missing");
+    },
+    retryCandidateIntelligenceOperation: async () =>
+      candidateIntelligenceOperation("succeeded"),
     requestAssistantAction: async () => succeededTask("task-1", "build_battle_card"),
     getCopilotTask: async () => succeededTask("task-1", "build_battle_card"),
     reviewCandidate: async () => ({
@@ -1506,6 +1551,94 @@ test("identity verification keeps controlled profile, rationale, and evidence se
   );
 });
 
+test("a new identity confirmation creates and polls one durable intelligence operation without browser Copilot tasks", async () => {
+  let candidateReads = 0;
+  let createdOperations = 0;
+  let operationPolls = 0;
+  let assistantActions = 0;
+  const resolved = unresolvedIndividualCandidate("candidate-1", {
+    status: "normalized",
+    version: 4,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+  });
+  const qualified = unresolvedIndividualCandidate("candidate-1", {
+    status: "pending_review",
+    version: 5,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    latestDecisionVersion: qualification.decisionVersion
+  });
+  const drawer = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => {
+        candidateReads += 1;
+        return candidateReads === 1
+          ? unresolvedIndividualCandidate()
+          : qualified;
+      },
+      getEvidence: async () => ({
+        items: [...evidence, profileEvidence],
+        nextCursor: null
+      }),
+      getBattleCard: async () => battleCardV2,
+      createContentFetchOperation: async () =>
+        contentFetchOperation("succeeded"),
+      getEvidenceById: async () => profileEvidence,
+      confirmCandidateIdentity: async () => ({
+        candidate: resolved,
+        resolution: {
+          status: "resolved",
+          basis: "provider_public_actor",
+          resolverVersion: "identity-resolver.v1",
+          evidenceIds: [profileEvidence.id],
+          resolvedAt: timestamp,
+          resolvedBy: "actor-1"
+        }
+      }),
+      createCandidateIntelligenceOperation: async () => {
+        createdOperations += 1;
+        return candidateIntelligenceOperation("queued");
+      },
+      getCandidateIntelligenceOperation: async () => {
+        operationPolls += 1;
+        return candidateIntelligenceOperation("succeeded");
+      },
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        throw new Error("automatic continuation must not use Copilot tasks");
+      }
+    }),
+    wait: async () => undefined,
+    onCandidateUpdated: () => undefined
+  });
+  await drawer.open("candidate-1");
+  await drawer.fetchIdentityProfile(
+    "https://www.douyin.com/user/MS4wLjABAAAA"
+  );
+
+  await drawer.confirmCandidateIdentity({
+    profileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
+    rationale: "已人工核验公开主页与原始需求信号一致。",
+    evidenceIds: [profileEvidence.id]
+  });
+
+  assert.equal(createdOperations, 1);
+  assert.equal(operationPolls, 1);
+  assert.equal(assistantActions, 0);
+  assert.equal(drawer.getState().identityVerification.status, "complete");
+  assert.deepEqual(
+    drawer.getState().identityVerification.continuation.data?.completedTools,
+    ["research_candidate", "qualify_candidate", "build_battle_card"]
+  );
+  assert.equal(drawer.getState().candidate.data?.status, "pending_review");
+  assert.equal(drawer.getState().qualification.status, "ready");
+  assert.equal(drawer.getState().financialValue.status, "ready");
+  assert.equal(drawer.getState().battleCard.status, "ready");
+});
+
 test("opening an already resolved individual synchronizes identity verification state", async () => {
   const resolved = unresolvedIndividualCandidate("candidate-1", {
     status: "pending_review",
@@ -1535,8 +1668,10 @@ test("opening an already resolved individual synchronizes identity verification 
   );
 });
 
-test("reopening a resolved Douyin individual restores a complete current workflow without duplicate tasks", async () => {
+test("reopening a resolved Douyin individual reads the latest durable operation before authoritative resources", async () => {
   let assistantActions = 0;
+  let createdOperations = 0;
+  const calls: string[] = [];
   const resolved = unresolvedIndividualCandidate("candidate-1", {
     status: "pending_review",
     version: 5,
@@ -1548,9 +1683,26 @@ test("reopening a resolved Douyin individual restores a complete current workflo
   const drawer = createBattleCardDrawer({
     api: apiStub({
       getCandidate: async () => resolved,
-      getQualification: async () => qualification,
-      getFinancialValue: async () => financialValue,
-      getBattleCard: async () => battleCardV2,
+      getLatestCandidateIntelligenceOperation: async () => {
+        calls.push("latest-operation");
+        return candidateIntelligenceOperation("succeeded");
+      },
+      createCandidateIntelligenceOperation: async () => {
+        createdOperations += 1;
+        return candidateIntelligenceOperation("succeeded");
+      },
+      getQualification: async () => {
+        calls.push("qualification");
+        return qualification;
+      },
+      getFinancialValue: async () => {
+        calls.push("financial-value");
+        return financialValue;
+      },
+      getBattleCard: async () => {
+        calls.push("battle-card");
+        return battleCardV2;
+      },
       requestAssistantAction: async () => {
         assistantActions += 1;
         return succeededTask("unexpected-task", "build_battle_card");
@@ -1563,6 +1715,13 @@ test("reopening a resolved Douyin individual restores a complete current workflo
   await drawer.open("candidate-1");
 
   assert.equal(assistantActions, 0);
+  assert.equal(createdOperations, 0);
+  assert.deepEqual(calls, [
+    "latest-operation",
+    "qualification",
+    "financial-value",
+    "battle-card"
+  ]);
   assert.equal(drawer.getState().identityVerification.status, "complete");
   assert.equal(
     drawer.getState().identityVerification.continuation.status,
@@ -1574,9 +1733,9 @@ test("reopening a resolved Douyin individual restores a complete current workflo
   );
 });
 
-test("reopening a resolved Douyin individual resumes only the missing battle-card stage", async () => {
-  const messages: string[] = [];
-  let cardReads = 0;
+test("reopening a resolved Douyin individual resumes queued and running durable operations", async () => {
+  let operationPolls = 0;
+  let assistantActions = 0;
   const resolved = unresolvedIndividualCandidate("candidate-1", {
     status: "pending_review",
     version: 5,
@@ -1588,16 +1747,23 @@ test("reopening a resolved Douyin individual resumes only the missing battle-car
   const drawer = createBattleCardDrawer({
     api: apiStub({
       getCandidate: async () => resolved,
+      getLatestCandidateIntelligenceOperation: async () =>
+        candidateIntelligenceOperation("queued"),
+      getCandidateIntelligenceOperation: async () => {
+        operationPolls += 1;
+        return operationPolls === 1
+          ? candidateIntelligenceOperation("running", {
+              currentStage: "qualification",
+              completedStages: ["research"]
+            })
+          : candidateIntelligenceOperation("succeeded");
+      },
       getQualification: async () => qualification,
       getFinancialValue: async () => financialValue,
-      getBattleCard: async () => {
-        cardReads += 1;
-        if (cardReads === 1) throw httpError(404, "battle card missing");
-        return battleCardV2;
-      },
-      requestAssistantAction: async (_sessionId, message) => {
-        messages.push(message);
-        return succeededTask("task-card-resume", "build_battle_card");
+      getBattleCard: async () => battleCardV2,
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        throw new Error("automatic continuation must not use Copilot tasks");
       }
     }),
     wait: async () => undefined,
@@ -1606,9 +1772,8 @@ test("reopening a resolved Douyin individual resumes only the missing battle-car
 
   await drawer.open("candidate-1");
 
-  assert.equal(messages.length, 1);
-  assert.match(messages[0] ?? "", /build_battle_card/);
-  assert.doesNotMatch(messages[0] ?? "", /research_candidate|qualify_candidate/);
+  assert.equal(operationPolls, 2);
+  assert.equal(assistantActions, 0);
   assert.equal(drawer.getState().identityVerification.status, "complete");
   assert.deepEqual(
     drawer.getState().identityVerification.continuation.data?.completedTools,
@@ -1636,6 +1801,18 @@ test("reopening an ineligible resolved Douyin individual marks the battle card s
   const drawer = createBattleCardDrawer({
     api: apiStub({
       getCandidate: async () => resolved,
+      getLatestCandidateIntelligenceOperation: async () =>
+        candidateIntelligenceOperation("succeeded", {
+          completedStages: ["research", "qualification"],
+          skippedStages: ["battle_card"],
+          qualification: {
+            grade: "C",
+            score: 58,
+            hardGateFailures: [],
+            financialValueId: "financial-1"
+          },
+          battleCardId: null
+        }),
       getQualification: async () => ineligibleQualification,
       getFinancialValue: async () => financialValue,
       getBattleCard: async () => {
@@ -1668,10 +1845,9 @@ test("reopening an ineligible resolved Douyin individual marks the battle card s
   );
 });
 
-test("reopening a resolved Douyin individual with only current qualification resumes qualification and card", async () => {
-  const messages: string[] = [];
-  let financeReads = 0;
-  let cardReads = 0;
+test("reopening a resolved Douyin individual creates a durable operation only when no latest operation exists", async () => {
+  const calls: string[] = [];
+  let assistantActions = 0;
   const resolved = unresolvedIndividualCandidate("candidate-1", {
     status: "pending_review",
     version: 5,
@@ -1683,22 +1859,20 @@ test("reopening a resolved Douyin individual with only current qualification res
   const drawer = createBattleCardDrawer({
     api: apiStub({
       getCandidate: async () => resolved,
+      getLatestCandidateIntelligenceOperation: async () => {
+        calls.push("latest");
+        throw httpError(404, "operation missing");
+      },
+      createCandidateIntelligenceOperation: async () => {
+        calls.push("create");
+        return candidateIntelligenceOperation("succeeded");
+      },
       getQualification: async () => qualification,
-      getFinancialValue: async () => {
-        financeReads += 1;
-        if (financeReads === 1) throw httpError(404, "financial value missing");
-        return financialValue;
-      },
-      getBattleCard: async () => {
-        cardReads += 1;
-        if (cardReads === 1) throw httpError(404, "battle card missing");
-        return battleCardV2;
-      },
-      requestAssistantAction: async (_sessionId, message) => {
-        messages.push(message);
-        return message.includes("qualify_candidate")
-          ? succeededTask("task-qualification-resume", "qualify_candidate")
-          : succeededTask("task-card-resume", "build_battle_card");
+      getFinancialValue: async () => financialValue,
+      getBattleCard: async () => battleCardV2,
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        throw new Error("automatic continuation must not use Copilot tasks");
       }
     }),
     wait: async () => undefined,
@@ -1707,80 +1881,8 @@ test("reopening a resolved Douyin individual with only current qualification res
 
   await drawer.open("candidate-1");
 
-  assert.equal(messages.length, 2);
-  assert.match(messages[0] ?? "", /qualify_candidate/);
-  assert.match(messages[1] ?? "", /build_battle_card/);
-  assert.doesNotMatch(messages.join("\n"), /research_candidate/);
-  assert.equal(drawer.getState().identityVerification.status, "complete");
-  assert.deepEqual(
-    drawer.getState().identityVerification.continuation.data?.completedTools,
-    ["research_candidate", "qualify_candidate", "build_battle_card"]
-  );
-});
-
-test("reopening a newly resolved Douyin individual resumes the full missing workflow", async () => {
-  const messages: string[] = [];
-  let candidateReads = 0;
-  let qualificationReads = 0;
-  let financeReads = 0;
-  let cardReads = 0;
-  const resolved = unresolvedIndividualCandidate("candidate-1", {
-    status: "normalized",
-    version: 4,
-    identityResolved: true,
-    publicActorKey: "public:douyin:sha256:actor",
-    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
-  });
-  const qualified = unresolvedIndividualCandidate("candidate-1", {
-    status: "pending_review",
-    version: 5,
-    identityResolved: true,
-    publicActorKey: "public:douyin:sha256:actor",
-    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
-    latestDecisionVersion: qualification.decisionVersion
-  });
-  const drawer = createBattleCardDrawer({
-    api: apiStub({
-      getCandidate: async () => {
-        candidateReads += 1;
-        return candidateReads === 1 ? resolved : qualified;
-      },
-      getQualification: async () => {
-        qualificationReads += 1;
-        if (qualificationReads === 1) throw httpError(404, "qualification missing");
-        return qualification;
-      },
-      getFinancialValue: async () => {
-        financeReads += 1;
-        if (financeReads === 1) throw httpError(404, "financial value missing");
-        return financialValue;
-      },
-      getBattleCard: async () => {
-        cardReads += 1;
-        if (cardReads === 1) throw httpError(404, "battle card missing");
-        return battleCardV2;
-      },
-      requestAssistantAction: async (_sessionId, message) => {
-        messages.push(message);
-        if (message.includes("research_candidate")) {
-          return succeededTask("task-research-resume", "research_candidate");
-        }
-        if (message.includes("qualify_candidate")) {
-          return succeededTask("task-qualification-resume", "qualify_candidate");
-        }
-        return succeededTask("task-card-resume", "build_battle_card");
-      }
-    }),
-    wait: async () => undefined,
-    onCandidateUpdated: () => undefined
-  });
-
-  await drawer.open("candidate-1");
-
-  assert.equal(messages.length, 3);
-  assert.match(messages[0] ?? "", /research_candidate/);
-  assert.match(messages[1] ?? "", /qualify_candidate/);
-  assert.match(messages[2] ?? "", /build_battle_card/);
+  assert.deepEqual(calls, ["latest", "create"]);
+  assert.equal(assistantActions, 0);
   assert.equal(drawer.getState().identityVerification.status, "complete");
   assert.deepEqual(
     drawer.getState().identityVerification.continuation.data?.completedTools,
@@ -1846,7 +1948,8 @@ test("identity confirmation surfaces 409 and 412 conflicts without replaying the
 test("identity confirmation treats a conflict refresh with resolved identity as idempotent success", async () => {
   let candidateReads = 0;
   let confirmations = 0;
-  const messages: string[] = [];
+  let latestOperations = 0;
+  let assistantActions = 0;
   const resolved = unresolvedIndividualCandidate("candidate-1", {
     status: "normalized",
     version: 4,
@@ -1865,8 +1968,7 @@ test("identity confirmation treats a conflict refresh with resolved identity as 
       getCandidate: async () => {
         candidateReads += 1;
         if (candidateReads === 1) return unresolvedIndividualCandidate();
-        if (candidateReads < 4) return resolved;
-        return qualified;
+        return candidateReads === 2 ? resolved : qualified;
       },
       createContentFetchOperation: async () =>
         contentFetchOperation("succeeded"),
@@ -1874,6 +1976,10 @@ test("identity confirmation treats a conflict refresh with resolved identity as 
         contentFetchOperation("succeeded"),
       getEvidenceById: async () => profileEvidence,
       getBattleCard: async () => battleCardV2,
+      getLatestCandidateIntelligenceOperation: async () => {
+        latestOperations += 1;
+        return candidateIntelligenceOperation("succeeded");
+      },
       confirmCandidateIdentity: async () => {
         confirmations += 1;
         throw new AdvisorConflictError(
@@ -1881,14 +1987,9 @@ test("identity confirmation treats a conflict refresh with resolved identity as 
           Object.assign(new Error("HTTP 412"), { status: 412 })
         );
       },
-      requestAssistantAction: async (_sessionId, message) => {
-        messages.push(message);
-        const toolName = message.includes("research_candidate")
-          ? "research_candidate"
-          : message.includes("qualify_candidate")
-            ? "qualify_candidate"
-            : "build_battle_card";
-        return succeededTask(`task-${messages.length}`, toolName);
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        throw new Error("automatic continuation must not use Copilot tasks");
       }
     }),
     wait: async () => undefined,
@@ -1906,8 +2007,9 @@ test("identity confirmation treats a conflict refresh with resolved identity as 
   });
 
   assert.equal(confirmations, 1);
-  assert.equal(candidateReads, 5);
-  assert.equal(messages.length, 3);
+  assert.equal(candidateReads, 3);
+  assert.equal(latestOperations, 1);
+  assert.equal(assistantActions, 0);
   assert.equal(drawer.getState().identityVerification.status, "complete");
   assert.equal(
     drawer.getState().identityVerification.confirmation.status,
@@ -1964,17 +2066,18 @@ test("identity confirmation reports a missing candidate version separately from 
   );
 });
 
-test("identity confirmation coalesces duplicates then runs research, qualification, and battle card in order", async () => {
+test("identity confirmation coalesces duplicates and creates one durable continuation operation", async () => {
   const confirmation = deferred<Awaited<
     ReturnType<AiGrowthApi["confirmCandidateIdentity"]>
   >>();
-  const messages: string[] = [];
   const updates: CandidateDto[] = [];
   let candidateReads = 0;
   let qualificationReads = 0;
   let financeReads = 0;
   let cardReads = 0;
   let confirmations = 0;
+  let createdOperations = 0;
+  let assistantActions = 0;
   let forbiddenWrites = 0;
   const resolved = unresolvedIndividualCandidate("candidate-1", {
     status: "normalized",
@@ -2025,14 +2128,13 @@ test("identity confirmation coalesces duplicates then runs research, qualificati
         confirmations += 1;
         return confirmation.promise;
       },
-      requestAssistantAction: async (_sessionId, message) => {
-        messages.push(message);
-        const toolName = message.includes("research_candidate")
-          ? "research_candidate"
-          : message.includes("qualify_candidate")
-            ? "qualify_candidate"
-            : "build_battle_card";
-        return succeededTask(`task-${messages.length}`, toolName);
+      createCandidateIntelligenceOperation: async () => {
+        createdOperations += 1;
+        return candidateIntelligenceOperation("succeeded");
+      },
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        throw new Error("automatic continuation must not use Copilot tasks");
       },
       reviewCandidate: async () => {
         forbiddenWrites += 1;
@@ -2077,13 +2179,9 @@ test("identity confirmation coalesces duplicates then runs research, qualificati
   await first;
 
   assert.equal(confirmations, 1);
-  assert.equal(messages.length, 3);
-  assert.match(messages[0] ?? "", /research_candidate/);
-  assert.match(messages[0] ?? "", /"depth":"standard"/);
-  assert.match(messages[1] ?? "", /qualify_candidate/);
-  assert.match(messages[2] ?? "", /build_battle_card/);
+  assert.equal(createdOperations, 1);
+  assert.equal(assistantActions, 0);
   assert.equal(forbiddenWrites, 0);
-  assert.doesNotMatch(messages.join("\n"), /create_review_task|outreach|convert/);
   assert.equal(drawer.getState().identityVerification.status, "complete");
   assert.equal(
     drawer.getState().identityVerification.confirmation.status,
@@ -2105,8 +2203,8 @@ test("identity confirmation coalesces duplicates then runs research, qualificati
   assert.equal(updates.at(-1)?.status, "pending_review");
 });
 
-test("identity continuation stops successfully after an ineligible qualification", async () => {
-  const messages: string[] = [];
+test("identity continuation accepts a durable success that skips the battle card", async () => {
+  let assistantActions = 0;
   let cardReads = 0;
   let candidateReads = 0;
   const resolved = unresolvedIndividualCandidate("candidate-1", {
@@ -2155,11 +2253,21 @@ test("identity continuation stops successfully after an ineligible qualification
           resolvedBy: "actor-1"
         }
       }),
-      requestAssistantAction: async (_sessionId, message) => {
-        messages.push(message);
-        return message.includes("research_candidate")
-          ? succeededTask("task-research", "research_candidate")
-          : succeededTask("task-qualification", "qualify_candidate");
+      createCandidateIntelligenceOperation: async () =>
+        candidateIntelligenceOperation("succeeded", {
+          completedStages: ["research", "qualification"],
+          skippedStages: ["battle_card"],
+          qualification: {
+            grade: "C",
+            score: 58,
+            hardGateFailures: [],
+            financialValueId: "financial-1"
+          },
+          battleCardId: null
+        }),
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        throw new Error("automatic continuation must not use Copilot tasks");
       }
     }),
     wait: async () => undefined,
@@ -2176,9 +2284,8 @@ test("identity continuation stops successfully after an ineligible qualification
     evidenceIds: ["evidence-profile-1"]
   });
 
-  assert.equal(messages.length, 2);
-  assert.doesNotMatch(messages.join("\n"), /build_battle_card/);
-  assert.equal(cardReads, 0);
+  assert.equal(assistantActions, 0);
+  assert.equal(cardReads, 1);
   assert.equal(drawer.getState().identityVerification.status, "complete");
   assert.equal(
     drawer.getState().identityVerification.continuation.status,
@@ -2194,62 +2301,11 @@ test("identity continuation stops successfully after an ineligible qualification
   );
 });
 
-test("identity continuation does not build a card when qualification hard gates fail", async () => {
-  const messages: string[] = [];
-  let qualificationReads = 0;
-  const resolved = unresolvedIndividualCandidate("candidate-1", {
-    status: "normalized",
-    version: 4,
-    identityResolved: true,
-    publicActorKey: "public:douyin:sha256:actor",
-    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA",
-    latestDecisionVersion: qualification.decisionVersion
-  });
-  const drawer = createBattleCardDrawer({
-    api: apiStub({
-      getCandidate: async () => resolved,
-      getQualification: async () => {
-        qualificationReads += 1;
-        if (qualificationReads === 1) throw httpError(404, "missing");
-        return {
-          ...qualification,
-          grade: "A",
-          score: 88,
-          hardGateFailures: ["identity_unresolved"]
-        };
-      },
-      getBattleCard: async () => {
-        throw httpError(404, "missing");
-      },
-      requestAssistantAction: async (_sessionId, message) => {
-        messages.push(message);
-        return message.includes("research_candidate")
-          ? succeededTask("task-research", "research_candidate")
-          : succeededTask("task-qualification", "qualify_candidate");
-      }
-    }),
-    wait: async () => undefined,
-    onCandidateUpdated: () => undefined
-  });
-  await drawer.open("candidate-1");
-
-  assert.equal(messages.length, 2);
-  assert.doesNotMatch(messages.join("\n"), /build_battle_card/);
-  assert.equal(drawer.getState().identityVerification.status, "complete");
-  assert.deepEqual(
-    drawer.getState().identityVerification.continuation.data?.completedTools,
-    ["research_candidate", "qualify_candidate"]
-  );
-  assert.deepEqual(
-    drawer.getState().identityVerification.continuation.data?.skippedTools,
-    ["build_battle_card"]
-  );
-});
-
-test("failed identity continuation keeps confirmation and retries from the first incomplete tool", async () => {
-  const retryQualification = deferred<CopilotTaskDto>();
-  const messages: string[] = [];
+test("failed durable identity continuation exposes stage and code then coalesces retry", async () => {
+  const retryOperation = deferred<CandidateIntelligenceOperationDto>();
   let confirmations = 0;
+  let retries = 0;
+  let assistantActions = 0;
   let candidateReads = 0;
   let qualificationReads = 0;
   let financeReads = 0;
@@ -2301,16 +2357,22 @@ test("failed identity continuation keeps confirmation and retries from the first
           }
         };
       },
-      requestAssistantAction: async (_sessionId, message) => {
-        messages.push(message);
-        if (messages.length === 1) {
-          return succeededTask("task-research", "research_candidate");
-        }
-        if (messages.length === 2) {
-          return failedTask("task-qualification-failed");
-        }
-        if (messages.length === 3) return retryQualification.promise;
-        return succeededTask("task-card", "build_battle_card");
+      createCandidateIntelligenceOperation: async () =>
+        candidateIntelligenceOperation("failed", {
+          currentStage: "qualification",
+          completedStages: ["research"],
+          failure: {
+            stage: "qualification",
+            errorCode: "MODEL_TIMEOUT"
+          }
+        }),
+      retryCandidateIntelligenceOperation: async () => {
+        retries += 1;
+        return retryOperation.promise;
+      },
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        throw new Error("automatic continuation must not use Copilot tasks");
       }
     }),
     wait: async () => undefined,
@@ -2339,38 +2401,33 @@ test("failed identity continuation keeps confirmation and retries from the first
     drawer.getState().identityVerification.continuation.data?.completedTools,
     ["research_candidate"]
   );
+  assert.match(
+    drawer.getState().identityVerification.error ?? "",
+    /意向与财务价值评估失败（MODEL_TIMEOUT）/
+  );
 
   const retry = drawer.retryIdentityContinuation();
   const duplicateRetry = drawer.retryIdentityContinuation();
   assert.equal(retry, duplicateRetry);
-  retryQualification.resolve(
-    succeededTask("task-qualification-retry", "qualify_candidate")
-  );
+  retryOperation.resolve(candidateIntelligenceOperation("succeeded"));
   await retry;
 
   assert.equal(confirmations, 1);
+  assert.equal(retries, 1);
+  assert.equal(assistantActions, 0);
   assert.equal(
     drawer.getState().identityVerification.status,
     "complete",
     drawer.getState().identityVerification.error ?? undefined
   );
   assert.deepEqual(
-    messages.map((message) => message.includes("research_candidate")
-      ? "research_candidate"
-      : message.includes("qualify_candidate")
-        ? "qualify_candidate"
-        : "build_battle_card"),
-    [
-      "research_candidate",
-      "qualify_candidate",
-      "qualify_candidate",
-      "build_battle_card"
-    ]
+    drawer.getState().identityVerification.continuation.data?.completedTools,
+    ["research_candidate", "qualify_candidate", "build_battle_card"]
   );
 });
 
-test("a succeeded qualification task cannot advance without a persisted current financial decision", async () => {
-  const messages: string[] = [];
+test("a succeeded durable operation cannot complete without a persisted current financial decision", async () => {
+  let assistantActions = 0;
   let candidateReads = 0;
   const resolved = unresolvedIndividualCandidate("candidate-1", {
     status: "normalized",
@@ -2392,7 +2449,6 @@ test("a succeeded qualification task cannot advance without a persisted current 
       getCandidate: async () => {
         candidateReads += 1;
         if (candidateReads === 1) return unresolvedIndividualCandidate();
-        if (candidateReads === 2) return resolved;
         return qualified;
       },
       getQualification: async () => qualification,
@@ -2415,15 +2471,11 @@ test("a succeeded qualification task cannot advance without a persisted current 
           resolvedBy: "actor-1"
         }
       }),
-      requestAssistantAction: async (_sessionId, message) => {
-        messages.push(message);
-        if (message.includes("research_candidate")) {
-          return succeededTask("task-research", "research_candidate");
-        }
-        if (message.includes("qualify_candidate")) {
-          return succeededTask("task-qualification", "qualify_candidate");
-        }
-        return succeededTask("task-card", "build_battle_card");
+      createCandidateIntelligenceOperation: async () =>
+        candidateIntelligenceOperation("succeeded"),
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        throw new Error("automatic continuation must not use Copilot tasks");
       }
     }),
     wait: async () => undefined,
@@ -2440,23 +2492,20 @@ test("a succeeded qualification task cannot advance without a persisted current 
     evidenceIds: [profileEvidence.id]
   });
 
-  assert.equal(
-    messages.filter((message) => message.includes("build_battle_card")).length,
-    0
-  );
+  assert.equal(assistantActions, 0);
   assert.equal(
     drawer.getState().identityVerification.status,
     "continuation_partial"
   );
   assert.deepEqual(
     drawer.getState().identityVerification.continuation.data?.completedTools,
-    ["research_candidate"]
+    ["research_candidate", "qualify_candidate", "build_battle_card"]
   );
   assert.equal(drawer.getState().financialValue.status, "missing");
 });
 
-test("a succeeded battle-card task cannot complete with a stale persisted card", async () => {
-  const messages: string[] = [];
+test("a succeeded durable operation cannot complete with a stale persisted card", async () => {
+  let assistantActions = 0;
   let candidateReads = 0;
   const resolved = unresolvedIndividualCandidate("candidate-1", {
     status: "normalized",
@@ -2482,7 +2531,6 @@ test("a succeeded battle-card task cannot complete with a stale persisted card",
       getCandidate: async () => {
         candidateReads += 1;
         if (candidateReads === 1) return unresolvedIndividualCandidate();
-        if (candidateReads === 2) return resolved;
         return qualified;
       },
       getQualification: async () => qualification,
@@ -2504,15 +2552,11 @@ test("a succeeded battle-card task cannot complete with a stale persisted card",
           resolvedBy: "actor-1"
         }
       }),
-      requestAssistantAction: async (_sessionId, message) => {
-        messages.push(message);
-        if (message.includes("research_candidate")) {
-          return succeededTask("task-research", "research_candidate");
-        }
-        if (message.includes("qualify_candidate")) {
-          return succeededTask("task-qualification", "qualify_candidate");
-        }
-        return succeededTask("task-card", "build_battle_card");
+      createCandidateIntelligenceOperation: async () =>
+        candidateIntelligenceOperation("succeeded"),
+      requestAssistantAction: async () => {
+        assistantActions += 1;
+        throw new Error("automatic continuation must not use Copilot tasks");
       }
     }),
     wait: async () => undefined,
@@ -2529,14 +2573,14 @@ test("a succeeded battle-card task cannot complete with a stale persisted card",
     evidenceIds: [profileEvidence.id]
   });
 
-  assert.equal(messages.length, 3);
+  assert.equal(assistantActions, 0);
   assert.equal(
     drawer.getState().identityVerification.status,
     "continuation_partial"
   );
   assert.deepEqual(
     drawer.getState().identityVerification.continuation.data?.completedTools,
-    ["research_candidate", "qualify_candidate"]
+    ["research_candidate", "qualify_candidate", "build_battle_card"]
   );
   assert.match(
     drawer.getState().identityVerification.error ?? "",
@@ -2629,4 +2673,75 @@ test("candidate switches and drawer close ignore stale identity completions", as
   assert.equal(closed.getState().open, false);
   assert.equal(assistantActions, 0);
   assert.deepEqual(updates, []);
+});
+
+test("candidate switches and drawer close stop durable operation polling before the next request", async () => {
+  const resolved = unresolvedIndividualCandidate("candidate-1", {
+    status: "normalized",
+    version: 4,
+    identityResolved: true,
+    publicActorKey: "public:douyin:sha256:actor",
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA"
+  });
+  const switchWait = deferred<void>();
+  let switchWaits = 0;
+  let switchPolls = 0;
+  const switched = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async (candidateId) => candidateId === "candidate-1"
+        ? resolved
+        : unresolvedIndividualCandidate(candidateId),
+      getLatestCandidateIntelligenceOperation: async () =>
+        candidateIntelligenceOperation("queued"),
+      getCandidateIntelligenceOperation: async () => {
+        switchPolls += 1;
+        return candidateIntelligenceOperation("succeeded");
+      }
+    }),
+    wait: async () => {
+      switchWaits += 1;
+      await switchWait.promise;
+    },
+    onCandidateUpdated: () => undefined
+  });
+  const staleOpen = switched.open("candidate-1");
+  while (switchWaits === 0) await Promise.resolve();
+  await switched.open("candidate-2");
+  switchWait.resolve();
+  await staleOpen;
+
+  assert.equal(switchPolls, 0);
+  assert.equal(switched.getState().candidateId, "candidate-2");
+  assert.equal(
+    switched.getState().identityVerification.status,
+    "needs_profile"
+  );
+
+  const closeWait = deferred<void>();
+  let closeWaits = 0;
+  let closePolls = 0;
+  const closed = createBattleCardDrawer({
+    api: apiStub({
+      getCandidate: async () => resolved,
+      getLatestCandidateIntelligenceOperation: async () =>
+        candidateIntelligenceOperation("running"),
+      getCandidateIntelligenceOperation: async () => {
+        closePolls += 1;
+        return candidateIntelligenceOperation("succeeded");
+      }
+    }),
+    wait: async () => {
+      closeWaits += 1;
+      await closeWait.promise;
+    },
+    onCandidateUpdated: () => undefined
+  });
+  const staleClosedOpen = closed.open("candidate-1");
+  while (closeWaits === 0) await Promise.resolve();
+  closed.close();
+  closeWait.resolve();
+  await staleClosedOpen;
+
+  assert.equal(closePolls, 0);
+  assert.equal(closed.getState().open, false);
 });

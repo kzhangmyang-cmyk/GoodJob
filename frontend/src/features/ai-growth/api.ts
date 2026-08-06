@@ -113,6 +113,10 @@ export type CandidateIdentityConfirmationResultDto = operations[
   "confirmAcquisitionCandidateIdentity"
 ]["responses"][200]["content"]["application/json"];
 
+export type CandidateIntelligenceOperationDto = operations[
+  "createAcquisitionCandidateIntelligenceOperation"
+]["responses"][202]["content"]["application/json"];
+
 export type PlanDtoWithEtag = AcquisitionPlanCreateDto &
   Pick<
     components["schemas"]["AcquisitionPlan"],
@@ -689,6 +693,44 @@ export function createAiGrowthApi(request: AdvisorRequest) {
     getCandidate(candidateId: string): Promise<CandidateDto> {
       return mapConflict(() =>
         request(`/api/v1/acquisition/candidates/${segment(candidateId)}`)
+      );
+    },
+
+    createCandidateIntelligenceOperation(
+      candidateId: string,
+      idempotencyKey: string
+    ): Promise<CandidateIntelligenceOperationDto> {
+      return post(
+        `/api/v1/acquisition/candidates/${segment(candidateId)}/intelligence-operations`,
+        {},
+        idempotencyKey
+      );
+    },
+
+    getCandidateIntelligenceOperation(
+      operationId: string
+    ): Promise<CandidateIntelligenceOperationDto> {
+      return mapConflict(() => request(
+        `/api/v1/acquisition/candidate-intelligence-operations/${segment(operationId)}`
+      ));
+    },
+
+    getLatestCandidateIntelligenceOperation(
+      candidateId: string
+    ): Promise<CandidateIntelligenceOperationDto> {
+      return mapConflict(() => request(
+        `/api/v1/acquisition/candidates/${segment(candidateId)}/intelligence-operation`
+      ));
+    },
+
+    retryCandidateIntelligenceOperation(
+      operationId: string,
+      idempotencyKey: string
+    ): Promise<CandidateIntelligenceOperationDto> {
+      return post(
+        `/api/v1/acquisition/candidate-intelligence-operations/${segment(operationId)}/retry`,
+        {},
+        idempotencyKey
       );
     },
 

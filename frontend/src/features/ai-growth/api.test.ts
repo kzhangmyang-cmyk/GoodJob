@@ -7,6 +7,7 @@ import {
   createAiGrowthApi,
   readAdvisorResponse,
   type AdvisorRequest,
+  type CandidateIntelligenceOperationDto,
   type CandidateIdentityConfirmationDto,
   type ContentFetchCreateDto,
   type ContentFetchOperationDto,
@@ -239,6 +240,112 @@ const contentFetchOperation: ContentFetchOperationDto = {
   startedAt: "2026-08-06T00:00:01.000Z",
   completedAt: "2026-08-06T00:00:02.000Z"
 };
+
+const candidateIntelligenceOperation: CandidateIntelligenceOperationDto = {
+  id: "intelligence-operation-1",
+  candidateId: "candidate-1",
+  status: "queued",
+  currentStage: null,
+  completedStages: [],
+  skippedStages: [],
+  research: null,
+  qualification: null,
+  battleCardId: null,
+  failure: null,
+  createdAt: "2026-08-07T00:00:00.000Z",
+  startedAt: null,
+  updatedAt: "2026-08-07T00:00:00.000Z",
+  completedAt: null,
+  failedAt: null
+};
+
+test("createCandidateIntelligenceOperation posts strict empty JSON with an idempotency key", async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const request = (async (path: string, init?: RequestInit) => {
+    calls.push({ path, init });
+    return candidateIntelligenceOperation;
+  }) as AdvisorRequest;
+
+  const result = await createAiGrowthApi(request)
+    .createCandidateIntelligenceOperation(
+      "candidate/with ?",
+      "fixture-intelligence-create"
+    );
+
+  assert.deepEqual(result, candidateIntelligenceOperation);
+  assert.deepEqual(calls, [{
+    path: "/api/v1/acquisition/candidates/candidate%2Fwith%20%3F/intelligence-operations",
+    init: {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "fixture-intelligence-create"
+      },
+      body: "{}"
+    }
+  }]);
+});
+
+test("getCandidateIntelligenceOperation URL-encodes the operation id", async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const request = (async (path: string, init?: RequestInit) => {
+    calls.push({ path, init });
+    return { ...candidateIntelligenceOperation, status: "running" };
+  }) as AdvisorRequest;
+
+  const result = await createAiGrowthApi(request)
+    .getCandidateIntelligenceOperation("operation/with ?");
+
+  assert.equal(result.status, "running");
+  assert.deepEqual(calls, [{
+    path: "/api/v1/acquisition/candidate-intelligence-operations/operation%2Fwith%20%3F",
+    init: undefined
+  }]);
+});
+
+test("getLatestCandidateIntelligenceOperation URL-encodes the candidate id", async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const request = (async (path: string, init?: RequestInit) => {
+    calls.push({ path, init });
+    return { ...candidateIntelligenceOperation, status: "succeeded" };
+  }) as AdvisorRequest;
+
+  const result = await createAiGrowthApi(request)
+    .getLatestCandidateIntelligenceOperation("candidate/with ?");
+
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(calls, [{
+    path: "/api/v1/acquisition/candidates/candidate%2Fwith%20%3F/intelligence-operation",
+    init: undefined
+  }]);
+});
+
+test("retryCandidateIntelligenceOperation posts strict empty JSON with an idempotency key", async () => {
+  const calls: Array<{ path: string; init?: RequestInit }> = [];
+  const request = (async (path: string, init?: RequestInit) => {
+    calls.push({ path, init });
+    return { ...candidateIntelligenceOperation, status: "queued" };
+  }) as AdvisorRequest;
+
+  const result = await createAiGrowthApi(request)
+    .retryCandidateIntelligenceOperation(
+      "operation/with ?",
+      "fixture-intelligence-retry"
+    );
+
+  assert.equal(result.status, "queued");
+  assert.deepEqual(calls, [{
+    path: "/api/v1/acquisition/candidate-intelligence-operations/operation%2Fwith%20%3F/retry",
+    init: {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "fixture-intelligence-retry"
+      },
+      body: "{}"
+    }
+  }]);
+});
 
 test("createContentFetchOperation sends only the public URL, subject channel, and idempotency key", async () => {
   const input: ContentFetchCreateDto = {

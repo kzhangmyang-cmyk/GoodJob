@@ -5,6 +5,7 @@ import {
   copilotSessionResourceId,
   copilotTaskIncludesToolName,
   type AiGrowthApi,
+  type CandidateIntelligenceOperationDto,
   type CandidateIdentityConfirmationResultDto,
   type ContentFetchOperationDto,
   type CopilotTaskDto,
@@ -291,6 +292,28 @@ const TERMINAL_CONTENT_FETCH_STATUSES = new Set<
   ContentFetchOperationDto["status"]
 >(["succeeded", "failed", "access_restricted"]);
 
+const TERMINAL_CANDIDATE_INTELLIGENCE_STATUSES = new Set<
+  CandidateIntelligenceOperationDto["status"]
+>(["succeeded", "failed"]);
+
+const INTELLIGENCE_STAGE_TO_TOOL = {
+  research: "research_candidate",
+  qualification: "qualify_candidate",
+  battle_card: "build_battle_card"
+} as const;
+
+const INTELLIGENCE_STAGE_TO_STATUS = {
+  research: "researching",
+  qualification: "qualifying",
+  battle_card: "building_card"
+} as const;
+
+const INTELLIGENCE_STAGE_LABEL = {
+  research: "客户研究",
+  qualification: "意向与财务价值评估",
+  battle_card: "客户作战卡生成"
+} as const;
+
 function candidateVersion(candidate: CandidateDto | null): number | null {
   if (!candidate) return null;
   const value: unknown = candidate.version;
@@ -478,18 +501,6 @@ function identityStateForLoadedCandidate(
     message: "主体已确认",
     error: null
   };
-}
-
-function eligibleForBattleCard(
-  qualification: QualificationDto | null
-): boolean | null {
-  if (qualification === null) return null;
-  return qualification.hardGateFailures.length === 0
-    && (
-      qualification.grade === "S"
-      || qualification.grade === "A"
-      || qualification.score >= 70
-  );
 }
 
 function currentQualificationProblem(
@@ -1080,6 +1091,7 @@ export function createBattleCardDrawer(
   let identityDraftRevision = 0;
   let identityConfirmationPromise: Promise<void> | null = null;
   let identityContinuationPromise: Promise<void> | null = null;
+  let identityContinuationOperationId: string | null = null;
   const notify = () => options.onStateChange?.(state);
 
   const callbacks: BattleCardDrawerCallbacks = {
@@ -1197,20 +1209,6 @@ export function createBattleCardDrawer(
       await wait(pollMs);
       if (!isActive(context)) return null;
       current = await api.getContentFetchOperation(current.id);
-    }
-    return isActive(context) ? current : null;
-  }
-
-  async function pollIdentityTask(
-    context: ActionContext,
-    task: CopilotTaskDto
-  ): Promise<CopilotTaskDto | null> {
-    let current = task;
-    while (!TERMINAL_TASK_STATUSES.has(current.status)) {
-      if (!isActive(context)) return null;
-      await wait(pollMs);
-      if (!isActive(context)) return null;
-      current = await api.getCopilotTask(current.id);
     }
     return isActive(context) ? current : null;
   }
@@ -1409,23 +1407,6 @@ export function createBattleCardDrawer(
     notify();
   }
 
-  async function refreshCandidateQualificationAndFinance(
-    context: ActionContext
-  ) {
-    const [candidateResult, qualificationResult, financialResult] =
-      await Promise.all([
-        settleResource(() => api.getCandidate(context.candidateId)),
-        settleResource(() => api.getQualification(context.candidateId)),
-        settleResource(() => api.getFinancialValue(context.candidateId))
-      ]);
-    if (!isActive(context)) return;
-    state.candidate = candidateResult;
-    state.qualification = qualificationResult;
-    state.financialValue = financialResult;
-    if (candidateResult.data) onCandidateUpdated(candidateResult.data);
-    notify();
-  }
-
   async function refreshAllAfterIdentity(context: ActionContext) {
     const [
       candidateResult,
@@ -1452,199 +1433,177 @@ export function createBattleCardDrawer(
     notify();
   }
 
-  async function runIdentityTool(
-    context: ActionContext,
-    toolName:
-      | "research_candidate"
-      | "qualify_candidate"
-      | "build_battle_card",
-    message: string
-  ): Promise<boolean> {
-    try {
-      const activeSessionId = await ensureSession();
-      if (!isActive(context)) return false;
-      const task = await api.requestAssistantAction(
-        activeSessionId,
-        message,
-        key()
-      );
-      if (!isActive(context)) return false;
-      const completed = await pollIdentityTask(context, task);
-      if (completed === null || !isActive(context)) return false;
-      return completed.status === "succeeded"
-        && copilotTaskIncludesToolName(completed, toolName);
-    } catch {
-      return false;
-    }
+  function operationContinuationResult(
+    operation: CandidateIntelligenceOperationDto
+  ): IdentityContinuationResult {
+    const completedTools = operation.completedStages.map(
+      (stage) => INTELLIGENCE_STAGE_TO_TOOL[stage]
+    );
+    const skippedTools = operation.skippedStages.map(
+      (stage) => INTELLIGENCE_STAGE_TO_TOOL[stage]
+    );
+    return {
+      completedTools,
+      ...(skippedTools.length > 0 ? { skippedTools } : {})
+    };
   }
 
-  async function runIdentityContinuation(
-    context: ActionContext
-  ): Promise<void> {
-    const completedTools = [
-      ...(state.identityVerification.continuation.data?.completedTools ?? [])
-    ];
+  function publishCandidateIntelligenceProgress(
+    context: ActionContext,
+    operation: CandidateIntelligenceOperationDto
+  ) {
+    const stage = operation.currentStage;
+    const stageStatus = stage === null
+      ? "confirmed"
+      : INTELLIGENCE_STAGE_TO_STATUS[stage];
+    const stageMessage = stage === null
+      ? "客户情报任务已进入后端队列"
+      : `正在处理${INTELLIGENCE_STAGE_LABEL[stage]}`;
     publishIdentity(context, (current) => ({
       ...current,
+      status: stageStatus,
       continuation: {
         status: "running",
-        data: { completedTools: [...completedTools] },
+        data: operationContinuationResult(operation),
         error: null
       },
+      message: stageMessage,
       error: null
     }));
-    const steps = [
-      {
-        toolName: "research_candidate" as const,
-        status: "researching" as const,
-        message: "正在补充客户研究",
-        prompt: `请调用 research_candidate 工具补充候选研究。参数：${JSON.stringify({
-          candidateId: context.candidateId,
-          depth: "standard"
-        })}`,
-        refresh: () => refreshCandidateAndEvidence(context)
-      },
-      {
-        toolName: "qualify_candidate" as const,
-        status: "qualifying" as const,
-        message: "正在重新计算意向与财务价值",
-        prompt: `请调用 qualify_candidate 工具评估候选。参数：${JSON.stringify({
-          candidateId: context.candidateId,
-          policyVersion: "qualification.v1"
-        })}`,
-        refresh: () => refreshCandidateQualificationAndFinance(context)
-      },
-      {
-        toolName: "build_battle_card" as const,
-        status: "building_card" as const,
-        message: "正在生成客户作战卡",
-        prompt: `请调用 build_battle_card 工具生成客户作战卡。参数：${JSON.stringify({
-          candidateId: context.candidateId,
-          templateVersion: "battle-card.v2"
-        })}`,
-        refresh: () => refreshAllAfterIdentity(context)
-      }
-    ];
-    for (const step of steps) {
-      if (completedTools.includes(step.toolName)) continue;
-      if (!publishIdentity(context, (current) => ({
-        ...current,
-        status: step.status,
-        message: step.message,
-        error: null
-      }))) return;
-      const ok = await runIdentityTool(
-        context,
-        step.toolName,
-        step.prompt
-      );
+  }
+
+  async function followCandidateIntelligenceOperation(
+    context: ActionContext,
+    operation: CandidateIntelligenceOperationDto
+  ): Promise<void> {
+    let current = operation;
+    identityContinuationOperationId = current.id;
+    while (!TERMINAL_CANDIDATE_INTELLIGENCE_STATUSES.has(current.status)) {
       if (!isActive(context)) return;
-      if (!ok) {
-        const detail = `${step.message}失败，请重试后续生成`;
-        publishIdentity(context, (current) => ({
-          ...current,
-          status: "continuation_partial",
-          continuation: {
-            status: "failed",
-            data: { completedTools: [...completedTools] },
-            error: detail
-          },
-          message: "主体已确认，后续生成未全部完成",
-          error: detail
-        }));
-        return;
-      }
-      await step.refresh();
+      publishCandidateIntelligenceProgress(context, current);
+      await wait(pollMs);
       if (!isActive(context)) return;
-      if (step.toolName === "qualify_candidate") {
-        const persistedProblem = currentQualificationAndFinanceProblem(
-          state,
-          context.candidateId
-        );
-        if (persistedProblem) {
-          const detail = `${step.message}已执行，但${persistedProblem}`;
-          publishIdentity(context, (current) => ({
-            ...current,
-            status: "continuation_partial",
-            continuation: {
-              status: "failed",
-              data: { completedTools: [...completedTools] },
-              error: detail
-            },
-            message: "主体已确认，后续生成未全部完成",
-            error: detail
-          }));
-          return;
-        }
-        const eligible = eligibleForBattleCard(state.qualification.data);
-        if (eligible === false) {
-          completedTools.push(step.toolName);
-          publishIdentity(context, (current) => ({
-            ...current,
-            status: "complete",
-            continuation: {
-              status: "succeeded",
-              data: {
-                completedTools: [...completedTools],
-                skippedTools: ["build_battle_card"]
-              },
-              error: null
-            },
-            message: "资格评估已完成；当前不满足作战卡生成条件",
-            error: null
-          }));
-          return;
-        }
-      }
-      if (step.toolName === "build_battle_card") {
-        const persistedProblem = currentBattleCardProblem(
-          state,
-          context.candidateId
-        );
-        if (persistedProblem) {
-          const detail = `${step.message}已执行，但${persistedProblem}`;
-          publishIdentity(context, (current) => ({
-            ...current,
-            status: "continuation_partial",
-            continuation: {
-              status: "failed",
-              data: { completedTools: [...completedTools] },
-              error: detail
-            },
-            message: "主体已确认，后续生成未全部完成",
-            error: detail
-          }));
-          return;
-        }
-      }
-      completedTools.push(step.toolName);
-      publishIdentity(context, (current) => ({
-        ...current,
-        continuation: {
-          status: "running",
-          data: { completedTools: [...completedTools] },
-          error: null
-        }
-      }));
+      current = await api.getCandidateIntelligenceOperation(current.id);
+      if (!isActive(context)) return;
+      identityContinuationOperationId = current.id;
     }
-    publishIdentity(context, (current) => ({
-      ...current,
+    if (!isActive(context)) return;
+    if (current.status === "failed") {
+      await refreshAllAfterIdentity(context);
+      if (!isActive(context)) return;
+      const failure = current.failure;
+      const detail = failure
+        ? `${INTELLIGENCE_STAGE_LABEL[failure.stage]}失败（${failure.errorCode}）`
+        : "客户情报任务执行失败";
+      publishIdentity(context, (identity) => ({
+        ...identity,
+        status: "continuation_partial",
+        continuation: {
+          status: "failed",
+          data: operationContinuationResult(current),
+          error: detail
+        },
+        message: "主体已确认，后续生成未全部完成",
+        error: detail
+      }));
+      return;
+    }
+    await refreshAllAfterIdentity(context);
+    if (!isActive(context)) return;
+    const result = operationContinuationResult(current);
+    const cardSkipped = current.skippedStages.includes("battle_card");
+    const persistedProblem = cardSkipped
+      ? currentQualificationAndFinanceProblem(state, context.candidateId)
+      : currentBattleCardProblem(state, context.candidateId);
+    if (persistedProblem) {
+      const detail = `客户情报任务已完成，但${persistedProblem}`;
+      publishIdentity(context, (identity) => ({
+        ...identity,
+        status: "continuation_partial",
+        continuation: {
+          status: "failed",
+          data: result,
+          error: detail
+        },
+        message: "主体已确认，后续生成未全部完成",
+        error: detail
+      }));
+      return;
+    }
+    publishIdentity(context, (identity) => ({
+      ...identity,
       status: "complete",
       continuation: {
         status: "succeeded",
-        data: { completedTools: [...completedTools] },
+        data: result,
         error: null
       },
-      message: "作战资料已生成，等待人工审核",
+      message: cardSkipped
+        ? "主体已确认；当前资格不满足作战卡生成条件"
+        : "作战资料已生成，等待人工审核",
       error: null
     }));
   }
 
+  type IdentityContinuationMode = "create" | "resume" | "retry";
+
+  async function runIdentityContinuation(
+    context: ActionContext,
+    mode: IdentityContinuationMode
+  ): Promise<void> {
+    try {
+      let operation: CandidateIntelligenceOperationDto;
+      if (mode === "create") {
+        operation = await api.createCandidateIntelligenceOperation(
+          context.candidateId,
+          key()
+        );
+      } else if (mode === "retry") {
+        if (!identityContinuationOperationId) {
+          throw new Error("缺少可重试的客户情报任务");
+        }
+        operation = await api.retryCandidateIntelligenceOperation(
+          identityContinuationOperationId,
+          key()
+        );
+      } else {
+        try {
+          operation = await api.getLatestCandidateIntelligenceOperation(
+            context.candidateId
+          );
+        } catch (error) {
+          if (advisorHttpStatus(error) !== 404) throw error;
+          operation = await api.createCandidateIntelligenceOperation(
+            context.candidateId,
+            key()
+          );
+        }
+      }
+      if (!isActive(context)) return;
+      await followCandidateIntelligenceOperation(context, operation);
+    } catch (error) {
+      if (!isActive(context)) return;
+      const detail = errorMessage(error);
+      publishIdentity(context, (current) => ({
+        ...current,
+        status: "continuation_partial",
+        continuation: {
+          status: "failed",
+          data: current.continuation.data ?? { completedTools: [] },
+          error: detail
+        },
+        message: "主体已确认，后续生成未全部完成",
+        error: detail
+      }));
+    }
+  }
+
   function startIdentityContinuation(
-    context: ActionContext
+    context: ActionContext,
+    mode: IdentityContinuationMode
   ): Promise<void> {
     if (identityContinuationPromise) return identityContinuationPromise;
-    const promise = runIdentityContinuation(context);
+    const promise = runIdentityContinuation(context, mode);
     identityContinuationPromise = promise;
     void promise.then(
       () => {
@@ -1749,7 +1708,7 @@ export function createBattleCardDrawer(
         message: "主体已确认",
         error: null
       }));
-      await startIdentityContinuation(context);
+      await startIdentityContinuation(context, "create");
     } catch (error) {
       if (!isActive(context)) return;
       if (error instanceof AdvisorConflictError) {
@@ -1773,7 +1732,7 @@ export function createBattleCardDrawer(
             message: "主体已由其他成员确认，继续生成作战资料",
             error: null
           }));
-          await startIdentityContinuation(context);
+          await startIdentityContinuation(context, "resume");
           return;
         }
         publishIdentity(context, (current) => ({
@@ -1815,6 +1774,7 @@ export function createBattleCardDrawer(
       identityDraftRevision += 1;
       identityConfirmationPromise = null;
       identityContinuationPromise = null;
+      identityContinuationOperationId = null;
       const currentGeneration = ++generation;
       state = {
         ...initialState(),
@@ -1866,6 +1826,18 @@ export function createBattleCardDrawer(
         notify();
         return;
       }
+      if (loadedCandidate && isResolvedDouyinIndividual(loadedCandidate)) {
+        state.identityVerification = identityStateForLoadedCandidate(
+          state.identityVerification,
+          loadedCandidate
+        );
+        notify();
+        await startIdentityContinuation({
+          candidateId,
+          generation: currentGeneration
+        }, "resume");
+        return;
+      }
       await Promise.all([
         publish("qualification", () => api.getQualification(candidateId)),
         publish("financialValue", () => api.getFinancialValue(candidateId)),
@@ -1880,101 +1852,7 @@ export function createBattleCardDrawer(
           state.identityVerification,
           state.candidate.data
         );
-        let resumeIdentityContinuation = false;
-        if (isResolvedDouyinIndividual(state.candidate.data)) {
-          if (currentBattleCardProblem(state, candidateId) === null) {
-            state.identityVerification = {
-              ...state.identityVerification,
-              status: "complete",
-              continuation: {
-                status: "succeeded",
-                data: {
-                  completedTools: [
-                    "research_candidate",
-                    "qualify_candidate",
-                    "build_battle_card"
-                  ]
-                },
-                error: null
-              },
-              message: "作战资料已生成，等待人工审核",
-              error: null
-            };
-          } else if (currentQualificationAndFinanceProblem(
-            state,
-            candidateId
-          ) === null) {
-            if (eligibleForBattleCard(state.qualification.data) === false) {
-              state.identityVerification = {
-                ...state.identityVerification,
-                status: "complete",
-                continuation: {
-                  status: "succeeded",
-                  data: {
-                    completedTools: [
-                      "research_candidate",
-                      "qualify_candidate"
-                    ],
-                    skippedTools: ["build_battle_card"]
-                  },
-                  error: null
-                },
-                message: "主体已确认；当前资格不满足作战卡生成条件",
-                error: null
-              };
-            } else {
-              state.identityVerification = {
-                ...state.identityVerification,
-                continuation: {
-                  status: "idle",
-                  data: {
-                    completedTools: [
-                      "research_candidate",
-                      "qualify_candidate"
-                    ]
-                  },
-                  error: null
-                },
-                message: "已恢复当前资格与财务决定，继续生成作战卡",
-                error: null
-              };
-              resumeIdentityContinuation = true;
-            }
-          } else if (currentQualificationProblem(state, candidateId) === null) {
-            state.identityVerification = {
-              ...state.identityVerification,
-              continuation: {
-                status: "idle",
-                data: {
-                  completedTools: ["research_candidate"]
-                },
-                error: null
-              },
-              message: "已恢复当前资格决定，继续补齐财务价值与作战卡",
-              error: null
-            };
-            resumeIdentityContinuation = true;
-          } else {
-            state.identityVerification = {
-              ...state.identityVerification,
-              continuation: {
-                status: "idle",
-                data: { completedTools: [] },
-                error: null
-              },
-              message: "主体已确认，继续补齐研究、资格与作战资料",
-              error: null
-            };
-            resumeIdentityContinuation = true;
-          }
-        }
         notify();
-        if (resumeIdentityContinuation) {
-          await startIdentityContinuation({
-            candidateId,
-            generation: currentGeneration
-          });
-        }
       }
     },
 
@@ -1991,6 +1869,7 @@ export function createBattleCardDrawer(
       identityDraftRevision += 1;
       identityConfirmationPromise = null;
       identityContinuationPromise = null;
+      identityContinuationOperationId = null;
       generation += 1;
       state = {
         ...initialState(),
@@ -2025,6 +1904,7 @@ export function createBattleCardDrawer(
       identityDraftRevision += 1;
       identityConfirmationPromise = null;
       identityContinuationPromise = null;
+      identityContinuationOperationId = null;
       generation += 1;
       state = initialState();
       notify();
@@ -2197,7 +2077,7 @@ export function createBattleCardDrawer(
       } catch (error) {
         return Promise.reject(error);
       }
-      return startIdentityContinuation(context);
+      return startIdentityContinuation(context, "retry");
     },
 
     async runQualification() {
