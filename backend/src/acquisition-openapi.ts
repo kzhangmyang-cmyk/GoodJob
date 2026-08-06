@@ -334,6 +334,9 @@ const partyRefResponseSchema = loadContractSchema("party-ref");
 const copilotSessionResponseSchema = loadContractSchema("copilot-session");
 const copilotMessageResponseSchema = loadContractSchema("copilot-message");
 const copilotTaskResponseSchema = loadContractSchema("copilot-task");
+const candidateIntelligenceOperationResponseSchema = loadContractSchema(
+  "candidate-intelligence-operation"
+);
 
 function typedPagedResponseSchema(itemSchema: Record<string, unknown>) {
   return {
@@ -639,9 +642,9 @@ function standardResponses(
   };
 }
 
-function idParameter(maxLength = 255) {
+function idParameter(maxLength = 255, name = "id") {
   return {
-    name: "id",
+    name,
     in: "path",
     required: true,
     schema: { type: "string", minLength: 1, maxLength }
@@ -797,6 +800,14 @@ const acquisitionOperationIds: Record<string, string> = {
     "listAcquisitionCandidateEvidence",
   "post /api/v1/acquisition/candidates/{id}/identity-confirmation":
     "confirmAcquisitionCandidateIdentity",
+  "post /api/v1/acquisition/candidates/{candidateId}/intelligence-operations":
+    "createAcquisitionCandidateIntelligenceOperation",
+  "get /api/v1/acquisition/candidate-intelligence-operations/{operationId}":
+    "getAcquisitionCandidateIntelligenceOperation",
+  "get /api/v1/acquisition/candidates/{candidateId}/intelligence-operation":
+    "getLatestAcquisitionCandidateIntelligenceOperation",
+  "post /api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry":
+    "retryAcquisitionCandidateIntelligenceOperation",
   "get /api/v1/acquisition/candidates/{id}/qualification":
     "getAcquisitionCandidateQualification",
   "get /api/v1/acquisition/candidates/{id}/financial-value":
@@ -1298,6 +1309,12 @@ const identityConfirmationWriteSchema = {
   discriminator: {
     propertyName: "subjectKind"
   }
+};
+
+const strictEmptyWriteSchema = {
+  type: "object",
+  additionalProperties: false,
+  maxProperties: 0
 };
 
 const acquisitionUsageWriteSchema = {
@@ -2051,6 +2068,10 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     ["/api/v1/acquisition/candidates/{id}", "get", "读取候选客户"],
     ["/api/v1/acquisition/candidates/{id}/evidence", "get", "列出候选证据"],
     ["/api/v1/acquisition/candidates/{id}/identity-confirmation", "post", "人工确认公开主体身份"],
+    ["/api/v1/acquisition/candidates/{candidateId}/intelligence-operations", "post", "创建候选客户情报任务"],
+    ["/api/v1/acquisition/candidate-intelligence-operations/{operationId}", "get", "读取候选客户情报任务"],
+    ["/api/v1/acquisition/candidates/{candidateId}/intelligence-operation", "get", "读取候选客户最新情报任务"],
+    ["/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry", "post", "重试候选客户情报任务"],
     ["/api/v1/acquisition/candidates/{id}/qualification", "get", "读取资格判断"],
     ["/api/v1/acquisition/candidates/{id}/financial-value", "get", "读取财务价值判断"],
     ["/api/v1/acquisition/candidates/{id}/battle-card", "get", "读取客户作战卡"],
@@ -2086,6 +2107,16 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
   }> = {
     "post /api/v1/acquisition/candidates/{id}/identity-confirmation": {
       schema: identityConfirmationWriteSchema
+    },
+    "post /api/v1/acquisition/candidates/{candidateId}/intelligence-operations": {
+      schema: strictEmptyWriteSchema,
+      successStatus: 202,
+      successDescription: "候选客户情报任务已接受"
+    },
+    "post /api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry": {
+      schema: strictEmptyWriteSchema,
+      successStatus: 202,
+      successDescription: "候选客户情报重试已接受"
     },
     "post /api/v1/acquisition/candidates/{id}/review": {
       schema: reviewWriteSchema
@@ -2137,6 +2168,8 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
   };
   const v1IdempotentWrites = new Set([
     "/api/v1/acquisition/candidates/{id}/identity-confirmation",
+    "/api/v1/acquisition/candidates/{candidateId}/intelligence-operations",
+    "/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry",
     "/api/v1/acquisition/candidates/{id}/review",
     "/api/v1/acquisition/candidates/{id}/convert",
     "/api/v1/acquisition/copilot/sessions",
@@ -2190,6 +2223,14 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       evidencePagedResponseSchema,
     "post /api/v1/acquisition/candidates/{id}/identity-confirmation":
       identityConfirmationResponseSchema,
+    "post /api/v1/acquisition/candidates/{candidateId}/intelligence-operations":
+      candidateIntelligenceOperationResponseSchema,
+    "get /api/v1/acquisition/candidate-intelligence-operations/{operationId}":
+      candidateIntelligenceOperationResponseSchema,
+    "get /api/v1/acquisition/candidates/{candidateId}/intelligence-operation":
+      candidateIntelligenceOperationResponseSchema,
+    "post /api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry":
+      candidateIntelligenceOperationResponseSchema,
     "get /api/v1/acquisition/candidates/{id}/qualification":
       qualificationDecisionResponseSchema,
     "get /api/v1/acquisition/candidates/{id}/financial-value":
@@ -2217,9 +2258,20 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
   };
 
   for (const [path, method, summary] of definitions) {
-    const hasId = path.includes("{id}");
     const parameters: Array<Record<string, unknown>> = [];
-    if (hasId) parameters.push(idParameter());
+    const pathParameterName = path.includes("{candidateId}")
+      ? "candidateId"
+      : path.includes("{operationId}")
+        ? "operationId"
+        : path.includes("{id}")
+          ? "id"
+          : null;
+    if (pathParameterName) {
+      parameters.push(idParameter(
+        pathParameterName === "id" ? 255 : 160,
+        pathParameterName
+      ));
+    }
     if (method === "get") {
       if ([
         "/api/v1/acquisition/candidates",

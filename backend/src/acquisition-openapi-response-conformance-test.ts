@@ -179,6 +179,47 @@ function planBody() {
   };
 }
 
+test("candidate intelligence public DTO conforms without internal operation state", () => {
+  const operation = {
+    id: "candidate-intelligence-response-1",
+    candidateId: "candidate-response-1",
+    status: "running",
+    currentStage: "qualification",
+    completedStages: ["research"],
+    skippedStages: [],
+    research: {
+      summary: "已完成公开证据研究",
+      findings: [{
+        label: "公开需求",
+        content: "客户正在公开调研解决方案",
+        evidenceIds: ["evidence-response-1"],
+        confidence: 0.9
+      }]
+    },
+    qualification: null,
+    battleCardId: null,
+    failure: null,
+    createdAt: NOW,
+    startedAt: NOW,
+    updatedAt: NOW,
+    completedAt: null,
+    failedAt: null
+  };
+  const path =
+    "/api/v1/acquisition/candidate-intelligence-operations/{operationId}";
+
+  assertResponseConforms(path, "get", 200, operation);
+  const schema = (openApiPaths[path]!.get as Record<string, any>)
+    .responses["200"].content["application/json"].schema;
+  const validate = new Ajv({
+    allErrors: true,
+    strict: false,
+    validateFormats: false
+  }).compile(schema);
+  assert.equal(validate({ ...operation, ownerId: OWNER }), false);
+  assert.equal(validate({ ...operation, leaseToken: "secret" }), false);
+});
+
 test("mounted plan and run responses conform to production OpenAPI", async () => {
   const executionPort: AcquisitionExecutionPort = {
     async enqueue() {},

@@ -38,6 +38,10 @@ const section16 = {
   "/api/v1/acquisition/candidates/{id}": ["get"],
   "/api/v1/acquisition/candidates/{id}/evidence": ["get"],
   "/api/v1/acquisition/candidates/{id}/identity-confirmation": ["post"],
+  "/api/v1/acquisition/candidates/{candidateId}/intelligence-operations": ["post"],
+  "/api/v1/acquisition/candidate-intelligence-operations/{operationId}": ["get"],
+  "/api/v1/acquisition/candidates/{candidateId}/intelligence-operation": ["get"],
+  "/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry": ["post"],
   "/api/v1/acquisition/candidates/{id}/qualification": ["get"],
   "/api/v1/acquisition/candidates/{id}/financial-value": ["get"],
   "/api/v1/acquisition/candidates/{id}/battle-card": ["get"],
@@ -79,6 +83,8 @@ const reads = {
   "/api/v1/acquisition/runs/{id}": "AcquisitionRun",
   "/api/v1/acquisition/runs/{id}/presentation": "AcquisitionRunPresentation",
   "/api/v1/acquisition/candidates/{id}": "Candidate",
+  "/api/v1/acquisition/candidate-intelligence-operations/{operationId}": "CandidateIntelligenceOperation",
+  "/api/v1/acquisition/candidates/{candidateId}/intelligence-operation": "CandidateIntelligenceOperation",
   "/api/v1/acquisition/candidates/{id}/qualification": "QualificationDecision",
   "/api/v1/acquisition/candidates/{id}/financial-value": "FinancialValueDecision",
   "/api/v1/acquisition/candidates/{id}/battle-card": "BattleCard",
@@ -97,6 +103,10 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(document.components.schemas.ApiError.oneOf[0].additionalProperties, false);
   assert.equal(document.components.schemas.ApiError.oneOf[1].additionalProperties, false);
   assert.equal(document.components.schemas.AsyncOperation.$ref, "../json-schema/async-operation.v1.schema.json");
+  assert.equal(
+    document.components.schemas.CandidateIntelligenceOperation.$ref,
+    "../json-schema/candidate-intelligence-operation.v1.schema.json"
+  );
   assert.deepEqual(
     document.components.schemas.BattleCard.oneOf.map((branch) => branch.$ref),
     [
@@ -257,6 +267,43 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(
     document.components.schemas.ImportOperationList.properties.items.items.$ref,
     "#/components/schemas/ImportOperation"
+  );
+  const candidateIntelligenceCreates = [
+    document.paths["/api/v1/acquisition/candidates/{candidateId}/intelligence-operations"].post,
+    document.paths["/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry"].post
+  ];
+  for (const operation of candidateIntelligenceCreates) {
+    assert.equal(
+      operation.responses["202"].content["application/json"].schema.$ref,
+      "#/components/schemas/CandidateIntelligenceOperation"
+    );
+    assert.deepEqual(
+      operation.requestBody.content["application/json"].schema,
+      { type: "object", additionalProperties: false, maxProperties: 0 }
+    );
+    assert.equal(
+      operation.parameters.some((parameter) =>
+        parameter.$ref === "#/components/parameters/idempotencyKey"),
+      true
+    );
+  }
+  assert.equal(
+    candidateIntelligenceCreates[0].operationId,
+    "createAcquisitionCandidateIntelligenceOperation"
+  );
+  assert.equal(
+    candidateIntelligenceCreates[1].operationId,
+    "retryAcquisitionCandidateIntelligenceOperation"
+  );
+  assert.equal(
+    document.paths["/api/v1/acquisition/candidate-intelligence-operations/{operationId}"]
+      .get.operationId,
+    "getAcquisitionCandidateIntelligenceOperation"
+  );
+  assert.equal(
+    document.paths["/api/v1/acquisition/candidates/{candidateId}/intelligence-operation"]
+      .get.operationId,
+    "getLatestAcquisitionCandidateIntelligenceOperation"
   );
   assert.equal(document.components.schemas.FinancialValueDecision.$ref, "../json-schema/financial-value-decision.v1.schema.json");
   assert.equal(document.components.schemas.CopilotMessage.$ref, "../json-schema/copilot-message.v1.schema.json");

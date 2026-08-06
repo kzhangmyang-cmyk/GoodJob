@@ -73,6 +73,10 @@ test("acquisition OpenAPI publishes the complete agent control surface", () => {
     "/api/v1/acquisition/candidates/{id}",
     "/api/v1/acquisition/candidates/{id}/evidence",
     "/api/v1/acquisition/candidates/{id}/identity-confirmation",
+    "/api/v1/acquisition/candidates/{candidateId}/intelligence-operations",
+    "/api/v1/acquisition/candidate-intelligence-operations/{operationId}",
+    "/api/v1/acquisition/candidates/{candidateId}/intelligence-operation",
+    "/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry",
     "/api/v1/acquisition/candidates/{id}/qualification",
     "/api/v1/acquisition/candidates/{id}/battle-card",
     "/api/v1/acquisition/candidates/{id}/reviews",
@@ -120,12 +124,102 @@ test("every published acquisition operation has a unique stable camelCase id", (
     }
   }
 
-  assert.equal(ids.length, 43);
+  assert.equal(ids.length, 47);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(
     paths["/api/v1/acquisition/plans/{id}/approval"]?.post?.operationId,
     "approveAcquisitionPlan"
   );
+});
+
+test("candidate intelligence operations publish strict async control contracts", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  const create = paths[
+    "/api/v1/acquisition/candidates/{candidateId}/intelligence-operations"
+  ]!.post as Record<string, any>;
+  const retry = paths[
+    "/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry"
+  ]!.post as Record<string, any>;
+  const detail = paths[
+    "/api/v1/acquisition/candidate-intelligence-operations/{operationId}"
+  ]!.get as Record<string, any>;
+  const latest = paths[
+    "/api/v1/acquisition/candidates/{candidateId}/intelligence-operation"
+  ]!.get as Record<string, any>;
+
+  assert.equal(
+    create.operationId,
+    "createAcquisitionCandidateIntelligenceOperation"
+  );
+  assert.equal(
+    detail.operationId,
+    "getAcquisitionCandidateIntelligenceOperation"
+  );
+  assert.equal(
+    latest.operationId,
+    "getLatestAcquisitionCandidateIntelligenceOperation"
+  );
+  assert.equal(
+    retry.operationId,
+    "retryAcquisitionCandidateIntelligenceOperation"
+  );
+  assert.deepEqual(
+    create.parameters.map((parameter: { name: string }) => parameter.name),
+    ["candidateId", "Idempotency-Key"]
+  );
+  assert.deepEqual(
+    retry.parameters.map((parameter: { name: string }) => parameter.name),
+    ["operationId", "Idempotency-Key"]
+  );
+  assert.deepEqual(
+    detail.parameters.map((parameter: { name: string }) => parameter.name),
+    ["operationId"]
+  );
+  assert.deepEqual(
+    latest.parameters.map((parameter: { name: string }) => parameter.name),
+    ["candidateId"]
+  );
+  for (const operation of [create, retry]) {
+    assert.deepEqual(
+      operation.requestBody.content["application/json"].schema,
+      { type: "object", additionalProperties: false, maxProperties: 0 }
+    );
+    assert.ok(operation.responses["202"]);
+    assert.equal(operation.responses["200"], undefined);
+  }
+  const schema = detail.responses["200"].content["application/json"].schema;
+  assert.deepEqual(schema.required, [
+    "id",
+    "candidateId",
+    "status",
+    "currentStage",
+    "completedStages",
+    "skippedStages",
+    "research",
+    "qualification",
+    "battleCardId",
+    "failure",
+    "createdAt",
+    "startedAt",
+    "updatedAt",
+    "completedAt",
+    "failedAt"
+  ]);
+  assert.equal(schema.additionalProperties, false);
+  for (const internalField of [
+    "ownerId",
+    "teamId",
+    "actorId",
+    "sessionId",
+    "identityFingerprint",
+    "idempotencyKeyHash",
+    "requestHash",
+    "leaseOwner",
+    "leaseToken",
+    "leaseExpiresAt"
+  ]) {
+    assert.equal(schema.properties[internalField], undefined, internalField);
+  }
 });
 
 test("run presentation publishes a strict read-only paginated DTO", () => {
@@ -245,10 +339,18 @@ test("every published JSON write body is a closed object contract", () => {
           "object",
           `${method.toUpperCase()} ${path} must publish an object body`
         );
-        assert.ok(
-          variant.properties,
-          `${method.toUpperCase()} ${path} must declare body properties`
-        );
+        if (variant.maxProperties === 0) {
+          assert.equal(
+            variant.properties,
+            undefined,
+            `${method.toUpperCase()} ${path} strict empty body must not invent properties`
+          );
+        } else {
+          assert.ok(
+            variant.properties,
+            `${method.toUpperCase()} ${path} must declare body properties`
+          );
+        }
         assert.ok(
           variant.required === undefined
           || (

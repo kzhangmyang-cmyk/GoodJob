@@ -11,7 +11,7 @@ const expected = [
   "api-error", "paged-result", "async-operation", "model-provider",
   "model-connection", "model-capability", "model-call-record",
   "discovery-provider", "provider-connection", "content-fetch-operation",
-  "import-operation", "acquisition-plan", "acquisition-run",
+  "import-operation", "candidate-intelligence-operation", "acquisition-plan", "acquisition-run",
   "acquisition-run-presentation",
   "acquisition-operation-shard", "discovery-evidence", "party-ref",
   "organization-candidate", "individual-demand-signal",
@@ -168,6 +168,62 @@ test("ai-acquisition.v1 exposes the complete unique schema registry", async () =
   assert.equal(registry.ids.size, expected.length);
   for (const validate of registry.validators.values()) {
     assert.equal(typeof validate, "function");
+  }
+});
+
+test("candidate intelligence operations expose only the strict public DTO", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("candidate-intelligence-operation");
+  const operation = {
+    id: "candidate-intelligence-1",
+    candidateId: "candidate-1",
+    status: "succeeded",
+    currentStage: null,
+    completedStages: ["research", "qualification", "battle_card"],
+    skippedStages: [],
+    research: {
+      summary: "已形成公开证据支持的客户研究结论",
+      findings: [{
+        label: "需求信号",
+        content: "客户正在调研获客方案",
+        evidenceIds: ["evidence-1"],
+        confidence: 0.88
+      }]
+    },
+    qualification: {
+      grade: "A",
+      score: 82,
+      hardGateFailures: [],
+      financialValueId: "financial-value-1"
+    },
+    battleCardId: "battle-card-1",
+    failure: null,
+    createdAt: "2026-08-07T01:00:00.000Z",
+    startedAt: "2026-08-07T01:00:01.000Z",
+    updatedAt: "2026-08-07T01:00:03.000Z",
+    completedAt: "2026-08-07T01:00:03.000Z",
+    failedAt: null
+  };
+
+  assert.equal(validate(operation), true, JSON.stringify(validate.errors));
+  for (const internalField of [
+    "ownerId",
+    "teamId",
+    "actorId",
+    "sessionId",
+    "identityFingerprint",
+    "idempotencyKey",
+    "idempotencyKeyHash",
+    "requestHash",
+    "leaseOwner",
+    "leaseToken",
+    "leaseExpiresAt"
+  ]) {
+    assert.equal(
+      validate({ ...operation, [internalField]: "internal" }),
+      false,
+      internalField
+    );
   }
 });
 
