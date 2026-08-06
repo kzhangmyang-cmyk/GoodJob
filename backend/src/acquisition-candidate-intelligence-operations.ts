@@ -65,6 +65,7 @@ export interface AcquisitionCandidateIntelligenceOperation {
   actorId: string;
   candidateId: string;
   sessionId: string;
+  identityFingerprint: string;
   status: AcquisitionCandidateIntelligenceOperationStatus;
   currentStage: AcquisitionCandidateIntelligenceStage | null;
   completedStages: AcquisitionCandidateIntelligenceStage[];
@@ -94,6 +95,25 @@ export interface AcquisitionCandidateIntelligenceClaim {
   leaseToken: string;
   claimedAt: string;
   leaseExpiresAt: string;
+}
+
+export interface AcquisitionCandidateIntelligenceHeartbeatScheduler {
+  setInterval(callback: () => void, delayMs: number): unknown;
+  clearInterval(handle: unknown): void;
+}
+
+export interface AcquisitionCandidateIntelligenceRecoveryQuery {
+  now: string;
+  limit: number;
+}
+
+export interface AcquisitionCandidateIntelligenceRetryCommand {
+  ownerId: string;
+  teamId: string;
+  operationId: string;
+  idempotencyKeyHash: string;
+  requestHash: string;
+  createdAt: string;
 }
 
 export type AcquisitionCandidateIntelligenceOperationErrorCode =
@@ -129,6 +149,19 @@ export interface AcquisitionCandidateIntelligenceOperationRepository {
     scope: Pick<AcquisitionCandidateIntelligenceScope, "ownerId" | "teamId">,
     id: string
   ): Promise<AcquisitionCandidateIntelligenceOperationRecord | null>;
+  findLatestForCandidate(
+    scope: Pick<AcquisitionCandidateIntelligenceScope, "ownerId" | "teamId">,
+    candidateId: string
+  ): Promise<AcquisitionCandidateIntelligenceOperationRecord | null>;
+  registerRetryCommand(
+    command: AcquisitionCandidateIntelligenceRetryCommand
+  ): Promise<{
+    command: AcquisitionCandidateIntelligenceRetryCommand;
+    created: boolean;
+  }>;
+  listRecoverableOperations(
+    input: AcquisitionCandidateIntelligenceRecoveryQuery
+  ): Promise<AcquisitionCandidateIntelligenceOperationRecord[]>;
   claimOperation(
     scope: Pick<AcquisitionCandidateIntelligenceScope, "ownerId" | "teamId">,
     id: string,
@@ -141,6 +174,15 @@ export interface AcquisitionCandidateIntelligenceOperationRepository {
     operation: AcquisitionCandidateIntelligenceOperationRecord,
     leaseToken: string
   ): Promise<void>;
+  renewLease(
+    scope: Pick<AcquisitionCandidateIntelligenceScope, "ownerId" | "teamId">,
+    id: string,
+    leaseToken: string,
+    input: {
+      renewedAt: string;
+      leaseExpiresAt: string;
+    }
+  ): Promise<boolean>;
 }
 
 export interface AcquisitionCandidateIntelligenceCandidatePort {
@@ -165,6 +207,8 @@ export interface AcquisitionCandidateIntelligenceOperationServiceOptions {
   executor: AcquisitionAgentToolExecutor;
   workerId?: string;
   leaseDurationMs?: number;
+  heartbeatIntervalMs?: number;
+  heartbeatScheduler?: AcquisitionCandidateIntelligenceHeartbeatScheduler;
   leaseTokenFactory?: () => string;
   idFactory?: () => string;
   now?: () => string;
@@ -184,6 +228,12 @@ const RESEARCH_QUESTIONS = Object.freeze([
 ]);
 
 const GRADES = new Set(["S", "A", "B", "C", "D"]);
+const MAX_RESEARCH_SUMMARY_LENGTH = 8_000;
+const MAX_RESEARCH_FINDINGS = 100;
+const MAX_RESEARCH_LABEL_LENGTH = 200;
+const MAX_RESEARCH_CONTENT_LENGTH = 4_000;
+const MAX_RESEARCH_EVIDENCE_IDS = 100;
+const MAX_REFERENCE_ID_LENGTH = 255;
 const TRUSTED_TOOL_ERROR_CODES = new Set<AcquisitionToolExecutorErrorCode>([
   "ABORTED",
   "INVALID_IDENTITY",
@@ -217,6 +267,36 @@ function hash(value: string) {
 
 function stableHash(value: unknown) {
   return `sha256:${hash(canonicalJsonStringify(value))}`;
+}
+
+function resolvedIdentityFingerprint(candidate: AcquisitionCandidate) {
+  if (!acquisitionCandidateIdentityResolved(candidate)) return null;
+  if (candidate.partyType === "organization"
+    && candidate.partyRef.partyType === "organization"
+    && candidate.profile.kind === "organization") {
+    return stableHash({
+      partyRef: candidate.partyRef,
+      publicIdentity: {
+        name: candidate.profile.name,
+        domain: candidate.profile.domain,
+        creditCode: candidate.profile.creditCode
+      }
+    });
+  }
+  if (candidate.partyType === "individual"
+    && candidate.partyRef.partyType === "individual"
+    && candidate.profile.kind === "individual") {
+    return stableHash({
+      partyRef: candidate.partyRef,
+      publicIdentity: {
+        publicActorKey: candidate.profile.publicActorKey,
+        publicDisplayName: candidate.profile.publicDisplayName,
+        publicProfileUrl: candidate.profile.publicProfileUrl,
+        sourcePlatform: candidate.profile.sourcePlatform
+      }
+    });
+  }
+  return null;
 }
 
 function requiredText(value: unknown, max = 200) {
@@ -278,6 +358,10 @@ implements AcquisitionCandidateIntelligenceOperationRepository {
     AcquisitionCandidateIntelligenceOperationRecord
   >();
   private readonly idempotency = new Map<string, string>();
+  private readonly retryIdempotency = new Map<
+    string,
+    AcquisitionCandidateIntelligenceRetryCommand
+  >();
 
   async findOperationByIdempotency(input: {
     ownerId: string;
@@ -319,6 +403,54 @@ implements AcquisitionCandidateIntelligenceOperationRepository {
       : null;
   }
 
+  async findLatestForCandidate(
+    scope: Pick<AcquisitionCandidateIntelligenceScope, "ownerId" | "teamId">,
+    candidateId: string
+  ) {
+    const latest = [...this.operations.values()]
+      .filter((operation) =>
+        operation.ownerId === scope.ownerId
+        && operation.teamId === scope.teamId
+        && operation.candidateId === candidateId)
+      .sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt)
+        || right.id.localeCompare(left.id))[0];
+    return latest ? clone(latest) : null;
+  }
+
+  async registerRetryCommand(
+    command: AcquisitionCandidateIntelligenceRetryCommand
+  ) {
+    const key = idempotencyMapKey(command);
+    const existing = this.retryIdempotency.get(key);
+    if (existing) {
+      if (existing.requestHash !== command.requestHash) {
+        throw new AcquisitionCandidateIntelligenceOperationError(
+          "IDEMPOTENCY_CONFLICT"
+        );
+      }
+      return { command: clone(existing), created: false };
+    }
+    this.retryIdempotency.set(key, clone(command));
+    return { command: clone(command), created: true };
+  }
+
+  async listRecoverableOperations(
+    input: AcquisitionCandidateIntelligenceRecoveryQuery
+  ) {
+    return [...this.operations.values()]
+      .filter((operation) =>
+        operation.status === "queued"
+        || (operation.status === "running"
+          && Boolean(operation.leaseExpiresAt)
+          && operation.leaseExpiresAt! <= input.now))
+      .sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id))
+      .slice(0, input.limit)
+      .map(clone);
+  }
+
   async claimOperation(
     scope: Pick<AcquisitionCandidateIntelligenceScope, "ownerId" | "teamId">,
     id: string,
@@ -337,7 +469,10 @@ implements AcquisitionCandidateIntelligenceOperationRepository {
     operation.status = "running";
     operation.startedAt ??= claim.claimedAt;
     operation.updatedAt = claim.claimedAt;
+    operation.currentStage = null;
+    operation.failure = null;
     operation.completedAt = null;
+    operation.failedAt = null;
     operation.leaseOwner = claim.leaseOwner;
     operation.leaseToken = claim.leaseToken;
     operation.leaseExpiresAt = claim.leaseExpiresAt;
@@ -371,6 +506,31 @@ implements AcquisitionCandidateIntelligenceOperationRepository {
       leaseExpiresAt: released ? null : existing.leaseExpiresAt
     }));
   }
+
+  async renewLease(
+    scope: Pick<AcquisitionCandidateIntelligenceScope, "ownerId" | "teamId">,
+    id: string,
+    leaseToken: string,
+    input: {
+      renewedAt: string;
+      leaseExpiresAt: string;
+    }
+  ) {
+    const operation = this.operations.get(id);
+    if (!operation
+      || operation.ownerId !== scope.ownerId
+      || operation.teamId !== scope.teamId
+      || operation.status !== "running"
+      || operation.leaseToken !== leaseToken
+      || !operation.leaseExpiresAt
+      || operation.leaseExpiresAt <= input.renewedAt) {
+      return false;
+    }
+    operation.leaseExpiresAt = input.leaseExpiresAt;
+    operation.updatedAt = input.renewedAt;
+    this.operations.set(id, clone(operation));
+    return true;
+  }
 }
 
 class InvalidStageResultError extends Error {
@@ -392,30 +552,34 @@ function researchResult(value: unknown): AcquisitionCandidateIntelligenceResearc
     || !Array.isArray(value.findings)) {
     throw new InvalidStageResultError("INVALID_RESEARCH_RESULT");
   }
-  const findings = value.findings.map((raw) => {
-    if (!isRecord(raw)
-      || typeof raw.label !== "string"
-      || !raw.label.trim()
-      || typeof raw.content !== "string"
-      || !raw.content.trim()
-      || !Array.isArray(raw.evidenceIds)
-      || raw.evidenceIds.some((id) => typeof id !== "string" || !id.trim())
-      || !(raw.confidence === null
-        || (typeof raw.confidence === "number"
-          && Number.isFinite(raw.confidence)
-          && raw.confidence >= 0
-          && raw.confidence <= 1))) {
-      throw new InvalidStageResultError("INVALID_RESEARCH_RESULT");
-    }
-    return {
-      label: raw.label,
-      content: raw.content,
-      evidenceIds: [...raw.evidenceIds] as string[],
-      confidence: raw.confidence as number | null
-    };
-  });
+  const findings = value.findings
+    .slice(0, MAX_RESEARCH_FINDINGS)
+    .map((raw) => {
+      if (!isRecord(raw)
+        || typeof raw.label !== "string"
+        || !raw.label.trim()
+        || typeof raw.content !== "string"
+        || !raw.content.trim()
+        || !Array.isArray(raw.evidenceIds)
+        || raw.evidenceIds.some((id) => typeof id !== "string" || !id.trim())
+        || !(raw.confidence === null
+          || (typeof raw.confidence === "number"
+            && Number.isFinite(raw.confidence)
+            && raw.confidence >= 0
+            && raw.confidence <= 1))) {
+        throw new InvalidStageResultError("INVALID_RESEARCH_RESULT");
+      }
+      return {
+        label: raw.label.slice(0, MAX_RESEARCH_LABEL_LENGTH),
+        content: raw.content.slice(0, MAX_RESEARCH_CONTENT_LENGTH),
+        evidenceIds: (raw.evidenceIds as string[])
+          .slice(0, MAX_RESEARCH_EVIDENCE_IDS)
+          .map((id) => id.slice(0, MAX_REFERENCE_ID_LENGTH)),
+        confidence: raw.confidence as number | null
+      };
+    });
   return {
-    summary: value.summary,
+    summary: value.summary.slice(0, MAX_RESEARCH_SUMMARY_LENGTH),
     findings
   };
 }
@@ -446,8 +610,10 @@ function qualificationResult(
   return {
     grade: grade as AcquisitionCandidateIntelligenceQualification["grade"],
     score,
-    hardGateFailures: [...hardGateFailures] as string[],
-    financialValueId
+    hardGateFailures: (hardGateFailures as string[])
+      .slice(0, 20)
+      .map((failure) => failure.slice(0, 100)),
+    financialValueId: financialValueId.slice(0, MAX_REFERENCE_ID_LENGTH)
   };
 }
 
@@ -458,7 +624,7 @@ function battleCardId(value: unknown) {
     || !value.battleCard.id.trim()) {
     throw new InvalidStageResultError("INVALID_BATTLE_CARD_RESULT");
   }
-  return value.battleCard.id;
+  return value.battleCard.id.slice(0, MAX_REFERENCE_ID_LENGTH);
 }
 
 function stableFailureCode(error: unknown) {
@@ -483,6 +649,7 @@ function stageIdempotencyKey(
     teamId: operation.teamId,
     operationId: operation.id,
     candidateId: operation.candidateId,
+    identityFingerprint: operation.identityFingerprint,
     stage
   })).slice(0, 48)}`;
 }
@@ -537,6 +704,9 @@ export class AcquisitionCandidateIntelligenceOperationService {
   private readonly executor: AcquisitionAgentToolExecutor;
   private readonly workerId: string;
   private readonly leaseDurationMs: number;
+  private readonly heartbeatIntervalMs: number;
+  private readonly heartbeatScheduler:
+    AcquisitionCandidateIntelligenceHeartbeatScheduler;
   private readonly leaseTokenFactory: () => string;
   private readonly idFactory: () => string;
   private readonly now: () => string;
@@ -562,6 +732,25 @@ export class AcquisitionCandidateIntelligenceOperationService {
         "leaseDurationMs must be between 10000 and 86400000"
       );
     }
+    this.heartbeatIntervalMs = options.heartbeatIntervalMs
+      ?? Math.max(1_000, Math.floor(this.leaseDurationMs / 3));
+    if (!Number.isSafeInteger(this.heartbeatIntervalMs)
+      || this.heartbeatIntervalMs < 1_000
+      || this.heartbeatIntervalMs >= this.leaseDurationMs) {
+      throw new TypeError(
+        "heartbeatIntervalMs must be between 1000 and leaseDurationMs"
+      );
+    }
+    this.heartbeatScheduler = options.heartbeatScheduler ?? {
+      setInterval(callback, delayMs) {
+        const timer = setInterval(callback, delayMs);
+        timer.unref?.();
+        return timer;
+      },
+      clearInterval(handle) {
+        clearInterval(handle as NodeJS.Timeout);
+      }
+    };
     this.leaseTokenFactory = options.leaseTokenFactory ?? randomUUID;
     this.idFactory = options.idFactory
       ?? (() => `candidate-intelligence-${randomUUID()}`);
@@ -577,7 +766,19 @@ export class AcquisitionCandidateIntelligenceOperationService {
     const candidateId = requiredText(candidateIdInput, 160);
     const idempotencyKey = requiredText(idempotencyKeyInput, 200);
     const idempotencyKeyHash = hash(idempotencyKey);
-    const requestHash = stableHash({ candidateId });
+    const candidate = await this.candidates.getCandidate(scope, candidateId);
+    if (!candidate) {
+      throw new AcquisitionCandidateIntelligenceOperationError(
+        "RESOURCE_NOT_FOUND"
+      );
+    }
+    const identityFingerprint = resolvedIdentityFingerprint(candidate);
+    if (!identityFingerprint) {
+      throw new AcquisitionCandidateIntelligenceOperationError(
+        "IDENTITY_NOT_RESOLVED"
+      );
+    }
+    const requestHash = stableHash({ candidateId, identityFingerprint });
     const existing = await this.repository.findOperationByIdempotency({
       ownerId: scope.ownerId,
       teamId: scope.teamId,
@@ -590,17 +791,6 @@ export class AcquisitionCandidateIntelligenceOperationService {
         );
       }
       return publicOperation(existing);
-    }
-    const candidate = await this.candidates.getCandidate(scope, candidateId);
-    if (!candidate) {
-      throw new AcquisitionCandidateIntelligenceOperationError(
-        "RESOURCE_NOT_FOUND"
-      );
-    }
-    if (!acquisitionCandidateIdentityResolved(candidate)) {
-      throw new AcquisitionCandidateIntelligenceOperationError(
-        "IDENTITY_NOT_RESOLVED"
-      );
     }
     const session = await this.sessionFactory.createSession({
       scope,
@@ -615,6 +805,7 @@ export class AcquisitionCandidateIntelligenceOperationService {
       ...scope,
       candidateId,
       sessionId,
+      identityFingerprint,
       status: "queued",
       currentStage: null,
       completedStages: [],
@@ -655,6 +846,61 @@ export class AcquisitionCandidateIntelligenceOperationService {
     return publicOperation(operation);
   }
 
+  async findLatestForCandidate(
+    rawScope: AcquisitionCandidateIntelligenceScope,
+    candidateIdInput: string
+  ) {
+    const scope = validScope(rawScope);
+    const operation = await this.repository.findLatestForCandidate(
+      scope,
+      requiredText(candidateIdInput, 160)
+    );
+    return operation ? publicOperation(operation) : null;
+  }
+
+  async requestRetry(
+    rawScope: AcquisitionCandidateIntelligenceScope,
+    operationIdInput: string,
+    idempotencyKeyInput: string
+  ) {
+    const scope = validScope(rawScope);
+    const operationId = requiredText(operationIdInput, 160);
+    const idempotencyKey = requiredText(idempotencyKeyInput, 200);
+    const operation = await this.repository.getOperation(scope, operationId);
+    if (!operation) {
+      throw new AcquisitionCandidateIntelligenceOperationError(
+        "RESOURCE_NOT_FOUND"
+      );
+    }
+    const command: AcquisitionCandidateIntelligenceRetryCommand = {
+      ownerId: scope.ownerId,
+      teamId: scope.teamId,
+      operationId,
+      idempotencyKeyHash: hash(idempotencyKey),
+      requestHash: stableHash({ operationId }),
+      createdAt: validIso(this.now())
+    };
+    const registered = await this.repository.registerRetryCommand(command);
+    return {
+      operation: publicOperation(operation),
+      shouldDispatch: registered.created
+    };
+  }
+
+  async listRecoverableOperations(options: { limit?: number } = {}) {
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new AcquisitionCandidateIntelligenceOperationError(
+        "INVALID_REQUEST"
+      );
+    }
+    const operations = await this.repository.listRecoverableOperations({
+      now: validIso(this.now()),
+      limit
+    });
+    return operations.map(publicOperation);
+  }
+
   execute(
     rawScope: AcquisitionCandidateIntelligenceScope,
     operationIdInput: string,
@@ -684,6 +930,125 @@ export class AcquisitionCandidateIntelligenceOperationService {
         Date.parse(claimedAt) + this.leaseDurationMs
       ).toISOString()
     };
+  }
+
+  private async assertIdentityBinding(
+    operation: AcquisitionCandidateIntelligenceOperationRecord
+  ) {
+    const candidate = await this.candidates.getCandidate(
+      {
+        ownerId: operation.ownerId,
+        teamId: operation.teamId,
+        actorId: operation.actorId
+      },
+      operation.candidateId
+    );
+    if (!candidate
+      || resolvedIdentityFingerprint(candidate)
+        !== operation.identityFingerprint) {
+      throw new InvalidStageResultError("IDENTITY_BINDING_CHANGED");
+    }
+  }
+
+  private async executeToolWithHeartbeat(
+    operation: AcquisitionCandidateIntelligenceOperationRecord,
+    leaseToken: string,
+    execution: AcquisitionToolExecutionInput,
+    externalSignal?: AbortSignal
+  ) {
+    const controller = new AbortController();
+    let leaseLost = false;
+    let stopped = false;
+    let heartbeatInFlight: Promise<void> | null = null;
+    let rejectOnAbort!: (error: unknown) => void;
+    const abortPromise = new Promise<never>((_resolve, reject) => {
+      rejectOnAbort = reject;
+    });
+    const abort = (reason: unknown) => {
+      if (controller.signal.aborted) return;
+      controller.abort(reason);
+      rejectOnAbort(reason);
+    };
+    const onExternalAbort = () => abort(
+      externalSignal?.reason instanceof Error
+        ? externalSignal.reason
+        : new DOMException("aborted", "AbortError")
+    );
+    if (externalSignal?.aborted) onExternalAbort();
+    else externalSignal?.addEventListener("abort", onExternalAbort, {
+      once: true
+    });
+
+    const heartbeat = () => {
+      if (stopped || heartbeatInFlight) return;
+      heartbeatInFlight = (async () => {
+        try {
+          const renewedAt = validIso(this.now());
+          const renewed = await this.repository.renewLease(
+            {
+              ownerId: operation.ownerId,
+              teamId: operation.teamId
+            },
+            operation.id,
+            leaseToken,
+            {
+              renewedAt,
+              leaseExpiresAt: new Date(
+                Date.parse(renewedAt) + this.leaseDurationMs
+              ).toISOString()
+            }
+          );
+          if (!renewed) {
+            leaseLost = true;
+            abort(new AcquisitionCandidateIntelligenceOperationError(
+              "OPERATION_ALREADY_RUNNING"
+            ));
+          }
+        } catch {
+          leaseLost = true;
+          abort(new AcquisitionCandidateIntelligenceOperationError(
+            "OPERATION_ALREADY_RUNNING"
+          ));
+        }
+      })().finally(() => {
+        heartbeatInFlight = null;
+      });
+    };
+    const heartbeatHandle = this.heartbeatScheduler.setInterval(
+      heartbeat,
+      this.heartbeatIntervalMs
+    );
+    try {
+      const executionPromise = this.executor.execute({
+        ...execution,
+        signal: controller.signal
+      });
+      const value = await Promise.race([executionPromise, abortPromise]);
+      if (heartbeatInFlight) await heartbeatInFlight;
+      if (leaseLost) {
+        throw new AcquisitionCandidateIntelligenceOperationError(
+          "OPERATION_ALREADY_RUNNING"
+        );
+      }
+      if (externalSignal?.aborted) {
+        throw externalSignal.reason instanceof Error
+          ? externalSignal.reason
+          : new DOMException("aborted", "AbortError");
+      }
+      return value;
+    } catch (error) {
+      if (heartbeatInFlight) await heartbeatInFlight;
+      if (leaseLost) {
+        throw new AcquisitionCandidateIntelligenceOperationError(
+          "OPERATION_ALREADY_RUNNING"
+        );
+      }
+      throw error;
+    } finally {
+      stopped = true;
+      this.heartbeatScheduler.clearInterval(heartbeatHandle);
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+    }
   }
 
   private async executeClaimed(
@@ -737,6 +1102,7 @@ export class AcquisitionCandidateIntelligenceOperationService {
       operation.updatedAt = validIso(this.now());
       await this.repository.saveOperation(operation, leaseToken);
       try {
+        await this.assertIdentityBinding(operation);
         if (signal?.aborted) {
           throw new DOMException("aborted", "AbortError");
         }
@@ -753,9 +1119,14 @@ export class AcquisitionCandidateIntelligenceOperationService {
           toolCallId: idempotencyKey,
           idempotencyKey,
           payload: blueprint.payload(operation.candidateId),
-          signal
+          signal: undefined
         };
-        const value = await this.executor.execute(execution);
+        const value = await this.executeToolWithHeartbeat(
+          operation,
+          leaseToken,
+          execution,
+          signal
+        );
         if (signal?.aborted) {
           throw new DOMException("aborted", "AbortError");
         }
@@ -783,7 +1154,7 @@ export class AcquisitionCandidateIntelligenceOperationService {
         };
         operation.currentStage = stage;
         operation.updatedAt = failedAt;
-        operation.completedAt = failedAt;
+        operation.completedAt = null;
         operation.failedAt = failedAt;
         await this.repository.saveOperation(operation, leaseToken);
         return publicOperation(operation);

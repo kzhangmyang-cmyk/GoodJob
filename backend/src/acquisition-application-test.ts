@@ -2083,6 +2083,123 @@ test("application startup reconciles a durable pending CRM conversion", async ()
   }
 });
 
+test("application runs and exposes a durable candidate intelligence workflow after identity resolution", async () => {
+  const fixture = isolatedMemoryStore();
+  const domainRepository = new InMemoryAcquisitionDomainRepository();
+  const now = "2026-07-24T10:00:00.000Z";
+  await domainRepository.appendEvidence({
+    id: "evidence-candidate-intelligence-application",
+    ownerId: OWNER,
+    teamId: TEAM,
+    targetType: "organization",
+    sourcePlatform: "baidu_ai_search",
+    sourceTitle: "AI 获客系统公开采购需求",
+    sourceSnippet: "公开信息显示该企业正在寻找 AI 获客与销售决策系统。",
+    publishedAt: "2026-07-23T00:00:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: `sha256:${"c".repeat(64)}`,
+    contentHash: `sha256:${"d".repeat(64)}`,
+    provenance: {
+      kind: "search_result",
+      provider: "baidu_ai_search",
+      queryText: "AI 获客 采购需求",
+      sourceUrl: "https://intelligence.example.cn/procurement",
+      resultRank: 1
+    },
+    accessStatus: "indexed_summary",
+    supersedesEvidenceId: null,
+    fetchedAt: now
+  });
+  await domainRepository.insertCandidate({
+    id: "candidate-intelligence-application",
+    ownerId: OWNER,
+    teamId: TEAM,
+    partyType: "organization",
+    partyRef: {
+      partyType: "organization",
+      organizationId: "org-candidate-intelligence-application",
+      tenantProspectId: "prospect-candidate-intelligence-application"
+    },
+    profile: {
+      kind: "organization",
+      name: "候选情报应用测试公司",
+      domain: "intelligence.example.cn",
+      region: "中国",
+      creditCode: null
+    },
+    evidenceIds: ["evidence-candidate-intelligence-application"],
+    status: "normalized",
+    latestDecisionId: null,
+    latestDecisionVersion: null,
+    approvedDecisionVersion: null,
+    hardGateFailures: [],
+    leadId: null,
+    createdAt: now,
+    updatedAt: now,
+    version: 1
+  });
+  const model = fakeGateway();
+  let sequence = 0;
+  let timestamp = Date.parse(now);
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    domainRepository,
+    searchPort: fakeSearchPort().port,
+    modelGatewayFactory: () => model.gateway,
+    idFactory: (prefix) => `${prefix}-candidate-intelligence-${++sequence}`,
+    now: () => new Date(timestamp++).toISOString(),
+    nowMs: () => timestamp++
+  });
+  const server = await serve(runtime.handler);
+
+  try {
+    const created = await server.request(
+      "/api/v1/acquisition/candidates/candidate-intelligence-application/intelligence-operations",
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": "application-candidate-intelligence"
+        },
+        body: JSON.stringify({})
+      }
+    );
+    assert.equal(created.response.status, 202, JSON.stringify(created.json));
+    assert.equal(created.json.candidateId, "candidate-intelligence-application");
+    assert.equal(created.json.status, "queued");
+
+    const completed = await waitFor(
+      () => server.request(
+        `/api/v1/acquisition/candidate-intelligence-operations/${created.json.id}`
+      ),
+      (value) => ["succeeded", "failed"].includes(String(value.json.status))
+    );
+    assert.equal(
+      completed.json.status,
+      "succeeded",
+      JSON.stringify(completed.json)
+    );
+    assert.deepEqual(completed.json.completedStages, [
+      "research",
+      "qualification",
+      "battle_card"
+    ]);
+    assert.equal(completed.json.qualification.grade, "S");
+    assert.ok(completed.json.qualification.financialValueId);
+    assert.ok(completed.json.battleCardId);
+
+    const latest = await server.request(
+      "/api/v1/acquisition/candidates/candidate-intelligence-application/intelligence-operation"
+    );
+    assert.equal(latest.response.status, 200);
+    assert.equal(latest.json.id, created.json.id);
+    assert.equal(latest.json.status, "succeeded");
+  } finally {
+    await server.close();
+    await runtime.close();
+  }
+});
+
 test("application shutdown is bounded when a model call never returns", async () => {
   const fixture = isolatedMemoryStore();
   let enteredGateway!: () => void;

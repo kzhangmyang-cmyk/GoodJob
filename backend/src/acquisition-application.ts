@@ -12,6 +12,21 @@ import {
   AcquisitionCandidateProcessingPipeline
 } from "./acquisition-candidate-processing-pipeline.js";
 import {
+  AcquisitionCandidateIntelligenceOperationService,
+  InMemoryAcquisitionCandidateIntelligenceOperationRepository,
+  type AcquisitionCandidateIntelligenceOperationRepository
+} from "./acquisition-candidate-intelligence-operations.js";
+import {
+  createAcquisitionCandidateIntelligenceOperationsRouter
+} from "./acquisition-candidate-intelligence-operations-router.js";
+import {
+  AcquisitionCandidateIntelligenceRecoverySweeper
+} from "./acquisition-candidate-intelligence-recovery-sweeper.js";
+import {
+  ensureAcquisitionCandidateIntelligenceMysqlSchema,
+  MysqlAcquisitionCandidateIntelligenceOperationRepository
+} from "./acquisition-candidate-intelligence-mysql-repository.js";
+import {
   AcquisitionCandidateResearchService
 } from "./acquisition-candidate-research.js";
 import {
@@ -266,9 +281,14 @@ export interface CreateAcquisitionApplicationOptions {
   copilotRecoveryIntervalMs?: number;
   discoveryRecoveryIntervalMs?: number;
   conversionRecoveryIntervalMs?: number;
+  candidateIntelligenceRecoveryIntervalMs?: number;
+  candidateIntelligenceRecoveryBatchSize?: number;
+  candidateIntelligenceLeaseDurationMs?: number;
   discoveryLeaseDurationMs?: number;
   domainRepository?: AcquisitionDomainRepository;
   discoveryRepository?: AcquisitionDiscoveryOperationRepository;
+  candidateIntelligenceRepository?:
+    AcquisitionCandidateIntelligenceOperationRepository;
   planRunRepository?: AcquisitionPlanRunRepository;
   shutdownTimeoutMs?: number;
   idFactory?: IdFactory;
@@ -286,6 +306,8 @@ interface AcquisitionRepositorySet {
   copilot: AcquisitionCopilotRepository;
   planRun: AcquisitionPlanRunRepository;
   discovery: AcquisitionDiscoveryOperationRepository;
+  candidateIntelligence:
+    AcquisitionCandidateIntelligenceOperationRepository;
 }
 
 const GRADE_RANK = Object.freeze({
@@ -846,6 +868,8 @@ export async function createAcquisitionApplication(
     AcquisitionDiscoveryRecoverySweeper | null = null;
   let conversionRecoverySweeper:
     AcquisitionLeadConversionRecoverySweeper | null = null;
+  let candidateIntelligenceRecoverySweeper:
+    AcquisitionCandidateIntelligenceRecoverySweeper | null = null;
 
   try {
     let repositories: AcquisitionRepositorySet;
@@ -867,10 +891,13 @@ export async function createAcquisitionApplication(
       await ensureAcquisitionMysqlSchema(pool);
       await ensureAcquisitionToolSupportMysqlSchema(pool);
       await ensureAcquisitionDiscoveryMysqlSchema(pool);
+      await ensureAcquisitionCandidateIntelligenceMysqlSchema(pool);
       repositories = {
         ...createMysqlAcquisitionRepositories(pool),
         discovery:
-          new MysqlAcquisitionDiscoveryOperationRepository(pool)
+          new MysqlAcquisitionDiscoveryOperationRepository(pool),
+        candidateIntelligence:
+          new MysqlAcquisitionCandidateIntelligenceOperationRepository(pool)
       };
       candidateDirectory = new MysqlAcquisitionCandidateDirectory(pool, {
         now,
@@ -897,7 +924,9 @@ export async function createAcquisitionApplication(
         copilot: new InMemoryAcquisitionCopilotRepository(),
         planRun,
         discovery:
-          new InMemoryAcquisitionDiscoveryOperationRepository()
+          new InMemoryAcquisitionDiscoveryOperationRepository(),
+        candidateIntelligence:
+          new InMemoryAcquisitionCandidateIntelligenceOperationRepository()
       };
       candidateDirectory = new InMemoryAcquisitionCandidateDirectory({
         now,
@@ -915,6 +944,10 @@ export async function createAcquisitionApplication(
     }
     if (options.discoveryRepository) {
       repositories.discovery = options.discoveryRepository;
+    }
+    if (options.candidateIntelligenceRepository) {
+      repositories.candidateIntelligence =
+        options.candidateIntelligenceRepository;
     }
     if (options.planRunRepository) {
       repositories.planRun = options.planRunRepository;
@@ -1093,6 +1126,36 @@ export async function createAcquisitionApplication(
       idFactory,
       now
     });
+    const resolveModelSnapshot =
+      createModelSnapshotResolver(options.store);
+    const candidateIntelligenceOperations =
+      new AcquisitionCandidateIntelligenceOperationService({
+        repository: repositories.candidateIntelligence,
+        candidates: {
+          getCandidate(scope, candidateId) {
+            return repositories.domain.findCandidate(scope, candidateId);
+          }
+        },
+        sessionFactory: {
+          async createSession(input) {
+            const snapshot = await resolveModelSnapshot(input.scope, {
+              connectionId: null,
+              idempotencyKey: input.idempotencyKey
+            });
+            const session = await copilotService.createSession(
+              input.scope,
+              snapshot,
+              input.idempotencyKey
+            );
+            return { sessionId: session.id };
+          }
+        },
+        executor: toolExecutor,
+        workerId: idFactory("candidate-intelligence-worker"),
+        leaseDurationMs: options.candidateIntelligenceLeaseDurationMs,
+        idFactory: () => idFactory("candidate-intelligence"),
+        now
+      });
 
     const candidateResearch = new AcquisitionCandidateResearchService({
       domain: domainService,
@@ -1185,6 +1248,7 @@ export async function createAcquisitionApplication(
 
     const activeCopilotTasks = new Set<Promise<void>>();
     const activeDiscoveryTasks = new Set<Promise<void>>();
+    const activeCandidateIntelligenceTasks = new Set<Promise<void>>();
     let closing = false;
     const dispatchCopilotTask = (
       scope: AcquisitionCopilotScope,
@@ -1213,9 +1277,25 @@ export async function createAcquisitionApplication(
       void task.catch(() => undefined);
       return Promise.resolve();
     };
-
-    const resolveModelSnapshot =
-      createModelSnapshotResolver(options.store);
+    const dispatchCandidateIntelligenceTask = (
+      scope: AcquisitionCopilotScope,
+      operationId: string
+    ) => {
+      if (closing) {
+        throw new Error("ACQUISITION_APPLICATION_CLOSING");
+      }
+      const task = trackAcquisitionBackgroundTask(
+        activeCandidateIntelligenceTasks,
+        Promise.resolve()
+          .then(() => candidateIntelligenceOperations.execute(
+            scope,
+            operationId
+          ))
+          .then(() => undefined)
+      );
+      void task.catch(() => undefined);
+      return Promise.resolve();
+    };
     const router = Router();
     router.use(createAcquisitionProviderConnectionsRouter({
       store: options.store,
@@ -1282,6 +1362,11 @@ export async function createAcquisitionApplication(
           )
         )
     }));
+    router.use(createAcquisitionCandidateIntelligenceOperationsRouter({
+      service: candidateIntelligenceOperations,
+      dispatchOperation: dispatchCandidateIntelligenceTask,
+      requestIdFactory: () => idFactory("request")
+    }));
     router.use(createAcquisitionV1Router({
       domainService,
       identityResolutionService,
@@ -1347,6 +1432,14 @@ export async function createAcquisitionApplication(
         nowMs
       });
     await discoveryRecoverySweeper.start();
+    candidateIntelligenceRecoverySweeper =
+      new AcquisitionCandidateIntelligenceRecoverySweeper({
+        service: candidateIntelligenceOperations,
+        dispatch: dispatchCandidateIntelligenceTask,
+        intervalMs: options.candidateIntelligenceRecoveryIntervalMs,
+        batchSize: options.candidateIntelligenceRecoveryBatchSize
+      });
+    await candidateIntelligenceRecoverySweeper.start();
     conversionRecoverySweeper =
       new AcquisitionLeadConversionRecoverySweeper({
         service: conversionReconciliation,
@@ -1370,6 +1463,12 @@ export async function createAcquisitionApplication(
                 copilotRecoverySweeper?.close() ?? Promise.resolve(),
                 discoveryRecoverySweeper?.close()
                   ?? Promise.resolve(),
+                (async () => {
+                  await candidateIntelligenceRecoverySweeper?.stop();
+                  await Promise.all([
+                    ...activeCandidateIntelligenceTasks
+                  ]);
+                })(),
                 conversionRecoverySweeper?.close()
                   ?? Promise.resolve(),
                 (async () => {
@@ -1405,6 +1504,10 @@ export async function createAcquisitionApplication(
       }
     };
   } catch (error) {
+    if (candidateIntelligenceRecoverySweeper) {
+      await candidateIntelligenceRecoverySweeper.stop()
+        .catch(() => undefined);
+    }
     if (conversionRecoverySweeper) {
       await conversionRecoverySweeper.close().catch(() => undefined);
     }
