@@ -12,6 +12,15 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function fakeElement() {
+  return {
+    innerHTML: "",
+    addEventListener() {},
+    removeEventListener() {},
+    contains() { return false; }
+  };
+}
+
 const customer = {
   id: "customer-1",
   company: "真实客户",
@@ -43,8 +52,8 @@ const todo = {
 };
 
 {
-  const main = { innerHTML: "", addEventListener() {}, removeEventListener() {} };
-  const inspector = { innerHTML: "" };
+  const main = fakeElement();
+  const inspector = fakeElement();
   const api = {
     async getCustomers() {
       return [customer, { ...customer, id: "customer-2", company: "第二客户" }];
@@ -117,8 +126,8 @@ const todo = {
 {
   const customersRequest = deferred<typeof customer[]>();
   const todosRequest = deferred<typeof todo[]>();
-  const main = { innerHTML: "", addEventListener() {}, removeEventListener() {} };
-  const inspector = { innerHTML: "" };
+  const main = fakeElement();
+  const inspector = fakeElement();
   const controller = createPrivateDomainController({
     api: {
       getCustomers: () => customersRequest.promise,

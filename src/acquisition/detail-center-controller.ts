@@ -1564,7 +1564,9 @@ export function createAcquisitionDetailCenterController(
               candidateId,
               action: "private_domain_handoff_completed",
               customerId: result.handoff.customerId,
-              todoId: result.handoff.todoId
+              todoId: result.handoff.todoId,
+              leadId: result.handoff.leadId,
+              handoffId: result.handoff.id
             }
           ));
           render();

@@ -59,6 +59,12 @@ interface Customer {
   ownerName?: string;
   activities?: CustomerActivity[];
   lastActivityAt?: string;
+  acquisitionBindings?: Array<{
+    handoffId: string;
+    leadId: string;
+    candidateId: string;
+    createdAt: string;
+  }>;
 }
 
 interface CustomerActivity {
@@ -1881,6 +1887,31 @@ async function refreshDashboardOnly() {
   } finally {
     dashboardRefreshPromise = null;
   }
+}
+
+async function refreshAuthoritativeCustomers(preferredCustomerId = "") {
+  const result = await api<{ customers: Customer[] }>("/api/customers?scope=mine");
+  state.customers = result.customers;
+  renderCustomers(state.customers);
+  renderPipeline(state.deals);
+  if (state.selectedCustomerId) {
+    const selected = state.customers.find((customer) =>
+      customer.id === state.selectedCustomerId);
+    if (selected) renderCustomerDrawer(selected);
+  }
+  return state.customers.find((customer) => customer.id === preferredCustomerId);
+}
+
+async function openRequiredAcquisitionDeal(customerId: string) {
+  const customer = await refreshAuthoritativeCustomers(customerId);
+  if (!customer || pendingCustomerAcquisitionBindings(customer).length === 0) {
+    toast("该客户当前没有可绑定的获客来源，请刷新后重试", "error");
+    return;
+  }
+  openDealModal(undefined, {
+    customerId: customer.id,
+    requireAcquisitionBinding: true
+  });
 }
 
 function requestDashboardRefresh() {
@@ -4357,8 +4388,29 @@ async function saveDealEvent(id: string) {
   toast("商机进展已记录");
 }
 
-function openDealModal(editing?: Deal) {
-  const defaultCustomer = editing?.customerId ? state.customers.find((item) => item.id === editing.customerId) : undefined;
+interface DealModalOptions {
+  customerId?: string;
+  requireAcquisitionBinding?: boolean;
+}
+
+function pendingCustomerAcquisitionBindings(customer?: Customer) {
+  return (customer?.acquisitionBindings ?? []).filter((binding) =>
+    typeof binding?.handoffId === "string"
+    && Boolean(binding.handoffId.trim())
+    && typeof binding?.leadId === "string"
+    && Boolean(binding.leadId.trim())
+    && typeof binding?.candidateId === "string"
+    && Boolean(binding.candidateId.trim())
+    && typeof binding?.createdAt === "string"
+    && Boolean(binding.createdAt.trim())
+  );
+}
+
+function openDealModal(editing?: Deal, options: DealModalOptions = {}) {
+  const preferredCustomerId = editing?.customerId || options.customerId || "";
+  const defaultCustomer = preferredCustomerId
+    ? state.customers.find((item) => item.id === preferredCustomerId)
+    : undefined;
   const title = editing?.title || "";
   const storedQuantity = Number(editing?.quantity || 0);
   const storedUnitPrice = Number(editing?.unitPrice || 0);
@@ -4378,6 +4430,10 @@ function openDealModal(editing?: Deal) {
       </div>
       <div class="form-field"><label>币种</label><select id="dealCurrencyInput">${["USD", "EUR", "GBP", "CNY", "JPY", "AED"].map((currency) => `<option ${currency === (editing?.currency || "USD") ? "selected" : ""}>${currency}</option>`).join("")}</select></div>
       <div class="form-field full"><label>产品 / 采购需求（必填）</label><input id="dealProductInput" value="${escapeHtml(editing?.product || "")}" placeholder="例如：产品型号 / 数量 / 规格"></div>
+      ${editing ? "" : `<div class="form-field full is-hidden" id="dealAcquisitionBindingField" data-required="${options.requireAcquisitionBinding ? "true" : "false"}">
+        <label>获客来源${options.requireAcquisitionBinding ? "（必选）" : "（可选）"}</label>
+        <select id="dealAcquisitionBindingInput"></select>
+      </div>`}
       <div class="form-field"><label>数量</label><input id="dealQuantityInput" type="number" min="0" step="1" value="${quantity || 30}"></div>
       <div class="form-field"><label>单价</label><input id="dealUnitPriceInput" type="number" min="0" step="0.01" value="${unitPrice || 600}"></div>
       <div class="form-field"><label>金额</label><input id="dealAmountInput" type="number" value="${computedAmount}" readonly></div>
@@ -4387,8 +4443,30 @@ function openDealModal(editing?: Deal) {
     </div>
   `, `<button class="btn" data-modal-close>取消</button><button class="btn primary" id="saveDealButton">${editing ? "保存修改" : "保存商机"}</button>`);
   bindDealCustomerPicker();
+  if (!editing) renderDealAcquisitionBindingOptions(defaultCustomer?.id || "");
   bindDealAmountCalculator();
   qs("#saveDealButton")?.addEventListener("click", () => void saveDeal());
+}
+
+function renderDealAcquisitionBindingOptions(customerId: string) {
+  const field = qs<HTMLElement>("#dealAcquisitionBindingField");
+  const select = qs<HTMLSelectElement>("#dealAcquisitionBindingInput");
+  if (!field || !select) return;
+  const customer = state.customers.find((item) => item.id === customerId);
+  const bindings = pendingCustomerAcquisitionBindings(customer);
+  const required = field.dataset.required === "true";
+  field.classList.toggle("is-hidden", bindings.length === 0);
+  if (bindings.length === 0) {
+    select.innerHTML = "";
+    return;
+  }
+  const placeholder = required
+    ? (bindings.length > 1 ? `<option value="">请选择获客来源</option>` : "")
+    : `<option value="">不关联获客来源</option>`;
+  select.innerHTML = `${placeholder}${bindings.map((binding) =>
+    `<option value="${escapeHtml(binding.handoffId)}">AI 获客候选 ${escapeHtml(binding.candidateId)} · ${escapeHtml(formatDateTime(binding.createdAt))}</option>`
+  ).join("")}`;
+  if (required && bindings.length === 1) select.value = bindings[0].handoffId;
 }
 
 function bindDealAmountCalculator() {
@@ -4432,6 +4510,7 @@ function renderDealCustomerOptions(keyword = "") {
       const idInput = qs<HTMLInputElement>("#dealCustomerIdInput");
       if (input) input.value = customer.company;
       if (idInput) idInput.value = customer.id;
+      renderDealAcquisitionBindingOptions(customer.id);
       box.classList.remove("active");
     });
   });
@@ -4451,6 +4530,7 @@ function bindDealCustomerPicker() {
   input.addEventListener("input", () => {
     const exact = state.customers.find((customer) => customer.company.toLowerCase() === input.value.trim().toLowerCase());
     idInput.value = exact?.id || "";
+    renderDealAcquisitionBindingOptions(exact?.id || "");
     renderDealCustomerOptions(input.value);
     box.classList.add("active");
   });
@@ -4470,6 +4550,7 @@ function bindDealCustomerPicker() {
   clear?.addEventListener("click", () => {
     input.value = "";
     idInput.value = "";
+    renderDealAcquisitionBindingOptions("");
     renderDealCustomerOptions("");
     box.classList.remove("active");
     input.focus();
@@ -4502,20 +4583,37 @@ async function saveDeal() {
   }
   const quantity = Number(qs<HTMLInputElement>("#dealQuantityInput")?.value || 0);
   const unitPrice = Number(qs<HTMLInputElement>("#dealUnitPriceInput")?.value || 0);
+  const selectedHandoffId = qs<HTMLSelectElement>("#dealAcquisitionBindingInput")?.value || "";
+  const selectedBinding = dealId ? undefined : pendingCustomerAcquisitionBindings(
+    state.customers.find((customer) => customer.id === customerId)
+  ).find((binding) => binding.handoffId === selectedHandoffId);
+  const acquisitionBindingRequired = qs<HTMLElement>("#dealAcquisitionBindingField")
+    ?.dataset.required === "true";
+  if (!dealId && acquisitionBindingRequired && !selectedBinding) {
+    toast("请选择获客来源", "error");
+    return;
+  }
+  const payload: Record<string, unknown> = {
+    title,
+    customerId,
+    product,
+    quantity,
+    unitPrice,
+    amount: Math.round(quantity * unitPrice * 100) / 100,
+    currency: qs<HTMLSelectElement>("#dealCurrencyInput")?.value || "USD",
+    nextAction,
+    nextActionAt,
+    expectedCloseAt: qs<HTMLInputElement>("#dealExpectedCloseAtInput")?.value || ""
+  };
+  if (!dealId && selectedBinding) {
+    payload.acquisitionBinding = {
+      handoffId: selectedBinding.handoffId,
+      leadId: selectedBinding.leadId
+    };
+  }
   const result = await api<{ deal: Deal }>(dealId ? `/api/deals/${dealId}` : "/api/deals", {
     method: dealId ? "PATCH" : "POST",
-    body: JSON.stringify({
-      title,
-      customerId,
-      product,
-      quantity,
-      unitPrice,
-      amount: Math.round(quantity * unitPrice * 100) / 100,
-      currency: qs<HTMLSelectElement>("#dealCurrencyInput")?.value || "USD",
-      nextAction,
-      nextActionAt,
-      expectedCloseAt: qs<HTMLInputElement>("#dealExpectedCloseAtInput")?.value || ""
-    })
+    body: JSON.stringify(payload)
   });
   closeModal();
   await refreshDealsData();
@@ -11147,6 +11245,24 @@ async function saveReportNote() {
 
 function installEvents() {
   ensureUiLayer();
+  document.addEventListener("goodjob:acquisition-candidate-changed", (event) => {
+    const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+    if (detail?.action !== "private_domain_handoff_completed") return;
+    const customerId = typeof detail.customerId === "string"
+      ? detail.customerId
+      : "";
+    void refreshAuthoritativeCustomers(customerId).catch(() => undefined);
+  });
+  document.addEventListener("goodjob:deal-create-requested", (event) => {
+    const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+    const customerId = typeof detail?.customerId === "string"
+      ? detail.customerId.trim()
+      : "";
+    if (!customerId) return;
+    void openRequiredAcquisitionDeal(customerId).catch((error) => {
+      toast(error instanceof Error ? error.message : "加载获客来源失败", "error");
+    });
+  });
   if (!FRONTEND_DEMO_MODE) {
     window.setInterval(refreshVisibleDashboard, DASHBOARD_LIVE_REFRESH_MS);
     window.addEventListener("focus", refreshVisibleDashboard);

@@ -22,6 +22,12 @@ const state = {
     pipelineStage: "暂无活跃商机",
     pipelineAmount: 0,
     activeDealCount: 0,
+    acquisitionBindings: [{
+      handoffId: "handoff-1",
+      leadId: "lead-1",
+      candidateId: "candidate-1",
+      createdAt: "2026-08-07T08:00:00.000Z"
+    }],
     activities: [{
       id: "activity-1",
       customerId: "customer-1",
@@ -58,6 +64,8 @@ assert.match(inspector.innerHTML, /已交接/);
 assert.match(inspector.innerHTML, /首次跟进/);
 assert.match(inspector.innerHTML, /2026-08-08T09:00:00\.000Z/);
 assert.match(inspector.innerHTML, /lead-1/);
+assert.match(inspector.innerHTML, /data-private-domain-action="create-deal"/);
+assert.match(inspector.innerHTML, /创建真实商机/);
 assert.doesNotMatch(main.innerHTML + inspector.innerHTML, /演示模式|模拟触达/);
 assert.doesNotMatch(main.innerHTML + inspector.innerHTML, /<script>|<img src=x/);
 assert.match(main.innerHTML + inspector.innerHTML, /&lt;script&gt;|&lt;img/);
@@ -72,3 +80,13 @@ renderPrivateDomainView({
   error: null
 }, emptyMain, emptyInspector);
 assert.match(emptyMain.innerHTML, /暂无真实私域客户/);
+
+const noBindingInspector = { innerHTML: "" } as HTMLElement;
+renderPrivateDomainView({
+  ...state,
+  customers: [{ ...state.customers[0], acquisitionBindings: [] }]
+}, { innerHTML: "" } as HTMLElement, noBindingInspector);
+assert.doesNotMatch(
+  noBindingInspector.innerHTML,
+  /data-private-domain-action="create-deal"/
+);

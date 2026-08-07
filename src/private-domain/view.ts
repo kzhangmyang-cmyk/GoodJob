@@ -29,6 +29,19 @@ function formatAmount(value: number): string {
   }).format(Number.isFinite(value) ? value : 0);
 }
 
+function pendingAcquisitionBindings(customer: PrivateDomainCustomer) {
+  return (customer.acquisitionBindings ?? []).filter((binding) =>
+    typeof binding?.handoffId === "string"
+    && Boolean(binding.handoffId.trim())
+    && typeof binding?.leadId === "string"
+    && Boolean(binding.leadId.trim())
+    && typeof binding?.candidateId === "string"
+    && Boolean(binding.candidateId.trim())
+    && typeof binding?.createdAt === "string"
+    && Boolean(binding.createdAt.trim())
+  );
+}
+
 function renderCustomerList(state: PrivateDomainViewState): string {
   if (state.status === "loading" && state.customers.length === 0) {
     return `<section class="demo-panel demo-empty" role="status"><h2>正在读取真实私域客户…</h2></section>`;
@@ -68,6 +81,7 @@ function renderInspector(
 ): string {
   if (!customer) return "";
   const relatedTodos = todos.filter((todo) => todo.customerId === customer.id);
+  const pendingBindings = pendingAcquisitionBindings(customer);
   return `
     <section class="demo-panel demo-customer-inspector">
       <header><div><span class="demo-status">真实 CRM</span><h3>${escapeHtml(customer.company)}</h3><p>${escapeHtml(customer.country)} · ${escapeHtml(customer.contact || "待维护")}</p></div><strong>${escapeHtml(customer.grade ?? "待评估")}级</strong></header>
@@ -77,6 +91,7 @@ function renderInspector(
         <div><b>活跃商机</b><span>${escapeHtml(customer.pipelineStage ?? "暂无活跃商机")}</span></div>
         <div><b>预期金额</b><span>${escapeHtml(formatAmount(customer.amount))}</span></div>
       </div>
+      ${pendingBindings.length > 0 ? `<div class="demo-customer-actions"><button type="button" class="demo-primary" data-private-domain-action="create-deal" data-customer-id="${escapeHtml(customer.id)}">创建真实商机</button></div>` : ""}
       <div class="demo-analysis-block demo-customer-timeline"><b>真实客户活动</b><ol>${customer.activities.length > 0
         ? customer.activities.map((activity) => `<li><time>${escapeHtml(activity.createdAt)}</time><span><b>${escapeHtml(activity.operatorName ?? activity.operatorId)}</b>${escapeHtml(activity.content)}</span></li>`).join("")
         : "<li><span><b>暂无活动</b>客户尚无跟进记录。</span></li>"}</ol></div>

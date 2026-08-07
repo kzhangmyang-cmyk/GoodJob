@@ -11,6 +11,7 @@ export interface PrivateDomainControllerOptions {
   api?: PrivateDomainRuntimeApi;
   main?: HTMLElement | null;
   inspector?: HTMLElement | null;
+  eventTarget?: EventTarget;
 }
 
 export interface PrivateDomainController {
@@ -38,6 +39,9 @@ export function createPrivateDomainController(
   const inspector = options.inspector ?? (typeof document === "undefined"
     ? null
     : document.getElementById("demoModuleInspector"));
+  const eventTarget = options.eventTarget ?? (typeof document === "undefined"
+    ? new EventTarget()
+    : document);
   const state: PrivateDomainViewState = {
     status: "ready",
     customers: [],
@@ -117,6 +121,7 @@ export function createPrivateDomainController(
       disposed = true;
       controller.deactivate();
       main?.removeEventListener("click", onClick);
+      inspector?.removeEventListener("click", onClick);
     }
   };
 
@@ -124,9 +129,27 @@ export function createPrivateDomainController(
     const target = (event.target as HTMLElement | null)?.closest<HTMLElement>(
       "[data-private-domain-action]"
     );
-    if (!target || !main?.contains(target)) return;
+    if (!target || (!main?.contains(target) && !inspector?.contains(target))) return;
     if (target.dataset.privateDomainAction === "select-customer") {
       controller.selectCustomer(target.dataset.customerId ?? "");
+    } else if (target.dataset.privateDomainAction === "create-deal") {
+      const customerId = target.dataset.customerId?.trim() ?? "";
+      const customer = state.customers.find((item) => item.id === customerId);
+      const hasPendingBinding = customer?.acquisitionBindings?.some((binding) =>
+        typeof binding?.handoffId === "string"
+        && Boolean(binding.handoffId.trim())
+        && typeof binding?.leadId === "string"
+        && Boolean(binding.leadId.trim())
+        && typeof binding?.candidateId === "string"
+        && Boolean(binding.candidateId.trim())
+        && typeof binding?.createdAt === "string"
+        && Boolean(binding.createdAt.trim())
+      );
+      if (!hasPendingBinding) return;
+      eventTarget.dispatchEvent(new CustomEvent(
+        "goodjob:deal-create-requested",
+        { detail: { customerId } }
+      ));
     } else if (target.dataset.privateDomainAction === "retry") {
       void controller.open(state.selectedCustomerId ?? undefined).catch(
         () => undefined
@@ -135,6 +158,7 @@ export function createPrivateDomainController(
   }
 
   main?.addEventListener("click", onClick);
+  inspector?.addEventListener("click", onClick);
   render();
   return controller;
 }

@@ -390,6 +390,11 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     idempotencyKey: string | undefined;
     body: unknown;
   }> = [];
+  const dealRequests: Array<{
+    method: string;
+    body: Record<string, unknown>;
+  }> = [];
+  const dealRows: Array<Record<string, unknown>> = [];
   let pendingCustomerGate: {
     started(): void;
     wait: Promise<void>;
@@ -406,8 +411,11 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     pendingCustomerGate = { started: markStarted, wait };
     return { started, release };
   }
-  await page.route("**/api/customers?scope=mine", async (route) => {
-    const gate = pendingCustomerGate;
+  await page.route("**/api/customers*", async (route) => {
+    const url = new URL(route.request().url());
+    const gate = url.searchParams.get("scope") === "mine"
+      ? pendingCustomerGate
+      : null;
     if (gate) {
       pendingCustomerGate = null;
       gate.started();
@@ -431,6 +439,17 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
           grade: "A",
           nextReminder: "2026-08-09T10:30:00.000Z",
           wecomBound: false,
+          acquisitionBindings: [{
+            handoffId: "ach-ui-1",
+            leadId: "lead-ui-1",
+            candidateId: candidate.id,
+            createdAt: "2026-08-07T08:10:00.000Z"
+          }, {
+            handoffId: "ach-ui-2",
+            leadId: "lead-ui-2",
+            candidateId: "candidate-ui-2",
+            createdAt: "2026-08-07T08:11:00.000Z"
+          }],
           activities: [{
             id: "activity-ui-1",
             customerId: "customer-ui-1",
@@ -444,6 +463,58 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
         }]
       })
     });
+  });
+  await page.route("**/api/dashboard/summary", async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ message: "E2E 不刷新 legacy dashboard" })
+    });
+  });
+  await page.route("**/api/deals**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const fulfill = (value: unknown) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(value)
+    });
+    if (url.pathname === "/api/deals/closed") {
+      await fulfill({
+        deals: [],
+        total: 0,
+        page: 1,
+        pageSize: 20,
+        counts: { won: 0, lost: 0, revisit: 0 }
+      });
+      return;
+    }
+    if (url.pathname === "/api/deals" && request.method() === "GET") {
+      await fulfill({ deals: dealRows, events: [] });
+      return;
+    }
+    const body = request.postDataJSON() as Record<string, unknown>;
+    dealRequests.push({ method: request.method(), body });
+    if (url.pathname === "/api/deals" && request.method() === "POST") {
+      const deal = {
+        id: `deal-ui-${dealRows.length + 1}`,
+        ...body,
+        stage: "询盘",
+        amountType: "estimate",
+        stageChangedAt: "2026-08-08T08:00:00.000Z"
+      };
+      dealRows.push(deal);
+      await fulfill({ deal });
+      return;
+    }
+    if (url.pathname.startsWith("/api/deals/") && request.method() === "PATCH") {
+      const id = url.pathname.split("/").at(-1);
+      const deal = dealRows.find((item) => item.id === id);
+      Object.assign(deal ?? {}, body);
+      await fulfill({ deal });
+      return;
+    }
+    await fulfill({ message: "测试路由未配置" });
   });
   await page.route("**/api/todos", async (route) => {
     await route.fulfill({
@@ -769,6 +840,53 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
   await expect(page.locator("#demoModuleInspector")).toContainText("todo-ui-1");
   await expect(page.locator("#demoModuleInspector")).toContainText("获客候选已交接");
   await expect(page.locator("#demoModuleMain")).not.toContainText("演示模式");
+
+  const createRealDeal = page.locator('[data-private-domain-action="create-deal"]');
+  await expect(createRealDeal).toBeVisible();
+  await createRealDeal.click();
+  await expect(page.locator("#appModal")).toHaveClass(/active/);
+  await expect(page.locator("#dealCustomerIdInput")).toHaveValue("customer-ui-1");
+  await expect(page.locator("#dealAcquisitionBindingField")).toBeVisible();
+  await expect(page.locator("#dealAcquisitionBindingInput")).toHaveValue("");
+  await page.locator("#dealAcquisitionBindingInput").selectOption("ach-ui-1");
+  await page.locator("#dealTitleInput").fill("AI 获客绑定商机");
+  await page.locator("#dealProductInput").fill("GoodJob CRM");
+  await page.locator("#saveDealButton").click();
+  await expect.poll(() => dealRequests.length).toBe(1);
+  expect(dealRequests[0]).toEqual({
+    method: "POST",
+    body: expect.objectContaining({
+      title: "AI 获客绑定商机",
+      customerId: "customer-ui-1",
+      acquisitionBinding: {
+        handoffId: "ach-ui-1",
+        leadId: "lead-ui-1"
+      }
+    })
+  });
+
+  await page.locator("#pipeline .page-head .btn.primary").evaluate((button) =>
+    (button as HTMLButtonElement).click());
+  await page.locator("#dealTitleInput").fill("普通商机");
+  await page.locator("#dealProductInput").fill("普通 CRM 服务");
+  await page.locator("#dealCustomerInput").fill(candidate.name);
+  await page.locator('[data-deal-customer-id="customer-ui-1"]').click();
+  await page.locator("#dealAcquisitionBindingInput").selectOption("");
+  await page.locator("#saveDealButton").click();
+  await expect.poll(() => dealRequests.length).toBe(2);
+  expect(dealRequests[1]?.method).toBe("POST");
+  expect(dealRequests[1]?.body).not.toHaveProperty("acquisitionBinding");
+
+  await page.locator('[data-deal-id="deal-ui-1"]').evaluate((card) =>
+    (card as HTMLElement).click());
+  await page.locator("#drawerEditDealButton").evaluate((button) =>
+    (button as HTMLButtonElement).click());
+  await expect(page.locator("#dealAcquisitionBindingField")).toHaveCount(0);
+  await page.locator("#dealTitleInput").fill("AI 获客绑定商机（更新）");
+  await page.locator("#saveDealButton").click();
+  await expect.poll(() => dealRequests.length).toBe(3);
+  expect(dealRequests[2]?.method).toBe("PATCH");
+  expect(dealRequests[2]?.body).not.toHaveProperty("acquisitionBinding");
 
   const leaveGate = holdNextCustomerRequest();
   await page.locator('[data-private-domain-action="retry"]').click();

@@ -206,6 +206,14 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
 
 {
   const storage = new MemorySessionStorage();
+  const eventTarget = new EventTarget();
+  const completedEvents: Array<Record<string, unknown>> = [];
+  eventTarget.addEventListener("goodjob:acquisition-candidate-changed", (event) => {
+    const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+    if (detail.action === "private_domain_handoff_completed") {
+      completedEvents.push(detail);
+    }
+  });
   const handoffKeys: string[] = [];
   let handoffAttempts = 0;
   const api = {
@@ -277,6 +285,7 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
   } as unknown as AcquisitionDetailApi;
   const controller = createAcquisitionDetailCenterController({
     api,
+    eventTarget,
     storage,
     keyFactory: () => "handoff-stable-key"
   });
@@ -307,6 +316,17 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
   assert.ok(completedHandoff && "handoff" in completedHandoff);
   assert.equal(completedHandoff.handoff.customerId, "customer-1");
   assert.equal(controller.getState().handoffDialog, null);
+  assert.deepEqual({
+    customerId: completedEvents[0]?.customerId,
+    todoId: completedEvents[0]?.todoId,
+    leadId: completedEvents[0]?.leadId,
+    handoffId: completedEvents[0]?.handoffId
+  }, {
+    customerId: "customer-1",
+    todoId: "todo-1",
+    leadId: "lead-1",
+    handoffId: "ach-1"
+  });
   controller.destroy();
 }
 

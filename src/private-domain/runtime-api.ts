@@ -27,6 +27,12 @@ export interface PrivateDomainCustomer {
   pipelineStage?: string;
   pipelineAmount?: number;
   activeDealCount?: number;
+  acquisitionBindings?: Array<{
+    handoffId: string;
+    leadId: string;
+    candidateId: string;
+    createdAt: string;
+  }>;
 }
 
 export interface PrivateDomainTodo {
