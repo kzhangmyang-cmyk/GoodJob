@@ -391,6 +391,7 @@ test("private-domain handoff route enforces server-owned input and supports repl
   };
   let createCalls = 0;
   let returnInProgress = false;
+  let returnCompletedRecovery = false;
   const fixture = await createFixture({
     privateDomainHandoffService: {
       async create(_scope, _candidateId, _request, _key) {
@@ -428,7 +429,26 @@ test("private-domain handoff route enforces server-owned input and supports repl
             }
           };
         }
-        return structuredClone(completed);
+        return {
+          ...structuredClone(completed),
+          ...(returnCompletedRecovery
+            ? {
+                recovery: {
+                  request: {
+                    operationCode: "handoff_acquisition_candidate_v1" as const,
+                    decisionVersion: "qualification-v2",
+                    mode: "create_new" as const,
+                    existingCustomerId: "",
+                    followUp: {
+                      title: "验证历史归因",
+                      dueAt: "2026-08-08T09:00:00.000Z",
+                      priority: "high" as const
+                    }
+                  }
+                }
+              }
+            : {})
+        };
       }
     }
   });
@@ -488,6 +508,24 @@ test("private-domain handoff route enforces server-owned input and supports repl
     assert.equal(refreshed.json.handoff.customerId, "customer-router");
     assert.equal("processingKeyHash" in refreshed.json.handoff, false);
 
+    returnCompletedRecovery = true;
+    const completedRecovery = await fixture.request(
+      "/api/v1/acquisition/candidates/candidate-router/private-domain-handoff"
+    );
+    assert.equal(completedRecovery.response.status, 200);
+    assert.deepEqual(completedRecovery.json.recovery?.request, {
+      operationCode: "handoff_acquisition_candidate_v1",
+      decisionVersion: "qualification-v2",
+      mode: "create_new",
+      existingCustomerId: "",
+      followUp: {
+        title: "验证历史归因",
+        dueAt: "2026-08-08T09:00:00.000Z",
+        priority: "high"
+      }
+    });
+
+    returnCompletedRecovery = false;
     returnInProgress = true;
     const recovering = await fixture.request(
       "/api/v1/acquisition/candidates/candidate-router/private-domain-handoff"

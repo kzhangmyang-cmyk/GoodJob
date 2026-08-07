@@ -859,7 +859,10 @@ function publicPrivateDomainHandoff(
     lead: structuredClone(result.lead),
     customer: structuredClone(result.customer),
     todo: structuredClone(result.todo),
-    intelligence: structuredClone(result.intelligence)
+    intelligence: structuredClone(result.intelligence),
+    ...(result.recovery
+      ? { recovery: structuredClone(result.recovery) }
+      : {})
   };
 }
 

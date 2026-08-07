@@ -440,6 +440,33 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
           : validHandoff.decisionVersion
       });
     });
+    const missingOperationRecovery = await acquisitionHttp.request(
+      `/api/v1/acquisition/candidates/${candidateId}-missingAttribution/private-domain-handoffs`,
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": `handoff-${suffix}-missing-operation-recovery`
+        },
+        body: JSON.stringify({
+          operationCode: "handoff_acquisition_candidate_v1",
+          runId,
+          discoveredEventId,
+          decisionVersion: "qualification-v2",
+          mode: "create_new",
+          existingCustomerId: "",
+          followUp: {
+            title: "不得恢复无可信操作的历史交接",
+            dueAt: "2026-08-08T09:00:00.000Z",
+            priority: "high"
+          }
+        })
+      }
+    );
+    assert.equal(missingOperationRecovery.response.status, 409);
+    assert.equal(
+      missingOperationRecovery.json.code,
+      "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING"
+    );
     const customerRead = await runtime.request("/api/customers", {
       headers: { authorization: `Bearer ${login.json.token}` }
     });

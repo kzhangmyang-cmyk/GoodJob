@@ -752,6 +752,13 @@ legacyOperation.requestHash = createHash("sha256")
   .update(canonicalJsonStringify(legacyRequest))
   .digest("hex");
 legacyOperation.acquisitionAttribution = null;
+const legacySourceEvent = legacyRecovery.store.leadSourceEvents.find((item) =>
+  item.channel === "acquisition_private_domain_handoff_snapshot"
+)!;
+legacySourceEvent.rawPayload = canonicalJsonStringify({
+  ...JSON.parse(legacySourceEvent.rawPayload),
+  acquisitionAttribution: null
+});
 legacyRecovery.store.persistMutation = undefined;
 const refreshedLegacyService = new AcquisitionPrivateDomainHandoffService({
   repository: legacyRecovery.repository,
@@ -776,10 +783,222 @@ assert.deepEqual(
   legacyOperation.acquisitionAttribution,
   acquisitionAttribution
 );
+assert.deepEqual(
+  JSON.parse(legacySourceEvent.rawPayload).acquisitionAttribution,
+  acquisitionAttribution
+);
 assert.equal(legacyRecovery.store.acquisitionCustomerHandoffs.length, 1);
 assert.equal(legacyRecovery.store.leads.length, 1);
 assert.equal(legacyRecovery.store.customers.length, 1);
 assert.equal(legacyRecovery.store.todos.length, 1);
+
+const completedLegacy = await fixture();
+await completedLegacy.service.create(
+  scope,
+  "candidate-a",
+  request,
+  "handoff-completed-before-attribution-upgrade"
+);
+const completedLegacyOperation =
+  completedLegacy.store.acquisitionCustomerHandoffOperations[0]!;
+const completedLegacyHandoff =
+  completedLegacy.store.acquisitionCustomerHandoffs[0]!;
+const completedLegacySource = completedLegacy.store.leadSourceEvents.find(
+  (item) => item.channel === "acquisition_private_domain_handoff_snapshot"
+)!;
+const {
+  runId: _completedLegacyRunId,
+  discoveredEventId: _completedLegacyDiscoveredEventId,
+  ...completedLegacyRequest
+} = completedLegacyOperation.request;
+const completedLegacyRequestHash = createHash("sha256")
+  .update(canonicalJsonStringify(completedLegacyRequest))
+  .digest("hex");
+completedLegacyOperation.request = completedLegacyRequest as
+  typeof completedLegacyOperation.request;
+completedLegacyOperation.requestHash = completedLegacyRequestHash;
+completedLegacyOperation.acquisitionAttribution = null;
+completedLegacyHandoff.requestHash = completedLegacyRequestHash;
+completedLegacyHandoff.acquisitionAttribution = null;
+completedLegacySource.rawPayload = canonicalJsonStringify({
+  ...JSON.parse(completedLegacySource.rawPayload),
+  acquisitionAttribution: null
+});
+const completedLegacyStatus = await completedLegacy.service.get(
+  scope,
+  "candidate-a"
+);
+assert.ok("handoff" in completedLegacyStatus);
+assert.deepEqual(
+  "recovery" in completedLegacyStatus
+    ? completedLegacyStatus.recovery?.request
+    : null,
+  completedLegacyRequest
+);
+const completedLegacyUpgradeService = new AcquisitionPrivateDomainHandoffService({
+  repository: completedLegacy.repository,
+  domainService: completedLegacy.domainService,
+  store: completedLegacy.store,
+  attributionResolver: validAttributionResolver,
+  now
+});
+const upgradedCompletedLegacy = await completedLegacyUpgradeService.create(
+  scope,
+  "candidate-a",
+  request,
+  "handoff-completed-after-attribution-upgrade"
+);
+assert.deepEqual(
+  upgradedCompletedLegacy.handoff.acquisitionAttribution,
+  acquisitionAttribution
+);
+assert.deepEqual(
+  completedLegacyOperation.acquisitionAttribution,
+  acquisitionAttribution
+);
+assert.equal(completedLegacyOperation.request.runId, runId);
+assert.equal(
+  completedLegacyOperation.request.discoveredEventId,
+  discoveredEventId
+);
+assert.deepEqual(
+  completedLegacyHandoff.acquisitionAttribution,
+  acquisitionAttribution
+);
+assert.deepEqual(
+  JSON.parse(completedLegacySource.rawPayload).acquisitionAttribution,
+  acquisitionAttribution
+);
+
+const {
+  runId: _rollbackRunId,
+  discoveredEventId: _rollbackEventId,
+  ...rollbackLegacyRequest
+} = completedLegacyOperation.request;
+const rollbackLegacyHash = createHash("sha256")
+  .update(canonicalJsonStringify(rollbackLegacyRequest))
+  .digest("hex");
+completedLegacyOperation.request = rollbackLegacyRequest as
+  typeof completedLegacyOperation.request;
+completedLegacyOperation.requestHash = rollbackLegacyHash;
+completedLegacyOperation.acquisitionAttribution = null;
+completedLegacyHandoff.requestHash = rollbackLegacyHash;
+completedLegacyHandoff.acquisitionAttribution = null;
+completedLegacySource.rawPayload = canonicalJsonStringify({
+  ...JSON.parse(completedLegacySource.rawPayload),
+  acquisitionAttribution: null
+});
+const operationBeforeRollback = structuredClone(completedLegacyOperation);
+const handoffBeforeRollback = structuredClone(completedLegacyHandoff);
+const sourceBeforeRollback = structuredClone(completedLegacySource);
+completedLegacy.store.persistMutation = undefined;
+completedLegacy.store.persist = async () => {
+  throw new Error("completed attribution upgrade persistence failed");
+};
+const rollbackUpgradeService = new AcquisitionPrivateDomainHandoffService({
+  repository: completedLegacy.repository,
+  domainService: completedLegacy.domainService,
+  store: completedLegacy.store,
+  attributionResolver: validAttributionResolver,
+  now
+});
+await assert.rejects(
+  () => rollbackUpgradeService.create(
+    scope,
+    "candidate-a",
+    request,
+    "handoff-completed-upgrade-rollback"
+  ),
+  /completed attribution upgrade persistence failed/
+);
+assert.deepEqual(completedLegacyOperation, operationBeforeRollback);
+assert.deepEqual(completedLegacyHandoff, handoffBeforeRollback);
+assert.deepEqual(completedLegacySource, sourceBeforeRollback);
+
+const completedWithoutOperation = await fixture();
+await completedWithoutOperation.service.create(
+  scope,
+  "candidate-a",
+  request,
+  "handoff-completed-without-operation"
+);
+completedWithoutOperation.store.acquisitionCustomerHandoffs[0]!
+  .acquisitionAttribution = null;
+completedWithoutOperation.store.acquisitionCustomerHandoffOperations = [];
+const missingOperationService = new AcquisitionPrivateDomainHandoffService({
+  repository: completedWithoutOperation.repository,
+  domainService: completedWithoutOperation.domainService,
+  store: completedWithoutOperation.store,
+  attributionResolver: validAttributionResolver,
+  now
+});
+const missingOperationStatus = await missingOperationService.get(
+  scope,
+  "candidate-a"
+);
+assert.ok("handoff" in missingOperationStatus);
+assert.equal("recovery" in missingOperationStatus, false);
+await assert.rejects(
+  () => missingOperationService.create(
+    scope,
+    "candidate-a",
+    request,
+    "handoff-completed-missing-operation-recovery"
+  ),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING"
+);
+
+const completedWithSnapshotCollision = await fixture();
+await completedWithSnapshotCollision.service.create(
+  scope,
+  "candidate-a",
+  request,
+  "handoff-completed-snapshot-collision"
+);
+const collisionOperation = completedWithSnapshotCollision.store
+  .acquisitionCustomerHandoffOperations[0]!;
+const collisionHandoff = completedWithSnapshotCollision.store
+  .acquisitionCustomerHandoffs[0]!;
+const collisionSource = completedWithSnapshotCollision.store.leadSourceEvents
+  .find((item) => item.channel
+    === "acquisition_private_domain_handoff_snapshot")!;
+const {
+  runId: _collisionRunId,
+  discoveredEventId: _collisionEventId,
+  ...collisionLegacyRequest
+} = collisionOperation.request;
+const collisionLegacyHash = createHash("sha256")
+  .update(canonicalJsonStringify(collisionLegacyRequest))
+  .digest("hex");
+collisionOperation.request = collisionLegacyRequest as
+  typeof collisionOperation.request;
+collisionOperation.requestHash = collisionLegacyHash;
+collisionOperation.acquisitionAttribution = null;
+collisionHandoff.requestHash = collisionLegacyHash;
+collisionHandoff.acquisitionAttribution = null;
+collisionSource.teamId = "team-other";
+const collisionService = new AcquisitionPrivateDomainHandoffService({
+  repository: completedWithSnapshotCollision.repository,
+  domainService: completedWithSnapshotCollision.domainService,
+  store: completedWithSnapshotCollision.store,
+  attributionResolver: validAttributionResolver,
+  now
+});
+await assert.rejects(
+  () => collisionService.create(
+    scope,
+    "candidate-a",
+    request,
+    "handoff-completed-collision-recovery"
+  ),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING"
+);
+assert.equal(collisionHandoff.acquisitionAttribution, null);
+assert.equal(collisionOperation.acquisitionAttribution, null);
 
 // The takeover completed, but its response was lost. Both accepted keys must
 // now replay the same durable result without creating another CRM resource.

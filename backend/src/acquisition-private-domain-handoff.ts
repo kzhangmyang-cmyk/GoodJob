@@ -50,6 +50,9 @@ export interface AcquisitionPrivateDomainHandoffResult {
   customer: Customer;
   todo: Todo;
   intelligence: AcquisitionHandoffIntelligence;
+  recovery?: {
+    request: AcquisitionPrivateDomainHandoffRecoveryRequest;
+  };
 }
 
 export interface AcquisitionPrivateDomainHandoffAttributionResolver {
@@ -76,7 +79,7 @@ export interface AcquisitionPrivateDomainHandoffPendingResult {
     mode: "create_new" | "link_existing";
     existingCustomerId: string;
     stage: AcquisitionCustomerHandoffOperation["stage"];
-    request: AcquisitionCustomerHandoffRequestSnapshot;
+    request: AcquisitionPrivateDomainHandoffRecoveryRequest;
     createdAt: string;
   };
 }
@@ -102,6 +105,46 @@ function digest(value: string) {
 
 function stableId(prefix: string, values: string[]) {
   return `${prefix}_${digest(values.join("\u001f")).slice(0, 40)}`;
+}
+
+function privateDomainHandoffSnapshotEvent(input: {
+  scope: Pick<AcquisitionActorScope, "ownerId" | "teamId">;
+  candidateId: string;
+  leadId: string;
+  decisionVersion: string;
+  sourceUrl: string;
+  occurredAt: string;
+  acquisitionAttribution: OutcomeAttributionInput;
+  intelligence: AcquisitionHandoffIntelligence;
+  qualificationSnapshotHash: string;
+  financialSnapshotHash: string;
+}): LeadSourceEvent {
+  return {
+    id: stableId("lse", [
+      input.scope.ownerId,
+      input.scope.teamId,
+      input.candidateId,
+      "private-domain-handoff-snapshot"
+    ]),
+    leadId: input.leadId,
+    sourceType: "outbound",
+    channel: "acquisition_private_domain_handoff_snapshot",
+    campaign: input.decisionVersion,
+    externalId: input.candidateId,
+    sourceUrl: input.sourceUrl,
+    occurredAt: input.occurredAt,
+    receivedAt: input.occurredAt,
+    rawPayload: canonicalJsonStringify({
+      candidateId: input.candidateId,
+      decisionVersion: input.decisionVersion,
+      acquisitionAttribution: input.acquisitionAttribution,
+      intelligence: input.intelligence,
+      qualificationSnapshotHash: input.qualificationSnapshotHash,
+      financialSnapshotHash: input.financialSnapshotHash
+    }),
+    ownerId: input.scope.ownerId,
+    teamId: input.scope.teamId
+  };
 }
 
 function gradeForCustomer(
@@ -130,14 +173,18 @@ function normalizeHandoffRequest(
   };
 }
 
-type LegacyAcquisitionCustomerHandoffRequestSnapshot = Omit<
+export type AcquisitionPrivateDomainHandoffRecoveryRequest = Omit<
   AcquisitionCustomerHandoffRequestSnapshot,
   "runId" | "discoveredEventId"
->;
+> & Partial<Pick<
+  AcquisitionCustomerHandoffRequestSnapshot,
+  "runId" | "discoveredEventId"
+>>;
 
 function legacyHandoffRequestSnapshot(
   value: unknown
-): LegacyAcquisitionCustomerHandoffRequestSnapshot | null {
+): Omit<AcquisitionPrivateDomainHandoffRecoveryRequest,
+  "runId" | "discoveredEventId"> | null {
   if (!value || typeof value !== "object") return null;
   const request = value as Partial<AcquisitionCustomerHandoffRequestSnapshot>;
   const followUp = request.followUp;
@@ -287,6 +334,17 @@ export class AcquisitionPrivateDomainHandoffService {
     if (completed) {
       const acceptedKey = acceptedProcessingKeyHashes(completed)
         .includes(processingKeyHash);
+      if (!completed.acquisitionAttribution) {
+        return await this.#upgradeCompletedLegacy(
+          scope,
+          candidateId,
+          normalizedRequest,
+          requestHash,
+          processingKeyHash,
+          completed,
+          acceptedKey
+        );
+      }
       if (acceptedKey && completed.requestHash !== requestHash) {
         throw new AcquisitionPrivateDomainHandoffError(
           "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT",
@@ -430,26 +488,8 @@ export class AcquisitionPrivateDomainHandoffService {
         409
       );
     }
-    if (operation && (legacyOperationRequest
-      || !operation.acquisitionAttribution)) {
-      const upgradedOperation = operation;
-      await this.#persistMutation(() => {
-        const previousOperation = structuredClone(upgradedOperation);
-        upgradedOperation.request = structuredClone(request);
-        upgradedOperation.requestHash = requestHash;
-        upgradedOperation.acquisitionAttribution = structuredClone(
-          acquisitionAttribution
-        );
-        upgradedOperation.updatedAt = new Date(this.#now()).toISOString();
-        return {
-          value: undefined,
-          rollback: () => Object.assign(
-            upgradedOperation,
-            previousOperation
-          )
-        };
-      });
-    }
+    const operationNeedsAttributionUpgrade = Boolean(operation
+      && (legacyOperationRequest || !operation.acquisitionAttribution));
     if (qualification.hardGateFailures.length > 0) {
       throw new AcquisitionPrivateDomainHandoffError(
         "ACQUISITION_HANDOFF_HARD_GATE_BLOCKED",
@@ -483,7 +523,7 @@ export class AcquisitionPrivateDomainHandoffService {
     const identity = [scope.ownerId, scope.teamId, candidateId];
     const createdAt = operation?.createdAt
       ?? new Date(this.#now()).toISOString();
-    if (operation) {
+    if (operation && !operationNeedsAttributionUpgrade) {
       const acceptedKeys = acceptedProcessingKeyHashes(operation);
       if (!acceptedKeys.includes(processingKeyHash)) {
         const acceptedOperation = operation;
@@ -588,41 +628,54 @@ export class AcquisitionPrivateDomainHandoffService {
     const customerId = linkedCustomer?.id
       ?? existingCustomer?.id
       ?? operation.customerId;
-    const snapshotEventId = stableId("lse", [
-      ...identity,
-      "private-domain-handoff-snapshot"
-    ]);
+    const snapshotEvent = privateDomainHandoffSnapshotEvent({
+      scope,
+      candidateId,
+      leadId: lead.id,
+      decisionVersion: request.decisionVersion,
+      sourceUrl: lead.sourceUrl,
+      occurredAt: createdAt,
+      acquisitionAttribution,
+      intelligence,
+      qualificationSnapshotHash: operation.qualificationSnapshotHash,
+      financialSnapshotHash: operation.financialSnapshotHash
+    });
+    const snapshotEventCollision = this.#store.leadSourceEvents.find((item) =>
+      item.id === snapshotEvent.id
+    );
     const recoveredSnapshotEvent = this.#store.leadSourceEvents.find((item) =>
-      item.id === snapshotEventId
+      item.id === snapshotEvent.id
       && item.leadId === lead.id
       && item.ownerId === scope.ownerId
       && item.teamId === scope.teamId
     );
-    const snapshotEvent: LeadSourceEvent = {
-      id: snapshotEventId,
-      leadId: lead.id,
-      sourceType: "outbound",
-      channel: "acquisition_private_domain_handoff_snapshot",
-      campaign: request.decisionVersion,
-      externalId: candidateId,
-      sourceUrl: lead.sourceUrl,
-      occurredAt: createdAt,
-      receivedAt: createdAt,
-      rawPayload: canonicalJsonStringify({
-        candidateId,
-        decisionVersion: request.decisionVersion,
-        acquisitionAttribution,
-        intelligence,
-        qualificationSnapshotHash: operation.qualificationSnapshotHash,
-        financialSnapshotHash: operation.financialSnapshotHash
-      }),
-      ownerId: scope.ownerId,
-      teamId: scope.teamId
-    };
+    if (snapshotEventCollision && !recoveredSnapshotEvent) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING",
+        "交接来源快照与当前租户或 Lead 不一致，无法安全恢复",
+        409
+      );
+    }
     await this.#persistMutation(() => {
       const previousOperation = structuredClone(operation);
+      const previousSnapshotEvent = recoveredSnapshotEvent
+        ? structuredClone(recoveredSnapshotEvent)
+        : null;
       if (!recoveredSnapshotEvent) {
         this.#store.leadSourceEvents.unshift(snapshotEvent);
+      } else {
+        Object.assign(recoveredSnapshotEvent, snapshotEvent);
+      }
+      if (operationNeedsAttributionUpgrade) {
+        operation.request = structuredClone(request);
+        operation.requestHash = requestHash;
+        operation.acquisitionAttribution = structuredClone(
+          acquisitionAttribution
+        );
+        operation.acceptedProcessingKeyHashes = Array.from(new Set([
+          ...acceptedProcessingKeyHashes(operation),
+          processingKeyHash
+        ]));
       }
       Object.assign(operation, {
         stage: laterHandoffStage(operation.stage, "lead_ready"),
@@ -635,6 +688,8 @@ export class AcquisitionPrivateDomainHandoffService {
         rollback: () => {
           if (!recoveredSnapshotEvent) {
             removeById(this.#store.leadSourceEvents, snapshotEvent.id);
+          } else if (previousSnapshotEvent) {
+            Object.assign(recoveredSnapshotEvent, previousSnapshotEvent);
           }
           Object.assign(operation, previousOperation);
         }
@@ -823,6 +878,170 @@ export class AcquisitionPrivateDomainHandoffService {
     return await this.#persistMutation(apply);
   }
 
+  async #upgradeCompletedLegacy(
+    scope: AcquisitionActorScope,
+    candidateId: string,
+    request: AcquisitionCustomerHandoffRequestSnapshot,
+    requestHash: string,
+    processingKeyHash: string,
+    handoff: AcquisitionCustomerHandoff,
+    replayed: boolean
+  ): Promise<AcquisitionPrivateDomainHandoffResult> {
+    const durable = this.#completedResult(scope, handoff, replayed);
+    const durableRequest = durable.recovery?.request;
+    const operation = this.#store.acquisitionCustomerHandoffOperations.find(
+      (item) => item.ownerId === scope.ownerId
+        && item.teamId === scope.teamId
+        && item.candidateId === candidateId
+        && item.handoffId === handoff.id
+    );
+    if (!durableRequest || !operation) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING",
+        "已完成交接缺少可信原请求，无法补全获客归因",
+        409
+      );
+    }
+    const durableComparable = hasPinnedAttributionRequest(durableRequest)
+      ? durableRequest
+      : legacyHandoffRequestSnapshot(durableRequest);
+    const incomingComparable = hasPinnedAttributionRequest(durableRequest)
+      ? request
+      : legacyHandoffRequestSnapshot(request);
+    if (!durableComparable || !incomingComparable
+      || canonicalJsonStringify(durableComparable)
+        !== canonicalJsonStringify(incomingComparable)) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT",
+        "历史交接恢复请求与原始规范化请求不一致",
+        409
+      );
+    }
+    const candidate = await this.#repository.findCandidate(scope, candidateId);
+    if (!candidate
+      || (candidate.status !== "approved"
+        && candidate.status !== "converted_to_lead")
+      || candidate.leadId !== handoff.leadId
+      || candidate.approvedDecisionVersion !== request.decisionVersion
+      || candidate.latestDecisionVersion !== request.decisionVersion
+      || candidate.hardGateFailures.length > 0) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING",
+        "已完成交接与当前候选资格快照不一致",
+        409
+      );
+    }
+    const qualification = (await this.#repository.listQualificationDecisions(
+      scope,
+      candidateId
+    )).find((item) => item.id === candidate.latestDecisionId
+      && item.decisionVersion === request.decisionVersion
+      && item.snapshotHash === operation.qualificationSnapshotHash
+      && item.snapshotHash === handoff.qualificationSnapshotHash);
+    if (!qualification || qualification.hardGateFailures.length > 0
+      || !this.#attributionResolver) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING",
+        "已完成交接缺少可验证资格快照或归因解析器",
+        409
+      );
+    }
+    let acquisitionAttribution: OutcomeAttributionInput | null = null;
+    try {
+      acquisitionAttribution = await this.#attributionResolver.resolve(
+        { ownerId: scope.ownerId, teamId: scope.teamId },
+        {
+          runId: request.runId,
+          discoveredEventId: request.discoveredEventId,
+          candidateId,
+          evidenceIds: candidate.evidenceIds,
+          qualificationDecisionId: qualification.id,
+          decisionVersion: qualification.decisionVersion,
+          decisionSnapshotHash: qualification.snapshotHash
+        }
+      );
+    } catch {
+      acquisitionAttribution = null;
+    }
+    if (!acquisitionAttribution) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_ATTRIBUTION_INVALID",
+        "历史交接的 Run 或发现事件无法验证",
+        409
+      );
+    }
+    const sourceSnapshot = privateDomainHandoffSnapshotEvent({
+      scope,
+      candidateId,
+      leadId: handoff.leadId,
+      decisionVersion: request.decisionVersion,
+      sourceUrl: durable.lead.sourceUrl,
+      occurredAt: handoff.createdAt,
+      acquisitionAttribution,
+      intelligence: operation.intelligence,
+      qualificationSnapshotHash: operation.qualificationSnapshotHash,
+      financialSnapshotHash: operation.financialSnapshotHash
+    });
+    const collision = this.#store.leadSourceEvents.find((item) =>
+      item.id === sourceSnapshot.id
+    );
+    const snapshotEvent = collision
+      && collision.leadId === handoff.leadId
+      && collision.ownerId === scope.ownerId
+      && collision.teamId === scope.teamId
+      ? collision
+      : null;
+    if (collision && !snapshotEvent) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING",
+        "历史交接来源快照与当前租户或 Lead 不一致",
+        409
+      );
+    }
+    const acceptedKeys = Array.from(new Set([
+      ...acceptedProcessingKeyHashes(operation),
+      ...acceptedProcessingKeyHashes(handoff),
+      processingKeyHash
+    ]));
+    await this.#persistMutation(() => {
+      const previousOperation = structuredClone(operation);
+      const previousHandoff = structuredClone(handoff);
+      const previousSnapshot = snapshotEvent
+        ? structuredClone(snapshotEvent)
+        : null;
+      Object.assign(operation, {
+        request: structuredClone(request),
+        requestHash,
+        acquisitionAttribution: structuredClone(acquisitionAttribution),
+        acceptedProcessingKeyHashes: [...acceptedKeys],
+        updatedAt: new Date(this.#now()).toISOString()
+      });
+      Object.assign(handoff, {
+        requestHash,
+        acquisitionAttribution: structuredClone(acquisitionAttribution),
+        acceptedProcessingKeyHashes: [...acceptedKeys]
+      });
+      if (snapshotEvent) {
+        Object.assign(snapshotEvent, sourceSnapshot);
+      } else {
+        this.#store.leadSourceEvents.unshift(sourceSnapshot);
+      }
+      return {
+        value: undefined,
+        rollback: () => {
+          Object.assign(operation, previousOperation);
+          Object.assign(handoff, previousHandoff);
+          if (snapshotEvent && previousSnapshot) {
+            Object.assign(snapshotEvent, previousSnapshot);
+          } else {
+            removeById(this.#store.leadSourceEvents, sourceSnapshot.id);
+          }
+        }
+      };
+    });
+    return this.#completedResult(scope, handoff, replayed);
+  }
+
   async #persistMutation<T>(mutationFactory: () => {
     value: T;
     rollback(): void;
@@ -867,14 +1086,73 @@ export class AcquisitionPrivateDomainHandoffService {
         502
       );
     }
+    const recoveryRequest = this.#completedRecoveryRequest(
+      scope,
+      handoff,
+      lead,
+      customer,
+      todo
+    );
     return {
       replayed,
       handoff,
       lead,
       customer,
       todo,
-      intelligence: handoff.intelligence
+      intelligence: handoff.intelligence,
+      ...(recoveryRequest
+        ? { recovery: { request: recoveryRequest } }
+        : {})
     };
+  }
+
+  #completedRecoveryRequest(
+    scope: Pick<AcquisitionActorScope, "ownerId" | "teamId">,
+    handoff: AcquisitionCustomerHandoff,
+    lead: Lead,
+    customer: Customer,
+    todo: Todo
+  ): AcquisitionPrivateDomainHandoffRecoveryRequest | null {
+    if (handoff.acquisitionAttribution) return null;
+    const operations = this.#store.acquisitionCustomerHandoffOperations.filter(
+      (item) => item.ownerId === scope.ownerId
+        && item.teamId === scope.teamId
+        && item.candidateId === handoff.candidateId
+        && item.handoffId === handoff.id
+    );
+    if (operations.length !== 1) return null;
+    const operation = operations[0];
+    const request = operation.request as unknown;
+    const legacyRequest = legacyHandoffRequestSnapshot(request);
+    if (!legacyRequest
+      || operation.stage !== "completed"
+      || operation.leadId !== handoff.leadId
+      || operation.customerId !== handoff.customerId
+      || operation.todoId !== handoff.todoId
+      || operation.decisionVersion !== handoff.decisionVersion
+      || operation.mode !== handoff.mode
+      || operation.processingKeyHash !== handoff.processingKeyHash
+      || canonicalJsonStringify(
+        acceptedProcessingKeyHashes(operation).sort()
+      ) !== canonicalJsonStringify(
+        acceptedProcessingKeyHashes(handoff).sort()
+      )
+      || operation.existingCustomerId !== legacyRequest.existingCustomerId
+      || operation.requestHash !== handoff.requestHash
+      || operation.requestHash !== digest(canonicalJsonStringify(request))
+      || operation.qualificationSnapshotHash
+        !== handoff.qualificationSnapshotHash
+      || operation.financialSnapshotHash !== handoff.financialSnapshotHash
+      || canonicalJsonStringify(operation.intelligence)
+        !== canonicalJsonStringify(handoff.intelligence)
+      || lead.convertedCustomerId !== customer.id
+      || todo.leadId !== lead.id
+      || todo.customerId !== customer.id) {
+      return null;
+    }
+    return structuredClone(
+      request as AcquisitionPrivateDomainHandoffRecoveryRequest
+    );
   }
 
   async get(

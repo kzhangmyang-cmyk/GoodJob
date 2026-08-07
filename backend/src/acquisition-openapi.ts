@@ -514,6 +514,42 @@ const handoffIntelligenceResponseSchema = {
   }
 };
 
+const privateDomainHandoffRecoveryRequestSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "operationCode",
+    "decisionVersion",
+    "mode",
+    "existingCustomerId",
+    "followUp"
+  ],
+  properties: {
+    operationCode: {
+      type: "string",
+      enum: ["handoff_acquisition_candidate_v1"]
+    },
+    runId: { type: "string", minLength: 1, maxLength: 255 },
+    discoveredEventId: { type: "string", minLength: 1, maxLength: 255 },
+    decisionVersion: { type: "string", minLength: 1, maxLength: 100 },
+    mode: { type: "string", enum: ["create_new", "link_existing"] },
+    existingCustomerId: { type: "string", maxLength: 255 },
+    followUp: {
+      type: "object",
+      additionalProperties: false,
+      required: ["title", "dueAt", "priority"],
+      properties: {
+        title: { type: "string", minLength: 1, maxLength: 500 },
+        dueAt: { type: "string", format: "date-time" },
+        priority: {
+          type: "string",
+          enum: ["high", "medium", "normal"]
+        }
+      }
+    }
+  }
+};
+
 const privateDomainHandoffResponseSchema = {
   type: "object",
   additionalProperties: false,
@@ -556,7 +592,15 @@ const privateDomainHandoffResponseSchema = {
     lead: { type: "object", additionalProperties: true },
     customer: { type: "object", additionalProperties: true },
     todo: { type: "object", additionalProperties: true },
-    intelligence: handoffIntelligenceResponseSchema
+    intelligence: handoffIntelligenceResponseSchema,
+    recovery: {
+      type: "object",
+      additionalProperties: false,
+      required: ["request"],
+      properties: {
+        request: privateDomainHandoffRecoveryRequestSchema
+      }
+    }
   }
 };
 
@@ -1793,51 +1837,6 @@ const privateDomainHandoffWriteSchema = {
   }))
 };
 
-const privateDomainHandoffRequestSnapshotSchema = {
-  type: "object",
-  required: [
-    "operationCode",
-    "runId",
-    "discoveredEventId",
-    "decisionVersion",
-    "mode",
-    "existingCustomerId",
-    "followUp"
-  ],
-  properties: {
-    operationCode: {
-      type: "string",
-      enum: ["handoff_acquisition_candidate_v1"]
-    },
-    runId: { type: "string", minLength: 1, maxLength: 255 },
-    discoveredEventId: { type: "string", minLength: 1, maxLength: 255 },
-    decisionVersion: {
-      type: "string",
-      minLength: 1,
-      maxLength: 100
-    },
-    mode: {
-      type: "string",
-      enum: ["create_new", "link_existing"]
-    },
-    existingCustomerId: { type: "string", maxLength: 255 },
-    followUp: {
-      type: "object",
-      required: ["title", "dueAt", "priority"],
-      properties: {
-        title: { type: "string", minLength: 1, maxLength: 500 },
-        dueAt: { type: "string", format: "date-time" },
-        priority: {
-          type: "string",
-          enum: ["high", "medium", "normal"]
-        }
-      },
-      additionalProperties: false
-    }
-  },
-  additionalProperties: false
-};
-
 const privateDomainHandoffPendingResponseSchema = {
   type: "object",
   required: ["replayed", "inProgress"],
@@ -1875,7 +1874,7 @@ const privateDomainHandoffPendingResponseSchema = {
             "completed"
           ]
         },
-        request: privateDomainHandoffRequestSnapshotSchema,
+        request: privateDomainHandoffRecoveryRequestSchema,
         createdAt: { type: "string", format: "date-time" }
       },
       additionalProperties: false

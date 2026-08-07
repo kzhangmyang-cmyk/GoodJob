@@ -543,6 +543,37 @@ test("human review, conversion, and copilot writes mirror runtime schemas", () =
       .properties.followUp.required,
     ["title", "dueAt", "priority"]
   );
+  assert.deepEqual(
+    pendingHandoff.properties.inProgress.properties.request.required,
+    [
+      "operationCode",
+      "decisionVersion",
+      "mode",
+      "existingCustomerId",
+      "followUp"
+    ]
+  );
+  const completedHandoff = handoffStatusSchema.oneOf.find(
+    (variant: Record<string, any>) => variant.properties.handoff
+  );
+  assert.deepEqual(
+    completedHandoff.properties.recovery.properties.request.required,
+    [
+      "operationCode",
+      "decisionVersion",
+      "mode",
+      "existingCustomerId",
+      "followUp"
+    ]
+  );
+  assert.ok(
+    completedHandoff.properties.recovery.properties.request
+      .properties.runId
+  );
+  assert.ok(
+    completedHandoff.properties.recovery.properties.request
+      .properties.discoveredEventId
+  );
 
   const session = paths[
     "/api/v1/acquisition/copilot/sessions"
