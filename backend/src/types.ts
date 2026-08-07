@@ -277,6 +277,7 @@ export interface AcquisitionCustomerHandoff {
   decisionVersion: string;
   mode: "create_new" | "link_existing";
   processingKeyHash: string;
+  acceptedProcessingKeyHashes: string[];
   requestHash: string;
   intelligence: AcquisitionHandoffIntelligence;
   qualificationSnapshotHash: string;
@@ -310,6 +311,7 @@ export interface AcquisitionCustomerHandoffOperation {
   teamId: string;
   candidateId: string;
   processingKeyHash: string;
+  acceptedProcessingKeyHashes: string[];
   requestHash: string;
   decisionVersion: string;
   mode: "create_new" | "link_existing";

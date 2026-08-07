@@ -281,6 +281,7 @@ test("private-domain handoff route enforces server-owned input and supports repl
       decisionVersion: "qualification-v2",
       mode: "create_new",
       processingKeyHash: "a".repeat(64),
+      acceptedProcessingKeyHashes: ["a".repeat(64)],
       requestHash: "b".repeat(64),
       intelligence: {
         qualificationGrade: "S",

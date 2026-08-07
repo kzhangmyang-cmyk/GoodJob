@@ -614,6 +614,70 @@ assert.equal(reservedFailure.store.customers.length, 1);
 assert.equal(reservedFailure.store.todos.length, 1);
 assert.equal(reservedFailure.store.acquisitionCustomerHandoffs.length, 1);
 
+// The takeover completed, but its response was lost. Both accepted keys must
+// now replay the same durable result without creating another CRM resource.
+const responseLossService = new AcquisitionPrivateDomainHandoffService({
+  repository: reservedFailure.repository,
+  domainService: reservedFailure.domainService,
+  store: reservedFailure.store,
+  now
+});
+const takeoverReplay = await responseLossService.create(
+  scope,
+  "candidate-a",
+  pendingHandoff.inProgress.request,
+  "handoff-refresh-recovery-key"
+);
+assert.equal(takeoverReplay.replayed, true);
+assert.equal(takeoverReplay.handoff.id, immutableResume.handoff.id);
+assert.equal(takeoverReplay.customer.id, immutableResume.customer.id);
+assert.equal(takeoverReplay.todo.id, immutableResume.todo.id);
+const reservationReplay = await responseLossService.create(
+  scope,
+  "candidate-a",
+  pendingHandoff.inProgress.request,
+  "handoff-reserved-key"
+);
+assert.equal(reservationReplay.replayed, true);
+assert.equal(reservationReplay.handoff.id, immutableResume.handoff.id);
+await assert.rejects(
+  () => responseLossService.create(
+    scope,
+    "candidate-a",
+    {
+      ...pendingHandoff.inProgress.request,
+      followUp: {
+        ...pendingHandoff.inProgress.request.followUp,
+        title: "接管 key 不得改写请求"
+      }
+    },
+    "handoff-refresh-recovery-key"
+  ),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT"
+);
+assert.equal(reservedFailure.store.leads.length, 1);
+assert.equal(reservedFailure.store.customers.length, 1);
+assert.equal(reservedFailure.store.customerActivities.length, 1);
+assert.equal(reservedFailure.store.todos.length, 1);
+assert.equal(reservedFailure.store.acquisitionCustomerHandoffs.length, 1);
+assert.equal(
+  reservedFailure.store.acquisitionCustomerHandoffOperations.length,
+  1
+);
+assert.equal(
+  reservedFailure.store.acquisitionCustomerHandoffOperations[0]
+    ?.acceptedProcessingKeyHashes.length,
+  2
+);
+assert.deepEqual(
+  reservedFailure.store.acquisitionCustomerHandoffs[0]
+    ?.acceptedProcessingKeyHashes,
+  reservedFailure.store.acquisitionCustomerHandoffOperations[0]
+    ?.acceptedProcessingKeyHashes
+);
+
 const linkedTodoFailure = await fixture();
 linkedTodoFailure.store.customers.push({
   ...result.customer,

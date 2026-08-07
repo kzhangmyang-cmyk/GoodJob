@@ -133,6 +133,18 @@ function laterHandoffStage(
     : next;
 }
 
+function acceptedProcessingKeyHashes(record: {
+  processingKeyHash: string;
+  acceptedProcessingKeyHashes?: string[];
+}) {
+  return Array.from(new Set([
+    record.processingKeyHash,
+    ...(Array.isArray(record.acceptedProcessingKeyHashes)
+      ? record.acceptedProcessingKeyHashes
+      : [])
+  ]));
+}
+
 export class AcquisitionPrivateDomainHandoffService {
   readonly #repository: AcquisitionDomainRepository;
   readonly #domainService: AcquisitionDomainService;
@@ -204,8 +216,9 @@ export class AcquisitionPrivateDomainHandoffService {
       && item.candidateId === candidateId
     );
     if (completed) {
-      if (completed.processingKeyHash === processingKeyHash
-        && completed.requestHash !== requestHash) {
+      const acceptedKey = acceptedProcessingKeyHashes(completed)
+        .includes(processingKeyHash);
+      if (acceptedKey && completed.requestHash !== requestHash) {
         throw new AcquisitionPrivateDomainHandoffError(
           "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT",
           "同一 Idempotency-Key 已用于不同交接请求",
@@ -215,7 +228,7 @@ export class AcquisitionPrivateDomainHandoffService {
       return this.#completedResult(
         scope,
         completed,
-        completed.processingKeyHash === processingKeyHash
+        acceptedKey
       );
     }
     let operation = this.#store.acquisitionCustomerHandoffOperations.find(
@@ -328,6 +341,27 @@ export class AcquisitionPrivateDomainHandoffService {
     const identity = [scope.ownerId, scope.teamId, candidateId];
     const createdAt = operation?.createdAt
       ?? new Date(this.#now()).toISOString();
+    if (operation) {
+      const acceptedKeys = acceptedProcessingKeyHashes(operation);
+      if (!acceptedKeys.includes(processingKeyHash)) {
+        const acceptedOperation = operation;
+        await this.#persistMutation(() => {
+          const previousOperation = structuredClone(acceptedOperation);
+          acceptedOperation.acceptedProcessingKeyHashes = [
+            ...acceptedKeys,
+            processingKeyHash
+          ];
+          acceptedOperation.updatedAt = new Date(this.#now()).toISOString();
+          return {
+            value: undefined,
+            rollback: () => Object.assign(
+              acceptedOperation,
+              previousOperation
+            )
+          };
+        });
+      }
+    }
     if (!operation) {
       operation = {
         id: stableId("acho", identity),
@@ -335,6 +369,7 @@ export class AcquisitionPrivateDomainHandoffService {
         teamId: scope.teamId,
         candidateId,
         processingKeyHash,
+        acceptedProcessingKeyHashes: [processingKeyHash],
         requestHash,
         decisionVersion: request.decisionVersion,
         mode: request.mode,
@@ -607,6 +642,8 @@ export class AcquisitionPrivateDomainHandoffService {
       decisionVersion: request.decisionVersion,
       mode: request.mode,
       processingKeyHash: operation.processingKeyHash,
+      acceptedProcessingKeyHashes:
+        acceptedProcessingKeyHashes(operation),
       requestHash: operation.requestHash,
       intelligence,
       qualificationSnapshotHash: operation.qualificationSnapshotHash,
