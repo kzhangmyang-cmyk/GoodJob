@@ -965,12 +965,49 @@ assert.equal(handoffHeaders.get("x-csrf-token"), "csrf/handoff");
 const loadedHandoff = await handoffApi.getCandidatePrivateDomainHandoff(
   "candidate/with space"
 );
-assert.equal(loadedHandoff?.handoff.todoId, "todo-1");
+assert.ok(loadedHandoff && "handoff" in loadedHandoff);
+assert.equal(loadedHandoff.handoff.todoId, "todo-1");
 assert.equal(
   handoffCalls[1]?.input,
   "/api/v1/acquisition/candidates/candidate%2Fwith%20space/private-domain-handoff"
 );
 assert.equal(handoffCalls[1]?.init?.method, "GET");
+
+const pendingHandoffApi = createAcquisitionDetailApi(
+  async () => Response.json({
+    replayed: false,
+    inProgress: {
+      id: "ach-operation-refresh",
+      candidateId: "candidate-1",
+      decisionVersion: "qualification-v2",
+      mode: "link_existing",
+      existingCustomerId: "customer-original-target",
+      stage: "customer_ready",
+      request: {
+        ...handoffInput,
+        mode: "link_existing",
+        existingCustomerId: "customer-original-target",
+        followUp: {
+          title: "原始刷新跟进",
+          dueAt: "2026-08-09T10:30:00.000Z",
+          priority: "medium"
+        }
+      },
+      createdAt: "2026-08-07T08:00:00.000Z"
+    }
+  })
+);
+const pendingHandoff = await pendingHandoffApi
+  .getCandidatePrivateDomainHandoff("candidate-1");
+assert.ok(pendingHandoff && "inProgress" in pendingHandoff);
+assert.equal(
+  pendingHandoff.inProgress.request.followUp.title,
+  "原始刷新跟进"
+);
+assert.equal(
+  pendingHandoff.inProgress.request.existingCustomerId,
+  "customer-original-target"
+);
 
 let shortHandoffFetches = 0;
 const shortHandoffApi = createAcquisitionDetailApi(

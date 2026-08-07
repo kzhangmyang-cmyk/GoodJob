@@ -416,6 +416,50 @@ function state(
 }
 
 {
+  const recoveringDetail: AcquisitionCandidateDetail = {
+    ...candidateDetail,
+    candidate: {
+      ...candidateDetail.candidate,
+      status: "approved",
+      latestDecisionVersion: "qualification-v2",
+      approvedDecisionVersion: "qualification-v2"
+    },
+    privateDomainHandoff: {
+      replayed: false,
+      inProgress: {
+        id: "ach-operation-refresh",
+        candidateId: "candidate-org",
+        decisionVersion: "qualification-v2",
+        mode: "link_existing",
+        existingCustomerId: "customer-original-target",
+        stage: "customer_ready",
+        request: {
+          operationCode: "handoff_acquisition_candidate_v1",
+          decisionVersion: "qualification-v2",
+          mode: "link_existing",
+          existingCustomerId: "customer-original-target",
+          followUp: {
+            title: "原始刷新跟进",
+            dueAt: "2026-08-09T10:30:00.000Z",
+            priority: "medium"
+          }
+        },
+        createdAt: timestamp
+      }
+    }
+  };
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-org",
+    candidateDetail: recoveringDetail
+  }));
+  assert.match(html, /继续完成私域交接/);
+  assert.match(html, /customer_ready/);
+  assert.match(html, /2026-08-09T10:30:00\.000Z/);
+  assert.match(html, /data-acquisition-detail-action="open-private-domain-handoff"/);
+}
+
+{
   const completedDetail: AcquisitionCandidateDetail = {
     ...candidateDetail,
     candidate: {
@@ -484,6 +528,7 @@ function state(
     handoffDialog: {
       open: true,
       busy: false,
+      recovering: true,
       mode: "link_existing",
       existingCustomerId: `customer-&\"<script>alert('customer')</script>`,
       followUp: {
@@ -494,6 +539,9 @@ function state(
     }
   }));
   assert.match(html, /data-acquisition-detail-form="private-domain-handoff"/);
+  assert.match(html, /继续服务端已保留的原交接请求/);
+  assert.match(html, /<fieldset disabled>/);
+  assert.match(html, /继续原交接/);
   assert.match(html, /name="handoffMode"/);
   assert.match(html, /name="existingCustomerId"/);
   assert.match(html, /name="followUpDueAt"/);

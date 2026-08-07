@@ -1,5 +1,5 @@
 import type {
-  AcquisitionPrivateDomainHandoffResult
+  AcquisitionPrivateDomainHandoffStatus
 } from "./detail-center-api";
 import type { AcquisitionTaskDetail } from "./runtime-api";
 
@@ -14,12 +14,13 @@ export interface AcquisitionCandidateDetail {
   battleCard: Record<string, unknown> | null;
   reviews: Array<Record<string, unknown>>;
   intelligenceOperation: Record<string, unknown> | null;
-  privateDomainHandoff: AcquisitionPrivateDomainHandoffResult | null;
+  privateDomainHandoff: AcquisitionPrivateDomainHandoffStatus | null;
 }
 
 export interface AcquisitionHandoffDialogState {
   open: boolean;
   busy: boolean;
+  recovering?: boolean;
   mode: "create_new" | "link_existing";
   existingCustomerId: string;
   followUp: {
@@ -792,8 +793,9 @@ function renderPrivateDomainHandoff(
   candidate: DataRecord,
   detail: AcquisitionCandidateDetail | null
 ): string {
-  const completed = detail?.privateDomainHandoff;
-  if (completed) {
+  const statusResult = detail?.privateDomainHandoff;
+  if (statusResult && "handoff" in statusResult) {
+    const completed = statusResult;
     const handoff = completed.handoff;
     const dueAt = textValue(completed.todo.dueAt, "待确认");
     return `
@@ -814,12 +816,18 @@ function renderPrivateDomainHandoff(
   }
   const status = textValue(candidate.status, "");
   if (status !== "approved" && status !== "converted_to_lead") return "";
-  const label = status === "converted_to_lead"
+  const pending = statusResult && "inProgress" in statusResult
+    ? statusResult.inProgress
+    : null;
+  const label = pending || status === "converted_to_lead"
     ? "继续完成私域交接"
     : "交接至 CRM/私域";
+  const description = pending
+    ? `已恢复原交接请求（阶段：${escapeHtml(pending.stage)}；跟进时间：${escapeHtml(pending.request.followUp.dueAt)}）。`
+    : "交接后将创建或关联真实客户，并创建一条关联的首次跟进待办。";
   return `
     <div class="replica-acquisition-intelligence-start">
-      <div><strong>${label}</strong><span>交接后将创建或关联真实客户，并创建一条关联的首次跟进待办。</span></div>
+      <div><strong>${label}</strong><span>${description}</span></div>
       <button type="button" data-acquisition-detail-action="open-private-domain-handoff">${label}</button>
     </div>
   `;
@@ -842,7 +850,8 @@ function renderHandoffDialog(
           <div><span>CRM/私域</span><h4 id="acquisition-handoff-title">交接真实候选</h4></div>
           <button type="button" data-acquisition-detail-action="close-private-domain-handoff"${dialog.busy ? " disabled" : ""}>关闭</button>
         </header>
-        <fieldset${dialog.busy ? " disabled" : ""}>
+        ${dialog.recovering ? "<p>正在继续服务端已保留的原交接请求；为避免重复或改写目标，本次参数不可编辑。</p>" : ""}
+        <fieldset${dialog.busy || dialog.recovering ? " disabled" : ""}>
           <legend>交接模式</legend>
           <label><input type="radio" name="handoffMode" value="create_new"${dialog.mode === "create_new" ? " checked" : ""}> 创建新客户</label>
           <label><input type="radio" name="handoffMode" value="link_existing"${dialog.mode === "link_existing" ? " checked" : ""}> 关联已有客户</label>
@@ -855,7 +864,7 @@ function renderHandoffDialog(
             ).join("")}
           </select></label>
         </fieldset>
-        <footer><button type="submit"${dialog.busy ? " disabled" : ""}>${dialog.busy ? "正在交接…" : "确认交接"}</button></footer>
+        <footer><button type="submit"${dialog.busy ? " disabled" : ""}>${dialog.busy ? "正在交接…" : dialog.recovering ? "继续原交接" : "确认交接"}</button></footer>
       </form>
     </dialog>
   `;

@@ -564,6 +564,30 @@ export interface AcquisitionPrivateDomainHandoffResult {
   };
 }
 
+export interface AcquisitionPrivateDomainHandoffPendingResult {
+  replayed: false;
+  inProgress: {
+    id: string;
+    candidateId: string;
+    decisionVersion: string;
+    mode: "create_new" | "link_existing";
+    existingCustomerId: string;
+    stage:
+      | "reserved"
+      | "lead_ready"
+      | "customer_ready"
+      | "activity_ready"
+      | "todo_ready"
+      | "completed";
+    request: AcquisitionPrivateDomainHandoffInput;
+    createdAt: string;
+  };
+}
+
+export type AcquisitionPrivateDomainHandoffStatus =
+  | AcquisitionPrivateDomainHandoffResult
+  | AcquisitionPrivateDomainHandoffPendingResult;
+
 export interface AcquisitionDetailApi {
   getTask(planId: string): Promise<AcquisitionTaskDetail>;
   createRun(
@@ -618,7 +642,7 @@ export interface AcquisitionDetailApi {
   ): Promise<AcquisitionPrivateDomainHandoffResult>;
   getCandidatePrivateDomainHandoff(
     candidateId: string
-  ): Promise<AcquisitionPrivateDomainHandoffResult | null>;
+  ): Promise<AcquisitionPrivateDomainHandoffStatus | null>;
 }
 
 interface ErrorEnvelope {
@@ -932,7 +956,7 @@ export function createAcquisitionDetailApi(
       return loaded.body;
     },
     getCandidatePrivateDomainHandoff(candidateId) {
-      return getNullable<AcquisitionPrivateDomainHandoffResult>(
+      return getNullable<AcquisitionPrivateDomainHandoffStatus>(
         `/api/v1/acquisition/candidates/${pathSegment(
           requiredText(candidateId, "候选 ID", 255)
         )}/private-domain-handoff`

@@ -289,11 +289,132 @@ const taskDetail = {
   await controller.handoffCandidate(input);
   assert.deepEqual(handoffKeys, ["handoff-stable-key", "handoff-stable-key"]);
   assert.equal(storage.values.size, 0);
-  assert.equal(
-    controller.getState().candidateDetail?.privateDomainHandoff?.handoff.customerId,
-    "customer-1"
-  );
+  const completedHandoff = controller.getState().candidateDetail
+    ?.privateDomainHandoff;
+  assert.ok(completedHandoff && "handoff" in completedHandoff);
+  assert.equal(completedHandoff.handoff.customerId, "customer-1");
   assert.equal(controller.getState().handoffDialog, null);
+  controller.destroy();
+}
+
+{
+  const restoredRequest = {
+    operationCode: "handoff_acquisition_candidate_v1" as const,
+    decisionVersion: "qualification-v2",
+    mode: "link_existing" as const,
+    existingCustomerId: "customer-original-target",
+    followUp: {
+      title: "原始刷新跟进",
+      dueAt: "2026-08-09T10:30:00.000Z",
+      priority: "medium" as const
+    }
+  };
+  const submitted: Array<{ input: unknown; key: string }> = [];
+  const api = {
+    async getTask() {
+      return taskDetail;
+    },
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          status: "approved",
+          identityResolved: true,
+          latestDecisionVersion: "qualification-v2",
+          approvedDecisionVersion: "qualification-v2"
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return { grade: "S", score: 94, hardGateFailures: [] };
+    },
+    async getCandidateFinancialValue() {
+      return { currency: "CNY", expectedRevenueMinor: 1_288_000 };
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    },
+    async getCandidatePrivateDomainHandoff() {
+      return {
+        replayed: false,
+        inProgress: {
+          id: "ach-operation-refresh",
+          candidateId: "candidate-refresh",
+          decisionVersion: restoredRequest.decisionVersion,
+          mode: restoredRequest.mode,
+          existingCustomerId: restoredRequest.existingCustomerId,
+          stage: "customer_ready",
+          request: restoredRequest,
+          createdAt: "2026-08-07T08:00:00.000Z"
+        }
+      };
+    },
+    async handoffCandidate(_candidateId: string, input: unknown, key: string) {
+      submitted.push({ input, key });
+      return {
+        replayed: false,
+        handoff: {
+          id: "ach-refresh",
+          candidateId: "candidate-refresh",
+          leadId: "lead-refresh",
+          customerId: "customer-original-target",
+          todoId: "todo-refresh",
+          decisionVersion: "qualification-v2",
+          createdAt: "2026-08-07T08:01:00.000Z"
+        },
+        lead: { id: "lead-refresh" },
+        customer: { id: "customer-original-target" },
+        todo: {
+          id: "todo-refresh",
+          dueAt: restoredRequest.followUp.dueAt
+        },
+        intelligence: {
+          qualificationGrade: "S",
+          qualificationScore: 94,
+          financialGrade: "A",
+          currency: "CNY",
+          expectedRevenueMinor: 1_288_000,
+          expectedGrossProfitMinor: 708_400,
+          expectedContributionMinor: 520_000
+        }
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    storage: new MemorySessionStorage(),
+    keyFactory: () => "handoff-refresh-key"
+  });
+
+  await controller.open("candidates", "plan-1");
+  await controller.selectCandidate("candidate-refresh");
+  controller.openPrivateDomainHandoff();
+  assert.deepEqual(controller.getState().handoffDialog, {
+    open: true,
+    busy: false,
+    recovering: true,
+    mode: "link_existing",
+    existingCustomerId: "customer-original-target",
+    followUp: restoredRequest.followUp
+  });
+  await controller.handoffCandidate({
+    mode: "link_existing",
+    existingCustomerId: "customer-original-target",
+    followUp: restoredRequest.followUp
+  });
+  assert.equal(submitted.length, 1);
+  assert.deepEqual(submitted[0]?.input, restoredRequest);
+  assert.equal(submitted[0]?.key, "handoff-refresh-key");
   controller.destroy();
 }
 

@@ -56,3 +56,52 @@
 - Playwright：5/5 passed，新增覆盖 open→leave 与 open→demo 两种慢请求竞态。
 - 前端 `pnpm build` 通过；仅有既有 Vite 大 chunk 警告。
 - 两仓库 `git diff --check` 通过，既有脏改动未暂存、未提交。
+
+## 独立审查第 2 轮修复
+
+状态：已修复 Important 的刷新恢复缺陷。
+
+问题根因：未完成 operation 只固化了请求 hash、阶段和目标资源，没有固化
+完整规范化请求。页面刷新会重新生成默认 `dueAt`，从而形成不同指纹并被
+服务端判定为冲突；服务端也无法向新 controller 实例返回原始继续参数。
+
+修复内容：
+
+1. reservation 新增完整规范化请求快照，包含 operation/decision、mode、
+   existing customer target 以及 follow-up title/dueAt/priority；MySQL operation
+   表新增 `request_json` 并完成读写映射。
+2. 未完成 operation 的所有恢复都使用持久化原请求。相同规范化请求允许用
+   刷新后生成的新幂等键继续；不同 title、dueAt、mode 或 customer target
+   无论是否换 key 均返回 409，不会静默改写 reservation。
+3. GET handoff status 在未完成时返回 `inProgress` 阶段与原请求；HTTP 公共
+   投影及 OpenAPI 200 union 同步发布该恢复合同。
+4. 前端加载候选时保留 pending status；“继续完成私域交接”会用原 mode、
+   target、title、dueAt、priority 恢复对话框。恢复参数锁定不可编辑，提交
+   强制使用服务端快照，避免刷新默认值或新 decision version 产生重复资源。
+5. Customer-stage 与 Todo-stage 故障回归分别以新 service/controller 恢复，
+   验证原 title/dueAt/target、原 intelligence，以及仅一套 Lead/Customer/
+   Activity/Todo/Handoff；变更请求继续保持冲突。
+
+RED 证据：
+
+- 后端 GET 未完成 operation 最初返回
+  `ACQUISITION_HANDOFF_NOT_FOUND`；实现 pending status 后转绿。
+- 相同原请求换新 key 恢复最初返回
+  `ACQUISITION_HANDOFF_ALREADY_IN_PROGRESS`；改为按规范化请求判定后转绿。
+- OpenAPI 回归最初因 GET 200 没有 completed/pending `oneOf` 而失败。
+- 前端刷新恢复测试最初得到 `handoffDialog: null`，而非原 link target、标题
+  与时间；controller 支持 pending status 后转绿。
+
+最终验证（均为提交前重新完整运行）：
+
+- 后端任务目标集：51/51 passed，0 failed。
+- 后端 `npm run build`：通过。
+- 前端 `pnpm test`：125 checks passed。
+- 前端 `pnpm build`：通过；仅有既有 Vite 大 chunk 警告。
+- 前端 `pnpm test:e2e`：5/5 passed。
+- staged diff check：通过；两仓库既有无关脏文件均未暂存。
+
+修复提交：
+
+- 后端：`5adba2f` (`fix(acquisition): resume handoffs from original request`)
+- 前端：本报告所在提交 (`fix(acquisition): restore pending CRM handoffs`)

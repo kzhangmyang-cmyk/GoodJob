@@ -1369,6 +1369,7 @@ export function createAcquisitionDetailCenterController(
 
     openPrivateDomainHandoff() {
       const candidate = state.candidateDetail?.candidate;
+      const handoffStatus = state.candidateDetail?.privateDomainHandoff;
       const status = typeof candidate?.status === "string"
         ? candidate.status
         : "";
@@ -1376,24 +1377,30 @@ export function createAcquisitionDetailCenterController(
         void rejectValidation("请先选择一个候选").catch(() => undefined);
         return;
       }
-      if (state.candidateDetail?.privateDomainHandoff) return;
+      if (handoffStatus && "handoff" in handoffStatus) return;
       if (status !== "approved" && status !== "converted_to_lead") {
         void rejectValidation("只有已批准或已转线索的候选可以交接").catch(
           () => undefined
         );
         return;
       }
+      const reservedRequest = handoffStatus && "inProgress" in handoffStatus
+        ? handoffStatus.inProgress.request
+        : null;
       state.error = null;
       state.handoffDialog = {
         open: true,
         busy: false,
-        mode: "create_new",
-        existingCustomerId: "",
-        followUp: {
-          title: "首次跟进：确认需求和预算",
-          dueAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
-          priority: "high"
-        }
+        recovering: Boolean(reservedRequest),
+        mode: reservedRequest?.mode ?? "create_new",
+        existingCustomerId: reservedRequest?.existingCustomerId ?? "",
+        followUp: reservedRequest
+          ? { ...reservedRequest.followUp }
+          : {
+              title: "首次跟进：确认需求和预算",
+              dueAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
+              priority: "high"
+            }
       };
       render();
     },
@@ -1407,15 +1414,20 @@ export function createAcquisitionDetailCenterController(
     handoffCandidate(input) {
       const candidateId = state.selectedCandidateId;
       const candidate = state.candidateDetail?.candidate;
+      const handoffStatus = state.candidateDetail?.privateDomainHandoff;
+      const reservedRequest = handoffStatus && "inProgress" in handoffStatus
+        ? handoffStatus.inProgress.request
+        : null;
       const status = typeof candidate?.status === "string"
         ? candidate.status
         : "";
-      const decisionVersion = typeof candidate?.approvedDecisionVersion === "string"
-        && candidate.approvedDecisionVersion.trim()
-        ? candidate.approvedDecisionVersion.trim()
-        : typeof candidate?.latestDecisionVersion === "string"
-          ? candidate.latestDecisionVersion.trim()
-          : "";
+      const decisionVersion = reservedRequest?.decisionVersion
+        ?? (typeof candidate?.approvedDecisionVersion === "string"
+          && candidate.approvedDecisionVersion.trim()
+          ? candidate.approvedDecisionVersion.trim()
+          : typeof candidate?.latestDecisionVersion === "string"
+            ? candidate.latestDecisionVersion.trim()
+            : "");
       if (!candidateId || !candidate) {
         return rejectValidation("请先选择一个候选");
       }
@@ -1425,13 +1437,20 @@ export function createAcquisitionDetailCenterController(
       if (!decisionVersion) {
         return rejectValidation("候选缺少已批准的资格决定版本");
       }
-      const title = input.followUp.title.trim();
-      const existingCustomerId = input.existingCustomerId.trim();
-      const dueTimestamp = Date.parse(input.followUp.dueAt);
-      if (input.mode !== "create_new" && input.mode !== "link_existing") {
+      const effectiveInput = reservedRequest ?? {
+        operationCode: "handoff_acquisition_candidate_v1" as const,
+        decisionVersion,
+        mode: input.mode,
+        existingCustomerId: input.existingCustomerId,
+        followUp: input.followUp
+      };
+      const title = effectiveInput.followUp.title.trim();
+      const existingCustomerId = effectiveInput.existingCustomerId.trim();
+      const dueTimestamp = Date.parse(effectiveInput.followUp.dueAt);
+      if (effectiveInput.mode !== "create_new" && effectiveInput.mode !== "link_existing") {
         return rejectValidation("私域交接模式无效");
       }
-      if (input.mode === "link_existing" && !existingCustomerId) {
+      if (effectiveInput.mode === "link_existing" && !existingCustomerId) {
         return rejectValidation("请选择要关联的已有客户");
       }
       if (!title) return rejectValidation("首次跟进标题不能为空");
@@ -1443,14 +1462,14 @@ export function createAcquisitionDetailCenterController(
       const request: AcquisitionPrivateDomainHandoffInput = {
         operationCode: "handoff_acquisition_candidate_v1",
         decisionVersion,
-        mode: input.mode,
-        existingCustomerId: input.mode === "link_existing"
+        mode: effectiveInput.mode,
+        existingCustomerId: effectiveInput.mode === "link_existing"
           ? existingCustomerId
           : "",
         followUp: {
           title,
           dueAt: new Date(dueTimestamp).toISOString(),
-          priority: input.followUp.priority
+          priority: effectiveInput.followUp.priority
         }
       };
       const idempotency = stableKey("handoff-candidate", {
@@ -1461,6 +1480,7 @@ export function createAcquisitionDetailCenterController(
       state.handoffDialog = {
         open: true,
         busy: true,
+        recovering: Boolean(reservedRequest),
         mode: request.mode,
         existingCustomerId: request.existingCustomerId,
         followUp: { ...request.followUp }
