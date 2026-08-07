@@ -80,7 +80,7 @@ test("real acquisition header survives a private-domain round trip without hidde
   });
 
   await page.goto("/#acquisition");
-  await page.locator('[data-acquisition-mode="real"]').click();
+  await page.locator('button[data-acquisition-mode="real"]').click();
   await expect(page.locator("#replicaHeaderSubtitle")).toHaveText(
     "真实抖音任务 · 公开搜索 · AI 研判 · 人工审核"
   );
