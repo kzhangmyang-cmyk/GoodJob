@@ -70,6 +70,7 @@ export type AcquisitionToolExecutorErrorCode =
   | "ACTION_EXECUTION_MISMATCH"
   | "INVALID_JUDGMENT_RESULT"
   | "UNSUPPORTED_CURRENCY"
+  | "LEGACY_OUTCOME_TOOL_READ_ONLY"
   | "TOOL_EXECUTION_FAILED";
 
 export class AcquisitionToolExecutorError extends Error {
@@ -2087,104 +2088,9 @@ implements AcquisitionAgentToolExecutor {
   }
 
   private async recordOutcome(
-    input: AcquisitionToolExecutionInput,
-    payload: z.infer<typeof schemas.record_outcome>
+    _input: AcquisitionToolExecutionInput,
+    _payload: z.infer<typeof schemas.record_outcome>
   ) {
-    const currencyExponent = payload.currency
-      ? iso4217CurrencyExponent(payload.currency)
-      : null;
-    if (payload.currency && currencyExponent === null) {
-      throw toolError("UNSUPPORTED_CURRENCY");
-    }
-    const scope = this.scope(input);
-    const candidate = await this.domain.getCandidate(scope, payload.candidateId);
-    const reviewTask = await this.reviewTasks.get(
-      scope,
-      payload.reviewTaskId
-    );
-    if (!reviewTask
-      || reviewTask.candidateId !== candidate.id
-      || !["approved", "executed"].includes(reviewTask.status)) {
-      throw toolError("ACTION_NOT_EXECUTED");
-    }
-    const rawExecution = await this.actionExecutions.getVerifiedExecution(
-      scope,
-      payload.reviewTaskId
-    );
-    const parsedExecution = actionExecutionReceiptSchema.safeParse(rawExecution);
-    if (!parsedExecution.success) {
-      throw toolError("ACTION_NOT_EXECUTED");
-    }
-    const execution = parsedExecution.data;
-    if (execution.ownerId !== scope.ownerId
-      || execution.teamId !== scope.teamId
-      || execution.candidateId !== candidate.id
-      || execution.reviewTaskId !== reviewTask.id
-      || execution.proposedAction !== reviewTask.proposedAction
-      || !actionSupportsOutcome(execution.proposedAction, payload.outcome)
-      || new Date(execution.executedAt).getTime()
-        < new Date(reviewTask.createdAt).getTime()) {
-      throw toolError("ACTION_EXECUTION_MISMATCH");
-    }
-    if (new Date(payload.occurredAt).getTime()
-      < new Date(execution.executedAt).getTime()) {
-      throw toolError("ACTION_EXECUTION_MISMATCH");
-    }
-    const decisions = await this.domain.listQualificationDecisions(
-      scope,
-      candidate.id
-    );
-    const decision = decisions.at(-1);
-    if (!decision) throw toolError("STALE_DECISION");
-    const evidence = await this.evidenceForCandidate(scope, candidate);
-    const providerIds = [...new Set(evidence.map((item) =>
-      item.provenance.kind === "search_result"
-        ? item.provenance.provider
-        : item.sourcePlatform
-    ))];
-    const queryIds = [...new Set(evidence.flatMap((item) =>
-      item.provenance.kind === "search_result"
-        ? [`query:sha256:${hash(item.provenance.queryText)}`]
-        : []
-    ))];
-    const outcome = await this.domain.recordOutcome(scope, {
-      leadId: candidate.leadId,
-      customerId: null,
-      eventType: mapOutcome(payload.outcome),
-      occurredAt: payload.occurredAt,
-      amount: payload.amountMinor === undefined
-        ? null
-        : {
-            amountMinor: payload.amountMinor,
-            currency: payload.currency!
-          },
-      reasonCode: `agent_recorded_${payload.outcome}`,
-      reasonText: payload.notes ?? null,
-      candidateId: candidate.id,
-      idempotencyKey: input.idempotencyKey,
-      attribution: {
-        runId: input.identity.sessionId,
-        evidenceIds: evidence.map((item) => item.id),
-        providerIds,
-        queryIds,
-        strategyVersion: STRATEGY_VERSION,
-        qualificationDecisionId: decision.id,
-        decisionVersion: decision.decisionVersion,
-        decisionSnapshotHash: decision.snapshotHash
-      }
-    });
-    return {
-      outcome: publicRecord(outcome as unknown as Record<string, unknown>),
-      reviewedByTaskId: reviewTask.id,
-      execution: {
-        executionId: execution.executionId,
-        executedAt: execution.executedAt,
-        credentialIssuer: execution.credential.issuer,
-        credentialId: execution.credential.credentialId
-      },
-      currencyExponent,
-      actionRecordedOnly: true,
-      outreachExecuted: false
-    };
+    throw toolError("LEGACY_OUTCOME_TOOL_READ_ONLY");
   }
 }

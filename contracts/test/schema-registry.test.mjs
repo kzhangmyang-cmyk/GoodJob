@@ -624,6 +624,7 @@ test("live outcome attribution publishes the complete persisted acquisition run 
   const attribution = registry.schemaDocuments.get("outcome-feedback")
     .$defs.liveAttribution;
   for (const field of [
+    "attributionVersion",
     "planId",
     "planVersionId",
     "planVersion",

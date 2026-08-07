@@ -11,6 +11,7 @@ import type {
   LeadConversionIntent,
   LeadConversionRecord,
   LiveOutcomeFeedbackEvent,
+  OutcomeFeedbackEvent,
   QualificationDecision,
   ResearchAttempt,
   ReviewEvent
@@ -137,7 +138,7 @@ export interface AcquisitionDomainRepository {
   listOutcomes(
     scope: AcquisitionDataScope,
     candidateId: string
-  ): Promise<LiveOutcomeFeedbackEvent[]>;
+  ): Promise<OutcomeFeedbackEvent[]>;
   appendAuditEvent(event: AcquisitionAuditEvent): Promise<void>;
   listAuditEvents(
     scope: AcquisitionDataScope,

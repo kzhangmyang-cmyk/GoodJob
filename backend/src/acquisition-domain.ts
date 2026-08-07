@@ -12,6 +12,11 @@ export type PartyRef =
       demandSignalId: string;
     };
 
+export type OrganizationPartyRef = Extract<
+  PartyRef,
+  { partyType: "organization" }
+>;
+
 export type CandidateStatus =
   | "discovered"
   | "unresolvable"
@@ -550,17 +555,18 @@ export type OutcomeEventType =
   | "payment_received";
 
 export interface OutcomeAttributionInput {
+  attributionVersion: "acquisition-run.v1";
   runId: string;
-  planId?: string;
-  planVersionId?: string;
-  planVersion?: number;
-  planSnapshotHash?: string;
-  discoveredEventId?: string;
-  discoveredAt?: string;
-  shardId?: string;
-  operationId?: string;
-  connectionId?: string;
-  providerId?: string;
+  planId: string;
+  planVersionId: string;
+  planVersion: number;
+  planSnapshotHash: string;
+  discoveredEventId: string;
+  discoveredAt: string;
+  shardId: string;
+  operationId: string;
+  connectionId: string;
+  providerId: string;
   evidenceIds: string[];
   providerIds: string[];
   queryIds: string[];
@@ -609,6 +615,48 @@ export interface LiveOutcomeFeedbackEvent {
   };
   snapshotHash: string;
 }
+
+export interface LegacyOutcomeAttribution {
+  runId: string | null;
+  evidenceIds: string[];
+  providerIds: string[];
+  queryIds: string[];
+  strategyVersion: string | null;
+  qualificationDecisionId: string | null;
+  decisionVersion: string | null;
+  decisionSnapshotHash: string | null;
+  decisionEngine: "model" | "rules" | null;
+  ruleVersion: string | null;
+  modelProvider: string | null;
+  model: string | null;
+  promptVersion: string | null;
+}
+
+export interface LegacyMigratedOutcomeFeedbackEvent {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  leadId: string | null;
+  customerId: string | null;
+  eventType: OutcomeEventType;
+  occurredAt: string;
+  amount: { amountMinor: number; currency: string } | null;
+  reasonCode: string | null;
+  reasonText: string | null;
+  idempotencyKey: string;
+  createdBy: string;
+  createdAt: string;
+  recordKind: "legacy_migrated";
+  legacySourceId: string;
+  partyRef: OrganizationPartyRef | null;
+  candidateId: string | null;
+  attribution: LegacyOutcomeAttribution;
+  migrationWarnings: string[];
+}
+
+export type OutcomeFeedbackEvent =
+  | LiveOutcomeFeedbackEvent
+  | LegacyMigratedOutcomeFeedbackEvent;
 
 export interface AcquisitionAuditEvent {
   id: string;

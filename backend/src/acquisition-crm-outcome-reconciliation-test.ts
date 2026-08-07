@@ -11,6 +11,7 @@ import type {
 } from "./acquisition-plan-run-repository.js";
 
 const attribution = {
+  attributionVersion: "acquisition-run.v1" as const,
   runId: "run-real",
   planId: "plan-real",
   planVersionId: "plan-version-real",
@@ -114,6 +115,7 @@ function store(): AcquisitionCrmOutcomeReconciliationStore {
     }],
     acquisitionOutcomeReconciliationDiagnostics: [],
     acquisitionOutcomeReconciliationCheckpoints: [],
+    acquisitionOutcomeReconciliationProcessedSources: [],
     async persist() {},
     async readBarrier() {}
   };
@@ -445,6 +447,73 @@ test("rolls back a failed diagnostic write so the same source remains retryable"
   failPersist = false;
   await service.runTenant({ ownerId: "owner-real", teamId: "team-real" });
   assert.equal(fixture.acquisitionOutcomeReconciliationDiagnostics.length, 1);
+});
+
+test("processes late and same-millisecond lower-id CRM events once across restart", async () => {
+  const fixture = store();
+  (fixture as AcquisitionCrmOutcomeReconciliationStore & {
+    acquisitionOutcomeReconciliationProcessedSources: unknown[];
+  }).acquisitionOutcomeReconciliationProcessedSources = [];
+  const recorded: string[] = [];
+  const createService = (
+    currentStore: AcquisitionCrmOutcomeReconciliationStore = fixture
+  ) => new AcquisitionCrmOutcomeReconciliationService({
+    store: currentStore,
+    planRuns: persistedPlanRuns(),
+    outcomeRecorder: {
+      async recordOutcome(_scope, input) {
+        recorded.push(input.idempotencyKey);
+        return { id: input.idempotencyKey };
+      }
+    },
+    now: () => "2026-08-07T08:00:00.000Z"
+  });
+  const tenant = { ownerId: "owner-real", teamId: "team-real" };
+
+  await createService().runTenant(tenant, { limit: 500 });
+  const initiallyRecorded = [...recorded];
+  fixture.leadActivities.push({
+    id: "activity-late",
+    leadId: "lead-real",
+    type: "email",
+    content: "late imported email",
+    operatorId: "owner-real",
+    nextFollowAt: "",
+    createdAt: "2026-08-01T00:00:00.000Z"
+  });
+  fixture.dealEvents.push({
+    id: "event-aaa",
+    dealId: "deal-real",
+    type: "quote",
+    content: "same millisecond lower id quote",
+    operatorId: "owner-real",
+    createdAt: "2026-08-05T01:00:00.000Z"
+  });
+
+  await createService().runTenant(tenant, { limit: 500 });
+  const restartedStore = {
+    ...fixture,
+    acquisitionOutcomeReconciliationCheckpoints: structuredClone(
+      fixture.acquisitionOutcomeReconciliationCheckpoints
+    ),
+    acquisitionOutcomeReconciliationProcessedSources: structuredClone(
+      fixture.acquisitionOutcomeReconciliationProcessedSources
+    )
+  };
+  await createService(restartedStore).runTenant(tenant, { limit: 500 });
+
+  assert.deepEqual(recorded, [
+    ...initiallyRecorded,
+    "crm:lead-activity:activity-late",
+    "crm:deal-event:event-aaa"
+  ]);
+  assert.equal(
+    (fixture as AcquisitionCrmOutcomeReconciliationStore & {
+      acquisitionOutcomeReconciliationProcessedSources: unknown[];
+    }).acquisitionOutcomeReconciliationProcessedSources.length,
+    7,
+    "contact, quote, won, two ignored sources, and two late sources are durable"
+  );
 });
 
 test("resolves attribution only from a persisted candidate.discovered event in a real acquisition run", async () => {

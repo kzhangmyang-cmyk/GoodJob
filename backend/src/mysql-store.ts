@@ -126,7 +126,8 @@ import type { DailyReport, DailyReportComment, InternalMessage } from "./types.j
 import type { AcquisitionCustomerHandoff, AcquisitionCustomerHandoffOperation, AcquisitionOutcomeFeedback, AgentJob, AgentJobIdempotencyAlias, AiModelConfig, CaseStudy, CommissionCalculation, CommissionExport, CommissionItem, CommissionProduct, CommissionRule, Competitor, Customer, CustomerAcquisitionSourceEvent, CustomerActivity, CustomerIntelligenceSuggestion, CustomerOwnershipEvent, CustomerOwnershipMutationInput, CustomerOwnershipMutationResult, Deal, DealEvent, DealRecommendation, Exam, ExamAttempt, ExamQuestion, ExamQuestionLink, ImportExportJob, KnowledgeAsset, Lead, LeadActivity, LeadSourceConfig, LeadSourceEvent, MarketOpportunityBatch, MarketOpportunityCalculationEvent, MarketOpportunitySnapshot, MarketTradeObservation, Memo, MonthlySalesRecord, OcrJob, PlanTask, PlanTemplate, ProblemItem, ProcurementSignal, ProspectCampaign, ProspectCampaignEvent, ProspectCampaignVersion, ProspectCandidateProcessingState, ProspectExecutionAttempt, ProspectExecutionCheckpoint, ProspectExecutionEvent, ProspectExecutionKernelState, ProspectExecutionLease, ProspectExecutionPage, ProspectExecutionThrottleBucket, ProspectProviderRequestAccountingEvidence, ProspectProviderRequestAttemptBinding, ProspectProviderRequestDispatch, ProspectProviderRequestEvent, ProspectProviderRequestLedger, ProspectRunEvent, ProspectRunQueueChildBinding, ProspectRunQueueParentBinding, ProspectRunShard, ProspectSchedule, ProspectSearchRun, ProspectSourceRawBatch, ProspectSourceRawHit, ProspectSourceRawRecord, ProspectStrategy, ProspectStrategyEvent, ProspectStrategySourcePosition, ProspectStrategySuggestion, ProspectTouchpoint, ProviderCatalogItem, ProviderConnection, ProviderRequestLog, ProviderResponseCache, Reminder, SalesRecordAudit, Todo, TradeDocument, User, WecomMessage, WebsiteOpportunity } from "./types.js";
 import type {
   AcquisitionOutcomeReconciliationCheckpoint,
-  AcquisitionOutcomeReconciliationDiagnostic
+  AcquisitionOutcomeReconciliationDiagnostic,
+  AcquisitionOutcomeReconciliationProcessedSource
 } from "./types.js";
 import type { CompanyProfile } from "./types.js";
 
@@ -1563,6 +1564,8 @@ export async function createMysqlStore(
       await loadAcquisitionOutcomeReconciliationDiagnostics(pool),
     acquisitionOutcomeReconciliationCheckpoints:
       await loadAcquisitionOutcomeReconciliationCheckpoints(pool),
+    acquisitionOutcomeReconciliationProcessedSources:
+      await loadAcquisitionOutcomeReconciliationProcessedSources(pool),
     leads: await loadLeads(pool),
     leadActivities: await loadLeadActivities(pool),
     leadSourceEvents: await loadLeadSourceEvents(pool),
@@ -2118,6 +2121,16 @@ async function ensureSchema(pool: mysql.Pool) {
     cursor_source_id VARCHAR(100) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
     PRIMARY KEY (owner_id,team_id)
+  ) ENGINE=InnoDB`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS acquisition_outcome_reconciliation_processed_sources (
+    owner_id VARCHAR(64) NOT NULL,
+    team_id VARCHAR(64) NOT NULL,
+    source_kind VARCHAR(24) NOT NULL,
+    source_id VARCHAR(100) NOT NULL,
+    occurred_at DATETIME(3) NOT NULL,
+    processed_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (owner_id,team_id,source_kind,source_id),
+    INDEX idx_aorps_scope_processed(owner_id,team_id,processed_at)
   ) ENGINE=InnoDB`);
   await ensureColumn(
     pool,
@@ -5770,6 +5783,27 @@ async function loadAcquisitionOutcomeReconciliationCheckpoints(
     updatedAt: row.updated_at instanceof Date
       ? row.updated_at.toISOString()
       : row.updated_at
+  }));
+}
+
+async function loadAcquisitionOutcomeReconciliationProcessedSources(
+  pool: mysql.Pool
+): Promise<AcquisitionOutcomeReconciliationProcessedSource[]> {
+  return (await rows<Record<string, any>>(
+    pool,
+    `SELECT * FROM acquisition_outcome_reconciliation_processed_sources
+     ORDER BY owner_id, team_id, processed_at, source_kind, source_id`
+  )).map((row) => ({
+    ownerId: row.owner_id,
+    teamId: row.team_id,
+    sourceKind: row.source_kind,
+    sourceId: row.source_id,
+    occurredAt: row.occurred_at instanceof Date
+      ? row.occurred_at.toISOString()
+      : row.occurred_at,
+    processedAt: row.processed_at instanceof Date
+      ? row.processed_at.toISOString()
+      : row.processed_at
   }));
 }
 
@@ -10545,6 +10579,7 @@ async function persistAll(pool: mysql.Pool, store: CrmStore) {
     await replaceRows(connection, "acquisition_customer_handoffs", store.acquisitionCustomerHandoffs, (item) => [item.id, item.ownerId, item.teamId, item.candidateId, item.leadId, item.customerId, item.todoId, item.decisionVersion, item.mode, item.processingKeyHash, JSON.stringify(item.acceptedProcessingKeyHashes), item.requestHash, JSON.stringify(item.intelligence), item.qualificationSnapshotHash, item.financialSnapshotHash, mysqlDate(item.createdAt)], "(id,owner_id,team_id,candidate_id,lead_id,customer_id,todo_id,decision_version,handoff_mode,processing_key_hash,accepted_processing_key_hashes_json,request_hash,intelligence_json,qualification_snapshot_hash,financial_snapshot_hash,created_at)");
     await replaceRows(connection, "acquisition_outcome_reconciliation_diagnostics", store.acquisitionOutcomeReconciliationDiagnostics, (item) => [item.id, item.ownerId, item.teamId, item.sourceKind, item.sourceId, item.candidateId, item.code, item.message, mysqlDate(item.occurredAt), mysqlDate(item.createdAt)], "(id,owner_id,team_id,source_kind,source_id,candidate_id,diagnostic_code,message,occurred_at,created_at)");
     await replaceRows(connection, "acquisition_outcome_reconciliation_checkpoints", store.acquisitionOutcomeReconciliationCheckpoints, (item) => [item.ownerId, item.teamId, mysqlDate(item.cursorOccurredAt), item.cursorSourceKind, item.cursorSourceId, mysqlDate(item.updatedAt)], "(owner_id,team_id,cursor_occurred_at,cursor_source_kind,cursor_source_id,updated_at)");
+    await replaceRows(connection, "acquisition_outcome_reconciliation_processed_sources", store.acquisitionOutcomeReconciliationProcessedSources, (item) => [item.ownerId, item.teamId, item.sourceKind, item.sourceId, mysqlDate(item.occurredAt), mysqlDate(item.processedAt)], "(owner_id,team_id,source_kind,source_id,occurred_at,processed_at)");
     await replaceRows(connection, "acquisition_customer_handoff_operations", store.acquisitionCustomerHandoffOperations, (item) => [item.id, item.ownerId, item.teamId, item.candidateId, item.processingKeyHash, JSON.stringify(item.acceptedProcessingKeyHashes), item.requestHash, item.decisionVersion, item.mode, item.existingCustomerId, item.stage, item.leadId, item.customerId, item.activityId, item.todoId, item.handoffId, JSON.stringify(item.intelligence), item.qualificationSnapshotHash, item.financialSnapshotHash, JSON.stringify(item.request), mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,owner_id,team_id,candidate_id,processing_key_hash,accepted_processing_key_hashes_json,request_hash,decision_version,handoff_mode,existing_customer_id,operation_stage,lead_id,customer_id,activity_id,todo_id,handoff_id,intelligence_json,qualification_snapshot_hash,financial_snapshot_hash,request_json,created_at,updated_at)");
     await replaceRows(connection, "leads", store.leads, (item) => [item.id, item.company, item.contact || "", item.country || "", item.email || "", item.phone || "", item.wechat || "", item.source || "", item.sourceType || "outbound", item.sourceChannel || "manual", item.sourceCampaign || "", item.externalId || "", item.sourceUrl || "", item.intent || "中", item.stage || "新线索", item.status || "new", item.ownerId, item.teamId, item.estimatedAmount || 0, item.nextFollowAt || "", item.lastActivityAt || "", item.remark || "", item.convertedCustomerId || "", item.convertedDealId || "", item.deletedAt ? mysqlDate(item.deletedAt) : null, item.deletedReason || "", item.deletedBy || "", item.purgeAt ? mysqlDate(item.purgeAt) : null, item.statusBeforeDelete || "", mysqlDate(item.createdAt)], "(id,company,contact,country,email,phone,wechat,source,source_type,source_channel,source_campaign,external_id,source_url,intent,stage,status,owner_id,team_id,estimated_amount,next_follow_at,last_activity_at,remark,converted_customer_id,converted_deal_id,deleted_at,deleted_reason,deleted_by,purge_at,status_before_delete,created_at)");
     await replaceRows(connection, "lead_activities", store.leadActivities, (item) => [item.id, item.leadId, item.type || "note", item.content || "", item.operatorId || "", item.nextFollowAt || "", mysqlDate(item.createdAt)], "(id,lead_id,type,content,operator_id,next_follow_at,created_at)");

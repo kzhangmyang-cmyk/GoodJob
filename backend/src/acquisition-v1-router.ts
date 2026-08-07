@@ -22,11 +22,14 @@ import {
   type DiscoveryEvidence,
   type FinancialValueDecision,
   type LeadConversionRecord,
-  type LiveOutcomeFeedbackEvent,
+  type OutcomeFeedbackEvent,
   type QualificationDecision,
   type ResearchAttempt,
   type ReviewEvent
 } from "./acquisition-domain.js";
+import {
+  normalizeOutcomeFeedbackEvent
+} from "./acquisition-outcome-compatibility.js";
 import {
   AcquisitionDomainError,
   type AcquisitionActorScope,
@@ -371,7 +374,18 @@ const outcomeBodySchema = z.object({
   reasonText: nullableText(2_000),
   candidateId: idSchema,
   attribution: z.object({
+    attributionVersion: z.literal("acquisition-run.v1"),
     runId: requiredText(255),
+    planId: requiredText(255),
+    planVersionId: requiredText(255),
+    planVersion: z.number().int().min(1),
+    planSnapshotHash: requiredText(255),
+    discoveredEventId: requiredText(255),
+    discoveredAt: z.string().datetime({ offset: true }),
+    shardId: requiredText(255),
+    operationId: requiredText(255),
+    connectionId: requiredText(255),
+    providerId: requiredText(255),
     evidenceIds: z.array(idSchema).max(500),
     providerIds: z.array(idSchema).max(100),
     queryIds: z.array(idSchema).max(500),
@@ -844,26 +858,34 @@ function publicPrivateDomainHandoff(
   };
 }
 
-function publicOutcome(outcome: LiveOutcomeFeedbackEvent) {
-  return {
-    id: outcome.id,
-    ownerId: outcome.ownerId,
-    teamId: outcome.teamId,
-    leadId: outcome.leadId,
-    customerId: outcome.customerId,
-    eventType: outcome.eventType,
-    occurredAt: outcome.occurredAt,
-    amount: outcome.amount ? { ...outcome.amount } : null,
-    reasonCode: outcome.reasonCode,
-    reasonText: outcome.reasonText,
-    idempotencyKey: outcome.idempotencyKey,
-    createdBy: outcome.createdBy,
-    createdAt: outcome.createdAt,
-    recordKind: outcome.recordKind,
-    partyRef: structuredClone(outcome.partyRef),
-    candidateId: outcome.candidateId,
-    attribution: structuredClone(outcome.attribution)
+function publicOutcome(outcome: OutcomeFeedbackEvent) {
+  const normalized = normalizeOutcomeFeedbackEvent(outcome);
+  const common = {
+    id: normalized.id,
+    ownerId: normalized.ownerId,
+    teamId: normalized.teamId,
+    leadId: normalized.leadId,
+    customerId: normalized.customerId,
+    eventType: normalized.eventType,
+    occurredAt: normalized.occurredAt,
+    amount: normalized.amount ? { ...normalized.amount } : null,
+    reasonCode: normalized.reasonCode,
+    reasonText: normalized.reasonText,
+    idempotencyKey: normalized.idempotencyKey,
+    createdBy: normalized.createdBy,
+    createdAt: normalized.createdAt,
+    recordKind: normalized.recordKind,
+    partyRef: structuredClone(normalized.partyRef),
+    candidateId: normalized.candidateId,
+    attribution: structuredClone(normalized.attribution)
   };
+  return normalized.recordKind === "legacy_migrated"
+    ? {
+        ...common,
+        legacySourceId: normalized.legacySourceId,
+        migrationWarnings: [...normalized.migrationWarnings]
+      }
+    : common;
 }
 
 function publicAudit(event: AcquisitionAuditEvent) {

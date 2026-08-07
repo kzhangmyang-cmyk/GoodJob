@@ -721,7 +721,7 @@ test("resolves strong public identities at the executor boundary instead of trus
   );
 });
 
-test("maps all ten controlled tools to domain decisions, conservative drafts, review, and outcome feedback", async () => {
+test("maps current controlled tools and keeps the retired outcome tool read-only", async () => {
   const {
     executor,
     domain,
@@ -847,22 +847,20 @@ test("maps all ten controlled tools to domain decisions, conservative drafts, re
     }
   });
 
-  const outcome = await execute(executor, "record_outcome", {
-    candidateId: organization.id,
-    reviewTaskId: review.reviewTask.id,
-    outcome: "won",
-    occurredAt: "2026-07-24T06:00:00.000Z",
-    amountMinor: 2_980_000,
-    currency: "CNY",
-    notes: "客户已签约"
-  });
-  assert.equal(outcome.outcome.eventType, "won");
-  assert.deepEqual(outcome.outcome.amount, {
-    amountMinor: 2_980_000,
-    currency: "CNY"
-  });
-  assert.equal(outcome.currencyExponent, 2);
-  assert.equal(outcome.outreachExecuted, false);
+  await assert.rejects(
+    execute(executor, "record_outcome", {
+      candidateId: organization.id,
+      reviewTaskId: review.reviewTask.id,
+      outcome: "won",
+      occurredAt: "2026-07-24T06:00:00.000Z",
+      amountMinor: 2_980_000,
+      currency: "CNY",
+      notes: "客户已签约"
+    }),
+    (error: unknown) =>
+      error instanceof AcquisitionToolExecutorError
+      && error.code === "LEGACY_OUTCOME_TOOL_READ_ONLY"
+  );
 });
 
 test("enforces tenant isolation even when a candidate id is known", async () => {
@@ -947,7 +945,7 @@ test("returns stable non-secret errors for invalid payload, unknown tool, all-pr
   );
 });
 
-test("rejects outcome recording unless a trusted execution receipt exists", async () => {
+test("retired outcome recording remains read-only before execution lookup", async () => {
   const { executor } = createHarness();
   const discovery = await discover(executor, ["search-ok"]);
   const candidate = discovery.candidates[0];
@@ -961,7 +959,7 @@ test("rejects outcome recording unless a trusted execution receipt exists", asyn
     }),
     (error: unknown) =>
       error instanceof AcquisitionToolExecutorError
-      && error.code === "ACTION_NOT_EXECUTED"
+      && error.code === "LEGACY_OUTCOME_TOOL_READ_ONLY"
   );
 });
 
@@ -1281,7 +1279,7 @@ test("never accepts model-created evidence as formal evidence", async () => {
   assert.deepEqual(after.evidenceIds, before.evidenceIds);
 });
 
-test("requires trusted execution action to match the reviewed proposed action", async () => {
+test("retired outcome tool cannot write even with a mismatched execution", async () => {
   const {
     executor,
     domain,
@@ -1341,11 +1339,11 @@ test("requires trusted execution action to match the reviewed proposed action", 
     }, "outcome:mismatch"),
     (error: unknown) =>
       error instanceof AcquisitionToolExecutorError
-      && error.code === "ACTION_EXECUTION_MISMATCH"
+      && error.code === "LEGACY_OUTCOME_TOOL_READ_ONLY"
   );
 });
 
-test("requires integer minor-unit amounts with a supported ISO currency exponent", async () => {
+test("validates retired outcome payload shape before returning read-only", async () => {
   const { executor } = createHarness();
   await assert.rejects(
     execute(executor, "record_outcome", {
@@ -1371,7 +1369,7 @@ test("requires integer minor-unit amounts with a supported ISO currency exponent
     }, "outcome:unknown-currency"),
     (error: unknown) =>
       error instanceof AcquisitionToolExecutorError
-      && error.code === "UNSUPPORTED_CURRENCY"
+      && error.code === "LEGACY_OUTCOME_TOOL_READ_ONLY"
   );
 });
 

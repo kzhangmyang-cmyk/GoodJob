@@ -11,6 +11,7 @@ import type {
 import type {
   AcquisitionOutcomeReconciliationCheckpoint,
   AcquisitionOutcomeReconciliationDiagnostic,
+  AcquisitionOutcomeReconciliationProcessedSource,
   Deal,
   DealEvent,
   Lead,
@@ -88,6 +89,7 @@ export class AcquisitionCandidateRunAttributionResolver {
         && item.connection.connectionId === event.data.connectionId);
       if (!shard) continue;
       return {
+        attributionVersion: "acquisition-run.v1",
         runId: run.id,
         planId: run.planId,
         planVersionId: run.planVersionId,
@@ -129,6 +131,8 @@ export interface AcquisitionCrmOutcomeReconciliationStore {
     AcquisitionOutcomeReconciliationDiagnostic[];
   acquisitionOutcomeReconciliationCheckpoints:
     AcquisitionOutcomeReconciliationCheckpoint[];
+  acquisitionOutcomeReconciliationProcessedSources:
+    AcquisitionOutcomeReconciliationProcessedSource[];
   persist(): Promise<void>;
   readBarrier(): Promise<void>;
 }
@@ -193,6 +197,7 @@ function validAttribution(value: unknown): value is ReconciledOutcomeAttribution
   const item = value as Record<string, unknown>;
   const textFields = [
     "runId",
+    "attributionVersion",
     "planId",
     "planVersionId",
     "planSnapshotHash",
@@ -208,6 +213,7 @@ function validAttribution(value: unknown): value is ReconciledOutcomeAttribution
     "decisionSnapshotHash"
   ];
   return textFields.every((field) => isText(item[field]))
+    && item.attributionVersion === "acquisition-run.v1"
     && Number.isSafeInteger(item.planVersion)
     && Number(item.planVersion) > 0
     && ["evidenceIds", "providerIds", "queryIds"].every((field) =>
@@ -258,22 +264,12 @@ export class AcquisitionCrmOutcomeReconciliationService {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
       throw new TypeError("limit must be between 1 and 500");
     }
-    const checkpoint = this.#store.acquisitionOutcomeReconciliationCheckpoints
-      .find((item) =>
-        item.ownerId === scope.ownerId && item.teamId === scope.teamId);
-    const afterCheckpoint = (item: {
-      occurredAt: string;
-      sourceKind: "lead_activity" | "deal_event";
-      event: { id: string };
-    }) => !checkpoint || [
-      item.occurredAt,
-      item.sourceKind,
-      item.event.id
-    ].join("\u001f") > [
-      checkpoint.cursorOccurredAt,
-      checkpoint.cursorSourceKind,
-      checkpoint.cursorSourceId
-    ].join("\u001f");
+    const processed = new Set(
+      this.#store.acquisitionOutcomeReconciliationProcessedSources
+        .filter((item) =>
+          item.ownerId === scope.ownerId && item.teamId === scope.teamId)
+        .map((item) => `${item.sourceKind}\u001f${item.sourceId}`)
+    );
     const tenantLeadIds = new Set(this.#store.leads
       .filter((lead) =>
         lead.ownerId === scope.ownerId && lead.teamId === scope.teamId)
@@ -297,7 +293,8 @@ export class AcquisitionCrmOutcomeReconciliationService {
           event,
           occurredAt: event.createdAt
         }))
-    ].filter(afterCheckpoint)
+    ].filter((item) =>
+      !processed.has(`${item.sourceKind}\u001f${item.event.id}`))
       .sort((left, right) =>
         left.occurredAt.localeCompare(right.occurredAt)
         || left.sourceKind.localeCompare(right.sourceKind)
@@ -342,12 +339,7 @@ export class AcquisitionCrmOutcomeReconciliationService {
         }
       }
       if (!advance) break;
-      await this.#advanceCheckpoint(scope, {
-        cursorOccurredAt: source.occurredAt,
-        cursorSourceKind: source.sourceKind,
-        cursorSourceId: source.event.id,
-        updatedAt: result.lastReconciledAt
-      });
+      await this.#markProcessed(scope, source, result.lastReconciledAt);
     }
     return result;
   }
@@ -579,25 +571,63 @@ export class AcquisitionCrmOutcomeReconciliationService {
     }
   }
 
-  async #advanceCheckpoint(
+  async #markProcessed(
     scope: { ownerId: string; teamId: string },
-    cursor: {
-      cursorOccurredAt: string;
-      cursorSourceKind: "lead_activity" | "deal_event";
-      cursorSourceId: string;
-      updatedAt: string;
-    }
+    source: {
+      occurredAt: string;
+      sourceKind: "lead_activity" | "deal_event";
+      event: { id: string };
+    },
+    processedAt: string
   ) {
+    const ledger = this.#store.acquisitionOutcomeReconciliationProcessedSources;
+    const processed = {
+      ...scope,
+      sourceKind: source.sourceKind,
+      sourceId: source.event.id,
+      occurredAt: source.occurredAt,
+      processedAt
+    };
+    ledger.push(processed);
     const checkpoints = this.#store.acquisitionOutcomeReconciliationCheckpoints;
     const index = checkpoints.findIndex((item) =>
       item.ownerId === scope.ownerId && item.teamId === scope.teamId);
     const previous = index >= 0 ? structuredClone(checkpoints[index]) : null;
-    const next = { ...scope, ...cursor };
+    const previousCursor = previous
+      ? [
+          previous.cursorOccurredAt,
+          previous.cursorSourceKind,
+          previous.cursorSourceId
+        ].join("\u001f")
+      : "";
+    const sourceCursor = [
+      source.occurredAt,
+      source.sourceKind,
+      source.event.id
+    ].join("\u001f");
+    const cursor = previous && previousCursor > sourceCursor
+      ? {
+          cursorOccurredAt: previous.cursorOccurredAt,
+          cursorSourceKind: previous.cursorSourceKind,
+          cursorSourceId: previous.cursorSourceId
+        }
+      : {
+          cursorOccurredAt: source.occurredAt,
+          cursorSourceKind: source.sourceKind,
+          cursorSourceId: source.event.id
+        };
+    const next = { ...scope, ...cursor, updatedAt: processedAt };
     if (index >= 0) checkpoints[index] = next;
     else checkpoints.push(next);
     try {
       await this.#store.persist();
     } catch (error) {
+      const ledgerIndex = ledger.findIndex((item) =>
+        item.ownerId === processed.ownerId
+        && item.teamId === processed.teamId
+        && item.sourceKind === processed.sourceKind
+        && item.sourceId === processed.sourceId);
+      if (ledgerIndex >= 0) ledger.splice(ledgerIndex, 1);
       if (index >= 0 && previous) checkpoints[index] = previous;
       else checkpoints.pop();
       throw error;

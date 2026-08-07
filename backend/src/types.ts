@@ -283,6 +283,15 @@ export interface AcquisitionOutcomeReconciliationCheckpoint {
   updatedAt: string;
 }
 
+export interface AcquisitionOutcomeReconciliationProcessedSource {
+  ownerId: string;
+  teamId: string;
+  sourceKind: "lead_activity" | "deal_event";
+  sourceId: string;
+  occurredAt: string;
+  processedAt: string;
+}
+
 export interface AcquisitionHandoffIntelligence {
   qualificationGrade: "S" | "A" | "B" | "C" | "D";
   qualificationScore: number;

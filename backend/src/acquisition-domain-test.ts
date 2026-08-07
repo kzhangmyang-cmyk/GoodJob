@@ -860,7 +860,18 @@ test("live outcomes are append-only, idempotent, attributed, and tenant isolated
     candidateId: candidate.id,
     idempotencyKey: "outcome:won:1",
     attribution: {
+      attributionVersion: "acquisition-run.v1" as const,
       runId: "run-1",
+      planId: "plan-1",
+      planVersionId: "plan-version-1",
+      planVersion: 1,
+      planSnapshotHash: `sha256:${"a".repeat(64)}`,
+      discoveredEventId: "run-event-discovered-1",
+      discoveredAt: "2026-07-23T08:00:00.000Z",
+      shardId: "shard-1",
+      operationId: "operation-1",
+      connectionId: "connection-1",
+      providerId: "baidu_ai_search",
       evidenceIds: [evidence.id],
       providerIds: ["baidu_ai_search"],
       queryIds: ["query-1"],
@@ -870,6 +881,24 @@ test("live outcomes are append-only, idempotent, attributed, and tenant isolated
       decisionSnapshotHash: qualified.qualification.snapshotHash
     }
   };
+  await assert.rejects(
+    service.recordOutcome(ownerScope, {
+      ...outcomeInput,
+      idempotencyKey: "outcome:incomplete-attribution",
+      attribution: {
+        runId: "run-legacy",
+        evidenceIds: [evidence.id],
+        providerIds: ["baidu_ai_search"],
+        queryIds: ["query-legacy"],
+        strategyVersion: "strategy.v1",
+        qualificationDecisionId: qualified.qualification.id,
+        decisionVersion: qualified.qualification.decisionVersion,
+        decisionSnapshotHash: qualified.qualification.snapshotHash
+      }
+    } as never),
+    (error: unknown) => error instanceof AcquisitionDomainError
+      && error.code === "invalid_request"
+  );
   const first = await service.recordOutcome(ownerScope, outcomeInput);
   const replay = await service.recordOutcome(ownerScope, outcomeInput);
   assert.equal(replay.id, first.id);

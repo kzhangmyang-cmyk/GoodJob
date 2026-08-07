@@ -24,6 +24,7 @@ import type {
   LiveOutcomeFeedbackEvent,
   OrganizationCandidateInput,
   OutcomeInput,
+  OutcomeFeedbackEvent,
   PartyRef,
   QualificationDecision,
   QualificationDimensions,
@@ -33,6 +34,9 @@ import type {
   ReviewAction,
   ReviewEvent
 } from "./acquisition-domain.js";
+import {
+  normalizeOutcomeFeedbackEvent
+} from "./acquisition-outcome-compatibility.js";
 import type {
   AcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
@@ -171,6 +175,32 @@ function validIso(value: string, label: string) {
     fail("invalid_request", `${label}必须是合法 ISO 8601 时间`, 400);
   }
   return new Date(timestamp).toISOString();
+}
+
+function validateOutcomeAttribution(
+  attribution: OutcomeInput["attribution"]
+) {
+  if (attribution?.attributionVersion !== "acquisition-run.v1") {
+    fail("invalid_request", "结果反馈归因版本无效", 400);
+  }
+  for (const [field, value] of Object.entries({
+    runId: attribution.runId,
+    planId: attribution.planId,
+    planVersionId: attribution.planVersionId,
+    planSnapshotHash: attribution.planSnapshotHash,
+    discoveredEventId: attribution.discoveredEventId,
+    shardId: attribution.shardId,
+    operationId: attribution.operationId,
+    connectionId: attribution.connectionId,
+    providerId: attribution.providerId
+  })) {
+    requiredText(value, `结果反馈归因 ${field}`, 255);
+  }
+  if (!Number.isSafeInteger(attribution.planVersion)
+    || attribution.planVersion < 1) {
+    fail("invalid_request", "结果反馈归因 planVersion 无效", 400);
+  }
+  validIso(attribution.discoveredAt, "结果反馈归因发现时间");
 }
 
 function validUrl(value: string, label: string) {
@@ -1926,6 +1956,7 @@ export class AcquisitionDomainService {
     raw: OutcomeInput
   ) {
     this.validateScope(scope);
+    validateOutcomeAttribution(raw.attribution);
     return this.idempotent(
       scope,
       "record_outcome",
@@ -2012,7 +2043,10 @@ export class AcquisitionDomainService {
     candidateId: string
   ) {
     await this.requireCandidate(scope, candidateId);
-    return this.repository.listOutcomes(scope, candidateId);
+    return (await this.repository.listOutcomes(scope, candidateId))
+      .map((outcome) => normalizeOutcomeFeedbackEvent(
+        outcome as OutcomeFeedbackEvent
+      ));
   }
 
   async listAuditEvents(

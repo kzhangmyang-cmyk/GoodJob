@@ -496,6 +496,129 @@ test("mounted candidate, battle-card, message, and task responses conform to pro
       return [cards.v1, cards.v2]
         .filter((card) => card.candidateId === candidateId)
         .map((card) => structuredClone(card));
+    },
+    async listOutcomes() {
+      return [{
+        id: "outcome-incomplete-live-history",
+        ownerId: OWNER,
+        teamId: TEAM,
+        leadId: "lead-response-contract",
+        customerId: null,
+        eventType: "won",
+        occurredAt: NOW,
+        amount: { amountMinor: 120_000, currency: "CNY" },
+        reasonCode: "historical-live",
+        reasonText: "旧 live 记录缺少完整 run chain",
+        idempotencyKey: "outcome-history-response-contract",
+        createdBy: OWNER,
+        createdAt: NOW,
+        recordKind: "live",
+        partyRef: candidates.organization.partyRef,
+        candidateId: candidates.organization.id,
+        attribution: {
+          runId: "legacy-session-id",
+          evidenceIds: ["evidence-response-contract"],
+          providerIds: ["baidu_ai_search"],
+          queryIds: ["query-legacy"],
+          strategyVersion: "strategy.v0",
+          qualificationDecisionId: "decision-organization",
+          decisionVersion: "decision-version-response-contract",
+          decisionSnapshotHash: "sha256:legacy-decision",
+          decisionEngine: "rules",
+          ruleVersion: "qualification-rules.v1",
+          modelProvider: null,
+          model: null,
+          promptVersion: null
+        },
+        snapshotHash: "sha256:historical-live"
+      }, {
+        id: "outcome-partial-live-history",
+        ownerId: OWNER,
+        teamId: TEAM,
+        leadId: "lead-response-contract",
+        customerId: null,
+        eventType: "quoted",
+        occurredAt: NOW,
+        amount: { amountMinor: 80_000, currency: "CNY" },
+        reasonCode: "historical-partial-live",
+        reasonText: "旧 live 记录有 run chain 但缺少 decisionEngine",
+        idempotencyKey: "outcome-partial-response-contract",
+        createdBy: OWNER,
+        createdAt: NOW,
+        recordKind: "live",
+        partyRef: candidates.organization.partyRef,
+        candidateId: candidates.organization.id,
+        attribution: {
+          attributionVersion: "acquisition-run.v1",
+          runId: "run-partial-response-contract",
+          planId: "plan-partial-response-contract",
+          planVersionId: "plan-version-partial-response-contract",
+          planVersion: 1,
+          planSnapshotHash: "sha256:plan-partial-response-contract",
+          discoveredEventId: "run-event-partial-response-contract",
+          discoveredAt: NOW,
+          shardId: "shard-partial-response-contract",
+          operationId: "operation-partial-response-contract",
+          connectionId: "connection-partial-response-contract",
+          providerId: "baidu_ai_search",
+          evidenceIds: ["evidence-response-contract"],
+          providerIds: ["baidu_ai_search"],
+          queryIds: ["operation:operation-partial-response-contract"],
+          strategyVersion: "acquisition-plan-v1",
+          qualificationDecisionId: "decision-organization",
+          decisionVersion: "decision-version-response-contract",
+          decisionSnapshotHash: "sha256:decision-response-contract",
+          ruleVersion: "qualification-rules.v1",
+          modelProvider: null,
+          model: null,
+          promptVersion: null
+        },
+        snapshotHash: "sha256:partial-live"
+      }, {
+        id: "outcome-full-live-v2",
+        ownerId: OWNER,
+        teamId: TEAM,
+        leadId: "lead-response-contract",
+        customerId: null,
+        eventType: "contacted",
+        occurredAt: NOW,
+        amount: null,
+        reasonCode: "full-live",
+        reasonText: "完整持久化运行链",
+        idempotencyKey: "outcome-full-response-contract",
+        createdBy: OWNER,
+        createdAt: NOW,
+        recordKind: "live",
+        partyRef: candidates.organization.partyRef,
+        candidateId: candidates.organization.id,
+        attribution: {
+          attributionVersion: "acquisition-run.v1",
+          runId: "run-response-contract",
+          planId: "plan-response-contract",
+          planVersionId: "plan-version-response-contract",
+          planVersion: 1,
+          planSnapshotHash: "sha256:plan-response-contract",
+          discoveredEventId: "run-event-response-contract",
+          discoveredAt: NOW,
+          shardId: "shard-response-contract",
+          operationId: "operation-response-contract",
+          connectionId: "connection-response-contract",
+          providerId: "baidu_ai_search",
+          evidenceIds: ["evidence-response-contract"],
+          providerIds: ["baidu_ai_search"],
+          queryIds: ["operation:operation-response-contract"],
+          strategyVersion: "acquisition-plan-v1",
+          qualificationDecisionId: "decision-organization",
+          decisionVersion: "decision-version-response-contract",
+          decisionSnapshotHash: "sha256:decision-response-contract",
+          decisionEngine: "rules",
+          ruleVersion: "qualification-rules.v1",
+          modelProvider: null,
+          model: null,
+          promptVersion: null
+        },
+        snapshotHash: "sha256:full-live"
+      }];
     }
   };
   const assistantMessage = {
@@ -599,6 +722,25 @@ test("mounted candidate, battle-card, message, and task responses conform to pro
         result.body
       );
     }
+
+    const outcomes = await fixture.request(
+      "/api/v1/acquisition/outcomes?candidateId=candidate-organization"
+    );
+    assert.equal(outcomes.response.status, 200);
+    assert.equal(outcomes.body.items[0]?.recordKind, "legacy_migrated");
+    assert.match(outcomes.body.items[0]?.migrationWarnings?.[0] ?? "", /incomplete/i);
+    assert.equal(outcomes.body.items[1]?.recordKind, "legacy_migrated");
+    assert.equal(outcomes.body.items[2]?.recordKind, "live");
+    assert.equal(
+      outcomes.body.items[2]?.attribution?.attributionVersion,
+      "acquisition-run.v1"
+    );
+    assertResponseConforms(
+      "/api/v1/acquisition/outcomes",
+      "get",
+      200,
+      outcomes.body
+    );
 
     const messages = await fixture.request(
       "/api/v1/acquisition/copilot/sessions/copilot-session-response-contract/messages"

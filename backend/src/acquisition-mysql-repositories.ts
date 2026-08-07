@@ -12,6 +12,7 @@ import type {
   LeadConversionIntent,
   LeadConversionRecord,
   LiveOutcomeFeedbackEvent,
+  OutcomeFeedbackEvent,
   QualificationDecision,
   ResearchAttempt,
   ReviewEvent
@@ -1389,7 +1390,7 @@ implements AcquisitionDomainRepository {
   }
 
   listOutcomes(scope: AcquisitionDataScope, candidateId: string) {
-    return this.listByCandidate<LiveOutcomeFeedbackEvent>(
+    return this.listByCandidate<OutcomeFeedbackEvent>(
       "acquisition_outcomes",
       scope,
       candidateId,
