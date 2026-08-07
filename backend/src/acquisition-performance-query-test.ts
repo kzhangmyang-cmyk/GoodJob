@@ -813,6 +813,95 @@ test("filters platform before applying the run cap", async () => {
   assert.deepEqual(eventReads, ["run-douyin-older"]);
 });
 
+test("resolves a shared plan version only once while filtering platforms", async () => {
+  let versionReads = 0;
+  const runs = Array.from({ length: 5 }, (_, index) => ({
+    id: `run-shared-version-${index}`,
+    ownerId: scope.ownerId,
+    teamId: scope.teamId,
+    planVersionId: "version-shared",
+    billingCurrency: "CNY",
+    consumedBudget: { amountMinor: 0 },
+    createdAt: `2026-08-0${index + 1}T00:00:00.000Z`
+  }));
+  const service = new AcquisitionPerformanceQueryService({
+    planRuns: {
+      async listRuns() { return runs; },
+      async getPlanVersion() {
+        versionReads += 1;
+        return { payload: { targetPlatform: "douyin" } };
+      },
+      async listRunEvents() { return []; }
+    } as never,
+    domain: {
+      async getPresentationCandidateSnapshots() { return []; },
+      async listQualificationDecisions() { return []; },
+      async listFinancialValues() { return []; },
+      async listOutcomes() { return []; },
+      async listAuditEvents() { return []; }
+    } as never,
+    diagnostics: []
+  });
+
+  await service.get(scope, {
+    platform: "douyin",
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-07T23:59:59.999Z"
+  });
+
+  assert.equal(versionReads, 1);
+});
+
+test("stops platform resolution after the run cap plus one matching run", async () => {
+  const versionReads: string[] = [];
+  const eventReads: string[] = [];
+  const runs = Array.from({ length: 5 }, (_, index) => ({
+    id: `run-bounded-${index}`,
+    ownerId: scope.ownerId,
+    teamId: scope.teamId,
+    planVersionId: `version-bounded-${index}`,
+    billingCurrency: "CNY",
+    consumedBudget: { amountMinor: 0 },
+    createdAt: `2026-08-0${7 - index}T00:00:00.000Z`
+  }));
+  const service = new AcquisitionPerformanceQueryService({
+    limits: { runs: 2 },
+    planRuns: {
+      async listRuns() { return runs; },
+      async getPlanVersion(id: string) {
+        versionReads.push(id);
+        return { payload: { targetPlatform: "douyin" } };
+      },
+      async listRunEvents(runId: string) {
+        eventReads.push(runId);
+        return [];
+      }
+    } as never,
+    domain: {
+      async getPresentationCandidateSnapshots() { return []; },
+      async listQualificationDecisions() { return []; },
+      async listFinancialValues() { return []; },
+      async listOutcomes() { return []; },
+      async listAuditEvents() { return []; }
+    } as never,
+    diagnostics: []
+  });
+
+  const result = await service.get(scope, {
+    platform: "douyin",
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-07T23:59:59.999Z"
+  });
+
+  assert.deepEqual(versionReads, [
+    "version-bounded-0",
+    "version-bounded-1",
+    "version-bounded-2"
+  ]);
+  assert.deepEqual(eventReads, ["run-bounded-0", "run-bounded-1"]);
+  assert.equal(result.dataQuality.truncated, true);
+});
+
 test("historical discovery events are not evicted by newer events outside the requested windows", async () => {
   const service = new AcquisitionPerformanceQueryService({
     limits: { eventsPerRun: 1 },
