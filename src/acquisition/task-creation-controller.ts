@@ -62,6 +62,7 @@ function initialise(): void {
   const close = byId<HTMLButtonElement>("replicaRealTaskClose");
   const cancel = byId<HTMLButtonElement>("replicaRealTaskCancel");
   const refresh = byId<HTMLButtonElement>("replicaRealConnectionsRefresh");
+  const configure = byId<HTMLButtonElement>("replicaRealConnectionsConfigure");
   const searchSelect = byId<HTMLSelectElement>("replicaRealSearchConnection");
   const modelSelect = byId<HTMLSelectElement>("replicaRealModelConnection");
   const approvalConfirmed = byId<HTMLInputElement>("replicaRealApprovalConfirmed");
@@ -181,6 +182,15 @@ function initialise(): void {
   close?.addEventListener("click", closeDialog);
   cancel?.addEventListener("click", closeDialog);
   refresh?.addEventListener("click", () => void loadConnections());
+  configure?.addEventListener("click", () => {
+    const mode = searchConnections.length === 0 ? "search" : "model";
+    document.dispatchEvent(new CustomEvent("goodjob:connections-open-requested", {
+      detail: { mode, returnTo: "task-creation" }
+    }));
+  });
+  document.addEventListener("goodjob:connections-changed", () => {
+    if (taskDialog.open) void loadConnections();
+  });
   searchConnectionSelect.addEventListener("change", updateSubmitAvailability);
   modelConnectionSelect.addEventListener("change", updateSubmitAvailability);
   approvalConfirmed?.addEventListener("change", updateSubmitAvailability);

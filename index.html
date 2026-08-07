@@ -10588,7 +10588,10 @@
         <section class="replica-real-form-section replica-preflight-section">
           <div class="replica-form-section-head">
             <div><span>运行前置</span><h3>连接真实搜索与 AI 模型</h3></div>
-            <button type="button" id="replicaRealConnectionsRefresh"><i class="ph ph-arrow-clockwise" aria-hidden="true"></i>重新检查</button>
+            <div class="replica-form-section-actions">
+              <button type="button" class="is-primary" id="replicaRealConnectionsConfigure"><i class="ph ph-plugs-connected" aria-hidden="true"></i>配置连接</button>
+              <button type="button" id="replicaRealConnectionsRefresh"><i class="ph ph-arrow-clockwise" aria-hidden="true"></i>重新检查</button>
+            </div>
           </div>
           <div class="replica-connection-grid">
             <label>
@@ -10659,6 +10662,29 @@
         <button type="submit" class="replica-real-submit" id="replicaRealTaskSubmit" disabled><i class="ph ph-play" aria-hidden="true"></i>创建、批准并启动</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog class="replica-modal replica-connection-center" id="replicaConnectionCenter">
+    <div class="replica-connection-center-shell">
+      <div class="replica-modal-head replica-connection-center-head">
+        <div>
+          <span class="replica-wizard-kicker">CONNECTION CENTER</span>
+          <h2>搜索与 AI 连接中心</h2>
+          <p>统一配置客户自己的官方 API Key。密钥只提交给当前系统，不会在页面回显。</p>
+        </div>
+        <button type="button" id="replicaConnectionCenterClose" aria-label="关闭"><i class="ph ph-x" aria-hidden="true"></i></button>
+      </div>
+      <div class="replica-connection-center-body" id="replicaConnectionCenterBody" aria-live="polite">
+        <section class="replica-connection-center-placeholder" role="status">
+          <i class="ph ph-plugs-connected" aria-hidden="true"></i>
+          <div><strong>正在读取连接配置</strong><span>将显示真实搜索 API 与支持工具调用的 AI 模型。</span></div>
+        </section>
+      </div>
+      <div class="replica-modal-footer replica-connection-center-footer">
+        <p><i class="ph ph-shield-check" aria-hidden="true"></i>连接需通过测试后才能用于真实获客任务。</p>
+        <button type="button" id="replicaConnectionCenterDone">完成</button>
+      </div>
+    </div>
   </dialog>
 
   <div class="shell">

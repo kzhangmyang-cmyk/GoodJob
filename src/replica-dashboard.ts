@@ -1,5 +1,6 @@
 import { startAcquisitionRuntime } from "./acquisition/runtime";
 import { startAcquisitionTaskCreation } from "./acquisition/task-creation-controller";
+import { startConnectionCenter } from "./connections/connection-controller";
 
 type ReplicaTaskRow = HTMLButtonElement & {
   dataset: DOMStringMap & {
@@ -535,3 +536,4 @@ if (replica) {
 
 startAcquisitionRuntime();
 startAcquisitionTaskCreation();
+startConnectionCenter();

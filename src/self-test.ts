@@ -10,6 +10,9 @@ import "./acquisition/runtime-presenter.self-test";
 import "./acquisition/task-creation-api.self-test";
 import "./acquisition/task-creation-controller.self-test";
 import "./acquisition/task-creation-workflow.self-test";
+import "./connections/connection-api.self-test";
+import "./connections/connection-controller.self-test";
+import "./connections/connection-view.self-test";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");
 assert.equal(getLeadFinderLayoutMode(1), "results");
@@ -145,6 +148,9 @@ const required = [
   "id=\"replicaRealTaskForm\"",
   "id=\"replicaRealSearchConnection\"",
   "id=\"replicaRealModelConnection\"",
+  "id=\"replicaRealConnectionsConfigure\"",
+  "id=\"replicaConnectionCenter\"",
+  "id=\"replicaConnectionCenterBody\"",
   "src/demo/demo-app.ts",
   "src/demo/demo.css",
   "renderDashboardView",
@@ -157,6 +163,11 @@ assert.equal(
   replicaBehavior.includes("startAcquisitionRuntime"),
   true,
   "missing real acquisition runtime bootstrap"
+);
+assert.equal(
+  replicaBehavior.includes("startConnectionCenter"),
+  true,
+  "missing connection center bootstrap"
 );
 assert.equal(
   demoRouter.includes("hashchange"),
