@@ -304,6 +304,21 @@ await assert.rejects(
   /AI 计划草稿不完整/
 );
 
+const immediateSuccessMismatchApi = createAcquisitionTaskCreationApi(async () => Response.json({
+  id: "immediate-model-mismatch",
+  status: "succeeded",
+  errorCode: null,
+  result: { summary: "立即完成", planDraft: planInput }
+}), { cookieSource: () => "gj_csrf=csrf" });
+await assert.rejects(
+  () => immediateSuccessMismatchApi.createPlanDraftTask("session", {
+    message: "立即完成但模型不一致",
+    responseMode: "plan_draft",
+    targetPlatform: "douyin"
+  }, "immediate-success-key", undefined, "different-model"),
+  /AI 计划草稿不完整/
+);
+
 for (const corrupt of [
   (draft: typeof planInput) => { draft.providerConnections.push({ ...draft.providerConnections[0]!, providerId: "duplicate" }); },
   (draft: typeof planInput) => { draft.operations[1]!.operationId = draft.operations[0]!.operationId; },

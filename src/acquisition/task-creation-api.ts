@@ -585,7 +585,8 @@ export function createAcquisitionTaskCreationApi(
         targetPlatform: "douyin";
       },
       idempotencyKey: string,
-      signal?: AbortSignal
+      signal?: AbortSignal,
+      expectedModelConnectionId?: string
     ): Promise<CopilotPlanDraftTask> {
       const result = await post<unknown>(
         `/api/v1/acquisition/copilot/sessions/${pathSegment(sessionId, "AI 会话 ID")}/messages`,
@@ -596,7 +597,7 @@ export function createAcquisitionTaskCreationApi(
         },
         { "Idempotency-Key": validIdempotencyKey(idempotencyKey) }, signal
       );
-      return copilotTask(result.data);
+      return copilotTask(result.data, expectedModelConnectionId);
     },
 
     async getCopilotTask(

@@ -9,7 +9,7 @@ export interface CopilotPlanDraftTask {
 
 export interface PlanDraftWorkflowApi {
   createCopilotSession(input: { connectionId: string }, idempotencyKey: string, signal?: AbortSignal): Promise<{ id: string }>;
-  createPlanDraftTask(sessionId: string, input: { message: string; responseMode: "plan_draft"; targetPlatform: "douyin" }, idempotencyKey: string, signal?: AbortSignal): Promise<CopilotPlanDraftTask>;
+  createPlanDraftTask(sessionId: string, input: { message: string; responseMode: "plan_draft"; targetPlatform: "douyin" }, idempotencyKey: string, signal?: AbortSignal, expectedModelConnectionId?: string): Promise<CopilotPlanDraftTask>;
   getCopilotTask(taskId: string, modelConnectionId: string, signal?: AbortSignal): Promise<CopilotPlanDraftTask>;
 }
 
@@ -43,6 +43,8 @@ export interface PlanDraftWorkflowOptions {
   now?: () => number;
   sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   timeoutMs?: number;
+  setDeadlineTimer?: (callback: () => void, milliseconds: number) => unknown;
+  clearDeadlineTimer?: (timer: unknown) => void;
 }
 
 const STORAGE_KEY = "goodjob.acquisition.plan-draft-workflow.v1";
@@ -107,6 +109,10 @@ export function createPlanDraftWorkflow(api: PlanDraftWorkflowApi, options: Plan
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const setDeadlineTimer = options.setDeadlineTimer
+    ?? ((callback, milliseconds) => globalThis.setTimeout(callback, milliseconds));
+  const clearDeadlineTimer = options.clearDeadlineTimer
+    ?? ((timer) => globalThis.clearTimeout(timer as ReturnType<typeof globalThis.setTimeout>));
   let activeController: AbortController | null = null;
 
   function save(state: StoredPlanDraftState): void {
@@ -120,11 +126,6 @@ export function createPlanDraftWorkflow(api: PlanDraftWorkflowApi, options: Plan
 
   function timeoutError(): Error {
     return new Error(`AI 计划生成超过 ${Math.ceil(timeoutMs / 1000)} 秒，请稍后重试`);
-  }
-
-  function checkDeadline(startedAt: number, signal: AbortSignal): void {
-    throwIfCancelled(signal);
-    if (now() - startedAt >= timeoutMs) throw timeoutError();
   }
 
   function complete(task: CopilotPlanDraftTask, state: StoredPlanDraftState): DouyinPlanInput | null {
@@ -151,18 +152,50 @@ export function createPlanDraftWorkflow(api: PlanDraftWorkflowApi, options: Plan
       const prompt = requiredText(input.prompt, "一句话需求");
       const startedAt = now();
       const state = readStored(storage);
+      let deadlineElapsed = false;
+      const deadlineTimer = setDeadlineTimer(() => {
+        deadlineElapsed = true;
+        controller.abort();
+      }, timeoutMs);
+      const checkDeadline = (): void => {
+        if (!deadlineElapsed && now() - startedAt >= timeoutMs) {
+          deadlineElapsed = true;
+          controller.abort();
+        }
+        if (deadlineElapsed) throw timeoutError();
+        throwIfCancelled(controller.signal);
+      };
+      const awaitRequest = <T>(request: Promise<T>): Promise<T> => new Promise((resolve, reject) => {
+        const onAbort = () => {
+          cleanup();
+          reject(deadlineElapsed ? timeoutError() : abortError());
+        };
+        const cleanup = () => controller.signal.removeEventListener("abort", onAbort);
+        if (controller.signal.aborted) {
+          onAbort();
+          return;
+        }
+        controller.signal.addEventListener("abort", onAbort, { once: true });
+        void request.then((value) => {
+          cleanup();
+          resolve(value);
+        }, (error) => {
+          cleanup();
+          reject(deadlineElapsed ? timeoutError() : error);
+        });
+      });
       try {
-        checkDeadline(startedAt, controller.signal);
+        checkDeadline();
         if (!state.session || state.session.modelConnectionId !== modelConnectionId) {
           state.session = { modelConnectionId, sessionKey: idempotencyKeyFactory() };
           delete state.task;
           save(state);
         }
         if (!state.session.sessionId) {
-          const session = await api.createCopilotSession(
+          const session = await awaitRequest(api.createCopilotSession(
             { connectionId: modelConnectionId }, state.session.sessionKey, controller.signal
-          );
-          checkDeadline(startedAt, controller.signal);
+          ));
+          checkDeadline();
           state.session.sessionId = session.id;
           save(state);
         }
@@ -171,10 +204,10 @@ export function createPlanDraftWorkflow(api: PlanDraftWorkflowApi, options: Plan
           save(state);
         }
         if (!state.task.taskId) {
-          const task = await api.createPlanDraftTask(state.session.sessionId, {
+          const task = await awaitRequest(api.createPlanDraftTask(state.session.sessionId, {
             message: prompt, responseMode: "plan_draft", targetPlatform: "douyin"
-          }, state.task.taskKey, controller.signal);
-          checkDeadline(startedAt, controller.signal);
+          }, state.task.taskKey, controller.signal, modelConnectionId));
+          checkDeadline();
           state.task.taskId = task.id;
           save(state);
           const planDraft = complete(task, state);
@@ -182,17 +215,18 @@ export function createPlanDraftWorkflow(api: PlanDraftWorkflowApi, options: Plan
         }
         let attempt = 0;
         while (true) {
-          checkDeadline(startedAt, controller.signal);
-          const task = await api.getCopilotTask(state.task.taskId!, modelConnectionId, controller.signal);
-          checkDeadline(startedAt, controller.signal);
+          checkDeadline();
+          const task = await awaitRequest(api.getCopilotTask(state.task.taskId!, modelConnectionId, controller.signal));
+          checkDeadline();
           const planDraft = complete(task, state);
           if (planDraft) return { planDraft };
           const backoff = Math.min(1_000 * 2 ** attempt, 8_000);
           attempt += 1;
           await sleep(backoff, controller.signal);
-          checkDeadline(startedAt, controller.signal);
+          checkDeadline();
         }
       } finally {
+        clearDeadlineTimer(deadlineTimer);
         if (activeController === controller) activeController = null;
       }
     },

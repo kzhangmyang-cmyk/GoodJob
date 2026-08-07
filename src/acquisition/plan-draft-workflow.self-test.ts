@@ -183,6 +183,8 @@ const taskCancellationWorkflow = createPlanDraftWorkflow({
 }, { storage: null });
 const taskRun = taskCancellationWorkflow.generate({ modelConnectionId: "model-a", prompt: "取消任务创建" });
 await Promise.resolve();
+await Promise.resolve();
+await Promise.resolve();
 taskCancellationWorkflow.cancel();
 assert.equal(observedTaskSignal?.aborted, true, "任务 POST 必须收到取消信号");
 await assert.rejects(taskRun, /AbortError/);
@@ -197,6 +199,8 @@ const pollCancellationWorkflow = createPlanDraftWorkflow({
   }
 }, { storage: null });
 const pollRun = pollCancellationWorkflow.generate({ modelConnectionId: "model-a", prompt: "取消轮询" });
+await Promise.resolve();
+await Promise.resolve();
 await Promise.resolve();
 await Promise.resolve();
 pollCancellationWorkflow.cancel();
@@ -301,3 +305,61 @@ await assert.rejects(
   () => configuredTimeoutWorkflow.generate({ modelConnectionId: "model-a", prompt: "自定义超时" }),
   /2 秒/
 );
+
+const sessionDeadlineCallbacks: Array<() => void> = [];
+let sessionDeadlineAborted = false;
+const sessionDeadlineWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession(_input, _key, signal) {
+    return new Promise((_, reject) => signal?.addEventListener("abort", () => {
+      sessionDeadlineAborted = true;
+      reject(new DOMException("请求已取消", "AbortError"));
+    }, { once: true }));
+  },
+  async createPlanDraftTask() { throw new Error("超时的会话不得创建任务"); },
+  async getCopilotTask() { throw new Error("超时的会话不得轮询"); }
+}, {
+  storage: null,
+  timeoutMs: 2_000,
+  now: () => 0,
+  setDeadlineTimer: (callback: () => void) => {
+    sessionDeadlineCallbacks.push(callback);
+    return callback;
+  },
+  clearDeadlineTimer: () => undefined
+} as never);
+const sessionDeadlineRun = sessionDeadlineWorkflow.generate({ modelConnectionId: "model-a", prompt: "会话无限等待" });
+assert.equal(sessionDeadlineCallbacks.length, 1, "首个 POST 前必须注册 deadline timer");
+sessionDeadlineCallbacks[0]!();
+await assert.rejects(sessionDeadlineRun, /2 秒/);
+assert.equal(sessionDeadlineAborted, true, "deadline 必须主动 abort 首个 POST");
+
+const pollDeadlineCallbacks: Array<() => void> = [];
+let pollDeadlineAborted = false;
+let markPollDeadlineStarted: (() => void) | undefined;
+const pollDeadlineStarted = new Promise<void>((resolve) => { markPollDeadlineStarted = resolve; });
+const pollDeadlineWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession() { return { id: "deadline-poll-session" }; },
+  async createPlanDraftTask() { return { id: "deadline-poll-task", status: "queued", result: null, errorCode: null }; },
+  async getCopilotTask(_taskId, _modelConnectionId, signal) {
+    markPollDeadlineStarted?.();
+    return new Promise((_, reject) => signal?.addEventListener("abort", () => {
+      pollDeadlineAborted = true;
+      reject(new DOMException("请求已取消", "AbortError"));
+    }, { once: true }));
+  }
+}, {
+  storage: null,
+  timeoutMs: 2_000,
+  now: () => 0,
+  setDeadlineTimer: (callback: () => void) => {
+    pollDeadlineCallbacks.push(callback);
+    return callback;
+  },
+  clearDeadlineTimer: () => undefined
+} as never);
+const pollDeadlineRun = pollDeadlineWorkflow.generate({ modelConnectionId: "model-a", prompt: "轮询无限等待" });
+await pollDeadlineStarted;
+assert.equal(pollDeadlineCallbacks.length, 1, "poll GET 前必须已有 deadline timer");
+pollDeadlineCallbacks[0]!();
+await assert.rejects(pollDeadlineRun, /2 秒/);
+assert.equal(pollDeadlineAborted, true, "deadline 必须主动 abort poll GET");

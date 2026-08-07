@@ -78,3 +78,28 @@ git diff --check
 ```
 
 `pnpm-workspace.yaml` 仍是用户既有未提交改动，未触碰、未暂存。
+
+## 第 2 轮审查修复
+
+### 改动与红绿证据
+
+- RED：新增 deadline self-test 后，旧工作流断言“首个 POST 前必须注册 deadline timer”失败（`0 !== 1`）；新增 task POST 立即成功但模型不匹配的断言，旧实现未做所选模型校验。
+- GREEN：工作流现在在第一条请求前注册全生命周期 deadline timer；deadline 主动 abort 同一请求信号，并通过请求包装器在底层 promise 不自行完成时立即以配置超时错误退出。用户取消仍返回 `AbortError`，deadline 返回超时错误。
+- 新增可控 timer self-test：首个 session POST 和 poll GET 各自使用不自行 resolve 的 promise，deadline 触发后验证 signal 已 abort 且拒绝消息为配置的 `2 秒`。
+- `createPlanDraftTask()` 增加期望模型连接参数，直接返回 `succeeded + planDraft` 时与轮询结果一样调用严格模型一致性校验；self-test 验证不匹配被拒绝。
+
+### 最终命令与结果
+
+```text
+pnpm test
+# PASS — checked: 125
+
+pnpm run build
+# PASS — tsc -b + vite build 完成
+
+pnpm run test:e2e
+# PASS — 5/5 Playwright tests
+
+git diff --check
+# PASS — 无输出
+```
