@@ -60,7 +60,7 @@ test("serves the authenticated read-only performance endpoint", async () => {
   const app = await fixture();
   try {
     const result = await app.request(
-      "/api/v1/acquisition/performance?platform=douyin&from=2026-08-01T00%3A00%3A00.000Z&to=2026-08-07T00%3A00%3A00.000Z"
+      "/api/v1/acquisition/performance?platform=douyin&from=2026-08-02&to=2026-08-02"
     );
     assert.equal(result.response.status, 200);
     assert.equal(result.response.headers.get("cache-control"), "no-store");
@@ -70,8 +70,8 @@ test("serves the authenticated read-only performance endpoint", async () => {
       scope: { ownerId: "owner-a", teamId: "team-a" },
       input: {
         platform: "douyin",
-        from: "2026-08-01T00:00:00.000Z",
-        to: "2026-08-07T00:00:00.000Z"
+        from: "2026-08-01T16:00:00.000Z",
+        to: "2026-08-02T15:59:59.999Z"
       }
     }]);
     assert.equal((await app.request(
@@ -88,14 +88,17 @@ test("rejects anonymous, invalid and over-90-day windows", async () => {
   const app = await fixture();
   try {
     assert.equal((await app.request(
-      "/api/v1/acquisition/performance?from=2026-08-01T00%3A00%3A00.000Z&to=2026-08-07T00%3A00%3A00.000Z",
+      "/api/v1/acquisition/performance?from=2026-08-01&to=2026-08-07",
       false
     )).response.status, 401);
     assert.equal((await app.request(
-      "/api/v1/acquisition/performance?from=2026-01-01T00%3A00%3A00.000Z&to=2026-08-07T00%3A00%3A00.000Z"
+      "/api/v1/acquisition/performance?from=2026-01-01&to=2026-08-07"
     )).response.status, 400);
     assert.equal((await app.request(
-      "/api/v1/acquisition/performance?platform=unknown&from=2026-08-01T00%3A00%3A00.000Z&to=2026-08-07T00%3A00%3A00.000Z"
+      "/api/v1/acquisition/performance?platform=unknown&from=2026-08-01&to=2026-08-07"
+    )).response.status, 400);
+    assert.equal((await app.request(
+      "/api/v1/acquisition/performance?from=2026-08-01T00%3A00%3A00.000Z&to=2026-08-07"
     )).response.status, 400);
   } finally {
     await app.close();

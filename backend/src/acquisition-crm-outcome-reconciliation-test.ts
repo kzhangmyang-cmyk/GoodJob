@@ -77,11 +77,13 @@ function store(): AcquisitionCrmOutcomeReconciliationStore {
       teamId: "team-real"
     }],
     acquisitionCustomerHandoffs: [{
+      id: "handoff-real",
       candidateId: "candidate-real",
       leadId: "lead-real",
       customerId: "customer-real",
       ownerId: "owner-real",
-      teamId: "team-real"
+      teamId: "team-real",
+      dealId: "deal-real"
     }],
     deals: [{
       id: "deal-real",
@@ -97,6 +99,14 @@ function store(): AcquisitionCrmOutcomeReconciliationStore {
       type: "quote",
       content: "quote sent",
       operatorId: "owner-real",
+      ownerIdSnapshot: "owner-real",
+      teamIdSnapshot: "team-real",
+      customerIdSnapshot: "customer-real",
+      leadIdSnapshot: "lead-real",
+      handoffIdSnapshot: "handoff-real",
+      candidateIdSnapshot: "candidate-real",
+      amountMinorSnapshot: 128_850,
+      currencySnapshot: "USD",
       createdAt: "2026-08-03T01:00:00.000Z"
     }, {
       id: "event-payment",
@@ -104,6 +114,14 @@ function store(): AcquisitionCrmOutcomeReconciliationStore {
       type: "payment",
       content: "sales-entered payment",
       operatorId: "owner-real",
+      ownerIdSnapshot: "owner-real",
+      teamIdSnapshot: "team-real",
+      customerIdSnapshot: "customer-real",
+      leadIdSnapshot: "lead-real",
+      handoffIdSnapshot: "handoff-real",
+      candidateIdSnapshot: "candidate-real",
+      amountMinorSnapshot: 128_850,
+      currencySnapshot: "USD",
       createdAt: "2026-08-04T01:00:00.000Z"
     }, {
       id: "event-won",
@@ -111,6 +129,14 @@ function store(): AcquisitionCrmOutcomeReconciliationStore {
       type: "won",
       content: "deal won",
       operatorId: "owner-real",
+      ownerIdSnapshot: "owner-real",
+      teamIdSnapshot: "team-real",
+      customerIdSnapshot: "customer-real",
+      leadIdSnapshot: "lead-real",
+      handoffIdSnapshot: "handoff-real",
+      candidateIdSnapshot: "candidate-real",
+      amountMinorSnapshot: 128_850,
+      currencySnapshot: "USD",
       createdAt: "2026-08-05T01:00:00.000Z"
     }],
     acquisitionOutcomeReconciliationDiagnostics: [],
@@ -216,6 +242,60 @@ test("reconciles durable CRM activities and deal events without treating payment
     failed: 0,
     lastReconciledAt: "2026-08-07T08:00:00.000Z"
   });
+});
+
+test("delayed replay consumes immutable DealEvent snapshots after the Deal changes", async () => {
+  const fixture = store();
+  fixture.leadActivities = [];
+  fixture.acquisitionCustomerHandoffs[0]!.dealId = "deal-real";
+  fixture.dealEvents = [{
+    id: "event-snapshot-quote",
+    dealId: "deal-real",
+    type: "quote",
+    content: "original quote",
+    operatorId: "owner-real",
+    ownerIdSnapshot: "owner-real",
+    teamIdSnapshot: "team-real",
+    customerIdSnapshot: "customer-real",
+    leadIdSnapshot: "lead-real",
+    handoffIdSnapshot: fixture.acquisitionCustomerHandoffs[0]!.id,
+    candidateIdSnapshot: "candidate-real",
+    amountMinorSnapshot: 128_850,
+    currencySnapshot: "USD",
+    createdAt: "2026-08-03T01:00:00.000Z"
+  }];
+  Object.assign(fixture.deals[0]!, {
+    customerId: "customer-mutated",
+    ownerId: "owner-mutated",
+    teamId: "team-mutated",
+    amount: 1,
+    currency: "CNY"
+  });
+  const recorded: OutcomeInput[] = [];
+  const service = new AcquisitionCrmOutcomeReconciliationService({
+    store: fixture,
+    planRuns: persistedPlanRuns(),
+    outcomeRecorder: {
+      async recordOutcome(_scope, input) {
+        recorded.push(structuredClone(input));
+        return { id: input.idempotencyKey };
+      }
+    }
+  });
+
+  await service.runTenant({ ownerId: "owner-real", teamId: "team-real" });
+
+  assert.deepEqual(recorded.map((item) => ({
+    eventType: item.eventType,
+    candidateId: item.candidateId,
+    customerId: item.customerId,
+    amount: item.amount
+  })), [{
+    eventType: "quoted",
+    candidateId: "candidate-real",
+    customerId: "customer-real",
+    amount: { amountMinor: 128_850, currency: "USD" }
+  }]);
 });
 
 test("leaves the checkpoint before an Outcome failure so the durable CRM event can be retried", async () => {
@@ -399,11 +479,13 @@ test("rejects an ambiguous deal-to-handoff binding instead of selecting array or
     externalId: "candidate-second"
   });
   fixture.acquisitionCustomerHandoffs.push({
-    candidateId: "candidate-second",
-    leadId: "lead-second",
+    id: "handoff-real",
+    candidateId: "candidate-real",
+    leadId: "lead-real",
     customerId: "customer-real",
     ownerId: "owner-real",
-    teamId: "team-real"
+    teamId: "team-real",
+    dealId: "deal-real"
   });
   const service = new AcquisitionCrmOutcomeReconciliationService({
     store: fixture,
@@ -487,6 +569,14 @@ test("processes late and same-millisecond lower-id CRM events once across restar
     type: "quote",
     content: "same millisecond lower id quote",
     operatorId: "owner-real",
+    ownerIdSnapshot: "owner-real",
+    teamIdSnapshot: "team-real",
+    customerIdSnapshot: "customer-real",
+    leadIdSnapshot: "lead-real",
+    handoffIdSnapshot: "handoff-real",
+    candidateIdSnapshot: "candidate-real",
+    amountMinorSnapshot: 128_850,
+    currencySnapshot: "USD",
     createdAt: "2026-08-05T01:00:00.000Z"
   });
 
@@ -529,7 +619,10 @@ test("resolves attribution only from a persisted candidate.discovered event in a
     updatedAt: "2026-08-01T02:00:00.000Z"
   };
   const planRuns = {
-    async listRuns() { return [run]; },
+    async getRun(runId: string) {
+      assert.equal(runId, run.id);
+      return run;
+    },
     async listRunEvents(runId: string) {
       assert.equal(runId, run.id);
       return [{
@@ -564,7 +657,7 @@ test("resolves attribution only from a persisted candidate.discovered event in a
     }
   } as unknown as Pick<
     AcquisitionPlanRunRepository,
-    "listRuns" | "listRunEvents" | "listRunShards"
+    "getRun" | "listRunEvents" | "listRunShards"
   >;
   const resolver = new AcquisitionCandidateRunAttributionResolver({
     planRuns
@@ -574,6 +667,8 @@ test("resolves attribution only from a persisted candidate.discovered event in a
     ownerId: "owner-real",
     teamId: "team-real"
   }, {
+    runId: run.id,
+    discoveredEventId: "run-event-discovered",
     candidateId: "candidate-real",
     evidenceIds: ["evidence-real"],
     qualificationDecisionId: "decision-real",
@@ -587,12 +682,12 @@ test("resolves attribution only from a persisted candidate.discovered event in a
 test("does not substitute a Copilot session for a missing acquisition run", async () => {
   const resolver = new AcquisitionCandidateRunAttributionResolver({
     planRuns: {
-      async listRuns() { return []; },
+      async getRun() { return null; },
       async listRunEvents() { return []; },
       async listRunShards() { return []; }
     } as unknown as Pick<
       AcquisitionPlanRunRepository,
-      "listRuns" | "listRunEvents" | "listRunShards"
+      "getRun" | "listRunEvents" | "listRunShards"
     >
   });
 
@@ -600,6 +695,8 @@ test("does not substitute a Copilot session for a missing acquisition run", asyn
     ownerId: "owner-real",
     teamId: "team-real"
   }, {
+    runId: "run-missing",
+    discoveredEventId: "event-missing",
     candidateId: "candidate-real",
     evidenceIds: ["evidence-real"],
     qualificationDecisionId: "decision-real",

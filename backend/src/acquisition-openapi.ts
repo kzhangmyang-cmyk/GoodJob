@@ -536,6 +536,8 @@ const privateDomainHandoffResponseSchema = {
         "leadId",
         "customerId",
         "todoId",
+        "runId",
+        "discoveredEventId",
         "decisionVersion",
         "createdAt"
       ],
@@ -545,6 +547,8 @@ const privateDomainHandoffResponseSchema = {
         leadId: { type: "string" },
         customerId: { type: "string" },
         todoId: { type: "string" },
+        runId: { type: "string", nullable: true },
+        discoveredEventId: { type: "string", nullable: true },
         decisionVersion: { type: "string" },
         createdAt: { type: "string", format: "date-time" }
       }
@@ -1748,6 +1752,8 @@ const privateDomainHandoffWriteSchema = {
     type: "object",
     required: [
       "operationCode",
+      "runId",
+      "discoveredEventId",
       "decisionVersion",
       "mode",
       "existingCustomerId",
@@ -1758,6 +1764,8 @@ const privateDomainHandoffWriteSchema = {
         type: "string",
         enum: ["handoff_acquisition_candidate_v1"]
       },
+      runId: { type: "string", minLength: 1, maxLength: 255 },
+      discoveredEventId: { type: "string", minLength: 1, maxLength: 255 },
       decisionVersion: {
         type: "string",
         minLength: 1,
@@ -1789,6 +1797,8 @@ const privateDomainHandoffRequestSnapshotSchema = {
   type: "object",
   required: [
     "operationCode",
+    "runId",
+    "discoveredEventId",
     "decisionVersion",
     "mode",
     "existingCustomerId",
@@ -1799,6 +1809,8 @@ const privateDomainHandoffRequestSnapshotSchema = {
       type: "string",
       enum: ["handoff_acquisition_candidate_v1"]
     },
+    runId: { type: "string", minLength: 1, maxLength: 255 },
+    discoveredEventId: { type: "string", minLength: 1, maxLength: 255 },
     decisionVersion: {
       type: "string",
       minLength: 1,
@@ -2659,13 +2671,13 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
             name: "from",
             in: "query",
             required: true,
-            schema: { type: "string", format: "date-time" }
+            schema: { type: "string", format: "date" }
           },
           {
             name: "to",
             in: "query",
             required: true,
-            schema: { type: "string", format: "date-time" }
+            schema: { type: "string", format: "date" }
           }
         );
       }

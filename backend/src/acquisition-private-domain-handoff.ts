@@ -56,6 +56,8 @@ export interface AcquisitionPrivateDomainHandoffAttributionResolver {
   resolve(
     scope: { ownerId: string; teamId: string },
     input: {
+      runId: string;
+      discoveredEventId: string;
       candidateId: string;
       evidenceIds: string[];
       qualificationDecisionId: string;
@@ -113,6 +115,8 @@ function normalizeHandoffRequest(
 ): AcquisitionCustomerHandoffRequestSnapshot {
   return {
     operationCode: "handoff_acquisition_candidate_v1",
+    runId: request.runId.trim(),
+    discoveredEventId: request.discoveredEventId.trim(),
     decisionVersion: request.decisionVersion.trim(),
     mode: request.mode,
     existingCustomerId: request.mode === "link_existing"
@@ -124,6 +128,51 @@ function normalizeHandoffRequest(
       priority: request.followUp.priority
     }
   };
+}
+
+type LegacyAcquisitionCustomerHandoffRequestSnapshot = Omit<
+  AcquisitionCustomerHandoffRequestSnapshot,
+  "runId" | "discoveredEventId"
+>;
+
+function legacyHandoffRequestSnapshot(
+  value: unknown
+): LegacyAcquisitionCustomerHandoffRequestSnapshot | null {
+  if (!value || typeof value !== "object") return null;
+  const request = value as Partial<AcquisitionCustomerHandoffRequestSnapshot>;
+  const followUp = request.followUp;
+  if (request.operationCode !== "handoff_acquisition_candidate_v1"
+    || typeof request.decisionVersion !== "string"
+    || (request.mode !== "create_new" && request.mode !== "link_existing")
+    || typeof request.existingCustomerId !== "string"
+    || !followUp
+    || typeof followUp.title !== "string"
+    || typeof followUp.dueAt !== "string"
+    || !["high", "medium", "normal"].includes(followUp.priority)) {
+    return null;
+  }
+  return {
+    operationCode: request.operationCode,
+    decisionVersion: request.decisionVersion,
+    mode: request.mode,
+    existingCustomerId: request.existingCustomerId,
+    followUp: {
+      title: followUp.title,
+      dueAt: followUp.dueAt,
+      priority: followUp.priority
+    }
+  };
+}
+
+function hasPinnedAttributionRequest(
+  value: unknown
+): value is AcquisitionCustomerHandoffRequestSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const request = value as Partial<AcquisitionCustomerHandoffRequestSnapshot>;
+  return typeof request.runId === "string"
+    && request.runId.trim().length > 0
+    && typeof request.discoveredEventId === "string"
+    && request.discoveredEventId.trim().length > 0;
 }
 
 function removeById<T extends { id: string }>(values: T[], id: string) {
@@ -263,14 +312,36 @@ export class AcquisitionPrivateDomainHandoffService {
         409
       );
     }
-    if (operation && operation.requestHash !== requestHash) {
-      throw new AcquisitionPrivateDomainHandoffError(
-        "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT",
-        "候选已有使用不同规范化请求的未完成交接",
-        409
+    const legacyOperationRequest = operation
+      && !hasPinnedAttributionRequest(operation.request)
+      ? legacyHandoffRequestSnapshot(operation.request)
+      : null;
+    if (operation && legacyOperationRequest) {
+      const normalizedLegacyRequest = legacyHandoffRequestSnapshot(
+        normalizedRequest
       );
+      const storedLegacyHash = digest(
+        canonicalJsonStringify(legacyOperationRequest)
+      );
+      const incomingLegacyHash = normalizedLegacyRequest
+        ? digest(canonicalJsonStringify(normalizedLegacyRequest))
+        : "";
+      if (operation.requestHash !== storedLegacyHash
+        || operation.requestHash !== incomingLegacyHash) {
+        throw new AcquisitionPrivateDomainHandoffError(
+          "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT",
+          "候选已有使用不同规范化请求的未完成交接",
+          409
+        );
+      }
+    } else if (operation && operation.requestHash !== requestHash) {
+        throw new AcquisitionPrivateDomainHandoffError(
+          "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT",
+          "候选已有使用不同规范化请求的未完成交接",
+          409
+        );
     }
-    request = operation
+    request = operation && !legacyOperationRequest
       ? structuredClone(operation.request)
       : normalizedRequest;
     const candidate = await this.#repository.findCandidate(scope, candidateId);
@@ -328,12 +399,15 @@ export class AcquisitionPrivateDomainHandoffService {
         409
       );
     }
-    let acquisitionAttribution: OutcomeAttributionInput | null = null;
-    if (this.#attributionResolver) {
+    let acquisitionAttribution = operation?.acquisitionAttribution ?? null;
+    if ((!operation || !acquisitionAttribution || legacyOperationRequest)
+      && this.#attributionResolver) {
       try {
         acquisitionAttribution = await this.#attributionResolver.resolve(
           { ownerId: scope.ownerId, teamId: scope.teamId },
           {
+            runId: request.runId,
+            discoveredEventId: request.discoveredEventId,
             candidateId,
             evidenceIds: candidate.evidenceIds,
             qualificationDecisionId: qualification.id,
@@ -342,11 +416,39 @@ export class AcquisitionPrivateDomainHandoffService {
           }
         );
       } catch {
-        // Attribution is a bridge concern. CRM handoff remains available and
-        // the reconciler records a durable diagnostic instead of inventing a
-        // run or rolling the normal CRM operation back.
         acquisitionAttribution = null;
       }
+    }
+    if (!acquisitionAttribution) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        operation
+          ? "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING"
+          : "ACQUISITION_HANDOFF_ATTRIBUTION_INVALID",
+        operation
+          ? "未完成交接缺少固定获客归因，无法安全恢复"
+          : "指定的获客 Run 或发现事件无效",
+        409
+      );
+    }
+    if (operation && (legacyOperationRequest
+      || !operation.acquisitionAttribution)) {
+      const upgradedOperation = operation;
+      await this.#persistMutation(() => {
+        const previousOperation = structuredClone(upgradedOperation);
+        upgradedOperation.request = structuredClone(request);
+        upgradedOperation.requestHash = requestHash;
+        upgradedOperation.acquisitionAttribution = structuredClone(
+          acquisitionAttribution
+        );
+        upgradedOperation.updatedAt = new Date(this.#now()).toISOString();
+        return {
+          value: undefined,
+          rollback: () => Object.assign(
+            upgradedOperation,
+            previousOperation
+          )
+        };
+      });
     }
     if (qualification.hardGateFailures.length > 0) {
       throw new AcquisitionPrivateDomainHandoffError(
@@ -423,6 +525,7 @@ export class AcquisitionPrivateDomainHandoffService {
         intelligence: currentIntelligence,
         qualificationSnapshotHash: qualification.snapshotHash,
         financialSnapshotHash: financial.inputSnapshotHash,
+        acquisitionAttribution: structuredClone(acquisitionAttribution),
         request: structuredClone(request),
         createdAt,
         updatedAt: createdAt
@@ -689,6 +792,7 @@ export class AcquisitionPrivateDomainHandoffService {
       intelligence,
       qualificationSnapshotHash: operation.qualificationSnapshotHash,
       financialSnapshotHash: operation.financialSnapshotHash,
+      acquisitionAttribution: structuredClone(acquisitionAttribution),
       createdAt
     };
     const result: AcquisitionPrivateDomainHandoffResult = {

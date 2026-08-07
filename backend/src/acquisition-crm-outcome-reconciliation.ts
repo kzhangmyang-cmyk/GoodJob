@@ -34,6 +34,8 @@ type ReconciliationDeal = Pick<
 >;
 
 export interface AcquisitionCandidateRunAttributionInput {
+  runId: string;
+  discoveredEventId: string;
   candidateId: string;
   evidenceIds: string[];
   qualificationDecisionId: string;
@@ -44,13 +46,13 @@ export interface AcquisitionCandidateRunAttributionInput {
 export class AcquisitionCandidateRunAttributionResolver {
   readonly #planRuns: Pick<
     AcquisitionPlanRunRepository,
-    "listRuns" | "listRunEvents" | "listRunShards"
+    "getRun" | "listRunEvents" | "listRunShards"
   >;
 
   constructor(options: {
     planRuns: Pick<
       AcquisitionPlanRunRepository,
-      "listRuns" | "listRunEvents" | "listRunShards"
+      "getRun" | "listRunEvents" | "listRunShards"
     >;
   }) {
     this.#planRuns = options.planRuns;
@@ -60,57 +62,51 @@ export class AcquisitionCandidateRunAttributionResolver {
     scope: { ownerId: string; teamId: string },
     input: AcquisitionCandidateRunAttributionInput
   ): Promise<OutcomeAttributionInput | null> {
-    const runs = (await this.#planRuns.listRuns(scope))
-      .filter((run) =>
-        run.ownerId === scope.ownerId && run.teamId === scope.teamId)
-      .sort((left, right) =>
-        right.createdAt.localeCompare(left.createdAt)
-        || right.id.localeCompare(left.id));
-    for (const run of runs) {
-      const event = (await this.#planRuns.listRunEvents(run.id))
-        .filter((item) =>
-          item.runId === run.id
-          && item.ownerId === scope.ownerId
-          && item.teamId === scope.teamId
-          && item.type === "candidate.discovered"
-          && item.data.candidateId === input.candidateId
-          && isText(item.data.operationId)
-          && isText(item.data.connectionId)
-          && isText(item.shardId))
-        .sort((left, right) =>
-          right.at.localeCompare(left.at) || right.id.localeCompare(left.id))[0];
-      if (!event?.shardId) continue;
-      const shard = (await this.#planRuns.listRunShards(run.id)).find((item) =>
-        item.id === event.shardId
+    const run = await this.#planRuns.getRun(input.runId);
+    if (!run
+      || run.ownerId !== scope.ownerId
+      || run.teamId !== scope.teamId) return null;
+    const event = (await this.#planRuns.listRunEvents(run.id))
+      .find((item) =>
+        item.id === input.discoveredEventId
         && item.runId === run.id
         && item.ownerId === scope.ownerId
         && item.teamId === scope.teamId
-        && item.operationId === event.data.operationId
-        && item.connection.connectionId === event.data.connectionId);
-      if (!shard) continue;
-      return {
-        attributionVersion: "acquisition-run.v1",
-        runId: run.id,
-        planId: run.planId,
-        planVersionId: run.planVersionId,
-        planVersion: run.planVersion,
-        planSnapshotHash: run.planSnapshotHash,
-        discoveredEventId: event.id,
-        discoveredAt: event.at,
-        shardId: shard.id,
-        operationId: shard.operationId,
-        connectionId: shard.connection.connectionId,
-        providerId: shard.connection.providerId,
-        evidenceIds: [...new Set(input.evidenceIds)],
-        providerIds: [shard.connection.providerId],
-        queryIds: [`operation:${shard.operationId}`],
-        strategyVersion: `acquisition-plan-v${run.planVersion}`,
-        qualificationDecisionId: input.qualificationDecisionId,
-        decisionVersion: input.decisionVersion,
-        decisionSnapshotHash: input.decisionSnapshotHash
-      };
-    }
-    return null;
+        && item.type === "candidate.discovered"
+        && item.data.candidateId === input.candidateId
+        && isText(item.data.operationId)
+        && isText(item.data.connectionId)
+        && isText(item.shardId));
+    if (!event?.shardId) return null;
+    const shard = (await this.#planRuns.listRunShards(run.id)).find((item) =>
+      item.id === event.shardId
+      && item.runId === run.id
+      && item.ownerId === scope.ownerId
+      && item.teamId === scope.teamId
+      && item.operationId === event.data.operationId
+      && item.connection.connectionId === event.data.connectionId);
+    if (!shard) return null;
+    return {
+      attributionVersion: "acquisition-run.v1",
+      runId: run.id,
+      planId: run.planId,
+      planVersionId: run.planVersionId,
+      planVersion: run.planVersion,
+      planSnapshotHash: run.planSnapshotHash,
+      discoveredEventId: event.id,
+      discoveredAt: event.at,
+      shardId: shard.id,
+      operationId: shard.operationId,
+      connectionId: shard.connection.connectionId,
+      providerId: shard.connection.providerId,
+      evidenceIds: [...new Set(input.evidenceIds)],
+      providerIds: [shard.connection.providerId],
+      queryIds: [`operation:${shard.operationId}`],
+      strategyVersion: `acquisition-plan-v${run.planVersion}`,
+      qualificationDecisionId: input.qualificationDecisionId,
+      decisionVersion: input.decisionVersion,
+      decisionSnapshotHash: input.decisionSnapshotHash
+    };
   }
 }
 
@@ -119,11 +115,13 @@ export interface AcquisitionCrmOutcomeReconciliationStore {
   leadActivities: LeadActivity[];
   leadSourceEvents: LeadSourceEvent[];
   acquisitionCustomerHandoffs: Array<{
+    id: string;
     candidateId: string;
     leadId: string;
     customerId: string;
     ownerId: string;
     teamId: string;
+    dealId?: string;
   }>;
   deals: ReconciliationDeal[];
   dealEvents: DealEvent[];
@@ -221,14 +219,12 @@ function validAttribution(value: unknown): value is ReconciledOutcomeAttribution
       && (item[field] as unknown[]).every(isText));
 }
 
-function amountForDeal(deal: ReconciliationDeal) {
-  if (!Number.isFinite(deal.amount) || deal.amount < 0) return null;
-  const currency = deal.currency.trim().toUpperCase();
+function amountForDealEvent(event: DealEvent) {
+  if (!Number.isSafeInteger(event.amountMinorSnapshot)
+    || Number(event.amountMinorSnapshot) < 0) return null;
+  const currency = event.currencySnapshot?.trim().toUpperCase() ?? "";
   if (!/^[A-Z]{3}$/.test(currency)) return null;
-  const amountMinor = Math.round(deal.amount * 100);
-  return Number.isSafeInteger(amountMinor)
-    ? { amountMinor, currency }
-    : null;
+  return { amountMinor: Number(event.amountMinorSnapshot), currency };
 }
 
 export class AcquisitionCrmOutcomeReconciliationService {
@@ -287,7 +283,11 @@ export class AcquisitionCrmOutcomeReconciliationService {
           occurredAt: event.createdAt
         })),
       ...this.#store.dealEvents
-        .filter((event) => tenantDealIds.has(event.dealId))
+        .filter((event) =>
+          (event.ownerIdSnapshot === scope.ownerId
+            && event.teamIdSnapshot === scope.teamId)
+          || ((!event.ownerIdSnapshot || !event.teamIdSnapshot)
+            && tenantDealIds.has(event.dealId)))
         .map((event) => ({
           sourceKind: "deal_event" as const,
           event,
@@ -364,29 +364,55 @@ export class AcquisitionCrmOutcomeReconciliationService {
     const eventType = DEAL_OUTCOMES[event.type];
     if (!eventType) return null;
     const deal = this.#store.deals.find((item) => item.id === event.dealId);
-    if (!deal) return null;
+    const ownerId = event.ownerIdSnapshot || deal?.ownerId || "";
+    const teamId = event.teamIdSnapshot || deal?.teamId || "";
+    const completeSnapshot = Boolean(
+      event.ownerIdSnapshot
+      && event.teamIdSnapshot
+      && event.customerIdSnapshot
+      && event.leadIdSnapshot
+      && event.handoffIdSnapshot
+      && event.candidateIdSnapshot
+      && amountForDealEvent(event)
+    );
+    if (!completeSnapshot) {
+      return ownerId && teamId ? { diagnostic: {
+        ownerId,
+        teamId,
+        sourceKind: "deal_event" as const,
+        sourceId: event.id,
+        candidateId: event.candidateIdSnapshot ?? null,
+        code: "deal_binding_ambiguous" as const,
+        message: "DealEvent is missing its immutable acquisition binding snapshot",
+        occurredAt: event.createdAt
+      } } : null;
+    }
     const bindings = this.#store.acquisitionCustomerHandoffs
       .filter((item) =>
-        item.customerId === deal.customerId
-        && item.ownerId === deal.ownerId
-        && item.teamId === deal.teamId)
+        item.id === event.handoffIdSnapshot
+        && item.dealId === event.dealId
+        && item.customerId === event.customerIdSnapshot
+        && item.candidateId === event.candidateIdSnapshot
+        && item.leadId === event.leadIdSnapshot
+        && item.ownerId === event.ownerIdSnapshot
+        && item.teamId === event.teamIdSnapshot)
       .flatMap((handoff) => {
         const lead = this.#store.leads.find((item) =>
           item.id === handoff.leadId
-          && item.ownerId === deal.ownerId
-          && item.teamId === deal.teamId
-          && item.convertedCustomerId === deal.customerId
-          && item.convertedDealId === deal.id
+          && item.ownerId === event.ownerIdSnapshot
+          && item.teamId === event.teamIdSnapshot
+          && item.convertedCustomerId === event.customerIdSnapshot
+          && item.convertedDealId === event.dealId
           && item.externalId === handoff.candidateId);
         return lead ? [{ handoff, lead }] : [];
       });
     if (bindings.length !== 1) {
       return { diagnostic: {
-        ownerId: deal.ownerId,
-        teamId: deal.teamId,
+        ownerId: event.ownerIdSnapshot!,
+        teamId: event.teamIdSnapshot!,
         sourceKind: "deal_event" as const,
         sourceId: event.id,
-        candidateId: null,
+        candidateId: event.candidateIdSnapshot,
         code: "deal_binding_ambiguous" as const,
         message: "Deal does not have exactly one evidence-backed acquisition binding",
         occurredAt: event.createdAt
@@ -397,10 +423,10 @@ export class AcquisitionCrmOutcomeReconciliationService {
       sourceKind: "deal_event",
       sourceId: event.id,
       lead,
-      customerId: deal.customerId,
+      customerId: event.customerIdSnapshot,
       eventType,
       occurredAt: event.createdAt,
-      amount: amountForDeal(deal),
+      amount: amountForDealEvent(event),
       reasonText: event.content
     });
   }

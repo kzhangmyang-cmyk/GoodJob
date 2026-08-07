@@ -1204,6 +1204,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/acquisition/performance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read acquisition funnel, currency-separated contract values, and owner briefing facts */
+        get: operations["getAcquisitionPerformance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/acquisition/copilot/sessions": {
         parameters: {
             query?: never;
@@ -1372,6 +1389,64 @@ export interface components {
         OutcomeFeedbackPagedResult: {
             items: components["schemas"]["outcome-feedback.v1.schema"][];
             nextCursor: string | null;
+        };
+        AcquisitionPerformance: {
+            counts: {
+                discovered: number;
+                highIntent: number;
+                approved: number;
+                converted: number;
+                contacted: number;
+                quoted: number;
+                won: number;
+                lost: number;
+            };
+            rates: {
+                highIntentRate: number | null;
+                approvalRate: number | null;
+                crmConversionRate: number | null;
+                contactRate: number | null;
+                quoteRate: number | null;
+                winRate: number | null;
+            };
+            valuesByCurrency: {
+                currency: string;
+                estimatedPipelineMinor: number;
+                quotedMinor: number;
+                wonContractMinor: number;
+            }[];
+            cost: {
+                /** @enum {string} */
+                status: "available" | "not_aggregatable";
+                executionCostMinor: number | null;
+                currency: string | null;
+                /** @enum {string} */
+                coverage: "recorded_api_execution_only";
+            };
+            roi: {
+                /** @enum {string} */
+                status: "not_computable";
+                /** @enum {string} */
+                reason: "channel_cost_or_verified_margin_unavailable";
+            };
+            dataQuality: {
+                missingAttribution: number;
+                missingFinancial: number;
+                truncated: boolean;
+                /** Format: date-time */
+                lastReconciledAt: string | null;
+            };
+            briefingFacts: {
+                headlines: components["schemas"]["AcquisitionPerformanceFact"][];
+                risks: components["schemas"]["AcquisitionPerformanceFact"][];
+                actions: components["schemas"]["AcquisitionPerformanceFact"][];
+                metricIds: string[];
+            };
+        };
+        AcquisitionPerformanceFact: {
+            metricId: string;
+            text: string;
+            evidenceRefs: string[];
         };
         CopilotMessagePagedResult: {
             items: components["schemas"]["copilot-message.v1.schema"][];
@@ -2411,7 +2486,20 @@ export interface components {
             demandSignalId: string;
         };
         liveAttribution: {
+            /** @constant */
+            attributionVersion: "acquisition-run.v1";
             runId: string;
+            planId: string;
+            planVersionId: string;
+            planVersion: number;
+            planSnapshotHash: string;
+            discoveredEventId: string;
+            /** Format: date-time */
+            discoveredAt: string;
+            shardId: string;
+            operationId: string;
+            connectionId: string;
+            providerId: string;
             evidenceIds: string[];
             providerIds: string[];
             queryIds: string[];
@@ -2462,7 +2550,20 @@ export interface components {
                     currency: string;
                 };
                 liveAttribution: {
+                    /** @constant */
+                    attributionVersion: "acquisition-run.v1";
                     runId: string;
+                    planId: string;
+                    planVersionId: string;
+                    planVersion: number;
+                    planSnapshotHash: string;
+                    discoveredEventId: string;
+                    /** Format: date-time */
+                    discoveredAt: string;
+                    shardId: string;
+                    operationId: string;
+                    connectionId: string;
+                    providerId: string;
                     evidenceIds: string[];
                     providerIds: string[];
                     queryIds: string[];
@@ -6265,6 +6366,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OutcomeFeedbackPagedResult"];
+                };
+            };
+            /** @description Unified API error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getAcquisitionPerformance: {
+        parameters: {
+            query: {
+                platform?: "douyin" | "web";
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Acquisition performance */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AcquisitionPerformance"];
                 };
             };
             /** @description Unified API error */

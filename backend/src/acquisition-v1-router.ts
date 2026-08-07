@@ -324,6 +324,8 @@ const convertBodySchema = z.object({
 
 const privateDomainHandoffBodySchema = z.object({
   operationCode: z.literal("handoff_acquisition_candidate_v1"),
+  runId: idSchema,
+  discoveredEventId: idSchema,
   decisionVersion: requiredText(100),
   mode: z.enum(["create_new", "link_existing"]),
   existingCustomerId: z.string().trim().max(255),
@@ -848,6 +850,9 @@ function publicPrivateDomainHandoff(
       leadId: result.handoff.leadId,
       customerId: result.handoff.customerId,
       todoId: result.handoff.todoId,
+      runId: result.handoff.acquisitionAttribution?.runId ?? null,
+      discoveredEventId:
+        result.handoff.acquisitionAttribution?.discoveredEventId ?? null,
       decisionVersion: result.handoff.decisionVersion,
       createdAt: result.handoff.createdAt
     },

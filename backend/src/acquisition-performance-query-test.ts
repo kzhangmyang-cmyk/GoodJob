@@ -74,6 +74,7 @@ function fixture() {
       candidateId: "candidate-a",
       eventType: "contacted",
       occurredAt: "2026-08-02T00:00:00.000Z",
+      attribution: { runId: "run-a" },
       amount: null
     }, {
       id: "outcome-quoted",
@@ -82,6 +83,7 @@ function fixture() {
       candidateId: "candidate-a",
       eventType: "quoted",
       occurredAt: "2026-08-03T00:00:00.000Z",
+      attribution: { runId: "run-a" },
       amount: { amountMinor: 10_000, currency: "USD" }
     }, {
       id: "outcome-won",
@@ -90,6 +92,7 @@ function fixture() {
       candidateId: "candidate-a",
       eventType: "won",
       occurredAt: "2026-08-04T00:00:00.000Z",
+      attribution: { runId: "run-a" },
       amount: { amountMinor: 9_000, currency: "USD" }
     }, {
       id: "outcome-quoted-duplicate",
@@ -98,6 +101,7 @@ function fixture() {
       candidateId: "candidate-a",
       eventType: "quoted",
       occurredAt: "2026-08-03T01:00:00.000Z",
+      attribution: { runId: "run-a" },
       amount: { amountMinor: 10_000, currency: "USD" }
     }]],
     ["candidate-b", [{
@@ -107,6 +111,7 @@ function fixture() {
       candidateId: "candidate-b",
       eventType: "lost",
       occurredAt: "2026-08-05T00:00:00.000Z",
+      attribution: { runId: "run-a" },
       amount: null
     }]]
   ]);
@@ -159,6 +164,19 @@ function fixture() {
           ownerId: scope.ownerId,
           teamId: scope.teamId,
           candidateId
+        }] : [];
+      },
+      async listFinancialValues(_scope: unknown, candidateId: string) {
+        const snapshot = candidates.find((item) =>
+          item.candidate.id === candidateId);
+        return snapshot?.financial ? [{
+          ...snapshot.financial,
+          id: `financial-${candidateId}`,
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          candidateId,
+          qualificationDecisionId: `qualification-${candidateId}`,
+          createdAt: snapshot.qualification?.createdAt
         }] : [];
       },
       async listAuditEvents(_scope: unknown, candidateId: string) {
@@ -264,6 +282,7 @@ test("returns null for every zero-denominator rate", async () => {
       async getPresentationCandidateSnapshots() { return []; },
       async listOutcomes() { return []; },
       async listQualificationDecisions() { return []; },
+      async listFinancialValues() { return []; },
       async listAuditEvents() { return []; }
     } as never,
     diagnostics: [],
@@ -295,6 +314,7 @@ test("performance reads never invoke CRM reconciliation or any write path", asyn
       async getPresentationCandidateSnapshots() { return []; },
       async listOutcomes() { return []; },
       async listQualificationDecisions() { return []; },
+      async listFinancialValues() { return []; },
       async listAuditEvents() { return []; }
     } as never,
     diagnostics: [],
@@ -408,6 +428,7 @@ test("uses qualification, approval and conversion event time instead of current 
           createdAt: "2026-08-10T00:00:00.000Z"
         }];
       },
+      async listFinancialValues() { return []; },
       async listAuditEvents() {
         return [{
           id: "audit-late-approved",
@@ -445,4 +466,333 @@ test("uses qualification, approval and conversion event time instead of current 
     lost: 0
   });
   assert.deepEqual(result.valuesByCurrency, []);
+});
+
+test("uses Financial history tied to the qualification selected inside the window", async () => {
+  const service = new AcquisitionPerformanceQueryService({
+    planRuns: {
+      async listRuns() { return [{
+        id: "run-history-financial",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        planVersionId: "version-history-financial",
+        billingCurrency: "CNY",
+        consumedBudget: { amountMinor: 0 },
+        createdAt: "2026-08-01T00:00:00.000Z"
+      }]; },
+      async getPlanVersion() { return { payload: {} }; },
+      async listRunEvents() { return [{
+        id: "event-history-financial",
+        runId: "run-history-financial",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        type: "candidate.discovered",
+        at: "2026-08-01T01:00:00.000Z",
+        data: { candidateId: "candidate-history-financial" }
+      }]; }
+    } as never,
+    domain: {
+      async getPresentationCandidateSnapshots() { return [{
+        candidate: {
+          id: "candidate-history-financial",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId
+        },
+        qualification: { id: "qualification-future", grade: "A" },
+        financial: { currency: "CNY", expectedRevenueMinor: 999_999 }
+      }]; },
+      async listQualificationDecisions() { return [{
+        id: "qualification-window",
+        candidateId: "candidate-history-financial",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        grade: "A",
+        createdAt: "2026-08-02T00:00:00.000Z"
+      }, {
+        id: "qualification-future",
+        candidateId: "candidate-history-financial",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        grade: "A",
+        createdAt: "2026-08-10T00:00:00.000Z"
+      }]; },
+      async listFinancialValues() { return [{
+        id: "financial-window",
+        candidateId: "candidate-history-financial",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        qualificationDecisionId: "qualification-window",
+        currency: "USD",
+        expectedRevenueMinor: 12_345,
+        createdAt: "2026-08-02T00:01:00.000Z"
+      }, {
+        id: "financial-future",
+        candidateId: "candidate-history-financial",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        qualificationDecisionId: "qualification-future",
+        currency: "CNY",
+        expectedRevenueMinor: 999_999,
+        createdAt: "2026-08-10T00:01:00.000Z"
+      }]; },
+      async listOutcomes() { return []; },
+      async listAuditEvents() { return []; }
+    } as never,
+    diagnostics: []
+  });
+
+  const result = await service.get(scope, {
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-07T23:59:59.999Z"
+  });
+  assert.deepEqual(result.valuesByCurrency, [{
+    currency: "USD",
+    estimatedPipelineMinor: 12_345,
+    quotedMinor: 0,
+    wonContractMinor: 0
+  }]);
+});
+
+test("platform filtering follows immutable Outcome run attribution", async () => {
+  const service = new AcquisitionPerformanceQueryService({
+    planRuns: {
+      async listRuns() { return ["douyin", "web"].map((platform) => ({
+        id: `run-${platform}`,
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        planVersionId: `version-${platform}`,
+        billingCurrency: "CNY",
+        consumedBudget: { amountMinor: 0 },
+        createdAt: "2026-08-01T00:00:00.000Z"
+      })); },
+      async getPlanVersion(id: string) {
+        return { payload: { targetPlatform: id.endsWith("web") ? "web" : "douyin" } };
+      },
+      async listRunEvents(runId: string) { return [{
+        id: `event-${runId}`,
+        runId,
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        type: "candidate.discovered",
+        at: "2026-08-01T01:00:00.000Z",
+        data: { candidateId: "candidate-shared" }
+      }]; }
+    } as never,
+    domain: {
+      async getPresentationCandidateSnapshots() { return [{
+        candidate: {
+          id: "candidate-shared",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId
+        },
+        qualification: null,
+        financial: null
+      }]; },
+      async listQualificationDecisions() { return []; },
+      async listFinancialValues() { return []; },
+      async listOutcomes() { return [{
+        id: "outcome-web-won",
+        candidateId: "candidate-shared",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        eventType: "won",
+        occurredAt: "2026-08-03T00:00:00.000Z",
+        attribution: { runId: "run-web" },
+        amount: { currency: "CNY", amountMinor: 88_800 }
+      }]; },
+      async listAuditEvents() { return []; }
+    } as never,
+    diagnostics: []
+  });
+  const result = await service.get(scope, {
+    platform: "douyin",
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-07T23:59:59.999Z"
+  });
+  assert.equal(result.counts.won, 0);
+  assert.deepEqual(result.valuesByCurrency, []);
+});
+
+test("caps deterministic candidates before per-candidate fan-out and reports truncation", async () => {
+  const calls: string[] = [];
+  const service = new AcquisitionPerformanceQueryService({
+    limits: { candidates: 1 },
+    planRuns: {
+      async listRuns() { return [{
+        id: "run-bounded",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        planVersionId: "version-bounded",
+        billingCurrency: "CNY",
+        consumedBudget: { amountMinor: 0 },
+        createdAt: "2026-08-01T00:00:00.000Z"
+      }]; },
+      async getPlanVersion() { return { payload: {} }; },
+      async listRunEvents() { return ["candidate-b", "candidate-a"].map((candidateId) => ({
+        id: `event-${candidateId}`,
+        runId: "run-bounded",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        type: "candidate.discovered",
+        at: "2026-08-01T01:00:00.000Z",
+        data: { candidateId }
+      })); }
+    } as never,
+    domain: {
+      async getPresentationCandidateSnapshots(_scope: unknown, ids: string[]) {
+        assert.deepEqual(ids, ["candidate-a"]);
+        return ids.map((id) => ({ candidate: {
+          id,
+          ownerId: scope.ownerId,
+          teamId: scope.teamId
+        }, qualification: null, financial: null }));
+      },
+      async listQualificationDecisions(_scope: unknown, id: string) {
+        calls.push(`qualification:${id}`); return [];
+      },
+      async listFinancialValues(_scope: unknown, id: string) {
+        calls.push(`financial:${id}`); return [];
+      },
+      async listOutcomes(_scope: unknown, id: string) {
+        calls.push(`outcomes:${id}`); return [];
+      },
+      async listAuditEvents(_scope: unknown, id: string) {
+        calls.push(`audit:${id}`); return [];
+      }
+    } as never,
+    diagnostics: []
+  } as never);
+  const result = await service.get(scope, {
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-07T23:59:59.999Z"
+  });
+  assert.deepEqual(calls.sort(), [
+    "audit:candidate-a",
+    "financial:candidate-a",
+    "outcomes:candidate-a",
+    "qualification:candidate-a"
+  ]);
+  assert.equal(result.dataQuality.truncated, true);
+});
+
+test("historical windows are not evicted by newer runs outside the requested windows", async () => {
+  const service = new AcquisitionPerformanceQueryService({
+    limits: { runs: 1 },
+    planRuns: {
+      async listRuns() {
+        return [{
+          id: "run-future",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          planVersionId: "version-future",
+          billingCurrency: "CNY",
+          consumedBudget: { amountMinor: 0 },
+          createdAt: "2026-08-20T00:00:00.000Z"
+        }, {
+          id: "run-historical",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          planVersionId: "version-historical",
+          billingCurrency: "CNY",
+          consumedBudget: { amountMinor: 0 },
+          createdAt: "2026-07-01T00:00:00.000Z"
+        }];
+      },
+      async getPlanVersion() { return { payload: {} }; },
+      async listRunEvents(runId: string) {
+        return runId === "run-historical" ? [{
+          id: "event-historical",
+          runId,
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          type: "candidate.discovered",
+          at: "2026-08-01T01:00:00.000Z",
+          data: { candidateId: "candidate-historical" }
+        }] : [];
+      }
+    } as never,
+    domain: {
+      async getPresentationCandidateSnapshots() { return [{
+        candidate: {
+          id: "candidate-historical",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId
+        },
+        qualification: null,
+        financial: null
+      }]; },
+      async listQualificationDecisions() { return []; },
+      async listFinancialValues() { return []; },
+      async listOutcomes() { return []; },
+      async listAuditEvents() { return []; }
+    } as never,
+    diagnostics: []
+  });
+
+  const result = await service.get(scope, {
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-07T23:59:59.999Z"
+  });
+
+  assert.equal(result.counts.discovered, 1);
+  assert.equal(result.dataQuality.truncated, false);
+});
+
+test("historical discovery events are not evicted by newer events outside the requested windows", async () => {
+  const service = new AcquisitionPerformanceQueryService({
+    limits: { eventsPerRun: 1 },
+    planRuns: {
+      async listRuns() { return [{
+        id: "run-historical-events",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        planVersionId: "version-historical-events",
+        billingCurrency: "CNY",
+        consumedBudget: { amountMinor: 0 },
+        createdAt: "2026-08-01T00:00:00.000Z"
+      }]; },
+      async getPlanVersion() { return { payload: {} }; },
+      async listRunEvents() { return [{
+        id: "event-future",
+        runId: "run-historical-events",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        type: "candidate.discovered",
+        at: "2026-08-20T01:00:00.000Z",
+        data: { candidateId: "candidate-future" }
+      }, {
+        id: "event-historical",
+        runId: "run-historical-events",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        type: "candidate.discovered",
+        at: "2026-08-01T01:00:00.000Z",
+        data: { candidateId: "candidate-historical" }
+      }]; }
+    } as never,
+    domain: {
+      async getPresentationCandidateSnapshots() { return [{
+        candidate: {
+          id: "candidate-historical",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId
+        },
+        qualification: null,
+        financial: null
+      }]; },
+      async listQualificationDecisions() { return []; },
+      async listFinancialValues() { return []; },
+      async listOutcomes() { return []; },
+      async listAuditEvents() { return []; }
+    } as never,
+    diagnostics: []
+  });
+
+  const result = await service.get(scope, {
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-07T23:59:59.999Z"
+  });
+
+  assert.equal(result.counts.discovered, 1);
+  assert.equal(result.dataQuality.truncated, false);
 });

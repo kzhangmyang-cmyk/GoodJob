@@ -4131,7 +4131,11 @@ const dealBodySchema = z.object({
   expectedCloseAt: z.string().trim().optional().default("")
 });
 const createDealBodySchema = dealBodySchema.extend({
-  recommendationId: z.string().trim().max(90).optional().default("")
+  recommendationId: z.string().trim().max(90).optional().default(""),
+  acquisitionBinding: z.object({
+    leadId: z.string().trim().min(1).max(255),
+    handoffId: z.string().trim().min(1).max(255)
+  }).strict().optional()
 });
 
 function calculatedDealAmount(body: { amount?: number; quantity: number; unitPrice: number }) {
@@ -4139,10 +4143,43 @@ function calculatedDealAmount(body: { amount?: number; quantity: number; unitPri
   return Math.round(body.quantity * body.unitPrice * 100) / 100;
 }
 
-function createDealEvent(input: Omit<DealEvent, "id" | "createdAt"> & { createdAt?: string }) {
+function createDealEvent(input: Omit<
+  DealEvent,
+  | "id"
+  | "createdAt"
+  | "ownerIdSnapshot"
+  | "teamIdSnapshot"
+  | "customerIdSnapshot"
+  | "leadIdSnapshot"
+  | "handoffIdSnapshot"
+  | "candidateIdSnapshot"
+  | "amountMinorSnapshot"
+  | "currencySnapshot"
+> & { createdAt?: string }) {
   const store = getStore();
+  const deal = store.deals.find((item) => item.id === input.dealId);
+  const binding = deal
+    ? store.acquisitionCustomerHandoffs.find((item) =>
+      item.dealId === deal.id
+      && item.ownerId === deal.ownerId
+      && item.teamId === deal.teamId
+      && item.customerId === deal.customerId)
+    : undefined;
+  const amountMinor = deal ? Math.round(deal.amount * 100) : Number.NaN;
+  const currency = deal?.currency.trim().toUpperCase() ?? "";
   const event: DealEvent = {
     ...input,
+    ownerIdSnapshot: deal?.ownerId ?? null,
+    teamIdSnapshot: deal?.teamId ?? null,
+    customerIdSnapshot: deal?.customerId ?? null,
+    leadIdSnapshot: binding?.leadId ?? null,
+    handoffIdSnapshot: binding?.id ?? null,
+    candidateIdSnapshot: binding?.candidateId ?? null,
+    amountMinorSnapshot: Number.isSafeInteger(amountMinor)
+      && amountMinor >= 0
+      ? amountMinor
+      : null,
+    currencySnapshot: /^[A-Z]{3}$/.test(currency) ? currency : null,
     id: `de_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     createdAt: input.createdAt || new Date().toISOString()
   };
@@ -4192,6 +4229,34 @@ app.post("/api/deals", requireAuth, asyncRoute(async (req, res) => {
       return;
     }
   }
+  const acquisitionHandoffs = body.acquisitionBinding
+    ? store.acquisitionCustomerHandoffs.filter((item) =>
+      item.id === body.acquisitionBinding!.handoffId
+      && item.ownerId === customer.ownerId
+      && item.teamId === customer.teamId
+      && item.customerId === customer.id
+      && item.leadId === body.acquisitionBinding!.leadId)
+    : [];
+  const acquisitionHandoff = acquisitionHandoffs[0];
+  const acquisitionLead = acquisitionHandoff
+    ? store.leads.find((item) =>
+      item.id === acquisitionHandoff.leadId
+      && item.ownerId === customer.ownerId
+      && item.teamId === customer.teamId
+      && item.convertedCustomerId === customer.id
+      && item.externalId === acquisitionHandoff.candidateId)
+    : undefined;
+  if (body.acquisitionBinding
+    && (acquisitionHandoffs.length !== 1 || !acquisitionLead)) {
+    res.status(404).json({
+      message: "获客交接绑定不存在、不属于当前租户或与客户不匹配"
+    });
+    return;
+  }
+  if (acquisitionHandoff?.dealId || acquisitionLead?.convertedDealId) {
+    res.status(409).json({ message: "该获客交接已绑定其他商机" });
+    return;
+  }
   const now = new Date().toISOString();
   const deal: Deal = {
     id: `d_${Date.now()}`,
@@ -4212,7 +4277,75 @@ app.post("/api/deals", requireAuth, asyncRoute(async (req, res) => {
     stageChangedAt: now,
     archivedAt: undefined
   };
-  store.deals.unshift(deal);
+  if (acquisitionHandoff && acquisitionLead) {
+    const persistBinding = () => {
+      const currentHandoffs = store.acquisitionCustomerHandoffs.filter((item) =>
+        item.id === acquisitionHandoff.id
+        && item.ownerId === customer.ownerId
+        && item.teamId === customer.teamId
+        && item.customerId === customer.id
+        && item.leadId === acquisitionLead.id);
+      const currentHandoff = currentHandoffs[0];
+      const currentLead = currentHandoff
+        ? store.leads.find((item) =>
+          item.id === currentHandoff.leadId
+          && item.ownerId === customer.ownerId
+          && item.teamId === customer.teamId
+          && item.convertedCustomerId === customer.id
+          && item.externalId === currentHandoff.candidateId)
+        : undefined;
+      if (currentHandoffs.length !== 1 || !currentLead) {
+        return {
+          value: "missing" as const,
+          rollback: () => undefined
+        };
+      }
+      if (currentHandoff.dealId || currentLead.convertedDealId) {
+        return {
+          value: "conflict" as const,
+          rollback: () => undefined
+        };
+      }
+      const previousDealId = currentHandoff.dealId;
+      const previousConvertedDealId = currentLead.convertedDealId;
+      store.deals.unshift(deal);
+      currentHandoff.dealId = deal.id;
+      currentLead.convertedDealId = deal.id;
+      return {
+        value: "created" as const,
+        rollback: () => {
+          store.deals = store.deals.filter((item) => item.id !== deal.id);
+          currentHandoff.dealId = previousDealId;
+          currentLead.convertedDealId = previousConvertedDealId;
+        }
+      };
+    };
+    let bindingResult: ReturnType<typeof persistBinding>["value"];
+    if (store.persistMutation) {
+      bindingResult = await store.persistMutation(persistBinding);
+    } else {
+      const mutation = persistBinding();
+      try {
+        await store.persist();
+        bindingResult = mutation.value;
+      } catch (error) {
+        mutation.rollback();
+        throw error;
+      }
+    }
+    if (bindingResult === "missing") {
+      res.status(404).json({
+        message: "获客交接绑定不存在、不属于当前租户或与客户不匹配"
+      });
+      return;
+    }
+    if (bindingResult === "conflict") {
+      res.status(409).json({ message: "该获客交接已绑定其他商机" });
+      return;
+    }
+  } else {
+    store.deals.unshift(deal);
+  }
   createDealEvent({
     dealId: deal.id,
     type: "created",

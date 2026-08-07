@@ -294,6 +294,27 @@ test("private-domain handoff route enforces server-owned input and supports repl
       },
       qualificationSnapshotHash: `sha256:${"c".repeat(64)}`,
       financialSnapshotHash: `sha256:${"d".repeat(64)}`,
+      acquisitionAttribution: {
+        attributionVersion: "acquisition-run.v1",
+        runId: "run-router",
+        planId: "plan-router",
+        planVersionId: "plan-version-router",
+        planVersion: 1,
+        planSnapshotHash: `sha256:${"e".repeat(64)}`,
+        discoveredEventId: "discovered-router",
+        discoveredAt: "2026-08-07T07:00:00.000Z",
+        shardId: "shard-router",
+        operationId: "operation-router",
+        connectionId: "connection-router",
+        providerId: "provider-router",
+        evidenceIds: ["evidence-router"],
+        providerIds: ["provider-router"],
+        queryIds: ["operation:operation-router"],
+        strategyVersion: "acquisition-plan-v1",
+        qualificationDecisionId: "qualification-router",
+        decisionVersion: "qualification-v2",
+        decisionSnapshotHash: `sha256:${"c".repeat(64)}`
+      },
       createdAt: "2026-08-07T08:00:00.000Z"
     },
     lead: {
@@ -392,6 +413,8 @@ test("private-domain handoff route enforces server-owned input and supports repl
               stage: "customer_ready",
               request: {
                 operationCode: "handoff_acquisition_candidate_v1",
+                runId: "run-router",
+                discoveredEventId: "discovered-router",
                 decisionVersion: "qualification-v2",
                 mode: "link_existing",
                 existingCustomerId: "customer-original-target",
@@ -411,6 +434,8 @@ test("private-domain handoff route enforces server-owned input and supports repl
   });
   const body = {
     operationCode: "handoff_acquisition_candidate_v1",
+    runId: "run-router",
+    discoveredEventId: "discovered-router",
     decisionVersion: "qualification-v2",
     mode: "create_new",
     existingCustomerId: "",

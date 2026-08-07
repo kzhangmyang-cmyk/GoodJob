@@ -1,3 +1,5 @@
+import type { OutcomeAttributionInput } from "./acquisition-domain.js";
+
 export type Role = "sales" | "manager" | "admin" | "super_admin";
 
 export interface User {
@@ -310,6 +312,7 @@ export interface AcquisitionCustomerHandoff {
   leadId: string;
   customerId: string;
   todoId: string;
+  dealId?: string;
   decisionVersion: string;
   mode: "create_new" | "link_existing";
   processingKeyHash: string;
@@ -318,6 +321,7 @@ export interface AcquisitionCustomerHandoff {
   intelligence: AcquisitionHandoffIntelligence;
   qualificationSnapshotHash: string;
   financialSnapshotHash: string;
+  acquisitionAttribution: OutcomeAttributionInput | null;
   createdAt: string;
 }
 
@@ -331,6 +335,8 @@ export type AcquisitionCustomerHandoffStage =
 
 export interface AcquisitionCustomerHandoffRequestSnapshot {
   operationCode: "handoff_acquisition_candidate_v1";
+  runId: string;
+  discoveredEventId: string;
   decisionVersion: string;
   mode: "create_new" | "link_existing";
   existingCustomerId: string;
@@ -361,6 +367,7 @@ export interface AcquisitionCustomerHandoffOperation {
   intelligence: AcquisitionHandoffIntelligence;
   qualificationSnapshotHash: string;
   financialSnapshotHash: string;
+  acquisitionAttribution: OutcomeAttributionInput | null;
   request: AcquisitionCustomerHandoffRequestSnapshot;
   createdAt: string;
   updatedAt: string;
@@ -2562,6 +2569,14 @@ export interface DealEvent {
   type: DealEventType;
   content: string;
   operatorId: string;
+  ownerIdSnapshot: string | null;
+  teamIdSnapshot: string | null;
+  customerIdSnapshot: string | null;
+  leadIdSnapshot: string | null;
+  handoffIdSnapshot: string | null;
+  candidateIdSnapshot: string | null;
+  amountMinorSnapshot: number | null;
+  currencySnapshot: string | null;
   fromStage?: Deal["stage"];
   toStage?: Deal["stage"];
   nextAction?: string;

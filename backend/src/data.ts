@@ -358,9 +358,9 @@ export const deals: Deal[] = [
 ];
 
 export const dealEvents: DealEvent[] = [
-  { id: "de1", dealId: "d1", type: "quote", content: "已向客户发送 PI-2026-0706-001，等待确认付款方式。", operatorId: "u_sales_shirley", fromStage: "已联系", toStage: "已报价", nextAction: "二次确认报价", nextActionAt: "2026-07-11", relatedDocumentId: "td_seed_pi", createdAt: "2026-07-06T09:00:00.000Z" },
-  { id: "de2", dealId: "d2", type: "sample", content: "客户已签收样品，等待内部测试反馈。", operatorId: "u_sales_shirley", fromStage: "已报价", toStage: "样品", nextAction: "确认样品反馈", nextActionAt: "2026-07-11", createdAt: "2026-07-09T08:30:00.000Z" },
-  { id: "de3", dealId: "d5", type: "won", content: "客户已确认 PI 与付款条件，商机成交。", operatorId: "u_sales_shirley", fromStage: "谈判", toStage: "成交", nextAction: "确认定金与订单交付", nextActionAt: "2026-07-17", createdAt: "2026-07-10T05:30:00.000Z" }
+  { id: "de1", dealId: "d1", type: "quote", content: "已向客户发送 PI-2026-0706-001，等待确认付款方式。", operatorId: "u_sales_shirley", ownerIdSnapshot: null, teamIdSnapshot: null, customerIdSnapshot: null, leadIdSnapshot: null, handoffIdSnapshot: null, candidateIdSnapshot: null, amountMinorSnapshot: null, currencySnapshot: null, fromStage: "已联系", toStage: "已报价", nextAction: "二次确认报价", nextActionAt: "2026-07-11", relatedDocumentId: "td_seed_pi", createdAt: "2026-07-06T09:00:00.000Z" },
+  { id: "de2", dealId: "d2", type: "sample", content: "客户已签收样品，等待内部测试反馈。", operatorId: "u_sales_shirley", ownerIdSnapshot: null, teamIdSnapshot: null, customerIdSnapshot: null, leadIdSnapshot: null, handoffIdSnapshot: null, candidateIdSnapshot: null, amountMinorSnapshot: null, currencySnapshot: null, fromStage: "已报价", toStage: "样品", nextAction: "确认样品反馈", nextActionAt: "2026-07-11", createdAt: "2026-07-09T08:30:00.000Z" },
+  { id: "de3", dealId: "d5", type: "won", content: "客户已确认 PI 与付款条件，商机成交。", operatorId: "u_sales_shirley", ownerIdSnapshot: null, teamIdSnapshot: null, customerIdSnapshot: null, leadIdSnapshot: null, handoffIdSnapshot: null, candidateIdSnapshot: null, amountMinorSnapshot: null, currencySnapshot: null, fromStage: "谈判", toStage: "成交", nextAction: "确认定金与订单交付", nextActionAt: "2026-07-17", createdAt: "2026-07-10T05:30:00.000Z" }
 ];
 
 export const reminders: Reminder[] = [

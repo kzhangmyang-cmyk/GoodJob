@@ -1023,8 +1023,8 @@ paths:
       security: [{ bearerAuth: [] }, { cookieAuth: [] }]
       parameters:
         - { name: platform, in: query, required: false, schema: { type: string, enum: [douyin, web] } }
-        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
-        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: from, in: query, required: true, schema: { type: string, format: date } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date } }
       responses:
         <<: *acquisitionStandardResponses
         '200': { description: Acquisition performance, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionPerformance' } } } }

@@ -15,6 +15,22 @@ export interface AcquisitionPerformanceQuery {
   to: string;
 }
 
+export interface AcquisitionPerformanceQueryLimits {
+  runs: number;
+  eventsPerRun: number;
+  candidates: number;
+  historyPerCandidate: number;
+  evidenceRefs: number;
+}
+
+const defaultLimits: AcquisitionPerformanceQueryLimits = {
+  runs: 100,
+  eventsPerRun: 1_000,
+  candidates: 500,
+  historyPerCandidate: 500,
+  evidenceRefs: 500
+};
+
 export interface AcquisitionPerformanceFact {
   metricId: string;
   text: string;
@@ -121,11 +137,13 @@ export class AcquisitionPerformanceQueryService {
     AcquisitionDomainRepository,
     | "getPresentationCandidateSnapshots"
     | "listQualificationDecisions"
+    | "listFinancialValues"
     | "listOutcomes"
     | "listAuditEvents"
   >;
   readonly #diagnostics: AcquisitionOutcomeReconciliationDiagnostic[];
   readonly #checkpoints: PerformanceCheckpoint[];
+  readonly #limits: AcquisitionPerformanceQueryLimits;
 
   constructor(options: {
     planRuns: Pick<
@@ -136,11 +154,13 @@ export class AcquisitionPerformanceQueryService {
       AcquisitionDomainRepository,
       | "getPresentationCandidateSnapshots"
       | "listQualificationDecisions"
+      | "listFinancialValues"
       | "listOutcomes"
       | "listAuditEvents"
     >;
     diagnostics: AcquisitionOutcomeReconciliationDiagnostic[];
     checkpoints?: PerformanceCheckpoint[];
+    limits?: Partial<AcquisitionPerformanceQueryLimits>;
     /** Accepted temporarily for backwards-compatible composition; never called. */
     reconcile?: PerformanceReconciler;
   }) {
@@ -148,41 +168,65 @@ export class AcquisitionPerformanceQueryService {
     this.#domain = options.domain;
     this.#diagnostics = options.diagnostics;
     this.#checkpoints = options.checkpoints ?? [];
+    this.#limits = { ...defaultLimits, ...options.limits };
+    for (const [name, value] of Object.entries(this.#limits)) {
+      if (!Number.isSafeInteger(value) || value < 1) {
+        throw new TypeError(`performance limit ${name} must be a positive integer`);
+      }
+    }
   }
 
   async get(
     scope: { ownerId: string; teamId: string },
     query: AcquisitionPerformanceQuery
   ): Promise<AcquisitionPerformanceDto> {
-    const lastReconciledAt = this.#checkpoints
-      .filter((item) =>
-        item.ownerId === scope.ownerId && item.teamId === scope.teamId)
-      .map((item) => item.updatedAt)
-      .sort((left, right) => right.localeCompare(left))[0] ?? null;
-    const scopedRuns = (await this.#planRuns.listRuns(scope)).filter((run) =>
-      run.ownerId === scope.ownerId && run.teamId === scope.teamId);
-    const selectedRuns = (await Promise.all(scopedRuns.map(async (run) => ({
-      run,
-      version: await this.#planRuns.getPlanVersion(run.planVersionId)
-    })))).filter(({ version }) =>
-      !query.platform || version?.payload.targetPlatform === query.platform);
-    const allDiscoveryEvents = (await Promise.all(selectedRuns.map(
-      async ({ run }) => (await this.#planRuns.listRunEvents(run.id))
-        .filter((event) =>
-          event.runId === run.id
-          && event.ownerId === scope.ownerId
-          && event.teamId === scope.teamId
-          && event.type === "candidate.discovered"
-          && typeof event.data.candidateId === "string"
-          && event.data.candidateId)
-    ))).flat();
-    const discoveryEvents = allDiscoveryEvents.filter((event) =>
-      inWindow(event.at, query.from, query.to));
+    let truncated = false;
     const fromMs = new Date(query.from).getTime();
     const toMs = new Date(query.to).getTime();
     const windowDurationMs = toMs - fromMs + 1;
     const previousFrom = new Date(fromMs - windowDurationMs).toISOString();
     const previousTo = new Date(fromMs - 1).toISOString();
+    const inRelevantWindow = (value: string) =>
+      inWindow(value, previousFrom, previousTo)
+      || inWindow(value, query.from, query.to);
+    const lastReconciledAt = this.#checkpoints
+      .filter((item) =>
+        item.ownerId === scope.ownerId && item.teamId === scope.teamId)
+      .map((item) => item.updatedAt)
+      .sort((left, right) => right.localeCompare(left))[0] ?? null;
+    const allScopedRuns = (await this.#planRuns.listRuns(scope)).filter((run) =>
+      run.ownerId === scope.ownerId
+      && run.teamId === scope.teamId
+      && run.createdAt <= query.to)
+      .sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt)
+        || right.id.localeCompare(left.id));
+    if (allScopedRuns.length > this.#limits.runs) truncated = true;
+    const scopedRuns = allScopedRuns.slice(0, this.#limits.runs);
+    const selectedRuns = (await Promise.all(scopedRuns.map(async (run) => ({
+      run,
+      version: await this.#planRuns.getPlanVersion(run.planVersionId)
+    })))).filter(({ version }) =>
+      !query.platform || version?.payload.targetPlatform === query.platform);
+    const selectedRunIds = new Set(selectedRuns.map(({ run }) => run.id));
+    const allDiscoveryEvents = (await Promise.all(selectedRuns.map(
+      async ({ run }) => {
+        const events = (await this.#planRuns.listRunEvents(run.id))
+          .filter((event) =>
+            event.runId === run.id
+            && event.ownerId === scope.ownerId
+            && event.teamId === scope.teamId
+            && event.type === "candidate.discovered"
+            && event.data.candidateId
+            && inRelevantWindow(event.at))
+          .sort((left, right) =>
+            right.at.localeCompare(left.at) || right.id.localeCompare(left.id));
+        if (events.length > this.#limits.eventsPerRun) truncated = true;
+        return events.slice(0, this.#limits.eventsPerRun);
+      }
+    ))).flat();
+    const discoveryEvents = allDiscoveryEvents.filter((event) =>
+      inWindow(event.at, query.from, query.to));
     const previousDiscoveryEvents = allDiscoveryEvents.filter((event) =>
       inWindow(event.at, previousFrom, previousTo));
     const candidateEvent = new Map<string, (typeof discoveryEvents)[number]>();
@@ -190,20 +234,24 @@ export class AcquisitionPerformanceQueryService {
       left.at.localeCompare(right.at) || left.id.localeCompare(right.id))) {
       candidateEvent.set(String(event.data.candidateId), event);
     }
-    const candidateIds = [...candidateEvent.keys()].sort();
+    const allCandidateIds = [...candidateEvent.keys()].sort();
+    if (allCandidateIds.length > this.#limits.candidates) truncated = true;
+    const candidateIds = allCandidateIds.slice(0, this.#limits.candidates);
+    const boundedCandidateIds = new Set(candidateIds);
     const snapshots = candidateIds.length
       ? await this.#domain.getPresentationCandidateSnapshots(scope, candidateIds)
       : [];
     const scopedSnapshots = snapshots.filter((snapshot) =>
-      candidateEvent.has(snapshot.candidate.id)
+      boundedCandidateIds.has(snapshot.candidate.id)
       && snapshot.candidate.ownerId === scope.ownerId
       && snapshot.candidate.teamId === scope.teamId);
-    const qualificationByCandidate = new Map((await Promise.all(
-      candidateIds.map(async (candidateId) => {
-        const decisions = (await this.#domain.listQualificationDecisions(
-          scope,
-          candidateId
-        )).filter((decision) =>
+    const candidateHistory = await Promise.all(candidateIds.map(
+      async (candidateId) => {
+        const [allDecisions, allFinancials] = await Promise.all([
+          this.#domain.listQualificationDecisions(scope, candidateId),
+          this.#domain.listFinancialValues(scope, candidateId)
+        ]);
+        const decisions = allDecisions.filter((decision) =>
           decision.candidateId === candidateId
           && decision.ownerId === scope.ownerId
           && decision.teamId === scope.teamId
@@ -211,23 +259,62 @@ export class AcquisitionPerformanceQueryService {
           .sort((left, right) =>
             right.createdAt.localeCompare(left.createdAt)
             || right.id.localeCompare(left.id));
-        return [candidateId, decisions[0] ?? null] as const;
-      })
-    )));
-    const outcomes = (await Promise.all(candidateIds.map(async (candidateId) =>
-      (await this.#domain.listOutcomes(scope, candidateId)).filter((outcome) =>
-        outcome.candidateId === candidateId
-        && outcome.ownerId === scope.ownerId
-        && outcome.teamId === scope.teamId
-        && inWindow(outcome.occurredAt, query.from, query.to))
+        const financials = allFinancials.filter((financial) =>
+          financial.candidateId === candidateId
+          && financial.ownerId === scope.ownerId
+          && financial.teamId === scope.teamId
+          && inWindow(financial.createdAt, query.from, query.to))
+          .sort((left, right) =>
+            right.createdAt.localeCompare(left.createdAt)
+            || right.id.localeCompare(left.id));
+        if (decisions.length > this.#limits.historyPerCandidate
+          || financials.length > this.#limits.historyPerCandidate) {
+          truncated = true;
+        }
+        const qualification = decisions
+          .slice(0, this.#limits.historyPerCandidate)[0] ?? null;
+        const financial = qualification
+          ? financials.slice(0, this.#limits.historyPerCandidate).find((item) =>
+              item.qualificationDecisionId === qualification.id) ?? null
+          : null;
+        return { candidateId, qualification, financial };
+      }
+    ));
+    const qualificationByCandidate = new Map(candidateHistory.map((item) =>
+      [item.candidateId, item.qualification] as const));
+    const financialByCandidate = new Map(candidateHistory.map((item) =>
+      [item.candidateId, item.financial] as const));
+    const outcomes = (await Promise.all(candidateIds.map(
+      async (candidateId) => {
+        const items = (await this.#domain.listOutcomes(scope, candidateId))
+          .filter((outcome) =>
+            outcome.candidateId === candidateId
+            && outcome.ownerId === scope.ownerId
+            && outcome.teamId === scope.teamId
+            && inWindow(outcome.occurredAt, query.from, query.to)
+            && (!query.platform
+              || selectedRunIds.has(outcome.attribution?.runId ?? "")))
+          .sort((left, right) =>
+            right.occurredAt.localeCompare(left.occurredAt)
+            || right.id.localeCompare(left.id));
+        if (items.length > this.#limits.historyPerCandidate) truncated = true;
+        return items.slice(0, this.#limits.historyPerCandidate);
+      }
     ))).flat();
     const auditEvents = (await Promise.all(candidateIds.map(
-      async (candidateId) =>
-        (await this.#domain.listAuditEvents(scope, candidateId)).filter((event) =>
-          event.candidateId === candidateId
-          && event.ownerId === scope.ownerId
-          && event.teamId === scope.teamId
-          && inWindow(event.createdAt, query.from, query.to))
+      async (candidateId) => {
+        const items = (await this.#domain.listAuditEvents(scope, candidateId))
+          .filter((event) =>
+            event.candidateId === candidateId
+            && event.ownerId === scope.ownerId
+            && event.teamId === scope.teamId
+            && inWindow(event.createdAt, query.from, query.to))
+          .sort((left, right) =>
+            right.createdAt.localeCompare(left.createdAt)
+            || right.id.localeCompare(left.id));
+        if (items.length > this.#limits.historyPerCandidate) truncated = true;
+        return items.slice(0, this.#limits.historyPerCandidate);
+      }
     ))).flat();
     const candidatesForOutcome = (eventType: string) => new Set(outcomes
       .filter((outcome) => outcome.eventType === eventType)
@@ -278,12 +365,10 @@ export class AcquisitionPerformanceQueryService {
       return current;
     };
     for (const snapshot of scopedSnapshots) {
-      if (!snapshot.financial
-        || !qualificationByCandidate.get(snapshot.candidate.id)) {
-        continue;
-      }
-      currency(snapshot.financial.currency).estimatedPipelineMinor +=
-        snapshot.financial.expectedRevenueMinor;
+      const financial = financialByCandidate.get(snapshot.candidate.id);
+      if (!financial) continue;
+      currency(financial.currency).estimatedPipelineMinor +=
+        financial.expectedRevenueMinor;
     }
     const stableMonetaryOutcomes = new Map<string, (typeof outcomes)[number]>();
     for (const outcome of outcomes.filter((item) =>
@@ -337,14 +422,21 @@ export class AcquisitionPerformanceQueryService {
           coverage: "recorded_api_execution_only"
         };
     const missingFinancial = scopedSnapshots.filter((snapshot) =>
-      snapshot.financial === null).length;
+      !financialByCandidate.get(snapshot.candidate.id)).length;
     const missingAttribution = this.#diagnostics.filter((item) =>
       item.ownerId === scope.ownerId
       && item.teamId === scope.teamId
       && ["attribution_missing", "attribution_invalid", "attribution_cross_tenant"]
         .includes(item.code)
       && inWindow(item.occurredAt, query.from, query.to)).length;
-    const headlineRefs = discoveryEvents.map((event) => event.id);
+    const boundedEvidenceRefs = (refs: string[]) => {
+      const unique = [...new Set(refs)];
+      if (unique.length > this.#limits.evidenceRefs) truncated = true;
+      return unique.slice(0, this.#limits.evidenceRefs);
+    };
+    const headlineRefs = boundedEvidenceRefs(discoveryEvents
+      .filter((event) => boundedCandidateIds.has(String(event.data.candidateId)))
+      .map((event) => event.id));
     const previousCandidates = new Set(previousDiscoveryEvents.map((event) =>
       String(event.data.candidateId)));
     const discoveredDelta = counts.discovered - previousCandidates.size;
@@ -360,33 +452,38 @@ export class AcquisitionPerformanceQueryService {
       fact(
         "funnel.discovered.delta",
         `本期去重候选较前一可比窗口变化 ${signedDelta}（前期 ${previousCandidates.size}，本期 ${counts.discovered}）。`,
-        [...headlineRefs, ...previousDiscoveryEvents.map((event) => event.id)]
+        boundedEvidenceRefs([
+          ...headlineRefs,
+          ...previousDiscoveryEvents.map((event) => event.id)
+        ])
       ),
       fact(
         "funnel.won",
         `本期成交 ${counts.won} 个候选；金额仅表示成交合同额。`,
-        outcomes.filter((item) => item.eventType === "won").map((item) => item.id)
+        boundedEvidenceRefs(outcomes
+          .filter((item) => item.eventType === "won")
+          .map((item) => item.id))
       )
     ];
     const risks = [
       fact(
         "data.missing_attribution",
         `缺失或无效获客归因 ${missingAttribution} 条。`,
-        this.#diagnostics.filter((item) =>
+        boundedEvidenceRefs(this.#diagnostics.filter((item) =>
           item.ownerId === scope.ownerId && item.teamId === scope.teamId)
-          .map((item) => item.id)
+          .map((item) => item.id))
       ),
       fact(
         "roi.status",
         "缺少完整渠道成本、财务核销或可验证毛利，ROI 暂不可计算。",
-        selectedRuns.map(({ run }) => run.id)
+        boundedEvidenceRefs(selectedRuns.map(({ run }) => run.id))
       )
     ];
     const actions = [
       fact(
         "action.follow_up_converted",
         `优先检查 ${Math.max(0, converted - contacted)} 个尚无联系结果的已转 CRM 候选。`,
-        candidateIds
+        boundedEvidenceRefs(candidateIds)
       )
     ];
     return {
@@ -401,7 +498,7 @@ export class AcquisitionPerformanceQueryService {
       dataQuality: {
         missingAttribution,
         missingFinancial,
-        truncated: false,
+        truncated,
         lastReconciledAt
       },
       briefingFacts: {

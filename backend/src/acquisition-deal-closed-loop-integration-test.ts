@@ -1,0 +1,709 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { Server } from "node:http";
+import express from "express";
+import { app } from "./server.js";
+import {
+  createAcquisitionApplication
+} from "./acquisition-application.js";
+import type {
+  AcquisitionCandidate,
+  DiscoveryEvidence,
+  FinancialValueDecision,
+  OutcomeInput,
+  QualificationDecision
+} from "./acquisition-domain.js";
+import {
+  InMemoryAcquisitionDomainRepository
+} from "./acquisition-domain-repository.js";
+import {
+  InMemoryAcquisitionPlanRunRepository,
+  type AcquisitionOperationShard,
+  type AcquisitionRun
+} from "./acquisition-plan-run-repository.js";
+import {
+  AcquisitionCrmOutcomeReconciliationService
+} from "./acquisition-crm-outcome-reconciliation.js";
+import {
+  AcquisitionCrmOutcomeReconciliationWorker
+} from "./acquisition-crm-outcome-reconciliation-worker.js";
+import {
+  AcquisitionPerformanceQueryService
+} from "./acquisition-performance-query.js";
+import {
+  createAcquisitionPerformanceRouter
+} from "./acquisition-performance-router.js";
+import { getStore } from "./store.js";
+
+async function listen(application: typeof app = app): Promise<{
+  server: Server;
+  request(path: string, init?: RequestInit): Promise<{
+    response: Response;
+    json: any;
+  }>;
+}> {
+  const server = await new Promise<Server>((resolve) => {
+    const listening = application.listen(
+      0,
+      "127.0.0.1",
+      () => resolve(listening)
+    );
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("test server did not bind");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  return {
+    server,
+    async request(path, init = {}) {
+      const headers = new Headers(init.headers);
+      if (init.body) headers.set("content-type", "application/json");
+      const response = await fetch(`${baseUrl}${path}`, { ...init, headers });
+      return {
+        response,
+        json: await response.json().catch(() => null)
+      };
+    }
+  };
+}
+
+test("real handoff HTTP output binds one Deal and reaches performance", async () => {
+  const store = getStore();
+  const owner = store.users.find((item) => item.email === "alex@goodjob.com");
+  assert.ok(owner);
+  const originalReconciliationState = {
+    diagnostics: structuredClone(
+      store.acquisitionOutcomeReconciliationDiagnostics
+    ),
+    checkpoints: structuredClone(
+      store.acquisitionOutcomeReconciliationCheckpoints
+    ),
+    processedSources: structuredClone(
+      store.acquisitionOutcomeReconciliationProcessedSources
+    )
+  };
+  const suffix = `closed-loop-${Date.now()}`;
+  const candidateId = `candidate-${suffix}`;
+  const evidenceId = `evidence-${suffix}`;
+  const qualificationDecisionId = `qualification-${suffix}`;
+  const runId = `run-${suffix}`;
+  const discoveredEventId = `discovered-${suffix}`;
+  const shardId = `shard-${suffix}`;
+  const operationId = `operation-${suffix}`;
+  const connectionId = `connection-${suffix}`;
+  const domainRepository = new InMemoryAcquisitionDomainRepository();
+  const planRunRepository = new InMemoryAcquisitionPlanRunRepository();
+  domainRepository.bindPresentationRunRepository(planRunRepository);
+  const evidence: DiscoveryEvidence = {
+    id: evidenceId,
+    ownerId: owner.id,
+    teamId: owner.teamId,
+    targetType: "organization",
+    sourcePlatform: "baidu_ai_search",
+    sourceTitle: "公开采购需求",
+    sourceSnippet: "寻找长期供应商",
+    publishedAt: "2026-08-06T00:00:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: `sha256:${"a".repeat(64)}`,
+    contentHash: `sha256:${"b".repeat(64)}`,
+    provenance: {
+      kind: "search_result",
+      provider: "baidu_ai_search",
+      queryText: "采购需求",
+      sourceUrl: "https://example.test/acquisition",
+      resultRank: 1
+    },
+    accessStatus: "public_content",
+    supersedesEvidenceId: null,
+    fetchedAt: "2026-08-07T07:00:00.000Z"
+  };
+  const candidate: AcquisitionCandidate = {
+    id: candidateId,
+    ownerId: owner.id,
+    teamId: owner.teamId,
+    partyType: "organization",
+    partyRef: {
+      partyType: "organization",
+      organizationId: `organization-${suffix}`,
+      tenantProspectId: `tenant-prospect-${suffix}`
+    },
+    profile: {
+      kind: "organization",
+      name: "闭环集成测试客户",
+      domain: "closed-loop.example",
+      region: "中国",
+      creditCode: null
+    },
+    evidenceIds: [evidenceId],
+    status: "approved",
+    latestDecisionId: qualificationDecisionId,
+    latestDecisionVersion: "qualification-v2",
+    approvedDecisionVersion: "qualification-v2",
+    hardGateFailures: [],
+    leadId: null,
+    createdAt: "2026-08-07T07:00:00.000Z",
+    updatedAt: "2026-08-07T07:40:00.000Z",
+    version: 3
+  };
+  const qualification: QualificationDecision = {
+    id: qualificationDecisionId,
+    ownerId: owner.id,
+    teamId: owner.teamId,
+    candidateId,
+    decisionVersion: "qualification-v2",
+    decisionEngine: "model",
+    grade: "S",
+    score: 94,
+    recommendedAction: "priority_review",
+    evidence: [{ evidenceId, excerpt: "寻找长期供应商" }],
+    positiveSignals: [{ name: "purchase_intent", score: 98 }],
+    negativeSignals: [],
+    reasons: ["公开需求明确"],
+    confidence: 0.94,
+    ruleVersion: "qualification-rules-v2",
+    promptVersion: "qualification-prompt-v2",
+    modelProvider: "server-provider",
+    model: "server-model",
+    hardGateFailures: [],
+    snapshotHash: `sha256:${"c".repeat(64)}`,
+    createdAt: "2026-08-07T07:30:00.000Z"
+  };
+  const financial: FinancialValueDecision = {
+    id: `financial-${suffix}`,
+    ownerId: owner.id,
+    teamId: owner.teamId,
+    candidateId,
+    qualificationDecisionId,
+    version: "financial-v1",
+    grade: "A",
+    score: 90,
+    currency: "CNY",
+    expectedRevenueMinor: 1_288_000,
+    expectedGrossProfitMinor: 708_400,
+    expectedContributionMinor: 520_000,
+    factors: {
+      profitability: 90,
+      cashFlow: 88,
+      creditQuality: 92,
+      repeatPotential: 85,
+      referralPotential: 80,
+      closeProbability: 86
+    },
+    inputSnapshotHash: `sha256:${"d".repeat(64)}`,
+    createdAt: "2026-08-07T07:31:00.000Z"
+  };
+  const modelSnapshotRef = {
+    jobSnapshotId: `snapshot-${suffix}`,
+    connectionId: `model-${suffix}`,
+    credentialVersion: 1,
+    provider: "moonshot",
+    model: "kimi-k3",
+    capabilitySnapshotHash: `sha256:${"f".repeat(64)}`,
+    promptVersion: "acquisition.v1",
+    schemaVersion: "acquisition-plan.v1",
+    promptHash: `sha256:${"1".repeat(64)}`,
+    schemaHash: `sha256:${"2".repeat(64)}`
+  };
+  const run: AcquisitionRun = {
+    id: runId,
+    ownerId: owner.id,
+    teamId: owner.teamId,
+    planId: `plan-${suffix}`,
+    planVersionId: `plan-version-${suffix}`,
+    planVersion: 1,
+    planSnapshotHash: `sha256:${"e".repeat(64)}`,
+    parentRunId: null,
+    status: "succeeded",
+    terminationIntent: null,
+    revision: 2,
+    etag: `"${runId}:2"`,
+    budgetSnapshotId: `budget-${suffix}`,
+    budgetSnapshot: {
+      billingCurrency: "CNY",
+      maxRequests: 1,
+      maxResults: 1,
+      maxAmountMinor: 100,
+      maxDurationSeconds: 60
+    },
+    budgetSnapshotHash: `sha256:${"3".repeat(64)}`,
+    billingCurrency: "CNY",
+    modelSnapshotRef,
+    consumedBudget: {
+      requests: 1,
+      results: 1,
+      amountMinor: 100,
+      durationSeconds: 1
+    },
+    evidenceCount: 1,
+    reason: null,
+    createdBy: owner.id,
+    createdAt: "2026-08-07T06:00:00.000Z",
+    updatedBy: owner.id,
+    updatedAt: "2026-08-07T07:00:00.000Z",
+    completedAt: "2026-08-07T07:00:00.000Z"
+  };
+  const shard: AcquisitionOperationShard = {
+    id: shardId,
+    runId,
+    ownerId: owner.id,
+    teamId: owner.teamId,
+    operationId,
+    parentShardId: null,
+    subjectChannel: "organization",
+    kind: "search",
+    connection: {
+      connectionId,
+      providerId: "baidu_ai_search",
+      kind: "search",
+      status: "active",
+      credentialVersion: 1
+    },
+    query: "采购需求",
+    sourceRef: "",
+    status: "succeeded",
+    budgetSnapshotId: run.budgetSnapshotId,
+    allocatedBudget: {
+      requests: 1,
+      results: 1,
+      amountMinor: 100,
+      durationSeconds: 60
+    },
+    consumedBudget: structuredClone(run.consumedBudget),
+    modelSnapshotRef,
+    evidenceCount: 1,
+    revision: 2,
+    createdAt: "2026-08-07T06:00:00.000Z",
+    updatedAt: "2026-08-07T07:00:00.000Z",
+    completedAt: "2026-08-07T07:00:00.000Z"
+  };
+  const attribution = {
+    attributionVersion: "acquisition-run.v1" as const,
+    runId,
+    planId: run.planId,
+    planVersionId: run.planVersionId,
+    planVersion: 1,
+    planSnapshotHash: run.planSnapshotHash,
+    discoveredEventId,
+    discoveredAt: "2026-08-07T07:00:00.000Z",
+    shardId,
+    operationId,
+    connectionId,
+    providerId: "baidu_ai_search",
+    evidenceIds: [evidenceId],
+    providerIds: ["baidu_ai_search"],
+    queryIds: [`operation:${operationId}`],
+    strategyVersion: "acquisition-plan-v1",
+    qualificationDecisionId,
+    decisionVersion: "qualification-v2",
+    decisionSnapshotHash: `sha256:${"c".repeat(64)}`
+  };
+  await domainRepository.appendEvidence(evidence);
+  await domainRepository.insertCandidate(candidate);
+  await domainRepository.appendQualificationDecision(qualification);
+  await domainRepository.appendFinancialValue(financial);
+  await planRunRepository.transaction((transaction) => {
+    transaction.putRun(run);
+    transaction.putShard(shard);
+    transaction.appendRunEvent({
+      id: discoveredEventId,
+      runId,
+      shardId,
+      ownerId: owner.id,
+      teamId: owner.teamId,
+      type: "candidate.discovered",
+      actorId: owner.id,
+      revision: 2,
+      at: attribution.discoveredAt,
+      data: { candidateId, operationId, connectionId }
+    });
+  });
+  const acquisitionRuntime = await createAcquisitionApplication({
+    store,
+    masterSecret: "closed-loop-integration-master-secret-at-least-32-bytes",
+    domainRepository,
+    planRunRepository,
+    now: () => "2026-08-07T08:00:00.000Z",
+    outcomeReconciliationIntervalMs: 60_000
+  });
+  const acquisitionApp = express();
+  acquisitionApp.use(express.json());
+  acquisitionApp.use((request, _response, next) => {
+    request.user = {
+      id: owner.id,
+      name: owner.name,
+      email: owner.email,
+      role: owner.role,
+      teamId: owner.teamId,
+      avatar: owner.avatar,
+      authVersion: owner.authVersion ?? 1
+    };
+    next();
+  });
+  acquisitionApp.use(acquisitionRuntime.handler);
+  const acquisitionHttp = await listen(acquisitionApp as typeof app);
+
+  const runtime = await listen();
+  let customerId = "";
+  let leadId = "";
+  let handoffId = "";
+  try {
+    const login = await runtime.request("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({
+        email: owner.email,
+        password: "goodjob123"
+      })
+    });
+    assert.equal(login.response.status, 200);
+    const handoff = await acquisitionHttp.request(
+      `/api/v1/acquisition/candidates/${candidateId}/private-domain-handoffs`,
+      {
+        method: "POST",
+        headers: {
+          "Idempotency-Key": `handoff-${suffix}`
+        },
+        body: JSON.stringify({
+          operationCode: "handoff_acquisition_candidate_v1",
+          runId,
+          discoveredEventId,
+          decisionVersion: "qualification-v2",
+          mode: "create_new",
+          existingCustomerId: "",
+          followUp: {
+            title: "首次跟进：确认需求和预算",
+            dueAt: "2026-08-08T09:00:00.000Z",
+            priority: "high"
+          }
+        })
+      }
+    );
+    assert.equal(handoff.response.status, 200);
+    customerId = handoff.json.handoff.customerId;
+    leadId = handoff.json.handoff.leadId;
+    handoffId = handoff.json.handoff.id;
+    assert.equal(handoff.json.handoff.runId, runId);
+    assert.equal(handoff.json.handoff.discoveredEventId, discoveredEventId);
+    assert.equal(handoff.json.customer.amount, 12_880);
+    assert.equal(
+      store.acquisitionCustomerHandoffs.find((item) =>
+        item.id === handoffId)?.acquisitionAttribution?.runId,
+      runId
+    );
+    const handoffSource = store.leadSourceEvents.find((item) =>
+      item.leadId === leadId
+      && item.channel === "acquisition_private_domain_handoff_snapshot"
+    );
+    assert.deepEqual(
+      JSON.parse(handoffSource?.rawPayload ?? "{}").acquisitionAttribution,
+      attribution
+    );
+    const dealInput = {
+      customerId,
+      title: "获客闭环商机",
+      product: "GoodJob CRM",
+      quantity: 1,
+      unitPrice: 12_880,
+      currency: "CNY",
+      nextAction: "发送正式报价",
+      nextActionAt: "2026-08-09",
+      expectedCloseAt: "2026-08-31",
+      acquisitionBinding: { leadId, handoffId }
+    };
+    const originalPersistMutation = store.persistMutation;
+    let releaseConcurrentMutations!: () => void;
+    const concurrentMutationGate = new Promise<void>((resolve) => {
+      releaseConcurrentMutations = resolve;
+    });
+    let concurrentMutationArrivals = 0;
+    let mutationTail = Promise.resolve();
+    store.persistMutation = async <T>(mutation: () => {
+      value: T;
+      rollback(): void;
+    }) => {
+      concurrentMutationArrivals += 1;
+      if (concurrentMutationArrivals === 2) releaseConcurrentMutations();
+      await concurrentMutationGate;
+      const previous = mutationTail;
+      let releaseMutation!: () => void;
+      mutationTail = new Promise<void>((resolve) => {
+        releaseMutation = resolve;
+      });
+      await previous;
+      const applied = mutation();
+      try {
+        await store.persist();
+        return applied.value;
+      } catch (error) {
+        applied.rollback();
+        throw error;
+      } finally {
+        releaseMutation();
+      }
+    };
+    let attempts: Awaited<ReturnType<typeof runtime.request>>[];
+    try {
+      attempts = await Promise.all([
+        runtime.request("/api/deals", {
+          method: "POST",
+          headers: { authorization: `Bearer ${login.json.token}` },
+          body: JSON.stringify(dealInput)
+        }),
+        runtime.request("/api/deals", {
+          method: "POST",
+          headers: { authorization: `Bearer ${login.json.token}` },
+          body: JSON.stringify({ ...dealInput, title: "并发重复商机" })
+        })
+      ]);
+    } finally {
+      store.persistMutation = originalPersistMutation;
+    }
+    assert.deepEqual(
+      attempts.map((attempt) => attempt.response.status).sort(),
+      [200, 409]
+    );
+    const created = attempts.find((attempt) => attempt.response.status === 200)!;
+    assert.equal(created.response.status, 200);
+    assert.equal(
+      store.leads.find((item) => item.id === leadId)?.convertedDealId,
+      created.json.deal.id
+    );
+    const duplicateBinding = await runtime.request("/api/deals", {
+      method: "POST",
+      headers: { authorization: `Bearer ${login.json.token}` },
+      body: JSON.stringify({ ...dealInput, title: "不得创建的重复商机" })
+    });
+    assert.equal(duplicateBinding.response.status, 409);
+    assert.equal(store.deals.filter((item) =>
+      item.id === created.json.deal.id
+      || item.title === "并发重复商机"
+      || item.title === "不得创建的重复商机").length, 1);
+    const quote = await runtime.request(`/api/deals/${created.json.deal.id}/events`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${login.json.token}` },
+      body: JSON.stringify({
+        type: "quote",
+        content: "已发送 CNY 12,880 报价",
+        nextAction: "确认报价",
+        nextActionAt: "2026-08-10"
+      })
+    });
+    assert.equal(quote.response.status, 200);
+    assert.deepEqual({
+      ownerIdSnapshot: quote.json.event.ownerIdSnapshot,
+      teamIdSnapshot: quote.json.event.teamIdSnapshot,
+      customerIdSnapshot: quote.json.event.customerIdSnapshot,
+      leadIdSnapshot: quote.json.event.leadIdSnapshot,
+      handoffIdSnapshot: quote.json.event.handoffIdSnapshot,
+      candidateIdSnapshot: quote.json.event.candidateIdSnapshot,
+      amountMinorSnapshot: quote.json.event.amountMinorSnapshot,
+      currencySnapshot: quote.json.event.currencySnapshot
+    }, {
+      ownerIdSnapshot: owner.id,
+      teamIdSnapshot: owner.teamId,
+      customerIdSnapshot: customerId,
+      leadIdSnapshot: leadId,
+      handoffIdSnapshot: handoffId,
+      candidateIdSnapshot: candidateId,
+      amountMinorSnapshot: 1_288_000,
+      currencySnapshot: "CNY"
+    });
+    const won = await runtime.request(`/api/deals/${created.json.deal.id}/stage`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${login.json.token}` },
+      body: JSON.stringify({
+        stage: "成交",
+        result: "客户已签署合同",
+        nextAction: "安排交付",
+        nextActionAt: "2026-08-12",
+        expectedCloseAt: "2026-08-31",
+        transitionReason: "集成测试快速推进",
+        wonReason: "已收到客户签字合同"
+      })
+    });
+    assert.equal(won.response.status, 200);
+
+    const planRuns = {
+      async getRun(id: string) { return planRunRepository.getRun(id); },
+      async listRuns(resolvedScope: { ownerId: string; teamId: string }) {
+        return planRunRepository.listRuns(resolvedScope);
+      },
+      async getPlanVersion() {
+        return { payload: { targetPlatform: "douyin" } };
+      },
+      async listRunEvents(id: string) {
+        return planRunRepository.listRunEvents(id);
+      },
+      async listRunShards(id: string) {
+        return planRunRepository.listRunShards(id);
+      }
+    };
+    const outcomes: Array<OutcomeInput & {
+      id: string;
+      ownerId: string;
+      teamId: string;
+    }> = [];
+    const reconciliation = new AcquisitionCrmOutcomeReconciliationService({
+      store,
+      planRuns: planRuns as never,
+      outcomeRecorder: {
+        async recordOutcome(outcomeScope, input) {
+          outcomes.push({
+            ...structuredClone(input),
+            ...outcomeScope,
+            id: `outcome-${outcomes.length + 1}`
+          });
+          return outcomes.at(-1)!;
+        }
+      },
+      now: () => "2026-08-08T00:00:00.000Z"
+    });
+    const worker = new AcquisitionCrmOutcomeReconciliationWorker({
+      service: reconciliation,
+      listTenantScopes: () => [{ ownerId: owner.id, teamId: owner.teamId }],
+      intervalMs: 60_000,
+      batchSize: 100,
+      setTimer: () => ({ unref() {} }),
+      clearTimer() {}
+    });
+    await worker.start();
+    await worker.close();
+    assert.deepEqual(
+      [...new Set(outcomes.map((item) => item.eventType))].sort(),
+      ["quoted", "won"]
+    );
+
+    const performanceQuery = new AcquisitionPerformanceQueryService({
+      planRuns: planRuns as never,
+      domain: {
+        async getPresentationCandidateSnapshots() {
+          return [{
+            candidate: { id: candidateId, ownerId: owner.id, teamId: owner.teamId },
+            qualification: {
+              id: attribution.qualificationDecisionId,
+              candidateId,
+              ownerId: owner.id,
+              teamId: owner.teamId,
+              grade: "S",
+              createdAt: "2026-08-07T07:30:00.000Z"
+            },
+            financial: {
+              qualificationDecisionId: attribution.qualificationDecisionId,
+              currency: "CNY",
+              expectedRevenueMinor: 1_288_000
+            },
+            sourcePlatforms: ["douyin"]
+          }];
+        },
+        async listQualificationDecisions() {
+          return [{
+            id: attribution.qualificationDecisionId,
+            candidateId,
+            ownerId: owner.id,
+            teamId: owner.teamId,
+            grade: "S",
+            createdAt: "2026-08-07T07:30:00.000Z"
+          }];
+        },
+        async listFinancialValues() {
+          return [{
+            id: `financial-${suffix}`,
+            candidateId,
+            ownerId: owner.id,
+            teamId: owner.teamId,
+            qualificationDecisionId: attribution.qualificationDecisionId,
+            currency: "CNY",
+            expectedRevenueMinor: 1_288_000,
+            createdAt: "2026-08-07T07:31:00.000Z"
+          }];
+        },
+        async listOutcomes() { return outcomes; },
+        async listAuditEvents() {
+          return [{
+            id: `audit-approved-${suffix}`,
+            candidateId,
+            ownerId: owner.id,
+            teamId: owner.teamId,
+            toStatus: "approved",
+            createdAt: "2026-08-07T07:40:00.000Z"
+          }, {
+            id: `audit-converted-${suffix}`,
+            candidateId,
+            ownerId: owner.id,
+            teamId: owner.teamId,
+            toStatus: "converted_to_lead",
+            createdAt: "2026-08-07T08:00:00.000Z"
+          }];
+        }
+      } as never,
+      diagnostics: store.acquisitionOutcomeReconciliationDiagnostics,
+      checkpoints: store.acquisitionOutcomeReconciliationCheckpoints
+    });
+    const performanceApp = express();
+    performanceApp.use((request, _response, next) => {
+      (request as typeof request & { user: { id: string; teamId: string } }).user = {
+        id: owner.id,
+        name: owner.name,
+        email: owner.email,
+        role: owner.role,
+        teamId: owner.teamId,
+        avatar: owner.avatar,
+        authVersion: owner.authVersion ?? 1
+      };
+      next();
+    });
+    performanceApp.use(createAcquisitionPerformanceRouter({
+      query: performanceQuery
+    }));
+    const performanceRuntime = await listen(performanceApp as typeof app);
+    try {
+      const performance = await performanceRuntime.request(
+        "/api/v1/acquisition/performance?platform=douyin&from=2026-08-07&to=2026-08-08"
+      );
+      assert.equal(performance.response.status, 200);
+      assert.equal(performance.json.counts.won, 1);
+      assert.equal(
+        performance.json.valuesByCurrency[0]?.wonContractMinor,
+        1_288_000
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) => performanceRuntime.server.close(
+        (error) => error ? reject(error) : resolve()
+      ));
+    }
+  } finally {
+    await new Promise<void>((resolve, reject) => runtime.server.close(
+      (error) => error ? reject(error) : resolve()
+    ));
+    await new Promise<void>((resolve, reject) => acquisitionHttp.server.close(
+      (error) => error ? reject(error) : resolve()
+    ));
+    await acquisitionRuntime.close();
+    const createdDealIds = new Set(store.deals
+      .filter((item) => item.title === "获客闭环商机"
+        || item.title === "并发重复商机")
+      .map((item) => item.id));
+    store.dealEvents = store.dealEvents.filter((item) =>
+      !createdDealIds.has(item.dealId));
+    store.deals = store.deals.filter((item) => !createdDealIds.has(item.id));
+    store.acquisitionCustomerHandoffs = store.acquisitionCustomerHandoffs
+      .filter((item) => item.id !== handoffId);
+    store.acquisitionCustomerHandoffOperations =
+      store.acquisitionCustomerHandoffOperations.filter((item) =>
+        item.candidateId !== candidateId);
+    store.todos = store.todos.filter((item) =>
+      item.leadId !== leadId && item.customerId !== customerId);
+    store.customerActivities = store.customerActivities.filter((item) =>
+      item.customerId !== customerId);
+    store.leadActivities = store.leadActivities.filter((item) =>
+      item.leadId !== leadId);
+    store.leads = store.leads.filter((item) => item.id !== leadId);
+    store.leadSourceEvents = store.leadSourceEvents.filter((item) =>
+      item.leadId !== leadId);
+    store.customers = store.customers.filter((item) => item.id !== customerId);
+    store.acquisitionOutcomeReconciliationDiagnostics =
+      originalReconciliationState.diagnostics;
+    store.acquisitionOutcomeReconciliationCheckpoints =
+      originalReconciliationState.checkpoints;
+    store.acquisitionOutcomeReconciliationProcessedSources =
+      originalReconciliationState.processedSources;
+  }
+});

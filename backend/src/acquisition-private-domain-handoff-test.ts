@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type {
   AcquisitionCandidate,
   DiscoveryEvidence,
@@ -18,6 +19,7 @@ import {
   AcquisitionPrivateDomainHandoffService,
   type AcquisitionPrivateDomainHandoffStore
 } from "./acquisition-private-domain-handoff.js";
+import { canonicalJsonStringify } from "./canonical-json.js";
 
 const scope = {
   ownerId: "owner-a",
@@ -133,6 +135,34 @@ const financial: FinancialValueDecision = {
   createdAt: "2026-08-07T00:40:00.000Z"
 };
 
+const runId = "run-real";
+const discoveredEventId = "discovered-real";
+const acquisitionAttribution = {
+  attributionVersion: "acquisition-run.v1" as const,
+  runId,
+  planId: "plan-real",
+  planVersionId: "plan-version-real",
+  planVersion: 2,
+  planSnapshotHash: `sha256:${"e".repeat(64)}`,
+  discoveredEventId,
+  discoveredAt: "2026-08-07T00:00:00.000Z",
+  shardId: "shard-real",
+  operationId: "operation-real",
+  connectionId: "connection-real",
+  providerId: "provider-real",
+  evidenceIds: [evidence.id],
+  providerIds: ["provider-real"],
+  queryIds: ["operation:operation-real"],
+  strategyVersion: "acquisition-plan-v2",
+  qualificationDecisionId: qualification.id,
+  decisionVersion: qualification.decisionVersion,
+  decisionSnapshotHash: qualification.snapshotHash
+};
+
+const validAttributionResolver = {
+  async resolve() { return structuredClone(acquisitionAttribution); }
+};
+
 function handoffStore(): AcquisitionPrivateDomainHandoffStore {
   return {
     leads: [],
@@ -151,10 +181,12 @@ function handoffStore(): AcquisitionPrivateDomainHandoffStore {
 async function fixture(
   candidateOverrides: Partial<AcquisitionCandidate> = {},
   financialOverrides: Partial<FinancialValueDecision> = {},
-  attributionResolver?: {
+  attributionResolver: {
     resolve(
       scope: { ownerId: string; teamId: string },
       input: {
+        runId: string;
+        discoveredEventId: string;
         candidateId: string;
         evidenceIds: string[];
         qualificationDecisionId: string;
@@ -162,7 +194,7 @@ async function fixture(
         decisionSnapshotHash: string;
       }
     ): Promise<any>;
-  }
+  } = validAttributionResolver
 ) {
   const repository = new InMemoryAcquisitionDomainRepository();
   await repository.appendEvidence(evidence);
@@ -202,17 +234,15 @@ const attributionSnapshotFixture = await fixture({}, {}, {
       teamId: scope.teamId
     });
     assert.equal(input.candidateId, "candidate-a");
-    return {
-      runId: "run-real",
-      planId: "plan-real",
-      planVersionId: "plan-version-real",
-      operationId: "operation-real",
-      providerId: "provider-real"
-    };
+    assert.equal(input.runId, runId);
+    assert.equal(input.discoveredEventId, discoveredEventId);
+    return structuredClone(acquisitionAttribution);
   }
 });
 await attributionSnapshotFixture.service.create(scope, "candidate-a", {
   operationCode: "handoff_acquisition_candidate_v1",
+  runId,
+  discoveredEventId,
   decisionVersion: "qualification-v2",
   mode: "create_new",
   existingCustomerId: "",
@@ -227,18 +257,37 @@ const attributedSource = attributionSnapshotFixture.store.leadSourceEvents.find(
 );
 assert.deepEqual(
   JSON.parse(attributedSource?.rawPayload ?? "{}").acquisitionAttribution,
-  {
-    runId: "run-real",
-    planId: "plan-real",
-    planVersionId: "plan-version-real",
-    operationId: "operation-real",
-    providerId: "provider-real"
-  }
+  acquisitionAttribution
 );
+
+const invalidAttributionFixture = await fixture({}, {}, {
+  async resolve() { return null; }
+});
+await assert.rejects(
+  () => invalidAttributionFixture.service.create(scope, "candidate-a", {
+    operationCode: "handoff_acquisition_candidate_v1",
+    runId: "forged-run",
+    discoveredEventId: "forged-event",
+    decisionVersion: "qualification-v2",
+    mode: "create_new",
+    existingCustomerId: "",
+    followUp: {
+      title: "首次跟进",
+      dueAt: "2026-08-08T09:00:00.000Z",
+      priority: "high"
+    }
+  }, "handoff-invalid-attribution"),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "ACQUISITION_HANDOFF_ATTRIBUTION_INVALID"
+);
+assert.equal(invalidAttributionFixture.store.acquisitionCustomerHandoffs.length, 0);
 
 const first = await fixture();
 const result = await first.service.create(scope, "candidate-a", {
   operationCode: "handoff_acquisition_candidate_v1",
+  runId,
+  discoveredEventId,
   decisionVersion: "qualification-v2",
   mode: "create_new",
   existingCustomerId: "",
@@ -291,6 +340,8 @@ assert.equal(
 
 const request = {
   operationCode: "handoff_acquisition_candidate_v1" as const,
+  runId,
+  discoveredEventId,
   decisionVersion: "qualification-v2",
   mode: "create_new" as const,
   existingCustomerId: "",
@@ -667,6 +718,68 @@ assert.equal(reservedFailure.store.leads.length, 1);
 assert.equal(reservedFailure.store.customers.length, 1);
 assert.equal(reservedFailure.store.todos.length, 1);
 assert.equal(reservedFailure.store.acquisitionCustomerHandoffs.length, 1);
+
+const legacyRecovery = await fixture();
+let rejectedLegacyCustomerWrite = false;
+legacyRecovery.store.persistMutation = async (mutation) => {
+  const applied = mutation();
+  if (!rejectedLegacyCustomerWrite
+    && legacyRecovery.store.customers.length > 0) {
+    rejectedLegacyCustomerWrite = true;
+    applied.rollback();
+    throw new Error("legacy customer stage failed");
+  }
+  return applied.value;
+};
+await assert.rejects(
+  () => legacyRecovery.service.create(
+    scope,
+    "candidate-a",
+    request,
+    "handoff-before-run-attribution-upgrade"
+  ),
+  /legacy customer stage failed/
+);
+const legacyOperation =
+  legacyRecovery.store.acquisitionCustomerHandoffOperations[0]!;
+const {
+  runId: _legacyRunId,
+  discoveredEventId: _legacyDiscoveredEventId,
+  ...legacyRequest
+} = legacyOperation.request;
+legacyOperation.request = legacyRequest as typeof legacyOperation.request;
+legacyOperation.requestHash = createHash("sha256")
+  .update(canonicalJsonStringify(legacyRequest))
+  .digest("hex");
+legacyOperation.acquisitionAttribution = null;
+legacyRecovery.store.persistMutation = undefined;
+const refreshedLegacyService = new AcquisitionPrivateDomainHandoffService({
+  repository: legacyRecovery.repository,
+  domainService: legacyRecovery.domainService,
+  store: legacyRecovery.store,
+  attributionResolver: validAttributionResolver,
+  now
+});
+const upgradedLegacyResult = await refreshedLegacyService.create(
+  scope,
+  "candidate-a",
+  request,
+  "handoff-after-run-attribution-upgrade"
+);
+assert.deepEqual(
+  upgradedLegacyResult.handoff.acquisitionAttribution,
+  acquisitionAttribution
+);
+assert.equal(legacyOperation.request.runId, runId);
+assert.equal(legacyOperation.request.discoveredEventId, discoveredEventId);
+assert.deepEqual(
+  legacyOperation.acquisitionAttribution,
+  acquisitionAttribution
+);
+assert.equal(legacyRecovery.store.acquisitionCustomerHandoffs.length, 1);
+assert.equal(legacyRecovery.store.leads.length, 1);
+assert.equal(legacyRecovery.store.customers.length, 1);
+assert.equal(legacyRecovery.store.todos.length, 1);
 
 // The takeover completed, but its response was lost. Both accepted keys must
 // now replay the same durable result without creating another CRM resource.
