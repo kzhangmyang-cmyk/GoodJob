@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
-import { isTaskCreationSubmitReady } from "./task-creation-controller";
+import {
+  isPlanDraftSubmissionReady,
+  isTaskCreationSubmitReady
+} from "./task-creation-controller";
 
 assert.equal(isTaskCreationSubmitReady({
   searchConnectionId: "search-1",
@@ -8,6 +11,28 @@ assert.equal(isTaskCreationSubmitReady({
   loading: false,
   submitting: false
 }), false);
+
+assert.equal(isPlanDraftSubmissionReady({
+  mode: "ai",
+  hasDraft: false,
+  approvalConfirmed: true,
+  loading: false,
+  submitting: false
+}), false);
+assert.equal(isPlanDraftSubmissionReady({
+  mode: "ai",
+  hasDraft: true,
+  approvalConfirmed: true,
+  loading: false,
+  submitting: false
+}), true);
+assert.equal(isPlanDraftSubmissionReady({
+  mode: "manual",
+  hasDraft: false,
+  approvalConfirmed: true,
+  loading: false,
+  submitting: false
+}), true);
 
 assert.equal(isTaskCreationSubmitReady({
   searchConnectionId: "search-1",

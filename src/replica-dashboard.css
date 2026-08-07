@@ -1865,6 +1865,131 @@ body.is-authenticated .replica-shell {
   min-height: 64px;
 }
 
+.replica-plan-mode-switch {
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  background: rgba(255, 255, 255, .025);
+  border: 1px solid var(--replica-line-soft);
+  border-radius: 10px;
+}
+
+.replica-plan-mode-switch button {
+  min-height: 32px;
+  padding: 0 12px;
+  color: #8d938f;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.replica-plan-mode-switch button[aria-pressed="true"] {
+  color: #dfffe9;
+  background: rgba(24, 237, 120, .08);
+  border-color: rgba(24, 237, 120, .22);
+}
+
+.replica-ai-plan-section > label {
+  display: grid;
+  gap: 7px;
+}
+
+.replica-ai-plan-section .replica-form-section-actions {
+  margin-top: 12px;
+}
+
+.replica-plan-draft-preview {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 15px;
+  color: #b7bdb9;
+  background: rgba(24, 237, 120, .025);
+  border: 1px solid rgba(24, 237, 120, .16);
+  border-radius: 12px;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.replica-plan-draft-preview header span,
+.replica-plan-draft-preview h4 {
+  color: #8be6ad;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.replica-plan-draft-preview h3,
+.replica-plan-draft-preview h4,
+.replica-plan-draft-preview p {
+  margin: 0;
+}
+
+.replica-plan-draft-preview h3 {
+  margin-top: 4px;
+  color: #ecf2ee;
+  font-size: 14px;
+}
+
+.replica-plan-draft-preview header p {
+  margin-top: 5px;
+}
+
+.replica-plan-draft-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.replica-plan-draft-preview section {
+  min-width: 0;
+  padding: 11px;
+  background: rgba(0, 0, 0, .1);
+  border: 1px solid var(--replica-line-soft);
+  border-radius: 9px;
+}
+
+.replica-plan-draft-preview dl,
+.replica-plan-draft-preview ul,
+.replica-plan-draft-preview ol {
+  margin: 7px 0 0;
+  padding-left: 17px;
+}
+
+.replica-plan-draft-preview dt {
+  margin-top: 6px;
+  color: #909793;
+}
+
+.replica-plan-draft-preview dd {
+  margin: 0;
+}
+
+.replica-plan-draft-preview li {
+  margin: 3px 0;
+  overflow-wrap: anywhere;
+}
+
+.replica-plan-draft-operations small {
+  display: block;
+  color: #747b76;
+}
+
+.replica-plan-draft-preview code {
+  color: #caffdc;
+  font-family: inherit;
+}
+
+.replica-plan-draft-preview footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: #9da49f;
+}
+
 .replica-preflight-status,
 .replica-real-submit-status {
   margin-top: 11px;

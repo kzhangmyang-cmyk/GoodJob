@@ -4,6 +4,8 @@ import {
   type AcquisitionSearchConnection,
   type ToolCallingModelConnection
 } from "./task-creation-api";
+import { createPlanDraftWorkflow } from "./plan-draft-workflow";
+import { renderPlanDraftPreview } from "./plan-draft-view";
 import { createTaskCreationWorkflow } from "./task-creation-workflow";
 
 let started = false;
@@ -26,6 +28,18 @@ export function isTaskCreationSubmitReady(
     && !state.loading
     && !state.submitting
   );
+}
+
+export function isPlanDraftSubmissionReady(state: {
+  mode: "ai" | "manual";
+  hasDraft: boolean;
+  approvalConfirmed: boolean;
+  loading: boolean;
+  submitting: boolean;
+}): boolean {
+  return state.mode === "manual"
+    ? state.approvalConfirmed && !state.loading && !state.submitting
+    : state.hasDraft && state.approvalConfirmed && !state.loading && !state.submitting;
 }
 
 function byId<T extends HTMLElement = HTMLElement>(id: string): T | null {
@@ -67,6 +81,13 @@ function initialise(): void {
   const modelSelect = byId<HTMLSelectElement>("replicaRealModelConnection");
   const approvalConfirmed = byId<HTMLInputElement>("replicaRealApprovalConfirmed");
   const submit = byId<HTMLButtonElement>("replicaRealTaskSubmit");
+  const aiMode = byId<HTMLButtonElement>("replicaRealTaskModeAi");
+  const manualMode = byId<HTMLButtonElement>("replicaRealTaskModeManual");
+  const aiPrompt = byId<HTMLTextAreaElement>("replicaRealAiPrompt");
+  const aiGenerate = byId<HTMLButtonElement>("replicaRealAiGenerate");
+  const aiDraft = byId("replicaRealAiDraft");
+  const aiSection = byId("replicaRealAiSection");
+  const manualFields = byId("replicaRealManualFields");
   const preflight = byId("replicaRealPreflightStatus");
   const submitStatus = byId("replicaRealTaskSubmitStatus");
   if (!dialog || !form || !searchSelect || !modelSelect || !submit) return;
@@ -79,10 +100,13 @@ function initialise(): void {
 
   const api = createAcquisitionTaskCreationApi();
   const workflow = createTaskCreationWorkflow(api);
+  const planDraftWorkflow = createPlanDraftWorkflow(api);
   let searchConnections: AcquisitionSearchConnection[] = [];
   let modelConnections: ToolCallingModelConnection[] = [];
   let loadingConnections = false;
   let submitting = false;
+  let mode: "ai" | "manual" = "ai";
+  let generatedPlan: ReturnType<typeof buildDouyinPlanInput> | null = null;
 
   function setPreflight(message: string, state: "loading" | "ready" | "blocked"): void {
     if (!preflight) return;
@@ -98,13 +122,82 @@ function initialise(): void {
   }
 
   function updateSubmitAvailability(): void {
-    submitButton.disabled = !isTaskCreationSubmitReady({
-      searchConnectionId: searchConnectionSelect.value,
-      modelConnectionId: modelConnectionSelect.value,
-      approvalConfirmed: approvalConfirmed?.checked === true,
-      loading: loadingConnections,
-      submitting
+    submitButton.disabled = mode === "manual"
+      ? !isTaskCreationSubmitReady({
+        searchConnectionId: searchConnectionSelect.value,
+        modelConnectionId: modelConnectionSelect.value,
+        approvalConfirmed: approvalConfirmed?.checked === true,
+        loading: loadingConnections,
+        submitting
+      })
+      : !isPlanDraftSubmissionReady({
+        mode,
+        hasDraft: generatedPlan !== null,
+        approvalConfirmed: approvalConfirmed?.checked === true,
+        loading: loadingConnections,
+        submitting
+      });
+  }
+
+  function setMode(nextMode: "ai" | "manual"): void {
+    mode = nextMode;
+    invalidateGeneratedPlan();
+    aiMode?.setAttribute("aria-pressed", String(mode === "ai"));
+    manualMode?.setAttribute("aria-pressed", String(mode === "manual"));
+    if (manualFields) manualFields.hidden = mode !== "manual";
+    if (aiSection) aiSection.hidden = mode !== "ai";
+    manualFields?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("input, textarea, select").forEach((field) => {
+      field.disabled = mode === "ai";
     });
+    if (aiPrompt) aiPrompt.disabled = mode !== "ai";
+    submitButton.innerHTML = mode === "ai"
+      ? '<i class="ph ph-play" aria-hidden="true"></i>批准并启动 AI 方案'
+      : '<i class="ph ph-play" aria-hidden="true"></i>创建、批准并启动';
+    updateSubmitAvailability();
+  }
+
+  function invalidateGeneratedPlan(): void {
+    planDraftWorkflow.clear();
+    generatedPlan = null;
+    if (aiDraft) {
+      aiDraft.hidden = true;
+      aiDraft.replaceChildren();
+    }
+    updateSubmitAvailability();
+  }
+
+  async function generatePlanDraft(): Promise<void> {
+    if (mode !== "ai" || loadingConnections || submitting) return;
+    if (!modelConnectionSelect.value) {
+      setSubmitStatus("请先选择一个支持工具调用的 AI 模型。", "error");
+      return;
+    }
+    const prompt = aiPrompt?.value.trim() ?? "";
+    if (!prompt) {
+      setSubmitStatus("请用一句话描述您的抖音获客目标。", "error");
+      return;
+    }
+    invalidateGeneratedPlan();
+    aiGenerate!.disabled = true;
+    setSubmitStatus("AI 增长参谋正在生成完整服务端计划草稿…", "loading");
+    try {
+      const result = await planDraftWorkflow.generate({
+        modelConnectionId: modelConnectionSelect.value,
+        prompt
+      });
+      generatedPlan = result.planDraft;
+      if (aiDraft) {
+        aiDraft.innerHTML = renderPlanDraftPreview(generatedPlan);
+        aiDraft.hidden = false;
+      }
+      setSubmitStatus("计划草稿已生成。请完整核对后勾选人工批准。", "success");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      setSubmitStatus(error instanceof Error ? error.message : "AI 计划生成失败", "error");
+    } finally {
+      if (aiGenerate) aiGenerate.disabled = false;
+      updateSubmitAvailability();
+    }
   }
 
   function renderConnections(): void {
@@ -170,11 +263,13 @@ function initialise(): void {
   function openDialog(): void {
     if (submitStatus) submitStatus.hidden = true;
     if (!taskDialog.open) taskDialog.showModal();
+    setMode("ai");
     void loadConnections();
   }
 
   function closeDialog(): void {
     if (submitting) return;
+    invalidateGeneratedPlan();
     taskDialog.close();
   }
 
@@ -189,11 +284,26 @@ function initialise(): void {
     }));
   });
   document.addEventListener("goodjob:connections-changed", () => {
-    if (taskDialog.open) void loadConnections();
+    if (taskDialog.open) {
+      if (mode === "ai") invalidateGeneratedPlan();
+      void loadConnections();
+    }
   });
-  searchConnectionSelect.addEventListener("change", updateSubmitAvailability);
-  modelConnectionSelect.addEventListener("change", updateSubmitAvailability);
+  searchConnectionSelect.addEventListener("change", () => {
+    if (mode === "ai") invalidateGeneratedPlan();
+    updateSubmitAvailability();
+  });
+  modelConnectionSelect.addEventListener("change", () => {
+    if (mode === "ai") invalidateGeneratedPlan();
+    updateSubmitAvailability();
+  });
   approvalConfirmed?.addEventListener("change", updateSubmitAvailability);
+  aiMode?.addEventListener("click", () => setMode("ai"));
+  manualMode?.addEventListener("click", () => setMode("manual"));
+  aiPrompt?.addEventListener("input", () => {
+    if (mode === "ai") invalidateGeneratedPlan();
+  });
+  aiGenerate?.addEventListener("click", () => void generatePlanDraft());
 
   taskForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -201,14 +311,16 @@ function initialise(): void {
     const providerConnection = searchConnections.find(
       (connection) => connection.id === searchConnectionSelect.value
     );
-    if (!providerConnection || !modelConnectionSelect.value) {
+    if (mode === "manual" && (!providerConnection || !modelConnectionSelect.value)) {
       setSubmitStatus("真实运行条件尚未满足，请先完成连接检查。", "error");
       return;
     }
 
     let planInput: ReturnType<typeof buildDouyinPlanInput>;
     try {
-      planInput = buildDouyinPlanInput({
+      planInput = mode === "ai"
+        ? generatedPlan ?? (() => { throw new Error("请先生成完整 AI 计划草稿"); })()
+        : buildDouyinPlanInput({
         name: inputValue("replicaRealTaskName"),
         objective: inputValue("replicaRealObjective"),
         industries: splitValues(inputValue("replicaRealIndustries")),
@@ -218,7 +330,7 @@ function initialise(): void {
         exclusionRules: splitValues(inputValue("replicaRealExclusions")),
         organizationQuery: inputValue("replicaRealOrganizationQuery"),
         individualQuery: inputValue("replicaRealIndividualQuery"),
-        providerConnection,
+        providerConnection: providerConnection!,
         modelConnectionId: modelConnectionSelect.value,
         budget: {
           billingCurrency: "CNY",

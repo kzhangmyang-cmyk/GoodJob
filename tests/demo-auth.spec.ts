@@ -45,6 +45,77 @@ test("standalone frontend does not poll backend dashboards in demo mode", async 
   expect(apiRequests).toEqual([]);
 });
 
+test("AI draft creation preserves the complete server plan through approval and run", async ({ page }) => {
+  const createdPlans: unknown[] = [];
+  const draft = {
+    targetPlatform: "douyin",
+    name: "厦门多连接获客方案",
+    objective: "发现公开采购信号",
+    icp: {
+      industries: ["企业服务", "装修"], regions: ["厦门"],
+      organizationCriteria: ["公开询价"], individualCriteria: ["老板合作需求"], exclusionRules: ["明确拒绝联系"]
+    },
+    subjectChannels: { organization: true, individual: true },
+    providerConnections: [
+      { connectionId: "search-a", providerId: "brave", kind: "search", status: "active", credentialVersion: 1 },
+      { connectionId: "search-b", providerId: "serper", kind: "search", status: "active", credentialVersion: 2 }
+    ],
+    operations: [
+      { operationId: "a-org", subjectChannel: "organization", kind: "search", connectionId: "search-a", query: "site:douyin.com 企业服务 采购", allocatedBudget: { requests: 2, results: 10, amountMinor: 0, durationSeconds: 30 } },
+      { operationId: "a-person", subjectChannel: "individual", kind: "search", connectionId: "search-a", query: "site:iesdouyin.com 老板 询价", allocatedBudget: { requests: 2, results: 10, amountMinor: 0, durationSeconds: 30 } },
+      { operationId: "b-org", subjectChannel: "organization", kind: "search", connectionId: "search-b", query: "site:douyin.com 装修 寻找供应商", allocatedBudget: { requests: 2, results: 10, amountMinor: 0, durationSeconds: 30 } },
+      { operationId: "b-person", subjectChannel: "individual", kind: "search", connectionId: "search-b", query: "site:iesdouyin.com 老板 合作", allocatedBudget: { requests: 2, results: 10, amountMinor: 0, durationSeconds: 30 } }
+    ],
+    budgetSnapshot: { billingCurrency: "CNY", maxRequests: 8, maxResults: 40, maxAmountMinor: 0, maxDurationSeconds: 120 },
+    modelConnectionId: "model-a",
+    stopConditions: { stopWhenBudgetExhausted: true, stopWhenNoMoreResults: true }
+  };
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const json = async (value: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(value) });
+    if (url.pathname === "/api/v1/acquisition/provider-connections") {
+      return void await json({ items: draft.providerConnections.map((connection) => ({ ...connection, lastHealthStatus: "passed" })), nextCursor: null });
+    }
+    if (url.pathname === "/api/v1/ai/connections") {
+      return void await json({ items: [{ id: "model-a", provider: "zhipu", model: "glm", status: "active", credentialVersion: 1, capabilitySnapshot: { toolCalling: true } }], nextCursor: null });
+    }
+    if (url.pathname === "/api/v1/acquisition/copilot/sessions" && request.method() === "POST") return void await json({ resourceId: "session-ai" }, 202);
+    if (url.pathname.endsWith("/messages") && request.method() === "POST") return void await json({ id: "task-ai", status: "queued", result: null, errorCode: null }, 202);
+    if (url.pathname === "/api/v1/acquisition/copilot/tasks/task-ai") return void await json({ id: "task-ai", status: "succeeded", errorCode: null, result: { summary: "完整草稿已生成", planDraft: draft } });
+    if (url.pathname === "/api/v1/acquisition/plans" && request.method() === "POST") {
+      createdPlans.push(request.postDataJSON());
+      return void await route.fulfill({ status: 201, contentType: "application/json", headers: { etag: "\"plan-ai:1\"" }, body: JSON.stringify({ id: "plan-ai", status: "draft" }) });
+    }
+    if (url.pathname === "/api/v1/acquisition/plans/plan-ai/approval") return void await json({ id: "plan-ai", status: "approved" });
+    if (url.pathname === "/api/v1/acquisition/plans/plan-ai/runs") return void await json({ id: "run-ai", status: "queued" }, 202);
+    return void await json({ items: [], nextCursor: null });
+  });
+  await page.addInitScript(() => {
+    document.cookie = "gj_csrf=e2e-csrf; path=/";
+    localStorage.setItem("gj_user", JSON.stringify({ id: "demo-admin", name: "Admin", email: "admin@goodjob.com", role: "admin", teamId: "demo-team", avatar: "AD" }));
+  });
+  await page.goto("/#acquisition");
+  await page.locator('[data-acquisition-mode="real"]').click();
+  await page.locator("#replicaNewTaskButton").click();
+  const dialog = page.locator("#replicaRealTaskModal");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#replicaRealTaskModeAi")).toHaveAttribute("aria-pressed", "true");
+  await dialog.locator("#replicaRealAiPrompt").fill("帮我找厦门的企业服务和装修抖音商机");
+  await dialog.locator("#replicaRealAiGenerate").click();
+  await expect(dialog.locator("#replicaRealAiDraft")).toBeVisible();
+  await expect(dialog.locator("#replicaRealAiDraft")).toContainText("brave");
+  await expect(dialog.locator("#replicaRealAiDraft")).toContainText("serper");
+  await expect(dialog.locator("#replicaRealAiDraft")).toContainText("老板 合作");
+  await dialog.locator("#replicaRealApprovalConfirmed").check();
+  await dialog.locator("#replicaRealTaskSubmit").click();
+  await expect(dialog.locator("#replicaRealTaskSubmitStatus")).toContainText("Run run-ai");
+  expect(createdPlans).toHaveLength(1);
+  expect((createdPlans[0] as { providerConnections: unknown[]; operations: unknown[]; modelSnapshotRef?: unknown }).providerConnections).toHaveLength(2);
+  expect((createdPlans[0] as { providerConnections: unknown[]; operations: unknown[]; modelSnapshotRef?: unknown }).operations).toHaveLength(4);
+  expect((createdPlans[0] as { modelSnapshotRef?: unknown }).modelSnapshotRef).toBeUndefined();
+});
+
 test("real acquisition task opens authoritative plan and AI candidate review", async ({ page }) => {
   const qualification = {
     id: "qualification-ui-1",

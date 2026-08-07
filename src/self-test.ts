@@ -11,6 +11,8 @@ import "./acquisition/runtime.self-test";
 import "./acquisition/task-creation-api.self-test";
 import "./acquisition/task-creation-controller.self-test";
 import "./acquisition/task-creation-workflow.self-test";
+import "./acquisition/plan-draft-workflow.self-test";
+import "./acquisition/plan-draft-view.self-test";
 import "./acquisition/detail-center-api.self-test";
 import "./acquisition/detail-center-controller.self-test";
 import "./acquisition/detail-center-entry.self-test";
@@ -173,6 +175,11 @@ const required = [
   "id=\"replicaRunMetrics\"",
   "id=\"replicaRealTaskModal\"",
   "id=\"replicaRealTaskForm\"",
+  "id=\"replicaRealTaskModeAi\"",
+  "id=\"replicaRealTaskModeManual\"",
+  "id=\"replicaRealAiPrompt\"",
+  "id=\"replicaRealAiGenerate\"",
+  "id=\"replicaRealAiDraft\"",
   "id=\"replicaRealSearchConnection\"",
   "id=\"replicaRealModelConnection\"",
   "id=\"replicaRealConnectionsConfigure\"",

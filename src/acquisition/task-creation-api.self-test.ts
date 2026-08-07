@@ -84,6 +84,47 @@ const api = createAcquisitionTaskCreationApi(async (input, init) => {
       nextCursor: null
     });
   }
+  if (input === "/api/v1/acquisition/copilot/sessions") {
+    return Response.json({ resourceId: "copilot-session-1" }, { status: 202 });
+  }
+  if (String(input).includes("/copilot/sessions/copilot-session-1/messages")) {
+    return Response.json({
+      id: "copilot-task-1",
+      status: "queued",
+      result: null,
+      errorCode: null
+    }, { status: 202 });
+  }
+  if (String(input).includes("/copilot/tasks/copilot-task-1")) {
+    return Response.json({
+      id: "copilot-task-1",
+      status: "succeeded",
+      errorCode: null,
+      result: {
+        summary: "已生成计划",
+        planDraft: {
+          targetPlatform: "douyin",
+          name: "完整计划",
+          objective: "发现公开需求",
+          icp: { industries: ["企业服务"], regions: ["厦门"], organizationCriteria: ["企业需求"], individualCriteria: ["老板需求"], exclusionRules: [] },
+          subjectChannels: { organization: true, individual: true },
+          providerConnections: [
+            { connectionId: "search-a", providerId: "brave", kind: "search", status: "active", credentialVersion: 1 },
+            { connectionId: "search-b", providerId: "serper", kind: "search", status: "active", credentialVersion: 1 }
+          ],
+          operations: [
+            { operationId: "1", subjectChannel: "organization", kind: "search", connectionId: "search-a", query: "a", allocatedBudget: { requests: 1, results: 1, amountMinor: 0, durationSeconds: 1 } },
+            { operationId: "2", subjectChannel: "individual", kind: "search", connectionId: "search-a", query: "b", allocatedBudget: { requests: 1, results: 1, amountMinor: 0, durationSeconds: 1 } },
+            { operationId: "3", subjectChannel: "organization", kind: "search", connectionId: "search-b", query: "c", allocatedBudget: { requests: 1, results: 1, amountMinor: 0, durationSeconds: 1 } },
+            { operationId: "4", subjectChannel: "individual", kind: "search", connectionId: "search-b", query: "d", allocatedBudget: { requests: 1, results: 1, amountMinor: 0, durationSeconds: 1 } }
+          ],
+          budgetSnapshot: { billingCurrency: "CNY", maxRequests: 4, maxResults: 4, maxAmountMinor: 0, maxDurationSeconds: 4 },
+          modelConnectionId: "model-tool",
+          stopConditions: { stopWhenBudgetExhausted: true, stopWhenNoMoreResults: true }
+        }
+      }
+    });
+  }
   if (String(input).endsWith("/runs")) {
     return Response.json({ id: "run-1", status: "queued" }, { status: 202 });
   }
@@ -105,6 +146,36 @@ assert.equal(calls[0]?.init?.credentials, "same-origin");
 const modelConnections = await api.listToolCallingModelConnections();
 assert.deepEqual(modelConnections.map((item) => item.id), ["model-tool"]);
 assert.equal(calls[1]?.input, "/api/v1/ai/connections");
+
+const copilotSession = await api.createCopilotSession(
+  { connectionId: "model-tool" },
+  "fixture-copilot-session"
+);
+assert.equal(copilotSession.id, "copilot-session-1");
+const copilotTask = await api.createPlanDraftTask(
+  copilotSession.id,
+  {
+    message: "生成厦门企业服务抖音公开获客计划",
+    responseMode: "plan_draft",
+    targetPlatform: "douyin"
+  },
+  "fixture-copilot-task"
+);
+assert.equal(copilotTask.id, "copilot-task-1");
+const completedCopilotTask = await api.getCopilotTask(copilotTask.id);
+assert.equal(completedCopilotTask.result?.planDraft!.operations.length, 4);
+assert.equal(completedCopilotTask.result?.planDraft!.providerConnections.length, 2);
+assert.equal(JSON.stringify(completedCopilotTask).includes("modelSnapshotRef"), false);
+const sessionCall = calls[2]!;
+const taskCall = calls[3]!;
+assert.equal(sessionCall.input, "/api/v1/acquisition/copilot/sessions");
+assert.deepEqual(JSON.parse(String(sessionCall.init?.body)), { connectionId: "model-tool" });
+assert.equal(taskCall.input, "/api/v1/acquisition/copilot/sessions/copilot-session-1/messages");
+assert.deepEqual(JSON.parse(String(taskCall.init?.body)), {
+  message: "生成厦门企业服务抖音公开获客计划",
+  responseMode: "plan_draft",
+  targetPlatform: "douyin"
+});
 
 const planInput = buildDouyinPlanInput({
   name: "厦门抖音获客",
@@ -171,9 +242,9 @@ await api.approvePlan("plan/1", "\"plan:1\"", {
 });
 await api.createRun("plan/1", { reason: "人工启动" });
 
-const createCall = calls[2]!;
-const approvalCall = calls[3]!;
-const runCall = calls[4]!;
+const createCall = calls[5]!;
+const approvalCall = calls[6]!;
+const runCall = calls[7]!;
 assert.equal(createCall.input, "/api/v1/acquisition/plans");
 assert.equal(approvalCall.input, "/api/v1/acquisition/plans/plan%2F1/approval");
 assert.equal(runCall.input, "/api/v1/acquisition/plans/plan%2F1/runs");
@@ -207,6 +278,29 @@ assert.notEqual(
 assert.equal(
   "modelSnapshotRef" in JSON.parse(String(createCall.init?.body)),
   false
+);
+
+const malformedTaskApi = createAcquisitionTaskCreationApi(async (input) => {
+  if (String(input).includes("/copilot/tasks/bad-task")) {
+    return Response.json({
+      id: "bad-task",
+      status: "succeeded",
+      errorCode: null,
+      result: {
+        summary: "不完整草稿",
+        planDraft: {
+          targetPlatform: "douyin",
+          providerConnections: [{}],
+          operations: [{}]
+        }
+      }
+    });
+  }
+  return Response.json({});
+});
+await assert.rejects(
+  () => malformedTaskApi.getCopilotTask("bad-task"),
+  /AI 计划草稿不完整/
 );
 
 const requiredInput = {

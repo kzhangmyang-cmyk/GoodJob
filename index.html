@@ -10608,6 +10608,22 @@
           <div class="replica-preflight-status" id="replicaRealPreflightStatus" role="status" aria-live="polite">正在核验真实运行条件…</div>
         </section>
 
+        <section class="replica-real-form-section replica-plan-mode-section">
+          <div class="replica-form-section-head"><div><span>创建方式</span><h3>先让 AI 生成完整方案，或手动逐项配置</h3></div></div>
+          <div class="replica-plan-mode-switch" role="group" aria-label="任务创建方式">
+            <button type="button" id="replicaRealTaskModeAi" aria-pressed="true">AI 一句话生成</button>
+            <button type="button" id="replicaRealTaskModeManual" aria-pressed="false">手动创建</button>
+          </div>
+        </section>
+
+        <section class="replica-real-form-section replica-ai-plan-section" id="replicaRealAiSection">
+          <div class="replica-form-section-head"><div><span>AI 增长参谋</span><h3>用一句话生成可批准的完整服务端计划</h3></div></div>
+          <label class="wide"><span>你的抖音获客目标</span><textarea id="replicaRealAiPrompt" maxlength="20000" required>帮我寻找厦门企业服务和装修行业，在抖音公开表达采购、询价或合作需求的企业和老板。</textarea><small>AI 会保留所有服务端生成的搜索连接、查询、预算与停止条件，供人工完整核对。</small></label>
+          <div class="replica-form-section-actions"><button type="button" class="is-primary" id="replicaRealAiGenerate"><i class="ph ph-sparkle" aria-hidden="true"></i>生成完整计划</button></div>
+          <div id="replicaRealAiDraft" hidden></div>
+        </section>
+
+        <div id="replicaRealManualFields" hidden>
         <section class="replica-real-form-section">
           <div class="replica-form-section-head"><div><span>任务与 ICP</span><h3>先定义谁值得被发现</h3></div></div>
           <div class="replica-real-form-grid two">
@@ -10645,6 +10661,7 @@
             <label><span>费用上限</span><input id="replicaRealMaxAmount" type="number" min="0" step="1" value="0" required /><small>分</small></label>
           </div>
         </section>
+        </div>
 
         <section class="replica-real-form-section replica-approval-section">
           <div class="replica-form-section-head"><div><span>人工批准</span><h3>核对后再创建、批准并启动</h3></div></div>

@@ -113,6 +113,16 @@ export interface AcquisitionTaskCreationApiOptions {
   idempotencyKeyFactory?: () => string;
 }
 
+export interface CopilotPlanDraftTask {
+  id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  result: {
+    summary: string;
+    planDraft?: DouyinPlanInput;
+  } | null;
+  errorCode: string | null;
+}
+
 interface Page<T> {
   items: T[];
   nextCursor?: string | null;
@@ -366,6 +376,105 @@ function withoutModelSnapshot(input: DouyinPlanInput): DouyinPlanInput {
   return publicInput;
 }
 
+function record(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label}格式无效`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function stringArray(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0
+    && value.every((item) => typeof item === "string" && item.trim().length > 0);
+}
+
+function usageIsValid(value: unknown): boolean {
+  const usage = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+  return Boolean(usage && ["requests", "results", "amountMinor", "durationSeconds"].every((key) =>
+    typeof usage[key] === "number" && Number.isSafeInteger(usage[key]) && usage[key] >= 0
+  ));
+}
+
+function validPlanDraft(value: unknown): value is DouyinPlanInput {
+  const draft = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+  if (!draft || "modelSnapshotRef" in draft
+    || draft.targetPlatform !== "douyin"
+    || typeof draft.name !== "string" || !draft.name.trim()
+    || typeof draft.objective !== "string" || !draft.objective.trim()
+    || typeof draft.modelConnectionId !== "string" || !draft.modelConnectionId.trim()) return false;
+  const icp = draft.icp && typeof draft.icp === "object" && !Array.isArray(draft.icp)
+    ? draft.icp as Record<string, unknown>
+    : null;
+  const channels = draft.subjectChannels && typeof draft.subjectChannels === "object"
+    ? draft.subjectChannels as Record<string, unknown>
+    : null;
+  const budget = draft.budgetSnapshot && typeof draft.budgetSnapshot === "object" && !Array.isArray(draft.budgetSnapshot)
+    ? draft.budgetSnapshot as Record<string, unknown>
+    : null;
+  const stopConditions = draft.stopConditions && typeof draft.stopConditions === "object"
+    ? draft.stopConditions as Record<string, unknown>
+    : null;
+  if (!icp || !["industries", "regions", "organizationCriteria", "individualCriteria"].every((key) => stringArray(icp[key]))
+    || !Array.isArray(icp.exclusionRules) || !icp.exclusionRules.every((item) => typeof item === "string")
+    || !channels || typeof channels.organization !== "boolean" || typeof channels.individual !== "boolean"
+    || !budget || typeof budget.billingCurrency !== "string" || !budget.billingCurrency.trim()
+    || !usageIsValid({
+      requests: budget.maxRequests,
+      results: budget.maxResults,
+      amountMinor: budget.maxAmountMinor,
+      durationSeconds: budget.maxDurationSeconds
+    })
+    || !stopConditions || typeof stopConditions.stopWhenBudgetExhausted !== "boolean"
+    || typeof stopConditions.stopWhenNoMoreResults !== "boolean") return false;
+  const connections = draft.providerConnections;
+  const operations = draft.operations;
+  return Array.isArray(connections) && connections.length > 0
+    && connections.every((value) => {
+      const connection = value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+      return Boolean(connection && typeof connection.connectionId === "string" && connection.connectionId.trim()
+        && typeof connection.providerId === "string" && connection.providerId.trim()
+        && connection.kind === "search" && connection.status === "active"
+        && typeof connection.credentialVersion === "number" && Number.isSafeInteger(connection.credentialVersion)
+        && connection.credentialVersion > 0);
+    })
+    && Array.isArray(operations) && operations.length > 0
+    && operations.every((value) => {
+      const operation = value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+      return Boolean(operation && typeof operation.operationId === "string" && operation.operationId.trim()
+        && (operation.subjectChannel === "organization" || operation.subjectChannel === "individual")
+        && operation.kind === "search" && typeof operation.connectionId === "string" && operation.connectionId.trim()
+        && typeof operation.query === "string" && operation.query.trim() && usageIsValid(operation.allocatedBudget));
+    });
+}
+
+function copilotTask(value: unknown): CopilotPlanDraftTask {
+  const task = record(value, "AI 任务");
+  const id = trimText(task.id, "AI 任务 ID", 255);
+  const statuses = new Set(["queued", "running", "succeeded", "failed", "cancelled"]);
+  if (typeof task.status !== "string" || !statuses.has(task.status)) {
+    throw new Error("AI 任务状态无效");
+  }
+  if (task.result !== null && task.result !== undefined) {
+    const result = record(task.result, "AI 任务结果");
+    if (typeof result.summary !== "string") throw new Error("AI 任务结果缺少摘要");
+    if (result.planDraft !== undefined) {
+      const planDraft = record(result.planDraft, "AI 计划草稿");
+      if (!validPlanDraft(planDraft)) {
+        throw new Error("AI 计划草稿不完整");
+      }
+    }
+  }
+  return task as unknown as CopilotPlanDraftTask;
+}
+
 export function createAcquisitionTaskCreationApi(
   fetchImpl: typeof fetch = fetch,
   options: AcquisitionTaskCreationApiOptions = {}
@@ -432,6 +541,48 @@ export function createAcquisitionTaskCreationApi(
         connection.status === "active"
         && connection.capabilitySnapshot?.toolCalling === true
       );
+    },
+
+    async createCopilotSession(
+      input: { connectionId: string },
+      idempotencyKey: string
+    ): Promise<{ id: string }> {
+      const result = await post<Record<string, unknown>>(
+        "/api/v1/acquisition/copilot/sessions",
+        { connectionId: trimText(input.connectionId, "AI 模型连接", 255) },
+        { "Idempotency-Key": validIdempotencyKey(idempotencyKey) }
+      );
+      const id = typeof result.data.resourceId === "string"
+        ? result.data.resourceId
+        : result.data.id;
+      return { id: trimText(id, "AI 会话 ID", 255) };
+    },
+
+    async createPlanDraftTask(
+      sessionId: string,
+      input: {
+        message: string;
+        responseMode: "plan_draft";
+        targetPlatform: "douyin";
+      },
+      idempotencyKey: string
+    ): Promise<CopilotPlanDraftTask> {
+      const result = await post<unknown>(
+        `/api/v1/acquisition/copilot/sessions/${pathSegment(sessionId, "AI 会话 ID")}/messages`,
+        {
+          message: trimText(input.message, "一句话需求", 20_000),
+          responseMode: "plan_draft",
+          targetPlatform: "douyin"
+        },
+        { "Idempotency-Key": validIdempotencyKey(idempotencyKey) }
+      );
+      return copilotTask(result.data);
+    },
+
+    async getCopilotTask(taskId: string): Promise<CopilotPlanDraftTask> {
+      return copilotTask(await get<unknown>(
+        `/api/v1/acquisition/copilot/tasks/${pathSegment(taskId, "AI 任务 ID")}`
+      ));
     },
 
     async createPlan(
