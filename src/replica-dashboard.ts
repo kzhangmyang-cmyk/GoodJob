@@ -2,6 +2,7 @@ import { startAcquisitionRuntime } from "./acquisition/runtime";
 import { startAcquisitionTaskCreation } from "./acquisition/task-creation-controller";
 import { startAcquisitionDetailCenter } from "./acquisition/detail-center-controller";
 import { acquisitionDetailRequestForAction } from "./acquisition/detail-center-entry";
+import { startAcquisitionPerformance } from "./acquisition/performance-controller";
 import { startConnectionCenter } from "./connections/connection-controller";
 
 type ReplicaTaskRow = HTMLButtonElement & {
@@ -574,4 +575,5 @@ if (replica) {
 startAcquisitionRuntime();
 startAcquisitionTaskCreation();
 startAcquisitionDetailCenter();
+startAcquisitionPerformance();
 startConnectionCenter();

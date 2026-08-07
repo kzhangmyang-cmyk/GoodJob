@@ -10357,6 +10357,23 @@
         </article>
       </section>
 
+      <section class="replica-performance replica-glass" id="replicaAcquisitionPerformance" hidden aria-labelledby="replicaAcquisitionPerformanceTitle">
+        <header class="replica-performance-header">
+          <div>
+            <span class="replica-performance-eyebrow">真实经营结果</span>
+            <h2 id="replicaAcquisitionPerformanceTitle">渠道漏斗与老板简报</h2>
+            <p>数字由后端根据获客运行、CRM 活动和商机事件确定性聚合。</p>
+          </div>
+          <div class="replica-performance-filters" aria-label="经营结果筛选">
+            <label><span>开始日期</span><input id="replicaPerformanceFrom" type="date" /></label>
+            <label><span>结束日期</span><input id="replicaPerformanceTo" type="date" /></label>
+            <label><span>平台</span><select id="replicaPerformancePlatform"><option value="">全部平台</option><option value="douyin">抖音</option><option value="web">Web</option></select></label>
+            <button type="button" id="replicaPerformanceRefresh"><i class="ph ph-arrows-clockwise" aria-hidden="true"></i>刷新</button>
+          </div>
+        </header>
+        <div id="replicaAcquisitionPerformanceBody" aria-live="polite"></div>
+      </section>
+
       <section class="replica-boardbar" aria-label="任务看板工具栏">
         <div class="replica-boardbar-left">
           <h2>全渠道获客任务 <span class="demo-status" id="replicaAcquisitionModeBadge">演示模式</span></h2>

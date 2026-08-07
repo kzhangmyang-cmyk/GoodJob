@@ -545,6 +545,294 @@ body.is-authenticated .replica-shell {
   color: var(--replica-danger);
 }
 
+.replica-performance {
+  display: grid;
+  position: relative;
+  z-index: 50;
+  gap: 22px;
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 22px;
+  background: linear-gradient(140deg, rgba(22, 28, 25, 0.96), rgba(13, 17, 15, 0.9));
+}
+
+.replica-performance[hidden] {
+  display: none;
+}
+
+.replica-performance-header,
+.replica-performance-briefing > header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.replica-performance-eyebrow {
+  color: #6bdb95;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.replica-performance h2,
+.replica-performance h3,
+.replica-performance h4,
+.replica-performance p {
+  margin: 0;
+}
+
+.replica-performance-header h2 {
+  margin-top: 5px;
+  color: #f0f3f1;
+  font-size: 21px;
+}
+
+.replica-performance-header p {
+  margin-top: 7px;
+  color: #8f9792;
+  font-size: 12px;
+}
+
+.replica-performance-filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.replica-performance-filters label {
+  display: grid;
+  gap: 5px;
+  color: #8f9792;
+  font-size: 10px;
+}
+
+.replica-performance-filters input,
+.replica-performance-filters select,
+.replica-performance-filters button,
+.replica-performance-briefing button {
+  min-height: 36px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9px;
+  background: #202723;
+  color: #dfe5e1;
+  padding: 0 10px;
+  font: inherit;
+}
+
+.replica-performance-filters button,
+.replica-performance-briefing button {
+  cursor: pointer;
+}
+
+.replica-performance-filters button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.replica-performance-summary,
+.replica-performance-grid,
+.replica-performance-facts {
+  display: grid;
+  gap: 12px;
+}
+
+.replica-performance-summary {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.replica-performance-summary article,
+.replica-performance-grid > section,
+.replica-performance-facts > section,
+.replica-performance-ai {
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 16px;
+}
+
+.replica-performance-summary article {
+  display: grid;
+  gap: 7px;
+  color: #9ba39e;
+  font-size: 11px;
+}
+
+.replica-performance-summary strong {
+  color: #f0f4f1;
+  font-size: 27px;
+}
+
+.replica-performance-grid {
+  grid-template-columns: 1.05fr 1.25fr 0.8fr;
+}
+
+.replica-performance-grid h3,
+.replica-performance-briefing h3 {
+  margin-bottom: 13px;
+  color: #e7ebe8;
+  font-size: 14px;
+}
+
+.replica-performance-funnel > div {
+  display: grid;
+  grid-template-columns: 1fr auto 54px;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: #9ca49f;
+  font-size: 12px;
+}
+
+.replica-performance-funnel strong,
+.replica-performance-funnel small {
+  color: #dfe5e1;
+}
+
+.replica-performance-money,
+.replica-performance-money article,
+.replica-performance-quality,
+.replica-performance-briefing,
+.replica-performance-ai {
+  display: grid;
+  gap: 10px;
+}
+
+.replica-performance-money article {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 11px;
+  border-radius: 10px;
+  background: rgba(107, 219, 149, 0.055);
+  color: #aab2ad;
+  font-size: 11px;
+}
+
+.replica-performance-money article strong {
+  grid-column: 1 / -1;
+  color: #73df9c;
+}
+
+.replica-performance-cost,
+.replica-performance-gap,
+.replica-performance-quality span,
+.replica-performance-ai p {
+  color: #9ca49f;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.replica-performance-gap strong {
+  color: #f0bf72;
+}
+
+.replica-performance-briefing {
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.replica-performance-briefing button {
+  border-color: rgba(107, 219, 149, 0.28);
+  color: #7be4a3;
+}
+
+.replica-performance-facts {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.replica-performance-facts h4,
+.replica-performance-ai h4 {
+  color: #dfe5e1;
+  font-size: 12px;
+}
+
+.replica-performance-facts ul {
+  display: grid;
+  gap: 12px;
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #b5bdb8;
+  font-size: 12px;
+}
+
+.replica-performance-facts li span,
+.replica-performance-facts li small {
+  display: block;
+}
+
+.replica-performance-facts li small,
+.replica-performance-facts details,
+.replica-performance-facts section > p {
+  margin-top: 5px;
+  color: #78817b;
+  font-size: 10px;
+}
+
+.replica-performance-facts summary {
+  cursor: pointer;
+  color: #76d99a;
+}
+
+.replica-performance-facts code {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.replica-performance-state {
+  padding: 30px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  color: #9ca49f;
+  text-align: center;
+}
+
+.replica-performance-state.is-error {
+  border-color: rgba(239, 111, 111, 0.3);
+  color: #ef9797;
+}
+
+@media (max-width: 1100px) {
+  .replica-performance-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .replica-performance-filters {
+    flex-wrap: wrap;
+  }
+
+  .replica-performance-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .replica-performance-quality {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 700px) {
+  .replica-performance-summary,
+  .replica-performance-grid,
+  .replica-performance-facts,
+  .replica-performance-money article {
+    grid-template-columns: 1fr;
+  }
+
+  .replica-performance-quality,
+  .replica-performance-money article strong {
+    grid-column: auto;
+  }
+
+  .replica-performance-filters label,
+  .replica-performance-filters input,
+  .replica-performance-filters select,
+  .replica-performance-filters button {
+    width: 100%;
+  }
+}
+
 .replica-boardbar {
   display: grid;
   grid-template-columns: minmax(460px, 1fr) auto;
