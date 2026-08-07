@@ -14,6 +14,9 @@ import {
 import {
   AcquisitionDomainService
 } from "./acquisition-domain-service.js";
+import type {
+  AcquisitionPrivateDomainHandoffResult
+} from "./acquisition-private-domain-handoff.js";
 import {
   AcquisitionIdentityResolutionService
 } from "./acquisition-identity-resolution-service.js";
@@ -52,6 +55,8 @@ async function createFixture(options: {
   resolveCopilotModelSnapshot?:
     AcquisitionV1RouterOptions["resolveCopilotModelSnapshot"];
   allowDirectDomainWrites?: boolean;
+  privateDomainHandoffService?:
+    AcquisitionV1RouterOptions["privateDomainHandoffService"];
 } = {}) {
   const repository = new InMemoryAcquisitionDomainRepository();
   const candidates = new Map<string, AcquisitionCandidate>();
@@ -206,7 +211,8 @@ async function createFixture(options: {
       "router-test-cursor-secret-that-is-at-least-32-characters",
     dispatchCopilotTask: options.dispatchCopilotTask,
     resolveCopilotModelSnapshot: options.resolveCopilotModelSnapshot,
-    allowDirectDomainWrites: options.allowDirectDomainWrites ?? true
+    allowDirectDomainWrites: options.allowDirectDomainWrites ?? true,
+    privateDomainHandoffService: options.privateDomainHandoffService
   }));
 
   const server = await new Promise<Server>((resolve) => {
@@ -259,6 +265,179 @@ function write(body: unknown, key?: string): RequestInit {
     body: JSON.stringify(body)
   };
 }
+
+test("private-domain handoff route enforces server-owned input and supports replay recovery", async () => {
+  const completed: AcquisitionPrivateDomainHandoffResult = {
+    replayed: false,
+    handoff: {
+      id: "ach-router",
+      ownerId: OWNER_A,
+      teamId: TEAM_A,
+      candidateId: "candidate-router",
+      leadId: "lead-router",
+      customerId: "customer-router",
+      todoId: "todo-router",
+      decisionVersion: "qualification-v2",
+      mode: "create_new",
+      processingKeyHash: "a".repeat(64),
+      requestHash: "b".repeat(64),
+      intelligence: {
+        qualificationGrade: "S",
+        qualificationScore: 94,
+        financialGrade: "A",
+        currency: "CNY",
+        expectedRevenueMinor: 1_288_000,
+        expectedGrossProfitMinor: 708_400,
+        expectedContributionMinor: 520_000
+      },
+      qualificationSnapshotHash: `sha256:${"c".repeat(64)}`,
+      financialSnapshotHash: `sha256:${"d".repeat(64)}`,
+      createdAt: "2026-08-07T08:00:00.000Z"
+    },
+    lead: {
+      id: "lead-router",
+      company: "真实候选公司",
+      contact: "",
+      country: "中国",
+      email: "",
+      phone: "",
+      wechat: "",
+      source: "AI获客智能体",
+      intent: "高",
+      stage: "待人工跟进",
+      status: "new",
+      ownerId: OWNER_A,
+      teamId: TEAM_A,
+      estimatedAmount: 12_880,
+      nextFollowAt: "",
+      lastActivityAt: "2026-08-07T08:00:00.000Z",
+      remark: "",
+      convertedCustomerId: "customer-router",
+      convertedDealId: "",
+      sourceType: "outbound",
+      sourceChannel: "ai_acquisition",
+      sourceCampaign: "qualification-v2",
+      externalId: "candidate-router",
+      sourceUrl: "",
+      createdAt: "2026-08-07T08:00:00.000Z"
+    },
+    customer: {
+      id: "customer-router",
+      company: "真实候选公司",
+      country: "中国",
+      contact: "",
+      ownerId: OWNER_A,
+      teamId: TEAM_A,
+      stage: "待首次跟进",
+      amount: 12_880,
+      health: 80,
+      grade: "A",
+      nextReminder: "2026-08-08T09:00:00.000Z",
+      wecomBound: false,
+      billingName: "",
+      billingAddress: "",
+      documentContact: "",
+      defaultPortDischarge: "",
+      defaultIncoterm: "",
+      defaultPaymentTerm: ""
+    },
+    todo: {
+      id: "todo-router",
+      title: "首次跟进：确认需求和预算",
+      type: "customer",
+      priority: "high",
+      status: "pending",
+      dueAt: "2026-08-08T09:00:00.000Z",
+      ownerId: OWNER_A,
+      teamId: TEAM_A,
+      related: "真实候选公司",
+      done: false,
+      customerId: "customer-router",
+      leadId: "lead-router",
+      triggerKey: "acquisition-first-follow-up:candidate-router"
+    },
+    intelligence: {
+      qualificationGrade: "S",
+      qualificationScore: 94,
+      financialGrade: "A",
+      currency: "CNY",
+      expectedRevenueMinor: 1_288_000,
+      expectedGrossProfitMinor: 708_400,
+      expectedContributionMinor: 520_000
+    }
+  };
+  let createCalls = 0;
+  const fixture = await createFixture({
+    privateDomainHandoffService: {
+      async create(_scope, _candidateId, _request, _key) {
+        createCalls += 1;
+        return {
+          ...structuredClone(completed),
+          replayed: createCalls > 1
+        };
+      },
+      async get() {
+        return structuredClone(completed);
+      }
+    }
+  });
+  const body = {
+    operationCode: "handoff_acquisition_candidate_v1",
+    decisionVersion: "qualification-v2",
+    mode: "create_new",
+    existingCustomerId: "",
+    followUp: {
+      title: "首次跟进：确认需求和预算",
+      dueAt: "2026-08-08T09:00:00.000Z",
+      priority: "high"
+    }
+  };
+  try {
+    const shortKey = await fixture.request(
+      "/api/v1/acquisition/candidates/candidate-router/private-domain-handoffs",
+      write(body, "short")
+    );
+    assert.equal(shortKey.response.status, 400);
+
+    const forged = await fixture.request(
+      "/api/v1/acquisition/candidates/candidate-router/private-domain-handoffs",
+      write({
+        ...body,
+        qualificationScore: 1,
+        expectedRevenueMinor: 1
+      }, "handoff-router-forged")
+    );
+    assert.equal(forged.response.status, 400);
+    assert.equal(createCalls, 0);
+
+    const created = await fixture.request(
+      "/api/v1/acquisition/candidates/candidate-router/private-domain-handoffs",
+      write(body, "handoff-router-valid")
+    );
+    assert.equal(created.response.status, 200);
+    assert.equal(created.json.intelligence.qualificationScore, 94);
+    assert.equal(created.response.headers.get("Idempotency-Replayed"), null);
+
+    const replayed = await fixture.request(
+      "/api/v1/acquisition/candidates/candidate-router/private-domain-handoffs",
+      write(body, "handoff-router-valid")
+    );
+    assert.equal(replayed.response.status, 200);
+    assert.equal(
+      replayed.response.headers.get("Idempotency-Replayed"),
+      "true"
+    );
+
+    const refreshed = await fixture.request(
+      "/api/v1/acquisition/candidates/candidate-router/private-domain-handoff"
+    );
+    assert.equal(refreshed.response.status, 200);
+    assert.equal(refreshed.json.handoff.customerId, "customer-router");
+    assert.equal("processingKeyHash" in refreshed.json.handoff, false);
+  } finally {
+    await fixture.close();
+  }
+});
 
 function evidenceBody(
   targetType: "organization" | "individual_signal",

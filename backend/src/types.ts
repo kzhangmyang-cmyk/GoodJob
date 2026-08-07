@@ -256,6 +256,34 @@ export interface LeadActivity {
   createdAt: string;
 }
 
+export interface AcquisitionHandoffIntelligence {
+  qualificationGrade: "S" | "A" | "B" | "C" | "D";
+  qualificationScore: number;
+  financialGrade: "S" | "A" | "B" | "C" | "D";
+  currency: string;
+  expectedRevenueMinor: number;
+  expectedGrossProfitMinor: number;
+  expectedContributionMinor: number;
+}
+
+export interface AcquisitionCustomerHandoff {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  candidateId: string;
+  leadId: string;
+  customerId: string;
+  todoId: string;
+  decisionVersion: string;
+  mode: "create_new" | "link_existing";
+  processingKeyHash: string;
+  requestHash: string;
+  intelligence: AcquisitionHandoffIntelligence;
+  qualificationSnapshotHash: string;
+  financialSnapshotHash: string;
+  createdAt: string;
+}
+
 export interface WhatsAppMessage {
   id: string;
   customerId: string;

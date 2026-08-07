@@ -33,6 +33,10 @@ import {
   type AcquisitionDomainService
 } from "./acquisition-domain-service.js";
 import {
+  AcquisitionPrivateDomainHandoffError,
+  type AcquisitionPrivateDomainHandoffService
+} from "./acquisition-private-domain-handoff.js";
+import {
   AcquisitionCopilotError,
   type AcquisitionCopilotMessage,
   type AcquisitionCopilotScope,
@@ -315,6 +319,33 @@ const convertBodySchema = z.object({
   decisionVersion: requiredText(100)
 }).strict();
 
+const privateDomainHandoffBodySchema = z.object({
+  operationCode: z.literal("handoff_acquisition_candidate_v1"),
+  decisionVersion: requiredText(100),
+  mode: z.enum(["create_new", "link_existing"]),
+  existingCustomerId: z.string().trim().max(255),
+  followUp: z.object({
+    title: requiredText(500),
+    dueAt: z.string().datetime({ offset: true }),
+    priority: z.enum(["high", "medium", "normal"])
+  }).strict()
+}).strict().superRefine((value, context) => {
+  if (value.mode === "link_existing" && !value.existingCustomerId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["existingCustomerId"],
+      message: "link_existing 必须提供 existingCustomerId"
+    });
+  }
+  if (value.mode === "create_new" && value.existingCustomerId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["existingCustomerId"],
+      message: "create_new 不接受 existingCustomerId"
+    });
+  }
+});
+
 const outcomeBodySchema = z.object({
   leadId: idSchema.nullable(),
   customerId: idSchema.nullable(),
@@ -453,6 +484,10 @@ export interface AcquisitionV1RouterOptions {
    * invent evidence, model decisions, battle cards, or revenue outcomes.
    */
   allowDirectDomainWrites?: boolean;
+  privateDomainHandoffService?: Pick<
+    AcquisitionPrivateDomainHandoffService,
+    "create" | "get"
+  >;
 }
 
 class AcquisitionV1HttpError extends Error {
@@ -508,6 +543,18 @@ function idempotencyKey(req: Request) {
     );
   }
   return parsed.data;
+}
+
+function handoffIdempotencyKey(req: Request) {
+  const value = idempotencyKey(req);
+  if (value.length < 8) {
+    throw new AcquisitionV1HttpError(
+      "invalid_idempotency_key",
+      "Idempotency-Key 必须为 8 至 200 个字符",
+      400
+    );
+  }
+  return value;
 }
 
 function expectedCandidateVersion(req: Request) {
@@ -570,6 +617,11 @@ function sendError(error: unknown, res: Response) {
     message = error.message;
     status = error.status;
     retryable = error.status === 429 || error.status >= 500;
+  } else if (error instanceof AcquisitionPrivateDomainHandoffError) {
+    code = error.code;
+    message = error.message;
+    status = error.status;
+    retryable = error.status >= 500;
   }
 
   res.status(status).json({
@@ -762,6 +814,27 @@ function publicConversion(record: LeadConversionRecord) {
     reviewerId: record.reviewerId,
     evidenceSnapshotHash: record.evidenceSnapshotHash,
     createdAt: record.createdAt
+  };
+}
+
+function publicPrivateDomainHandoff(
+  result: Awaited<ReturnType<AcquisitionPrivateDomainHandoffService["get"]>>
+) {
+  return {
+    replayed: result.replayed,
+    handoff: {
+      id: result.handoff.id,
+      candidateId: result.handoff.candidateId,
+      leadId: result.handoff.leadId,
+      customerId: result.handoff.customerId,
+      todoId: result.handoff.todoId,
+      decisionVersion: result.handoff.decisionVersion,
+      createdAt: result.handoff.createdAt
+    },
+    lead: structuredClone(result.lead),
+    customer: structuredClone(result.customer),
+    todo: structuredClone(result.todo),
+    intelligence: structuredClone(result.intelligence)
   };
 }
 
@@ -1488,6 +1561,36 @@ export function createAcquisitionV1Router(
       res.json(publicConversion(conversion));
     })
   );
+
+  if (options.privateDomainHandoffService) {
+    router.post(
+      "/api/v1/acquisition/candidates/:id/private-domain-handoffs",
+      asyncRoute(async (req, res) => {
+        const scope = scopeFromRequest(req);
+        const result = await options.privateDomainHandoffService!.create(
+          scope,
+          parse(idSchema, req.params.id),
+          parse(privateDomainHandoffBodySchema, req.body),
+          handoffIdempotencyKey(req)
+        );
+        if (result.replayed) {
+          res.setHeader("Idempotency-Replayed", "true");
+        }
+        res.json(publicPrivateDomainHandoff(result));
+      })
+    );
+
+    router.get(
+      "/api/v1/acquisition/candidates/:id/private-domain-handoff",
+      asyncRoute(async (req, res) => {
+        const result = await options.privateDomainHandoffService!.get(
+          scopeFromRequest(req),
+          parse(idSchema, req.params.id)
+        );
+        res.json(publicPrivateDomainHandoff(result));
+      })
+    );
+  }
 
   router.post(
     "/api/v1/acquisition/outcomes",

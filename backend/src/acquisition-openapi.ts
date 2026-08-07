@@ -485,6 +485,77 @@ const leadConversionResponseSchema = {
   }
 };
 
+const handoffIntelligenceResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "qualificationGrade",
+    "qualificationScore",
+    "financialGrade",
+    "currency",
+    "expectedRevenueMinor",
+    "expectedGrossProfitMinor",
+    "expectedContributionMinor"
+  ],
+  properties: {
+    qualificationGrade: {
+      type: "string",
+      enum: ["S", "A", "B", "C", "D"]
+    },
+    qualificationScore: { type: "number" },
+    financialGrade: {
+      type: "string",
+      enum: ["S", "A", "B", "C", "D"]
+    },
+    currency: { type: "string", minLength: 3, maxLength: 3 },
+    expectedRevenueMinor: { type: "integer", minimum: 0 },
+    expectedGrossProfitMinor: { type: "integer" },
+    expectedContributionMinor: { type: "integer" }
+  }
+};
+
+const privateDomainHandoffResponseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "replayed",
+    "handoff",
+    "lead",
+    "customer",
+    "todo",
+    "intelligence"
+  ],
+  properties: {
+    replayed: { type: "boolean" },
+    handoff: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "id",
+        "candidateId",
+        "leadId",
+        "customerId",
+        "todoId",
+        "decisionVersion",
+        "createdAt"
+      ],
+      properties: {
+        id: { type: "string" },
+        candidateId: { type: "string" },
+        leadId: { type: "string" },
+        customerId: { type: "string" },
+        todoId: { type: "string" },
+        decisionVersion: { type: "string" },
+        createdAt: { type: "string", format: "date-time" }
+      }
+    },
+    lead: { type: "object", additionalProperties: true },
+    customer: { type: "object", additionalProperties: true },
+    todo: { type: "object", additionalProperties: true },
+    intelligence: handoffIntelligenceResponseSchema
+  }
+};
+
 const candidateStatuses = [
   "discovered",
   "unresolvable",
@@ -820,6 +891,10 @@ const acquisitionOperationIds: Record<string, string> = {
     "reviewAcquisitionCandidate",
   "post /api/v1/acquisition/candidates/{id}/convert":
     "convertAcquisitionCandidate",
+  "post /api/v1/acquisition/candidates/{id}/private-domain-handoffs":
+    "handoffAcquisitionCandidateToPrivateDomain",
+  "get /api/v1/acquisition/candidates/{id}/private-domain-handoff":
+    "getAcquisitionCandidatePrivateDomainHandoff",
   "get /api/v1/acquisition/outcomes": "listAcquisitionOutcomes",
   "get /api/v1/acquisition/audit-events": "listAcquisitionAuditEvents",
   "post /api/v1/acquisition/copilot/sessions":
@@ -1564,6 +1639,48 @@ const convertWriteSchema = {
   additionalProperties: false
 };
 
+const privateDomainHandoffWriteSchema = {
+  oneOf: ["create_new", "link_existing"].map((mode) => ({
+    type: "object",
+    required: [
+      "operationCode",
+      "decisionVersion",
+      "mode",
+      "existingCustomerId",
+      "followUp"
+    ],
+    properties: {
+      operationCode: {
+        type: "string",
+        enum: ["handoff_acquisition_candidate_v1"]
+      },
+      decisionVersion: {
+        type: "string",
+        minLength: 1,
+        maxLength: 100
+      },
+      mode: { type: "string", enum: [mode] },
+      existingCustomerId: mode === "link_existing"
+        ? { type: "string", minLength: 1, maxLength: 255 }
+        : { type: "string", maxLength: 0 },
+      followUp: {
+        type: "object",
+        required: ["title", "dueAt", "priority"],
+        properties: {
+          title: { type: "string", minLength: 1, maxLength: 500 },
+          dueAt: { type: "string", format: "date-time" },
+          priority: {
+            type: "string",
+            enum: ["high", "medium", "normal"]
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    additionalProperties: false
+  }))
+};
+
 const copilotSessionWriteSchema = {
   type: "object",
   properties: {
@@ -2078,6 +2195,8 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     ["/api/v1/acquisition/candidates/{id}/reviews", "get", "读取人工审核历史"],
     ["/api/v1/acquisition/candidates/{id}/review", "post", "提交人工审核"],
     ["/api/v1/acquisition/candidates/{id}/convert", "post", "人工确认转换为 CRM 线索"],
+    ["/api/v1/acquisition/candidates/{id}/private-domain-handoffs", "post", "交接已批准候选至 CRM/私域"],
+    ["/api/v1/acquisition/candidates/{id}/private-domain-handoff", "get", "读取候选的 CRM/私域交接"],
     ["/api/v1/acquisition/outcomes", "get", "列出成交反馈"],
     ["/api/v1/acquisition/audit-events", "get", "读取获客审计事件"],
     ["/api/v1/acquisition/copilot/sessions", "post", "创建绑定模型快照的 Pi 会话"],
@@ -2123,6 +2242,9 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     },
     "post /api/v1/acquisition/candidates/{id}/convert": {
       schema: convertWriteSchema
+    },
+    "post /api/v1/acquisition/candidates/{id}/private-domain-handoffs": {
+      schema: privateDomainHandoffWriteSchema
     },
     "post /api/v1/acquisition/copilot/sessions": {
       schema: copilotSessionWriteSchema,
@@ -2172,6 +2294,7 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry",
     "/api/v1/acquisition/candidates/{id}/review",
     "/api/v1/acquisition/candidates/{id}/convert",
+    "/api/v1/acquisition/candidates/{id}/private-domain-handoffs",
     "/api/v1/acquisition/copilot/sessions",
     "/api/v1/acquisition/copilot/sessions/{id}/messages"
   ]);
@@ -2243,6 +2366,10 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       reviewResultResponseSchema,
     "post /api/v1/acquisition/candidates/{id}/convert":
       leadConversionResponseSchema,
+    "post /api/v1/acquisition/candidates/{id}/private-domain-handoffs":
+      privateDomainHandoffResponseSchema,
+    "get /api/v1/acquisition/candidates/{id}/private-domain-handoff":
+      privateDomainHandoffResponseSchema,
     "get /api/v1/acquisition/outcomes": outcomePagedResponseSchema,
     "get /api/v1/acquisition/audit-events": auditPagedResponseSchema,
     "post /api/v1/acquisition/copilot/sessions":
@@ -2358,7 +2485,9 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       }
     } else {
       if (v1IdempotentWrites.has(path)) {
-        parameters.push(idempotencyParameter(1));
+        parameters.push(idempotencyParameter(
+          path.endsWith("/private-domain-handoffs") ? 8 : 1
+        ));
       } else if (planIdempotentWrites.has(path)) {
         parameters.push(idempotencyParameter(8));
       }

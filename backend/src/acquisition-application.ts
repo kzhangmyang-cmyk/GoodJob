@@ -69,6 +69,9 @@ import {
   AcquisitionCrmLeadConversionPort
 } from "./acquisition-lead-conversion-port.js";
 import {
+  AcquisitionPrivateDomainHandoffService
+} from "./acquisition-private-domain-handoff.js";
+import {
   AcquisitionLeadConversionReconciliationService
 } from "./acquisition-lead-conversion-reconciliation.js";
 import {
@@ -982,6 +985,13 @@ export async function createAcquisitionApplication(
       idFactory,
       now
     });
+    const privateDomainHandoffService =
+      new AcquisitionPrivateDomainHandoffService({
+        repository: repositories.domain,
+        domainService,
+        store: options.store,
+        now
+      });
     const identityResolutionService =
       new AcquisitionIdentityResolutionService({
         domain: domainService
@@ -1375,7 +1385,8 @@ export async function createAcquisitionApplication(
       requestIdFactory: idFactory,
       cursorSecret: derivedSecret(masterSecret, "v1-cursor"),
       dispatchCopilotTask,
-      resolveCopilotModelSnapshot: resolveModelSnapshot
+      resolveCopilotModelSnapshot: resolveModelSnapshot,
+      privateDomainHandoffService
     }));
     router.use(createAcquisitionPlanRouter({
       service: planService,

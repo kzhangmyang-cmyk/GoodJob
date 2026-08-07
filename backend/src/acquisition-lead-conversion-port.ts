@@ -9,6 +9,7 @@ import type {
   LeadConversionPort
 } from "./acquisition-domain-service.js";
 import type {
+  AcquisitionHandoffIntelligence,
   Lead,
   LeadActivity,
   LeadSourceEvent
@@ -150,12 +151,19 @@ implements LeadConversionPort {
       request,
       candidate.id
     );
-    const financial = financialValues.at(-1);
+    const financial = financialValues
+      .filter((value) =>
+        value.qualificationDecisionId === candidate.latestDecisionId
+      )
+      .at(-1);
     const qualifications = await this.#repository.listQualificationDecisions(
       request,
       candidate.id
     );
-    const qualification = qualifications.at(-1);
+    const qualification = qualifications.find((value) =>
+      value.id === candidate.latestDecisionId
+      && value.decisionVersion === request.decisionVersion
+    );
     const createdAt = new Date(this.#now()).toISOString();
     const identity = [
       request.ownerId,
@@ -181,6 +189,18 @@ implements LeadConversionPort {
       ? financial.expectedRevenueMinor / 100
       : 0;
     const publicSourceUrl = sourceUrl(evidence);
+    const intelligence: AcquisitionHandoffIntelligence | null =
+      qualification && financial
+        ? {
+            qualificationGrade: qualification.grade,
+            qualificationScore: qualification.score,
+            financialGrade: financial.grade,
+            currency: financial.currency,
+            expectedRevenueMinor: financial.expectedRevenueMinor,
+            expectedGrossProfitMinor: financial.expectedGrossProfitMinor,
+            expectedContributionMinor: financial.expectedContributionMinor
+          }
+        : null;
     const lead: Lead = {
       id: leadId,
       company,
@@ -224,7 +244,10 @@ implements LeadConversionPort {
         candidateId: candidate.id,
         partyType: candidate.partyType,
         decisionVersion: request.decisionVersion,
-        evidenceIds: request.evidenceIds
+        evidenceIds: request.evidenceIds,
+        intelligence,
+        qualificationSnapshotHash: qualification?.snapshotHash ?? "",
+        financialSnapshotHash: financial?.inputSnapshotHash ?? ""
       }),
       ownerId: request.ownerId,
       teamId: request.teamId
