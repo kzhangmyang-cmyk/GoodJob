@@ -17,6 +17,7 @@ export interface PrivateDomainController {
   getState(): Readonly<PrivateDomainViewState>;
   whenIdle(): Promise<void>;
   open(preferredCustomerId?: string): Promise<void>;
+  deactivate(): void;
   selectCustomer(customerId: string): void;
   destroy(): void;
 }
@@ -45,11 +46,14 @@ export function createPrivateDomainController(
     error: null
   };
   let disposed = false;
+  let active = false;
   let requestSerial = 0;
   let idlePromise = Promise.resolve();
 
   function render() {
-    if (main && inspector) renderPrivateDomainView(state, main, inspector);
+    if (active && main && inspector) {
+      renderPrivateDomainView(state, main, inspector);
+    }
   }
 
   const controller: PrivateDomainController = {
@@ -60,6 +64,7 @@ export function createPrivateDomainController(
       return idlePromise;
     },
     open(preferredCustomerId) {
+      active = true;
       const serial = ++requestSerial;
       state.status = "loading";
       state.error = null;
@@ -95,6 +100,10 @@ export function createPrivateDomainController(
       idlePromise = operation.then(() => undefined, () => undefined);
       return operation;
     },
+    deactivate() {
+      active = false;
+      requestSerial += 1;
+    },
     selectCustomer(customerId) {
       const normalized = customerId.trim();
       if (!state.customers.some((customer) => customer.id === normalized)) {
@@ -106,7 +115,7 @@ export function createPrivateDomainController(
     destroy() {
       if (disposed) return;
       disposed = true;
-      requestSerial += 1;
+      controller.deactivate();
       main?.removeEventListener("click", onClick);
     }
   };

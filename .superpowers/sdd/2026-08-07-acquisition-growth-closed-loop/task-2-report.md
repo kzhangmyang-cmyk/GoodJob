@@ -32,3 +32,27 @@
 
 - 后端全量历史 `test:acquisition` 套件曾运行到 72 项且 0 fail，因总时长超过本次有界验证窗口主动终止；上述 51 项任务目标集与构建均完整退出为 0。
 - 两个仓库中原有、与本任务无关的工作区改动均未暂存或提交。
+
+## 独立审查第 1 轮修复
+
+状态：6 个 Important 已全部修复；审查 ledger 中两个 Minor 按要求未处理。
+
+1. 在任何 CRM 副作用前持久化 owner/team/candidate 作用域的 handoff operation，固化 processing key hash、canonical request hash、服务端 intelligence 快照、阶段与目标资源；同 key 修改 dueAt、mode 或 customer 均返回 409。
+2. operation 按 `reserved → lead_ready → customer_ready → activity_ready → todo_ready → completed` 持久推进。恢复时先检查 `Lead.convertedCustomerId`，同租户 Customer 已存在则复用，并从缺失 Activity/Todo/Handoff 的阶段继续。
+3. `link_existing` 只更新 `nextReminder` 并创建 Activity/Todo/Handoff，不改已有 Customer 的 amount、grade、stage、health 等主档字段。
+4. 为部署前已 `converted_to_lead` 的旧 Lead 创建服务端专用、确定 ID 的 `acquisition_private_domain_handoff_snapshot` 来源事件；快照内容由 reservation 固化，后续财务记录变化不会改写最终 handoff。
+5. OpenAPI handoff POST 200 响应声明可选 `Idempotency-Replayed: true` header，并加入合同断言。
+6. 真实私域 controller 增加 `deactivate()` generation guard；demo-app 在离开模块或切换显式 demo 时停用 controller，慢请求完成后不再覆盖共享 host。
+
+修复提交：
+
+- 后端：`1c2eac8` (`fix(acquisition): harden CRM handoff recovery`)
+- 前端：本报告所在提交 (`fix(private-domain): guard inactive runtime renders`)
+
+第 1 轮验证证据：
+
+- 后端目标集：51/51 passed；`npm run build` 通过。
+- 前端自测：125 checks passed。
+- Playwright：5/5 passed，新增覆盖 open→leave 与 open→demo 两种慢请求竞态。
+- 前端 `pnpm build` 通过；仅有既有 Vite 大 chunk 警告。
+- 两仓库 `git diff --check` 通过，既有脏改动未暂存、未提交。

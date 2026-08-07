@@ -72,6 +72,7 @@ export function startDemoApp(): void {
       }
       return;
     }
+    if (realPrivateDomainActive) privateDomainController.deactivate();
     realPrivateDomainActive = false;
     renderModule(router.current(), store.getState(), host, inspector);
   };

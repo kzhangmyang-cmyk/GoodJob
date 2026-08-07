@@ -113,3 +113,28 @@ const todo = {
   assert.equal(controller.getState().selectedCustomerId, "customer-new");
   controller.destroy();
 }
+
+{
+  const customersRequest = deferred<typeof customer[]>();
+  const todosRequest = deferred<typeof todo[]>();
+  const main = { innerHTML: "", addEventListener() {}, removeEventListener() {} };
+  const inspector = { innerHTML: "" };
+  const controller = createPrivateDomainController({
+    api: {
+      getCustomers: () => customersRequest.promise,
+      getTodos: () => todosRequest.promise
+    },
+    main: main as unknown as HTMLElement,
+    inspector: inspector as unknown as HTMLElement
+  });
+  const pending = controller.open();
+  controller.deactivate();
+  main.innerHTML = "<h2>数据看板</h2>";
+  inspector.innerHTML = "<p>看板摘要</p>";
+  customersRequest.resolve([customer]);
+  todosRequest.resolve([todo]);
+  await pending;
+  assert.equal(main.innerHTML, "<h2>数据看板</h2>");
+  assert.equal(inspector.innerHTML, "<p>看板摘要</p>");
+  controller.destroy();
+}

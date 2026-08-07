@@ -367,7 +367,29 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     idempotencyKey: string | undefined;
     body: unknown;
   }> = [];
+  let pendingCustomerGate: {
+    started(): void;
+    wait: Promise<void>;
+  } | null = null;
+  function holdNextCustomerRequest() {
+    let markStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const wait = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    pendingCustomerGate = { started: markStarted, wait };
+    return { started, release };
+  }
   await page.route("**/api/customers?scope=mine", async (route) => {
+    const gate = pendingCustomerGate;
+    if (gate) {
+      pendingCustomerGate = null;
+      gate.started();
+      await gate.wait;
+    }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -712,9 +734,45 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
   await expect(dialog).toContainText("福州数智营销有限公司");
   await expect(dialog.locator('[data-acquisition-detail-action="load-more-candidates"]')).toHaveCount(0);
   await dialog.getByRole("link", { name: "查看客户", exact: true }).click();
+  await dialog.locator('[data-acquisition-detail-action="close"]').first().click();
   await expect(page.locator("#demoModuleMain")).toContainText("真实客户池");
   await expect(page.locator("#demoModuleMain")).toContainText(candidate.name);
   await expect(page.locator("#demoModuleInspector")).toContainText("todo-ui-1");
   await expect(page.locator("#demoModuleInspector")).toContainText("获客候选已交接");
   await expect(page.locator("#demoModuleMain")).not.toContainText("演示模式");
+
+  const leaveGate = holdNextCustomerRequest();
+  await page.locator('[data-private-domain-action="retry"]').click();
+  await leaveGate.started;
+  await page.locator('[data-replica-view="dashboard"]').click();
+  const leaveResponse = page.waitForResponse(
+    (response) => response.url().includes("/api/customers?scope=mine")
+  );
+  leaveGate.release();
+  await leaveResponse;
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await expect(page.locator("#demoModuleMain")).toContainText(
+    "让每一次客户信号，都进入下一步"
+  );
+  await expect(page.locator("#demoModuleMain")).not.toContainText("真实客户池");
+
+  const demoGate = holdNextCustomerRequest();
+  await page.locator('[data-replica-view="private-domain"]').click();
+  await demoGate.started;
+  await page.evaluate(() => {
+    const shell = document.querySelector<HTMLElement>(".replica-shell");
+    if (shell) shell.dataset.acquisitionMode = "demo";
+    document.dispatchEvent(new CustomEvent(
+      "goodjob:acquisition-mode-changed",
+      { detail: { mode: "demo" } }
+    ));
+  });
+  const demoResponse = page.waitForResponse(
+    (response) => response.url().includes("/api/customers?scope=mine")
+  );
+  demoGate.release();
+  await demoResponse;
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await expect(page.locator("#demoModuleMain")).toContainText("演示模式");
+  await expect(page.locator("#demoModuleMain")).not.toContainText("真实客户池");
 });
