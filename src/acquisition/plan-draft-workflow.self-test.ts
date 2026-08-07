@@ -363,3 +363,34 @@ assert.equal(pollDeadlineCallbacks.length, 1, "poll GET 前必须已有 deadline
 pollDeadlineCallbacks[0]!();
 await assert.rejects(pollDeadlineRun, /2 秒/);
 assert.equal(pollDeadlineAborted, true, "deadline 必须主动 abort poll GET");
+
+const backoffDeadlineCallbacks: Array<() => void> = [];
+let backoffSleepStarted: (() => void) | undefined;
+const backoffSleepStartedPromise = new Promise<void>((resolve) => { backoffSleepStarted = resolve; });
+let backoffDeadlinePolls = 0;
+const backoffDeadlineWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession() { return { id: "backoff-deadline-session" }; },
+  async createPlanDraftTask() { return { id: "backoff-deadline-task", status: "queued", result: null, errorCode: null }; },
+  async getCopilotTask(taskId) {
+    backoffDeadlinePolls += 1;
+    return { id: taskId, status: "running", result: null, errorCode: null };
+  }
+}, {
+  storage: null,
+  timeoutMs: 2_000,
+  now: () => 0,
+  sleep: async (_milliseconds, signal) => new Promise((_, reject) => {
+    backoffSleepStarted?.();
+    signal.addEventListener("abort", () => reject(new DOMException("请求已取消", "AbortError")), { once: true });
+  }),
+  setDeadlineTimer: (callback: () => void) => {
+    backoffDeadlineCallbacks.push(callback);
+    return callback;
+  },
+  clearDeadlineTimer: () => undefined
+});
+const backoffDeadlineRun = backoffDeadlineWorkflow.generate({ modelConnectionId: "model-a", prompt: "退避时超时" });
+await backoffSleepStartedPromise;
+backoffDeadlineCallbacks[0]!();
+await assert.rejects(backoffDeadlineRun, /2 秒/);
+assert.equal(backoffDeadlinePolls, 1, "deadline 在 backoff 时不得继续下一次轮询");

@@ -32,6 +32,29 @@ git diff --check
 # PASS — 无输出
 ```
 
+## 第 3 轮审查修复
+
+### 红绿与修复
+
+- RED：新增 backoff sleep deadline self-test 后，deadline 在 sleep 中 abort 时得到 `AbortError: 请求已取消`，而非配置的 `2 秒` 超时。
+- GREEN：指数退避 sleep 现统一捕获 abort：deadline 已到时返回配置超时错误；外部用户取消仍保留 `AbortError`。测试同时断言 deadline 触发后不会发起下一次 poll。
+
+### 最终命令与结果
+
+```text
+pnpm test
+# PASS — checked: 125
+
+pnpm run build
+# PASS — tsc -b + vite build 完成
+
+pnpm run test:e2e
+# PASS — 5/5 Playwright tests
+
+git diff --check
+# PASS — 无输出
+```
+
 ## 自审
 
 - [x] AI 默认，手动创建仍经原 `buildDouyinPlanInput` 与原工作流。

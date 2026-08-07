@@ -222,7 +222,13 @@ export function createPlanDraftWorkflow(api: PlanDraftWorkflowApi, options: Plan
           if (planDraft) return { planDraft };
           const backoff = Math.min(1_000 * 2 ** attempt, 8_000);
           attempt += 1;
-          await sleep(backoff, controller.signal);
+          try {
+            await sleep(backoff, controller.signal);
+          } catch (error) {
+            if (deadlineElapsed) throw timeoutError();
+            if (controller.signal.aborted) throw abortError();
+            throw error;
+          }
           checkDeadline();
         }
       } finally {
