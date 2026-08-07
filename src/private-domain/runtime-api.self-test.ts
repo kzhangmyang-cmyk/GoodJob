@@ -1,5 +1,27 @@
 import { strict as assert } from "node:assert";
-import { createPrivateDomainRuntimeApi } from "./runtime-api";
+import {
+  createPrivateDomainRuntimeApi,
+  pendingAcquisitionBindings
+} from "./runtime-api";
+
+assert.deepEqual(pendingAcquisitionBindings({
+  acquisitionBindings: [{
+    handoffId: "handoff-1",
+    leadId: "lead-1",
+    candidateId: "candidate-1",
+    createdAt: "2026-08-07T08:00:00.000Z"
+  }, {
+    handoffId: " ",
+    leadId: "lead-invalid",
+    candidateId: "candidate-invalid",
+    createdAt: "2026-08-07T08:00:00.000Z"
+  }]
+}), [{
+  handoffId: "handoff-1",
+  leadId: "lead-1",
+  candidateId: "candidate-1",
+  createdAt: "2026-08-07T08:00:00.000Z"
+}]);
 
 const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
 const api = createPrivateDomainRuntimeApi(async (input, init) => {

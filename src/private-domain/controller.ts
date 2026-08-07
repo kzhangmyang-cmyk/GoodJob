@@ -1,5 +1,6 @@
 import {
   createPrivateDomainRuntimeApi,
+  pendingAcquisitionBindings,
   type PrivateDomainRuntimeApi
 } from "./runtime-api";
 import {
@@ -135,17 +136,7 @@ export function createPrivateDomainController(
     } else if (target.dataset.privateDomainAction === "create-deal") {
       const customerId = target.dataset.customerId?.trim() ?? "";
       const customer = state.customers.find((item) => item.id === customerId);
-      const hasPendingBinding = customer?.acquisitionBindings?.some((binding) =>
-        typeof binding?.handoffId === "string"
-        && Boolean(binding.handoffId.trim())
-        && typeof binding?.leadId === "string"
-        && Boolean(binding.leadId.trim())
-        && typeof binding?.candidateId === "string"
-        && Boolean(binding.candidateId.trim())
-        && typeof binding?.createdAt === "string"
-        && Boolean(binding.createdAt.trim())
-      );
-      if (!hasPendingBinding) return;
+      if (pendingAcquisitionBindings(customer).length === 0) return;
       eventTarget.dispatchEvent(new CustomEvent(
         "goodjob:deal-create-requested",
         { detail: { customerId } }

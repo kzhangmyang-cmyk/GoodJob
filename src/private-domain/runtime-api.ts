@@ -9,6 +9,13 @@ export interface PrivateDomainCustomerActivity {
   createdAt: string;
 }
 
+export interface PrivateDomainAcquisitionBinding {
+  handoffId: string;
+  leadId: string;
+  candidateId: string;
+  createdAt: string;
+}
+
 export interface PrivateDomainCustomer {
   id: string;
   company: string;
@@ -27,12 +34,22 @@ export interface PrivateDomainCustomer {
   pipelineStage?: string;
   pipelineAmount?: number;
   activeDealCount?: number;
-  acquisitionBindings?: Array<{
-    handoffId: string;
-    leadId: string;
-    candidateId: string;
-    createdAt: string;
-  }>;
+  acquisitionBindings?: PrivateDomainAcquisitionBinding[];
+}
+
+export function pendingAcquisitionBindings(
+  customer?: Pick<PrivateDomainCustomer, "acquisitionBindings"> | null
+): PrivateDomainAcquisitionBinding[] {
+  return (customer?.acquisitionBindings ?? []).filter((binding) =>
+    typeof binding?.handoffId === "string"
+    && Boolean(binding.handoffId.trim())
+    && typeof binding?.leadId === "string"
+    && Boolean(binding.leadId.trim())
+    && typeof binding?.candidateId === "string"
+    && Boolean(binding.candidateId.trim())
+    && typeof binding?.createdAt === "string"
+    && Boolean(binding.createdAt.trim())
+  );
 }
 
 export interface PrivateDomainTodo {

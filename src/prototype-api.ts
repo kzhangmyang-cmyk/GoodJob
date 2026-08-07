@@ -7,6 +7,7 @@ import { LineChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import { SVGRenderer } from "echarts/renderers";
 import { buildLeadFinderIntentChips, getLeadFinderLayoutMode } from "./lead-finder-layout";
+import { pendingAcquisitionBindings } from "./private-domain/runtime-api";
 
 echarts.use([LineChart, GridComponent, TooltipComponent, SVGRenderer]);
 
@@ -1366,14 +1367,36 @@ function ensureUiLayer() {
   }
 }
 
-function toast(message: string, type: "ok" | "error" = "ok") {
+interface ToastAction {
+  label: string;
+  run(): void;
+}
+
+function toast(
+  message: string,
+  type: "ok" | "error" = "ok",
+  action?: ToastAction
+) {
   ensureUiLayer();
   const stack = qs<HTMLElement>(".toast-stack")!;
   const item = document.createElement("div");
-  item.className = `toast ${type === "error" ? "error" : ""}`;
-  item.textContent = message;
+  item.className = `toast ${type === "error" ? "error" : ""}${action ? " retryable" : ""}`;
+  const messageNode = document.createElement("span");
+  messageNode.textContent = message;
+  item.appendChild(messageNode);
+  if (action) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "btn compact";
+    button.textContent = action.label;
+    button.addEventListener("click", () => {
+      item.remove();
+      action.run();
+    });
+    item.appendChild(button);
+  }
   stack.appendChild(item);
-  window.setTimeout(() => item.remove(), 2600);
+  window.setTimeout(() => item.remove(), action ? 8_000 : 2_600);
 }
 
 function openModal(title: string, body: string, foot: string) {
@@ -1902,9 +1925,26 @@ async function refreshAuthoritativeCustomers(preferredCustomerId = "") {
   return state.customers.find((customer) => customer.id === preferredCustomerId);
 }
 
+function showAuthoritativeCustomerRefreshRetry(
+  customerId: string,
+  error: unknown
+) {
+  const reason = error instanceof Error && error.message.trim()
+    ? error.message
+    : "客户权威数据刷新失败";
+  toast(reason, "error", {
+    label: "重试刷新",
+    run() {
+      void refreshAuthoritativeCustomers(customerId).catch((retryError) => {
+        showAuthoritativeCustomerRefreshRetry(customerId, retryError);
+      });
+    }
+  });
+}
+
 async function openRequiredAcquisitionDeal(customerId: string) {
   const customer = await refreshAuthoritativeCustomers(customerId);
-  if (!customer || pendingCustomerAcquisitionBindings(customer).length === 0) {
+  if (!customer || pendingAcquisitionBindings(customer).length === 0) {
     toast("该客户当前没有可绑定的获客来源，请刷新后重试", "error");
     return;
   }
@@ -4393,19 +4433,6 @@ interface DealModalOptions {
   requireAcquisitionBinding?: boolean;
 }
 
-function pendingCustomerAcquisitionBindings(customer?: Customer) {
-  return (customer?.acquisitionBindings ?? []).filter((binding) =>
-    typeof binding?.handoffId === "string"
-    && Boolean(binding.handoffId.trim())
-    && typeof binding?.leadId === "string"
-    && Boolean(binding.leadId.trim())
-    && typeof binding?.candidateId === "string"
-    && Boolean(binding.candidateId.trim())
-    && typeof binding?.createdAt === "string"
-    && Boolean(binding.createdAt.trim())
-  );
-}
-
 function openDealModal(editing?: Deal, options: DealModalOptions = {}) {
   const preferredCustomerId = editing?.customerId || options.customerId || "";
   const defaultCustomer = preferredCustomerId
@@ -4453,7 +4480,7 @@ function renderDealAcquisitionBindingOptions(customerId: string) {
   const select = qs<HTMLSelectElement>("#dealAcquisitionBindingInput");
   if (!field || !select) return;
   const customer = state.customers.find((item) => item.id === customerId);
-  const bindings = pendingCustomerAcquisitionBindings(customer);
+  const bindings = pendingAcquisitionBindings(customer);
   const required = field.dataset.required === "true";
   field.classList.toggle("is-hidden", bindings.length === 0);
   if (bindings.length === 0) {
@@ -4584,7 +4611,7 @@ async function saveDeal() {
   const quantity = Number(qs<HTMLInputElement>("#dealQuantityInput")?.value || 0);
   const unitPrice = Number(qs<HTMLInputElement>("#dealUnitPriceInput")?.value || 0);
   const selectedHandoffId = qs<HTMLSelectElement>("#dealAcquisitionBindingInput")?.value || "";
-  const selectedBinding = dealId ? undefined : pendingCustomerAcquisitionBindings(
+  const selectedBinding = dealId ? undefined : pendingAcquisitionBindings(
     state.customers.find((customer) => customer.id === customerId)
   ).find((binding) => binding.handoffId === selectedHandoffId);
   const acquisitionBindingRequired = qs<HTMLElement>("#dealAcquisitionBindingField")
@@ -11251,7 +11278,9 @@ function installEvents() {
     const customerId = typeof detail.customerId === "string"
       ? detail.customerId
       : "";
-    void refreshAuthoritativeCustomers(customerId).catch(() => undefined);
+    void refreshAuthoritativeCustomers(customerId).catch((error) => {
+      showAuthoritativeCustomerRefreshRetry(customerId, error);
+    });
   });
   document.addEventListener("goodjob:deal-create-requested", (event) => {
     const detail = (event as CustomEvent<Record<string, unknown>>).detail;

@@ -2,6 +2,7 @@ import type {
   PrivateDomainCustomer,
   PrivateDomainTodo
 } from "./runtime-api";
+import { pendingAcquisitionBindings } from "./runtime-api";
 
 export interface PrivateDomainViewState {
   status: "loading" | "ready" | "error";
@@ -27,19 +28,6 @@ function formatAmount(value: number): string {
     currency: "CNY",
     minimumFractionDigits: 2
   }).format(Number.isFinite(value) ? value : 0);
-}
-
-function pendingAcquisitionBindings(customer: PrivateDomainCustomer) {
-  return (customer.acquisitionBindings ?? []).filter((binding) =>
-    typeof binding?.handoffId === "string"
-    && Boolean(binding.handoffId.trim())
-    && typeof binding?.leadId === "string"
-    && Boolean(binding.leadId.trim())
-    && typeof binding?.candidateId === "string"
-    && Boolean(binding.candidateId.trim())
-    && typeof binding?.createdAt === "string"
-    && Boolean(binding.createdAt.trim())
-  );
 }
 
 function renderCustomerList(state: PrivateDomainViewState): string {

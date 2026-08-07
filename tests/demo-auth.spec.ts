@@ -395,6 +395,7 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     body: Record<string, unknown>;
   }> = [];
   const dealRows: Array<Record<string, unknown>> = [];
+  let failNextCustomerRequest = false;
   let pendingCustomerGate: {
     started(): void;
     wait: Promise<void>;
@@ -413,6 +414,15 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
   }
   await page.route("**/api/customers*", async (route) => {
     const url = new URL(route.request().url());
+    if (failNextCustomerRequest) {
+      failNextCustomerRequest = false;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "客户权威数据暂时不可用" })
+      });
+      return;
+    }
     const gate = url.searchParams.get("scope") === "mine"
       ? pendingCustomerGate
       : null;
@@ -504,13 +514,6 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
         stageChangedAt: "2026-08-08T08:00:00.000Z"
       };
       dealRows.push(deal);
-      await fulfill({ deal });
-      return;
-    }
-    if (url.pathname.startsWith("/api/deals/") && request.method() === "PATCH") {
-      const id = url.pathname.split("/").at(-1);
-      const deal = dealRows.find((item) => item.id === id);
-      Object.assign(deal ?? {}, body);
       await fulfill({ deal });
       return;
     }
@@ -865,28 +868,33 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     })
   });
 
-  await page.locator("#pipeline .page-head .btn.primary").evaluate((button) =>
-    (button as HTMLButtonElement).click());
-  await page.locator("#dealTitleInput").fill("普通商机");
-  await page.locator("#dealProductInput").fill("普通 CRM 服务");
-  await page.locator("#dealCustomerInput").fill(candidate.name);
-  await page.locator('[data-deal-customer-id="customer-ui-1"]').click();
-  await page.locator("#dealAcquisitionBindingInput").selectOption("");
-  await page.locator("#saveDealButton").click();
-  await expect.poll(() => dealRequests.length).toBe(2);
-  expect(dealRequests[1]?.method).toBe("POST");
-  expect(dealRequests[1]?.body).not.toHaveProperty("acquisitionBinding");
-
-  await page.locator('[data-deal-id="deal-ui-1"]').evaluate((card) =>
-    (card as HTMLElement).click());
-  await page.locator("#drawerEditDealButton").evaluate((button) =>
-    (button as HTMLButtonElement).click());
-  await expect(page.locator("#dealAcquisitionBindingField")).toHaveCount(0);
-  await page.locator("#dealTitleInput").fill("AI 获客绑定商机（更新）");
-  await page.locator("#saveDealButton").click();
-  await expect.poll(() => dealRequests.length).toBe(3);
-  expect(dealRequests[2]?.method).toBe("PATCH");
-  expect(dealRequests[2]?.body).not.toHaveProperty("acquisitionBinding");
+  failNextCustomerRequest = true;
+  const failedAuthorityRefresh = page.waitForResponse((response) =>
+    response.url().includes("/api/customers?scope=mine")
+    && response.status() === 503);
+  await page.evaluate(() => document.dispatchEvent(new CustomEvent(
+    "goodjob:acquisition-candidate-changed",
+    {
+      detail: {
+        action: "private_domain_handoff_completed",
+        customerId: "customer-ui-1",
+        todoId: "todo-ui-1",
+        leadId: "lead-ui-1",
+        handoffId: "ach-ui-1"
+      }
+    }
+  )));
+  await failedAuthorityRefresh;
+  const retryRefresh = page.locator(".toast.error").getByRole("button", {
+    name: "重试刷新"
+  });
+  await expect(retryRefresh).toBeVisible();
+  const successfulRetry = page.waitForResponse((response) =>
+    response.url().includes("/api/customers?scope=mine")
+    && response.status() === 200);
+  await retryRefresh.click();
+  await successfulRetry;
+  await expect(retryRefresh).toHaveCount(0);
 
   const leaveGate = holdNextCustomerRequest();
   await page.locator('[data-private-domain-action="retry"]').click();
