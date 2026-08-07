@@ -31,7 +31,10 @@ function fixture() {
         status: "converted_to_lead",
         approvedDecisionVersion: "decision-v1"
       },
-      qualification: { grade: "A" },
+      qualification: {
+        grade: "A",
+        createdAt: "2026-08-01T12:00:00.000Z"
+      },
       financial: { currency: "USD", expectedRevenueMinor: 12_000 },
       sourcePlatforms: ["douyin"]
     },
@@ -43,7 +46,10 @@ function fixture() {
         status: "approved",
         approvedDecisionVersion: "decision-v1"
       },
-      qualification: { grade: "C" },
+      qualification: {
+        grade: "C",
+        createdAt: "2026-08-02T12:00:00.000Z"
+      },
       financial: { currency: "CNY", expectedRevenueMinor: 50_000 },
       sourcePlatforms: ["douyin"]
     },
@@ -85,6 +91,14 @@ function fixture() {
       eventType: "won",
       occurredAt: "2026-08-04T00:00:00.000Z",
       amount: { amountMinor: 9_000, currency: "USD" }
+    }, {
+      id: "outcome-quoted-duplicate",
+      ownerId: scope.ownerId,
+      teamId: scope.teamId,
+      candidateId: "candidate-a",
+      eventType: "quoted",
+      occurredAt: "2026-08-03T01:00:00.000Z",
+      amount: { amountMinor: 10_000, currency: "USD" }
     }]],
     ["candidate-b", [{
       id: "outcome-lost",
@@ -103,7 +117,7 @@ function fixture() {
         return { payload: { targetPlatform: "douyin" } };
       },
       async listRunEvents() {
-        return candidateIds.map((candidateId, index) => ({
+        return [...candidateIds.map((candidateId, index) => ({
           id: `event-${index}`,
           runId: "run-a",
           ownerId: scope.ownerId,
@@ -111,7 +125,15 @@ function fixture() {
           type: "candidate.discovered",
           at: `2026-08-0${index + 1}T01:00:00.000Z`,
           data: { candidateId }
-        }));
+        })), {
+          id: "event-prior",
+          runId: "run-a",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          type: "candidate.discovered",
+          at: "2026-07-30T01:00:00.000Z",
+          data: { candidateId: "candidate-prior" }
+        }];
       }
     } as never,
     domain: {
@@ -124,9 +146,48 @@ function fixture() {
       },
       async listOutcomes(_scope: unknown, candidateId: string) {
         return outcomes.get(candidateId) ?? [];
+      },
+      async listQualificationDecisions(
+        _scope: unknown,
+        candidateId: string
+      ) {
+        const snapshot = candidates.find((item) =>
+          item.candidate.id === candidateId);
+        return snapshot?.qualification ? [{
+          ...snapshot.qualification,
+          id: `qualification-${candidateId}`,
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          candidateId
+        }] : [];
+      },
+      async listAuditEvents(_scope: unknown, candidateId: string) {
+        const createdAt = candidateId === "candidate-a"
+          ? "2026-08-02T12:00:00.000Z"
+          : "2026-08-03T12:00:00.000Z";
+        return candidateId === "candidate-c" ? [] : [{
+          id: `audit-approved-${candidateId}`,
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          candidateId,
+          toStatus: "approved",
+          createdAt
+        }, ...(candidateId === "candidate-a" ? [{
+          id: "audit-converted-candidate-a",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          candidateId,
+          toStatus: "converted_to_lead",
+          createdAt: "2026-08-03T13:00:00.000Z"
+        }] : [])];
       }
     } as never,
     diagnostics: [],
+    checkpoints: [{
+      ownerId: scope.ownerId,
+      teamId: scope.teamId,
+      updatedAt: "2026-08-07T08:00:00.000Z"
+    }],
     reconcile: {
       async runOnce() {
         return { lastReconciledAt: "2026-08-07T08:00:00.000Z" };
@@ -184,6 +245,10 @@ test("aggregates candidate-deduplicated funnel, currency-separated values and co
   assert.equal(result.dataQuality.missingFinancial, 1);
   assert.equal(result.dataQuality.lastReconciledAt, "2026-08-07T08:00:00.000Z");
   assert.ok(result.briefingFacts.metricIds.includes("funnel.discovered"));
+  const delta = result.briefingFacts.headlines.find((item) =>
+    item.metricId === "funnel.discovered.delta");
+  assert.match(delta?.text ?? "", /\+2/);
+  assert.ok(delta?.evidenceRefs.includes("event-prior"));
   assert.ok(result.briefingFacts.headlines.every((item) => item.metricId));
   assert.equal(JSON.stringify(result).includes("payment"), false);
 });
@@ -197,7 +262,9 @@ test("returns null for every zero-denominator rate", async () => {
     } as never,
     domain: {
       async getPresentationCandidateSnapshots() { return []; },
-      async listOutcomes() { return []; }
+      async listOutcomes() { return []; },
+      async listQualificationDecisions() { return []; },
+      async listAuditEvents() { return []; }
     } as never,
     diagnostics: [],
     reconcile: { async runOnce() { return { lastReconciledAt: null }; } }
@@ -214,4 +281,168 @@ test("returns null for every zero-denominator rate", async () => {
     quoteRate: null,
     winRate: null
   });
+});
+
+test("performance reads never invoke CRM reconciliation or any write path", async () => {
+  let reconciliationCalls = 0;
+  const service = new AcquisitionPerformanceQueryService({
+    planRuns: {
+      async listRuns() { return []; },
+      async getPlanVersion() { return null; },
+      async listRunEvents() { return []; }
+    } as never,
+    domain: {
+      async getPresentationCandidateSnapshots() { return []; },
+      async listOutcomes() { return []; },
+      async listQualificationDecisions() { return []; },
+      async listAuditEvents() { return []; }
+    } as never,
+    diagnostics: [],
+    reconcile: {
+      async runOnce() {
+        reconciliationCalls += 1;
+        throw new Error("read path attempted a write");
+      }
+    }
+  });
+
+  await service.get(scope, {
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-02T00:00:00.000Z"
+  });
+
+  assert.equal(reconciliationCalls, 0);
+});
+
+test("uses qualification, approval and conversion event time instead of current snapshot state", async () => {
+  const service = new AcquisitionPerformanceQueryService({
+    planRuns: {
+      async listRuns() {
+        return [{
+          id: "run-history",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          planVersionId: "version-history",
+          billingCurrency: "CNY",
+          consumedBudget: { amountMinor: 0 },
+          createdAt: "2026-08-01T00:00:00.000Z"
+        }];
+      },
+      async getPlanVersion() { return { payload: {} }; },
+      async listRunEvents() {
+        return [{
+          id: "event-history",
+          runId: "run-history",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          type: "candidate.discovered",
+          at: "2026-08-01T01:00:00.000Z",
+          data: { candidateId: "candidate-history" }
+        }, {
+          id: "event-requalified",
+          runId: "run-history",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          type: "candidate.discovered",
+          at: "2026-08-01T02:00:00.000Z",
+          data: { candidateId: "candidate-requalified" }
+        }];
+      }
+    } as never,
+    domain: {
+      async getPresentationCandidateSnapshots() {
+        return [{
+          candidate: {
+            id: "candidate-history",
+            ownerId: scope.ownerId,
+            teamId: scope.teamId,
+            status: "converted_to_lead"
+          },
+          qualification: {
+            grade: "A",
+            createdAt: "2026-08-10T00:00:00.000Z"
+          },
+          financial: { currency: "USD", expectedRevenueMinor: 50_000 }
+        }, {
+          candidate: {
+            id: "candidate-requalified",
+            ownerId: scope.ownerId,
+            teamId: scope.teamId,
+            status: "discovered"
+          },
+          qualification: {
+            grade: "C",
+            createdAt: "2026-08-10T00:00:00.000Z"
+          },
+          financial: null
+        }];
+      },
+      async listOutcomes() { return []; },
+      async listQualificationDecisions(
+        _scope: unknown,
+        candidateId: string
+      ) {
+        if (candidateId === "candidate-requalified") {
+          return [{
+            id: "qualification-requalified-a",
+            ownerId: scope.ownerId,
+            teamId: scope.teamId,
+            candidateId,
+            grade: "A",
+            createdAt: "2026-08-02T00:00:00.000Z"
+          }, {
+            id: "qualification-requalified-c",
+            ownerId: scope.ownerId,
+            teamId: scope.teamId,
+            candidateId,
+            grade: "C",
+            createdAt: "2026-08-10T00:00:00.000Z"
+          }];
+        }
+        return [{
+          id: "qualification-history-late",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          candidateId,
+          grade: "A",
+          createdAt: "2026-08-10T00:00:00.000Z"
+        }];
+      },
+      async listAuditEvents() {
+        return [{
+          id: "audit-late-approved",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          candidateId: "candidate-history",
+          toStatus: "approved",
+          createdAt: "2026-08-10T01:00:00.000Z"
+        }, {
+          id: "audit-late-converted",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          candidateId: "candidate-history",
+          toStatus: "converted_to_lead",
+          createdAt: "2026-08-10T02:00:00.000Z"
+        }];
+      }
+    } as never,
+    diagnostics: []
+  });
+
+  const result = await service.get(scope, {
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-07T23:59:59.999Z"
+  });
+
+  assert.deepEqual(result.counts, {
+    discovered: 2,
+    highIntent: 1,
+    approved: 0,
+    converted: 0,
+    contacted: 0,
+    quoted: 0,
+    won: 0,
+    lost: 0
+  });
+  assert.deepEqual(result.valuesByCurrency, []);
 });

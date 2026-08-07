@@ -3,8 +3,10 @@ import type {
   AcquisitionPiTurnInput
 } from "./acquisition-pi-agent.js";
 import {
+  ACQUISITION_LEGACY_MODEL_CONTENT_BUNDLE,
   createAcquisitionModelContentBundle
 } from "./acquisition-model-content.js";
+import { acquisitionAgentToolDefinitions } from "./acquisition-pi-tools.js";
 import {
   ACQUISITION_FINAL_ANSWER_TOOL,
   ActiveModelGatewayAcquisitionPiRuntime,
@@ -70,6 +72,39 @@ const contentBundle = createAcquisitionModelContentBundle({
     ) as Record<string, unknown>
   }))
 });
+
+{
+  const runtime = new ActiveModelGatewayAcquisitionPiRuntime({
+    snapshot,
+    contentBundle: ACQUISITION_LEGACY_MODEL_CONTENT_BUNDLE,
+    systemPrompt: baseTurn.systemPrompt,
+    gateway: {
+      async callTools() {
+        return {
+          toolCalls: [{
+            id: "call-legacy-outcome",
+            name: "record_outcome",
+            arguments: { candidateId: "candidate-a" }
+          }],
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
+          providerRequestId: "legacy-request"
+        };
+      }
+    }
+  });
+
+  const result = await runtime.run({
+    ...baseTurn,
+    tools: acquisitionAgentToolDefinitions()
+  });
+
+  assert.deepEqual(result, {
+    type: "text",
+    text: "此旧会话的结果写入工具已停用，当前会话保持只读。请新建获客会话以使用最新工具。",
+    usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
+    providerRequestId: "legacy-request"
+  });
+}
 
 function createRuntime(gateway: AcquisitionPiGatewayPort) {
   return new ActiveModelGatewayAcquisitionPiRuntime({

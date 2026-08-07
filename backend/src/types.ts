@@ -267,10 +267,20 @@ export interface AcquisitionOutcomeReconciliationDiagnostic {
     | "attribution_missing"
     | "attribution_invalid"
     | "attribution_cross_tenant"
+    | "deal_binding_ambiguous"
     | "outcome_write_failed";
   message: string;
   occurredAt: string;
   createdAt: string;
+}
+
+export interface AcquisitionOutcomeReconciliationCheckpoint {
+  ownerId: string;
+  teamId: string;
+  cursorOccurredAt: string;
+  cursorSourceKind: "lead_activity" | "deal_event";
+  cursorSourceId: string;
+  updatedAt: string;
 }
 
 export interface AcquisitionHandoffIntelligence {

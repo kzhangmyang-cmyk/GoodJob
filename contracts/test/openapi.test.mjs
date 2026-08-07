@@ -49,6 +49,7 @@ const section16 = {
   "/api/v1/acquisition/candidates/{id}/review": ["post"],
   "/api/v1/acquisition/candidates/{id}/convert": ["post"],
   "/api/v1/acquisition/outcomes": ["get"],
+  "/api/v1/acquisition/performance": ["get"],
   "/api/v1/acquisition/copilot/sessions": ["post"],
   "/api/v1/acquisition/copilot/sessions/{id}": ["get"],
   "/api/v1/acquisition/copilot/sessions/{id}/messages": ["get", "post"],
@@ -89,7 +90,8 @@ const reads = {
   "/api/v1/acquisition/candidates/{id}/financial-value": "FinancialValueDecision",
   "/api/v1/acquisition/candidates/{id}/battle-card": "BattleCard",
   "/api/v1/acquisition/copilot/sessions/{id}": "CopilotSession",
-  "/api/v1/acquisition/copilot/tasks/{id}": "CopilotTask"
+  "/api/v1/acquisition/copilot/tasks/{id}": "CopilotTask",
+  "/api/v1/acquisition/performance": "AcquisitionPerformance"
 };
 
 test("OpenAPI exactly covers Section 16 with typed, authenticated responses", async () => {

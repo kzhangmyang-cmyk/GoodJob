@@ -9,6 +9,7 @@ import type {
   AcquisitionPlanRunRepository
 } from "./acquisition-plan-run-repository.js";
 import type {
+  AcquisitionOutcomeReconciliationCheckpoint,
   AcquisitionOutcomeReconciliationDiagnostic,
   Deal,
   DealEvent,
@@ -19,7 +20,12 @@ import type {
 
 type ReconciliationLead = Pick<
   Lead,
-  "id" | "ownerId" | "teamId" | "convertedCustomerId"
+  | "id"
+  | "ownerId"
+  | "teamId"
+  | "convertedCustomerId"
+  | "convertedDealId"
+  | "externalId"
 >;
 type ReconciliationDeal = Pick<
   Deal,
@@ -121,6 +127,8 @@ export interface AcquisitionCrmOutcomeReconciliationStore {
   dealEvents: DealEvent[];
   acquisitionOutcomeReconciliationDiagnostics:
     AcquisitionOutcomeReconciliationDiagnostic[];
+  acquisitionOutcomeReconciliationCheckpoints:
+    AcquisitionOutcomeReconciliationCheckpoint[];
   persist(): Promise<void>;
   readBarrier(): Promise<void>;
 }
@@ -166,7 +174,21 @@ function isText(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function validAttribution(value: unknown): value is OutcomeAttributionInput {
+type ReconciledOutcomeAttribution = OutcomeAttributionInput & Required<Pick<
+  OutcomeAttributionInput,
+  | "planId"
+  | "planVersionId"
+  | "planVersion"
+  | "planSnapshotHash"
+  | "discoveredEventId"
+  | "discoveredAt"
+  | "shardId"
+  | "operationId"
+  | "connectionId"
+  | "providerId"
+>>;
+
+function validAttribution(value: unknown): value is ReconciledOutcomeAttribution {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
   const textFields = [
@@ -206,34 +228,81 @@ function amountForDeal(deal: ReconciliationDeal) {
 export class AcquisitionCrmOutcomeReconciliationService {
   readonly #store: AcquisitionCrmOutcomeReconciliationStore;
   readonly #outcomeRecorder: AcquisitionOutcomeRecorder;
+  readonly #planRuns: Pick<
+    AcquisitionPlanRunRepository,
+    "getRun" | "listRunEvents" | "listRunShards"
+  >;
   readonly #now: () => string;
 
   constructor(options: {
     store: AcquisitionCrmOutcomeReconciliationStore;
     outcomeRecorder: AcquisitionOutcomeRecorder;
+    planRuns: Pick<
+      AcquisitionPlanRunRepository,
+      "getRun" | "listRunEvents" | "listRunShards"
+    >;
     now?: () => string;
   }) {
     this.#store = options.store;
     this.#outcomeRecorder = options.outcomeRecorder;
+    this.#planRuns = options.planRuns;
     this.#now = options.now ?? (() => new Date().toISOString());
   }
 
-  async runOnce() {
+  async runTenant(
+    scope: { ownerId: string; teamId: string },
+    options: { limit?: number } = {}
+  ) {
     await this.#store.readBarrier();
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new TypeError("limit must be between 1 and 500");
+    }
+    const checkpoint = this.#store.acquisitionOutcomeReconciliationCheckpoints
+      .find((item) =>
+        item.ownerId === scope.ownerId && item.teamId === scope.teamId);
+    const afterCheckpoint = (item: {
+      occurredAt: string;
+      sourceKind: "lead_activity" | "deal_event";
+      event: { id: string };
+    }) => !checkpoint || [
+      item.occurredAt,
+      item.sourceKind,
+      item.event.id
+    ].join("\u001f") > [
+      checkpoint.cursorOccurredAt,
+      checkpoint.cursorSourceKind,
+      checkpoint.cursorSourceId
+    ].join("\u001f");
+    const tenantLeadIds = new Set(this.#store.leads
+      .filter((lead) =>
+        lead.ownerId === scope.ownerId && lead.teamId === scope.teamId)
+      .map((lead) => lead.id));
+    const tenantDealIds = new Set(this.#store.deals
+      .filter((deal) =>
+        deal.ownerId === scope.ownerId && deal.teamId === scope.teamId)
+      .map((deal) => deal.id));
     const sources = [
-      ...this.#store.leadActivities.map((event) => ({
-        sourceKind: "lead_activity" as const,
-        event,
-        occurredAt: event.createdAt
-      })),
-      ...this.#store.dealEvents.map((event) => ({
-        sourceKind: "deal_event" as const,
-        event,
-        occurredAt: event.createdAt
-      }))
-    ].sort((left, right) =>
-      left.occurredAt.localeCompare(right.occurredAt)
-      || left.event.id.localeCompare(right.event.id));
+      ...this.#store.leadActivities
+        .filter((event) => tenantLeadIds.has(event.leadId))
+        .map((event) => ({
+          sourceKind: "lead_activity" as const,
+          event,
+          occurredAt: event.createdAt
+        })),
+      ...this.#store.dealEvents
+        .filter((event) => tenantDealIds.has(event.dealId))
+        .map((event) => ({
+          sourceKind: "deal_event" as const,
+          event,
+          occurredAt: event.createdAt
+        }))
+    ].filter(afterCheckpoint)
+      .sort((left, right) =>
+        left.occurredAt.localeCompare(right.occurredAt)
+        || left.sourceKind.localeCompare(right.sourceKind)
+        || left.event.id.localeCompare(right.event.id))
+      .slice(0, limit);
     const result: AcquisitionCrmOutcomeReconciliationResult = {
       scanned: sources.length,
       reconciled: 0,
@@ -242,39 +311,48 @@ export class AcquisitionCrmOutcomeReconciliationService {
       lastReconciledAt: new Date(this.#now()).toISOString()
     };
     for (const source of sources) {
-      const mapped = source.sourceKind === "lead_activity"
+      const mapped = await (source.sourceKind === "lead_activity"
         ? this.#leadActivityInput(source.event as LeadActivity)
-        : this.#dealEventInput(source.event as DealEvent);
+        : this.#dealEventInput(source.event as DealEvent));
+      let advance = true;
       if (!mapped) {
         result.skipped += 1;
-        continue;
-      }
-      if ("diagnostic" in mapped && mapped.diagnostic) {
+      } else if ("diagnostic" in mapped && mapped.diagnostic) {
         await this.#recordDiagnostic(mapped.diagnostic, result.lastReconciledAt);
         result.skipped += 1;
-        continue;
+      } else {
+        try {
+          await this.#outcomeRecorder.recordOutcome(mapped.scope, mapped.input);
+          result.reconciled += 1;
+        } catch (error) {
+          result.failed += 1;
+          advance = false;
+          await this.#recordDiagnostic({
+            ownerId: mapped.scope.ownerId,
+            teamId: mapped.scope.teamId,
+            sourceKind: source.sourceKind,
+            sourceId: source.event.id,
+            candidateId: mapped.input.candidateId,
+            code: "outcome_write_failed",
+            message: error instanceof Error
+              ? error.message
+              : "Outcome write failed",
+            occurredAt: source.occurredAt
+          }, result.lastReconciledAt);
+        }
       }
-      try {
-        await this.#outcomeRecorder.recordOutcome(mapped.scope, mapped.input);
-        result.reconciled += 1;
-      } catch (error) {
-        result.failed += 1;
-        await this.#recordDiagnostic({
-          ownerId: mapped.scope.ownerId,
-          teamId: mapped.scope.teamId,
-          sourceKind: source.sourceKind,
-          sourceId: source.event.id,
-          candidateId: mapped.input.candidateId,
-          code: "outcome_write_failed",
-          message: error instanceof Error ? error.message : "Outcome write failed",
-          occurredAt: source.occurredAt
-        }, result.lastReconciledAt);
-      }
+      if (!advance) break;
+      await this.#advanceCheckpoint(scope, {
+        cursorOccurredAt: source.occurredAt,
+        cursorSourceKind: source.sourceKind,
+        cursorSourceId: source.event.id,
+        updatedAt: result.lastReconciledAt
+      });
     }
     return result;
   }
 
-  #leadActivityInput(activity: LeadActivity) {
+  async #leadActivityInput(activity: LeadActivity) {
     if (!CONTACT_ACTIVITY_TYPES.has(activity.type)) return null;
     const lead = this.#store.leads.find((item) => item.id === activity.leadId);
     if (!lead) return null;
@@ -290,21 +368,39 @@ export class AcquisitionCrmOutcomeReconciliationService {
     });
   }
 
-  #dealEventInput(event: DealEvent) {
+  async #dealEventInput(event: DealEvent) {
     const eventType = DEAL_OUTCOMES[event.type];
     if (!eventType) return null;
     const deal = this.#store.deals.find((item) => item.id === event.dealId);
     if (!deal) return null;
-    const handoff = this.#store.acquisitionCustomerHandoffs.find((item) =>
-      item.customerId === deal.customerId
-      && item.ownerId === deal.ownerId
-      && item.teamId === deal.teamId);
-    if (!handoff) return null;
-    const lead = this.#store.leads.find((item) =>
-      item.id === handoff.leadId
-      && item.ownerId === deal.ownerId
-      && item.teamId === deal.teamId);
-    if (!lead) return null;
+    const bindings = this.#store.acquisitionCustomerHandoffs
+      .filter((item) =>
+        item.customerId === deal.customerId
+        && item.ownerId === deal.ownerId
+        && item.teamId === deal.teamId)
+      .flatMap((handoff) => {
+        const lead = this.#store.leads.find((item) =>
+          item.id === handoff.leadId
+          && item.ownerId === deal.ownerId
+          && item.teamId === deal.teamId
+          && item.convertedCustomerId === deal.customerId
+          && item.convertedDealId === deal.id
+          && item.externalId === handoff.candidateId);
+        return lead ? [{ handoff, lead }] : [];
+      });
+    if (bindings.length !== 1) {
+      return { diagnostic: {
+        ownerId: deal.ownerId,
+        teamId: deal.teamId,
+        sourceKind: "deal_event" as const,
+        sourceId: event.id,
+        candidateId: null,
+        code: "deal_binding_ambiguous" as const,
+        message: "Deal does not have exactly one evidence-backed acquisition binding",
+        occurredAt: event.createdAt
+      } };
+    }
+    const [{ lead }] = bindings;
     return this.#outcomeInput({
       sourceKind: "deal_event",
       sourceId: event.id,
@@ -317,7 +413,7 @@ export class AcquisitionCrmOutcomeReconciliationService {
     });
   }
 
-  #outcomeInput(input: {
+  async #outcomeInput(input: {
     sourceKind: "lead_activity" | "deal_event";
     sourceId: string;
     lead: ReconciliationLead;
@@ -366,7 +462,10 @@ export class AcquisitionCrmOutcomeReconciliationService {
     const candidateId = isText(payload.candidateId)
       ? payload.candidateId
       : source.externalId;
-    if (!candidateId || !validAttribution(payload.acquisitionAttribution)) {
+    if (!candidateId
+      || candidateId !== source.externalId
+      || candidateId !== input.lead.externalId
+      || !validAttribution(payload.acquisitionAttribution)) {
       return { diagnostic: {
         ...baseDiagnostic,
         candidateId: candidateId || null,
@@ -374,6 +473,19 @@ export class AcquisitionCrmOutcomeReconciliationService {
           ? "attribution_missing" as const
           : "attribution_invalid" as const,
         message: "Acquisition handoff attribution is absent or invalid"
+      } };
+    }
+    const attributionValidation = await this.#validateAttribution(
+      { ownerId: input.lead.ownerId, teamId: input.lead.teamId },
+      candidateId,
+      payload.acquisitionAttribution
+    );
+    if (attributionValidation) {
+      return { diagnostic: {
+        ...baseDiagnostic,
+        candidateId,
+        code: attributionValidation,
+        message: "Persisted acquisition attribution chain does not match"
       } };
     }
     const scope: AcquisitionActorScope = {
@@ -396,6 +508,50 @@ export class AcquisitionCrmOutcomeReconciliationService {
     return { scope, input: outcome };
   }
 
+  async #validateAttribution(
+    scope: { ownerId: string; teamId: string },
+    candidateId: string,
+    attribution: ReconciledOutcomeAttribution
+  ): Promise<"attribution_invalid" | "attribution_cross_tenant" | null> {
+    const run = await this.#planRuns.getRun(attribution.runId);
+    if (!run) return "attribution_invalid";
+    if (run.ownerId !== scope.ownerId || run.teamId !== scope.teamId) {
+      return "attribution_cross_tenant";
+    }
+    if (run.planId !== attribution.planId
+      || run.planVersionId !== attribution.planVersionId
+      || run.planVersion !== attribution.planVersion
+      || run.planSnapshotHash !== attribution.planSnapshotHash) {
+      return "attribution_invalid";
+    }
+    const event = (await this.#planRuns.listRunEvents(run.id)).find((item) =>
+      item.id === attribution.discoveredEventId
+      && item.runId === run.id
+      && item.ownerId === scope.ownerId
+      && item.teamId === scope.teamId
+      && item.type === "candidate.discovered"
+      && item.shardId === attribution.shardId
+      && item.at === attribution.discoveredAt
+      && item.data.candidateId === candidateId
+      && item.data.operationId === attribution.operationId
+      && item.data.connectionId === attribution.connectionId);
+    if (!event) return "attribution_invalid";
+    const shard = (await this.#planRuns.listRunShards(run.id)).find((item) =>
+      item.id === attribution.shardId
+      && item.runId === run.id
+      && item.ownerId === scope.ownerId
+      && item.teamId === scope.teamId
+      && item.operationId === attribution.operationId
+      && item.connection.connectionId === attribution.connectionId
+      && item.connection.providerId === attribution.providerId);
+    if (!shard
+      || !attribution.providerIds.includes(attribution.providerId)
+      || !attribution.queryIds.includes(`operation:${attribution.operationId}`)) {
+      return "attribution_invalid";
+    }
+    return null;
+  }
+
   async #recordDiagnostic(
     input: Omit<AcquisitionOutcomeReconciliationDiagnostic, "id" | "createdAt">,
     createdAt: string
@@ -404,17 +560,47 @@ export class AcquisitionCrmOutcomeReconciliationService {
     if (this.#store.acquisitionOutcomeReconciliationDiagnostics.some(
       (item) => item.id === id
     )) return;
-    this.#store.acquisitionOutcomeReconciliationDiagnostics.push({
+    const diagnostic = {
       id,
       ...input,
       message: input.message.slice(0, 500),
       createdAt
-    });
+    };
+    this.#store.acquisitionOutcomeReconciliationDiagnostics.push(diagnostic);
     try {
       await this.#store.persist();
-    } catch {
-      // The CRM source event is already durable. A later scan can retry both
-      // the Outcome write and the diagnostic without rolling CRM back.
+    } catch (error) {
+      const index = this.#store.acquisitionOutcomeReconciliationDiagnostics
+        .findIndex((item) => item.id === diagnostic.id);
+      if (index >= 0) {
+        this.#store.acquisitionOutcomeReconciliationDiagnostics.splice(index, 1);
+      }
+      throw error;
+    }
+  }
+
+  async #advanceCheckpoint(
+    scope: { ownerId: string; teamId: string },
+    cursor: {
+      cursorOccurredAt: string;
+      cursorSourceKind: "lead_activity" | "deal_event";
+      cursorSourceId: string;
+      updatedAt: string;
+    }
+  ) {
+    const checkpoints = this.#store.acquisitionOutcomeReconciliationCheckpoints;
+    const index = checkpoints.findIndex((item) =>
+      item.ownerId === scope.ownerId && item.teamId === scope.teamId);
+    const previous = index >= 0 ? structuredClone(checkpoints[index]) : null;
+    const next = { ...scope, ...cursor };
+    if (index >= 0) checkpoints[index] = next;
+    else checkpoints.push(next);
+    try {
+      await this.#store.persist();
+    } catch (error) {
+      if (index >= 0 && previous) checkpoints[index] = previous;
+      else checkpoints.pop();
+      throw error;
     }
   }
 }

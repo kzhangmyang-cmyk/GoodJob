@@ -74,6 +74,12 @@ interface PerformanceReconciler {
   runOnce(): Promise<{ lastReconciledAt: string | null }>;
 }
 
+interface PerformanceCheckpoint {
+  ownerId: string;
+  teamId: string;
+  updatedAt: string;
+}
+
 function rate(numerator: number, denominator: number) {
   return denominator === 0 ? null : numerator / denominator;
 }
@@ -113,10 +119,13 @@ export class AcquisitionPerformanceQueryService {
   >;
   readonly #domain: Pick<
     AcquisitionDomainRepository,
-    "getPresentationCandidateSnapshots" | "listOutcomes"
+    | "getPresentationCandidateSnapshots"
+    | "listQualificationDecisions"
+    | "listOutcomes"
+    | "listAuditEvents"
   >;
   readonly #diagnostics: AcquisitionOutcomeReconciliationDiagnostic[];
-  readonly #reconcile: PerformanceReconciler;
+  readonly #checkpoints: PerformanceCheckpoint[];
 
   constructor(options: {
     planRuns: Pick<
@@ -125,28 +134,31 @@ export class AcquisitionPerformanceQueryService {
     >;
     domain: Pick<
       AcquisitionDomainRepository,
-      "getPresentationCandidateSnapshots" | "listOutcomes"
+      | "getPresentationCandidateSnapshots"
+      | "listQualificationDecisions"
+      | "listOutcomes"
+      | "listAuditEvents"
     >;
     diagnostics: AcquisitionOutcomeReconciliationDiagnostic[];
-    reconcile: PerformanceReconciler;
+    checkpoints?: PerformanceCheckpoint[];
+    /** Accepted temporarily for backwards-compatible composition; never called. */
+    reconcile?: PerformanceReconciler;
   }) {
     this.#planRuns = options.planRuns;
     this.#domain = options.domain;
     this.#diagnostics = options.diagnostics;
-    this.#reconcile = options.reconcile;
+    this.#checkpoints = options.checkpoints ?? [];
   }
 
   async get(
     scope: { ownerId: string; teamId: string },
     query: AcquisitionPerformanceQuery
   ): Promise<AcquisitionPerformanceDto> {
-    let lastReconciledAt: string | null = null;
-    try {
-      lastReconciledAt = (await this.#reconcile.runOnce()).lastReconciledAt;
-    } catch {
-      // Reconciliation availability must not hide the deterministic facts
-      // already persisted in the Outcome store.
-    }
+    const lastReconciledAt = this.#checkpoints
+      .filter((item) =>
+        item.ownerId === scope.ownerId && item.teamId === scope.teamId)
+      .map((item) => item.updatedAt)
+      .sort((left, right) => right.localeCompare(left))[0] ?? null;
     const scopedRuns = (await this.#planRuns.listRuns(scope)).filter((run) =>
       run.ownerId === scope.ownerId && run.teamId === scope.teamId);
     const selectedRuns = (await Promise.all(scopedRuns.map(async (run) => ({
@@ -154,7 +166,7 @@ export class AcquisitionPerformanceQueryService {
       version: await this.#planRuns.getPlanVersion(run.planVersionId)
     })))).filter(({ version }) =>
       !query.platform || version?.payload.targetPlatform === query.platform);
-    const discoveryEvents = (await Promise.all(selectedRuns.map(
+    const allDiscoveryEvents = (await Promise.all(selectedRuns.map(
       async ({ run }) => (await this.#planRuns.listRunEvents(run.id))
         .filter((event) =>
           event.runId === run.id
@@ -162,9 +174,17 @@ export class AcquisitionPerformanceQueryService {
           && event.teamId === scope.teamId
           && event.type === "candidate.discovered"
           && typeof event.data.candidateId === "string"
-          && event.data.candidateId
-          && inWindow(event.at, query.from, query.to))
+          && event.data.candidateId)
     ))).flat();
+    const discoveryEvents = allDiscoveryEvents.filter((event) =>
+      inWindow(event.at, query.from, query.to));
+    const fromMs = new Date(query.from).getTime();
+    const toMs = new Date(query.to).getTime();
+    const windowDurationMs = toMs - fromMs + 1;
+    const previousFrom = new Date(fromMs - windowDurationMs).toISOString();
+    const previousTo = new Date(fromMs - 1).toISOString();
+    const previousDiscoveryEvents = allDiscoveryEvents.filter((event) =>
+      inWindow(event.at, previousFrom, previousTo));
     const candidateEvent = new Map<string, (typeof discoveryEvents)[number]>();
     for (const event of discoveryEvents.sort((left, right) =>
       left.at.localeCompare(right.at) || left.id.localeCompare(right.id))) {
@@ -178,6 +198,22 @@ export class AcquisitionPerformanceQueryService {
       candidateEvent.has(snapshot.candidate.id)
       && snapshot.candidate.ownerId === scope.ownerId
       && snapshot.candidate.teamId === scope.teamId);
+    const qualificationByCandidate = new Map((await Promise.all(
+      candidateIds.map(async (candidateId) => {
+        const decisions = (await this.#domain.listQualificationDecisions(
+          scope,
+          candidateId
+        )).filter((decision) =>
+          decision.candidateId === candidateId
+          && decision.ownerId === scope.ownerId
+          && decision.teamId === scope.teamId
+          && inWindow(decision.createdAt, query.from, query.to))
+          .sort((left, right) =>
+            right.createdAt.localeCompare(left.createdAt)
+            || right.id.localeCompare(left.id));
+        return [candidateId, decisions[0] ?? null] as const;
+      })
+    )));
     const outcomes = (await Promise.all(candidateIds.map(async (candidateId) =>
       (await this.#domain.listOutcomes(scope, candidateId)).filter((outcome) =>
         outcome.candidateId === candidateId
@@ -185,17 +221,25 @@ export class AcquisitionPerformanceQueryService {
         && outcome.teamId === scope.teamId
         && inWindow(outcome.occurredAt, query.from, query.to))
     ))).flat();
+    const auditEvents = (await Promise.all(candidateIds.map(
+      async (candidateId) =>
+        (await this.#domain.listAuditEvents(scope, candidateId)).filter((event) =>
+          event.candidateId === candidateId
+          && event.ownerId === scope.ownerId
+          && event.teamId === scope.teamId
+          && inWindow(event.createdAt, query.from, query.to))
+    ))).flat();
     const candidatesForOutcome = (eventType: string) => new Set(outcomes
       .filter((outcome) => outcome.eventType === eventType)
       .map((outcome) => outcome.candidateId));
-    const highIntent = scopedSnapshots.filter((snapshot) =>
-      snapshot.qualification
-      && ["S", "A"].includes(snapshot.qualification.grade)).length;
-    const approved = scopedSnapshots.filter((snapshot) =>
-      snapshot.candidate.status === "approved"
-      || snapshot.candidate.status === "converted_to_lead").length;
-    const converted = scopedSnapshots.filter((snapshot) =>
-      snapshot.candidate.status === "converted_to_lead").length;
+    const highIntent = [...qualificationByCandidate.values()].filter(
+      (decision) => decision && ["S", "A"].includes(decision.grade)
+    ).length;
+    const approved = new Set(auditEvents.filter((event) =>
+      event.toStatus === "approved").map((event) => event.candidateId)).size;
+    const converted = new Set(auditEvents.filter((event) =>
+      event.toStatus === "converted_to_lead")
+      .map((event) => event.candidateId)).size;
     const contacted = candidatesForOutcome("contacted").size;
     const quoted = candidatesForOutcome("quoted").size;
     const won = candidatesForOutcome("won").size;
@@ -234,11 +278,26 @@ export class AcquisitionPerformanceQueryService {
       return current;
     };
     for (const snapshot of scopedSnapshots) {
-      if (!snapshot.financial) continue;
+      if (!snapshot.financial
+        || !qualificationByCandidate.get(snapshot.candidate.id)) {
+        continue;
+      }
       currency(snapshot.financial.currency).estimatedPipelineMinor +=
         snapshot.financial.expectedRevenueMinor;
     }
-    for (const outcome of outcomes) {
+    const stableMonetaryOutcomes = new Map<string, (typeof outcomes)[number]>();
+    for (const outcome of outcomes.filter((item) =>
+      item.eventType === "quoted" || item.eventType === "won")) {
+      const key = `${outcome.candidateId}\u001f${outcome.eventType}`;
+      const previous = stableMonetaryOutcomes.get(key);
+      if (!previous
+        || outcome.occurredAt.localeCompare(previous.occurredAt) > 0
+        || (outcome.occurredAt === previous.occurredAt
+          && outcome.id.localeCompare(previous.id) > 0)) {
+        stableMonetaryOutcomes.set(key, outcome);
+      }
+    }
+    for (const outcome of stableMonetaryOutcomes.values()) {
       const amount = moneyValue(outcome.amount);
       if (!amount) continue;
       if (outcome.eventType === "quoted") {
@@ -286,11 +345,22 @@ export class AcquisitionPerformanceQueryService {
         .includes(item.code)
       && inWindow(item.occurredAt, query.from, query.to)).length;
     const headlineRefs = discoveryEvents.map((event) => event.id);
+    const previousCandidates = new Set(previousDiscoveryEvents.map((event) =>
+      String(event.data.candidateId)));
+    const discoveredDelta = counts.discovered - previousCandidates.size;
+    const signedDelta = discoveredDelta > 0
+      ? `+${discoveredDelta}`
+      : String(discoveredDelta);
     const headlines = [
       fact(
         "funnel.discovered",
         `本期发现 ${counts.discovered} 个去重候选，高意向 ${counts.highIntent} 个。`,
         headlineRefs
+      ),
+      fact(
+        "funnel.discovered.delta",
+        `本期去重候选较前一可比窗口变化 ${signedDelta}（前期 ${previousCandidates.size}，本期 ${counts.discovered}）。`,
+        [...headlineRefs, ...previousDiscoveryEvents.map((event) => event.id)]
       ),
       fact(
         "funnel.won",
@@ -347,4 +417,3 @@ export class AcquisitionPerformanceQueryService {
     };
   }
 }
-

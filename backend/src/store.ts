@@ -155,7 +155,10 @@ import type {
   ProspectQualificationCommandResult
 } from "./prospect-qualification.js";
 import type { AcquisitionCustomerHandoff, AcquisitionCustomerHandoffOperation, AcquisitionOutcomeFeedback, AgentJob, AgentJobIdempotencyAlias, AiModelConfig, CaseStudy, CommissionCalculation, CommissionExport, CommissionItem, CommissionProduct, CommissionRule, Competitor, Customer, CustomerAcquisitionSourceEvent, CustomerActivity, CustomerIntelligenceSuggestion, CustomerOwnershipEvent, CustomerOwnershipMutationInput, CustomerOwnershipMutationResult, DailyReport, DailyReportComment, Deal, DealEvent, DealRecommendation, Exam, ExamAttempt, ExamQuestion, ExamQuestionLink, ImportExportJob, InternalMessage, KnowledgeAsset, Lead, LeadActivity, LeadSourceConfig, LeadSourceEvent, MarketOpportunityBatch, MarketOpportunityCalculationEvent, MarketOpportunitySnapshot, MarketTradeObservation, Memo, MonthlySalesRecord, OcrJob, Organization, OrganizationAcceptedIdentifier, OrganizationAliasFact, OrganizationCanonicalMapping, OrganizationIdentityClaim, OrganizationIdentityConflict, OrganizationIdentityConflictReview, OrganizationIdentityEvent, OrganizationIdentityResolution, OrganizationRelationFact, OrganizationSourceBinding, PlanTask, PlanTemplate, ProblemItem, ProcurementSignal, ProspectCampaign, ProspectCampaignEvent, ProspectCampaignVersion, ProspectCandidateProcessingState, ProspectCoverageEvent, ProspectExecutionAttempt, ProspectExecutionCheckpoint, ProspectExecutionEvent, ProspectExecutionKernelState, ProspectExecutionLease, ProspectExecutionPage, ProspectExecutionThrottleBucket, ProspectProviderRequestAccountingEvidence, ProspectProviderRequestAttemptBinding, ProspectProviderRequestDispatch, ProspectProviderRequestEvent, ProspectProviderRequestLedger, ProspectRunEvent, ProspectRunQueueChildBinding, ProspectRunQueueParentBinding, ProspectRunShard, ProspectSchedule, ProspectSearchRun, ProspectSourceRawBatch, ProspectSourceRawHit, ProspectSourceRawRecord, ProspectStrategy, ProspectStrategyEvent, ProspectStrategySourcePosition, ProspectStrategySuggestion, ProspectTouchpoint, ProviderCatalogItem, ProviderConnection, ProviderRequestLog, ProviderResponseCache, Reminder, SalesRecordAudit, TenantProspect, Todo, TradeDocument, User, WecomMessage, WebsiteOpportunity, WhatsAppMessage, WhatsAppBinding } from "./types.js";
-import type { AcquisitionOutcomeReconciliationDiagnostic } from "./types.js";
+import type {
+  AcquisitionOutcomeReconciliationCheckpoint,
+  AcquisitionOutcomeReconciliationDiagnostic
+} from "./types.js";
 import { mutateCustomerOwnershipMemory } from "./customer-public-pool.js";
 import type {
   CompanyVerificationSnapshot,
@@ -210,6 +213,8 @@ export interface CrmStore {
   acquisitionCustomerHandoffOperations: AcquisitionCustomerHandoffOperation[];
   acquisitionOutcomeReconciliationDiagnostics:
     AcquisitionOutcomeReconciliationDiagnostic[];
+  acquisitionOutcomeReconciliationCheckpoints:
+    AcquisitionOutcomeReconciliationCheckpoint[];
   leads: Lead[];
   leadActivities: LeadActivity[];
   leadSourceEvents: LeadSourceEvent[];
@@ -402,6 +407,7 @@ export const memoryStore: CrmStore = {
   acquisitionCustomerHandoffs: [],
   acquisitionCustomerHandoffOperations: [],
   acquisitionOutcomeReconciliationDiagnostics: [],
+  acquisitionOutcomeReconciliationCheckpoints: [],
   leads,
   leadActivities,
   leadSourceEvents,

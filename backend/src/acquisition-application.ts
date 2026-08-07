@@ -79,6 +79,9 @@ import {
   AcquisitionCrmOutcomeReconciliationService
 } from "./acquisition-crm-outcome-reconciliation.js";
 import {
+  AcquisitionCrmOutcomeReconciliationWorker
+} from "./acquisition-crm-outcome-reconciliation-worker.js";
+import {
   AcquisitionPerformanceQueryService
 } from "./acquisition-performance-query.js";
 import {
@@ -294,6 +297,8 @@ export interface CreateAcquisitionApplicationOptions {
   copilotRecoveryIntervalMs?: number;
   discoveryRecoveryIntervalMs?: number;
   conversionRecoveryIntervalMs?: number;
+  outcomeReconciliationIntervalMs?: number;
+  outcomeReconciliationBatchSize?: number;
   candidateIntelligenceRecoveryIntervalMs?: number;
   candidateIntelligenceRecoveryBatchSize?: number;
   candidateIntelligenceLeaseDurationMs?: number;
@@ -881,6 +886,8 @@ export async function createAcquisitionApplication(
     AcquisitionDiscoveryRecoverySweeper | null = null;
   let conversionRecoverySweeper:
     AcquisitionLeadConversionRecoverySweeper | null = null;
+  let outcomeReconciliationWorker:
+    AcquisitionCrmOutcomeReconciliationWorker | null = null;
   let candidateIntelligenceRecoverySweeper:
     AcquisitionCandidateIntelligenceRecoverySweeper | null = null;
 
@@ -1019,6 +1026,7 @@ export async function createAcquisitionApplication(
       new AcquisitionCrmOutcomeReconciliationService({
         store: options.store,
         outcomeRecorder: domainService,
+        planRuns: repositories.planRun,
         now
       });
     const performanceQuery = new AcquisitionPerformanceQueryService({
@@ -1026,7 +1034,8 @@ export async function createAcquisitionApplication(
       domain: repositories.domain,
       diagnostics:
         options.store.acquisitionOutcomeReconciliationDiagnostics,
-      reconcile: outcomeReconciliation
+      checkpoints:
+        options.store.acquisitionOutcomeReconciliationCheckpoints
     });
     const searchPort = options.searchPort
       ?? createAcquisitionPublicSearchPort(options.store, {
@@ -1490,6 +1499,16 @@ export async function createAcquisitionApplication(
         intervalMs: options.conversionRecoveryIntervalMs
       });
     await conversionRecoverySweeper.start();
+    outcomeReconciliationWorker =
+      new AcquisitionCrmOutcomeReconciliationWorker({
+        service: outcomeReconciliation,
+        listTenantScopes: () => options.store.acquisitionCustomerHandoffs.map(
+          ({ ownerId, teamId }) => ({ ownerId, teamId })
+        ),
+        intervalMs: options.outcomeReconciliationIntervalMs,
+        batchSize: options.outcomeReconciliationBatchSize
+      });
+    await outcomeReconciliationWorker.start();
 
     let closePromise: Promise<void> | null = null;
     return {
@@ -1514,6 +1533,8 @@ export async function createAcquisitionApplication(
                   ]);
                 })(),
                 conversionRecoverySweeper?.close()
+                  ?? Promise.resolve(),
+                outcomeReconciliationWorker?.close()
                   ?? Promise.resolve(),
                 (async () => {
                   await planExecutionRecoverySweeper?.close();
@@ -1554,6 +1575,9 @@ export async function createAcquisitionApplication(
     }
     if (conversionRecoverySweeper) {
       await conversionRecoverySweeper.close().catch(() => undefined);
+    }
+    if (outcomeReconciliationWorker) {
+      await outcomeReconciliationWorker.close().catch(() => undefined);
     }
     if (discoveryRecoverySweeper) {
       await discoveryRecoverySweeper.close().catch(() => undefined);

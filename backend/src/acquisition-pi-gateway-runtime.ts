@@ -91,6 +91,7 @@ implements AcquisitionPiTurnRuntime {
   readonly #maxPromptChars: number;
   readonly #systemPrompt: string;
   readonly #expectedBusinessTools: ToolDefinition[];
+  readonly #legacyOutcomeAdapter: boolean;
 
   constructor(options: ActiveModelGatewayAcquisitionPiRuntimeOptions) {
     this.#snapshotFingerprint = snapshotFingerprint(options.snapshot);
@@ -107,6 +108,10 @@ implements AcquisitionPiTurnRuntime {
     this.#expectedBusinessTools = registered
       .filter((tool) => tool.name !== ACQUISITION_FINAL_ANSWER_TOOL)
       .map((tool) => structuredClone(tool));
+    this.#legacyOutcomeAdapter =
+      this.#expectedBusinessTools.some((tool) => tool.name === "record_outcome")
+      && !this.#expectedBusinessTools.some((tool) =>
+        tool.name === "get_acquisition_performance");
     if (
       !Number.isInteger(this.#maxPromptChars)
       || this.#maxPromptChars < 1_000
@@ -146,7 +151,14 @@ implements AcquisitionPiTurnRuntime {
       }
     );
 
-    if (canonical(businessTools) !== canonical(this.#expectedBusinessTools)) {
+    const exactTools = canonical(businessTools)
+      === canonical(this.#expectedBusinessTools);
+    const legacyCompatible = this.#legacyOutcomeAdapter
+      && canonical(businessTools.filter((tool) =>
+        tool.name !== "get_acquisition_performance"))
+        === canonical(this.#expectedBusinessTools.filter((tool) =>
+          tool.name !== "record_outcome"));
+    if (!exactTools && !legacyCompatible) {
       fail("MODEL_TOOL_DEFINITION_INVALID");
     }
     const dynamicData = {
@@ -181,6 +193,21 @@ implements AcquisitionPiTurnRuntime {
 
     if (!result.toolCalls.length) {
       fail("MODEL_EMPTY_RESPONSE");
+    }
+    const legacyOutcomeCalls = result.toolCalls.filter((call) =>
+      call.name === "record_outcome");
+    if (legacyOutcomeCalls.length) {
+      if (!this.#legacyOutcomeAdapter
+        || legacyOutcomeCalls.length !== 1
+        || result.toolCalls.length !== 1) {
+        fail("MODEL_RESPONSE_INVALID");
+      }
+      return {
+        type: "text",
+        text: "此旧会话的结果写入工具已停用，当前会话保持只读。请新建获客会话以使用最新工具。",
+        usage: usage(result),
+        providerRequestId: result.providerRequestId
+      };
     }
     const finalCalls = result.toolCalls.filter(
       (call) => call.name === ACQUISITION_FINAL_ANSWER_TOOL

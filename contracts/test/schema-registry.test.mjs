@@ -618,3 +618,24 @@ test("acquisition plan and copilot task schemas expose the optional target platf
   });
   assert.equal(task.required.includes("targetPlatform"), false);
 });
+
+test("live outcome attribution publishes the complete persisted acquisition run chain", async () => {
+  const registry = await loadSchemaRegistry();
+  const attribution = registry.schemaDocuments.get("outcome-feedback")
+    .$defs.liveAttribution;
+  for (const field of [
+    "planId",
+    "planVersionId",
+    "planVersion",
+    "planSnapshotHash",
+    "discoveredEventId",
+    "discoveredAt",
+    "shardId",
+    "operationId",
+    "connectionId",
+    "providerId"
+  ]) {
+    assert.ok(attribution.required.includes(field), `${field} is required`);
+    assert.ok(attribution.properties[field], `${field} is published`);
+  }
+});
