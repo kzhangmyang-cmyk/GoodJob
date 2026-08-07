@@ -201,13 +201,15 @@ export class AcquisitionPerformanceQueryService {
       .sort((left, right) =>
         right.createdAt.localeCompare(left.createdAt)
         || right.id.localeCompare(left.id));
-    if (allScopedRuns.length > this.#limits.runs) truncated = true;
-    const scopedRuns = allScopedRuns.slice(0, this.#limits.runs);
-    const selectedRuns = (await Promise.all(scopedRuns.map(async (run) => ({
-      run,
-      version: await this.#planRuns.getPlanVersion(run.planVersionId)
-    })))).filter(({ version }) =>
-      !query.platform || version?.payload.targetPlatform === query.platform);
+    const platformScopedRuns = query.platform
+      ? (await Promise.all(allScopedRuns.map(async (run) => ({
+          run,
+          version: await this.#planRuns.getPlanVersion(run.planVersionId)
+        })))).filter(({ version }) =>
+          version?.payload.targetPlatform === query.platform)
+      : allScopedRuns.map((run) => ({ run, version: null }));
+    if (platformScopedRuns.length > this.#limits.runs) truncated = true;
+    const selectedRuns = platformScopedRuns.slice(0, this.#limits.runs);
     const selectedRunIds = new Set(selectedRuns.map(({ run }) => run.id));
     const allDiscoveryEvents = (await Promise.all(selectedRuns.map(
       async ({ run }) => {

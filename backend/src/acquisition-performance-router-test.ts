@@ -5,6 +5,9 @@ import type { Server } from "node:http";
 import {
   createAcquisitionPerformanceRouter
 } from "./acquisition-performance-router.js";
+import {
+  normalizeShanghaiPerformanceWindow
+} from "./acquisition-performance-window.js";
 
 async function fixture() {
   const calls: unknown[] = [];
@@ -100,6 +103,84 @@ test("rejects anonymous, invalid and over-90-day windows", async () => {
     assert.equal((await app.request(
       "/api/v1/acquisition/performance?from=2026-08-01T00%3A00%3A00.000Z&to=2026-08-07"
     )).response.status, 400);
+  } finally {
+    await app.close();
+  }
+});
+
+test("accepts at most 90 real Shanghai calendar days", async () => {
+  const app = await fixture();
+  try {
+    const ninetyDays = await app.request(
+      "/api/v1/acquisition/performance?from=2026-05-10&to=2026-08-07"
+    );
+    assert.equal(ninetyDays.response.status, 200);
+    assert.deepEqual(app.calls.at(-1), {
+      scope: { ownerId: "owner-a", teamId: "team-a" },
+      input: {
+        platform: undefined,
+        from: "2026-05-09T16:00:00.000Z",
+        to: "2026-08-07T15:59:59.999Z"
+      }
+    });
+
+    const leapDay = await app.request(
+      "/api/v1/acquisition/performance?from=2024-02-29&to=2024-02-29"
+    );
+    assert.equal(leapDay.response.status, 200);
+    assert.deepEqual(app.calls.at(-1), {
+      scope: { ownerId: "owner-a", teamId: "team-a" },
+      input: {
+        platform: undefined,
+        from: "2024-02-28T16:00:00.000Z",
+        to: "2024-02-29T15:59:59.999Z"
+      }
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+test("normalizes the shared Shanghai date-only contract", () => {
+  assert.deepEqual(normalizeShanghaiPerformanceWindow({
+    from: "2026-08-02",
+    to: "2026-08-02"
+  }), {
+    ok: true,
+    value: {
+      fromInclusiveUtc: "2026-08-01T16:00:00.000Z",
+      toInclusiveUtc: "2026-08-02T15:59:59.999Z"
+    }
+  });
+
+  const cases = [
+    [{ from: "2026-02-29", to: "2026-02-29" }, "from"],
+    [{ from: "2026-02-28", to: "2026-02-30" }, "to"],
+    [{ from: "2026-08-08", to: "2026-08-07" }, "from"],
+    [{ from: "2026-05-09", to: "2026-08-07" }, "to"]
+  ] as const;
+  for (const [input, field] of cases) {
+    const result = normalizeShanghaiPerformanceWindow(input);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.issue.field, field);
+  }
+});
+
+test("rejects fake, reversed, timestamp and 91-day windows before querying", async () => {
+  const app = await fixture();
+  try {
+    const invalidPaths = [
+      "/api/v1/acquisition/performance?from=2026-02-29&to=2026-02-29",
+      "/api/v1/acquisition/performance?from=2026-02-30&to=2026-02-30",
+      "/api/v1/acquisition/performance?from=2026-13-01&to=2026-13-01",
+      "/api/v1/acquisition/performance?from=2026-08-08&to=2026-08-07",
+      "/api/v1/acquisition/performance?from=2026-05-09&to=2026-08-07",
+      "/api/v1/acquisition/performance?from=2026-08-01T00%3A00%3A00.000Z&to=2026-08-07"
+    ];
+    for (const path of invalidPaths) {
+      assert.equal((await app.request(path)).response.status, 400, path);
+    }
+    assert.equal(app.calls.length, 0);
   } finally {
     await app.close();
   }

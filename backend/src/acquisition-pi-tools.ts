@@ -277,14 +277,14 @@ const TOOL_BLUEPRINTS: readonly ToolBlueprint[] = [
         Type.Literal("web")
       ])),
       from: Type.String({
-        minLength: 20,
-        maxLength: 35,
-        format: "date-time"
+        minLength: 10,
+        maxLength: 10,
+        format: "date"
       }),
       to: Type.String({
-        minLength: 20,
-        maxLength: 35,
-        format: "date-time"
+        minLength: 10,
+        maxLength: 10,
+        format: "date"
       })
     }, { additionalProperties: false }),
     executionMode: "parallel"

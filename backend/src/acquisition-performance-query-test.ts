@@ -738,6 +738,81 @@ test("historical windows are not evicted by newer runs outside the requested win
   assert.equal(result.dataQuality.truncated, false);
 });
 
+test("filters platform before applying the run cap", async () => {
+  const eventReads: string[] = [];
+  const webRuns = Array.from({ length: 100 }, (_, index) => ({
+    id: `run-web-${String(index).padStart(3, "0")}`,
+    ownerId: scope.ownerId,
+    teamId: scope.teamId,
+    planVersionId: `version-web-${String(index).padStart(3, "0")}`,
+    billingCurrency: "CNY",
+    consumedBudget: { amountMinor: 0 },
+    createdAt: `2026-08-07T${String(23 - Math.floor(index / 5)).padStart(2, "0")}:${String((index % 5) * 10).padStart(2, "0")}:00.000Z`
+  }));
+  const douyinRun = {
+    id: "run-douyin-older",
+    ownerId: scope.ownerId,
+    teamId: scope.teamId,
+    planVersionId: "version-douyin-older",
+    billingCurrency: "CNY",
+    consumedBudget: { amountMinor: 0 },
+    createdAt: "2026-08-01T00:00:00.000Z"
+  };
+  const service = new AcquisitionPerformanceQueryService({
+    limits: { runs: 100 },
+    planRuns: {
+      async listRuns() { return [...webRuns, douyinRun]; },
+      async getPlanVersion(id: string) {
+        return {
+          payload: {
+            targetPlatform: id === "version-douyin-older"
+              ? "douyin"
+              : "web"
+          }
+        };
+      },
+      async listRunEvents(runId: string) {
+        eventReads.push(runId);
+        return runId === douyinRun.id ? [{
+          id: "event-douyin-older",
+          runId,
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          type: "candidate.discovered",
+          at: "2026-08-02T01:00:00.000Z",
+          data: { candidateId: "candidate-douyin-older" }
+        }] : [];
+      }
+    } as never,
+    domain: {
+      async getPresentationCandidateSnapshots() { return [{
+        candidate: {
+          id: "candidate-douyin-older",
+          ownerId: scope.ownerId,
+          teamId: scope.teamId
+        },
+        qualification: null,
+        financial: null
+      }]; },
+      async listQualificationDecisions() { return []; },
+      async listFinancialValues() { return []; },
+      async listOutcomes() { return []; },
+      async listAuditEvents() { return []; }
+    } as never,
+    diagnostics: []
+  });
+
+  const result = await service.get(scope, {
+    platform: "douyin",
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-07T23:59:59.999Z"
+  });
+
+  assert.equal(result.counts.discovered, 1);
+  assert.equal(result.dataQuality.truncated, false);
+  assert.deepEqual(eventReads, ["run-douyin-older"]);
+});
+
 test("historical discovery events are not evicted by newer events outside the requested windows", async () => {
   const service = new AcquisitionPerformanceQueryService({
     limits: { eventsPerRun: 1 },

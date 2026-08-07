@@ -34,7 +34,7 @@ const executor: AcquisitionAgentToolExecutor = {
   async execute(input) {
     calls.push(input);
     if (input.toolName === "get_acquisition_performance"
-      && input.payload.from === "2026-07-24T00:00:00.000Z") {
+      && input.payload.from === "2026-07-24") {
       const error = new Error("OUTCOME_REJECTED secret=should-not-leak");
       error.name = "AcquisitionToolExecutionError";
       throw error;
@@ -142,6 +142,33 @@ assert.deepEqual(Object.keys(performanceProperties).sort(), [
   "platform",
   "to"
 ]);
+assert.deepEqual(performanceProperties.from, {
+  type: "string",
+  minLength: 10,
+  maxLength: 10,
+  format: "date"
+});
+assert.deepEqual(performanceProperties.to, {
+  type: "string",
+  minLength: 10,
+  maxLength: 10,
+  format: "date"
+});
+
+await byName(tools, "get_acquisition_performance").execute(
+  "call-performance-date-only",
+  {
+    platform: "douyin",
+    from: "2026-08-01",
+    to: "2026-08-07"
+  },
+  undefined
+);
+assert.deepEqual(calls.at(-1)?.payload, {
+  platform: "douyin",
+  from: "2026-08-01",
+  to: "2026-08-07"
+});
 
 const evidenceResult = await byName(tools, "get_candidate_evidence").execute(
   "call-evidence-1",
@@ -269,8 +296,8 @@ await assert.rejects(
   () => byName(tools, "get_acquisition_performance").execute(
     "call-failure-1",
     {
-      from: "2026-07-24T00:00:00.000Z",
-      to: "2026-07-24T01:00:00.000Z"
+      from: "2026-07-24",
+      to: "2026-07-24"
     },
     undefined
   ),
@@ -282,8 +309,9 @@ const records = await audit.list({
   teamId: "team-a",
   sessionId: "copilot-session-a"
 });
-assert.equal(records.length, 4);
+assert.equal(records.length, 5);
 assert.deepEqual(records.map((item) => item.status), [
+  "succeeded",
   "succeeded",
   "succeeded",
   "aborted",

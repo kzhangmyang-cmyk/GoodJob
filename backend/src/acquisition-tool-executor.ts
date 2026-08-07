@@ -42,6 +42,9 @@ import {
 import type {
   AcquisitionPerformanceQueryService
 } from "./acquisition-performance-query.js";
+import {
+  normalizeShanghaiPerformanceWindow
+} from "./acquisition-performance-window.js";
 
 const TOOL_NAMES = new Set<string>(ACQUISITION_AGENT_TOOL_NAMES);
 const GRADE_RANK = { S: 0, A: 1, B: 2, C: 3, D: 4 } as const;
@@ -500,17 +503,23 @@ const schemas = {
   }),
   get_acquisition_performance: z.object({
     platform: z.enum(["douyin", "web"]).optional(),
-    from: z.string().datetime({ offset: true }),
-    to: z.string().datetime({ offset: true })
-  }).strict().superRefine((value, context) => {
-    const from = new Date(value.from).getTime();
-    const to = new Date(value.to).getTime();
-    if (from > to || to - from > 90 * 24 * 60 * 60 * 1_000) {
+    from: z.string(),
+    to: z.string()
+  }).strict().transform((value, context) => {
+    const normalized = normalizeShanghaiPerformanceWindow(value);
+    if (!normalized.ok) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "performance window must be ordered and no longer than 90 days"
+        path: [normalized.issue.field],
+        message: normalized.issue.message
       });
+      return z.NEVER;
     }
+    return {
+      platform: value.platform,
+      from: normalized.value.fromInclusiveUtc,
+      to: normalized.value.toInclusiveUtc
+    };
   })
 } as const;
 

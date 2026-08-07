@@ -4,50 +4,15 @@ import { z } from "zod";
 import type {
   AcquisitionPerformanceQueryService
 } from "./acquisition-performance-query.js";
+import {
+  normalizeShanghaiPerformanceWindow
+} from "./acquisition-performance-window.js";
 
-const MAX_WINDOW_DAYS = 90;
-const dateOnlySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
-  .refine((value) => {
-    const parsed = new Date(`${value}T00:00:00.000Z`);
-    return Number.isFinite(parsed.getTime())
-      && parsed.toISOString().slice(0, 10) === value;
-  }, "must be a real calendar date in YYYY-MM-DD form");
 const querySchema = z.object({
   platform: z.enum(["douyin", "web"]).optional(),
-  from: dateOnlySchema,
-  to: dateOnlySchema
-}).strict().superRefine((value, context) => {
-  const from = Date.parse(`${value.from}T00:00:00.000Z`);
-  const to = Date.parse(`${value.to}T00:00:00.000Z`);
-  if (from > to) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["from"],
-      message: "from must not be after to"
-    });
-  }
-  if ((to - from) / (24 * 60 * 60 * 1_000) >= MAX_WINDOW_DAYS) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["to"],
-      message: "performance window cannot exceed 90 days"
-    });
-  }
-});
-
-function shanghaiWindow(from: string, to: string) {
-  const fromInstant = new Date(`${from}T00:00:00.000+08:00`).toISOString();
-  const dayAfterTo = new Date(`${to}T00:00:00.000Z`);
-  dayAfterTo.setUTCDate(dayAfterTo.getUTCDate() + 1);
-  const dayAfterToText = dayAfterTo.toISOString().slice(0, 10);
-  const exclusiveTo = new Date(
-    `${dayAfterToText}T00:00:00.000+08:00`
-  ).getTime();
-  return {
-    from: fromInstant,
-    to: new Date(exclusiveTo - 1).toISOString()
-  };
-}
+  from: z.string(),
+  to: z.string()
+}).strict();
 
 function scope(req: Request) {
   const user = (req as Request & {
@@ -98,11 +63,28 @@ export function createAcquisitionPerformanceRouter(options: {
       });
       return;
     }
+    const window = normalizeShanghaiPerformanceWindow(parsed.data);
+    if (!window.ok) {
+      res.status(400).json({
+        error: {
+          code: "invalid_request",
+          message: "经营查询参数不符合接口契约",
+          details: {
+            issues: [{
+              path: window.issue.field,
+              message: window.issue.message
+            }]
+          },
+          requestId
+        }
+      });
+      return;
+    }
     try {
-      const window = shanghaiWindow(parsed.data.from, parsed.data.to);
       const result = await options.query.get(requestScope, {
         platform: parsed.data.platform,
-        ...window
+        from: window.value.fromInclusiveUtc,
+        to: window.value.toInclusiveUtc
       });
       res.json(result);
     } catch {

@@ -423,6 +423,13 @@ function createHarness(options: {
   individualSourceType?: SearchPublicSourceResult["sourceType"];
   searchConnectionIds?: string[];
   candidateIdFactory?: () => string;
+  performance?: {
+    get(scope: { ownerId: string; teamId: string }, query: {
+      platform?: "douyin" | "web";
+      from: string;
+      to: string;
+    }): Promise<unknown>;
+  };
 } = {}) {
   let id = 0;
   let tick = 0;
@@ -473,6 +480,7 @@ function createHarness(options: {
     actionExecutions: executions,
     toolResults,
     judgments: options.judgments,
+    performance: options.performance as never,
     now: () => "2026-07-24T08:00:00.000Z"
   });
   return {
@@ -1371,6 +1379,66 @@ test("validates retired outcome payload shape before returning read-only", async
       error instanceof AcquisitionToolExecutorError
       && error.code === "LEGACY_OUTCOME_TOOL_READ_ONLY"
   );
+});
+
+test("normalizes date-only performance windows to inclusive Shanghai instants", async () => {
+  const calls: unknown[] = [];
+  const { executor } = createHarness({
+    performance: {
+      async get(scope, query) {
+        calls.push({ scope, query });
+        return { ok: true };
+      }
+    }
+  });
+
+  const result = await execute(executor, "get_acquisition_performance", {
+    platform: "douyin",
+    from: "2026-08-02",
+    to: "2026-08-02"
+  }, "performance:valid");
+
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(calls, [{
+    scope: { ownerId: "owner-1", teamId: "team-1" },
+    query: {
+      platform: "douyin",
+      from: "2026-08-01T16:00:00.000Z",
+      to: "2026-08-02T15:59:59.999Z"
+    }
+  }]);
+});
+
+test("rejects invalid date-only performance windows without querying", async () => {
+  const calls: unknown[] = [];
+  const { executor } = createHarness({
+    performance: {
+      async get(scope, query) {
+        calls.push({ scope, query });
+        return { ok: true };
+      }
+    }
+  });
+  const invalidPayloads = [
+    { from: "2026-02-30", to: "2026-02-30" },
+    { from: "2026-08-08", to: "2026-08-07" },
+    { from: "2026-05-09", to: "2026-08-07" }
+  ];
+
+  for (const [index, payload] of invalidPayloads.entries()) {
+    await assert.rejects(
+      execute(
+        executor,
+        "get_acquisition_performance",
+        payload,
+        `performance:invalid:${index}`
+      ),
+      (error: unknown) =>
+        error instanceof AcquisitionToolExecutorError
+        && error.code === "INVALID_PAYLOAD"
+    );
+  }
+  assert.deepEqual(calls, []);
 });
 
 test("domain errors remain typed underneath the executor harness", () => {
