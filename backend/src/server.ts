@@ -2202,6 +2202,29 @@ function customerWithPipeline(customer: Customer) {
       && item.status === "pending"
     )
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  const acquisitionBindings = store.acquisitionCustomerHandoffs
+    .filter((handoff) => {
+      if (handoff.customerId !== customer.id
+        || handoff.ownerId !== customer.ownerId
+        || handoff.teamId !== customer.teamId
+        || handoff.dealId
+        || !handoff.acquisitionAttribution) return false;
+      return store.leads.some((lead) =>
+        lead.id === handoff.leadId
+        && lead.ownerId === customer.ownerId
+        && lead.teamId === customer.teamId
+        && lead.convertedCustomerId === customer.id
+        && lead.externalId === handoff.candidateId
+        && !lead.convertedDealId
+      );
+    })
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .map((handoff) => ({
+      handoffId: handoff.id,
+      leadId: handoff.leadId,
+      candidateId: handoff.candidateId,
+      createdAt: handoff.createdAt
+    }));
   return {
     ...customer,
     ownerName: store.users.find((user) => user.id === customer.ownerId)?.name || "未分配",
@@ -2223,6 +2246,7 @@ function customerWithPipeline(customer: Customer) {
     pipelineStage: pipelineStage || "暂无活跃商机",
     pipelineAmount: activeDeals.reduce((sum, deal) => sum + deal.amount, 0),
     activeDealCount: activeDeals.length,
+    acquisitionBindings,
     pendingIntelligence,
     pendingIntelligenceCount: pendingIntelligence.length
   };
@@ -4160,18 +4184,15 @@ function createDealEvent(input: Omit<
   const deal = store.deals.find((item) => item.id === input.dealId);
   const binding = deal
     ? store.acquisitionCustomerHandoffs.find((item) =>
-      item.dealId === deal.id
-      && item.ownerId === deal.ownerId
-      && item.teamId === deal.teamId
-      && item.customerId === deal.customerId)
+      item.dealId === deal.id)
     : undefined;
   const amountMinor = deal ? Math.round(deal.amount * 100) : Number.NaN;
   const currency = deal?.currency.trim().toUpperCase() ?? "";
   const event: DealEvent = {
     ...input,
-    ownerIdSnapshot: deal?.ownerId ?? null,
-    teamIdSnapshot: deal?.teamId ?? null,
-    customerIdSnapshot: deal?.customerId ?? null,
+    ownerIdSnapshot: binding?.ownerId ?? deal?.ownerId ?? null,
+    teamIdSnapshot: binding?.teamId ?? deal?.teamId ?? null,
+    customerIdSnapshot: binding?.customerId ?? deal?.customerId ?? null,
     leadIdSnapshot: binding?.leadId ?? null,
     handoffIdSnapshot: binding?.id ?? null,
     candidateIdSnapshot: binding?.candidateId ?? null,
@@ -4235,7 +4256,8 @@ app.post("/api/deals", requireAuth, asyncRoute(async (req, res) => {
       && item.ownerId === customer.ownerId
       && item.teamId === customer.teamId
       && item.customerId === customer.id
-      && item.leadId === body.acquisitionBinding!.leadId)
+      && item.leadId === body.acquisitionBinding!.leadId
+      && Boolean(item.acquisitionAttribution))
     : [];
   const acquisitionHandoff = acquisitionHandoffs[0];
   const acquisitionLead = acquisitionHandoff
@@ -4382,6 +4404,12 @@ app.patch("/api/deals/:id", requireAuth, asyncRoute(async (req, res) => {
     return;
   }
   if (!ensureDealCustomerWritable(req.user!, deal, res)) return;
+  const acquisitionHandoff = store.acquisitionCustomerHandoffs.find((item) =>
+    item.dealId === deal.id);
+  if (acquisitionHandoff && body.customerId !== acquisitionHandoff.customerId) {
+    res.status(409).json({ message: "获客来源已绑定，不能更换关联客户" });
+    return;
+  }
   const customer = findWritableCustomer(req.user!, body.customerId, res);
   if (!customer) return;
   const before = {

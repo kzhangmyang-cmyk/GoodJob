@@ -396,6 +396,55 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
       JSON.parse(handoffSource?.rawPayload ?? "{}").acquisitionAttribution,
       attribution
     );
+    const validHandoff = store.acquisitionCustomerHandoffs.find((item) =>
+      item.id === handoffId);
+    const validLead = store.leads.find((item) => item.id === leadId);
+    assert.ok(validHandoff);
+    assert.ok(validLead);
+    const excludedHandoffIds = {
+      missingAttribution: `${handoffId}-missing-attribution`,
+      handoffAlreadyBound: `${handoffId}-handoff-bound`,
+      leadAlreadyBound: `${handoffId}-lead-bound`
+    };
+    const excludedLeadIds = {
+      missingAttribution: `${leadId}-missing-attribution`,
+      handoffAlreadyBound: `${leadId}-handoff-bound`,
+      leadAlreadyBound: `${leadId}-lead-bound`
+    };
+    Object.entries(excludedHandoffIds).forEach(([kind, id]) => {
+      const nextLeadId = excludedLeadIds[kind as keyof typeof excludedLeadIds];
+      const candidate = `${candidateId}-${kind}`;
+      store.leads.push({
+        ...structuredClone(validLead),
+        id: nextLeadId,
+        externalId: candidate,
+        convertedDealId: kind === "leadAlreadyBound" ? "deal-existing" : ""
+      });
+      store.acquisitionCustomerHandoffs.push({
+        ...structuredClone(validHandoff),
+        id,
+        candidateId: candidate,
+        leadId: nextLeadId,
+        dealId: kind === "handoffAlreadyBound" ? "deal-existing" : undefined,
+        acquisitionAttribution: kind === "missingAttribution"
+          ? null
+          : structuredClone(attribution)
+      });
+    });
+    const customerRead = await runtime.request("/api/customers", {
+      headers: { authorization: `Bearer ${login.json.token}` }
+    });
+    assert.equal(customerRead.response.status, 200);
+    assert.deepEqual(
+      customerRead.json.customers.find((item: { id: string }) =>
+        item.id === customerId)?.acquisitionBindings,
+      [{
+        handoffId,
+        leadId,
+        candidateId,
+        createdAt: handoff.json.handoff.createdAt
+      }]
+    );
     const dealInput = {
       customerId,
       title: "获客闭环商机",
@@ -408,6 +457,21 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
       expectedCloseAt: "2026-08-31",
       acquisitionBinding: { leadId, handoffId }
     };
+    const missingAttributionBinding = await runtime.request("/api/deals", {
+      method: "POST",
+      headers: { authorization: `Bearer ${login.json.token}` },
+      body: JSON.stringify({
+        ...dealInput,
+        title: "不得创建的无归因商机",
+        acquisitionBinding: {
+          handoffId: excludedHandoffIds.missingAttribution,
+          leadId: excludedLeadIds.missingAttribution
+        }
+      })
+    });
+    assert.equal(missingAttributionBinding.response.status, 404);
+    assert.equal(store.deals.some((item) =>
+      item.title === "不得创建的无归因商机"), false);
     const originalPersistMutation = store.persistMutation;
     let releaseConcurrentMutations!: () => void;
     const concurrentMutationGate = new Promise<void>((resolve) => {
@@ -466,6 +530,27 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
       store.leads.find((item) => item.id === leadId)?.convertedDealId,
       created.json.deal.id
     );
+    const boundCustomer = store.customers.find((item) => item.id === customerId);
+    assert.ok(boundCustomer);
+    const alternateCustomerId = `${customerId}-alternate`;
+    store.customers.push({
+      ...structuredClone(boundCustomer),
+      id: alternateCustomerId,
+      company: "不允许迁移到的客户"
+    });
+    const moveBoundDeal = await runtime.request(`/api/deals/${created.json.deal.id}`, {
+      method: "PATCH",
+      headers: { authorization: `Bearer ${login.json.token}` },
+      body: JSON.stringify({
+        ...dealInput,
+        customerId: alternateCustomerId,
+        acquisitionBinding: undefined
+      })
+    });
+    assert.equal(moveBoundDeal.response.status, 409);
+    assert.equal(created.json.deal.customerId, customerId);
+    assert.equal(store.deals.find((item) =>
+      item.id === created.json.deal.id)?.customerId, customerId);
     const duplicateBinding = await runtime.request("/api/deals", {
       method: "POST",
       headers: { authorization: `Bearer ${login.json.token}` },
@@ -476,16 +561,24 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
       item.id === created.json.deal.id
       || item.title === "并发重复商机"
       || item.title === "不得创建的重复商机").length, 1);
-    const quote = await runtime.request(`/api/deals/${created.json.deal.id}/events`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${login.json.token}` },
-      body: JSON.stringify({
-        type: "quote",
-        content: "已发送 CNY 12,880 报价",
-        nextAction: "确认报价",
-        nextActionAt: "2026-08-10"
-      })
-    });
+    const mutableDeal = store.deals.find((item) => item.id === created.json.deal.id);
+    assert.ok(mutableDeal);
+    mutableDeal.customerId = alternateCustomerId;
+    let quote: Awaited<ReturnType<typeof runtime.request>>;
+    try {
+      quote = await runtime.request(`/api/deals/${created.json.deal.id}/events`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${login.json.token}` },
+        body: JSON.stringify({
+          type: "quote",
+          content: "已发送 CNY 12,880 报价",
+          nextAction: "确认报价",
+          nextActionAt: "2026-08-10"
+        })
+      });
+    } finally {
+      mutableDeal.customerId = customerId;
+    }
     assert.equal(quote.response.status, 200);
     assert.deepEqual({
       ownerIdSnapshot: quote.json.event.ownerIdSnapshot,
@@ -679,13 +772,15 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
     await acquisitionRuntime.close();
     const createdDealIds = new Set(store.deals
       .filter((item) => item.title === "获客闭环商机"
-        || item.title === "并发重复商机")
+        || item.title === "并发重复商机"
+        || item.title === "不得创建的无归因商机")
       .map((item) => item.id));
     store.dealEvents = store.dealEvents.filter((item) =>
       !createdDealIds.has(item.dealId));
     store.deals = store.deals.filter((item) => !createdDealIds.has(item.id));
     store.acquisitionCustomerHandoffs = store.acquisitionCustomerHandoffs
-      .filter((item) => item.id !== handoffId);
+      .filter((item) => item.id !== handoffId
+        && !item.id.startsWith(`${handoffId}-`));
     store.acquisitionCustomerHandoffOperations =
       store.acquisitionCustomerHandoffOperations.filter((item) =>
         item.candidateId !== candidateId);
@@ -695,10 +790,12 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
       item.customerId !== customerId);
     store.leadActivities = store.leadActivities.filter((item) =>
       item.leadId !== leadId);
-    store.leads = store.leads.filter((item) => item.id !== leadId);
+    store.leads = store.leads.filter((item) => item.id !== leadId
+      && !item.id.startsWith(`${leadId}-`));
     store.leadSourceEvents = store.leadSourceEvents.filter((item) =>
       item.leadId !== leadId);
-    store.customers = store.customers.filter((item) => item.id !== customerId);
+    store.customers = store.customers.filter((item) => item.id !== customerId
+      && item.id !== `${customerId}-alternate`);
     store.acquisitionOutcomeReconciliationDiagnostics =
       originalReconciliationState.diagnostics;
     store.acquisitionOutcomeReconciliationCheckpoints =
