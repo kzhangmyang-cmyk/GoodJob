@@ -7,6 +7,10 @@
   gap: 14px;
 }
 
+.replica-demo-main[hidden] {
+  display: none !important;
+}
+
 .replica-demo-inspector {
   grid-column: 3;
   grid-row: 2;

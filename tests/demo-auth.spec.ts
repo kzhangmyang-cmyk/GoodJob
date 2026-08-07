@@ -45,6 +45,171 @@ test("standalone frontend does not poll backend dashboards in demo mode", async 
   expect(apiRequests).toEqual([]);
 });
 
+test("real acquisition header survives a private-domain round trip without hidden-panel overlap", async ({ page }) => {
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const json = (value: unknown, status = 200) => route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify(value)
+    });
+    if (url.pathname === "/api/v1/acquisition/overview") {
+      return void await json({
+        generatedAt: "2026-08-08T08:00:00.000Z",
+        platform: "douyin",
+        totals: { tasks: 0 },
+        statusCounts: {},
+        discoveryMethodCounts: {},
+        tasks: []
+      });
+    }
+    if (url.pathname.startsWith("/api/customers")) {
+      return void await json({ customers: [] });
+    }
+    await json({ message: "测试路由未配置" }, 503);
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem("gj_user", JSON.stringify({
+      id: "demo-admin",
+      name: "Admin",
+      email: "admin@goodjob.com",
+      role: "admin",
+      teamId: "demo-team",
+      avatar: "AD"
+    }));
+  });
+
+  await page.goto("/#acquisition");
+  await page.locator('[data-acquisition-mode="real"]').click();
+  await expect(page.locator("#replicaHeaderSubtitle")).toHaveText(
+    "真实抖音任务 · 公开搜索 · AI 研判 · 人工审核"
+  );
+  await page.locator('[data-replica-view="private-domain"]').click();
+  await expect(page.locator("#demoModuleMain")).toBeVisible();
+  await page.locator('[data-replica-view="acquisition"]').click();
+
+  expect(await page.locator("#demoModuleMain").evaluate((node) => node.getClientRects().length)).toBe(0);
+  await expect(page.locator("#replicaHeaderSubtitle")).toHaveText(
+    "真实抖音任务 · 公开搜索 · AI 研判 · 人工审核"
+  );
+  await expect(page.locator("#replicaNewTaskButtonLabel")).toHaveText("新建真实任务");
+  await expect(page.locator("#demoModuleMain")).toBeHidden();
+});
+
+test("hidden legacy dashboard neither polls nor initialises a zero-size chart", async ({ page }) => {
+  test.skip(!process.env.VITE_API_TARGET?.trim(), "requires the real-mode frontend build");
+  const dashboardRequests: string[] = [];
+  const chartWarnings: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "warning" && /dom width or height/i.test(message.text())) {
+      chartWarnings.push(message.text());
+    }
+  });
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/auth/me") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          user: {
+            id: "demo-admin",
+            name: "Admin",
+            email: "admin@goodjob.com",
+            role: "admin",
+            teamId: "demo-team",
+            avatar: "AD"
+          }
+        })
+      });
+      return;
+    }
+    if (url.pathname === "/api/dashboard/summary") dashboardRequests.push(url.pathname);
+    await route.abort();
+  });
+  await page.addInitScript(() => {
+    const user = {
+      id: "demo-admin",
+      name: "Admin",
+      email: "admin@goodjob.com",
+      role: "admin",
+      teamId: "demo-team",
+      avatar: "AD"
+    };
+    const summary = {
+      scope: "本团队业务数据",
+      scopeLabels: { business: "团队业务", todos: "本人待办" },
+      updatedAt: "2026-08-08T08:00:00.000Z",
+      periods: {},
+      briefing: {
+        title: "今日经营简报",
+        description: "测试缓存",
+        basis: "真实数据",
+        action: "查看重点客户",
+        impact: "保护成交节奏",
+        riskAmount: 0,
+        riskLabel: "无风险",
+        closableDeals: 0,
+        closableAmount: 0,
+        unreadWecom: 0
+      },
+      metrics: {
+        customers: 0,
+        riskCustomers: 0,
+        todos: 0,
+        overdueTodos: 0,
+        forecastAmount: 0,
+        wecomBoundRate: 0,
+        pendingKnowledge: 0,
+        examPassRate: 0,
+        unfinishedExams: 0,
+        customerCompleteness: 0
+      },
+      schedule: [],
+      quality: { followHealth: 0, overdueRate: 0, avgResponseHours: 0 },
+      leadFunnel: {
+        stages: [
+          { key: "entered", label: "进入系统", count: 1, conversionRate: 100 },
+          { key: "valid", label: "有效线索", count: 1, conversionRate: 100 }
+        ],
+        todayAdded: 1,
+        filteredOut: 0,
+        dealConversionRate: 0
+      },
+      pipelineHealth: [],
+      todoInsights: {
+        total: 0,
+        overdue: 0,
+        completionRate: 0,
+        impactAmount: 0,
+        typeRows: [],
+        weekLoad: [],
+        historyCount: 0,
+        historyAmount: 0
+      },
+      priorityTasks: []
+    };
+    localStorage.setItem("gj_user", JSON.stringify(user));
+    localStorage.setItem("gj_dashboard_cache", JSON.stringify({
+      "demo-admin:admin:demo-team": {
+        summary,
+        todos: [],
+        customers: [],
+        cachedAt: new Date().toISOString()
+      }
+    }));
+  });
+
+  await page.goto("/#acquisition");
+  await expect(page.locator("body")).toHaveClass(/is-authenticated/);
+  await expect.poll(() => dashboardRequests.length).toBe(1);
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForTimeout(250);
+
+  expect(chartWarnings).toEqual([]);
+  expect(dashboardRequests).toHaveLength(1);
+});
+
 test("AI draft creation preserves the complete server plan through approval and run", async ({ page }) => {
   const createdPlans: unknown[] = [];
   const createdRuns: unknown[] = [];

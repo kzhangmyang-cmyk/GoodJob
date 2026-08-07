@@ -1962,7 +1962,8 @@ function requestDashboardRefresh() {
 
 function refreshVisibleDashboard() {
   if (!state.user || document.visibilityState !== "visible") return;
-  if (qs<HTMLElement>(".view.active")?.id !== "dashboard") return;
+  const dashboard = qs<HTMLElement>(".view.active#dashboard");
+  if (!dashboard || dashboard.getClientRects().length === 0) return;
   requestDashboardRefresh();
 }
 
@@ -2139,7 +2140,7 @@ function renderLeadFunnel(summary: DashboardSummary) {
     </div>`;
 
   const chartHost = qs<HTMLElement>("[data-lead-funnel-chart]", funnel);
-  if (chartHost) {
+  if (chartHost && chartHost.clientWidth > 0 && chartHost.clientHeight > 0) {
     const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const maxCount = Math.max(1, ...data.stages.map((stage) => stage.count));
     const chart = echarts.init(chartHost, undefined, { renderer: "svg" });

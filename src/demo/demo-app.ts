@@ -466,7 +466,9 @@ export function startDemoApp(): void {
 
   store.subscribe(render);
   router.subscribe(render);
-  document.addEventListener("goodjob:acquisition-mode-changed", render);
+  document.addEventListener("goodjob:acquisition-mode-changed", () => {
+    router.navigate(router.current());
+  });
   render();
 }
 

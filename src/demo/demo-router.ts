@@ -101,10 +101,14 @@ export function createDemoRouter(initial: DemoModule = "acquisition"): DemoRoute
     const subtitle = document.querySelector<HTMLElement>("#replicaHeaderSubtitle");
     const search = document.querySelector<HTMLInputElement>("#replicaSearchInput");
     const action = document.querySelector<HTMLElement>("#replicaNewTaskButton span");
+    const realAcquisition = acquisition
+      && document.querySelector<HTMLElement>(".replica-shell")?.dataset.acquisitionMode === "real";
     if (title) title.textContent = meta.title;
-    if (subtitle) subtitle.textContent = meta.subtitle;
+    if (subtitle) subtitle.textContent = realAcquisition
+      ? "真实抖音任务 · 公开搜索 · AI 研判 · 人工审核"
+      : meta.subtitle;
     if (search) search.placeholder = meta.searchPlaceholder;
-    if (action) action.textContent = meta.primaryAction;
+    if (action) action.textContent = realAcquisition ? "新建真实任务" : meta.primaryAction;
   }
 
   function navigate(module: DemoModule): void {

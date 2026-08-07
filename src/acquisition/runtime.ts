@@ -166,8 +166,6 @@ function initialiseRuntime(): void {
     "replicaAcquisitionModeBadge",
     "replicaAcquisitionRuntimeStatus",
     "replicaRealTaskCount",
-    "replicaNewTaskButtonLabel",
-    "replicaHeaderSubtitle",
     "replicaScopeAllLabel",
     "replicaScopeAgentLabel",
     "replicaScopeScriptLabel",
@@ -357,8 +355,6 @@ function initialiseRuntime(): void {
   }
 
   function setRealInspectorShell(statusText: string): void {
-    setText("replicaNewTaskButtonLabel", "新建真实任务");
-    setText("replicaHeaderSubtitle", "真实抖音任务 · 公开搜索 · AI 研判 · 人工审核");
     setText("replicaScopeAllLabel", "全部真实任务");
     setText("replicaScopeAgentLabel", "智能体执行");
     setText("replicaScopeScriptLabel", "工作流任务");
