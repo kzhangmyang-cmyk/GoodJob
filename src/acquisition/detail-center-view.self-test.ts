@@ -356,6 +356,10 @@ function state(
   assert.match(html, /glm-4\.5/);
   assert.match(html, /百度 AI 搜索/);
   assert.match(html, /运行中/);
+  assert.match(html, /name="runControlReason"/);
+  assert.match(html, /data-acquisition-run-action="pause"/);
+  assert.match(html, /data-acquisition-run-action="cancel"/);
+  assert.doesNotMatch(html, /data-acquisition-run-action="resume"/);
   assert.match(html, /douyin-organization-search/);
   assert.match(html, /已完成/);
   assert.match(html, /data-acquisition-detail-action="switch-mode"/);
@@ -515,6 +519,118 @@ function state(
   }));
   assert.match(html, /任务尚未运行/);
   assert.match(html, /启动真实运行后/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    runControlReason: `失败重试 "原始原因" <script>alert('reason')</script>`,
+    detail: { ...detail, latestRun: null, presentation: null }
+  }));
+  assert.match(html, /data-acquisition-run-action="start"/);
+  assert.doesNotMatch(html, /data-acquisition-run-action="pause"/);
+  assert.match(html, /value="失败重试 &quot;原始原因&quot; &lt;script&gt;/);
+  assert.doesNotMatch(html, /<script>alert\('reason'\)<\/script>/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      latestRun: detail.latestRun && {
+        ...detail.latestRun,
+        status: "paused"
+      }
+    }
+  }));
+  assert.match(html, /data-acquisition-run-action="resume"/);
+  assert.match(html, /data-acquisition-run-action="cancel"/);
+  assert.doesNotMatch(html, /data-acquisition-run-action="pause"/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      latestRun: detail.latestRun && {
+        ...detail.latestRun,
+        status: "succeeded"
+      }
+    }
+  }));
+  assert.match(html, /data-acquisition-run-action="start"/);
+  assert.match(html, /再次运行/);
+  assert.doesNotMatch(html, /data-acquisition-run-action="cancel"/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    runControlBusy: true,
+    detail: {
+      ...detail,
+      latestRun: detail.latestRun && {
+        ...detail.latestRun,
+        status: "pause_requested"
+      }
+    }
+  }));
+  assert.match(html, /data-acquisition-run-action="cancel"/);
+  assert.match(html, /正在处理…/);
+  assert.match(html, /disabled/);
+  assert.doesNotMatch(html, /data-acquisition-run-action="pause"/);
+  assert.doesNotMatch(html, /data-acquisition-run-action="resume"/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      latestRun: detail.latestRun && {
+        ...detail.latestRun,
+        status: "cancel_requested"
+      }
+    }
+  }));
+  assert.match(html, /正在取消/);
+  assert.doesNotMatch(html, /data-acquisition-detail-action="run-control"/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      latestRun: detail.latestRun && {
+        ...detail.latestRun,
+        status: "budget_exhausted",
+        planVersion: 3
+      }
+    }
+  }));
+  assert.match(html, /请先调整预算并重新审批/);
+  assert.doesNotMatch(html, /data-acquisition-run-action="start"/);
+  assert.doesNotMatch(html, /data-acquisition-run-action="resume"/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      latestRun: detail.latestRun && {
+        ...detail.latestRun,
+        status: "budget_exhausted",
+        planVersion: 2
+      }
+    }
+  }));
+  assert.match(html, /data-acquisition-run-action="start"/);
+  assert.match(html, /追加预算后续跑/);
+  assert.doesNotMatch(html, /请先调整预算并重新审批/);
 }
 
 {

@@ -149,6 +149,87 @@ export interface RunPresentationQuery {
   limit?: number;
 }
 
+export type AcquisitionRunStatus =
+  | "queued"
+  | "running"
+  | "pause_requested"
+  | "paused"
+  | "cancel_requested"
+  | "cancelled"
+  | "succeeded"
+  | "succeeded_empty"
+  | "partial_success"
+  | "failed"
+  | "budget_exhausted";
+
+export interface AcquisitionBudgetUsage {
+  requests: number;
+  results: number;
+  amountMinor: number;
+  durationSeconds: number;
+}
+
+export interface AcquisitionBudgetSnapshot {
+  billingCurrency: string;
+  maxRequests: number;
+  maxResults: number;
+  maxAmountMinor: number;
+  maxDurationSeconds: number;
+}
+
+export interface AcquisitionModelSnapshotRef {
+  jobSnapshotId: string;
+  connectionId: string;
+  credentialVersion: number;
+  provider: string;
+  model: string;
+  capabilitySnapshotHash: string;
+  promptVersion: string;
+  schemaVersion: string;
+  promptHash: string;
+  schemaHash: string;
+}
+
+export interface AcquisitionRun {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  planId: string;
+  planVersionId: string;
+  planVersion: number;
+  planSnapshotHash: string;
+  parentRunId: string | null;
+  status: AcquisitionRunStatus;
+  terminationIntent: "cancelled" | "budget_exhausted" | null;
+  revision: number;
+  etag: string;
+  budgetSnapshotId: string;
+  budgetSnapshot: AcquisitionBudgetSnapshot;
+  budgetSnapshotHash: string;
+  billingCurrency: string;
+  modelSnapshotRef: AcquisitionModelSnapshotRef;
+  consumedBudget: AcquisitionBudgetUsage;
+  evidenceCount: number;
+  reason: string | null;
+  createdBy: string;
+  createdAt: string;
+  updatedBy: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface AcquisitionRunCreateInput {
+  parentRunId?: string;
+  reason?: string;
+}
+
+export interface AcquisitionRunWithEtag {
+  run: AcquisitionRun;
+  etag: string | null;
+}
+
+export type AcquisitionRunControlAction = "pause" | "resume" | "cancel";
+
 export type AcquisitionCandidateStatus =
   | "discovered"
   | "unresolvable"
@@ -443,6 +524,17 @@ export interface CandidateReviewResult {
 
 export interface AcquisitionDetailApi {
   getTask(planId: string): Promise<AcquisitionTaskDetail>;
+  createRun(
+    planId: string,
+    input: AcquisitionRunCreateInput | undefined,
+    idempotencyKey: string
+  ): Promise<AcquisitionRunWithEtag>;
+  controlRun(
+    runId: string,
+    action: AcquisitionRunControlAction,
+    ifMatch: string,
+    reason: string
+  ): Promise<AcquisitionRunWithEtag>;
   getRunPresentation(
     runId: string,
     query?: RunPresentationQuery
@@ -502,6 +594,39 @@ function pathSegment(value: string): string {
   return encodeURIComponent(value);
 }
 
+function requiredText(value: string, label: string, maxLength: number): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${label}不能为空`);
+  if (normalized.length > maxLength) {
+    throw new Error(`${label}不能超过 ${maxLength} 个字符`);
+  }
+  return normalized;
+}
+
+function normalizedRunCreateInput(
+  input: AcquisitionRunCreateInput = {}
+): AcquisitionRunCreateInput {
+  const reason = input.reason?.trim();
+  if (reason !== undefined && reason.length > 2_000) {
+    throw new Error("运行理由不能超过 2000 个字符");
+  }
+  return {
+    ...(input.parentRunId === undefined
+      ? {}
+      : { parentRunId: requiredText(input.parentRunId, "父运行 ID", 255) }),
+    ...(reason === undefined ? {} : { reason })
+  };
+}
+
+function validRunControlAction(
+  value: AcquisitionRunControlAction
+): AcquisitionRunControlAction {
+  if (value !== "pause" && value !== "resume" && value !== "cancel") {
+    throw new Error("运行控制动作无效");
+  }
+  return value;
+}
+
 function defaultCookieSource(): string {
   return typeof document === "undefined" ? "" : document.cookie;
 }
@@ -526,6 +651,14 @@ function validIdempotencyKey(value: string): string {
   const normalized = value.trim();
   if (!normalized || normalized.length > 200) {
     throw new Error("幂等键必须为 1 到 200 个字符");
+  }
+  return normalized;
+}
+
+function validRunIdempotencyKey(value: string): string {
+  const normalized = value.trim();
+  if (normalized.length < 8 || normalized.length > 200) {
+    throw new Error("幂等键必须为 8 到 200 个字符");
   }
   return normalized;
 }
@@ -607,6 +740,56 @@ export function createAcquisitionDetailApi(
       return get<AcquisitionTaskDetail>(
         `/api/v1/acquisition/tasks/${pathSegment(planId)}`
       );
+    },
+    async createRun(
+      planId: string,
+      input: AcquisitionRunCreateInput = {},
+      idempotencyKey: string
+    ) {
+      const loaded = await request<AcquisitionRun>(
+        `/api/v1/acquisition/plans/${pathSegment(
+          requiredText(planId, "计划 ID", 255)
+        )}/runs`,
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": validRunIdempotencyKey(idempotencyKey)
+          },
+          body: JSON.stringify(normalizedRunCreateInput(input))
+        }
+      );
+      if (!loaded) throw new Error("运行不存在");
+      return {
+        run: loaded.body,
+        etag: loaded.response.headers.get("etag")
+      };
+    },
+    async controlRun(
+      runId: string,
+      action: AcquisitionRunControlAction,
+      ifMatch: string,
+      reason: string
+    ) {
+      const validatedAction = validRunControlAction(action);
+      const loaded = await request<AcquisitionRun>(
+        `/api/v1/acquisition/runs/${pathSegment(
+          requiredText(runId, "运行 ID", 255)
+        )}/${validatedAction}`,
+        {
+          method: "POST",
+          headers: {
+            "If-Match": requiredText(ifMatch, "运行 ETag", 1_024)
+          },
+          body: JSON.stringify({
+            reason: requiredText(reason, "操作理由", 2_000)
+          })
+        }
+      );
+      if (!loaded) throw new Error("运行不存在");
+      return {
+        run: loaded.body,
+        etag: loaded.response.headers.get("etag")
+      };
     },
     getRunPresentation(runId: string, query: RunPresentationQuery = {}) {
       return get<AcquisitionRunPresentation>(

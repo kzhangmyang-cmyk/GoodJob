@@ -641,6 +641,246 @@ assert.deepEqual(JSON.parse(String(reviewWriteCall?.init?.body)), {
 const reviewWriteHeaders = new Headers(reviewWriteCall?.init?.headers);
 assert.equal(reviewWriteHeaders.get("x-csrf-token"), "csrf/review");
 assert.equal(reviewWriteHeaders.get("idempotency-key"), "candidate-review-key-1");
+await reviewWriteApi.reviewCandidate(
+  "candidate-short-key",
+  {
+    action: "approved",
+    decisionVersion: "qualification.v2:1",
+    reason: null
+  },
+  "x"
+);
+assert.equal(
+  new Headers(reviewWriteCalls[1]?.init?.headers).get("idempotency-key"),
+  "x"
+);
+
+const runResponse = {
+  id: "run-1",
+  ownerId: "user-1",
+  teamId: "team-1",
+  planId: "plan-1",
+  planVersionId: "plan-version-1",
+  planVersion: 1,
+  planSnapshotHash: "sha256:approved-plan",
+  parentRunId: "parent/run",
+  status: "queued" as const,
+  terminationIntent: null,
+  revision: 1,
+  etag: '"run:run-1:1"',
+  budgetSnapshotId: "budget-1",
+  budgetSnapshot: {
+    billingCurrency: "CNY",
+    maxRequests: 4,
+    maxResults: 40,
+    maxAmountMinor: 400,
+    maxDurationSeconds: 240
+  },
+  budgetSnapshotHash: "sha256:budget",
+  billingCurrency: "CNY",
+  modelSnapshotRef: {
+    jobSnapshotId: "snapshot-1",
+    connectionId: "model-1",
+    credentialVersion: 1,
+    provider: "moonshot",
+    model: "kimi-k3",
+    capabilitySnapshotHash: "sha256:capability",
+    promptVersion: "acquisition.v1",
+    schemaVersion: "acquisition-plan.v1",
+    promptHash: "sha256:prompt",
+    schemaHash: "sha256:schema"
+  },
+  consumedBudget: {
+    requests: 0,
+    results: 0,
+    amountMinor: 0,
+    durationSeconds: 0
+  },
+  evidenceCount: 0,
+  reason: "继续公开检索",
+  createdBy: "user-1",
+  createdAt: "2026-08-07T06:00:00.000Z",
+  updatedBy: "user-1",
+  updatedAt: "2026-08-07T06:00:00.000Z",
+  completedAt: null
+};
+const createRunCalls: Array<{
+  input: RequestInfo | URL;
+  init?: RequestInit;
+}> = [];
+const runLifecycleApi = createAcquisitionDetailApi(
+  async (input, init) => {
+    createRunCalls.push({ input, init });
+    return Response.json(runResponse, {
+      status: 202,
+      headers: { etag: '"run:run-1:1"' }
+    });
+  },
+  { cookie: "session=1; gj_csrf=csrf%2Frun" }
+);
+const createdRun = await runLifecycleApi.createRun(
+  " plan/with space ",
+  {
+    parentRunId: " parent/run ",
+    reason: " 继续公开检索 "
+  },
+  " run-key-0001 "
+);
+assert.equal(createdRun.run.id, "run-1");
+assert.equal(createdRun.etag, '"run:run-1:1"');
+const createRunCall = createRunCalls[0];
+assert.equal(
+  createRunCall?.input,
+  "/api/v1/acquisition/plans/plan%2Fwith%20space/runs"
+);
+assert.equal(createRunCall?.init?.method, "POST");
+assert.deepEqual(JSON.parse(String(createRunCall?.init?.body)), {
+  parentRunId: "parent/run",
+  reason: "继续公开检索"
+});
+const createRunHeaders = new Headers(createRunCall?.init?.headers);
+assert.equal(createRunHeaders.get("idempotency-key"), "run-key-0001");
+assert.equal(createRunHeaders.get("x-csrf-token"), "csrf/run");
+assert.equal(createRunHeaders.get("if-match"), null);
+
+const controlRunCalls: Array<{
+  input: RequestInfo | URL;
+  init?: RequestInit;
+}> = [];
+const controlRunApi = createAcquisitionDetailApi(
+  async (input, init) => {
+    controlRunCalls.push({ input, init });
+    const action = String(input).split("/").at(-1);
+    const status = action === "pause"
+      ? "paused"
+      : action === "resume"
+        ? "queued"
+        : "cancelled";
+    const revision = controlRunCalls.length + 1;
+    return Response.json({
+      ...runResponse,
+      status,
+      revision,
+      etag: `"run:run-1:${revision}"`
+    }, {
+      headers: { etag: `"run:run-1:${revision}"` }
+    });
+  },
+  { cookieSource: () => "gj_csrf=csrf%2Fcontrol" }
+);
+for (const [index, action, reason] of [
+  [0, "pause", "人工暂停检查"],
+  [1, "resume", "检查完成"],
+  [2, "cancel", "人工终止"]
+] as const) {
+  const controlled = await controlRunApi.controlRun(
+    " run/with space ",
+    action,
+    ` "run:run-1:${index + 1}" `,
+    ` ${reason} `
+  );
+  assert.equal(controlled.etag, `"run:run-1:${index + 2}"`);
+  const call = controlRunCalls[index];
+  assert.equal(
+    call?.input,
+    `/api/v1/acquisition/runs/run%2Fwith%20space/${action}`
+  );
+  assert.equal(call?.init?.method, "POST");
+  assert.deepEqual(JSON.parse(String(call?.init?.body)), { reason });
+  const headers = new Headers(call?.init?.headers);
+  assert.equal(headers.get("if-match"), `"run:run-1:${index + 1}"`);
+  assert.equal(headers.get("idempotency-key"), null);
+  assert.equal(headers.get("x-csrf-token"), "csrf/control");
+}
+
+let invalidLifecycleFetches = 0;
+const invalidLifecycleApi = createAcquisitionDetailApi(
+  async () => {
+    invalidLifecycleFetches += 1;
+    return Response.json(runResponse, {
+      headers: { etag: runResponse.etag }
+    });
+  },
+  { cookie: "gj_csrf=csrf" }
+);
+await assert.rejects(
+  () => invalidLifecycleApi.createRun("   ", {}, "valid-run-key"),
+  /计划 ID不能为空/
+);
+await assert.rejects(
+  () => invalidLifecycleApi.createRun(
+    "plan-1",
+    { parentRunId: "   " },
+    "valid-run-key"
+  ),
+  /父运行 ID不能为空/
+);
+await assert.rejects(
+  () => invalidLifecycleApi.controlRun(
+    "   ",
+    "pause",
+    '"run:1"',
+    "人工检查"
+  ),
+  /运行 ID不能为空/
+);
+assert.equal(invalidLifecycleFetches, 0);
+await assert.rejects(
+  () => invalidLifecycleApi.createRun("plan-1", {}, "short"),
+  /幂等键必须为 8 到 200 个字符/
+);
+await assert.rejects(
+  () => invalidLifecycleApi.createRun("plan-1", {}, "x".repeat(201)),
+  /幂等键必须为 8 到 200 个字符/
+);
+assert.equal(invalidLifecycleFetches, 0);
+await assert.rejects(
+  () => invalidLifecycleApi.createRun(
+    "plan-1",
+    { reason: "x".repeat(2_001) },
+    "valid-run-key"
+  ),
+  /运行理由不能超过 2000 个字符/
+);
+assert.equal(invalidLifecycleFetches, 0);
+await assert.rejects(
+  () => invalidLifecycleApi.controlRun(
+    "run-1",
+    "restart" as "pause",
+    '"run:1"',
+    "人工检查"
+  ),
+  /运行控制动作无效/
+);
+assert.equal(invalidLifecycleFetches, 0);
+await assert.rejects(
+  () => invalidLifecycleApi.controlRun(
+    "run-1",
+    "pause",
+    "   ",
+    "人工检查"
+  ),
+  /运行 ETag不能为空/
+);
+await assert.rejects(
+  () => invalidLifecycleApi.controlRun(
+    "run-1",
+    "pause",
+    '"run:1"',
+    "   "
+  ),
+  /操作理由不能为空/
+);
+await assert.rejects(
+  () => invalidLifecycleApi.controlRun(
+    "run-1",
+    "pause",
+    '"run:1"',
+    "x".repeat(2_001)
+  ),
+  /操作理由不能超过 2000 个字符/
+);
+assert.equal(invalidLifecycleFetches, 0);
 
 const failingApi = createAcquisitionDetailApi(async () => Response.json({
   error: {

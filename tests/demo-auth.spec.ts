@@ -97,9 +97,9 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     planStatus: "approved",
     latestRun: {
       id: "run-ui-1",
-      status: "succeeded",
+      status: "running",
       updatedAt: "2026-08-07T08:05:00.000Z",
-      completedAt: "2026-08-07T08:05:00.000Z",
+      completedAt: null,
       evidenceCount: 1,
       consumedBudget: { requests: 2, results: 1, amountMinor: 120, durationSeconds: 18 }
     },
@@ -187,7 +187,7 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     planVersion: 1,
     planSnapshotHash: "sha256:approved-ui-1",
     parentRunId: null,
-    status: "succeeded",
+    status: "running",
     terminationIntent: null,
     revision: 2,
     etag: "\"run-ui-1:2\"",
@@ -203,8 +203,15 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     createdAt: "2026-08-07T08:00:00.000Z",
     updatedBy: "demo-admin",
     updatedAt: "2026-08-07T08:05:00.000Z",
-    completedAt: "2026-08-07T08:05:00.000Z"
+    completedAt: null
   };
+  let lifecycleStatus: "running" | "paused" = "running";
+  let lifecycleEtag = "\"run-ui-1:2\"";
+  const pauseRequests: Array<{
+    ifMatch: string | undefined;
+    csrf: string | undefined;
+    body: unknown;
+  }> = [];
   const candidateSummary = {
     id: "candidate-ui-1",
     subjectKind: "organization",
@@ -287,17 +294,37 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
         generatedAt: "2026-08-07T08:06:00.000Z",
         platform: "douyin",
         totals: { tasks: 1 },
-        statusCounts: { succeeded: 1 },
+        statusCounts: { [lifecycleStatus]: 1 },
         discoveryMethodCounts: { public_search: 1 },
-        tasks: [task]
+        tasks: [{
+          ...task,
+          latestRun: task.latestRun && {
+            ...task.latestRun,
+            status: lifecycleStatus,
+            completedAt: lifecycleStatus === "paused" ? null : task.latestRun.completedAt
+          }
+        }]
       });
       return;
     }
     if (url.pathname === `/api/v1/acquisition/tasks/${plan.id}`) {
+      const currentRun = {
+        ...latestRun,
+        status: lifecycleStatus,
+        etag: lifecycleEtag,
+        revision: lifecycleStatus === "paused" ? 3 : 2
+      };
       await json({
-        task,
+        task: {
+          ...task,
+          latestRun: task.latestRun && {
+            ...task.latestRun,
+            status: lifecycleStatus,
+            completedAt: null
+          }
+        },
         plan,
-        latestRun,
+        latestRun: currentRun,
         shards: [{
           id: "shard-ui-1",
           runId: latestRun.id,
@@ -323,6 +350,24 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
         }],
         presentation
       });
+      return;
+    }
+    if (url.pathname === `/api/v1/acquisition/runs/${latestRun.id}/pause`
+      && route.request().method() === "POST") {
+      pauseRequests.push({
+        ifMatch: route.request().headers()["if-match"],
+        csrf: route.request().headers()["x-csrf-token"],
+        body: route.request().postDataJSON()
+      });
+      lifecycleStatus = "paused";
+      lifecycleEtag = "\"run-ui-1:3\"";
+      await json({
+        ...latestRun,
+        status: lifecycleStatus,
+        etag: lifecycleEtag,
+        revision: 3,
+        updatedAt: "2026-08-07T08:07:00.000Z"
+      }, 200, { ETag: lifecycleEtag });
       return;
     }
     if (url.pathname === `/api/v1/acquisition/runs/${latestRun.id}/presentation`) {
@@ -409,6 +454,7 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
   });
 
   await page.addInitScript(() => {
+    document.cookie = "gj_csrf=e2e-csrf; path=/";
     localStorage.setItem("gj_user", JSON.stringify({
       id: "demo-admin",
       name: "Admin",
@@ -427,6 +473,15 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
   const dialog = page.locator("#replicaAcquisitionDetailCenter");
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("发现正在采购 AI 获客系统的企业");
+  await dialog.locator('[name="runControlReason"]').fill("人工检查搜索结果");
+  await dialog.locator('[data-acquisition-run-action="pause"]').click();
+  await expect(dialog.locator(".replica-acquisition-run-summary")).toContainText("已暂停");
+  expect(pauseRequests).toEqual([{
+    ifMatch: "\"run-ui-1:2\"",
+    csrf: "e2e-csrf",
+    body: { reason: "人工检查搜索结果" }
+  }]);
+  await expect(dialog.locator('[data-acquisition-run-action="resume"]')).toBeVisible();
   await dialog.locator('[data-acquisition-detail-action="switch-mode"][data-mode="candidates"]').click();
   await expect(dialog).toContainText("厦门增长科技有限公司");
   await expect(dialog).toContainText("出现明确采购需求并主动比较供应商");

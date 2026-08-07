@@ -985,3 +985,517 @@ const taskDetail = {
   assert.deepEqual(changed, []);
   controller.destroy();
 }
+
+{
+  const startKeys: string[] = [];
+  const refreshes: Array<Record<string, unknown>> = [];
+  const eventTarget = new EventTarget();
+  eventTarget.addEventListener(
+    "goodjob:acquisition-refresh-requested",
+    (event) => refreshes.push(
+      (event as CustomEvent<Record<string, unknown>>).detail
+    )
+  );
+  let createAttempts = 0;
+  let taskReads = 0;
+  const completedRun = {
+    id: "run-start-1",
+    status: "succeeded" as const,
+    etag: '"run-start-1:2"',
+    updatedAt: "2026-08-07T12:00:00.000Z",
+    completedAt: "2026-08-07T12:00:00.000Z",
+    evidenceCount: 4,
+    consumedBudget: {
+      requests: 2,
+      results: 4,
+      amountMinor: 40,
+      durationSeconds: 12
+    }
+  };
+  const api = {
+    async getTask() {
+      taskReads += 1;
+      return taskReads === 1
+        ? taskDetail
+        : { ...taskDetail, latestRun: completedRun };
+    },
+    async createRun(
+      planId: string,
+      input: { reason?: string },
+      idempotencyKey: string
+    ) {
+      assert.equal(planId, "plan-1");
+      assert.deepEqual(input, { reason: "开始公开检索" });
+      startKeys.push(idempotencyKey);
+      createAttempts += 1;
+      if (createAttempts === 1) throw new Error("运行创建网络失败");
+      return {
+        run: {
+          ...completedRun,
+          status: "queued",
+          completedAt: null
+        },
+        etag: '"run-start-1:1"'
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  let keySerial = 0;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    eventTarget,
+    keyFactory: () => `run-start-key-${++keySerial}`
+  });
+
+  await controller.open("plan", "plan-1");
+  await assert.rejects(
+    () => controller.startRun("  开始公开检索  "),
+    /运行创建网络失败/
+  );
+  assert.equal(controller.getState().runControlBusy, false);
+  assert.equal(controller.getState().runControlReason, "开始公开检索");
+  await controller.startRun();
+  assert.equal(startKeys[0], startKeys[1]);
+  assert.equal(controller.getState().detail?.latestRun?.status, "succeeded");
+  assert.equal(controller.getState().runControlBusy, false);
+  assert.equal(controller.getState().runControlReason, "");
+  assert.deepEqual(refreshes.at(-1), {
+    planId: "plan-1",
+    action: "start",
+    runId: "run-start-1"
+  });
+
+  await controller.startRun("  开始公开检索  ");
+  assert.notEqual(startKeys[1], startKeys[2]);
+  controller.destroy();
+}
+
+{
+  let taskReads = 0;
+  const createInputs: Array<Record<string, unknown>> = [];
+  const budgetRun = {
+    id: "run-budget-parent",
+    status: "budget_exhausted" as const,
+    planVersion: 1,
+    etag: '"run-budget-parent:2"',
+    updatedAt: "2026-08-07T12:00:00.000Z",
+    completedAt: "2026-08-07T12:00:00.000Z",
+    evidenceCount: 8,
+    consumedBudget: {
+      requests: 10,
+      results: 8,
+      amountMinor: 1_000,
+      durationSeconds: 100
+    }
+  };
+  const continuedRun = {
+    ...budgetRun,
+    id: "run-budget-child",
+    status: "queued" as const,
+    planVersion: 2,
+    etag: '"run-budget-child:1"',
+    completedAt: null,
+    consumedBudget: {
+      requests: 0,
+      results: 0,
+      amountMinor: 0,
+      durationSeconds: 0
+    }
+  };
+  const api = {
+    async getTask() {
+      taskReads += 1;
+      return {
+        ...taskDetail,
+        plan: { ...taskDetail.plan, version: 2 },
+        latestRun: taskReads === 1 ? budgetRun : continuedRun
+      };
+    },
+    async createRun(
+      planId: string,
+      input: Record<string, unknown>,
+      idempotencyKey: string
+    ) {
+      assert.equal(planId, "plan-1");
+      assert.match(idempotencyKey, /budget-key/);
+      createInputs.push(input);
+      return {
+        run: {
+          ...continuedRun,
+          ownerId: "user-1",
+          teamId: "team-1",
+          planId,
+          planVersionId: "plan-version-2",
+          planSnapshotHash: "sha256:plan-2",
+          parentRunId: budgetRun.id,
+          terminationIntent: null,
+          revision: 1,
+          budgetSnapshotId: "budget-2",
+          budgetSnapshot: {
+            billingCurrency: "CNY",
+            maxRequests: 20,
+            maxResults: 20,
+            maxAmountMinor: 2_000,
+            maxDurationSeconds: 200
+          },
+          budgetSnapshotHash: "sha256:budget-2",
+          billingCurrency: "CNY",
+          modelSnapshotRef: {
+            jobSnapshotId: "snapshot-2",
+            connectionId: "model-2",
+            credentialVersion: 1,
+            provider: "zhipu",
+            model: "glm-5.2",
+            capabilitySnapshotHash: "sha256:capability",
+            promptVersion: "prompt-v1",
+            schemaVersion: "schema-v1",
+            promptHash: "sha256:prompt",
+            schemaHash: "sha256:schema"
+          },
+          reason: "追加预算后继续",
+          createdBy: "user-1",
+          createdAt: "2026-08-07T12:01:00.000Z",
+          updatedBy: "user-1"
+        },
+        etag: continuedRun.etag
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    keyFactory: () => "budget-key-0001"
+  });
+
+  await controller.open("plan", "plan-1");
+  await controller.startRun(" 追加预算后继续 ");
+  assert.deepEqual(createInputs, [{
+    parentRunId: "run-budget-parent",
+    reason: "追加预算后继续"
+  }]);
+  assert.equal(controller.getState().detail?.latestRun?.id, "run-budget-child");
+  controller.destroy();
+}
+
+{
+  let taskReads = 0;
+  const oldRun = {
+    id: "run-old",
+    status: "succeeded" as const,
+    etag: '"run-old:2"',
+    updatedAt: "2026-08-07T12:00:00.000Z",
+    completedAt: "2026-08-07T12:00:00.000Z",
+    evidenceCount: 5,
+    consumedBudget: {
+      requests: 2,
+      results: 5,
+      amountMinor: 20,
+      durationSeconds: 20
+    }
+  };
+  const api = {
+    async getTask() {
+      taskReads += 1;
+      if (taskReads > 1) throw new Error("详情刷新失败");
+      return {
+        ...taskDetail,
+        latestRun: oldRun,
+        shards: [{ id: "old-shard" }],
+        presentation: {
+          candidateEvents: [{ candidateId: "old-candidate" }],
+          providers: [],
+          hasMore: false,
+          nextAfter: null
+        }
+      };
+    },
+    async createRun(planId: string) {
+      return {
+        run: {
+          id: "run-new",
+          ownerId: "user-1",
+          teamId: "team-1",
+          planId,
+          planVersionId: "plan-version-1",
+          planVersion: 1,
+          planSnapshotHash: "sha256:plan",
+          parentRunId: null,
+          status: "queued" as const,
+          terminationIntent: null,
+          revision: 1,
+          etag: '"run-new:1"',
+          budgetSnapshotId: "budget-1",
+          budgetSnapshot: {
+            billingCurrency: "CNY",
+            maxRequests: 10,
+            maxResults: 10,
+            maxAmountMinor: 1_000,
+            maxDurationSeconds: 100
+          },
+          budgetSnapshotHash: "sha256:budget",
+          billingCurrency: "CNY",
+          modelSnapshotRef: {
+            jobSnapshotId: "snapshot-1",
+            connectionId: "model-1",
+            credentialVersion: 1,
+            provider: "zhipu",
+            model: "glm-5.2",
+            capabilitySnapshotHash: "sha256:capability",
+            promptVersion: "prompt-v1",
+            schemaVersion: "schema-v1",
+            promptHash: "sha256:prompt",
+            schemaHash: "sha256:schema"
+          },
+          consumedBudget: {
+            requests: 0,
+            results: 0,
+            amountMinor: 0,
+            durationSeconds: 0
+          },
+          evidenceCount: 0,
+          reason: null,
+          createdBy: "user-1",
+          createdAt: "2026-08-07T12:01:00.000Z",
+          updatedBy: "user-1",
+          updatedAt: "2026-08-07T12:01:00.000Z",
+          completedAt: null
+        },
+        etag: '"run-new:1"'
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({ api });
+
+  await controller.open("plan", "plan-1");
+  await controller.startRun("新的独立运行");
+  assert.equal(controller.getState().detail?.latestRun?.id, "run-new");
+  assert.deepEqual(controller.getState().detail?.shards, []);
+  assert.equal(controller.getState().detail?.presentation, null);
+  assert.match(controller.getState().error ?? "", /详情刷新失败/);
+  controller.destroy();
+}
+
+{
+  const refreshes: Array<Record<string, unknown>> = [];
+  const eventTarget = new EventTarget();
+  eventTarget.addEventListener(
+    "goodjob:acquisition-refresh-requested",
+    (event) => refreshes.push(
+      (event as CustomEvent<Record<string, unknown>>).detail
+    )
+  );
+  let currentRun = {
+    id: "run-control-1",
+    status: "running" as "running" | "paused" | "queued" | "cancelled",
+    etag: '"run-control-1:2"',
+    updatedAt: "2026-08-07T12:00:00.000Z",
+    completedAt: null,
+    evidenceCount: 3,
+    consumedBudget: {
+      requests: 2,
+      results: 3,
+      amountMinor: 30,
+      durationSeconds: 10
+    }
+  };
+  const calls: Array<{
+    runId: string;
+    action: string;
+    etag: string;
+    reason: string;
+  }> = [];
+  let confirmCalls = 0;
+  const api = {
+    async getTask() {
+      return { ...taskDetail, latestRun: { ...currentRun } };
+    },
+    async controlRun(
+      runId: string,
+      action: "pause" | "resume" | "cancel",
+      etag: string,
+      reason: string
+    ) {
+      calls.push({ runId, action, etag, reason });
+      const nextStatus = action === "pause"
+        ? "paused"
+        : action === "resume"
+          ? "queued"
+          : "cancelled";
+      currentRun = {
+        ...currentRun,
+        status: nextStatus,
+        etag: `"run-control-1:${calls.length + 2}"`
+      };
+      return { run: currentRun, etag: currentRun.etag };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    eventTarget,
+    confirm: () => {
+      confirmCalls += 1;
+      return confirmCalls > 1;
+    }
+  });
+
+  await controller.open("plan", "plan-1");
+  await assert.rejects(() => controller.controlRun("pause", "  "), /理由/);
+  assert.equal(calls.length, 0);
+  await controller.controlRun("pause", " 人工检查 ");
+  assert.deepEqual(calls[0], {
+    runId: "run-control-1",
+    action: "pause",
+    etag: '"run-control-1:2"',
+    reason: "人工检查"
+  });
+  assert.equal(controller.getState().detail?.latestRun?.status, "paused");
+
+  await controller.controlRun("resume", " 检查完成 ");
+  assert.deepEqual(calls[1], {
+    runId: "run-control-1",
+    action: "resume",
+    etag: '"run-control-1:3"',
+    reason: "检查完成"
+  });
+  assert.equal(controller.getState().detail?.latestRun?.status, "queued");
+
+  await controller.controlRun("cancel", " 不再继续 ");
+  assert.equal(calls.length, 2);
+  await controller.controlRun("cancel", " 不再继续 ");
+  assert.deepEqual(calls[2], {
+    runId: "run-control-1",
+    action: "cancel",
+    etag: '"run-control-1:4"',
+    reason: "不再继续"
+  });
+  assert.equal(controller.getState().detail?.latestRun?.status, "cancelled");
+  assert.deepEqual(refreshes.map((item) => item.action), [
+    "pause",
+    "resume",
+    "cancel"
+  ]);
+  controller.destroy();
+}
+
+{
+  const invalidCalls: string[] = [];
+  const api = {
+    async getTask(planId: string) {
+      if (planId === "budget-plan") {
+        return {
+          ...taskDetail,
+          plan: { ...taskDetail.plan, id: planId },
+          latestRun: {
+            id: "run-budget",
+            status: "budget_exhausted",
+            etag: '"run-budget:2"',
+            updatedAt: "2026-08-07T12:00:00.000Z",
+            completedAt: "2026-08-07T12:00:00.000Z",
+            evidenceCount: 0,
+            consumedBudget: {
+              requests: 4,
+              results: 0,
+              amountMinor: 400,
+              durationSeconds: 60
+            }
+          }
+        };
+      }
+      return {
+        ...taskDetail,
+        plan: { ...taskDetail.plan, id: planId },
+        latestRun: {
+          id: "run-no-etag",
+          status: "running",
+          updatedAt: "2026-08-07T12:00:00.000Z",
+          completedAt: null,
+          evidenceCount: 0,
+          consumedBudget: {
+            requests: 1,
+            results: 0,
+            amountMinor: 0,
+            durationSeconds: 1
+          }
+        }
+      };
+    },
+    async createRun() {
+      invalidCalls.push("start");
+      throw new Error("不应调用");
+    },
+    async controlRun() {
+      invalidCalls.push("control");
+      throw new Error("不应调用");
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({ api });
+
+  await controller.open("plan", "no-etag-plan");
+  await assert.rejects(
+    () => controller.controlRun("pause", "人工检查"),
+    /ETag|刷新/
+  );
+  await assert.rejects(
+    () => controller.controlRun("resume", "人工检查"),
+    /只有已暂停/
+  );
+  await controller.open("plan", "budget-plan");
+  await assert.rejects(
+    () => controller.startRun("追加预算"),
+    /预算|审批/
+  );
+  assert.deepEqual(invalidCalls, []);
+  controller.destroy();
+}
+
+{
+  const control = deferred<Record<string, unknown>>();
+  const refreshes: Array<Record<string, unknown>> = [];
+  const eventTarget = new EventTarget();
+  eventTarget.addEventListener(
+    "goodjob:acquisition-refresh-requested",
+    (event) => refreshes.push(
+      (event as CustomEvent<Record<string, unknown>>).detail
+    )
+  );
+  const api = {
+    async getTask(planId: string) {
+      return {
+        ...taskDetail,
+        task: { ...taskDetail.task, planId },
+        plan: { ...taskDetail.plan, id: planId },
+        latestRun: {
+          id: `run-${planId}`,
+          status: "running",
+          etag: `"run-${planId}:1"`,
+          updatedAt: "2026-08-07T12:00:00.000Z",
+          completedAt: null,
+          evidenceCount: 0,
+          consumedBudget: {
+            requests: 1,
+            results: 0,
+            amountMinor: 0,
+            durationSeconds: 1
+          }
+        }
+      };
+    },
+    controlRun() {
+      return control.promise;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({ api, eventTarget });
+
+  await controller.open("plan", "plan-old");
+  const staleControl = controller.controlRun("pause", "人工检查");
+  controller.close();
+  await controller.open("plan", "plan-new");
+  control.resolve({
+    run: { id: "run-plan-old", status: "paused" },
+    etag: '"run-plan-old:2"'
+  });
+  await staleControl;
+
+  assert.equal(controller.getState().detail?.plan.id, "plan-new");
+  assert.equal(controller.getState().detail?.latestRun?.id, "run-plan-new");
+  assert.deepEqual(refreshes, []);
+  controller.destroy();
+}

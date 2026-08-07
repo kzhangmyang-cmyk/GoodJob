@@ -2851,6 +2851,75 @@ body.is-authenticated .replica-shell {
   border-color: rgba(24, 237, 120, .13);
 }
 
+.replica-acquisition-run-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, .055);
+}
+
+.replica-acquisition-run-controls label {
+  display: grid;
+  gap: 5px;
+  color: #7c847e;
+  font-size: 8px;
+}
+
+.replica-acquisition-run-controls input {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  color: #dfe6e1;
+  background: rgba(255, 255, 255, .025);
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 9px;
+  font: inherit;
+}
+
+.replica-acquisition-run-controls > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.replica-acquisition-run-note {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.07);
+  color: #9a6700;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.replica-acquisition-run-controls button {
+  min-height: 34px;
+  padding: 0 12px;
+  color: #caffda;
+  background: rgba(24, 237, 120, .05);
+  border: 1px solid rgba(24, 237, 120, .16);
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 680;
+}
+
+.replica-acquisition-run-controls button.is-danger {
+  color: #ffb4af;
+  background: rgba(255, 93, 86, .045);
+  border-color: rgba(255, 93, 86, .18);
+}
+
+.replica-acquisition-run-controls button:disabled {
+  opacity: .48;
+  cursor: wait;
+}
+
 .replica-acquisition-run-empty {
   display: grid;
   gap: 4px;

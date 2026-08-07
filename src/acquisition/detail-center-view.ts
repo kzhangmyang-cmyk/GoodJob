@@ -22,6 +22,8 @@ export interface AcquisitionDetailCenterState {
   message: string | null;
   error: string | null;
   loadingMoreCandidates?: boolean;
+  runControlBusy?: boolean;
+  runControlReason?: string;
 }
 
 type DataRecord = Record<string, unknown>;
@@ -212,7 +214,92 @@ function renderStateMessage(state: AcquisitionDetailCenterState): string | null 
   return null;
 }
 
-function renderPlanOverview(detail: AcquisitionTaskDetail): string {
+function renderRunControls(
+  planStatus: string,
+  planVersion: unknown,
+  latestRun: DataRecord | null,
+  busy: boolean,
+  reason: string
+): string {
+  const status = latestRun === null ? null : textValue(latestRun.status, "queued");
+  const currentPlanVersion = typeof planVersion === "number" && Number.isFinite(planVersion)
+    ? planVersion
+    : null;
+  const runPlanVersion = typeof latestRun?.planVersion === "number"
+    && Number.isFinite(latestRun.planVersion)
+    ? latestRun.planVersion
+    : null;
+  const canContinueBudgetRun = status === "budget_exhausted"
+    && planStatus === "approved"
+    && currentPlanVersion !== null
+    && runPlanVersion !== null
+    && currentPlanVersion > runPlanVersion;
+  const actions: Array<{ action: string; label: string; danger?: boolean }> = [];
+  if (status === null) {
+    if (planStatus === "approved") actions.push({ action: "start", label: "启动运行" });
+  } else if (["queued", "running"].includes(status)) {
+    actions.push(
+      { action: "pause", label: "暂停运行" },
+      { action: "cancel", label: "取消运行", danger: true }
+    );
+  } else if (status === "paused") {
+    actions.push(
+      { action: "resume", label: "继续运行" },
+      { action: "cancel", label: "取消运行", danger: true }
+    );
+  } else if (status === "pause_requested") {
+    actions.push({ action: "cancel", label: "取消运行", danger: true });
+  } else if (canContinueBudgetRun) {
+    actions.push({ action: "start", label: "追加预算后续跑" });
+  } else if ([
+    "cancelled",
+    "succeeded",
+    "succeeded_empty",
+    "partial_success",
+    "failed"
+  ].includes(status) && planStatus === "approved") {
+    actions.push({ action: "start", label: "再次运行" });
+  }
+  if (actions.length === 0) {
+    if (status === "budget_exhausted") {
+      return `
+        <div class="replica-acquisition-run-note" role="note">
+          预算已用完，请先调整预算并重新审批后再续跑。
+        </div>
+      `;
+    }
+    if (status === "cancel_requested") {
+      return `
+        <div class="replica-acquisition-run-note" role="status">
+          取消请求已提交，系统正在安全停止当前运行。
+        </div>
+      `;
+    }
+    return "";
+  }
+  return `
+    <div class="replica-acquisition-run-controls" data-run-status="${escapeHtml(status ?? "not_started")}">
+      <label>
+        <span>操作原因</span>
+        <input name="runControlReason" maxlength="2000" value="${escapeHtml(reason)}" placeholder="暂停、继续或取消时请填写原因">
+      </label>
+      <div>${actions.map(({ action, label, danger }) => `
+        <button
+          type="button"
+          class="${danger ? "is-danger" : ""}"
+          data-acquisition-detail-action="run-control"
+          data-acquisition-run-action="${action}"
+          ${busy ? "disabled" : ""}
+        >${busy ? "正在处理…" : label}</button>
+      `).join("")}</div>
+    </div>
+  `;
+}
+
+function renderPlanOverview(
+  detail: AcquisitionTaskDetail,
+  state: AcquisitionDetailCenterState
+): string {
   const plan = record(detail.plan) ?? {};
   const payload = record(plan.payload) ?? plan;
   const icp = record(payload.icp) ?? {};
@@ -268,7 +355,14 @@ function renderPlanOverview(detail: AcquisitionTaskDetail): string {
     }).join("");
 
   const runHtml = latestRun === null
-    ? `<div class="replica-acquisition-run-empty"><strong>尚未运行</strong><span>计划已保存，但还没有真实运行记录。</span></div>`
+    ? `<div class="replica-acquisition-run-empty"><strong>尚未运行</strong><span>计划已保存，但还没有真实运行记录。</span></div>
+      ${renderRunControls(
+        String(plan.status ?? "draft"),
+        plan.version,
+        null,
+        state.runControlBusy === true,
+        state.runControlReason ?? ""
+      )}`
     : `
       <div class="replica-acquisition-run-summary">
         <strong>${escapeHtml(readableLabel(latestRun.status, RUN_STATUS_LABELS))}</strong>
@@ -277,6 +371,13 @@ function renderPlanOverview(detail: AcquisitionTaskDetail): string {
         <span>${finiteNumber(runBudget.results)} 条结果</span>
         <span>${finiteNumber(runBudget.durationSeconds)} 秒</span>
       </div>
+      ${renderRunControls(
+        String(plan.status ?? "draft"),
+        plan.version,
+        latestRun,
+        state.runControlBusy === true,
+        state.runControlReason ?? ""
+      )}
     `;
 
   return `
@@ -696,7 +797,7 @@ export function renderAcquisitionDetailCenter(
 ): string {
   const statusMessage = renderStateMessage(state);
   const content = statusMessage ?? (state.mode === "plan"
-    ? renderPlanOverview(state.detail as AcquisitionTaskDetail)
+    ? renderPlanOverview(state.detail as AcquisitionTaskDetail, state)
     : renderCandidatePanel(state));
   return `
     <section

@@ -1,6 +1,8 @@
 import {
   createAcquisitionDetailApi,
   type AcquisitionDetailApi,
+  type AcquisitionRunControlAction,
+  type AcquisitionRunWithEtag,
   type CandidateReviewAction
 } from "./detail-center-api";
 import {
@@ -28,6 +30,8 @@ export interface AcquisitionDetailCenterController {
   switchMode(mode: AcquisitionDetailCenterMode): void;
   selectCandidate(candidateId: string): Promise<void>;
   loadMoreCandidates(): Promise<void>;
+  startRun(reason?: string): Promise<void>;
+  controlRun(action: AcquisitionRunControlAction, reason: string): Promise<void>;
   reviewCandidate(
     action: AcquisitionCandidateReviewAction,
     reason?: string
@@ -42,6 +46,14 @@ interface MutationContext {
   planId: string | null;
   candidateId: string;
   mode: AcquisitionDetailCenterMode;
+}
+
+interface RunMutationContext {
+  serial: number;
+  requestSerial: number;
+  planId: string;
+  runId: string | null;
+  action: "start" | AcquisitionRunControlAction;
 }
 
 interface DetailOpenRequest {
@@ -186,14 +198,18 @@ export function createAcquisitionDetailCenterController(
     candidateDetail: null,
     message: null,
     error: null,
-    loadingMoreCandidates: false
+    loadingMoreCandidates: false,
+    runControlBusy: false,
+    runControlReason: ""
   };
   let disposed = false;
   let requestSerial = 0;
   let candidateSerial = 0;
   let mutationSerial = 0;
+  let runMutationSerial = 0;
   let currentPlanId: string | null = null;
   let mutating = false;
+  let runMutating = false;
   let idlePromise = Promise.resolve();
   let root = options.root
     ?? (typeof document === "undefined"
@@ -281,6 +297,12 @@ export function createAcquisitionDetailCenterController(
     mutating = false;
   }
 
+  function invalidateRunMutation(): void {
+    runMutationSerial += 1;
+    runMutating = false;
+    state.runControlBusy = false;
+  }
+
   function beginMutation(candidateId: string): MutationContext {
     mutating = true;
     return {
@@ -299,6 +321,87 @@ export function createAcquisitionDetailCenterController(
       && context.planId === currentPlanId
       && context.candidateId === state.selectedCandidateId
       && context.mode === state.mode;
+  }
+
+  function beginRunMutation(
+    planId: string,
+    action: RunMutationContext["action"],
+    runId: string | null
+  ): RunMutationContext {
+    runMutating = true;
+    state.runControlBusy = true;
+    return {
+      serial: ++runMutationSerial,
+      requestSerial,
+      planId,
+      runId,
+      action
+    };
+  }
+
+  function runMutationIsCurrent(context: RunMutationContext): boolean {
+    return !disposed
+      && context.serial === runMutationSerial
+      && context.requestSerial === requestSerial
+      && context.planId === currentPlanId;
+  }
+
+  function applyRunResult(result: AcquisitionRunWithEtag): void {
+    if (!state.detail) return;
+    const run = result.run;
+    const runChanged = state.detail.latestRun?.id !== run.id;
+    state.detail = {
+      ...state.detail,
+      latestRun: {
+        id: run.id,
+        status: run.status,
+        updatedAt: run.updatedAt,
+        completedAt: run.completedAt,
+        evidenceCount: run.evidenceCount,
+        consumedBudget: { ...run.consumedBudget },
+        etag: result.etag ?? run.etag,
+        planVersion: run.planVersion
+      },
+      ...(runChanged ? { shards: [], presentation: null } : {})
+    };
+  }
+
+  async function refreshAfterRunMutation(
+    context: RunMutationContext,
+    result: AcquisitionRunWithEtag,
+    completedMessage: string
+  ): Promise<void> {
+    if (!runMutationIsCurrent(context)) return;
+    state.runControlReason = "";
+    applyRunResult(result);
+    state.error = null;
+    state.message = `${completedMessage}，正在刷新任务状态…`;
+    render();
+    const eventDetail = {
+      planId: context.planId,
+      action: context.action,
+      runId: result.run.id
+    };
+    eventTarget.dispatchEvent(customEvent(
+      "goodjob:acquisition-refresh-requested",
+      eventDetail
+    ));
+    eventTarget.dispatchEvent(customEvent(
+      "goodjob:acquisition-notify",
+      { message: completedMessage }
+    ));
+    try {
+      const detail = await api.getTask(context.planId);
+      if (!runMutationIsCurrent(context)) return;
+      state.detail = detail;
+      state.message = completedMessage;
+      state.error = null;
+    } catch (error) {
+      if (!runMutationIsCurrent(context)) return;
+      state.message = completedMessage;
+      state.error = `${completedMessage}，但详情刷新失败：${errorText(error)}`;
+    }
+    render();
   }
 
   async function loadCandidateSnapshot(
@@ -421,6 +524,7 @@ export function createAcquisitionDetailCenterController(
 
     open(mode, planId) {
       invalidateMutation();
+      invalidateRunMutation();
       const serial = ++requestSerial;
       currentPlanId = planId;
       showRoot();
@@ -431,6 +535,7 @@ export function createAcquisitionDetailCenterController(
       state.candidateDetail = null;
       state.message = null;
       state.error = null;
+      state.runControlReason = "";
       candidateSerial += 1;
       render();
       return remember((async () => {
@@ -459,6 +564,7 @@ export function createAcquisitionDetailCenterController(
 
     close() {
       invalidateMutation();
+      invalidateRunMutation();
       requestSerial += 1;
       candidateSerial += 1;
       hideRoot();
@@ -583,6 +689,176 @@ export function createAcquisitionDetailCenterController(
           state.error = error instanceof Error ? error.message : "更多候选加载失败";
           render();
           throw error;
+        }
+      })());
+    },
+
+    startRun(reason) {
+      const detail = state.detail;
+      const planId = currentPlanId;
+      const planStatus = requestedPlanId(detail?.plan.status);
+      const latestRun = detail?.latestRun ?? null;
+      const latestStatus = latestRun?.status ?? null;
+      const normalizedReason = (
+        reason === undefined ? state.runControlReason ?? "" : reason
+      ).trim();
+      const planVersion = typeof detail?.plan.version === "number"
+        && Number.isFinite(detail.plan.version)
+        ? detail.plan.version
+        : null;
+      const runPlanVersion = typeof latestRun?.planVersion === "number"
+        && Number.isFinite(latestRun.planVersion)
+        ? latestRun.planVersion
+        : null;
+      const isBudgetContinuation = latestStatus === "budget_exhausted"
+        && planVersion !== null
+        && runPlanVersion !== null
+        && planVersion > runPlanVersion;
+      const restartableStatuses = new Set([
+        "cancelled",
+        "succeeded",
+        "succeeded_empty",
+        "partial_success",
+        "failed"
+      ]);
+      if (!detail || !planId) {
+        return rejectValidation("请先打开一个获客计划");
+      }
+      if (planStatus !== "approved") {
+        return rejectValidation("只有已人工审批的计划可以启动运行");
+      }
+      if (latestStatus === "budget_exhausted" && !isBudgetContinuation) {
+        return rejectValidation("预算已用完，请先调整预算并重新审批后再续跑");
+      }
+      if (latestStatus !== null
+        && !restartableStatuses.has(latestStatus)
+        && !isBudgetContinuation) {
+        return rejectValidation("当前运行尚未结束，不能再次启动");
+      }
+      if (runMutating) return rejectValidation("另一项运行操作正在进行");
+
+      const input = {
+        ...(isBudgetContinuation && latestRun
+          ? { parentRunId: latestRun.id }
+          : {}),
+        ...(normalizedReason ? { reason: normalizedReason } : {})
+      };
+      const idempotency = stableKey("start-run", { planId, ...input });
+      const context = beginRunMutation(planId, "start", latestRun?.id ?? null);
+      state.runControlReason = normalizedReason;
+      state.error = null;
+      state.message = isBudgetContinuation
+        ? "正在按新预算继续运行…"
+        : latestRun ? "正在创建新的独立运行…" : "正在启动获客运行…";
+      render();
+      return remember((async () => {
+        try {
+          const result = await api.createRun(planId, input, idempotency.value);
+          pendingIdempotencyKeys.delete(idempotency.id);
+          await refreshAfterRunMutation(
+            context,
+            result,
+            isBudgetContinuation
+              ? "追加预算后的运行已启动"
+              : latestRun ? "新的独立运行已启动" : "获客运行已启动"
+          );
+        } catch (error) {
+          if (runMutationIsCurrent(context)) {
+            state.error = errorText(error);
+            state.message = null;
+            render();
+          }
+          throw error;
+        } finally {
+          if (context.serial === runMutationSerial) {
+            runMutating = false;
+            state.runControlBusy = false;
+            render();
+          }
+        }
+      })());
+    },
+
+    controlRun(action, reason) {
+      const detail = state.detail;
+      const planId = currentPlanId;
+      const latestRun = detail?.latestRun ?? null;
+      const normalizedReason = reason.trim();
+      const allowedActions: AcquisitionRunControlAction[] = [
+        "pause",
+        "resume",
+        "cancel"
+      ];
+      if (!allowedActions.includes(action)) {
+        return rejectValidation("运行控制动作无效");
+      }
+      if (!detail || !planId || !latestRun) {
+        return rejectValidation("当前计划还没有可控制的运行");
+      }
+      if (!normalizedReason) {
+        return rejectValidation("暂停、继续或取消运行必须填写操作理由");
+      }
+      const status = latestRun.status;
+      const actionAllowed = action === "pause"
+        ? status === "queued" || status === "running"
+        : action === "resume"
+          ? status === "paused"
+          : ["queued", "running", "pause_requested", "paused"].includes(status);
+      if (!actionAllowed) {
+        return rejectValidation(
+          action === "pause"
+            ? "只有排队中或运行中的任务可以暂停"
+            : action === "resume"
+              ? "只有已暂停的任务可以继续"
+              : "当前运行状态不能取消"
+        );
+      }
+      const etag = typeof latestRun.etag === "string" ? latestRun.etag.trim() : "";
+      if (!etag) {
+        return rejectValidation("运行 ETag 缺失，请刷新详情后重试");
+      }
+      if (action === "cancel" && !ask("确认取消当前获客运行？")) {
+        return Promise.resolve();
+      }
+      if (runMutating) return rejectValidation("另一项运行操作正在进行");
+
+      const context = beginRunMutation(planId, action, latestRun.id);
+      state.runControlReason = normalizedReason;
+      const progressLabel = action === "pause"
+        ? "正在请求安全暂停…"
+        : action === "resume"
+          ? "正在继续运行…"
+          : "正在取消运行…";
+      const completedLabel = action === "pause"
+        ? "暂停请求已提交"
+        : action === "resume"
+          ? "运行已继续"
+          : "取消请求已提交";
+      state.error = null;
+      state.message = progressLabel;
+      render();
+      return remember((async () => {
+        try {
+          const result = await api.controlRun(
+            latestRun.id,
+            action,
+            etag,
+            normalizedReason
+          );
+          await refreshAfterRunMutation(context, result, completedLabel);
+        } catch (error) {
+          if (runMutationIsCurrent(context)) {
+            state.error = errorText(error);
+            state.message = null;
+            render();
+          }
+          throw error;
+        } finally {
+          if (context.serial === runMutationSerial) {
+            runMutating = false;
+            state.runControlBusy = false;
+            render();
+          }
         }
       })());
     },
@@ -717,6 +993,7 @@ export function createAcquisitionDetailCenterController(
       if (disposed) return;
       disposed = true;
       invalidateMutation();
+      invalidateRunMutation();
       requestSerial += 1;
       candidateSerial += 1;
       pendingIdempotencyKeys.clear();
@@ -775,6 +1052,21 @@ export function createAcquisitionDetailCenterController(
         '[name="reviewReason"]'
       );
       consume(controller.reviewCandidate(reviewAction, reasonControl?.value ?? ""));
+    } else if (action === "run-control") {
+      event.preventDefault();
+      const runAction = target.dataset.acquisitionRunAction;
+      const reasonControl = root?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+        '[name="runControlReason"]'
+      );
+      const reason = reasonControl?.value ?? "";
+      if (runAction === "start") {
+        consume(controller.startRun(reason));
+      } else {
+        consume(controller.controlRun(
+          runAction as AcquisitionRunControlAction,
+          reason
+        ));
+      }
     }
   }
 
@@ -798,6 +1090,7 @@ export function createAcquisitionDetailCenterController(
 
   function onRootClose(): void {
     invalidateMutation();
+    invalidateRunMutation();
     requestSerial += 1;
     candidateSerial += 1;
     finishClose();

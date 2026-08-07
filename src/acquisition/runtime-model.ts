@@ -8,6 +8,7 @@ export type AcquisitionDiscoveryMethod =
 export type AcquisitionRunStatus =
   | "queued"
   | "running"
+  | "pause_requested"
   | "paused"
   | "cancel_requested"
   | "cancelled"
@@ -85,6 +86,7 @@ export interface AcquisitionOverviewModel {
 const RUN_STATUS_LABELS: Record<AcquisitionRunStatus, string> = {
   queued: "排队中",
   running: "正在运行",
+  pause_requested: "正在暂停",
   paused: "已暂停",
   cancel_requested: "正在取消",
   cancelled: "已取消",
@@ -104,6 +106,7 @@ const DISCOVERY_METHOD_LABELS: Record<AcquisitionDiscoveryMethod, string> = {
 const RUNNING_STATUSES = new Set<AcquisitionRunStatus>([
   "queued",
   "running",
+  "pause_requested",
   "cancel_requested"
 ]);
 

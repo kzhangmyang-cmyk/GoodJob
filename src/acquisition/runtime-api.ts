@@ -8,6 +8,7 @@ export interface AcquisitionTaskDetail {
   plan: Record<string, unknown>;
   latestRun: (AcquisitionTaskSummary["latestRun"] & {
     etag?: string;
+    planVersion?: number;
   }) | null;
   shards: Array<Record<string, unknown>>;
   presentation: {
