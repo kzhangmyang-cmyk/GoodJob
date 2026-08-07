@@ -4644,6 +4644,19 @@ async function saveDeal() {
     body: JSON.stringify(payload)
   });
   closeModal();
+  if (!dealId && selectedBinding) {
+    document.dispatchEvent(new CustomEvent(
+      "goodjob:acquisition-deal-created",
+      {
+        detail: {
+          dealId: result.deal.id,
+          customerId,
+          handoffId: selectedBinding.handoffId,
+          leadId: selectedBinding.leadId
+        }
+      }
+    ));
+  }
   await refreshDealsData();
   void refreshDashboardOnly();
   toast(dealId ? "商机已更新" : "商机已新增");

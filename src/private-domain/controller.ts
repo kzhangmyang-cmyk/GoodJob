@@ -123,6 +123,10 @@ export function createPrivateDomainController(
       controller.deactivate();
       main?.removeEventListener("click", onClick);
       inspector?.removeEventListener("click", onClick);
+      eventTarget.removeEventListener(
+        "goodjob:acquisition-deal-created",
+        onAcquisitionDealCreated
+      );
     }
   };
 
@@ -148,8 +152,22 @@ export function createPrivateDomainController(
     }
   }
 
+  function onAcquisitionDealCreated(event: Event) {
+    if (!active || disposed) return;
+    const detail = (event as CustomEvent<{ customerId?: unknown }>).detail;
+    const customerId = typeof detail?.customerId === "string"
+      ? detail.customerId.trim()
+      : "";
+    if (!customerId) return;
+    void controller.open(customerId).catch(() => undefined);
+  }
+
   main?.addEventListener("click", onClick);
   inspector?.addEventListener("click", onClick);
+  eventTarget.addEventListener(
+    "goodjob:acquisition-deal-created",
+    onAcquisitionDealCreated
+  );
   render();
   return controller;
 }

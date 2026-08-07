@@ -560,6 +560,18 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     body: Record<string, unknown>;
   }> = [];
   const dealRows: Array<Record<string, unknown>> = [];
+  const acquisitionBindings = [{
+    handoffId: "ach-ui-1",
+    leadId: "lead-ui-1",
+    candidateId: candidate.id,
+    createdAt: "2026-08-07T08:10:00.000Z"
+  }, {
+    handoffId: "ach-ui-2",
+    leadId: "lead-ui-2",
+    candidateId: "candidate-ui-2",
+    createdAt: "2026-08-07T08:11:00.000Z"
+  }];
+  const consumedHandoffIds = new Set<string>();
   let failNextCustomerRequest = false;
   let pendingCustomerGate: {
     started(): void;
@@ -614,17 +626,8 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
           grade: "A",
           nextReminder: "2026-08-09T10:30:00.000Z",
           wecomBound: false,
-          acquisitionBindings: [{
-            handoffId: "ach-ui-1",
-            leadId: "lead-ui-1",
-            candidateId: candidate.id,
-            createdAt: "2026-08-07T08:10:00.000Z"
-          }, {
-            handoffId: "ach-ui-2",
-            leadId: "lead-ui-2",
-            candidateId: "candidate-ui-2",
-            createdAt: "2026-08-07T08:11:00.000Z"
-          }],
+          acquisitionBindings: acquisitionBindings.filter((binding) =>
+            !consumedHandoffIds.has(binding.handoffId)),
           activities: [{
             id: "activity-ui-1",
             customerId: "customer-ui-1",
@@ -671,6 +674,12 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     const body = request.postDataJSON() as Record<string, unknown>;
     dealRequests.push({ method: request.method(), body });
     if (url.pathname === "/api/deals" && request.method() === "POST") {
+      const acquisitionBinding = body.acquisitionBinding as {
+        handoffId?: unknown;
+      } | undefined;
+      if (typeof acquisitionBinding?.handoffId === "string") {
+        consumedHandoffIds.add(acquisitionBinding.handoffId);
+      }
       const deal = {
         id: `deal-ui-${dealRows.length + 1}`,
         ...body,
@@ -1019,7 +1028,11 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
   await page.locator("#dealAcquisitionBindingInput").selectOption("ach-ui-1");
   await page.locator("#dealTitleInput").fill("AI 获客绑定商机");
   await page.locator("#dealProductInput").fill("GoodJob CRM");
+  const firstBindingRefresh = page.waitForResponse((response) =>
+    response.url().includes("/api/customers?scope=mine")
+    && response.status() === 200);
   await page.locator("#saveDealButton").click();
+  await firstBindingRefresh;
   await expect.poll(() => dealRequests.length).toBe(1);
   expect(dealRequests[0]).toEqual({
     method: "POST",
@@ -1032,6 +1045,19 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
       }
     })
   });
+
+  await expect(createRealDeal).toBeVisible();
+  await createRealDeal.click();
+  await expect(page.locator("#dealAcquisitionBindingInput")).toHaveValue("ach-ui-2");
+  await page.locator("#dealTitleInput").fill("AI 获客绑定商机二");
+  await page.locator("#dealProductInput").fill("GoodJob CRM");
+  const finalBindingRefresh = page.waitForResponse((response) =>
+    response.url().includes("/api/customers?scope=mine")
+    && response.status() === 200);
+  await page.locator("#saveDealButton").click();
+  await finalBindingRefresh;
+  await expect.poll(() => dealRequests.length).toBe(2);
+  await expect(createRealDeal).toHaveCount(0);
 
   failNextCustomerRequest = true;
   const failedAuthorityRefresh = page.waitForResponse((response) =>

@@ -147,3 +147,87 @@ const todo = {
   assert.equal(inspector.innerHTML, "<p>看板摘要</p>");
   controller.destroy();
 }
+
+{
+  const eventTarget = new EventTarget();
+  const main = fakeElement();
+  const inspector = fakeElement();
+  const binding = {
+    handoffId: "handoff-1",
+    leadId: "lead-1",
+    candidateId: "candidate-1",
+    createdAt: "2026-08-08T08:00:00.000Z"
+  };
+  let customerReads = 0;
+  const controller = createPrivateDomainController({
+    eventTarget,
+    api: {
+      async getCustomers() {
+        customerReads += 1;
+        return [{
+          ...customer,
+          acquisitionBindings: customerReads === 1 ? [binding] : []
+        }];
+      },
+      async getTodos() {
+        return [todo];
+      }
+    },
+    main: main as unknown as HTMLElement,
+    inspector: inspector as unknown as HTMLElement
+  });
+  await controller.open(customer.id);
+  assert.match(inspector.innerHTML, /创建真实商机/);
+
+  eventTarget.dispatchEvent(new CustomEvent(
+    "goodjob:acquisition-deal-created",
+    {
+      detail: {
+        dealId: "deal-1",
+        customerId: customer.id,
+        handoffId: binding.handoffId,
+        leadId: binding.leadId
+      }
+    }
+  ));
+  await controller.whenIdle();
+
+  assert.equal(customerReads, 2);
+  assert.equal(controller.getState().selectedCustomerId, customer.id);
+  assert.doesNotMatch(inspector.innerHTML, /创建真实商机/);
+  controller.destroy();
+}
+
+{
+  const eventTarget = new EventTarget();
+  let customerReads = 0;
+  const controller = createPrivateDomainController({
+    eventTarget,
+    api: {
+      async getCustomers() {
+        customerReads += 1;
+        return [customer];
+      },
+      async getTodos() {
+        return [todo];
+      }
+    }
+  });
+  await controller.open(customer.id);
+  controller.deactivate();
+  eventTarget.dispatchEvent(new CustomEvent(
+    "goodjob:acquisition-deal-created",
+    { detail: { customerId: customer.id } }
+  ));
+  await Promise.resolve();
+  assert.equal(customerReads, 1);
+
+  await controller.open(customer.id);
+  controller.destroy();
+  eventTarget.dispatchEvent(new CustomEvent(
+    "goodjob:acquisition-deal-created",
+    { detail: { customerId: customer.id } }
+  ));
+  await Promise.resolve();
+  assert.equal(customerReads, 2);
+}
