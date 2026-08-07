@@ -106,7 +106,7 @@ assert.deepEqual(
     "draft_connection_strategy",
     "list_priority_candidates",
     "create_review_task",
-    "record_outcome"
+    "get_acquisition_performance"
   ]
 );
 assert.equal(toolExecutions.length, 1);

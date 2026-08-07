@@ -37,7 +37,7 @@ assert.equal(
 );
 assert.equal(
   ACQUISITION_MODEL_SCHEMA_VERSION,
-  "acquisition-model-schema-bundle.v4"
+  "acquisition-model-schema-bundle.v5"
 );
 assert.equal(
   ACQUISITION_PREVIOUS_MODEL_PROMPT_VERSION,

@@ -201,6 +201,88 @@ components:
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/OutcomeFeedback' } }
         nextCursor: { type: [string, 'null'] }
+    AcquisitionPerformance:
+      type: object
+      additionalProperties: false
+      required: [counts, rates, valuesByCurrency, cost, roi, dataQuality, briefingFacts]
+      properties:
+        counts:
+          type: object
+          additionalProperties: false
+          required: [discovered, highIntent, approved, converted, contacted, quoted, won, lost]
+          properties:
+            discovered: { type: integer, minimum: 0 }
+            highIntent: { type: integer, minimum: 0 }
+            approved: { type: integer, minimum: 0 }
+            converted: { type: integer, minimum: 0 }
+            contacted: { type: integer, minimum: 0 }
+            quoted: { type: integer, minimum: 0 }
+            won: { type: integer, minimum: 0 }
+            lost: { type: integer, minimum: 0 }
+        rates:
+          type: object
+          additionalProperties: false
+          required: [highIntentRate, approvalRate, crmConversionRate, contactRate, quoteRate, winRate]
+          properties:
+            highIntentRate: { type: [number, 'null'], minimum: 0 }
+            approvalRate: { type: [number, 'null'], minimum: 0 }
+            crmConversionRate: { type: [number, 'null'], minimum: 0 }
+            contactRate: { type: [number, 'null'], minimum: 0 }
+            quoteRate: { type: [number, 'null'], minimum: 0 }
+            winRate: { type: [number, 'null'], minimum: 0 }
+        valuesByCurrency:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [currency, estimatedPipelineMinor, quotedMinor, wonContractMinor]
+            properties:
+              currency: { type: string, pattern: '^[A-Z]{3}$' }
+              estimatedPipelineMinor: { type: integer, minimum: 0 }
+              quotedMinor: { type: integer, minimum: 0 }
+              wonContractMinor: { type: integer, minimum: 0 }
+        cost:
+          type: object
+          additionalProperties: false
+          required: [status, executionCostMinor, currency, coverage]
+          properties:
+            status: { type: string, enum: [available, not_aggregatable] }
+            executionCostMinor: { type: [integer, 'null'], minimum: 0 }
+            currency: { type: [string, 'null'], pattern: '^[A-Z]{3}$' }
+            coverage: { type: string, enum: [recorded_api_execution_only] }
+        roi:
+          type: object
+          additionalProperties: false
+          required: [status, reason]
+          properties:
+            status: { type: string, enum: [not_computable] }
+            reason: { type: string, enum: [channel_cost_or_verified_margin_unavailable] }
+        dataQuality:
+          type: object
+          additionalProperties: false
+          required: [missingAttribution, missingFinancial, truncated, lastReconciledAt]
+          properties:
+            missingAttribution: { type: integer, minimum: 0 }
+            missingFinancial: { type: integer, minimum: 0 }
+            truncated: { type: boolean }
+            lastReconciledAt: { type: [string, 'null'], format: date-time }
+        briefingFacts:
+          type: object
+          additionalProperties: false
+          required: [headlines, risks, actions, metricIds]
+          properties:
+            headlines: { type: array, items: { $ref: '#/components/schemas/AcquisitionPerformanceFact' } }
+            risks: { type: array, items: { $ref: '#/components/schemas/AcquisitionPerformanceFact' } }
+            actions: { type: array, items: { $ref: '#/components/schemas/AcquisitionPerformanceFact' } }
+            metricIds: { type: array, items: { type: string } }
+    AcquisitionPerformanceFact:
+      type: object
+      additionalProperties: false
+      required: [metricId, text, evidenceRefs]
+      properties:
+        metricId: { type: string, minLength: 1 }
+        text: { type: string }
+        evidenceRefs: { type: array, items: { type: string } }
     CopilotMessagePagedResult:
       type: object
       additionalProperties: false
@@ -934,6 +1016,18 @@ paths:
       responses:
         <<: *acquisitionStandardResponses
         '200': { description: Outcome feedback, content: { application/json: { schema: { $ref: '#/components/schemas/OutcomeFeedbackPagedResult' } } } }
+  /api/v1/acquisition/performance:
+    get:
+      operationId: getAcquisitionPerformance
+      summary: Read acquisition funnel, currency-separated contract values, and owner briefing facts
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      parameters:
+        - { name: platform, in: query, required: false, schema: { type: string, enum: [douyin, web] } }
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Acquisition performance, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionPerformance' } } } }
   /api/v1/acquisition/copilot/sessions:
     post:
       operationId: createAcquisitionCopilotSession

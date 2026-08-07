@@ -21,7 +21,8 @@ export const ACQUISITION_AGENT_TOOL_NAMES = [
   "draft_connection_strategy",
   "list_priority_candidates",
   "create_review_task",
-  "record_outcome"
+  "record_outcome",
+  "get_acquisition_performance"
 ] as const;
 
 export type AcquisitionAgentToolName =
@@ -267,44 +268,82 @@ const TOOL_BLUEPRINTS: readonly ToolBlueprint[] = [
     executionMode: "sequential"
   },
   {
-    name: "record_outcome",
-    label: "记录获客结果",
-    description: "只在已审核动作存在可信执行凭证后记录结果，用于闭环优化；本工具不执行任何外部触达。",
+    name: "get_acquisition_performance",
+    label: "读取获客经营事实",
+    description: "只读取后端已确定计算的漏斗、分币种合同额、执行成本覆盖、ROI 可用性和简报事实；不写 CRM 或 Outcome，不补造数值。",
     parameters: Type.Object({
-      candidateId: Type.String({ minLength: 1, maxLength: 255 }),
-      reviewTaskId: Type.String({ minLength: 1, maxLength: 255 }),
-      outcome: Type.Union([
-        Type.Literal("contacted"),
-        Type.Literal("replied"),
-        Type.Literal("qualified"),
-        Type.Literal("converted"),
-        Type.Literal("won"),
-        Type.Literal("lost"),
-        Type.Literal("do_not_contact")
-      ]),
-      occurredAt: Type.String({
+      platform: Type.Optional(Type.Union([
+        Type.Literal("douyin"),
+        Type.Literal("web")
+      ])),
+      from: Type.String({
         minLength: 20,
         maxLength: 35,
         format: "date-time"
       }),
-      amountMinor: Type.Optional(Type.Integer({
-        minimum: 0,
-        maximum: Number.MAX_SAFE_INTEGER
-      })),
-      currency: Type.Optional(Type.String({
-        minLength: 3,
-        maxLength: 3,
-        pattern: "^[A-Z]{3}$"
-      })),
-      notes: Type.Optional(Type.String({ maxLength: 2000 }))
+      to: Type.String({
+        minLength: 20,
+        maxLength: 35,
+        format: "date-time"
+      })
     }, { additionalProperties: false }),
-    executionMode: "sequential"
+    executionMode: "parallel"
   }
 ];
+
+const LEGACY_RECORD_OUTCOME_BLUEPRINT: ToolBlueprint = {
+  name: "record_outcome",
+  label: "记录获客结果",
+  description: "只在已审核动作存在可信执行凭证后记录结果，用于闭环优化；本工具不执行任何外部触达。",
+  parameters: Type.Object({
+    candidateId: Type.String({ minLength: 1, maxLength: 255 }),
+    reviewTaskId: Type.String({ minLength: 1, maxLength: 255 }),
+    outcome: Type.Union([
+      Type.Literal("contacted"),
+      Type.Literal("replied"),
+      Type.Literal("qualified"),
+      Type.Literal("converted"),
+      Type.Literal("won"),
+      Type.Literal("lost"),
+      Type.Literal("do_not_contact")
+    ]),
+    occurredAt: Type.String({
+      minLength: 20,
+      maxLength: 35,
+      format: "date-time"
+    }),
+    amountMinor: Type.Optional(Type.Integer({
+      minimum: 0,
+      maximum: Number.MAX_SAFE_INTEGER
+    })),
+    currency: Type.Optional(Type.String({
+      minLength: 3,
+      maxLength: 3,
+      pattern: "^[A-Z]{3}$"
+    })),
+    notes: Type.Optional(Type.String({ maxLength: 2000 }))
+  }, { additionalProperties: false }),
+  executionMode: "sequential"
+};
 
 export function acquisitionAgentToolDefinitions():
 AcquisitionAgentToolDefinition[] {
   return TOOL_BLUEPRINTS.map((blueprint) => ({
+    name: blueprint.name,
+    description: blueprint.description,
+    parameters: structuredClone(
+      blueprint.parameters
+    ) as Record<string, unknown>
+  }));
+}
+
+export function legacyAcquisitionAgentToolDefinitions():
+AcquisitionAgentToolDefinition[] {
+  return [
+    ...TOOL_BLUEPRINTS.filter((blueprint) =>
+      blueprint.name !== "get_acquisition_performance"),
+    LEGACY_RECORD_OUTCOME_BLUEPRINT
+  ].map((blueprint) => ({
     name: blueprint.name,
     description: blueprint.description,
     parameters: structuredClone(

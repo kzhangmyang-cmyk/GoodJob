@@ -39,6 +39,9 @@ import {
   AcquisitionIndividualSignalIngestionService,
   type AcquisitionIndividualSignalIngestionPort
 } from "./acquisition-individual-signal-ingestion.js";
+import type {
+  AcquisitionPerformanceQueryService
+} from "./acquisition-performance-query.js";
 
 const TOOL_NAMES = new Set<string>(ACQUISITION_AGENT_TOOL_NAMES);
 const GRADE_RANK = { S: 0, A: 1, B: 2, C: 3, D: 4 } as const;
@@ -387,6 +390,7 @@ export interface ProductionAcquisitionAgentToolExecutorOptions {
   toolResults: AcquisitionToolResultLedgerPort;
   individualSignals?: AcquisitionIndividualSignalIngestionPort;
   judgments?: AcquisitionJudgmentPort;
+  performance?: Pick<AcquisitionPerformanceQueryService, "get">;
   now?: () => string;
   maxEvidenceAgeDays?: number;
 }
@@ -490,6 +494,20 @@ const schemas = {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         message: "amount and currency must be provided together"
+      });
+    }
+  }),
+  get_acquisition_performance: z.object({
+    platform: z.enum(["douyin", "web"]).optional(),
+    from: z.string().datetime({ offset: true }),
+    to: z.string().datetime({ offset: true })
+  }).strict().superRefine((value, context) => {
+    const from = new Date(value.from).getTime();
+    const to = new Date(value.to).getTime();
+    if (from > to || to - from > 90 * 24 * 60 * 60 * 1_000) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "performance window must be ordered and no longer than 90 days"
       });
     }
   })
@@ -1156,6 +1174,7 @@ implements AcquisitionAgentToolExecutor {
   private readonly toolResults: AcquisitionToolResultLedgerPort;
   private readonly individualSignals: AcquisitionIndividualSignalIngestionPort;
   private readonly judgments?: AcquisitionJudgmentPort;
+  private readonly performance?: Pick<AcquisitionPerformanceQueryService, "get">;
   private readonly now: () => string;
   private readonly maxEvidenceAgeDays: number;
 
@@ -1174,6 +1193,7 @@ implements AcquisitionAgentToolExecutor {
         candidateDirectory: options.candidateDirectory
       });
     this.judgments = options.judgments;
+    this.performance = options.performance;
     this.now = options.now ?? (() => new Date().toISOString());
     this.maxEvidenceAgeDays = options.maxEvidenceAgeDays ?? 90;
     if (!Number.isInteger(this.maxEvidenceAgeDays)
@@ -1260,6 +1280,12 @@ implements AcquisitionAgentToolExecutor {
         return this.recordOutcome(input, payload as z.infer<
           typeof schemas.record_outcome
         >);
+      case "get_acquisition_performance":
+        if (!this.performance) throw toolError("TOOL_EXECUTION_FAILED");
+        return this.performance.get({
+          ownerId: input.identity.ownerId,
+          teamId: input.identity.teamId
+        }, payload as z.infer<typeof schemas.get_acquisition_performance>);
       default:
         throw toolError("UNKNOWN_TOOL");
     }

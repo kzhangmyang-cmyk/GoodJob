@@ -20,7 +20,7 @@ const EXPECTED_TOOLS = [
   "draft_connection_strategy",
   "list_priority_candidates",
   "create_review_task",
-  "record_outcome"
+  "get_acquisition_performance"
 ] as const;
 
 function byName(tools: AgentTool[], name: string) {
@@ -33,7 +33,8 @@ const calls: AcquisitionToolExecutionInput[] = [];
 const executor: AcquisitionAgentToolExecutor = {
   async execute(input) {
     calls.push(input);
-    if (input.toolName === "record_outcome" && input.payload.forceFailure) {
+    if (input.toolName === "get_acquisition_performance"
+      && input.payload.from === "2026-07-24T00:00:00.000Z") {
       const error = new Error("OUTCOME_REJECTED secret=should-not-leak");
       error.name = "AcquisitionToolExecutionError";
       throw error;
@@ -71,7 +72,7 @@ const tools = createAcquisitionAgentTools({
 assert.deepEqual(
   tools.map((tool) => tool.name),
   EXPECTED_TOOLS,
-  "Pi must receive only the ten acquisition tools"
+  "Pi must receive only the ten acquisition tools, with Outcome writes replaced by read-only performance"
 );
 assert.equal(
   tools.some((tool) => ["bash", "shell", "read_file", "write_file", "database"].includes(tool.name)),
@@ -127,16 +128,20 @@ assert.equal(
   "sequential"
 );
 assert.equal(
-  byName(tools, "record_outcome").executionMode,
-  "sequential"
+  byName(tools, "get_acquisition_performance").executionMode,
+  "parallel"
 );
-const outcomeProperties = (
-  byName(tools, "record_outcome").parameters as {
+assert.equal(tools.some((tool) => tool.name === "record_outcome"), false);
+const performanceProperties = (
+  byName(tools, "get_acquisition_performance").parameters as {
     properties?: Record<string, unknown>;
   }
 ).properties ?? {};
-assert.equal("amountMinor" in outcomeProperties, true);
-assert.equal("amount" in outcomeProperties, false);
+assert.deepEqual(Object.keys(performanceProperties).sort(), [
+  "from",
+  "platform",
+  "to"
+]);
 
 const evidenceResult = await byName(tools, "get_candidate_evidence").execute(
   "call-evidence-1",
@@ -261,15 +266,12 @@ await assert.rejects(
 assert.equal(calls.length, beforeAbortCalls);
 
 await assert.rejects(
-  () => byName(tools, "record_outcome").execute(
+  () => byName(tools, "get_acquisition_performance").execute(
     "call-failure-1",
     {
-      candidateId: "candidate-a",
-      reviewTaskId: "review-a",
-      outcome: "won",
-      occurredAt: "2026-07-24T00:00:00.000Z",
-      forceFailure: true
-    } as never,
+      from: "2026-07-24T00:00:00.000Z",
+      to: "2026-07-24T01:00:00.000Z"
+    },
     undefined
   ),
   /OUTCOME_REJECTED/

@@ -4,7 +4,8 @@ import {
   type ToolDefinition
 } from "./model-providers/gateway.js";
 import {
-  acquisitionAgentToolDefinitions
+  acquisitionAgentToolDefinitions,
+  legacyAcquisitionAgentToolDefinitions
 } from "./acquisition-pi-tools.js";
 
 export const ACQUISITION_PI_PROMPT_ID = "acquisition.pi.turn.v1";
@@ -34,6 +35,11 @@ export const ACQUISITION_PREVIOUS_MODEL_SCHEMA_VERSION =
 export const ACQUISITION_MODEL_PROMPT_VERSION =
   "acquisition-model-prompt-bundle.v5";
 export const ACQUISITION_MODEL_SCHEMA_VERSION =
+  "acquisition-model-schema-bundle.v5";
+
+const ACQUISITION_RETIRED_MODEL_PROMPT_VERSION =
+  "acquisition-model-prompt-bundle.v5";
+const ACQUISITION_RETIRED_MODEL_SCHEMA_VERSION =
   "acquisition-model-schema-bundle.v4";
 
 const MAX_FINAL_ANSWER_CHARS = 100_000;
@@ -713,13 +719,17 @@ export function createAcquisitionModelContentBundle(
 }
 
 export const ACQUISITION_LEGACY_MODEL_CONTENT_BUNDLE =
-  modelContentBundle({}, false, "battle-card.v1");
+  modelContentBundle({
+    businessTools: legacyAcquisitionAgentToolDefinitions()
+  }, false, "battle-card.v1");
 
 export const ACQUISITION_LEGACY_MODEL_CONTENT_HASHES =
   modelContentBundleHashes(ACQUISITION_LEGACY_MODEL_CONTENT_BUNDLE);
 
 export const ACQUISITION_PREVIOUS_MODEL_CONTENT_BUNDLE =
-  modelContentBundle({}, true, "battle-card.v1");
+  modelContentBundle({
+    businessTools: legacyAcquisitionAgentToolDefinitions()
+  }, true, "battle-card.v1");
 
 export const ACQUISITION_PREVIOUS_MODEL_CONTENT_HASHES =
   modelContentBundleHashes(ACQUISITION_PREVIOUS_MODEL_CONTENT_BUNDLE);
@@ -729,6 +739,13 @@ export const ACQUISITION_MODEL_CONTENT_BUNDLE =
 
 export const ACQUISITION_MODEL_CONTENT_HASHES =
   modelContentBundleHashes(ACQUISITION_MODEL_CONTENT_BUNDLE);
+
+const ACQUISITION_RETIRED_MODEL_CONTENT_BUNDLE =
+  modelContentBundle({
+    businessTools: legacyAcquisitionAgentToolDefinitions()
+  }, true, "battle-card.v2");
+const ACQUISITION_RETIRED_MODEL_CONTENT_HASHES =
+  modelContentBundleHashes(ACQUISITION_RETIRED_MODEL_CONTENT_BUNDLE);
 
 const ACQUISITION_MODEL_CONTENT_REGISTRY = Object.freeze([{
   promptVersion: ACQUISITION_LEGACY_MODEL_PROMPT_VERSION,
@@ -740,6 +757,11 @@ const ACQUISITION_MODEL_CONTENT_REGISTRY = Object.freeze([{
   schemaVersion: ACQUISITION_PREVIOUS_MODEL_SCHEMA_VERSION,
   ...ACQUISITION_PREVIOUS_MODEL_CONTENT_HASHES,
   bundle: ACQUISITION_PREVIOUS_MODEL_CONTENT_BUNDLE
+}, {
+  promptVersion: ACQUISITION_RETIRED_MODEL_PROMPT_VERSION,
+  schemaVersion: ACQUISITION_RETIRED_MODEL_SCHEMA_VERSION,
+  ...ACQUISITION_RETIRED_MODEL_CONTENT_HASHES,
+  bundle: ACQUISITION_RETIRED_MODEL_CONTENT_BUNDLE
 }, {
   promptVersion: ACQUISITION_MODEL_PROMPT_VERSION,
   schemaVersion: ACQUISITION_MODEL_SCHEMA_VERSION,

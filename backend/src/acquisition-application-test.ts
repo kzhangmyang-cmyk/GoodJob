@@ -440,31 +440,6 @@ function fakeGateway(
       };
       const serialized = JSON.stringify(dynamic.conversation ?? []);
       const asksForUnsafeOutcome = serialized.includes("未经可信执行");
-      const hasToolResult = serialized.includes("toolResult");
-      if (asksForUnsafeOutcome && !hasToolResult) {
-        outcomeToolCalls += 1;
-        const candidateId =
-          serialized.match(/candidate[-_][A-Za-z0-9_-]+/u)?.[0]
-          ?? "missing-candidate";
-        return {
-          toolCalls: [{
-            id: "record-outcome-without-receipt",
-            name: "record_outcome",
-            arguments: {
-              candidateId,
-              reviewTaskId: "missing-review-task",
-              outcome: "contacted",
-              occurredAt: "2026-07-24T01:00:00.000Z"
-            }
-          }],
-          usage: {
-            inputTokens: 20,
-            outputTokens: 10,
-            reasoningTokens: 0
-          },
-          providerRequestId: "fake-model-request-tool"
-        };
-      }
       return {
         toolCalls: [{
           id: "final-answer-application",
@@ -1663,7 +1638,7 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
       "succeeded",
       JSON.stringify(unsafeTask.json)
     );
-    assert.equal(model.outcomeToolCalls(), 1);
+    assert.equal(model.outcomeToolCalls(), 0);
     assert.match(unsafeTask.json.result.summary, /未记录已触达结果/u);
 
     const outcomes = await server.request(

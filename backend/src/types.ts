@@ -256,6 +256,23 @@ export interface LeadActivity {
   createdAt: string;
 }
 
+export interface AcquisitionOutcomeReconciliationDiagnostic {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  sourceKind: "lead_activity" | "deal_event";
+  sourceId: string;
+  candidateId: string | null;
+  code:
+    | "attribution_missing"
+    | "attribution_invalid"
+    | "attribution_cross_tenant"
+    | "outcome_write_failed";
+  message: string;
+  occurredAt: string;
+  createdAt: string;
+}
+
 export interface AcquisitionHandoffIntelligence {
   qualificationGrade: "S" | "A" | "B" | "C" | "D";
   qualificationScore: number;

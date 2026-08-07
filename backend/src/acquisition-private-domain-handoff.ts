@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 import type {
+  OutcomeAttributionInput
+} from "./acquisition-domain.js";
+import type {
   AcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
 import type {
@@ -47,6 +50,19 @@ export interface AcquisitionPrivateDomainHandoffResult {
   customer: Customer;
   todo: Todo;
   intelligence: AcquisitionHandoffIntelligence;
+}
+
+export interface AcquisitionPrivateDomainHandoffAttributionResolver {
+  resolve(
+    scope: { ownerId: string; teamId: string },
+    input: {
+      candidateId: string;
+      evidenceIds: string[];
+      qualificationDecisionId: string;
+      decisionVersion: string;
+      decisionSnapshotHash: string;
+    }
+  ): Promise<OutcomeAttributionInput | null>;
 }
 
 export interface AcquisitionPrivateDomainHandoffPendingResult {
@@ -149,6 +165,8 @@ export class AcquisitionPrivateDomainHandoffService {
   readonly #repository: AcquisitionDomainRepository;
   readonly #domainService: AcquisitionDomainService;
   readonly #store: AcquisitionPrivateDomainHandoffStore;
+  readonly #attributionResolver:
+    AcquisitionPrivateDomainHandoffAttributionResolver | undefined;
   readonly #now: () => string;
   readonly #inFlight = new Map<
     string,
@@ -159,11 +177,13 @@ export class AcquisitionPrivateDomainHandoffService {
     repository: AcquisitionDomainRepository;
     domainService: AcquisitionDomainService;
     store: AcquisitionPrivateDomainHandoffStore;
+    attributionResolver?: AcquisitionPrivateDomainHandoffAttributionResolver;
     now?: () => string;
   }) {
     this.#repository = options.repository;
     this.#domainService = options.domainService;
     this.#store = options.store;
+    this.#attributionResolver = options.attributionResolver;
     this.#now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -307,6 +327,26 @@ export class AcquisitionPrivateDomainHandoffService {
         "候选的服务端评分快照不完整",
         409
       );
+    }
+    let acquisitionAttribution: OutcomeAttributionInput | null = null;
+    if (this.#attributionResolver) {
+      try {
+        acquisitionAttribution = await this.#attributionResolver.resolve(
+          { ownerId: scope.ownerId, teamId: scope.teamId },
+          {
+            candidateId,
+            evidenceIds: candidate.evidenceIds,
+            qualificationDecisionId: qualification.id,
+            decisionVersion: qualification.decisionVersion,
+            decisionSnapshotHash: qualification.snapshotHash
+          }
+        );
+      } catch {
+        // Attribution is a bridge concern. CRM handoff remains available and
+        // the reconciler records a durable diagnostic instead of inventing a
+        // run or rolling the normal CRM operation back.
+        acquisitionAttribution = null;
+      }
     }
     if (qualification.hardGateFailures.length > 0) {
       throw new AcquisitionPrivateDomainHandoffError(
@@ -468,6 +508,7 @@ export class AcquisitionPrivateDomainHandoffService {
       rawPayload: canonicalJsonStringify({
         candidateId,
         decisionVersion: request.decisionVersion,
+        acquisitionAttribution,
         intelligence,
         qualificationSnapshotHash: operation.qualificationSnapshotHash,
         financialSnapshotHash: operation.financialSnapshotHash

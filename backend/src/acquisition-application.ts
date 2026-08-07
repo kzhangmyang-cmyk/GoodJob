@@ -75,6 +75,16 @@ import {
   AcquisitionLeadConversionReconciliationService
 } from "./acquisition-lead-conversion-reconciliation.js";
 import {
+  AcquisitionCandidateRunAttributionResolver,
+  AcquisitionCrmOutcomeReconciliationService
+} from "./acquisition-crm-outcome-reconciliation.js";
+import {
+  AcquisitionPerformanceQueryService
+} from "./acquisition-performance-query.js";
+import {
+  createAcquisitionPerformanceRouter
+} from "./acquisition-performance-router.js";
+import {
   AcquisitionLeadConversionRecoverySweeper
 } from "./acquisition-lead-conversion-recovery-sweeper.js";
 import {
@@ -985,11 +995,16 @@ export async function createAcquisitionApplication(
       idFactory,
       now
     });
+    const candidateRunAttribution =
+      new AcquisitionCandidateRunAttributionResolver({
+        planRuns: repositories.planRun
+      });
     const privateDomainHandoffService =
       new AcquisitionPrivateDomainHandoffService({
         repository: repositories.domain,
         domainService,
         store: options.store,
+        attributionResolver: candidateRunAttribution,
         now
       });
     const identityResolutionService =
@@ -1000,6 +1015,19 @@ export async function createAcquisitionApplication(
       new AcquisitionLeadConversionReconciliationService({
         domainService
       });
+    const outcomeReconciliation =
+      new AcquisitionCrmOutcomeReconciliationService({
+        store: options.store,
+        outcomeRecorder: domainService,
+        now
+      });
+    const performanceQuery = new AcquisitionPerformanceQueryService({
+      planRuns: repositories.planRun,
+      domain: repositories.domain,
+      diagnostics:
+        options.store.acquisitionOutcomeReconciliationDiagnostics,
+      reconcile: outcomeReconciliation
+    });
     const searchPort = options.searchPort
       ?? createAcquisitionPublicSearchPort(options.store, {
         credentialSecret: providerCredentialSecret
@@ -1107,6 +1135,7 @@ export async function createAcquisitionApplication(
       toolResults,
       individualSignals,
       judgments,
+      performance: performanceQuery,
       now
     });
     const piRuntimeFactory = createAcquisitionPiRuntimeFactory({
@@ -1375,6 +1404,10 @@ export async function createAcquisitionApplication(
     router.use(createAcquisitionCandidateIntelligenceOperationsRouter({
       service: candidateIntelligenceOperations,
       dispatchOperation: dispatchCandidateIntelligenceTask,
+      requestIdFactory: () => idFactory("request")
+    }));
+    router.use(createAcquisitionPerformanceRouter({
+      query: performanceQuery,
       requestIdFactory: () => idFactory("request")
     }));
     router.use(createAcquisitionV1Router({

@@ -551,6 +551,16 @@ export type OutcomeEventType =
 
 export interface OutcomeAttributionInput {
   runId: string;
+  planId?: string;
+  planVersionId?: string;
+  planVersion?: number;
+  planSnapshotHash?: string;
+  discoveredEventId?: string;
+  discoveredAt?: string;
+  shardId?: string;
+  operationId?: string;
+  connectionId?: string;
+  providerId?: string;
   evidenceIds: string[];
   providerIds: string[];
   queryIds: string[];

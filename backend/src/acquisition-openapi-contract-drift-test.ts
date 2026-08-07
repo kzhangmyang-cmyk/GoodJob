@@ -57,6 +57,7 @@ const candidateCopilotOperations = {
   "/api/v1/acquisition/candidates/{id}/review": ["post"],
   "/api/v1/acquisition/candidates/{id}/convert": ["post"],
   "/api/v1/acquisition/outcomes": ["get"],
+  "/api/v1/acquisition/performance": ["get"],
   "/api/v1/acquisition/audit-events": ["get"],
   "/api/v1/acquisition/copilot/sessions": ["post"],
   "/api/v1/acquisition/copilot/sessions/{id}": ["get"],

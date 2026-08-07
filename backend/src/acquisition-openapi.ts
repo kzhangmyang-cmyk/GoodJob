@@ -596,6 +596,109 @@ const auditEventResponseSchema = {
 const auditPagedResponseSchema = typedPagedResponseSchema(
   auditEventResponseSchema
 );
+const performanceFactSchema = {
+  type: "object",
+  required: ["metricId", "text", "evidenceRefs"],
+  properties: {
+    metricId: { type: "string", minLength: 1 },
+    text: { type: "string" },
+    evidenceRefs: { type: "array", items: { type: "string" } }
+  },
+  additionalProperties: false
+};
+const acquisitionPerformanceResponseSchema = {
+  type: "object",
+  required: [
+    "counts",
+    "rates",
+    "valuesByCurrency",
+    "cost",
+    "roi",
+    "dataQuality",
+    "briefingFacts"
+  ],
+  properties: {
+    counts: {
+      type: "object",
+      required: ["discovered", "highIntent", "approved", "converted", "contacted", "quoted", "won", "lost"],
+      properties: Object.fromEntries([
+        "discovered", "highIntent", "approved", "converted",
+        "contacted", "quoted", "won", "lost"
+      ].map((name) => [name, { type: "integer", minimum: 0 }])),
+      additionalProperties: false
+    },
+    rates: {
+      type: "object",
+      required: ["highIntentRate", "approvalRate", "crmConversionRate", "contactRate", "quoteRate", "winRate"],
+      properties: Object.fromEntries([
+        "highIntentRate", "approvalRate", "crmConversionRate",
+        "contactRate", "quoteRate", "winRate"
+      ].map((name) => [name, {
+        type: "number",
+        minimum: 0,
+        nullable: true
+      }])),
+      additionalProperties: false
+    },
+    valuesByCurrency: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["currency", "estimatedPipelineMinor", "quotedMinor", "wonContractMinor"],
+        properties: {
+          currency: { type: "string", pattern: "^[A-Z]{3}$" },
+          estimatedPipelineMinor: { type: "integer", minimum: 0 },
+          quotedMinor: { type: "integer", minimum: 0 },
+          wonContractMinor: { type: "integer", minimum: 0 }
+        },
+        additionalProperties: false
+      }
+    },
+    cost: {
+      type: "object",
+      required: ["status", "executionCostMinor", "currency", "coverage"],
+      properties: {
+        status: { type: "string", enum: ["available", "not_aggregatable"] },
+        executionCostMinor: { type: "integer", minimum: 0, nullable: true },
+        currency: { type: "string", pattern: "^[A-Z]{3}$", nullable: true },
+        coverage: { type: "string", enum: ["recorded_api_execution_only"] }
+      },
+      additionalProperties: false
+    },
+    roi: {
+      type: "object",
+      required: ["status", "reason"],
+      properties: {
+        status: { type: "string", enum: ["not_computable"] },
+        reason: { type: "string", enum: ["channel_cost_or_verified_margin_unavailable"] }
+      },
+      additionalProperties: false
+    },
+    dataQuality: {
+      type: "object",
+      required: ["missingAttribution", "missingFinancial", "truncated", "lastReconciledAt"],
+      properties: {
+        missingAttribution: { type: "integer", minimum: 0 },
+        missingFinancial: { type: "integer", minimum: 0 },
+        truncated: { type: "boolean" },
+        lastReconciledAt: { type: "string", format: "date-time", nullable: true }
+      },
+      additionalProperties: false
+    },
+    briefingFacts: {
+      type: "object",
+      required: ["headlines", "risks", "actions", "metricIds"],
+      properties: {
+        headlines: { type: "array", items: performanceFactSchema },
+        risks: { type: "array", items: performanceFactSchema },
+        actions: { type: "array", items: performanceFactSchema },
+        metricIds: { type: "array", items: { type: "string" } }
+      },
+      additionalProperties: false
+    }
+  },
+  additionalProperties: false
+};
 
 const acquisitionPlanResponseSchema = loadContractSchema(
   "acquisition-plan"
@@ -896,6 +999,7 @@ const acquisitionOperationIds: Record<string, string> = {
   "get /api/v1/acquisition/candidates/{id}/private-domain-handoff":
     "getAcquisitionCandidatePrivateDomainHandoff",
   "get /api/v1/acquisition/outcomes": "listAcquisitionOutcomes",
+  "get /api/v1/acquisition/performance": "getAcquisitionPerformance",
   "get /api/v1/acquisition/audit-events": "listAcquisitionAuditEvents",
   "post /api/v1/acquisition/copilot/sessions":
     "createAcquisitionCopilotSession",
@@ -2292,6 +2396,7 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     ["/api/v1/acquisition/candidates/{id}/private-domain-handoffs", "post", "交接已批准候选至 CRM/私域"],
     ["/api/v1/acquisition/candidates/{id}/private-domain-handoff", "get", "读取候选的 CRM/私域交接"],
     ["/api/v1/acquisition/outcomes", "get", "列出成交反馈"],
+    ["/api/v1/acquisition/performance", "get", "读取获客经营漏斗、分币种合同额和老板简报事实"],
     ["/api/v1/acquisition/audit-events", "get", "读取获客审计事件"],
     ["/api/v1/acquisition/copilot/sessions", "post", "创建绑定模型快照的 Pi 会话"],
     ["/api/v1/acquisition/copilot/sessions/{id}", "get", "读取 Pi 会话"],
@@ -2465,6 +2570,8 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     "get /api/v1/acquisition/candidates/{id}/private-domain-handoff":
       privateDomainHandoffStatusResponseSchema,
     "get /api/v1/acquisition/outcomes": outcomePagedResponseSchema,
+    "get /api/v1/acquisition/performance":
+      acquisitionPerformanceResponseSchema,
     "get /api/v1/acquisition/audit-events": auditPagedResponseSchema,
     "post /api/v1/acquisition/copilot/sessions":
       asyncOperationResponseSchema,
@@ -2539,6 +2646,28 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
             maxLength: 255
           }
         });
+      }
+      if (path === "/api/v1/acquisition/performance") {
+        parameters.push(
+          {
+            name: "platform",
+            in: "query",
+            required: false,
+            schema: { type: "string", enum: ["douyin", "web"] }
+          },
+          {
+            name: "from",
+            in: "query",
+            required: true,
+            schema: { type: "string", format: "date-time" }
+          },
+          {
+            name: "to",
+            in: "query",
+            required: true,
+            schema: { type: "string", format: "date-time" }
+          }
+        );
       }
       if (path === "/api/v1/acquisition/audit-events") {
         parameters.push({

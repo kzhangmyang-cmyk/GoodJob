@@ -150,7 +150,19 @@ function handoffStore(): AcquisitionPrivateDomainHandoffStore {
 
 async function fixture(
   candidateOverrides: Partial<AcquisitionCandidate> = {},
-  financialOverrides: Partial<FinancialValueDecision> = {}
+  financialOverrides: Partial<FinancialValueDecision> = {},
+  attributionResolver?: {
+    resolve(
+      scope: { ownerId: string; teamId: string },
+      input: {
+        candidateId: string;
+        evidenceIds: string[];
+        qualificationDecisionId: string;
+        decisionVersion: string;
+        decisionSnapshotHash: string;
+      }
+    ): Promise<any>;
+  }
 ) {
   const repository = new InMemoryAcquisitionDomainRepository();
   await repository.appendEvidence(evidence);
@@ -177,10 +189,52 @@ async function fixture(
       repository,
       domainService,
       store,
+      attributionResolver,
       now
     })
   };
 }
+
+const attributionSnapshotFixture = await fixture({}, {}, {
+  async resolve(resolvedScope, input) {
+    assert.deepEqual(resolvedScope, {
+      ownerId: scope.ownerId,
+      teamId: scope.teamId
+    });
+    assert.equal(input.candidateId, "candidate-a");
+    return {
+      runId: "run-real",
+      planId: "plan-real",
+      planVersionId: "plan-version-real",
+      operationId: "operation-real",
+      providerId: "provider-real"
+    };
+  }
+});
+await attributionSnapshotFixture.service.create(scope, "candidate-a", {
+  operationCode: "handoff_acquisition_candidate_v1",
+  decisionVersion: "qualification-v2",
+  mode: "create_new",
+  existingCustomerId: "",
+  followUp: {
+    title: "首次跟进",
+    dueAt: "2026-08-08T09:00:00.000Z",
+    priority: "high"
+  }
+}, "handoff-attribution-snapshot");
+const attributedSource = attributionSnapshotFixture.store.leadSourceEvents.find(
+  (item) => item.channel === "acquisition_private_domain_handoff_snapshot"
+);
+assert.deepEqual(
+  JSON.parse(attributedSource?.rawPayload ?? "{}").acquisitionAttribution,
+  {
+    runId: "run-real",
+    planId: "plan-real",
+    planVersionId: "plan-version-real",
+    operationId: "operation-real",
+    providerId: "provider-real"
+  }
+);
 
 const first = await fixture();
 const result = await first.service.create(scope, "candidate-a", {
