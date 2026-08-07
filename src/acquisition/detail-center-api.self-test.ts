@@ -895,3 +895,105 @@ await assert.rejects(
   (error: unknown) =>
     error instanceof Error && error.message === "模型服务暂时不可用"
 );
+
+const handoffCalls: Array<{
+  input: RequestInfo | URL;
+  init?: RequestInit;
+}> = [];
+const handoffEnvelope = {
+  replayed: false,
+  handoff: {
+    id: "ach-1",
+    candidateId: "candidate/with space",
+    leadId: "lead-1",
+    customerId: "customer-1",
+    todoId: "todo-1",
+    decisionVersion: "qualification-v2",
+    createdAt: "2026-08-07T08:00:00.000Z"
+  },
+  lead: { id: "lead-1" },
+  customer: { id: "customer-1", company: "真实客户" },
+  todo: {
+    id: "todo-1",
+    dueAt: "2026-08-08T09:00:00.000Z",
+    customerId: "customer-1",
+    leadId: "lead-1"
+  },
+  intelligence: {
+    qualificationGrade: "S" as const,
+    qualificationScore: 94,
+    financialGrade: "A" as const,
+    currency: "CNY",
+    expectedRevenueMinor: 1_288_000,
+    expectedGrossProfitMinor: 708_400,
+    expectedContributionMinor: 520_000
+  }
+};
+const handoffApi = createAcquisitionDetailApi(
+  async (input, init) => {
+    handoffCalls.push({ input, init });
+    return Response.json(handoffEnvelope);
+  },
+  { cookie: "gj_csrf=csrf%2Fhandoff" }
+);
+const handoffInput = {
+  operationCode: "handoff_acquisition_candidate_v1" as const,
+  decisionVersion: "qualification-v2",
+  mode: "create_new" as const,
+  existingCustomerId: "",
+  followUp: {
+    title: "首次跟进：确认需求和预算",
+    dueAt: "2026-08-08T09:00:00.000Z",
+    priority: "high" as const
+  }
+};
+const createdHandoff = await handoffApi.handoffCandidate(
+  " candidate/with space ",
+  handoffInput,
+  " handoff-key-0001 "
+);
+assert.equal(createdHandoff.customer.id, "customer-1");
+assert.equal(
+  handoffCalls[0]?.input,
+  "/api/v1/acquisition/candidates/candidate%2Fwith%20space/private-domain-handoffs"
+);
+assert.deepEqual(JSON.parse(String(handoffCalls[0]?.init?.body)), handoffInput);
+const handoffHeaders = new Headers(handoffCalls[0]?.init?.headers);
+assert.equal(handoffHeaders.get("idempotency-key"), "handoff-key-0001");
+assert.equal(handoffHeaders.get("x-csrf-token"), "csrf/handoff");
+
+const loadedHandoff = await handoffApi.getCandidatePrivateDomainHandoff(
+  "candidate/with space"
+);
+assert.equal(loadedHandoff?.handoff.todoId, "todo-1");
+assert.equal(
+  handoffCalls[1]?.input,
+  "/api/v1/acquisition/candidates/candidate%2Fwith%20space/private-domain-handoff"
+);
+assert.equal(handoffCalls[1]?.init?.method, "GET");
+
+let shortHandoffFetches = 0;
+const shortHandoffApi = createAcquisitionDetailApi(
+  async () => {
+    shortHandoffFetches += 1;
+    return Response.json(handoffEnvelope);
+  },
+  { cookie: "gj_csrf=csrf" }
+);
+await assert.rejects(
+  () => shortHandoffApi.handoffCandidate(
+    "candidate-1",
+    handoffInput,
+    "short"
+  ),
+  /幂等键必须为 8 到 200 个字符/
+);
+assert.equal(shortHandoffFetches, 0);
+
+const missingHandoffApi = createAcquisitionDetailApi(
+  async () => Response.json({ message: "交接记录不存在" }, { status: 404 })
+);
+assert.equal(
+  await missingHandoffApi.getCandidatePrivateDomainHandoff("candidate-1"),
+  null
+);

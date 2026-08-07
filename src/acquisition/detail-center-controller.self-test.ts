@@ -116,6 +116,22 @@ class ManualPollScheduler {
   }
 }
 
+class MemorySessionStorage {
+  readonly values = new Map<string, string>();
+
+  getItem(key: string) {
+    return this.values.get(key) ?? null;
+  }
+
+  setItem(key: string, value: string) {
+    this.values.set(key, value);
+  }
+
+  removeItem(key: string) {
+    this.values.delete(key);
+  }
+}
+
 function fakeAction(dataset: Record<string, string>) {
   const action = {
     dataset,
@@ -172,6 +188,205 @@ const taskDetail = {
   await oldRequest;
 
   assert.equal(controller.getState().detail?.plan.id, "plan-new");
+  controller.destroy();
+}
+
+{
+  const storage = new MemorySessionStorage();
+  const handoffKeys: string[] = [];
+  let handoffAttempts = 0;
+  const api = {
+    async getTask() {
+      return taskDetail;
+    },
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          status: "approved",
+          identityResolved: true,
+          latestDecisionVersion: "qualification-v2",
+          approvedDecisionVersion: "qualification-v2"
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return { grade: "S", score: 94, hardGateFailures: [] };
+    },
+    async getCandidateFinancialValue() {
+      return { currency: "CNY", expectedRevenueMinor: 1_288_000 };
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    },
+    async getCandidatePrivateDomainHandoff() {
+      return null;
+    },
+    async handoffCandidate(_candidateId: string, _input: unknown, key: string) {
+      handoffKeys.push(key);
+      handoffAttempts += 1;
+      if (handoffAttempts === 1) throw new Error("CRM 暂时不可用");
+      return {
+        replayed: false,
+        handoff: {
+          id: "ach-1",
+          candidateId: "candidate-approved",
+          leadId: "lead-1",
+          customerId: "customer-1",
+          todoId: "todo-1",
+          decisionVersion: "qualification-v2",
+          createdAt: "2026-08-07T08:00:00.000Z"
+        },
+        lead: { id: "lead-1" },
+        customer: { id: "customer-1" },
+        todo: { id: "todo-1", dueAt: "2026-08-08T09:00:00.000Z" },
+        intelligence: {
+          qualificationGrade: "S",
+          qualificationScore: 94,
+          financialGrade: "A",
+          currency: "CNY",
+          expectedRevenueMinor: 1_288_000,
+          expectedGrossProfitMinor: 708_400,
+          expectedContributionMinor: 520_000
+        }
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    storage,
+    keyFactory: () => "handoff-stable-key"
+  });
+  await controller.open("candidates", "plan-1");
+  await controller.selectCandidate("candidate-approved");
+  controller.openPrivateDomainHandoff();
+  const input = {
+    mode: "create_new" as const,
+    existingCustomerId: "",
+    followUp: {
+      title: "首次跟进：确认需求和预算",
+      dueAt: "2026-08-08T09:00:00.000Z",
+      priority: "high" as const
+    }
+  };
+  await assert.rejects(
+    () => controller.handoffCandidate(input),
+    /CRM 暂时不可用/
+  );
+  assert.equal(controller.getState().handoffDialog?.open, true);
+  assert.equal(controller.getState().handoffDialog?.followUp.dueAt, input.followUp.dueAt);
+  assert.equal(storage.values.size, 1);
+  await controller.handoffCandidate(input);
+  assert.deepEqual(handoffKeys, ["handoff-stable-key", "handoff-stable-key"]);
+  assert.equal(storage.values.size, 0);
+  assert.equal(
+    controller.getState().candidateDetail?.privateDomainHandoff?.handoff.customerId,
+    "customer-1"
+  );
+  assert.equal(controller.getState().handoffDialog, null);
+  controller.destroy();
+}
+
+{
+  const pending = deferred<any>();
+  const api = {
+    async getTask() {
+      return taskDetail;
+    },
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          status: "approved",
+          identityResolved: true,
+          latestDecisionVersion: "qualification-v2",
+          approvedDecisionVersion: "qualification-v2"
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return { grade: "S", hardGateFailures: [] };
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    },
+    async getCandidatePrivateDomainHandoff() {
+      return null;
+    },
+    handoffCandidate() {
+      return pending.promise;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    keyFactory: () => "handoff-race-key"
+  });
+  await controller.open("candidates", "plan-1");
+  await controller.selectCandidate("candidate-old");
+  controller.openPrivateDomainHandoff();
+  const oldRequest = controller.handoffCandidate({
+    mode: "create_new",
+    existingCustomerId: "",
+    followUp: {
+      title: "首次跟进",
+      dueAt: "2026-08-08T09:00:00.000Z",
+      priority: "high"
+    }
+  });
+  await controller.selectCandidate("candidate-new");
+  pending.resolve({
+    replayed: false,
+    handoff: {
+      id: "ach-old",
+      candidateId: "candidate-old",
+      leadId: "lead-old",
+      customerId: "customer-old",
+      todoId: "todo-old",
+      decisionVersion: "qualification-v2",
+      createdAt: "2026-08-07T08:00:00.000Z"
+    },
+    lead: { id: "lead-old" },
+    customer: { id: "customer-old" },
+    todo: { id: "todo-old" },
+    intelligence: {
+      qualificationGrade: "S",
+      qualificationScore: 94,
+      financialGrade: "A",
+      currency: "CNY",
+      expectedRevenueMinor: 0,
+      expectedGrossProfitMinor: 0,
+      expectedContributionMinor: 0
+    }
+  });
+  await oldRequest;
+  assert.equal(controller.getState().selectedCandidateId, "candidate-new");
+  assert.equal(
+    controller.getState().candidateDetail?.privateDomainHandoff,
+    null
+  );
   controller.destroy();
 }
 

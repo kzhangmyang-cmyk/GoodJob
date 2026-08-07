@@ -1,6 +1,7 @@
 import {
   createAcquisitionDetailApi,
   type AcquisitionDetailApi,
+  type AcquisitionPrivateDomainHandoffInput,
   type AcquisitionRunControlAction,
   type AcquisitionRunWithEtag,
   type AcquisitionTaskDetail,
@@ -24,6 +25,7 @@ export interface AcquisitionDetailCenterControllerOptions {
   pollIntervalMs?: number;
   schedulePoll?: (callback: () => void, delay: number) => unknown;
   cancelPoll?: (handle: unknown) => void;
+  storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
 }
 
 export interface AcquisitionDetailCenterController {
@@ -41,6 +43,14 @@ export interface AcquisitionDetailCenterController {
     reason?: string
   ): Promise<void>;
   startIntelligence(): Promise<void>;
+  openPrivateDomainHandoff(): void;
+  closePrivateDomainHandoff(): void;
+  handoffCandidate(
+    input: Omit<
+      AcquisitionPrivateDomainHandoffInput,
+      "operationCode" | "decisionVersion"
+    >
+  ): Promise<void>;
   destroy(): void;
 }
 
@@ -84,6 +94,17 @@ function defaultKey(): string {
 
 function defaultConfirm(message: string): boolean {
   return typeof window === "undefined" ? true : window.confirm(message);
+}
+
+function defaultStorage(): Pick<
+  Storage,
+  "getItem" | "setItem" | "removeItem"
+> | null {
+  try {
+    return typeof sessionStorage === "undefined" ? null : sessionStorage;
+  } catch {
+    return null;
+  }
 }
 
 function fingerprint(value: unknown): string {
@@ -314,6 +335,9 @@ export function createAcquisitionDetailCenterController(
   const api = options.api ?? createAcquisitionDetailApi();
   const eventTarget = options.eventTarget ?? defaultEventTarget();
   const keyFactory = options.keyFactory ?? defaultKey;
+  const storage = options.storage === undefined
+    ? defaultStorage()
+    : options.storage;
   const ask = options.confirm ?? defaultConfirm;
   const pollIntervalMs = typeof options.pollIntervalMs === "number"
     && Number.isFinite(options.pollIntervalMs)
@@ -337,7 +361,8 @@ export function createAcquisitionDetailCenterController(
     error: null,
     loadingMoreCandidates: false,
     runControlBusy: false,
-    runControlReason: ""
+    runControlReason: "",
+    handoffDialog: null
   };
   let disposed = false;
   let requestSerial = 0;
@@ -425,14 +450,36 @@ export function createAcquisitionDetailCenterController(
   function stableKey(operation: string, payload: unknown): {
     id: string;
     value: string;
+    storageKey?: string;
   } {
     const id = `${operation}:${fingerprint(payload)}`;
-    let value = pendingIdempotencyKeys.get(id);
+    const storageKey = `goodjob:acquisition-idempotency:${id}`;
+    let value = pendingIdempotencyKeys.get(id)
+      ?? (operation === "handoff-candidate"
+        ? storage?.getItem(storageKey) ?? undefined
+        : undefined);
     if (!value) {
       value = keyFactory();
       pendingIdempotencyKeys.set(id, value);
+      if (operation === "handoff-candidate") {
+        storage?.setItem(storageKey, value);
+      }
+    } else {
+      pendingIdempotencyKeys.set(id, value);
     }
-    return { id, value };
+    return { id, value, storageKey } as {
+      id: string;
+      value: string;
+      storageKey: string;
+    };
+  }
+
+  function forgetStableKey(key: {
+    id: string;
+    storageKey?: string;
+  }): void {
+    pendingIdempotencyKeys.delete(key.id);
+    if (key.storageKey) storage?.removeItem(key.storageKey);
   }
 
   function invalidateMutation(): void {
@@ -753,7 +800,8 @@ export function createAcquisitionDetailCenterController(
     applies: () => boolean = () => true
   ): Promise<void> {
     const [candidateResult, evidenceResult, qualificationResult,
-      financialResult, battleCardResult, reviewsResult, operationResult] =
+      financialResult, battleCardResult, reviewsResult, operationResult,
+      handoffResult] =
       await Promise.all([
         loadResource(
           "候选基本信息",
@@ -787,6 +835,13 @@ export function createAcquisitionDetailCenterController(
           "AI 研判任务",
           () => api.getLatestIntelligenceOperation(candidateId),
           null
+        ),
+        loadResource(
+          "CRM/私域交接",
+          () => typeof api.getCandidatePrivateDomainHandoff === "function"
+            ? api.getCandidatePrivateDomainHandoff(candidateId)
+            : Promise.resolve(null),
+          null
         )
       ]);
     if (disposed || serial !== candidateSerial || !applies()) return;
@@ -798,7 +853,8 @@ export function createAcquisitionDetailCenterController(
       financialValue: record(financialResult.value),
       battleCard: record(battleCardResult.value),
       reviews: reviewsResult.value,
-      intelligenceOperation: record(operationResult.value)
+      intelligenceOperation: record(operationResult.value),
+      privateDomainHandoff: handoffResult.value
     };
     const failures = [
       ...candidateResult.errors,
@@ -807,7 +863,8 @@ export function createAcquisitionDetailCenterController(
       ...financialResult.errors,
       ...battleCardResult.errors,
       ...reviewsResult.errors,
-      ...operationResult.errors
+      ...operationResult.errors,
+      ...handoffResult.errors
     ];
     if (failures.length === 0) {
       state.message = null;
@@ -892,6 +949,7 @@ export function createAcquisitionDetailCenterController(
       state.message = null;
       state.error = null;
       state.runControlReason = "";
+      state.handoffDialog = null;
       candidateSerial += 1;
       render();
       return remember((async () => {
@@ -935,6 +993,7 @@ export function createAcquisitionDetailCenterController(
       state.mode = mode;
       state.error = null;
       state.message = null;
+      state.handoffDialog = null;
       if (mode === "candidates" && !state.selectedCandidateId) {
         const candidateId = firstCandidateId(state.detail);
         if (candidateId) {
@@ -952,6 +1011,7 @@ export function createAcquisitionDetailCenterController(
       const serial = ++candidateSerial;
       state.selectedCandidateId = id;
       state.candidateDetail = null;
+      state.handoffDialog = null;
       state.error = null;
       state.message = "正在读取候选证据与 AI 研判…";
       render();
@@ -1307,6 +1367,150 @@ export function createAcquisitionDetailCenterController(
       })());
     },
 
+    openPrivateDomainHandoff() {
+      const candidate = state.candidateDetail?.candidate;
+      const status = typeof candidate?.status === "string"
+        ? candidate.status
+        : "";
+      if (!candidate || !state.selectedCandidateId) {
+        void rejectValidation("请先选择一个候选").catch(() => undefined);
+        return;
+      }
+      if (state.candidateDetail?.privateDomainHandoff) return;
+      if (status !== "approved" && status !== "converted_to_lead") {
+        void rejectValidation("只有已批准或已转线索的候选可以交接").catch(
+          () => undefined
+        );
+        return;
+      }
+      state.error = null;
+      state.handoffDialog = {
+        open: true,
+        busy: false,
+        mode: "create_new",
+        existingCustomerId: "",
+        followUp: {
+          title: "首次跟进：确认需求和预算",
+          dueAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
+          priority: "high"
+        }
+      };
+      render();
+    },
+
+    closePrivateDomainHandoff() {
+      if (state.handoffDialog?.busy) return;
+      state.handoffDialog = null;
+      render();
+    },
+
+    handoffCandidate(input) {
+      const candidateId = state.selectedCandidateId;
+      const candidate = state.candidateDetail?.candidate;
+      const status = typeof candidate?.status === "string"
+        ? candidate.status
+        : "";
+      const decisionVersion = typeof candidate?.approvedDecisionVersion === "string"
+        && candidate.approvedDecisionVersion.trim()
+        ? candidate.approvedDecisionVersion.trim()
+        : typeof candidate?.latestDecisionVersion === "string"
+          ? candidate.latestDecisionVersion.trim()
+          : "";
+      if (!candidateId || !candidate) {
+        return rejectValidation("请先选择一个候选");
+      }
+      if (status !== "approved" && status !== "converted_to_lead") {
+        return rejectValidation("只有已批准或已转线索的候选可以交接");
+      }
+      if (!decisionVersion) {
+        return rejectValidation("候选缺少已批准的资格决定版本");
+      }
+      const title = input.followUp.title.trim();
+      const existingCustomerId = input.existingCustomerId.trim();
+      const dueTimestamp = Date.parse(input.followUp.dueAt);
+      if (input.mode !== "create_new" && input.mode !== "link_existing") {
+        return rejectValidation("私域交接模式无效");
+      }
+      if (input.mode === "link_existing" && !existingCustomerId) {
+        return rejectValidation("请选择要关联的已有客户");
+      }
+      if (!title) return rejectValidation("首次跟进标题不能为空");
+      if (!Number.isFinite(dueTimestamp)) {
+        return rejectValidation("请填写有效的首次跟进时间");
+      }
+      if (mutating) return rejectValidation("另一项候选操作正在进行");
+
+      const request: AcquisitionPrivateDomainHandoffInput = {
+        operationCode: "handoff_acquisition_candidate_v1",
+        decisionVersion,
+        mode: input.mode,
+        existingCustomerId: input.mode === "link_existing"
+          ? existingCustomerId
+          : "",
+        followUp: {
+          title,
+          dueAt: new Date(dueTimestamp).toISOString(),
+          priority: input.followUp.priority
+        }
+      };
+      const idempotency = stableKey("handoff-candidate", {
+        candidateId,
+        ...request
+      });
+      const context = beginMutation(candidateId);
+      state.handoffDialog = {
+        open: true,
+        busy: true,
+        mode: request.mode,
+        existingCustomerId: request.existingCustomerId,
+        followUp: { ...request.followUp }
+      };
+      state.error = null;
+      state.message = "正在交接至 CRM/私域…";
+      render();
+      return remember((async () => {
+        try {
+          const result = await api.handoffCandidate(
+            candidateId,
+            request,
+            idempotency.value
+          );
+          forgetStableKey(idempotency);
+          if (!mutationIsCurrent(context)) return;
+          if (state.candidateDetail) {
+            state.candidateDetail = {
+              ...state.candidateDetail,
+              privateDomainHandoff: result
+            };
+          }
+          state.handoffDialog = null;
+          state.error = null;
+          state.message = "已交接至 CRM/私域并创建首次跟进待办";
+          eventTarget.dispatchEvent(customEvent(
+            "goodjob:acquisition-candidate-changed",
+            {
+              planId: context.planId,
+              candidateId,
+              action: "private_domain_handoff_completed",
+              customerId: result.handoff.customerId,
+              todoId: result.handoff.todoId
+            }
+          ));
+          render();
+        } catch (error) {
+          if (mutationIsCurrent(context)) {
+            state.error = errorText(error);
+            state.message = null;
+            if (state.handoffDialog) state.handoffDialog.busy = false;
+            render();
+          }
+          throw error;
+        } finally {
+          if (context.serial === mutationSerial) mutating = false;
+        }
+      })());
+    },
+
     startIntelligence() {
       const candidateId = state.selectedCandidateId;
       const candidate = state.candidateDetail?.candidate;
@@ -1416,6 +1620,12 @@ export function createAcquisitionDetailCenterController(
     } else if (action === "start-intelligence") {
       event.preventDefault();
       consume(controller.startIntelligence());
+    } else if (action === "open-private-domain-handoff") {
+      event.preventDefault();
+      controller.openPrivateDomainHandoff();
+    } else if (action === "close-private-domain-handoff") {
+      event.preventDefault();
+      controller.closePrivateDomainHandoff();
     } else if (action === "review") {
       event.preventDefault();
       const reviewAction = target.dataset.reviewAction as AcquisitionCandidateReviewAction;
@@ -1443,6 +1653,34 @@ export function createAcquisitionDetailCenterController(
 
   function onRootSubmit(event: Event): void {
     const form = event.target as HTMLFormElement | null;
+    if (form?.dataset?.acquisitionDetailForm === "private-domain-handoff") {
+      event.preventDefault();
+      if (typeof form.reportValidity === "function" && !form.reportValidity()) return;
+      const mode = (form.elements.namedItem("handoffMode") as RadioNodeList | null)
+        ?.value;
+      const existingCustomerId = (form.elements.namedItem(
+        "existingCustomerId"
+      ) as HTMLInputElement | null)?.value ?? "";
+      const title = (form.elements.namedItem(
+        "followUpTitle"
+      ) as HTMLInputElement | null)?.value ?? "";
+      const dueAt = (form.elements.namedItem(
+        "followUpDueAt"
+      ) as HTMLInputElement | null)?.value ?? "";
+      const priority = (form.elements.namedItem(
+        "followUpPriority"
+      ) as HTMLSelectElement | null)?.value;
+      consume(controller.handoffCandidate({
+        mode: mode as "create_new" | "link_existing",
+        existingCustomerId,
+        followUp: {
+          title,
+          dueAt,
+          priority: priority as "high" | "medium" | "normal"
+        }
+      }));
+      return;
+    }
     if (form?.dataset?.acquisitionDetailForm !== "review") return;
     event.preventDefault();
     if (typeof form.reportValidity === "function" && !form.reportValidity()) return;

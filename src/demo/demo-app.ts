@@ -16,6 +16,7 @@ import {
 import { createDemoStore } from "./demo-store";
 import type { DemoModule, DemoState } from "./demo-types";
 import { showDemoToast } from "./demo-ui";
+import { createPrivateDomainController } from "../private-domain/controller";
 
 function renderModule(module: DemoModule, state: DemoState, host: HTMLElement, inspector: HTMLElement): void {
   if (module === "dashboard") {
@@ -54,7 +55,26 @@ export function startDemoApp(): void {
 
   const store = createDemoStore();
   const router = createDemoRouter();
-  const render = () => renderModule(router.current(), store.getState(), host, inspector);
+  const privateDomainController = createPrivateDomainController({
+    main: host,
+    inspector
+  });
+  let realPrivateDomainActive = false;
+  let requestedRealCustomerId = "";
+  const render = () => {
+    if (router.current() === "private-domain"
+      && shell.dataset.acquisitionMode !== "demo") {
+      if (!realPrivateDomainActive || requestedRealCustomerId) {
+        realPrivateDomainActive = true;
+        const preferred = requestedRealCustomerId || undefined;
+        requestedRealCustomerId = "";
+        void privateDomainController.open(preferred).catch(() => undefined);
+      }
+      return;
+    }
+    realPrivateDomainActive = false;
+    renderModule(router.current(), store.getState(), host, inspector);
+  };
   let draggedOpportunityId = "";
   let resetInProgress = false;
 
@@ -73,6 +93,20 @@ export function startDemoApp(): void {
 
   shell.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
+    const realCustomerLink = target.closest<HTMLElement>(
+      "[data-private-domain-customer-id]"
+    );
+    if (realCustomerLink?.dataset.privateDomainCustomerId) {
+      event.preventDefault();
+      requestedRealCustomerId = realCustomerLink.dataset.privateDomainCustomerId;
+      shell.dataset.acquisitionMode = "real";
+      document.dispatchEvent(new CustomEvent(
+        "goodjob:acquisition-mode-changed",
+        { detail: { mode: "real" } }
+      ));
+      router.navigate("private-domain");
+      return;
+    }
     const moduleButton = target.closest<HTMLButtonElement>("[data-demo-action=\"open-module\"]");
     const module = moduleButton?.dataset.demoModule;
     if (module && Object.prototype.hasOwnProperty.call(demoModuleMeta, module)) {
@@ -431,6 +465,7 @@ export function startDemoApp(): void {
 
   store.subscribe(render);
   router.subscribe(render);
+  document.addEventListener("goodjob:acquisition-mode-changed", render);
   render();
 }
 

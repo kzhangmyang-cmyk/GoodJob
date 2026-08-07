@@ -296,7 +296,7 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     industry: "企业服务",
     region: "福建厦门",
     domain: "growth.example.cn",
-    status: "pending_review",
+    status: "approved",
     version: 2,
     identityResolved: true,
     updatedAt: "2026-08-07T08:04:00.000Z"
@@ -353,15 +353,75 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
     creditCode: null,
     evidenceIds: ["evidence-ui-1"],
     subjectKind: "organization",
-    status: "pending_review",
+    status: "approved",
     version: 2,
     identityResolved: true,
     latestDecisionVersion: qualification.decisionVersion,
-    approvedDecisionVersion: null,
+    approvedDecisionVersion: qualification.decisionVersion,
     updatedAt: candidateSummary.updatedAt,
     createdAt: "2026-08-07T08:02:00.000Z"
   };
 
+  const handoffRequests: Array<{
+    csrf: string | undefined;
+    idempotencyKey: string | undefined;
+    body: unknown;
+  }> = [];
+  await page.route("**/api/customers?scope=mine", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        customers: [{
+          id: "customer-ui-1",
+          company: candidate.name,
+          country: "中国",
+          contact: "王总",
+          ownerId: "demo-admin",
+          teamId: "demo-team",
+          ownerName: "Admin",
+          stage: "待首次跟进",
+          amount: 12880,
+          health: 80,
+          grade: "A",
+          nextReminder: "2026-08-09T10:30:00.000Z",
+          wecomBound: false,
+          activities: [{
+            id: "activity-ui-1",
+            customerId: "customer-ui-1",
+            type: "note",
+            content: "获客候选已交接至 CRM/私域",
+            operatorId: "demo-admin",
+            operatorName: "Admin",
+            nextReminder: "2026-08-09T10:30:00.000Z",
+            createdAt: "2026-08-07T08:10:00.000Z"
+          }]
+        }]
+      })
+    });
+  });
+  await page.route("**/api/todos", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        todos: [{
+          id: "todo-ui-1",
+          title: "首次跟进：确认需求和预算",
+          type: "customer",
+          priority: "high",
+          status: "pending",
+          dueAt: "2026-08-09T10:30:00.000Z",
+          ownerId: "demo-admin",
+          teamId: "demo-team",
+          related: candidate.name,
+          done: false,
+          customerId: "customer-ui-1",
+          leadId: "lead-ui-1"
+        }]
+      })
+    });
+  });
   await page.route("**/api/v1/acquisition/**", async (route) => {
     const url = new URL(route.request().url());
     const json = (value: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -473,6 +533,48 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
       await json(candidate, 200, { ETag: "\"candidate-v2\"" });
       return;
     }
+    if (url.pathname === `/api/v1/acquisition/candidates/${candidate.id}/private-domain-handoff`) {
+      await json({ message: "交接记录不存在" }, 404);
+      return;
+    }
+    if (url.pathname === `/api/v1/acquisition/candidates/${candidate.id}/private-domain-handoffs`
+      && route.request().method() === "POST") {
+      handoffRequests.push({
+        csrf: route.request().headers()["x-csrf-token"],
+        idempotencyKey: route.request().headers()["idempotency-key"],
+        body: route.request().postDataJSON()
+      });
+      await json({
+        replayed: false,
+        handoff: {
+          id: "ach-ui-1",
+          candidateId: candidate.id,
+          leadId: "lead-ui-1",
+          customerId: "customer-ui-1",
+          todoId: "todo-ui-1",
+          decisionVersion: qualification.decisionVersion,
+          createdAt: "2026-08-07T08:10:00.000Z"
+        },
+        lead: { id: "lead-ui-1" },
+        customer: { id: "customer-ui-1", company: candidate.name },
+        todo: {
+          id: "todo-ui-1",
+          dueAt: "2026-08-09T10:30:00.000Z",
+          leadId: "lead-ui-1",
+          customerId: "customer-ui-1"
+        },
+        intelligence: {
+          qualificationGrade: "S",
+          qualificationScore: 94,
+          financialGrade: "A",
+          currency: "CNY",
+          expectedRevenueMinor: 1288000,
+          expectedGrossProfitMinor: 640000,
+          expectedContributionMinor: 420000
+        }
+      });
+      return;
+    }
     if (url.pathname === `/api/v1/acquisition/candidates/${candidate.id}/evidence`) {
       await json({
         items: [{
@@ -581,7 +683,38 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
   await expect(dialog).toContainText("出现明确采购需求并主动比较供应商");
   await expect(dialog.locator(".replica-acquisition-factor-list")).toContainText("82%");
   await expect(dialog.locator(".replica-acquisition-factor-list")).not.toContainText("8200%");
+  await dialog.locator('[data-acquisition-detail-action="open-private-domain-handoff"]').click();
+  const handoffDialog = dialog.locator(".replica-acquisition-handoff-dialog");
+  await expect(handoffDialog).toBeVisible();
+  await handoffDialog.locator('[name="followUpDueAt"]').fill("2026-08-09T10:30");
+  await handoffDialog.locator('button[type="submit"]').click();
+  await expect(dialog.locator(".replica-acquisition-handoff-complete")).toContainText(
+    "customer-ui-1"
+  );
+  await expect(dialog.locator(".replica-acquisition-handoff-complete")).toContainText(
+    "todo-ui-1"
+  );
+  expect(handoffRequests).toHaveLength(1);
+  expect(handoffRequests[0]?.csrf).toBe("e2e-csrf");
+  expect(handoffRequests[0]?.idempotencyKey?.length).toBeGreaterThanOrEqual(8);
+  expect(handoffRequests[0]?.body).toEqual({
+    operationCode: "handoff_acquisition_candidate_v1",
+    decisionVersion: qualification.decisionVersion,
+    mode: "create_new",
+    existingCustomerId: "",
+    followUp: {
+      title: "首次跟进：确认需求和预算",
+      dueAt: "2026-08-09T02:30:00.000Z",
+      priority: "high"
+    }
+  });
   await dialog.locator('[data-acquisition-detail-action="load-more-candidates"]').click();
   await expect(dialog).toContainText("福州数智营销有限公司");
   await expect(dialog.locator('[data-acquisition-detail-action="load-more-candidates"]')).toHaveCount(0);
+  await dialog.getByRole("link", { name: "查看客户", exact: true }).click();
+  await expect(page.locator("#demoModuleMain")).toContainText("真实客户池");
+  await expect(page.locator("#demoModuleMain")).toContainText(candidate.name);
+  await expect(page.locator("#demoModuleInspector")).toContainText("todo-ui-1");
+  await expect(page.locator("#demoModuleInspector")).toContainText("获客候选已交接");
+  await expect(page.locator("#demoModuleMain")).not.toContainText("演示模式");
 });

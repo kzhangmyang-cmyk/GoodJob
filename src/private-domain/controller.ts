@@ -1,0 +1,131 @@
+import {
+  createPrivateDomainRuntimeApi,
+  type PrivateDomainRuntimeApi
+} from "./runtime-api";
+import {
+  renderPrivateDomainView,
+  type PrivateDomainViewState
+} from "./view";
+
+export interface PrivateDomainControllerOptions {
+  api?: PrivateDomainRuntimeApi;
+  main?: HTMLElement | null;
+  inspector?: HTMLElement | null;
+}
+
+export interface PrivateDomainController {
+  getState(): Readonly<PrivateDomainViewState>;
+  whenIdle(): Promise<void>;
+  open(preferredCustomerId?: string): Promise<void>;
+  selectCustomer(customerId: string): void;
+  destroy(): void;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error && error.message.trim()
+    ? error.message
+    : "真实私域数据读取失败";
+}
+
+export function createPrivateDomainController(
+  options: PrivateDomainControllerOptions = {}
+): PrivateDomainController {
+  const api = options.api ?? createPrivateDomainRuntimeApi();
+  const main = options.main ?? (typeof document === "undefined"
+    ? null
+    : document.getElementById("demoModuleMain"));
+  const inspector = options.inspector ?? (typeof document === "undefined"
+    ? null
+    : document.getElementById("demoModuleInspector"));
+  const state: PrivateDomainViewState = {
+    status: "ready",
+    customers: [],
+    todos: [],
+    selectedCustomerId: null,
+    error: null
+  };
+  let disposed = false;
+  let requestSerial = 0;
+  let idlePromise = Promise.resolve();
+
+  function render() {
+    if (main && inspector) renderPrivateDomainView(state, main, inspector);
+  }
+
+  const controller: PrivateDomainController = {
+    getState() {
+      return state;
+    },
+    whenIdle() {
+      return idlePromise;
+    },
+    open(preferredCustomerId) {
+      const serial = ++requestSerial;
+      state.status = "loading";
+      state.error = null;
+      render();
+      const operation = (async () => {
+        try {
+          const [customers, todos] = await Promise.all([
+            api.getCustomers(),
+            api.getTodos()
+          ]);
+          if (disposed || serial !== requestSerial) return;
+          state.customers = customers;
+          state.todos = todos;
+          const preferred = preferredCustomerId?.trim() ?? "";
+          state.selectedCustomerId = customers.some((customer) =>
+            customer.id === preferred)
+            ? preferred
+            : customers.some((customer) =>
+                customer.id === state.selectedCustomerId)
+              ? state.selectedCustomerId
+              : customers[0]?.id ?? null;
+          state.status = "ready";
+          state.error = null;
+          render();
+        } catch (error) {
+          if (disposed || serial !== requestSerial) return;
+          state.status = "error";
+          state.error = errorText(error);
+          render();
+          throw error;
+        }
+      })();
+      idlePromise = operation.then(() => undefined, () => undefined);
+      return operation;
+    },
+    selectCustomer(customerId) {
+      const normalized = customerId.trim();
+      if (!state.customers.some((customer) => customer.id === normalized)) {
+        return;
+      }
+      state.selectedCustomerId = normalized;
+      render();
+    },
+    destroy() {
+      if (disposed) return;
+      disposed = true;
+      requestSerial += 1;
+      main?.removeEventListener("click", onClick);
+    }
+  };
+
+  function onClick(event: Event) {
+    const target = (event.target as HTMLElement | null)?.closest<HTMLElement>(
+      "[data-private-domain-action]"
+    );
+    if (!target || !main?.contains(target)) return;
+    if (target.dataset.privateDomainAction === "select-customer") {
+      controller.selectCustomer(target.dataset.customerId ?? "");
+    } else if (target.dataset.privateDomainAction === "retry") {
+      void controller.open(state.selectedCustomerId ?? undefined).catch(
+        () => undefined
+      );
+    }
+  }
+
+  main?.addEventListener("click", onClick);
+  render();
+  return controller;
+}

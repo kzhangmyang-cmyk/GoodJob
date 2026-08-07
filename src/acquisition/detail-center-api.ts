@@ -522,6 +522,48 @@ export interface CandidateReviewResult {
   research: CandidateResearch | null;
 }
 
+export interface AcquisitionPrivateDomainHandoffInput {
+  operationCode: "handoff_acquisition_candidate_v1";
+  decisionVersion: string;
+  mode: "create_new" | "link_existing";
+  existingCustomerId: string;
+  followUp: {
+    title: string;
+    dueAt: string;
+    priority: "high" | "medium" | "normal";
+  };
+}
+
+export interface AcquisitionPrivateDomainHandoffResult {
+  replayed: boolean;
+  handoff: {
+    id: string;
+    candidateId: string;
+    leadId: string;
+    customerId: string;
+    todoId: string;
+    decisionVersion: string;
+    createdAt: string;
+  };
+  lead: Record<string, unknown> & { id: string };
+  customer: Record<string, unknown> & { id: string };
+  todo: Record<string, unknown> & {
+    id: string;
+    dueAt?: string;
+    leadId?: string;
+    customerId?: string;
+  };
+  intelligence: {
+    qualificationGrade: AcquisitionGrade;
+    qualificationScore: number;
+    financialGrade: AcquisitionGrade;
+    currency: string;
+    expectedRevenueMinor: number;
+    expectedGrossProfitMinor: number;
+    expectedContributionMinor: number;
+  };
+}
+
 export interface AcquisitionDetailApi {
   getTask(planId: string): Promise<AcquisitionTaskDetail>;
   createRun(
@@ -569,6 +611,14 @@ export interface AcquisitionDetailApi {
     input: CandidateReviewInput,
     idempotencyKey: string
   ): Promise<CandidateReviewResult>;
+  handoffCandidate(
+    candidateId: string,
+    input: AcquisitionPrivateDomainHandoffInput,
+    idempotencyKey: string
+  ): Promise<AcquisitionPrivateDomainHandoffResult>;
+  getCandidatePrivateDomainHandoff(
+    candidateId: string
+  ): Promise<AcquisitionPrivateDomainHandoffResult | null>;
 }
 
 interface ErrorEnvelope {
@@ -662,6 +712,8 @@ function validRunIdempotencyKey(value: string): string {
   }
   return normalized;
 }
+
+const validHandoffIdempotencyKey = validRunIdempotencyKey;
 
 function queryString(values: Record<string, string | number | undefined>) {
   const params = new URLSearchParams();
@@ -861,6 +913,29 @@ export function createAcquisitionDetailApi(
         `/api/v1/acquisition/candidates/${pathSegment(candidateId)}/review`,
         input,
         idempotencyKey
+      );
+    },
+    async handoffCandidate(candidateId, input, idempotencyKey) {
+      const loaded = await request<AcquisitionPrivateDomainHandoffResult>(
+        `/api/v1/acquisition/candidates/${pathSegment(
+          requiredText(candidateId, "候选 ID", 255)
+        )}/private-domain-handoffs`,
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": validHandoffIdempotencyKey(idempotencyKey)
+          },
+          body: JSON.stringify(input)
+        }
+      );
+      if (!loaded) throw new Error("交接结果不存在");
+      return loaded.body;
+    },
+    getCandidatePrivateDomainHandoff(candidateId) {
+      return getNullable<AcquisitionPrivateDomainHandoffResult>(
+        `/api/v1/acquisition/candidates/${pathSegment(
+          requiredText(candidateId, "候选 ID", 255)
+        )}/private-domain-handoff`
       );
     }
   };

@@ -322,7 +322,8 @@ const candidateDetail: AcquisitionCandidateDetail = {
     reviewerId: "reviewer-1",
     createdAt: timestamp
   }],
-  intelligenceOperation: null
+  intelligenceOperation: null,
+  privateDomainHandoff: null
 };
 
 function state(
@@ -369,6 +370,145 @@ function state(
   assert.match(html, /aria-labelledby="acquisition-detail-tab-plan"/);
   assert.doesNotMatch(html, /<script>/);
   assert.match(html, /&lt;script&gt;/);
+}
+
+{
+  const approvedDetail: AcquisitionCandidateDetail = {
+    ...candidateDetail,
+    candidate: {
+      ...candidateDetail.candidate,
+      status: "approved",
+      latestDecisionVersion: "qualification-v2",
+      approvedDecisionVersion: "qualification-v2"
+    },
+    qualification: {
+      ...candidateDetail.qualification,
+      hardGateFailures: []
+    },
+    privateDomainHandoff: null
+  };
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-org",
+    candidateDetail: approvedDetail
+  }));
+  assert.match(html, /交接至 CRM\/私域/);
+  assert.match(html, /data-acquisition-detail-action="open-private-domain-handoff"/);
+}
+
+{
+  const convertedDetail: AcquisitionCandidateDetail = {
+    ...candidateDetail,
+    candidate: {
+      ...candidateDetail.candidate,
+      status: "converted_to_lead",
+      latestDecisionVersion: "qualification-v2",
+      approvedDecisionVersion: "qualification-v2"
+    },
+    privateDomainHandoff: null
+  };
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-org",
+    candidateDetail: convertedDetail
+  }));
+  assert.match(html, /继续完成私域交接/);
+}
+
+{
+  const completedDetail: AcquisitionCandidateDetail = {
+    ...candidateDetail,
+    candidate: {
+      ...candidateDetail.candidate,
+      status: "converted_to_lead"
+    },
+    privateDomainHandoff: {
+      replayed: false,
+      handoff: {
+        id: "ach-1",
+        candidateId: "candidate-org",
+        leadId: "lead-<script>alert('lead')</script>",
+        customerId: "customer-1",
+        todoId: "todo-1",
+        decisionVersion: "qualification-v2",
+        createdAt: timestamp
+      },
+      lead: { id: "lead-1" },
+      customer: { id: "customer-1" },
+      todo: {
+        id: "todo-1",
+        dueAt: "2026-08-08T09:00:00.000Z"
+      },
+      intelligence: {
+        qualificationGrade: "S",
+        qualificationScore: 94,
+        financialGrade: "A",
+        currency: "CNY",
+        expectedRevenueMinor: 1_288_000,
+        expectedGrossProfitMinor: 708_400,
+        expectedContributionMinor: 520_000
+      }
+    }
+  };
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-org",
+    candidateDetail: completedDetail
+  }));
+  assert.match(html, /Lead ID/);
+  assert.match(html, /Customer ID/);
+  assert.match(html, /Todo ID/);
+  assert.match(html, /2026-08-08T09:00:00\.000Z/);
+  assert.match(html, /查看客户/);
+  assert.match(html, /查看待办/);
+  assert.match(
+    html,
+    /data-private-domain-customer-id="customer-1" data-todo-id="todo-1"/
+  );
+  assert.doesNotMatch(html, /<script>alert\('lead'\)<\/script>/);
+  assert.match(html, /&lt;script&gt;/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-org",
+    candidateDetail: {
+      ...candidateDetail,
+      candidate: {
+        ...candidateDetail.candidate,
+        status: "approved"
+      },
+      privateDomainHandoff: null
+    },
+    handoffDialog: {
+      open: true,
+      busy: false,
+      mode: "link_existing",
+      existingCustomerId: `customer-&\"<script>alert('customer')</script>`,
+      followUp: {
+        title: `首次跟进 <img src=x onerror=alert('title')>`,
+        dueAt: "2026-08-08T09:00:00.000Z",
+        priority: "high"
+      }
+    }
+  }));
+  assert.match(html, /data-acquisition-detail-form="private-domain-handoff"/);
+  assert.match(html, /name="handoffMode"/);
+  assert.match(html, /name="existingCustomerId"/);
+  assert.match(html, /name="followUpDueAt"/);
+  const dueAtValue = html.match(
+    /name="followUpDueAt"[^>]*value="([^"]+)"/
+  )?.[1];
+  assert.ok(dueAtValue);
+  assert.equal(
+    new Date(dueAtValue).toISOString(),
+    "2026-08-08T09:00:00.000Z"
+  );
+  assert.doesNotMatch(html, /<script>alert\('customer'\)<\/script>/);
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.match(html, /&lt;img/);
 }
 
 // Catches collapsing independent budget dimensions into one invented percentage.

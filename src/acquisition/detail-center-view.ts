@@ -1,3 +1,6 @@
+import type {
+  AcquisitionPrivateDomainHandoffResult
+} from "./detail-center-api";
 import type { AcquisitionTaskDetail } from "./runtime-api";
 
 export type AcquisitionDetailCenterMode = "plan" | "candidates";
@@ -11,6 +14,19 @@ export interface AcquisitionCandidateDetail {
   battleCard: Record<string, unknown> | null;
   reviews: Array<Record<string, unknown>>;
   intelligenceOperation: Record<string, unknown> | null;
+  privateDomainHandoff: AcquisitionPrivateDomainHandoffResult | null;
+}
+
+export interface AcquisitionHandoffDialogState {
+  open: boolean;
+  busy: boolean;
+  mode: "create_new" | "link_existing";
+  existingCustomerId: string;
+  followUp: {
+    title: string;
+    dueAt: string;
+    priority: "high" | "medium" | "normal";
+  };
 }
 
 export interface AcquisitionDetailCenterState {
@@ -24,6 +40,7 @@ export interface AcquisitionDetailCenterState {
   loadingMoreCandidates?: boolean;
   runControlBusy?: boolean;
   runControlReason?: string;
+  handoffDialog?: AcquisitionHandoffDialogState | null;
 }
 
 type DataRecord = Record<string, unknown>;
@@ -771,6 +788,79 @@ function renderReviewActions(
   return `<div class="replica-acquisition-review-note">当前候选状态：${escapeHtml(status)}。此状态没有可提交的人工审核动作。</div>`;
 }
 
+function renderPrivateDomainHandoff(
+  candidate: DataRecord,
+  detail: AcquisitionCandidateDetail | null
+): string {
+  const completed = detail?.privateDomainHandoff;
+  if (completed) {
+    const handoff = completed.handoff;
+    const dueAt = textValue(completed.todo.dueAt, "待确认");
+    return `
+      <div class="replica-acquisition-handoff-complete" data-private-domain-handoff-id="${escapeHtml(handoff.id)}">
+        <strong>已完成 CRM/私域交接</strong>
+        <dl>
+          <div><dt>Lead ID</dt><dd>${escapeHtml(handoff.leadId)}</dd></div>
+          <div><dt>Customer ID</dt><dd>${escapeHtml(handoff.customerId)}</dd></div>
+          <div><dt>Todo ID</dt><dd>${escapeHtml(handoff.todoId)}</dd></div>
+          <div><dt>首次跟进时间</dt><dd>${escapeHtml(dueAt)}</dd></div>
+        </dl>
+        <div class="replica-acquisition-review-actions">
+          <a href="#private-domain" data-private-domain-customer-id="${escapeHtml(handoff.customerId)}">查看客户</a>
+          <a href="#private-domain" data-private-domain-customer-id="${escapeHtml(handoff.customerId)}" data-todo-id="${escapeHtml(handoff.todoId)}">查看待办</a>
+        </div>
+      </div>
+    `;
+  }
+  const status = textValue(candidate.status, "");
+  if (status !== "approved" && status !== "converted_to_lead") return "";
+  const label = status === "converted_to_lead"
+    ? "继续完成私域交接"
+    : "交接至 CRM/私域";
+  return `
+    <div class="replica-acquisition-intelligence-start">
+      <div><strong>${label}</strong><span>交接后将创建或关联真实客户，并创建一条关联的首次跟进待办。</span></div>
+      <button type="button" data-acquisition-detail-action="open-private-domain-handoff">${label}</button>
+    </div>
+  `;
+}
+
+function renderHandoffDialog(
+  dialog: AcquisitionHandoffDialogState | null | undefined
+): string {
+  if (!dialog?.open) return "";
+  const dueDate = new Date(dialog.followUp.dueAt);
+  const dueAt = Number.isFinite(dueDate.getTime())
+    ? new Date(
+        dueDate.getTime() - dueDate.getTimezoneOffset() * 60_000
+      ).toISOString().slice(0, 16)
+    : dialog.followUp.dueAt.slice(0, 16);
+  return `
+    <dialog class="replica-acquisition-handoff-dialog" open aria-labelledby="acquisition-handoff-title">
+      <form data-acquisition-detail-form="private-domain-handoff">
+        <header>
+          <div><span>CRM/私域</span><h4 id="acquisition-handoff-title">交接真实候选</h4></div>
+          <button type="button" data-acquisition-detail-action="close-private-domain-handoff"${dialog.busy ? " disabled" : ""}>关闭</button>
+        </header>
+        <fieldset${dialog.busy ? " disabled" : ""}>
+          <legend>交接模式</legend>
+          <label><input type="radio" name="handoffMode" value="create_new"${dialog.mode === "create_new" ? " checked" : ""}> 创建新客户</label>
+          <label><input type="radio" name="handoffMode" value="link_existing"${dialog.mode === "link_existing" ? " checked" : ""}> 关联已有客户</label>
+          <label><span>已有 Customer ID</span><input name="existingCustomerId" maxlength="255" value="${escapeHtml(dialog.existingCustomerId)}"${dialog.mode === "link_existing" ? " required" : ""}></label>
+          <label><span>首次跟进标题</span><input name="followUpTitle" maxlength="500" required value="${escapeHtml(dialog.followUp.title)}"></label>
+          <label><span>首次跟进时间</span><input name="followUpDueAt" type="datetime-local" required value="${escapeHtml(dueAt)}"></label>
+          <label><span>优先级</span><select name="followUpPriority">
+            ${(["high", "medium", "normal"] as const).map((priority) =>
+              `<option value="${priority}"${dialog.followUp.priority === priority ? " selected" : ""}>${priority === "high" ? "高" : priority === "medium" ? "中" : "普通"}</option>`
+            ).join("")}
+          </select></label>
+        </fieldset>
+        <footer><button type="submit"${dialog.busy ? " disabled" : ""}>${dialog.busy ? "正在交接…" : "确认交接"}</button></footer>
+      </form>
+    </dialog>
+  `;
+}
+
 function renderCandidateDetail(
   event: DataRecord | undefined,
   detail: AcquisitionCandidateDetail | null
@@ -823,6 +913,10 @@ function renderCandidateDetail(
       <section class="replica-acquisition-detail-section replica-acquisition-review-section">
         <h5>人工审核</h5>
         ${renderReviewActions(candidateSnapshot, qualification, detail?.intelligenceOperation ?? null)}
+      </section>
+      <section class="replica-acquisition-detail-section replica-acquisition-handoff-section">
+        <h5>CRM/私域交接</h5>
+        ${renderPrivateDomainHandoff(candidateSnapshot, detail)}
       </section>
       <section class="replica-acquisition-detail-section">
         <h5>审核历史</h5>
@@ -940,6 +1034,7 @@ export function renderAcquisitionDetailCenter(
         ? `<div class="replica-acquisition-detail-message is-error" role="alert">${escapeHtml(state.error)}</div>`
         : ""}
       ${content}
+      ${renderHandoffDialog(state.handoffDialog)}
     </section>
   `;
 }
