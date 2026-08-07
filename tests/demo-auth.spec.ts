@@ -108,6 +108,12 @@ test("AI draft creation preserves the complete server plan through approval and 
   await expect(dialog.locator("#replicaRealAiDraft")).toContainText("serper");
   await expect(dialog.locator("#replicaRealAiDraft")).toContainText("老板 合作");
   await dialog.locator("#replicaRealApprovalConfirmed").check();
+  await dialog.locator("#replicaRealAiPrompt").fill("帮我重新生成厦门的企业服务和装修抖音商机");
+  await expect(dialog.locator("#replicaRealApprovalConfirmed")).not.toBeChecked();
+  await expect(dialog.locator("#replicaRealAiDraft")).toBeHidden();
+  await dialog.locator("#replicaRealAiGenerate").click();
+  await expect(dialog.locator("#replicaRealAiDraft")).toBeVisible();
+  await dialog.locator("#replicaRealApprovalConfirmed").check();
   await dialog.locator("#replicaRealTaskSubmit").click();
   await expect(dialog.locator("#replicaRealTaskSubmitStatus")).toContainText("Run run-ai");
   expect(createdPlans).toHaveLength(1);

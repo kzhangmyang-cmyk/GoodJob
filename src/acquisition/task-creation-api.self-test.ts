@@ -280,6 +280,51 @@ assert.equal(
   false
 );
 
+const relationshipInvalidDraft = structuredClone(planInput);
+relationshipInvalidDraft.operations[1]!.connectionId = "missing-connection";
+const relationshipInvalidApi = createAcquisitionTaskCreationApi(async () => Response.json({
+  id: "relationship-invalid",
+  status: "succeeded",
+  errorCode: null,
+  result: { summary: "关系无效", planDraft: relationshipInvalidDraft }
+}));
+await assert.rejects(
+  () => relationshipInvalidApi.getCopilotTask("relationship-invalid", "model-tool"),
+  /AI 计划草稿不完整/
+);
+
+const modelMismatchApi = createAcquisitionTaskCreationApi(async () => Response.json({
+  id: "model-mismatch",
+  status: "succeeded",
+  errorCode: null,
+  result: { summary: "模型不匹配", planDraft: planInput }
+}));
+await assert.rejects(
+  () => modelMismatchApi.getCopilotTask("model-mismatch", "different-model"),
+  /AI 计划草稿不完整/
+);
+
+for (const corrupt of [
+  (draft: typeof planInput) => { draft.providerConnections.push({ ...draft.providerConnections[0]!, providerId: "duplicate" }); },
+  (draft: typeof planInput) => { draft.operations[1]!.operationId = draft.operations[0]!.operationId; },
+  (draft: typeof planInput) => { (draft.providerConnections[0] as { status: string }).status = "inactive"; },
+  (draft: typeof planInput) => { (draft.subjectChannels as { organization: boolean }).organization = false; },
+  (draft: typeof planInput) => { draft.operations[0]!.allocatedBudget.requests += 1; }
+]) {
+  const invalidDraft = structuredClone(planInput);
+  corrupt(invalidDraft);
+  const invalidApi = createAcquisitionTaskCreationApi(async () => Response.json({
+    id: "invalid-relationship",
+    status: "succeeded",
+    errorCode: null,
+    result: { summary: "无效", planDraft: invalidDraft }
+  }));
+  await assert.rejects(
+    () => invalidApi.getCopilotTask("invalid-relationship", "model-tool"),
+    /AI 计划草稿不完整/
+  );
+}
+
 const malformedTaskApi = createAcquisitionTaskCreationApi(async (input) => {
   if (String(input).includes("/copilot/tasks/bad-task")) {
     return Response.json({

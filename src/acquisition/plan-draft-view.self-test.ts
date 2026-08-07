@@ -28,7 +28,7 @@ const preview = renderPlanDraftPreview({
   stopConditions: { stopWhenBudgetExhausted: true, stopWhenNoMoreResults: true }
 });
 
-for (const text of ["企业服务", "装修", "厦门", "泉州", "公开询价", "老板账号", "brave", "serper", "企业 &lt;采购&gt;", "老板 询价", "装修 寻找供应商", "合作 需求", "组织", "个人", "最大请求：8", "最大结果：40", "费用上限：60", "最长运行：120", "预算耗尽时停止", "无更多结果时停止"]) {
+for (const text of ["企业服务", "装修", "厦门", "泉州", "公开询价", "老板账号", "brave", "serper", "连接 a", "连接 b", "企业 &lt;采购&gt;", "老板 询价", "装修 寻找供应商", "合作 需求", "组织", "个人", "最大请求：8 CNY", "最大结果：40 CNY", "费用上限：60 CNY", "最长运行：120 秒", "预算耗尽时停止", "无更多结果时停止"]) {
   assert.equal(preview.includes(text), true, `missing ${text}`);
 }
 assert.equal(preview.includes("<script>alert(1)</script>"), false);

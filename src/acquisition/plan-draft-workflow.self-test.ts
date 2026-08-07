@@ -98,7 +98,7 @@ assert.deepEqual(calls[1]?.value, {
 });
 assert.equal(JSON.stringify(calls).includes("modelSnapshotRef"), false);
 assert.equal(polls, 2);
-const saved = storageWrites[0] ?? "";
+const saved = storageWrites.find((value) => value.includes("session-a") && value.includes("task-a")) ?? "";
 assert.match(saved, /session-a/);
 assert.match(saved, /task-a/);
 assert.match(saved, /model-a/);
@@ -118,11 +118,186 @@ const timeoutWorkflow = createPlanDraftWorkflow({
   sleep: async () => undefined,
   now: (() => {
     let current = 0;
-    return () => current += 61_000;
+    return () => current += 30_000;
   })()
 });
 await assert.rejects(
   () => timeoutWorkflow.generate({ modelConnectionId: "model-a", prompt: "生成计划" }),
   /120 秒/
 );
-assert.equal(timeoutPolls > 0, true);
+assert.equal(timeoutPolls, 0, "超时必须从第一条请求开始计算，而非首次轮询后");
+
+let reusableSessionCalls = 0;
+let reusableTaskCalls = 0;
+const reusableStorage = new Map<string, string>();
+const reusableWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession() {
+    reusableSessionCalls += 1;
+    return { id: "reusable-session" };
+  },
+  async createPlanDraftTask(_sessionId, _input, _key) {
+    reusableTaskCalls += 1;
+    return { id: `reusable-task-${reusableTaskCalls}`, status: "succeeded", result: { summary: "完成", planDraft }, errorCode: null };
+  },
+  async getCopilotTask() {
+    throw new Error("立即完成的任务不应轮询");
+  }
+}, {
+  storage: {
+    getItem: (key) => reusableStorage.get(key) ?? null,
+    setItem: (key, value) => reusableStorage.set(key, value),
+    removeItem: (key) => reusableStorage.delete(key)
+  }
+});
+await reusableWorkflow.generate({ modelConnectionId: "model-a", prompt: "第一个草稿" });
+await reusableWorkflow.generate({ modelConnectionId: "model-a", prompt: "第二个草稿" });
+assert.equal(reusableSessionCalls, 1, "完成后必须复用同一模型的 Copilot 会话");
+assert.equal(reusableTaskCalls, 2);
+
+let observedSessionSignal: AbortSignal | undefined;
+const cancellableWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession(_input, _key, signal) {
+    observedSessionSignal = signal;
+    return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new DOMException("取消", "AbortError")), { once: true }));
+  },
+  async createPlanDraftTask() {
+    throw new Error("取消的会话不能继续创建任务");
+  },
+  async getCopilotTask() {
+    throw new Error("取消的会话不能轮询");
+  }
+}, { storage: null });
+const sessionRun = cancellableWorkflow.generate({ modelConnectionId: "model-a", prompt: "取消会话创建" });
+cancellableWorkflow.cancel();
+assert.equal(observedSessionSignal?.aborted, true, "会话 POST 必须收到取消信号");
+await assert.rejects(sessionRun, /AbortError/);
+
+let observedTaskSignal: AbortSignal | undefined;
+const taskCancellationWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession() { return { id: "session-task-cancel" }; },
+  async createPlanDraftTask(_sessionId, _input, _key, signal) {
+    observedTaskSignal = signal;
+    return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new DOMException("取消", "AbortError")), { once: true }));
+  },
+  async getCopilotTask() { throw new Error("任务 POST 取消后不得轮询"); }
+}, { storage: null });
+const taskRun = taskCancellationWorkflow.generate({ modelConnectionId: "model-a", prompt: "取消任务创建" });
+await Promise.resolve();
+taskCancellationWorkflow.cancel();
+assert.equal(observedTaskSignal?.aborted, true, "任务 POST 必须收到取消信号");
+await assert.rejects(taskRun, /AbortError/);
+
+let observedPollSignal: AbortSignal | undefined;
+const pollCancellationWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession() { return { id: "session-poll-cancel" }; },
+  async createPlanDraftTask() { return { id: "task-poll-cancel", status: "queued", result: null, errorCode: null }; },
+  async getCopilotTask(_taskId, _modelConnectionId, signal) {
+    observedPollSignal = signal;
+    return new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new DOMException("取消", "AbortError")), { once: true }));
+  }
+}, { storage: null });
+const pollRun = pollCancellationWorkflow.generate({ modelConnectionId: "model-a", prompt: "取消轮询" });
+await Promise.resolve();
+await Promise.resolve();
+pollCancellationWorkflow.cancel();
+assert.equal(observedPollSignal?.aborted, true, "轮询 GET 必须收到取消信号");
+await assert.rejects(pollRun, /AbortError/);
+
+const recoveryStorage = new Map<string, string>();
+recoveryStorage.set("goodjob.acquisition.plan-draft-workflow.v1", JSON.stringify({
+  session: { modelConnectionId: "model-a", sessionKey: "stable-session-key", sessionId: "recovered-session" },
+  task: { modelConnectionId: "model-a", prompt: "恢复中", taskKey: "stable-task-key", taskId: "recovered-task" }
+}));
+let recoveryPosts = 0;
+const recoveryWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession() { recoveryPosts += 1; return { id: "unexpected" }; },
+  async createPlanDraftTask() { recoveryPosts += 1; return { id: "unexpected", status: "queued", result: null, errorCode: null }; },
+  async getCopilotTask(taskId) {
+    assert.equal(taskId, "recovered-task");
+    return { id: taskId, status: "succeeded", result: { summary: "恢复完成", planDraft }, errorCode: null };
+  }
+}, { storage: { getItem: (key) => recoveryStorage.get(key) ?? null, setItem: (key, value) => recoveryStorage.set(key, value), removeItem: (key) => recoveryStorage.delete(key) } });
+await recoveryWorkflow.generate({ modelConnectionId: "model-a", prompt: "恢复中" });
+assert.equal(recoveryPosts, 0, "持久化 pending task 必须直接恢复轮询");
+assert.equal((recoveryStorage.get("goodjob.acquisition.plan-draft-workflow.v1") ?? "").includes("recovered-session"), true);
+assert.equal((recoveryStorage.get("goodjob.acquisition.plan-draft-workflow.v1") ?? "").includes("recovered-task"), false);
+
+const ambiguousStorage = new Map<string, string>();
+const taskKeys: string[] = [];
+let ambiguousAttempts = 0;
+const ambiguousWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession() { return { id: "ambiguous-session" }; },
+  async createPlanDraftTask(_sessionId, _input, key) {
+    taskKeys.push(key);
+    ambiguousAttempts += 1;
+    if (ambiguousAttempts === 1) throw new TypeError("网络中断");
+    return { id: "ambiguous-task", status: "succeeded", result: { summary: "恢复", planDraft }, errorCode: null };
+  },
+  async getCopilotTask() { throw new Error("立即成功不轮询"); }
+}, { storage: { getItem: (key) => ambiguousStorage.get(key) ?? null, setItem: (key, value) => ambiguousStorage.set(key, value), removeItem: (key) => ambiguousStorage.delete(key) } });
+await assert.rejects(() => ambiguousWorkflow.generate({ modelConnectionId: "model-a", prompt: "模糊失败" }), /网络中断/);
+await ambiguousWorkflow.generate({ modelConnectionId: "model-a", prompt: "模糊失败" });
+assert.deepEqual(taskKeys, [taskKeys[0], taskKeys[0]], "模糊网络失败恢复时必须复用任务幂等键");
+
+const sessionAmbiguousStorage = new Map<string, string>();
+const sessionKeys: string[] = [];
+let sessionAmbiguousAttempts = 0;
+const sessionAmbiguousWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession(_input, key) {
+    sessionKeys.push(key);
+    sessionAmbiguousAttempts += 1;
+    if (sessionAmbiguousAttempts === 1) throw new TypeError("会话网络中断");
+    return { id: "restored-session" };
+  },
+  async createPlanDraftTask() { return { id: "restored-task", status: "succeeded", result: { summary: "恢复", planDraft }, errorCode: null }; },
+  async getCopilotTask() { throw new Error("立即成功不轮询"); }
+}, { storage: { getItem: (key) => sessionAmbiguousStorage.get(key) ?? null, setItem: (key, value) => sessionAmbiguousStorage.set(key, value), removeItem: (key) => sessionAmbiguousStorage.delete(key) } });
+await assert.rejects(() => sessionAmbiguousWorkflow.generate({ modelConnectionId: "model-a", prompt: "会话模糊失败" }), /会话网络中断/);
+await sessionAmbiguousWorkflow.generate({ modelConnectionId: "model-a", prompt: "会话模糊失败" });
+assert.deepEqual(sessionKeys, [sessionKeys[0], sessionKeys[0]], "模糊会话创建恢复时必须复用会话幂等键");
+
+const backoffs: number[] = [];
+let backoffPolls = 0;
+const backoffWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession() { return { id: "backoff-session" }; },
+  async createPlanDraftTask() { return { id: "backoff-task", status: "queued", result: null, errorCode: null }; },
+  async getCopilotTask(taskId) {
+    backoffPolls += 1;
+    return backoffPolls < 3
+      ? { id: taskId, status: "running", result: null, errorCode: null }
+      : { id: taskId, status: "succeeded", result: { summary: "退避完成", planDraft }, errorCode: null };
+  }
+}, { storage: null, sleep: async (milliseconds) => { backoffs.push(milliseconds); } });
+await backoffWorkflow.generate({ modelConnectionId: "model-a", prompt: "验证退避" });
+assert.deepEqual(backoffs, [1_000, 2_000]);
+
+for (const status of ["failed", "cancelled"] as const) {
+  const terminalStorage = new Map<string, string>();
+  const terminalWorkflow = createPlanDraftWorkflow({
+    async createCopilotSession() { return { id: `session-${status}` }; },
+    async createPlanDraftTask() { return { id: `task-${status}`, status, result: null, errorCode: `TASK_${status.toUpperCase()}` }; },
+    async getCopilotTask() { throw new Error("终态任务不应轮询"); }
+  }, { storage: { getItem: (key) => terminalStorage.get(key) ?? null, setItem: (key, value) => terminalStorage.set(key, value), removeItem: (key) => terminalStorage.delete(key) } });
+  await assert.rejects(
+    () => terminalWorkflow.generate({ modelConnectionId: "model-a", prompt: `终态 ${status}` }),
+    new RegExp(`TASK_${status.toUpperCase()}`)
+  );
+  const remaining = terminalStorage.get("goodjob.acquisition.plan-draft-workflow.v1") ?? "";
+  assert.equal(remaining.includes(`session-${status}`), true, "终态后应保留可复用会话");
+  assert.equal(remaining.includes(`task-${status}`), false, "终态后必须移除 pending task");
+}
+
+const configuredTimeoutWorkflow = createPlanDraftWorkflow({
+  async createCopilotSession() { return { id: "timeout-session" }; },
+  async createPlanDraftTask() { return { id: "timeout-task", status: "queued", result: null, errorCode: null }; },
+  async getCopilotTask(taskId) { return { id: taskId, status: "running", result: null, errorCode: null }; }
+}, {
+  storage: null,
+  timeoutMs: 2_000,
+  sleep: async () => undefined,
+  now: (() => { let clock = 0; return () => clock += 1_000; })()
+});
+await assert.rejects(
+  () => configuredTimeoutWorkflow.generate({ modelConnectionId: "model-a", prompt: "自定义超时" }),
+  /2 秒/
+);

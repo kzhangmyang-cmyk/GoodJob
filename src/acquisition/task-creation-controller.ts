@@ -107,6 +107,7 @@ function initialise(): void {
   let submitting = false;
   let mode: "ai" | "manual" = "ai";
   let generatedPlan: ReturnType<typeof buildDouyinPlanInput> | null = null;
+  let generation = 0;
 
   function setPreflight(message: string, state: "loading" | "ready" | "blocked"): void {
     if (!preflight) return;
@@ -157,8 +158,11 @@ function initialise(): void {
   }
 
   function invalidateGeneratedPlan(): void {
+    generation += 1;
     planDraftWorkflow.clear();
     generatedPlan = null;
+    if (approvalConfirmed) approvalConfirmed.checked = false;
+    if (aiGenerate) aiGenerate.disabled = false;
     if (aiDraft) {
       aiDraft.hidden = true;
       aiDraft.replaceChildren();
@@ -178,6 +182,7 @@ function initialise(): void {
       return;
     }
     invalidateGeneratedPlan();
+    const requestGeneration = generation;
     aiGenerate!.disabled = true;
     setSubmitStatus("AI 增长参谋正在生成完整服务端计划草稿…", "loading");
     try {
@@ -185,6 +190,7 @@ function initialise(): void {
         modelConnectionId: modelConnectionSelect.value,
         prompt
       });
+      if (requestGeneration !== generation || mode !== "ai") return;
       generatedPlan = result.planDraft;
       if (aiDraft) {
         aiDraft.innerHTML = renderPlanDraftPreview(generatedPlan);
@@ -192,11 +198,14 @@ function initialise(): void {
       }
       setSubmitStatus("计划草稿已生成。请完整核对后勾选人工批准。", "success");
     } catch (error) {
+      if (requestGeneration !== generation) return;
       if (error instanceof DOMException && error.name === "AbortError") return;
       setSubmitStatus(error instanceof Error ? error.message : "AI 计划生成失败", "error");
     } finally {
-      if (aiGenerate) aiGenerate.disabled = false;
-      updateSubmitAvailability();
+      if (requestGeneration === generation) {
+        if (aiGenerate) aiGenerate.disabled = false;
+        updateSubmitAvailability();
+      }
     }
   }
 
