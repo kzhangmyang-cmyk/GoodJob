@@ -539,10 +539,10 @@ export interface AcquisitionPrivateDomainHandoffInput {
 export type AcquisitionPrivateDomainHandoffStoredRequest = Omit<
   AcquisitionPrivateDomainHandoffInput,
   "runId" | "discoveredEventId"
-> & {
-  runId?: string;
-  discoveredEventId?: string;
-};
+> & (
+  | Pick<AcquisitionPrivateDomainHandoffInput, "runId" | "discoveredEventId">
+  | { runId?: never; discoveredEventId?: never }
+);
 
 export interface AcquisitionPrivateDomainHandoffResult {
   replayed: boolean;

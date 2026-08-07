@@ -790,6 +790,40 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
     discoveredEventId: "event-candidate-legacy-in-flight"
   });
   controller.destroy();
+
+  let partialPinSubmitted = false;
+  const partialPinApi = {
+    ...api,
+    async getCandidatePrivateDomainHandoff() {
+      return {
+        replayed: false,
+        inProgress: {
+          id: "operation-partial-pin-in-flight",
+          candidateId: "candidate-legacy-in-flight",
+          decisionVersion: legacyRequest.decisionVersion,
+          mode: legacyRequest.mode,
+          existingCustomerId: legacyRequest.existingCustomerId,
+          stage: "customer_ready" as const,
+          request: { ...legacyRequest, runId: "run-partial-only" },
+          createdAt: "2026-08-07T08:00:00.000Z"
+        }
+      };
+    },
+    async handoffCandidate() {
+      partialPinSubmitted = true;
+      throw new Error("部分归因不得提交");
+    }
+  } as unknown as AcquisitionDetailApi;
+  const partialPinController = createAcquisitionDetailCenterController({
+    api: partialPinApi
+  });
+  await partialPinController.open("candidates", "plan-1");
+  await partialPinController.selectCandidate("candidate-legacy-in-flight");
+  partialPinController.openPrivateDomainHandoff();
+  assert.equal(partialPinController.getState().handoffDialog, null);
+  assert.match(partialPinController.getState().error ?? "", /历史交接.*不完整/);
+  assert.equal(partialPinSubmitted, false);
+  partialPinController.destroy();
 }
 
 {
@@ -913,6 +947,47 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
     discoveredEventId: "event-candidate-legacy-completed"
   });
   controller.destroy();
+
+  for (const invalidRecoveryRequest of [
+    { ...legacyRequest, runId: "run-partial-only" },
+    { ...legacyRequest, runId: "   ", discoveredEventId: "   " }
+  ]) {
+    let invalidRecoverySubmitted = false;
+    const invalidRecoveryApi = {
+      ...api,
+      async getCandidatePrivateDomainHandoff() {
+        const completed = await api.getCandidatePrivateDomainHandoff(
+          "candidate-legacy-completed"
+        );
+        if (!completed || !("handoff" in completed)) {
+          throw new Error("缺少完成态交接");
+        }
+        return {
+          ...completed,
+          recovery: { request: invalidRecoveryRequest }
+        };
+      },
+      async handoffCandidate() {
+        invalidRecoverySubmitted = true;
+        throw new Error("无效历史归因不得提交");
+      }
+    } as unknown as AcquisitionDetailApi;
+    const invalidRecoveryController = createAcquisitionDetailCenterController({
+      api: invalidRecoveryApi
+    });
+    await invalidRecoveryController.open("candidates", "plan-1");
+    await invalidRecoveryController.selectCandidate(
+      "candidate-legacy-completed"
+    );
+    invalidRecoveryController.openPrivateDomainHandoff();
+    assert.equal(invalidRecoveryController.getState().handoffDialog, null);
+    assert.match(
+      invalidRecoveryController.getState().error ?? "",
+      /历史交接.*不完整/
+    );
+    assert.equal(invalidRecoverySubmitted, false);
+    invalidRecoveryController.destroy();
+  }
 }
 
 {

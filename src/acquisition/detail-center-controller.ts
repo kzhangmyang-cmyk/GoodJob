@@ -291,7 +291,15 @@ function handoffAttributionSource(
 
 function storedHandoffRequest(value: unknown) {
   const request = record(value);
+  if (!request) return null;
   const followUp = record(request?.followUp);
+  const hasRunId = Object.prototype.hasOwnProperty.call(request, "runId");
+  const hasDiscoveredEventId = Object.prototype.hasOwnProperty.call(
+    request,
+    "discoveredEventId"
+  );
+  const runId = requestedPlanId(request.runId);
+  const discoveredEventId = requestedPlanId(request.discoveredEventId);
   const decisionVersion = requestedPlanId(request?.decisionVersion);
   const existingCustomerId = typeof request?.existingCustomerId === "string"
     ? request.existingCustomerId
@@ -299,7 +307,9 @@ function storedHandoffRequest(value: unknown) {
   const title = typeof followUp?.title === "string" ? followUp.title : null;
   const dueAt = typeof followUp?.dueAt === "string" ? followUp.dueAt : null;
   const priority = followUp?.priority;
-  if (request?.operationCode !== "handoff_acquisition_candidate_v1"
+  if (hasRunId !== hasDiscoveredEventId
+    || (hasRunId && (!runId || !discoveredEventId))
+    || request?.operationCode !== "handoff_acquisition_candidate_v1"
     || !decisionVersion
     || (request.mode !== "create_new" && request.mode !== "link_existing")
     || existingCustomerId === null
@@ -310,8 +320,9 @@ function storedHandoffRequest(value: unknown) {
   }
   return {
     operationCode: request.operationCode,
-    runId: requestedPlanId(request.runId),
-    discoveredEventId: requestedPlanId(request.discoveredEventId),
+    ...(hasRunId
+      ? { runId: runId!, discoveredEventId: discoveredEventId! }
+      : {}),
     decisionVersion,
     mode: request.mode as "create_new" | "link_existing",
     existingCustomerId,
@@ -328,7 +339,7 @@ function recoverableHandoffRequest(status: unknown) {
   const inProgress = record(result?.inProgress);
   if (inProgress) return storedHandoffRequest(inProgress.request);
   const recovery = record(result?.recovery);
-  return storedHandoffRequest(recovery?.request);
+  return recovery ? storedHandoffRequest(recovery.request) : undefined;
 }
 
 interface ResourceLoad<T> {
@@ -1434,7 +1445,14 @@ export function createAcquisitionDetailCenterController(
         return;
       }
       const recoveryRequest = recoverableHandoffRequest(handoffStatus);
-      if (handoffStatus && "handoff" in handoffStatus && !recoveryRequest) return;
+      if (recoveryRequest === null) {
+        void rejectValidation(
+          "历史交接归因不完整，无法安全恢复"
+        ).catch(() => undefined);
+        return;
+      }
+      if (handoffStatus && "handoff" in handoffStatus
+        && recoveryRequest === undefined) return;
       if (status !== "approved" && status !== "converted_to_lead") {
         void rejectValidation("只有已批准或已转线索的候选可以交接").catch(
           () => undefined
