@@ -292,6 +292,18 @@ export type AcquisitionCustomerHandoffStage =
   | "todo_ready"
   | "completed";
 
+export interface AcquisitionCustomerHandoffRequestSnapshot {
+  operationCode: "handoff_acquisition_candidate_v1";
+  decisionVersion: string;
+  mode: "create_new" | "link_existing";
+  existingCustomerId: string;
+  followUp: {
+    title: string;
+    dueAt: string;
+    priority: "high" | "medium" | "normal";
+  };
+}
+
 export interface AcquisitionCustomerHandoffOperation {
   id: string;
   ownerId: string;
@@ -311,6 +323,7 @@ export interface AcquisitionCustomerHandoffOperation {
   intelligence: AcquisitionHandoffIntelligence;
   qualificationSnapshotHash: string;
   financialSnapshotHash: string;
+  request: AcquisitionCustomerHandoffRequestSnapshot;
   createdAt: string;
   updatedAt: string;
 }

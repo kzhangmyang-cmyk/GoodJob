@@ -529,6 +529,20 @@ test("human review, conversion, and copilot writes mirror runtime schemas", () =
       .schema.enum[0],
     "true"
   );
+  const handoffStatus = paths[
+    "/api/v1/acquisition/candidates/{id}/private-domain-handoff"
+  ]!.get as Record<string, any>;
+  const handoffStatusSchema = handoffStatus.responses["200"]
+    .content["application/json"].schema;
+  assert.equal(handoffStatusSchema.oneOf.length, 2);
+  const pendingHandoff = handoffStatusSchema.oneOf.find(
+    (variant: Record<string, any>) => variant.properties.inProgress
+  );
+  assert.deepEqual(
+    pendingHandoff.properties.inProgress.properties.request
+      .properties.followUp.required,
+    ["title", "dueAt", "priority"]
+  );
 
   const session = paths[
     "/api/v1/acquisition/copilot/sessions"

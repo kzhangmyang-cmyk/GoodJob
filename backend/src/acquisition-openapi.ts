@@ -1681,6 +1681,100 @@ const privateDomainHandoffWriteSchema = {
   }))
 };
 
+const privateDomainHandoffRequestSnapshotSchema = {
+  type: "object",
+  required: [
+    "operationCode",
+    "decisionVersion",
+    "mode",
+    "existingCustomerId",
+    "followUp"
+  ],
+  properties: {
+    operationCode: {
+      type: "string",
+      enum: ["handoff_acquisition_candidate_v1"]
+    },
+    decisionVersion: {
+      type: "string",
+      minLength: 1,
+      maxLength: 100
+    },
+    mode: {
+      type: "string",
+      enum: ["create_new", "link_existing"]
+    },
+    existingCustomerId: { type: "string", maxLength: 255 },
+    followUp: {
+      type: "object",
+      required: ["title", "dueAt", "priority"],
+      properties: {
+        title: { type: "string", minLength: 1, maxLength: 500 },
+        dueAt: { type: "string", format: "date-time" },
+        priority: {
+          type: "string",
+          enum: ["high", "medium", "normal"]
+        }
+      },
+      additionalProperties: false
+    }
+  },
+  additionalProperties: false
+};
+
+const privateDomainHandoffPendingResponseSchema = {
+  type: "object",
+  required: ["replayed", "inProgress"],
+  properties: {
+    replayed: { type: "boolean", enum: [false] },
+    inProgress: {
+      type: "object",
+      required: [
+        "id",
+        "candidateId",
+        "decisionVersion",
+        "mode",
+        "existingCustomerId",
+        "stage",
+        "request",
+        "createdAt"
+      ],
+      properties: {
+        id: { type: "string" },
+        candidateId: { type: "string" },
+        decisionVersion: { type: "string" },
+        mode: {
+          type: "string",
+          enum: ["create_new", "link_existing"]
+        },
+        existingCustomerId: { type: "string" },
+        stage: {
+          type: "string",
+          enum: [
+            "reserved",
+            "lead_ready",
+            "customer_ready",
+            "activity_ready",
+            "todo_ready",
+            "completed"
+          ]
+        },
+        request: privateDomainHandoffRequestSnapshotSchema,
+        createdAt: { type: "string", format: "date-time" }
+      },
+      additionalProperties: false
+    }
+  },
+  additionalProperties: false
+};
+
+const privateDomainHandoffStatusResponseSchema = {
+  oneOf: [
+    privateDomainHandoffResponseSchema,
+    privateDomainHandoffPendingResponseSchema
+  ]
+};
+
 const copilotSessionWriteSchema = {
   type: "object",
   properties: {
@@ -2369,7 +2463,7 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     "post /api/v1/acquisition/candidates/{id}/private-domain-handoffs":
       privateDomainHandoffResponseSchema,
     "get /api/v1/acquisition/candidates/{id}/private-domain-handoff":
-      privateDomainHandoffResponseSchema,
+      privateDomainHandoffStatusResponseSchema,
     "get /api/v1/acquisition/outcomes": outcomePagedResponseSchema,
     "get /api/v1/acquisition/audit-events": auditPagedResponseSchema,
     "post /api/v1/acquisition/copilot/sessions":

@@ -820,6 +820,12 @@ function publicConversion(record: LeadConversionRecord) {
 function publicPrivateDomainHandoff(
   result: Awaited<ReturnType<AcquisitionPrivateDomainHandoffService["get"]>>
 ) {
+  if ("inProgress" in result) {
+    return {
+      replayed: false,
+      inProgress: structuredClone(result.inProgress)
+    };
+  }
   return {
     replayed: result.replayed,
     handoff: {

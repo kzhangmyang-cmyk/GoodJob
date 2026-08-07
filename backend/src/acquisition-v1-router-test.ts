@@ -15,7 +15,8 @@ import {
   AcquisitionDomainService
 } from "./acquisition-domain-service.js";
 import type {
-  AcquisitionPrivateDomainHandoffResult
+  AcquisitionPrivateDomainHandoffResult,
+  AcquisitionPrivateDomainHandoffStatus
 } from "./acquisition-private-domain-handoff.js";
 import {
   AcquisitionIdentityResolutionService
@@ -367,6 +368,7 @@ test("private-domain handoff route enforces server-owned input and supports repl
     }
   };
   let createCalls = 0;
+  let returnInProgress = false;
   const fixture = await createFixture({
     privateDomainHandoffService: {
       async create(_scope, _candidateId, _request, _key) {
@@ -376,7 +378,32 @@ test("private-domain handoff route enforces server-owned input and supports repl
           replayed: createCalls > 1
         };
       },
-      async get() {
+      async get(): Promise<AcquisitionPrivateDomainHandoffStatus> {
+        if (returnInProgress) {
+          return {
+            replayed: false,
+            inProgress: {
+              id: "ach-operation-router",
+              candidateId: "candidate-router",
+              decisionVersion: "qualification-v2",
+              mode: "link_existing",
+              existingCustomerId: "customer-original-target",
+              stage: "customer_ready",
+              request: {
+                operationCode: "handoff_acquisition_candidate_v1",
+                decisionVersion: "qualification-v2",
+                mode: "link_existing",
+                existingCustomerId: "customer-original-target",
+                followUp: {
+                  title: "原始刷新跟进",
+                  dueAt: "2026-08-09T10:30:00.000Z",
+                  priority: "medium"
+                }
+              },
+              createdAt: "2026-08-07T08:00:00.000Z"
+            }
+          };
+        }
         return structuredClone(completed);
       }
     }
@@ -434,6 +461,22 @@ test("private-domain handoff route enforces server-owned input and supports repl
     assert.equal(refreshed.response.status, 200);
     assert.equal(refreshed.json.handoff.customerId, "customer-router");
     assert.equal("processingKeyHash" in refreshed.json.handoff, false);
+
+    returnInProgress = true;
+    const recovering = await fixture.request(
+      "/api/v1/acquisition/candidates/candidate-router/private-domain-handoff"
+    );
+    assert.equal(recovering.response.status, 200);
+    assert.equal(recovering.json.inProgress.stage, "customer_ready");
+    assert.deepEqual(recovering.json.inProgress.request.followUp, {
+      title: "原始刷新跟进",
+      dueAt: "2026-08-09T10:30:00.000Z",
+      priority: "medium"
+    });
+    assert.equal(
+      recovering.json.inProgress.request.existingCustomerId,
+      "customer-original-target"
+    );
   } finally {
     await fixture.close();
   }

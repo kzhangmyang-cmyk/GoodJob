@@ -527,6 +527,23 @@ assert.equal(
   reservedFailure.store.acquisitionCustomerHandoffOperations[0]?.stage,
   "lead_ready"
 );
+const refreshedReservedService = new AcquisitionPrivateDomainHandoffService({
+  repository: reservedFailure.repository,
+  domainService: reservedFailure.domainService,
+  store: reservedFailure.store,
+  now
+});
+const pendingHandoff = await refreshedReservedService.get(
+  scope,
+  "candidate-a"
+) as unknown as {
+  inProgress: {
+    stage: string;
+    request: typeof request;
+  };
+};
+assert.equal(pendingHandoff.inProgress.stage, "lead_ready");
+assert.deepEqual(pendingHandoff.inProgress.request, request);
 await assert.rejects(
   () => reservedFailure.service.create(
     scope,
@@ -539,6 +556,23 @@ await assert.rejects(
       }
     },
     "handoff-reserved-key"
+  ),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT"
+);
+await assert.rejects(
+  () => refreshedReservedService.create(
+    scope,
+    "candidate-a",
+    {
+      ...request,
+      followUp: {
+        ...request.followUp,
+        title: "篡改后的首次跟进"
+      }
+    },
+    "handoff-different-request-key"
   ),
   (error: unknown) => error instanceof Error
     && "code" in error
@@ -559,34 +593,102 @@ await assert.rejects(
     && "code" in error
     && error.code === "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT"
 );
-await assert.rejects(
-  () => reservedFailure.service.create(
-    scope,
-    "candidate-a",
-    {
-      ...request,
-      existingCustomerId: "customer-changed-target"
-    },
-    "handoff-reserved-key"
-  ),
-  (error: unknown) => error instanceof Error
-    && "code" in error
-    && error.code === "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT"
-);
 await reservedFailure.repository.appendFinancialValue({
   ...financial,
   id: "financial-after-reservation",
   expectedRevenueMinor: 9_999_900,
   createdAt: "2026-08-07T07:59:00.000Z"
 });
-const immutableResume = await reservedFailure.service.create(
+const immutableResume = await refreshedReservedService.create(
   scope,
   "candidate-a",
-  request,
-  "handoff-reserved-key"
+  pendingHandoff.inProgress.request,
+  "handoff-refresh-recovery-key"
 );
 assert.equal(immutableResume.intelligence.expectedRevenueMinor, 1_288_000);
 assert.equal(immutableResume.customer.amount, 12_880);
+assert.equal(immutableResume.todo.title, request.followUp.title);
+assert.equal(immutableResume.todo.dueAt, request.followUp.dueAt);
+assert.equal(reservedFailure.store.leads.length, 1);
+assert.equal(reservedFailure.store.customers.length, 1);
+assert.equal(reservedFailure.store.todos.length, 1);
+assert.equal(reservedFailure.store.acquisitionCustomerHandoffs.length, 1);
+
+const linkedTodoFailure = await fixture();
+linkedTodoFailure.store.customers.push({
+  ...result.customer,
+  id: "customer-refresh-target",
+  amount: 432,
+  grade: "C",
+  nextReminder: ""
+});
+const linkedRefreshRequest = {
+  ...request,
+  mode: "link_existing" as const,
+  existingCustomerId: "customer-refresh-target",
+  followUp: {
+    title: "首次跟进：核对原始目标",
+    dueAt: "2026-08-11T03:30:00.000Z",
+    priority: "medium" as const
+  }
+};
+let rejectedTodoStage = false;
+linkedTodoFailure.store.persistMutation = async (mutation) => {
+  const applied = mutation();
+  if (!rejectedTodoStage && linkedTodoFailure.store.todos.length > 0) {
+    rejectedTodoStage = true;
+    applied.rollback();
+    throw new Error("todo stage failed");
+  }
+  return applied.value;
+};
+await assert.rejects(
+  () => linkedTodoFailure.service.create(
+    scope,
+    "candidate-a",
+    linkedRefreshRequest,
+    "handoff-linked-original-key"
+  ),
+  /todo stage failed/
+);
+const refreshedLinkedService = new AcquisitionPrivateDomainHandoffService({
+  repository: linkedTodoFailure.repository,
+  domainService: linkedTodoFailure.domainService,
+  store: linkedTodoFailure.store,
+  now
+});
+const linkedPending = await refreshedLinkedService.get(scope, "candidate-a");
+assert.ok("inProgress" in linkedPending);
+assert.deepEqual(linkedPending.inProgress.request, linkedRefreshRequest);
+await assert.rejects(
+  () => refreshedLinkedService.create(
+    scope,
+    "candidate-a",
+    {
+      ...linkedRefreshRequest,
+      existingCustomerId: "customer-silent-retarget"
+    },
+    "handoff-linked-new-key"
+  ),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT"
+);
+const linkedRecovered = await refreshedLinkedService.create(
+  scope,
+  "candidate-a",
+  linkedPending.inProgress.request,
+  "handoff-linked-refresh-key"
+);
+assert.equal(linkedRecovered.customer.id, "customer-refresh-target");
+assert.equal(linkedRecovered.customer.amount, 432);
+assert.equal(linkedRecovered.customer.grade, "C");
+assert.equal(linkedRecovered.todo.title, linkedRefreshRequest.followUp.title);
+assert.equal(linkedRecovered.todo.dueAt, linkedRefreshRequest.followUp.dueAt);
+assert.equal(linkedTodoFailure.store.customers.length, 1);
+assert.equal(linkedTodoFailure.store.customerActivities.length, 1);
+assert.equal(linkedTodoFailure.store.todos.length, 1);
+assert.equal(linkedTodoFailure.store.acquisitionCustomerHandoffs.length, 1);
 
 const recovering = await fixture();
 let rejectedCompletedWrite = false;
@@ -636,6 +738,7 @@ const refreshedService = new AcquisitionPrivateDomainHandoffService({
   now
 });
 const refreshed = await refreshedService.get(scope, "candidate-a");
+assert.ok("handoff" in refreshed);
 assert.equal(refreshed.handoff.id, recovered.handoff.id);
 assert.equal(refreshed.lead.id, recovered.lead.id);
 assert.equal(refreshed.customer.id, recovered.customer.id);

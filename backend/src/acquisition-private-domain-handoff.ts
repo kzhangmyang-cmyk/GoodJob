@@ -10,6 +10,7 @@ import { canonicalJsonStringify } from "./canonical-json.js";
 import type {
   AcquisitionCustomerHandoff,
   AcquisitionCustomerHandoffOperation,
+  AcquisitionCustomerHandoffRequestSnapshot,
   AcquisitionHandoffIntelligence,
   Customer,
   CustomerActivity,
@@ -19,17 +20,8 @@ import type {
   Todo
 } from "./types.js";
 
-export interface AcquisitionPrivateDomainHandoffRequest {
-  operationCode: "handoff_acquisition_candidate_v1";
-  decisionVersion: string;
-  mode: "create_new" | "link_existing";
-  existingCustomerId: string;
-  followUp: {
-    title: string;
-    dueAt: string;
-    priority: "high" | "medium" | "normal";
-  };
-}
+export interface AcquisitionPrivateDomainHandoffRequest
+  extends AcquisitionCustomerHandoffRequestSnapshot {}
 
 export interface AcquisitionPrivateDomainHandoffStore {
   leads: Lead[];
@@ -57,6 +49,24 @@ export interface AcquisitionPrivateDomainHandoffResult {
   intelligence: AcquisitionHandoffIntelligence;
 }
 
+export interface AcquisitionPrivateDomainHandoffPendingResult {
+  replayed: false;
+  inProgress: {
+    id: string;
+    candidateId: string;
+    decisionVersion: string;
+    mode: "create_new" | "link_existing";
+    existingCustomerId: string;
+    stage: AcquisitionCustomerHandoffOperation["stage"];
+    request: AcquisitionCustomerHandoffRequestSnapshot;
+    createdAt: string;
+  };
+}
+
+export type AcquisitionPrivateDomainHandoffStatus =
+  | AcquisitionPrivateDomainHandoffResult
+  | AcquisitionPrivateDomainHandoffPendingResult;
+
 export class AcquisitionPrivateDomainHandoffError extends Error {
   constructor(
     readonly code: string,
@@ -80,6 +90,24 @@ function gradeForCustomer(
   grade: AcquisitionHandoffIntelligence["qualificationGrade"]
 ): Customer["grade"] {
   return grade === "S" ? "A" : grade;
+}
+
+function normalizeHandoffRequest(
+  request: AcquisitionPrivateDomainHandoffRequest
+): AcquisitionCustomerHandoffRequestSnapshot {
+  return {
+    operationCode: "handoff_acquisition_candidate_v1",
+    decisionVersion: request.decisionVersion.trim(),
+    mode: request.mode,
+    existingCustomerId: request.mode === "link_existing"
+      ? request.existingCustomerId.trim()
+      : "",
+    followUp: {
+      title: request.followUp.title.trim(),
+      dueAt: new Date(request.followUp.dueAt).toISOString(),
+      priority: request.followUp.priority
+    }
+  };
 }
 
 function removeById<T extends { id: string }>(values: T[], id: string) {
@@ -162,13 +190,14 @@ export class AcquisitionPrivateDomainHandoffService {
     idempotencyKey: string
   ): Promise<AcquisitionPrivateDomainHandoffResult> {
     await this.#store.readBarrier();
+    const normalizedRequest = normalizeHandoffRequest(request);
     const processingKeyHash = digest([
       scope.ownerId,
       scope.teamId,
       candidateId,
       idempotencyKey
     ].join("\u001f"));
-    const requestHash = digest(canonicalJsonStringify(request));
+    const requestHash = digest(canonicalJsonStringify(normalizedRequest));
     const completed = this.#store.acquisitionCustomerHandoffs.find((item) =>
       item.ownerId === scope.ownerId
       && item.teamId === scope.teamId
@@ -194,21 +223,23 @@ export class AcquisitionPrivateDomainHandoffService {
         && item.teamId === scope.teamId
         && item.candidateId === candidateId
     );
-    if (operation?.processingKeyHash === processingKeyHash
-      && operation.requestHash !== requestHash) {
+    if (operation && !operation.request) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING",
+        "未完成交接缺少原请求快照，无法安全恢复",
+        409
+      );
+    }
+    if (operation && operation.requestHash !== requestHash) {
       throw new AcquisitionPrivateDomainHandoffError(
         "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT",
-        "同一 Idempotency-Key 已用于不同交接请求",
+        "候选已有使用不同规范化请求的未完成交接",
         409
       );
     }
-    if (operation && operation.processingKeyHash !== processingKeyHash) {
-      throw new AcquisitionPrivateDomainHandoffError(
-        "ACQUISITION_HANDOFF_ALREADY_IN_PROGRESS",
-        "候选已有未完成的 CRM/私域交接",
-        409
-      );
-    }
+    request = operation
+      ? structuredClone(operation.request)
+      : normalizedRequest;
     const candidate = await this.#repository.findCandidate(scope, candidateId);
     if (!candidate) {
       throw new AcquisitionPrivateDomainHandoffError(
@@ -317,6 +348,7 @@ export class AcquisitionPrivateDomainHandoffService {
         intelligence: currentIntelligence,
         qualificationSnapshotHash: qualification.snapshotHash,
         financialSnapshotHash: financial.inputSnapshotHash,
+        request: structuredClone(request),
         createdAt,
         updatedAt: createdAt
       };
@@ -574,8 +606,8 @@ export class AcquisitionPrivateDomainHandoffService {
       todoId,
       decisionVersion: request.decisionVersion,
       mode: request.mode,
-      processingKeyHash,
-      requestHash,
+      processingKeyHash: operation.processingKeyHash,
+      requestHash: operation.requestHash,
       intelligence,
       qualificationSnapshotHash: operation.qualificationSnapshotHash,
       financialSnapshotHash: operation.financialSnapshotHash,
@@ -666,20 +698,47 @@ export class AcquisitionPrivateDomainHandoffService {
   async get(
     scope: Pick<AcquisitionActorScope, "ownerId" | "teamId">,
     candidateId: string
-  ): Promise<AcquisitionPrivateDomainHandoffResult> {
+  ): Promise<AcquisitionPrivateDomainHandoffStatus> {
     await this.#store.readBarrier();
     const handoff = this.#store.acquisitionCustomerHandoffs.find((item) =>
       item.ownerId === scope.ownerId
       && item.teamId === scope.teamId
       && item.candidateId === candidateId
     );
-    if (!handoff) {
-      throw new AcquisitionPrivateDomainHandoffError(
-        "ACQUISITION_HANDOFF_NOT_FOUND",
-        "交接记录不存在",
-        404
-      );
+    if (handoff) {
+      return this.#completedResult(scope, handoff, false);
     }
-    return this.#completedResult(scope, handoff, false);
+    const operation = this.#store.acquisitionCustomerHandoffOperations.find(
+      (item) => item.ownerId === scope.ownerId
+        && item.teamId === scope.teamId
+        && item.candidateId === candidateId
+    );
+    if (operation) {
+      if (!operation.request) {
+        throw new AcquisitionPrivateDomainHandoffError(
+          "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING",
+          "未完成交接缺少原请求快照，无法安全恢复",
+          409
+        );
+      }
+      return {
+        replayed: false,
+        inProgress: {
+          id: operation.id,
+          candidateId: operation.candidateId,
+          decisionVersion: operation.decisionVersion,
+          mode: operation.mode,
+          existingCustomerId: operation.existingCustomerId,
+          stage: operation.stage,
+          request: structuredClone(operation.request),
+          createdAt: operation.createdAt
+        }
+      };
+    }
+    throw new AcquisitionPrivateDomainHandoffError(
+      "ACQUISITION_HANDOFF_NOT_FOUND",
+      "交接记录不存在",
+      404
+    );
   }
 }
