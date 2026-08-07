@@ -37,6 +37,19 @@ const METRIC_DESCRIPTIONS = [
 let started = false;
 let waitingForDom = false;
 
+export function snapshotDisabledStates(
+  elements: Array<{ disabled: boolean } | null>
+): () => void {
+  const snapshots = elements.flatMap((element) => (
+    element ? [{ element, disabled: element.disabled }] : []
+  ));
+  return () => {
+    snapshots.forEach(({ element, disabled }) => {
+      element.disabled = disabled;
+    });
+  };
+}
+
 function byId<T extends HTMLElement = HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
 }
@@ -222,6 +235,10 @@ function initialiseRuntime(): void {
   const flowCards = FLOW_CARD_IDS
     .map((id) => byId<HTMLButtonElement>(id))
     .filter((card): card is HTMLButtonElement => card !== null);
+  const detailActionButtons = [
+    byId<HTMLButtonElement>("replicaEditTask"),
+    byId<HTMLButtonElement>("replicaCompleteTask")
+  ];
 
   rememberHidden(runtimeStatus);
   rememberHidden(realTaskGroup);
@@ -232,6 +249,7 @@ function initialiseRuntime(): void {
   rememberClass(runtimeStatus);
   rememberAttribute(runtimeStatus, "data-state");
   rememberAttribute(realTaskList, "aria-busy");
+  restoreActions.push(snapshotDisabledStates(detailActionButtons));
   modeButtons.forEach((button) => {
     rememberClass(button);
     rememberAttribute(button, "aria-selected");
@@ -356,8 +374,12 @@ function initialiseRuntime(): void {
     setText("replicaAdvicePrimary", "公开证据不等于意向客户，需经 AI 评分和人工审核。");
     setText("replicaAdviceSecondary", "真实模式只展示后端已保存的任务、证据和运行消耗。");
     setText("replicaAdviceButton", "查看研判说明");
-    setText("replicaEditTaskLabel", "计划详情（待接入）");
-    setText("replicaCompleteTaskLabel", "候选研判（待接入）");
+    setText("replicaEditTaskLabel", "查看计划详情");
+    setText("replicaCompleteTaskLabel", "AI 候选研判");
+    const planButton = byId<HTMLButtonElement>("replicaEditTask");
+    const candidateButton = byId<HTMLButtonElement>("replicaCompleteTask");
+    if (planButton) planButton.disabled = true;
+    if (candidateButton) candidateButton.disabled = true;
 
     setText("replicaDetailId", "--");
     setText("replicaDetailNameText", "尚未选择真实抖音任务");

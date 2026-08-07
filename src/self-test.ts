@@ -7,9 +7,14 @@ import { buildLeadFinderIntentChips, getLeadFinderLayoutMode } from "./lead-find
 import "./acquisition/runtime-model.self-test";
 import "./acquisition/runtime-api.self-test";
 import "./acquisition/runtime-presenter.self-test";
+import "./acquisition/runtime.self-test";
 import "./acquisition/task-creation-api.self-test";
 import "./acquisition/task-creation-controller.self-test";
 import "./acquisition/task-creation-workflow.self-test";
+import "./acquisition/detail-center-api.self-test";
+import "./acquisition/detail-center-controller.self-test";
+import "./acquisition/detail-center-entry.self-test";
+import "./acquisition/detail-center-view.self-test";
 import "./connections/connection-api.self-test";
 import "./connections/connection-controller.self-test";
 import "./connections/connection-view.self-test";
@@ -151,6 +156,8 @@ const required = [
   "id=\"replicaRealConnectionsConfigure\"",
   "id=\"replicaConnectionCenter\"",
   "id=\"replicaConnectionCenterBody\"",
+  "id=\"replicaAcquisitionDetailCenter\"",
+  "id=\"replicaAcquisitionDetailCenterBody\"",
   "src/demo/demo-app.ts",
   "src/demo/demo.css",
   "renderDashboardView",
@@ -168,6 +175,11 @@ assert.equal(
   replicaBehavior.includes("startConnectionCenter"),
   true,
   "missing connection center bootstrap"
+);
+assert.equal(
+  replicaBehavior.includes("startAcquisitionDetailCenter"),
+  true,
+  "missing acquisition detail center bootstrap"
 );
 assert.equal(
   demoRouter.includes("hashchange"),

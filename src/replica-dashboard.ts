@@ -1,5 +1,7 @@
 import { startAcquisitionRuntime } from "./acquisition/runtime";
 import { startAcquisitionTaskCreation } from "./acquisition/task-creation-controller";
+import { startAcquisitionDetailCenter } from "./acquisition/detail-center-controller";
+import { acquisitionDetailRequestForAction } from "./acquisition/detail-center-entry";
 import { startConnectionCenter } from "./connections/connection-controller";
 
 type ReplicaTaskRow = HTMLButtonElement & {
@@ -189,6 +191,8 @@ if (replica) {
 
   function renderTaskDetail(row: ReplicaTaskRow, syncFlow = true) {
     const isRealTask = row.dataset.acquisitionRealTask === "true";
+    const planButton = document.querySelector<HTMLButtonElement>("#replicaEditTask");
+    const candidateButton = document.querySelector<HTMLButtonElement>("#replicaCompleteTask");
     selectedTask?.classList.remove("active");
     selectedTask = row;
     selectedTask.classList.add("active");
@@ -216,6 +220,8 @@ if (replica) {
         ? `真实任务数据已载入；公开证据不等于意向客户，需完成 AI 研判后再决定是否触达。`
         : `演示建议：优先处理“${row.dataset.taskProject || "当前平台"}”中包含明确购买、咨询或合作意图的内容`;
     }
+    if (planButton) planButton.disabled = false;
+    if (candidateButton) candidateButton.disabled = false;
     if (isRealTask) {
       document.dispatchEvent(new CustomEvent("goodjob:acquisition-task-selected", {
         detail: { planId: row.dataset.acquisitionPlanId || "" }
@@ -399,7 +405,19 @@ if (replica) {
   document.querySelector("#replicaEditTask")?.addEventListener("click", () => {
     if (!selectedTask) return;
     if (replica.dataset.acquisitionMode === "real") {
-      showToast("真实任务只读展示已接通；编辑与审批将在下一步接入");
+      const request = acquisitionDetailRequestForAction(
+        replica.dataset.acquisitionMode,
+        "replicaEditTask",
+        selectedTask.dataset.acquisitionPlanId
+      );
+      if (!request) {
+        showToast("请先选择一个真实抖音获客任务");
+        return;
+      }
+      document.dispatchEvent(new CustomEvent(
+        "goodjob:acquisition-detail-open-requested",
+        { detail: request }
+      ));
       return;
     }
     const nameInput = document.querySelector<HTMLInputElement>("#replicaTaskName");
@@ -413,6 +431,25 @@ if (replica) {
     if (platformInput) platformInput.value = selectedTask.dataset.taskProject || "抖音";
     if (modeInput) modeInput.value = selectedTask.dataset.taskOwner || "智能体";
     modal?.showModal();
+  });
+
+  document.querySelector("#replicaCompleteTask")?.addEventListener("click", (event) => {
+    if (!isAcquisitionActive() || replica.dataset.acquisitionMode !== "real") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const request = acquisitionDetailRequestForAction(
+      replica.dataset.acquisitionMode,
+      "replicaCompleteTask",
+      selectedTask?.dataset.acquisitionPlanId
+    );
+    if (!request) {
+      showToast("请先选择一个真实抖音获客任务");
+      return;
+    }
+    document.dispatchEvent(new CustomEvent(
+      "goodjob:acquisition-detail-open-requested",
+      { detail: request }
+    ));
   });
 
   document.querySelector("#replicaAdviceButton")?.addEventListener("click", () => {
@@ -536,4 +573,5 @@ if (replica) {
 
 startAcquisitionRuntime();
 startAcquisitionTaskCreation();
+startAcquisitionDetailCenter();
 startConnectionCenter();

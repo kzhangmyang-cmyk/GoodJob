@@ -1,0 +1,657 @@
+import { strict as assert } from "node:assert";
+import { createAcquisitionDetailApi } from "./detail-center-api";
+
+const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+const api = createAcquisitionDetailApi(async (input, init) => {
+  calls.push({ input, init });
+  return Response.json({
+    task: {
+      id: "plan/with space",
+      planId: "plan/with space",
+      name: "抖音公开商机发现",
+      objective: "发现公开且可验证的业务需求",
+      platform: "douyin",
+      discoveryMethods: ["public_search"],
+      planStatus: "approved",
+      latestRun: null,
+      updatedAt: "2026-08-07T05:00:00.000Z"
+    },
+    plan: {
+      id: "plan/with space",
+      ownerId: "user-1",
+      teamId: "team-1",
+      status: "approved",
+      version: 1,
+      revision: 2,
+      etag: '"plan/with space:2"',
+      currentVersionId: "plan-version-1",
+      approvedVersionId: "plan-version-1",
+      approvedSnapshotHash: "sha256:approved-plan",
+      approvedBy: "user-1",
+      approvedAt: "2026-08-07T04:59:00.000Z",
+      budgetSnapshot: {
+        billingCurrency: "CNY",
+        maxRequests: 4,
+        maxResults: 40,
+        maxAmountMinor: 400,
+        maxDurationSeconds: 240
+      },
+      payload: {
+        targetPlatform: "douyin",
+        name: "抖音公开商机发现",
+        objective: "发现公开且可验证的业务需求",
+        icp: {
+          industries: ["企业服务"],
+          regions: ["中国大陆"],
+          organizationCriteria: ["存在公开采购或增长信号"],
+          individualCriteria: ["公开表达经营需求"],
+          exclusionRules: ["明确拒绝联系"]
+        },
+        subjectChannels: { organization: true, individual: true },
+        providerConnections: [{
+          connectionId: "search-1",
+          providerId: "baidu_ai_search",
+          kind: "search",
+          status: "active",
+          credentialVersion: 1
+        }],
+        operations: [{
+          operationId: "organization-search",
+          subjectChannel: "organization",
+          kind: "search",
+          connectionId: "search-1",
+          query: "site:douyin.com 企业服务 采购",
+          allocatedBudget: {
+            requests: 4,
+            results: 40,
+            amountMinor: 400,
+            durationSeconds: 240
+          }
+        }],
+        budgetSnapshot: {
+          billingCurrency: "CNY",
+          maxRequests: 4,
+          maxResults: 40,
+          maxAmountMinor: 400,
+          maxDurationSeconds: 240
+        },
+        modelSnapshotRef: {
+          jobSnapshotId: "snapshot-1",
+          connectionId: "model-1",
+          credentialVersion: 1,
+          provider: "moonshot",
+          model: "kimi-k3",
+          capabilitySnapshotHash: "sha256:capability",
+          promptVersion: "acquisition.v1",
+          schemaVersion: "acquisition-plan.v1",
+          promptHash: "sha256:prompt",
+          schemaHash: "sha256:schema"
+        },
+        stopConditions: {
+          stopWhenBudgetExhausted: true,
+          stopWhenNoMoreResults: true
+        }
+      },
+      createdBy: "user-1",
+      createdAt: "2026-08-07T04:58:00.000Z",
+      updatedBy: "user-1",
+      updatedAt: "2026-08-07T05:00:00.000Z"
+    },
+    latestRun: null,
+    shards: [],
+    presentation: null
+  });
+});
+
+const task = await api.getTask("plan/with space");
+assert.equal(task.plan.id, "plan/with space");
+assert.equal(calls[0]?.input, "/api/v1/acquisition/tasks/plan%2Fwith%20space");
+assert.equal(calls[0]?.init?.method, "GET");
+assert.equal(calls[0]?.init?.credentials, "same-origin");
+assert.equal(new Headers(calls[0]?.init?.headers).get("accept"), "application/json");
+
+const presentationResponse = {
+  run: {
+    id: "run-1",
+    status: "succeeded" as const,
+    etag: '"run-1:3"',
+    updatedAt: "2026-08-07T05:00:00.000Z",
+    completedAt: "2026-08-07T05:01:00.000Z"
+  },
+  providers: [{
+    shardId: "shard-1",
+    connectionId: "search-1",
+    providerId: "baidu_ai_search",
+    status: "succeeded",
+    rawResultCount: 8,
+    acceptedResultCount: 3,
+    duplicateResultCount: 2,
+    failedResultCount: 0,
+    errorCode: null,
+    retryAfterAt: null
+  }],
+  summary: {
+    sourcesSearched: 1,
+    pagesAnalyzed: 8,
+    organizationsFound: 3,
+    dedupedCandidates: 3,
+    validOpportunities: 2,
+    highIntent: 1,
+    financialEvaluatedHighIntentCount: 1,
+    financialPendingHighIntentCount: 0,
+    expectedRevenueByCurrency: [{ currency: "CNY", amountMinor: 1200000 }]
+  },
+  candidateEvents: [{
+    eventId: "event-1",
+    createdAt: "2026-08-07T05:00:30.000Z",
+    candidateId: "candidate-1",
+    candidate: {
+      id: "candidate-1",
+      subjectKind: "organization" as const,
+      displayName: "厦门示例商贸有限公司",
+      industry: null,
+      region: "厦门",
+      domain: "example.cn",
+      status: "pending_review",
+      version: 2,
+      identityResolved: true,
+      updatedAt: "2026-08-07T05:00:30.000Z"
+    },
+    qualification: {
+      id: "qualification-1",
+      candidateId: "candidate-1",
+      decisionVersion: "qualification.v2:1",
+      decisionEngine: "model" as const,
+      grade: "A" as const,
+      score: 86,
+      recommendedAction: "priority_review" as const,
+      evidence: [{ evidenceId: "evidence-1", excerpt: "公开表达采购需求" }],
+      positiveSignals: [{ name: "明确需求", score: 25 }],
+      negativeSignals: [{ name: "触达风险", score: 2 }],
+      reasons: ["需求与目标客户画像匹配"],
+      confidence: 0.88,
+      ruleVersion: "qualification-rules.v2",
+      promptVersion: "qualification-prompt.v2",
+      modelProvider: "moonshot",
+      model: "kimi-k3",
+      hardGateFailures: [],
+      createdAt: "2026-08-07T05:00:28.000Z"
+    },
+    financialValue: {
+      id: "financial-1",
+      candidateId: "candidate-1",
+      qualificationDecisionId: "qualification-1",
+      version: "financial.v1:1",
+      grade: "A" as const,
+      score: 82,
+      currency: "CNY",
+      expectedRevenueMinor: 1200000,
+      expectedGrossProfitMinor: 600000,
+      expectedContributionMinor: 480000,
+      factors: {
+        profitability: 85,
+        cashFlow: 75,
+        creditQuality: 80,
+        repeatPotential: 70,
+        referralPotential: 60,
+        closeProbability: 72
+      },
+      createdAt: "2026-08-07T05:00:29.000Z"
+    },
+    sourcePlatforms: ["douyin", "web"],
+    evidenceCount: 2
+  }],
+  nextAfter: "cursor/next value",
+  hasMore: true
+};
+
+const presentationCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+const presentationApi = createAcquisitionDetailApi(async (input, init) => {
+  presentationCalls.push({ input, init });
+  return Response.json(presentationResponse);
+});
+const presentation = await presentationApi.getRunPresentation(
+  "run/with space",
+  { after: "cursor/with space", limit: 100 }
+);
+assert.equal(presentation.candidateEvents[0]?.qualification?.grade, "A");
+assert.equal(
+  presentationCalls[0]?.input,
+  "/api/v1/acquisition/runs/run%2Fwith%20space/presentation"
+    + "?after=cursor%2Fwith+space&limit=100"
+);
+
+const candidateResponse = {
+  id: "candidate-1",
+  name: "厦门示例商贸有限公司",
+  domain: "example.cn",
+  region: "厦门",
+  creditCode: "91350200EXAMPLE",
+  evidenceIds: ["evidence-1", "evidence-2"],
+  subjectKind: "organization" as const,
+  status: "pending_review" as const,
+  version: 2,
+  identityResolved: true,
+  latestDecisionVersion: "qualification.v2:1",
+  approvedDecisionVersion: null,
+  updatedAt: "2026-08-07T05:00:30.000Z",
+  createdAt: "2026-08-07T05:00:00.000Z"
+};
+const candidateCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+const candidateApi = createAcquisitionDetailApi(async (input, init) => {
+  candidateCalls.push({ input, init });
+  return Response.json(candidateResponse, {
+    headers: { etag: '"candidate-v2"' }
+  });
+});
+const loadedCandidate = await candidateApi.getCandidate("candidate/with space");
+assert.equal(loadedCandidate.candidate.subjectKind, "organization");
+if (loadedCandidate.candidate.subjectKind !== "organization") {
+  assert.fail("expected an organization candidate");
+}
+assert.equal(loadedCandidate.candidate.name, "厦门示例商贸有限公司");
+assert.equal(loadedCandidate.etag, '"candidate-v2"');
+assert.equal(
+  candidateCalls[0]?.input,
+  "/api/v1/acquisition/candidates/candidate%2Fwith%20space"
+);
+
+const evidenceResponse = {
+  items: [{
+    id: "evidence-1",
+    targetType: "organization" as const,
+    sourcePlatform: "douyin",
+    sourceTitle: "公开采购需求",
+    sourceSnippet: "正在寻找获客增长系统",
+    publishedAt: "2026-08-06T02:00:00.000Z",
+    fetchedAt: "2026-08-07T05:00:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: "sha256:raw",
+    contentHash: "sha256:content",
+    provenance: {
+      kind: "search_result" as const,
+      provider: "baidu_ai_search",
+      providerConnectionId: "search-1",
+      requestId: "provider-request-1",
+      providerRecordId: "provider-record-1",
+      queryText: "厦门 获客 采购",
+      sourceUrl: "https://example.cn/source",
+      resultRank: 1,
+      sourceType: "public_web"
+    },
+    accessStatus: "public_content" as const
+  }],
+  nextCursor: "evidence-cursor-2"
+};
+const evidenceCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+const evidenceApi = createAcquisitionDetailApi(async (input, init) => {
+  evidenceCalls.push({ input, init });
+  return Response.json(evidenceResponse);
+});
+const evidence = await evidenceApi.getCandidateEvidence(
+  "candidate/with space",
+  { cursor: "cursor/with space", limit: 25 }
+);
+assert.equal(evidence.items[0]?.provenance.kind, "search_result");
+assert.equal(
+  evidenceCalls[0]?.input,
+  "/api/v1/acquisition/candidates/candidate%2Fwith%20space/evidence"
+    + "?cursor=cursor%2Fwith+space&limit=25"
+);
+
+const qualificationCalls: string[] = [];
+const qualificationApi = createAcquisitionDetailApi(async (input) => {
+  qualificationCalls.push(String(input));
+  if (String(input).includes("candidate-missing")) {
+    return Response.json({
+      code: "resource_not_found",
+      message: "候选当前没有有效的资格决定",
+      details: null,
+      requestId: "request-404",
+      retryable: false
+    }, { status: 404 });
+  }
+  return Response.json(presentationResponse.candidateEvents[0]?.qualification);
+});
+assert.equal(
+  (await qualificationApi.getCandidateQualification("candidate-1"))?.grade,
+  "A"
+);
+assert.equal(
+  await qualificationApi.getCandidateQualification("candidate-missing"),
+  null
+);
+assert.deepEqual(qualificationCalls, [
+  "/api/v1/acquisition/candidates/candidate-1/qualification",
+  "/api/v1/acquisition/candidates/candidate-missing/qualification"
+]);
+
+const financialApi = createAcquisitionDetailApi(async (input) => {
+  if (String(input).includes("candidate-missing")) {
+    return Response.json({
+      code: "resource_not_found",
+      message: "候选当前没有有效的财务价值决定",
+      details: null,
+      requestId: "request-financial-404",
+      retryable: false
+    }, { status: 404 });
+  }
+  return Response.json(presentationResponse.candidateEvents[0]?.financialValue);
+});
+assert.equal(
+  (await financialApi.getCandidateFinancialValue("candidate-1"))
+    ?.expectedContributionMinor,
+  480000
+);
+assert.equal(
+  await financialApi.getCandidateFinancialValue("candidate-missing"),
+  null
+);
+
+const battleCardResponse = {
+  id: "battle-card-1",
+  candidateId: "candidate-1",
+  qualificationDecisionId: "qualification-1",
+  partyType: "organization" as const,
+  evidenceIds: ["evidence-1", "evidence-2"],
+  confidence: 0.84,
+  modelProvider: "moonshot",
+  model: "kimi-k3",
+  promptVersion: "battle-card-prompt.v2",
+  createdAt: "2026-08-07T05:00:31.000Z",
+  schemaVersion: "battle-card.v2" as const,
+  intelligence: {
+    accountOverview: [{
+      kind: "fact" as const,
+      text: "企业位于厦门",
+      evidenceIds: ["evidence-1"],
+      confidence: 0.95
+    }],
+    needAssessment: [{
+      kind: "fact" as const,
+      text: "公开表达获客采购需求",
+      evidenceIds: ["evidence-1"],
+      confidence: 0.9
+    }],
+    supplierHypotheses: [{
+      kind: "unknown" as const,
+      text: "现有供应商待确认",
+      evidenceIds: [],
+      confidence: null
+    }],
+    buyingCommittee: [{
+      role: "老板",
+      priority: 1 as const,
+      influence: "decision_maker" as const,
+      concerns: ["投入产出比"],
+      claim: {
+        kind: "inference" as const,
+        text: "建议优先联系老板",
+        evidenceIds: ["evidence-2"],
+        confidence: 0.72
+      }
+    }],
+    procurementPreferences: [{
+      kind: "inference" as const,
+      text: "偏效果导向",
+      evidenceIds: ["evidence-2"],
+      confidence: 0.7
+    }],
+    connectionStrategies: [{
+      channel: "public_reply" as const,
+      targetRole: "老板",
+      rationale: {
+        kind: "inference" as const,
+        text: "先用公开诊断切入",
+        evidenceIds: ["evidence-1"],
+        confidence: 0.78
+      },
+      openingDraft: "看到您在关注获客效率，可以先做一次公开渠道诊断。"
+    }],
+    roleSpecificOpeners: [{
+      role: "老板",
+      channel: "phone" as const,
+      text: "先交流渠道投入产出，不急着介绍产品。"
+    }],
+    doNotActions: ["不要直接承诺效果"],
+    financialSummary: {
+      decisionId: "financial-1",
+      decisionVersion: "financial.v1:1",
+      grade: "A" as const,
+      score: 82,
+      currency: "CNY",
+      expectedRevenueMinor: 1200000,
+      expectedGrossProfitMinor: 600000,
+      expectedContributionMinor: 480000,
+      factors: {
+        profitability: 85,
+        cashFlow: 75,
+        creditQuality: 80,
+        repeatPotential: 70,
+        referralPotential: 60,
+        closeProbability: 72
+      }
+    }
+  }
+};
+const battleCardApi = createAcquisitionDetailApi(async (input) => {
+  if (String(input).includes("candidate-missing")) {
+    return Response.json({
+      code: "resource_not_found",
+      message: "候选当前没有有效的客户作战卡",
+      details: null,
+      requestId: "request-battle-card-404",
+      retryable: false
+    }, { status: 404 });
+  }
+  return Response.json(battleCardResponse);
+});
+const battleCard = await battleCardApi.getCandidateBattleCard("candidate-1");
+assert.equal(battleCard?.schemaVersion, "battle-card.v2");
+if (!battleCard || battleCard.schemaVersion !== "battle-card.v2") {
+  assert.fail("expected a v2 battle card");
+}
+assert.equal(
+  battleCard.intelligence.connectionStrategies[0]?.channel,
+  "public_reply"
+);
+assert.equal(
+  await battleCardApi.getCandidateBattleCard("candidate-missing"),
+  null
+);
+
+const reviewPageResponse = {
+  items: [{
+    id: "review-1",
+    candidateId: "candidate-1",
+    decisionVersion: "qualification.v2:1",
+    action: "needs_research" as const,
+    reason: "需要补充预算证据",
+    reviewerId: "user-1",
+    idempotencyKey: "review-key-1",
+    createdAt: "2026-08-07T05:02:00.000Z"
+  }],
+  nextCursor: null
+};
+const reviewCalls: string[] = [];
+const reviewApi = createAcquisitionDetailApi(async (input) => {
+  reviewCalls.push(String(input));
+  return Response.json(reviewPageResponse);
+});
+const reviews = await reviewApi.getCandidateReviews(
+  "candidate/review",
+  { cursor: "review/cursor", limit: 10 }
+);
+assert.equal(reviews.items[0]?.action, "needs_research");
+assert.equal(
+  reviewCalls[0],
+  "/api/v1/acquisition/candidates/candidate%2Freview/reviews"
+    + "?cursor=review%2Fcursor&limit=10"
+);
+
+const intelligenceOperationResponse = {
+  id: "intelligence-operation-1",
+  candidateId: "candidate-1",
+  status: "succeeded" as const,
+  currentStage: null,
+  completedStages: ["research", "qualification", "battle_card"] as const,
+  skippedStages: [] as const,
+  research: {
+    summary: "已完成公开商务情报研究",
+    findings: [{
+      label: "需求信号",
+      content: "公开表达获客系统采购需求",
+      evidenceIds: ["evidence-1"],
+      confidence: 0.9
+    }]
+  },
+  qualification: {
+    grade: "A" as const,
+    score: 86,
+    hardGateFailures: [],
+    financialValueId: "financial-1"
+  },
+  battleCardId: "battle-card-1",
+  failure: null,
+  createdAt: "2026-08-07T05:00:20.000Z",
+  startedAt: "2026-08-07T05:00:21.000Z",
+  updatedAt: "2026-08-07T05:00:31.000Z",
+  completedAt: "2026-08-07T05:00:31.000Z",
+  failedAt: null
+};
+const intelligenceApi = createAcquisitionDetailApi(async (input) => {
+  if (String(input).includes("candidate-missing")) {
+    return Response.json({
+      code: "resource_not_found",
+      message: "候选智能研判任务不存在",
+      details: null,
+      requestId: "request-operation-404",
+      retryable: false
+    }, { status: 404 });
+  }
+  return Response.json(intelligenceOperationResponse);
+});
+assert.equal(
+  (await intelligenceApi.getLatestIntelligenceOperation("candidate-1"))
+    ?.battleCardId,
+  "battle-card-1"
+);
+assert.equal(
+  await intelligenceApi.getLatestIntelligenceOperation("candidate-missing"),
+  null
+);
+
+const intelligenceWriteCalls: Array<{
+  input: RequestInfo | URL;
+  init?: RequestInit;
+}> = [];
+const intelligenceWriteApi = createAcquisitionDetailApi(
+  async (input, init) => {
+    intelligenceWriteCalls.push({ input, init });
+    return Response.json({
+      ...intelligenceOperationResponse,
+      id: "intelligence-operation-2",
+      status: "queued",
+      currentStage: null,
+      completedStages: [],
+      research: null,
+      qualification: null,
+      battleCardId: null,
+      completedAt: null
+    }, { status: 202 });
+  },
+  { cookie: "session=1; gj_csrf=csrf%2Fcandidate" }
+);
+const started = await intelligenceWriteApi.startIntelligenceOperation(
+  "candidate/with space",
+  "candidate-intelligence-key-1"
+);
+assert.equal(started.status, "queued");
+const intelligenceWriteCall = intelligenceWriteCalls[0];
+assert.equal(
+  intelligenceWriteCall?.input,
+  "/api/v1/acquisition/candidates/candidate%2Fwith%20space"
+    + "/intelligence-operations"
+);
+assert.equal(intelligenceWriteCall?.init?.method, "POST");
+assert.equal(intelligenceWriteCall?.init?.credentials, "same-origin");
+assert.equal(intelligenceWriteCall?.init?.body, "{}");
+const intelligenceWriteHeaders = new Headers(intelligenceWriteCall?.init?.headers);
+assert.equal(intelligenceWriteHeaders.get("accept"), "application/json");
+assert.equal(intelligenceWriteHeaders.get("content-type"), "application/json");
+assert.equal(
+  intelligenceWriteHeaders.get("idempotency-key"),
+  "candidate-intelligence-key-1"
+);
+assert.equal(intelligenceWriteHeaders.get("x-csrf-token"), "csrf/candidate");
+
+const reviewWriteResponse = {
+  candidate: {
+    ...candidateResponse,
+    status: "approved" as const,
+    version: 3,
+    approvedDecisionVersion: "qualification.v2:1",
+    updatedAt: "2026-08-07T05:03:00.000Z"
+  },
+  review: {
+    id: "review-2",
+    candidateId: "candidate-1",
+    decisionVersion: "qualification.v2:1",
+    action: "approved" as const,
+    reason: "证据充分，批准进入后续人工触达",
+    reviewerId: "user-1",
+    idempotencyKey: "candidate-review-key-1",
+    createdAt: "2026-08-07T05:03:00.000Z"
+  },
+  research: null
+};
+const reviewWriteCalls: Array<{
+  input: RequestInfo | URL;
+  init?: RequestInit;
+}> = [];
+const reviewWriteApi = createAcquisitionDetailApi(
+  async (input, init) => {
+    reviewWriteCalls.push({ input, init });
+    return Response.json(reviewWriteResponse);
+  },
+  { cookieSource: () => "gj_csrf=csrf%2Freview" }
+);
+const reviewed = await reviewWriteApi.reviewCandidate(
+  "candidate/with space",
+  {
+    action: "approved",
+    decisionVersion: "qualification.v2:1",
+    reason: "证据充分，批准进入后续人工触达"
+  },
+  "candidate-review-key-1"
+);
+assert.equal(reviewed.candidate.status, "approved");
+assert.equal(reviewed.review.action, "approved");
+assert.equal(reviewed.research, null);
+const reviewWriteCall = reviewWriteCalls[0];
+assert.equal(
+  reviewWriteCall?.input,
+  "/api/v1/acquisition/candidates/candidate%2Fwith%20space/review"
+);
+assert.deepEqual(JSON.parse(String(reviewWriteCall?.init?.body)), {
+  action: "approved",
+  decisionVersion: "qualification.v2:1",
+  reason: "证据充分，批准进入后续人工触达"
+});
+const reviewWriteHeaders = new Headers(reviewWriteCall?.init?.headers);
+assert.equal(reviewWriteHeaders.get("x-csrf-token"), "csrf/review");
+assert.equal(reviewWriteHeaders.get("idempotency-key"), "candidate-review-key-1");
+
+const failingApi = createAcquisitionDetailApi(async () => Response.json({
+  error: {
+    code: "model_service_unavailable",
+    message: "模型服务暂时不可用",
+    details: null,
+    requestId: "request-error-1"
+  }
+}, { status: 503 }));
+await assert.rejects(
+  () => failingApi.getCandidateBattleCard("candidate-1"),
+  (error: unknown) =>
+    error instanceof Error && error.message === "模型服务暂时不可用"
+);

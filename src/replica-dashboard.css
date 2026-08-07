@@ -2525,6 +2525,759 @@ body.is-authenticated .replica-shell {
   font-weight: 720;
 }
 
+.replica-acquisition-detail-center {
+  width: min(1120px, calc(100vw - 40px));
+  max-height: min(860px, calc(100vh - 40px));
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 82% 0%, rgba(24, 237, 120, .075), transparent 34%),
+    rgba(9, 11, 11, .985);
+  backdrop-filter: blur(20px) saturate(116%);
+}
+
+.replica-acquisition-detail-shell {
+  max-height: min(860px, calc(100vh - 40px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.replica-acquisition-detail-head {
+  align-items: flex-start;
+  gap: 24px;
+  padding: 20px 24px 17px;
+  border-bottom: 1px solid var(--replica-line-soft);
+}
+
+.replica-acquisition-detail-head > div {
+  min-width: 0;
+}
+
+.replica-acquisition-detail-head p {
+  max-width: 720px;
+  margin: 7px 0 0;
+  color: #737b75;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.replica-acquisition-detail-body {
+  min-height: 430px;
+  overflow-y: auto;
+  padding: 18px 24px 24px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, .16) transparent;
+}
+
+.replica-acquisition-detail-view {
+  display: grid;
+  gap: 14px;
+}
+
+.replica-acquisition-detail-tabs {
+  position: sticky;
+  top: -18px;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  padding: 4px;
+  background: rgba(13, 16, 15, .96);
+  border: 1px solid var(--replica-line-soft);
+  border-radius: 12px;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .22);
+  backdrop-filter: blur(16px);
+}
+
+.replica-acquisition-detail-tabs button {
+  min-height: 38px;
+  color: #788079;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.replica-acquisition-detail-tabs button.is-active {
+  color: #e4ffec;
+  background: rgba(24, 237, 120, .075);
+  box-shadow: inset 0 0 0 1px rgba(24, 237, 120, .15);
+}
+
+.replica-acquisition-detail-center :where(button, input, textarea):focus-visible {
+  outline: 2px solid rgba(24, 237, 120, .72);
+  outline-offset: 2px;
+}
+
+.replica-acquisition-detail-message {
+  padding: 10px 12px;
+  color: #caffda;
+  background: rgba(24, 237, 120, .045);
+  border: 1px solid rgba(24, 237, 120, .14);
+  border-radius: 10px;
+  font-size: 9px;
+}
+
+.replica-acquisition-detail-message.is-error {
+  color: #ffb4af;
+  background: rgba(255, 93, 86, .055);
+  border-color: rgba(255, 93, 86, .2);
+}
+
+.replica-acquisition-detail-state {
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 28px;
+  color: #737b75;
+  text-align: center;
+  background: rgba(255, 255, 255, .012);
+  border: 1px dashed rgba(255, 255, 255, .09);
+  border-radius: 15px;
+}
+
+.replica-acquisition-detail-state strong {
+  color: #dce2de;
+  font-size: 12px;
+}
+
+.replica-acquisition-detail-state span {
+  max-width: 480px;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.replica-acquisition-detail-state.is-error {
+  color: #ffaaa6;
+  border-color: rgba(255, 93, 86, .2);
+}
+
+.replica-acquisition-detail-state button {
+  min-height: 36px;
+  margin-top: 7px;
+  padding: 0 14px;
+  color: #dfe5e1;
+  background: rgba(255, 255, 255, .04);
+  border: 1px solid var(--replica-line-soft);
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.replica-acquisition-detail-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.replica-acquisition-detail-heading,
+.replica-acquisition-selected-candidate > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 17px;
+  background: linear-gradient(135deg, rgba(24, 237, 120, .055), rgba(255, 255, 255, .015));
+  border: 1px solid rgba(24, 237, 120, .13);
+  border-radius: 14px;
+}
+
+.replica-acquisition-detail-heading span,
+.replica-acquisition-selected-candidate > header span {
+  display: block;
+  margin-bottom: 5px;
+  color: #727a74;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.replica-acquisition-detail-heading h3,
+.replica-acquisition-selected-candidate > header h4 {
+  margin: 0;
+  color: #e4e9e6;
+  font-size: 15px;
+  font-weight: 660;
+}
+
+.replica-acquisition-detail-heading > strong,
+.replica-acquisition-selected-candidate > header > strong {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  color: #c7ffd8;
+  background: rgba(24, 237, 120, .065);
+  border: 1px solid rgba(24, 237, 120, .15);
+  border-radius: 999px;
+  font-size: 8px;
+}
+
+.replica-acquisition-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.replica-acquisition-detail-section {
+  min-width: 0;
+  padding: 14px 15px;
+  background: rgba(255, 255, 255, .015);
+  border: 1px solid var(--replica-line-soft);
+  border-radius: 12px;
+}
+
+.replica-acquisition-detail-section h4,
+.replica-acquisition-detail-section h5,
+.replica-acquisition-selected-candidate h5 {
+  margin: 0 0 9px;
+  color: #8f9791;
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: .035em;
+}
+
+.replica-acquisition-detail-section p,
+.replica-acquisition-detail-section small {
+  margin: 0;
+  color: #c8ceca;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.replica-acquisition-detail-section small {
+  display: block;
+  margin-top: 4px;
+  color: #69706b;
+  font-size: 8px;
+}
+
+.replica-acquisition-detail-tags,
+.replica-acquisition-connection-list,
+.replica-acquisition-shard-list,
+.replica-acquisition-selected-candidate ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.replica-acquisition-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.replica-acquisition-detail-tags li {
+  padding: 5px 7px;
+  color: #b8c0ba;
+  background: rgba(255, 255, 255, .03);
+  border: 1px solid rgba(255, 255, 255, .055);
+  border-radius: 999px;
+  font-size: 8px;
+}
+
+.replica-acquisition-detail-empty-value {
+  color: #69706b;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.replica-acquisition-operation-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.replica-acquisition-operation {
+  min-width: 0;
+  padding: 11px;
+  background: rgba(255, 255, 255, .018);
+  border: 1px solid rgba(255, 255, 255, .055);
+  border-radius: 10px;
+}
+
+.replica-acquisition-operation > div,
+.replica-acquisition-shard-list li > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.replica-acquisition-operation strong,
+.replica-acquisition-shard-list strong {
+  overflow: hidden;
+  color: #cdd3cf;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replica-acquisition-operation span,
+.replica-acquisition-shard-list span {
+  flex: 0 0 auto;
+  color: #7c847e;
+  font-size: 8px;
+}
+
+.replica-acquisition-operation p {
+  margin: 8px 0 5px;
+  overflow-wrap: anywhere;
+  color: #929a94;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.replica-acquisition-run-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.replica-acquisition-run-summary strong,
+.replica-acquisition-run-summary span {
+  padding: 6px 8px;
+  color: #aeb5b0;
+  background: rgba(255, 255, 255, .025);
+  border: 1px solid rgba(255, 255, 255, .05);
+  border-radius: 8px;
+  font-size: 8px;
+}
+
+.replica-acquisition-run-summary strong {
+  color: #caffda;
+  border-color: rgba(24, 237, 120, .13);
+}
+
+.replica-acquisition-run-empty {
+  display: grid;
+  gap: 4px;
+  color: #707771;
+  font-size: 9px;
+}
+
+.replica-acquisition-run-empty strong {
+  color: #b9c0bb;
+}
+
+.replica-acquisition-connection-list,
+.replica-acquisition-shard-list {
+  display: grid;
+  gap: 7px;
+}
+
+.replica-acquisition-connection-list li,
+.replica-acquisition-shard-list li {
+  display: grid;
+  gap: 3px;
+  padding: 8px 9px;
+  background: rgba(255, 255, 255, .018);
+  border: 1px solid rgba(255, 255, 255, .05);
+  border-radius: 8px;
+}
+
+.replica-acquisition-connection-list strong,
+.replica-acquisition-connection-list span {
+  display: block;
+  color: #b9c0bb;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.replica-acquisition-connection-list span {
+  color: #666d68;
+  overflow-wrap: anywhere;
+}
+
+.replica-acquisition-candidate-summary {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.replica-acquisition-candidate-summary span {
+  min-width: 0;
+  padding: 9px 7px;
+  color: #89918b;
+  text-align: center;
+  background: rgba(255, 255, 255, .018);
+  border: 1px solid var(--replica-line-soft);
+  border-radius: 9px;
+  font-size: 7px;
+  line-height: 1.45;
+}
+
+.replica-acquisition-candidate-layout {
+  min-height: 420px;
+  display: grid;
+  grid-template-columns: 290px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.replica-acquisition-candidate-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px 0 2px;
+  color: #778078;
+  font-size: 9px;
+}
+
+.replica-acquisition-candidate-pagination button {
+  min-height: 32px;
+  padding: 0 14px;
+  color: #caffda;
+  background: rgba(24, 237, 120, .05);
+  border: 1px solid rgba(24, 237, 120, .16);
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 680;
+}
+
+.replica-acquisition-candidate-pagination button:disabled {
+  opacity: .48;
+  cursor: wait;
+}
+
+.replica-acquisition-candidate-list,
+.replica-acquisition-candidate-inspector {
+  min-width: 0;
+  padding: 10px;
+  background: rgba(255, 255, 255, .012);
+  border: 1px solid var(--replica-line-soft);
+  border-radius: 13px;
+}
+
+.replica-acquisition-candidate-list {
+  max-height: 570px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  overflow-y: auto;
+}
+
+.replica-acquisition-candidate {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px 8px;
+  padding: 11px;
+  color: #747c76;
+  text-align: left;
+  background: rgba(255, 255, 255, .018);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.replica-acquisition-candidate:hover,
+.replica-acquisition-candidate.is-selected {
+  background: rgba(24, 237, 120, .045);
+  border-color: rgba(24, 237, 120, .16);
+}
+
+.replica-acquisition-candidate-name {
+  color: #d5dbd7;
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.replica-acquisition-candidate strong {
+  color: #c6ffd8;
+  font-size: 8px;
+}
+
+.replica-acquisition-candidate span {
+  font-size: 7px;
+  line-height: 1.45;
+}
+
+.replica-acquisition-candidate > :nth-last-child(-n + 2) {
+  grid-column: 1 / -1;
+}
+
+.replica-acquisition-candidate-inspector {
+  padding: 13px;
+}
+
+.replica-acquisition-selected-candidate {
+  display: grid;
+  gap: 10px;
+}
+
+.replica-acquisition-selected-candidate > .replica-acquisition-detail-grid section {
+  min-width: 0;
+  padding: 12px;
+  background: rgba(255, 255, 255, .015);
+  border: 1px solid rgba(255, 255, 255, .055);
+  border-radius: 10px;
+}
+
+.replica-acquisition-selected-candidate li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 0;
+  color: #8d958f;
+  border-bottom: 1px solid rgba(255, 255, 255, .035);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.replica-acquisition-selected-candidate li:last-child {
+  border-bottom: 0;
+}
+
+.replica-acquisition-selected-candidate li strong {
+  color: #bfc6c1;
+  font-size: 8px;
+}
+
+.replica-acquisition-qualification-meta {
+  margin: 0;
+  color: #717872;
+  font-size: 8px;
+}
+
+.replica-acquisition-financial-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.replica-acquisition-financial-summary strong,
+.replica-acquisition-financial-summary span {
+  padding: 6px 8px;
+  color: #aeb6b0;
+  background: rgba(255, 255, 255, .025);
+  border: 1px solid rgba(255, 255, 255, .05);
+  border-radius: 8px;
+  font-size: 8px;
+}
+
+.replica-acquisition-financial-summary strong {
+  color: #c8ffd9;
+  border-color: rgba(24, 237, 120, .14);
+}
+
+.replica-acquisition-factor-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 9px 0 0;
+}
+
+.replica-acquisition-factor-list div {
+  padding: 8px;
+  background: rgba(255, 255, 255, .018);
+  border-radius: 8px;
+}
+
+.replica-acquisition-factor-list dt {
+  color: #68706a;
+  font-size: 7px;
+}
+
+.replica-acquisition-factor-list dd {
+  margin: 4px 0 0;
+  color: #c8ceca;
+  font-size: 9px;
+}
+
+.replica-acquisition-evidence-list,
+.replica-acquisition-battle-card-list,
+.replica-acquisition-review-history {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.replica-acquisition-evidence-list li,
+.replica-acquisition-battle-card-list li,
+.replica-acquisition-review-history li {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  background: rgba(255, 255, 255, .018);
+  border: 1px solid rgba(255, 255, 255, .05);
+  border-radius: 9px;
+}
+
+.replica-acquisition-evidence-list li > div,
+.replica-acquisition-review-history li > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.replica-acquisition-evidence-list strong,
+.replica-acquisition-battle-card-list strong,
+.replica-acquisition-review-history strong {
+  color: #c4cbc6;
+  font-size: 9px;
+}
+
+.replica-acquisition-evidence-list span,
+.replica-acquisition-evidence-list small,
+.replica-acquisition-review-history span {
+  color: #666d68;
+  font-size: 7px;
+}
+
+.replica-acquisition-evidence-list p,
+.replica-acquisition-battle-card-list p,
+.replica-acquisition-review-history p {
+  margin: 0;
+  color: #858d87;
+  font-size: 8px;
+  line-height: 1.55;
+}
+
+.replica-acquisition-review-section {
+  border-color: rgba(24, 237, 120, .11);
+}
+
+.replica-acquisition-review-form,
+.replica-acquisition-intelligence-start {
+  display: grid;
+  gap: 10px;
+}
+
+.replica-acquisition-review-note {
+  padding: 9px 10px;
+  color: #a9dcb9;
+  background: rgba(24, 237, 120, .035);
+  border: 1px solid rgba(24, 237, 120, .11);
+  border-radius: 8px;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.replica-acquisition-review-note.is-warning {
+  color: #f0ca8d;
+  background: rgba(255, 185, 82, .035);
+  border-color: rgba(255, 185, 82, .14);
+}
+
+.replica-acquisition-review-form label {
+  display: grid;
+  gap: 6px;
+  color: #808882;
+  font-size: 8px;
+}
+
+.replica-acquisition-review-form textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  padding: 9px 10px;
+  color: #dfe5e1;
+  background: rgba(255, 255, 255, .025);
+  border: 1px solid var(--replica-line-soft);
+  border-radius: 9px;
+  outline: 0;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.replica-acquisition-review-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.replica-acquisition-review-actions button,
+.replica-acquisition-intelligence-start button {
+  min-height: 36px;
+  padding: 0 12px;
+  color: #cbd2cd;
+  background: rgba(255, 255, 255, .035);
+  border: 1px solid var(--replica-line-soft);
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 8px;
+}
+
+.replica-acquisition-review-actions button.is-primary,
+.replica-acquisition-intelligence-start button {
+  color: #041108;
+  background: var(--replica-accent);
+  border-color: var(--replica-accent);
+  font-weight: 720;
+}
+
+.replica-acquisition-review-actions button.is-danger {
+  color: #ffaaa6;
+  border-color: rgba(255, 93, 86, .17);
+}
+
+.replica-acquisition-review-actions button:disabled {
+  cursor: not-allowed;
+  opacity: .38;
+}
+
+.replica-acquisition-intelligence-start {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.replica-acquisition-intelligence-start strong,
+.replica-acquisition-intelligence-start span {
+  display: block;
+}
+
+.replica-acquisition-intelligence-start strong {
+  color: #c9d0cb;
+  font-size: 9px;
+}
+
+.replica-acquisition-intelligence-start span {
+  margin-top: 4px;
+  color: #717872;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.replica-acquisition-detail-footer {
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 24px 17px;
+  border-top: 1px solid var(--replica-line-soft);
+}
+
+.replica-acquisition-detail-footer p {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #727a74;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.replica-acquisition-detail-footer p i {
+  color: var(--replica-accent);
+  font-size: 14px;
+}
+
+.replica-acquisition-detail-footer #replicaAcquisitionDetailCenterDone {
+  min-width: 96px;
+  color: #05130a;
+  background: var(--replica-accent);
+  border-color: var(--replica-accent);
+  font-weight: 720;
+}
+
 @media (max-width: 760px) {
   .replica-real-task-modal {
     width: calc(100vw - 18px);
@@ -2610,6 +3363,37 @@ body.is-authenticated .replica-shell {
   .replica-connection-center-footer {
     padding: 13px 16px 15px;
   }
+
+  .replica-acquisition-detail-center {
+    width: calc(100vw - 18px);
+    max-height: calc(100vh - 18px);
+  }
+
+  .replica-acquisition-detail-shell {
+    max-height: calc(100vh - 18px);
+  }
+
+  .replica-acquisition-detail-head,
+  .replica-acquisition-detail-footer {
+    padding-inline: 16px;
+  }
+
+  .replica-acquisition-detail-body {
+    min-height: 320px;
+    padding: 13px 16px 16px;
+  }
+
+  .replica-acquisition-detail-tabs {
+    top: -13px;
+  }
+
+  .replica-acquisition-candidate-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .replica-acquisition-candidate-layout {
+    grid-template-columns: 235px minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 520px) {
@@ -2640,6 +3424,30 @@ body.is-authenticated .replica-shell {
   .replica-connection-center-footer #replicaConnectionCenterDone {
     width: 100%;
   }
+
+  .replica-acquisition-detail-grid,
+  .replica-acquisition-operation-list,
+  .replica-acquisition-candidate-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .replica-acquisition-candidate-summary,
+  .replica-acquisition-factor-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .replica-acquisition-candidate-list {
+    max-height: 230px;
+  }
+
+  .replica-acquisition-detail-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .replica-acquisition-detail-footer #replicaAcquisitionDetailCenterDone {
+    width: 100%;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2650,6 +3458,11 @@ body.is-authenticated .replica-shell {
 
 @media (prefers-reduced-transparency: reduce) {
   .replica-connection-center {
+    background: #0b0d0d;
+    backdrop-filter: none;
+  }
+
+  .replica-acquisition-detail-center {
     background: #0b0d0d;
     backdrop-filter: none;
   }
