@@ -10567,6 +10567,100 @@
     </form>
   </dialog>
 
+  <dialog class="replica-modal replica-real-task-modal" id="replicaRealTaskModal">
+    <form id="replicaRealTaskForm">
+      <div class="replica-modal-head">
+        <div>
+          <span class="replica-wizard-kicker">DOUYIN · REAL ACQUISITION</span>
+          <h2>创建真实抖音获客任务</h2>
+        </div>
+        <button type="button" id="replicaRealTaskClose" aria-label="关闭"><i class="ph ph-x" aria-hidden="true"></i></button>
+      </div>
+
+      <ol class="replica-wizard-steps" aria-label="任务创建步骤">
+        <li class="active"><b>01</b><span>连接检查</span></li>
+        <li><b>02</b><span>定义客户</span></li>
+        <li><b>03</b><span>搜索与预算</span></li>
+        <li><b>04</b><span>人工批准</span></li>
+      </ol>
+
+      <div class="replica-real-task-scroll">
+        <section class="replica-real-form-section replica-preflight-section">
+          <div class="replica-form-section-head">
+            <div><span>运行前置</span><h3>连接真实搜索与 AI 模型</h3></div>
+            <button type="button" id="replicaRealConnectionsRefresh"><i class="ph ph-arrow-clockwise" aria-hidden="true"></i>重新检查</button>
+          </div>
+          <div class="replica-connection-grid">
+            <label>
+              <span>公开搜索 API</span>
+              <select id="replicaRealSearchConnection" required><option value="">正在读取可用连接…</option></select>
+              <small>用于搜索引擎检索公开收录的抖音页面，不等于抖音官方接口。</small>
+            </label>
+            <label>
+              <span>AI 模型连接</span>
+              <select id="replicaRealModelConnection" required><option value="">正在读取可用模型…</option></select>
+              <small>只显示已启用且支持工具调用的模型连接。</small>
+            </label>
+          </div>
+          <div class="replica-preflight-status" id="replicaRealPreflightStatus" role="status" aria-live="polite">正在核验真实运行条件…</div>
+        </section>
+
+        <section class="replica-real-form-section">
+          <div class="replica-form-section-head"><div><span>任务与 ICP</span><h3>先定义谁值得被发现</h3></div></div>
+          <div class="replica-real-form-grid two">
+            <label><span>任务名称</span><input id="replicaRealTaskName" required maxlength="200" value="抖音公开商机获客计划" /></label>
+            <label><span>目标地区</span><input id="replicaRealRegions" required value="中国大陆" placeholder="多个地区用逗号分隔" /></label>
+            <label class="wide"><span>获客目标</span><textarea id="replicaRealObjective" required maxlength="2000">发现公开表达采购、获客或经营需求的组织和个人</textarea></label>
+            <label><span>目标行业</span><input id="replicaRealIndustries" required value="企业服务" placeholder="例如：装修, 美业, 财税" /></label>
+            <label><span>排除规则</span><input id="replicaRealExclusions" value="明确拒绝联系, 同行广告, 无关内容" placeholder="多个规则用逗号分隔" /></label>
+            <label class="wide"><span>企业判断条件</span><textarea id="replicaRealOrganizationCriteria" required>企业公开表达采购、获客或增长需求</textarea></label>
+            <label class="wide"><span>个人判断条件</span><textarea id="replicaRealIndividualCriteria" required>个人账号公开表达经营、询价或合作需求</textarea></label>
+          </div>
+        </section>
+
+        <section class="replica-real-form-section">
+          <div class="replica-form-section-head"><div><span>公开搜索</span><h3>企业与个人两条证据发现路径</h3></div></div>
+          <div class="replica-query-stack">
+            <label>
+              <span>企业公开信号关键词</span>
+              <div class="replica-query-input"><code>site:douyin.com</code><input id="replicaRealOrganizationQuery" required value="企业 获客难 寻找供应商" /></div>
+            </label>
+            <label>
+              <span>个人公开信号关键词</span>
+              <div class="replica-query-input"><code>site:iesdouyin.com</code><input id="replicaRealIndividualQuery" required value="老板 获客难 询价" /></div>
+            </label>
+          </div>
+          <p class="replica-form-note"><i class="ph ph-info" aria-hidden="true"></i>系统只检索公开网页证据；发现结果仍需 AI 研判和人工审核，不能直接视为意向客户。</p>
+        </section>
+
+        <section class="replica-real-form-section">
+          <div class="replica-form-section-head"><div><span>安全预算</span><h3>限制单次真实运行的资源消耗</h3></div></div>
+          <div class="replica-budget-grid">
+            <label><span>最大请求</span><input id="replicaRealMaxRequests" type="number" min="2" step="1" value="4" required /><small>次</small></label>
+            <label><span>最大结果</span><input id="replicaRealMaxResults" type="number" min="2" step="1" value="40" required /><small>条</small></label>
+            <label><span>最长运行</span><input id="replicaRealMaxDuration" type="number" min="2" step="1" value="240" required /><small>秒</small></label>
+            <label><span>费用上限</span><input id="replicaRealMaxAmount" type="number" min="0" step="1" value="0" required /><small>分</small></label>
+          </div>
+        </section>
+
+        <section class="replica-real-form-section replica-approval-section">
+          <div class="replica-form-section-head"><div><span>人工批准</span><h3>核对后再创建、批准并启动</h3></div></div>
+          <div class="replica-real-form-grid two">
+            <label><span>批准理由</span><textarea id="replicaRealApprovalReason" required>已人工确认公开数据源、搜索范围、预算及企业与个人两条检索条件</textarea></label>
+            <label><span>运行理由</span><textarea id="replicaRealRunReason" required>开始执行抖音公开商机检索</textarea></label>
+          </div>
+          <label class="replica-approval-confirm"><input id="replicaRealApprovalConfirmed" type="checkbox" required /><span>我已核对搜索连接、AI 模型、公开搜索范围和预算，同意批准并启动本次真实任务。</span></label>
+        </section>
+      </div>
+
+      <div class="replica-real-submit-status" id="replicaRealTaskSubmitStatus" role="status" aria-live="polite" hidden></div>
+      <div class="replica-modal-footer replica-real-modal-footer">
+        <button type="button" id="replicaRealTaskCancel">取消</button>
+        <button type="submit" class="replica-real-submit" id="replicaRealTaskSubmit" disabled><i class="ph ph-play" aria-hidden="true"></i>创建、批准并启动</button>
+      </div>
+    </form>
+  </dialog>
+
   <div class="shell">
     <aside class="sidebar">
       <div class="brand">

@@ -339,7 +339,7 @@ function initialiseRuntime(): void {
   }
 
   function setRealInspectorShell(statusText: string): void {
-    setText("replicaNewTaskButtonLabel", "新建真实任务（待接入）");
+    setText("replicaNewTaskButtonLabel", "新建真实任务");
     setText("replicaHeaderSubtitle", "真实抖音任务 · 公开搜索 · AI 研判 · 人工审核");
     setText("replicaScopeAllLabel", "全部真实任务");
     setText("replicaScopeAgentLabel", "智能体执行");
@@ -611,6 +611,10 @@ function initialiseRuntime(): void {
     if (typeof planId === "string" && planId.trim()) {
       void loadTaskDetail(planId.trim());
     }
+  });
+
+  document.addEventListener("goodjob:acquisition-refresh-requested", () => {
+    void refreshOverview();
   });
 
   let wasAuthenticated = document.body.classList.contains("is-authenticated");

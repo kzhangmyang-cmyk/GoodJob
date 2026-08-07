@@ -1,4 +1,5 @@
 import { startAcquisitionRuntime } from "./acquisition/runtime";
+import { startAcquisitionTaskCreation } from "./acquisition/task-creation-controller";
 
 type ReplicaTaskRow = HTMLButtonElement & {
   dataset: DOMStringMap & {
@@ -387,7 +388,7 @@ if (replica) {
   document.querySelector("#replicaNewTaskButton")?.addEventListener("click", () => {
     if (!isAcquisitionActive()) return;
     if (replica.dataset.acquisitionMode === "real") {
-      showToast("真实任务创建正在接入后端审批流；当前不会生成模拟任务");
+      document.dispatchEvent(new CustomEvent("goodjob:acquisition-create-requested"));
       return;
     }
     modal?.showModal();
@@ -517,6 +518,11 @@ if (replica) {
     applyFilters();
   });
 
+  document.addEventListener("goodjob:acquisition-notify", (event) => {
+    const message = (event as CustomEvent<{ message?: unknown }>).detail?.message;
+    if (typeof message === "string" && message.trim()) showToast(message.trim());
+  });
+
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
@@ -528,3 +534,4 @@ if (replica) {
 }
 
 startAcquisitionRuntime();
+startAcquisitionTaskCreation();

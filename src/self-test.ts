@@ -7,6 +7,9 @@ import { buildLeadFinderIntentChips, getLeadFinderLayoutMode } from "./lead-find
 import "./acquisition/runtime-model.self-test";
 import "./acquisition/runtime-api.self-test";
 import "./acquisition/runtime-presenter.self-test";
+import "./acquisition/task-creation-api.self-test";
+import "./acquisition/task-creation-controller.self-test";
+import "./acquisition/task-creation-workflow.self-test";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");
 assert.equal(getLeadFinderLayoutMode(1), "results");
@@ -138,6 +141,10 @@ const required = [
   "data-acquisition-mode=\"demo\"",
   "id=\"replicaRealTaskGroup\"",
   "id=\"replicaRunMetrics\"",
+  "id=\"replicaRealTaskModal\"",
+  "id=\"replicaRealTaskForm\"",
+  "id=\"replicaRealSearchConnection\"",
+  "id=\"replicaRealModelConnection\"",
   "src/demo/demo-app.ts",
   "src/demo/demo.css",
   "renderDashboardView",
