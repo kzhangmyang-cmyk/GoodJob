@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -18,6 +19,51 @@ const workspaceRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../.."
 );
+
+test("backend build emits the package start entry at dist/server.js", () => {
+  const outputDirectory = mkdtempSync(
+    path.join(workspaceRoot, "backend/.build-entry-")
+  );
+
+  try {
+    execFileSync(
+      path.join(workspaceRoot, "node_modules/.bin/tsc"),
+      [
+        "-p",
+        path.join(workspaceRoot, "backend/tsconfig.json"),
+        "--outDir",
+        outputDirectory
+      ],
+      { cwd: workspaceRoot, encoding: "utf8" }
+    );
+    const startEntry = path.join(outputDirectory, "server.js");
+
+    assert.equal(
+      existsSync(startEntry),
+      true,
+      "backend build did not emit the package start entry dist/server.js"
+    );
+
+    const evaluation = spawnSync(process.execPath, [startEntry], {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NODE_ENV: "test",
+        JWT_SECRET: "goodjob-build-entry-test-secret-at-least-32-characters",
+        ACQUISITION_MASTER_SECRET:
+          "goodjob-build-entry-master-secret-at-least-32-characters"
+      }
+    });
+    assert.equal(
+      evaluation.status,
+      0,
+      evaluation.stderr || evaluation.stdout
+    );
+  } finally {
+    rmSync(outputDirectory, { recursive: true, force: true });
+  }
+});
 
 test("Baota package can evaluate the acquisition OpenAPI module", () => {
   const temporaryRoot = mkdtempSync(
