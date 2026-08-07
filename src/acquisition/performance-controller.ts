@@ -1,4 +1,5 @@
 import {
+  AcquisitionPerformanceApiError,
   createAcquisitionPerformanceApi,
   type AcquisitionPerformanceDto,
   type AcquisitionPerformanceFilters
@@ -41,8 +42,43 @@ export function performanceFiltersFromDates(
 }
 
 export function isUnauthorizedPerformanceError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /(?:^|\b)401(?:\b|$)|unauthori[sz]ed|未登录|请先登录|登录已失效/i.test(message);
+  return error instanceof AcquisitionPerformanceApiError
+    && error.status === 401;
+}
+
+export interface PerformanceGenerationToken {
+  readonly version: number;
+  readonly signature: string;
+  readonly signal: AbortSignal;
+}
+
+export function createPerformanceGenerationGuard() {
+  let version = 0;
+  let active: { token: PerformanceGenerationToken; abort: AbortController }
+    | null = null;
+  return {
+    begin(filters: AcquisitionPerformanceFilters, mode: string) {
+      active?.abort.abort();
+      const abort = new AbortController();
+      const token: PerformanceGenerationToken = {
+        version: ++version,
+        signature: JSON.stringify({ mode, filters }),
+        signal: abort.signal
+      };
+      active = { token, abort };
+      return token;
+    },
+    invalidate() {
+      version += 1;
+      active?.abort.abort();
+      active = null;
+    },
+    isCurrent(token: PerformanceGenerationToken) {
+      return active?.token === token
+        && token.version === version
+        && !token.signal.aborted;
+    }
+  };
 }
 
 export function performanceStatusFor(counts: { discovered: number }): PerformanceStatus {
@@ -75,6 +111,7 @@ export function startAcquisitionPerformance(
   toInput.value ||= defaults.to;
   let realMode = document.querySelector("[data-acquisition-mode=\"real\"].active") !== null;
   let requestVersion = 0;
+  const aiGeneration = createPerformanceGenerationGuard();
   let state: AcquisitionPerformanceViewState = {
     status: "loading",
     data: null,
@@ -111,6 +148,7 @@ export function startAcquisitionPerformance(
 
   const load = async () => {
     if (!realMode) return;
+    aiGeneration.invalidate();
     const version = ++requestVersion;
     state = { status: "loading", data: null, aiInterpretation: null, aiStatus: "idle" };
     setSummaryCards(null);
@@ -153,12 +191,18 @@ export function startAcquisitionPerformance(
       "[data-performance-action=\"generate\"]"
     );
     if (!button || !state.data || state.aiStatus === "loading") return;
+    const filters = currentFilters();
+    const generation = aiGeneration.begin(filters, "real");
     state = { ...state, aiStatus: "loading", aiError: undefined };
     render();
-    void api.generateBriefing(currentFilters()).then((interpretation) => {
+    void api.generateBriefing(filters, {
+      signal: generation.signal
+    }).then((interpretation) => {
+      if (!realMode || !aiGeneration.isCurrent(generation)) return;
       state = { ...state, aiStatus: "ready", aiInterpretation: interpretation };
       render();
     }).catch((error) => {
+      if (!realMode || !aiGeneration.isCurrent(generation)) return;
       state = {
         ...state,
         aiStatus: "error",
@@ -174,6 +218,7 @@ export function startAcquisitionPerformance(
     section.hidden = !realMode;
     if (!realMode) {
       requestVersion += 1;
+      aiGeneration.invalidate();
       return;
     }
     void load();

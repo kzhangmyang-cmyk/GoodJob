@@ -63,6 +63,16 @@ interface ErrorBody {
   error?: { message?: unknown };
 }
 
+export class AcquisitionPerformanceApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "AcquisitionPerformanceApiError";
+    this.status = status;
+  }
+}
+
 function message(body: ErrorBody, status: number) {
   if (typeof body.error?.message === "string" && body.error.message.trim()) {
     return body.error.message;
@@ -95,7 +105,12 @@ export function createAcquisitionPerformanceApi(
       }
     });
     const body = await response.json().catch(() => ({})) as T & ErrorBody;
-    if (!response.ok) throw new Error(message(body, response.status));
+    if (!response.ok) {
+      throw new AcquisitionPerformanceApiError(
+        message(body, response.status),
+        response.status
+      );
+    }
     return body;
   }
 
@@ -110,11 +125,17 @@ export function createAcquisitionPerformanceApi(
         { method: "GET" }
       );
     },
-    async generateBriefing(filters: AcquisitionPerformanceFilters) {
+    async generateBriefing(
+      filters: AcquisitionPerformanceFilters,
+      options: { signal?: AbortSignal } = {}
+    ) {
+      const signal = options.signal;
+      signal?.throwIfAborted();
       const session = await request<{ resourceId: string }>(
         "/api/v1/acquisition/copilot/sessions",
         {
           method: "POST",
+          signal,
           headers: { "Idempotency-Key": key("performance-session") },
           body: JSON.stringify({ connectionId: null })
         }
@@ -124,6 +145,7 @@ export function createAcquisitionPerformanceApi(
         `/api/v1/acquisition/copilot/sessions/${encodeURIComponent(session.resourceId)}/messages`,
         {
           method: "POST",
+          signal,
           headers: { "Idempotency-Key": key("performance-briefing") },
           body: JSON.stringify({
             responseMode: "assistant",
@@ -140,12 +162,14 @@ export function createAcquisitionPerformanceApi(
         }
       );
       for (let attempt = 0; attempt < 20; attempt += 1) {
+        signal?.throwIfAborted();
         const current = await request<{
           status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
           result: { summary?: string } | null;
           errorCode: string | null;
         }>(`/api/v1/acquisition/copilot/tasks/${encodeURIComponent(task.id)}`, {
-          method: "GET"
+          method: "GET",
+          signal
         });
         if (current.status === "succeeded") {
           const summary = current.result?.summary?.trim();
@@ -156,6 +180,7 @@ export function createAcquisitionPerformanceApi(
           throw new Error(current.errorCode || "AI 解读生成失败");
         }
         await wait(500);
+        signal?.throwIfAborted();
       }
       throw new Error("AI 解读生成超时");
     }

@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
-import { createAcquisitionPerformanceApi } from "./performance-api";
+import {
+  AcquisitionPerformanceApiError,
+  createAcquisitionPerformanceApi
+} from "./performance-api";
 
 const requests: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
 const api = createAcquisitionPerformanceApi(async (input, init) => {
@@ -64,3 +67,13 @@ await assert.rejects(
   }),
   /真实经营接口不可用/
 );
+try {
+  await failing.getPerformance({
+    from: "2026-08-01T00:00:00.000Z",
+    to: "2026-08-07T00:00:00.000Z"
+  });
+  assert.fail("expected HTTP failure");
+} catch (error) {
+  assert.ok(error instanceof AcquisitionPerformanceApiError);
+  assert.equal(error.status, 503);
+}

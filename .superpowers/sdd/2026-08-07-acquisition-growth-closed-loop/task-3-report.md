@@ -34,3 +34,22 @@
 
 - 完整 acquisition 回归中的 18 个 application 子测试全部通过，但该历史文件的“模型调用永不返回”用例留有悬空 Promise，使 Node test worker 在子测试结束后到达文件级 timeout。本任务的对账和查询服务未引入 timer；上述有界目标集均完整退出为 0。
 - 两个仓库中用户原有的无关脏改动均未暂存、未提交。
+
+## Review Round 1（2026-08-08）
+
+已修复 1 个 Critical 与 10 个 Important；按评审决定保留 2 个 Minor（`missingAttribution` 的 `evidenceRefs` 精确过滤、mode 事件的额外 reload）到后续处理。
+
+### RED → GREEN 证据
+
+- Critical：新增“performance read 不得触发 reconciliation/write”测试，RED 时观察到 `reconciliationCalls === 1`；移除读路径副作用后 GREEN。新增独立 worker 测试，RED 为 worker module 不存在；实现 tenant scope、每租户 durable checkpoint、bounded page 后 GREEN。
+- Important 1/2/5：完整持久化 attribution chain 伪造 provider 测试 RED（未产生 `attribution_invalid`）；多 handoff Deal 测试 RED（落为 `outcome_write_failed`）；diagnostic 持久化失败重试测试验证回滚。实现 run/event/shard/operation/connection/provider/candidate 重校验、唯一 `convertedDealId` 绑定和 diagnostic 回滚后 9/9 GREEN。
+- Important 3/4/10：历史窗口测试 RED（当前 snapshot 将 highIntent/approved/converted 错计为 1，且窗口内 A→窗口外 C 会漏计历史 A）；重复 quoted 测试 RED（20,000 而非 10,000）；改读 qualification decisions 与 approval/conversion audit 历史、加入 candidate+eventKind 最新稳定金额规则、前一等长窗口 delta 与证据引用后 4/4 GREEN。
+- Important 6：contract 测试 RED 为 `planId is required`；补全 canonical `liveAttribution` 的 plan/version/hash/discovery/shard/operation/connection/provider 字段及 OpenAPI 发布后 GREEN，完整 contracts 32/32。
+- Important 7/8：前端 RED 为缺少 `AcquisitionPerformanceApiError` / generation guard 导出；保留 HTTP status、仅 `status === 401` 判未授权，并加入独立 generation、filter/mode signature 与 AbortController 后 `pnpm test` GREEN。
+- Important 9：旧签名 bundle 使用当前工具恢复时 RED 为 `MODEL_TOOL_DEFINITION_INVALID`；加入只读兼容 adapter，旧模型调用 `record_outcome` 时返回明确迁移提示且不执行写入，gateway/runtime factory 测试 GREEN。
+
+### 回归
+
+- 后端目标集 14/14；Pi gateway/runtime factory 通过。
+- `npm run test:security` 通过；OpenAPI 24/24；contract drift 16/16；contracts 32/32；`npm run build` 通过。
+- 前端 `pnpm test` 125 checks、`pnpm test:e2e` 7/7、`pnpm build` 均通过；仅保留既有 Vite 大 chunk 警告。
