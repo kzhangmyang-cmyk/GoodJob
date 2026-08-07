@@ -536,6 +536,14 @@ export interface AcquisitionPrivateDomainHandoffInput {
   };
 }
 
+export type AcquisitionPrivateDomainHandoffStoredRequest = Omit<
+  AcquisitionPrivateDomainHandoffInput,
+  "runId" | "discoveredEventId"
+> & {
+  runId?: string;
+  discoveredEventId?: string;
+};
+
 export interface AcquisitionPrivateDomainHandoffResult {
   replayed: boolean;
   handoff: {
@@ -566,6 +574,9 @@ export interface AcquisitionPrivateDomainHandoffResult {
     expectedGrossProfitMinor: number;
     expectedContributionMinor: number;
   };
+  recovery?: {
+    request: AcquisitionPrivateDomainHandoffStoredRequest;
+  };
 }
 
 export interface AcquisitionPrivateDomainHandoffPendingResult {
@@ -583,7 +594,7 @@ export interface AcquisitionPrivateDomainHandoffPendingResult {
       | "activity_ready"
       | "todo_ready"
       | "completed";
-    request: AcquisitionPrivateDomainHandoffInput;
+    request: AcquisitionPrivateDomainHandoffStoredRequest;
     createdAt: string;
   };
 }

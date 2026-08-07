@@ -289,6 +289,48 @@ function handoffAttributionSource(
   return discoveredEventId ? { runId, discoveredEventId } : null;
 }
 
+function storedHandoffRequest(value: unknown) {
+  const request = record(value);
+  const followUp = record(request?.followUp);
+  const decisionVersion = requestedPlanId(request?.decisionVersion);
+  const existingCustomerId = typeof request?.existingCustomerId === "string"
+    ? request.existingCustomerId
+    : null;
+  const title = typeof followUp?.title === "string" ? followUp.title : null;
+  const dueAt = typeof followUp?.dueAt === "string" ? followUp.dueAt : null;
+  const priority = followUp?.priority;
+  if (request?.operationCode !== "handoff_acquisition_candidate_v1"
+    || !decisionVersion
+    || (request.mode !== "create_new" && request.mode !== "link_existing")
+    || existingCustomerId === null
+    || title === null
+    || dueAt === null
+    || (priority !== "high" && priority !== "medium" && priority !== "normal")) {
+    return null;
+  }
+  return {
+    operationCode: request.operationCode,
+    runId: requestedPlanId(request.runId),
+    discoveredEventId: requestedPlanId(request.discoveredEventId),
+    decisionVersion,
+    mode: request.mode as "create_new" | "link_existing",
+    existingCustomerId,
+    followUp: {
+      title,
+      dueAt,
+      priority: priority as "high" | "medium" | "normal"
+    }
+  };
+}
+
+function recoverableHandoffRequest(status: unknown) {
+  const result = record(status);
+  const inProgress = record(result?.inProgress);
+  if (inProgress) return storedHandoffRequest(inProgress.request);
+  const recovery = record(result?.recovery);
+  return storedHandoffRequest(recovery?.request);
+}
+
 interface ResourceLoad<T> {
   value: T;
   errors: string[];
@@ -1391,24 +1433,19 @@ export function createAcquisitionDetailCenterController(
         void rejectValidation("请先选择一个候选").catch(() => undefined);
         return;
       }
-      if (handoffStatus && "handoff" in handoffStatus) return;
+      const recoveryRequest = recoverableHandoffRequest(handoffStatus);
+      if (handoffStatus && "handoff" in handoffStatus && !recoveryRequest) return;
       if (status !== "approved" && status !== "converted_to_lead") {
         void rejectValidation("只有已批准或已转线索的候选可以交接").catch(
           () => undefined
         );
         return;
       }
-      const reservedRequest = handoffStatus && "inProgress" in handoffStatus
-        ? handoffStatus.inProgress.request
-        : null;
-      const reservedRunId = requestedPlanId(reservedRequest?.runId);
-      const reservedEventId = requestedPlanId(
-        reservedRequest?.discoveredEventId
-      );
-      const source = reservedRequest
-        ? reservedRunId && reservedEventId
-          ? { runId: reservedRunId, discoveredEventId: reservedEventId }
-          : null
+      const source = recoveryRequest?.runId && recoveryRequest.discoveredEventId
+        ? {
+            runId: recoveryRequest.runId,
+            discoveredEventId: recoveryRequest.discoveredEventId
+          }
         : handoffAttributionSource(state.detail, state.selectedCandidateId);
       if (!source) {
         void rejectValidation("候选缺少当前运行的固定发现事件").catch(
@@ -1420,13 +1457,20 @@ export function createAcquisitionDetailCenterController(
       state.handoffDialog = {
         open: true,
         busy: false,
-        recovering: Boolean(reservedRequest),
+        recovering: Boolean(recoveryRequest),
         runId: source.runId,
         discoveredEventId: source.discoveredEventId,
-        mode: reservedRequest?.mode ?? "create_new",
-        existingCustomerId: reservedRequest?.existingCustomerId ?? "",
-        followUp: reservedRequest
-          ? { ...reservedRequest.followUp }
+        decisionVersion: recoveryRequest?.decisionVersion
+          ?? (typeof candidate.approvedDecisionVersion === "string"
+            && candidate.approvedDecisionVersion.trim()
+            ? candidate.approvedDecisionVersion.trim()
+            : typeof candidate.latestDecisionVersion === "string"
+              ? candidate.latestDecisionVersion.trim()
+              : ""),
+        mode: recoveryRequest?.mode ?? "create_new",
+        existingCustomerId: recoveryRequest?.existingCustomerId ?? "",
+        followUp: recoveryRequest
+          ? { ...recoveryRequest.followUp }
           : {
               title: "首次跟进：确认需求和预算",
               dueAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
@@ -1445,31 +1489,11 @@ export function createAcquisitionDetailCenterController(
     handoffCandidate(input) {
       const candidateId = state.selectedCandidateId;
       const candidate = state.candidateDetail?.candidate;
-      const handoffStatus = state.candidateDetail?.privateDomainHandoff;
-      const reservedRequest = handoffStatus && "inProgress" in handoffStatus
-        ? handoffStatus.inProgress.request
-        : null;
-      const reservedRunId = requestedPlanId(reservedRequest?.runId);
-      const reservedEventId = requestedPlanId(
-        reservedRequest?.discoveredEventId
-      );
-      const source = reservedRequest
-        ? reservedRunId && reservedEventId
-          ? { runId: reservedRunId, discoveredEventId: reservedEventId }
-          : null
-        : candidateId
-          ? handoffAttributionSource(state.detail, candidateId)
-          : null;
+      const dialog = state.handoffDialog;
       const status = typeof candidate?.status === "string"
         ? candidate.status
         : "";
-      const decisionVersion = reservedRequest?.decisionVersion
-        ?? (typeof candidate?.approvedDecisionVersion === "string"
-          && candidate.approvedDecisionVersion.trim()
-          ? candidate.approvedDecisionVersion.trim()
-          : typeof candidate?.latestDecisionVersion === "string"
-            ? candidate.latestDecisionVersion.trim()
-            : "");
+      const decisionVersion = dialog?.decisionVersion.trim() ?? "";
       if (!candidateId || !candidate) {
         return rejectValidation("请先选择一个候选");
       }
@@ -1479,18 +1503,11 @@ export function createAcquisitionDetailCenterController(
       if (!decisionVersion) {
         return rejectValidation("候选缺少已批准的资格决定版本");
       }
-      if (!source) {
+      if (!dialog?.open || !dialog.runId.trim()
+        || !dialog.discoveredEventId.trim()) {
         return rejectValidation("候选缺少当前运行的固定发现事件");
       }
-      const effectiveInput = reservedRequest ?? {
-        operationCode: "handoff_acquisition_candidate_v1" as const,
-        runId: source.runId,
-        discoveredEventId: source.discoveredEventId,
-        decisionVersion,
-        mode: input.mode,
-        existingCustomerId: input.existingCustomerId,
-        followUp: input.followUp
-      };
+      const effectiveInput = dialog.recovering ? dialog : input;
       const title = effectiveInput.followUp.title.trim();
       const existingCustomerId = effectiveInput.existingCustomerId.trim();
       const dueTimestamp = Date.parse(effectiveInput.followUp.dueAt);
@@ -1508,8 +1525,8 @@ export function createAcquisitionDetailCenterController(
 
       const request: AcquisitionPrivateDomainHandoffInput = {
         operationCode: "handoff_acquisition_candidate_v1",
-        runId: effectiveInput.runId,
-        discoveredEventId: effectiveInput.discoveredEventId,
+        runId: dialog.runId,
+        discoveredEventId: dialog.discoveredEventId,
         decisionVersion,
         mode: effectiveInput.mode,
         existingCustomerId: effectiveInput.mode === "link_existing"
@@ -1529,9 +1546,10 @@ export function createAcquisitionDetailCenterController(
       state.handoffDialog = {
         open: true,
         busy: true,
-        recovering: Boolean(reservedRequest),
+        recovering: dialog.recovering,
         runId: request.runId,
         discoveredEventId: request.discoveredEventId,
+        decisionVersion: request.decisionVersion,
         mode: request.mode,
         existingCustomerId: request.existingCustomerId,
         followUp: { ...request.followUp }

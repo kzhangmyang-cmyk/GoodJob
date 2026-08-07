@@ -440,6 +440,7 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
     recovering: true,
     runId: restoredRequest.runId,
     discoveredEventId: restoredRequest.discoveredEventId,
+    decisionVersion: restoredRequest.decisionVersion,
     mode: "link_existing",
     existingCustomerId: "customer-original-target",
     followUp: restoredRequest.followUp
@@ -545,6 +546,372 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
     controller.getState().candidateDetail?.privateDomainHandoff,
     null
   );
+  controller.destroy();
+}
+
+{
+  const scheduler = new ManualPollScheduler();
+  let taskReads = 0;
+  const submitted: unknown[] = [];
+  const taskForRead = () => ({
+    ...taskDetail,
+    latestRun: {
+      id: "run-pinned",
+      status: taskReads < 3 ? "running" as const : "paused" as const,
+      updatedAt: `2026-08-07T09:0${taskReads}:00.000Z`,
+      revision: taskReads
+    },
+    presentation: {
+      candidateEvents: [{
+        eventId: taskReads === 1 ? "event-reviewed-a" : "event-refreshed-b",
+        candidateId: "candidate-pinned"
+      }],
+      providers: [],
+      summary: {},
+      hasMore: false,
+      nextAfter: null
+    }
+  });
+  const api = {
+    async getTask() {
+      taskReads += 1;
+      return taskForRead();
+    },
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          status: "approved",
+          identityResolved: true,
+          latestDecisionVersion: "qualification-v2",
+          approvedDecisionVersion: "qualification-v2"
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() { return { items: [], nextCursor: null }; },
+    async getCandidateQualification() {
+      return { grade: "S", score: 94, hardGateFailures: [] };
+    },
+    async getCandidateFinancialValue() { return null; },
+    async getCandidateBattleCard() { return null; },
+    async getCandidateReviews() { return { items: [], nextCursor: null }; },
+    async getLatestIntelligenceOperation() { return null; },
+    async getCandidatePrivateDomainHandoff() { return null; },
+    async handoffCandidate(_candidateId: string, input: unknown) {
+      submitted.push(input);
+      return {
+        replayed: false,
+        handoff: {
+          id: "handoff-pinned",
+          candidateId: "candidate-pinned",
+          leadId: "lead-pinned",
+          customerId: "customer-pinned",
+          todoId: "todo-pinned",
+          runId: "run-pinned",
+          discoveredEventId: "event-reviewed-a",
+          decisionVersion: "qualification-v2",
+          createdAt: "2026-08-07T09:30:00.000Z"
+        },
+        lead: { id: "lead-pinned" },
+        customer: { id: "customer-pinned" },
+        todo: { id: "todo-pinned" },
+        intelligence: {
+          qualificationGrade: "S",
+          qualificationScore: 94,
+          financialGrade: "A",
+          currency: "CNY",
+          expectedRevenueMinor: 0,
+          expectedGrossProfitMinor: 0,
+          expectedContributionMinor: 0
+        }
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    pollIntervalMs: 1,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+  await controller.open("candidates", "plan-1");
+  await controller.selectCandidate("candidate-pinned");
+  controller.openPrivateDomainHandoff();
+  assert.equal(
+    controller.getState().handoffDialog?.discoveredEventId,
+    "event-reviewed-a"
+  );
+
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(
+    controller.getState().detail?.presentation?.candidateEvents[0]?.eventId,
+    "event-refreshed-b"
+  );
+  assert.equal(
+    controller.getState().handoffDialog?.discoveredEventId,
+    "event-reviewed-a"
+  );
+
+  await controller.handoffCandidate({
+    mode: "create_new",
+    existingCustomerId: "",
+    followUp: {
+      title: "保持已审核来源",
+      dueAt: "2026-08-08T09:00:00.000Z",
+      priority: "high"
+    }
+  });
+  assert.deepEqual(submitted[0], {
+    operationCode: "handoff_acquisition_candidate_v1",
+    runId: "run-pinned",
+    discoveredEventId: "event-reviewed-a",
+    decisionVersion: "qualification-v2",
+    mode: "create_new",
+    existingCustomerId: "",
+    followUp: {
+      title: "保持已审核来源",
+      dueAt: "2026-08-08T09:00:00.000Z",
+      priority: "high"
+    }
+  });
+  controller.destroy();
+}
+
+{
+  const legacyRequest = {
+    operationCode: "handoff_acquisition_candidate_v1" as const,
+    decisionVersion: "qualification-v2",
+    mode: "link_existing" as const,
+    existingCustomerId: "customer-legacy-in-flight",
+    followUp: {
+      title: "保留历史未完成请求",
+      dueAt: "2026-08-10T10:00:00.000Z",
+      priority: "medium" as const
+    }
+  };
+  const submitted: unknown[] = [];
+  const api = {
+    async getTask() {
+      return taskDetailWithCandidateSource("candidate-legacy-in-flight");
+    },
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          status: "converted_to_lead",
+          identityResolved: true,
+          latestDecisionVersion: "qualification-v2",
+          approvedDecisionVersion: "qualification-v2"
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() { return { items: [], nextCursor: null }; },
+    async getCandidateQualification() {
+      return { grade: "S", score: 94, hardGateFailures: [] };
+    },
+    async getCandidateFinancialValue() { return null; },
+    async getCandidateBattleCard() { return null; },
+    async getCandidateReviews() { return { items: [], nextCursor: null }; },
+    async getLatestIntelligenceOperation() { return null; },
+    async getCandidatePrivateDomainHandoff() {
+      return {
+        replayed: false,
+        inProgress: {
+          id: "operation-legacy-in-flight",
+          candidateId: "candidate-legacy-in-flight",
+          decisionVersion: legacyRequest.decisionVersion,
+          mode: legacyRequest.mode,
+          existingCustomerId: legacyRequest.existingCustomerId,
+          stage: "customer_ready",
+          request: legacyRequest,
+          createdAt: "2026-08-07T08:00:00.000Z"
+        }
+      };
+    },
+    async handoffCandidate(_candidateId: string, input: unknown) {
+      submitted.push(input);
+      return {
+        replayed: false,
+        handoff: {
+          id: "handoff-legacy-in-flight",
+          candidateId: "candidate-legacy-in-flight",
+          leadId: "lead-legacy-in-flight",
+          customerId: legacyRequest.existingCustomerId,
+          todoId: "todo-legacy-in-flight",
+          runId: "run-handoff",
+          discoveredEventId: "event-candidate-legacy-in-flight",
+          decisionVersion: legacyRequest.decisionVersion,
+          createdAt: "2026-08-07T08:00:00.000Z"
+        },
+        lead: { id: "lead-legacy-in-flight" },
+        customer: { id: legacyRequest.existingCustomerId },
+        todo: { id: "todo-legacy-in-flight" },
+        intelligence: {
+          qualificationGrade: "S",
+          qualificationScore: 94,
+          financialGrade: "A",
+          currency: "CNY",
+          expectedRevenueMinor: 0,
+          expectedGrossProfitMinor: 0,
+          expectedContributionMinor: 0
+        }
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({ api });
+  await controller.open("candidates", "plan-1");
+  await controller.selectCandidate("candidate-legacy-in-flight");
+  controller.openPrivateDomainHandoff();
+  assert.deepEqual(controller.getState().handoffDialog, {
+    open: true,
+    busy: false,
+    recovering: true,
+    runId: "run-handoff",
+    discoveredEventId: "event-candidate-legacy-in-flight",
+    decisionVersion: legacyRequest.decisionVersion,
+    mode: legacyRequest.mode,
+    existingCustomerId: legacyRequest.existingCustomerId,
+    followUp: legacyRequest.followUp
+  });
+  await controller.handoffCandidate({
+    mode: "create_new",
+    existingCustomerId: "customer-do-not-use",
+    followUp: {
+      title: "不得覆盖历史请求",
+      dueAt: "2026-08-31T00:00:00.000Z",
+      priority: "high"
+    }
+  });
+  assert.deepEqual(submitted[0], {
+    ...legacyRequest,
+    runId: "run-handoff",
+    discoveredEventId: "event-candidate-legacy-in-flight"
+  });
+  controller.destroy();
+}
+
+{
+  const legacyRequest = {
+    operationCode: "handoff_acquisition_candidate_v1" as const,
+    decisionVersion: "qualification-v2",
+    mode: "create_new" as const,
+    existingCustomerId: "",
+    followUp: {
+      title: "验证已完成历史交接",
+      dueAt: "2026-08-10T11:00:00.000Z",
+      priority: "normal" as const
+    }
+  };
+  const submitted: unknown[] = [];
+  const api = {
+    async getTask() {
+      return taskDetailWithCandidateSource("candidate-legacy-completed");
+    },
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          status: "converted_to_lead",
+          identityResolved: true,
+          latestDecisionVersion: "qualification-v2",
+          approvedDecisionVersion: "qualification-v2"
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() { return { items: [], nextCursor: null }; },
+    async getCandidateQualification() {
+      return { grade: "S", score: 94, hardGateFailures: [] };
+    },
+    async getCandidateFinancialValue() { return null; },
+    async getCandidateBattleCard() { return null; },
+    async getCandidateReviews() { return { items: [], nextCursor: null }; },
+    async getLatestIntelligenceOperation() { return null; },
+    async getCandidatePrivateDomainHandoff() {
+      return {
+        replayed: false,
+        handoff: {
+          id: "handoff-legacy-completed",
+          candidateId: "candidate-legacy-completed",
+          leadId: "lead-legacy-completed",
+          customerId: "customer-legacy-completed",
+          todoId: "todo-legacy-completed",
+          runId: null,
+          discoveredEventId: null,
+          decisionVersion: legacyRequest.decisionVersion,
+          createdAt: "2026-08-07T08:00:00.000Z"
+        },
+        lead: { id: "lead-legacy-completed" },
+        customer: { id: "customer-legacy-completed" },
+        todo: { id: "todo-legacy-completed" },
+        intelligence: {
+          qualificationGrade: "S",
+          qualificationScore: 94,
+          financialGrade: "A",
+          currency: "CNY",
+          expectedRevenueMinor: 0,
+          expectedGrossProfitMinor: 0,
+          expectedContributionMinor: 0
+        },
+        recovery: { request: legacyRequest }
+      };
+    },
+    async handoffCandidate(_candidateId: string, input: unknown) {
+      submitted.push(input);
+      return {
+        replayed: true,
+        handoff: {
+          id: "handoff-legacy-completed",
+          candidateId: "candidate-legacy-completed",
+          leadId: "lead-legacy-completed",
+          customerId: "customer-legacy-completed",
+          todoId: "todo-legacy-completed",
+          runId: "run-handoff",
+          discoveredEventId: "event-candidate-legacy-completed",
+          decisionVersion: legacyRequest.decisionVersion,
+          createdAt: "2026-08-07T08:00:00.000Z"
+        },
+        lead: { id: "lead-legacy-completed" },
+        customer: { id: "customer-legacy-completed" },
+        todo: { id: "todo-legacy-completed" },
+        intelligence: {
+          qualificationGrade: "S",
+          qualificationScore: 94,
+          financialGrade: "A",
+          currency: "CNY",
+          expectedRevenueMinor: 0,
+          expectedGrossProfitMinor: 0,
+          expectedContributionMinor: 0
+        }
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({ api });
+  await controller.open("candidates", "plan-1");
+  await controller.selectCandidate("candidate-legacy-completed");
+  controller.openPrivateDomainHandoff();
+  assert.equal(controller.getState().handoffDialog?.recovering, true);
+  assert.equal(controller.getState().handoffDialog?.runId, "run-handoff");
+  assert.equal(
+    controller.getState().handoffDialog?.discoveredEventId,
+    "event-candidate-legacy-completed"
+  );
+  await controller.handoffCandidate({
+    mode: "link_existing",
+    existingCustomerId: "customer-do-not-use",
+    followUp: {
+      title: "不得覆盖已完成历史请求",
+      dueAt: "2026-08-31T00:00:00.000Z",
+      priority: "high"
+    }
+  });
+  assert.deepEqual(submitted[0], {
+    ...legacyRequest,
+    runId: "run-handoff",
+    discoveredEventId: "event-candidate-legacy-completed"
+  });
   controller.destroy();
 }
 

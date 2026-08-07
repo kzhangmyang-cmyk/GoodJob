@@ -515,6 +515,60 @@ function state(
   );
   assert.doesNotMatch(html, /<script>alert\('lead'\)<\/script>/);
   assert.match(html, /&lt;script&gt;/);
+
+  const completedStatus = completedDetail.privateDomainHandoff;
+  assert.ok(completedStatus && "handoff" in completedStatus);
+  const legacyCompleted = {
+    ...completedDetail,
+    privateDomainHandoff: {
+      ...completedStatus,
+      handoff: {
+        ...completedStatus.handoff,
+        runId: null,
+        discoveredEventId: null
+      },
+      recovery: {
+        request: {
+          operationCode: "handoff_acquisition_candidate_v1" as const,
+          decisionVersion: "qualification-v2",
+          mode: "create_new" as const,
+          existingCustomerId: "",
+          followUp: {
+            title: "验证历史归因",
+            dueAt: "2026-08-08T09:00:00.000Z",
+            priority: "high" as const
+          }
+        }
+      }
+    }
+  } satisfies AcquisitionCandidateDetail;
+  const recoverableHtml = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-org",
+    candidateDetail: legacyCompleted
+  }));
+  assert.match(recoverableHtml, /验证并补全历史归因/);
+  assert.match(
+    recoverableHtml,
+    /data-acquisition-detail-action="open-private-domain-handoff"/
+  );
+
+  const untrustedHtml = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-org",
+    candidateDetail: {
+      ...legacyCompleted,
+      privateDomainHandoff: {
+        ...legacyCompleted.privateDomainHandoff,
+        recovery: undefined
+      }
+    }
+  }));
+  assert.match(untrustedHtml, /历史归因不可验证，不能创建获客绑定商机/);
+  assert.doesNotMatch(
+    untrustedHtml,
+    /data-acquisition-detail-action="open-private-domain-handoff"/
+  );
 }
 
 {
@@ -535,6 +589,7 @@ function state(
       recovering: true,
       runId: "run-1",
       discoveredEventId: "event-org",
+      decisionVersion: "qualification-v2",
       mode: "link_existing",
       existingCustomerId: `customer-&\"<script>alert('customer')</script>`,
       followUp: {

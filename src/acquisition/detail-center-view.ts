@@ -23,6 +23,7 @@ export interface AcquisitionHandoffDialogState {
   recovering?: boolean;
   runId: string;
   discoveredEventId: string;
+  decisionVersion: string;
   mode: "create_new" | "link_existing";
   existingCustomerId: string;
   followUp: {
@@ -800,6 +801,13 @@ function renderPrivateDomainHandoff(
     const completed = statusResult;
     const handoff = completed.handoff;
     const dueAt = textValue(completed.todo.dueAt, "待确认");
+    const attributionMissing = !textValue(handoff.runId, "")
+      || !textValue(handoff.discoveredEventId, "");
+    const recoveryAction = attributionMissing
+      ? completed.recovery
+        ? `<button type="button" data-acquisition-detail-action="open-private-domain-handoff">验证并补全历史归因</button>`
+        : `<span class="replica-acquisition-review-note is-warning">历史归因不可验证，不能创建获客绑定商机</span>`
+      : "";
     return `
       <div class="replica-acquisition-handoff-complete" data-private-domain-handoff-id="${escapeHtml(handoff.id)}">
         <strong>已完成 CRM/私域交接</strong>
@@ -812,6 +820,7 @@ function renderPrivateDomainHandoff(
         <div class="replica-acquisition-review-actions">
           <a href="#private-domain" data-private-domain-customer-id="${escapeHtml(handoff.customerId)}">查看客户</a>
           <a href="#private-domain" data-private-domain-customer-id="${escapeHtml(handoff.customerId)}" data-todo-id="${escapeHtml(handoff.todoId)}">查看待办</a>
+          ${recoveryAction}
         </div>
       </div>
     `;
