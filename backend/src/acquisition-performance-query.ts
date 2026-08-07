@@ -131,7 +131,7 @@ function fact(
 export class AcquisitionPerformanceQueryService {
   readonly #planRuns: Pick<
     AcquisitionPlanRunRepository,
-    "listRuns" | "getPlanVersion" | "listRunEvents"
+    "listRuns" | "listRunEvents"
   >;
   readonly #domain: Pick<
     AcquisitionDomainRepository,
@@ -148,7 +148,7 @@ export class AcquisitionPerformanceQueryService {
   constructor(options: {
     planRuns: Pick<
       AcquisitionPlanRunRepository,
-      "listRuns" | "getPlanVersion" | "listRunEvents"
+      "listRuns" | "listRunEvents"
     >;
     domain: Pick<
       AcquisitionDomainRepository,
@@ -194,40 +194,16 @@ export class AcquisitionPerformanceQueryService {
         item.ownerId === scope.ownerId && item.teamId === scope.teamId)
       .map((item) => item.updatedAt)
       .sort((left, right) => right.localeCompare(left))[0] ?? null;
-    const allScopedRuns = (await this.#planRuns.listRuns(scope)).filter((run) =>
-      run.ownerId === scope.ownerId
-      && run.teamId === scope.teamId
-      && run.createdAt <= query.to)
-      .sort((left, right) =>
-        right.createdAt.localeCompare(left.createdAt)
-        || right.id.localeCompare(left.id));
-    const selectedRuns: Array<{ run: (typeof allScopedRuns)[number] }> = [];
-    if (query.platform) {
-      const platform = query.platform;
-      const versionReads = new Map<
-        string,
-        ReturnType<AcquisitionPlanRunRepository["getPlanVersion"]>
-      >();
-      for (const run of allScopedRuns) {
-        let versionRead = versionReads.get(run.planVersionId);
-        if (!versionRead) {
-          versionRead = this.#planRuns.getPlanVersion(run.planVersionId);
-          versionReads.set(run.planVersionId, versionRead);
-        }
-        const version = await versionRead;
-        if (version?.payload.targetPlatform !== platform) continue;
-        if (selectedRuns.length === this.#limits.runs) {
-          truncated = true;
-          break;
-        }
-        selectedRuns.push({ run });
-      }
-    } else {
-      if (allScopedRuns.length > this.#limits.runs) truncated = true;
-      selectedRuns.push(...allScopedRuns
-        .slice(0, this.#limits.runs)
-        .map((run) => ({ run })));
-    }
+    const queriedRuns = await this.#planRuns.listRuns(scope, {
+      ...(query.platform ? { targetPlatform: query.platform } : {}),
+      createdAtOnOrBefore: query.to,
+      orderBy: "created_at_desc",
+      limit: this.#limits.runs + 1
+    });
+    if (queriedRuns.length > this.#limits.runs) truncated = true;
+    const selectedRuns = queriedRuns
+      .slice(0, this.#limits.runs)
+      .map((run) => ({ run }));
     const selectedRunIds = new Set(selectedRuns.map(({ run }) => run.id));
     const allDiscoveryEvents = (await Promise.all(selectedRuns.map(
       async ({ run }) => {

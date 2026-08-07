@@ -232,6 +232,13 @@ export interface AcquisitionRunEventPageQuery {
   limit: number;
 }
 
+export interface AcquisitionRunListQuery {
+  targetPlatform?: AcquisitionTargetPlatform;
+  createdAtOnOrBefore: string;
+  orderBy: "created_at_desc";
+  limit: number;
+}
+
 export interface AcquisitionRunPresentationExecution {
   providers: Array<{
     shardId: string;
@@ -369,7 +376,10 @@ export interface AcquisitionPlanRunRepository {
   getPlan(id: string): Promise<AcquisitionPlan | null>;
   getPlanVersion(id: string): Promise<AcquisitionPlanVersion | null>;
   listPlanVersions(planId: string): Promise<AcquisitionPlanVersion[]>;
-  listRuns(scope: { ownerId: string; teamId: string }): Promise<AcquisitionRun[]>;
+  listRuns(
+    scope: { ownerId: string; teamId: string },
+    query?: AcquisitionRunListQuery
+  ): Promise<AcquisitionRun[]>;
   getRun(id: string): Promise<AcquisitionRun | null>;
   listRunShards(runId: string): Promise<AcquisitionOperationShard[]>;
   listPlanEvents(planId: string): Promise<AcquisitionPlanEvent[]>;
@@ -537,13 +547,32 @@ implements AcquisitionPlanRunRepository {
     return clone(state.runs.get(id) ?? null);
   }
 
-  async listRuns(scope: { ownerId: string; teamId: string }) {
+  async listRuns(
+    scope: { ownerId: string; teamId: string },
+    query?: AcquisitionRunListQuery
+  ) {
     const state = await this.snapshot();
-    return Array.from(state.runs.values())
+    const scoped = Array.from(state.runs.values())
       .filter((run) => run.ownerId === scope.ownerId
-        && run.teamId === scope.teamId)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
+        && run.teamId === scope.teamId);
+    if (!query) {
+      return scoped
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)
+          || right.id.localeCompare(left.id))
+        .map(clone);
+    }
+    return scoped
+      .filter((run) => run.createdAt <= query.createdAtOnOrBefore)
+      .filter((run) => {
+        if (!query.targetPlatform) return true;
+        const version = state.planVersions.get(run.planVersionId);
+        return version?.ownerId === scope.ownerId
+          && version.teamId === scope.teamId
+          && version.payload.targetPlatform === query.targetPlatform;
+      })
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt)
         || right.id.localeCompare(left.id))
+      .slice(0, query.limit)
       .map(clone);
   }
 

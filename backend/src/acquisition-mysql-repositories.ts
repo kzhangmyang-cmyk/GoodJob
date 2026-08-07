@@ -45,6 +45,7 @@ import type {
   AcquisitionPlanRunRepositoryTransaction,
   AcquisitionPlanVersion,
   AcquisitionRun,
+  AcquisitionRunListQuery,
   AcquisitionRunCandidateLink,
   AcquisitionRunEvent,
   AcquisitionRunEventPageQuery,
@@ -2944,13 +2945,45 @@ implements AcquisitionPlanRunRepository {
       ownedPayload<AcquisitionPlanVersion>(row, "plan_version"));
   }
 
-  async listRuns(scope: { ownerId: string; teamId: string }) {
+  async listRuns(
+    scope: { ownerId: string; teamId: string },
+    query?: AcquisitionRunListQuery
+  ) {
+    if (!query) {
+      const result = await rows(
+        this.pool,
+        `SELECT * FROM acquisition_runs
+         WHERE owner_id = ? AND team_id = ?
+         ORDER BY updated_at DESC, id DESC`,
+        [scope.ownerId, scope.teamId]
+      );
+      return result.map((row) => ownedPayload<AcquisitionRun>(row, "run"));
+    }
+    const platformJoin = query.targetPlatform
+      ? `INNER JOIN acquisition_plan_versions v
+           ON v.id = r.plan_version_id
+          AND v.plan_id = r.plan_id
+          AND v.owner_id = r.owner_id
+          AND v.team_id = r.team_id`
+      : "";
+    const platformPredicate = query.targetPlatform
+      ? `AND JSON_UNQUOTE(
+           JSON_EXTRACT(v.payload_json, '$.payload.targetPlatform')
+         ) = ?`
+      : "";
+    const values: unknown[] = [scope.ownerId, scope.teamId];
+    if (query.targetPlatform) values.push(query.targetPlatform);
+    values.push(mysqlDate(query.createdAtOnOrBefore), query.limit);
     const result = await rows(
       this.pool,
-      `SELECT * FROM acquisition_runs
-       WHERE owner_id = ? AND team_id = ?
-       ORDER BY updated_at DESC, id DESC`,
-      [scope.ownerId, scope.teamId]
+      `SELECT r.* FROM acquisition_runs r
+       ${platformJoin}
+       WHERE r.owner_id = ? AND r.team_id = ?
+       ${platformPredicate}
+         AND r.created_at <= ?
+       ORDER BY r.created_at DESC, r.id DESC
+       LIMIT ?`,
+      values
     );
     return result.map((row) => ownedPayload<AcquisitionRun>(row, "run"));
   }

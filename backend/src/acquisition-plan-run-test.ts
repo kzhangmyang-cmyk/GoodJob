@@ -1467,6 +1467,53 @@ test("run and plan reads never cross owner/team boundaries", async () => {
   assert.equal((await service.getRun(ownerA, run.id)).id, run.id);
 });
 
+test("in-memory run listing filters platform and time before ordering and limiting", async () => {
+  const { repository, service } = harness();
+  const douyinInput = planInput({ targetPlatform: "douyin" });
+  douyinInput.operations = douyinInput.operations.map((operation) => {
+    if (operation.kind !== "search") return operation;
+    return {
+      ...operation,
+      query: operation.subjectChannel === "organization"
+        ? "site:douyin.com 招聘销售 新店开业"
+        : "site:iesdouyin.com 老板 获客难"
+    };
+  });
+  const douyinDraft = await service.createPlan(ownerA, douyinInput);
+  const douyinPlan = await service.approvePlan(
+    ownerA,
+    douyinDraft.id,
+    douyinDraft.etag,
+    { decision: "approve", reason: "构造早期抖音运行" }
+  );
+  const douyinRun = await service.createRun(ownerA, douyinPlan.id, {
+    idempotencyKey: "run-list-query-douyin"
+  });
+  const webDraft = await service.createPlan(
+    ownerA,
+    planInput({ targetPlatform: "web" })
+  );
+  const webPlan = await service.approvePlan(
+    ownerA,
+    webDraft.id,
+    webDraft.etag,
+    { decision: "approve", reason: "构造更新的 Web 运行" }
+  );
+  const webRun = await service.createRun(ownerA, webPlan.id, {
+    idempotencyKey: "run-list-query-web"
+  });
+
+  assert.equal((await repository.listRuns(ownerA))[0]?.id, webRun.id);
+  const selected = await repository.listRuns(ownerA, {
+    targetPlatform: "douyin",
+    createdAtOnOrBefore: "2026-07-24T23:59:59.999Z",
+    orderBy: "created_at_desc",
+    limit: 1
+  });
+
+  assert.deepEqual(selected.map((run) => run.id), [douyinRun.id]);
+});
+
 let passed = 0;
 for (const entry of tests) {
   try {

@@ -956,6 +956,54 @@ async function testRunPersistsImmutableSnapshotColumnsAfterVersion() {
   ]);
 }
 
+async function testRunListQueryPushesFilteringOrderingAndLimitIntoSql() {
+  const pool = new FakePool();
+  const repository = new MysqlAcquisitionPlanRunRepository(asPool(pool));
+  pool.enqueue([]);
+  await repository.listRuns({ ownerId: "owner-a", teamId: "team-a" });
+  const unfiltered = pool.calls.at(-1)!;
+  assert.doesNotMatch(unfiltered.sql, /acquisition_plan_versions/u);
+  assert.match(unfiltered.sql, /ORDER BY updated_at DESC, id DESC/u);
+
+  const run = acquisitionRun();
+  pool.enqueue([{
+    id: run.id,
+    owner_id: run.ownerId,
+    team_id: run.teamId,
+    payload_json: JSON.stringify(run)
+  }]);
+  const selected = await repository.listRuns(
+    { ownerId: "owner-a", teamId: "team-a" },
+    {
+      targetPlatform: "douyin",
+      createdAtOnOrBefore: "2026-08-07T23:59:59.999Z",
+      orderBy: "created_at_desc",
+      limit: 3
+    }
+  );
+
+  assert.deepEqual(selected, [run]);
+  const filtered = pool.calls.at(-1)!;
+  assert.match(
+    filtered.sql,
+    /INNER JOIN acquisition_plan_versions v/u
+  );
+  assert.match(
+    filtered.sql,
+    /JSON_EXTRACT\(v\.payload_json, '\$\.payload\.targetPlatform'\)/u
+  );
+  assert.match(filtered.sql, /r\.created_at <= \?/u);
+  assert.match(filtered.sql, /ORDER BY r\.created_at DESC, r\.id DESC/u);
+  assert.match(filtered.sql, /LIMIT \?/u);
+  assert.deepEqual(filtered.values, [
+    "owner-a",
+    "team-a",
+    "douyin",
+    "2026-08-07 23:59:59.999",
+    3
+  ]);
+}
+
 async function testPlanRunIdempotencyScopesAreHashedAtRest() {
   const pool = new FakePool();
   const connection = pool.connection;
@@ -1354,6 +1402,7 @@ async function run() {
   await testPlaintextCredentialFieldsAreRejected();
   await testTaskStateUpdateUsesExpectedPreviousState();
   await testRunPersistsImmutableSnapshotColumnsAfterVersion();
+  await testRunListQueryPushesFilteringOrderingAndLimitIntoSql();
   await testPlanRunIdempotencyScopesAreHashedAtRest();
   await testPlanRunTransactionCommitsNewRowsWithoutOverwriteUpsert();
   await testPlanRunTransactionLocksAndRollsBack();
