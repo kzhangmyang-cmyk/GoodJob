@@ -164,6 +164,19 @@ const taskDetail = {
   presentation: null
 };
 
+function taskDetailWithCandidateSource(...candidateIds: string[]) {
+  return {
+    ...taskDetail,
+    latestRun: { id: "run-handoff" },
+    presentation: {
+      candidateEvents: candidateIds.map((candidateId) => ({
+        eventId: `event-${candidateId}`,
+        candidateId
+      }))
+    }
+  };
+}
+
 {
   const oldTask = deferred<typeof taskDetail>();
   const newTask = deferred<typeof taskDetail>();
@@ -197,7 +210,7 @@ const taskDetail = {
   let handoffAttempts = 0;
   const api = {
     async getTask() {
-      return taskDetail;
+      return taskDetailWithCandidateSource("candidate-approved");
     },
     async getCandidate(candidateId: string) {
       return {
@@ -300,6 +313,8 @@ const taskDetail = {
 {
   const restoredRequest = {
     operationCode: "handoff_acquisition_candidate_v1" as const,
+    runId: "run-handoff",
+    discoveredEventId: "event-candidate-refresh",
     decisionVersion: "qualification-v2",
     mode: "link_existing" as const,
     existingCustomerId: "customer-original-target",
@@ -403,6 +418,8 @@ const taskDetail = {
     open: true,
     busy: false,
     recovering: true,
+    runId: restoredRequest.runId,
+    discoveredEventId: restoredRequest.discoveredEventId,
     mode: "link_existing",
     existingCustomerId: "customer-original-target",
     followUp: restoredRequest.followUp
@@ -422,7 +439,7 @@ const taskDetail = {
   const pending = deferred<any>();
   const api = {
     async getTask() {
-      return taskDetail;
+      return taskDetailWithCandidateSource("candidate-old", "candidate-new");
     },
     async getCandidate(candidateId: string) {
       return {

@@ -9,7 +9,7 @@ const html = renderAcquisitionPerformance({
     valuesByCurrency: [{ currency: "USD", estimatedPipelineMinor: 100_000, quotedMinor: 80_000, wonContractMinor: 60_000 }],
     cost: { status: "available", executionCostMinor: 300, currency: "CNY", coverage: "recorded_api_execution_only" },
     roi: { status: "not_computable", reason: "channel_cost_or_verified_margin_unavailable" },
-    dataQuality: { missingAttribution: 1, missingFinancial: 2, truncated: false, lastReconciledAt: "2026-08-07T08:00:00.000Z" },
+    dataQuality: { missingAttribution: 1, missingFinancial: 2, truncated: true, lastReconciledAt: "2026-08-07T08:00:00.000Z" },
     briefingFacts: {
       headlines: [{ metricId: "funnel.won", text: "<img src=x onerror=alert(1)>", evidenceRefs: ["outcome-a"] }],
       risks: [{ metricId: "roi.status", text: "ROI 不可计算", evidenceRefs: ["run-a"] }],
@@ -28,6 +28,7 @@ assert.equal(html.includes("USD 600.00"), true);
 assert.equal(html.includes("成交合同额"), true);
 assert.equal(html.includes("实际回款"), false);
 assert.equal(html.includes("ROI 暂不可计算"), true);
+assert.equal(html.includes("结果已按安全上限截断"), true);
 assert.equal(html.includes("&lt;img"), true);
 assert.equal(html.includes("&lt;script&gt;"), true);
 assert.equal(html.includes("onerror=alert(1)><"), false);

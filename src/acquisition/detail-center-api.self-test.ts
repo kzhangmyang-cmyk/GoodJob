@@ -908,6 +908,8 @@ const handoffEnvelope = {
     leadId: "lead-1",
     customerId: "customer-1",
     todoId: "todo-1",
+    runId: "run-1",
+    discoveredEventId: "event-1",
     decisionVersion: "qualification-v2",
     createdAt: "2026-08-07T08:00:00.000Z"
   },
@@ -938,6 +940,8 @@ const handoffApi = createAcquisitionDetailApi(
 );
 const handoffInput = {
   operationCode: "handoff_acquisition_candidate_v1" as const,
+  runId: "run-1",
+  discoveredEventId: "event-1",
   decisionVersion: "qualification-v2",
   mode: "create_new" as const,
   existingCustomerId: "",

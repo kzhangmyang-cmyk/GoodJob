@@ -524,6 +524,8 @@ export interface CandidateReviewResult {
 
 export interface AcquisitionPrivateDomainHandoffInput {
   operationCode: "handoff_acquisition_candidate_v1";
+  runId: string;
+  discoveredEventId: string;
   decisionVersion: string;
   mode: "create_new" | "link_existing";
   existingCustomerId: string;
@@ -542,6 +544,8 @@ export interface AcquisitionPrivateDomainHandoffResult {
     leadId: string;
     customerId: string;
     todoId: string;
+    runId: string | null;
+    discoveredEventId: string | null;
     decisionVersion: string;
     createdAt: string;
   };

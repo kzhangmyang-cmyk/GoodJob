@@ -435,6 +435,8 @@ function state(
         stage: "customer_ready",
         request: {
           operationCode: "handoff_acquisition_candidate_v1",
+          runId: "run-1",
+          discoveredEventId: "event-org",
           decisionVersion: "qualification-v2",
           mode: "link_existing",
           existingCustomerId: "customer-original-target",
@@ -474,6 +476,8 @@ function state(
         leadId: "lead-<script>alert('lead')</script>",
         customerId: "customer-1",
         todoId: "todo-1",
+        runId: "run-1",
+        discoveredEventId: "event-org",
         decisionVersion: "qualification-v2",
         createdAt: timestamp
       },
@@ -529,6 +533,8 @@ function state(
       open: true,
       busy: false,
       recovering: true,
+      runId: "run-1",
+      discoveredEventId: "event-org",
       mode: "link_existing",
       existingCustomerId: `customer-&\"<script>alert('customer')</script>`,
       followUp: {
@@ -540,6 +546,8 @@ function state(
   }));
   assert.match(html, /data-acquisition-detail-form="private-domain-handoff"/);
   assert.match(html, /继续服务端已保留的原交接请求/);
+  assert.match(html, /固定获客来源：Run/);
+  assert.match(html, /event-org/);
   assert.match(html, /<fieldset disabled>/);
   assert.match(html, /继续原交接/);
   assert.match(html, /name="handoffMode"/);

@@ -21,6 +21,8 @@ export interface AcquisitionHandoffDialogState {
   open: boolean;
   busy: boolean;
   recovering?: boolean;
+  runId: string;
+  discoveredEventId: string;
   mode: "create_new" | "link_existing";
   existingCustomerId: string;
   followUp: {
@@ -851,6 +853,7 @@ function renderHandoffDialog(
           <button type="button" data-acquisition-detail-action="close-private-domain-handoff"${dialog.busy ? " disabled" : ""}>关闭</button>
         </header>
         ${dialog.recovering ? "<p>正在继续服务端已保留的原交接请求；为避免重复或改写目标，本次参数不可编辑。</p>" : ""}
+        <p>固定获客来源：Run <code>${escapeHtml(dialog.runId)}</code> · 发现事件 <code>${escapeHtml(dialog.discoveredEventId)}</code></p>
         <fieldset${dialog.busy || dialog.recovering ? " disabled" : ""}>
           <legend>交接模式</legend>
           <label><input type="radio" name="handoffMode" value="create_new"${dialog.mode === "create_new" ? " checked" : ""}> 创建新客户</label>

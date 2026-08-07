@@ -20,12 +20,12 @@ const api = createAcquisitionPerformanceApi(async (input, init) => {
 
 await api.getPerformance({
   platform: "douyin",
-  from: "2026-08-01T00:00:00.000Z",
-  to: "2026-08-07T00:00:00.000Z"
+  from: "2026-08-01",
+  to: "2026-08-07"
 });
 assert.equal(
   requests[0]?.input,
-  "/api/v1/acquisition/performance?platform=douyin&from=2026-08-01T00%3A00%3A00.000Z&to=2026-08-07T00%3A00%3A00.000Z"
+  "/api/v1/acquisition/performance?platform=douyin&from=2026-08-01&to=2026-08-07"
 );
 assert.equal(requests[0]?.init?.method, "GET");
 assert.equal(requests[0]?.init?.credentials, "same-origin");
@@ -45,16 +45,26 @@ const briefingApi = createAcquisitionPerformanceApi(async (input, init) => {
     status: "succeeded",
     result: { summary: "成交合同额提升，但 ROI 因渠道成本不完整仍不可计算。" }
   }), { status: 200 });
-}, async () => {});
+}, async () => {}, {
+  cookieSource: () => "gj_session=real-session; gj_csrf=csrf%2Fbriefing"
+});
 const interpretation = await briefingApi.generateBriefing({
   platform: "douyin",
-  from: "2026-08-01T00:00:00.000Z",
-  to: "2026-08-07T00:00:00.000Z"
+  from: "2026-08-01",
+  to: "2026-08-07"
 });
 assert.equal(interpretation.includes("ROI"), true);
 assert.equal(briefingRequests[0]?.init?.method, "POST");
 assert.equal(briefingRequests[1]?.init?.method, "POST");
 assert.equal(briefingRequests[2]?.init?.method, "GET");
+assert.equal(
+  new Headers(briefingRequests[0]?.init?.headers).get("x-csrf-token"),
+  "csrf/briefing"
+);
+assert.equal(
+  new Headers(briefingRequests[1]?.init?.headers).get("x-csrf-token"),
+  "csrf/briefing"
+);
 
 const failing = createAcquisitionPerformanceApi(async () => new Response(
   JSON.stringify({ error: { message: "真实经营接口不可用" } }),
@@ -62,15 +72,15 @@ const failing = createAcquisitionPerformanceApi(async () => new Response(
 ));
 await assert.rejects(
   () => failing.getPerformance({
-    from: "2026-08-01T00:00:00.000Z",
-    to: "2026-08-07T00:00:00.000Z"
+    from: "2026-08-01",
+    to: "2026-08-07"
   }),
   /真实经营接口不可用/
 );
 try {
   await failing.getPerformance({
-    from: "2026-08-01T00:00:00.000Z",
-    to: "2026-08-07T00:00:00.000Z"
+    from: "2026-08-01",
+    to: "2026-08-07"
   });
   assert.fail("expected HTTP failure");
 } catch (error) {

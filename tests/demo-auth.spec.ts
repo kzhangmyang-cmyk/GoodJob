@@ -47,6 +47,7 @@ test("standalone frontend does not poll backend dashboards in demo mode", async 
 
 test("AI draft creation preserves the complete server plan through approval and run", async ({ page }) => {
   const createdPlans: unknown[] = [];
+  const createdRuns: unknown[] = [];
   const draft = {
     targetPlatform: "douyin",
     name: "厦门多连接获客方案",
@@ -88,7 +89,10 @@ test("AI draft creation preserves the complete server plan through approval and 
       return void await route.fulfill({ status: 201, contentType: "application/json", headers: { etag: "\"plan-ai:1\"" }, body: JSON.stringify({ id: "plan-ai", status: "draft" }) });
     }
     if (url.pathname === "/api/v1/acquisition/plans/plan-ai/approval") return void await json({ id: "plan-ai", status: "approved" });
-    if (url.pathname === "/api/v1/acquisition/plans/plan-ai/runs") return void await json({ id: "run-ai", status: "queued" }, 202);
+    if (url.pathname === "/api/v1/acquisition/plans/plan-ai/runs") {
+      createdRuns.push(request.postDataJSON());
+      return void await json({ id: "run-ai", status: "queued" }, 202);
+    }
     return void await json({ items: [], nextCursor: null });
   });
   await page.addInitScript(() => {
@@ -116,10 +120,29 @@ test("AI draft creation preserves the complete server plan through approval and 
   await dialog.locator("#replicaRealApprovalConfirmed").check();
   await dialog.locator("#replicaRealTaskSubmit").click();
   await expect(dialog.locator("#replicaRealTaskSubmitStatus")).toContainText("Run run-ai");
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#replicaRealTaskSubmit")).toBeDisabled();
+  await expect(dialog.locator("#replicaRealAiGenerate")).toBeDisabled();
+  await expect(dialog.locator("#replicaRealAiPrompt")).toBeDisabled();
+  await page.waitForTimeout(1_000);
+  await expect(dialog).toBeVisible();
+
+  await dialog.locator("#replicaRealTaskForm").evaluate((form) => {
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  await page.waitForTimeout(50);
   expect(createdPlans).toHaveLength(1);
+  expect(createdRuns).toHaveLength(1);
   expect((createdPlans[0] as { providerConnections: unknown[]; operations: unknown[]; modelSnapshotRef?: unknown }).providerConnections).toHaveLength(2);
   expect((createdPlans[0] as { providerConnections: unknown[]; operations: unknown[]; modelSnapshotRef?: unknown }).operations).toHaveLength(4);
   expect((createdPlans[0] as { modelSnapshotRef?: unknown }).modelSnapshotRef).toBeUndefined();
+
+  await dialog.locator("#replicaRealTaskClose").click();
+  await expect(dialog).toBeHidden();
+  await page.locator("#replicaNewTaskButton").click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator("#replicaRealAiPrompt")).toBeEnabled();
+  await expect(dialog.locator("#replicaRealTaskSubmitStatus")).toBeHidden();
 });
 
 test("real acquisition task opens authoritative plan and AI candidate review", async ({ page }) => {
@@ -574,6 +597,8 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
           leadId: "lead-ui-1",
           customerId: "customer-ui-1",
           todoId: "todo-ui-1",
+          runId: latestRun.id,
+          discoveredEventId: presentation.candidateEvents[0].eventId,
           decisionVersion: qualification.decisionVersion,
           createdAt: "2026-08-07T08:10:00.000Z"
         },
@@ -708,6 +733,8 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
   await dialog.locator('[data-acquisition-detail-action="open-private-domain-handoff"]').click();
   const handoffDialog = dialog.locator(".replica-acquisition-handoff-dialog");
   await expect(handoffDialog).toBeVisible();
+  await expect(handoffDialog).toContainText(latestRun.id);
+  await expect(handoffDialog).toContainText(presentation.candidateEvents[0].eventId);
   await handoffDialog.locator('[name="followUpDueAt"]').fill("2026-08-09T10:30");
   await handoffDialog.locator('button[type="submit"]').click();
   await expect(dialog.locator(".replica-acquisition-handoff-complete")).toContainText(
@@ -721,6 +748,8 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
   expect(handoffRequests[0]?.idempotencyKey?.length).toBeGreaterThanOrEqual(8);
   expect(handoffRequests[0]?.body).toEqual({
     operationCode: "handoff_acquisition_candidate_v1",
+    runId: latestRun.id,
+    discoveredEventId: presentation.candidateEvents[0].eventId,
     decisionVersion: qualification.decisionVersion,
     mode: "create_new",
     existingCustomerId: "",

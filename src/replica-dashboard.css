@@ -2297,6 +2297,16 @@ body.is-authenticated .replica-shell {
   background: rgba(24, 237, 120, .045);
 }
 
+.replica-real-task-modal form[data-state="completed"] .replica-real-task-scroll {
+  opacity: .62;
+  filter: saturate(.72);
+}
+
+.replica-real-task-modal form[data-state="completed"] .replica-real-submit-status[data-state="success"] {
+  border-color: rgba(24, 237, 120, .42);
+  box-shadow: 0 0 0 3px rgba(24, 237, 120, .055);
+}
+
 .replica-preflight-status[data-state="blocked"],
 .replica-real-submit-status[data-state="error"] {
   color: #ffaaa6;

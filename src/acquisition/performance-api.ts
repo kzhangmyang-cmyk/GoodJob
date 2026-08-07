@@ -1,3 +1,5 @@
+import { csrfFromCookie } from "./csrf";
+
 export interface AcquisitionPerformanceFact {
   metricId: string;
   text: string;
@@ -73,6 +75,10 @@ export class AcquisitionPerformanceApiError extends Error {
   }
 }
 
+export interface AcquisitionPerformanceApiOptions {
+  cookieSource?: () => string;
+}
+
 function message(body: ErrorBody, status: number) {
   if (typeof body.error?.message === "string" && body.error.message.trim()) {
     return body.error.message;
@@ -92,17 +98,24 @@ function key(prefix: string) {
 export function createAcquisitionPerformanceApi(
   fetchImpl: typeof fetch = fetch,
   wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) =>
-    window.setTimeout(resolve, ms))
+    window.setTimeout(resolve, ms)),
+  options: AcquisitionPerformanceApiOptions = {}
 ) {
+  const cookieSource = options.cookieSource
+    ?? (() => typeof document === "undefined" ? "" : document.cookie);
+
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const method = (init.method ?? "GET").toUpperCase();
+    const headers = new Headers(init.headers);
+    headers.set("accept", "application/json");
+    if (init.body) headers.set("content-type", "application/json");
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+      headers.set("X-CSRF-Token", csrfFromCookie(cookieSource()));
+    }
     const response = await fetchImpl(path, {
       credentials: "same-origin",
       ...init,
-      headers: {
-        accept: "application/json",
-        ...(init.body ? { "content-type": "application/json" } : {}),
-        ...init.headers
-      }
+      headers
     });
     const body = await response.json().catch(() => ({})) as T & ErrorBody;
     if (!response.ok) {

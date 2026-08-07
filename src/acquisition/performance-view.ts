@@ -111,6 +111,9 @@ export function renderAcquisitionPerformance(
       </section>
       <section class="replica-performance-quality">
         <h3>数据质量与缺口</h3>
+        ${data.dataQuality.truncated
+          ? '<strong role="status">结果已按安全上限截断，当前指标仅代表已展示的有界数据。</strong>'
+          : ""}
         <span>归因缺失 ${data.dataQuality.missingAttribution}</span>
         <span>财务数据缺失 ${data.dataQuality.missingFinancial}</span>
         <span>最近对账 ${data.dataQuality.lastReconciledAt ? escapeHtml(data.dataQuality.lastReconciledAt) : "尚无"}</span>

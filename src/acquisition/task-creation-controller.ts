@@ -16,6 +16,7 @@ export interface TaskCreationSubmitState {
   approvalConfirmed: boolean;
   loading: boolean;
   submitting: boolean;
+  completed: boolean;
 }
 
 export function isTaskCreationSubmitReady(
@@ -27,6 +28,7 @@ export function isTaskCreationSubmitReady(
     && state.approvalConfirmed
     && !state.loading
     && !state.submitting
+    && !state.completed
   );
 }
 
@@ -36,10 +38,11 @@ export function isPlanDraftSubmissionReady(state: {
   approvalConfirmed: boolean;
   loading: boolean;
   submitting: boolean;
+  completed: boolean;
 }): boolean {
   return state.mode === "manual"
-    ? state.approvalConfirmed && !state.loading && !state.submitting
-    : state.hasDraft && state.approvalConfirmed && !state.loading && !state.submitting;
+    ? state.approvalConfirmed && !state.loading && !state.submitting && !state.completed
+    : state.hasDraft && state.approvalConfirmed && !state.loading && !state.submitting && !state.completed;
 }
 
 function byId<T extends HTMLElement = HTMLElement>(id: string): T | null {
@@ -105,6 +108,7 @@ function initialise(): void {
   let modelConnections: ToolCallingModelConnection[] = [];
   let loadingConnections = false;
   let submitting = false;
+  let completed = false;
   let mode: "ai" | "manual" = "ai";
   let generatedPlan: ReturnType<typeof buildDouyinPlanInput> | null = null;
   let generation = 0;
@@ -129,18 +133,21 @@ function initialise(): void {
         modelConnectionId: modelConnectionSelect.value,
         approvalConfirmed: approvalConfirmed?.checked === true,
         loading: loadingConnections,
-        submitting
+        submitting,
+        completed
       })
       : !isPlanDraftSubmissionReady({
         mode,
         hasDraft: generatedPlan !== null,
         approvalConfirmed: approvalConfirmed?.checked === true,
         loading: loadingConnections,
-        submitting
+        submitting,
+        completed
       });
   }
 
   function setMode(nextMode: "ai" | "manual"): void {
+    if (completed) return;
     mode = nextMode;
     invalidateGeneratedPlan();
     aiMode?.setAttribute("aria-pressed", String(mode === "ai"));
@@ -171,7 +178,7 @@ function initialise(): void {
   }
 
   async function generatePlanDraft(): Promise<void> {
-    if (mode !== "ai" || loadingConnections || submitting) return;
+    if (mode !== "ai" || loadingConnections || submitting || completed) return;
     if (!modelConnectionSelect.value) {
       setSubmitStatus("请先选择一个支持工具调用的 AI 模型。", "error");
       return;
@@ -269,16 +276,42 @@ function initialise(): void {
     }
   }
 
-  function openDialog(): void {
+  function resetDialog(): void {
+    completed = false;
+    taskForm.dataset.state = "editing";
+    taskForm.reset();
+    taskForm.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement>(
+      "input, textarea, select, button"
+    ).forEach((control) => {
+      control.disabled = false;
+    });
+    if (cancel) cancel.textContent = "取消";
     if (submitStatus) submitStatus.hidden = true;
-    if (!taskDialog.open) taskDialog.showModal();
     setMode("ai");
+  }
+
+  function markCompleted(): void {
+    completed = true;
+    taskForm.dataset.state = "completed";
+    taskForm.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement>(
+      "input, textarea, select, button"
+    ).forEach((control) => {
+      if (control === close || control === cancel) return;
+      control.disabled = true;
+    });
+    submitButton.innerHTML = '<i class="ph ph-check-circle" aria-hidden="true"></i>任务已启动';
+    if (cancel) cancel.textContent = "关闭";
+  }
+
+  function openDialog(): void {
+    resetDialog();
+    if (!taskDialog.open) taskDialog.showModal();
     void loadConnections();
   }
 
   function closeDialog(): void {
     if (submitting) return;
-    invalidateGeneratedPlan();
+    resetDialog();
     taskDialog.close();
   }
 
@@ -316,7 +349,7 @@ function initialise(): void {
 
   taskForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (submitting || !taskForm.reportValidity()) return;
+    if (submitting || completed || !taskForm.reportValidity()) return;
     const providerConnection = searchConnections.find(
       (connection) => connection.id === searchConnectionSelect.value
     );
@@ -385,10 +418,7 @@ function initialise(): void {
           detail: { message: "真实抖音获客任务已批准并开始运行" }
         }));
         document.dispatchEvent(new Event("goodjob:acquisition-refresh-requested"));
-        window.setTimeout(() => {
-          taskDialog.close();
-          taskForm.reset();
-        }, 900);
+        markCompleted();
       } catch (error) {
         const message = error instanceof Error ? error.message : "真实任务创建失败";
         const pendingPlanId = workflow.pendingPlanId();

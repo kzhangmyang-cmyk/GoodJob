@@ -48,7 +48,7 @@ export interface AcquisitionDetailCenterController {
   handoffCandidate(
     input: Omit<
       AcquisitionPrivateDomainHandoffInput,
-      "operationCode" | "decisionVersion"
+      "operationCode" | "runId" | "discoveredEventId" | "decisionVersion"
     >
   ): Promise<void>;
   destroy(): void;
@@ -273,6 +273,20 @@ function firstCandidateId(detail: unknown): string | null {
     if (candidateId) return candidateId;
   }
   return null;
+}
+
+function handoffAttributionSource(
+  detail: AcquisitionTaskDetail | null,
+  candidateId: string
+) {
+  const runId = requestedPlanId(detail?.latestRun?.id);
+  if (!runId) return null;
+  const event = records(detail?.presentation?.candidateEvents).find((item) =>
+    requestedPlanId(item.candidateId) === candidateId
+    || requestedPlanId(record(item.candidate)?.id) === candidateId);
+  const discoveredEventId = requestedPlanId(event?.eventId)
+    ?? requestedPlanId(event?.id);
+  return discoveredEventId ? { runId, discoveredEventId } : null;
 }
 
 interface ResourceLoad<T> {
@@ -1387,11 +1401,28 @@ export function createAcquisitionDetailCenterController(
       const reservedRequest = handoffStatus && "inProgress" in handoffStatus
         ? handoffStatus.inProgress.request
         : null;
+      const reservedRunId = requestedPlanId(reservedRequest?.runId);
+      const reservedEventId = requestedPlanId(
+        reservedRequest?.discoveredEventId
+      );
+      const source = reservedRequest
+        ? reservedRunId && reservedEventId
+          ? { runId: reservedRunId, discoveredEventId: reservedEventId }
+          : null
+        : handoffAttributionSource(state.detail, state.selectedCandidateId);
+      if (!source) {
+        void rejectValidation("候选缺少当前运行的固定发现事件").catch(
+          () => undefined
+        );
+        return;
+      }
       state.error = null;
       state.handoffDialog = {
         open: true,
         busy: false,
         recovering: Boolean(reservedRequest),
+        runId: source.runId,
+        discoveredEventId: source.discoveredEventId,
         mode: reservedRequest?.mode ?? "create_new",
         existingCustomerId: reservedRequest?.existingCustomerId ?? "",
         followUp: reservedRequest
@@ -1418,6 +1449,17 @@ export function createAcquisitionDetailCenterController(
       const reservedRequest = handoffStatus && "inProgress" in handoffStatus
         ? handoffStatus.inProgress.request
         : null;
+      const reservedRunId = requestedPlanId(reservedRequest?.runId);
+      const reservedEventId = requestedPlanId(
+        reservedRequest?.discoveredEventId
+      );
+      const source = reservedRequest
+        ? reservedRunId && reservedEventId
+          ? { runId: reservedRunId, discoveredEventId: reservedEventId }
+          : null
+        : candidateId
+          ? handoffAttributionSource(state.detail, candidateId)
+          : null;
       const status = typeof candidate?.status === "string"
         ? candidate.status
         : "";
@@ -1437,8 +1479,13 @@ export function createAcquisitionDetailCenterController(
       if (!decisionVersion) {
         return rejectValidation("候选缺少已批准的资格决定版本");
       }
+      if (!source) {
+        return rejectValidation("候选缺少当前运行的固定发现事件");
+      }
       const effectiveInput = reservedRequest ?? {
         operationCode: "handoff_acquisition_candidate_v1" as const,
+        runId: source.runId,
+        discoveredEventId: source.discoveredEventId,
         decisionVersion,
         mode: input.mode,
         existingCustomerId: input.existingCustomerId,
@@ -1461,6 +1508,8 @@ export function createAcquisitionDetailCenterController(
 
       const request: AcquisitionPrivateDomainHandoffInput = {
         operationCode: "handoff_acquisition_candidate_v1",
+        runId: effectiveInput.runId,
+        discoveredEventId: effectiveInput.discoveredEventId,
         decisionVersion,
         mode: effectiveInput.mode,
         existingCustomerId: effectiveInput.mode === "link_existing"
@@ -1481,6 +1530,8 @@ export function createAcquisitionDetailCenterController(
         open: true,
         busy: true,
         recovering: Boolean(reservedRequest),
+        runId: request.runId,
+        discoveredEventId: request.discoveredEventId,
         mode: request.mode,
         existingCustomerId: request.existingCustomerId,
         followUp: { ...request.followUp }

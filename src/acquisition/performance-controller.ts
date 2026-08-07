@@ -14,8 +14,12 @@ type PerformanceStatus = AcquisitionPerformanceViewState["status"];
 
 let started = false;
 
-function isoDay(value: string, endOfDay: boolean): Date {
-  return new Date(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`);
+function calendarDay(value: string): Date {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(Number.NaN);
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return date.toISOString().slice(0, 10) === value
+    ? date
+    : new Date(Number.NaN);
 }
 
 function dateValue(date: Date) {
@@ -27,18 +31,18 @@ export function performanceFiltersFromDates(
   toValue: string,
   platformValue: string
 ): AcquisitionPerformanceFilters {
-  let to = isoDay(toValue, true);
-  let from = isoDay(fromValue, false);
+  const to = calendarDay(toValue);
+  let from = calendarDay(fromValue);
   if (Number.isNaN(to.getTime()) || Number.isNaN(from.getTime())) {
     throw new Error("请选择有效的时间范围");
   }
   if (from.getTime() > to.getTime()) throw new Error("开始日期不能晚于结束日期");
-  const earliest = new Date(to.getTime() - (90 * 24 * 60 * 60 * 1000) + 1);
+  const earliest = new Date(to.getTime() - (89 * 24 * 60 * 60 * 1000));
   if (from.getTime() < earliest.getTime()) from = earliest;
   const platform = platformValue === "douyin" || platformValue === "web"
     ? platformValue
     : undefined;
-  return { platform, from: from.toISOString(), to: to.toISOString() };
+  return { platform, from: dateValue(from), to: dateValue(to) };
 }
 
 export function isUnauthorizedPerformanceError(error: unknown) {
