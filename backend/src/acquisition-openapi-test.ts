@@ -574,6 +574,35 @@ test("human review, conversion, and copilot writes mirror runtime schemas", () =
     completedHandoff.properties.recovery.properties.request
       .properties.discoveredEventId
   );
+  for (const recoveryRequest of [
+    pendingHandoff.properties.inProgress.properties.request,
+    completedHandoff.properties.recovery.properties.request
+  ]) {
+    assert.equal(recoveryRequest.oneOf.length, 2);
+    assert.equal(
+      recoveryRequest.oneOf.some((variant: Record<string, any>) =>
+        variant.required?.length === 2
+        && variant.required.includes("runId")
+        && variant.required.includes("discoveredEventId")
+      ),
+      true
+    );
+    assert.equal(
+      recoveryRequest.oneOf.some((variant: Record<string, any>) =>
+        variant.not?.anyOf?.some(
+          (constraint: Record<string, any>) =>
+            constraint.required?.includes("runId")
+        )
+        && variant.not?.anyOf?.some(
+          (constraint: Record<string, any>) =>
+            constraint.required?.includes("discoveredEventId")
+        )
+      ),
+      true
+    );
+    assert.equal(recoveryRequest.properties.runId.minLength, 1);
+    assert.equal(recoveryRequest.properties.discoveredEventId.minLength, 1);
+  }
 
   const session = paths[
     "/api/v1/acquisition/copilot/sessions"

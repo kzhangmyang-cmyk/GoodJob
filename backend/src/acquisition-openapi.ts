@@ -517,6 +517,17 @@ const handoffIntelligenceResponseSchema = {
 const privateDomainHandoffRecoveryRequestSchema = {
   type: "object",
   additionalProperties: false,
+  oneOf: [
+    { required: ["runId", "discoveredEventId"] },
+    {
+      not: {
+        anyOf: [
+          { required: ["runId"] },
+          { required: ["discoveredEventId"] }
+        ]
+      }
+    }
+  ],
   required: [
     "operationCode",
     "decisionVersion",

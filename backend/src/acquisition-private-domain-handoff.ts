@@ -176,10 +176,13 @@ function normalizeHandoffRequest(
 export type AcquisitionPrivateDomainHandoffRecoveryRequest = Omit<
   AcquisitionCustomerHandoffRequestSnapshot,
   "runId" | "discoveredEventId"
-> & Partial<Pick<
-  AcquisitionCustomerHandoffRequestSnapshot,
-  "runId" | "discoveredEventId"
->>;
+> & (
+  | Pick<
+      AcquisitionCustomerHandoffRequestSnapshot,
+      "runId" | "discoveredEventId"
+    >
+  | { runId?: never; discoveredEventId?: never }
+);
 
 function legacyHandoffRequestSnapshot(
   value: unknown
@@ -187,8 +190,18 @@ function legacyHandoffRequestSnapshot(
   "runId" | "discoveredEventId"> | null {
   if (!value || typeof value !== "object") return null;
   const request = value as Partial<AcquisitionCustomerHandoffRequestSnapshot>;
+  const hasRunId = Object.prototype.hasOwnProperty.call(request, "runId");
+  const hasDiscoveredEventId = Object.prototype.hasOwnProperty.call(
+    request,
+    "discoveredEventId"
+  );
   const followUp = request.followUp;
-  if (request.operationCode !== "handoff_acquisition_candidate_v1"
+  if (hasRunId !== hasDiscoveredEventId
+    || (hasRunId && (typeof request.runId !== "string"
+      || request.runId.trim().length === 0
+      || typeof request.discoveredEventId !== "string"
+      || request.discoveredEventId.trim().length === 0))
+    || request.operationCode !== "handoff_acquisition_candidate_v1"
     || typeof request.decisionVersion !== "string"
     || (request.mode !== "create_new" && request.mode !== "link_existing")
     || typeof request.existingCustomerId !== "string"
@@ -1129,7 +1142,9 @@ export class AcquisitionPrivateDomainHandoffService {
       || operation.leadId !== handoff.leadId
       || operation.customerId !== handoff.customerId
       || operation.todoId !== handoff.todoId
+      || operation.decisionVersion !== legacyRequest.decisionVersion
       || operation.decisionVersion !== handoff.decisionVersion
+      || operation.mode !== legacyRequest.mode
       || operation.mode !== handoff.mode
       || operation.processingKeyHash !== handoff.processingKeyHash
       || canonicalJsonStringify(
@@ -1138,6 +1153,8 @@ export class AcquisitionPrivateDomainHandoffService {
         acceptedProcessingKeyHashes(handoff).sort()
       )
       || operation.existingCustomerId !== legacyRequest.existingCustomerId
+      || (legacyRequest.mode === "link_existing"
+        && legacyRequest.existingCustomerId !== handoff.customerId)
       || operation.requestHash !== handoff.requestHash
       || operation.requestHash !== digest(canonicalJsonStringify(request))
       || operation.qualificationSnapshotHash
@@ -1147,7 +1164,10 @@ export class AcquisitionPrivateDomainHandoffService {
         !== canonicalJsonStringify(handoff.intelligence)
       || lead.convertedCustomerId !== customer.id
       || todo.leadId !== lead.id
-      || todo.customerId !== customer.id) {
+      || todo.customerId !== customer.id
+      || todo.title !== legacyRequest.followUp.title
+      || todo.dueAt !== legacyRequest.followUp.dueAt
+      || todo.priority !== legacyRequest.followUp.priority) {
       return null;
     }
     return structuredClone(
@@ -1178,6 +1198,13 @@ export class AcquisitionPrivateDomainHandoffService {
         throw new AcquisitionPrivateDomainHandoffError(
           "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING",
           "未完成交接缺少原请求快照，无法安全恢复",
+          409
+        );
+      }
+      if (!legacyHandoffRequestSnapshot(operation.request)) {
+        throw new AcquisitionPrivateDomainHandoffError(
+          "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING",
+          "未完成交接的获客归因固定信息不完整",
           409
         );
       }

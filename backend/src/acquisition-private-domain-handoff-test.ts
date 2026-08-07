@@ -20,6 +20,11 @@ import {
   type AcquisitionPrivateDomainHandoffStore
 } from "./acquisition-private-domain-handoff.js";
 import { canonicalJsonStringify } from "./canonical-json.js";
+import type {
+  AcquisitionCustomerHandoff,
+  AcquisitionCustomerHandoffOperation,
+  Todo
+} from "./types.js";
 
 const scope = {
   ownerId: "owner-a",
@@ -792,6 +797,73 @@ assert.equal(legacyRecovery.store.leads.length, 1);
 assert.equal(legacyRecovery.store.customers.length, 1);
 assert.equal(legacyRecovery.store.todos.length, 1);
 
+const partialPinInFlight = await fixture();
+let partialPinCustomerWriteRejected = false;
+partialPinInFlight.store.persistMutation = async (mutation) => {
+  const applied = mutation();
+  if (!partialPinCustomerWriteRejected
+    && partialPinInFlight.store.customers.length > 0) {
+    partialPinCustomerWriteRejected = true;
+    applied.rollback();
+    throw new Error("partial pin customer stage failed");
+  }
+  return applied.value;
+};
+await assert.rejects(
+  () => partialPinInFlight.service.create(
+    scope,
+    "candidate-a",
+    request,
+    "handoff-partial-pin-in-flight-setup"
+  ),
+  /partial pin customer stage failed/
+);
+const partialPinOperation = partialPinInFlight.store
+  .acquisitionCustomerHandoffOperations[0]!;
+const {
+  discoveredEventId: _partialInFlightEventId,
+  ...partialInFlightRequest
+} = partialPinOperation.request;
+partialPinOperation.request = partialInFlightRequest as
+  typeof partialPinOperation.request;
+partialPinOperation.requestHash = createHash("sha256")
+  .update(canonicalJsonStringify(partialInFlightRequest))
+  .digest("hex");
+partialPinOperation.acquisitionAttribution = null;
+partialPinInFlight.store.persistMutation = undefined;
+let partialPinInFlightResolverCalls = 0;
+const partialPinInFlightService = new AcquisitionPrivateDomainHandoffService({
+  repository: partialPinInFlight.repository,
+  domainService: partialPinInFlight.domainService,
+  store: partialPinInFlight.store,
+  attributionResolver: {
+    async resolve() {
+      partialPinInFlightResolverCalls += 1;
+      return structuredClone(acquisitionAttribution);
+    }
+  },
+  now
+});
+await assert.rejects(
+  () => partialPinInFlightService.get(scope, "candidate-a"),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING"
+);
+await assert.rejects(
+  () => partialPinInFlightService.create(
+    scope,
+    "candidate-a",
+    request,
+    "handoff-partial-pin-in-flight-recovery"
+  ),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && (error.code === "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING"
+      || error.code === "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT")
+);
+assert.equal(partialPinInFlightResolverCalls, 0);
+
 const completedLegacy = await fixture();
 await completedLegacy.service.create(
   scope,
@@ -869,6 +941,161 @@ assert.deepEqual(
   JSON.parse(completedLegacySource.rawPayload).acquisitionAttribution,
   acquisitionAttribution
 );
+
+let negativeRecoveryFixtureIndex = 0;
+async function completedLegacyFixtureForNegativeRecovery(
+  storedRequest: unknown,
+  mutate?: (records: {
+    operation: AcquisitionCustomerHandoffOperation;
+    handoff: AcquisitionCustomerHandoff;
+    todo: Todo;
+  }) => void
+) {
+  const target = await fixture();
+  await target.service.create(
+    scope,
+    "candidate-a",
+    request,
+    `handoff-negative-recovery-${negativeRecoveryFixtureIndex += 1}`
+  );
+  const operation = target.store.acquisitionCustomerHandoffOperations[0]!;
+  const handoff = target.store.acquisitionCustomerHandoffs[0]!;
+  const todo = target.store.todos[0]!;
+  operation.request = structuredClone(storedRequest) as
+    typeof operation.request;
+  operation.acquisitionAttribution = null;
+  handoff.acquisitionAttribution = null;
+  mutate?.({ operation, handoff, todo });
+  const durableHash = createHash("sha256")
+    .update(canonicalJsonStringify(operation.request))
+    .digest("hex");
+  operation.requestHash = durableHash;
+  handoff.requestHash = durableHash;
+  let resolverCalls = 0;
+  const service = new AcquisitionPrivateDomainHandoffService({
+    repository: target.repository,
+    domainService: target.domainService,
+    store: target.store,
+    attributionResolver: {
+      async resolve() {
+        resolverCalls += 1;
+        return structuredClone(acquisitionAttribution);
+      }
+    },
+    now
+  });
+  return { operation, handoff, todo, service, resolverCalls: () => resolverCalls };
+}
+
+for (const invalidPinnedRequest of [
+  {
+    ...completedLegacyRequest,
+    runId
+  },
+  {
+    ...completedLegacyRequest,
+    runId: "   ",
+    discoveredEventId: "   "
+  }
+]) {
+  const invalidPins = await completedLegacyFixtureForNegativeRecovery(
+    invalidPinnedRequest
+  );
+  const status = await invalidPins.service.get(scope, "candidate-a");
+  assert.ok("handoff" in status);
+  assert.equal("recovery" in status, false);
+  await assert.rejects(
+    () => invalidPins.service.create(
+      scope,
+      "candidate-a",
+      request,
+      "handoff-invalid-completed-pins"
+    ),
+    (error: unknown) => error instanceof Error
+      && "code" in error
+      && error.code === "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING"
+  );
+  assert.equal(invalidPins.resolverCalls(), 0);
+}
+
+const completedLegacyMismatchCases: Array<{
+  name: string;
+  mutate(records: {
+    operation: AcquisitionCustomerHandoffOperation;
+    handoff: AcquisitionCustomerHandoff;
+    todo: Todo;
+  }): void;
+}> = [
+  {
+    name: "decision",
+    mutate({ operation }) {
+      operation.request.decisionVersion = "qualification-mismatched";
+    }
+  },
+  {
+    name: "mode",
+    mutate({ operation }) {
+      operation.request.mode = "link_existing";
+      operation.request.existingCustomerId = operation.customerId;
+    }
+  },
+  {
+    name: "link-existing-customer",
+    mutate({ operation, handoff }) {
+      operation.mode = "link_existing";
+      handoff.mode = "link_existing";
+      operation.existingCustomerId = "customer-mismatched";
+      operation.request.mode = "link_existing";
+      operation.request.existingCustomerId = "customer-mismatched";
+    }
+  },
+  {
+    name: "todo-title",
+    mutate({ todo }) {
+      todo.title = "不一致的待办标题";
+    }
+  },
+  {
+    name: "todo-due-at",
+    mutate({ todo }) {
+      todo.dueAt = "2026-08-30T00:00:00.000Z";
+    }
+  },
+  {
+    name: "todo-priority",
+    mutate({ todo }) {
+      todo.priority = "normal";
+    }
+  }
+];
+for (const mismatchCase of completedLegacyMismatchCases) {
+  const mismatch = await completedLegacyFixtureForNegativeRecovery(
+    completedLegacyRequest,
+    mismatchCase.mutate
+  );
+  const status = await mismatch.service.get(scope, "candidate-a");
+  assert.ok("handoff" in status);
+  assert.equal(
+    "recovery" in status,
+    false,
+    `${mismatchCase.name} mismatch must not expose recovery`
+  );
+  await assert.rejects(
+    () => mismatch.service.create(
+      scope,
+      "candidate-a",
+      {
+        ...mismatch.operation.request,
+        runId,
+        discoveredEventId
+      },
+      `handoff-completed-${mismatchCase.name}-mismatch`
+    ),
+    (error: unknown) => error instanceof Error
+      && "code" in error
+      && error.code === "ACQUISITION_HANDOFF_RECOVERY_DATA_MISSING"
+  );
+}
 
 const {
   runId: _rollbackRunId,
