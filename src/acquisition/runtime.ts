@@ -361,7 +361,7 @@ function initialiseRuntime(): void {
     setText("replicaHeaderSubtitle", "真实抖音任务 · 公开搜索 · AI 研判 · 人工审核");
     setText("replicaScopeAllLabel", "全部真实任务");
     setText("replicaScopeAgentLabel", "智能体执行");
-    setText("replicaScopeScriptLabel", "脚本任务");
+    setText("replicaScopeScriptLabel", "工作流任务");
     setText("replicaStatusLabel", "真实状态");
     setText("replicaInspectorTitle", "抖音真实获客任务详情");
     setText("replicaDetailOwnerLabel", "执行主体");

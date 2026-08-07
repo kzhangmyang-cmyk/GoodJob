@@ -43,12 +43,12 @@ function renderAgents(state: DemoState): string {
 function renderScripts(state: DemoState): string {
   const enabled = scripts.filter((script) => state.demoSettings.scripts[script.platform]).length;
   return `
-    <section class="demo-capabilities" aria-label="自动脚本">
+    <section class="demo-capabilities" aria-label="自动工作流">
       <header class="demo-capabilities-header">
-        <div><span class="demo-status">演示模式</span><h2>自动脚本</h2><p>仅展示平台脚本的模拟计划；不会登录平台、发布内容或发送消息。</p></div>
+        <div><span class="demo-status">演示模式</span><h2>自动工作流</h2><p>仅展示平台工作流的模拟计划；不会登录平台、发布内容或发送消息。</p></div>
         <span class="demo-chip">${enabled} / ${scripts.length} 已启用</span>
       </header>
-      <section class="demo-panel demo-script-list" aria-label="平台脚本列表">
+      <section class="demo-panel demo-script-list" aria-label="平台工作流列表">
         ${scripts.map((script) => {
           const active = state.demoSettings.scripts[script.platform];
           return `<article class="demo-script-row ${active ? "is-active" : "is-paused"}">
@@ -109,7 +109,7 @@ export function renderCapabilityDemoView(
   }
   if (module === "scripts") {
     main.innerHTML = renderScripts(state);
-    inspector.innerHTML = `<section class="demo-panel demo-capability-inspector"><span class="demo-chip">平台安全</span><h3>无真实平台连接</h3><p>脚本状态与运行记录均为静态演示信息，未接入任何账号、API 或发布能力。</p></section>`;
+    inspector.innerHTML = `<section class="demo-panel demo-capability-inspector"><span class="demo-chip">平台安全</span><h3>无真实平台连接</h3><p>工作流状态与运行记录均为静态演示信息，未接入任何账号、API 或发布能力。</p></section>`;
     return;
   }
   if (module === "trade-marketing") {

@@ -51,10 +51,10 @@ export const demoModuleMeta: Record<DemoModule, ModuleMeta> = {
     primaryAction: "新建智能体"
   },
   scripts: {
-    title: "自动脚本",
-    subtitle: "管理自动化脚本与执行计划",
-    searchPlaceholder: "搜索脚本、平台或执行记录...",
-    primaryAction: "新建脚本"
+    title: "自动工作流",
+    subtitle: "管理自动化工作流与执行计划",
+    searchPlaceholder: "搜索工作流、平台或执行记录...",
+    primaryAction: "新建工作流"
   },
   "trade-marketing": {
     title: "外贸营销",

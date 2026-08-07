@@ -63,6 +63,28 @@ const replicaBehavior = readFileSync(new URL("./replica-dashboard.ts", import.me
 const demoApp = readFileSync(new URL("./demo/demo-app.ts", import.meta.url), "utf8");
 const demoRouter = readFileSync(new URL("./demo/demo-router.ts", import.meta.url), "utf8");
 const demoDashboardView = readFileSync(new URL("./demo/demo-dashboard-view.ts", import.meta.url), "utf8");
+const demoCapabilitiesView = readFileSync(
+  new URL("./demo/demo-capabilities-view.ts", import.meta.url),
+  "utf8"
+);
+const acquisitionRuntime = readFileSync(
+  new URL("./acquisition/runtime.ts", import.meta.url),
+  "utf8"
+);
+
+for (const customerFacingSource of [
+  prototype,
+  replicaBehavior,
+  demoRouter,
+  demoCapabilitiesView,
+  acquisitionRuntime
+]) {
+  assert.doesNotMatch(
+    customerFacingSource,
+    /脚本/u,
+    "customer-facing automation terminology must use 工作流 instead of 脚本"
+  );
+}
 
 const required = [
   "login-screen",

@@ -180,7 +180,7 @@ if (replica) {
       const text = `${row.dataset.taskId || ""} ${row.dataset.taskName || ""} ${row.dataset.taskSummary || ""} ${row.dataset.taskProject || ""}`.toLowerCase();
       const scopeMatches = activeScope === "all"
         || (activeScope === "agent" && row.dataset.taskOwner === "智能体")
-        || (activeScope === "script" && row.dataset.taskOwner === "自动脚本");
+        || (activeScope === "script" && row.dataset.taskOwner === "自动工作流");
       const filterMatches = activeFilter === "all"
         || (activeFilter === "high" && row.dataset.taskPriority === "高")
         || (activeFilter === "active" && row.dataset.taskStatus === "进行中");
@@ -490,7 +490,7 @@ if (replica) {
       row.dataset.taskPriority = "中";
       row.dataset.taskTags = `${stage},${mode},新建`;
       row.dataset.demoCreated = "true";
-      row.innerHTML = `<span>${escapeText(nextId)}</span><b>${escapeText(name)}</b><span><span class="priority medium">${escapeText(mode === "智能体" ? "智能体" : "脚本")}</span> 模拟待启动</span>`;
+      row.innerHTML = `<span>${escapeText(nextId)}</span><b>${escapeText(name)}</b><span><span class="priority medium">${escapeText(mode === "智能体" ? "智能体" : "工作流")}</span> 模拟待启动</span>`;
       list.prepend(row);
       renderTaskDetail(row);
       applyFilters();
