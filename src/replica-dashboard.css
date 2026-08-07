@@ -2851,6 +2851,92 @@ body.is-authenticated .replica-shell {
   border-color: rgba(24, 237, 120, .13);
 }
 
+.replica-acquisition-run-summary .replica-acquisition-run-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #8de9ad;
+  background: rgba(24, 237, 120, .035);
+  border-color: rgba(24, 237, 120, .11);
+}
+
+.replica-acquisition-run-live i {
+  width: 6px;
+  height: 6px;
+  background: var(--replica-accent);
+  border-radius: 50%;
+  box-shadow: 0 0 9px rgba(24, 237, 120, .5);
+  animation: replica-real-pulse 1.9s ease-in-out infinite;
+}
+
+.replica-acquisition-run-progress {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.replica-acquisition-run-progress-item {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 11px;
+  background: rgba(255, 255, 255, .017);
+  border: 1px solid rgba(255, 255, 255, .05);
+  border-radius: 9px;
+}
+
+.replica-acquisition-run-progress-item > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.replica-acquisition-run-progress-item span {
+  color: #717973;
+  font-size: 8px;
+}
+
+.replica-acquisition-run-progress-item strong {
+  overflow: hidden;
+  color: #bdc5bf;
+  font-size: 8px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replica-acquisition-run-progress-track {
+  height: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, .055);
+  border-radius: 999px;
+}
+
+.replica-acquisition-run-progress-track > i {
+  display: block;
+  width: var(--run-progress-percent, 0%);
+  height: 100%;
+  background: linear-gradient(90deg, rgba(24, 237, 120, .46), var(--replica-accent));
+  border-radius: inherit;
+  box-shadow: 0 0 9px rgba(24, 237, 120, .24);
+  transition: width .28s ease;
+}
+
+.replica-acquisition-run-progress-track.is-unbounded > i {
+  width: 34%;
+  background: repeating-linear-gradient(
+    90deg,
+    rgba(24, 237, 120, .34) 0 8px,
+    rgba(24, 237, 120, .08) 8px 14px
+  );
+}
+
+.replica-acquisition-run-progress-track.is-empty > i {
+  width: 0;
+}
+
 .replica-acquisition-run-controls {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto;
@@ -3496,6 +3582,7 @@ body.is-authenticated .replica-shell {
 
   .replica-acquisition-detail-grid,
   .replica-acquisition-operation-list,
+  .replica-acquisition-run-progress,
   .replica-acquisition-candidate-layout {
     grid-template-columns: 1fr;
   }

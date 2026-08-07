@@ -80,6 +80,42 @@ class FakeDialogRoot {
   }
 }
 
+class ManualPollScheduler {
+  private nextId = 1;
+  private readonly entries = new Map<number, {
+    callback: () => void;
+    delay: number;
+  }>();
+
+  schedule = (callback: () => void, delay: number): number => {
+    const id = this.nextId;
+    this.nextId += 1;
+    this.entries.set(id, { callback, delay });
+    return id;
+  };
+
+  cancel = (handle: unknown): void => {
+    if (typeof handle === "number") this.entries.delete(handle);
+  };
+
+  pendingCount(): number {
+    return this.entries.size;
+  }
+
+  nextDelay(): number | null {
+    return this.entries.values().next().value?.delay ?? null;
+  }
+
+  runNext(): void {
+    const entry = this.entries.entries().next().value as
+      | [number, { callback: () => void; delay: number }]
+      | undefined;
+    if (!entry) throw new Error("没有待执行的轮询任务");
+    this.entries.delete(entry[0]);
+    entry[1].callback();
+  }
+}
+
 function fakeAction(dataset: Record<string, string>) {
   const action = {
     dataset,
@@ -772,6 +808,179 @@ const taskDetail = {
   controller.destroy();
 }
 
+// Catches an older in-flight poll rolling a run back after a later candidate
+// refresh has already observed the terminal state.
+{
+  const scheduler = new ManualPollScheduler();
+  const stalePoll = deferred<Record<string, unknown>>();
+  let taskReads = 0;
+  const candidateId = "candidate-freshness";
+  const detailAt = (status: "running" | "succeeded", updatedAt: string) => ({
+    ...taskDetail,
+    latestRun: {
+      id: "run-freshness",
+      status,
+      etag: status === "running" ? '"run-freshness:1"' : '"run-freshness:2"',
+      updatedAt,
+      completedAt: status === "succeeded" ? updatedAt : null,
+      evidenceCount: status === "succeeded" ? 4 : 1,
+      consumedBudget: {
+        requests: status === "succeeded" ? 4 : 1,
+        results: status === "succeeded" ? 3 : 1,
+        amountMinor: 0,
+        durationSeconds: status === "succeeded" ? 8 : 1
+      }
+    },
+    presentation: {
+      candidateEvents: [{
+        eventId: "event-freshness",
+        candidateId,
+        candidate: { id: candidateId, displayName: "时序候选" }
+      }],
+      providers: [],
+      summary: { validOpportunities: 1 },
+      hasMore: false,
+      nextAfter: null
+    }
+  });
+  const api = {
+    getTask() {
+      taskReads += 1;
+      if (taskReads === 2) return stalePoll.promise;
+      return Promise.resolve(taskReads >= 3
+        ? detailAt("succeeded", "2026-08-07T17:02:00.000Z")
+        : detailAt("running", "2026-08-07T17:00:00.000Z"));
+    },
+    async getCandidate() {
+      return {
+        candidate: {
+          id: candidateId,
+          status: "pending_review",
+          identityResolved: true,
+          latestDecisionVersion: "decision-freshness"
+        },
+        etag: '"candidate-freshness:1"'
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return { decisionVersion: "decision-freshness", grade: "A" };
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    },
+    async reviewCandidate() {
+      return { candidate: { id: candidateId }, review: {}, research: null };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("candidates", "plan-1");
+  scheduler.runNext();
+  await controller.reviewCandidate("approved");
+  assert.equal(controller.getState().detail?.latestRun?.status, "succeeded");
+
+  stalePoll.resolve(detailAt("running", "2026-08-07T17:00:00.000Z"));
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(controller.getState().detail?.latestRun?.status, "succeeded");
+  assert.equal(controller.getState().detail?.latestRun?.evidenceCount, 4);
+  assert.equal(scheduler.pendingCount(), 0);
+  controller.destroy();
+}
+
+// Catches a closed dialog carrying a previous page-load spinner into the next
+// plan after the stale response is intentionally ignored.
+{
+  const scheduler = new ManualPollScheduler();
+  const oldPage = deferred<Record<string, unknown>>();
+  const api = {
+    async getTask(planId: string) {
+      if (planId === "plan-new-after-page") {
+        return {
+          ...taskDetail,
+          plan: { ...taskDetail.plan, id: planId },
+          latestRun: null,
+          presentation: null
+        };
+      }
+      return {
+        ...taskDetail,
+        plan: { ...taskDetail.plan, id: planId },
+        latestRun: {
+          id: "run-close-page",
+          status: "running" as const,
+          etag: '"run-close-page:1"',
+          updatedAt: "2026-08-07T16:00:00.000Z",
+          completedAt: null,
+          evidenceCount: 1,
+          consumedBudget: {
+            requests: 1,
+            results: 1,
+            amountMinor: 0,
+            durationSeconds: 1
+          }
+        },
+        presentation: {
+          candidateEvents: [{
+            eventId: "event-close-page",
+            candidateId: "candidate-close-page",
+            candidate: { id: "candidate-close-page", displayName: "旧计划候选" }
+          }],
+          providers: [],
+          summary: { validOpportunities: 1 },
+          hasMore: true,
+          nextAfter: "cursor-close-page"
+        }
+      };
+    },
+    getRunPresentation() {
+      return oldPage.promise;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("plan", "plan-old-page");
+  const oldPageRequest = controller.loadMoreCandidates();
+  assert.equal(controller.getState().loadingMoreCandidates, true);
+  controller.close();
+  await controller.open("plan", "plan-new-after-page");
+  assert.equal(controller.getState().loadingMoreCandidates, false);
+
+  oldPage.resolve({
+    run: {},
+    providers: [],
+    summary: {},
+    candidateEvents: [],
+    hasMore: false,
+    nextAfter: null
+  });
+  await oldPageRequest;
+  assert.equal(controller.getState().detail?.plan.id, "plan-new-after-page");
+  controller.destroy();
+}
+
 {
   let evidencePage = 0;
   const api = {
@@ -1267,9 +1476,102 @@ const taskDetail = {
   await controller.open("plan", "plan-1");
   await controller.startRun("新的独立运行");
   assert.equal(controller.getState().detail?.latestRun?.id, "run-new");
+  assert.deepEqual(controller.getState().detail?.latestRun?.budgetSnapshot, {
+    billingCurrency: "CNY",
+    maxRequests: 10,
+    maxResults: 10,
+    maxAmountMinor: 1_000,
+    maxDurationSeconds: 100
+  });
   assert.deepEqual(controller.getState().detail?.shards, []);
   assert.equal(controller.getState().detail?.presentation, null);
   assert.match(controller.getState().error ?? "", /详情刷新失败/);
+  controller.destroy();
+}
+
+{
+  const oldRun = {
+    id: "run-lag-old",
+    status: "succeeded" as const,
+    etag: '"run-lag-old:2"',
+    planVersion: 1,
+    updatedAt: "2026-08-07T12:00:00.000Z",
+    completedAt: "2026-08-07T12:00:00.000Z",
+    evidenceCount: 3,
+    consumedBudget: {
+      requests: 2,
+      results: 3,
+      amountMinor: 30,
+      durationSeconds: 10
+    }
+  };
+  const newRun = {
+    id: "run-lag-new",
+    status: "queued" as const,
+    etag: '"run-lag-new:1"',
+    planVersion: 1,
+    revision: 1,
+    updatedAt: "2026-08-07T12:01:00.000Z",
+    completedAt: null,
+    evidenceCount: 0,
+    consumedBudget: {
+      requests: 0,
+      results: 0,
+      amountMinor: 0,
+      durationSeconds: 0
+    },
+    budgetSnapshot: {
+      billingCurrency: "CNY",
+      maxRequests: 10,
+      maxResults: 20,
+      maxAmountMinor: 1_000,
+      maxDurationSeconds: 120
+    },
+    modelSnapshotRef: {
+      provider: "zhipu",
+      model: "glm-5.2"
+    }
+  };
+  const laggedDetail = {
+    ...taskDetail,
+    latestRun: oldRun,
+    shards: [{ id: "old-shard" }],
+    presentation: {
+      candidateEvents: [{ candidateId: "old-candidate" }],
+      providers: [],
+      hasMore: false,
+      nextAfter: null
+    }
+  };
+  const api = {
+    async getTask() {
+      return laggedDetail;
+    },
+    async createRun() {
+      return { run: newRun, etag: newRun.etag };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const scheduler = new ManualPollScheduler();
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    pollIntervalMs: 25,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("plan", "plan-1");
+  await controller.startRun("新的独立运行");
+
+  assert.equal(controller.getState().detail?.latestRun?.id, "run-lag-new");
+  assert.deepEqual(controller.getState().detail?.shards, []);
+  assert.equal(controller.getState().detail?.presentation, null);
+  assert.match(controller.getState().error ?? "", /任务详情仍在同步/);
+  assert.equal(scheduler.pendingCount(), 1);
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(controller.getState().detail?.latestRun?.id, "run-lag-new");
+  assert.deepEqual(controller.getState().detail?.shards, []);
+  assert.equal(controller.getState().detail?.presentation, null);
   controller.destroy();
 }
 
@@ -1497,5 +1799,675 @@ const taskDetail = {
   assert.equal(controller.getState().detail?.plan.id, "plan-new");
   assert.equal(controller.getState().detail?.latestRun?.id, "run-plan-new");
   assert.deepEqual(refreshes, []);
+  controller.destroy();
+}
+
+{
+  const scheduler = new ManualPollScheduler();
+  const refreshes: Array<Record<string, unknown>> = [];
+  const eventTarget = new EventTarget();
+  eventTarget.addEventListener(
+    "goodjob:acquisition-refresh-requested",
+    (event) => refreshes.push(
+      (event as CustomEvent<Record<string, unknown>>).detail
+    )
+  );
+  let taskReads = 0;
+  const run = (status: "running" | "paused", evidenceCount: number) => ({
+    id: "run-poll-1",
+    status,
+    etag: `"run-poll-1:${taskReads}"`,
+    updatedAt: `2026-08-07T12:0${taskReads}:00.000Z`,
+    completedAt: null,
+    evidenceCount,
+    consumedBudget: {
+      requests: evidenceCount,
+      results: evidenceCount,
+      amountMinor: evidenceCount * 10,
+      durationSeconds: evidenceCount * 2
+    }
+  });
+  const detailForRead = () => {
+    const status = taskReads >= 3 ? "paused" as const : "running" as const;
+    const candidateEvents = taskReads === 1
+      ? [{
+          eventId: "event-poll-1",
+          candidateId: "candidate-poll-1",
+          candidate: { id: "candidate-poll-1", displayName: "首屏候选" }
+        }]
+      : [{
+          eventId: "event-poll-1",
+          candidateId: "candidate-poll-1",
+          candidate: { id: "candidate-poll-1", displayName: "首屏候选 · 已更新" }
+        }, {
+          eventId: "event-poll-3",
+          candidateId: "candidate-poll-3",
+          candidate: { id: "candidate-poll-3", displayName: "轮询新增候选" }
+        }];
+    return {
+      ...taskDetail,
+      latestRun: run(status, taskReads),
+      presentation: {
+        candidateEvents,
+        providers: [{
+          shardId: "shard-poll-1",
+          connectionId: "search-poll-1",
+          providerId: "baidu_ai_search",
+          status
+        }],
+        summary: { validOpportunities: candidateEvents.length },
+        hasMore: true,
+        nextAfter: "cursor-poll-1"
+      }
+    };
+  };
+  const api = {
+    async getTask() {
+      taskReads += 1;
+      return detailForRead();
+    },
+    async getRunPresentation(runId: string, query: { after?: string }) {
+      assert.equal(runId, "run-poll-1");
+      assert.equal(query.after, "cursor-poll-1");
+      return {
+        run: run("running", 1),
+        providers: [],
+        summary: { validOpportunities: 2 },
+        candidateEvents: [{
+          eventId: "event-poll-2",
+          candidateId: "candidate-poll-2",
+          candidate: { id: "candidate-poll-2", displayName: "翻页候选" }
+        }],
+        hasMore: false,
+        nextAfter: null
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    eventTarget,
+    pollIntervalMs: 1_234,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("plan", "plan-1");
+  assert.equal(scheduler.pendingCount(), 1);
+  assert.equal(scheduler.nextDelay(), 1_234);
+  await controller.loadMoreCandidates();
+  assert.deepEqual(
+    controller.getState().detail?.presentation?.candidateEvents.map(
+      (event) => event.candidateId
+    ),
+    ["candidate-poll-1", "candidate-poll-2"]
+  );
+
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(controller.getState().detail?.latestRun?.evidenceCount, 2);
+  assert.deepEqual(
+    controller.getState().detail?.presentation?.candidateEvents.map(
+      (event) => event.candidateId
+    ),
+    ["candidate-poll-1", "candidate-poll-2", "candidate-poll-3"]
+  );
+  assert.equal(
+    controller.getState().detail?.presentation?.candidateEvents[0]?.candidate
+      && (controller.getState().detail?.presentation?.candidateEvents[0]?.candidate as
+        Record<string, unknown>).displayName,
+    "首屏候选 · 已更新"
+  );
+  assert.equal(controller.getState().detail?.presentation?.hasMore, false);
+  assert.equal(scheduler.pendingCount(), 1);
+  assert.equal(refreshes.length, 1);
+
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(controller.getState().detail?.latestRun?.status, "paused");
+  assert.equal(scheduler.pendingCount(), 0);
+  assert.equal(refreshes.length, 2);
+  controller.destroy();
+}
+
+{
+  const scheduler = new ManualPollScheduler();
+  let presentationReads = 0;
+  const liveRun = {
+    id: "run-tail-poll",
+    status: "succeeded" as const,
+    etag: '"run-tail-poll:1"',
+    updatedAt: "2026-08-07T12:00:00.000Z",
+    completedAt: null,
+    evidenceCount: 2,
+    consumedBudget: {
+      requests: 1,
+      results: 2,
+      amountMinor: 20,
+      durationSeconds: 3
+    }
+  };
+  const api = {
+    async getTask() {
+      return {
+        ...taskDetail,
+        latestRun: liveRun,
+        presentation: {
+          candidateEvents: [{
+            eventId: "event-tail-1",
+            candidateId: "candidate-tail-1"
+          }],
+          providers: [],
+          summary: { validOpportunities: 1 },
+          hasMore: true,
+          nextAfter: "cursor-tail-1"
+        }
+      };
+    },
+    async getRunPresentation(runId: string, query: { after?: string }) {
+      presentationReads += 1;
+      assert.equal(runId, "run-tail-poll");
+      assert.equal(
+        query.after,
+        presentationReads === 1 ? "cursor-tail-1" : "cursor-tail-2"
+      );
+      return {
+        run: liveRun,
+        providers: [{
+          shardId: "shard-tail-1",
+          connectionId: "search-tail",
+          providerId: "baidu_ai_search",
+          status: "running"
+        }],
+        summary: { validOpportunities: presentationReads + 1 },
+        candidateEvents: [{
+          eventId: `event-tail-${presentationReads + 1}`,
+          candidateId: `candidate-tail-${presentationReads + 1}`
+        }],
+        hasMore: presentationReads === 1,
+        nextAfter: presentationReads === 1
+          ? "cursor-tail-2"
+          : "cursor-tail-3"
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("plan", "plan-1");
+  assert.equal(scheduler.pendingCount(), 1);
+  scheduler.runNext();
+  await controller.whenIdle();
+
+  assert.equal(presentationReads, 2);
+  assert.deepEqual(
+    controller.getState().detail?.presentation?.candidateEvents.map(
+      (event) => event.candidateId
+    ),
+    ["candidate-tail-1", "candidate-tail-2", "candidate-tail-3"]
+  );
+  assert.equal(
+    controller.getState().detail?.presentation?.nextAfter,
+    "cursor-tail-3"
+  );
+  assert.equal(
+    controller.getState().detail?.presentation?.summary?.validOpportunities,
+    3
+  );
+  assert.equal(controller.getState().detail?.presentation?.hasMore, false);
+  assert.equal(scheduler.pendingCount(), 0);
+  controller.destroy();
+}
+
+{
+  const scheduler = new ManualPollScheduler();
+  const oldPoll = deferred<typeof taskDetail>();
+  let oldReads = 0;
+  const api = {
+    getTask(planId: string) {
+      if (planId === "plan-old") {
+        oldReads += 1;
+        if (oldReads > 1) return oldPoll.promise;
+        return Promise.resolve({
+          ...taskDetail,
+          plan: { ...taskDetail.plan, id: planId },
+          latestRun: {
+            id: "run-old-poll",
+            status: "running" as const,
+            etag: '"run-old-poll:1"',
+            updatedAt: "2026-08-07T12:00:00.000Z",
+            completedAt: null,
+            evidenceCount: 1,
+            consumedBudget: {
+              requests: 1,
+              results: 1,
+              amountMinor: 10,
+              durationSeconds: 1
+            }
+          }
+        });
+      }
+      return Promise.resolve({
+        ...taskDetail,
+        plan: { ...taskDetail.plan, id: planId },
+        latestRun: null
+      });
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("plan", "plan-old");
+  scheduler.runNext();
+  controller.close();
+  await controller.open("plan", "plan-new");
+  oldPoll.resolve({
+    ...taskDetail,
+    plan: { ...taskDetail.plan, id: "plan-old" }
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(controller.getState().detail?.plan.id, "plan-new");
+  assert.equal(controller.getState().detail?.latestRun, null);
+  assert.equal(scheduler.pendingCount(), 0);
+  controller.destroy();
+}
+
+// Catches background polling moving a manually advanced candidate cursor back
+// to the first page while more pages still remain.
+{
+  const scheduler = new ManualPollScheduler();
+  let taskReads = 0;
+  const activeDetail = (status: "running" | "paused") => ({
+    ...taskDetail,
+    latestRun: {
+      id: "run-pagination-poll",
+      status,
+      etag: `"run-pagination-poll:${taskReads}"`,
+      updatedAt: `2026-08-07T13:0${taskReads}:00.000Z`,
+      completedAt: null,
+      evidenceCount: taskReads,
+      consumedBudget: {
+        requests: taskReads,
+        results: taskReads,
+        amountMinor: 0,
+        durationSeconds: taskReads
+      }
+    },
+    presentation: {
+      candidateEvents: [{
+        eventId: "event-pagination-1",
+        candidateId: "candidate-pagination-1",
+        candidate: {
+          id: "candidate-pagination-1",
+          displayName: taskReads > 1 ? "第一页候选 · 已刷新" : "第一页候选"
+        }
+      }],
+      providers: [],
+      summary: { validOpportunities: 3 },
+      hasMore: true,
+      nextAfter: "cursor-first-page"
+    }
+  });
+  const api = {
+    async getTask() {
+      taskReads += 1;
+      return activeDetail(taskReads > 1 ? "paused" : "running");
+    },
+    async getRunPresentation() {
+      return {
+        run: activeDetail("running").latestRun,
+        providers: [],
+        summary: { validOpportunities: 3 },
+        candidateEvents: [{
+          eventId: "event-pagination-2",
+          candidateId: "candidate-pagination-2",
+          candidate: { id: "candidate-pagination-2", displayName: "第二页候选" }
+        }],
+        hasMore: true,
+        nextAfter: "cursor-second-page"
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("plan", "plan-1");
+  await controller.loadMoreCandidates();
+  assert.equal(
+    controller.getState().detail?.presentation?.nextAfter,
+    "cursor-second-page"
+  );
+
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(
+    controller.getState().detail?.presentation?.nextAfter,
+    "cursor-second-page"
+  );
+  assert.equal(controller.getState().detail?.presentation?.hasMore, false);
+  assert.match(controller.getState().error ?? "", /分页游标未前进/);
+  assert.equal(scheduler.pendingCount(), 0);
+  assert.deepEqual(
+    controller.getState().detail?.presentation?.candidateEvents.map(
+      (event) => event.candidateId
+    ),
+    ["candidate-pagination-1", "candidate-pagination-2"]
+  );
+  controller.destroy();
+}
+
+// Catches a transient API failure causing tight-loop polling or erasing the
+// last trustworthy run state.
+{
+  const scheduler = new ManualPollScheduler();
+  const refreshes: Event[] = [];
+  const eventTarget = new EventTarget();
+  eventTarget.addEventListener(
+    "goodjob:acquisition-refresh-requested",
+    (event) => refreshes.push(event)
+  );
+  let taskReads = 0;
+  const runningDetail = {
+    ...taskDetail,
+    latestRun: {
+      id: "run-retry-poll",
+      status: "running" as const,
+      etag: '"run-retry-poll:1"',
+      updatedAt: "2026-08-07T14:00:00.000Z",
+      completedAt: null,
+      evidenceCount: 1,
+      consumedBudget: {
+        requests: 1,
+        results: 1,
+        amountMinor: 0,
+        durationSeconds: 1
+      }
+    }
+  };
+  const api = {
+    async getTask() {
+      taskReads += 1;
+      if (taskReads === 2) throw new Error("temporary upstream failure");
+      if (taskReads === 3) {
+        return {
+          ...runningDetail,
+          latestRun: {
+            ...runningDetail.latestRun,
+            status: "paused" as const,
+            etag: '"run-retry-poll:2"',
+            updatedAt: "2026-08-07T14:01:00.000Z"
+          }
+        };
+      }
+      return runningDetail;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    eventTarget,
+    pollIntervalMs: 400,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("plan", "plan-1");
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(controller.getState().detail?.latestRun?.status, "running");
+  assert.equal(controller.getState().error, null);
+  assert.equal(refreshes.length, 0);
+  assert.equal(scheduler.pendingCount(), 1);
+  assert.equal(scheduler.nextDelay(), 800);
+
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(controller.getState().detail?.latestRun?.status, "paused");
+  assert.equal(scheduler.pendingCount(), 0);
+  assert.equal(refreshes.length, 1);
+  controller.destroy();
+}
+
+// Catches a presentation-tail failure being treated as a fully successful
+// poll, which would otherwise hammer a terminal backlog at the base interval.
+{
+  const scheduler = new ManualPollScheduler();
+  const runningDetail = {
+    ...taskDetail,
+    latestRun: {
+      id: "run-tail-retry",
+      status: "running" as const,
+      etag: '"run-tail-retry:1"',
+      updatedAt: "2026-08-07T14:30:00.000Z",
+      completedAt: null,
+      evidenceCount: 1,
+      consumedBudget: {
+        requests: 1,
+        results: 1,
+        amountMinor: 0,
+        durationSeconds: 1
+      }
+    },
+    presentation: {
+      candidateEvents: [{
+        eventId: "event-tail-retry",
+        candidateId: "candidate-tail-retry"
+      }],
+      providers: [],
+      summary: { validOpportunities: 1 },
+      hasMore: true,
+      nextAfter: "cursor-tail-retry"
+    }
+  };
+  const api = {
+    async getTask() {
+      return runningDetail;
+    },
+    async getRunPresentation() {
+      throw new Error("temporary presentation failure");
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    pollIntervalMs: 400,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("plan", "plan-1");
+  scheduler.runNext();
+  await controller.whenIdle();
+
+  assert.equal(controller.getState().detail?.presentation?.hasMore, true);
+  assert.equal(controller.getState().error, null);
+  assert.equal(scheduler.pendingCount(), 1);
+  assert.equal(scheduler.nextDelay(), 800);
+  controller.destroy();
+}
+
+// Catches a late manual page response rolling back a cursor already advanced
+// by the automatic presentation tail.
+{
+  const scheduler = new ManualPollScheduler();
+  const manualPage = deferred<Record<string, unknown>>();
+  let presentationReads = 0;
+  const run = {
+    id: "run-page-race",
+    status: "running" as const,
+    etag: '"run-page-race:1"',
+    updatedAt: "2026-08-07T14:40:00.000Z",
+    completedAt: null,
+    evidenceCount: 3,
+    consumedBudget: {
+      requests: 1,
+      results: 3,
+      amountMinor: 0,
+      durationSeconds: 2
+    }
+  };
+  const task = {
+    ...taskDetail,
+    latestRun: run,
+    presentation: {
+      candidateEvents: [{
+        eventId: "event-page-race-1",
+        candidateId: "candidate-page-race-1"
+      }],
+      providers: [],
+      summary: { validOpportunities: 1 },
+      hasMore: true,
+      nextAfter: "cursor-page-race-1"
+    }
+  };
+  const page = (number: 2 | 3) => ({
+    run,
+    providers: [],
+    summary: { validOpportunities: number },
+    candidateEvents: [{
+      eventId: `event-page-race-${number}`,
+      candidateId: `candidate-page-race-${number}`
+    }],
+    hasMore: number === 2,
+    nextAfter: `cursor-page-race-${number}`
+  });
+  const api = {
+    async getTask() {
+      return task;
+    },
+    getRunPresentation(_runId: string, query: { after?: string }) {
+      presentationReads += 1;
+      if (presentationReads === 1) return manualPage.promise;
+      if (presentationReads === 2) {
+        assert.equal(query.after, "cursor-page-race-1");
+        return Promise.resolve(page(2));
+      }
+      assert.equal(query.after, "cursor-page-race-2");
+      return Promise.resolve(page(3));
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("plan", "plan-1");
+  const manualRequest = controller.loadMoreCandidates();
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(
+    controller.getState().detail?.presentation?.nextAfter,
+    "cursor-page-race-3"
+  );
+
+  manualPage.resolve(page(2));
+  await manualRequest;
+
+  assert.equal(controller.getState().loadingMoreCandidates, false);
+  assert.equal(
+    controller.getState().detail?.presentation?.nextAfter,
+    "cursor-page-race-3"
+  );
+  assert.deepEqual(
+    controller.getState().detail?.presentation?.candidateEvents.map(
+      (event) => event.candidateId
+    ),
+    [
+      "candidate-page-race-1",
+      "candidate-page-race-2",
+      "candidate-page-race-3"
+    ]
+  );
+  controller.destroy();
+}
+
+// Catches a page request from the previous run leaving the candidate pane
+// permanently busy after polling discovers a newer run.
+{
+  const scheduler = new ManualPollScheduler();
+  const oldPage = deferred<Record<string, unknown>>();
+  let taskReads = 0;
+  const runDetail = (runId: string, candidateId: string) => ({
+    ...taskDetail,
+    latestRun: {
+      id: runId,
+      status: "running" as const,
+      etag: `"${runId}:1"`,
+      updatedAt: `2026-08-07T15:0${taskReads}:00.000Z`,
+      completedAt: null,
+      evidenceCount: taskReads,
+      consumedBudget: {
+        requests: taskReads,
+        results: taskReads,
+        amountMinor: 0,
+        durationSeconds: taskReads
+      }
+    },
+    presentation: {
+      candidateEvents: [{
+        eventId: `event-${candidateId}`,
+        candidateId,
+        candidate: { id: candidateId, displayName: candidateId }
+      }],
+      providers: [],
+      summary: { validOpportunities: 1 },
+      hasMore: runId === "run-page-old",
+      nextAfter: runId === "run-page-old" ? "cursor-page-old" : null
+    }
+  });
+  const api = {
+    async getTask() {
+      taskReads += 1;
+      return taskReads === 1
+        ? runDetail("run-page-old", "candidate-page-old")
+        : runDetail("run-page-new", "candidate-page-new");
+    },
+    getRunPresentation() {
+      return oldPage.promise;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.open("plan", "plan-1");
+  const stalePageRequest = controller.loadMoreCandidates();
+  assert.equal(controller.getState().loadingMoreCandidates, true);
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(controller.getState().detail?.latestRun?.id, "run-page-new");
+
+  oldPage.resolve({
+    run: runDetail("run-page-old", "candidate-page-old").latestRun,
+    providers: [],
+    summary: { validOpportunities: 2 },
+    candidateEvents: [{
+      eventId: "event-stale-page",
+      candidateId: "candidate-stale-page",
+      candidate: { id: "candidate-stale-page", displayName: "旧运行翻页结果" }
+    }],
+    hasMore: false,
+    nextAfter: null
+  });
+  await stalePageRequest;
+
+  assert.equal(controller.getState().loadingMoreCandidates, false);
+  assert.deepEqual(
+    controller.getState().detail?.presentation?.candidateEvents.map(
+      (event) => event.candidateId
+    ),
+    ["candidate-page-new"]
+  );
   controller.destroy();
 }

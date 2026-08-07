@@ -371,6 +371,187 @@ function state(
   assert.match(html, /&lt;script&gt;/);
 }
 
+// Catches collapsing independent budget dimensions into one invented percentage.
+{
+  const html = renderAcquisitionDetailCenter(state({ mode: "plan" }));
+  assert.match(
+    html,
+    /data-run-progress-metric="requests"[\s\S]*?4 \/ 10 次请求[\s\S]*?data-progress-percent="40"/
+  );
+  assert.match(
+    html,
+    /data-run-progress-metric="results"[\s\S]*?12 \/ 100 条结果[\s\S]*?data-progress-percent="12"/
+  );
+  assert.match(
+    html,
+    /data-run-progress-metric="duration"[\s\S]*?41 \/ 600 秒[\s\S]*?data-progress-percent="6\.8"/
+  );
+  assert.match(
+    html,
+    /data-run-progress-metric="shards"[\s\S]*?1 \/ 2 个分片[\s\S]*?data-progress-percent="50"/
+  );
+  assert.doesNotMatch(html, /总体进度|data-run-progress-metric="overall"/);
+}
+
+// Catches progress bars overflowing when actual usage exceeds approved limits.
+{
+  const plan = detail.plan as Record<string, unknown>;
+  const payload = plan.payload as Record<string, unknown>;
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      plan: {
+        ...plan,
+        payload: {
+          ...payload,
+          budgetSnapshot: {
+            billingCurrency: "CNY",
+            maxRequests: 2,
+            maxResults: 5,
+            maxAmountMinor: 1000,
+            maxDurationSeconds: 20
+          }
+        }
+      }
+    }
+  }));
+  assert.match(
+    html,
+    /data-run-progress-metric="requests"[\s\S]*?4 \/ 2 次请求[\s\S]*?data-progress-percent="100"/
+  );
+  assert.match(
+    html,
+    /data-run-progress-metric="results"[\s\S]*?12 \/ 5 条结果[\s\S]*?data-progress-percent="100"/
+  );
+  assert.match(
+    html,
+    /data-run-progress-metric="duration"[\s\S]*?41 \/ 20 秒[\s\S]*?data-progress-percent="100"/
+  );
+  assert.doesNotMatch(html, /data-progress-percent="(?:10[1-9]|1[1-9]\d|[2-9]\d{2,})/);
+}
+
+// Catches a later plan edit changing the denominator of an already-started run.
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      latestRun: detail.latestRun && {
+        ...detail.latestRun,
+        budgetSnapshot: {
+          billingCurrency: "CNY",
+          maxRequests: 8,
+          maxResults: 24,
+          maxAmountMinor: 760,
+          maxDurationSeconds: 82
+        }
+      }
+    }
+  }));
+  assert.match(
+    html,
+    /data-run-progress-metric="requests"[\s\S]*?4 \/ 8 次请求[\s\S]*?data-progress-percent="50"/
+  );
+  assert.match(
+    html,
+    /data-run-progress-metric="results"[\s\S]*?12 \/ 24 条结果[\s\S]*?data-progress-percent="50"/
+  );
+  assert.match(
+    html,
+    /data-run-progress-metric="duration"[\s\S]*?41 \/ 82 秒[\s\S]*?data-progress-percent="50"/
+  );
+  assert.match(
+    html,
+    /<h4>预算上限<\/h4>[\s\S]*?10 次请求 · 100 条结果/
+  );
+}
+
+// Catches divide-by-zero/NaN output when a plan leaves a limit unset or zero.
+{
+  const plan = detail.plan as Record<string, unknown>;
+  const payload = plan.payload as Record<string, unknown>;
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      plan: {
+        ...plan,
+        payload: {
+          ...payload,
+          budgetSnapshot: {
+            billingCurrency: "CNY",
+            maxRequests: 0,
+            maxAmountMinor: 1000,
+            maxDurationSeconds: 0
+          }
+        }
+      },
+      shards: []
+    }
+  }));
+  assert.match(
+    html,
+    /data-run-progress-metric="requests"[\s\S]*?4 次请求 · 未设置上限[\s\S]*?data-progress-limit="unbounded"/
+  );
+  assert.match(
+    html,
+    /data-run-progress-metric="results"[\s\S]*?12 条结果 · 未设置上限[\s\S]*?data-progress-limit="unbounded"/
+  );
+  assert.match(
+    html,
+    /data-run-progress-metric="duration"[\s\S]*?41 秒 · 未设置上限[\s\S]*?data-progress-limit="unbounded"/
+  );
+  assert.match(
+    html,
+    /data-run-progress-metric="shards"[\s\S]*?0 \/ 0 个分片[\s\S]*?data-progress-limit="empty"/
+  );
+  assert.doesNotMatch(html, /NaN|Infinity/);
+}
+
+// Catches a stalled-looking UI while a run is actively changing state.
+for (const activeStatus of [
+  "queued",
+  "running",
+  "pause_requested",
+  "cancel_requested"
+] as const) {
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      latestRun: detail.latestRun && {
+        ...detail.latestRun,
+        status: activeStatus
+      }
+    }
+  }));
+  assert.match(html, /data-acquisition-run-live/);
+  assert.match(html, /aria-live="polite"/);
+}
+
+// Catches an animated/live indicator persisting after a run reaches a terminal state.
+for (const terminalStatus of [
+  "cancelled",
+  "succeeded",
+  "succeeded_empty",
+  "partial_success",
+  "failed",
+  "budget_exhausted"
+] as const) {
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      latestRun: detail.latestRun && {
+        ...detail.latestRun,
+        status: terminalStatus
+      }
+    }
+  }));
+  assert.doesNotMatch(html, /data-acquisition-run-live/);
+}
+
 {
   const html = renderAcquisitionDetailCenter(state({
     mode: "candidates",
@@ -646,6 +827,26 @@ function state(
   }));
   assert.match(html, /运行中，尚未形成候选/);
   assert.match(html, /已发现 9 条公开证据/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    detail: {
+      ...detail,
+      latestRun: detail.latestRun && {
+        ...detail.latestRun,
+        status: "paused"
+      },
+      presentation: detail.presentation && {
+        ...detail.presentation,
+        candidateEvents: []
+      }
+    }
+  }));
+  assert.match(html, /运行已暂停，当前尚无候选/);
+  assert.match(html, /继续运行后将接着去重和研判/);
+  assert.doesNotMatch(html, /运行中，尚未形成候选/);
 }
 
 console.log("Acquisition detail center view self-test passed");

@@ -473,9 +473,26 @@ test("real acquisition task opens authoritative plan and AI candidate review", a
   const dialog = page.locator("#replicaAcquisitionDetailCenter");
   await expect(dialog).toBeVisible();
   await expect(dialog).toContainText("发现正在采购 AI 获客系统的企业");
+  await expect(dialog.locator('[data-run-progress-metric="requests"]')).toContainText(
+    "2 / 20 次请求"
+  );
+  await expect(
+    dialog.locator('[data-run-progress-metric="requests"] [data-progress-percent]')
+  ).toHaveAttribute("data-progress-percent", "10");
+  await expect(dialog.locator('[data-run-progress-metric="results"]')).toContainText(
+    "1 / 50 条结果"
+  );
+  await expect(dialog.locator('[data-run-progress-metric="duration"]')).toContainText(
+    "18 / 600 秒"
+  );
+  await expect(dialog.locator('[data-run-progress-metric="shards"]')).toContainText(
+    "1 / 1 个分片"
+  );
+  await expect(dialog.locator("[data-acquisition-run-live]")).toBeVisible();
   await dialog.locator('[name="runControlReason"]').fill("人工检查搜索结果");
   await dialog.locator('[data-acquisition-run-action="pause"]').click();
   await expect(dialog.locator(".replica-acquisition-run-summary")).toContainText("已暂停");
+  await expect(dialog.locator("[data-acquisition-run-live]")).toHaveCount(0);
   expect(pauseRequests).toEqual([{
     ifMatch: "\"run-ui-1:2\"",
     csrf: "e2e-csrf",

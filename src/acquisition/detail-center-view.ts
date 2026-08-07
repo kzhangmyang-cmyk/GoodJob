@@ -47,11 +47,28 @@ const SHARD_STATUS_LABELS: Readonly<Record<string, string>> = {
   queued: "排队中",
   running: "运行中",
   succeeded: "已完成",
+  succeeded_empty: "已完成 · 无结果",
   partial_success: "部分完成",
   failed: "执行失败",
   cancelled: "已取消",
   budget_exhausted: "预算已用完"
 };
+
+const ACTIVE_RUN_STATUSES = new Set([
+  "queued",
+  "running",
+  "pause_requested",
+  "cancel_requested"
+]);
+
+const TERMINAL_SHARD_STATUSES = new Set([
+  "cancelled",
+  "succeeded",
+  "succeeded_empty",
+  "partial_success",
+  "failed",
+  "budget_exhausted"
+]);
 
 const PROVIDER_LABELS: Readonly<Record<string, string>> = {
   baidu_ai_search: "百度 AI 搜索",
@@ -151,6 +168,69 @@ function formatMinorAmount(currency: unknown, amountMinor: unknown): string {
   } catch {
     return `${code} ${amount.toFixed(2)}`;
   }
+}
+
+function progressValue(value: unknown): number {
+  return Math.max(0, finiteNumber(value));
+}
+
+function progressPercent(current: number, limit: number): string {
+  const percent = Math.min(100, Math.max(0, (current / limit) * 100));
+  return String(Number(percent.toFixed(1)));
+}
+
+function renderRunProgressMetric(input: {
+  metric: "requests" | "results" | "duration" | "shards";
+  label: string;
+  current: unknown;
+  limit: unknown;
+  unit: string;
+  emptyWhenZero?: boolean;
+}): string {
+  const current = progressValue(input.current);
+  const limit = progressValue(input.limit);
+  const noLimitKind = input.emptyWhenZero ? "empty" : "unbounded";
+  const valueText = limit > 0
+    ? `${current} / ${limit} ${input.unit}`
+    : input.emptyWhenZero
+      ? `${current} / 0 ${input.unit}`
+      : `${current} ${input.unit} · 未设置上限`;
+  const indicator = limit > 0
+    ? (() => {
+      const percent = progressPercent(current, limit);
+      return `
+        <div
+          class="replica-acquisition-run-progress-track"
+          role="progressbar"
+          aria-label="${escapeHtml(input.label)}"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="${percent}"
+        >
+          <i style="--run-progress-percent: ${percent}%" data-progress-percent="${percent}"></i>
+        </div>
+      `;
+    })()
+    : `
+      <div class="replica-acquisition-run-progress-track is-${noLimitKind}" data-progress-limit="${noLimitKind}">
+        <i aria-hidden="true"></i>
+      </div>
+    `;
+  return `
+    <article class="replica-acquisition-run-progress-item" data-run-progress-metric="${input.metric}">
+      <div><span>${escapeHtml(input.label)}</span><strong>${escapeHtml(valueText)}</strong></div>
+      ${indicator}
+    </article>
+  `;
+}
+
+function renderRunLiveIndicator(status: string): string {
+  if (!ACTIVE_RUN_STATUSES.has(status)) return "";
+  return `
+    <span class="replica-acquisition-run-live" data-acquisition-run-live role="status" aria-live="polite">
+      <i aria-hidden="true"></i>实时更新中
+    </span>
+  `;
 }
 
 function tabButton(
@@ -305,14 +385,21 @@ function renderPlanOverview(
   const icp = record(payload.icp) ?? {};
   const operations = records(payload.operations);
   const connections = records(payload.providerConnections);
-  const budget = record(payload.budgetSnapshot)
+  const latestRun = record(detail.latestRun);
+  const planBudget = record(payload.budgetSnapshot)
     ?? record(plan.budgetSnapshot)
     ?? {};
-  const latestRun = record(detail.latestRun);
+  const runBudgetLimit = record(latestRun?.budgetSnapshot) ?? planBudget;
   const runModel = record(latestRun?.modelSnapshotRef);
   const planModel = record(payload.modelSnapshotRef);
   const model = runModel ?? planModel ?? {};
   const runBudget = record(latestRun?.consumedBudget) ?? {};
+  const terminalShardCount = detail.shards.filter((rawShard) => {
+    const shard = record(rawShard);
+    return shard !== null
+      && typeof shard.status === "string"
+      && TERMINAL_SHARD_STATUSES.has(shard.status);
+  }).length;
   const objective = textValue(payload.objective, detail.task.objective);
   const planStatus = plan.status === "approved"
     ? "已批准"
@@ -367,9 +454,38 @@ function renderPlanOverview(
       <div class="replica-acquisition-run-summary">
         <strong>${escapeHtml(readableLabel(latestRun.status, RUN_STATUS_LABELS))}</strong>
         <span>${finiteNumber(latestRun.evidenceCount)} 条证据</span>
-        <span>${finiteNumber(runBudget.requests)} 次请求</span>
-        <span>${finiteNumber(runBudget.results)} 条结果</span>
-        <span>${finiteNumber(runBudget.durationSeconds)} 秒</span>
+        ${renderRunLiveIndicator(textValue(latestRun.status, "queued"))}
+      </div>
+      <div class="replica-acquisition-run-progress" aria-label="本次运行资源进度">
+        ${renderRunProgressMetric({
+          metric: "requests",
+          label: "请求消耗",
+          current: runBudget.requests,
+          limit: runBudgetLimit.maxRequests,
+          unit: "次请求"
+        })}
+        ${renderRunProgressMetric({
+          metric: "results",
+          label: "结果产出",
+          current: runBudget.results,
+          limit: runBudgetLimit.maxResults,
+          unit: "条结果"
+        })}
+        ${renderRunProgressMetric({
+          metric: "duration",
+          label: "运行时长",
+          current: runBudget.durationSeconds,
+          limit: runBudgetLimit.maxDurationSeconds,
+          unit: "秒"
+        })}
+        ${renderRunProgressMetric({
+          metric: "shards",
+          label: "终态分片",
+          current: terminalShardCount,
+          limit: detail.shards.length,
+          unit: "个分片",
+          emptyWhenZero: true
+        })}
       </div>
       ${renderRunControls(
         String(plan.status ?? "draft"),
@@ -412,8 +528,8 @@ function renderPlanOverview(
       <div class="replica-acquisition-detail-grid">
         <article class="replica-acquisition-detail-section">
           <h4>预算上限</h4>
-          <p>${finiteNumber(budget.maxRequests)} 次请求 · ${finiteNumber(budget.maxResults)} 条结果</p>
-          <small>${escapeHtml(formatMinorAmount(budget.billingCurrency, budget.maxAmountMinor))} · ${finiteNumber(budget.maxDurationSeconds)} 秒</small>
+          <p>${finiteNumber(planBudget.maxRequests)} 次请求 · ${finiteNumber(planBudget.maxResults)} 条结果</p>
+          <small>${escapeHtml(formatMinorAmount(planBudget.billingCurrency, planBudget.maxAmountMinor))} · ${finiteNumber(planBudget.maxDurationSeconds)} 秒</small>
         </article>
         <article class="replica-acquisition-detail-section">
           <h4>AI 模型</h4>
@@ -752,16 +868,26 @@ function renderCandidatePanel(state: AcquisitionDetailCenterState): string {
   const presentation = record(detail.presentation);
   const events = records(presentation?.candidateEvents);
   const runStatus = textValue(latestRun.status, "queued");
-  const active = ["queued", "running", "pause_requested", "paused", "cancel_requested"]
-    .includes(runStatus);
+  const active = ACTIVE_RUN_STATUSES.has(runStatus);
+  const paused = runStatus === "paused";
   if (events.length === 0) {
     const evidenceCount = finiteNumber(latestRun.evidenceCount);
+    const emptyTitle = active
+      ? "运行中，尚未形成候选"
+      : paused
+        ? "运行已暂停，当前尚无候选"
+        : "运行已结束，未发现符合条件的候选";
+    const emptyDetail = active
+      ? "，系统仍在去重和研判。"
+      : paused
+        ? "，继续运行后将接着去重和研判。"
+        : "，但没有候选通过当前筛选条件。";
     return `
       <section class="replica-acquisition-detail-panel" id="acquisition-detail-panel-candidates" role="tabpanel" aria-labelledby="acquisition-detail-tab-candidates" data-acquisition-detail-panel="candidates">
         ${renderCandidateSummary(record(presentation?.summary))}
         <div class="replica-acquisition-detail-state" role="status">
-          <strong>${active ? "运行中，尚未形成候选" : "运行已结束，未发现符合条件的候选"}</strong>
-          <span>已发现 ${evidenceCount} 条公开证据${active ? "，系统仍在去重和研判。" : "，但没有候选通过当前筛选条件。"}</span>
+          <strong>${emptyTitle}</strong>
+          <span>已发现 ${evidenceCount} 条公开证据${emptyDetail}</span>
         </div>
       </section>
     `;

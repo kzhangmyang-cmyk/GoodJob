@@ -3,6 +3,7 @@ import {
   type AcquisitionDetailApi,
   type AcquisitionRunControlAction,
   type AcquisitionRunWithEtag,
+  type AcquisitionTaskDetail,
   type CandidateReviewAction
 } from "./detail-center-api";
 import {
@@ -20,6 +21,9 @@ export interface AcquisitionDetailCenterControllerOptions {
   body?: HTMLElement | null;
   keyFactory?: () => string;
   confirm?: (message: string) => boolean;
+  pollIntervalMs?: number;
+  schedulePoll?: (callback: () => void, delay: number) => unknown;
+  cancelPoll?: (handle: unknown) => void;
 }
 
 export interface AcquisitionDetailCenterController {
@@ -116,6 +120,128 @@ function records(value: unknown): Array<Record<string, unknown>> {
     : [];
 }
 
+function recordIdentity(
+  value: Record<string, unknown>,
+  preferredKeys: string[]
+): string | null {
+  for (const key of preferredKeys) {
+    const identity = requestedPlanId(value[key]);
+    if (identity) return `${key}:${identity}`;
+  }
+  return null;
+}
+
+function mergeRecordItems(
+  current: Array<Record<string, unknown>>,
+  incoming: Array<Record<string, unknown>>,
+  preferredKeys: string[]
+): Array<Record<string, unknown>> {
+  const merged: Array<Record<string, unknown>> = [];
+  const indexes = new Map<string, number>();
+  for (const item of [...current, ...incoming]) {
+    const identity = recordIdentity(item, preferredKeys);
+    if (!identity) {
+      merged.push(item);
+      continue;
+    }
+    const existingIndex = indexes.get(identity);
+    if (existingIndex === undefined) {
+      indexes.set(identity, merged.length);
+      merged.push(item);
+      continue;
+    }
+    merged[existingIndex] = {
+      ...merged[existingIndex],
+      ...item
+    };
+  }
+  return merged;
+}
+
+function mergePolledTaskDetail(
+  current: AcquisitionTaskDetail | null,
+  incoming: AcquisitionTaskDetail,
+  preservePagination = false
+): AcquisitionTaskDetail {
+  if (!current || current.latestRun?.id !== incoming.latestRun?.id) return incoming;
+  if (!incoming.presentation) {
+    return {
+      ...incoming,
+      presentation: current.presentation
+    };
+  }
+  if (!current.presentation) return incoming;
+  return {
+    ...incoming,
+    presentation: {
+      ...incoming.presentation,
+      candidateEvents: mergeRecordItems(
+        current.presentation.candidateEvents,
+        incoming.presentation.candidateEvents,
+        ["candidateId", "eventId"]
+      ),
+      providers: mergeRecordItems(
+        current.presentation.providers,
+        incoming.presentation.providers,
+        ["shardId", "connectionId", "providerId"]
+      ),
+      ...(preservePagination
+        ? {
+            hasMore: current.presentation.hasMore,
+            nextAfter: current.presentation.nextAfter
+          }
+        : {})
+    }
+  };
+}
+
+function activeRun(detail: AcquisitionTaskDetail | null): boolean {
+  return [
+    "queued",
+    "running",
+    "pause_requested",
+    "cancel_requested"
+  ].includes(detail?.latestRun?.status ?? "");
+}
+
+function shouldPollRun(detail: AcquisitionTaskDetail | null): boolean {
+  return activeRun(detail) || detail?.presentation?.hasMore === true;
+}
+
+function runProgressFingerprint(detail: AcquisitionTaskDetail | null): string {
+  return fingerprint({
+    run: detail?.latestRun ?? null,
+    shards: detail?.shards ?? [],
+    summary: detail?.presentation?.summary ?? null,
+    providers: detail?.presentation?.providers ?? []
+  });
+}
+
+function taskDetailIsOlder(
+  current: AcquisitionTaskDetail | null,
+  incoming: AcquisitionTaskDetail
+): boolean {
+  const currentRun = current?.latestRun ?? null;
+  const incomingRun = incoming.latestRun;
+  if (!currentRun || !incomingRun || currentRun.id !== incomingRun.id) return false;
+  const currentRecord = record(currentRun);
+  const incomingRecord = record(incomingRun);
+  const currentRevision = currentRecord?.revision;
+  const incomingRevision = incomingRecord?.revision;
+  if (typeof currentRevision === "number" && Number.isFinite(currentRevision)
+    && typeof incomingRevision === "number" && Number.isFinite(incomingRevision)
+    && currentRevision !== incomingRevision) {
+    return incomingRevision < currentRevision;
+  }
+  const currentUpdatedAt = Date.parse(currentRun.updatedAt);
+  const incomingUpdatedAt = Date.parse(incomingRun.updatedAt);
+  if (Number.isFinite(currentUpdatedAt) && Number.isFinite(incomingUpdatedAt)
+    && currentUpdatedAt !== incomingUpdatedAt) {
+    return incomingUpdatedAt < currentUpdatedAt;
+  }
+  return !activeRun(current) && activeRun(incoming);
+}
+
 function firstCandidateId(detail: unknown): string | null {
   const taskDetail = record(detail);
   const presentation = record(taskDetail?.presentation);
@@ -189,6 +315,17 @@ export function createAcquisitionDetailCenterController(
   const eventTarget = options.eventTarget ?? defaultEventTarget();
   const keyFactory = options.keyFactory ?? defaultKey;
   const ask = options.confirm ?? defaultConfirm;
+  const pollIntervalMs = typeof options.pollIntervalMs === "number"
+    && Number.isFinite(options.pollIntervalMs)
+    && options.pollIntervalMs > 0
+    ? options.pollIntervalMs
+    : 3_000;
+  const schedulePoll = options.schedulePoll
+    ?? ((callback: () => void, delay: number) => globalThis.setTimeout(callback, delay));
+  const cancelPoll = options.cancelPoll
+    ?? ((handle: unknown) => globalThis.clearTimeout(
+      handle as ReturnType<typeof globalThis.setTimeout>
+    ));
   const pendingIdempotencyKeys = new Map<string, string>();
   const state: AcquisitionDetailCenterState = {
     mode: "plan",
@@ -207,6 +344,12 @@ export function createAcquisitionDetailCenterController(
   let candidateSerial = 0;
   let mutationSerial = 0;
   let runMutationSerial = 0;
+  let pollGeneration = 0;
+  let pollHandle: unknown = null;
+  let hasPollHandle = false;
+  let pollFailureCount = 0;
+  let paginatedRunId: string | null = null;
+  let expectedRunId: string | null = null;
   let currentPlanId: string | null = null;
   let mutating = false;
   let runMutating = false;
@@ -298,9 +441,182 @@ export function createAcquisitionDetailCenterController(
   }
 
   function invalidateRunMutation(): void {
+    stopRunPolling();
     runMutationSerial += 1;
     runMutating = false;
     state.runControlBusy = false;
+  }
+
+  function stopRunPolling(): void {
+    pollGeneration += 1;
+    if (hasPollHandle) cancelPoll(pollHandle);
+    pollHandle = null;
+    hasPollHandle = false;
+    pollFailureCount = 0;
+  }
+
+  function clearCandidatePaginationBusy(): void {
+    const wasLoadingMore = state.loadingMoreCandidates;
+    state.loadingMoreCandidates = false;
+    if (wasLoadingMore && state.message === "正在加载更多真实候选…") {
+      state.message = null;
+    }
+  }
+
+  function resetCandidateStateForRunChange(): void {
+    paginatedRunId = null;
+    candidateSerial += 1;
+    state.selectedCandidateId = null;
+    state.candidateDetail = null;
+    clearCandidatePaginationBusy();
+  }
+
+  async function pollPresentationTail(
+    generation: number,
+    serial: number,
+    planId: string
+  ): Promise<"ok" | "stalled" | "failed"> {
+    const stalledMessage = "候选分页游标未前进，已停止自动追踪；重新打开任务可重试";
+    const detail = state.detail;
+    const presentation = detail?.presentation;
+    const runId = requestedPlanId(detail?.latestRun?.id);
+    let cursor = requestedPlanId(presentation?.nextAfter);
+    if (!detail || !presentation || !runId || !cursor
+      || typeof api.getRunPresentation !== "function") return "ok";
+    const visitedCursors = new Set<string>();
+    try {
+      while (cursor && !visitedCursors.has(cursor)) {
+        visitedCursors.add(cursor);
+        const nextPage = await api.getRunPresentation(runId, {
+          after: cursor,
+          limit: 100
+        });
+        if (disposed
+          || generation !== pollGeneration
+          || serial !== requestSerial
+          || planId !== currentPlanId) return "ok";
+        const currentDetail = state.detail;
+        const currentPresentation = currentDetail?.presentation;
+        if (!currentDetail || !currentPresentation
+          || requestedPlanId(currentDetail.latestRun?.id) !== runId
+          || requestedPlanId(currentPresentation.nextAfter) !== cursor) return "ok";
+        const nextCursor: string = requestedPlanId(nextPage.nextAfter) ?? cursor;
+        const stalled = nextPage.hasMore && nextCursor === cursor;
+        state.detail = {
+          ...currentDetail,
+          presentation: {
+            ...currentPresentation,
+            candidateEvents: mergeRecordItems(
+              currentPresentation.candidateEvents,
+              nextPage.candidateEvents.map((event) => ({ ...event })),
+              ["candidateId", "eventId"]
+            ),
+            providers: mergeRecordItems(
+              currentPresentation.providers,
+              nextPage.providers.map((provider) => ({ ...provider })),
+              ["shardId", "connectionId", "providerId"]
+            ),
+            summary: { ...nextPage.summary },
+            hasMore: stalled ? false : nextPage.hasMore,
+            nextAfter: nextCursor
+          }
+        };
+        paginatedRunId = runId;
+        if (stalled) {
+          state.error = stalledMessage;
+          return "stalled";
+        }
+        if (!nextPage.hasMore) {
+          if (state.error === stalledMessage) state.error = null;
+          return "ok";
+        }
+        cursor = nextCursor;
+      }
+    } catch {
+      // The task snapshot remains usable; the tail is retried on the next poll.
+      return "failed";
+    }
+    return "ok";
+  }
+
+  function ensureRunPolling(): void {
+    if (disposed || hasPollHandle || !currentPlanId || !shouldPollRun(state.detail)) return;
+    const generation = pollGeneration;
+    const delay = Math.min(
+      30_000,
+      pollIntervalMs * (2 ** Math.min(pollFailureCount, 10))
+    );
+    hasPollHandle = true;
+    pollHandle = schedulePoll(() => {
+      hasPollHandle = false;
+      pollHandle = null;
+      remember(pollRun(generation));
+    }, delay);
+  }
+
+  async function pollRun(generation: number): Promise<void> {
+    const planId = currentPlanId;
+    const serial = requestSerial;
+    if (disposed || !planId || generation !== pollGeneration) return;
+    try {
+      const incoming = await api.getTask(planId);
+      if (disposed
+        || generation !== pollGeneration
+        || serial !== requestSerial
+        || planId !== currentPlanId) return;
+      const incomingRunId = requestedPlanId(incoming.latestRun?.id);
+      if (expectedRunId && incomingRunId !== expectedRunId) {
+        pollFailureCount = 0;
+        if (shouldPollRun(state.detail)) ensureRunPolling();
+        return;
+      }
+      if (expectedRunId === incomingRunId) expectedRunId = null;
+      if (taskDetailIsOlder(state.detail, incoming)) {
+        pollFailureCount = 0;
+        if (shouldPollRun(state.detail)) ensureRunPolling();
+        return;
+      }
+      const before = runProgressFingerprint(state.detail);
+      const currentRunId = requestedPlanId(state.detail?.latestRun?.id);
+      const runChanged = currentRunId !== incomingRunId;
+      state.detail = mergePolledTaskDetail(
+        state.detail,
+        incoming,
+        !runChanged && paginatedRunId === currentRunId
+      );
+      if (runChanged) {
+        resetCandidateStateForRunChange();
+      }
+      const tailResult = await pollPresentationTail(generation, serial, planId);
+      if (disposed
+        || generation !== pollGeneration
+        || serial !== requestSerial
+        || planId !== currentPlanId) return;
+      pollFailureCount = tailResult === "ok"
+        ? 0
+        : Math.min(pollFailureCount + 1, 10);
+      state.status = "ready";
+      render();
+      if (before !== runProgressFingerprint(state.detail)) {
+        eventTarget.dispatchEvent(customEvent(
+          "goodjob:acquisition-refresh-requested",
+          {
+            planId,
+            action: "poll",
+            runId: state.detail.latestRun?.id ?? null,
+            status: state.detail.latestRun?.status ?? null
+          }
+        ));
+      }
+    } catch {
+      if (disposed
+        || generation !== pollGeneration
+        || serial !== requestSerial
+        || planId !== currentPlanId) return;
+      pollFailureCount = Math.min(pollFailureCount + 1, 10);
+    }
+    if (generation !== pollGeneration) return;
+    if (shouldPollRun(state.detail)) ensureRunPolling();
   }
 
   function beginMutation(candidateId: string): MutationContext {
@@ -328,6 +644,7 @@ export function createAcquisitionDetailCenterController(
     action: RunMutationContext["action"],
     runId: string | null
   ): RunMutationContext {
+    stopRunPolling();
     runMutating = true;
     state.runControlBusy = true;
     return {
@@ -350,6 +667,10 @@ export function createAcquisitionDetailCenterController(
     if (!state.detail) return;
     const run = result.run;
     const runChanged = state.detail.latestRun?.id !== run.id;
+    if (runChanged) {
+      resetCandidateStateForRunChange();
+      expectedRunId = run.id;
+    }
     state.detail = {
       ...state.detail,
       latestRun: {
@@ -360,7 +681,10 @@ export function createAcquisitionDetailCenterController(
         evidenceCount: run.evidenceCount,
         consumedBudget: { ...run.consumedBudget },
         etag: result.etag ?? run.etag,
-        planVersion: run.planVersion
+        planVersion: run.planVersion,
+        revision: run.revision,
+        budgetSnapshot: { ...run.budgetSnapshot },
+        modelSnapshotRef: { ...run.modelSnapshotRef }
       },
       ...(runChanged ? { shards: [], presentation: null } : {})
     };
@@ -393,7 +717,25 @@ export function createAcquisitionDetailCenterController(
     try {
       const detail = await api.getTask(context.planId);
       if (!runMutationIsCurrent(context)) return;
-      state.detail = detail;
+      const currentRunId = requestedPlanId(state.detail?.latestRun?.id);
+      const incomingRunId = requestedPlanId(detail.latestRun?.id);
+      if (incomingRunId !== result.run.id) {
+        state.message = completedMessage;
+        state.error = `${completedMessage}，但任务详情仍在同步，请稍后刷新`;
+        render();
+        ensureRunPolling();
+        return;
+      }
+      expectedRunId = null;
+      const runChanged = currentRunId !== incomingRunId;
+      if (!taskDetailIsOlder(state.detail, detail)) {
+        state.detail = mergePolledTaskDetail(
+          state.detail,
+          detail,
+          !runChanged && paginatedRunId === currentRunId
+        );
+        if (runChanged) paginatedRunId = null;
+      }
       state.message = completedMessage;
       state.error = null;
     } catch (error) {
@@ -402,6 +744,7 @@ export function createAcquisitionDetailCenterController(
       state.error = `${completedMessage}，但详情刷新失败：${errorText(error)}`;
     }
     render();
+    ensureRunPolling();
   }
 
   async function loadCandidateSnapshot(
@@ -501,7 +844,17 @@ export function createAcquisitionDetailCenterController(
     if (!mutationIsCurrent(context)
       || taskSerial !== requestSerial
       || refreshSerial !== candidateSerial) return;
-    if (detail) state.detail = detail;
+    if (detail && !taskDetailIsOlder(state.detail, detail)) {
+      const currentRunId = requestedPlanId(state.detail?.latestRun?.id);
+      const incomingRunId = requestedPlanId(detail.latestRun?.id);
+      const runChanged = currentRunId !== incomingRunId;
+      state.detail = mergePolledTaskDetail(
+        state.detail,
+        detail,
+        !runChanged && paginatedRunId === currentRunId
+      );
+      if (runChanged) paginatedRunId = null;
+    }
     state.message = state.error
       ? `${completedMessage}，部分资料刷新失败`
       : completedMessage;
@@ -525,8 +878,11 @@ export function createAcquisitionDetailCenterController(
     open(mode, planId) {
       invalidateMutation();
       invalidateRunMutation();
+      clearCandidatePaginationBusy();
       const serial = ++requestSerial;
       currentPlanId = planId;
+      paginatedRunId = null;
+      expectedRunId = null;
       showRoot();
       state.mode = mode;
       state.status = "loading";
@@ -544,6 +900,7 @@ export function createAcquisitionDetailCenterController(
           if (disposed || serial !== requestSerial) return;
           state.detail = detail;
           state.status = "ready";
+          ensureRunPolling();
           if (state.mode === "candidates" && !state.selectedCandidateId) {
             const candidateId = firstCandidateId(detail);
             if (candidateId) {
@@ -565,8 +922,11 @@ export function createAcquisitionDetailCenterController(
     close() {
       invalidateMutation();
       invalidateRunMutation();
+      clearCandidatePaginationBusy();
       requestSerial += 1;
       candidateSerial += 1;
+      paginatedRunId = null;
+      expectedRunId = null;
       hideRoot();
     },
 
@@ -637,7 +997,12 @@ export function createAcquisitionDetailCenterController(
           const currentDetail = state.detail;
           const currentPresentation = currentDetail?.presentation;
           if (!currentDetail || !currentPresentation
-            || requestedPlanId(currentDetail.latestRun?.id) !== runId) return;
+            || requestedPlanId(currentDetail.latestRun?.id) !== runId
+            || requestedPlanId(currentPresentation.nextAfter) !== cursor) {
+            clearCandidatePaginationBusy();
+            render();
+            return;
+          }
 
           const eventKeys = new Set<string>();
           const mergedEvents = [
@@ -674,6 +1039,7 @@ export function createAcquisitionDetailCenterController(
               nextAfter: repeatedCursor ? null : nextPage.nextAfter
             }
           };
+          paginatedRunId = runId;
           state.loadingMoreCandidates = false;
           state.message = repeatedCursor
             ? "已加载可用候选；服务端分页游标未前进，已停止继续加载"
@@ -774,6 +1140,7 @@ export function createAcquisitionDetailCenterController(
             runMutating = false;
             state.runControlBusy = false;
             render();
+            ensureRunPolling();
           }
         }
       })());
@@ -858,6 +1225,7 @@ export function createAcquisitionDetailCenterController(
             runMutating = false;
             state.runControlBusy = false;
             render();
+            ensureRunPolling();
           }
         }
       })());
@@ -994,9 +1362,12 @@ export function createAcquisitionDetailCenterController(
       disposed = true;
       invalidateMutation();
       invalidateRunMutation();
+      clearCandidatePaginationBusy();
       requestSerial += 1;
       candidateSerial += 1;
       pendingIdempotencyKeys.clear();
+      paginatedRunId = null;
+      expectedRunId = null;
       eventTarget.removeEventListener(
         "goodjob:acquisition-detail-open-requested",
         onOpenRequested as EventListener
@@ -1091,8 +1462,11 @@ export function createAcquisitionDetailCenterController(
   function onRootClose(): void {
     invalidateMutation();
     invalidateRunMutation();
+    clearCandidatePaginationBusy();
     requestSerial += 1;
     candidateSerial += 1;
+    paginatedRunId = null;
+    expectedRunId = null;
     finishClose();
   }
 

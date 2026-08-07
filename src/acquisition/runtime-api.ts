@@ -9,6 +9,15 @@ export interface AcquisitionTaskDetail {
   latestRun: (AcquisitionTaskSummary["latestRun"] & {
     etag?: string;
     planVersion?: number;
+    revision?: number;
+    budgetSnapshot?: {
+      billingCurrency: string;
+      maxRequests: number;
+      maxResults: number;
+      maxAmountMinor: number;
+      maxDurationSeconds: number;
+    };
+    modelSnapshotRef?: Record<string, unknown>;
   }) | null;
   shards: Array<Record<string, unknown>>;
   presentation: {
