@@ -17,7 +17,8 @@ let started = false;
 function calendarDay(value: string): Date {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(Number.NaN);
   const date = new Date(`${value}T00:00:00.000Z`);
-  return date.toISOString().slice(0, 10) === value
+  return Number.isFinite(date.getTime())
+    && date.toISOString().slice(0, 10) === value
     ? date
     : new Date(Number.NaN);
 }
@@ -89,8 +90,13 @@ export function performanceStatusFor(counts: { discovered: number }): Performanc
   return counts.discovered === 0 ? "empty" : "ready";
 }
 
-function defaultDateValues(now: Date) {
-  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+export function defaultPerformanceDateValues(now: Date) {
+  const shanghaiNow = new Date(now.getTime() + 8 * 60 * 60 * 1_000);
+  const to = new Date(Date.UTC(
+    shanghaiNow.getUTCFullYear(),
+    shanghaiNow.getUTCMonth(),
+    shanghaiNow.getUTCDate()
+  ));
   const from = new Date(to);
   from.setUTCDate(from.getUTCDate() - 29);
   return { from: dateValue(from), to: dateValue(to) };
@@ -110,7 +116,7 @@ export function startAcquisitionPerformance(
   if (!section || !body || !fromInput || !toInput || !platformInput || !refreshButton) return;
   started = true;
 
-  const defaults = defaultDateValues(now());
+  const defaults = defaultPerformanceDateValues(now());
   fromInput.value ||= defaults.from;
   toInput.value ||= defaults.to;
   let realMode = document.querySelector("[data-acquisition-mode=\"real\"].active") !== null;
