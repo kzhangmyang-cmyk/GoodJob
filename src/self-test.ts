@@ -4,6 +4,9 @@ import "./demo/demo-store.self-test";
 import { renderDashboardView } from "./demo/demo-dashboard-view";
 import { createDemoStore } from "./demo/demo-store";
 import { buildLeadFinderIntentChips, getLeadFinderLayoutMode } from "./lead-finder-layout";
+import "./acquisition/runtime-model.self-test";
+import "./acquisition/runtime-api.self-test";
+import "./acquisition/runtime-presenter.self-test";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");
 assert.equal(getLeadFinderLayoutMode(1), "results");
@@ -47,6 +50,7 @@ const m1Layout = readFileSync(new URL("./m1-layout.css", import.meta.url), "utf8
 const replicaStyles = readFileSync(new URL("./replica-dashboard.css", import.meta.url), "utf8");
 const replicaBehavior = readFileSync(new URL("./replica-dashboard.ts", import.meta.url), "utf8");
 const demoApp = readFileSync(new URL("./demo/demo-app.ts", import.meta.url), "utf8");
+const demoRouter = readFileSync(new URL("./demo/demo-router.ts", import.meta.url), "utf8");
 const demoDashboardView = readFileSync(new URL("./demo/demo-dashboard-view.ts", import.meta.url), "utf8");
 
 const required = [
@@ -130,6 +134,10 @@ const required = [
   "id=\"demoModuleMain\"",
   "id=\"demoModuleInspector\"",
   "data-replica-module-panel=\"acquisition\"",
+  "data-acquisition-mode=\"real\"",
+  "data-acquisition-mode=\"demo\"",
+  "id=\"replicaRealTaskGroup\"",
+  "id=\"replicaRunMetrics\"",
   "src/demo/demo-app.ts",
   "src/demo/demo.css",
   "renderDashboardView",
@@ -137,6 +145,17 @@ const required = [
   "今日业务漏斗",
   "最近业务活动"
 ];
+
+assert.equal(
+  replicaBehavior.includes("startAcquisitionRuntime"),
+  true,
+  "missing real acquisition runtime bootstrap"
+);
+assert.equal(
+  demoRouter.includes("hashchange"),
+  true,
+  "hash navigation must update the visible module without a page reload"
+);
 
 const leadFinderMarkupRequired = [
   "class=\"lead-taskbar\"",

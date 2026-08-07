@@ -1,3 +1,5 @@
+import { startAcquisitionRuntime } from "./acquisition/runtime";
+
 type ReplicaTaskRow = HTMLButtonElement & {
   dataset: DOMStringMap & {
     taskId?: string;
@@ -9,6 +11,12 @@ type ReplicaTaskRow = HTMLButtonElement & {
     taskStatus?: string;
     taskPriority?: string;
     taskTags?: string;
+    acquisitionRealTask?: string;
+    acquisitionPlanId?: string;
+    evidenceCount?: string;
+    requestCount?: string;
+    resultCount?: string;
+    durationSeconds?: string;
   };
 };
 
@@ -178,6 +186,7 @@ if (replica) {
   }
 
   function renderTaskDetail(row: ReplicaTaskRow, syncFlow = true) {
+    const isRealTask = row.dataset.acquisitionRealTask === "true";
     selectedTask?.classList.remove("active");
     selectedTask = row;
     selectedTask.classList.add("active");
@@ -188,7 +197,11 @@ if (replica) {
     if (detail.project) detail.project.textContent = row.dataset.taskProject || "--";
     if (detail.due) detail.due.textContent = row.dataset.taskDue || "--";
     if (detail.status) detail.status.textContent = row.dataset.taskStatus || "--";
-    if (detail.priority) detail.priority.textContent = `${row.dataset.taskPriority || "普通"}意向`;
+    if (detail.priority) {
+      detail.priority.textContent = isRealTask
+        ? "真实任务"
+        : `${row.dataset.taskPriority || "普通"}意向`;
+    }
     if (detail.priorityText) detail.priorityText.textContent = row.dataset.taskPriority || "普通";
     if (detail.tags) {
       detail.tags.innerHTML = (row.dataset.taskTags || "待整理")
@@ -197,7 +210,14 @@ if (replica) {
         .join("");
     }
     if (detail.advice) {
-      detail.advice.textContent = `演示建议：优先处理“${row.dataset.taskProject || "当前平台"}”中包含明确购买、咨询或合作意图的内容`;
+      detail.advice.textContent = isRealTask
+        ? `真实任务数据已载入；公开证据不等于意向客户，需完成 AI 研判后再决定是否触达。`
+        : `演示建议：优先处理“${row.dataset.taskProject || "当前平台"}”中包含明确购买、咨询或合作意图的内容`;
+    }
+    if (isRealTask) {
+      document.dispatchEvent(new CustomEvent("goodjob:acquisition-task-selected", {
+        detail: { planId: row.dataset.acquisitionPlanId || "" }
+      }));
     }
     if (syncFlow) syncFlowToTask(row);
     flow?.classList.add("is-focused");
@@ -255,6 +275,10 @@ if (replica) {
     if (toolButton) {
       const tool = toolButton.dataset.replicaTool;
       if (tool === "filter") {
+        if (replica.dataset.acquisitionMode === "real") {
+          showToast("真实任务需完成 AI 意向研判后才能按意向筛选");
+          return;
+        }
         const willEnable = activeFilter !== "high";
         activeFilter = willEnable ? "high" : "all";
         toolButton.classList.toggle("active", willEnable);
@@ -362,12 +386,20 @@ if (replica) {
 
   document.querySelector("#replicaNewTaskButton")?.addEventListener("click", () => {
     if (!isAcquisitionActive()) return;
+    if (replica.dataset.acquisitionMode === "real") {
+      showToast("真实任务创建正在接入后端审批流；当前不会生成模拟任务");
+      return;
+    }
     modal?.showModal();
   });
   document.querySelector("#replicaModalClose")?.addEventListener("click", () => modal?.close());
   document.querySelector("#replicaModalCancel")?.addEventListener("click", () => modal?.close());
   document.querySelector("#replicaEditTask")?.addEventListener("click", () => {
     if (!selectedTask) return;
+    if (replica.dataset.acquisitionMode === "real") {
+      showToast("真实任务只读展示已接通；编辑与审批将在下一步接入");
+      return;
+    }
     const nameInput = document.querySelector<HTMLInputElement>("#replicaTaskName");
     const dueInput = document.querySelector<HTMLInputElement>("#replicaTaskDue");
     const summaryInput = document.querySelector<HTMLTextAreaElement>("#replicaTaskSummary");
@@ -382,13 +414,20 @@ if (replica) {
   });
 
   document.querySelector("#replicaAdviceButton")?.addEventListener("click", () => {
-    showToast("演示：已展开 AI 建议；不会读取或操作真实平台数据");
+    showToast(replica.dataset.acquisitionMode === "real"
+      ? "真实证据必须经过 AI 研判和人工审核，不能直接视为意向客户"
+      : "演示：已展开 AI 建议；不会读取或操作真实平台数据");
   });
 
   taskForm?.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!isAcquisitionActive()) {
       modal?.close();
+      return;
+    }
+    if (replica.dataset.acquisitionMode === "real") {
+      modal?.close();
+      showToast("真实模式不会创建本地模拟任务");
       return;
     }
     const name = document.querySelector<HTMLInputElement>("#replicaTaskName")?.value.trim() || "新演示获客任务";
@@ -457,6 +496,27 @@ if (replica) {
 
   document.addEventListener("goodjob:demo-reset", resetAcquisitionTransientState);
 
+  document.addEventListener("goodjob:acquisition-mode-changed", (event) => {
+    const mode = (event as CustomEvent<{ mode?: string }>).detail?.mode;
+    activeScope = "all";
+    activeFilter = "all";
+    searchQuery = "";
+    if (searchInput) searchInput.value = "";
+    document.querySelectorAll<HTMLButtonElement>("[data-replica-scope]").forEach((button) => {
+      const active = button.dataset.replicaScope === "all";
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+    document.querySelectorAll<HTMLButtonElement>("[data-replica-tool]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.replicaTool === "view");
+    });
+    const nextTask = mode === "real"
+      ? document.querySelector<ReplicaTaskRow>("[data-acquisition-real-task=\"true\"]")
+      : initialTaskPlacements[0]?.row ?? null;
+    if (nextTask) renderTaskDetail(nextTask);
+    applyFilters();
+  });
+
   document.addEventListener("keydown", (event) => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
@@ -466,3 +526,5 @@ if (replica) {
 
   updateFlowLayout(selectedFlowIndex);
 }
+
+startAcquisitionRuntime();

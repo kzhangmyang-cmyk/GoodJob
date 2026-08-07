@@ -114,6 +114,14 @@ export function createDemoRouter(initial: DemoModule = "acquisition"): DemoRoute
     listeners.forEach((listener) => listener(active));
   }
 
+  window.addEventListener("hashchange", () => {
+    const next = moduleFromHash(initial);
+    if (next === active) return;
+    active = next;
+    renderShell(active);
+    listeners.forEach((listener) => listener(active));
+  });
+
   renderShell(active);
   if (window.location.hash !== `#${active}`) window.location.hash = active;
 

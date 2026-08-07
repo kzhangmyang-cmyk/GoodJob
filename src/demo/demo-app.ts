@@ -108,6 +108,10 @@ export function startDemoApp(): void {
     const opportunityId = actionTarget?.dataset.opportunityId;
     if (action === "simulate-acquisition-sync") {
       if (router.current() !== "acquisition") return;
+      if (shell.dataset.acquisitionMode === "real") {
+        showDemoToast("真实模式不会执行演示同步；候选客户需先完成 AI 研判和人工审核");
+        return;
+      }
       const selectedTask = shell.querySelector<HTMLElement>(".replica-task-row.active");
       const platform = selectedTask?.dataset.taskProject;
       const conversation = store.getState().conversations.find((item) => item.platform === platform);
