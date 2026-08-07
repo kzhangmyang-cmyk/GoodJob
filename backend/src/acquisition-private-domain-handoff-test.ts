@@ -142,6 +142,7 @@ function handoffStore(): AcquisitionPrivateDomainHandoffStore {
     customerActivities: [],
     todos: [],
     acquisitionCustomerHandoffs: [],
+    acquisitionCustomerHandoffOperations: [],
     async persist() {},
     async readBarrier() {}
   };
@@ -358,6 +359,10 @@ const linkResult = await linked.service.create(scope, "candidate-a", {
 assert.equal(linkResult.customer.id, "customer-existing");
 assert.equal(linked.store.customers.length, 1);
 assert.equal(linkResult.todo.customerId, "customer-existing");
+assert.equal(linkResult.customer.amount, 99);
+assert.equal(linkResult.customer.grade, "C");
+assert.equal(linkResult.customer.stage, "沟通中");
+assert.equal(linkResult.customer.health, 70);
 assert.equal(
   linkResult.customer.nextReminder,
   request.followUp.dueAt
@@ -434,11 +439,166 @@ assert.equal(customerPartial.store.customerActivities.length, 1);
 assert.equal(customerPartial.store.todos.length, 1);
 assert.equal(customerPartial.store.acquisitionCustomerHandoffs.length, 1);
 
+const convertedCustomerPartial = await fixture({
+  status: "converted_to_lead",
+  leadId: "lead-existing-customer"
+});
+convertedCustomerPartial.store.leads.push({
+  ...result.lead,
+  id: "lead-existing-customer",
+  convertedCustomerId: "customer-from-lead"
+});
+convertedCustomerPartial.store.customers.push({
+  ...result.customer,
+  id: "customer-from-lead",
+  amount: 777,
+  grade: "B",
+  nextReminder: ""
+});
+const convertedCustomerResumed =
+  await convertedCustomerPartial.service.create(
+    scope,
+    "candidate-a",
+    request,
+    "handoff-resume-converted-customer"
+  );
+assert.equal(
+  convertedCustomerResumed.customer.id,
+  "customer-from-lead"
+);
+assert.equal(convertedCustomerPartial.store.customers.length, 1);
+assert.equal(convertedCustomerPartial.store.customerActivities.length, 1);
+assert.equal(convertedCustomerPartial.store.todos.length, 1);
+assert.equal(
+  convertedCustomerPartial.store.leads[0]?.convertedCustomerId,
+  "customer-from-lead"
+);
+const convertedLeadSnapshotEvent =
+  convertedCustomerPartial.store.leadSourceEvents.find((item) =>
+    item.leadId === "lead-existing-customer"
+    && item.channel === "acquisition_private_domain_handoff_snapshot"
+  );
+assert.ok(convertedLeadSnapshotEvent);
+const convertedLeadSnapshot = JSON.parse(
+  convertedLeadSnapshotEvent.rawPayload
+);
+assert.deepEqual(convertedLeadSnapshot.intelligence, {
+  qualificationGrade: "S",
+  qualificationScore: 94,
+  financialGrade: "A",
+  currency: "CNY",
+  expectedRevenueMinor: 1_288_000,
+  expectedGrossProfitMinor: 708_400,
+  expectedContributionMinor: 520_000
+});
+assert.equal(
+  convertedLeadSnapshot.qualificationSnapshotHash,
+  qualification.snapshotHash
+);
+assert.equal(
+  convertedLeadSnapshot.financialSnapshotHash,
+  financial.inputSnapshotHash
+);
+
+const reservedFailure = await fixture();
+let rejectedCustomerWrite = false;
+reservedFailure.store.persistMutation = async (mutation) => {
+  const applied = mutation();
+  if (!rejectedCustomerWrite
+    && reservedFailure.store.customers.length > 0) {
+    rejectedCustomerWrite = true;
+    applied.rollback();
+    throw new Error("customer stage failed");
+  }
+  return applied.value;
+};
+await assert.rejects(
+  () => reservedFailure.service.create(
+    scope,
+    "candidate-a",
+    request,
+    "handoff-reserved-key"
+  ),
+  /customer stage failed/
+);
+assert.equal(reservedFailure.store.leads.length, 1);
+assert.equal(reservedFailure.store.customers.length, 0);
+assert.equal(
+  reservedFailure.store.acquisitionCustomerHandoffOperations[0]?.stage,
+  "lead_ready"
+);
+await assert.rejects(
+  () => reservedFailure.service.create(
+    scope,
+    "candidate-a",
+    {
+      ...request,
+      followUp: {
+        ...request.followUp,
+        dueAt: "2026-08-09T09:00:00.000Z"
+      }
+    },
+    "handoff-reserved-key"
+  ),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT"
+);
+await assert.rejects(
+  () => reservedFailure.service.create(
+    scope,
+    "candidate-a",
+    {
+      ...request,
+      mode: "link_existing",
+      existingCustomerId: "customer-changed-mode"
+    },
+    "handoff-reserved-key"
+  ),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT"
+);
+await assert.rejects(
+  () => reservedFailure.service.create(
+    scope,
+    "candidate-a",
+    {
+      ...request,
+      existingCustomerId: "customer-changed-target"
+    },
+    "handoff-reserved-key"
+  ),
+  (error: unknown) => error instanceof Error
+    && "code" in error
+    && error.code === "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT"
+);
+await reservedFailure.repository.appendFinancialValue({
+  ...financial,
+  id: "financial-after-reservation",
+  expectedRevenueMinor: 9_999_900,
+  createdAt: "2026-08-07T07:59:00.000Z"
+});
+const immutableResume = await reservedFailure.service.create(
+  scope,
+  "candidate-a",
+  request,
+  "handoff-reserved-key"
+);
+assert.equal(immutableResume.intelligence.expectedRevenueMinor, 1_288_000);
+assert.equal(immutableResume.customer.amount, 12_880);
+
 const recovering = await fixture();
-let persistenceAttempt = 0;
-recovering.store.persist = async () => {
-  persistenceAttempt += 1;
-  if (persistenceAttempt === 2) throw new Error("customer commit failed");
+let rejectedCompletedWrite = false;
+recovering.store.persistMutation = async (mutation) => {
+  const applied = mutation();
+  if (!rejectedCompletedWrite
+    && recovering.store.acquisitionCustomerHandoffs.length > 0) {
+    rejectedCompletedWrite = true;
+    applied.rollback();
+    throw new Error("customer commit failed");
+  }
+  return applied.value;
 };
 await assert.rejects(
   () => recovering.service.create(
@@ -450,10 +610,14 @@ await assert.rejects(
   /customer commit failed/
 );
 assert.equal(recovering.store.leads.length, 1);
-assert.equal(recovering.store.customers.length, 0);
-assert.equal(recovering.store.customerActivities.length, 0);
-assert.equal(recovering.store.todos.length, 0);
+assert.equal(recovering.store.customers.length, 1);
+assert.equal(recovering.store.customerActivities.length, 1);
+assert.equal(recovering.store.todos.length, 1);
 assert.equal(recovering.store.acquisitionCustomerHandoffs.length, 0);
+assert.equal(
+  recovering.store.acquisitionCustomerHandoffOperations[0]?.stage,
+  "todo_ready"
+);
 const recovered = await recovering.service.create(
   scope,
   "candidate-a",

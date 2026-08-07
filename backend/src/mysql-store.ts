@@ -123,7 +123,7 @@ import type {
 } from "./store.js";
 import type { WhatsAppBinding, WhatsAppMessage } from "./types.js";
 import type { DailyReport, DailyReportComment, InternalMessage } from "./types.js";
-import type { AcquisitionCustomerHandoff, AcquisitionOutcomeFeedback, AgentJob, AgentJobIdempotencyAlias, AiModelConfig, CaseStudy, CommissionCalculation, CommissionExport, CommissionItem, CommissionProduct, CommissionRule, Competitor, Customer, CustomerAcquisitionSourceEvent, CustomerActivity, CustomerIntelligenceSuggestion, CustomerOwnershipEvent, CustomerOwnershipMutationInput, CustomerOwnershipMutationResult, Deal, DealEvent, DealRecommendation, Exam, ExamAttempt, ExamQuestion, ExamQuestionLink, ImportExportJob, KnowledgeAsset, Lead, LeadActivity, LeadSourceConfig, LeadSourceEvent, MarketOpportunityBatch, MarketOpportunityCalculationEvent, MarketOpportunitySnapshot, MarketTradeObservation, Memo, MonthlySalesRecord, OcrJob, PlanTask, PlanTemplate, ProblemItem, ProcurementSignal, ProspectCampaign, ProspectCampaignEvent, ProspectCampaignVersion, ProspectCandidateProcessingState, ProspectExecutionAttempt, ProspectExecutionCheckpoint, ProspectExecutionEvent, ProspectExecutionKernelState, ProspectExecutionLease, ProspectExecutionPage, ProspectExecutionThrottleBucket, ProspectProviderRequestAccountingEvidence, ProspectProviderRequestAttemptBinding, ProspectProviderRequestDispatch, ProspectProviderRequestEvent, ProspectProviderRequestLedger, ProspectRunEvent, ProspectRunQueueChildBinding, ProspectRunQueueParentBinding, ProspectRunShard, ProspectSchedule, ProspectSearchRun, ProspectSourceRawBatch, ProspectSourceRawHit, ProspectSourceRawRecord, ProspectStrategy, ProspectStrategyEvent, ProspectStrategySourcePosition, ProspectStrategySuggestion, ProspectTouchpoint, ProviderCatalogItem, ProviderConnection, ProviderRequestLog, ProviderResponseCache, Reminder, SalesRecordAudit, Todo, TradeDocument, User, WecomMessage, WebsiteOpportunity } from "./types.js";
+import type { AcquisitionCustomerHandoff, AcquisitionCustomerHandoffOperation, AcquisitionOutcomeFeedback, AgentJob, AgentJobIdempotencyAlias, AiModelConfig, CaseStudy, CommissionCalculation, CommissionExport, CommissionItem, CommissionProduct, CommissionRule, Competitor, Customer, CustomerAcquisitionSourceEvent, CustomerActivity, CustomerIntelligenceSuggestion, CustomerOwnershipEvent, CustomerOwnershipMutationInput, CustomerOwnershipMutationResult, Deal, DealEvent, DealRecommendation, Exam, ExamAttempt, ExamQuestion, ExamQuestionLink, ImportExportJob, KnowledgeAsset, Lead, LeadActivity, LeadSourceConfig, LeadSourceEvent, MarketOpportunityBatch, MarketOpportunityCalculationEvent, MarketOpportunitySnapshot, MarketTradeObservation, Memo, MonthlySalesRecord, OcrJob, PlanTask, PlanTemplate, ProblemItem, ProcurementSignal, ProspectCampaign, ProspectCampaignEvent, ProspectCampaignVersion, ProspectCandidateProcessingState, ProspectExecutionAttempt, ProspectExecutionCheckpoint, ProspectExecutionEvent, ProspectExecutionKernelState, ProspectExecutionLease, ProspectExecutionPage, ProspectExecutionThrottleBucket, ProspectProviderRequestAccountingEvidence, ProspectProviderRequestAttemptBinding, ProspectProviderRequestDispatch, ProspectProviderRequestEvent, ProspectProviderRequestLedger, ProspectRunEvent, ProspectRunQueueChildBinding, ProspectRunQueueParentBinding, ProspectRunShard, ProspectSchedule, ProspectSearchRun, ProspectSourceRawBatch, ProspectSourceRawHit, ProspectSourceRawRecord, ProspectStrategy, ProspectStrategyEvent, ProspectStrategySourcePosition, ProspectStrategySuggestion, ProspectTouchpoint, ProviderCatalogItem, ProviderConnection, ProviderRequestLog, ProviderResponseCache, Reminder, SalesRecordAudit, Todo, TradeDocument, User, WecomMessage, WebsiteOpportunity } from "./types.js";
 import type { CompanyProfile } from "./types.js";
 
 const defaultUrl = "mysql://goodjob:change_me@127.0.0.1:3306/goodjob_crm";
@@ -1553,6 +1553,8 @@ export async function createMysqlStore(
       await loadCustomerIntelligenceSuggestions(pool),
     acquisitionCustomerHandoffs:
       await loadAcquisitionCustomerHandoffs(pool),
+    acquisitionCustomerHandoffOperations:
+      await loadAcquisitionCustomerHandoffOperations(pool),
     leads: await loadLeads(pool),
     leadActivities: await loadLeadActivities(pool),
     leadSourceEvents: await loadLeadSourceEvents(pool),
@@ -2083,6 +2085,36 @@ async function ensureSchema(pool: mysql.Pool) {
     INDEX idx_ach_todo(todo_id),
     CONSTRAINT chk_ach_mode CHECK (
       handoff_mode IN ('create_new','link_existing')
+    )
+  ) ENGINE=InnoDB`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS acquisition_customer_handoff_operations (
+    id VARCHAR(64) PRIMARY KEY,
+    owner_id VARCHAR(64) NOT NULL,
+    team_id VARCHAR(64) NOT NULL,
+    candidate_id VARCHAR(100) NOT NULL,
+    processing_key_hash CHAR(64) NOT NULL,
+    request_hash CHAR(64) NOT NULL,
+    decision_version VARCHAR(100) NOT NULL,
+    handoff_mode VARCHAR(20) NOT NULL,
+    existing_customer_id VARCHAR(64) NOT NULL,
+    operation_stage VARCHAR(24) NOT NULL,
+    lead_id VARCHAR(100) NOT NULL,
+    customer_id VARCHAR(64) NOT NULL,
+    activity_id VARCHAR(64) NOT NULL,
+    todo_id VARCHAR(64) NOT NULL,
+    handoff_id VARCHAR(64) NOT NULL,
+    intelligence_json JSON NOT NULL,
+    qualification_snapshot_hash VARCHAR(100) NOT NULL,
+    financial_snapshot_hash VARCHAR(100) NOT NULL,
+    created_at DATETIME(3) NOT NULL,
+    updated_at DATETIME(3) NOT NULL,
+    UNIQUE KEY uk_acho_candidate(owner_id,team_id,candidate_id),
+    UNIQUE KEY uk_acho_processing(owner_id,team_id,candidate_id,processing_key_hash),
+    CONSTRAINT chk_acho_mode CHECK (
+      handoff_mode IN ('create_new','link_existing')
+    ),
+    CONSTRAINT chk_acho_stage CHECK (
+      operation_stage IN ('reserved','lead_ready','customer_ready','activity_ready','todo_ready','completed')
     )
   ) ENGINE=InnoDB`);
   await pool.query(`CREATE TABLE IF NOT EXISTS customer_intelligence_suggestions (
@@ -5629,6 +5661,43 @@ async function loadAcquisitionCustomerHandoffs(
     createdAt: row.created_at instanceof Date
       ? row.created_at.toISOString()
       : row.created_at
+  }));
+}
+
+async function loadAcquisitionCustomerHandoffOperations(
+  pool: mysql.Pool
+): Promise<AcquisitionCustomerHandoffOperation[]> {
+  return (await rows<Record<string, any>>(
+    pool,
+    `SELECT * FROM acquisition_customer_handoff_operations
+     ORDER BY created_at DESC`
+  )).map((row) => ({
+    id: row.id,
+    ownerId: row.owner_id,
+    teamId: row.team_id,
+    candidateId: row.candidate_id,
+    processingKeyHash: row.processing_key_hash,
+    requestHash: row.request_hash,
+    decisionVersion: row.decision_version,
+    mode: row.handoff_mode,
+    existingCustomerId: row.existing_customer_id,
+    stage: row.operation_stage,
+    leadId: row.lead_id,
+    customerId: row.customer_id,
+    activityId: row.activity_id,
+    todoId: row.todo_id,
+    handoffId: row.handoff_id,
+    intelligence: typeof row.intelligence_json === "string"
+      ? JSON.parse(row.intelligence_json)
+      : row.intelligence_json,
+    qualificationSnapshotHash: row.qualification_snapshot_hash,
+    financialSnapshotHash: row.financial_snapshot_hash,
+    createdAt: row.created_at instanceof Date
+      ? row.created_at.toISOString()
+      : row.created_at,
+    updatedAt: row.updated_at instanceof Date
+      ? row.updated_at.toISOString()
+      : row.updated_at
   }));
 }
 
@@ -10357,6 +10426,7 @@ async function persistAll(pool: mysql.Pool, store: CrmStore) {
     await replaceRows(connection, "customer_activities", store.customerActivities, (item) => [item.id, item.customerId, item.type || "note", item.content || "", item.operatorId || "", item.nextReminder || "", mysqlDate(item.createdAt)], "(id,customer_id,type,content,operator_id,next_reminder,created_at)");
     await replaceRows(connection, "customer_intelligence_suggestions", store.customerIntelligenceSuggestions, (item) => [item.id, item.teamId, item.ownerId, item.customerId, item.prospectCandidateId, item.tenantProspectId || "", item.organizationId || "", item.leadId || "", item.sourceEventId || "", item.sourceLabel || "", item.sourceUrl || "", JSON.stringify(item.suggestedFields || []), item.website || "", item.business || "", item.contactInfo || "", item.evidenceSummary || "", JSON.stringify(item.evidenceRefs || []), item.payloadHash, item.status, JSON.stringify(item.acceptedFields || []), item.reviewedBy || "", item.reviewedAt ? mysqlDate(item.reviewedAt) : null, item.reviewNote || "", mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,team_id,owner_id,customer_id,prospect_candidate_id,tenant_prospect_id,organization_id,lead_id,source_event_id,source_label,source_url,suggested_fields_json,website,business,contact_info,evidence_summary,evidence_refs_json,payload_hash,suggestion_status,accepted_fields_json,reviewed_by,reviewed_at,review_note,created_at,updated_at)");
     await replaceRows(connection, "acquisition_customer_handoffs", store.acquisitionCustomerHandoffs, (item) => [item.id, item.ownerId, item.teamId, item.candidateId, item.leadId, item.customerId, item.todoId, item.decisionVersion, item.mode, item.processingKeyHash, item.requestHash, JSON.stringify(item.intelligence), item.qualificationSnapshotHash, item.financialSnapshotHash, mysqlDate(item.createdAt)], "(id,owner_id,team_id,candidate_id,lead_id,customer_id,todo_id,decision_version,handoff_mode,processing_key_hash,request_hash,intelligence_json,qualification_snapshot_hash,financial_snapshot_hash,created_at)");
+    await replaceRows(connection, "acquisition_customer_handoff_operations", store.acquisitionCustomerHandoffOperations, (item) => [item.id, item.ownerId, item.teamId, item.candidateId, item.processingKeyHash, item.requestHash, item.decisionVersion, item.mode, item.existingCustomerId, item.stage, item.leadId, item.customerId, item.activityId, item.todoId, item.handoffId, JSON.stringify(item.intelligence), item.qualificationSnapshotHash, item.financialSnapshotHash, mysqlDate(item.createdAt), mysqlDate(item.updatedAt)], "(id,owner_id,team_id,candidate_id,processing_key_hash,request_hash,decision_version,handoff_mode,existing_customer_id,operation_stage,lead_id,customer_id,activity_id,todo_id,handoff_id,intelligence_json,qualification_snapshot_hash,financial_snapshot_hash,created_at,updated_at)");
     await replaceRows(connection, "leads", store.leads, (item) => [item.id, item.company, item.contact || "", item.country || "", item.email || "", item.phone || "", item.wechat || "", item.source || "", item.sourceType || "outbound", item.sourceChannel || "manual", item.sourceCampaign || "", item.externalId || "", item.sourceUrl || "", item.intent || "中", item.stage || "新线索", item.status || "new", item.ownerId, item.teamId, item.estimatedAmount || 0, item.nextFollowAt || "", item.lastActivityAt || "", item.remark || "", item.convertedCustomerId || "", item.convertedDealId || "", item.deletedAt ? mysqlDate(item.deletedAt) : null, item.deletedReason || "", item.deletedBy || "", item.purgeAt ? mysqlDate(item.purgeAt) : null, item.statusBeforeDelete || "", mysqlDate(item.createdAt)], "(id,company,contact,country,email,phone,wechat,source,source_type,source_channel,source_campaign,external_id,source_url,intent,stage,status,owner_id,team_id,estimated_amount,next_follow_at,last_activity_at,remark,converted_customer_id,converted_deal_id,deleted_at,deleted_reason,deleted_by,purge_at,status_before_delete,created_at)");
     await replaceRows(connection, "lead_activities", store.leadActivities, (item) => [item.id, item.leadId, item.type || "note", item.content || "", item.operatorId || "", item.nextFollowAt || "", mysqlDate(item.createdAt)], "(id,lead_id,type,content,operator_id,next_follow_at,created_at)");
     await replaceRows(connection, "lead_source_events", store.leadSourceEvents, (item) => [item.id, item.leadId, item.sourceType, item.channel, item.campaign || "", item.externalId || "", item.sourceUrl || "", mysqlDate(item.occurredAt), mysqlDate(item.receivedAt), item.rawPayload || "{}", item.ownerId, item.teamId], "(id,lead_id,source_type,channel,campaign,external_id,source_url,occurred_at,received_at,raw_payload,owner_id,team_id)");

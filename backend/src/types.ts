@@ -284,6 +284,37 @@ export interface AcquisitionCustomerHandoff {
   createdAt: string;
 }
 
+export type AcquisitionCustomerHandoffStage =
+  | "reserved"
+  | "lead_ready"
+  | "customer_ready"
+  | "activity_ready"
+  | "todo_ready"
+  | "completed";
+
+export interface AcquisitionCustomerHandoffOperation {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  candidateId: string;
+  processingKeyHash: string;
+  requestHash: string;
+  decisionVersion: string;
+  mode: "create_new" | "link_existing";
+  existingCustomerId: string;
+  stage: AcquisitionCustomerHandoffStage;
+  leadId: string;
+  customerId: string;
+  activityId: string;
+  todoId: string;
+  handoffId: string;
+  intelligence: AcquisitionHandoffIntelligence;
+  qualificationSnapshotHash: string;
+  financialSnapshotHash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface WhatsAppMessage {
   id: string;
   customerId: string;

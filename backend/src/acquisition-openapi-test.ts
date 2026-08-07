@@ -521,6 +521,15 @@ test("human review, conversion, and copilot writes mirror runtime schemas", () =
     ["decisionVersion"]
   );
 
+  const handoff = paths[
+    "/api/v1/acquisition/candidates/{id}/private-domain-handoffs"
+  ]!.post as Record<string, any>;
+  assert.equal(
+    handoff.responses["200"].headers["Idempotency-Replayed"]
+      .schema.enum[0],
+    "true"
+  );
+
   const session = paths[
     "/api/v1/acquisition/copilot/sessions"
   ]!.post as Record<string, any>;

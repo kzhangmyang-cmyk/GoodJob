@@ -9,6 +9,7 @@ import type {
 import { canonicalJsonStringify } from "./canonical-json.js";
 import type {
   AcquisitionCustomerHandoff,
+  AcquisitionCustomerHandoffOperation,
   AcquisitionHandoffIntelligence,
   Customer,
   CustomerActivity,
@@ -38,6 +39,7 @@ export interface AcquisitionPrivateDomainHandoffStore {
   customerActivities: CustomerActivity[];
   todos: Todo[];
   acquisitionCustomerHandoffs: AcquisitionCustomerHandoff[];
+  acquisitionCustomerHandoffOperations: AcquisitionCustomerHandoffOperation[];
   persist(): Promise<void>;
   persistMutation?<T>(mutation: () => {
     value: T;
@@ -83,6 +85,24 @@ function gradeForCustomer(
 function removeById<T extends { id: string }>(values: T[], id: string) {
   const index = values.findIndex((value) => value.id === id);
   if (index >= 0) values.splice(index, 1);
+}
+
+const handoffStageOrder: AcquisitionCustomerHandoffOperation["stage"][] = [
+  "reserved",
+  "lead_ready",
+  "customer_ready",
+  "activity_ready",
+  "todo_ready",
+  "completed"
+];
+
+function laterHandoffStage(
+  current: AcquisitionCustomerHandoffOperation["stage"],
+  next: AcquisitionCustomerHandoffOperation["stage"]
+) {
+  return handoffStageOrder.indexOf(current) >= handoffStageOrder.indexOf(next)
+    ? current
+    : next;
 }
 
 export class AcquisitionPrivateDomainHandoffService {
@@ -169,6 +189,26 @@ export class AcquisitionPrivateDomainHandoffService {
         completed.processingKeyHash === processingKeyHash
       );
     }
+    let operation = this.#store.acquisitionCustomerHandoffOperations.find(
+      (item) => item.ownerId === scope.ownerId
+        && item.teamId === scope.teamId
+        && item.candidateId === candidateId
+    );
+    if (operation?.processingKeyHash === processingKeyHash
+      && operation.requestHash !== requestHash) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_IDEMPOTENCY_CONFLICT",
+        "同一 Idempotency-Key 已用于不同交接请求",
+        409
+      );
+    }
+    if (operation && operation.processingKeyHash !== processingKeyHash) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_ALREADY_IN_PROGRESS",
+        "候选已有未完成的 CRM/私域交接",
+        409
+      );
+    }
     const candidate = await this.#repository.findCandidate(scope, candidateId);
     if (!candidate) {
       throw new AcquisitionPrivateDomainHandoffError(
@@ -245,6 +285,53 @@ export class AcquisitionPrivateDomainHandoffService {
         404
       );
     }
+    const currentIntelligence: AcquisitionHandoffIntelligence = {
+      qualificationGrade: qualification.grade,
+      qualificationScore: qualification.score,
+      financialGrade: financial.grade,
+      currency: financial.currency,
+      expectedRevenueMinor: financial.expectedRevenueMinor,
+      expectedGrossProfitMinor: financial.expectedGrossProfitMinor,
+      expectedContributionMinor: financial.expectedContributionMinor
+    };
+    const identity = [scope.ownerId, scope.teamId, candidateId];
+    const createdAt = operation?.createdAt
+      ?? new Date(this.#now()).toISOString();
+    if (!operation) {
+      operation = {
+        id: stableId("acho", identity),
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        candidateId,
+        processingKeyHash,
+        requestHash,
+        decisionVersion: request.decisionVersion,
+        mode: request.mode,
+        existingCustomerId: request.existingCustomerId,
+        stage: "reserved",
+        leadId: candidate.leadId ?? "",
+        customerId: existingCustomer?.id ?? stableId("customer", identity),
+        activityId: stableId("ca", identity),
+        todoId: stableId("todo", identity),
+        handoffId: stableId("ach", identity),
+        intelligence: currentIntelligence,
+        qualificationSnapshotHash: qualification.snapshotHash,
+        financialSnapshotHash: financial.inputSnapshotHash,
+        createdAt,
+        updatedAt: createdAt
+      };
+      const reserved = operation;
+      await this.#persistMutation(() => {
+        this.#store.acquisitionCustomerHandoffOperations.unshift(reserved);
+        return {
+          value: undefined,
+          rollback: () => removeById(
+            this.#store.acquisitionCustomerHandoffOperations,
+            reserved.id
+          )
+        };
+      });
+    }
     const conversion = candidate.status === "converted_to_lead"
       && candidate.leadId
       ? { leadId: candidate.leadId }
@@ -264,45 +351,97 @@ export class AcquisitionPrivateDomainHandoffService {
         502
       );
     }
-    const createdAt = new Date(this.#now()).toISOString();
-    const identity = [scope.ownerId, scope.teamId, candidateId];
-    const customerId = existingCustomer?.id
-      ?? stableId("customer", identity);
-    const activityId = stableId("ca", identity);
-    const todoId = stableId("todo", identity);
-    const handoffId = stableId("ach", identity);
-    const recoveredCustomer = request.mode === "create_new"
+    const intelligence = structuredClone(operation.intelligence);
+    const linkedCustomerId = lead.convertedCustomerId?.trim() ?? "";
+    const linkedCustomer = linkedCustomerId
       ? this.#store.customers.find((item) =>
-          item.id === customerId
+          item.id === linkedCustomerId
           && item.ownerId === scope.ownerId
           && item.teamId === scope.teamId
         )
       : undefined;
-    const targetCustomer = existingCustomer ?? recoveredCustomer;
-    const recoveredActivity = this.#store.customerActivities.find((item) =>
-      item.id === activityId
-    );
-    const recoveredTodo = this.#store.todos.find((item) =>
-      item.id === todoId
+    if (linkedCustomerId && !linkedCustomer) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_LEAD_CUSTOMER_MISSING",
+        "CRM 线索已关联的客户不存在或不在当前租户范围",
+        409
+      );
+    }
+    if (linkedCustomer && existingCustomer
+      && linkedCustomer.id !== existingCustomer.id) {
+      throw new AcquisitionPrivateDomainHandoffError(
+        "ACQUISITION_HANDOFF_LEAD_CUSTOMER_CONFLICT",
+        "CRM 线索已关联其他客户，不能覆盖原客户链接",
+        409
+      );
+    }
+    const customerId = linkedCustomer?.id
+      ?? existingCustomer?.id
+      ?? operation.customerId;
+    const snapshotEventId = stableId("lse", [
+      ...identity,
+      "private-domain-handoff-snapshot"
+    ]);
+    const recoveredSnapshotEvent = this.#store.leadSourceEvents.find((item) =>
+      item.id === snapshotEventId
+      && item.leadId === lead.id
       && item.ownerId === scope.ownerId
       && item.teamId === scope.teamId
     );
-    const intelligence: AcquisitionHandoffIntelligence = {
-      qualificationGrade: qualification.grade,
-      qualificationScore: qualification.score,
-      financialGrade: financial.grade,
-      currency: financial.currency,
-      expectedRevenueMinor: financial.expectedRevenueMinor,
-      expectedGrossProfitMinor: financial.expectedGrossProfitMinor,
-      expectedContributionMinor: financial.expectedContributionMinor
+    const snapshotEvent: LeadSourceEvent = {
+      id: snapshotEventId,
+      leadId: lead.id,
+      sourceType: "outbound",
+      channel: "acquisition_private_domain_handoff_snapshot",
+      campaign: request.decisionVersion,
+      externalId: candidateId,
+      sourceUrl: lead.sourceUrl,
+      occurredAt: createdAt,
+      receivedAt: createdAt,
+      rawPayload: canonicalJsonStringify({
+        candidateId,
+        decisionVersion: request.decisionVersion,
+        intelligence,
+        qualificationSnapshotHash: operation.qualificationSnapshotHash,
+        financialSnapshotHash: operation.financialSnapshotHash
+      }),
+      ownerId: scope.ownerId,
+      teamId: scope.teamId
     };
+    await this.#persistMutation(() => {
+      const previousOperation = structuredClone(operation);
+      if (!recoveredSnapshotEvent) {
+        this.#store.leadSourceEvents.unshift(snapshotEvent);
+      }
+      Object.assign(operation, {
+        stage: laterHandoffStage(operation.stage, "lead_ready"),
+        leadId: lead.id,
+        customerId,
+        updatedAt: new Date(this.#now()).toISOString()
+      });
+      return {
+        value: undefined,
+        rollback: () => {
+          if (!recoveredSnapshotEvent) {
+            removeById(this.#store.leadSourceEvents, snapshotEvent.id);
+          }
+          Object.assign(operation, previousOperation);
+        }
+      };
+    });
+    const activityId = operation.activityId;
+    const todoId = operation.todoId;
+    const handoffId = operation.handoffId;
+    const recoveredCustomer = this.#store.customers.find((item) =>
+      item.id === customerId
+      && item.ownerId === scope.ownerId
+      && item.teamId === scope.teamId
+    );
+    const targetCustomer = linkedCustomer ?? existingCustomer
+      ?? recoveredCustomer;
     const customer: Customer = targetCustomer
       ? {
           ...targetCustomer,
-          amount: financial.currency === "CNY"
-            ? financial.expectedRevenueMinor / 100
-            : targetCustomer.amount,
-          grade: gradeForCustomer(qualification.grade),
           nextReminder: request.followUp.dueAt
         }
       : {
@@ -313,11 +452,11 @@ export class AcquisitionPrivateDomainHandoffService {
           ownerId: scope.ownerId,
           teamId: scope.teamId,
           stage: "待首次跟进",
-          amount: financial.currency === "CNY"
-            ? financial.expectedRevenueMinor / 100
+          amount: intelligence.currency === "CNY"
+            ? intelligence.expectedRevenueMinor / 100
             : 0,
           health: 80,
-          grade: gradeForCustomer(qualification.grade),
+          grade: gradeForCustomer(intelligence.qualificationGrade),
           nextReminder: request.followUp.dueAt,
           wecomBound: false,
           billingName: "",
@@ -329,6 +468,36 @@ export class AcquisitionPrivateDomainHandoffService {
           poolStatus: "owned",
           ownershipVersion: 0
         };
+    await this.#persistMutation(() => {
+      const previousCustomer = targetCustomer
+        ? structuredClone(targetCustomer)
+        : null;
+      const previousConvertedCustomerId = lead.convertedCustomerId;
+      const previousOperation = structuredClone(operation);
+      if (targetCustomer) {
+        targetCustomer.nextReminder = customer.nextReminder;
+      } else {
+        this.#store.customers.unshift(customer);
+      }
+      lead.convertedCustomerId = customer.id;
+      Object.assign(operation, {
+        stage: laterHandoffStage(operation.stage, "customer_ready"),
+        customerId: customer.id,
+        updatedAt: new Date(this.#now()).toISOString()
+      });
+      return {
+        value: undefined,
+        rollback: () => {
+          if (targetCustomer && previousCustomer) {
+            Object.assign(targetCustomer, previousCustomer);
+          } else {
+            removeById(this.#store.customers, customer.id);
+          }
+          lead.convertedCustomerId = previousConvertedCustomerId;
+          Object.assign(operation, previousOperation);
+        }
+      };
+    });
     const activity: CustomerActivity = {
       id: activityId,
       customerId,
@@ -338,6 +507,26 @@ export class AcquisitionPrivateDomainHandoffService {
       nextReminder: request.followUp.dueAt,
       createdAt
     };
+    const recoveredActivity = this.#store.customerActivities.find((item) =>
+      item.id === activityId
+    );
+    await this.#persistMutation(() => {
+      const previousOperation = structuredClone(operation);
+      if (!recoveredActivity) this.#store.customerActivities.unshift(activity);
+      Object.assign(operation, {
+        stage: laterHandoffStage(operation.stage, "activity_ready"),
+        updatedAt: new Date(this.#now()).toISOString()
+      });
+      return {
+        value: undefined,
+        rollback: () => {
+          if (!recoveredActivity) {
+            removeById(this.#store.customerActivities, activity.id);
+          }
+          Object.assign(operation, previousOperation);
+        }
+      };
+    });
     const todo: Todo = {
       id: todoId,
       title: request.followUp.title,
@@ -354,6 +543,27 @@ export class AcquisitionPrivateDomainHandoffService {
       triggerKey: `acquisition-first-follow-up:${candidateId}`,
       createdAt
     };
+    const recoveredTodo = this.#store.todos.find((item) =>
+      item.id === todoId
+      && item.ownerId === scope.ownerId
+      && item.teamId === scope.teamId
+    );
+    await this.#persistMutation(() => {
+      const previousOperation = structuredClone(operation);
+      if (!recoveredTodo) this.#store.todos.unshift(todo);
+      Object.assign(operation, {
+        stage: laterHandoffStage(operation.stage, "todo_ready"),
+        updatedAt: new Date(this.#now()).toISOString()
+      });
+      return {
+        value: undefined,
+        rollback: () => {
+          if (!recoveredTodo) removeById(this.#store.todos, todo.id);
+          Object.assign(operation, previousOperation);
+        }
+      };
+    });
+    const durableTodo = recoveredTodo ?? todo;
     const handoff: AcquisitionCustomerHandoff = {
       id: handoffId,
       ownerId: scope.ownerId,
@@ -367,8 +577,8 @@ export class AcquisitionPrivateDomainHandoffService {
       processingKeyHash,
       requestHash,
       intelligence,
-      qualificationSnapshotHash: qualification.snapshotHash,
-      financialSnapshotHash: financial.inputSnapshotHash,
+      qualificationSnapshotHash: operation.qualificationSnapshotHash,
+      financialSnapshotHash: operation.financialSnapshotHash,
       createdAt
     };
     const result: AcquisitionPrivateDomainHandoffResult = {
@@ -376,55 +586,37 @@ export class AcquisitionPrivateDomainHandoffService {
       handoff,
       lead,
       customer,
-      todo,
+      todo: durableTodo,
       intelligence
     };
     const apply = () => {
-      const previousCustomer = targetCustomer
-        ? structuredClone(targetCustomer)
-        : null;
-      const previousActivity = recoveredActivity
-        ? structuredClone(recoveredActivity)
-        : null;
-      const previousTodo = recoveredTodo
-        ? structuredClone(recoveredTodo)
-        : null;
-      const previousConvertedCustomerId = lead.convertedCustomerId;
-      if (targetCustomer) Object.assign(targetCustomer, customer);
-      else this.#store.customers.unshift(customer);
-      if (recoveredActivity) Object.assign(recoveredActivity, activity);
-      else this.#store.customerActivities.unshift(activity);
-      if (recoveredTodo) Object.assign(recoveredTodo, todo);
-      else this.#store.todos.unshift(todo);
+      const previousOperation = structuredClone(operation);
       this.#store.acquisitionCustomerHandoffs.unshift(handoff);
-      lead.convertedCustomerId = customer.id;
+      Object.assign(operation, {
+        stage: "completed",
+        leadId: lead.id,
+        customerId: customer.id,
+        updatedAt: createdAt
+      });
       return {
         value: result,
         rollback: () => {
-          if (targetCustomer && previousCustomer) {
-            Object.assign(targetCustomer, previousCustomer);
-          } else {
-            removeById(this.#store.customers, customer.id);
-          }
-          if (recoveredActivity && previousActivity) {
-            Object.assign(recoveredActivity, previousActivity);
-          } else {
-            removeById(this.#store.customerActivities, activity.id);
-          }
-          if (recoveredTodo && previousTodo) {
-            Object.assign(recoveredTodo, previousTodo);
-          } else {
-            removeById(this.#store.todos, todo.id);
-          }
           removeById(this.#store.acquisitionCustomerHandoffs, handoff.id);
-          lead.convertedCustomerId = previousConvertedCustomerId;
+          Object.assign(operation, previousOperation);
         }
       };
     };
+    return await this.#persistMutation(apply);
+  }
+
+  async #persistMutation<T>(mutationFactory: () => {
+    value: T;
+    rollback(): void;
+  }): Promise<T> {
     if (this.#store.persistMutation) {
-      return await this.#store.persistMutation(apply);
+      return await this.#store.persistMutation(mutationFactory);
     }
-    const mutation = apply();
+    const mutation = mutationFactory();
     try {
       await this.#store.persist();
       return mutation.value;

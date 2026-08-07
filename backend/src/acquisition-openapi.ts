@@ -2537,6 +2537,18 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
         }
       };
     }
+    if (method === "post"
+      && path.endsWith("/private-domain-handoffs")) {
+      (responses[String(successStatus)] as Record<string, unknown>).headers = {
+        "Idempotency-Replayed": {
+          description: "值为 true 表示返回的是同一幂等请求的既有结果。",
+          schema: {
+            type: "string",
+            enum: ["true"]
+          }
+        }
+      };
+    }
     if (method !== "get" && etagWrites.has(path)) {
       if (
         path
