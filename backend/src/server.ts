@@ -231,8 +231,9 @@ import {
   normalizeWebsiteReference,
   withProspectVerificationReport
 } from "./prospect-verification.js";
-import type { AiModelConfig, CommissionCalculation, CommissionItem, CommissionProduct, CommissionRule, Customer, CustomerIntelligenceFieldKey, Deal, DealEvent, Exam, ExamAttempt, ExamQuestion, Lead, LeadSourceEvent, LeadSourceType, MonthlySalesRecord, OcrJob, PlanTask, PlanTemplate, ProspectOutreachChannel, ProviderCatalogItem, ProviderConnection, ProviderEvidenceSnapshot, SalesRecordAudit, SessionUser, Todo, TradeDocument, TradeDocumentAudit, TradeDocumentSendRecord, WebsiteOpportunity } from "./types.js";
+import type { AcquisitionCustomerHandoff, AiModelConfig, CommissionCalculation, CommissionItem, CommissionProduct, CommissionRule, Customer, CustomerIntelligenceFieldKey, Deal, DealEvent, Exam, ExamAttempt, ExamQuestion, Lead, LeadSourceEvent, LeadSourceType, MonthlySalesRecord, OcrJob, PlanTask, PlanTemplate, ProspectOutreachChannel, ProviderCatalogItem, ProviderConnection, ProviderEvidenceSnapshot, SalesRecordAudit, SessionUser, Todo, TradeDocument, TradeDocumentAudit, TradeDocumentSendRecord, WebsiteOpportunity } from "./types.js";
 import type { CompanyProfile } from "./types.js";
+import type { OutcomeAttributionInput } from "./acquisition-domain.js";
 
 loadLocalEnv();
 
@@ -2184,6 +2185,86 @@ function customerGradeFromHealth(health: number) {
   return "D" as const;
 }
 
+type TrustedAcquisitionDealBinding = {
+  handoff: AcquisitionCustomerHandoff;
+  lead: Lead;
+};
+
+type AcquisitionDealBindingLookup = {
+  handoffId: string;
+  leadId: string;
+  ownerId: string;
+  teamId: string;
+  customerId: string;
+} | {
+  dealId: string;
+};
+
+function isTrustedAcquisitionAttribution(
+  value: unknown
+): value is OutcomeAttributionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const attribution = value as Record<string, unknown>;
+  const requiredTextFields = [
+    "runId",
+    "planId",
+    "planVersionId",
+    "planSnapshotHash",
+    "discoveredEventId",
+    "discoveredAt",
+    "shardId",
+    "operationId",
+    "connectionId",
+    "providerId",
+    "strategyVersion",
+    "qualificationDecisionId",
+    "decisionVersion",
+    "decisionSnapshotHash"
+  ];
+  const stringListFields = ["evidenceIds", "providerIds", "queryIds"];
+  return attribution.attributionVersion === "acquisition-run.v1"
+    && requiredTextFields.every((field) =>
+      typeof attribution[field] === "string"
+      && Boolean(String(attribution[field]).trim()))
+    && Number.isSafeInteger(attribution.planVersion)
+    && Number(attribution.planVersion) > 0
+    && Number.isFinite(Date.parse(String(attribution.discoveredAt)))
+    && stringListFields.every((field) =>
+      Array.isArray(attribution[field])
+      && (attribution[field] as unknown[]).every((item) =>
+        typeof item === "string" && Boolean(item.trim())));
+}
+
+function resolveTrustedAcquisitionDealBinding(
+  store: CrmStore,
+  lookup: AcquisitionDealBindingLookup
+): TrustedAcquisitionDealBinding | null {
+  const handoffs = store.acquisitionCustomerHandoffs.filter((handoff) =>
+    "dealId" in lookup
+      ? handoff.dealId === lookup.dealId
+      : handoff.id === lookup.handoffId
+        && handoff.leadId === lookup.leadId
+        && handoff.ownerId === lookup.ownerId
+        && handoff.teamId === lookup.teamId
+        && handoff.customerId === lookup.customerId);
+  if (handoffs.length !== 1) return null;
+  const handoff = handoffs[0];
+  if (!isTrustedAcquisitionAttribution(handoff.acquisitionAttribution)
+    || handoff.acquisitionAttribution.decisionVersion !== handoff.decisionVersion) {
+    return null;
+  }
+  const leads = store.leads.filter((lead) =>
+    lead.id === handoff.leadId
+    && lead.ownerId === handoff.ownerId
+    && lead.teamId === handoff.teamId
+    && lead.convertedCustomerId === handoff.customerId
+    && lead.externalId === handoff.candidateId);
+  if (leads.length !== 1) return null;
+  const lead = leads[0];
+  if ("dealId" in lookup && lead.convertedDealId !== lookup.dealId) return null;
+  return { handoff, lead };
+}
+
 function customerWithPipeline(customer: Customer) {
   const store = getStore();
   const activeDeals = store.deals.filter((deal) => deal.customerId === customer.id && !deal.archivedAt && deal.stage !== "丢单" && deal.stage !== "成交");
@@ -2204,19 +2285,16 @@ function customerWithPipeline(customer: Customer) {
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const acquisitionBindings = store.acquisitionCustomerHandoffs
     .filter((handoff) => {
-      if (handoff.customerId !== customer.id
-        || handoff.ownerId !== customer.ownerId
-        || handoff.teamId !== customer.teamId
-        || handoff.dealId
-        || !handoff.acquisitionAttribution) return false;
-      return store.leads.some((lead) =>
-        lead.id === handoff.leadId
-        && lead.ownerId === customer.ownerId
-        && lead.teamId === customer.teamId
-        && lead.convertedCustomerId === customer.id
-        && lead.externalId === handoff.candidateId
-        && !lead.convertedDealId
-      );
+      const binding = resolveTrustedAcquisitionDealBinding(store, {
+        handoffId: handoff.id,
+        leadId: handoff.leadId,
+        ownerId: customer.ownerId,
+        teamId: customer.teamId,
+        customerId: customer.id
+      });
+      return Boolean(binding
+        && !binding.handoff.dealId
+        && !binding.lead.convertedDealId);
     })
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .map((handoff) => ({
@@ -4183,19 +4261,18 @@ function createDealEvent(input: Omit<
   const store = getStore();
   const deal = store.deals.find((item) => item.id === input.dealId);
   const binding = deal
-    ? store.acquisitionCustomerHandoffs.find((item) =>
-      item.dealId === deal.id)
-    : undefined;
+    ? resolveTrustedAcquisitionDealBinding(store, { dealId: deal.id })
+    : null;
   const amountMinor = deal ? Math.round(deal.amount * 100) : Number.NaN;
   const currency = deal?.currency.trim().toUpperCase() ?? "";
   const event: DealEvent = {
     ...input,
-    ownerIdSnapshot: binding?.ownerId ?? deal?.ownerId ?? null,
-    teamIdSnapshot: binding?.teamId ?? deal?.teamId ?? null,
-    customerIdSnapshot: binding?.customerId ?? deal?.customerId ?? null,
-    leadIdSnapshot: binding?.leadId ?? null,
-    handoffIdSnapshot: binding?.id ?? null,
-    candidateIdSnapshot: binding?.candidateId ?? null,
+    ownerIdSnapshot: binding?.handoff.ownerId ?? deal?.ownerId ?? null,
+    teamIdSnapshot: binding?.handoff.teamId ?? deal?.teamId ?? null,
+    customerIdSnapshot: binding?.handoff.customerId ?? deal?.customerId ?? null,
+    leadIdSnapshot: binding?.lead.id ?? null,
+    handoffIdSnapshot: binding?.handoff.id ?? null,
+    candidateIdSnapshot: binding?.handoff.candidateId ?? null,
     amountMinorSnapshot: Number.isSafeInteger(amountMinor)
       && amountMinor >= 0
       ? amountMinor
@@ -4250,26 +4327,18 @@ app.post("/api/deals", requireAuth, asyncRoute(async (req, res) => {
       return;
     }
   }
-  const acquisitionHandoffs = body.acquisitionBinding
-    ? store.acquisitionCustomerHandoffs.filter((item) =>
-      item.id === body.acquisitionBinding!.handoffId
-      && item.ownerId === customer.ownerId
-      && item.teamId === customer.teamId
-      && item.customerId === customer.id
-      && item.leadId === body.acquisitionBinding!.leadId
-      && Boolean(item.acquisitionAttribution))
-    : [];
-  const acquisitionHandoff = acquisitionHandoffs[0];
-  const acquisitionLead = acquisitionHandoff
-    ? store.leads.find((item) =>
-      item.id === acquisitionHandoff.leadId
-      && item.ownerId === customer.ownerId
-      && item.teamId === customer.teamId
-      && item.convertedCustomerId === customer.id
-      && item.externalId === acquisitionHandoff.candidateId)
-    : undefined;
-  if (body.acquisitionBinding
-    && (acquisitionHandoffs.length !== 1 || !acquisitionLead)) {
+  const acquisitionBinding = body.acquisitionBinding
+    ? resolveTrustedAcquisitionDealBinding(store, {
+      handoffId: body.acquisitionBinding.handoffId,
+      leadId: body.acquisitionBinding.leadId,
+      ownerId: customer.ownerId,
+      teamId: customer.teamId,
+      customerId: customer.id
+    })
+    : null;
+  const acquisitionHandoff = acquisitionBinding?.handoff;
+  const acquisitionLead = acquisitionBinding?.lead;
+  if (body.acquisitionBinding && !acquisitionBinding) {
     res.status(404).json({
       message: "获客交接绑定不存在、不属于当前租户或与客户不匹配"
     });
@@ -4301,27 +4370,21 @@ app.post("/api/deals", requireAuth, asyncRoute(async (req, res) => {
   };
   if (acquisitionHandoff && acquisitionLead) {
     const persistBinding = () => {
-      const currentHandoffs = store.acquisitionCustomerHandoffs.filter((item) =>
-        item.id === acquisitionHandoff.id
-        && item.ownerId === customer.ownerId
-        && item.teamId === customer.teamId
-        && item.customerId === customer.id
-        && item.leadId === acquisitionLead.id);
-      const currentHandoff = currentHandoffs[0];
-      const currentLead = currentHandoff
-        ? store.leads.find((item) =>
-          item.id === currentHandoff.leadId
-          && item.ownerId === customer.ownerId
-          && item.teamId === customer.teamId
-          && item.convertedCustomerId === customer.id
-          && item.externalId === currentHandoff.candidateId)
-        : undefined;
-      if (currentHandoffs.length !== 1 || !currentLead) {
+      const currentBinding = resolveTrustedAcquisitionDealBinding(store, {
+        handoffId: acquisitionHandoff.id,
+        leadId: acquisitionLead.id,
+        ownerId: customer.ownerId,
+        teamId: customer.teamId,
+        customerId: customer.id
+      });
+      if (!currentBinding) {
         return {
           value: "missing" as const,
           rollback: () => undefined
         };
       }
+      const currentHandoff = currentBinding.handoff;
+      const currentLead = currentBinding.lead;
       if (currentHandoff.dealId || currentLead.convertedDealId) {
         return {
           value: "conflict" as const,

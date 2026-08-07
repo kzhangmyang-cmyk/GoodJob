@@ -403,11 +403,15 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
     assert.ok(validLead);
     const excludedHandoffIds = {
       missingAttribution: `${handoffId}-missing-attribution`,
+      malformedAttribution: `${handoffId}-malformed-attribution`,
+      decisionMismatch: `${handoffId}-decision-mismatch`,
       handoffAlreadyBound: `${handoffId}-handoff-bound`,
       leadAlreadyBound: `${handoffId}-lead-bound`
     };
     const excludedLeadIds = {
       missingAttribution: `${leadId}-missing-attribution`,
+      malformedAttribution: `${leadId}-malformed-attribution`,
+      decisionMismatch: `${leadId}-decision-mismatch`,
       handoffAlreadyBound: `${leadId}-handoff-bound`,
       leadAlreadyBound: `${leadId}-lead-bound`
     };
@@ -428,7 +432,12 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
         dealId: kind === "handoffAlreadyBound" ? "deal-existing" : undefined,
         acquisitionAttribution: kind === "missingAttribution"
           ? null
-          : structuredClone(attribution)
+          : kind === "malformedAttribution"
+            ? { ...structuredClone(attribution), runId: "" }
+            : structuredClone(attribution),
+        decisionVersion: kind === "decisionMismatch"
+          ? `${attribution.decisionVersion}-stale`
+          : validHandoff.decisionVersion
       });
     });
     const customerRead = await runtime.request("/api/customers", {
@@ -472,6 +481,23 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
     assert.equal(missingAttributionBinding.response.status, 404);
     assert.equal(store.deals.some((item) =>
       item.title === "不得创建的无归因商机"), false);
+    for (const kind of ["malformedAttribution", "decisionMismatch"] as const) {
+      const invalidAttributionBinding = await runtime.request("/api/deals", {
+        method: "POST",
+        headers: { authorization: `Bearer ${login.json.token}` },
+        body: JSON.stringify({
+          ...dealInput,
+          title: `不得创建的无效归因商机-${kind}`,
+          acquisitionBinding: {
+            handoffId: excludedHandoffIds[kind],
+            leadId: excludedLeadIds[kind]
+          }
+        })
+      });
+      assert.equal(invalidAttributionBinding.response.status, 404);
+      assert.equal(store.deals.some((item) =>
+        item.title === `不得创建的无效归因商机-${kind}`), false);
+    }
     const originalPersistMutation = store.persistMutation;
     let releaseConcurrentMutations!: () => void;
     const concurrentMutationGate = new Promise<void>((resolve) => {
@@ -598,6 +624,38 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
       candidateIdSnapshot: candidateId,
       amountMinorSnapshot: 1_288_000,
       currencySnapshot: "CNY"
+    });
+    const ambiguousHandoff = {
+      ...structuredClone(validHandoff),
+      id: `${handoffId}-duplicate-bound`,
+      dealId: created.json.deal.id
+    };
+    store.acquisitionCustomerHandoffs.push(ambiguousHandoff);
+    let ambiguousEvent: Awaited<ReturnType<typeof runtime.request>>;
+    try {
+      ambiguousEvent = await runtime.request(`/api/deals/${created.json.deal.id}/events`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${login.json.token}` },
+        body: JSON.stringify({
+          type: "quote",
+          content: "重复 Handoff 时不得生成获客快照",
+          nextAction: "人工核验归因",
+          nextActionAt: "2026-08-10"
+        })
+      });
+    } finally {
+      store.acquisitionCustomerHandoffs = store.acquisitionCustomerHandoffs
+        .filter((item) => item.id !== ambiguousHandoff.id);
+    }
+    assert.equal(ambiguousEvent.response.status, 200);
+    assert.deepEqual({
+      leadIdSnapshot: ambiguousEvent.json.event.leadIdSnapshot,
+      handoffIdSnapshot: ambiguousEvent.json.event.handoffIdSnapshot,
+      candidateIdSnapshot: ambiguousEvent.json.event.candidateIdSnapshot
+    }, {
+      leadIdSnapshot: null,
+      handoffIdSnapshot: null,
+      candidateIdSnapshot: null
     });
     const won = await runtime.request(`/api/deals/${created.json.deal.id}/stage`, {
       method: "PATCH",
