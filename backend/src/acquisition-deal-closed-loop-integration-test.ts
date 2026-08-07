@@ -525,6 +525,190 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
       assert.equal(store.deals.some((item) =>
         item.title === `不得创建的无效归因商机-${kind}`), false);
     }
+    const createAtomicDealFixture = (label: string) => {
+      const fixtureLead = {
+        ...structuredClone(validLead),
+        id: `${leadId}-${label}`,
+        externalId: `${candidateId}-${label}`,
+        convertedDealId: ""
+      };
+      const fixtureHandoff = {
+        ...structuredClone(validHandoff),
+        id: `${handoffId}-${label}`,
+        candidateId: `${candidateId}-${label}`,
+        leadId: fixtureLead.id,
+        dealId: undefined
+      };
+      const recommendation = {
+        id: `recommendation-${suffix}-${label}`,
+        signalId: `signal-${suffix}-${label}`,
+        teamId: owner.teamId,
+        ownerId: owner.id,
+        prospectCandidateId: fixtureHandoff.candidateId,
+        leadId: fixtureLead.id,
+        customerId,
+        suggestedTitle: `原子创建测试-${label}`,
+        suggestedProduct: "GoodJob CRM",
+        suggestedQuantity: 1,
+        suggestedUnitPrice: 12_880,
+        suggestedAmount: 12_880,
+        currency: "CNY",
+        initialStage: "询盘" as const,
+        nextAction: "发送正式报价",
+        nextActionAt: "2026-08-09",
+        expectedCloseAt: "2026-08-31",
+        reasonCodes: ["clear_demand"],
+        missingFields: [],
+        evidenceRefs: [],
+        recommendationScore: 90,
+        duplicateDealIds: [],
+        status: "generated" as const,
+        expiresAt: "2026-09-01T00:00:00.000Z",
+        createdAt: "2026-08-08T00:00:00.000Z",
+        updatedAt: "2026-08-08T00:00:00.000Z"
+      };
+      store.leads.push(fixtureLead);
+      store.acquisitionCustomerHandoffs.push(fixtureHandoff);
+      store.dealRecommendations.push(recommendation);
+      return { fixtureLead, fixtureHandoff, recommendation };
+    };
+    const failedFixture = createAtomicDealFixture("atomic-failure");
+    const originalPersistMutationForFailure = store.persistMutation;
+    let failedMutationSnapshot = {
+      deal: false,
+      event: false,
+      binding: false,
+      recommendation: false
+    };
+    let failedDealId = "";
+    store.persistMutation = async <T>(mutation: () => {
+      value: T;
+      rollback(): void;
+    }) => {
+      const applied = mutation();
+      const failedDeal = store.deals.find((item) =>
+        item.title === "原子创建失败商机");
+      const failedEvent = failedDeal
+        ? store.dealEvents.find((item) =>
+          item.dealId === failedDeal.id && item.type === "created")
+        : undefined;
+      failedDealId = failedDeal?.id ?? "";
+      failedMutationSnapshot = {
+        deal: Boolean(failedDeal),
+        event: Boolean(failedEvent
+          && failedEvent.leadIdSnapshot === failedFixture.fixtureLead.id
+          && failedEvent.handoffIdSnapshot === failedFixture.fixtureHandoff.id),
+        binding: Boolean(failedDeal
+          && failedFixture.fixtureHandoff.dealId === failedDeal.id
+          && failedFixture.fixtureLead.convertedDealId === failedDeal.id),
+        recommendation: Boolean(failedDeal
+          && failedFixture.recommendation.linkedDealId === failedDeal.id
+          && failedFixture.recommendation.status === "converted_by_user")
+      };
+      applied.rollback();
+      throw new Error("injected atomic deal persistence failure");
+    };
+    let failedAtomicCreation: Awaited<ReturnType<typeof runtime.request>>;
+    try {
+      failedAtomicCreation = await runtime.request("/api/deals", {
+        method: "POST",
+        headers: { authorization: `Bearer ${login.json.token}` },
+        body: JSON.stringify({
+          ...dealInput,
+          title: "原子创建失败商机",
+          recommendationId: failedFixture.recommendation.id,
+          acquisitionBinding: {
+            leadId: failedFixture.fixtureLead.id,
+            handoffId: failedFixture.fixtureHandoff.id
+          }
+        })
+      });
+    } finally {
+      store.persistMutation = originalPersistMutationForFailure;
+    }
+    assert.equal(failedAtomicCreation.response.status, 500);
+    assert.deepEqual(failedMutationSnapshot, {
+      deal: true,
+      event: true,
+      binding: true,
+      recommendation: true
+    });
+    assert.equal(store.deals.some((item) =>
+      item.title === "原子创建失败商机"), false);
+    assert.ok(failedDealId);
+    assert.equal(store.dealEvents.some((item) =>
+      item.dealId === failedDealId), false);
+    assert.equal(failedFixture.fixtureHandoff.dealId, undefined);
+    assert.equal(failedFixture.fixtureLead.convertedDealId, "");
+    assert.equal(failedFixture.recommendation.status, "generated");
+    assert.equal(failedFixture.recommendation.linkedDealId, undefined);
+
+    const successfulFixture = createAtomicDealFixture("atomic-success");
+    const originalPersistMutationForSuccess = store.persistMutation;
+    const originalPersistForSuccess = store.persist;
+    let successfulMutationCount = 0;
+    let successfulPersistCount = 0;
+    let successfulMutationSnapshot = {
+      event: false,
+      binding: false,
+      recommendation: false
+    };
+    store.persist = async () => {
+      successfulPersistCount += 1;
+    };
+    store.persistMutation = async <T>(mutation: () => {
+      value: T;
+      rollback(): void;
+    }) => {
+      successfulMutationCount += 1;
+      const applied = mutation();
+      const successfulDeal = store.deals.find((item) =>
+        item.title === "原子创建成功商机");
+      const successfulEvent = successfulDeal
+        ? store.dealEvents.find((item) =>
+          item.dealId === successfulDeal.id && item.type === "created")
+        : undefined;
+      successfulMutationSnapshot = {
+        event: Boolean(successfulEvent
+          && successfulEvent.leadIdSnapshot === successfulFixture.fixtureLead.id
+          && successfulEvent.handoffIdSnapshot === successfulFixture.fixtureHandoff.id),
+        binding: Boolean(successfulDeal
+          && successfulFixture.fixtureHandoff.dealId === successfulDeal.id
+          && successfulFixture.fixtureLead.convertedDealId === successfulDeal.id),
+        recommendation: Boolean(successfulDeal
+          && successfulFixture.recommendation.linkedDealId === successfulDeal.id
+          && successfulFixture.recommendation.status === "converted_by_user")
+      };
+      await store.persist();
+      return applied.value;
+    };
+    let successfulAtomicCreation: Awaited<ReturnType<typeof runtime.request>>;
+    try {
+      successfulAtomicCreation = await runtime.request("/api/deals", {
+        method: "POST",
+        headers: { authorization: `Bearer ${login.json.token}` },
+        body: JSON.stringify({
+          ...dealInput,
+          title: "原子创建成功商机",
+          recommendationId: successfulFixture.recommendation.id,
+          acquisitionBinding: {
+            leadId: successfulFixture.fixtureLead.id,
+            handoffId: successfulFixture.fixtureHandoff.id
+          }
+        })
+      });
+    } finally {
+      store.persistMutation = originalPersistMutationForSuccess;
+      store.persist = originalPersistForSuccess;
+    }
+    assert.equal(successfulAtomicCreation.response.status, 200);
+    assert.equal(successfulMutationCount, 1);
+    assert.equal(successfulPersistCount, 1);
+    assert.deepEqual(successfulMutationSnapshot, {
+      event: true,
+      binding: true,
+      recommendation: true
+    });
     const originalPersistMutation = store.persistMutation;
     let releaseConcurrentMutations!: () => void;
     const concurrentMutationGate = new Promise<void>((resolve) => {
@@ -858,7 +1042,9 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
     const createdDealIds = new Set(store.deals
       .filter((item) => item.title === "获客闭环商机"
         || item.title === "并发重复商机"
-        || item.title === "不得创建的无归因商机")
+        || item.title === "不得创建的无归因商机"
+        || item.title === "原子创建失败商机"
+        || item.title === "原子创建成功商机")
       .map((item) => item.id));
     store.dealEvents = store.dealEvents.filter((item) =>
       !createdDealIds.has(item.dealId));
@@ -877,6 +1063,8 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
       item.leadId !== leadId);
     store.leads = store.leads.filter((item) => item.id !== leadId
       && !item.id.startsWith(`${leadId}-`));
+    store.dealRecommendations = store.dealRecommendations.filter((item) =>
+      !item.id.startsWith(`recommendation-${suffix}-`));
     store.leadSourceEvents = store.leadSourceEvents.filter((item) =>
       item.leadId !== leadId);
     store.customers = store.customers.filter((item) => item.id !== customerId

@@ -4298,25 +4298,25 @@ app.post("/api/deals", requireAuth, asyncRoute(async (req, res) => {
   const store = getStore();
   const customer = findWritableCustomer(req.user!, body.customerId, res);
   if (!customer) return;
-  const recommendation = body.recommendationId
+  const preflightRecommendation = body.recommendationId
     ? store.dealRecommendations.find((item) =>
       item.id === body.recommendationId
       && item.teamId === req.user!.teamId
       && item.ownerId === req.user!.id
     )
     : undefined;
-  if (body.recommendationId && !recommendation) {
+  if (body.recommendationId && !preflightRecommendation) {
     res.status(404).json({ message: "商机建议不存在或无权访问" });
     return;
   }
-  if (recommendation) {
-    if (recommendation.status !== "generated") {
+  if (preflightRecommendation) {
+    if (preflightRecommendation.status !== "generated") {
       res.status(409).json({ message: "当前商机建议已经处理" });
       return;
     }
     const recommendationCustomerId = resolveRecommendationCustomerId(
       store,
-      recommendation
+      preflightRecommendation
     );
     if (!recommendationCustomerId) {
       res.status(409).json({ message: "请先将候选确认到客户，再使用商机建议" });
@@ -4368,90 +4368,216 @@ app.post("/api/deals", requireAuth, asyncRoute(async (req, res) => {
     stageChangedAt: now,
     archivedAt: undefined
   };
-  if (acquisitionHandoff && acquisitionLead) {
-    const persistBinding = () => {
-      const currentBinding = resolveTrustedAcquisitionDealBinding(store, {
-        handoffId: acquisitionHandoff.id,
-        leadId: acquisitionLead.id,
+  const applyDealCreation = () => {
+    const currentBinding = body.acquisitionBinding
+      ? resolveTrustedAcquisitionDealBinding(store, {
+        handoffId: body.acquisitionBinding.handoffId,
+        leadId: body.acquisitionBinding.leadId,
         ownerId: customer.ownerId,
         teamId: customer.teamId,
         customerId: customer.id
-      });
-      if (!currentBinding) {
-        return {
-          value: "missing" as const,
-          rollback: () => undefined
-        };
-      }
-      const currentHandoff = currentBinding.handoff;
-      const currentLead = currentBinding.lead;
-      if (currentHandoff.dealId || currentLead.convertedDealId) {
-        return {
-          value: "conflict" as const,
-          rollback: () => undefined
-        };
-      }
-      const previousDealId = currentHandoff.dealId;
-      const previousConvertedDealId = currentLead.convertedDealId;
-      store.deals.unshift(deal);
-      currentHandoff.dealId = deal.id;
-      currentLead.convertedDealId = deal.id;
+      })
+      : null;
+    if (body.acquisitionBinding && !currentBinding) {
       return {
-        value: "created" as const,
-        rollback: () => {
-          store.deals = store.deals.filter((item) => item.id !== deal.id);
-          currentHandoff.dealId = previousDealId;
-          currentLead.convertedDealId = previousConvertedDealId;
-        }
+        value: { status: "binding_missing" as const },
+        rollback: () => undefined
       };
-    };
-    let bindingResult: ReturnType<typeof persistBinding>["value"];
-    if (store.persistMutation) {
-      bindingResult = await store.persistMutation(persistBinding);
-    } else {
-      const mutation = persistBinding();
-      try {
-        await store.persist();
-        bindingResult = mutation.value;
-      } catch (error) {
-        mutation.rollback();
-        throw error;
+    }
+    if (currentBinding
+      && (currentBinding.handoff.dealId || currentBinding.lead.convertedDealId)) {
+      return {
+        value: { status: "binding_conflict" as const },
+        rollback: () => undefined
+      };
+    }
+
+    const currentRecommendation = body.recommendationId
+      ? store.dealRecommendations.find((item) =>
+        item.id === body.recommendationId
+        && item.teamId === req.user!.teamId
+        && item.ownerId === req.user!.id
+      )
+      : undefined;
+    if (body.recommendationId && !currentRecommendation) {
+      return {
+        value: { status: "recommendation_missing" as const },
+        rollback: () => undefined
+      };
+    }
+    if (currentRecommendation) {
+      if (currentRecommendation.status !== "generated") {
+        return {
+          value: { status: "recommendation_conflict" as const },
+          rollback: () => undefined
+        };
+      }
+      const recommendationCustomerId = resolveRecommendationCustomerId(
+        store,
+        currentRecommendation
+      );
+      if (!recommendationCustomerId) {
+        return {
+          value: { status: "recommendation_customer_missing" as const },
+          rollback: () => undefined
+        };
+      }
+      if (recommendationCustomerId !== customer.id) {
+        return {
+          value: { status: "recommendation_customer_mismatch" as const },
+          rollback: () => undefined
+        };
       }
     }
-    if (bindingResult === "missing") {
-      res.status(404).json({
-        message: "获客交接绑定不存在、不属于当前租户或与客户不匹配"
+
+    const currentHandoff = currentBinding?.handoff;
+    const currentLead = currentBinding?.lead;
+    const previousHandoffDealId = currentHandoff?.dealId;
+    const previousLeadConvertedDealId = currentLead?.convertedDealId ?? "";
+    const recommendationSignal = currentRecommendation
+      ? store.procurementSignals.find((item) =>
+        item.id === currentRecommendation.signalId)
+      : undefined;
+    const recommendationCandidate = currentRecommendation
+      ? store.websiteOpportunities.find((item) =>
+        item.id === currentRecommendation.prospectCandidateId)
+      : undefined;
+    const recommendationLead = currentRecommendation?.leadId
+      ? store.leads.find((item) => item.id === currentRecommendation.leadId)
+      : undefined;
+    const recommendationProspect = currentRecommendation?.tenantProspectId
+      ? store.tenantProspects.find((item) =>
+        item.id === currentRecommendation.tenantProspectId
+        && item.teamId === currentRecommendation.teamId)
+      : undefined;
+    const recommendationSnapshot = currentRecommendation
+      ? {
+        customerId: currentRecommendation.customerId,
+        linkedDealId: currentRecommendation.linkedDealId,
+        status: currentRecommendation.status,
+        reviewedBy: currentRecommendation.reviewedBy,
+        reviewedAt: currentRecommendation.reviewedAt,
+        updatedAt: currentRecommendation.updatedAt
+      }
+      : undefined;
+    const recommendationSignalCustomerId = recommendationSignal?.customerId;
+    const recommendationCandidateCustomerId = recommendationCandidate?.customerId;
+    const recommendationCandidateDealId = recommendationCandidate?.dealId;
+    const recommendationLeadCustomerId = recommendationLead?.convertedCustomerId ?? "";
+    const recommendationLeadDealId = recommendationLead?.convertedDealId ?? "";
+    const recommendationProspectCustomerId = recommendationProspect?.customerId ?? "";
+    const recommendationProspectDealId = recommendationProspect?.dealId ?? "";
+    let createdEvent: DealEvent | undefined;
+    const rollback = () => {
+      store.dealEvents = store.dealEvents.filter((item) =>
+        item.id !== createdEvent?.id);
+      store.deals = store.deals.filter((item) => item.id !== deal.id);
+      if (currentHandoff) currentHandoff.dealId = previousHandoffDealId;
+      if (currentLead) currentLead.convertedDealId = previousLeadConvertedDealId;
+      if (currentRecommendation && recommendationSnapshot) {
+        currentRecommendation.customerId = recommendationSnapshot.customerId;
+        currentRecommendation.linkedDealId = recommendationSnapshot.linkedDealId;
+        currentRecommendation.status = recommendationSnapshot.status;
+        currentRecommendation.reviewedBy = recommendationSnapshot.reviewedBy;
+        currentRecommendation.reviewedAt = recommendationSnapshot.reviewedAt;
+        currentRecommendation.updatedAt = recommendationSnapshot.updatedAt;
+      }
+      if (recommendationSignal) {
+        recommendationSignal.customerId = recommendationSignalCustomerId;
+      }
+      if (recommendationCandidate) {
+        recommendationCandidate.customerId = recommendationCandidateCustomerId;
+        recommendationCandidate.dealId = recommendationCandidateDealId;
+      }
+      if (recommendationLead) {
+        recommendationLead.convertedCustomerId = recommendationLeadCustomerId;
+        recommendationLead.convertedDealId = recommendationLeadDealId;
+      }
+      if (recommendationProspect) {
+        recommendationProspect.customerId = recommendationProspectCustomerId;
+        recommendationProspect.dealId = recommendationProspectDealId;
+      }
+    };
+
+    try {
+      store.deals.unshift(deal);
+      if (currentHandoff && currentLead) {
+        currentHandoff.dealId = deal.id;
+        currentLead.convertedDealId = deal.id;
+      }
+      createdEvent = createDealEvent({
+        dealId: deal.id,
+        type: "created",
+        content: `创建商机并关联客户 ${customer.company}`,
+        operatorId: req.user!.id,
+        toStage: "询盘",
+        nextAction: deal.nextAction,
+        nextActionAt: deal.nextActionAt,
+        createdAt: now
       });
-      return;
+      if (currentRecommendation) {
+        linkRecommendationToDeal(
+          store,
+          currentRecommendation,
+          deal,
+          req.user!.id,
+          "converted_by_user"
+        );
+      }
+      return {
+        value: {
+          status: "created" as const,
+          recommendation: currentRecommendation
+        },
+        rollback
+      };
+    } catch (error) {
+      rollback();
+      throw error;
     }
-    if (bindingResult === "conflict") {
-      res.status(409).json({ message: "该获客交接已绑定其他商机" });
-      return;
-    }
+  };
+  let creationResult: ReturnType<typeof applyDealCreation>["value"];
+  if (store.persistMutation) {
+    creationResult = await store.persistMutation<
+      ReturnType<typeof applyDealCreation>["value"]
+    >(applyDealCreation);
   } else {
-    store.deals.unshift(deal);
+    const mutation = applyDealCreation();
+    try {
+      await store.persist();
+      creationResult = mutation.value;
+    } catch (error) {
+      mutation.rollback();
+      throw error;
+    }
   }
-  createDealEvent({
-    dealId: deal.id,
-    type: "created",
-    content: `创建商机并关联客户 ${customer.company}`,
-    operatorId: req.user!.id,
-    toStage: "询盘",
-    nextAction: deal.nextAction,
-    nextActionAt: deal.nextActionAt,
-    createdAt: now
-  });
-  if (recommendation) {
-    linkRecommendationToDeal(
-      store,
-      recommendation,
-      deal,
-      req.user!.id,
-      "converted_by_user"
-    );
+  if (creationResult.status === "binding_missing") {
+    res.status(404).json({
+      message: "获客交接绑定不存在、不属于当前租户或与客户不匹配"
+    });
+    return;
   }
-  await store.persist();
-  res.json({ deal, recommendation });
+  if (creationResult.status === "binding_conflict") {
+    res.status(409).json({ message: "该获客交接已绑定其他商机" });
+    return;
+  }
+  if (creationResult.status === "recommendation_missing") {
+    res.status(404).json({ message: "商机建议不存在或无权访问" });
+    return;
+  }
+  if (creationResult.status === "recommendation_conflict") {
+    res.status(409).json({ message: "当前商机建议已经处理" });
+    return;
+  }
+  if (creationResult.status === "recommendation_customer_missing") {
+    res.status(409).json({ message: "请先将候选确认到客户，再使用商机建议" });
+    return;
+  }
+  if (creationResult.status === "recommendation_customer_mismatch") {
+    res.status(409).json({ message: "商机建议与所选客户不一致" });
+    return;
+  }
+  res.json({ deal, recommendation: creationResult.recommendation });
 }));
 
 app.patch("/api/deals/:id", requireAuth, asyncRoute(async (req, res) => {
