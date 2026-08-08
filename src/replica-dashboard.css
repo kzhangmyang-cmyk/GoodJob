@@ -976,6 +976,201 @@ body.is-authenticated .replica-shell {
   gap: 18px;
 }
 
+#replicaPublicDouyinImportHost {
+  min-width: 0;
+}
+
+.replica-public-import {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid rgba(24, 237, 120, 0.18);
+  border-radius: 20px;
+  background:
+    linear-gradient(135deg, rgba(24, 237, 120, 0.075), rgba(255, 255, 255, 0.025) 42%, transparent),
+    rgba(9, 12, 11, 0.78);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055);
+}
+
+.replica-public-import-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.replica-public-import-header p {
+  margin: 0 0 6px;
+  color: var(--replica-accent);
+  font-size: 10px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.replica-public-import-header h2 {
+  margin: 0 0 6px;
+  color: #f1f5f1;
+  font-size: 18px;
+}
+
+.replica-public-import-header span,
+.replica-public-import-actions span {
+  color: #8b948e;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.replica-public-import-header strong {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  color: #caffdc;
+  border: 1px solid rgba(24, 237, 120, 0.22);
+  border-radius: 999px;
+  background: rgba(24, 237, 120, 0.09);
+  font-size: 11px;
+}
+
+.replica-public-import-notice,
+.replica-public-import-message {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  color: #b6beb8;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.replica-public-import-message {
+  color: #d8f8e2;
+  border-color: rgba(24, 237, 120, 0.18);
+  background: rgba(24, 237, 120, 0.075);
+}
+
+.replica-public-import-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  color: #dfe5e1;
+  font-size: 12px;
+}
+
+.replica-public-import-field textarea {
+  min-height: 94px;
+  resize: vertical;
+  padding: 12px;
+  color: #ecf2ee;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 13px;
+  background: rgba(0, 0, 0, 0.24);
+  outline: none;
+}
+
+.replica-public-import-field textarea:focus {
+  border-color: rgba(24, 237, 120, 0.45);
+  box-shadow: 0 0 0 3px rgba(24, 237, 120, 0.08);
+}
+
+.replica-public-import-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.replica-public-import-actions button,
+.replica-public-import-text-action {
+  min-height: 34px;
+  padding: 0 14px;
+  color: #08110c;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #70f58d, #4fdc72);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.replica-public-import-actions button:disabled {
+  color: #66706a;
+  background: rgba(255, 255, 255, 0.08);
+  cursor: not-allowed;
+}
+
+.replica-public-import-results {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.replica-public-import-results li {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  border-radius: 13px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.replica-public-import-results li > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.replica-public-import-results strong {
+  color: #eef6f1;
+  font-size: 12px;
+}
+
+.replica-public-import-results small {
+  color: #8a948d;
+  overflow-wrap: anywhere;
+}
+
+.replica-public-import-error {
+  color: #ffb9b9 !important;
+}
+
+.replica-public-import-outcome {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid rgba(24, 237, 120, 0.16);
+  border-radius: 14px;
+  background: rgba(24, 237, 120, 0.06);
+}
+
+.replica-public-import-outcome p {
+  margin: 0 0 10px;
+  color: #d7f8df;
+  font-size: 12px;
+}
+
+.replica-public-import-candidates {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.replica-public-import-errors {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.replica-public-import-errors li {
+  display: grid;
+  gap: 4px;
+  color: #ffcdcd;
+  font-size: 12px;
+}
+
 .replica-task-groups {
   min-width: 0;
   display: grid;
@@ -3752,10 +3947,10 @@ body.is-authenticated .replica-shell {
   font-size: 8px;
 }
 
+.replica-acquisition-review-form input[type="url"],
+.replica-acquisition-review-form input[type="text"],
 .replica-acquisition-review-form textarea {
   width: 100%;
-  min-height: 72px;
-  resize: vertical;
   padding: 9px 10px;
   color: #dfe5e1;
   background: rgba(255, 255, 255, .025);
@@ -3764,6 +3959,41 @@ body.is-authenticated .replica-shell {
   outline: 0;
   font: inherit;
   line-height: 1.5;
+}
+
+.replica-acquisition-review-form textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.replica-acquisition-identity-section {
+  border-color: rgba(255, 185, 82, .13);
+}
+
+.replica-acquisition-identity-evidence {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.replica-acquisition-identity-evidence li {
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, .018);
+  border: 1px solid rgba(255, 255, 255, .05);
+  border-radius: 8px;
+}
+
+.replica-acquisition-identity-evidence label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #aeb6b0;
+}
+
+.replica-acquisition-identity-evidence input {
+  flex: 0 0 auto;
 }
 
 .replica-acquisition-review-actions {

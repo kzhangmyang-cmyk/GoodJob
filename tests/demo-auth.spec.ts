@@ -1,5 +1,65 @@
 import { expect, test } from "@playwright/test";
 
+test("settings exposes the customer-owned AI model connection center", async ({ page }) => {
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const json = (value: unknown) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(value)
+    });
+    if (url.pathname === "/api/v1/acquisition/providers") {
+      return void await json({ items: [], nextCursor: null });
+    }
+    if (url.pathname === "/api/v1/acquisition/provider-connections") {
+      return void await json({ items: [], nextCursor: null });
+    }
+    if (url.pathname === "/api/v1/ai/connections") {
+      return void await json({ items: [], nextCursor: null });
+    }
+    if (url.pathname === "/api/v1/ai/endpoint-profiles") {
+      return void await json({
+        items: [{
+          provider: "moonshot",
+          endpointProfileId: "moonshot-cn",
+          region: "cn",
+          baseUrl: "https://api.moonshot.cn/v1",
+          requiresWorkspaceId: false,
+          modelListPolicy: "same_key",
+          officialReference: "https://platform.moonshot.cn/docs"
+        }],
+        nextCursor: null
+      });
+    }
+    await route.fulfill({ status: 404, body: "{}" });
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem("gj_user", JSON.stringify({
+      id: "demo-admin",
+      name: "Admin",
+      email: "admin@goodjob.com",
+      role: "admin",
+      teamId: "demo-team",
+      avatar: "AD"
+    }));
+  });
+
+  await page.goto("/#settings");
+  await page.getByRole("button", { name: "配置 AI 模型" }).click();
+
+  await expect(page.locator("#replicaConnectionCenter")).toBeVisible();
+  await expect(page.getByRole("tab", { name: "AI 模型" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(page.getByRole("button", {
+    name: /Kimi CN 官方端点 新增/
+  })).toBeVisible();
+  await expect(page.getByRole("textbox", {
+    name: /官方 API Key/
+  })).toHaveAttribute("type", "password");
+});
+
 test("standalone frontend login enters the demo workspace without an API server", async ({ page }) => {
   await page.goto("/#acquisition");
   await page.locator("#loginButton").click();
@@ -43,6 +103,81 @@ test("standalone frontend does not poll backend dashboards in demo mode", async 
   await page.waitForTimeout(10_250);
 
   expect(apiRequests).toEqual([]);
+});
+
+test("real acquisition overview follows an active run to its terminal status", async ({ page }) => {
+  let overviewRequests = 0;
+  const statuses = ["queued", "running", "succeeded"] as const;
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/acquisition/overview") {
+      const status = statuses[Math.min(overviewRequests, statuses.length - 1)]!;
+      overviewRequests += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          generatedAt: `2026-08-08T08:00:0${overviewRequests}.000Z`,
+          platform: "douyin",
+          totals: { tasks: 1 },
+          statusCounts: { [status]: 1 },
+          discoveryMethodCounts: { public_search: 1 },
+          tasks: [{
+            id: "plan-live-poll",
+            planId: "plan-live-poll",
+            name: "自动更新状态的抖音任务",
+            objective: "验证运行结果自动回显",
+            platform: "douyin",
+            discoveryMethods: ["public_search"],
+            planStatus: "approved",
+            latestRun: {
+              id: "run-live-poll",
+              status,
+              updatedAt: `2026-08-08T08:00:0${overviewRequests}.000Z`,
+              completedAt: status === "succeeded"
+                ? "2026-08-08T08:00:03.000Z"
+                : null,
+              evidenceCount: status === "succeeded" ? 4 : 0,
+              consumedBudget: {
+                requests: status === "queued" ? 0 : 2,
+                results: status === "succeeded" ? 4 : 0,
+                amountMinor: 0,
+                durationSeconds: status === "succeeded" ? 12 : 0
+              }
+            },
+            updatedAt: "2026-08-08T08:00:00.000Z"
+          }]
+        })
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items: [], nextCursor: null })
+    });
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem("gj_user", JSON.stringify({
+      id: "demo-admin",
+      name: "Admin",
+      email: "admin@goodjob.com",
+      role: "admin",
+      teamId: "demo-team",
+      avatar: "AD"
+    }));
+  });
+
+  await page.goto("/#acquisition");
+  await page.locator('[data-acquisition-mode="real"]').click();
+  await expect(page.locator("#replicaRealTaskList")).toContainText("排队中");
+  await expect.poll(() => overviewRequests, { timeout: 9_000 }).toBe(3);
+  await expect(page.locator("#replicaRealTaskList")).toContainText("已完成");
+  await expect(page.locator("#replicaRealTaskList")).toContainText("4 条公开证据");
+
+  const terminalRequestCount = overviewRequests;
+  await page.waitForTimeout(2_500);
+  expect(overviewRequests).toBe(terminalRequestCount);
 });
 
 test("real acquisition header survives a private-domain round trip without hidden-panel overlap", async ({ page }) => {

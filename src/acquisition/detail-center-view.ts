@@ -33,6 +33,22 @@ export interface AcquisitionHandoffDialogState {
   };
 }
 
+export interface AcquisitionIdentityVerificationState {
+  status:
+    | "idle"
+    | "fetching"
+    | "ready_to_confirm"
+    | "confirming"
+    | "confirmed"
+    | "failed";
+  profileUrl: string;
+  rationale: string;
+  evidenceIds: string[];
+  operationId: string | null;
+  message: string | null;
+  error: string | null;
+}
+
 export interface AcquisitionDetailCenterState {
   mode: AcquisitionDetailCenterMode;
   status: AcquisitionDetailCenterStatus;
@@ -45,6 +61,7 @@ export interface AcquisitionDetailCenterState {
   runControlBusy?: boolean;
   runControlReason?: string;
   handoffDialog?: AcquisitionHandoffDialogState | null;
+  identityVerification?: AcquisitionIdentityVerificationState | null;
 }
 
 type DataRecord = Record<string, unknown>;
@@ -304,7 +321,8 @@ function renderStateMessage(state: AcquisitionDetailCenterState): string | null 
       </div>
     `;
   }
-  if (state.detail === null) {
+  if (state.detail === null
+    && !(state.mode === "candidates" && state.selectedCandidateId)) {
     return `
       <div class="replica-acquisition-detail-state" role="status">
         <strong>尚未选择真实任务</strong>
@@ -613,7 +631,7 @@ function renderCandidateList(
         data-candidate-id="${escapeHtml(candidateId)}"
         aria-pressed="${selected}"
       >
-        <span class="replica-acquisition-candidate-name">${escapeHtml(textValue(candidate.displayName, "未命名候选"))}</span>
+        <span class="replica-acquisition-candidate-name">${escapeHtml(textValue(candidate.displayName, textValue(candidate.publicDisplayName, "未命名候选")))}</span>
         <span>${candidateSubjectLabel(candidate.subjectKind)}</span>
         <strong>意向等级 ${escapeHtml(grade)}</strong>
         <span>${escapeHtml(score)} · ${decisionEngineLabel(qualification?.decisionEngine)}</span>
@@ -743,6 +761,85 @@ function renderIntelligenceAction(
       <div><strong>尚未完成 AI 资格研判</strong><span>系统将研究公开证据、计算意向等级与财务价值，并生成客户作战卡。</span></div>
       <button type="button" data-acquisition-detail-action="start-intelligence">启动 AI 研判</button>
     </div>
+  `;
+}
+
+function isUnresolvedDouyinIndividual(candidate: DataRecord): boolean {
+  return candidate.subjectKind === "individual"
+    && candidate.identityResolved !== true
+    && textValue(candidate.sourcePlatform, "").toLowerCase().includes("douyin");
+}
+
+function identityRationaleValue(
+  state: AcquisitionIdentityVerificationState | null | undefined
+): string {
+  return state?.rationale
+    ?? "已人工核对本次受控抓取的抖音公开主页，与候选需求主体一致。";
+}
+
+function identityProfileInputValue(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const url = new URL(value.trim());
+    const hostname = url.hostname.toLowerCase();
+    const path = url.pathname.replace(/\/+$/u, "");
+    return url.protocol === "https:"
+      && (hostname === "www.douyin.com" || hostname === "douyin.com")
+      && path.startsWith("/user/")
+      && path.length > "/user/".length
+      ? value.trim()
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function renderIdentityVerificationWorkbench(
+  candidate: DataRecord,
+  state: AcquisitionIdentityVerificationState | null | undefined
+): string {
+  if (!isUnresolvedDouyinIndividual(candidate)) return "";
+  const busy = state?.status === "fetching" || state?.status === "confirming";
+  const fetched = state?.status === "ready_to_confirm"
+    && (state.evidenceIds?.length ?? 0) > 0;
+  const profileUrl = identityProfileInputValue(
+    state?.profileUrl ?? candidate.publicProfileUrl
+  );
+  const evidenceIds = state?.evidenceIds ?? [];
+  const evidenceHtml = evidenceIds.length === 0
+    ? `<div class="replica-acquisition-detail-empty-value">先抓取精确公开主页，返回的公开证据才可用于身份确认。</div>`
+    : `<ol class="replica-acquisition-identity-evidence">${evidenceIds
+        .map((id) => `
+          <li>
+            <label>
+              <input type="checkbox" name="identityEvidenceId" value="${escapeHtml(id)}" checked${busy ? " disabled" : ""}>
+              <span>${escapeHtml(id)}</span>
+            </label>
+          </li>
+        `)
+        .join("")}</ol>`;
+  return `
+    <section class="replica-acquisition-detail-section replica-acquisition-identity-section">
+      <h5>主体核验</h5>
+      <form class="replica-acquisition-review-form" data-acquisition-detail-form="identity-verification">
+        <div class="replica-acquisition-review-note is-warning">当前候选来自抖音公开内容，但还没有确认到精确主页。请填写 HTTPS 的抖音 /user/ 主页，不能使用视频、评论或短链作为主体。</div>
+        ${state?.message ? `<div class="replica-acquisition-review-note">${escapeHtml(state.message)}</div>` : ""}
+        ${state?.error ? `<div class="replica-acquisition-review-note is-warning">${escapeHtml(state.error)}</div>` : ""}
+        <label>
+          <span>抖音公开主页</span>
+          <input name="identityProfileUrl" type="url" maxlength="2000" required placeholder="https://www.douyin.com/user/..." value="${escapeHtml(profileUrl)}"${busy ? " disabled" : ""}>
+        </label>
+        <label>
+          <span>人工核验说明</span>
+          <textarea name="identityRationale" maxlength="2000" required${busy ? " disabled" : ""}>${escapeHtml(identityRationaleValue(state))}</textarea>
+        </label>
+        ${evidenceHtml}
+        <div class="replica-acquisition-review-actions">
+          <button type="submit" data-identity-action="fetch"${busy ? " disabled" : ""}>${state?.status === "fetching" ? "正在抓取…" : fetched ? "重新抓取主页证据" : "抓取公开主页证据"}</button>
+          <button type="submit" class="is-primary" data-identity-action="confirm"${!fetched || busy ? " disabled" : ""}>${state?.status === "confirming" ? "正在确认…" : "确认主体并启动 AI 研判"}</button>
+        </div>
+      </form>
+    </section>
   `;
 }
 
@@ -884,7 +981,8 @@ function renderHandoffDialog(
 
 function renderCandidateDetail(
   event: DataRecord | undefined,
-  detail: AcquisitionCandidateDetail | null
+  detail: AcquisitionCandidateDetail | null,
+  identityVerification?: AcquisitionIdentityVerificationState | null
 ): string {
   if (!event) {
     return `
@@ -905,7 +1003,7 @@ function renderCandidateDetail(
   return `
     <article class="replica-acquisition-selected-candidate" data-selected-candidate-id="${escapeHtml(candidateEventId(event))}">
       <header>
-        <div><span>${candidateSubjectLabel(candidate.subjectKind)}</span><h4>${escapeHtml(textValue(candidate.displayName, "未命名候选"))}</h4></div>
+        <div><span>${candidateSubjectLabel(candidate.subjectKind)}</span><h4>${escapeHtml(textValue(candidate.displayName, textValue(candidate.publicDisplayName, "未命名候选")))}</h4></div>
         <strong>${qualification ? `意向等级 ${escapeHtml(textValue(qualification.grade))}` : "意向待评估"}</strong>
       </header>
       ${qualification === null ? `
@@ -931,6 +1029,7 @@ function renderCandidateDetail(
         <h5>客户作战建议</h5>
         ${renderBattleCard(detail?.battleCard ?? null)}
       </section>
+      ${renderIdentityVerificationWorkbench(candidateSnapshot, identityVerification)}
       <section class="replica-acquisition-detail-section replica-acquisition-review-section">
         <h5>人工审核</h5>
         ${renderReviewActions(candidateSnapshot, qualification, detail?.intelligenceOperation ?? null)}
@@ -968,7 +1067,26 @@ function renderCandidateSummary(summary: DataRecord | null): string {
 
 function renderCandidatePanel(state: AcquisitionDetailCenterState): string {
   const detail = state.detail;
-  if (detail === null) return "";
+  if (detail === null) {
+    const candidateId = state.selectedCandidateId;
+    if (!candidateId) return "";
+    const candidate = state.candidateDetail?.candidate ?? { id: candidateId };
+    const event = { candidateId, candidate };
+    return `
+      <section class="replica-acquisition-detail-panel" id="acquisition-detail-panel-candidates" role="tabpanel" aria-labelledby="acquisition-detail-tab-candidates" data-acquisition-detail-panel="candidates">
+        <div class="replica-acquisition-review-note">该候选来自用户导入的公开线索，可先独立完成主体核验，无需预先创建获客任务。</div>
+        <div class="replica-acquisition-candidate-layout is-standalone">
+          <div class="replica-acquisition-candidate-inspector">
+            ${renderCandidateDetail(
+              event,
+              state.candidateDetail,
+              state.identityVerification
+            )}
+          </div>
+        </div>
+      </section>
+    `;
+  }
   const latestRun = record(detail.latestRun);
   if (latestRun === null) {
     return `
@@ -1018,7 +1136,11 @@ function renderCandidatePanel(state: AcquisitionDetailCenterState): string {
           ${renderCandidateList(events, state.selectedCandidateId)}
         </div>
         <div class="replica-acquisition-candidate-inspector">
-          ${renderCandidateDetail(selectedEvent, state.candidateDetail)}
+          ${renderCandidateDetail(
+            selectedEvent,
+            state.candidateDetail,
+            state.identityVerification
+          )}
         </div>
       </div>
       ${presentation?.hasMore === true ? `

@@ -679,6 +679,73 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
 }
 
 {
+  const eventTarget = new EventTarget();
+  const candidateReads: string[] = [];
+  let taskReads = 0;
+  const api = {
+    async getTask() {
+      taskReads += 1;
+      return taskDetail;
+    },
+    async getCandidate(candidateId: string) {
+      candidateReads.push(candidateId);
+      return {
+        candidate: {
+          id: candidateId,
+          publicDisplayName: "用户导入的公开抖音链接",
+          publicProfileUrl: "https://www.douyin.com/video/1",
+          sourcePlatform: "douyin",
+          subjectKind: "individual",
+          status: "normalized",
+          version: 1,
+          identityResolved: false
+        },
+        etag: '"candidate-v1"'
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return null;
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    },
+    async getCandidatePrivateDomainHandoff() {
+      return null;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({ api, eventTarget });
+
+  eventTarget.dispatchEvent(detailEvent(
+    "goodjob:acquisition-detail-open-requested",
+    { mode: "candidates", candidateId: "candidate-imported-1" }
+  ));
+  await controller.whenIdle();
+
+  assert.equal(taskReads, 0, "task-independent candidate opening must not read a missing plan");
+  assert.deepEqual(candidateReads, ["candidate-imported-1"]);
+  assert.equal(controller.getState().status, "ready");
+  assert.equal(controller.getState().detail, null);
+  assert.equal(controller.getState().selectedCandidateId, "candidate-imported-1");
+  assert.equal(
+    controller.getState().candidateDetail?.candidate?.id,
+    "candidate-imported-1"
+  );
+  controller.destroy();
+}
+
+{
   const legacyRequest = {
     operationCode: "handoff_acquisition_candidate_v1" as const,
     decisionVersion: "qualification-v2",
@@ -1399,6 +1466,219 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
   assert.equal(operationKeys[0], operationKeys[1]);
   await controller.startIntelligence();
   assert.notEqual(operationKeys[1], operationKeys[2]);
+
+  controller.destroy();
+}
+
+{
+  let identityResolved = false;
+  const contentFetches: Array<Record<string, unknown>> = [];
+  const confirmations: Array<Record<string, unknown>> = [];
+  const intelligenceStarts: string[] = [];
+  const changed: Array<Record<string, unknown>> = [];
+  const eventTarget = new EventTarget();
+  eventTarget.addEventListener("goodjob:acquisition-candidate-changed", (event) => {
+    changed.push((event as CustomEvent<Record<string, unknown>>).detail);
+  });
+  const individualCandidate = () => ({
+    id: "candidate-douyin-identity",
+    subjectKind: "individual",
+    publicActorKey: "unknown-public-actor",
+    publicDisplayName: "陈经理",
+    publicProfileUrl: identityResolved
+      ? "https://www.douyin.com/user/example"
+      : "",
+    sourcePlatform: "douyin",
+    demandCategory: "获客",
+    demandSummary: "公开表达获客需求",
+    locationHint: "厦门",
+    buyingStage: "solution_research",
+    negativeSignals: [],
+    firstSeenAt: "2026-08-07T05:00:00.000Z",
+    lastSeenAt: "2026-08-07T05:04:00.000Z",
+    status: "normalized",
+    version: identityResolved ? 2 : 1,
+    identityResolved,
+    latestDecisionVersion: null,
+    approvedDecisionVersion: null,
+    evidenceIds: ["original-evidence-1"],
+    updatedAt: "2026-08-07T05:04:00.000Z"
+  });
+  const api = {
+    async getTask() {
+      return {
+        ...taskDetail,
+        latestRun: { id: "run-identity" },
+        presentation: {
+          candidateEvents: [{
+            eventId: "event-douyin-identity",
+            candidateId: "candidate-douyin-identity",
+            candidate: {
+              id: "candidate-douyin-identity",
+              subjectKind: "individual",
+              displayName: "陈经理",
+              status: "normalized",
+              version: identityResolved ? 2 : 1,
+              identityResolved,
+              updatedAt: "2026-08-07T05:04:00.000Z"
+            },
+            qualification: null,
+            financialValue: null,
+            evidenceCount: 1
+          }],
+          providers: [],
+          summary: { validOpportunities: 1 },
+          hasMore: false,
+          nextAfter: null
+        }
+      };
+    },
+    async getCandidate() {
+      return { candidate: individualCandidate(), etag: null };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return null;
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    },
+    async createContentFetchOperation(input: Record<string, unknown>) {
+      contentFetches.push(input);
+      return {
+        id: "content-fetch-identity",
+        sourceUrl: input.sourceUrl,
+        finalUrl: input.sourceUrl,
+        subjectChannel: "individual",
+        status: "succeeded",
+        accessStatus: "public_content",
+        httpStatus: 200,
+        contentType: "text/html",
+        title: "陈经理的抖音主页",
+        rawArtifactHash: "sha256:raw-profile",
+        contentHash: "sha256:profile",
+        evidenceCount: 1,
+        evidenceIds: ["identity-evidence-1"],
+        candidateCount: 1,
+        candidateIds: ["candidate-douyin-identity"],
+        errorCode: null,
+        createdAt: "2026-08-07T05:04:00.000Z",
+        startedAt: "2026-08-07T05:04:01.000Z",
+        completedAt: "2026-08-07T05:04:02.000Z"
+      };
+    },
+    async getContentFetchOperation() {
+      throw new Error("succeeded create response should not poll");
+    },
+    async confirmCandidateIdentity(
+      _candidateId: string,
+      version: number,
+      input: Record<string, unknown>
+    ) {
+      confirmations.push({ version, input });
+      identityResolved = true;
+      return {
+        candidate: individualCandidate(),
+        resolution: {
+          status: "resolved",
+          basis: "provider_public_actor",
+          resolverVersion: "identity-resolution.v1",
+          evidenceIds: ["identity-evidence-1"],
+          resolvedAt: "2026-08-07T05:04:03.000Z",
+          resolvedBy: "user-1"
+        }
+      };
+    },
+    async startIntelligenceOperation(candidateId: string) {
+      intelligenceStarts.push(candidateId);
+      return {
+        id: "intelligence-after-identity",
+        candidateId,
+        status: "queued",
+        currentStage: null,
+        completedStages: [],
+        skippedStages: [],
+        research: null,
+        qualification: null,
+        battleCardId: null,
+        failure: null,
+        createdAt: "2026-08-07T05:04:04.000Z",
+        startedAt: null,
+        updatedAt: "2026-08-07T05:04:04.000Z",
+        completedAt: null,
+        failedAt: null
+      };
+    }
+  } as unknown as AcquisitionDetailApi;
+  let keySerial = 0;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    eventTarget,
+    keyFactory: () => `identity-flow-key-${++keySerial}`
+  });
+
+  await controller.open("candidates", "plan-identity");
+  assert.equal(
+    controller.getState().identityVerification?.status,
+    "idle"
+  );
+
+  await controller.fetchCandidateIdentityProfile(
+    "https://www.douyin.com/user/example",
+    "公开主页与候选主体一致"
+  );
+  assert.deepEqual(contentFetches, [{
+    sourceUrl: "https://www.douyin.com/user/example",
+    subjectChannel: "individual"
+  }]);
+  assert.equal(
+    controller.getState().identityVerification?.status,
+    "ready_to_confirm"
+  );
+  assert.deepEqual(
+    controller.getState().identityVerification?.evidenceIds,
+    ["identity-evidence-1"]
+  );
+
+  await controller.confirmCandidateIdentity({
+    profileUrl: "https://www.douyin.com/user/example",
+    rationale: "公开主页与候选主体一致",
+    evidenceIds: ["identity-evidence-1"]
+  });
+  assert.deepEqual(confirmations, [{
+    version: 1,
+    input: {
+      subjectKind: "individual",
+      publicProfileUrl: "https://www.douyin.com/user/example",
+      sourcePlatform: "douyin",
+      evidenceIds: ["identity-evidence-1"],
+      rationale: "公开主页与候选主体一致"
+    }
+  }]);
+  assert.deepEqual(intelligenceStarts, ["candidate-douyin-identity"]);
+  assert.equal(
+    controller.getState().identityVerification?.status,
+    "confirmed"
+  );
+  assert.equal(
+    controller.getState().candidateDetail?.candidate?.identityResolved,
+    true
+  );
+  assert.equal(
+    changed.at(-1)?.action,
+    "identity_confirmed_and_intelligence_started"
+  );
 
   controller.destroy();
 }
@@ -3202,6 +3482,73 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
       "candidate-page-race-3"
     ]
   );
+  controller.destroy();
+}
+
+{
+  const eventTarget = new EventTarget();
+  const candidateLoads: string[] = [];
+  const api = {
+    async getTask() {
+      return taskDetailWithCandidateSource("candidate-import-1");
+    },
+    async getCandidate(candidateId: string) {
+      candidateLoads.push(candidateId);
+      return {
+        candidate: {
+          id: candidateId,
+          displayName: "用户导入候选",
+          identityResolved: false
+        },
+        evidence: [],
+        reviews: [],
+        research: null,
+        qualification: null,
+        financialValue: null,
+        battleCard: null,
+        intelligenceOperation: null,
+        privateDomainHandoff: null,
+        etag: '"candidate-v1"'
+      };
+    },
+    getCandidateEvidence() {
+      return Promise.resolve({ items: [], nextCursor: null });
+    },
+    getCandidateReviews() {
+      return Promise.resolve({ items: [], nextCursor: null });
+    },
+    getCandidateQualification() {
+      return Promise.resolve(null);
+    },
+    getCandidateFinancialValue() {
+      return Promise.resolve(null);
+    },
+    getCandidateBattleCard() {
+      return Promise.resolve(null);
+    },
+    getLatestIntelligenceOperation() {
+      return Promise.resolve(null);
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    eventTarget
+  });
+
+  eventTarget.dispatchEvent(new CustomEvent(
+    "goodjob:acquisition-detail-open-requested",
+    {
+      detail: {
+        mode: "candidates",
+        planId: "plan-1",
+        candidateId: "candidate-import-1"
+      }
+    }
+  ));
+  await controller.whenIdle();
+
+  assert.deepEqual(candidateLoads, ["candidate-import-1"]);
+  assert.equal(controller.getState().selectedCandidateId, "candidate-import-1");
   controller.destroy();
 }
 

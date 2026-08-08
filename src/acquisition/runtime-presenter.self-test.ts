@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
-import { renderRealTaskRows } from "./runtime-presenter";
+import {
+  renderPublicDouyinImportPanel,
+  renderRealTaskRows
+} from "./runtime-presenter";
 
 assert.match(renderRealTaskRows([]), /暂无真实抖音获客任务/);
 
@@ -26,3 +29,39 @@ assert.match(html, /正在运行/);
 assert.doesNotMatch(html, /<img/);
 assert.match(html, /&lt;img/);
 
+const importPanel = renderPublicDouyinImportPanel({
+  visible: true,
+  urlText: "https://www.douyin.com/video/1",
+  status: "completed",
+  message: "导入完成，已形成用户提交证据；主体仍待核验",
+  results: [{
+    sourceUrl: "https://www.douyin.com/video/1",
+    status: "succeeded",
+    operationId: "import-url-1",
+    errorMessage: null
+  }],
+  outcome: {
+    acceptedRowCount: 1,
+    evidenceCount: 1,
+    candidateCount: 1,
+    candidateIds: ["candidate-<unsafe>"],
+    rowErrors: []
+  }
+});
+
+for (const text of [
+  "导入公开抖音线索",
+  "仅支持公开页面",
+  "导入后先形成用户提交证据",
+  "粘贴公开链接",
+  "导入公开链接",
+  "导入完成",
+  "打开待核验候选 1"
+]) {
+  assert.match(importPanel, new RegExp(text));
+}
+assert.match(importPanel, /data-acquisition-import-action="submit-urls"/);
+assert.match(importPanel, /data-acquisition-import-url-input/);
+assert.match(importPanel, /data-acquisition-import-action="verify-identity"/);
+assert.match(importPanel, /data-candidate-id="candidate-&lt;unsafe&gt;"/);
+assert.doesNotMatch(importPanel, /candidate-<unsafe>/);

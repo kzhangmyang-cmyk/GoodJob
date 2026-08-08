@@ -1,5 +1,7 @@
 import { strict as assert } from "node:assert";
-import { acquisitionDetailRequestForAction } from "./detail-center-entry";
+import * as detailEntry from "./detail-center-entry";
+
+const { acquisitionDetailRequestForAction } = detailEntry;
 
 assert.deepEqual(
   acquisitionDetailRequestForAction("real", "replicaEditTask", "plan-real-1"),
@@ -23,4 +25,33 @@ assert.equal(
   acquisitionDetailRequestForAction("real", "replicaEditTask", "  "),
   null,
   "a real detail action without a selected plan must not open an empty dialog"
+);
+
+const candidateDetailOpenRequest = (
+  detailEntry as typeof detailEntry & {
+    acquisitionCandidateDetailRequest?: (
+      candidateId: string,
+      planId?: string
+    ) => unknown;
+  }
+).acquisitionCandidateDetailRequest;
+
+assert.equal(
+  typeof candidateDetailOpenRequest,
+  "function",
+  "a user-imported candidate needs a task-independent detail request builder"
+);
+assert.deepEqual(
+  candidateDetailOpenRequest?.("candidate-imported-1"),
+  { mode: "candidates", candidateId: "candidate-imported-1" },
+  "an imported candidate must remain openable before any acquisition task exists"
+);
+assert.deepEqual(
+  candidateDetailOpenRequest?.("candidate-imported-1", "plan-existing-1"),
+  {
+    mode: "candidates",
+    planId: "plan-existing-1",
+    candidateId: "candidate-imported-1"
+  },
+  "an imported candidate should keep task attribution when a plan is selected"
 );

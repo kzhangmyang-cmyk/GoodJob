@@ -1,11 +1,27 @@
 import { createAcquisitionApi } from "./runtime-api";
-import type { AcquisitionTaskDetail } from "./runtime-api";
+import type {
+  AcquisitionImportOperation,
+  AcquisitionTaskDetail
+} from "./runtime-api";
+import {
+  importItemStatus,
+  importOperationStatus,
+  importOutcomeFromOperation,
+  publicDouyinUrl,
+  publicUrlsCsv
+} from "./runtime-import";
 import {
   buildAcquisitionOverviewModel,
   type AcquisitionMetricModel,
-  type AcquisitionOverviewModel
+  type AcquisitionOverviewModel,
+  type AcquisitionRunStatus
 } from "./runtime-model";
-import { renderRealTaskRows } from "./runtime-presenter";
+import {
+  renderPublicDouyinImportPanel,
+  renderRealTaskRows,
+  type PublicDouyinImportPanelState
+} from "./runtime-presenter";
+import { acquisitionCandidateDetailRequest } from "./detail-center-entry";
 
 type AcquisitionMode = "demo" | "real";
 type RuntimeState = "loading" | "ready" | "error" | "unauthorized";
@@ -33,6 +49,21 @@ const METRIC_DESCRIPTIONS = [
   "成功、无结果或部分成功的任务",
   "失败、暂停、取消或预算耗尽的任务"
 ] as const;
+
+const TERMINAL_IMPORT_STATUSES = new Set([
+  "succeeded",
+  "partial_success",
+  "failed"
+]);
+
+const ACTIVE_RUN_STATUSES = new Set<AcquisitionRunStatus>([
+  "queued",
+  "running",
+  "pause_requested",
+  "cancel_requested"
+]);
+const OVERVIEW_POLL_BASE_DELAY_MS = 2_000;
+const OVERVIEW_POLL_MAX_DELAY_MS = 30_000;
 
 let started = false;
 let waitingForDom = false;
@@ -62,6 +93,23 @@ function setText(id: string, value: string | number): void {
 function safeErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message.trim() : "未知错误";
   return (message || "未知错误").slice(0, 300);
+}
+
+function idempotencyKey(prefix: string): string {
+  const random = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}:${random}`;
+}
+
+function initialPublicImportState(): PublicDouyinImportPanelState {
+  return {
+    visible: false,
+    urlText: "",
+    status: "idle",
+    message: null,
+    results: [],
+    outcome: null
+  };
 }
 
 function isUnauthorizedMessage(message: string): boolean {
@@ -115,6 +163,12 @@ function initialiseRuntime(): void {
   let mode: AcquisitionMode = defaultMode();
   let overviewRequestVersion = 0;
   let detailRequestVersion = 0;
+  let importRequestVersion = 0;
+  let publicImport = initialPublicImportState();
+  let urlImportOperation: Promise<void> | null = null;
+  let overviewPollTimer: number | null = null;
+  let overviewPollAttempt = 0;
+  let lastOverviewHadActiveRuns = false;
 
   const rememberText = (id: string): void => {
     const element = byId(id);
@@ -224,6 +278,10 @@ function initialiseRuntime(): void {
   const realTaskList = byId("replicaRealTaskList");
   const runMetrics = byId("replicaRunMetrics");
   const demoTimeline = byId("replicaDemoTimeline");
+  const publicImportHost = document.createElement("div");
+  publicImportHost.id = "replicaPublicDouyinImportHost";
+  publicImportHost.hidden = true;
+  demoTimeline?.before(publicImportHost);
   const demoTaskGroups = Array.from(
     document.querySelectorAll<HTMLElement>("[data-acquisition-demo-task-group]")
   );
@@ -313,6 +371,12 @@ function initialiseRuntime(): void {
     runtimeStatus.textContent = text;
   }
 
+  function renderPublicImport(): void {
+    publicImport.visible = mode === "real";
+    publicImportHost.hidden = mode !== "real";
+    publicImportHost.innerHTML = renderPublicDouyinImportPanel(publicImport);
+  }
+
   function setRunMetricValues(
     evidence: string | number,
     requests: string | number,
@@ -398,6 +462,7 @@ function initialiseRuntime(): void {
     if (demoTimeline && !demoTimeline.hidden) demoTimeline.hidden = true;
     if (realTaskGroup?.hidden) realTaskGroup.hidden = false;
     if (runMetrics?.hidden) runMetrics.hidden = false;
+    if (publicImportHost.hidden) publicImportHost.hidden = false;
   }
 
   function renderTaskListState(
@@ -457,6 +522,38 @@ function initialiseRuntime(): void {
     });
   }
 
+  function clearOverviewPollTimer(): void {
+    if (overviewPollTimer === null) return;
+    window.clearTimeout(overviewPollTimer);
+    overviewPollTimer = null;
+  }
+
+  function stopOverviewPolling(): void {
+    clearOverviewPollTimer();
+    overviewPollAttempt = 0;
+    lastOverviewHadActiveRuns = false;
+  }
+
+  function scheduleOverviewPoll(active: boolean): void {
+    clearOverviewPollTimer();
+    lastOverviewHadActiveRuns = active;
+    if (!active
+      || mode !== "real"
+      || !document.body.classList.contains("is-authenticated")) {
+      if (!active) overviewPollAttempt = 0;
+      return;
+    }
+    const delay = Math.min(
+      OVERVIEW_POLL_BASE_DELAY_MS * (2 ** overviewPollAttempt),
+      OVERVIEW_POLL_MAX_DELAY_MS
+    );
+    overviewPollTimer = window.setTimeout(() => {
+      overviewPollTimer = null;
+      overviewPollAttempt += 1;
+      void refreshOverview({ background: true, resetPollAttempt: false });
+    }, delay);
+  }
+
   function renderOverview(model: AcquisitionOverviewModel): void {
     const totalTaskCount = model.metrics[0]?.value ?? model.tasks.length;
     setRealMetrics(model.metrics);
@@ -474,6 +571,9 @@ function initialiseRuntime(): void {
       setRealInspectorShell("后端当前没有抖音获客任务。");
       setRunMetricValues(0, 0, 0, "0 秒");
     }
+    scheduleOverviewPoll(model.tasks.some((task) =>
+      task.status !== null && ACTIVE_RUN_STATUSES.has(task.status)
+    ));
   }
 
   function showLoadingState(): void {
@@ -525,10 +625,15 @@ function initialiseRuntime(): void {
     );
   }
 
-  async function refreshOverview(): Promise<void> {
+  async function refreshOverview(options: {
+    background?: boolean;
+    resetPollAttempt?: boolean;
+  } = {}): Promise<void> {
     if (mode !== "real") return;
+    clearOverviewPollTimer();
+    if (options.resetPollAttempt !== false) overviewPollAttempt = 0;
     const requestVersion = ++overviewRequestVersion;
-    showLoadingState();
+    if (options.background !== true) showLoadingState();
     try {
       const overview = await api.getOverview();
       if (mode !== "real" || requestVersion !== overviewRequestVersion) return;
@@ -540,7 +645,184 @@ function initialiseRuntime(): void {
       showErrorState(error);
       dispatchModeChanged("error");
       enforceRealVisibility();
+      const message = safeErrorMessage(error);
+      if (lastOverviewHadActiveRuns && !isUnauthorizedMessage(message)) {
+        scheduleOverviewPoll(true);
+      } else {
+        stopOverviewPolling();
+      }
     }
+  }
+
+  async function waitForImportTerminal(
+    operation: AcquisitionImportOperation,
+    requestVersion: number
+  ): Promise<AcquisitionImportOperation | null> {
+    let current = operation;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (mode !== "real" || requestVersion !== importRequestVersion) {
+        return null;
+      }
+      if (TERMINAL_IMPORT_STATUSES.has(importOperationStatus(current) ?? "")) {
+        return current;
+      }
+      await new Promise((resolve) => window.setTimeout(
+        resolve,
+        attempt < 4 ? 700 : 1_500
+      ));
+      current = await api.getImportOperation(current.id);
+      const operationId = typeof current.id === "string" ? current.id : null;
+      publicImport = {
+        ...publicImport,
+        status: "uploading",
+        results: publicImport.results.map((item) =>
+          item.status === "failed"
+            ? item
+            : {
+                ...item,
+                status: importItemStatus(current),
+                operationId
+              }),
+        message: "导入任务处理中，主体仍待核验"
+      };
+      renderPublicImport();
+    }
+    return current;
+  }
+
+  async function submitPublicImportUrls(): Promise<void> {
+    if (urlImportOperation) return urlImportOperation;
+    const rawRows = publicImport.urlText
+      .split(/\r?\n/u)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const uniqueRows = [...new Set(rawRows)];
+    if (uniqueRows.length === 0) {
+      publicImport = {
+        ...publicImport,
+        status: "failed",
+        message: "请至少粘贴一个公开抖音链接",
+        results: [],
+        outcome: null
+      };
+      renderPublicImport();
+      return;
+    }
+    const checked = uniqueRows.map((sourceUrl) => ({
+      sourceUrl,
+      result: publicDouyinUrl(sourceUrl)
+    }));
+    const validUrls = checked.flatMap(({ result }) =>
+      result.ok ? [result.value] : []);
+    const initialResults = checked.map(({ sourceUrl, result }) => ({
+      sourceUrl: result.ok ? result.value : sourceUrl,
+      status: result.ok ? "queued" as const : "failed" as const,
+      operationId: null,
+      errorMessage: result.ok ? null : result.message
+    }));
+    if (validUrls.length === 0) {
+      publicImport = {
+        ...publicImport,
+        status: "failed",
+        results: initialResults,
+        outcome: null,
+        message: "没有可提交的公开抖音链接"
+      };
+      renderPublicImport();
+      return;
+    }
+    publicImport = {
+      ...publicImport,
+      status: "uploading",
+      results: initialResults,
+      outcome: null,
+      message: "正在形成用户提交证据，主体仍待核验"
+    };
+    renderPublicImport();
+    const requestVersion = ++importRequestVersion;
+    const operation = (async () => {
+      try {
+        const created = await api.createImportOperation({
+          fileName: `douyin-public-urls-${Date.now()}.csv`,
+          mediaType: "text/csv",
+          content: publicUrlsCsv(validUrls),
+          subjectChannel: "individual",
+          mapping: {
+            sourceTitle: "标题",
+            sourceSnippet: "摘要",
+            sourcePlatform: "平台",
+            sourceUrl: "链接"
+          }
+        }, idempotencyKey("goodjob-douyin-public-url-import"));
+        const terminal = await waitForImportTerminal(created, requestVersion);
+        if (!terminal || mode !== "real" || requestVersion !== importRequestVersion) return;
+        const operationId = typeof terminal.id === "string" ? terminal.id : null;
+        const outcome = importOutcomeFromOperation(terminal);
+        const errorsByUrl = new Map<string, string>();
+        for (const error of outcome.rowErrors) {
+          const sourceUrl = validUrls[error.rowNumber - 2];
+          if (sourceUrl) errorsByUrl.set(sourceUrl, error.message);
+        }
+        const terminalStatus = importOperationStatus(terminal);
+        publicImport = {
+          ...publicImport,
+          status: terminalStatus === "failed"
+            ? "failed"
+            : initialResults.some((item) => item.status === "failed")
+              || terminalStatus === "partial_success"
+              ? "partial"
+              : "completed",
+          results: initialResults.map((item) =>
+            item.status === "failed"
+              ? item
+              : errorsByUrl.has(item.sourceUrl)
+                ? {
+                    ...item,
+                    status: "failed",
+                    operationId,
+                    errorMessage: errorsByUrl.get(item.sourceUrl) ?? null
+                  }
+                : {
+                    ...item,
+                    status: importItemStatus(terminal),
+                    operationId,
+                    errorMessage: terminalStatus === "failed"
+                      ? "导入任务处理失败"
+                      : null
+                  }),
+          outcome,
+          message: terminalStatus === "failed"
+            ? "公开链接导入任务处理失败"
+            : "导入完成，已形成用户提交证据；主体仍待核验"
+        };
+        renderPublicImport();
+        document.dispatchEvent(new CustomEvent("goodjob:acquisition-refresh-requested"));
+      } catch (error) {
+        if (mode !== "real" || requestVersion !== importRequestVersion) return;
+        publicImport = {
+          ...publicImport,
+          status: "failed",
+          results: initialResults.map((item) =>
+            item.status === "failed"
+              ? item
+              : {
+                  ...item,
+                  status: "failed",
+                  errorMessage: safeErrorMessage(error)
+                }),
+          outcome: null,
+          message: "公开链接导入失败"
+        };
+        renderPublicImport();
+        throw error;
+      }
+    })();
+    urlImportOperation = operation;
+    const clear = () => {
+      if (urlImportOperation === operation) urlImportOperation = null;
+    };
+    void operation.then(clear, clear);
+    return operation;
   }
 
   function renderRunMetrics(detail: AcquisitionTaskDetail): void {
@@ -598,16 +880,21 @@ function initialiseRuntime(): void {
     if (realTaskGroup) realTaskGroup.hidden = false;
     if (runMetrics) runMetrics.hidden = false;
     dispatchModeChanged("selected");
+    renderPublicImport();
     enforceRealVisibility();
     void refreshOverview();
   }
 
   function applyDemoMode(): void {
+    stopOverviewPolling();
     overviewRequestVersion += 1;
     detailRequestVersion += 1;
+    importRequestVersion += 1;
     restoreInitialDom();
     runtimeShell.dataset.acquisitionMode = "demo";
     updateModeButtons();
+    publicImport = { ...publicImport, visible: false };
+    renderPublicImport();
     dispatchModeChanged("selected");
   }
 
@@ -635,6 +922,65 @@ function initialiseRuntime(): void {
     void refreshOverview();
   });
 
+  publicImportHost.addEventListener("input", (event) => {
+    const target = event.target as HTMLTextAreaElement | null;
+    if (!target?.matches("[data-acquisition-import-url-input]")) return;
+    publicImport = {
+      ...publicImport,
+      urlText: target.value,
+      status: publicImport.status === "uploading" ? "uploading" : "idle",
+      message: publicImport.status === "uploading" ? publicImport.message : null
+    };
+    const submit = publicImportHost.querySelector<HTMLButtonElement>(
+      "[data-acquisition-import-action=\"submit-urls\"]"
+    );
+    if (submit) submit.disabled = !target.value.trim()
+      || publicImport.status === "uploading";
+  });
+
+  publicImportHost.addEventListener("click", (event) => {
+    const target = (event.target as HTMLElement | null)?.closest<HTMLElement>(
+      "[data-acquisition-import-action]"
+    );
+    if (!target || !publicImportHost.contains(target)) return;
+    const action = target.dataset.acquisitionImportAction;
+    if (action === "submit-urls") {
+      const input = publicImportHost.querySelector<HTMLTextAreaElement>(
+        "[data-acquisition-import-url-input]"
+      );
+      publicImport = { ...publicImport, urlText: input?.value ?? "" };
+      void submitPublicImportUrls().catch((error) => {
+        document.dispatchEvent(new CustomEvent("goodjob:acquisition-notify", {
+          detail: { message: safeErrorMessage(error) }
+        }));
+      });
+      return;
+    }
+    if (action === "verify-identity") {
+      const candidateId = target.dataset.candidateId?.trim();
+      const selectedPlanId =
+        document.querySelector<HTMLElement>("[data-acquisition-real-task=\"true\"].active")
+          ?.dataset.acquisitionPlanId
+        ?? document.querySelector<HTMLElement>("[data-acquisition-real-task=\"true\"]")
+          ?.dataset.acquisitionPlanId
+        ?? "";
+      if (!candidateId) {
+        document.dispatchEvent(new CustomEvent("goodjob:acquisition-notify", {
+          detail: { message: "待核验候选 ID 缺失，请刷新后重试" }
+        }));
+        return;
+      }
+      const detail = acquisitionCandidateDetailRequest(candidateId, selectedPlanId);
+      if (!detail) return;
+      document.dispatchEvent(new CustomEvent(
+        "goodjob:acquisition-detail-open-requested",
+        {
+          detail
+        }
+      ));
+    }
+  });
+
   let wasAuthenticated = document.body.classList.contains("is-authenticated");
   const authObserver = new MutationObserver(() => {
     const isAuthenticated = document.body.classList.contains("is-authenticated");
@@ -642,8 +988,10 @@ function initialiseRuntime(): void {
       void refreshOverview();
     }
     if (mode === "real" && !isAuthenticated && wasAuthenticated) {
+      stopOverviewPolling();
       overviewRequestVersion += 1;
       detailRequestVersion += 1;
+      importRequestVersion += 1;
       showErrorState(new Error("未登录"));
       enforceRealVisibility();
     }
@@ -653,6 +1001,8 @@ function initialiseRuntime(): void {
     attributes: true,
     attributeFilter: ["class"]
   });
+
+  window.addEventListener("pagehide", stopOverviewPolling, { once: true });
 
   const visibilityObserver = new MutationObserver(enforceRealVisibility);
   [...demoTaskGroups, realTaskGroup, runMetrics, demoTimeline]
@@ -665,6 +1015,7 @@ function initialiseRuntime(): void {
     });
 
   setMode(mode);
+  renderPublicImport();
 }
 
 export function startAcquisitionRuntime(): void {

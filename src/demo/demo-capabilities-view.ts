@@ -89,7 +89,11 @@ function renderSettings(state: DemoState): string {
   ];
   return `
     <section class="demo-capabilities" aria-label="设置中心">
-      <header class="demo-capabilities-header"><div><span class="demo-status">演示模式</span><h2>设置中心</h2><p>此页面只管理当前浏览器的演示数据和模拟状态；没有接入账户、权限或通知服务。</p></div></header>
+      <header class="demo-capabilities-header"><div><span class="demo-status">连接与系统</span><h2>设置中心</h2><p>接入客户自己的官方搜索与 AI 模型 API；演示数据仍只保存在当前浏览器。</p></div></header>
+      <section class="demo-panel demo-settings-connections"><div class="demo-section-heading"><div><span class="demo-chip">客户自带密钥</span><h3>官方搜索与 AI 模型连接</h3></div><small>保存 · 测试 · 人工启用</small></div><p>API Key 只提交给后端加密保存，保存后不再回显。连接通过测试并人工确认启用后，才会用于真实获客任务。</p><div class="demo-settings-connection-grid">
+        <article class="demo-settings-connection-card"><span class="demo-capability-icon">搜</span><div><b>官方搜索 API</b><span>配置真实搜索数据源，用于发现公开商机与补充证据。</span></div><button type="button" class="demo-primary" data-demo-action="open-connection-center" data-connection-mode="search">配置搜索 API</button></article>
+        <article class="demo-settings-connection-card"><span class="demo-capability-icon">AI</span><div><b>官方 AI 模型</b><span>支持 OpenAI、Kimi、MiniMax、GLM、DeepSeek、通义等官方端点。</span></div><button type="button" class="demo-primary" data-demo-action="open-connection-center" data-connection-mode="model">配置 AI 模型</button></article>
+      </div></section>
       <section class="demo-panel demo-settings-data"><div class="demo-section-heading"><div><span class="demo-chip">本地数据</span><h3>演示数据概览</h3></div><small>保存在当前浏览器</small></div><div class="demo-settings-counts">${localData.map(([label, value]) => `<div><small>${label}</small><b>${value}</b></div>`).join("")}</div><div class="demo-settings-reset"><div><b>重置演示数据</b><span>恢复初始客户、会话、商机和模拟开关；此操作不可撤销。</span></div><button type="button" class="demo-danger-button" data-demo-action="open-reset-dialog">重置演示数据</button></div></section>
       <section class="demo-panel demo-settings-unavailable"><div><span class="demo-chip">演示版暂未接入</span><h3>外观、通知与权限</h3></div><div><article><b>外观偏好</b><span>主题和工作台布局</span></article><article><b>通知提醒</b><span>站内、邮件与平台通知</span></article><article><b>访问权限</b><span>成员角色与渠道授权</span></article></div></section>
       <dialog id="demoResetDialog" class="demo-reset-dialog" aria-labelledby="demoResetDialogTitle"><form method="dialog"><span class="demo-status">确认操作</span><h3 id="demoResetDialogTitle">重置本地演示数据？</h3><p>会恢复初始演示数据，并移除当前浏览器中所有本次操作。</p><div><button type="button" data-demo-action="cancel-reset">取消</button><button type="button" class="demo-danger-button" data-demo-action="confirm-reset">确认重置</button></div></form></dialog>
@@ -118,5 +122,5 @@ export function renderCapabilityDemoView(
     return;
   }
   main.innerHTML = renderSettings(state);
-  inspector.innerHTML = `<section class="demo-panel demo-capability-inspector"><span class="demo-chip">演示模式</span><h3>本地优先</h3><p>所有状态存储在当前浏览器。重置后会回到默认数据与开关状态。</p></section>`;
+  inspector.innerHTML = `<section class="demo-panel demo-capability-inspector"><span class="demo-chip">客户自带密钥</span><h3>真实连接，可控启用</h3><p>官方 API Key 只在创建或轮换时提交；连接需先测试，再人工确认启用。演示数据仍存储在当前浏览器。</p></section>`;
 }

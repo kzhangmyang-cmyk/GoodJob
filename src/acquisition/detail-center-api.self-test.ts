@@ -585,6 +585,143 @@ assert.equal(
 );
 assert.equal(intelligenceWriteHeaders.get("x-csrf-token"), "csrf/candidate");
 
+const contentFetchResponse = {
+  id: "content-fetch-1",
+  ownerId: "user-1",
+  teamId: "team-1",
+  actorId: "user-1",
+  sourceUrl: "https://www.douyin.com/user/example",
+  finalUrl: "https://www.douyin.com/user/example",
+  subjectChannel: "individual" as const,
+  status: "succeeded" as const,
+  accessStatus: "public_content" as const,
+  httpStatus: 200,
+  contentType: "text/html",
+  title: "示例主页",
+  rawArtifactHash: "sha256:raw-profile",
+  contentHash: "sha256:content-profile",
+  evidenceCount: 1,
+  evidenceIds: ["identity-evidence-1"],
+  candidateCount: 1,
+  candidateIds: ["candidate-identity"],
+  errorCode: null,
+  createdAt: "2026-08-07T05:04:00.000Z",
+  startedAt: "2026-08-07T05:04:01.000Z",
+  completedAt: "2026-08-07T05:04:02.000Z"
+};
+const identityCalls: Array<{
+  input: RequestInfo | URL;
+  init?: RequestInit;
+}> = [];
+const identityApi = createAcquisitionDetailApi(
+  async (input, init) => {
+    identityCalls.push({ input, init });
+    if (String(input).includes("content-fetch-1")) {
+      return Response.json(contentFetchResponse);
+    }
+    if (String(input).includes("identity-confirmation")) {
+      return Response.json({
+        candidate: {
+          ...candidateResponse,
+          subjectKind: "individual",
+          publicActorKey: "douyin-user-example",
+          publicDisplayName: "陈经理",
+          publicProfileUrl: "https://www.douyin.com/user/example",
+          sourcePlatform: "douyin",
+          demandCategory: "获客",
+          demandSummary: "公开表达获客需求",
+          locationHint: "厦门",
+          buyingStage: "solution_research",
+          negativeSignals: [],
+          firstSeenAt: "2026-08-07T05:00:00.000Z",
+          lastSeenAt: "2026-08-07T05:04:00.000Z",
+          identityResolved: true,
+          version: 2
+        },
+        resolution: {
+          status: "resolved",
+          basis: "provider_public_actor",
+          resolverVersion: "identity-resolution.v1",
+          evidenceIds: ["identity-evidence-1"],
+          resolvedAt: "2026-08-07T05:04:03.000Z",
+          resolvedBy: "user-1"
+        }
+      }, { headers: { etag: '"candidate-v2"' } });
+    }
+    return Response.json(contentFetchResponse, { status: 202 });
+  },
+  { cookie: "session=1; gj_csrf=csrf%2Fidentity" }
+);
+const createdFetch = await identityApi.createContentFetchOperation(
+  {
+    sourceUrl: " https://www.douyin.com/user/example ",
+    subjectChannel: "individual"
+  },
+  "identity-fetch-key-1"
+);
+assert.equal(createdFetch.evidenceIds[0], "identity-evidence-1");
+assert.equal(identityCalls[0]?.input, "/api/v1/acquisition/content-fetch-operations");
+assert.deepEqual(JSON.parse(String(identityCalls[0]?.init?.body)), {
+  sourceUrl: "https://www.douyin.com/user/example",
+  subjectChannel: "individual"
+});
+let identityHeaders = new Headers(identityCalls[0]?.init?.headers);
+assert.equal(identityHeaders.get("idempotency-key"), "identity-fetch-key-1");
+assert.equal(identityHeaders.get("x-csrf-token"), "csrf/identity");
+
+const loadedFetch = await identityApi.getContentFetchOperation("content-fetch-1");
+assert.equal(loadedFetch.status, "succeeded");
+assert.equal(
+  identityCalls[1]?.input,
+  "/api/v1/acquisition/content-fetch-operations/content-fetch-1"
+);
+
+const confirmedIdentity = await identityApi.confirmCandidateIdentity(
+  "candidate/identity",
+  1,
+  {
+    subjectKind: "individual",
+    publicProfileUrl: "https://www.douyin.com/user/example",
+    sourcePlatform: "douyin",
+    evidenceIds: ["identity-evidence-1"],
+    rationale: "公开主页与候选主体一致"
+  },
+  "identity-confirm-key-1"
+);
+assert.equal(confirmedIdentity.resolution.status, "resolved");
+assert.equal(confirmedIdentity.candidate.identityResolved, true);
+assert.equal(
+  identityCalls[2]?.input,
+  "/api/v1/acquisition/candidates/candidate%2Fidentity/identity-confirmation"
+);
+assert.deepEqual(JSON.parse(String(identityCalls[2]?.init?.body)), {
+  subjectKind: "individual",
+  publicProfileUrl: "https://www.douyin.com/user/example",
+  sourcePlatform: "douyin",
+  evidenceIds: ["identity-evidence-1"],
+  rationale: "公开主页与候选主体一致"
+});
+identityHeaders = new Headers(identityCalls[2]?.init?.headers);
+assert.equal(identityHeaders.get("if-match"), '"candidate-v1"');
+assert.equal(identityHeaders.get("idempotency-key"), "identity-confirm-key-1");
+assert.equal(identityHeaders.get("x-csrf-token"), "csrf/identity");
+
+await assert.rejects(
+  () => identityApi.confirmCandidateIdentity(
+    "candidate-identity",
+    0,
+    {
+      subjectKind: "individual",
+      publicProfileUrl: "https://www.douyin.com/user/example",
+      sourcePlatform: "douyin",
+      evidenceIds: ["identity-evidence-1"],
+      rationale: "公开主页与候选主体一致"
+    },
+    "identity-confirm-key-2"
+  ),
+  /候选版本必须是正整数/
+);
+
 const reviewWriteResponse = {
   candidate: {
     ...candidateResponse,

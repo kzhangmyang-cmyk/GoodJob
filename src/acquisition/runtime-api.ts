@@ -2,6 +2,7 @@ import type {
   AcquisitionTaskOverview,
   AcquisitionTaskSummary
 } from "./runtime-model";
+import { csrfFromCookie } from "./csrf";
 
 export interface AcquisitionTaskDetail {
   task: AcquisitionTaskSummary;
@@ -32,6 +33,46 @@ export interface AcquisitionTaskDetail {
 export interface AcquisitionRuntimeApi {
   getOverview(): Promise<AcquisitionTaskOverview>;
   getTask(planId: string): Promise<AcquisitionTaskDetail>;
+  createImportOperation(
+    input: AcquisitionImportOperationCreateInput,
+    idempotencyKey: string
+  ): Promise<AcquisitionImportOperation>;
+  getImportOperation(id: string): Promise<AcquisitionImportOperation>;
+}
+
+export interface AcquisitionRuntimeApiOptions {
+  cookie?: string;
+  cookieSource?: () => string;
+}
+
+export interface AcquisitionImportOperation {
+  id: string;
+  status: string;
+  acceptedRowCount?: number;
+  evidenceCount?: number;
+  candidateCount?: number;
+  candidateIds?: string[];
+  errorRows?: Array<{
+    sheetName: string;
+    rowNumber: number;
+    code: string;
+    message: string;
+  }>;
+}
+
+export interface AcquisitionImportOperationCreateInput {
+  fileName: string;
+  mediaType: "text/csv" | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  content: ArrayBuffer;
+  subjectChannel: "organization" | "individual";
+  mapping: {
+    sourceTitle: string;
+    sourceSnippet: string;
+    sourcePlatform?: string;
+    sourceUrl?: string;
+    publishedAt?: string;
+    locale?: string;
+  };
 }
 
 interface ErrorBody {
@@ -54,9 +95,27 @@ function segment(value: string): string {
   return encodeURIComponent(value);
 }
 
+function defaultCookieSource(): string {
+  return typeof document === "undefined" ? "" : document.cookie;
+}
+
+function validIdempotencyKey(value: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 200) {
+    throw new Error("幂等键必须为 1 到 200 个字符");
+  }
+  return normalized;
+}
+
 export function createAcquisitionApi(
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  options: AcquisitionRuntimeApiOptions = {}
 ): AcquisitionRuntimeApi {
+  const cookieSource = options.cookieSource
+    ?? (options.cookie === undefined
+      ? defaultCookieSource
+      : () => options.cookie ?? "");
+
   async function request<T>(path: string): Promise<T> {
     const response = await fetchImpl(path, {
       method: "GET",
@@ -79,6 +138,36 @@ export function createAcquisitionApi(
     getTask(planId: string) {
       return request<AcquisitionTaskDetail>(
         `/api/v1/acquisition/tasks/${segment(planId)}`
+      );
+    },
+    async createImportOperation(input, idempotencyKey) {
+      const query = new URLSearchParams({
+        fileName: input.fileName,
+        subjectChannel: input.subjectChannel,
+        mapping: JSON.stringify(input.mapping)
+      });
+      const response = await fetchImpl(
+        `/api/v1/acquisition/import-operations?${query}`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+          headers: {
+            accept: "application/json",
+            "Content-Type": input.mediaType,
+            "Idempotency-Key": validIdempotencyKey(idempotencyKey),
+            "X-CSRF-Token": csrfFromCookie(cookieSource())
+          },
+          body: input.content
+        }
+      );
+      const body = await response.json().catch(() => ({})) as
+        AcquisitionImportOperation & ErrorBody;
+      if (!response.ok) throw new Error(errorMessage(body, response.status));
+      return body;
+    },
+    getImportOperation(id: string) {
+      return request<AcquisitionImportOperation>(
+        `/api/v1/acquisition/import-operations/${segment(id)}`
       );
     }
   };

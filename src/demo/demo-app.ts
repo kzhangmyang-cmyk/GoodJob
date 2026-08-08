@@ -141,6 +141,15 @@ export function startDemoApp(): void {
     const action = actionTarget?.dataset.demoAction;
     const conversationId = actionTarget?.dataset.conversationId;
     const opportunityId = actionTarget?.dataset.opportunityId;
+    if (action === "open-connection-center") {
+      const mode = actionTarget?.dataset.connectionMode;
+      if (mode === "search" || mode === "model") {
+        document.dispatchEvent(new CustomEvent("goodjob:connections-open-requested", {
+          detail: { mode, returnTo: "settings" }
+        }));
+      }
+      return;
+    }
     if (action === "simulate-acquisition-sync") {
       if (router.current() !== "acquisition") return;
       if (shell.dataset.acquisitionMode === "real") {

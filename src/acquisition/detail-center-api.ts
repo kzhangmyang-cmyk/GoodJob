@@ -291,6 +291,71 @@ export interface CandidateWithEtag {
   etag: string | null;
 }
 
+export type AcquisitionContentFetchStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "access_restricted";
+
+export interface AcquisitionContentFetchCreateInput {
+  sourceUrl: string;
+  subjectChannel: "organization" | "individual";
+}
+
+export interface AcquisitionContentFetchOperation {
+  id: string;
+  ownerId: string;
+  teamId: string;
+  actorId: string;
+  sourceUrl: string;
+  finalUrl: string | null;
+  subjectChannel: "organization" | "individual";
+  status: AcquisitionContentFetchStatus;
+  accessStatus: "public_content" | "access_restricted" | null;
+  httpStatus: number | null;
+  contentType: string | null;
+  title: string | null;
+  rawArtifactHash: string | null;
+  contentHash: string | null;
+  evidenceCount: number;
+  evidenceIds: string[];
+  candidateCount: number;
+  candidateIds: string[];
+  errorCode: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export type CandidateIdentityConfirmationInput =
+  | {
+      subjectKind: "organization";
+      domain: string | null;
+      creditCode: string | null;
+      evidenceIds: string[];
+      rationale: string;
+    }
+  | {
+      subjectKind: "individual";
+      publicProfileUrl: string;
+      sourcePlatform: string;
+      evidenceIds: string[];
+      rationale: string;
+    };
+
+export interface CandidateIdentityConfirmationResult {
+  candidate: AcquisitionCandidate;
+  resolution: {
+    status: "resolved";
+    basis: string;
+    resolverVersion: string;
+    evidenceIds: string[];
+    resolvedAt: string;
+    resolvedBy: string;
+  };
+}
+
 export type EvidenceProvenance =
   | {
       kind: "search_result";
@@ -641,6 +706,19 @@ export interface AcquisitionDetailApi {
   getLatestIntelligenceOperation(
     candidateId: string
   ): Promise<CandidateIntelligenceOperation | null>;
+  createContentFetchOperation(
+    input: AcquisitionContentFetchCreateInput,
+    idempotencyKey: string
+  ): Promise<AcquisitionContentFetchOperation>;
+  getContentFetchOperation(
+    id: string
+  ): Promise<AcquisitionContentFetchOperation>;
+  confirmCandidateIdentity(
+    candidateId: string,
+    candidateVersion: number,
+    input: CandidateIdentityConfirmationInput,
+    idempotencyKey: string
+  ): Promise<CandidateIdentityConfirmationResult>;
   startIntelligenceOperation(
     candidateId: string,
     idempotencyKey: string
@@ -753,6 +831,13 @@ function validRunIdempotencyKey(value: string): string {
 }
 
 const validHandoffIdempotencyKey = validRunIdempotencyKey;
+
+function validCandidateVersion(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("候选版本必须是正整数");
+  }
+  return value;
+}
 
 function queryString(values: Record<string, string | number | undefined>) {
   const params = new URLSearchParams();
@@ -934,6 +1019,45 @@ export function createAcquisitionDetailApi(
         `/api/v1/acquisition/candidates/${pathSegment(candidateId)}`
         + "/intelligence-operation"
       );
+    },
+    createContentFetchOperation(input, idempotencyKey) {
+      return post<AcquisitionContentFetchOperation>(
+        "/api/v1/acquisition/content-fetch-operations",
+        {
+          sourceUrl: requiredText(input.sourceUrl, "公开主页 URL", 4_096),
+          subjectChannel: input.subjectChannel
+        },
+        idempotencyKey
+      );
+    },
+    getContentFetchOperation(id) {
+      return get<AcquisitionContentFetchOperation>(
+        `/api/v1/acquisition/content-fetch-operations/${pathSegment(
+          requiredText(id, "公开抓取任务 ID", 160)
+        )}`
+      );
+    },
+    async confirmCandidateIdentity(
+      candidateId,
+      candidateVersion,
+      input,
+      idempotencyKey
+    ) {
+      const loaded = await request<CandidateIdentityConfirmationResult>(
+        `/api/v1/acquisition/candidates/${pathSegment(
+          requiredText(candidateId, "候选 ID", 255)
+        )}/identity-confirmation`,
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": validRunIdempotencyKey(idempotencyKey),
+            "If-Match": `"candidate-v${validCandidateVersion(candidateVersion)}"`
+          },
+          body: JSON.stringify(input)
+        }
+      );
+      if (!loaded) throw new Error("候选不存在");
+      return loaded.body;
     },
     startIntelligenceOperation(candidateId: string, idempotencyKey: string) {
       return post<CandidateIntelligenceOperation>(

@@ -248,8 +248,17 @@
 .demo-trade-handoff { grid-column: 1 / -1; align-content: start; min-height: 148px; }
 .demo-trade-handoff .demo-capability-toggle { justify-self: start; }
 
+.demo-settings-connections,
 .demo-settings-data,
 .demo-settings-unavailable { display: grid; gap: 15px; }
+.demo-settings-connections > p { margin: 0; color: var(--replica-muted); font-size: 11px; line-height: 1.55; }
+.demo-settings-connection-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.demo-settings-connection-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 13px; border: 1px solid var(--replica-line-soft); border-radius: 10px; background: rgba(24, 237, 120, 0.035); }
+.demo-settings-connection-card > div { display: grid; gap: 4px; min-width: 0; }
+.demo-settings-connection-card b { color: #eafff0; font-size: 12px; }
+.demo-settings-connection-card > div > span { color: var(--replica-muted); font-size: 10px; line-height: 1.45; }
+.demo-settings-connection-card .demo-primary { min-height: 34px; padding: 0 11px; cursor: pointer; white-space: nowrap; }
+.demo-settings-connection-card .demo-primary:hover { border-color: rgba(24, 237, 120, 0.7); }
 .demo-settings-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .demo-settings-counts div { display: grid; gap: 5px; padding: 11px; border: 1px solid var(--replica-line-soft); border-radius: 9px; background: rgba(255, 255, 255, 0.018); }
 .demo-settings-counts b { color: #eafff0; font-size: 21px; }
@@ -1925,6 +1934,9 @@
   .demo-trade-grid,
   .demo-settings-unavailable > div:last-child { grid-template-columns: minmax(0, 1fr); }
 
+  .demo-settings-connection-grid { grid-template-columns: minmax(0, 1fr); }
+  .demo-settings-connection-card { grid-template-columns: auto minmax(0, 1fr); }
+  .demo-settings-connection-card .demo-primary { grid-column: 1 / -1; justify-self: start; }
   .demo-settings-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .demo-trade-handoff { grid-column: auto; }
 

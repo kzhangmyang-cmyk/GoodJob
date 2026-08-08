@@ -622,6 +622,105 @@ function state(
   assert.match(html, /&lt;img/);
 }
 
+{
+  const unresolvedDouyinDetail: AcquisitionCandidateDetail = {
+    ...candidateDetail,
+    candidate: {
+      id: "candidate-person",
+      subjectKind: "individual",
+      publicActorKey: "unknown-public-actor",
+      publicDisplayName: "陈经理",
+      publicProfileUrl: "",
+      sourcePlatform: "douyin",
+      status: "normalized",
+      version: 1,
+      identityResolved: false,
+      latestDecisionVersion: null,
+      approvedDecisionVersion: null
+    },
+    qualification: null,
+    financialValue: null,
+    battleCard: null,
+    intelligenceOperation: null
+  };
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-person",
+    candidateDetail: unresolvedDouyinDetail,
+    identityVerification: {
+      status: "ready_to_confirm",
+      profileUrl: "https://www.douyin.com/user/example",
+      rationale: "公开主页与候选主体一致 <script>alert('rationale')</script>",
+      evidenceIds: ["identity-evidence-1"],
+      operationId: "content-fetch-identity",
+      message: "已抓取 1 条公开主页证据",
+      error: null
+    }
+  }));
+  assert.match(html, /主体核验/);
+  assert.match(html, /data-acquisition-detail-form="identity-verification"/);
+  assert.match(html, /name="identityProfileUrl"/);
+  assert.match(html, /https:\/\/www\.douyin\.com\/user\/example/);
+  assert.match(html, /name="identityEvidenceId"/);
+  assert.match(html, /identity-evidence-1/);
+  assert.match(html, /data-identity-action="fetch"/);
+  assert.match(html, /data-identity-action="confirm"/);
+  assert.doesNotMatch(html, /data-acquisition-detail-action="start-intelligence"/);
+  assert.doesNotMatch(html, /<script>alert\('rationale'\)<\/script>/);
+  assert.match(html, /&lt;script&gt;/);
+}
+
+{
+  const importedCandidateDetail: AcquisitionCandidateDetail = {
+    candidate: {
+      id: "candidate-imported-1",
+      publicDisplayName: "用户导入的公开抖音链接",
+      publicProfileUrl: "https://www.douyin.com/video/1",
+      sourcePlatform: "douyin",
+      subjectKind: "individual",
+      status: "normalized",
+      version: 1,
+      identityResolved: false
+    },
+    evidence: [],
+    qualification: null,
+    financialValue: null,
+    battleCard: null,
+    reviews: [],
+    intelligenceOperation: null,
+    privateDomainHandoff: null
+  };
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    detail: null,
+    selectedCandidateId: "candidate-imported-1",
+    candidateDetail: importedCandidateDetail,
+    identityVerification: {
+      status: "idle",
+      profileUrl: "https://www.douyin.com/video/1",
+      rationale: "已人工核对本次受控抓取的抖音公开主页，与候选需求主体一致。",
+      evidenceIds: [],
+      operationId: null,
+      message: null,
+      error: null
+    }
+  }));
+
+  assert.match(html, /用户导入的公开抖音链接/);
+  assert.match(html, /主体核验/);
+  assert.match(
+    html,
+    /name="identityProfileUrl"[^>]*value=""/,
+    "a video URL must not be prefilled into the exact /user/ profile field"
+  );
+  assert.doesNotMatch(
+    html,
+    /name="identityProfileUrl"[^>]*value="https:\/\/www\.douyin\.com\/video\/1"/
+  );
+  assert.match(html, /抓取公开主页证据/);
+  assert.doesNotMatch(html, /请选择一个候选/);
+}
+
 // Catches collapsing independent budget dimensions into one invented percentage.
 {
   const html = renderAcquisitionDetailCenter(state({ mode: "plan" }));

@@ -5,12 +5,14 @@ import {
   type AcquisitionRunControlAction,
   type AcquisitionRunWithEtag,
   type AcquisitionTaskDetail,
+  type AcquisitionContentFetchOperation,
   type CandidateReviewAction
 } from "./detail-center-api";
 import {
   renderAcquisitionDetailCenter,
   type AcquisitionDetailCenterMode,
-  type AcquisitionDetailCenterState
+  type AcquisitionDetailCenterState,
+  type AcquisitionIdentityVerificationState
 } from "./detail-center-view";
 
 export type AcquisitionCandidateReviewAction = CandidateReviewAction;
@@ -32,6 +34,7 @@ export interface AcquisitionDetailCenterController {
   getState(): Readonly<AcquisitionDetailCenterState>;
   whenIdle(): Promise<void>;
   open(mode: AcquisitionDetailCenterMode, planId: string): Promise<void>;
+  openCandidate(candidateId: string): Promise<void>;
   close(): void;
   switchMode(mode: AcquisitionDetailCenterMode): void;
   selectCandidate(candidateId: string): Promise<void>;
@@ -42,6 +45,12 @@ export interface AcquisitionDetailCenterController {
     action: AcquisitionCandidateReviewAction,
     reason?: string
   ): Promise<void>;
+  fetchCandidateIdentityProfile(profileUrl: string, rationale?: string): Promise<void>;
+  confirmCandidateIdentity(input: {
+    profileUrl: string;
+    rationale: string;
+    evidenceIds: string[];
+  }): Promise<void>;
   startIntelligence(): Promise<void>;
   openPrivateDomainHandoff(): void;
   closePrivateDomainHandoff(): void;
@@ -73,6 +82,7 @@ interface RunMutationContext {
 interface DetailOpenRequest {
   mode?: unknown;
   planId?: unknown;
+  candidateId?: unknown;
 }
 
 function defaultEventTarget(): EventTarget {
@@ -84,6 +94,10 @@ function requestedMode(value: unknown): AcquisitionDetailCenterMode | null {
 }
 
 function requestedPlanId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function requestedCandidateId(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
@@ -353,6 +367,115 @@ function errorText(error: unknown): string {
     : "请求失败";
 }
 
+const TERMINAL_CONTENT_FETCH_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "access_restricted"
+]);
+
+function sleepWith(
+  schedule: (callback: () => void, delay: number) => unknown,
+  cancel: (handle: unknown) => void,
+  delay: number
+): Promise<void> {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const handle = schedule(() => {
+      resolved = true;
+      resolve();
+    }, delay);
+    if (resolved) cancel(handle);
+  });
+}
+
+function canonicalDouyinProfileUrl(value: string): string {
+  const normalized = value.trim();
+  let url: URL;
+  try {
+    url = new URL(normalized);
+  } catch {
+    throw new Error("请填写有效的抖音公开主页 URL");
+  }
+  const hostname = url.hostname.toLowerCase();
+  const path = url.pathname.replace(/\/+$/u, "");
+  if (url.protocol !== "https:"
+    || (hostname !== "www.douyin.com" && hostname !== "douyin.com")
+    || !path.startsWith("/user/")
+    || path.length <= "/user/".length) {
+    throw new Error("仅支持 HTTPS 的抖音 /user/ 精确公开主页");
+  }
+  url.hash = "";
+  return url.toString();
+}
+
+function validIdentityRationale(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error("请填写人工核验说明");
+  if (normalized.length > 2_000) {
+    throw new Error("人工核验说明不能超过 2000 个字符");
+  }
+  return normalized;
+}
+
+function validEvidenceIds(values: string[]): string[] {
+  const normalized = [...new Set(values.map((id) => id.trim()).filter(Boolean))];
+  if (normalized.length === 0) throw new Error("请至少选择一条公开主页证据");
+  if (normalized.length > 100) throw new Error("公开主页证据不能超过 100 条");
+  return normalized;
+}
+
+function candidateVersion(candidate: Record<string, unknown> | null | undefined): number {
+  const version = candidate?.version;
+  if (!Number.isSafeInteger(version) || Number(version) <= 0) {
+    throw new Error("候选版本缺失，请刷新后重试");
+  }
+  return Number(version);
+}
+
+function unresolvedDouyinCandidate(
+  candidate: Record<string, unknown> | null | undefined
+): boolean {
+  return candidate?.subjectKind === "individual"
+    && candidate.identityResolved !== true
+    && typeof candidate.sourcePlatform === "string"
+    && candidate.sourcePlatform.toLowerCase().includes("douyin");
+}
+
+function identityStateForCandidate(
+  candidate: Record<string, unknown> | null | undefined,
+  previous?: AcquisitionIdentityVerificationState | null
+): AcquisitionIdentityVerificationState | null {
+  if (candidate?.subjectKind !== "individual"
+    || typeof candidate.sourcePlatform !== "string"
+    || !candidate.sourcePlatform.toLowerCase().includes("douyin")) {
+    return null;
+  }
+  if (candidate.identityResolved === true) {
+    return {
+      status: "confirmed",
+      profileUrl: typeof candidate.publicProfileUrl === "string"
+        ? candidate.publicProfileUrl
+        : previous?.profileUrl ?? "",
+      rationale: previous?.rationale ?? "",
+      evidenceIds: previous?.evidenceIds ?? [],
+      operationId: previous?.operationId ?? null,
+      message: "主体已确认",
+      error: null
+    };
+  }
+  return previous ?? {
+    status: "idle",
+    profileUrl: typeof candidate.publicProfileUrl === "string"
+      ? candidate.publicProfileUrl
+      : "",
+    rationale: "已人工核对本次受控抓取的抖音公开主页，与候选需求主体一致。",
+    evidenceIds: [],
+    operationId: null,
+    message: null,
+    error: null
+  };
+}
+
 async function loadResource<T>(
   label: string,
   load: () => Promise<T>,
@@ -429,7 +552,8 @@ export function createAcquisitionDetailCenterController(
     loadingMoreCandidates: false,
     runControlBusy: false,
     runControlReason: "",
-    handoffDialog: null
+    handoffDialog: null,
+    identityVerification: null
   };
   let disposed = false;
   let requestSerial = 0;
@@ -582,6 +706,7 @@ export function createAcquisitionDetailCenterController(
     candidateSerial += 1;
     state.selectedCandidateId = null;
     state.candidateDetail = null;
+    state.identityVerification = null;
     clearCandidatePaginationBusy();
   }
 
@@ -923,6 +1048,10 @@ export function createAcquisitionDetailCenterController(
       intelligenceOperation: record(operationResult.value),
       privateDomainHandoff: handoffResult.value
     };
+    state.identityVerification = identityStateForCandidate(
+      state.candidateDetail.candidate,
+      state.identityVerification
+    );
     const failures = [
       ...candidateResult.errors,
       ...evidenceResult.errors,
@@ -990,6 +1119,19 @@ export function createAcquisitionDetailCenterController(
     return promise;
   }
 
+  async function waitForContentFetchOperation(
+    operation: AcquisitionContentFetchOperation,
+    context: MutationContext
+  ): Promise<AcquisitionContentFetchOperation | null> {
+    let current = operation;
+    while (!TERMINAL_CONTENT_FETCH_STATUSES.has(current.status)) {
+      await sleepWith(schedulePoll, cancelPoll, pollIntervalMs);
+      if (!mutationIsCurrent(context)) return null;
+      current = await api.getContentFetchOperation(current.id);
+    }
+    return mutationIsCurrent(context) ? current : null;
+  }
+
   const controller: AcquisitionDetailCenterController = {
     getState() {
       return state;
@@ -1013,6 +1155,7 @@ export function createAcquisitionDetailCenterController(
       state.detail = null;
       state.selectedCandidateId = null;
       state.candidateDetail = null;
+      state.identityVerification = null;
       state.message = null;
       state.error = null;
       state.runControlReason = "";
@@ -1044,6 +1187,32 @@ export function createAcquisitionDetailCenterController(
       })());
     },
 
+    openCandidate(candidateId) {
+      const id = requestedCandidateId(candidateId);
+      if (!id) return rejectValidation("候选 ID 不能为空");
+      invalidateMutation();
+      invalidateRunMutation();
+      clearCandidatePaginationBusy();
+      requestSerial += 1;
+      currentPlanId = null;
+      paginatedRunId = null;
+      expectedRunId = null;
+      showRoot();
+      state.mode = "candidates";
+      state.status = "ready";
+      state.detail = null;
+      state.selectedCandidateId = null;
+      state.candidateDetail = null;
+      state.identityVerification = null;
+      state.message = null;
+      state.error = null;
+      state.runControlReason = "";
+      state.handoffDialog = null;
+      candidateSerial += 1;
+      render();
+      return controller.selectCandidate(id);
+    },
+
     close() {
       invalidateMutation();
       invalidateRunMutation();
@@ -1052,6 +1221,7 @@ export function createAcquisitionDetailCenterController(
       candidateSerial += 1;
       paginatedRunId = null;
       expectedRunId = null;
+      state.identityVerification = null;
       hideRoot();
     },
 
@@ -1078,6 +1248,7 @@ export function createAcquisitionDetailCenterController(
       const serial = ++candidateSerial;
       state.selectedCandidateId = id;
       state.candidateDetail = null;
+      state.identityVerification = null;
       state.handoffDialog = null;
       state.error = null;
       state.message = "正在读取候选证据与 AI 研判…";
@@ -1434,6 +1605,242 @@ export function createAcquisitionDetailCenterController(
       })());
     },
 
+    fetchCandidateIdentityProfile(profileUrl, rationale = "") {
+      const candidateId = state.selectedCandidateId;
+      const candidate = state.candidateDetail?.candidate;
+      if (!candidateId || !candidate) {
+        return rejectValidation("请先选择一个候选");
+      }
+      if (!unresolvedDouyinCandidate(candidate)) {
+        return rejectValidation("只有未确认主体的抖音个人候选需要公开主页核验");
+      }
+      if (mutating) return rejectValidation("另一项候选操作正在进行");
+
+      let canonicalProfileUrl: string;
+      let normalizedRationale: string;
+      try {
+        canonicalProfileUrl = canonicalDouyinProfileUrl(profileUrl);
+        normalizedRationale = rationale.trim()
+          || "已人工核对本次受控抓取的抖音公开主页，与候选需求主体一致。";
+      } catch (error) {
+        return rejectValidation(errorText(error));
+      }
+      const idempotency = stableKey("identity-fetch", {
+        candidateId,
+        profileUrl: canonicalProfileUrl
+      });
+      const context = beginMutation(candidateId);
+      state.error = null;
+      state.message = null;
+      state.identityVerification = {
+        status: "fetching",
+        profileUrl: canonicalProfileUrl,
+        rationale: normalizedRationale,
+        evidenceIds: [],
+        operationId: null,
+        message: "正在抓取抖音公开主页证据…",
+        error: null
+      };
+      render();
+      return remember((async () => {
+        try {
+          const created = await api.createContentFetchOperation(
+            {
+              sourceUrl: canonicalProfileUrl,
+              subjectChannel: "individual"
+            },
+            idempotency.value
+          );
+          const completed = await waitForContentFetchOperation(created, context);
+          if (!completed || !mutationIsCurrent(context)) return;
+          pendingIdempotencyKeys.delete(idempotency.id);
+          if (completed.status === "succeeded" && completed.evidenceIds.length > 0) {
+            state.identityVerification = {
+              status: "ready_to_confirm",
+              profileUrl: canonicalProfileUrl,
+              rationale: normalizedRationale,
+              evidenceIds: [...completed.evidenceIds],
+              operationId: completed.id,
+              message: `已抓取 ${completed.evidenceIds.length} 条公开主页证据，请人工确认后启动 AI 研判。`,
+              error: null
+            };
+          } else {
+            const reason = completed.status === "access_restricted"
+              ? "公开主页访问受限，不能用于主体核验"
+              : completed.errorCode
+                ? `公开主页抓取失败（${completed.errorCode}）`
+                : "抓取完成，但没有返回可用于核验的公开证据";
+            state.identityVerification = {
+              status: "failed",
+              profileUrl: canonicalProfileUrl,
+              rationale: normalizedRationale,
+              evidenceIds: [],
+              operationId: completed.id,
+              message: null,
+              error: reason
+            };
+          }
+          render();
+        } catch (error) {
+          if (mutationIsCurrent(context)) {
+            state.identityVerification = {
+              status: "failed",
+              profileUrl: canonicalProfileUrl,
+              rationale: normalizedRationale,
+              evidenceIds: [],
+              operationId: null,
+              message: null,
+              error: errorText(error)
+            };
+            state.error = errorText(error);
+            state.message = null;
+            render();
+          }
+          throw error;
+        } finally {
+          if (context.serial === mutationSerial) mutating = false;
+        }
+      })());
+    },
+
+    confirmCandidateIdentity(input) {
+      const candidateId = state.selectedCandidateId;
+      const candidate = state.candidateDetail?.candidate;
+      if (!candidateId || !candidate) {
+        return rejectValidation("请先选择一个候选");
+      }
+      if (!unresolvedDouyinCandidate(candidate)) {
+        return rejectValidation("只有未确认主体的抖音个人候选可以执行主体确认");
+      }
+      if (state.identityVerification?.status !== "ready_to_confirm") {
+        return rejectValidation("请先抓取精确公开主页证据");
+      }
+      if (mutating) return rejectValidation("另一项候选操作正在进行");
+
+      let canonicalProfileUrl: string;
+      let rationale: string;
+      let evidenceIds: string[];
+      let version: number;
+      try {
+        canonicalProfileUrl = canonicalDouyinProfileUrl(input.profileUrl);
+        if (canonicalProfileUrl !== state.identityVerification.profileUrl) {
+          throw new Error("确认主页与已抓取的公开主页不一致");
+        }
+        rationale = validIdentityRationale(input.rationale);
+        evidenceIds = validEvidenceIds(input.evidenceIds);
+        const allowed = new Set(state.identityVerification.evidenceIds);
+        if (evidenceIds.some((id) => !allowed.has(id))) {
+          throw new Error("所选证据不是本次受控抓取返回的公开证据");
+        }
+        version = candidateVersion(candidate);
+      } catch (error) {
+        return rejectValidation(errorText(error));
+      }
+
+      const idempotency = stableKey("identity-confirm", {
+        candidateId,
+        version,
+        profileUrl: canonicalProfileUrl,
+        evidenceIds,
+        rationale
+      });
+      const context = beginMutation(candidateId);
+      state.error = null;
+      state.message = "正在确认主体并准备启动 AI 研判…";
+      state.identityVerification = {
+        ...state.identityVerification,
+        status: "confirming",
+        profileUrl: canonicalProfileUrl,
+        rationale,
+        evidenceIds,
+        message: "正在保存主体确认…",
+        error: null
+      };
+      render();
+      return remember((async () => {
+        let intelligenceStarted = false;
+        try {
+          const result = await api.confirmCandidateIdentity(
+            candidateId,
+            version,
+            {
+              subjectKind: "individual",
+              publicProfileUrl: canonicalProfileUrl,
+              sourcePlatform: "douyin",
+              evidenceIds,
+              rationale
+            },
+            idempotency.value
+          );
+          pendingIdempotencyKeys.delete(idempotency.id);
+          if (!mutationIsCurrent(context)) return;
+          if (state.candidateDetail) {
+            state.candidateDetail = {
+              ...state.candidateDetail,
+              candidate: result.candidate as unknown as Record<string, unknown>
+            };
+          }
+          state.identityVerification = {
+            status: "confirmed",
+            profileUrl: canonicalProfileUrl,
+            rationale,
+            evidenceIds,
+            operationId: state.identityVerification?.operationId ?? null,
+            message: "主体已确认，正在启动 AI 研判…",
+            error: null
+          };
+          try {
+            const startKey = stableKey("identity-start-intelligence", {
+              candidateId,
+              profileUrl: canonicalProfileUrl
+            });
+            await api.startIntelligenceOperation(candidateId, startKey.value);
+            pendingIdempotencyKeys.delete(startKey.id);
+            intelligenceStarted = true;
+          } catch (error) {
+            if (mutationIsCurrent(context)) {
+              state.error = `主体已确认，但 AI 研判启动失败：${errorText(error)}`;
+            }
+          }
+          if (!mutationIsCurrent(context)) return;
+          eventTarget.dispatchEvent(customEvent(
+            "goodjob:acquisition-candidate-changed",
+            {
+              planId: context.planId,
+              candidateId,
+              action: intelligenceStarted
+                ? "identity_confirmed_and_intelligence_started"
+                : "identity_confirmed"
+            }
+          ));
+          await refreshAfterMutation(
+            context,
+            intelligenceStarted
+              ? "主体已确认，AI 研判已启动，正在刷新候选…"
+              : "主体已确认，正在刷新候选…",
+            intelligenceStarted
+              ? "主体已确认并启动 AI 研判"
+              : "主体已确认"
+          );
+        } catch (error) {
+          if (mutationIsCurrent(context)) {
+            state.identityVerification = {
+              ...state.identityVerification!,
+              status: "failed",
+              message: null,
+              error: errorText(error)
+            };
+            state.error = errorText(error);
+            state.message = null;
+            render();
+          }
+          throw error;
+        } finally {
+          if (context.serial === mutationSerial) mutating = false;
+        }
+      })());
+    },
+
     openPrivateDomainHandoff() {
       const candidate = state.candidateDetail?.candidate;
       const handoffStatus = state.candidateDetail?.privateDomainHandoff;
@@ -1695,8 +2102,26 @@ export function createAcquisitionDetailCenterController(
     const detail = (event as CustomEvent<DetailOpenRequest>).detail;
     const mode = requestedMode(detail?.mode);
     const planId = requestedPlanId(detail?.planId);
-    if (!mode || !planId) return;
-    void controller.open(mode, planId).catch(() => undefined);
+    const candidateId = requestedCandidateId(detail?.candidateId);
+    if (!mode) return;
+    if (!planId) {
+      if (mode === "candidates" && candidateId) {
+        void controller.openCandidate(candidateId).catch(() => undefined);
+      }
+      return;
+    }
+    void controller.open(mode, planId)
+      .then(() => {
+        if (
+          mode === "candidates"
+          && candidateId
+          && controller.getState().selectedCandidateId !== candidateId
+        ) {
+          return controller.selectCandidate(candidateId);
+        }
+        return undefined;
+      })
+      .catch(() => undefined);
   }
 
   function consume(promise: Promise<void>): void {
@@ -1790,6 +2215,33 @@ export function createAcquisitionDetailCenterController(
       }));
       return;
     }
+    if (form?.dataset?.acquisitionDetailForm === "identity-verification") {
+      event.preventDefault();
+      if (typeof form.reportValidity === "function" && !form.reportValidity()) return;
+      const submitter = (event as SubmitEvent).submitter as HTMLElement | null;
+      const identityAction = submitter?.dataset.identityAction;
+      const profileUrl = (form.elements.namedItem(
+        "identityProfileUrl"
+      ) as HTMLInputElement | null)?.value ?? "";
+      const rationale = (form.elements.namedItem(
+        "identityRationale"
+      ) as HTMLTextAreaElement | null)?.value ?? "";
+      const evidenceIds = Array.from(
+        form.querySelectorAll<HTMLInputElement>(
+          'input[name="identityEvidenceId"]:checked'
+        )
+      ).map((input) => input.value);
+      if (identityAction === "confirm") {
+        consume(controller.confirmCandidateIdentity({
+          profileUrl,
+          rationale,
+          evidenceIds
+        }));
+      } else {
+        consume(controller.fetchCandidateIdentityProfile(profileUrl, rationale));
+      }
+      return;
+    }
     if (form?.dataset?.acquisitionDetailForm !== "review") return;
     event.preventDefault();
     if (typeof form.reportValidity === "function" && !form.reportValidity()) return;
@@ -1814,6 +2266,7 @@ export function createAcquisitionDetailCenterController(
     candidateSerial += 1;
     paginatedRunId = null;
     expectedRunId = null;
+    state.identityVerification = null;
     finishClose();
   }
 

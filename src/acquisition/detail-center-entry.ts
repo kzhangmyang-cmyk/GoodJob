@@ -2,7 +2,22 @@ export type AcquisitionDetailMode = "plan" | "candidates";
 
 export interface AcquisitionDetailOpenRequest {
   mode: AcquisitionDetailMode;
-  planId: string;
+  planId?: string;
+  candidateId?: string;
+}
+
+export function acquisitionCandidateDetailRequest(
+  candidateId: string,
+  planId?: string
+): AcquisitionDetailOpenRequest | null {
+  const selectedCandidateId = candidateId.trim();
+  if (!selectedCandidateId) return null;
+  const selectedPlanId = planId?.trim();
+  return {
+    mode: "candidates",
+    ...(selectedPlanId ? { planId: selectedPlanId } : {}),
+    candidateId: selectedCandidateId
+  };
 }
 
 export function acquisitionDetailRequestForAction(
