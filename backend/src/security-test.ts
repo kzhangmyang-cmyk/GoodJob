@@ -253,17 +253,15 @@ try {
   results.csrfBlocked = noCsrfWrite.response.status;
 
   const acquisitionNoCsrf = await request(
-    "/api/v1/acquisition/plans/missing/approval",
+    "/api/v1/acquisition/candidates/missing/douyin-identity-resolution-operations",
     {
       method: "POST",
       headers: {
         cookie: shirley.cookies,
+        "Idempotency-Key": "security-douyin-no-csrf",
         "X-Request-Id": "security-acquisition-csrf"
       },
-      body: JSON.stringify({
-        decision: "approve",
-        reason: "must be blocked before routing"
-      })
+      body: "{}"
     }
   );
   await expectStatus(

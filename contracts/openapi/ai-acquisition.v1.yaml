@@ -978,6 +978,7 @@ paths:
           content: { application/json: { schema: { $ref: '#/components/schemas/DouyinIdentityResolutionOperation' } } }
         '400': *apiError
         '401': *apiError
+        '403': *apiError
         '404': *apiError
         '409': *apiError
         '422': *apiError

@@ -487,12 +487,26 @@ implements AcquisitionDouyinIdentityResolutionOperationRepository {
     const existingId = this.idempotency.get(key);
     if (existingId) {
       const existing = this.operations.get(existingId)!;
-      if (existing.requestHash !== operation.requestHash) {
+      if (existing.candidateId !== operation.candidateId) {
         throw new AcquisitionDouyinIdentityResolutionOperationError(
           "IDEMPOTENCY_CONFLICT"
         );
       }
       return { operation: clone(existing), created: false };
+    }
+    const candidateOperations = [...this.operations.values()]
+      .filter((candidateOperation) =>
+        candidateOperation.ownerId === operation.ownerId
+        && candidateOperation.teamId === operation.teamId
+        && candidateOperation.candidateId === operation.candidateId);
+    const blocked = candidateOperations.some((candidateOperation) =>
+      !(candidateOperation.status === "failed"
+        && candidateOperation.retryable
+        && candidateOperation.outcome === "provider_unavailable"));
+    if (blocked) {
+      throw new AcquisitionDouyinIdentityResolutionOperationError(
+        "OPERATION_ALREADY_RUNNING"
+      );
     }
     this.operations.set(operation.id, clone(operation));
     this.idempotency.set(key, operation.id);
@@ -729,6 +743,20 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
   ) {
     const validatedScope = scope(rawScope);
     const candidateId = requiredText(rawInput.candidateId, 120);
+    const idempotencyKeyHash = hash(requiredText(idempotencyKeyInput, 200));
+    const existing = await this.repository.findOperationByIdempotency({
+      ownerId: validatedScope.ownerId,
+      teamId: validatedScope.teamId,
+      idempotencyKeyHash
+    });
+    if (existing) {
+      if (existing.candidateId !== candidateId) {
+        throw new AcquisitionDouyinIdentityResolutionOperationError(
+          "IDEMPOTENCY_CONFLICT"
+        );
+      }
+      return { operation: publicOperation(existing), replayed: true };
+    }
     if (!Number.isSafeInteger(rawInput.expectedCandidateVersion)
       || rawInput.expectedCandidateVersion < 1) {
       throw new AcquisitionDouyinIdentityResolutionOperationError(
@@ -751,7 +779,6 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
         "INVALID_REQUEST"
       );
     }
-    const idempotencyKeyHash = hash(requiredText(idempotencyKeyInput, 200));
     const sourceEvidence = await Promise.all(sourceEvidenceIds.map(async (id) => {
       const item = await this.evidence.getEvidence(validatedScope, id);
       if (!item) {
@@ -775,19 +802,6 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       searchConnections,
       planSessionId
     });
-    const existing = await this.repository.findOperationByIdempotency({
-      ownerId: validatedScope.ownerId,
-      teamId: validatedScope.teamId,
-      idempotencyKeyHash
-    });
-    if (existing) {
-      if (existing.requestHash !== requestHash) {
-        throw new AcquisitionDouyinIdentityResolutionOperationError(
-          "IDEMPOTENCY_CONFLICT"
-        );
-      }
-      return { operation: publicOperation(existing), replayed: true };
-    }
     const now = validIso(this.now());
     const operation: AcquisitionDouyinIdentityResolutionOperationRecord = {
       id: requiredText(this.idFactory(), 160),
@@ -831,16 +845,23 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
     return operation ? publicOperation(operation) : null;
   }
 
-  async findByIdempotency(
+  async findIdempotentReplay(
     rawScope: AcquisitionDouyinIdentityResolutionScope,
+    candidateIdInput: string,
     idempotencyKeyInput: string
   ) {
     const validatedScope = scope(rawScope);
+    const candidateId = requiredText(candidateIdInput, 120);
     const operation = await this.repository.findOperationByIdempotency({
       ownerId: validatedScope.ownerId,
       teamId: validatedScope.teamId,
       idempotencyKeyHash: hash(requiredText(idempotencyKeyInput, 200))
     });
+    if (operation && operation.candidateId !== candidateId) {
+      throw new AcquisitionDouyinIdentityResolutionOperationError(
+        "IDEMPOTENCY_CONFLICT"
+      );
+    }
     return operation ? publicOperation(operation) : null;
   }
 

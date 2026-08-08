@@ -23,6 +23,84 @@ class FakePool {
     this.calls.push({ sql: sql.replace(/\s+/gu, " ").trim(), values });
     return this.queue.shift() ?? [{ affectedRows: 1 }, []];
   }
+
+  async getConnection() {
+    return this as unknown as mysql.PoolConnection;
+  }
+
+  async beginTransaction() {}
+  async commit() {}
+  async rollback() {}
+  release() {}
+}
+
+class ConcurrentLifecyclePool {
+  readonly calls: string[] = [];
+  readonly operations: AcquisitionDouyinIdentityResolutionOperationRecord[] = [];
+  private lockTail = Promise.resolve();
+
+  async query(sql: string, values: unknown[] = []) {
+    this.calls.push(sql.replace(/\s+/gu, " ").trim());
+    if (sql.includes("INSERT INTO")) {
+      this.operations.push(JSON.parse(String(values[13])));
+    }
+    return [{ affectedRows: 1 }, []] as [unknown, unknown];
+  }
+
+  async getConnection() {
+    let releaseLock!: () => void;
+    const previous = this.lockTail;
+    this.lockTail = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    let ownsLock = false;
+    return {
+      beginTransaction: async () => {},
+      query: async (sql: string, values: unknown[] = []) => {
+        this.calls.push(sql.replace(/\s+/gu, " ").trim());
+        if (sql.includes("FROM acquisition_candidates")
+          && sql.includes("FOR UPDATE")) {
+          await previous;
+          ownsLock = true;
+          return [[{ id: values[2] }], []];
+        }
+        if (sql.includes("idempotency_key_hash = ?")) {
+          const operation = this.operations.find((item) =>
+            item.ownerId === values[0]
+            && item.teamId === values[1]
+            && item.idempotencyKeyHash === values[2]);
+          return [operation ? [mysqlRow(operation)] : [], []];
+        }
+        if (sql.includes("JSON_EXTRACT(payload_json")) {
+          const blocking = this.operations
+            .find((item) => item.ownerId === values[0]
+              && item.teamId === values[1]
+              && item.candidateId === values[2]
+              && !(item.status === "failed"
+                && item.retryable
+                && item.outcome === "provider_unavailable"));
+          return [blocking ? [{ id: blocking.id }] : [], []];
+        }
+        if (sql.includes("INSERT INTO")) {
+          this.operations.push(JSON.parse(String(values[13])));
+          return [{ affectedRows: 1 }, []];
+        }
+        return [[], []];
+      },
+      commit: async () => {
+        if (ownsLock) releaseLock();
+        ownsLock = false;
+      },
+      rollback: async () => {
+        if (ownsLock) releaseLock();
+        ownsLock = false;
+      },
+      release: () => {
+        if (ownsLock) releaseLock();
+        ownsLock = false;
+      }
+    } as unknown as mysql.PoolConnection;
+  }
 }
 
 function asPool(pool: FakePool) {
@@ -120,8 +198,11 @@ test("Douyin identity operation schema creates tenant, lease, latest, and recove
   }
 });
 
-test("MySQL create and idempotency replay are tenant scoped and conflict on request drift", async () => {
+test("MySQL create and idempotency replay are tenant and candidate scoped", async () => {
   const createdPool = new FakePool();
+  createdPool.enqueue([{ id: queuedOperation.candidateId }]);
+  createdPool.enqueue([]);
+  createdPool.enqueue([]);
   const createdRepository =
     new MysqlAcquisitionDouyinIdentityResolutionOperationRepository(
       asPool(createdPool)
@@ -130,53 +211,114 @@ test("MySQL create and idempotency replay are tenant scoped and conflict on requ
     operation: queuedOperation,
     created: true
   });
-  assert.match(createdPool.calls[0]!.sql, /INSERT INTO acquisition_douyin_identity_resolution_operations/u);
+  const insert = createdPool.calls.find((call) => call.sql.includes("INSERT INTO"));
+  assert.ok(insert);
   assert.equal(
-    createdPool.calls[0]!.sql.match(/operations \((.*?)\) VALUES/u)?.[1]
+    insert.sql.match(/operations \((.*?)\) VALUES/u)?.[1]
       ?.split(",").length,
-    createdPool.calls[0]!.values.length
+    insert.values.length
   );
 
-  const duplicate = Object.assign(new Error("duplicate"), {
-    errno: 1062,
-    code: "ER_DUP_ENTRY"
-  });
-  for (const sameRequest of [true, false]) {
+  for (const sameCandidate of [true, false]) {
     const pool = new FakePool();
-    pool.query = async function query(sql: string, values: unknown[] = []) {
-      this.calls.push({ sql: sql.replace(/\s+/gu, " ").trim(), values });
-      if (sql.includes("INSERT INTO")) throw duplicate;
-      return [[mysqlRow({
-        ...queuedOperation,
-        requestHash: sameRequest
-          ? queuedOperation.requestHash
-          : `sha256:${"d".repeat(64)}`
-      })], []];
-    };
+    pool.enqueue([{ id: sameCandidate
+      ? queuedOperation.candidateId
+      : "candidate-b" }]);
+    pool.enqueue([mysqlRow(queuedOperation)]);
     const repository =
       new MysqlAcquisitionDouyinIdentityResolutionOperationRepository(
         asPool(pool)
       );
-    if (sameRequest) {
+    const incoming = {
+      ...queuedOperation,
+      candidateId: sameCandidate ? queuedOperation.candidateId : "candidate-b",
+      requestHash: `sha256:${"d".repeat(64)}`
+    };
+    if (sameCandidate) {
       assert.equal(
-        (await repository.createOperation(queuedOperation)).created,
+        (await repository.createOperation(incoming)).created,
         false
       );
     } else {
       await assert.rejects(
-        repository.createOperation(queuedOperation),
+        repository.createOperation(incoming),
         (error: unknown) =>
           error instanceof AcquisitionDouyinIdentityResolutionOperationError
           && error.code === "IDEMPOTENCY_CONFLICT"
       );
     }
-    const lookup = pool.calls.at(-1)!;
+    const lookup = pool.calls.find((call) =>
+      call.sql.includes("idempotency_key_hash = ?"))!;
     assert.deepEqual(lookup.values, [
       queuedOperation.ownerId,
       queuedOperation.teamId,
       queuedOperation.idempotencyKeyHash
     ]);
   }
+});
+
+test("MySQL candidate row lock admits exactly one concurrent lifecycle", async () => {
+  const pool = new ConcurrentLifecyclePool();
+  const repository =
+    new MysqlAcquisitionDouyinIdentityResolutionOperationRepository(
+      pool as unknown as mysql.Pool
+    );
+  const second = {
+    ...queuedOperation,
+    id: "douyin-identity-resolution-2",
+    idempotencyKeyHash: "d".repeat(64),
+    requestHash: `sha256:${"e".repeat(64)}`
+  };
+
+  const results = await Promise.allSettled([
+    repository.createOperation(queuedOperation),
+    repository.createOperation(second)
+  ]);
+
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  const rejection = results.find((result) => result.status === "rejected");
+  assert.ok(rejection && rejection.status === "rejected");
+  assert.equal(
+    rejection.reason instanceof AcquisitionDouyinIdentityResolutionOperationError
+      ? rejection.reason.code
+      : null,
+    "OPERATION_ALREADY_RUNNING"
+  );
+  assert.equal(pool.operations.length, 1);
+  assert.equal(pool.calls.filter((sql) =>
+    sql.includes("FROM acquisition_candidates")
+    && sql.includes("FOR UPDATE")).length, 2);
+});
+
+test("MySQL candidate gate admits one retry after provider_unavailable", async () => {
+  const pool = new ConcurrentLifecyclePool();
+  pool.operations.push({
+    ...queuedOperation,
+    id: "douyin-identity-resolution-terminal",
+    status: "failed",
+    outcome: "provider_unavailable",
+    retryable: true,
+    idempotencyKeyHash: "f".repeat(64),
+    completedAt: "2026-08-08T02:01:00.000Z"
+  });
+  const repository =
+    new MysqlAcquisitionDouyinIdentityResolutionOperationRepository(
+      pool as unknown as mysql.Pool
+    );
+  const second = {
+    ...queuedOperation,
+    id: "douyin-identity-resolution-2",
+    idempotencyKeyHash: "d".repeat(64),
+    requestHash: `sha256:${"e".repeat(64)}`
+  };
+
+  const results = await Promise.allSettled([
+    repository.createOperation(queuedOperation),
+    repository.createOperation(second)
+  ]);
+
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(pool.operations.length, 2);
 });
 
 test("MySQL latest candidate lookup is tenant scoped and deterministic", async () => {

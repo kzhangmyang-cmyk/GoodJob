@@ -2799,11 +2799,12 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     }
     if (path === "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations") {
       for (const status of Object.keys(responses)) {
-        if (!["202", "400", "401", "404", "409"].includes(status)) {
+        if (!["202", "400", "401", "403", "404", "409"].includes(status)) {
           delete responses[status];
         }
       }
       responses["422"] = response("候选主体不满足安全核验条件", errorSchema);
+      responses["403"] = response("CSRF 安全校验失败", errorSchema);
       responses["429"] = response("请求过于频繁", errorSchema);
       (responses["202"] as Record<string, unknown>).headers = {
         "Idempotency-Replayed": {

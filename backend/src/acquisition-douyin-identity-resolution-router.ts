@@ -36,8 +36,9 @@ export interface AcquisitionDouyinIdentityResolutionRouterCandidate {
 
 export interface AcquisitionDouyinIdentityResolutionRouterOptions {
   operations: {
-    findByIdempotency(
+    findIdempotentReplay(
       scope: AcquisitionDouyinIdentityResolutionScope,
+      candidateId: string,
       idempotencyKey: string
     ): Promise<AcquisitionDouyinIdentityResolutionOperation | null>;
     findLatestForCandidate(
@@ -98,7 +99,20 @@ function scopeFromRequest(req: Request): AcquisitionDouyinIdentityResolutionScop
 }
 
 function idempotencyKey(req: Request) {
-  const value = req.header("Idempotency-Key")?.trim() ?? "";
+  const rawValues: string[] = [];
+  for (let index = 0; index < req.rawHeaders.length; index += 2) {
+    if (req.rawHeaders[index]?.toLocaleLowerCase("en-US") === "idempotency-key") {
+      rawValues.push(req.rawHeaders[index + 1] ?? "");
+    }
+  }
+  if (rawValues.length > 1) {
+    throw new DouyinIdentityResolutionHttpError(
+      "duplicate_idempotency_key",
+      "Idempotency-Key 请求头只能出现一次",
+      400
+    );
+  }
+  const value = rawValues[0]?.trim() ?? "";
   if (!value || value.length > 200) {
     throw new DouyinIdentityResolutionHttpError(
       value ? "invalid_idempotency_key" : "idempotency_key_required",
@@ -109,6 +123,21 @@ function idempotencyKey(req: Request) {
     );
   }
   return value;
+}
+
+function requireRequestBody(req: Request) {
+  const contentLength = req.header("Content-Length");
+  const transferEncoding = req.header("Transfer-Encoding");
+  const hasPositiveContentLength = contentLength !== undefined
+    && /^\d+$/u.test(contentLength.trim())
+    && Number(contentLength) > 0;
+  if (!hasPositiveContentLength && !transferEncoding) {
+    throw new DouyinIdentityResolutionHttpError(
+      "request_body_required",
+      "请求体必须是空 JSON 对象",
+      400
+    );
+  }
 }
 
 function unresolvedDouyinCandidate(
@@ -125,6 +154,74 @@ function unresolvedDouyinCandidate(
 }
 
 function publicOperation(operation: AcquisitionDouyinIdentityResolutionOperation) {
+  const validUrl = (value: unknown) => {
+    if (typeof value !== "string" || value.length === 0 || value.length > 4096) {
+      return false;
+    }
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  };
+  const evidenceClasses = new Set([
+    "douyin_public_page",
+    "independent_search_result"
+  ]);
+  const accessStatuses = new Set([
+    "indexed_summary",
+    "public_content",
+    "access_restricted",
+    "redirect_not_allowed",
+    "provider_unavailable"
+  ]);
+  const evidence: AcquisitionDouyinIdentityResolutionOperation["evidence"] = [];
+  const evidenceIds = new Set<string>();
+  for (const item of operation.evidence) {
+    if (evidence.length === 100) break;
+    if (typeof item.evidenceId !== "string"
+      || item.evidenceId.length === 0
+      || item.evidenceId.length > 255
+      || evidenceIds.has(item.evidenceId)
+      || !evidenceClasses.has(item.evidenceClass)
+      || !validUrl(item.publicProfileUrl)
+      || !validUrl(item.sourceUrl)
+      || typeof item.sourceFingerprint !== "string"
+      || item.sourceFingerprint.length === 0
+      || item.sourceFingerprint.length > 255
+      || !accessStatuses.has(item.accessStatus)
+      || typeof item.fetchedAt !== "string"
+      || Number.isNaN(Date.parse(item.fetchedAt))) {
+      continue;
+    }
+    evidenceIds.add(item.evidenceId);
+    evidence.push(structuredClone(item));
+  }
+  const profileCandidates: AcquisitionDouyinIdentityResolutionOperation["profileCandidates"] = [];
+  for (const candidate of operation.profileCandidates) {
+    if (profileCandidates.length === 100) break;
+    if (!validUrl(candidate.publicProfileUrl)) continue;
+    const referencedEvidenceIds: string[] = [];
+    const seen = new Set<string>();
+    for (const evidenceId of candidate.evidenceIds) {
+      if (referencedEvidenceIds.length === 100) break;
+      if (typeof evidenceId !== "string"
+        || evidenceId.length === 0
+        || evidenceId.length > 255
+        || seen.has(evidenceId)
+        || !evidenceIds.has(evidenceId)) {
+        continue;
+      }
+      seen.add(evidenceId);
+      referencedEvidenceIds.push(evidenceId);
+    }
+    if (referencedEvidenceIds.length === 0) continue;
+    profileCandidates.push({
+      publicProfileUrl: candidate.publicProfileUrl,
+      evidenceIds: referencedEvidenceIds
+    });
+  }
   return {
     id: operation.id,
     candidateId: operation.candidateId,
@@ -133,10 +230,16 @@ function publicOperation(operation: AcquisitionDouyinIdentityResolutionOperation
     currentStage: operation.currentStage,
     outcome: operation.outcome,
     retryable: operation.retryable,
-    canonicalProfileUrl: operation.canonicalProfileUrl,
-    profileCandidates: structuredClone(operation.profileCandidates),
-    evidence: structuredClone(operation.evidence),
-    intelligenceOperationId: operation.intelligenceOperationId,
+    canonicalProfileUrl: operation.canonicalProfileUrl !== null
+      && validUrl(operation.canonicalProfileUrl)
+      ? operation.canonicalProfileUrl
+      : null,
+    profileCandidates,
+    evidence,
+    intelligenceOperationId: typeof operation.intelligenceOperationId === "string"
+      && operation.intelligenceOperationId.length <= 160
+      ? operation.intelligenceOperationId
+      : null,
     createdAt: operation.createdAt,
     updatedAt: operation.updatedAt,
     completedAt: operation.completedAt
@@ -233,10 +336,21 @@ export function createAcquisitionDouyinIdentityResolutionRouter(
   router.post(
     "/api/v1/acquisition/candidates/:candidateId/douyin-identity-resolution-operations",
     asyncRoute(async (req, res) => {
-      emptyBodySchema.parse(req.body ?? {});
+      requireRequestBody(req);
+      emptyBodySchema.parse(req.body);
       const requestScope = scopeFromRequest(req);
       const candidateId = candidateIdSchema.parse(req.params.candidateId);
       const key = idempotencyKey(req);
+      const replay = await options.operations.findIdempotentReplay(
+        requestScope,
+        candidateId,
+        key
+      );
+      if (replay) {
+        res.setHeader("Idempotency-Replayed", "true");
+        res.status(202).json(publicOperation(replay));
+        return;
+      }
       const candidate = await options.candidates.getCandidate(
         requestScope,
         candidateId
@@ -258,33 +372,6 @@ export function createAcquisitionDouyinIdentityResolutionRouter(
           "source_evidence_required",
           "候选缺少可用于主体核验的来源证据",
           422
-        );
-      }
-      const replay = await options.operations.findByIdempotency(
-        requestScope,
-        key
-      );
-      if (replay) {
-        if (replay.candidateId !== candidate.id) {
-          throw new AcquisitionDouyinIdentityResolutionOperationError(
-            "IDEMPOTENCY_CONFLICT"
-          );
-        }
-        res.setHeader("Idempotency-Replayed", "true");
-        res.status(202).json(publicOperation(replay));
-        return;
-      }
-      const latest = await options.operations.findLatestForCandidate(
-        requestScope,
-        candidateId
-      );
-      if (latest && !(latest.status === "failed"
-        && latest.retryable
-        && latest.outcome === "provider_unavailable")) {
-        throw new DouyinIdentityResolutionHttpError(
-          "retry_not_allowed",
-          "当前抖音主体核验状态不允许重试",
-          409
         );
       }
       const created = await options.operations.create(requestScope, {

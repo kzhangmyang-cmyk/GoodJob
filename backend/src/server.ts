@@ -8,6 +8,10 @@ import { z } from "zod";
 import { AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, canManageAccount, canManageAccounts, canManageRole, canSeeOwner, canSeePersonalData, canSeeTeam, createCsrfToken, csrfCookieOptions, hashPassword, publicUser, requireAuth, sessionCookieOptions, signToken, validateAuthSecurity, verifyPassword } from "./auth.js";
 import { assertAiBaseUrlAllowed } from "./ai-http-security.js";
 import {
+  acquisitionApiErrorMiddleware,
+  acquisitionApiRateLimitHandler
+} from "./acquisition-api-error-response.js";
+import {
   AI_MODEL_TIMEOUT_MS,
   aiGenerateLeads,
   callAiModel,
@@ -300,7 +304,8 @@ const apiLimiter = rateLimit({
   limit: ["test", "e2e"].includes(process.env.NODE_ENV || "") ? 100_000 : 600,
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  message: { message: "请求过于频繁，请稍后再试" }
+  message: { message: "请求过于频繁，请稍后再试" },
+  handler: acquisitionApiRateLimitHandler
 });
 app.use("/api", apiLimiter);
 
@@ -11853,6 +11858,7 @@ app.use(acquisitionRuntimeBridge.middleware());
 
 registerSwagger(app);
 
+app.use(acquisitionApiErrorMiddleware);
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (error instanceof z.ZodError) {
     res.status(400).json({ message: "参数格式错误", issues: error.issues });

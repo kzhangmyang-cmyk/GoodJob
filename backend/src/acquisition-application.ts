@@ -1662,9 +1662,10 @@ export async function createAcquisitionApplication(
     }));
     router.use(createAcquisitionDouyinIdentityResolutionRouter({
       operations: {
-        findByIdempotency(scope, idempotencyKey) {
-          return douyinIdentityResolutionOperations.findByIdempotency(
+        findIdempotentReplay(scope, candidateId, idempotencyKey) {
+          return douyinIdentityResolutionOperations.findIdempotentReplay(
             scope,
+            candidateId,
             idempotencyKey
           );
         },

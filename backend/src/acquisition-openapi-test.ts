@@ -118,7 +118,7 @@ test("acquisition OpenAPI exposes only the safe Douyin identity operation DTO", 
 
   assert.deepEqual(Object.keys(latest.responses).sort(), ["200", "401", "404"]);
   assert.deepEqual(Object.keys(retry.responses).sort(), [
-    "202", "400", "401", "404", "409", "422", "429"
+    "202", "400", "401", "403", "404", "409", "422", "429"
   ]);
   assert.equal(retry.parameters.some((parameter: Record<string, unknown>) =>
     parameter.in === "header" && parameter.name === "Idempotency-Key"

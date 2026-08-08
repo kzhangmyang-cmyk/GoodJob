@@ -224,16 +224,40 @@ test("candidate intelligence public DTO conforms without internal operation stat
 });
 
 test("Douyin identity public DTO conforms without private operation state", async () => {
+  const validEvidence = Array.from({ length: 105 }, (_, index) => ({
+    evidenceId: `evidence-response-${index}`,
+    evidenceClass: "douyin_public_page" as const,
+    publicProfileUrl: `https://www.douyin.com/user/response-${index}`,
+    sourceUrl: `https://www.douyin.com/video/response-${index}`,
+    sourceFingerprint: `sha256:response-${index}`,
+    accessStatus: "public_content" as const,
+    fetchedAt: NOW
+  }));
   const operation = {
-    id: "douyin-response-1", candidateId: "candidate-response-1", candidateVersion: 3,
-    status: "succeeded" as const, currentStage: null, outcome: "verified_consensus" as const,
-    retryable: false, canonicalProfileUrl: "https://www.douyin.com/user/response",
-    profileCandidates: [{ publicProfileUrl: "https://www.douyin.com/user/response", evidenceIds: ["evidence-response-1"] }],
-    evidence: [{ evidenceId: "evidence-response-1", evidenceClass: "douyin_public_page" as const, publicProfileUrl: "https://www.douyin.com/user/response", sourceUrl: "https://www.douyin.com/video/response", sourceFingerprint: "sha256:response", accessStatus: "public_content" as const, fetchedAt: NOW }],
+    id: "douyin-response-1", ownerId: OWNER, teamId: TEAM, actorId: OWNER,
+    candidateId: "candidate-response-1", candidateVersion: 3,
+    sourceEvidenceFingerprint: "sha256:source-response",
+    searchConnections: [], planSessionId: null,
+    status: "failed" as const, currentStage: null,
+    outcome: "provider_unavailable" as const, retryable: true,
+    canonicalProfileUrl: null,
+    profileCandidates: validEvidence.map((item) => ({
+      publicProfileUrl: item.publicProfileUrl,
+      evidenceIds: [item.evidenceId]
+    })),
+    evidence: [{
+      evidenceId: "provider-unavailable-sentinel",
+      evidenceClass: "independent_search_result" as const,
+      publicProfileUrl: "",
+      sourceUrl: "",
+      sourceFingerprint: "sha256:provider-unavailable",
+      accessStatus: "provider_unavailable" as const,
+      fetchedAt: NOW
+    }, ...validEvidence],
     intelligenceOperationId: null, createdAt: NOW, updatedAt: NOW, completedAt: NOW
   };
   const fixture = await mount(createAcquisitionDouyinIdentityResolutionRouter({
-    operations: { async findByIdempotency() { return null; }, async findLatestForCandidate() { return operation; }, async create() { return { operation, replayed: false }; } },
+    operations: { async findIdempotentReplay() { return null; }, async findLatestForCandidate() { return operation; }, async create() { return { operation, replayed: false }; } },
     candidates: { async getCandidate() { return { id: operation.candidateId, version: 3, partyType: "individual", partyRef: { partyType: "individual" }, profile: { kind: "individual", sourcePlatform: "douyin" }, evidenceIds: ["evidence-response-1"] }; } },
     searchConnections: { async list() { return []; } },
     async dispatchOperation() {}, requestIdFactory: () => "request-douyin-response"
@@ -245,6 +269,11 @@ test("Douyin identity public DTO conforms without private operation state", asyn
     assertResponseConforms(path, "get", 200, result.body);
     assert.equal(result.body.ownerId, undefined);
     assert.equal(result.body.leaseToken, undefined);
+    assert.equal(result.body.outcome, "provider_unavailable");
+    assert.equal(result.body.evidence.length, 100);
+    assert.equal(result.body.profileCandidates.length, 100);
+    assert.equal(result.body.evidence.some((item: Record<string, unknown>) =>
+      item.evidenceId === "provider-unavailable-sentinel"), false);
   } finally { await fixture.close(); }
 });
 

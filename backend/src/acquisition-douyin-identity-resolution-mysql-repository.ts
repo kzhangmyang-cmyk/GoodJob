@@ -385,8 +385,78 @@ implements AcquisitionDouyinIdentityResolutionOperationRepository {
   async createOperation(
     operation: AcquisitionDouyinIdentityResolutionOperationRecord
   ) {
+    const connection = await this.pool.getConnection();
+    let transactionStarted = false;
     try {
-      await this.pool.query(
+      await connection.beginTransaction();
+      transactionStarted = true;
+      const candidateRows = await selectedRows(
+        connection,
+        `SELECT id
+         FROM acquisition_candidates
+         WHERE owner_id = ? AND team_id = ? AND id = ?
+         LIMIT 1
+         FOR UPDATE`,
+        [operation.ownerId, operation.teamId, operation.candidateId]
+      );
+      if (candidateRows.length === 0) {
+        throw new AcquisitionDouyinIdentityResolutionOperationError(
+          "RESOURCE_NOT_FOUND"
+        );
+      }
+      const idempotentRows = await selectedRows(
+        connection,
+        `SELECT ${OPERATION_SELECT_COLUMNS}
+         FROM acquisition_douyin_identity_resolution_operations
+         WHERE owner_id = ? AND team_id = ?
+           AND idempotency_key_hash = ?
+         LIMIT 1
+         FOR UPDATE`,
+        [
+          operation.ownerId,
+          operation.teamId,
+          operation.idempotencyKeyHash
+        ]
+      );
+      const idempotent = idempotentRows[0]
+        ? parseOperation(idempotentRows[0])
+        : null;
+      if (idempotent) {
+        if (idempotent.candidateId !== operation.candidateId) {
+          throw new AcquisitionDouyinIdentityResolutionOperationError(
+            "IDEMPOTENCY_CONFLICT"
+          );
+        }
+        await connection.commit();
+        transactionStarted = false;
+        return { operation: idempotent, created: false };
+      }
+      const blockingRows = await selectedRows(
+        connection,
+        `SELECT id
+         FROM acquisition_douyin_identity_resolution_operations
+         WHERE owner_id = ? AND team_id = ? AND candidate_id = ?
+           AND (
+             status <> 'failed'
+             OR COALESCE(
+               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.outcome')),
+               ''
+             ) <> 'provider_unavailable'
+             OR COALESCE(
+               JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.retryable')),
+               ''
+             ) <> 'true'
+           )
+         LIMIT 1
+         FOR UPDATE`,
+        [operation.ownerId, operation.teamId, operation.candidateId]
+      );
+      if (blockingRows.length > 0) {
+        throw new AcquisitionDouyinIdentityResolutionOperationError(
+          "OPERATION_ALREADY_RUNNING"
+        );
+      }
+      await connection.query(
         `INSERT INTO acquisition_douyin_identity_resolution_operations (
           id, owner_id, team_id, actor_id, candidate_id, candidate_version,
           source_evidence_fingerprint, idempotency_key_hash, request_hash,
@@ -414,17 +484,25 @@ implements AcquisitionDouyinIdentityResolutionOperationRepository {
           mysqlDate(operation.updatedAt)
         ]
       );
+      await connection.commit();
+      transactionStarted = false;
       return { operation: clone(operation), created: true };
     } catch (error) {
+      if (transactionStarted) {
+        await connection.rollback().catch(() => undefined);
+        transactionStarted = false;
+      }
       if (!duplicateEntry(error)) throw error;
       const existing = await this.findOperationByIdempotency(operation);
       if (!existing) throw error;
-      if (existing.requestHash !== operation.requestHash) {
+      if (existing.candidateId !== operation.candidateId) {
         throw new AcquisitionDouyinIdentityResolutionOperationError(
           "IDEMPOTENCY_CONFLICT"
         );
       }
       return { operation: existing, created: false };
+    } finally {
+      connection.release();
     }
   }
 

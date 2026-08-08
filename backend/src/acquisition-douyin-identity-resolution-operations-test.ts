@@ -63,7 +63,7 @@ function evidence(
   };
 }
 
-function fixture() {
+function fixture(options: { operationIds?: string[] } = {}) {
   const repository =
     new InMemoryAcquisitionDouyinIdentityResolutionOperationRepository();
   const evidenceById = new Map([
@@ -84,7 +84,8 @@ function fixture() {
           : null;
       }
     },
-    idFactory: () => `identity-operation-${++sequence}`,
+    idFactory: () => options.operationIds?.shift()
+      ?? `identity-operation-${++sequence}`,
     now: () => now
   });
   return {
@@ -147,20 +148,23 @@ test("create persists a queued operation at the expected candidate version", asy
   assert.deepEqual(created.evidence, []);
 });
 
-test("connection snapshot version participates in request identity", async () => {
+test("idempotent replay keeps the original frozen connection snapshot", async () => {
   const { service } = fixture();
-  await service.create(SCOPE, CREATE_INPUT, "identity-create-key");
+  const created = await service.create(
+    SCOPE,
+    CREATE_INPUT,
+    "identity-create-key"
+  );
 
-  await assert.rejects(service.create(SCOPE, {
+  const replayed = await service.create(SCOPE, {
     ...CREATE_INPUT,
     searchConnections: CREATE_INPUT.searchConnections.map((connection) =>
       connection.connectionId === "search-connection-1"
         ? { ...connection, credentialVersion: 4 }
         : connection)
-  }, "identity-create-key"), (error: unknown) =>
-    error instanceof AcquisitionDouyinIdentityResolutionOperationError
-    && error.code === "IDEMPOTENCY_CONFLICT"
-  );
+  }, "identity-create-key");
+
+  assert.deepEqual(replayed, created);
 });
 
 test("idempotency replays equivalent requests independent of source order and time", async () => {
@@ -202,25 +206,44 @@ test("createWithResult reports an idempotent replay without creating a second op
   assert.equal(replayed.operation.id, created.operation.id);
 });
 
-test("findByIdempotency returns only the owning tenant's public operation", async () => {
+test("findIdempotentReplay is tenant and candidate scoped", async () => {
   const { service } = fixture();
   const created = await service.create(SCOPE, CREATE_INPUT, "identity-find-key");
   assert.equal(
-    (await service.findByIdempotency(SCOPE, "identity-find-key"))?.id,
+    (await service.findIdempotentReplay(
+      SCOPE,
+      "candidate-1",
+      "identity-find-key"
+    ))?.id,
     created.id
   );
   assert.equal(
-    await service.findByIdempotency(
+    await service.findIdempotentReplay(
       { ...SCOPE, ownerId: "other-owner", actorId: "other-owner" },
+      "candidate-1",
       "identity-find-key"
     ),
     null
   );
+  await assert.rejects(
+    service.findIdempotentReplay(
+      SCOPE,
+      "candidate-2",
+      "identity-find-key"
+    ),
+    (error: unknown) =>
+      error instanceof AcquisitionDouyinIdentityResolutionOperationError
+      && error.code === "IDEMPOTENCY_CONFLICT"
+  );
 });
 
-test("idempotency conflicts when the candidate or original evidence hashes change", async () => {
+test("idempotency conflicts across candidates but replays frozen source evidence", async () => {
   const { service, evidenceById } = fixture();
-  await service.create(SCOPE, CREATE_INPUT, "identity-create-key");
+  const created = await service.create(
+    SCOPE,
+    CREATE_INPUT,
+    "identity-create-key"
+  );
 
   await assert.rejects(
     service.create(SCOPE, {
@@ -235,10 +258,85 @@ test("idempotency conflicts when the candidate or original evidence hashes chang
     "evidence-a",
     evidence("evidence-a", "sha256:changed", "sha256:raw-a")
   );
+  const replayed = await service.create(
+    SCOPE,
+    CREATE_INPUT,
+    "identity-create-key"
+  );
+  assert.deepEqual(replayed, created);
+});
+
+test("different idempotency keys cannot concurrently create a candidate lifecycle", async () => {
+  const { service } = fixture();
+
+  const results = await Promise.allSettled([
+    service.createWithResult(SCOPE, CREATE_INPUT, "candidate-race-a"),
+    service.createWithResult(SCOPE, CREATE_INPUT, "candidate-race-b")
+  ]);
+
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  const rejection = results.find((result) => result.status === "rejected");
+  assert.ok(rejection && rejection.status === "rejected");
+  assert.equal(
+    rejection.reason instanceof AcquisitionDouyinIdentityResolutionOperationError
+      ? rejection.reason.code
+      : null,
+    "OPERATION_ALREADY_RUNNING"
+  );
+});
+
+test("a retryable provider failure permits one new candidate lifecycle", async () => {
+  const { service, repository } = fixture();
+  const first = await service.create(SCOPE, CREATE_INPUT, "retryable-first");
+  const claimed = await repository.claimOperation(SCOPE, first.id, {
+    leaseOwner: "worker-retryable",
+    leaseToken: "lease-retryable",
+    claimedAt: "2026-08-08T00:01:00.000Z",
+    leaseExpiresAt: "2026-08-08T00:11:00.000Z"
+  });
+  await repository.saveOperation({
+    ...claimed.operation!,
+    status: "failed",
+    outcome: "provider_unavailable",
+    retryable: true,
+    updatedAt: "2026-08-08T00:02:00.000Z",
+    completedAt: "2026-08-08T00:02:00.000Z"
+  }, "lease-retryable");
+
+  const retried = await service.create(
+    SCOPE,
+    CREATE_INPUT,
+    "retryable-second"
+  );
+  assert.notEqual(retried.id, first.id);
+  assert.equal(retried.status, "queued");
+});
+
+test("a same-timestamp retry cannot be hidden behind terminal ID ordering", async () => {
+  const { service, repository } = fixture({
+    operationIds: ["z-terminal", "a-retry", "b-should-not-create"]
+  });
+  const first = await service.create(SCOPE, CREATE_INPUT, "same-time-first");
+  const claimed = await repository.claimOperation(SCOPE, first.id, {
+    leaseOwner: "worker-same-time",
+    leaseToken: "lease-same-time",
+    claimedAt: "2026-08-08T00:00:00.000Z",
+    leaseExpiresAt: "2026-08-08T00:10:00.000Z"
+  });
+  await repository.saveOperation({
+    ...claimed.operation!,
+    status: "failed",
+    outcome: "provider_unavailable",
+    retryable: true,
+    completedAt: "2026-08-08T00:00:00.000Z"
+  }, "lease-same-time");
+
+  await service.create(SCOPE, CREATE_INPUT, "same-time-retry");
   await assert.rejects(
-    service.create(SCOPE, CREATE_INPUT, "identity-create-key"),
-    (error: unknown) => error instanceof AcquisitionDouyinIdentityResolutionOperationError
-      && error.code === "IDEMPOTENCY_CONFLICT"
+    service.create(SCOPE, CREATE_INPUT, "same-time-third"),
+    (error: unknown) =>
+      error instanceof AcquisitionDouyinIdentityResolutionOperationError
+      && error.code === "OPERATION_ALREADY_RUNNING"
   );
 });
 
@@ -406,7 +504,10 @@ test("request identity replays across case and non-ASCII ordering without locale
 test("terminal operations are never claimed", async () => {
   const { service, repository } = fixture();
   for (const status of ["succeeded", "requires_review", "failed"] as const) {
-    const created = await service.create(SCOPE, CREATE_INPUT, `terminal-${status}`);
+    const created = await service.create(SCOPE, {
+      ...CREATE_INPUT,
+      candidateId: `candidate-${status}`
+    }, `terminal-${status}`);
     const firstClaim = await repository.claimOperation(SCOPE, created.id, {
       leaseOwner: "worker-a",
       leaseToken: `token-${status}`,
@@ -434,9 +535,15 @@ test("terminal operations are never claimed", async () => {
 
 test("recovery returns queued and expired-running operations in creation order", async () => {
   const { service, repository, setNow } = fixture();
-  const queued = await service.create(SCOPE, CREATE_INPUT, "recovery-queued");
+  const queued = await service.create(SCOPE, {
+    ...CREATE_INPUT,
+    candidateId: "candidate-recovery-queued"
+  }, "recovery-queued");
   setNow("2026-08-08T00:00:01.000Z");
-  const expired = await service.create(SCOPE, CREATE_INPUT, "recovery-expired");
+  const expired = await service.create(SCOPE, {
+    ...CREATE_INPUT,
+    candidateId: "candidate-recovery-expired"
+  }, "recovery-expired");
   await repository.claimOperation(SCOPE, expired.id, {
     leaseOwner: "worker-old",
     leaseToken: "expired-token",
@@ -444,7 +551,10 @@ test("recovery returns queued and expired-running operations in creation order",
     leaseExpiresAt: "2026-08-08T00:01:00.000Z"
   });
   setNow("2026-08-08T00:00:03.000Z");
-  const active = await service.create(SCOPE, CREATE_INPUT, "recovery-active");
+  const active = await service.create(SCOPE, {
+    ...CREATE_INPUT,
+    candidateId: "candidate-recovery-active"
+  }, "recovery-active");
   await repository.claimOperation(SCOPE, active.id, {
     leaseOwner: "worker-active",
     leaseToken: "active-token",
