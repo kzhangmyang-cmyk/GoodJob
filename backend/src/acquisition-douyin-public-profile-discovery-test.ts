@@ -98,6 +98,24 @@ test("discovery keeps a public profile page that merely contains login links or 
   })).status, "succeeded");
 });
 
+test("discovery accepts a public final page after an approved intermediate login path", async () => {
+  const discovery = createAcquisitionDouyinPublicProfileDiscovery({
+    fetchWithRedirectTrace: async () => ({
+      response: new Response('<a href="https://www.douyin.com/user/final-actor">author</a>'),
+      redirectChain: [
+        "https://v.douyin.com/ShortLink/",
+        "https://www.douyin.com/login",
+        "https://www.douyin.com/user/final-actor"
+      ]
+    })
+  });
+
+  assert.equal((await discovery.discover({
+    sourceUrl: "https://v.douyin.com/ShortLink/",
+    sourceEvidenceId: "evidence"
+  })).status, "succeeded");
+});
+
 test("discovery treats explicit verification pages and restricted responses as access restrictions", async () => {
   for (const response of [
     new Response('<body data-page="verification"><div id="captcha_container"></div></body>', { status: 200 }),

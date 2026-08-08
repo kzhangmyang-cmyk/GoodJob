@@ -161,7 +161,7 @@ function restricted(response: Response, body: string, redirectChain: string[]) {
   return response.status === 401
     || response.status === 403
     || response.status === 429
-    || redirectChain.some((url) => RESTRICTED_PATH.test(new URL(url).pathname))
+    || RESTRICTED_PATH.test(new URL(redirectChain.at(-1) || "https://invalid.invalid/").pathname)
     || RESTRICTED_PAGE_MARKER.test(body);
 }
 
