@@ -259,17 +259,27 @@ function safePublicActorKey(value: string) {
   const actorKey = normalizedText(value);
   const opaqueHashKey =
     /^public:[a-z0-9._:-]+:sha256:[a-f0-9]{64}$/iu.test(actorKey);
+  const unresolvedOpaqueHashKey =
+    /^unresolved-public-signal:[a-z0-9._-]+:sha256:[a-f0-9]{64}$/u
+      .test(actorKey);
+  const publicNamespace = actorKey
+    .toLocaleLowerCase("en-US")
+    .startsWith("public:");
   if (!actorKey
     || actorKey.length > 300
-    || !actorKey.toLocaleLowerCase("en-US").startsWith("public:")
+    || (!publicNamespace && !unresolvedOpaqueHashKey)
     || /(?:mailto:|tel:|[^\s@]+@[^\s@]+\.[^\s@]+)/iu.test(actorKey)
-    || (!opaqueHashKey && /\+?\d(?:[\s().-]*\d){6,14}/u.test(actorKey))) {
+    || (!opaqueHashKey
+      && !unresolvedOpaqueHashKey
+      && /\+?\d(?:[\s().-]*\d){6,14}/u.test(actorKey))) {
     return null;
   }
   return actorKey.toLocaleLowerCase("en-US");
 }
 
 const ADAPTER_GENERATED_PUBLIC_ACTOR_KEY =
+  /^(public|unresolved-public-signal):([a-z0-9._-]+):sha256:([a-f0-9]{64})$/u;
+const ADAPTER_GENERATED_PUBLIC_ACTOR_KEY_IGNORE_CASE =
   /^(public|unresolved-public-signal):([a-z0-9._-]+):sha256:([a-f0-9]{64})$/iu;
 
 function publicActorIdentityMaterial(input: {
@@ -278,11 +288,11 @@ function publicActorIdentityMaterial(input: {
   sourcePlatform: string;
   sourceUrl: string;
 }) {
-  const normalizedActorKey = normalizedText(input.publicActorKey)
-    .toLocaleLowerCase("en-US");
-  const match = ADAPTER_GENERATED_PUBLIC_ACTOR_KEY.exec(normalizedActorKey);
+  const actorKey = normalizedText(input.publicActorKey);
+  const match = ADAPTER_GENERATED_PUBLIC_ACTOR_KEY.exec(actorKey);
   const keyPlatform = normalizedProvider(match?.[2] || "");
-  const expectedHash = sha256(input.sourceUrl);
+  const normalizedSourceUrl = normalizeAcquisitionPublicUrl(input.sourceUrl);
+  const expectedHash = normalizedSourceUrl ? sha256(normalizedSourceUrl) : "";
   if (match
     && match[3] === expectedHash
     && (keyPlatform === input.provider
@@ -290,6 +300,12 @@ function publicActorIdentityMaterial(input: {
     return {
       actorKey: `${match[1]}:${input.provider}:sha256:${expectedHash}`,
       sourcePlatform: input.provider
+    };
+  }
+  if (match || ADAPTER_GENERATED_PUBLIC_ACTOR_KEY_IGNORE_CASE.test(actorKey)) {
+    return {
+      actorKey: "",
+      sourcePlatform: input.sourcePlatform
     };
   }
   return {
@@ -390,6 +406,9 @@ export function resolveAcquisitionPublicIdentity(
     sourceUrl: input.sourceUrl
   });
   const actorKey = safePublicActorKey(identityMaterial.actorKey);
+  const resolvedActorKey = actorKey?.startsWith("public:")
+    ? actorKey
+    : null;
   const identitySourcePlatform = identityMaterial.sourcePlatform;
   const douyinClassification = normalizedProfileUrl
     ? classifyDouyinPublicSource(normalizedProfileUrl)
@@ -403,7 +422,7 @@ export function resolveAcquisitionPublicIdentity(
   );
   if (provider
     && sourcePlatform
-    && actorKey
+    && resolvedActorKey
     && normalizedProfileUrl
     && isStableDouyinProfile) {
     const digest = scopedDigest(
@@ -412,7 +431,7 @@ export function resolveAcquisitionPublicIdentity(
       [
         provider,
         identitySourcePlatform,
-        actorKey,
+        resolvedActorKey,
         normalizedProfileUrl
       ].join("\u0000"),
       "owner_team"

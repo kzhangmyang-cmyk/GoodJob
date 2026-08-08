@@ -210,6 +210,119 @@ test("runs research, qualification, and a v2 battle card in order for an eligibl
   });
 });
 
+test("uses completed automatic Douyin intelligence without running the legacy stages", async () => {
+  const executorCalls: AcquisitionToolExecutionInput[] = [];
+  const identityResolutionCalls: string[] = [];
+  const researchCalls: string[] = [];
+  const pipeline = new AcquisitionCandidateProcessingPipeline({
+    executor: {
+      async execute(input) {
+        executorCalls.push(input);
+        throw new Error("legacy executor must not run");
+      }
+    },
+    research: {
+      async research(input) {
+        researchCalls.push(input.candidateId);
+        throw new Error("supplemental research must not run");
+      }
+    },
+    identityResolutionStage: {
+      async resolveBeforeIntelligence(input) {
+        identityResolutionCalls.push(input.candidateId);
+        return {
+          status: "completed",
+          operationId: "identity-operation-1",
+          intelligence: {
+            id: "candidate-intelligence-1",
+            candidateId: input.candidateId,
+            status: "succeeded",
+            battleCardId: "battle-card-1"
+          } as never
+        };
+      }
+    }
+  });
+
+  const result = await pipeline.process(
+    processingInput(["candidate-unresolved"])
+  );
+
+  assert.deepEqual(identityResolutionCalls, ["candidate-unresolved"]);
+  assert.equal(executorCalls.length, 0);
+  assert.equal(researchCalls.length, 0);
+  assert.deepEqual(result, {
+    processedCandidateIds: ["candidate-unresolved"],
+    battleCardCandidateIds: ["candidate-unresolved"],
+    failures: []
+  });
+});
+
+test("stops a candidate for manual identity review without running intelligence", async () => {
+  const executorCalls: AcquisitionToolExecutionInput[] = [];
+  const pipeline = new AcquisitionCandidateProcessingPipeline({
+    executor: {
+      async execute(input) {
+        executorCalls.push(input);
+        return {};
+      }
+    },
+    identityResolutionStage: {
+      async resolveBeforeIntelligence() {
+        return {
+          status: "requires_review",
+          operationId: "identity-operation-review",
+          errorCode: "ambiguous"
+        };
+      }
+    }
+  });
+
+  const result = await pipeline.process(
+    processingInput(["candidate-unresolved"])
+  );
+
+  assert.deepEqual(result, {
+    processedCandidateIds: [],
+    battleCardCandidateIds: [],
+    failures: [{
+      candidateId: "candidate-unresolved",
+      stage: "research",
+      errorCode: "IDENTITY_RESEARCH_REQUIRED"
+    }]
+  });
+  assert.equal(executorCalls.length, 0);
+});
+
+test("keeps the legacy stages when automatic Douyin identity is not required", async () => {
+  const calls: AcquisitionToolExecutionInput[] = [];
+  const pipeline = new AcquisitionCandidateProcessingPipeline({
+    executor: {
+      async execute(input) {
+        calls.push(input);
+        return input.toolName === "qualify_candidate"
+          ? qualification("A", 78)
+          : { outreachExecuted: false };
+      }
+    },
+    identityResolutionStage: {
+      async resolveBeforeIntelligence() {
+        return { status: "not_required" };
+      }
+    }
+  });
+
+  const result = await pipeline.process(processingInput(["candidate-resolved"]));
+
+  assert.deepEqual(calls.map((call) => call.toolName), [
+    "research_candidate",
+    "qualify_candidate",
+    "build_battle_card"
+  ]);
+  assert.deepEqual(result.processedCandidateIds, ["candidate-resolved"]);
+  assert.deepEqual(result.battleCardCandidateIds, ["candidate-resolved"]);
+});
+
 test("does not build cards for lower grades or any hard-gated qualification", async () => {
   const calls: AcquisitionToolExecutionInput[] = [];
   const decisions = new Map([

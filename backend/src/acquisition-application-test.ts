@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import express, { type RequestHandler } from "express";
 import type mysql from "mysql2/promise";
 import {
@@ -35,6 +36,15 @@ import {
 import {
   InMemoryAcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
+import {
+  acquisitionCandidateIdentityResolved
+} from "./acquisition-domain.js";
+import {
+  InMemoryAcquisitionDouyinIdentityResolutionOperationRepository
+} from "./acquisition-douyin-identity-resolution-operations.js";
+import {
+  InMemoryAcquisitionCandidateIntelligenceOperationRepository
+} from "./acquisition-candidate-intelligence-operations.js";
 import {
   ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS
 } from "./acquisition-discovery-providers.js";
@@ -1872,18 +1882,411 @@ test("application exposes acquisition providers and executes direct discovery op
   }
 });
 
-test("application startup recovers queued discovery operations", async () => {
+test("application automatically resolves a direct Douyin signal and runs one intelligence chain", async () => {
+  const fixture = isolatedMemoryStore();
+  const domainRepository = new InMemoryAcquisitionDomainRepository();
+  const identityRepository =
+    new InMemoryAcquisitionDouyinIdentityResolutionOperationRepository();
+  const intelligenceRepository =
+    new InMemoryAcquisitionCandidateIntelligenceOperationRepository();
+  const profileUrl =
+    "https://www.douyin.com/user/MS4wLjABAAAAapplication";
+  const sourceUrl =
+    "https://www.douyin.com/video/7536012345678904321";
+  const model = fakeGateway();
+  const searchCalls: string[] = [];
+  let sequence = 0;
+  let timestamp = Date.parse("2026-07-24T03:30:00.000Z");
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    domainRepository,
+    douyinIdentityResolutionRepository: identityRepository,
+    candidateIntelligenceRepository: intelligenceRepository,
+    contentFetcher: {
+      async fetch(requestedUrl) {
+        return {
+          finalUrl: requestedUrl,
+          status: "succeeded",
+          accessStatus: "public_content",
+          httpStatus: 200,
+          contentType: "text/html; charset=utf-8",
+          title: "厦门门店主理人林老师",
+          text: "公开视频显示正在比较 AI 获客系统供应商。",
+          rawArtifactHash: `sha256:${"1".repeat(64)}`,
+          contentHash: `sha256:${"2".repeat(64)}`
+        };
+      }
+    },
+    douyinPublicProfileDiscovery: {
+      async discover(input) {
+        if (input.sourceUrl === sourceUrl) {
+          return {
+            status: "succeeded",
+            redirectChain: [sourceUrl],
+            publicProfileUrls: [profileUrl],
+            rawArtifactHash: `sha256:${"3".repeat(64)}`,
+            contentHash: `sha256:${"4".repeat(64)}`
+          };
+        }
+        return {
+          status: "succeeded",
+          redirectChain: [profileUrl],
+          publicProfileUrls: [profileUrl],
+          rawArtifactHash: `sha256:${"5".repeat(64)}`,
+          contentHash: `sha256:${"6".repeat(64)}`
+        };
+      }
+    },
+    searchPort: {
+      async search(input) {
+        searchCalls.push(input.query);
+        return {
+          providerConnectionId: input.providerConnectionId,
+          provider: "fake-official-search",
+          requestId: "direct-douyin-identity-search",
+          results: [{
+            providerRecordId: "direct-douyin-profile-result",
+            sourceUrl: profileUrl,
+            sourcePlatform: "douyin",
+            sourceType: "profile",
+            title: "林老师的抖音主页",
+            snippet: "厦门门店主理人",
+            publishedAt: null,
+            locale: "zh-CN",
+            rawArtifactHash: `sha256:${"7".repeat(64)}`,
+            accessStatus: "indexed_summary",
+            subject: {
+              kind: "individual",
+              publicActorKey: "douyin:application",
+              publicDisplayName: "林老师",
+              publicProfileUrl: profileUrl,
+              sourcePlatform: "douyin",
+              demandCategory: "AI 获客",
+              demandSummary: "比较供应商",
+              locationHint: "厦门",
+              buyingStage: "comparison",
+              negativeSignals: []
+            }
+          }]
+        };
+      }
+    },
+    modelGatewayFactory: () => model.gateway,
+    idFactory: (prefix) => `${prefix}-douyin-auto-${++sequence}`,
+    now: () => new Date(timestamp++).toISOString(),
+    nowMs: () => timestamp++
+  });
+  const server = await serve(runtime.handler);
+
+  try {
+    const created = await server.request(
+      "/api/v1/acquisition/content-fetch-operations",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "direct-douyin-auto-identity" },
+        body: JSON.stringify({
+          sourceUrl,
+          subjectChannel: "individual"
+        })
+      }
+    );
+    assert.equal(created.response.status, 202, JSON.stringify(created.json));
+    const discovery = await waitFor(
+      () => server.request(
+        `/api/v1/acquisition/content-fetch-operations/${created.json.id}`
+      ),
+      (value) => value.json.status === "succeeded"
+    );
+    const candidateId = String(discovery.json.candidateIds[0]);
+    const identity = await waitFor(
+      () => identityRepository.findLatestForCandidate(
+        { ownerId: OWNER, teamId: TEAM },
+        candidateId
+      ),
+      (value) => value?.status === "succeeded"
+    );
+    const candidate = await domainRepository.findCandidate(
+      { ownerId: OWNER, teamId: TEAM },
+      candidateId
+    );
+    const intelligence = await intelligenceRepository
+      .findLatestForCandidate(
+        { ownerId: OWNER, teamId: TEAM },
+        candidateId
+      );
+
+    assert.equal(identity?.outcome, "verified_consensus");
+    assert.equal(identity?.planSessionId, null);
+    assert.equal(candidate ? acquisitionCandidateIdentityResolved(candidate) : false, true);
+    assert.equal(candidate?.profile.kind === "individual"
+      ? candidate.profile.publicProfileUrl
+      : null, profileUrl);
+    assert.equal(intelligence?.status, "succeeded");
+    assert.equal(intelligence?.sessionId.startsWith("acquisition-plan:"), false);
+    assert.deepEqual(model.judgmentOperations(), [
+      "research",
+      "qualify",
+      "build_battle_card"
+    ]);
+    assert.equal(searchCalls.length, 1);
+  } finally {
+    await server.close();
+    await runtime.close();
+  }
+});
+
+test("application Run reuses its frozen plan session and skips duplicate candidate stages", async () => {
+  const fixture = isolatedMemoryStore();
+  const domainRepository = new InMemoryAcquisitionDomainRepository();
+  const identityRepository =
+    new InMemoryAcquisitionDouyinIdentityResolutionOperationRepository();
+  const intelligenceRepository =
+    new InMemoryAcquisitionCandidateIntelligenceOperationRepository();
+  const sourceUrl =
+    "https://www.douyin.com/video/7536012345678909876";
+  const profileUrl =
+    "https://www.douyin.com/user/MS4wLjABAAAArun";
+  const searchCalls: Array<{ query: string; sessionId: string }> = [];
+  const model = fakeGateway();
+  const unresolvedSubject = {
+    publicActorKey: `unresolved-public-signal:douyin:sha256:${createHash("sha256")
+      .update(sourceUrl)
+      .digest("hex")}`,
+    publicDisplayName: "厦门门店主理人比较 AI 获客系统",
+    publicProfileUrl: sourceUrl,
+    sourcePlatform: "douyin",
+    demandCategory: "AI 获客",
+    demandSummary: "公开信号：近期正在寻找供应商。",
+    locationHint: "厦门",
+    buyingStage: "purchase_ready" as const,
+    negativeSignals: []
+  };
+  let sequence = 0;
+  let timestamp = Date.parse("2026-07-24T04:00:00.000Z");
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    domainRepository,
+    douyinIdentityResolutionRepository: identityRepository,
+    candidateIntelligenceRepository: intelligenceRepository,
+    douyinPublicProfileDiscovery: {
+      async discover(input) {
+        if (input.sourceUrl === sourceUrl) {
+          return {
+            status: "succeeded",
+            redirectChain: [sourceUrl],
+            publicProfileUrls: [profileUrl],
+            rawArtifactHash: `sha256:${"8".repeat(64)}`,
+            contentHash: `sha256:${"9".repeat(64)}`
+          };
+        }
+        return {
+          status: "succeeded",
+          redirectChain: [profileUrl],
+          publicProfileUrls: [profileUrl],
+          rawArtifactHash: `sha256:${"a".repeat(64)}`,
+          contentHash: `sha256:${"b".repeat(64)}`
+        };
+      }
+    },
+    searchPort: {
+      async search(input) {
+        searchCalls.push({ query: input.query, sessionId: input.sessionId });
+        const identitySearch = input.query.includes("7536012345678909876");
+        if (input.subjectKinds[0] === "organization") {
+          return {
+            providerConnectionId: input.providerConnectionId,
+            provider: "fake-official-search",
+            requestId: "run-organization-empty-request",
+            results: []
+          };
+        }
+        return {
+          providerConnectionId: input.providerConnectionId,
+          provider: "fake-official-search",
+          requestId: identitySearch
+            ? "run-identity-search-request"
+            : "run-discovery-search-request",
+          results: [{
+            providerRecordId: identitySearch
+              ? "run-profile-result"
+              : "run-video-result",
+            sourceUrl: identitySearch ? profileUrl : sourceUrl,
+            sourcePlatform: "douyin",
+            sourceType: identitySearch ? "profile" : "video",
+            title: identitySearch
+              ? "林老师的抖音主页"
+              : "厦门门店主理人比较 AI 获客系统",
+            snippet: "公开信号：近期正在寻找供应商。",
+            publishedAt: "2026-07-23T12:00:00.000Z",
+            locale: "zh-CN",
+            rawArtifactHash: identitySearch
+              ? `sha256:${"c".repeat(64)}`
+              : `sha256:${"d".repeat(64)}`,
+            accessStatus: "indexed_summary",
+            subject: identitySearch ? {
+              kind: "individual",
+              publicActorKey: "douyin:run-profile",
+              publicDisplayName: "林老师",
+              publicProfileUrl: profileUrl,
+              sourcePlatform: "douyin",
+              demandCategory: "AI 获客",
+              demandSummary: "寻找供应商",
+              locationHint: "厦门",
+              buyingStage: "purchase_ready",
+              negativeSignals: [],
+              individualPartyId: null
+            } : {
+              ...unresolvedSubject,
+              kind: "individual",
+              individualPartyId: null
+            }
+          }]
+        };
+      }
+    },
+    modelGatewayFactory: () => model.gateway,
+    idFactory: (prefix) => `${prefix}-run-auto-${++sequence}`,
+    now: () => new Date(timestamp++).toISOString(),
+    nowMs: () => timestamp++
+  });
+  const server = await serve(runtime.handler);
+
+  try {
+    const payload = planPayload();
+    payload.name = "抖音自动身份核验 Run";
+    payload.objective = "搜索抖音公开需求信号";
+    payload.subjectChannels = { organization: true, individual: true };
+    payload.operations = [{
+      operationId: "search-douyin-organization",
+      subjectChannel: "organization",
+      kind: "search",
+      connectionId: "fake-search-connection",
+      query: "site:douyin.com 厦门企业 AI 获客供应商",
+      allocatedBudget: {
+        requests: 1,
+        results: 10,
+        amountMinor: 0,
+        durationSeconds: 60
+      }
+    }, {
+      operationId: "search-douyin-individual",
+      subjectChannel: "individual",
+      kind: "search",
+      connectionId: "fake-search-connection",
+      query: "site:douyin.com 厦门 AI 获客供应商",
+      allocatedBudget: {
+        requests: 1,
+        results: 10,
+        amountMinor: 0,
+        durationSeconds: 60
+      }
+    }];
+    payload.budgetSnapshot = {
+      billingCurrency: "CNY",
+      maxRequests: 2,
+      maxResults: 20,
+      maxAmountMinor: 0,
+      maxDurationSeconds: 120
+    };
+    const created = await server.request("/api/v1/acquisition/plans", {
+      method: "POST",
+      headers: { "Idempotency-Key": "douyin-run-auto-plan" },
+      body: JSON.stringify(payload)
+    });
+    assert.equal(created.response.status, 201, JSON.stringify(created.json));
+    const approved = await server.request(
+      `/api/v1/acquisition/plans/${created.json.id}/approval`,
+      {
+        method: "POST",
+        headers: { "If-Match": created.response.headers.get("etag")! },
+        body: JSON.stringify({
+          decision: "approve",
+          reason: "验证 Run 冻结模型会话"
+        })
+      }
+    );
+    assert.equal(approved.response.status, 200, JSON.stringify(approved.json));
+    const started = await server.request(
+      `/api/v1/acquisition/plans/${created.json.id}/runs`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "douyin-run-auto-start" },
+        body: JSON.stringify({})
+      }
+    );
+    assert.equal(started.response.status, 202, JSON.stringify(started.json));
+    const runId = String(started.json.id);
+    const terminal = await waitFor(
+      () => server.request(`/api/v1/acquisition/runs/${runId}`),
+      (value) => ["succeeded", "partial_success", "failed"].includes(
+        String(value.json.status)
+      )
+    );
+    const shards = await server.request(
+      `/api/v1/acquisition/runs/${runId}/shards`
+    );
+    assert.equal(terminal.json.status, "succeeded", JSON.stringify({
+      run: terminal.json,
+      shards: shards.json
+    }));
+    const candidates = await server.request(
+      "/api/v1/acquisition/candidates?limit=10"
+    );
+    const candidateId = String(candidates.json.items[0]?.id);
+    const identity = await identityRepository.findLatestForCandidate(
+      { ownerId: OWNER, teamId: TEAM },
+      candidateId
+    );
+    const intelligence = await intelligenceRepository.findLatestForCandidate(
+      { ownerId: OWNER, teamId: TEAM },
+      candidateId
+    );
+
+    assert.equal(identity?.status, "succeeded");
+    assert.equal(identity?.planSessionId, `acquisition-plan:${runId}`);
+    assert.equal(intelligence?.sessionId, `acquisition-plan:${runId}`);
+    assert.deepEqual(model.judgmentOperations(), [
+      "research",
+      "qualify",
+      "build_battle_card"
+    ]);
+    assert.equal(searchCalls.length, 3);
+    assert.equal(
+      searchCalls.every((call) =>
+        call.sessionId === `acquisition-plan:${runId}`
+      ),
+      true
+    );
+  } finally {
+    await server.close();
+    await runtime.close();
+  }
+});
+
+test("application startup recovery continues a queued Douyin fetch into automatic identity", async () => {
   const fixture = isolatedMemoryStore();
   const discoveryRepository =
     new InMemoryAcquisitionDiscoveryOperationRepository();
+  const domainRepository = new InMemoryAcquisitionDomainRepository();
+  const identityRepository =
+    new InMemoryAcquisitionDouyinIdentityResolutionOperationRepository();
+  const intelligenceRepository =
+    new InMemoryAcquisitionCandidateIntelligenceOperationRepository();
+  const sourceUrl =
+    "https://www.douyin.com/video/7536012345678909999";
+  const profileUrl =
+    "https://www.douyin.com/user/MS4wLjABAAAArecovery";
+  const model = fakeGateway();
   const queued: AcquisitionContentFetchOperationRecord = {
     id: "fetch-startup-recovery",
     ownerId: OWNER,
     teamId: TEAM,
     actorId: OWNER,
-    sourceUrl: "https://example.cn/startup-recovery",
+    sourceUrl,
     finalUrl: null,
-    subjectChannel: "organization",
+    subjectChannel: "individual",
     status: "queued",
     accessStatus: null,
     httpStatus: null,
@@ -1909,8 +2312,54 @@ test("application startup recovers queued discovery operations", async () => {
   const runtime = await createAcquisitionApplication({
     store: fixture.store,
     masterSecret: MASTER_SECRET,
+    domainRepository,
     discoveryRepository,
-    searchPort: fakeSearchPort().port,
+    douyinIdentityResolutionRepository: identityRepository,
+    candidateIntelligenceRepository: intelligenceRepository,
+    douyinPublicProfileDiscovery: {
+      async discover(input) {
+        return {
+          status: "succeeded",
+          redirectChain: [input.sourceUrl],
+          publicProfileUrls: [profileUrl],
+          rawArtifactHash: `sha256:${"5".repeat(64)}`,
+          contentHash: `sha256:${"6".repeat(64)}`
+        };
+      }
+    },
+    searchPort: {
+      async search(input) {
+        return {
+          providerConnectionId: input.providerConnectionId,
+          provider: "fake-official-search",
+          requestId: "startup-recovery-identity-search",
+          results: [{
+            providerRecordId: "startup-recovery-profile",
+            sourceUrl: profileUrl,
+            sourcePlatform: "douyin",
+            sourceType: "profile",
+            title: "恢复任务中的公开抖音主页",
+            snippet: "厦门门店主理人正在比较 AI 获客系统。",
+            publishedAt: null,
+            locale: "zh-CN",
+            rawArtifactHash: `sha256:${"7".repeat(64)}`,
+            accessStatus: "indexed_summary",
+            subject: {
+              kind: "individual",
+              publicActorKey: "douyin:startup-recovery",
+              publicDisplayName: "林老师",
+              publicProfileUrl: profileUrl,
+              sourcePlatform: "douyin",
+              demandCategory: "AI 获客",
+              demandSummary: "比较供应商",
+              locationHint: "厦门",
+              buyingStage: "comparison",
+              negativeSignals: []
+            }
+          }]
+        };
+      }
+    },
     contentFetcher: {
       async fetch(sourceUrl) {
         return {
@@ -1919,14 +2368,14 @@ test("application startup recovers queued discovery operations", async () => {
           accessStatus: "public_content",
           httpStatus: 200,
           contentType: "text/html",
-          title: "恢复后的公开商机",
-          text: "应用启动后恢复了此前排队的公开商机抓取。",
+          title: "恢复后的抖音公开需求信号",
+          text: "厦门门店主理人正在比较 AI 获客系统供应商。",
           rawArtifactHash: `sha256:${"3".repeat(64)}`,
           contentHash: `sha256:${"4".repeat(64)}`
         };
       }
     },
-    modelGatewayFactory: () => fakeGateway().gateway,
+    modelGatewayFactory: () => model.gateway,
     now: () => "2026-07-24T03:00:00.000Z",
     nowMs: () => Date.parse("2026-07-24T03:00:00.000Z")
   });
@@ -1941,6 +2390,27 @@ test("application startup recovers queued discovery operations", async () => {
     );
     assert.equal(completed?.evidenceCount, 1);
     assert.equal(completed?.leaseToken, null);
+    const candidateId = completed?.candidateIds[0] ?? "";
+    const identity = await waitFor(
+      () => identityRepository.findLatestForCandidate(
+        { ownerId: OWNER, teamId: TEAM },
+        candidateId
+      ),
+      (value) => value?.status === "succeeded"
+    );
+    assert.equal(identity?.outcome, "verified_consensus");
+    assert.equal(
+      (await intelligenceRepository.findLatestForCandidate(
+        { ownerId: OWNER, teamId: TEAM },
+        candidateId
+      ))?.status,
+      "succeeded"
+    );
+    assert.deepEqual(model.judgmentOperations(), [
+      "research",
+      "qualify",
+      "build_battle_card"
+    ]);
   } finally {
     await runtime.close();
   }

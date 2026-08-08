@@ -250,6 +250,45 @@ test("creates one queued operation only after identity resolution and pins one m
   );
 });
 
+test("uses a trusted acquisition plan session without creating a replacement", async () => {
+  const state = fixture();
+
+  const operation = await state.service.createAfterIdentity(
+    scope,
+    "candidate-a",
+    "plan-bound-key",
+    { trustedSessionId: "acquisition-plan:run-123" }
+  );
+  const replay = await state.service.createAfterIdentity(
+    scope,
+    "candidate-a",
+    "plan-bound-key",
+    { trustedSessionId: "acquisition-plan:run-123" }
+  );
+
+  assert.equal(operation.sessionId, "acquisition-plan:run-123");
+  assert.deepEqual(replay, operation);
+  assert.equal(state.sessionCalls.length, 0);
+});
+
+test("rejects an untrusted supplied session before creating an operation", async () => {
+  const state = fixture();
+
+  await assert.rejects(
+    state.service.createAfterIdentity(
+      scope,
+      "candidate-a",
+      "untrusted-plan-key",
+      { trustedSessionId: "model-session:active" }
+    ),
+    (error: unknown) =>
+      error instanceof AcquisitionCandidateIntelligenceOperationError
+      && error.code === "INVALID_REQUEST"
+  );
+
+  assert.equal(state.sessionCalls.length, 0);
+});
+
 test("registers retry commands durably and rejects one tenant key reused for another operation", async () => {
   const state = fixture({
     candidates: [candidate("candidate-a"), candidate("candidate-b")]

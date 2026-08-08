@@ -351,6 +351,13 @@ test("MySQL reads fail closed on JSON and indexed-column mismatches", async () =
       error: /ACQUISITION_DOUYIN_IDENTITY_RESOLUTION_MYSQL_INTEGRITY:request_hash/u
     },
     {
+      row: mysqlRow({
+        ...queuedOperation,
+        planSessionId: "model-session:not-a-frozen-plan"
+      }),
+      error: /ACQUISITION_DOUYIN_IDENTITY_RESOLUTION_MYSQL_INTEGRITY:plan_session_id/u
+    },
+    {
       row: mysqlRow({ ...queuedOperation, status: "running" }),
       error: /ACQUISITION_DOUYIN_IDENTITY_RESOLUTION_MYSQL_INTEGRITY:lease_state/u
     },

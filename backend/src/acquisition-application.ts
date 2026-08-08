@@ -9,6 +9,9 @@ import type {
   AcquisitionCandidate
 } from "./acquisition-domain.js";
 import {
+  acquisitionCandidateIdentityResolved
+} from "./acquisition-domain.js";
+import {
   AcquisitionCandidateProcessingPipeline
 } from "./acquisition-candidate-processing-pipeline.js";
 import {
@@ -22,6 +25,23 @@ import {
 import {
   AcquisitionCandidateIntelligenceRecoverySweeper
 } from "./acquisition-candidate-intelligence-recovery-sweeper.js";
+import {
+  AcquisitionDouyinIdentityResolutionOperationService,
+  InMemoryAcquisitionDouyinIdentityResolutionOperationRepository,
+  type AcquisitionDouyinIdentityResolutionOperationRepository,
+  type AcquisitionDouyinIdentityResolutionScope
+} from "./acquisition-douyin-identity-resolution-operations.js";
+import {
+  AcquisitionDouyinIdentityResolutionRecoverySweeper
+} from "./acquisition-douyin-identity-resolution-recovery-sweeper.js";
+import {
+  ensureAcquisitionDouyinIdentityResolutionMysqlSchema,
+  MysqlAcquisitionDouyinIdentityResolutionOperationRepository
+} from "./acquisition-douyin-identity-resolution-mysql-repository.js";
+import {
+  createAcquisitionDouyinPublicProfileDiscovery,
+  type AcquisitionDouyinPublicProfileDiscoveryPort
+} from "./acquisition-douyin-public-profile-discovery.js";
 import {
   ensureAcquisitionCandidateIntelligenceMysqlSchema,
   MysqlAcquisitionCandidateIntelligenceOperationRepository
@@ -302,11 +322,18 @@ export interface CreateAcquisitionApplicationOptions {
   candidateIntelligenceRecoveryIntervalMs?: number;
   candidateIntelligenceRecoveryBatchSize?: number;
   candidateIntelligenceLeaseDurationMs?: number;
+  douyinIdentityResolutionRecoveryIntervalMs?: number;
+  douyinIdentityResolutionRecoveryBatchSize?: number;
+  douyinIdentityResolutionLeaseDurationMs?: number;
   discoveryLeaseDurationMs?: number;
   domainRepository?: AcquisitionDomainRepository;
   discoveryRepository?: AcquisitionDiscoveryOperationRepository;
   candidateIntelligenceRepository?:
     AcquisitionCandidateIntelligenceOperationRepository;
+  douyinIdentityResolutionRepository?:
+    AcquisitionDouyinIdentityResolutionOperationRepository;
+  douyinPublicProfileDiscovery?:
+    AcquisitionDouyinPublicProfileDiscoveryPort;
   planRunRepository?: AcquisitionPlanRunRepository;
   shutdownTimeoutMs?: number;
   idFactory?: IdFactory;
@@ -326,6 +353,8 @@ interface AcquisitionRepositorySet {
   discovery: AcquisitionDiscoveryOperationRepository;
   candidateIntelligence:
     AcquisitionCandidateIntelligenceOperationRepository;
+  douyinIdentityResolution:
+    AcquisitionDouyinIdentityResolutionOperationRepository;
 }
 
 const GRADE_RANK = Object.freeze({
@@ -335,6 +364,26 @@ const GRADE_RANK = Object.freeze({
   C: 4,
   D: 5
 });
+
+function unresolvedDouyinCandidate(candidate: AcquisitionCandidate) {
+  return candidate.partyType === "individual"
+    && candidate.partyRef.partyType === "individual"
+    && candidate.profile.kind === "individual"
+    && candidate.profile.sourcePlatform.toLocaleLowerCase("en-US")
+      === "douyin"
+    && !acquisitionCandidateIdentityResolved(candidate);
+}
+
+function automaticDouyinIdentityKey(input: {
+  source: string;
+  candidateId: string;
+  candidateVersion: number;
+  sourceEvidenceIds: string[];
+}) {
+  return `douyin-identity:operation:${createHash("sha256")
+    .update(canonicalJsonStringify(input) ?? "")
+    .digest("hex")}`;
+}
 
 function requireMasterSecret(secret: string) {
   if (
@@ -890,6 +939,8 @@ export async function createAcquisitionApplication(
     AcquisitionCrmOutcomeReconciliationWorker | null = null;
   let candidateIntelligenceRecoverySweeper:
     AcquisitionCandidateIntelligenceRecoverySweeper | null = null;
+  let douyinIdentityResolutionRecoverySweeper:
+    AcquisitionDouyinIdentityResolutionRecoverySweeper | null = null;
 
   try {
     let repositories: AcquisitionRepositorySet;
@@ -912,12 +963,17 @@ export async function createAcquisitionApplication(
       await ensureAcquisitionToolSupportMysqlSchema(pool);
       await ensureAcquisitionDiscoveryMysqlSchema(pool);
       await ensureAcquisitionCandidateIntelligenceMysqlSchema(pool);
+      await ensureAcquisitionDouyinIdentityResolutionMysqlSchema(pool);
       repositories = {
         ...createMysqlAcquisitionRepositories(pool),
         discovery:
           new MysqlAcquisitionDiscoveryOperationRepository(pool),
         candidateIntelligence:
-          new MysqlAcquisitionCandidateIntelligenceOperationRepository(pool)
+          new MysqlAcquisitionCandidateIntelligenceOperationRepository(pool),
+        douyinIdentityResolution:
+          new MysqlAcquisitionDouyinIdentityResolutionOperationRepository(
+            pool
+          )
       };
       candidateDirectory = new MysqlAcquisitionCandidateDirectory(pool, {
         now,
@@ -946,7 +1002,9 @@ export async function createAcquisitionApplication(
         discovery:
           new InMemoryAcquisitionDiscoveryOperationRepository(),
         candidateIntelligence:
-          new InMemoryAcquisitionCandidateIntelligenceOperationRepository()
+          new InMemoryAcquisitionCandidateIntelligenceOperationRepository(),
+        douyinIdentityResolution:
+          new InMemoryAcquisitionDouyinIdentityResolutionOperationRepository()
       };
       candidateDirectory = new InMemoryAcquisitionCandidateDirectory({
         now,
@@ -968,6 +1026,10 @@ export async function createAcquisitionApplication(
     if (options.candidateIntelligenceRepository) {
       repositories.candidateIntelligence =
         options.candidateIntelligenceRepository;
+    }
+    if (options.douyinIdentityResolutionRepository) {
+      repositories.douyinIdentityResolution =
+        options.douyinIdentityResolutionRepository;
     }
     if (options.planRunRepository) {
       repositories.planRun = options.planRunRepository;
@@ -1204,6 +1266,25 @@ export async function createAcquisitionApplication(
         idFactory: () => idFactory("candidate-intelligence"),
         now
       });
+    const douyinIdentityResolutionOperations =
+      new AcquisitionDouyinIdentityResolutionOperationService({
+        repository: repositories.douyinIdentityResolution,
+        evidence: domainService,
+        candidates: {
+          getCandidate(scope, candidateId) {
+            return repositories.domain.findCandidate(scope, candidateId);
+          }
+        },
+        discovery: options.douyinPublicProfileDiscovery
+          ?? createAcquisitionDouyinPublicProfileDiscovery(),
+        search: searchPort,
+        identityResolution: identityResolutionService,
+        candidateIntelligence: candidateIntelligenceOperations,
+        workerId: idFactory("douyin-identity-worker"),
+        leaseDurationMs: options.douyinIdentityResolutionLeaseDurationMs,
+        idFactory: () => idFactory("douyin-identity-resolution"),
+        now
+      });
 
     const candidateResearch = new AcquisitionCandidateResearchService({
       domain: domainService,
@@ -1219,7 +1300,66 @@ export async function createAcquisitionApplication(
     });
     const candidatePipeline = new AcquisitionCandidateProcessingPipeline({
       executor: toolExecutor,
-      research: candidateResearch
+      research: candidateResearch,
+      identityResolutionStage: {
+        async resolveBeforeIntelligence(input) {
+          const candidate = await domainService.getCandidate(
+            input.scope,
+            input.candidateId
+          );
+          if (!unresolvedDouyinCandidate(candidate)) {
+            return { status: "not_required" };
+          }
+          const sourceEvidenceIds = [...candidate.evidenceIds];
+          if (sourceEvidenceIds.length === 0) {
+            return {
+              status: "requires_review",
+              operationId: "unavailable",
+              errorCode: "not_found"
+            };
+          }
+          const operation = await douyinIdentityResolutionOperations.create(
+            input.scope,
+            {
+              candidateId: candidate.id,
+              expectedCandidateVersion: candidate.version,
+              sourceEvidenceIds,
+              providerConnectionIds: [
+                input.shard.connection.connectionId
+              ],
+              planSessionId: `acquisition-plan:${input.run.id}`
+            },
+            automaticDouyinIdentityKey({
+              source: `${input.run.id}:${input.shard.id}`,
+              candidateId: candidate.id,
+              candidateVersion: candidate.version,
+              sourceEvidenceIds
+            })
+          );
+          const completed =
+            await douyinIdentityResolutionOperations.execute(
+              input.scope,
+              operation.id,
+              input.signal
+            );
+          if (completed.status !== "succeeded"
+            || !completed.intelligenceOperationId) {
+            return {
+              status: "requires_review",
+              operationId: completed.id,
+              errorCode: completed.outcome ?? "provider_unavailable"
+            };
+          }
+          return {
+            status: "completed",
+            operationId: completed.id,
+            intelligence: await candidateIntelligenceOperations.get(
+              input.scope,
+              completed.intelligenceOperationId
+            )
+          };
+        }
+      }
     });
     const searchProcessor = new AcquisitionSearchShardProcessor({
       executor: toolExecutor,
@@ -1297,6 +1437,7 @@ export async function createAcquisitionApplication(
     const activeCopilotTasks = new Set<Promise<void>>();
     const activeDiscoveryTasks = new Set<Promise<void>>();
     const activeCandidateIntelligenceTasks = new Set<Promise<void>>();
+    const activeDouyinIdentityTasks = new Set<Promise<void>>();
     let closing = false;
     const dispatchCopilotTask = (
       scope: AcquisitionCopilotScope,
@@ -1343,6 +1484,90 @@ export async function createAcquisitionApplication(
       );
       void task.catch(() => undefined);
       return Promise.resolve();
+    };
+    const dispatchDouyinIdentityTask = (
+      scope: AcquisitionDouyinIdentityResolutionScope,
+      operationId: string
+    ) => {
+      if (closing) {
+        throw new Error("ACQUISITION_APPLICATION_CLOSING");
+      }
+      const task = trackAcquisitionBackgroundTask(
+        activeDouyinIdentityTasks,
+        Promise.resolve()
+          .then(() => douyinIdentityResolutionOperations.execute(
+            scope,
+            operationId
+          ))
+          .then(() => undefined)
+      );
+      void task.catch(() => undefined);
+      return Promise.resolve();
+    };
+    const submitDirectDouyinCandidates = async (
+      scope: AcquisitionDouyinIdentityResolutionScope,
+      source: string,
+      candidateIds: string[]
+    ) => {
+      if (candidateIds.length === 0) return;
+      const providerConnectionIds = (
+        await activeSearchConnections.list(scope)
+      ).map((connection) => connection.connectionId);
+      for (const candidateId of candidateIds) {
+        const candidate = await domainService.getCandidate(scope, candidateId);
+        if (!unresolvedDouyinCandidate(candidate)
+          || candidate.evidenceIds.length === 0) {
+          continue;
+        }
+        const operation = await douyinIdentityResolutionOperations.create(
+          scope,
+          {
+            candidateId,
+            expectedCandidateVersion: candidate.version,
+            sourceEvidenceIds: candidate.evidenceIds,
+            providerConnectionIds,
+            planSessionId: null
+          },
+          automaticDouyinIdentityKey({
+            source,
+            candidateId,
+            candidateVersion: candidate.version,
+            sourceEvidenceIds: candidate.evidenceIds
+          })
+        );
+        await dispatchDouyinIdentityTask(scope, operation.id);
+      }
+    };
+    const executeContentFetchAndSubmitIdentity = async (
+      scope: AcquisitionDouyinIdentityResolutionScope,
+      operationId: string
+    ) => {
+      const completed =
+        await discoveryOperations.executeContentFetchOperation(
+          scope,
+          operationId
+        );
+      await submitDirectDouyinCandidates(
+        scope,
+        `content-fetch:${operationId}`,
+        completed.candidateIds
+      );
+      return completed;
+    };
+    const executeImportAndSubmitIdentity = async (
+      scope: AcquisitionDouyinIdentityResolutionScope,
+      operationId: string
+    ) => {
+      const completed = await discoveryOperations.executeImportOperation(
+        scope,
+        operationId
+      );
+      await submitDirectDouyinCandidates(
+        scope,
+        `import:${operationId}`,
+        completed.candidateIds
+      );
+      return completed;
     };
     const router = Router();
     router.use(createAcquisitionProviderConnectionsRouter({
@@ -1396,19 +1621,15 @@ export async function createAcquisitionApplication(
       service: discoveryOperations,
       requestIdFactory: () => idFactory("request"),
       dispatchContentFetchOperation: (scope, operationId) =>
-        dispatchDiscoveryTask(() =>
-          discoveryOperations.executeContentFetchOperation(
-            scope,
-            operationId
-          )
-        ),
+        dispatchDiscoveryTask(() => executeContentFetchAndSubmitIdentity(
+          scope,
+          operationId
+        )),
       dispatchImportOperation: (scope, operationId) =>
-        dispatchDiscoveryTask(() =>
-          discoveryOperations.executeImportOperation(
-            scope,
-            operationId
-          )
-        )
+        dispatchDiscoveryTask(() => executeImportAndSubmitIdentity(
+          scope,
+          operationId
+        ))
     }));
     router.use(createAcquisitionCandidateIntelligenceOperationsRouter({
       service: candidateIntelligenceOperations,
@@ -1469,14 +1690,14 @@ export async function createAcquisitionApplication(
         service: discoveryOperations,
         dispatchContentFetchOperation: (scope, operationId) =>
           dispatchDiscoveryTask(() =>
-            discoveryOperations.executeContentFetchOperation(
+            executeContentFetchAndSubmitIdentity(
               scope,
               operationId
             )
           ),
         dispatchImportOperation: (scope, operationId) =>
           dispatchDiscoveryTask(() =>
-            discoveryOperations.executeImportOperation(
+            executeImportAndSubmitIdentity(
               scope,
               operationId
             )
@@ -1493,6 +1714,14 @@ export async function createAcquisitionApplication(
         batchSize: options.candidateIntelligenceRecoveryBatchSize
       });
     await candidateIntelligenceRecoverySweeper.start();
+    douyinIdentityResolutionRecoverySweeper =
+      new AcquisitionDouyinIdentityResolutionRecoverySweeper({
+        service: douyinIdentityResolutionOperations,
+        dispatch: dispatchDouyinIdentityTask,
+        intervalMs: options.douyinIdentityResolutionRecoveryIntervalMs,
+        batchSize: options.douyinIdentityResolutionRecoveryBatchSize
+      });
+    await douyinIdentityResolutionRecoverySweeper.start();
     conversionRecoverySweeper =
       new AcquisitionLeadConversionRecoverySweeper({
         service: conversionReconciliation,
@@ -1532,6 +1761,12 @@ export async function createAcquisitionApplication(
                     ...activeCandidateIntelligenceTasks
                   ]);
                 })(),
+                (async () => {
+                  await douyinIdentityResolutionRecoverySweeper?.stop();
+                  await Promise.all([
+                    ...activeDouyinIdentityTasks
+                  ]);
+                })(),
                 conversionRecoverySweeper?.close()
                   ?? Promise.resolve(),
                 outcomeReconciliationWorker?.close()
@@ -1569,6 +1804,10 @@ export async function createAcquisitionApplication(
       }
     };
   } catch (error) {
+    if (douyinIdentityResolutionRecoverySweeper) {
+      await douyinIdentityResolutionRecoverySweeper.stop()
+        .catch(() => undefined);
+    }
     if (candidateIntelligenceRecoverySweeper) {
       await candidateIntelligenceRecoverySweeper.stop()
         .catch(() => undefined);

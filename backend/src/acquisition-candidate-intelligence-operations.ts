@@ -827,11 +827,23 @@ export class AcquisitionCandidateIntelligenceOperationService {
   async createAfterIdentity(
     rawScope: AcquisitionCandidateIntelligenceScope,
     candidateIdInput: string,
-    idempotencyKeyInput: string
+    idempotencyKeyInput: string,
+    options: { trustedSessionId?: string } = {}
   ) {
     const scope = validScope(rawScope);
     const candidateId = requiredText(candidateIdInput, 160);
     const idempotencyKey = requiredText(idempotencyKeyInput, 200);
+    const trustedSessionId = options.trustedSessionId === undefined
+      ? null
+      : requiredText(options.trustedSessionId, 255);
+    if (trustedSessionId
+      && !/^acquisition-plan:[A-Za-z0-9._:-]{1,200}$/u.test(
+        trustedSessionId
+      )) {
+      throw new AcquisitionCandidateIntelligenceOperationError(
+        "INVALID_REQUEST"
+      );
+    }
     const idempotencyKeyHash = hash(idempotencyKey);
     const candidate = await this.candidates.getCandidate(scope, candidateId);
     if (!candidate) {
@@ -845,7 +857,9 @@ export class AcquisitionCandidateIntelligenceOperationService {
         "IDENTITY_NOT_RESOLVED"
       );
     }
-    const requestHash = stableHash({ candidateId, identityFingerprint });
+    const requestHash = stableHash(trustedSessionId
+      ? { candidateId, identityFingerprint, trustedSessionId }
+      : { candidateId, identityFingerprint });
     const existing = await this.repository.findOperationByIdempotency({
       ownerId: scope.ownerId,
       teamId: scope.teamId,
@@ -859,13 +873,14 @@ export class AcquisitionCandidateIntelligenceOperationService {
       }
       return publicOperation(existing);
     }
-    const session = await this.sessionFactory.createSession({
-      scope,
-      candidateId,
-      idempotencyKey:
-        `candidate-intelligence-session:${idempotencyKeyHash}`
-    });
-    const sessionId = requiredText(session.sessionId, 255);
+    const sessionId = trustedSessionId ?? requiredText((
+      await this.sessionFactory.createSession({
+        scope,
+        candidateId,
+        idempotencyKey:
+          `candidate-intelligence-session:${idempotencyKeyHash}`
+      })
+    ).sessionId, 255);
     const now = validIso(this.now());
     const operation: AcquisitionCandidateIntelligenceOperationRecord = {
       id: requiredText(this.idFactory(), 160),

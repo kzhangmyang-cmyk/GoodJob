@@ -241,7 +241,14 @@ function parseOperation(row: MysqlRow) {
       !== payload.providerConnectionIds.length) {
     integrity("provider_connection_ids");
   }
-  nullableString(payload.planSessionId, "plan_session_id");
+  const planSessionId = nullableString(
+    payload.planSessionId,
+    "plan_session_id"
+  );
+  if (planSessionId
+    && !/^acquisition-plan:[A-Za-z0-9._:-]{1,200}$/u.test(planSessionId)) {
+    integrity("plan_session_id");
+  }
   nullableString(payload.canonicalProfileUrl, "canonical_profile_url");
   nullableString(
     payload.intelligenceOperationId,

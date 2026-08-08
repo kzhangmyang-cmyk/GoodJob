@@ -44,7 +44,7 @@ function baiduConnection(): ProviderConnection {
   };
 }
 
-test("Baidu official search runtime keeps indexed Douyin content as unresolved individual signals", async (t) => {
+test("Baidu official search separates unresolved Douyin content from verified profiles", async (t) => {
   const connection = baiduConnection();
   let persistCalls = 0;
   const store: AcquisitionPublicSearchStore = {
@@ -103,6 +103,13 @@ test("Baidu official search runtime keeps indexed Douyin content as unresolved i
           title: "站外转载页面",
           url: "https://news.example.cn/douyin/repost",
           snippet: "百度搜索混入的非抖音来源。"
+        },
+        {
+          id: 4,
+          type: "web",
+          title: "门店主理人的抖音主页",
+          url: "https://www.douyin.com/user/MS4wLjABAAAATracer",
+          snippet: "独立搜索明确返回的公开主页。"
         }
       ]
     }), {
@@ -127,7 +134,7 @@ test("Baidu official search runtime keeps indexed Douyin content as unresolved i
   assert.equal(response.provider, "baidu_ai_search");
   assert.deepEqual(
     response.results.map((result) => result.sourceType),
-    ["video", "short_link"]
+    ["video", "short_link", "profile"]
   );
   assert.equal(
     response.results.some((result) => result.sourceUrl.includes("news.example.cn")),
@@ -138,11 +145,22 @@ test("Baidu official search runtime keeps indexed Douyin content as unresolved i
     assert.equal(result.subject.kind, "individual");
     if (result.subject.kind === "individual") {
       assert.equal(result.subject.sourcePlatform, "douyin");
-      assert.equal(result.subject.individualPartyId, null);
-      assert.match(
-        result.subject.publicActorKey,
-        /^unresolved-public-signal:douyin:sha256:[a-f0-9]{64}$/u
-      );
+      if (result.sourceType === "profile") {
+        assert.match(
+          result.subject.individualPartyId ?? "",
+          /^public-individual-[a-f0-9]{24}$/u
+        );
+        assert.match(
+          result.subject.publicActorKey,
+          /^public:douyin:sha256:[a-f0-9]{64}$/u
+        );
+      } else {
+        assert.equal(result.subject.individualPartyId, null);
+        assert.match(
+          result.subject.publicActorKey,
+          /^unresolved-public-signal:douyin:sha256:[a-f0-9]{64}$/u
+        );
+      }
     }
   }
 

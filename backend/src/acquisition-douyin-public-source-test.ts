@@ -91,8 +91,9 @@ test("resolves only stable Douyin profiles while video, short-link, and comment 
       sourceType,
       subject: {
         kind: "individual",
-        publicActorKey:
-          `public:douyin:sha256:${"a".repeat(64)}`,
+        publicActorKey: `public:douyin:sha256:${createHash("sha256")
+          .update(publicProfileUrl)
+          .digest("hex")}`,
         publicProfileUrl,
         sourcePlatform: "douyin"
       }

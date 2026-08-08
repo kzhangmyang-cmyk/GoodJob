@@ -18,6 +18,9 @@ import {
 import type {
   AcquisitionCandidateResearchPort
 } from "./acquisition-candidate-research.js";
+import type {
+  AcquisitionCandidateIntelligenceOperation
+} from "./acquisition-candidate-intelligence-operations.js";
 
 export interface AcquisitionCandidateProcessingInput {
   scope: AcquisitionScope;
@@ -40,6 +43,25 @@ export interface AcquisitionCandidateProcessingResult {
 export interface AcquisitionCandidateProcessingPipelineOptions {
   executor: AcquisitionAgentToolExecutor;
   research?: AcquisitionCandidateResearchPort;
+  identityResolutionStage?: AcquisitionCandidateIdentityResolutionStagePort;
+}
+
+export interface AcquisitionCandidateIdentityResolutionStagePort {
+  resolveBeforeIntelligence(
+    input: AcquisitionCandidateProcessingInput & { candidateId: string }
+  ): Promise<
+    | { status: "not_required" }
+    | {
+        status: "completed";
+        operationId: string;
+        intelligence: AcquisitionCandidateIntelligenceOperation;
+      }
+    | {
+        status: "requires_review";
+        operationId: string;
+        errorCode: string;
+      }
+  >;
 }
 
 type CandidateStage =
@@ -147,10 +169,13 @@ function assertNotAborted(signal: AbortSignal) {
 export class AcquisitionCandidateProcessingPipeline {
   private readonly executor: AcquisitionAgentToolExecutor;
   private readonly research: AcquisitionCandidateResearchPort | null;
+  private readonly identityResolutionStage:
+    AcquisitionCandidateIdentityResolutionStagePort | null;
 
   constructor(options: AcquisitionCandidateProcessingPipelineOptions) {
     this.executor = options.executor;
     this.research = options.research ?? null;
+    this.identityResolutionStage = options.identityResolutionStage ?? null;
   }
 
   async process(
@@ -163,6 +188,35 @@ export class AcquisitionCandidateProcessingPipeline {
     };
     for (const candidateId of input.candidateIds) {
       assertNotAborted(input.signal);
+      if (this.identityResolutionStage) {
+        const identity = await this.identityResolutionStage
+          .resolveBeforeIntelligence({ ...input, candidateId });
+        assertNotAborted(input.signal);
+        if (identity.status === "requires_review") {
+          result.failures.push({
+            candidateId,
+            stage: "research",
+            errorCode: "IDENTITY_RESEARCH_REQUIRED"
+          });
+          continue;
+        }
+        if (identity.status === "completed") {
+          if (identity.intelligence.status === "succeeded") {
+            result.processedCandidateIds.push(candidateId);
+            if (identity.intelligence.battleCardId) {
+              result.battleCardCandidateIds.push(candidateId);
+            }
+          } else {
+            result.failures.push({
+              candidateId,
+              stage: identity.intelligence.failure?.stage ?? "research",
+              errorCode: identity.intelligence.failure?.errorCode
+                ?? "TOOL_EXECUTION_FAILED"
+            });
+          }
+          continue;
+        }
+      }
       if (this.research) {
         try {
           const supplemental = await this.research.research({
