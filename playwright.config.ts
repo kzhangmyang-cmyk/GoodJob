@@ -2,7 +2,11 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests",
-  testMatch: ["demo-auth.spec.ts", "acquisition-performance.spec.ts"],
+  testMatch: [
+    "demo-auth.spec.ts",
+    "acquisition-performance.spec.ts",
+    "acquisition-identity-resolution.spec.ts"
+  ],
   timeout: 20_000,
   expect: { timeout: 5_000 },
   use: {
