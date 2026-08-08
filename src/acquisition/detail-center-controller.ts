@@ -260,6 +260,32 @@ function shouldPollSelectedCandidate(
   return false;
 }
 
+const IDENTITY_HANDOFF_GRACE_POLLS = 3;
+
+function identityHandoffWindow(
+  detail: AcquisitionCandidateDetail | null
+): {
+  identityOperationId: string;
+  intelligenceOperationId: string;
+  serverCompletedAtMs: number;
+} | null {
+  const identity = detail?.identityResolutionOperation;
+  if (identity?.status !== "succeeded"
+    || identity.outcome !== "verified_consensus"
+    || !identity.intelligenceOperationId
+    || detail?.intelligenceOperation !== null) return null;
+  const serverCompletedAtMs = Date.parse(
+    identity.completedAt ?? identity.updatedAt
+  );
+  return Number.isFinite(serverCompletedAtMs)
+    ? {
+        identityOperationId: identity.id,
+        intelligenceOperationId: identity.intelligenceOperationId,
+        serverCompletedAtMs
+      }
+    : null;
+}
+
 function runProgressFingerprint(detail: AcquisitionTaskDetail | null): string {
   return fingerprint({
     run: detail?.latestRun ?? null,
@@ -585,6 +611,13 @@ export function createAcquisitionDetailCenterController(
   let selectedCandidatePollHandle: unknown = null;
   let hasSelectedCandidatePollHandle = false;
   let selectedCandidatePollFailureCount = 0;
+  let selectedCandidatePollingEnabled = true;
+  let identityHandoffGrace: {
+    identityOperationId: string;
+    intelligenceOperationId: string;
+    serverCompletedAtMs: number;
+    attempts: number;
+  } | null = null;
   let paginatedRunId: string | null = null;
   let expectedRunId: string | null = null;
   let currentPlanId: string | null = null;
@@ -722,6 +755,7 @@ export function createAcquisitionDetailCenterController(
     selectedCandidatePollHandle = null;
     hasSelectedCandidatePollHandle = false;
     selectedCandidatePollFailureCount = 0;
+    identityHandoffGrace = null;
   }
 
   function clearCandidatePaginationBusy(): void {
@@ -1018,9 +1052,12 @@ export function createAcquisitionDetailCenterController(
     ensureRunPolling();
   }
 
-  const candidateSnapshotErrors = new WeakMap<
+  const candidateSnapshotMetadata = new WeakMap<
     AcquisitionCandidateDetail,
-    string[]
+    {
+      errors: string[];
+      failedFields: Set<keyof AcquisitionCandidateDetail>;
+    }
   >();
 
   async function readCandidateSnapshot(
@@ -1101,8 +1138,33 @@ export function createAcquisitionDetailCenterController(
       ...operationResult.errors,
       ...handoffResult.errors
     ];
-    candidateSnapshotErrors.set(snapshot, failures);
+    const failedFields = new Set<keyof AcquisitionCandidateDetail>();
+    if (candidateResult.errors.length > 0) failedFields.add("candidate");
+    if (evidenceResult.errors.length > 0) failedFields.add("evidence");
+    if (qualificationResult.errors.length > 0) {
+      failedFields.add("qualification");
+    }
+    if (financialResult.errors.length > 0) failedFields.add("financialValue");
+    if (battleCardResult.errors.length > 0) failedFields.add("battleCard");
+    if (reviewsResult.errors.length > 0) failedFields.add("reviews");
+    if (identityResult.errors.length > 0) {
+      failedFields.add("identityResolutionOperation");
+    }
+    if (operationResult.errors.length > 0) {
+      failedFields.add("intelligenceOperation");
+    }
+    if (handoffResult.errors.length > 0) {
+      failedFields.add("privateDomainHandoff");
+    }
+    candidateSnapshotMetadata.set(snapshot, { errors: failures, failedFields });
     return snapshot;
+  }
+
+  function pollingWarning(current: string | null, errors: string[]): string {
+    const newErrors = errors.filter((error) => !current?.includes(error));
+    if (newErrors.length === 0) return current ?? "";
+    const warning = `后台候选资料刷新部分失败：${newErrors.join("；")}`;
+    return current ? `${current}；${warning}` : warning;
   }
 
   async function applyCandidateSnapshot(
@@ -1116,37 +1178,116 @@ export function createAcquisitionDetailCenterController(
       || requestSerialForCandidate !== candidateSerial
       || candidateId !== state.selectedCandidateId
       || !applies()) return;
-    const failures = candidateSnapshotErrors.get(snapshot) ?? [];
-    if (silent && failures.length > 0) {
-      throw new Error(failures.join("；"));
-    }
-    state.candidateDetail = snapshot;
+    const metadata = candidateSnapshotMetadata.get(snapshot) ?? {
+      errors: [],
+      failedFields: new Set<keyof AcquisitionCandidateDetail>()
+    };
+    const previous = state.candidateDetail;
+    const nextSnapshot = silent && previous
+      ? {
+          candidate: metadata.failedFields.has("candidate")
+            ? previous.candidate
+            : snapshot.candidate,
+          evidence: metadata.failedFields.has("evidence")
+            ? previous.evidence
+            : snapshot.evidence,
+          qualification: metadata.failedFields.has("qualification")
+            ? previous.qualification
+            : snapshot.qualification,
+          financialValue: metadata.failedFields.has("financialValue")
+            ? previous.financialValue
+            : snapshot.financialValue,
+          battleCard: metadata.failedFields.has("battleCard")
+            ? previous.battleCard
+            : snapshot.battleCard,
+          reviews: metadata.failedFields.has("reviews")
+            ? previous.reviews
+            : snapshot.reviews,
+          intelligenceOperation: metadata.failedFields.has("intelligenceOperation")
+            ? previous.intelligenceOperation
+            : snapshot.intelligenceOperation,
+          identityResolutionOperation: metadata.failedFields.has(
+            "identityResolutionOperation"
+          )
+            ? previous.identityResolutionOperation
+            : snapshot.identityResolutionOperation,
+          privateDomainHandoff: metadata.failedFields.has("privateDomainHandoff")
+            ? previous.privateDomainHandoff
+            : snapshot.privateDomainHandoff
+        }
+      : snapshot;
+    state.candidateDetail = nextSnapshot;
     state.identityVerification = identityStateForCandidate(
-      snapshot.candidate,
+      nextSnapshot.candidate,
       state.identityVerification
     );
-    if (silent) return;
-    if (failures.length === 0) {
+    if (silent) {
+      const coreOperationFailed = metadata.failedFields.has(
+        "identityResolutionOperation"
+      ) || metadata.failedFields.has("intelligenceOperation");
+      selectedCandidatePollFailureCount = coreOperationFailed
+        ? Math.min(selectedCandidatePollFailureCount + 1, 10)
+        : 0;
+      if (metadata.errors.length > 0) {
+        state.error = pollingWarning(state.error, metadata.errors);
+      }
+      return;
+    }
+    if (metadata.errors.length === 0) {
       state.message = null;
       state.error = null;
       state.loadingMoreCandidates = false;
     } else {
       state.message = "部分资料暂不可用，已保留成功加载的数据";
-      state.error = `部分候选资料加载失败：${failures.join("；")}`;
+      state.error = `部分候选资料加载失败：${metadata.errors.join("；")}`;
     }
+  }
+
+  function shouldContinueSelectedCandidatePolling(
+    detail: AcquisitionCandidateDetail | null
+  ): boolean {
+    if (shouldPollSelectedCandidate(detail)) {
+      identityHandoffGrace = null;
+      return true;
+    }
+    const handoff = identityHandoffWindow(detail);
+    if (!handoff) {
+      identityHandoffGrace = null;
+      return false;
+    }
+    if (identityHandoffGrace?.identityOperationId !== handoff.identityOperationId
+      || identityHandoffGrace.intelligenceOperationId
+        !== handoff.intelligenceOperationId) {
+      identityHandoffGrace = { ...handoff, attempts: 0 };
+    } else {
+      identityHandoffGrace.serverCompletedAtMs = handoff.serverCompletedAtMs;
+    }
+    return identityHandoffGrace.attempts < IDENTITY_HANDOFF_GRACE_POLLS;
+  }
+
+  function recordIdentityHandoffGraceAttempt(): void {
+    const handoff = identityHandoffWindow(state.candidateDetail);
+    if (!handoff) return;
+    if (!shouldContinueSelectedCandidatePolling(state.candidateDetail)) return;
+    if (identityHandoffGrace) identityHandoffGrace.attempts += 1;
   }
 
   function ensureSelectedCandidatePolling(): void {
     const candidateId = state.selectedCandidateId;
     if (disposed
+      || !selectedCandidatePollingEnabled
       || hasSelectedCandidatePollHandle
       || !candidateId
-      || !shouldPollSelectedCandidate(state.candidateDetail)) return;
+      || !shouldContinueSelectedCandidatePolling(state.candidateDetail)) return;
     const generation = selectedCandidatePollGeneration;
     const baseDelay = Math.max(2_000, pollIntervalMs);
+    const delayExponent = Math.max(
+      selectedCandidatePollFailureCount,
+      identityHandoffGrace?.attempts ?? 0
+    );
     const delay = Math.min(
       30_000,
-      baseDelay * (2 ** Math.min(selectedCandidatePollFailureCount, 10))
+      baseDelay * (2 ** Math.min(delayExponent, 10))
     );
     hasSelectedCandidatePollHandle = true;
     selectedCandidatePollHandle = schedulePoll(() => {
@@ -1161,8 +1302,10 @@ export function createAcquisitionDetailCenterController(
     candidateId: string
   ): Promise<void> {
     if (disposed
+      || !selectedCandidatePollingEnabled
       || generation !== selectedCandidatePollGeneration
       || candidateId !== state.selectedCandidateId) return;
+    recordIdentityHandoffGraceAttempt();
     const serial = ++candidateSerial;
     try {
       await applyCandidateSnapshot(
@@ -1173,12 +1316,13 @@ export function createAcquisitionDetailCenterController(
         true
       );
       if (disposed
+        || !selectedCandidatePollingEnabled
         || generation !== selectedCandidatePollGeneration
         || candidateId !== state.selectedCandidateId) return;
-      selectedCandidatePollFailureCount = 0;
       render();
     } catch {
       if (disposed
+        || !selectedCandidatePollingEnabled
         || generation !== selectedCandidatePollGeneration
         || candidateId !== state.selectedCandidateId) return;
       selectedCandidatePollFailureCount = Math.min(
@@ -1187,7 +1331,7 @@ export function createAcquisitionDetailCenterController(
       );
     }
     if (generation !== selectedCandidatePollGeneration) return;
-    if (shouldPollSelectedCandidate(state.candidateDetail)) {
+    if (shouldContinueSelectedCandidatePolling(state.candidateDetail)) {
       ensureSelectedCandidatePolling();
     }
   }
@@ -2317,7 +2461,17 @@ export function createAcquisitionDetailCenterController(
 
   function onAcquisitionModeChanged(event: Event): void {
     const mode = (event as CustomEvent<{ mode?: string }>).detail?.mode;
-    if (mode === "demo") stopSelectedCandidatePolling();
+    if (mode === "demo") {
+      selectedCandidatePollingEnabled = false;
+      stopSelectedCandidatePolling();
+      invalidateMutation();
+      candidateSerial += 1;
+      return;
+    }
+    if (mode === "real") {
+      selectedCandidatePollingEnabled = true;
+      ensureSelectedCandidatePolling();
+    }
   }
 
   function consume(promise: Promise<void>): void {
