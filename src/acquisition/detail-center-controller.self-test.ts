@@ -848,6 +848,105 @@ function automaticIntelligenceOperation(
   controller.destroy();
 }
 
+// A single identity-to-intelligence handoff cannot renew its grace budget by
+// alternating stale null snapshots with queued/running snapshots. The server
+// can keep offering more than nine alternations, but the client stops after
+// the original bounded budget; only a new identity operation may start over.
+{
+  const scheduler = new ManualPollScheduler();
+  const eventTarget = new EventTarget();
+  let snapshotReads = 0;
+  let identityOperationId = "identity-handoff-oscillating";
+  const api = {
+    async getCandidate(candidateId: string) {
+      snapshotReads += 1;
+      return {
+        candidate: {
+          id: candidateId,
+          subjectKind: "individual",
+          sourcePlatform: "douyin",
+          publicProfileUrl: "https://www.douyin.com/user/example",
+          status: "normalized",
+          version: 2,
+          identityResolved: true
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return null;
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestDouyinIdentityResolutionOperation(candidateId: string) {
+      return automaticIdentityOperation({
+        id: identityOperationId,
+        candidateId,
+        candidateVersion: 1,
+        status: "succeeded",
+        outcome: "verified_consensus",
+        canonicalProfileUrl: "https://www.douyin.com/user/example",
+        intelligenceOperationId: `${identityOperationId}-intelligence`,
+        updatedAt: "2026-08-08T12:00:02.000Z",
+        completedAt: "2026-08-08T12:00:02.000Z"
+      });
+    },
+    async getLatestIntelligenceOperation(candidateId: string) {
+      if (identityOperationId !== "identity-handoff-oscillating") return null;
+      if (snapshotReads % 2 !== 0) return null;
+      return automaticIntelligenceOperation({
+        id: `${identityOperationId}-intelligence`,
+        candidateId,
+        status: snapshotReads % 4 === 0 ? "running" : "queued"
+      });
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    eventTarget,
+    pollIntervalMs: 100,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.openCandidate("candidate-handoff-oscillating");
+  let pollCallbacks = 0;
+  while (pollCallbacks < 12 && scheduler.pendingCount() > 0) {
+    scheduler.runNext();
+    await controller.whenIdle();
+    pollCallbacks += 1;
+  }
+
+  assert.equal(scheduler.pendingCount(), 0);
+  assert.equal(pollCallbacks, 6);
+  assert.equal(snapshotReads, 7);
+
+  eventTarget.dispatchEvent(detailEvent(
+    "goodjob:acquisition-mode-changed",
+    { mode: "demo" }
+  ));
+  eventTarget.dispatchEvent(detailEvent(
+    "goodjob:acquisition-mode-changed",
+    { mode: "real" }
+  ));
+  assert.equal(scheduler.pendingCount(), 0);
+
+  identityOperationId = "identity-handoff-replacement";
+  await controller.selectCandidate("candidate-handoff-oscillating");
+  assert.equal(scheduler.pendingCount(), 1);
+  controller.destroy();
+}
+
 // A response from an old selected-candidate poll cannot replace a newer
 // selection, even when it resolves after the new snapshot.
 {
@@ -983,6 +1082,11 @@ function automaticIntelligenceOperation(
   assert.equal(scheduler.pendingCount(), 1);
   controller.close();
   assert.equal(scheduler.pendingCount(), 0);
+  eventTarget.dispatchEvent(detailEvent(
+    "goodjob:acquisition-mode-changed",
+    { mode: "real" }
+  ));
+  assert.equal(scheduler.pendingCount(), 0);
 
   await controller.openCandidate("candidate-cancel-poll");
   assert.equal(scheduler.pendingCount(), 1);
@@ -1001,6 +1105,105 @@ function automaticIntelligenceOperation(
   assert.equal(scheduler.pendingCount(), 1);
   controller.destroy();
   assert.equal(scheduler.pendingCount(), 0);
+}
+
+// A real-mode overview event while one selected-candidate poll is in flight
+// cannot schedule a second nine-resource snapshot. The normal successor timer
+// is armed only after the in-flight snapshot settles.
+{
+  const scheduler = new ManualPollScheduler();
+  const eventTarget = new EventTarget();
+  const inFlightCandidate = deferred<{
+    candidate: Record<string, unknown>;
+    etag: null;
+  }>();
+  let candidateReads = 0;
+  let resourceReads = 0;
+  const candidateResult = (candidateId: string) => ({
+    candidate: {
+      id: candidateId,
+      subjectKind: "individual",
+      sourcePlatform: "douyin",
+      status: "normalized",
+      version: 1,
+      identityResolved: false
+    },
+    etag: null
+  });
+  const api = {
+    getCandidate(candidateId: string) {
+      resourceReads += 1;
+      candidateReads += 1;
+      return candidateReads === 2
+        ? inFlightCandidate.promise
+        : Promise.resolve(candidateResult(candidateId));
+    },
+    async getCandidateEvidence() {
+      resourceReads += 1;
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      resourceReads += 1;
+      return null;
+    },
+    async getCandidateFinancialValue() {
+      resourceReads += 1;
+      return null;
+    },
+    async getCandidateBattleCard() {
+      resourceReads += 1;
+      return null;
+    },
+    async getCandidateReviews() {
+      resourceReads += 1;
+      return { items: [], nextCursor: null };
+    },
+    async getLatestDouyinIdentityResolutionOperation(candidateId: string) {
+      resourceReads += 1;
+      return automaticIdentityOperation({
+        id: "identity-in-flight-real-event",
+        candidateId,
+        status: "running",
+        currentStage: "independent_search"
+      });
+    },
+    async getLatestIntelligenceOperation() {
+      resourceReads += 1;
+      return null;
+    },
+    async getCandidatePrivateDomainHandoff() {
+      resourceReads += 1;
+      return null;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    eventTarget,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.openCandidate("candidate-in-flight-real-event");
+  assert.equal(resourceReads, 9);
+  scheduler.runNext();
+  assert.equal(resourceReads, 18);
+
+  eventTarget.dispatchEvent(detailEvent(
+    "goodjob:acquisition-mode-changed",
+    { mode: "real" }
+  ));
+  if (scheduler.pendingCount() > 0) scheduler.runNext();
+  await Promise.resolve();
+  assert.equal(resourceReads, 18);
+  assert.equal(scheduler.pendingCount(), 0);
+
+  inFlightCandidate.resolve(candidateResult("candidate-in-flight-real-event"));
+  await controller.whenIdle();
+  assert.equal(resourceReads, 18);
+  assert.equal(scheduler.pendingCount(), 1);
+  controller.close();
+  assert.equal(scheduler.pendingCount(), 0);
+  controller.destroy();
 }
 
 // Switching to demo while the initial selected-candidate read is in flight

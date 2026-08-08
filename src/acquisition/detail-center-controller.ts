@@ -262,9 +262,10 @@ function shouldPollSelectedCandidate(
 
 const IDENTITY_HANDOFF_GRACE_POLLS = 3;
 
-function identityHandoffWindow(
+function identityHandoffScope(
   detail: AcquisitionCandidateDetail | null
 ): {
+  candidateId: string;
   identityOperationId: string;
   intelligenceOperationId: string;
   serverCompletedAtMs: number;
@@ -272,13 +273,15 @@ function identityHandoffWindow(
   const identity = detail?.identityResolutionOperation;
   if (identity?.status !== "succeeded"
     || identity.outcome !== "verified_consensus"
-    || !identity.intelligenceOperationId
-    || detail?.intelligenceOperation !== null) return null;
+    || !identity.intelligenceOperationId) return null;
+  const candidateId = requestedCandidateId(identity.candidateId)
+    ?? requestedCandidateId(detail?.candidate?.id);
   const serverCompletedAtMs = Date.parse(
     identity.completedAt ?? identity.updatedAt
   );
-  return Number.isFinite(serverCompletedAtMs)
+  return candidateId && Number.isFinite(serverCompletedAtMs)
     ? {
+        candidateId,
         identityOperationId: identity.id,
         intelligenceOperationId: identity.intelligenceOperationId,
         serverCompletedAtMs
@@ -610,13 +613,17 @@ export function createAcquisitionDetailCenterController(
   let selectedCandidatePollGeneration = 0;
   let selectedCandidatePollHandle: unknown = null;
   let hasSelectedCandidatePollHandle = false;
+  let selectedCandidatePollInFlightGeneration: number | null = null;
   let selectedCandidatePollFailureCount = 0;
   let selectedCandidatePollingEnabled = true;
+  let detailOpen = false;
   let identityHandoffGrace: {
+    candidateId: string;
     identityOperationId: string;
     intelligenceOperationId: string;
     serverCompletedAtMs: number;
     attempts: number;
+    terminalIntelligenceObserved: boolean;
   } | null = null;
   let paginatedRunId: string | null = null;
   let expectedRunId: string | null = null;
@@ -755,7 +762,6 @@ export function createAcquisitionDetailCenterController(
     selectedCandidatePollHandle = null;
     hasSelectedCandidatePollHandle = false;
     selectedCandidatePollFailureCount = 0;
-    identityHandoffGrace = null;
   }
 
   function clearCandidatePaginationBusy(): void {
@@ -1246,37 +1252,67 @@ export function createAcquisitionDetailCenterController(
   function shouldContinueSelectedCandidatePolling(
     detail: AcquisitionCandidateDetail | null
   ): boolean {
-    if (shouldPollSelectedCandidate(detail)) {
+    const candidateId = requestedCandidateId(detail?.candidate?.id)
+      ?? requestedCandidateId(detail?.identityResolutionOperation?.candidateId);
+    const identity = detail?.identityResolutionOperation;
+    if (identityHandoffGrace
+      && ((candidateId && identityHandoffGrace.candidateId !== candidateId)
+        || (identity && identityHandoffGrace.identityOperationId !== identity.id))) {
       identityHandoffGrace = null;
-      return true;
     }
-    const handoff = identityHandoffWindow(detail);
-    if (!handoff) {
-      identityHandoffGrace = null;
-      return false;
+    const handoff = identityHandoffScope(detail);
+    if (handoff) {
+      if (identityHandoffGrace?.candidateId !== handoff.candidateId
+        || identityHandoffGrace.identityOperationId !== handoff.identityOperationId
+        || identityHandoffGrace.intelligenceOperationId
+          !== handoff.intelligenceOperationId) {
+        identityHandoffGrace = {
+          ...handoff,
+          attempts: 0,
+          terminalIntelligenceObserved: false
+        };
+      }
+      const intelligence = detail?.intelligenceOperation;
+      const intelligenceMatches = requestedPlanId(intelligence?.id)
+        === handoff.intelligenceOperationId;
+      const intelligenceStatus = intelligenceMatches
+        ? intelligence?.status
+        : null;
+      if (intelligenceStatus === "succeeded" || intelligenceStatus === "failed") {
+        identityHandoffGrace.terminalIntelligenceObserved = true;
+        return false;
+      }
+      if (identityHandoffGrace.terminalIntelligenceObserved) return false;
+      if (intelligenceStatus === "queued" || intelligenceStatus === "running") {
+        return true;
+      }
+      return identityHandoffGrace.attempts < IDENTITY_HANDOFF_GRACE_POLLS;
     }
-    if (identityHandoffGrace?.identityOperationId !== handoff.identityOperationId
-      || identityHandoffGrace.intelligenceOperationId
-        !== handoff.intelligenceOperationId) {
-      identityHandoffGrace = { ...handoff, attempts: 0 };
-    } else {
-      identityHandoffGrace.serverCompletedAtMs = handoff.serverCompletedAtMs;
-    }
-    return identityHandoffGrace.attempts < IDENTITY_HANDOFF_GRACE_POLLS;
+    return shouldPollSelectedCandidate(detail);
   }
 
   function recordIdentityHandoffGraceAttempt(): void {
-    const handoff = identityHandoffWindow(state.candidateDetail);
+    const handoff = identityHandoffScope(state.candidateDetail);
     if (!handoff) return;
-    if (!shouldContinueSelectedCandidatePolling(state.candidateDetail)) return;
-    if (identityHandoffGrace) identityHandoffGrace.attempts += 1;
+    const intelligenceId = requestedPlanId(
+      state.candidateDetail?.intelligenceOperation?.id
+    );
+    if (intelligenceId === handoff.intelligenceOperationId) return;
+    if (identityHandoffGrace
+      && !identityHandoffGrace.terminalIntelligenceObserved
+      && identityHandoffGrace.attempts < IDENTITY_HANDOFF_GRACE_POLLS) {
+      identityHandoffGrace.attempts += 1;
+    }
   }
 
   function ensureSelectedCandidatePolling(): void {
     const candidateId = state.selectedCandidateId;
     if (disposed
+      || !detailOpen
       || !selectedCandidatePollingEnabled
       || hasSelectedCandidatePollHandle
+      || selectedCandidatePollInFlightGeneration
+        === selectedCandidatePollGeneration
       || !candidateId
       || !shouldContinueSelectedCandidatePolling(state.candidateDetail)) return;
     const generation = selectedCandidatePollGeneration;
@@ -1302,35 +1338,49 @@ export function createAcquisitionDetailCenterController(
     candidateId: string
   ): Promise<void> {
     if (disposed
+      || !detailOpen
       || !selectedCandidatePollingEnabled
       || generation !== selectedCandidatePollGeneration
       || candidateId !== state.selectedCandidateId) return;
-    recordIdentityHandoffGraceAttempt();
-    const serial = ++candidateSerial;
+    selectedCandidatePollInFlightGeneration = generation;
     try {
-      await applyCandidateSnapshot(
-        candidateId,
-        serial,
-        () => generation === selectedCandidatePollGeneration
-          && candidateId === state.selectedCandidateId,
-        true
-      );
-      if (disposed
-        || !selectedCandidatePollingEnabled
-        || generation !== selectedCandidatePollGeneration
-        || candidateId !== state.selectedCandidateId) return;
-      render();
-    } catch {
-      if (disposed
-        || !selectedCandidatePollingEnabled
-        || generation !== selectedCandidatePollGeneration
-        || candidateId !== state.selectedCandidateId) return;
-      selectedCandidatePollFailureCount = Math.min(
-        selectedCandidatePollFailureCount + 1,
-        10
-      );
+      recordIdentityHandoffGraceAttempt();
+      const serial = ++candidateSerial;
+      try {
+        await applyCandidateSnapshot(
+          candidateId,
+          serial,
+          () => generation === selectedCandidatePollGeneration
+            && candidateId === state.selectedCandidateId,
+          true
+        );
+        if (disposed
+          || !detailOpen
+          || !selectedCandidatePollingEnabled
+          || generation !== selectedCandidatePollGeneration
+          || candidateId !== state.selectedCandidateId) return;
+        render();
+      } catch {
+        if (disposed
+          || !detailOpen
+          || !selectedCandidatePollingEnabled
+          || generation !== selectedCandidatePollGeneration
+          || candidateId !== state.selectedCandidateId) return;
+        selectedCandidatePollFailureCount = Math.min(
+          selectedCandidatePollFailureCount + 1,
+          10
+        );
+      }
+    } finally {
+      if (selectedCandidatePollInFlightGeneration === generation) {
+        selectedCandidatePollInFlightGeneration = null;
+      }
     }
-    if (generation !== selectedCandidatePollGeneration) return;
+    if (disposed
+      || !detailOpen
+      || !selectedCandidatePollingEnabled
+      || generation !== selectedCandidatePollGeneration
+      || candidateId !== state.selectedCandidateId) return;
     if (shouldContinueSelectedCandidatePolling(state.candidateDetail)) {
       ensureSelectedCandidatePolling();
     }
@@ -1415,6 +1465,7 @@ export function createAcquisitionDetailCenterController(
       currentPlanId = planId;
       paginatedRunId = null;
       expectedRunId = null;
+      detailOpen = true;
       showRoot();
       state.mode = mode;
       state.status = "loading";
@@ -1464,6 +1515,7 @@ export function createAcquisitionDetailCenterController(
       currentPlanId = null;
       paginatedRunId = null;
       expectedRunId = null;
+      detailOpen = true;
       showRoot();
       state.mode = "candidates";
       state.status = "ready";
@@ -1481,6 +1533,7 @@ export function createAcquisitionDetailCenterController(
     },
 
     close() {
+      detailOpen = false;
       invalidateMutation();
       invalidateRunMutation();
       stopSelectedCandidatePolling();
@@ -2410,6 +2463,7 @@ export function createAcquisitionDetailCenterController(
     destroy() {
       if (disposed) return;
       disposed = true;
+      detailOpen = false;
       invalidateMutation();
       invalidateRunMutation();
       stopSelectedCandidatePolling();
@@ -2470,7 +2524,7 @@ export function createAcquisitionDetailCenterController(
     }
     if (mode === "real") {
       selectedCandidatePollingEnabled = true;
-      ensureSelectedCandidatePolling();
+      if (detailOpen) ensureSelectedCandidatePolling();
     }
   }
 
@@ -2612,6 +2666,7 @@ export function createAcquisitionDetailCenterController(
   }
 
   function onRootClose(): void {
+    detailOpen = false;
     invalidateMutation();
     invalidateRunMutation();
     stopSelectedCandidatePolling();
