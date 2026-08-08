@@ -1278,6 +1278,14 @@ export async function createAcquisitionApplication(
         discovery: options.douyinPublicProfileDiscovery
           ?? createAcquisitionDouyinPublicProfileDiscovery(),
         search: searchPort,
+        validateSearchConnection: async (input) => {
+          await options.store.readBarrier();
+          assertTrustedSearchConnectionSnapshots(
+            options.store,
+            input.scope,
+            [input.connection]
+          );
+        },
         identityResolution: identityResolutionService,
         candidateIntelligence: candidateIntelligenceOperations,
         workerId: idFactory("douyin-identity-worker"),
@@ -1303,6 +1311,23 @@ export async function createAcquisitionApplication(
       research: candidateResearch,
       identityResolutionStage: {
         async resolveBeforeIntelligence(input) {
+          const planSessionId = `acquisition-plan:${input.run.id}`;
+          const owned = await douyinIdentityResolutionOperations
+            .findSucceededForCandidateAndPlanSession(
+              input.scope,
+              input.candidateId,
+              planSessionId
+            );
+          if (owned?.intelligenceOperationId) {
+            return {
+              status: "completed",
+              operationId: owned.id,
+              intelligence: await candidateIntelligenceOperations.get(
+                input.scope,
+                owned.intelligenceOperationId
+              )
+            };
+          }
           const candidate = await domainService.getCandidate(
             input.scope,
             input.candidateId
@@ -1324,10 +1349,8 @@ export async function createAcquisitionApplication(
               candidateId: candidate.id,
               expectedCandidateVersion: candidate.version,
               sourceEvidenceIds,
-              providerConnectionIds: [
-                input.shard.connection.connectionId
-              ],
-              planSessionId: `acquisition-plan:${input.run.id}`
+              searchConnections: [input.shard.connection],
+              planSessionId
             },
             automaticDouyinIdentityKey({
               source: `${input.run.id}:${input.shard.id}`,
@@ -1510,9 +1533,7 @@ export async function createAcquisitionApplication(
       candidateIds: string[]
     ) => {
       if (candidateIds.length === 0) return;
-      const providerConnectionIds = (
-        await activeSearchConnections.list(scope)
-      ).map((connection) => connection.connectionId);
+      const searchConnections = await activeSearchConnections.list(scope);
       for (const candidateId of candidateIds) {
         const candidate = await domainService.getCandidate(scope, candidateId);
         if (!unresolvedDouyinCandidate(candidate)
@@ -1525,7 +1546,7 @@ export async function createAcquisitionApplication(
             candidateId,
             expectedCandidateVersion: candidate.version,
             sourceEvidenceIds: candidate.evidenceIds,
-            providerConnectionIds,
+            searchConnections,
             planSessionId: null
           },
           automaticDouyinIdentityKey({

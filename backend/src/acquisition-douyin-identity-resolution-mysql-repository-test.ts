@@ -37,7 +37,13 @@ const queuedOperation: AcquisitionDouyinIdentityResolutionOperationRecord = {
   candidateId: "candidate-a",
   candidateVersion: 3,
   sourceEvidenceFingerprint: `sha256:${"a".repeat(64)}`,
-  providerConnectionIds: ["search-connection-1"],
+  searchConnections: [{
+    connectionId: "search-connection-1",
+    providerId: "baidu-search",
+    kind: "search",
+    status: "active",
+    credentialVersion: 3
+  }],
   planSessionId: "acquisition-plan:run-1",
   status: "queued",
   currentStage: null,
@@ -191,6 +197,38 @@ test("MySQL latest candidate lookup is tenant scoped and deterministic", async (
     "owner-a",
     "team-a",
     "candidate-a"
+  ]);
+});
+
+test("MySQL successful Run ownership lookup is tenant and session scoped", async () => {
+  const succeeded = {
+    ...queuedOperation,
+    status: "succeeded" as const,
+    outcome: "verified_consensus" as const,
+    intelligenceOperationId: "candidate-intelligence-1",
+    completedAt: "2026-08-08T02:01:00.000Z"
+  };
+  const pool = new FakePool();
+  pool.enqueue([mysqlRow(succeeded)]);
+  const repository =
+    new MysqlAcquisitionDouyinIdentityResolutionOperationRepository(
+      asPool(pool)
+    );
+
+  assert.deepEqual(await repository
+    .findSucceededForCandidateAndPlanSession(
+      { ownerId: "owner-a", teamId: "team-a" },
+      "candidate-a",
+      "acquisition-plan:run-1"
+    ), succeeded);
+  assert.match(pool.calls[0]!.sql, /status = 'succeeded'/u);
+  assert.match(pool.calls[0]!.sql, /\$\.planSessionId/u);
+  assert.match(pool.calls[0]!.sql, /\$\.intelligenceOperationId/u);
+  assert.deepEqual(pool.calls[0]!.values, [
+    "owner-a",
+    "team-a",
+    "candidate-a",
+    "acquisition-plan:run-1"
   ]);
 });
 
@@ -356,6 +394,62 @@ test("MySQL reads fail closed on JSON and indexed-column mismatches", async () =
         planSessionId: "model-session:not-a-frozen-plan"
       }),
       error: /ACQUISITION_DOUYIN_IDENTITY_RESOLUTION_MYSQL_INTEGRITY:plan_session_id/u
+    },
+    {
+      row: mysqlRow({
+        ...queuedOperation,
+        searchConnections: [{
+          connectionId: "search-connection-1",
+          providerId: "",
+          kind: "search",
+          status: "active",
+          credentialVersion: 3
+        }]
+      }),
+      error: /ACQUISITION_DOUYIN_IDENTITY_RESOLUTION_MYSQL_INTEGRITY:search_connections/u
+    },
+    {
+      row: mysqlRow({
+        ...queuedOperation,
+        searchConnections: [{
+          ...queuedOperation.searchConnections[0]!,
+          kind: "content_fetch" as const
+        }]
+      }),
+      error: /ACQUISITION_DOUYIN_IDENTITY_RESOLUTION_MYSQL_INTEGRITY:search_connections/u
+    },
+    {
+      row: mysqlRow({
+        ...queuedOperation,
+        searchConnections: [{
+          ...queuedOperation.searchConnections[0]!,
+          status: "inactive" as const
+        }]
+      }),
+      error: /ACQUISITION_DOUYIN_IDENTITY_RESOLUTION_MYSQL_INTEGRITY:search_connections/u
+    },
+    {
+      row: mysqlRow({
+        ...queuedOperation,
+        searchConnections: [{
+          connectionId: "search-connection-1",
+          providerId: "baidu-search",
+          kind: "search",
+          status: "active",
+          credentialVersion: 0
+        }]
+      }),
+      error: /ACQUISITION_DOUYIN_IDENTITY_RESOLUTION_MYSQL_INTEGRITY:search_connections/u
+    },
+    {
+      row: mysqlRow({
+        ...queuedOperation,
+        searchConnections: [
+          queuedOperation.searchConnections[0]!,
+          queuedOperation.searchConnections[0]!
+        ]
+      }),
+      error: /ACQUISITION_DOUYIN_IDENTITY_RESOLUTION_MYSQL_INTEGRITY:search_connections/u
     },
     {
       row: mysqlRow({ ...queuedOperation, status: "running" }),

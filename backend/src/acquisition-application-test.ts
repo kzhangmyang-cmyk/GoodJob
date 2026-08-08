@@ -40,7 +40,8 @@ import {
   acquisitionCandidateIdentityResolved
 } from "./acquisition-domain.js";
 import {
-  InMemoryAcquisitionDouyinIdentityResolutionOperationRepository
+  InMemoryAcquisitionDouyinIdentityResolutionOperationRepository,
+  type AcquisitionDouyinIdentityResolutionOperationRecord
 } from "./acquisition-douyin-identity-resolution-operations.js";
 import {
   InMemoryAcquisitionCandidateIntelligenceOperationRepository
@@ -1943,7 +1944,7 @@ test("application automatically resolves a direct Douyin signal and runs one int
         searchCalls.push(input.query);
         return {
           providerConnectionId: input.providerConnectionId,
-          provider: "fake-official-search",
+          provider: "brave",
           requestId: "direct-douyin-identity-search",
           results: [{
             providerRecordId: "direct-douyin-profile-result",
@@ -2018,6 +2019,13 @@ test("application automatically resolves a direct Douyin signal and runs one int
 
     assert.equal(identity?.outcome, "verified_consensus");
     assert.equal(identity?.planSessionId, null);
+    assert.deepEqual(identity?.searchConnections, [{
+      connectionId: "fake-search-connection",
+      providerId: "brave",
+      kind: "search",
+      status: "active",
+      credentialVersion: Date.parse("2026-07-24T00:00:00.000Z")
+    }]);
     assert.equal(candidate ? acquisitionCandidateIdentityResolved(candidate) : false, true);
     assert.equal(candidate?.profile.kind === "individual"
       ? candidate.profile.publicProfileUrl
@@ -2036,11 +2044,27 @@ test("application automatically resolves a direct Douyin signal and runs one int
   }
 });
 
-test("application Run reuses its frozen plan session and skips duplicate candidate stages", async () => {
+test("application Run replay reuses owned intelligence after an identity-stage pause", async () => {
   const fixture = isolatedMemoryStore();
   const domainRepository = new InMemoryAcquisitionDomainRepository();
-  const identityRepository =
-    new InMemoryAcquisitionDouyinIdentityResolutionOperationRepository();
+  class PausingIdentityRepository
+  extends InMemoryAcquisitionDouyinIdentityResolutionOperationRepository {
+    afterSucceeded: ((
+      operation: AcquisitionDouyinIdentityResolutionOperationRecord
+    ) => Promise<void>) | null = null;
+
+    override async saveOperation(
+      operation: AcquisitionDouyinIdentityResolutionOperationRecord,
+      leaseToken: string
+    ) {
+      await super.saveOperation(operation, leaseToken);
+      if (operation.status !== "succeeded" || !this.afterSucceeded) return;
+      const afterSucceeded = this.afterSucceeded;
+      this.afterSucceeded = null;
+      await afterSucceeded(operation);
+    }
+  }
+  const identityRepository = new PausingIdentityRepository();
   const intelligenceRepository =
     new InMemoryAcquisitionCandidateIntelligenceOperationRepository();
   const sourceUrl =
@@ -2097,14 +2121,14 @@ test("application Run reuses its frozen plan session and skips duplicate candida
         if (input.subjectKinds[0] === "organization") {
           return {
             providerConnectionId: input.providerConnectionId,
-            provider: "fake-official-search",
+            provider: "brave",
             requestId: "run-organization-empty-request",
             results: []
           };
         }
         return {
           providerConnectionId: input.providerConnectionId,
-          provider: "fake-official-search",
+          provider: "brave",
           requestId: identitySearch
             ? "run-identity-search-request"
             : "run-discovery-search-request",
@@ -2147,6 +2171,7 @@ test("application Run reuses its frozen plan session and skips duplicate candida
       }
     },
     modelGatewayFactory: () => model.gateway,
+    workerConcurrency: 1,
     idFactory: (prefix) => `${prefix}-run-auto-${++sequence}`,
     now: () => new Date(timestamp++).toISOString(),
     nowMs: () => timestamp++
@@ -2208,6 +2233,27 @@ test("application Run reuses its frozen plan session and skips duplicate candida
       }
     );
     assert.equal(approved.response.status, 200, JSON.stringify(approved.json));
+    identityRepository.afterSucceeded = async (operation) => {
+      const ownedRunId = operation.planSessionId?.replace(
+        /^acquisition-plan:/u,
+        ""
+      );
+      assert.equal(Boolean(ownedRunId), true);
+      const current = await server.request(
+        `/api/v1/acquisition/runs/${ownedRunId}`
+      );
+      const pausing = await server.request(
+        `/api/v1/acquisition/runs/${ownedRunId}/pause`,
+        {
+          method: "POST",
+          headers: { "If-Match": String(current.json.etag) },
+          body: JSON.stringify({
+            reason: "验证 identity 成功后的分片重放"
+          })
+        }
+      );
+      assert.equal(pausing.response.status, 200, JSON.stringify(pausing.json));
+    };
     const started = await server.request(
       `/api/v1/acquisition/plans/${created.json.id}/runs`,
       {
@@ -2218,6 +2264,19 @@ test("application Run reuses its frozen plan session and skips duplicate candida
     );
     assert.equal(started.response.status, 202, JSON.stringify(started.json));
     const runId = String(started.json.id);
+    const paused = await waitFor(
+      () => server.request(`/api/v1/acquisition/runs/${runId}`),
+      (value) => value.json.status === "paused"
+    );
+    const resumed = await server.request(
+      `/api/v1/acquisition/runs/${runId}/resume`,
+      {
+        method: "POST",
+        headers: { "If-Match": String(paused.json.etag) },
+        body: JSON.stringify({ reason: "重放同一分片" })
+      }
+    );
+    assert.equal(resumed.response.status, 200, JSON.stringify(resumed.json));
     const terminal = await waitFor(
       () => server.request(`/api/v1/acquisition/runs/${runId}`),
       (value) => ["succeeded", "partial_success", "failed"].includes(
@@ -2246,6 +2305,7 @@ test("application Run reuses its frozen plan session and skips duplicate candida
 
     assert.equal(identity?.status, "succeeded");
     assert.equal(identity?.planSessionId, `acquisition-plan:${runId}`);
+    assert.deepEqual(identity?.searchConnections, payload.providerConnections);
     assert.equal(intelligence?.sessionId, `acquisition-plan:${runId}`);
     assert.deepEqual(model.judgmentOperations(), [
       "research",
@@ -2331,7 +2391,7 @@ test("application startup recovery continues a queued Douyin fetch into automati
       async search(input) {
         return {
           providerConnectionId: input.providerConnectionId,
-          provider: "fake-official-search",
+          provider: "brave",
           requestId: "startup-recovery-identity-search",
           results: [{
             providerRecordId: "startup-recovery-profile",
@@ -2399,6 +2459,13 @@ test("application startup recovery continues a queued Douyin fetch into automati
       (value) => value?.status === "succeeded"
     );
     assert.equal(identity?.outcome, "verified_consensus");
+    assert.deepEqual(identity?.searchConnections, [{
+      connectionId: "fake-search-connection",
+      providerId: "brave",
+      kind: "search",
+      status: "active",
+      credentialVersion: Date.parse("2026-07-24T00:00:00.000Z")
+    }]);
     assert.equal(
       (await intelligenceRepository.findLatestForCandidate(
         { ownerId: OWNER, teamId: TEAM },

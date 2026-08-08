@@ -234,12 +234,33 @@ function parseOperation(row: MysqlRow) {
     integrity("outcome");
   }
   if (typeof payload.retryable !== "boolean") integrity("retryable");
-  if (!Array.isArray(payload.providerConnectionIds)
-    || payload.providerConnectionIds.some((id) =>
-      typeof id !== "string" || !id)
-    || new Set(payload.providerConnectionIds).size
-      !== payload.providerConnectionIds.length) {
-    integrity("provider_connection_ids");
+  if (!Array.isArray(payload.searchConnections)
+    || payload.searchConnections.length > 100) {
+    integrity("search_connections");
+  }
+  const searchConnectionIds = new Set<string>();
+  let previousSearchConnectionId: string | null = null;
+  for (const value of payload.searchConnections) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      integrity("search_connections");
+    }
+    const connection = value as Record<string, unknown>;
+    const connectionId = connection.connectionId;
+    const providerId = connection.providerId;
+    const credentialVersion = connection.credentialVersion;
+    if (typeof connectionId !== "string" || !connectionId
+      || typeof providerId !== "string" || !providerId
+      || connection.kind !== "search"
+      || connection.status !== "active"
+      || !Number.isSafeInteger(credentialVersion)
+      || Number(credentialVersion) < 1
+      || searchConnectionIds.has(connectionId)
+      || (previousSearchConnectionId !== null
+        && previousSearchConnectionId >= connectionId)) {
+      integrity("search_connections");
+    }
+    searchConnectionIds.add(connectionId);
+    previousSearchConnectionId = connectionId;
   }
   const planSessionId = nullableString(
     payload.planSessionId,
@@ -440,6 +461,29 @@ implements AcquisitionDouyinIdentityResolutionOperationRepository {
        ORDER BY created_at DESC, id DESC
        LIMIT 1`,
       [scope.ownerId, scope.teamId, candidateId]
+    );
+    return rows[0] ? parseOperation(rows[0]) : null;
+  }
+
+  async findSucceededForCandidateAndPlanSession(
+    scope: OperationScope,
+    candidateId: string,
+    planSessionId: string
+  ) {
+    const rows = await selectedRows(
+      this.pool,
+      `SELECT ${OPERATION_SELECT_COLUMNS}
+       FROM acquisition_douyin_identity_resolution_operations
+       WHERE owner_id = ? AND team_id = ? AND candidate_id = ?
+         AND status = 'succeeded'
+         AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.planSessionId')) = ?
+         AND JSON_TYPE(JSON_EXTRACT(
+           payload_json,
+           '$.intelligenceOperationId'
+         )) = 'STRING'
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [scope.ownerId, scope.teamId, candidateId, planSessionId]
     );
     return rows[0] ? parseOperation(rows[0]) : null;
   }

@@ -33,6 +33,10 @@ import type {
   SearchPublicSourcesPort,
   SearchPublicSourcesResponse
 } from "./acquisition-tool-executor.js";
+import { AcquisitionDomainError } from "./acquisition-domain-service.js";
+import type {
+  AcquisitionProviderConnectionSnapshot
+} from "./acquisition-plan-run-repository.js";
 
 export type AcquisitionDouyinIdentityResolutionStatus =
   | "queued"
@@ -62,7 +66,7 @@ export interface AcquisitionDouyinIdentityResolutionOperation {
   candidateId: string;
   candidateVersion: number;
   sourceEvidenceFingerprint: string;
-  providerConnectionIds: string[];
+  searchConnections: AcquisitionProviderConnectionSnapshot[];
   planSessionId: string | null;
   status: AcquisitionDouyinIdentityResolutionStatus;
   currentStage: AcquisitionDouyinIdentityResolutionStage | null;
@@ -147,6 +151,11 @@ export interface AcquisitionDouyinIdentityResolutionOperationRepository {
     scope: TenantScope,
     candidateId: string
   ): Promise<AcquisitionDouyinIdentityResolutionOperationRecord | null>;
+  findSucceededForCandidateAndPlanSession(
+    scope: TenantScope,
+    candidateId: string,
+    planSessionId: string
+  ): Promise<AcquisitionDouyinIdentityResolutionOperationRecord | null>;
   listRecoverableOperations(
     input: AcquisitionDouyinIdentityResolutionRecoveryQuery
   ): Promise<AcquisitionDouyinIdentityResolutionOperationRecord[]>;
@@ -216,7 +225,7 @@ export interface AcquisitionDouyinIdentityResolutionCreateInput {
   candidateId: string;
   expectedCandidateVersion: number;
   sourceEvidenceIds: string[];
-  providerConnectionIds: string[];
+  searchConnections: AcquisitionProviderConnectionSnapshot[];
   planSessionId?: string | null;
 }
 
@@ -226,6 +235,10 @@ export interface AcquisitionDouyinIdentityResolutionOperationServiceOptions {
   candidates?: AcquisitionDouyinIdentityResolutionCandidatePort;
   discovery?: AcquisitionDouyinPublicProfileDiscoveryPort;
   search?: SearchPublicSourcesPort;
+  validateSearchConnection?: (input: {
+    scope: AcquisitionDouyinIdentityResolutionScope;
+    connection: AcquisitionProviderConnectionSnapshot;
+  }) => Promise<void>;
   identityResolution?: AcquisitionDouyinIdentityResolutionIdentityPort
     | Pick<AcquisitionIdentityResolutionService, "resolveCandidateIdentity">;
   candidateIntelligence?: AcquisitionDouyinIdentityResolutionIntelligencePort
@@ -315,6 +328,42 @@ function uniqueSortedIds(
   return normalized.sort(compareCodeUnits);
 }
 
+function normalizedSearchConnections(
+  values: AcquisitionProviderConnectionSnapshot[]
+) {
+  if (!Array.isArray(values) || values.length > 100) {
+    throw new AcquisitionDouyinIdentityResolutionOperationError(
+      "INVALID_REQUEST"
+    );
+  }
+  const normalized = values.map((connection) => {
+    if (!connection || typeof connection !== "object"
+      || !Number.isSafeInteger(connection.credentialVersion)
+      || connection.credentialVersion < 1
+      || connection.kind !== "search"
+      || connection.status !== "active") {
+      throw new AcquisitionDouyinIdentityResolutionOperationError(
+        "INVALID_REQUEST"
+      );
+    }
+    return {
+      connectionId: requiredText(connection.connectionId, 255),
+      providerId: requiredText(connection.providerId, 120),
+      kind: "search" as const,
+      status: "active" as const,
+      credentialVersion: connection.credentialVersion
+    };
+  }).sort((left, right) =>
+    compareCodeUnits(left.connectionId, right.connectionId));
+  if (new Set(normalized.map((connection) => connection.connectionId)).size
+    !== normalized.length) {
+    throw new AcquisitionDouyinIdentityResolutionOperationError(
+      "INVALID_REQUEST"
+    );
+  }
+  return normalized;
+}
+
 function publicOperation(
   operation: AcquisitionDouyinIdentityResolutionOperationRecord
 ): AcquisitionDouyinIdentityResolutionOperation {
@@ -337,6 +386,24 @@ function normalizedDouyinProfileUrl(value: string) {
     && isVerifiedAcquisitionPublicProfileUrl(normalized)
     ? normalized
     : null;
+}
+
+function discoveredPageProvesProfile(
+  result: Extract<
+    Awaited<ReturnType<AcquisitionDouyinPublicProfileDiscoveryPort["discover"]>>,
+    { status: "succeeded" }
+  >,
+  publicProfileUrl: string
+) {
+  const finalRedirectUrl = normalizedDouyinProfileUrl(
+    result.redirectChain.at(-1) ?? ""
+  );
+  const explicitProfileUrls = result.publicProfileUrls.map(
+    normalizedDouyinProfileUrl
+  );
+  return finalRedirectUrl === publicProfileUrl
+    && explicitProfileUrls.length > 0
+    && explicitProfileUrls.every((url) => url === publicProfileUrl);
 }
 
 function boundedSearchQuery(evidence: DiscoveryEvidence) {
@@ -366,17 +433,21 @@ function appendEvidenceKey(input: {
   evidenceClass: "public" | "search";
   sourceEvidenceId: string;
   sourceUrl: string;
+  provider?: string;
   providerConnectionId?: string;
+  requestId?: string;
+  providerRecordId?: string;
+  resultRank?: number;
 }) {
   return `douyin-identity:evidence:${stableHash(input)}`;
 }
 
 function validAuditedSearchResponse(
   response: SearchPublicSourcesResponse,
-  providerConnectionId: string
+  connection: AcquisitionProviderConnectionSnapshot
 ) {
-  return response.providerConnectionId === providerConnectionId
-    && Boolean(response.provider.trim())
+  return response.providerConnectionId === connection.connectionId
+    && response.provider === connection.providerId
     && Boolean(response.requestId.trim());
 }
 
@@ -443,6 +514,25 @@ implements AcquisitionDouyinIdentityResolutionOperationRepository {
         operation.ownerId === rawScope.ownerId
         && operation.teamId === rawScope.teamId
         && operation.candidateId === candidateId)
+      .sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt)
+        || right.id.localeCompare(left.id))[0];
+    return latest ? clone(latest) : null;
+  }
+
+  async findSucceededForCandidateAndPlanSession(
+    rawScope: TenantScope,
+    candidateId: string,
+    planSessionId: string
+  ) {
+    const latest = [...this.operations.values()]
+      .filter((operation) =>
+        operation.ownerId === rawScope.ownerId
+        && operation.teamId === rawScope.teamId
+        && operation.candidateId === candidateId
+        && operation.planSessionId === planSessionId
+        && operation.status === "succeeded"
+        && operation.intelligenceOperationId !== null)
       .sort((left, right) =>
         right.createdAt.localeCompare(left.createdAt)
         || right.id.localeCompare(left.id))[0];
@@ -553,6 +643,10 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
   private readonly discovery:
     AcquisitionDouyinPublicProfileDiscoveryPort | null;
   private readonly search: SearchPublicSourcesPort | null;
+  private readonly validateSearchConnection: ((input: {
+    scope: AcquisitionDouyinIdentityResolutionScope;
+    connection: AcquisitionProviderConnectionSnapshot;
+  }) => Promise<void>) | null;
   private readonly identityResolution:
     AcquisitionDouyinIdentityResolutionIdentityPort | null;
   private readonly candidateIntelligence:
@@ -576,6 +670,7 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
     this.candidates = options.candidates ?? null;
     this.discovery = options.discovery ?? null;
     this.search = options.search ?? null;
+    this.validateSearchConnection = options.validateSearchConnection ?? null;
     this.identityResolution = options.identityResolution ?? null;
     this.candidateIntelligence = options.candidateIntelligence ?? null;
     this.workerId = requiredText(
@@ -632,9 +727,8 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       min: 1,
       max: 500
     });
-    const providerConnectionIds = uniqueSortedIds(
-      rawInput.providerConnectionIds,
-      { min: 0, max: 100 }
+    const searchConnections = normalizedSearchConnections(
+      rawInput.searchConnections
     );
     const planSessionId = rawInput.planSessionId === null
       || rawInput.planSessionId === undefined
@@ -666,7 +760,7 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       candidateId,
       candidateVersion: rawInput.expectedCandidateVersion,
       sourceEvidence: sortedSourceHashes,
-      providerConnectionIds,
+      searchConnections,
       planSessionId
     });
     const existing = await this.repository.findOperationByIdempotency({
@@ -689,7 +783,7 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       candidateId,
       candidateVersion: rawInput.expectedCandidateVersion,
       sourceEvidenceFingerprint,
-      providerConnectionIds,
+      searchConnections,
       planSessionId,
       status: "queued",
       currentStage: null,
@@ -731,6 +825,27 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       validatedScope,
       requiredText(candidateIdInput, 120)
     );
+    return operation ? publicOperation(operation) : null;
+  }
+
+  async findSucceededForCandidateAndPlanSession(
+    rawScope: AcquisitionDouyinIdentityResolutionScope,
+    candidateIdInput: string,
+    planSessionIdInput: string
+  ) {
+    const validatedScope = scope(rawScope);
+    const planSessionId = requiredText(planSessionIdInput, 255);
+    if (!validPlanSessionId(planSessionId)) {
+      throw new AcquisitionDouyinIdentityResolutionOperationError(
+        "INVALID_REQUEST"
+      );
+    }
+    const operation = await this.repository
+      .findSucceededForCandidateAndPlanSession(
+        validatedScope,
+        requiredText(candidateIdInput, 120),
+        planSessionId
+      );
     return operation ? publicOperation(operation) : null;
   }
 
@@ -785,6 +900,7 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       candidates: this.candidates,
       discovery: this.discovery,
       search: this.search,
+      validateSearchConnection: this.validateSearchConnection,
       appendEvidence: this.evidence.appendEvidence,
       identityResolution: this.identityResolution,
       candidateIntelligence: this.candidateIntelligence
@@ -792,6 +908,7 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
     if (!dependencies.candidates
       || !dependencies.discovery
       || !dependencies.search
+      || !dependencies.validateSearchConnection
       || !dependencies.appendEvidence
       || !dependencies.identityResolution
       || !dependencies.candidateIntelligence) {
@@ -800,6 +917,7 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       );
     }
     const candidateIntelligence = dependencies.candidateIntelligence;
+    const identityResolution = dependencies.identityResolution;
     if (signal?.aborted) throw signal.reason;
     const persisted = await this.repository.getOperation(
       validatedScope,
@@ -876,15 +994,16 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       heartbeatInFlight = (async () => {
         try {
           const renewedAt = validIso(this.now());
+          const leaseExpiresAt = new Date(
+            Date.parse(renewedAt) + this.leaseDurationMs
+          ).toISOString();
           const renewed = await this.repository.renewLease(
             validatedScope,
             operation.id,
             leaseToken,
             {
               renewedAt,
-              leaseExpiresAt: new Date(
-                Date.parse(renewedAt) + this.leaseDurationMs
-              ).toISOString()
+              leaseExpiresAt
             }
           );
           if (!renewed) {
@@ -892,6 +1011,8 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
             abort(new AcquisitionDouyinIdentityResolutionOperationError(
               "OPERATION_ALREADY_RUNNING"
             ));
+          } else {
+            operation.leaseExpiresAt = leaseExpiresAt;
           }
         } catch {
           leaseLost = true;
@@ -918,6 +1039,34 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
         throw controller.signal.reason instanceof Error
           ? controller.signal.reason
           : new DOMException("aborted", "AbortError");
+      }
+      try {
+        const renewedAt = validIso(this.now());
+        const leaseExpiresAt = new Date(
+          Date.parse(renewedAt) + this.leaseDurationMs
+        ).toISOString();
+        const renewed = await this.repository.renewLease(
+          validatedScope,
+          operation.id,
+          leaseToken,
+          {
+            renewedAt,
+            leaseExpiresAt
+          }
+        );
+        if (!renewed) {
+          throw new AcquisitionDouyinIdentityResolutionOperationError(
+            "OPERATION_ALREADY_RUNNING"
+          );
+        }
+        operation.leaseExpiresAt = leaseExpiresAt;
+      } catch {
+        leaseLost = true;
+        const error = new AcquisitionDouyinIdentityResolutionOperationError(
+          "OPERATION_ALREADY_RUNNING"
+        );
+        abort(error);
+        throw error;
       }
     };
     const executionSignal = controller.signal;
@@ -955,15 +1104,16 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       return publicOperation(operation);
     };
     const dispatchIntelligence = async () => {
-      await assertLease();
       let intelligence: AcquisitionCandidateIntelligenceOperation;
       if (operation.intelligenceOperationId) {
+        await assertLease();
         intelligence = await candidateIntelligence.execute(
           validatedScope,
           operation.intelligenceOperationId,
           executionSignal
         );
       } else {
+        await assertLease();
         intelligence = await candidateIntelligence
           .createAfterIdentity(
             validatedScope,
@@ -977,6 +1127,7 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
         operation.updatedAt = validIso(this.now());
         await assertLease();
         await this.repository.saveOperation(operation, leaseToken);
+        await assertLease();
         intelligence = await candidateIntelligence.execute(
           validatedScope,
           intelligence.id,
@@ -985,8 +1136,63 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       }
       return intelligence;
     };
+    const commitIdentity = async (decision: {
+      canonicalProfileUrl: string;
+      profileCandidates: AcquisitionDouyinIdentityResolutionOperation[
+        "profileCandidates"
+      ];
+    }): Promise<"stale_candidate" | "conflicting" | null> => {
+      const verifiedEvidenceIds = decision.profileCandidates.find((item) =>
+        item.publicProfileUrl === decision.canonicalProfileUrl
+      )?.evidenceIds ?? [];
+      await assertLease();
+      try {
+        await identityResolution.resolveCandidateIdentity(
+          validatedScope,
+          operation.candidateId,
+          {
+            expectedCandidateVersion: operation.candidateVersion,
+            evidenceIds: verifiedEvidenceIds,
+            rationale: "抖音公开页与独立搜索结果共同指向唯一公开主页。",
+            subject: {
+              kind: "individual",
+              publicProfileUrl: decision.canonicalProfileUrl,
+              sourcePlatform: "douyin"
+            }
+          },
+          `douyin-identity:commit:${operation.requestHash}`
+        );
+      } catch (error) {
+        if (error instanceof AcquisitionDomainError) {
+          if (error.code === "stale_candidate") return "stale_candidate";
+          if (error.code === "identity_conflict") return "conflicting";
+        }
+        throw error;
+      }
+      return null;
+    };
 
     try {
+    if (operation.currentStage === "identity_confirmation"
+      && operation.outcome === "verified_consensus"
+      && operation.canonicalProfileUrl) {
+      const decision = {
+        canonicalProfileUrl: operation.canonicalProfileUrl,
+        profileCandidates: operation.profileCandidates
+      };
+      const commitOutcome = await commitIdentity(decision);
+      if (commitOutcome) {
+        return finish(commitOutcome, {
+          canonicalProfileUrl: null,
+          profileCandidates: commitOutcome === "conflicting"
+            ? decision.profileCandidates
+            : []
+        });
+      }
+      await saveRunning("intelligence_dispatch");
+      await dispatchIntelligence();
+      return finish("verified_consensus", decision);
+    }
     if (operation.currentStage === "intelligence_dispatch"
       && operation.outcome === "verified_consensus"
       && operation.canonicalProfileUrl) {
@@ -1055,6 +1261,18 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
           }
           continue;
         }
+        if (!discoveredPageProvesProfile(profile, publicProfileUrl)) {
+          collected.push({
+            evidenceId: source.id,
+            evidenceClass: "douyin_public_page",
+            publicProfileUrl,
+            sourceUrl: publicProfileUrl,
+            sourceFingerprint: profile.rawArtifactHash,
+            accessStatus: "redirect_not_allowed",
+            fetchedAt: validIso(this.now())
+          });
+          continue;
+        }
         await assertLease();
         const created = await dependencies.appendEvidence.call(
           this.evidence,
@@ -1102,15 +1320,20 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
     for (const source of sources) {
       const query = boundedSearchQuery(source);
       if (!query) continue;
-      for (const providerConnectionId of operation.providerConnectionIds) {
+      for (const connection of operation.searchConnections) {
         if (executionSignal.aborted) throw executionSignal.reason;
         let response: SearchPublicSourcesResponse;
         try {
+          await dependencies.validateSearchConnection({
+            scope: validatedScope,
+            connection
+          });
+          await assertLease();
           response = await dependencies.search.search({
             ...validatedScope,
             sessionId: operation.planSessionId
               ?? `douyin-identity-search:${operation.requestHash}`,
-            providerConnectionId,
+            providerConnectionId: connection.connectionId,
             query,
             subjectKinds: ["individual"],
             maxResults: 10,
@@ -1119,7 +1342,10 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
         } catch {
           continue;
         }
-        if (!validAuditedSearchResponse(response, providerConnectionId)) {
+        if (!validAuditedSearchResponse(
+          response,
+          connection
+        )) {
           continue;
         }
         validSearchResponses += 1;
@@ -1169,7 +1395,11 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
               evidenceClass: "search",
               sourceEvidenceId: source.id,
               sourceUrl: publicProfileUrl,
-              providerConnectionId
+              provider: response.provider,
+              providerConnectionId: connection.connectionId,
+              requestId: response.requestId,
+              providerRecordId: result.providerRecordId,
+              resultRank: index + 1
             })
           );
           collected.push({
@@ -1216,6 +1446,7 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
     operation.canonicalProfileUrl = decision.canonicalProfileUrl;
     operation.profileCandidates = decision.profileCandidates;
     operation.updatedAt = validIso(this.now());
+    await assertLease();
     await this.repository.saveOperation(operation, leaseToken);
     if (decision.outcome !== "verified_consensus"
       || !decision.canonicalProfileUrl) {
@@ -1238,25 +1469,19 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
         profileCandidates: []
       });
     }
-    const verifiedEvidenceIds = decision.profileCandidates.find((item) =>
-      item.publicProfileUrl === decision.canonicalProfileUrl
-    )?.evidenceIds ?? [];
-    await assertLease();
-    await dependencies.identityResolution.resolveCandidateIdentity(
-      validatedScope,
-      operation.candidateId,
-      {
-        expectedCandidateVersion: operation.candidateVersion,
-        evidenceIds: verifiedEvidenceIds,
-        rationale: "抖音公开页与独立搜索结果共同指向唯一公开主页。",
-        subject: {
-          kind: "individual",
-          publicProfileUrl: decision.canonicalProfileUrl,
-          sourcePlatform: "douyin"
-        }
-      },
-      `douyin-identity:commit:${operation.requestHash}`
-    );
+    const commitDecision = {
+      canonicalProfileUrl: decision.canonicalProfileUrl,
+      profileCandidates: decision.profileCandidates
+    };
+    const commitOutcome = await commitIdentity(commitDecision);
+    if (commitOutcome) {
+      return finish(commitOutcome, {
+        canonicalProfileUrl: null,
+        profileCandidates: commitOutcome === "conflicting"
+          ? commitDecision.profileCandidates
+          : []
+      });
+    }
 
     await saveRunning("intelligence_dispatch");
     await dispatchIntelligence();

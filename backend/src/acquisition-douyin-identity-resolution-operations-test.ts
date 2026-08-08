@@ -8,10 +8,12 @@ import type {
 import type {
   SearchPublicSourcesResponse
 } from "./acquisition-tool-executor.js";
+import { AcquisitionDomainError } from "./acquisition-domain-service.js";
 import {
   AcquisitionDouyinIdentityResolutionOperationError,
   AcquisitionDouyinIdentityResolutionOperationService,
   InMemoryAcquisitionDouyinIdentityResolutionOperationRepository,
+  type AcquisitionDouyinIdentityResolutionOperationRecord,
   type AcquisitionDouyinIdentityResolutionScope
 } from "./acquisition-douyin-identity-resolution-operations.js";
 
@@ -20,6 +22,16 @@ const SCOPE: AcquisitionDouyinIdentityResolutionScope = {
   teamId: "team-a",
   actorId: "actor-a"
 };
+
+function searchConnections(...connectionIds: string[]) {
+  return connectionIds.map((connectionId) => ({
+    connectionId,
+    providerId: "baidu-search",
+    kind: "search" as const,
+    status: "active" as const,
+    credentialVersion: 1
+  }));
+}
 
 function evidence(
   id: string,
@@ -89,7 +101,19 @@ const CREATE_INPUT = {
   candidateId: "candidate-1",
   expectedCandidateVersion: 3,
   sourceEvidenceIds: ["evidence-a", "evidence-b"],
-  providerConnectionIds: ["search-connection-2", "search-connection-1"],
+  searchConnections: [{
+    connectionId: "search-connection-2",
+    providerId: "baidu-search",
+    kind: "search" as const,
+    status: "active" as const,
+    credentialVersion: 8
+  }, {
+    connectionId: "search-connection-1",
+    providerId: "brave-search",
+    kind: "search" as const,
+    status: "active" as const,
+    credentialVersion: 3
+  }],
   planSessionId: "acquisition-plan:run-1"
 };
 
@@ -105,13 +129,38 @@ test("create persists a queued operation at the expected candidate version", asy
   assert.equal(created.status, "queued");
   assert.equal(created.candidateVersion, 3);
   assert.equal(created.candidateId, "candidate-1");
-  assert.deepEqual(created.providerConnectionIds, [
-    "search-connection-1",
-    "search-connection-2"
-  ]);
+  assert.deepEqual(created.searchConnections, [{
+    connectionId: "search-connection-1",
+    providerId: "brave-search",
+    kind: "search",
+    status: "active",
+    credentialVersion: 3
+  }, {
+    connectionId: "search-connection-2",
+    providerId: "baidu-search",
+    kind: "search",
+    status: "active",
+    credentialVersion: 8
+  }]);
   assert.equal(created.planSessionId, "acquisition-plan:run-1");
   assert.equal(created.outcome, null);
   assert.deepEqual(created.evidence, []);
+});
+
+test("connection snapshot version participates in request identity", async () => {
+  const { service } = fixture();
+  await service.create(SCOPE, CREATE_INPUT, "identity-create-key");
+
+  await assert.rejects(service.create(SCOPE, {
+    ...CREATE_INPUT,
+    searchConnections: CREATE_INPUT.searchConnections.map((connection) =>
+      connection.connectionId === "search-connection-1"
+        ? { ...connection, credentialVersion: 4 }
+        : connection)
+  }, "identity-create-key"), (error: unknown) =>
+    error instanceof AcquisitionDouyinIdentityResolutionOperationError
+    && error.code === "IDEMPOTENCY_CONFLICT"
+  );
 });
 
 test("idempotency replays equivalent requests independent of source order and time", async () => {
@@ -126,7 +175,10 @@ test("idempotency replays equivalent requests independent of source order and ti
   const replayed = await service.create(SCOPE, {
     ...CREATE_INPUT,
     sourceEvidenceIds: ["evidence-b", "evidence-a"],
-    providerConnectionIds: ["search-connection-1", "search-connection-2"]
+    searchConnections: [
+      CREATE_INPUT.searchConnections[1]!,
+      CREATE_INPUT.searchConnections[0]!
+    ]
   }, "identity-create-key");
 
   assert.deepEqual(replayed, created);
@@ -299,19 +351,19 @@ test("request identity replays across case and non-ASCII ordering without locale
     const created = await service.create(SCOPE, {
       ...CREATE_INPUT,
       sourceEvidenceIds: ["证据-é", "Evidence-Z"],
-      providerConnectionIds: ["搜索-é", "Connection-Z"]
+      searchConnections: searchConnections("搜索-é", "Connection-Z")
     }, "locale-independent-request");
     const replayed = await service.create(SCOPE, {
       ...CREATE_INPUT,
       sourceEvidenceIds: ["Evidence-Z", "证据-é"],
-      providerConnectionIds: ["Connection-Z", "搜索-é"]
+      searchConnections: searchConnections("Connection-Z", "搜索-é")
     }, "locale-independent-request");
 
     assert.deepEqual(replayed, created);
-    assert.deepEqual(created.providerConnectionIds, [
-      "Connection-Z",
-      "搜索-é"
-    ]);
+    assert.deepEqual(
+      created.searchConnections.map((connection) => connection.connectionId),
+      ["Connection-Z", "搜索-é"]
+    );
   } finally {
     String.prototype.localeCompare = originalLocaleCompare;
   }
@@ -390,6 +442,12 @@ type ExecutionScenario =
   | "conflicting"
   | "access_restricted"
   | "redirect_not_allowed"
+  | "profile_redirect_mismatch"
+  | "commit_then_crash"
+  | "commit_stale_race"
+  | "commit_identity_conflict"
+  | "duplicate_search_url_records"
+  | "search_append_then_crash"
   | "stale_candidate"
   | "provider_unavailable";
 
@@ -397,6 +455,7 @@ function executionFixture(
   scenario: ExecutionScenario,
   options: {
     beforeDiscover?: (sourceUrl: string) => Promise<void>;
+    beforeGetCandidate?: (call: number) => Promise<void>;
     heartbeatIntervalMs?: number;
     heartbeatScheduler?: {
       setInterval(callback: () => void, delayMs: number): unknown;
@@ -404,10 +463,23 @@ function executionFixture(
     };
     leaseDurationMs?: number;
     now?: () => string;
+    afterSaveOperation?: (
+      repository: InMemoryAcquisitionDouyinIdentityResolutionOperationRepository,
+      operation: AcquisitionDouyinIdentityResolutionOperationRecord
+    ) => Promise<void>;
   } = {}
 ) {
-  const repository =
-    new InMemoryAcquisitionDouyinIdentityResolutionOperationRepository();
+  class FixtureRepository
+  extends InMemoryAcquisitionDouyinIdentityResolutionOperationRepository {
+    override async saveOperation(
+      operation: AcquisitionDouyinIdentityResolutionOperationRecord,
+      leaseToken: string
+    ) {
+      await super.saveOperation(operation, leaseToken);
+      await options.afterSaveOperation?.(this, structuredClone(operation));
+    }
+  }
+  const repository = new FixtureRepository();
   const sourceEvidence: DiscoveryEvidence = {
     ...evidence(
       "source-evidence",
@@ -423,6 +495,10 @@ function executionFixture(
     }
   };
   const evidenceById = new Map([[sourceEvidence.id, sourceEvidence]]);
+  const evidenceByIdempotencyKey = new Map<string, {
+    input: unknown;
+    evidence: DiscoveryEvidence;
+  }>();
   const appendedEvidence: DiscoveryEvidence[] = [];
   const discoveryCalls: string[] = [];
   const searchCalls: Array<{
@@ -445,9 +521,20 @@ function executionFixture(
     options: { trustedSessionId?: string };
   }> = [];
   const intelligenceExecutes: string[] = [];
+  const validatedSearchConnections: Array<{
+    connectionId: string;
+    providerId: string;
+    kind: "search";
+    status: "active";
+    credentialVersion: number;
+  }> = [];
+  const committedIdentityKeys = new Set<string>();
   let generatedEvidence = 0;
   let generatedOperation = 0;
+  let crashedAfterSearchAppend = false;
   let candidateVersion = scenario === "stale_candidate" ? 4 : 3;
+  let currentCredentialVersion = 1;
+  let candidateReads = 0;
 
   const discoveryResult = (
     sourceUrl: string
@@ -472,6 +559,16 @@ function executionFixture(
         contentHash: "sha256:source-page-content"
       };
     }
+    if (scenario === "profile_redirect_mismatch"
+      && sourceUrl === PROFILE_URL) {
+      return {
+        status: "succeeded",
+        redirectChain: [PROFILE_URL, OTHER_PROFILE_URL],
+        publicProfileUrls: [OTHER_PROFILE_URL],
+        rawArtifactHash: "sha256:redirected-profile-page-raw",
+        contentHash: "sha256:redirected-profile-page-content"
+      };
+    }
     return {
       status: "succeeded",
       redirectChain: [sourceUrl],
@@ -486,46 +583,58 @@ function executionFixture(
   };
 
   const searchResponse = (
-    connectionId: string
-  ): SearchPublicSourcesResponse => ({
+    connectionId: string,
+    requestSequence: number
+  ): SearchPublicSourcesResponse => {
+    const result: SearchPublicSourcesResponse["results"][number] = {
+      providerRecordId: `record-${connectionId}`,
+      sourceUrl: scenario === "conflicting"
+        ? OTHER_PROFILE_URL
+        : PROFILE_URL,
+      sourcePlatform: "douyin",
+      sourceType: "profile",
+      title: "林老师的抖音主页",
+      snippet: "厦门门店主理人",
+      publishedAt: null,
+      locale: "zh-CN",
+      rawArtifactHash: `sha256:search-raw-${connectionId}`,
+      accessStatus: "indexed_summary",
+      subject: {
+        kind: "individual",
+        publicActorKey: "douyin:lin",
+        publicDisplayName: "林老师",
+        publicProfileUrl: scenario === "conflicting"
+          ? OTHER_PROFILE_URL
+          : PROFILE_URL,
+        sourcePlatform: "douyin",
+        demandCategory: "AI 获客",
+        demandSummary: "比较供应商",
+        locationHint: "厦门",
+        buyingStage: "comparison",
+        negativeSignals: []
+      }
+    };
+    return {
     providerConnectionId: connectionId,
     provider: "baidu-search",
-    requestId: `request-${connectionId}`,
+    requestId: scenario === "search_append_then_crash"
+      ? `request-${connectionId}-${requestSequence}`
+      : `request-${connectionId}`,
     results: scenario === "not_found"
       || scenario === "insufficient_evidence"
       || scenario === "ambiguous"
       || scenario === "access_restricted"
       || scenario === "redirect_not_allowed"
       ? []
-      : [{
-          providerRecordId: `record-${connectionId}`,
-          sourceUrl: scenario === "conflicting"
-            ? OTHER_PROFILE_URL
-            : PROFILE_URL,
-          sourcePlatform: "douyin",
-          sourceType: "profile",
-          title: "林老师的抖音主页",
-          snippet: "厦门门店主理人",
-          publishedAt: null,
-          locale: "zh-CN",
-          rawArtifactHash: `sha256:search-raw-${connectionId}`,
-          accessStatus: "indexed_summary",
-          subject: {
-            kind: "individual",
-            publicActorKey: "douyin:lin",
-            publicDisplayName: "林老师",
-            publicProfileUrl: scenario === "conflicting"
-              ? OTHER_PROFILE_URL
-              : PROFILE_URL,
-            sourcePlatform: "douyin",
-            demandCategory: "AI 获客",
-            demandSummary: "比较供应商",
-            locationHint: "厦门",
-            buyingStage: "comparison",
-            negativeSignals: []
-          }
-        }]
-  });
+      : scenario === "duplicate_search_url_records"
+        ? [result, {
+            ...result,
+            providerRecordId: `record-${connectionId}-duplicate`,
+            rawArtifactHash: `sha256:search-raw-${connectionId}-duplicate`
+          }]
+        : [result]
+    };
+  };
 
   const service = new AcquisitionDouyinIdentityResolutionOperationService({
     repository,
@@ -538,7 +647,14 @@ function executionFixture(
           ? structuredClone(item)
           : null;
       },
-      async appendEvidence(_candidateScope, input) {
+      async appendEvidence(_candidateScope, input, idempotencyKey) {
+        const existing = evidenceByIdempotencyKey.get(idempotencyKey);
+        if (existing) {
+          if (JSON.stringify(existing.input) !== JSON.stringify(input)) {
+            throw new Error("simulated evidence idempotency conflict");
+          }
+          return structuredClone(existing.evidence);
+        }
         const item: DiscoveryEvidence = {
           ...input,
           id: `verified-evidence-${++generatedEvidence}`,
@@ -548,12 +664,24 @@ function executionFixture(
           supersedesEvidenceId: input.supersedesEvidenceId ?? null
         };
         evidenceById.set(item.id, item);
+        evidenceByIdempotencyKey.set(idempotencyKey, {
+          input: structuredClone(input),
+          evidence: structuredClone(item)
+        });
         appendedEvidence.push(structuredClone(item));
+        if (scenario === "search_append_then_crash"
+          && input.provenance.kind === "search_result"
+          && !crashedAfterSearchAppend) {
+          crashedAfterSearchAppend = true;
+          throw new Error("simulated crash after search evidence append");
+        }
         return structuredClone(item);
       }
     },
     candidates: {
       async getCandidate() {
+        candidateReads += 1;
+        await options.beforeGetCandidate?.(candidateReads);
         return {
           id: "candidate-1",
           version: candidateVersion
@@ -580,7 +708,16 @@ function executionFixture(
         if (input.providerConnectionId === "search-connection-failed") {
           throw new Error("one provider failed");
         }
-        return searchResponse(input.providerConnectionId);
+        return searchResponse(
+          input.providerConnectionId,
+          searchCalls.length
+        );
+      }
+    },
+    async validateSearchConnection(input) {
+      validatedSearchConnections.push(structuredClone(input.connection));
+      if (input.connection.credentialVersion !== currentCredentialVersion) {
+        throw new Error("simulated rotated provider credential");
       }
     },
     identityResolution: {
@@ -590,11 +727,29 @@ function executionFixture(
         input,
         idempotencyKey
       ) {
+        if (committedIdentityKeys.has(idempotencyKey)) return {} as never;
+        committedIdentityKeys.add(idempotencyKey);
         identityCommits.push({
           candidateId,
           input: structuredClone(input),
           idempotencyKey
         });
+        if (scenario === "commit_then_crash") {
+          candidateVersion = 4;
+          throw new Error("simulated crash after identity commit");
+        }
+        if (scenario === "commit_stale_race") {
+          throw new AcquisitionDomainError(
+            "stale_candidate",
+            "simulated candidate version race"
+          );
+        }
+        if (scenario === "commit_identity_conflict") {
+          throw new AcquisitionDomainError(
+            "identity_conflict",
+            "simulated alias conflict"
+          );
+        }
         return {} as never;
       }
     },
@@ -639,8 +794,12 @@ function executionFixture(
     identityCommits,
     intelligenceCreates,
     intelligenceExecutes,
+    validatedSearchConnections,
     setCandidateVersion(value: number) {
       candidateVersion = value;
+    },
+    setCredentialVersion(value: number) {
+      currentCredentialVersion = value;
     }
   };
 }
@@ -651,10 +810,10 @@ test("executes public-page and independent-search verification before one identi
     candidateId: "candidate-1",
     expectedCandidateVersion: 3,
     sourceEvidenceIds: ["source-evidence"],
-    providerConnectionIds: [
+    searchConnections: searchConnections(
       "search-connection-failed",
       "search-connection-success"
-    ],
+    ),
     planSessionId: "acquisition-plan:run-123"
   }, "verified-operation-key");
 
@@ -717,13 +876,164 @@ test("executes public-page and independent-search verification before one identi
   assert.equal(state.intelligenceExecutes.length, 1);
 });
 
+test("finds successful identity intelligence ownership for one frozen Run", async () => {
+  const state = executionFixture("verified");
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: searchConnections("search-connection-success"),
+    planSessionId: "acquisition-plan:run-owned"
+  }, "owned-run-operation");
+  const completed = await state.service.execute(SCOPE, created.id);
+
+  const owned = await state.service
+    .findSucceededForCandidateAndPlanSession(
+      SCOPE,
+      "candidate-1",
+      "acquisition-plan:run-owned"
+    );
+
+  assert.deepEqual(owned, completed);
+  assert.equal(owned?.intelligenceOperationId, "candidate-intelligence-1");
+});
+
+test("rejects a requested profile when its page redirects to and proves another profile", async () => {
+  const state = executionFixture("profile_redirect_mismatch");
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: searchConnections("search-connection-success"),
+    planSessionId: "acquisition-plan:run-profile-ownership"
+  }, "profile-ownership-mismatch");
+
+  const completed = await state.service.execute(SCOPE, created.id);
+
+  assert.equal(completed.status, "requires_review");
+  assert.equal(completed.outcome, "redirect_not_allowed");
+  assert.equal(
+    state.appendedEvidence.some((item) =>
+      item.provenance.kind === "controlled_public_page"),
+    false
+  );
+  assert.deepEqual(state.identityCommits, []);
+  assert.deepEqual(state.intelligenceCreates, []);
+});
+
+test("persists duplicate search URL records under provenance-specific idempotency keys", async () => {
+  const state = executionFixture("duplicate_search_url_records");
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: searchConnections("search-connection-success"),
+    planSessionId: "acquisition-plan:run-duplicate-search"
+  }, "duplicate-search-records");
+
+  const completed = await state.service.execute(SCOPE, created.id);
+
+  assert.equal(completed.status, "succeeded");
+  assert.equal(completed.outcome, "verified_consensus");
+  assert.equal(state.appendedEvidence.length, 3);
+  assert.equal(state.identityCommits.length, 1);
+  assert.equal(state.intelligenceCreates.length, 1);
+});
+
+test("research replay with a new audited request reaches a terminal operation", async () => {
+  let now = "2026-08-08T00:00:00.000Z";
+  const state = executionFixture("search_append_then_crash", {
+    now: () => now
+  });
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: searchConnections("search-connection-success"),
+    planSessionId: "acquisition-plan:run-search-replay"
+  }, "search-replay-operation");
+  await assert.rejects(
+    state.service.execute(SCOPE, created.id),
+    /simulated crash after search evidence append/u
+  );
+  now = "2026-08-08T00:02:00.000Z";
+
+  const completed = await state.service.execute(SCOPE, created.id);
+
+  assert.equal(completed.status, "succeeded");
+  assert.equal(completed.outcome, "verified_consensus");
+  assert.equal(state.searchCalls.length, 2);
+  assert.equal(state.identityCommits.length, 1);
+  assert.equal(state.intelligenceCreates.length, 1);
+});
+
+test("recovery fails closed when a frozen search credential has rotated", async () => {
+  const state = executionFixture("verified");
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: searchConnections("search-connection-success"),
+    planSessionId: "acquisition-plan:run-rotated-search"
+  }, "rotated-search-recovery");
+  const crashed = await state.repository.claimOperation(SCOPE, created.id, {
+    leaseOwner: "crashed-worker",
+    leaseToken: "crashed-lease",
+    claimedAt: "2026-08-07T23:58:00.000Z",
+    leaseExpiresAt: "2026-08-07T23:59:00.000Z"
+  });
+  await state.repository.saveOperation({
+    ...crashed.operation!,
+    currentStage: "independent_search"
+  }, "crashed-lease");
+  state.setCredentialVersion(2);
+
+  const completed = await state.service.execute(SCOPE, created.id);
+
+  assert.equal(completed.status, "failed");
+  assert.equal(completed.outcome, "provider_unavailable");
+  assert.deepEqual(state.validatedSearchConnections, searchConnections(
+    "search-connection-success"
+  ));
+  assert.deepEqual(state.searchCalls, []);
+  assert.deepEqual(state.identityCommits, []);
+  assert.deepEqual(state.intelligenceCreates, []);
+});
+
+for (const expected of [
+  { scenario: "commit_stale_race", outcome: "stale_candidate" },
+  { scenario: "commit_identity_conflict", outcome: "conflicting" }
+] as const) {
+  test(`${expected.scenario} becomes a terminal review outcome`, async () => {
+    const state = executionFixture(expected.scenario);
+    const created = await state.service.create(SCOPE, {
+      candidateId: "candidate-1",
+      expectedCandidateVersion: 3,
+      sourceEvidenceIds: ["source-evidence"],
+      searchConnections: searchConnections("search-connection-success"),
+      planSessionId: "acquisition-plan:run-commit-race"
+    }, `terminal-${expected.scenario}`);
+
+    const completed = await state.service.execute(SCOPE, created.id);
+
+    assert.equal(completed.status, "requires_review");
+    assert.equal(completed.outcome, expected.outcome);
+    assert.equal(state.identityCommits.length, 1);
+    assert.deepEqual(state.intelligenceCreates, []);
+
+    const replayed = await state.service.execute(SCOPE, created.id);
+    assert.deepEqual(replayed, completed);
+    assert.equal(state.identityCommits.length, 1);
+  });
+}
+
 test("lease recovery resumes persisted intelligence dispatch without repeating identity confirmation", async () => {
   const state = executionFixture("verified");
   const created = await state.service.create(SCOPE, {
     candidateId: "candidate-1",
     expectedCandidateVersion: 3,
     sourceEvidenceIds: ["source-evidence"],
-    providerConnectionIds: ["search-connection-success"],
+    searchConnections: searchConnections("search-connection-success"),
     planSessionId: "acquisition-plan:run-recovery"
   }, "recover-intelligence-dispatch");
   const oldClaim = await state.repository.claimOperation(SCOPE, created.id, {
@@ -756,6 +1066,37 @@ test("lease recovery resumes persisted intelligence dispatch without repeating i
   assert.deepEqual(state.intelligenceExecutes, ["candidate-intelligence-1"]);
 });
 
+test("recovery replays a committed identity before dispatch without becoming stale", async () => {
+  let now = "2026-08-08T00:00:00.000Z";
+  const state = executionFixture("commit_then_crash", { now: () => now });
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: searchConnections("search-connection-success"),
+    planSessionId: "acquisition-plan:run-commit-crash"
+  }, "commit-crash-operation");
+
+  await assert.rejects(
+    state.service.execute(SCOPE, created.id),
+    /simulated crash after identity commit/u
+  );
+  const interrupted = await state.repository.getOperation(SCOPE, created.id);
+  assert.equal(interrupted?.currentStage, "identity_confirmation");
+  assert.equal(interrupted?.outcome, "verified_consensus");
+  now = "2026-08-08T00:02:00.000Z";
+
+  const completed = await state.service.execute(SCOPE, created.id);
+
+  assert.equal(completed.status, "succeeded");
+  assert.equal(completed.outcome, "verified_consensus");
+  assert.equal(state.identityCommits.length, 1);
+  assert.equal(state.intelligenceCreates.length, 1);
+  assert.deepEqual(state.intelligenceExecutes, ["candidate-intelligence-1"]);
+  assert.deepEqual(state.discoveryCalls, [SOURCE_URL, PROFILE_URL]);
+  assert.equal(state.searchCalls.length, 1);
+});
+
 test("renews the identity lease while public verification is still running", async () => {
   let now = "2026-08-08T00:00:00.000Z";
   let releaseDiscovery!: () => void;
@@ -768,6 +1109,7 @@ test("renews the identity lease while public verification is still running", asy
   });
   const heartbeatCallbacks: Array<() => void> = [];
   const clearedHandles: unknown[] = [];
+  const savedLeaseExpiriesAfterRenewal: Array<string | null> = [];
   const state = executionFixture("verified", {
     now: () => now,
     leaseDurationMs: 10_000,
@@ -781,6 +1123,11 @@ test("renews the identity lease while public verification is still running", asy
         clearedHandles.push(handle);
       }
     },
+    async afterSaveOperation(_repository, operation) {
+      if (now === "2026-08-08T00:00:05.000Z") {
+        savedLeaseExpiriesAfterRenewal.push(operation.leaseExpiresAt);
+      }
+    },
     async beforeDiscover(sourceUrl) {
       if (sourceUrl !== SOURCE_URL) return;
       discoveryStarted();
@@ -791,7 +1138,7 @@ test("renews the identity lease while public verification is still running", asy
     candidateId: "candidate-1",
     expectedCandidateVersion: 3,
     sourceEvidenceIds: ["source-evidence"],
-    providerConnectionIds: ["search-connection-success"],
+    searchConnections: searchConnections("search-connection-success"),
     planSessionId: "acquisition-plan:run-heartbeat"
   }, "heartbeat-operation");
 
@@ -808,6 +1155,12 @@ test("renews the identity lease while public verification is still running", asy
   releaseDiscovery();
 
   assert.equal((await execution).status, "succeeded");
+  assert.equal(savedLeaseExpiriesAfterRenewal.length > 0, true);
+  assert.equal(
+    savedLeaseExpiriesAfterRenewal.every((value) =>
+      value === "2026-08-08T00:00:15.000Z"),
+    true
+  );
   assert.deepEqual(clearedHandles, [heartbeatCallbacks[0]]);
 });
 
@@ -843,7 +1196,7 @@ test("aborts before evidence mutation when the identity lease is lost", async ()
     candidateId: "candidate-1",
     expectedCandidateVersion: 3,
     sourceEvidenceIds: ["source-evidence"],
-    providerConnectionIds: ["search-connection-success"],
+    searchConnections: searchConnections("search-connection-success"),
     planSessionId: "acquisition-plan:run-lease-loss"
   }, "lease-loss-operation");
   const execution = state.service.execute(SCOPE, created.id);
@@ -874,13 +1227,160 @@ test("aborts before evidence mutation when the identity lease is lost", async ()
   assert.deepEqual(state.intelligenceCreates, []);
 });
 
+test("synchronously fences evidence mutation after an expired lease is reclaimed", async () => {
+  let now = "2026-08-08T00:00:00.000Z";
+  let releaseDiscovery!: () => void;
+  let discoveryStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    discoveryStarted = resolve;
+  });
+  const blocked = new Promise<void>((resolve) => {
+    releaseDiscovery = resolve;
+  });
+  const state = executionFixture("verified", {
+    now: () => now,
+    leaseDurationMs: 10_000,
+    heartbeatIntervalMs: 1_000,
+    heartbeatScheduler: {
+      setInterval(callback) {
+        return callback;
+      },
+      clearInterval() {}
+    },
+    async beforeDiscover(sourceUrl) {
+      if (sourceUrl !== SOURCE_URL) return;
+      discoveryStarted();
+      await blocked;
+    }
+  });
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: searchConnections("search-connection-success"),
+    planSessionId: "acquisition-plan:run-sync-fence"
+  }, "sync-fence-operation");
+  const execution = state.service.execute(SCOPE, created.id);
+  await started;
+  now = "2026-08-08T00:00:11.000Z";
+  const replacement = await state.repository.claimOperation(
+    SCOPE,
+    created.id,
+    {
+      leaseOwner: "replacement-worker",
+      leaseToken: "replacement-lease",
+      claimedAt: now,
+      leaseExpiresAt: "2026-08-08T00:00:21.000Z"
+    }
+  );
+  assert.equal(replacement.claimed, true);
+  releaseDiscovery();
+
+  await assert.rejects(
+    execution,
+    (error: unknown) => error instanceof AcquisitionDouyinIdentityResolutionOperationError
+      && error.code === "OPERATION_ALREADY_RUNNING"
+  );
+  assert.deepEqual(state.appendedEvidence, []);
+  assert.deepEqual(state.identityCommits, []);
+  assert.deepEqual(state.intelligenceCreates, []);
+});
+
+test("synchronously fences intelligence dispatch after its lease is reclaimed", async () => {
+  let now = "2026-08-08T00:00:00.000Z";
+  let reclaimed = false;
+  const state = executionFixture("verified", {
+    now: () => now,
+    async afterSaveOperation(repository, operation) {
+      if (reclaimed || !operation.intelligenceOperationId) return;
+      reclaimed = true;
+      now = "2026-08-08T00:02:00.000Z";
+      const replacement = await repository.claimOperation(
+        SCOPE,
+        operation.id,
+        {
+          leaseOwner: "replacement-worker",
+          leaseToken: "replacement-lease",
+          claimedAt: now,
+          leaseExpiresAt: "2026-08-08T00:03:00.000Z"
+        }
+      );
+      assert.equal(replacement.claimed, true);
+    }
+  });
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: searchConnections("search-connection-success"),
+    planSessionId: "acquisition-plan:run-dispatch-fence"
+  }, "dispatch-fence-operation");
+
+  await assert.rejects(
+    state.service.execute(SCOPE, created.id),
+    (error: unknown) =>
+      error instanceof AcquisitionDouyinIdentityResolutionOperationError
+      && error.code === "OPERATION_ALREADY_RUNNING"
+  );
+  assert.equal(state.intelligenceCreates.length, 1);
+  assert.deepEqual(state.intelligenceExecutes, []);
+});
+
+test("synchronously fences consensus persistence after its lease expires", async () => {
+  let now = "2026-08-08T00:00:00.000Z";
+  let releaseCandidateRead!: () => void;
+  let candidateReadStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    candidateReadStarted = resolve;
+  });
+  const blocked = new Promise<void>((resolve) => {
+    releaseCandidateRead = resolve;
+  });
+  const state = executionFixture("verified", {
+    now: () => now,
+    leaseDurationMs: 10_000,
+    async beforeGetCandidate(call) {
+      if (call !== 1) return;
+      candidateReadStarted();
+      await blocked;
+    }
+  });
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: searchConnections("search-connection-success"),
+    planSessionId: "acquisition-plan:run-consensus-fence"
+  }, "consensus-fence-operation");
+
+  const execution = state.service.execute(SCOPE, created.id);
+  await started;
+  now = "2026-08-08T00:00:11.000Z";
+  releaseCandidateRead();
+
+  await assert.rejects(
+    execution,
+    (error: unknown) =>
+      error instanceof AcquisitionDouyinIdentityResolutionOperationError
+      && error.code === "OPERATION_ALREADY_RUNNING"
+  );
+  const persisted = await state.repository.getOperation(SCOPE, created.id);
+  assert.equal(persisted?.currentStage, "consensus_gate");
+  assert.equal(persisted?.outcome, null);
+  assert.equal(persisted?.canonicalProfileUrl, null);
+  assert.deepEqual(persisted?.profileCandidates, []);
+  assert.deepEqual(persisted?.evidence, []);
+  assert.deepEqual(state.identityCommits, []);
+  assert.deepEqual(state.intelligenceCreates, []);
+});
+
 test("persisted invalid plan sessions fail before evidence or identity side effects", async () => {
   const state = executionFixture("verified");
   const created = await state.service.create(SCOPE, {
     candidateId: "candidate-1",
     expectedCandidateVersion: 3,
     sourceEvidenceIds: ["source-evidence"],
-    providerConnectionIds: ["search-connection-success"],
+    searchConnections: searchConnections("search-connection-success"),
     planSessionId: null
   }, "persisted-invalid-session");
   const oldClaim = await state.repository.claimOperation(SCOPE, created.id, {
@@ -922,7 +1422,7 @@ for (const expected of [
       candidateId: "candidate-1",
       expectedCandidateVersion: 3,
       sourceEvidenceIds: ["source-evidence"],
-      providerConnectionIds: ["search-connection-success"],
+      searchConnections: searchConnections("search-connection-success"),
       planSessionId: null
     }, `terminal-${expected.scenario}`);
 

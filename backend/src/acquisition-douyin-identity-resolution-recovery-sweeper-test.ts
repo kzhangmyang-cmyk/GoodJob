@@ -16,7 +16,13 @@ function operation(id: string): AcquisitionDouyinIdentityResolutionOperation {
     candidateId: `candidate-${id}`,
     candidateVersion: 3,
     sourceEvidenceFingerprint: `sha256:${"a".repeat(64)}`,
-    providerConnectionIds: ["search-connection-1"],
+    searchConnections: [{
+      connectionId: "search-connection-1",
+      providerId: "baidu-search",
+      kind: "search",
+      status: "active",
+      credentialVersion: 1
+    }],
     planSessionId: "acquisition-plan:run-1",
     status: id === "expired" ? "running" : "queued",
     currentStage: id === "expired" ? "independent_search" : null,
