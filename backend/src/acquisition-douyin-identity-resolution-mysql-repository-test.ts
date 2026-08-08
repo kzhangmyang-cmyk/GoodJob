@@ -290,6 +290,44 @@ test("MySQL claim, save, and renewal are tenant and lease-token fenced", async (
   assert.match(renewPool.calls[0]!.sql, /owner_id = \? AND team_id = \?/u);
 });
 
+test("MySQL claim does not report success when read-back has a replacement lease", async () => {
+  const replaced = {
+    ...queuedOperation,
+    status: "running" as const,
+    updatedAt: "2026-08-08T02:01:01.000Z",
+    leaseOwner: "worker-b",
+    leaseToken: "lease-b",
+    leaseExpiresAt: "2026-08-08T02:11:01.000Z"
+  };
+  const pool = new FakePool();
+  pool.enqueue({ affectedRows: 1 });
+  pool.enqueue([mysqlRow(replaced)]);
+  const repository =
+    new MysqlAcquisitionDouyinIdentityResolutionOperationRepository(
+      asPool(pool)
+    );
+
+  const result = await repository.claimOperation(
+    { ownerId: "owner-a", teamId: "team-a" },
+    queuedOperation.id,
+    {
+      leaseOwner: "worker-a",
+      leaseToken: "lease-a",
+      claimedAt: "2026-08-08T02:01:00.000Z",
+      leaseExpiresAt: "2026-08-08T02:11:00.000Z"
+    }
+  );
+
+  assert.equal(result.claimed, false);
+  assert.match(pool.calls[1]!.sql, /lease_token = \?/u);
+  assert.deepEqual(pool.calls[1]!.values, [
+    queuedOperation.id,
+    "owner-a",
+    "team-a",
+    "lease-a"
+  ]);
+});
+
 test("MySQL reads fail closed on JSON and indexed-column mismatches", async () => {
   const cases = [
     {

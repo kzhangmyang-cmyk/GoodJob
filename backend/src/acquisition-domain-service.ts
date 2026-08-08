@@ -358,6 +358,12 @@ export class AcquisitionDomainService {
         if (input.supersedesEvidenceId) {
           await this.requireEvidence(scope, input.supersedesEvidenceId);
         }
+        if (input.provenance.kind === "controlled_public_page") {
+          await this.requireEvidence(
+            scope,
+            input.provenance.discoveredFromEvidenceId
+          );
+        }
         const evidence: DiscoveryEvidence = {
           ...input,
           id: this.idFactory("evidence"),

@@ -729,6 +729,82 @@ test("resolves strong public identities at the executor boundary instead of trus
   );
 });
 
+test("qualification consumes controlled public-page evidence as a public source", async () => {
+  const { domain, executor } = createHarness();
+  const scope = {
+    ownerId: identity.ownerId,
+    teamId: identity.teamId,
+    actorId: identity.actorId
+  };
+  const source = await domain.appendEvidence(scope, {
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: "抖音公开视频",
+    sourceSnippet: "视频中包含明确的公开作者链接。",
+    publishedAt: "2026-07-24T04:00:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: sha256("controlled-source-raw"),
+    contentHash: sha256("controlled-source-content"),
+    provenance: {
+      kind: "search_result",
+      provider: "douyin",
+      queryText: "抖音 公开采购需求",
+      sourceUrl: "https://www.douyin.com/video/controlled-source",
+      resultRank: 1
+    },
+    accessStatus: "public_content"
+  }, "controlled-source-evidence");
+  const page = await domain.appendEvidence(scope, {
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: "抖音公开主页",
+    sourceSnippet: "公开主页显示该主体正在比较获客系统。",
+    publishedAt: "2026-07-24T04:30:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: sha256("controlled-page-raw"),
+    contentHash: sha256("controlled-page-content"),
+    provenance: {
+      kind: "controlled_public_page",
+      sourceUrl: "https://www.douyin.com/user/controlled-actor",
+      discoveredFromEvidenceId: source.id,
+      redirectChain: ["https://www.douyin.com/video/controlled-source"],
+      extractorVersion: "douyin-public-profile-v1"
+    },
+    accessStatus: "public_content"
+  }, "controlled-page-evidence");
+  const candidate = await domain.createIndividualCandidate(scope, {
+    publicActorKey: "public:douyin:controlled-actor",
+    publicDisplayName: "受控公开主页主体",
+    publicProfileUrl: "https://www.douyin.com/user/controlled-actor",
+    sourcePlatform: "douyin",
+    demandSignalId: "signal-controlled-actor",
+    demandCategory: "获客系统",
+    demandSummary: "正在比较获客系统",
+    locationHint: "厦门",
+    buyingStage: "comparison",
+    negativeSignals: [],
+    individualPartyId: "individual-controlled-actor",
+    evidenceIds: [page.id]
+  }, "controlled-page-candidate");
+
+  const qualification = await execute(executor, "qualify_candidate", {
+    candidateId: candidate.id,
+    policyVersion: "qualification-rules.controlled-page-v1"
+  }, "controlled-page-qualification");
+
+  assert.equal(
+    qualification.qualification.hardGateFailures.includes(
+      "missing_original_source"
+    ),
+    false
+  );
+  assert.equal(
+    qualification.qualification.hardGateFailures.includes("schema_invalid"),
+    false
+  );
+  assert.notEqual(qualification.qualification.grade, "D");
+});
+
 test("maps current controlled tools and keeps the retired outcome tool read-only", async () => {
   const {
     executor,

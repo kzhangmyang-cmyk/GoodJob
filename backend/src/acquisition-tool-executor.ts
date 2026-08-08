@@ -1,16 +1,17 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type {
-  AcquisitionCandidate,
-  BattleCardInput,
-  DiscoveryEvidence,
-  DiscoveryEvidenceInput,
-  FinancialSummary,
-  FinancialValueDecision,
-  FinancialValueInput,
-  OutcomeEventType,
-  QualificationHardGates,
-  QualificationInput
+import {
+  discoveryEvidencePublicSourceUrl,
+  type AcquisitionCandidate,
+  type BattleCardInput,
+  type DiscoveryEvidence,
+  type DiscoveryEvidenceInput,
+  type FinancialSummary,
+  type FinancialValueDecision,
+  type FinancialValueInput,
+  type OutcomeEventType,
+  type QualificationHardGates,
+  type QualificationInput
 } from "./acquisition-domain.js";
 import {
   AcquisitionDomainError,
@@ -790,18 +791,11 @@ function buyingStageScore(candidate: AcquisitionCandidate) {
   }[candidate.profile.buyingStage];
 }
 
-function evidenceSourceUrl(evidence: DiscoveryEvidence) {
-  return evidence.provenance.kind === "search_result"
-    || evidence.provenance.kind === "user_submitted_url"
-    ? evidence.provenance.sourceUrl
-    : null;
-}
-
 function publicDecisionEvidence(evidence: DiscoveryEvidence[]) {
   return evidence.filter((item) =>
     ["indexed_summary", "public_content"].includes(item.accessStatus)
     && item.provenance.kind !== "import_artifact_row"
-    && evidenceSourceUrl(item) !== null
+    && discoveryEvidencePublicSourceUrl(item) !== null
   );
 }
 
@@ -884,7 +878,7 @@ function deterministicHardGates(
     });
   const schemaValid = decisionEvidence.length > 0
     && decisionEvidence.every((item) => {
-      const sourceUrl = evidenceSourceUrl(item);
+      const sourceUrl = discoveryEvidencePublicSourceUrl(item);
       if (!sourceUrl
         || !/^sha256:[a-f0-9]{64}$/iu.test(item.rawArtifactHash)
         || !/^sha256:[a-f0-9]{64}$/iu.test(item.contentHash)) {

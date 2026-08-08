@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import type {
-  PartyRef
+import {
+  discoveryEvidencePublicSourceUrl,
+  type PartyRef
 } from "./acquisition-domain.js";
 import type {
   AcquisitionDomainRepository
@@ -59,10 +60,8 @@ function sourceUrl(
 ) {
   for (const item of evidence) {
     if (!item) continue;
-    if (item.provenance.kind === "search_result"
-      || item.provenance.kind === "user_submitted_url") {
-      return item.provenance.sourceUrl;
-    }
+    const publicSourceUrl = discoveryEvidencePublicSourceUrl(item);
+    if (publicSourceUrl) return publicSourceUrl;
   }
   return "";
 }

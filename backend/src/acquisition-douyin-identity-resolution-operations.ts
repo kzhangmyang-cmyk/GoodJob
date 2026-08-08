@@ -4,7 +4,6 @@ import type {
   DouyinIdentityEvidence,
   DouyinIdentityResolutionOutcome
 } from "./acquisition-douyin-identity-consensus.js";
-import { canonicalJsonStringify } from "./canonical-json.js";
 
 export type AcquisitionDouyinIdentityResolutionStatus =
   | "queued"
@@ -166,10 +165,6 @@ function hash(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function stableHash(value: unknown) {
-  return `sha256:${hash(canonicalJsonStringify(value))}`;
-}
-
 function requiredText(value: unknown, max = 200) {
   const normalized = String(value ?? "").trim();
   if (!normalized || normalized.length > max) {
@@ -196,6 +191,25 @@ function validIso(value: string) {
   return new Date(timestamp).toISOString();
 }
 
+function compareCodeUnits(left: string, right: string) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function normalizeStableJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeStableJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => compareCodeUnits(left, right))
+      .map(([key, item]) => [key, normalizeStableJson(item)]));
+  }
+  return value;
+}
+
+function stableHash(value: unknown) {
+  return `sha256:${hash(JSON.stringify(normalizeStableJson(value)))}`;
+}
+
 function uniqueSortedIds(
   values: string[],
   options: { min: number; max: number }
@@ -213,7 +227,7 @@ function uniqueSortedIds(
       "INVALID_REQUEST"
     );
   }
-  return normalized.sort((left, right) => left.localeCompare(right));
+  return normalized.sort(compareCodeUnits);
 }
 
 function publicOperation(
@@ -316,8 +330,13 @@ implements AcquisitionDouyinIdentityResolutionOperationRepository {
     id: string,
     claim: AcquisitionDouyinIdentityResolutionClaim
   ) {
-    const operation = await this.getOperation(rawScope, id);
-    if (!operation) return { operation: null, claimed: false };
+    const stored = this.operations.get(id);
+    if (!stored
+      || stored.ownerId !== rawScope.ownerId
+      || stored.teamId !== rawScope.teamId) {
+      return { operation: null, claimed: false };
+    }
+    const operation = clone(stored);
     const claimable = operation.status === "queued"
       || (operation.status === "running"
         && operation.leaseExpiresAt !== null
@@ -439,8 +458,8 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       };
     }));
     const sortedSourceHashes = sourceEvidence.sort((left, right) =>
-      left.contentHash.localeCompare(right.contentHash)
-      || left.rawArtifactHash.localeCompare(right.rawArtifactHash));
+      compareCodeUnits(left.contentHash, right.contentHash)
+      || compareCodeUnits(left.rawArtifactHash, right.rawArtifactHash));
     const sourceEvidenceFingerprint = stableHash(sortedSourceHashes);
     const requestHash = stableHash({
       candidateId,

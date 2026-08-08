@@ -95,6 +95,14 @@ export interface DiscoveryEvidence extends DiscoveryEvidenceInput {
   supersedesEvidenceId: string | null;
 }
 
+export function discoveryEvidencePublicSourceUrl(
+  evidence: Pick<DiscoveryEvidence, "provenance">
+) {
+  return evidence.provenance.kind === "import_artifact_row"
+    ? null
+    : evidence.provenance.sourceUrl;
+}
+
 export interface OrganizationCandidateProfile {
   kind: "organization";
   name: string;

@@ -592,9 +592,24 @@ function controlledPublicPageEvidenceBody() {
 test("v1 evidence accepts controlled Douyin public-page provenance", async () => {
   const fixture = await createFixture();
   try {
+    const source = await fixture.request(
+      "/api/v1/acquisition/evidence",
+      write(
+        evidenceBody("individual_signal", "controlled-page-source"),
+        "controlled-page-source-evidence"
+      )
+    );
+    assert.equal(source.response.status, 201);
+    const body = controlledPublicPageEvidenceBody();
     const result = await fixture.request(
       "/api/v1/acquisition/evidence",
-      write(controlledPublicPageEvidenceBody(), "controlled-page-evidence")
+      write({
+        ...body,
+        provenance: {
+          ...body.provenance,
+          discoveredFromEvidenceId: source.json.id
+        }
+      }, "controlled-page-evidence")
     );
 
     assert.equal(result.response.status, 201);

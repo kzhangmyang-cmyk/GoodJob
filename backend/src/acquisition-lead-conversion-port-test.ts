@@ -134,6 +134,53 @@ assert.doesNotMatch(
   /api[_-]?key|secret|token/i
 );
 
+const controlledRepository = new InMemoryAcquisitionDomainRepository();
+const controlledSource = {
+  ...evidence,
+  id: "evidence-controlled-source",
+  provenance: {
+    ...evidence.provenance,
+    sourceUrl: "https://www.douyin.com/video/controlled-source"
+  }
+} satisfies DiscoveryEvidence;
+const controlledEvidence = {
+  ...evidence,
+  id: "evidence-controlled-page",
+  sourcePlatform: "douyin",
+  provenance: {
+    kind: "controlled_public_page" as const,
+    sourceUrl: "https://www.douyin.com/user/controlled-actor",
+    discoveredFromEvidenceId: controlledSource.id,
+    redirectChain: [controlledSource.provenance.sourceUrl],
+    extractorVersion: "douyin-public-profile-v1" as const
+  }
+} satisfies DiscoveryEvidence;
+const controlledCandidate = {
+  ...candidate,
+  id: "candidate-controlled-page",
+  evidenceIds: [controlledEvidence.id]
+} satisfies AcquisitionCandidate;
+await controlledRepository.appendEvidence(controlledSource);
+await controlledRepository.appendEvidence(controlledEvidence);
+await controlledRepository.insertCandidate(controlledCandidate);
+const controlledStore = memoryStore();
+const controlledPort = new AcquisitionCrmLeadConversionPort({
+  repository: controlledRepository,
+  store: controlledStore,
+  now: () => "2026-07-23T08:00:00.000Z"
+});
+await controlledPort.createLead({
+  ...request,
+  candidateId: controlledCandidate.id,
+  partyRef: controlledCandidate.partyRef,
+  evidenceIds: [controlledEvidence.id],
+  idempotencyKey: "conversion-controlled-page"
+});
+assert.equal(
+  controlledStore.leads[0]?.sourceUrl,
+  "https://www.douyin.com/user/controlled-actor"
+);
+
 store.leadSourceEvents.splice(0, store.leadSourceEvents.length);
 store.leadActivities.splice(0, store.leadActivities.length);
 const repaired = await port.createLead(request);

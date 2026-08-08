@@ -222,6 +222,71 @@ test("only the active lease token can save an operation", async () => {
   assert.equal((await repository.getOperation(SCOPE, created.id))?.status, "succeeded");
 });
 
+test("concurrent claimants produce exactly one lease winner", async () => {
+  const { service, repository } = fixture();
+  const created = await service.create(SCOPE, CREATE_INPUT, "concurrent-claim");
+  const claims = [
+    {
+      leaseOwner: "worker-a",
+      leaseToken: "lease-token-a",
+      claimedAt: "2026-08-08T00:01:00.000Z",
+      leaseExpiresAt: "2026-08-08T00:11:00.000Z"
+    },
+    {
+      leaseOwner: "worker-b",
+      leaseToken: "lease-token-b",
+      claimedAt: "2026-08-08T00:01:00.000Z",
+      leaseExpiresAt: "2026-08-08T00:11:00.000Z"
+    }
+  ];
+
+  const results = await Promise.all(claims.map((claim) =>
+    repository.claimOperation(SCOPE, created.id, claim)
+  ));
+  const winners = results.filter((result) => result.claimed);
+  const stored = await repository.getOperation(SCOPE, created.id);
+
+  assert.equal(winners.length, 1);
+  assert.equal(stored?.leaseToken, winners[0]?.operation?.leaseToken);
+  assert.equal(stored?.leaseOwner, winners[0]?.operation?.leaseOwner);
+});
+
+test("request identity replays across case and non-ASCII ordering without localeCompare", async () => {
+  const { service, evidenceById } = fixture();
+  evidenceById.set(
+    "Evidence-Z",
+    evidence("Evidence-Z", "sha256:内容-Z", "sha256:原文-Z")
+  );
+  evidenceById.set(
+    "证据-é",
+    evidence("证据-é", "sha256:内容-é", "sha256:原文-é")
+  );
+  const originalLocaleCompare = String.prototype.localeCompare;
+  String.prototype.localeCompare = function forbiddenLocaleCompare() {
+    throw new Error("localeCompare must not define request identity");
+  };
+  try {
+    const created = await service.create(SCOPE, {
+      ...CREATE_INPUT,
+      sourceEvidenceIds: ["证据-é", "Evidence-Z"],
+      providerConnectionIds: ["搜索-é", "Connection-Z"]
+    }, "locale-independent-request");
+    const replayed = await service.create(SCOPE, {
+      ...CREATE_INPUT,
+      sourceEvidenceIds: ["Evidence-Z", "证据-é"],
+      providerConnectionIds: ["Connection-Z", "搜索-é"]
+    }, "locale-independent-request");
+
+    assert.deepEqual(replayed, created);
+    assert.deepEqual(created.providerConnectionIds, [
+      "Connection-Z",
+      "搜索-é"
+    ]);
+  } finally {
+    String.prototype.localeCompare = originalLocaleCompare;
+  }
+});
+
 test("terminal operations are never claimed", async () => {
   const { service, repository } = fixture();
   for (const status of ["succeeded", "requires_review", "failed"] as const) {

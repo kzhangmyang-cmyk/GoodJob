@@ -84,6 +84,98 @@ function searchEvidence(
   };
 }
 
+function controlledPublicPageEvidence(
+  discoveredFromEvidenceId: string,
+  suffix: string
+): DiscoveryEvidenceInput {
+  return {
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: `抖音公开主页 ${suffix}`,
+    sourceSnippet: "由公开视频中的明确作者链接解析并公开验证。",
+    publishedAt: null,
+    locale: "zh-CN",
+    rawArtifactHash: `sha256:page-${suffix}`,
+    contentHash: `sha256:content-${suffix}`,
+    provenance: {
+      kind: "controlled_public_page",
+      sourceUrl: `https://www.douyin.com/user/${suffix}`,
+      discoveredFromEvidenceId,
+      redirectChain: [`https://www.douyin.com/video/${suffix}`],
+      extractorVersion: "douyin-public-profile-v1"
+    },
+    accessStatus: "public_content"
+  };
+}
+
+test("controlled public-page evidence accepts an existing same-tenant source", async () => {
+  const { service } = createHarness();
+  const source = await service.appendEvidence(
+    ownerScope,
+    searchEvidence("individual_signal", "controlled-source"),
+    "controlled-source"
+  );
+
+  const page = await service.appendEvidence(
+    ownerScope,
+    controlledPublicPageEvidence(source.id, "same-tenant"),
+    "controlled-page-same-tenant"
+  );
+
+  assert.equal(page.provenance.kind, "controlled_public_page");
+  assert.equal(
+    page.provenance.kind === "controlled_public_page"
+      ? page.provenance.discoveredFromEvidenceId
+      : null,
+    source.id
+  );
+});
+
+test("controlled public-page evidence rejects a missing source atomically", async () => {
+  const { repository, service } = createHarness();
+
+  await assert.rejects(
+    service.appendEvidence(
+      ownerScope,
+      controlledPublicPageEvidence("evidence-missing", "missing"),
+      "controlled-page-missing"
+    ),
+    (error: unknown) => error instanceof AcquisitionDomainError
+      && error.code === "resource_not_found"
+  );
+  assert.equal(await repository.findEvidence(ownerScope, "evidence-1"), null);
+  assert.equal(await repository.findIdempotency(
+    ownerScope,
+    "append_evidence",
+    "controlled-page-missing"
+  ), null);
+});
+
+test("controlled public-page evidence rejects a cross-tenant source atomically", async () => {
+  const { repository, service } = createHarness();
+  const source = await service.appendEvidence(
+    intruderScope,
+    searchEvidence("individual_signal", "cross-tenant-source"),
+    "cross-tenant-source"
+  );
+
+  await assert.rejects(
+    service.appendEvidence(
+      ownerScope,
+      controlledPublicPageEvidence(source.id, "cross-tenant"),
+      "controlled-page-cross-tenant"
+    ),
+    (error: unknown) => error instanceof AcquisitionDomainError
+      && error.code === "resource_not_found"
+  );
+  assert.equal(await repository.findEvidence(ownerScope, "evidence-3"), null);
+  assert.equal(await repository.findIdempotency(
+    ownerScope,
+    "append_evidence",
+    "controlled-page-cross-tenant"
+  ), null);
+});
+
 function strongQualification(): QualificationInput {
   return {
     decisionEngine: "rules",

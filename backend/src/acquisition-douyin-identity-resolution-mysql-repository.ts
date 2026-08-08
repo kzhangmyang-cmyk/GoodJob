@@ -332,6 +332,24 @@ async function operationById(
   return rows[0] ? parseOperation(rows[0]) : null;
 }
 
+async function operationByLeaseToken(
+  source: Pick<mysql.Pool, "query">,
+  scope: OperationScope,
+  id: string,
+  leaseToken: string
+) {
+  const rows = await selectedRows(
+    source,
+    `SELECT ${OPERATION_SELECT_COLUMNS}
+     FROM acquisition_douyin_identity_resolution_operations
+     WHERE id = ? AND owner_id = ? AND team_id = ? AND lease_token = ?
+     LIMIT 1`,
+    [id, scope.ownerId, scope.teamId, leaseToken]
+  );
+  const operation = rows[0] ? parseOperation(rows[0]) : null;
+  return operation?.leaseToken === leaseToken ? operation : null;
+}
+
 export class MysqlAcquisitionDouyinIdentityResolutionOperationRepository
 implements AcquisitionDouyinIdentityResolutionOperationRepository {
   constructor(private readonly pool: mysql.Pool) {}
@@ -474,8 +492,11 @@ implements AcquisitionDouyinIdentityResolutionOperationRepository {
         mysqlDate(claim.claimedAt)
       ]
     );
-    const operation = await this.getOperation(scope, id);
-    return { operation, claimed: affectedRows(result) === 1 };
+    const updated = affectedRows(result) === 1;
+    const operation = updated
+      ? await operationByLeaseToken(this.pool, scope, id, claim.leaseToken)
+      : await this.getOperation(scope, id);
+    return { operation, claimed: updated && operation !== null };
   }
 
   async saveOperation(
