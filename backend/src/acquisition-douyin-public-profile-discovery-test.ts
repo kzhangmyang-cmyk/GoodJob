@@ -83,9 +83,24 @@ test("discovery rejects non-HTTPS or non-exact Douyin hosts before fetching", as
   assert.equal(calls, 0);
 });
 
-test("discovery treats login, verification, and restricted responses as access restrictions", async () => {
+test("discovery keeps a public profile page that merely contains login links or bundle text", async () => {
+  const discovery = createAcquisitionDouyinPublicProfileDiscovery({
+    fetchWithRedirectTrace: async () => traced([
+      '<a href="/login">登录</a>',
+      "<script>const loginBundleVersion = 'verify';</script>",
+      '<a href="https://www.douyin.com/user/public-actor">author</a>'
+    ].join(""))
+  });
+
+  assert.equal((await discovery.discover({
+    sourceUrl: "https://www.douyin.com/video/7521000000000000000",
+    sourceEvidenceId: "evidence"
+  })).status, "succeeded");
+});
+
+test("discovery treats explicit verification pages and restricted responses as access restrictions", async () => {
   for (const response of [
-    new Response("请登录后继续", { status: 200 }),
+    new Response('<body data-page="verification"><div id="captcha_container"></div></body>', { status: 200 }),
     new Response("", { status: 403 }),
     new Response("", { status: 429 })
   ]) {
@@ -104,6 +119,38 @@ test("discovery treats login, verification, and restricted responses as access r
       publicProfileUrls: []
     });
   }
+});
+
+test("discovery extracts JSON structured profile URLs with escaped slashes", async () => {
+  const discovery = createAcquisitionDouyinPublicProfileDiscovery({
+    fetchWithRedirectTrace: async () => traced(
+      '{"url":"https:\\/\\/www.douyin.com\\/user\\/escaped-slash"}'
+    )
+  });
+
+  const result = await discovery.discover({
+    sourceUrl: "https://www.douyin.com/video/7521000000000000000",
+    sourceEvidenceId: "evidence"
+  });
+  assert.deepEqual(result.status === "succeeded" ? result.publicProfileUrls : [], [
+    "https://www.douyin.com/user/escaped-slash"
+  ]);
+});
+
+test("discovery extracts JSON-LD structured profile URLs with Unicode escaped slashes", async () => {
+  const discovery = createAcquisitionDouyinPublicProfileDiscovery({
+    fetchWithRedirectTrace: async () => traced(
+      '<script type="application/ld+json">{"url":"https:\\u002F\\u002Fwww.douyin.com\\u002Fuser\\u002Funicode-slash"}</script>'
+    )
+  });
+
+  const result = await discovery.discover({
+    sourceUrl: "https://www.douyin.com/video/7521000000000000000",
+    sourceEvidenceId: "evidence"
+  });
+  assert.deepEqual(result.status === "succeeded" ? result.publicProfileUrls : [], [
+    "https://www.douyin.com/user/unicode-slash"
+  ]);
 });
 
 test("discovery rejects a trace that leaves the fixed exact-host allowlist", async () => {

@@ -32,7 +32,8 @@ const DOUYIN_PUBLIC_PROFILE_POLICY: ProviderNetworkPolicy = {
 };
 
 const EXACT_DOUYIN_HOSTS = new Set(DOUYIN_PUBLIC_PROFILE_POLICY.allowedHosts);
-const RESTRICTED_PAGE = /(?:login|verify|captcha|登录|验证|安全校验)/iu;
+const RESTRICTED_PATH = /\/(?:login|verify|verification|captcha|challenge)(?:\/|$)/iu;
+const RESTRICTED_PAGE_MARKER = /<(?:html|body|main|section|form|div)\b[^>]*\b(?:id|class|data-[\w-]+)\s*=\s*["'][^"']*(?:captcha(?:[-_ ]?(?:container|challenge))?|verification(?:[-_ ]?page)?|challenge(?:[-_ ]?page)?|security[-_ ]?check)[^"']*["'][^>]*>/iu;
 
 export type DouyinPublicProfileDiscoveryResult =
   | {
@@ -105,22 +106,53 @@ function normalizeProfileUrl(value: string) {
   }
 }
 
+function structuredJsonValues(html: string) {
+  const documents = [html.trim()];
+  for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/giu)) {
+    if (/\btype\s*=\s*["']application\/(?:ld\+)?json["']/iu.test(match[1] || "")) {
+      documents.push((match[2] || "").trim());
+    }
+  }
+  const values: string[] = [];
+  const visit = (value: unknown, depth = 0) => {
+    if (depth > 30 || values.length >= 1_000) return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, depth + 1));
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [key, nested] of Object.entries(value)) {
+      if (["url", "canonical", "profileUrl"].includes(key) && typeof nested === "string") {
+        values.push(nested);
+      }
+      visit(nested, depth + 1);
+    }
+  };
+  for (const document of documents) {
+    try {
+      visit(JSON.parse(document));
+    } catch {
+      // The surrounding HTML or malformed structured data is not evidence.
+    }
+  }
+  return values;
+}
+
 function explicitPublicUrls(html: string, pageUrl: string) {
   const candidates = new Set<string>();
-  const patterns = [
-    /\bhref\s*=\s*(["'])(.*?)\1/giu,
-    /["'](?:canonical|url|profileUrl)["']\s*:\s*["']([^"']+)["']/giu
-  ];
-  for (const pattern of patterns) {
-    for (const match of html.matchAll(pattern)) {
-      const raw = match[2] || match[1] || "";
-      try {
-        const normalized = normalizeProfileUrl(new URL(raw, pageUrl).toString());
-        if (normalized) candidates.add(normalized);
-      } catch {
-        // A malformed explicit URL is not evidence.
-      }
+  const addCandidate = (raw: string) => {
+    try {
+      const normalized = normalizeProfileUrl(new URL(raw, pageUrl).toString());
+      if (normalized) candidates.add(normalized);
+    } catch {
+      // A malformed explicit URL is not evidence.
     }
+  };
+  for (const match of html.matchAll(/\bhref\s*=\s*(["'])(.*?)\1/giu)) {
+    addCandidate(match[2] || "");
+  }
+  for (const raw of structuredJsonValues(html)) {
+    addCandidate(raw);
   }
   return [...candidates].sort((left, right) => left.localeCompare(right));
 }
@@ -129,8 +161,8 @@ function restricted(response: Response, body: string, redirectChain: string[]) {
   return response.status === 401
     || response.status === 403
     || response.status === 429
-    || redirectChain.some((url) => RESTRICTED_PAGE.test(new URL(url).pathname))
-    || RESTRICTED_PAGE.test(body);
+    || redirectChain.some((url) => RESTRICTED_PATH.test(new URL(url).pathname))
+    || RESTRICTED_PAGE_MARKER.test(body);
 }
 
 export function createAcquisitionDouyinPublicProfileDiscovery(
