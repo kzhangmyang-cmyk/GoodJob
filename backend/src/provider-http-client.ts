@@ -39,6 +39,11 @@ const SAFE_CROSS_HOST_HEADERS = [
 
 type ProviderHttpTestTransport = (url: string, init: RequestInit) => Promise<Response>;
 
+export interface ProviderHttpRedirectTrace {
+  response: Response;
+  redirectChain: string[];
+}
+
 let providerHttpTestTransport: ProviderHttpTestTransport | null = null;
 
 function policyError(message: string) {
@@ -371,28 +376,40 @@ async function requestOnce(
   });
 }
 
+export async function fetchProviderHttpWithRedirectTrace(
+  policy: ProviderNetworkPolicy,
+  rawUrl: string,
+  init: RequestInit = {}
+): Promise<ProviderHttpRedirectTrace> {
+  const deadlineAt = Date.now() + (policy.timeoutMs || DEFAULT_TIMEOUT_MS);
+  let current = validateTarget(rawUrl, policy);
+  let currentInit = init;
+  const redirectChain = [current.toString()];
+  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
+    const response = await requestOnce(current, currentInit, policy, deadlineAt);
+    if (![301, 302, 303, 307, 308].includes(response.status)) {
+      return { response, redirectChain };
+    }
+    const location = response.headers.get("location");
+    if (!location) return { response, redirectChain };
+    if (redirectCount === MAX_REDIRECTS) throw policyError("数据源重定向次数过多");
+    const next = redirectTarget(
+      current,
+      location,
+      policy,
+      requestContainsCredentials(current, currentInit)
+    );
+    currentInit = redirectInit(response.status, currentInit);
+    current = next;
+    redirectChain.push(current.toString());
+  }
+  throw policyError("数据源重定向失败");
+}
+
 export function createProviderHttpClient(policy: ProviderNetworkPolicy): ProviderHttpClient {
   return {
     async fetch(rawUrl, init = {}) {
-      const deadlineAt = Date.now() + (policy.timeoutMs || DEFAULT_TIMEOUT_MS);
-      let current = validateTarget(rawUrl, policy);
-      let currentInit = init;
-      for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
-        const response = await requestOnce(current, currentInit, policy, deadlineAt);
-        if (![301, 302, 303, 307, 308].includes(response.status)) return response;
-        const location = response.headers.get("location");
-        if (!location) return response;
-        if (redirectCount === MAX_REDIRECTS) throw policyError("数据源重定向次数过多");
-        const next = redirectTarget(
-          current,
-          location,
-          policy,
-          requestContainsCredentials(current, currentInit)
-        );
-        currentInit = redirectInit(response.status, currentInit);
-        current = next;
-      }
-      throw policyError("数据源重定向失败");
+      return (await fetchProviderHttpWithRedirectTrace(policy, rawUrl, init)).response;
     }
   };
 }
