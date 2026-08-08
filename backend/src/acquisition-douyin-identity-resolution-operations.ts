@@ -715,6 +715,18 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
     rawInput: AcquisitionDouyinIdentityResolutionCreateInput,
     idempotencyKeyInput: string
   ) {
+    return (await this.createWithResult(
+      rawScope,
+      rawInput,
+      idempotencyKeyInput
+    )).operation;
+  }
+
+  async createWithResult(
+    rawScope: AcquisitionDouyinIdentityResolutionScope,
+    rawInput: AcquisitionDouyinIdentityResolutionCreateInput,
+    idempotencyKeyInput: string
+  ) {
     const validatedScope = scope(rawScope);
     const candidateId = requiredText(rawInput.candidateId, 120);
     if (!Number.isSafeInteger(rawInput.expectedCandidateVersion)
@@ -774,7 +786,7 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
           "IDEMPOTENCY_CONFLICT"
         );
       }
-      return publicOperation(existing);
+      return { operation: publicOperation(existing), replayed: true };
     }
     const now = validIso(this.now());
     const operation: AcquisitionDouyinIdentityResolutionOperationRecord = {
@@ -804,7 +816,10 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       completedAt: null
     };
     const result = await this.repository.createOperation(operation);
-    return publicOperation(result.operation);
+    return {
+      operation: publicOperation(result.operation),
+      replayed: !result.created
+    };
   }
 
   async get(rawScope: AcquisitionDouyinIdentityResolutionScope, idInput: string) {
@@ -813,6 +828,19 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
       validatedScope,
       requiredText(idInput, 160)
     );
+    return operation ? publicOperation(operation) : null;
+  }
+
+  async findByIdempotency(
+    rawScope: AcquisitionDouyinIdentityResolutionScope,
+    idempotencyKeyInput: string
+  ) {
+    const validatedScope = scope(rawScope);
+    const operation = await this.repository.findOperationByIdempotency({
+      ownerId: validatedScope.ownerId,
+      teamId: validatedScope.teamId,
+      idempotencyKeyHash: hash(requiredText(idempotencyKeyInput, 200))
+    });
     return operation ? publicOperation(operation) : null;
   }
 

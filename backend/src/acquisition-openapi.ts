@@ -337,6 +337,9 @@ const copilotTaskResponseSchema = loadContractSchema("copilot-task");
 const candidateIntelligenceOperationResponseSchema = loadContractSchema(
   "candidate-intelligence-operation"
 );
+const douyinIdentityResolutionOperationResponseSchema = loadContractSchema(
+  "douyin-identity-resolution-operation"
+);
 
 function typedPagedResponseSchema(itemSchema: Record<string, unknown>) {
   return {
@@ -1041,6 +1044,10 @@ const acquisitionOperationIds: Record<string, string> = {
     "getLatestAcquisitionCandidateIntelligenceOperation",
   "post /api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry":
     "retryAcquisitionCandidateIntelligenceOperation",
+  "get /api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation":
+    "getLatestAcquisitionDouyinIdentityResolutionOperation",
+  "post /api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations":
+    "createAcquisitionDouyinIdentityResolutionOperation",
   "get /api/v1/acquisition/candidates/{id}/qualification":
     "getAcquisitionCandidateQualification",
   "get /api/v1/acquisition/candidates/{id}/financial-value":
@@ -2409,6 +2416,8 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     ["/api/v1/acquisition/candidate-intelligence-operations/{operationId}", "get", "读取候选客户情报任务"],
     ["/api/v1/acquisition/candidates/{candidateId}/intelligence-operation", "get", "读取候选客户最新情报任务"],
     ["/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry", "post", "重试候选客户情报任务"],
+    ["/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation", "get", "读取候选最新抖音主体核验任务"],
+    ["/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations", "post", "创建或重试候选抖音主体核验任务"],
     ["/api/v1/acquisition/candidates/{id}/qualification", "get", "读取资格判断"],
     ["/api/v1/acquisition/candidates/{id}/financial-value", "get", "读取财务价值判断"],
     ["/api/v1/acquisition/candidates/{id}/battle-card", "get", "读取客户作战卡"],
@@ -2457,6 +2466,11 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       schema: strictEmptyWriteSchema,
       successStatus: 202,
       successDescription: "候选客户情报重试已接受"
+    },
+    "post /api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations": {
+      schema: strictEmptyWriteSchema,
+      successStatus: 202,
+      successDescription: "抖音主体核验任务已接受"
     },
     "post /api/v1/acquisition/candidates/{id}/review": {
       schema: reviewWriteSchema
@@ -2513,6 +2527,7 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
     "/api/v1/acquisition/candidates/{id}/identity-confirmation",
     "/api/v1/acquisition/candidates/{candidateId}/intelligence-operations",
     "/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry",
+    "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations",
     "/api/v1/acquisition/candidates/{id}/review",
     "/api/v1/acquisition/candidates/{id}/convert",
     "/api/v1/acquisition/candidates/{id}/private-domain-handoffs",
@@ -2575,6 +2590,10 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       candidateIntelligenceOperationResponseSchema,
     "post /api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry":
       candidateIntelligenceOperationResponseSchema,
+    "get /api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation":
+      douyinIdentityResolutionOperationResponseSchema,
+    "post /api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations":
+      douyinIdentityResolutionOperationResponseSchema,
     "get /api/v1/acquisition/candidates/{id}/qualification":
       qualificationDecisionResponseSchema,
     "get /api/v1/acquisition/candidates/{id}/financial-value":
@@ -2618,7 +2637,11 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
           : null;
     if (pathParameterName) {
       parameters.push(idParameter(
-        pathParameterName === "id" ? 255 : 160,
+        pathParameterName === "id"
+          ? 255
+          : path.includes("/douyin-identity-resolution-")
+            ? 120
+            : 160,
         pathParameterName
       ));
     }
@@ -2769,6 +2792,26 @@ function addCoreAgentPaths(paths: AcquisitionOpenApiPaths) {
       body?.successDescription ?? "操作成功",
       successSchema
     );
+    if (path === "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation") {
+      for (const status of Object.keys(responses)) {
+        if (!["200", "401", "404"].includes(status)) delete responses[status];
+      }
+    }
+    if (path === "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations") {
+      for (const status of Object.keys(responses)) {
+        if (!["202", "400", "401", "404", "409"].includes(status)) {
+          delete responses[status];
+        }
+      }
+      responses["422"] = response("候选主体不满足安全核验条件", errorSchema);
+      responses["429"] = response("请求过于频繁", errorSchema);
+      (responses["202"] as Record<string, unknown>).headers = {
+        "Idempotency-Replayed": {
+          description: "值为 true 表示返回的是同一幂等请求的既有结果。",
+          schema: { type: "string", enum: ["true"] }
+        }
+      };
+    }
     if (etagResponses.has(path)) {
       (responses[String(successStatus)] as Record<string, unknown>).headers = {
         ETag: {

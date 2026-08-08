@@ -1073,6 +1073,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                candidateId: string;
+            };
+            cookie?: never;
+        };
+        /** Get latest Douyin identity resolution operation */
+        get: operations["getLatestAcquisitionDouyinIdentityResolutionOperation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                candidateId: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create or retry Douyin identity resolution operation */
+        post: operations["createAcquisitionDouyinIdentityResolutionOperation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/acquisition/candidates/{id}/qualification": {
         parameters: {
             query?: never;
@@ -1350,6 +1388,7 @@ export interface components {
             items: components["schemas"]["import-operation.v1.schema"][];
         };
         CandidateIntelligenceOperation: components["schemas"]["candidate-intelligence-operation.v1.schema"];
+        DouyinIdentityResolutionOperation: components["schemas"]["douyin-identity-resolution-operation.v1.schema"];
         AcquisitionPlan: components["schemas"]["acquisition-plan.v1.schema"];
         AcquisitionRun: components["schemas"]["acquisition-run.v1.schema"];
         AcquisitionOperationShard: components["schemas"]["acquisition-operation-shard.v1.schema"];
@@ -1770,6 +1809,15 @@ export interface components {
                 /** Format: uri */
                 sourceUrl: string;
                 submittedBy: string;
+            } | {
+                /** @constant */
+                kind: "controlled_public_page";
+                /** Format: uri */
+                sourceUrl: string;
+                discoveredFromEvidenceId: string;
+                redirectChain: string[];
+                /** @constant */
+                extractorVersion: "douyin-public-profile-v1";
             } | {
                 /** @constant */
                 kind: "import_artifact_row";
@@ -2225,6 +2273,42 @@ export interface components {
             completedAt: string | null;
             /** Format: date-time */
             failedAt: string | null;
+        };
+        "douyin-identity-resolution-operation.v1.schema": {
+            id: string;
+            candidateId: string;
+            candidateVersion: number;
+            /** @enum {string} */
+            status: "queued" | "running" | "succeeded" | "requires_review" | "failed";
+            /** @enum {string|null} */
+            currentStage: "public_page" | "independent_search" | "consensus_gate" | "identity_confirmation" | "intelligence_dispatch" | null;
+            /** @enum {string|null} */
+            outcome: "verified_consensus" | "not_found" | "insufficient_evidence" | "ambiguous" | "conflicting" | "access_restricted" | "redirect_not_allowed" | "stale_candidate" | "provider_unavailable" | null;
+            retryable: boolean;
+            canonicalProfileUrl: string | null;
+            profileCandidates: {
+                publicProfileUrl: string;
+                evidenceIds: string[];
+            }[];
+            evidence: {
+                evidenceId: string;
+                /** @enum {string} */
+                evidenceClass: "douyin_public_page" | "independent_search_result";
+                publicProfileUrl: string;
+                sourceUrl: string;
+                sourceFingerprint: string;
+                /** @enum {string} */
+                accessStatus: "indexed_summary" | "public_content" | "access_restricted" | "redirect_not_allowed" | "provider_unavailable";
+                /** Format: date-time */
+                fetchedAt: string;
+            }[];
+            intelligenceOperationId: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            completedAt: string | null;
         };
         /** QualificationDecision */
         "qualification-decision.v1.schema": {
@@ -5908,6 +5992,130 @@ export interface operations {
             };
             /** @description Unified API error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getLatestAcquisitionDouyinIdentityResolutionOperation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                candidateId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest Douyin identity resolution operation */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["douyin-identity-resolution-operation.v1.schema"];
+                };
+            };
+            /** @description Unified API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    createAcquisitionDouyinIdentityResolutionOperation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["idempotencyKey"];
+            };
+            path: {
+                candidateId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Douyin identity resolution operation accepted */
+            202: {
+                headers: {
+                    /** @description Present with value true for an idempotent replay */
+                    "Idempotency-Replayed"?: "true";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["douyin-identity-resolution-operation.v1.schema"];
+                };
+            };
+            /** @description Unified API error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

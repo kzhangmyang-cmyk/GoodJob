@@ -50,6 +50,8 @@ const candidateCopilotOperations = {
   "/api/v1/acquisition/candidate-intelligence-operations/{operationId}": ["get"],
   "/api/v1/acquisition/candidates/{candidateId}/intelligence-operation": ["get"],
   "/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry": ["post"],
+  "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation": ["get"],
+  "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations": ["post"],
   "/api/v1/acquisition/candidates/{id}/qualification": ["get"],
   "/api/v1/acquisition/candidates/{id}/financial-value": ["get"],
   "/api/v1/acquisition/candidates/{id}/battle-card": ["get"],

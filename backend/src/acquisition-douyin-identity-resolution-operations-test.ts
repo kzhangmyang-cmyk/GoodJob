@@ -184,6 +184,40 @@ test("idempotency replays equivalent requests independent of source order and ti
   assert.deepEqual(replayed, created);
 });
 
+test("createWithResult reports an idempotent replay without creating a second operation", async () => {
+  const { service } = fixture();
+  const created = await service.createWithResult(
+    SCOPE,
+    CREATE_INPUT,
+    "identity-create-result-key"
+  );
+  const replayed = await service.createWithResult(
+    SCOPE,
+    CREATE_INPUT,
+    "identity-create-result-key"
+  );
+
+  assert.equal(created.replayed, false);
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.operation.id, created.operation.id);
+});
+
+test("findByIdempotency returns only the owning tenant's public operation", async () => {
+  const { service } = fixture();
+  const created = await service.create(SCOPE, CREATE_INPUT, "identity-find-key");
+  assert.equal(
+    (await service.findByIdempotency(SCOPE, "identity-find-key"))?.id,
+    created.id
+  );
+  assert.equal(
+    await service.findByIdempotency(
+      { ...SCOPE, ownerId: "other-owner", actorId: "other-owner" },
+      "identity-find-key"
+    ),
+    null
+  );
+});
+
 test("idempotency conflicts when the candidate or original evidence hashes change", async () => {
   const { service, evidenceById } = fixture();
   await service.create(SCOPE, CREATE_INPUT, "identity-create-key");

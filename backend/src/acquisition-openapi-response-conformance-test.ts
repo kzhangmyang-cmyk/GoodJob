@@ -22,6 +22,9 @@ import {
 } from "./acquisition-provider-connections-router.js";
 import { createDefaultProviderCatalog } from "./provider-catalog.js";
 import { createAcquisitionV1Router } from "./acquisition-v1-router.js";
+import {
+  createAcquisitionDouyinIdentityResolutionRouter
+} from "./acquisition-douyin-identity-resolution-router.js";
 
 const OWNER = "response-contract-owner";
 const TEAM = "response-contract-team";
@@ -218,6 +221,31 @@ test("candidate intelligence public DTO conforms without internal operation stat
   }).compile(schema);
   assert.equal(validate({ ...operation, ownerId: OWNER }), false);
   assert.equal(validate({ ...operation, leaseToken: "secret" }), false);
+});
+
+test("Douyin identity public DTO conforms without private operation state", async () => {
+  const operation = {
+    id: "douyin-response-1", candidateId: "candidate-response-1", candidateVersion: 3,
+    status: "succeeded" as const, currentStage: null, outcome: "verified_consensus" as const,
+    retryable: false, canonicalProfileUrl: "https://www.douyin.com/user/response",
+    profileCandidates: [{ publicProfileUrl: "https://www.douyin.com/user/response", evidenceIds: ["evidence-response-1"] }],
+    evidence: [{ evidenceId: "evidence-response-1", evidenceClass: "douyin_public_page" as const, publicProfileUrl: "https://www.douyin.com/user/response", sourceUrl: "https://www.douyin.com/video/response", sourceFingerprint: "sha256:response", accessStatus: "public_content" as const, fetchedAt: NOW }],
+    intelligenceOperationId: null, createdAt: NOW, updatedAt: NOW, completedAt: NOW
+  };
+  const fixture = await mount(createAcquisitionDouyinIdentityResolutionRouter({
+    operations: { async findByIdempotency() { return null; }, async findLatestForCandidate() { return operation; }, async create() { return { operation, replayed: false }; } },
+    candidates: { async getCandidate() { return { id: operation.candidateId, version: 3, partyType: "individual", partyRef: { partyType: "individual" }, profile: { kind: "individual", sourcePlatform: "douyin" }, evidenceIds: ["evidence-response-1"] }; } },
+    searchConnections: { async list() { return []; } },
+    async dispatchOperation() {}, requestIdFactory: () => "request-douyin-response"
+  }));
+  try {
+    const result = await fixture.request(`/api/v1/acquisition/candidates/${operation.candidateId}/douyin-identity-resolution-operation`);
+    assert.equal(result.response.status, 200);
+    const path = "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation";
+    assertResponseConforms(path, "get", 200, result.body);
+    assert.equal(result.body.ownerId, undefined);
+    assert.equal(result.body.leaseToken, undefined);
+  } finally { await fixture.close(); }
 });
 
 test("mounted plan and run responses conform to production OpenAPI", async () => {

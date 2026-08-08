@@ -35,6 +35,9 @@ import {
   AcquisitionDouyinIdentityResolutionRecoverySweeper
 } from "./acquisition-douyin-identity-resolution-recovery-sweeper.js";
 import {
+  createAcquisitionDouyinIdentityResolutionRouter
+} from "./acquisition-douyin-identity-resolution-router.js";
+import {
   ensureAcquisitionDouyinIdentityResolutionMysqlSchema,
   MysqlAcquisitionDouyinIdentityResolutionOperationRepository
 } from "./acquisition-douyin-identity-resolution-mysql-repository.js";
@@ -1655,6 +1658,40 @@ export async function createAcquisitionApplication(
     router.use(createAcquisitionCandidateIntelligenceOperationsRouter({
       service: candidateIntelligenceOperations,
       dispatchOperation: dispatchCandidateIntelligenceTask,
+      requestIdFactory: () => idFactory("request")
+    }));
+    router.use(createAcquisitionDouyinIdentityResolutionRouter({
+      operations: {
+        findByIdempotency(scope, idempotencyKey) {
+          return douyinIdentityResolutionOperations.findByIdempotency(
+            scope,
+            idempotencyKey
+          );
+        },
+        findLatestForCandidate(scope, candidateId) {
+          return douyinIdentityResolutionOperations.findLatestForCandidate(
+            scope,
+            candidateId
+          );
+        },
+        create(scope, input, idempotencyKey) {
+          return douyinIdentityResolutionOperations.createWithResult(
+            scope,
+            input,
+            idempotencyKey
+          );
+        }
+      },
+      candidates: {
+        getCandidate(scope, candidateId) {
+          return repositories.domain.findCandidate(scope, candidateId);
+        }
+      },
+      searchConnections: activeSearchConnections,
+      candidateIsResolved: (candidate) => acquisitionCandidateIdentityResolved(
+        candidate as AcquisitionCandidate
+      ),
+      dispatchOperation: dispatchDouyinIdentityTask,
       requestIdFactory: () => idFactory("request")
     }));
     router.use(createAcquisitionPerformanceRouter({

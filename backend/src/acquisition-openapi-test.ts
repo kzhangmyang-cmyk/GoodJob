@@ -77,6 +77,8 @@ test("acquisition OpenAPI publishes the complete agent control surface", () => {
     "/api/v1/acquisition/candidate-intelligence-operations/{operationId}",
     "/api/v1/acquisition/candidates/{candidateId}/intelligence-operation",
     "/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry",
+    "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation",
+    "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations",
     "/api/v1/acquisition/candidates/{id}/qualification",
     "/api/v1/acquisition/candidates/{id}/battle-card",
     "/api/v1/acquisition/candidates/{id}/reviews",
@@ -105,6 +107,33 @@ test("acquisition OpenAPI publishes the complete agent control surface", () => {
   }
 });
 
+test("acquisition OpenAPI exposes only the safe Douyin identity operation DTO", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  const latest = paths[
+    "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation"
+  ]!.get as Record<string, any>;
+  const retry = paths[
+    "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations"
+  ]!.post as Record<string, any>;
+
+  assert.deepEqual(Object.keys(latest.responses).sort(), ["200", "401", "404"]);
+  assert.deepEqual(Object.keys(retry.responses).sort(), [
+    "202", "400", "401", "404", "409", "422", "429"
+  ]);
+  assert.equal(retry.parameters.some((parameter: Record<string, unknown>) =>
+    parameter.in === "header" && parameter.name === "Idempotency-Key"
+      && parameter.required === true
+  ), true);
+  assert.equal(retry.requestBody.content["application/json"].schema.maxProperties, 0);
+  const schema = latest.responses["200"].content["application/json"].schema;
+  assert.equal(schema.additionalProperties, false);
+  for (const privateField of [
+    "ownerId", "teamId", "actorId", "searchConnections", "planSessionId",
+    "sourceEvidenceFingerprint", "idempotencyKeyHash", "requestHash",
+    "leaseOwner", "leaseToken", "leaseExpiresAt"
+  ]) assert.equal(schema.properties[privateField], undefined, privateField);
+});
+
 test("every published acquisition operation has a unique stable camelCase id", () => {
   const paths = createAcquisitionOpenApiPaths();
   const ids: string[] = [];
@@ -124,7 +153,7 @@ test("every published acquisition operation has a unique stable camelCase id", (
     }
   }
 
-  assert.equal(ids.length, 50);
+  assert.equal(ids.length, 52);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(
     paths["/api/v1/acquisition/plans/{id}/approval"]?.post?.operationId,

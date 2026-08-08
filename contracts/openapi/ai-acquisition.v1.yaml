@@ -143,6 +143,7 @@ components:
           type: array
           items: { $ref: '#/components/schemas/ImportOperation' }
     CandidateIntelligenceOperation: { $ref: ../json-schema/candidate-intelligence-operation.v1.schema.json }
+    DouyinIdentityResolutionOperation: { $ref: ../json-schema/douyin-identity-resolution-operation.v1.schema.json }
     AcquisitionPlan: { $ref: ../json-schema/acquisition-plan.v1.schema.json }
     AcquisitionRun: { $ref: ../json-schema/acquisition-run.v1.schema.json }
     AcquisitionOperationShard: { $ref: ../json-schema/acquisition-operation-shard.v1.schema.json }
@@ -945,6 +946,42 @@ paths:
       responses:
         <<: *acquisitionStandardResponses
         '202': { description: Candidate intelligence operation retry accepted, content: { application/json: { schema: { $ref: '#/components/schemas/CandidateIntelligenceOperation' } } } }
+  /api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation:
+    parameters:
+      - { name: candidateId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 120 } }
+    get:
+      operationId: getLatestAcquisitionDouyinIdentityResolutionOperation
+      summary: Get latest Douyin identity resolution operation
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        '200': { description: Latest Douyin identity resolution operation, content: { application/json: { schema: { $ref: '#/components/schemas/DouyinIdentityResolutionOperation' } } } }
+        '401': *apiError
+        '404': *apiError
+  /api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations:
+    parameters:
+      - { name: candidateId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 120 } }
+    post:
+      operationId: createAcquisitionDouyinIdentityResolutionOperation
+      summary: Create or retry Douyin identity resolution operation
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        '202':
+          description: Douyin identity resolution operation accepted
+          headers:
+            Idempotency-Replayed: { description: Present with value true for an idempotent replay, schema: { type: string, enum: ["true"] } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/DouyinIdentityResolutionOperation' } } }
+        '400': *apiError
+        '401': *apiError
+        '404': *apiError
+        '409': *apiError
+        '422': *apiError
+        '429': *apiError
   /api/v1/acquisition/candidates/{id}/qualification:
     parameters: [{ $ref: '#/components/parameters/acquisitionId' }]
     get:

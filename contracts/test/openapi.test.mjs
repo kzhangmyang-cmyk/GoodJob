@@ -42,6 +42,8 @@ const section16 = {
   "/api/v1/acquisition/candidate-intelligence-operations/{operationId}": ["get"],
   "/api/v1/acquisition/candidates/{candidateId}/intelligence-operation": ["get"],
   "/api/v1/acquisition/candidate-intelligence-operations/{operationId}/retry": ["post"],
+  "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation": ["get"],
+  "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations": ["post"],
   "/api/v1/acquisition/candidates/{id}/qualification": ["get"],
   "/api/v1/acquisition/candidates/{id}/financial-value": ["get"],
   "/api/v1/acquisition/candidates/{id}/battle-card": ["get"],
@@ -86,6 +88,7 @@ const reads = {
   "/api/v1/acquisition/candidates/{id}": "Candidate",
   "/api/v1/acquisition/candidate-intelligence-operations/{operationId}": "CandidateIntelligenceOperation",
   "/api/v1/acquisition/candidates/{candidateId}/intelligence-operation": "CandidateIntelligenceOperation",
+  "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation": "DouyinIdentityResolutionOperation",
   "/api/v1/acquisition/candidates/{id}/qualification": "QualificationDecision",
   "/api/v1/acquisition/candidates/{id}/financial-value": "FinancialValueDecision",
   "/api/v1/acquisition/candidates/{id}/battle-card": "BattleCard",
@@ -108,6 +111,10 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(
     document.components.schemas.CandidateIntelligenceOperation.$ref,
     "../json-schema/candidate-intelligence-operation.v1.schema.json"
+  );
+  assert.equal(
+    document.components.schemas.DouyinIdentityResolutionOperation.$ref,
+    "../json-schema/douyin-identity-resolution-operation.v1.schema.json"
   );
   assert.deepEqual(
     document.components.schemas.BattleCard.oneOf.map((branch) => branch.$ref),
@@ -328,6 +335,31 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   );
   assert.deepEqual(presentation.properties.candidateEvents.items.properties.financialValue.type, ["null", "object"]);
   assert.equal(presentation.properties.summary.properties.expectedRevenueByCurrency.type, "array");
+});
+
+test("Douyin identity resolution exposes a closed retry contract", async () => {
+  const document = await loadOpenApiSource();
+  const latest = document.paths[
+    "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operation"
+  ].get;
+  const retry = document.paths[
+    "/api/v1/acquisition/candidates/{candidateId}/douyin-identity-resolution-operations"
+  ].post;
+  assert.deepEqual(Object.keys(latest.responses).sort(), ["200", "401", "404"]);
+  assert.deepEqual(Object.keys(retry.responses).sort(), [
+    "202", "400", "401", "404", "409", "422", "429"
+  ]);
+  assert.equal(
+    retry.requestBody.content["application/json"].schema.maxProperties,
+    0
+  );
+  assert.equal(
+    retry.parameters.some((parameter) =>
+      parameter.$ref === "#/components/parameters/idempotencyKey"
+    ),
+    true
+  );
+  assert.ok(retry.responses["202"].headers["Idempotency-Replayed"]);
 });
 
 test("workflow-internal candidate and outcome writes stay outside the release contract", async () => {

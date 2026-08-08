@@ -11,7 +11,7 @@ const expected = [
   "api-error", "paged-result", "async-operation", "model-provider",
   "model-connection", "model-capability", "model-call-record",
   "discovery-provider", "provider-connection", "content-fetch-operation",
-  "import-operation", "candidate-intelligence-operation", "acquisition-plan", "acquisition-run",
+  "import-operation", "candidate-intelligence-operation", "douyin-identity-resolution-operation", "acquisition-plan", "acquisition-run",
   "acquisition-run-presentation",
   "acquisition-operation-shard", "discovery-evidence", "party-ref",
   "organization-candidate", "individual-demand-signal",
@@ -225,6 +225,22 @@ test("candidate intelligence operations expose only the strict public DTO", asyn
       internalField
     );
   }
+});
+
+test("Douyin identity operations expose only the strict public DTO", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("douyin-identity-resolution-operation");
+  const operation = {
+    id: "douyin-identity-1", candidateId: "candidate-1", candidateVersion: 2,
+    status: "failed", currentStage: null, outcome: "provider_unavailable",
+    retryable: true, canonicalProfileUrl: null, profileCandidates: [],
+    evidence: [], intelligenceOperationId: null,
+    createdAt: "2026-08-08T00:00:00.000Z", updatedAt: "2026-08-08T00:00:00.000Z",
+    completedAt: "2026-08-08T00:00:00.000Z"
+  };
+  assert.equal(validate(operation), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...operation, leaseToken: "secret" }), false);
+  assert.equal(validate({ ...operation, ownerId: "owner-1" }), false);
 });
 
 test("platform and action placeholder components are published without routes", async () => {
