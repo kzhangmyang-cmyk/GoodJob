@@ -1,5 +1,9 @@
 import { strict as assert } from "node:assert";
-import type { AcquisitionDetailApi } from "./detail-center-api";
+import type {
+  AcquisitionDetailApi,
+  CandidateDouyinIdentityResolutionOperation,
+  CandidateIntelligenceOperation
+} from "./detail-center-api";
 import { createAcquisitionDetailCenterController } from "./detail-center-controller";
 
 function detailEvent<T>(name: string, detail: T): Event {
@@ -174,6 +178,51 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
         candidateId
       }))
     }
+  };
+}
+
+function automaticIdentityOperation(
+  overrides: Partial<CandidateDouyinIdentityResolutionOperation> = {}
+): CandidateDouyinIdentityResolutionOperation {
+  return {
+    id: "identity-operation-1",
+    candidateId: "candidate-auto-identity",
+    candidateVersion: 1,
+    status: "queued",
+    currentStage: null,
+    outcome: null,
+    retryable: false,
+    canonicalProfileUrl: null,
+    profileCandidates: [],
+    evidence: [],
+    intelligenceOperationId: null,
+    createdAt: "2026-08-08T12:00:00.000Z",
+    updatedAt: "2026-08-08T12:00:00.000Z",
+    completedAt: null,
+    ...overrides
+  };
+}
+
+function automaticIntelligenceOperation(
+  overrides: Partial<CandidateIntelligenceOperation> = {}
+): CandidateIntelligenceOperation {
+  return {
+    id: "intelligence-operation-1",
+    candidateId: "candidate-auto-identity",
+    status: "queued",
+    currentStage: null,
+    completedStages: [],
+    skippedStages: [],
+    research: null,
+    qualification: null,
+    battleCardId: null,
+    failure: null,
+    createdAt: "2026-08-08T12:00:02.000Z",
+    startedAt: null,
+    updatedAt: "2026-08-08T12:00:02.000Z",
+    completedAt: null,
+    failedAt: null,
+    ...overrides
   };
 }
 
@@ -546,6 +595,444 @@ function taskDetailWithCandidateSource(...candidateIds: string[]) {
     controller.getState().candidateDetail?.privateDomainHandoff,
     null
   );
+  controller.destroy();
+}
+
+// Automatic identity polling is independent from Run polling and owns the
+// identity -> intelligence handoff without invoking either client mutation.
+{
+  const scheduler = new ManualPollScheduler();
+  const identitySequence = [
+    automaticIdentityOperation(),
+    automaticIdentityOperation({
+      status: "running",
+      currentStage: "independent_search"
+    }),
+    automaticIdentityOperation({
+      status: "succeeded",
+      outcome: "verified_consensus",
+      canonicalProfileUrl: "https://www.douyin.com/user/example",
+      intelligenceOperationId: "intelligence-operation-1",
+      completedAt: "2026-08-08T12:00:02.000Z"
+    }),
+    automaticIdentityOperation({
+      status: "succeeded",
+      outcome: "verified_consensus",
+      canonicalProfileUrl: "https://www.douyin.com/user/example",
+      intelligenceOperationId: "intelligence-operation-1",
+      completedAt: "2026-08-08T12:00:02.000Z"
+    })
+  ];
+  const intelligenceSequence = [
+    null,
+    null,
+    automaticIntelligenceOperation(),
+    automaticIntelligenceOperation({
+      status: "succeeded",
+      completedStages: ["research", "qualification", "battle_card"],
+      qualification: {
+        grade: "A",
+        score: 88,
+        hardGateFailures: [],
+        financialValueId: "financial-automatic"
+      },
+      battleCardId: "battle-card-automatic",
+      completedAt: "2026-08-08T12:00:05.000Z"
+    })
+  ];
+  let snapshotIndex = -1;
+  let clientIdentityConfirmations = 0;
+  let clientIntelligenceStarts = 0;
+  const api = {
+    async getCandidate(candidateId: string) {
+      snapshotIndex = Math.min(snapshotIndex + 1, identitySequence.length - 1);
+      return {
+        candidate: {
+          id: candidateId,
+          subjectKind: "individual",
+          sourcePlatform: "douyin",
+          publicProfileUrl: snapshotIndex >= 2
+            ? "https://www.douyin.com/user/example"
+            : "https://www.douyin.com/video/1",
+          status: "normalized",
+          version: snapshotIndex >= 2 ? 2 : 1,
+          identityResolved: snapshotIndex >= 2
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return snapshotIndex === 3 ? { grade: "A", score: 88 } : null;
+    },
+    async getCandidateFinancialValue() {
+      if (snapshotIndex === 0) throw new Error("financial snapshot unavailable");
+      return snapshotIndex === 3 ? { id: "financial-automatic" } : null;
+    },
+    async getCandidateBattleCard() {
+      return snapshotIndex === 3 ? { id: "battle-card-automatic" } : null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestDouyinIdentityResolutionOperation() {
+      return identitySequence[snapshotIndex] ?? null;
+    },
+    async getLatestIntelligenceOperation() {
+      return intelligenceSequence[snapshotIndex] ?? null;
+    },
+    async confirmCandidateIdentity() {
+      clientIdentityConfirmations += 1;
+      throw new Error("automatic flow must not confirm identity from the client");
+    },
+    async startIntelligenceOperation() {
+      clientIntelligenceStarts += 1;
+      throw new Error("automatic flow must not start intelligence from the client");
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    pollIntervalMs: 100,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.openCandidate("candidate-auto-identity");
+  assert.equal(
+    controller.getState().candidateDetail?.identityResolutionOperation?.status,
+    "queued"
+  );
+  assert.equal(scheduler.pendingCount(), 1);
+  assert.equal(scheduler.nextDelay(), 2_000);
+  const initialMessage = controller.getState().message;
+  const initialError = controller.getState().error;
+  assert.match(initialMessage ?? "", /部分资料暂不可用/);
+
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(
+    controller.getState().candidateDetail?.identityResolutionOperation?.status,
+    "running"
+  );
+  assert.equal(controller.getState().message, initialMessage);
+  assert.equal(controller.getState().error, initialError);
+  assert.equal(scheduler.pendingCount(), 1);
+
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(
+    controller.getState().candidateDetail?.identityResolutionOperation?.status,
+    "succeeded"
+  );
+  assert.equal(
+    controller.getState().candidateDetail?.intelligenceOperation?.status,
+    "queued"
+  );
+  assert.equal(scheduler.pendingCount(), 1);
+
+  scheduler.runNext();
+  await controller.whenIdle();
+  assert.equal(
+    controller.getState().candidateDetail?.intelligenceOperation?.status,
+    "succeeded"
+  );
+  assert.equal(
+    controller.getState().candidateDetail?.battleCard?.id,
+    "battle-card-automatic"
+  );
+  assert.equal(scheduler.pendingCount(), 0);
+  assert.equal(clientIdentityConfirmations, 0);
+  assert.equal(clientIntelligenceStarts, 0);
+  controller.destroy();
+}
+
+// A response from an old selected-candidate poll cannot replace a newer
+// selection, even when it resolves after the new snapshot.
+{
+  const scheduler = new ManualPollScheduler();
+  const staleOldCandidate = deferred<{
+    candidate: Record<string, unknown>;
+    etag: null;
+  }>();
+  let oldCandidateReads = 0;
+  const api = {
+    getCandidate(candidateId: string) {
+      if (candidateId === "candidate-old-poll") {
+        oldCandidateReads += 1;
+        if (oldCandidateReads === 2) return staleOldCandidate.promise;
+      }
+      return Promise.resolve({
+        candidate: {
+          id: candidateId,
+          subjectKind: "individual",
+          sourcePlatform: "douyin",
+          status: "normalized",
+          version: 1,
+          identityResolved: candidateId === "candidate-new-poll"
+        },
+        etag: null
+      });
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return null;
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestDouyinIdentityResolutionOperation(candidateId: string) {
+      return candidateId === "candidate-old-poll"
+        ? automaticIdentityOperation({ candidateId })
+        : null;
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.openCandidate("candidate-old-poll");
+  scheduler.runNext();
+  assert.equal(oldCandidateReads, 2);
+  await controller.selectCandidate("candidate-new-poll");
+  staleOldCandidate.resolve({
+    candidate: {
+      id: "candidate-old-poll",
+      subjectKind: "individual",
+      sourcePlatform: "douyin",
+      status: "normalized",
+      version: 1,
+      identityResolved: false
+    },
+    etag: null
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(controller.getState().selectedCandidateId, "candidate-new-poll");
+  assert.equal(
+    controller.getState().candidateDetail?.candidate?.id,
+    "candidate-new-poll"
+  );
+  assert.equal(scheduler.pendingCount(), 0);
+  controller.destroy();
+}
+
+// Closing, switching to demo mode, and destroying each cancel the independent
+// selected-candidate timer.
+{
+  const scheduler = new ManualPollScheduler();
+  const eventTarget = new EventTarget();
+  const api = {
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          subjectKind: "individual",
+          sourcePlatform: "douyin",
+          status: "normalized",
+          version: 1,
+          identityResolved: false
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return null;
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestDouyinIdentityResolutionOperation(candidateId: string) {
+      return automaticIdentityOperation({ candidateId });
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    eventTarget,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.openCandidate("candidate-cancel-poll");
+  assert.equal(scheduler.pendingCount(), 1);
+  controller.close();
+  assert.equal(scheduler.pendingCount(), 0);
+
+  await controller.openCandidate("candidate-cancel-poll");
+  assert.equal(scheduler.pendingCount(), 1);
+  eventTarget.dispatchEvent(detailEvent(
+    "goodjob:acquisition-mode-changed",
+    { mode: "demo" }
+  ));
+  assert.equal(scheduler.pendingCount(), 0);
+
+  await controller.openCandidate("candidate-cancel-poll");
+  assert.equal(scheduler.pendingCount(), 1);
+  controller.destroy();
+  assert.equal(scheduler.pendingCount(), 0);
+}
+
+// Retry keys bind candidate, version, and failed operation. An uncertain POST
+// reuses its key, while a successful POST is the only point that forgets it.
+{
+  const scheduler = new ManualPollScheduler();
+  let version = 7;
+  let latestOperation = automaticIdentityOperation({
+    id: "identity-failed-1",
+    candidateId: "candidate-retry-identity",
+    candidateVersion: version,
+    status: "failed",
+    outcome: "provider_unavailable",
+    retryable: true,
+    completedAt: "2026-08-08T12:00:01.000Z"
+  });
+  const retryKeys: string[] = [];
+  let retryAttempt = 0;
+  const api = {
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          subjectKind: "individual",
+          sourcePlatform: "douyin",
+          status: "normalized",
+          version,
+          identityResolved: false
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return null;
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestDouyinIdentityResolutionOperation() {
+      return latestOperation;
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    },
+    async retryDouyinIdentityResolution(
+      candidateId: string,
+      key: string
+    ) {
+      assert.equal(candidateId, "candidate-retry-identity");
+      retryKeys.push(key);
+      retryAttempt += 1;
+      if (retryAttempt !== 2) throw new Error("POST result uncertain");
+      latestOperation = automaticIdentityOperation({
+        id: "identity-queued-2",
+        candidateId,
+        candidateVersion: version,
+        status: "queued"
+      });
+      return latestOperation;
+    }
+  } as unknown as AcquisitionDetailApi;
+  let keySerial = 0;
+  const root = new FakeDialogRoot(null);
+  const body = { innerHTML: "" };
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    keyFactory: () => `identity-retry-key-${++keySerial}`,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel,
+    root: root as unknown as HTMLElement,
+    body: body as unknown as HTMLElement
+  });
+
+  await controller.openCandidate("candidate-retry-identity");
+  await assert.rejects(
+    () => controller.retryIdentityResolution(),
+    /POST result uncertain/
+  );
+  root.emitClick(fakeAction({
+    acquisitionDetailAction: "retry-identity-resolution"
+  }));
+  await controller.whenIdle();
+  assert.deepEqual(retryKeys.slice(0, 2), [
+    "identity-retry-key-1",
+    "identity-retry-key-1"
+  ]);
+  assert.equal(
+    controller.getState().candidateDetail?.identityResolutionOperation?.status,
+    "queued"
+  );
+
+  latestOperation = automaticIdentityOperation({
+    id: "identity-failed-1",
+    candidateId: "candidate-retry-identity",
+    candidateVersion: version,
+    status: "failed",
+    outcome: "provider_unavailable",
+    retryable: true
+  });
+  await controller.selectCandidate("candidate-retry-identity");
+  await assert.rejects(
+    () => controller.retryIdentityResolution(),
+    /POST result uncertain/
+  );
+  assert.equal(retryKeys[2], "identity-retry-key-2");
+
+  latestOperation = automaticIdentityOperation({
+    ...latestOperation,
+    id: "identity-failed-3"
+  });
+  await controller.selectCandidate("candidate-retry-identity");
+  await assert.rejects(
+    () => controller.retryIdentityResolution(),
+    /POST result uncertain/
+  );
+  assert.equal(retryKeys[3], "identity-retry-key-3");
+
+  version = 8;
+  latestOperation = automaticIdentityOperation({
+    ...latestOperation,
+    candidateVersion: version
+  });
+  await controller.selectCandidate("candidate-retry-identity");
+  await assert.rejects(
+    () => controller.retryIdentityResolution(),
+    /POST result uncertain/
+  );
+  assert.equal(retryKeys[4], "identity-retry-key-4");
   controller.destroy();
 }
 

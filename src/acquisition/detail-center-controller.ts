@@ -6,10 +6,12 @@ import {
   type AcquisitionRunWithEtag,
   type AcquisitionTaskDetail,
   type AcquisitionContentFetchOperation,
+  type CandidateDouyinIdentityResolutionOperation,
   type CandidateReviewAction
 } from "./detail-center-api";
 import {
   renderAcquisitionDetailCenter,
+  type AcquisitionCandidateDetail,
   type AcquisitionDetailCenterMode,
   type AcquisitionDetailCenterState,
   type AcquisitionIdentityVerificationState
@@ -51,6 +53,7 @@ export interface AcquisitionDetailCenterController {
     rationale: string;
     evidenceIds: string[];
   }): Promise<void>;
+  retryIdentityResolution(): Promise<void>;
   startIntelligence(): Promise<void>;
   openPrivateDomainHandoff(): void;
   closePrivateDomainHandoff(): void;
@@ -241,6 +244,20 @@ function activeRun(detail: AcquisitionTaskDetail | null): boolean {
 
 function shouldPollRun(detail: AcquisitionTaskDetail | null): boolean {
   return activeRun(detail) || detail?.presentation?.hasMore === true;
+}
+
+function shouldPollSelectedCandidate(
+  detail: AcquisitionCandidateDetail | null
+): boolean {
+  const identity = detail?.identityResolutionOperation;
+  const intelligence = detail?.intelligenceOperation;
+  if (identity?.status === "queued" || identity?.status === "running") {
+    return true;
+  }
+  if (intelligence?.status === "queued" || intelligence?.status === "running") {
+    return true;
+  }
+  return false;
 }
 
 function runProgressFingerprint(detail: AcquisitionTaskDetail | null): string {
@@ -564,6 +581,10 @@ export function createAcquisitionDetailCenterController(
   let pollHandle: unknown = null;
   let hasPollHandle = false;
   let pollFailureCount = 0;
+  let selectedCandidatePollGeneration = 0;
+  let selectedCandidatePollHandle: unknown = null;
+  let hasSelectedCandidatePollHandle = false;
+  let selectedCandidatePollFailureCount = 0;
   let paginatedRunId: string | null = null;
   let expectedRunId: string | null = null;
   let currentPlanId: string | null = null;
@@ -693,6 +714,16 @@ export function createAcquisitionDetailCenterController(
     pollFailureCount = 0;
   }
 
+  function stopSelectedCandidatePolling(): void {
+    selectedCandidatePollGeneration += 1;
+    if (hasSelectedCandidatePollHandle) {
+      cancelPoll(selectedCandidatePollHandle);
+    }
+    selectedCandidatePollHandle = null;
+    hasSelectedCandidatePollHandle = false;
+    selectedCandidatePollFailureCount = 0;
+  }
+
   function clearCandidatePaginationBusy(): void {
     const wasLoadingMore = state.loadingMoreCandidates;
     state.loadingMoreCandidates = false;
@@ -702,6 +733,7 @@ export function createAcquisitionDetailCenterController(
   }
 
   function resetCandidateStateForRunChange(): void {
+    stopSelectedCandidatePolling();
     paginatedRunId = null;
     candidateSerial += 1;
     state.selectedCandidateId = null;
@@ -986,14 +1018,17 @@ export function createAcquisitionDetailCenterController(
     ensureRunPolling();
   }
 
-  async function loadCandidateSnapshot(
-    candidateId: string,
-    serial: number,
-    applies: () => boolean = () => true
-  ): Promise<void> {
+  const candidateSnapshotErrors = new WeakMap<
+    AcquisitionCandidateDetail,
+    string[]
+  >();
+
+  async function readCandidateSnapshot(
+    candidateId: string
+  ): Promise<AcquisitionCandidateDetail> {
     const [candidateResult, evidenceResult, qualificationResult,
-      financialResult, battleCardResult, reviewsResult, operationResult,
-      handoffResult] =
+      financialResult, battleCardResult, reviewsResult, identityResult,
+      operationResult, handoffResult] =
       await Promise.all([
         loadResource(
           "候选基本信息",
@@ -1023,6 +1058,13 @@ export function createAcquisitionDetailCenterController(
           ...(cursor ? { cursor } : {}),
           limit: 100
         })),
+        loadResource<CandidateDouyinIdentityResolutionOperation | null>(
+          "自动主体核验",
+          () => typeof api.getLatestDouyinIdentityResolutionOperation === "function"
+            ? api.getLatestDouyinIdentityResolutionOperation(candidateId)
+            : Promise.resolve(null),
+          null
+        ),
         loadResource(
           "AI 研判任务",
           () => api.getLatestIntelligenceOperation(candidateId),
@@ -1036,9 +1078,8 @@ export function createAcquisitionDetailCenterController(
           null
         )
       ]);
-    if (disposed || serial !== candidateSerial || !applies()) return;
     const candidateContainer = record(candidateResult.value);
-    state.candidateDetail = {
+    const snapshot: AcquisitionCandidateDetail = {
       candidate: record(candidateContainer?.candidate),
       evidence: evidenceResult.value,
       qualification: record(qualificationResult.value),
@@ -1046,12 +1087,9 @@ export function createAcquisitionDetailCenterController(
       battleCard: record(battleCardResult.value),
       reviews: reviewsResult.value,
       intelligenceOperation: record(operationResult.value),
+      identityResolutionOperation: identityResult.value,
       privateDomainHandoff: handoffResult.value
     };
-    state.identityVerification = identityStateForCandidate(
-      state.candidateDetail.candidate,
-      state.identityVerification
-    );
     const failures = [
       ...candidateResult.errors,
       ...evidenceResult.errors,
@@ -1059,9 +1097,35 @@ export function createAcquisitionDetailCenterController(
       ...financialResult.errors,
       ...battleCardResult.errors,
       ...reviewsResult.errors,
+      ...identityResult.errors,
       ...operationResult.errors,
       ...handoffResult.errors
     ];
+    candidateSnapshotErrors.set(snapshot, failures);
+    return snapshot;
+  }
+
+  async function applyCandidateSnapshot(
+    candidateId: string,
+    requestSerialForCandidate: number,
+    applies: () => boolean = () => true,
+    silent = false
+  ): Promise<void> {
+    const snapshot = await readCandidateSnapshot(candidateId);
+    if (disposed
+      || requestSerialForCandidate !== candidateSerial
+      || candidateId !== state.selectedCandidateId
+      || !applies()) return;
+    const failures = candidateSnapshotErrors.get(snapshot) ?? [];
+    if (silent && failures.length > 0) {
+      throw new Error(failures.join("；"));
+    }
+    state.candidateDetail = snapshot;
+    state.identityVerification = identityStateForCandidate(
+      snapshot.candidate,
+      state.identityVerification
+    );
+    if (silent) return;
     if (failures.length === 0) {
       state.message = null;
       state.error = null;
@@ -1069,6 +1133,62 @@ export function createAcquisitionDetailCenterController(
     } else {
       state.message = "部分资料暂不可用，已保留成功加载的数据";
       state.error = `部分候选资料加载失败：${failures.join("；")}`;
+    }
+  }
+
+  function ensureSelectedCandidatePolling(): void {
+    const candidateId = state.selectedCandidateId;
+    if (disposed
+      || hasSelectedCandidatePollHandle
+      || !candidateId
+      || !shouldPollSelectedCandidate(state.candidateDetail)) return;
+    const generation = selectedCandidatePollGeneration;
+    const baseDelay = Math.max(2_000, pollIntervalMs);
+    const delay = Math.min(
+      30_000,
+      baseDelay * (2 ** Math.min(selectedCandidatePollFailureCount, 10))
+    );
+    hasSelectedCandidatePollHandle = true;
+    selectedCandidatePollHandle = schedulePoll(() => {
+      hasSelectedCandidatePollHandle = false;
+      selectedCandidatePollHandle = null;
+      remember(pollSelectedCandidate(generation, candidateId));
+    }, delay);
+  }
+
+  async function pollSelectedCandidate(
+    generation: number,
+    candidateId: string
+  ): Promise<void> {
+    if (disposed
+      || generation !== selectedCandidatePollGeneration
+      || candidateId !== state.selectedCandidateId) return;
+    const serial = ++candidateSerial;
+    try {
+      await applyCandidateSnapshot(
+        candidateId,
+        serial,
+        () => generation === selectedCandidatePollGeneration
+          && candidateId === state.selectedCandidateId,
+        true
+      );
+      if (disposed
+        || generation !== selectedCandidatePollGeneration
+        || candidateId !== state.selectedCandidateId) return;
+      selectedCandidatePollFailureCount = 0;
+      render();
+    } catch {
+      if (disposed
+        || generation !== selectedCandidatePollGeneration
+        || candidateId !== state.selectedCandidateId) return;
+      selectedCandidatePollFailureCount = Math.min(
+        selectedCandidatePollFailureCount + 1,
+        10
+      );
+    }
+    if (generation !== selectedCandidatePollGeneration) return;
+    if (shouldPollSelectedCandidate(state.candidateDetail)) {
+      ensureSelectedCandidatePolling();
     }
   }
 
@@ -1088,7 +1208,7 @@ export function createAcquisitionDetailCenterController(
       : Promise.resolve(null);
     const [detail] = await Promise.all([
       taskPromise,
-      loadCandidateSnapshot(
+      applyCandidateSnapshot(
         context.candidateId,
         refreshSerial,
         () => mutationIsCurrent(context)
@@ -1112,6 +1232,7 @@ export function createAcquisitionDetailCenterController(
       ? `${completedMessage}，部分资料刷新失败`
       : completedMessage;
     render();
+    ensureSelectedCandidatePolling();
   }
 
   function remember<T>(promise: Promise<T>): Promise<T> {
@@ -1144,6 +1265,7 @@ export function createAcquisitionDetailCenterController(
     open(mode, planId) {
       invalidateMutation();
       invalidateRunMutation();
+      stopSelectedCandidatePolling();
       clearCandidatePaginationBusy();
       const serial = ++requestSerial;
       currentPlanId = planId;
@@ -1192,6 +1314,7 @@ export function createAcquisitionDetailCenterController(
       if (!id) return rejectValidation("候选 ID 不能为空");
       invalidateMutation();
       invalidateRunMutation();
+      stopSelectedCandidatePolling();
       clearCandidatePaginationBusy();
       requestSerial += 1;
       currentPlanId = null;
@@ -1216,6 +1339,7 @@ export function createAcquisitionDetailCenterController(
     close() {
       invalidateMutation();
       invalidateRunMutation();
+      stopSelectedCandidatePolling();
       clearCandidatePaginationBusy();
       requestSerial += 1;
       candidateSerial += 1;
@@ -1245,6 +1369,7 @@ export function createAcquisitionDetailCenterController(
       const id = requestedPlanId(candidateId);
       if (!id) return rejectValidation("候选 ID 不能为空");
       invalidateMutation();
+      stopSelectedCandidatePolling();
       const serial = ++candidateSerial;
       state.selectedCandidateId = id;
       state.candidateDetail = null;
@@ -1255,7 +1380,7 @@ export function createAcquisitionDetailCenterController(
       render();
       return remember((async () => {
         try {
-          await loadCandidateSnapshot(id, serial);
+          await applyCandidateSnapshot(id, serial);
         } catch (error) {
           if (disposed || serial !== candidateSerial) return;
           state.candidateDetail = null;
@@ -1265,6 +1390,7 @@ export function createAcquisitionDetailCenterController(
           throw error;
         }
         render();
+        ensureSelectedCandidatePolling();
       })());
     },
 
@@ -1841,6 +1967,66 @@ export function createAcquisitionDetailCenterController(
       })());
     },
 
+    retryIdentityResolution() {
+      const candidateId = state.selectedCandidateId;
+      const candidate = state.candidateDetail?.candidate;
+      const operation = state.candidateDetail?.identityResolutionOperation;
+      if (!candidateId || !candidate) {
+        return rejectValidation("请先选择一个候选");
+      }
+      if (operation?.status !== "failed" || operation.retryable !== true) {
+        return rejectValidation("当前自动主体核验任务不可重试");
+      }
+      if (mutating) return rejectValidation("另一项候选操作正在进行");
+
+      let version: number;
+      try {
+        version = candidateVersion(candidate);
+      } catch (error) {
+        return rejectValidation(errorText(error));
+      }
+      const idempotency = stableKey("retry-identity-resolution", {
+        candidateId,
+        candidateVersion: version,
+        failedOperationId: operation.id
+      });
+      const context = beginMutation(candidateId);
+      stopSelectedCandidatePolling();
+      state.error = null;
+      state.message = "正在重新提交自动主体核验…";
+      render();
+      return remember((async () => {
+        try {
+          const created = await api.retryDouyinIdentityResolution(
+            candidateId,
+            idempotency.value
+          );
+          pendingIdempotencyKeys.delete(idempotency.id);
+          if (!mutationIsCurrent(context)) return;
+          if (state.candidateDetail) {
+            state.candidateDetail = {
+              ...state.candidateDetail,
+              identityResolutionOperation: created
+            };
+          }
+          await refreshAfterMutation(
+            context,
+            "自动主体核验已重新排队，正在刷新状态…",
+            "自动主体核验已重新排队"
+          );
+        } catch (error) {
+          if (mutationIsCurrent(context)) {
+            state.error = errorText(error);
+            state.message = null;
+            render();
+          }
+          throw error;
+        } finally {
+          if (context.serial === mutationSerial) mutating = false;
+        }
+      })());
+    },
+
     openPrivateDomainHandoff() {
       const candidate = state.candidateDetail?.candidate;
       const handoffStatus = state.candidateDetail?.privateDomainHandoff;
@@ -2082,6 +2268,7 @@ export function createAcquisitionDetailCenterController(
       disposed = true;
       invalidateMutation();
       invalidateRunMutation();
+      stopSelectedCandidatePolling();
       clearCandidatePaginationBusy();
       requestSerial += 1;
       candidateSerial += 1;
@@ -2091,6 +2278,10 @@ export function createAcquisitionDetailCenterController(
       eventTarget.removeEventListener(
         "goodjob:acquisition-detail-open-requested",
         onOpenRequested as EventListener
+      );
+      eventTarget.removeEventListener(
+        "goodjob:acquisition-mode-changed",
+        onAcquisitionModeChanged as EventListener
       );
       root?.removeEventListener("click", onRootClick);
       root?.removeEventListener("submit", onRootSubmit);
@@ -2124,6 +2315,11 @@ export function createAcquisitionDetailCenterController(
       .catch(() => undefined);
   }
 
+  function onAcquisitionModeChanged(event: Event): void {
+    const mode = (event as CustomEvent<{ mode?: string }>).detail?.mode;
+    if (mode === "demo") stopSelectedCandidatePolling();
+  }
+
   function consume(promise: Promise<void>): void {
     void promise.catch(() => undefined);
   }
@@ -2151,6 +2347,9 @@ export function createAcquisitionDetailCenterController(
       consume(controller.loadMoreCandidates());
     } else if (action === "retry") {
       if (currentPlanId) consume(controller.open(state.mode, currentPlanId));
+    } else if (action === "retry-identity-resolution") {
+      event.preventDefault();
+      consume(controller.retryIdentityResolution());
     } else if (action === "start-intelligence") {
       event.preventDefault();
       consume(controller.startIntelligence());
@@ -2261,6 +2460,7 @@ export function createAcquisitionDetailCenterController(
   function onRootClose(): void {
     invalidateMutation();
     invalidateRunMutation();
+    stopSelectedCandidatePolling();
     clearCandidatePaginationBusy();
     requestSerial += 1;
     candidateSerial += 1;
@@ -2273,6 +2473,10 @@ export function createAcquisitionDetailCenterController(
   eventTarget.addEventListener(
     "goodjob:acquisition-detail-open-requested",
     onOpenRequested as EventListener
+  );
+  eventTarget.addEventListener(
+    "goodjob:acquisition-mode-changed",
+    onAcquisitionModeChanged as EventListener
   );
   resolveDom();
   root?.addEventListener("click", onRootClick);

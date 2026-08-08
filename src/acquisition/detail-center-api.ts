@@ -517,6 +517,53 @@ export type CandidateIntelligenceStage =
   | "qualification"
   | "battle_card";
 
+export type DouyinIdentityResolutionOutcome =
+  | "verified_consensus"
+  | "not_found"
+  | "insufficient_evidence"
+  | "ambiguous"
+  | "conflicting"
+  | "access_restricted"
+  | "redirect_not_allowed"
+  | "stale_candidate"
+  | "provider_unavailable";
+
+export interface DouyinIdentityEvidenceDto {
+  evidenceId: string;
+  evidenceClass: "douyin_public_page" | "independent_search_result";
+  publicProfileUrl: string;
+  sourceUrl: string;
+  sourceFingerprint: string;
+  accessStatus: "indexed_summary" | "public_content" | "access_restricted";
+  fetchedAt: string;
+}
+
+export interface CandidateDouyinIdentityResolutionOperation {
+  id: string;
+  candidateId: string;
+  candidateVersion: number;
+  status: "queued" | "running" | "succeeded" | "requires_review" | "failed";
+  currentStage:
+    | "public_page"
+    | "independent_search"
+    | "consensus_gate"
+    | "identity_confirmation"
+    | "intelligence_dispatch"
+    | null;
+  outcome: DouyinIdentityResolutionOutcome | null;
+  retryable: boolean;
+  canonicalProfileUrl: string | null;
+  profileCandidates: Array<{
+    publicProfileUrl: string;
+    evidenceIds: string[];
+  }>;
+  evidence: DouyinIdentityEvidenceDto[];
+  intelligenceOperationId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
 export interface CandidateIntelligenceOperation {
   id: string;
   candidateId: string;
@@ -706,6 +753,13 @@ export interface AcquisitionDetailApi {
   getLatestIntelligenceOperation(
     candidateId: string
   ): Promise<CandidateIntelligenceOperation | null>;
+  getLatestDouyinIdentityResolutionOperation(
+    candidateId: string
+  ): Promise<CandidateDouyinIdentityResolutionOperation | null>;
+  retryDouyinIdentityResolution(
+    candidateId: string,
+    idempotencyKey: string
+  ): Promise<CandidateDouyinIdentityResolutionOperation>;
   createContentFetchOperation(
     input: AcquisitionContentFetchCreateInput,
     idempotencyKey: string
@@ -1018,6 +1072,23 @@ export function createAcquisitionDetailApi(
       return getNullable<CandidateIntelligenceOperation>(
         `/api/v1/acquisition/candidates/${pathSegment(candidateId)}`
         + "/intelligence-operation"
+      );
+    },
+    getLatestDouyinIdentityResolutionOperation(candidateId: string) {
+      return getNullable<CandidateDouyinIdentityResolutionOperation>(
+        `/api/v1/acquisition/candidates/${pathSegment(candidateId)}`
+        + "/douyin-identity-resolution-operation"
+      );
+    },
+    retryDouyinIdentityResolution(
+      candidateId: string,
+      idempotencyKey: string
+    ) {
+      return post<CandidateDouyinIdentityResolutionOperation>(
+        `/api/v1/acquisition/candidates/${pathSegment(candidateId)}`
+        + "/douyin-identity-resolution-operations",
+        {},
+        idempotencyKey
       );
     },
     createContentFetchOperation(input, idempotencyKey) {

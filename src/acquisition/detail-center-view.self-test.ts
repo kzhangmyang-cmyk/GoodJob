@@ -1,4 +1,7 @@
 import { strict as assert } from "node:assert";
+import type {
+  CandidateDouyinIdentityResolutionOperation
+} from "./detail-center-api";
 import type { AcquisitionTaskDetail } from "./runtime-api";
 import {
   renderAcquisitionDetailCenter,
@@ -323,8 +326,50 @@ const candidateDetail: AcquisitionCandidateDetail = {
     createdAt: timestamp
   }],
   intelligenceOperation: null,
+  identityResolutionOperation: null,
   privateDomainHandoff: null
 };
+
+function automaticIdentityOperation(
+  overrides: Partial<CandidateDouyinIdentityResolutionOperation> = {}
+): CandidateDouyinIdentityResolutionOperation {
+  return {
+    id: "douyin-identity-operation-1",
+    candidateId: "candidate-person",
+    candidateVersion: 1,
+    status: "running",
+    currentStage: "independent_search",
+    outcome: null,
+    retryable: false,
+    canonicalProfileUrl: null,
+    profileCandidates: [{
+      publicProfileUrl: "https://www.douyin.com/user/example",
+      evidenceIds: ["identity-public-page", "identity-search-result"]
+    }],
+    evidence: [{
+      evidenceId: "identity-public-page",
+      evidenceClass: "douyin_public_page",
+      publicProfileUrl: "https://www.douyin.com/user/example",
+      sourceUrl: "https://www.douyin.com/user/example",
+      sourceFingerprint: "sha256:identity-public-page",
+      accessStatus: "public_content",
+      fetchedAt: timestamp
+    }, {
+      evidenceId: "identity-search-result",
+      evidenceClass: "independent_search_result",
+      publicProfileUrl: "https://www.douyin.com/user/example",
+      sourceUrl: "https://www.baidu.com/s?wd=douyin",
+      sourceFingerprint: "sha256:identity-search-result",
+      accessStatus: "indexed_summary",
+      fetchedAt: timestamp
+    }],
+    intelligenceOperationId: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    completedAt: null,
+    ...overrides
+  };
+}
 
 function state(
   overrides: Partial<AcquisitionDetailCenterState> = {}
@@ -688,6 +733,7 @@ function state(
     battleCard: null,
     reviews: [],
     intelligenceOperation: null,
+    identityResolutionOperation: null,
     privateDomainHandoff: null
   };
   const html = renderAcquisitionDetailCenter(state({
@@ -719,6 +765,178 @@ function state(
   );
   assert.match(html, /抓取公开主页证据/);
   assert.doesNotMatch(html, /请选择一个候选/);
+}
+
+{
+  const automaticDetail: AcquisitionCandidateDetail = {
+    ...candidateDetail,
+    candidate: {
+      id: "candidate-person",
+      subjectKind: "individual",
+      publicDisplayName: "陈经理",
+      publicProfileUrl: "https://www.douyin.com/video/1",
+      sourcePlatform: "douyin",
+      status: "normalized",
+      version: 1,
+      identityResolved: false
+    },
+    qualification: null,
+    financialValue: null,
+    battleCard: null,
+    intelligenceOperation: null,
+    identityResolutionOperation: automaticIdentityOperation()
+  };
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-person",
+    candidateDetail: automaticDetail,
+    identityVerification: {
+      status: "idle",
+      profileUrl: "https://www.douyin.com/user/manual",
+      rationale: "人工确认",
+      evidenceIds: [],
+      operationId: null,
+      message: null,
+      error: null
+    }
+  }));
+  assert.match(html, /正在自动核验/);
+  assert.match(html, /正在交叉检索独立公开结果/);
+  assert.doesNotMatch(html, /data-acquisition-detail-form="identity-verification"/);
+  assert.doesNotMatch(html, /name="identityProfileUrl"/);
+}
+
+{
+  const successDetail: AcquisitionCandidateDetail = {
+    ...candidateDetail,
+    candidate: {
+      id: "candidate-person",
+      subjectKind: "individual",
+      publicDisplayName: "陈经理",
+      publicProfileUrl: "https://www.douyin.com/user/example",
+      sourcePlatform: "douyin",
+      status: "normalized",
+      version: 2,
+      identityResolved: true
+    },
+    identityResolutionOperation: automaticIdentityOperation({
+      status: "succeeded",
+      currentStage: null,
+      outcome: "verified_consensus",
+      canonicalProfileUrl: "https://www.douyin.com/user/example?name=<script>alert('profile')</script>",
+      intelligenceOperationId: "intelligence-operation-1",
+      completedAt: timestamp,
+      evidence: [{
+        ...automaticIdentityOperation().evidence[0]!,
+        sourceUrl: "https://www.douyin.com/user/example?<img src=x onerror=alert(1)>"
+      }, automaticIdentityOperation().evidence[1]!]
+    })
+  };
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-person",
+    candidateDetail: successDetail
+  }));
+  assert.match(html, /已自动确认，正在进行 AI 研判/);
+  assert.match(html, /https:\/\/www\.douyin\.com\/user\/example/);
+  assert.match(html, /抖音公开页/);
+  assert.match(html, /独立搜索结果/);
+  assert.doesNotMatch(html, /data-acquisition-detail-form="identity-verification"/);
+  assert.doesNotMatch(html, /<script>alert\('profile'\)<\/script>/);
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.match(html, /&lt;img/);
+}
+
+{
+  const reviewDetail: AcquisitionCandidateDetail = {
+    ...candidateDetail,
+    candidate: {
+      id: "candidate-person",
+      subjectKind: "individual",
+      publicDisplayName: "陈经理",
+      publicProfileUrl: "https://v.douyin.com/short-link",
+      sourcePlatform: "douyin",
+      status: "normalized",
+      version: 1,
+      identityResolved: false
+    },
+    qualification: null,
+    financialValue: null,
+    battleCard: null,
+    identityResolutionOperation: automaticIdentityOperation({
+      status: "requires_review",
+      currentStage: null,
+      outcome: "conflicting",
+      profileCandidates: [{
+        publicProfileUrl: "https://www.douyin.com/user/a?<script>alert('a')</script>",
+        evidenceIds: ["identity-public-page"]
+      }, {
+        publicProfileUrl: "https://www.douyin.com/user/b",
+        evidenceIds: ["identity-search-result"]
+      }],
+      completedAt: timestamp
+    })
+  };
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-person",
+    candidateDetail: reviewDetail,
+    identityVerification: {
+      status: "idle",
+      profileUrl: "https://v.douyin.com/short-link",
+      rationale: "人工核验",
+      evidenceIds: [],
+      operationId: null,
+      message: null,
+      error: null
+    }
+  }));
+  assert.match(html, /证据不足，需要人工确认/);
+  assert.match(html, /两类证据指向不同主页/);
+  assert.match(html, /data-acquisition-detail-form="identity-verification"/);
+  assert.match(html, /name="identityProfileUrl"[^>]*value=""/);
+  assert.doesNotMatch(html, /name="identityProfileUrl"[^>]*value="https:\/\//);
+  assert.doesNotMatch(html, /<script>alert\('a'\)<\/script>/);
+  assert.match(html, /&lt;script&gt;/);
+}
+
+{
+  const failedDetail: AcquisitionCandidateDetail = {
+    ...candidateDetail,
+    candidate: {
+      id: "candidate-person",
+      subjectKind: "individual",
+      publicDisplayName: "陈经理",
+      publicProfileUrl: "",
+      sourcePlatform: "douyin",
+      status: "normalized",
+      version: 1,
+      identityResolved: false
+    },
+    qualification: null,
+    financialValue: null,
+    battleCard: null,
+    identityResolutionOperation: automaticIdentityOperation({
+      status: "failed",
+      currentStage: null,
+      outcome: "provider_unavailable",
+      retryable: true,
+      completedAt: timestamp
+    })
+  };
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "candidates",
+    selectedCandidateId: "candidate-person",
+    candidateDetail: failedDetail
+  }));
+  assert.match(html, /自动核验暂时失败，可重试/);
+  assert.match(html, /搜索或抓取服务暂不可用/);
+  assert.match(
+    html,
+    /data-acquisition-detail-action="retry-identity-resolution"/
+  );
+  assert.match(html, /data-acquisition-detail-form="identity-verification"/);
 }
 
 // Catches collapsing independent budget dimensions into one invented percentage.

@@ -1,5 +1,6 @@
 import type {
-  AcquisitionPrivateDomainHandoffStatus
+  AcquisitionPrivateDomainHandoffStatus,
+  CandidateDouyinIdentityResolutionOperation
 } from "./detail-center-api";
 import type { AcquisitionTaskDetail } from "./runtime-api";
 
@@ -14,6 +15,7 @@ export interface AcquisitionCandidateDetail {
   battleCard: Record<string, unknown> | null;
   reviews: Array<Record<string, unknown>>;
   intelligenceOperation: Record<string, unknown> | null;
+  identityResolutionOperation: CandidateDouyinIdentityResolutionOperation | null;
   privateDomainHandoff: AcquisitionPrivateDomainHandoffStatus | null;
 }
 
@@ -745,7 +747,8 @@ function renderReviewHistory(items: DataRecord[]): string {
 
 function renderIntelligenceAction(
   candidate: DataRecord,
-  operation: DataRecord | null
+  operation: DataRecord | null,
+  identityResolutionOperation: CandidateDouyinIdentityResolutionOperation | null
 ): string {
   if (candidate.identityResolved !== true) {
     return `<div class="replica-acquisition-review-note is-warning">主体身份尚未确认，暂不能启动 AI 资格研判。</div>`;
@@ -756,6 +759,10 @@ function renderIntelligenceAction(
   if (operation?.status === "failed") {
     return `<div class="replica-acquisition-review-note is-warning">最近一次 AI 研判失败，请在任务刷新后重试。</div>`;
   }
+  if (identityResolutionOperation?.status === "succeeded"
+    && identityResolutionOperation.outcome === "verified_consensus") {
+    return `<div class="replica-acquisition-review-note">AI 研判由自动主体核验流程创建，正在同步服务端状态。</div>`;
+  }
   return `
     <div class="replica-acquisition-intelligence-start">
       <div><strong>尚未完成 AI 资格研判</strong><span>系统将研究公开证据、计算意向等级与财务价值，并生成客户作战卡。</span></div>
@@ -764,10 +771,13 @@ function renderIntelligenceAction(
   `;
 }
 
-function isUnresolvedDouyinIndividual(candidate: DataRecord): boolean {
+function isDouyinIndividual(candidate: DataRecord): boolean {
   return candidate.subjectKind === "individual"
-    && candidate.identityResolved !== true
     && textValue(candidate.sourcePlatform, "").toLowerCase().includes("douyin");
+}
+
+function isUnresolvedDouyinIndividual(candidate: DataRecord): boolean {
+  return isDouyinIndividual(candidate) && candidate.identityResolved !== true;
 }
 
 function identityRationaleValue(
@@ -794,16 +804,22 @@ function identityProfileInputValue(value: unknown): string {
   }
 }
 
-function renderIdentityVerificationWorkbench(
+function renderManualIdentityVerificationForm(
   candidate: DataRecord,
-  state: AcquisitionIdentityVerificationState | null | undefined
+  state: AcquisitionIdentityVerificationState | null | undefined,
+  automaticOperation: CandidateDouyinIdentityResolutionOperation | null
 ): string {
-  if (!isUnresolvedDouyinIndividual(candidate)) return "";
   const busy = state?.status === "fetching" || state?.status === "confirming";
   const fetched = state?.status === "ready_to_confirm"
     && (state.evidenceIds?.length ?? 0) > 0;
+  const suggestedProfileUrl = automaticOperation?.outcome !== "conflicting"
+      && automaticOperation?.profileCandidates.length === 1
+    ? automaticOperation.profileCandidates[0]?.publicProfileUrl
+    : undefined;
   const profileUrl = identityProfileInputValue(
-    state?.profileUrl ?? candidate.publicProfileUrl
+    automaticOperation?.outcome === "conflicting"
+      ? ""
+      : state?.profileUrl || suggestedProfileUrl || candidate.publicProfileUrl
   );
   const evidenceIds = state?.evidenceIds ?? [];
   const evidenceHtml = evidenceIds.length === 0
@@ -819,26 +835,147 @@ function renderIdentityVerificationWorkbench(
         `)
         .join("")}</ol>`;
   return `
+    <form class="replica-acquisition-review-form" data-acquisition-detail-form="identity-verification">
+      <div class="replica-acquisition-review-note is-warning">当前候选来自抖音公开内容，但还没有确认到精确主页。请填写 HTTPS 的抖音 /user/ 主页，不能使用视频、评论或短链作为主体。</div>
+      ${state?.message ? `<div class="replica-acquisition-review-note">${escapeHtml(state.message)}</div>` : ""}
+      ${state?.error ? `<div class="replica-acquisition-review-note is-warning">${escapeHtml(state.error)}</div>` : ""}
+      <label>
+        <span>抖音公开主页</span>
+        <input name="identityProfileUrl" type="url" maxlength="2000" required placeholder="https://www.douyin.com/user/..." value="${escapeHtml(profileUrl)}"${busy ? " disabled" : ""}>
+      </label>
+      <label>
+        <span>人工核验说明</span>
+        <textarea name="identityRationale" maxlength="2000" required${busy ? " disabled" : ""}>${escapeHtml(identityRationaleValue(state))}</textarea>
+      </label>
+      ${evidenceHtml}
+      <div class="replica-acquisition-review-actions">
+        <button type="submit" data-identity-action="fetch"${busy ? " disabled" : ""}>${state?.status === "fetching" ? "正在抓取…" : fetched ? "重新抓取主页证据" : "抓取公开主页证据"}</button>
+        <button type="submit" class="is-primary" data-identity-action="confirm"${!fetched || busy ? " disabled" : ""}>${state?.status === "confirming" ? "正在确认…" : "确认主体并启动 AI 研判"}</button>
+      </div>
+    </form>
+  `;
+}
+
+const IDENTITY_STAGE_LABELS: Readonly<Record<string, string>> = {
+  public_page: "正在核验抖音公开页",
+  independent_search: "正在交叉检索独立公开结果",
+  consensus_gate: "正在比对两类公开证据",
+  identity_confirmation: "正在确认候选主体",
+  intelligence_dispatch: "正在启动 AI 研判"
+};
+
+const IDENTITY_OUTCOME_LABELS: Readonly<Record<string, string>> = {
+  verified_consensus: "抖音公开页与独立搜索结果共同指向唯一公开主页",
+  not_found: "未找到规范用户主页",
+  insufficient_evidence: "只有一种独立证据类别",
+  ambiguous: "存在多个有效候选主页",
+  conflicting: "两类证据指向不同主页",
+  access_restricted: "页面需要登录、验证码或无法公开验证",
+  redirect_not_allowed: "重定向离开允许域名",
+  stale_candidate: "候选版本在处理期间变化",
+  provider_unavailable: "搜索或抓取服务暂不可用"
+};
+
+const IDENTITY_EVIDENCE_CLASS_LABELS: Readonly<Record<string, string>> = {
+  douyin_public_page: "抖音公开页",
+  independent_search_result: "独立搜索结果"
+};
+
+const IDENTITY_ACCESS_STATUS_LABELS: Readonly<Record<string, string>> = {
+  indexed_summary: "公开索引摘要",
+  public_content: "公开内容",
+  access_restricted: "访问受限"
+};
+
+function renderAutomaticIdentityEvidence(
+  operation: CandidateDouyinIdentityResolutionOperation
+): string {
+  if (operation.evidence.length === 0) {
+    return `<div class="replica-acquisition-detail-empty-value">自动核验尚未记录可展示的公开证据。</div>`;
+  }
+  return `<ol class="replica-acquisition-evidence-list">${operation.evidence
+    .map((item) => `
+      <li>
+        <div><strong>${escapeHtml(readableLabel(item.evidenceClass, IDENTITY_EVIDENCE_CLASS_LABELS))}</strong><span>${escapeHtml(readableLabel(item.accessStatus, IDENTITY_ACCESS_STATUS_LABELS))}</span></div>
+        <p>${escapeHtml(item.publicProfileUrl)}</p>
+        <small>${escapeHtml(item.sourceUrl)} · ${escapeHtml(item.fetchedAt)}</small>
+      </li>
+    `)
+    .join("")}</ol>`;
+}
+
+function renderAutomaticProfileCandidates(
+  operation: CandidateDouyinIdentityResolutionOperation
+): string {
+  if (operation.profileCandidates.length === 0) return "";
+  return `
+    <div class="replica-acquisition-review-note">
+      <strong>待人工核对的公开主页</strong>
+      <ol>${operation.profileCandidates.map((item) => `
+        <li><span>${escapeHtml(item.publicProfileUrl)}</span><small>${escapeHtml(item.evidenceIds.join("、"))}</small></li>
+      `).join("")}</ol>
+    </div>
+  `;
+}
+
+function renderIdentityVerificationWorkbench(
+  candidate: DataRecord,
+  state: AcquisitionIdentityVerificationState | null | undefined,
+  automaticOperation: CandidateDouyinIdentityResolutionOperation | null
+): string {
+  if (!isDouyinIndividual(candidate)) return "";
+  if (automaticOperation?.status === "queued"
+    || automaticOperation?.status === "running") {
+    const stage = automaticOperation.currentStage
+      ? readableLabel(automaticOperation.currentStage, IDENTITY_STAGE_LABELS)
+      : "等待自动核验任务开始";
+    return `
+      <section class="replica-acquisition-detail-section replica-acquisition-identity-section">
+        <h5>主体核验</h5>
+        <div class="replica-acquisition-review-note" role="status"><strong>正在自动核验</strong><span>${escapeHtml(stage)}</span></div>
+        ${renderAutomaticIdentityEvidence(automaticOperation)}
+      </section>
+    `;
+  }
+  if (automaticOperation?.status === "succeeded"
+    && automaticOperation.outcome === "verified_consensus") {
+    return `
+      <section class="replica-acquisition-detail-section replica-acquisition-identity-section">
+        <h5>主体核验</h5>
+        <div class="replica-acquisition-review-note"><strong>已自动确认，正在进行 AI 研判</strong><span>${escapeHtml(automaticOperation.canonicalProfileUrl ?? "规范主页待同步")}</span></div>
+        ${renderAutomaticIdentityEvidence(automaticOperation)}
+      </section>
+    `;
+  }
+  if (!isUnresolvedDouyinIndividual(candidate)) return "";
+  if (automaticOperation?.status === "requires_review") {
+    const outcome = automaticOperation.outcome;
+    return `
+      <section class="replica-acquisition-detail-section replica-acquisition-identity-section">
+        <h5>主体核验</h5>
+        <div class="replica-acquisition-review-note is-warning"><strong>证据不足，需要人工确认</strong><span>${escapeHtml(outcome ? readableLabel(outcome, IDENTITY_OUTCOME_LABELS) : "自动核验未形成唯一结论")}</span></div>
+        ${renderAutomaticProfileCandidates(automaticOperation)}
+        ${renderAutomaticIdentityEvidence(automaticOperation)}
+        ${renderManualIdentityVerificationForm(candidate, state, automaticOperation)}
+      </section>
+    `;
+  }
+  if (automaticOperation?.status === "failed") {
+    const outcome = automaticOperation.outcome;
+    return `
+      <section class="replica-acquisition-detail-section replica-acquisition-identity-section">
+        <h5>主体核验</h5>
+        <div class="replica-acquisition-review-note is-warning"><strong>${automaticOperation.retryable ? "自动核验暂时失败，可重试" : "自动核验未完成，需要人工确认"}</strong><span>${escapeHtml(outcome ? readableLabel(outcome, IDENTITY_OUTCOME_LABELS) : "自动核验服务暂不可用")}</span></div>
+        ${automaticOperation.retryable ? `<div class="replica-acquisition-review-actions"><button type="button" data-acquisition-detail-action="retry-identity-resolution">重试自动核验</button></div>` : ""}
+        ${renderAutomaticIdentityEvidence(automaticOperation)}
+        ${renderManualIdentityVerificationForm(candidate, state, automaticOperation)}
+      </section>
+    `;
+  }
+  return `
     <section class="replica-acquisition-detail-section replica-acquisition-identity-section">
       <h5>主体核验</h5>
-      <form class="replica-acquisition-review-form" data-acquisition-detail-form="identity-verification">
-        <div class="replica-acquisition-review-note is-warning">当前候选来自抖音公开内容，但还没有确认到精确主页。请填写 HTTPS 的抖音 /user/ 主页，不能使用视频、评论或短链作为主体。</div>
-        ${state?.message ? `<div class="replica-acquisition-review-note">${escapeHtml(state.message)}</div>` : ""}
-        ${state?.error ? `<div class="replica-acquisition-review-note is-warning">${escapeHtml(state.error)}</div>` : ""}
-        <label>
-          <span>抖音公开主页</span>
-          <input name="identityProfileUrl" type="url" maxlength="2000" required placeholder="https://www.douyin.com/user/..." value="${escapeHtml(profileUrl)}"${busy ? " disabled" : ""}>
-        </label>
-        <label>
-          <span>人工核验说明</span>
-          <textarea name="identityRationale" maxlength="2000" required${busy ? " disabled" : ""}>${escapeHtml(identityRationaleValue(state))}</textarea>
-        </label>
-        ${evidenceHtml}
-        <div class="replica-acquisition-review-actions">
-          <button type="submit" data-identity-action="fetch"${busy ? " disabled" : ""}>${state?.status === "fetching" ? "正在抓取…" : fetched ? "重新抓取主页证据" : "抓取公开主页证据"}</button>
-          <button type="submit" class="is-primary" data-identity-action="confirm"${!fetched || busy ? " disabled" : ""}>${state?.status === "confirming" ? "正在确认…" : "确认主体并启动 AI 研判"}</button>
-        </div>
-      </form>
+      ${renderManualIdentityVerificationForm(candidate, state, automaticOperation)}
     </section>
   `;
 }
@@ -854,10 +991,15 @@ function reviewButton(
 function renderReviewActions(
   candidate: DataRecord,
   qualification: DataRecord | null,
-  operation: DataRecord | null
+  operation: DataRecord | null,
+  identityResolutionOperation: CandidateDouyinIdentityResolutionOperation | null
 ): string {
   if (qualification === null) {
-    return renderIntelligenceAction(candidate, operation);
+    return renderIntelligenceAction(
+      candidate,
+      operation,
+      identityResolutionOperation
+    );
   }
   const status = textValue(candidate.status, "normalized");
   const hardGateFailures = strings(qualification.hardGateFailures);
@@ -1029,10 +1171,19 @@ function renderCandidateDetail(
         <h5>客户作战建议</h5>
         ${renderBattleCard(detail?.battleCard ?? null)}
       </section>
-      ${renderIdentityVerificationWorkbench(candidateSnapshot, identityVerification)}
+      ${renderIdentityVerificationWorkbench(
+        candidateSnapshot,
+        identityVerification,
+        detail?.identityResolutionOperation ?? null
+      )}
       <section class="replica-acquisition-detail-section replica-acquisition-review-section">
         <h5>人工审核</h5>
-        ${renderReviewActions(candidateSnapshot, qualification, detail?.intelligenceOperation ?? null)}
+        ${renderReviewActions(
+          candidateSnapshot,
+          qualification,
+          detail?.intelligenceOperation ?? null,
+          detail?.identityResolutionOperation ?? null
+        )}
       </section>
       <section class="replica-acquisition-detail-section replica-acquisition-handoff-section">
         <h5>CRM/私域交接</h5>

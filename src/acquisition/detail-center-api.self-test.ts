@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
-import { createAcquisitionDetailApi } from "./detail-center-api";
+import {
+  createAcquisitionDetailApi,
+  type CandidateDouyinIdentityResolutionOperation
+} from "./detail-center-api";
 
 const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
 const api = createAcquisitionDetailApi(async (input, init) => {
@@ -539,6 +542,170 @@ assert.equal(
 assert.equal(
   await intelligenceApi.getLatestIntelligenceOperation("candidate-missing"),
   null
+);
+
+const identityResolutionOperationResponse = {
+  id: "douyin-identity-operation-1",
+  candidateId: "candidate/with space",
+  candidateVersion: 3,
+  status: "running",
+  currentStage: "independent_search",
+  outcome: null,
+  retryable: false,
+  canonicalProfileUrl: null,
+  profileCandidates: [{
+    publicProfileUrl: "https://www.douyin.com/user/example",
+    evidenceIds: ["evidence-public-page", "evidence-independent-search"]
+  }],
+  evidence: [{
+    evidenceId: "evidence-public-page",
+    evidenceClass: "douyin_public_page",
+    publicProfileUrl: "https://www.douyin.com/user/example",
+    sourceUrl: "https://www.douyin.com/user/example",
+    sourceFingerprint: "sha256:public-page",
+    accessStatus: "public_content",
+    fetchedAt: "2026-08-08T12:00:00.000Z"
+  }, {
+    evidenceId: "evidence-independent-search",
+    evidenceClass: "independent_search_result",
+    publicProfileUrl: "https://www.douyin.com/user/example",
+    sourceUrl: "https://www.baidu.com/s?wd=douyin",
+    sourceFingerprint: "sha256:independent-search",
+    accessStatus: "indexed_summary",
+    fetchedAt: "2026-08-08T12:00:01.000Z"
+  }],
+  intelligenceOperationId: null,
+  createdAt: "2026-08-08T12:00:00.000Z",
+  updatedAt: "2026-08-08T12:00:01.000Z",
+  completedAt: null
+} satisfies CandidateDouyinIdentityResolutionOperation;
+
+const identityResolutionReadCalls: Array<{
+  input: RequestInfo | URL;
+  init?: RequestInit;
+}> = [];
+const identityResolutionReadApi = createAcquisitionDetailApi(
+  async (input, init) => {
+    identityResolutionReadCalls.push({ input, init });
+    if (String(input).includes("candidate-missing")) {
+      return Response.json({
+        error: {
+          code: "resource_not_found",
+          message: "自动核验任务不存在"
+        }
+      }, { status: 404 });
+    }
+    return Response.json(identityResolutionOperationResponse);
+  }
+);
+const latestIdentityResolution = await identityResolutionReadApi
+  .getLatestDouyinIdentityResolutionOperation("candidate/with space");
+assert.equal(latestIdentityResolution?.status, "running");
+assert.equal(latestIdentityResolution?.currentStage, "independent_search");
+assert.deepEqual(
+  latestIdentityResolution?.evidence.map((item) => item.evidenceClass),
+  ["douyin_public_page", "independent_search_result"]
+);
+assert.equal(
+  identityResolutionReadCalls[0]?.input,
+  "/api/v1/acquisition/candidates/candidate%2Fwith%20space"
+    + "/douyin-identity-resolution-operation"
+);
+assert.equal(identityResolutionReadCalls[0]?.init?.method, "GET");
+assert.equal(identityResolutionReadCalls[0]?.init?.credentials, "same-origin");
+assert.equal(
+  await identityResolutionReadApi
+    .getLatestDouyinIdentityResolutionOperation("candidate-missing"),
+  null
+);
+
+const identityResolutionOutcomes: Array<
+  Exclude<CandidateDouyinIdentityResolutionOperation["outcome"], null>
+> = [
+  "verified_consensus",
+  "not_found",
+  "insufficient_evidence",
+  "ambiguous",
+  "conflicting",
+  "access_restricted",
+  "redirect_not_allowed",
+  "stale_candidate",
+  "provider_unavailable"
+];
+assert.equal(new Set(identityResolutionOutcomes).size, 9);
+const identityResolutionStages: Array<
+  Exclude<CandidateDouyinIdentityResolutionOperation["currentStage"], null>
+> = [
+  "public_page",
+  "independent_search",
+  "consensus_gate",
+  "identity_confirmation",
+  "intelligence_dispatch"
+];
+assert.equal(new Set(identityResolutionStages).size, 5);
+
+const identityResolutionRetryCalls: Array<{
+  input: RequestInfo | URL;
+  init?: RequestInit;
+}> = [];
+const identityResolutionRetryApi = createAcquisitionDetailApi(
+  async (input, init) => {
+    identityResolutionRetryCalls.push({ input, init });
+    return Response.json({
+      ...identityResolutionOperationResponse,
+      id: "douyin-identity-operation-2",
+      status: "queued",
+      currentStage: null
+    }, { status: 202 });
+  },
+  { cookie: "session=1; gj_csrf=csrf%2Fidentity-resolution" }
+);
+const retriedIdentityResolution = await identityResolutionRetryApi
+  .retryDouyinIdentityResolution(
+    "candidate/with space",
+    "douyin-identity-retry-key-1"
+  );
+assert.equal(retriedIdentityResolution.status, "queued");
+const identityResolutionRetryCall = identityResolutionRetryCalls[0];
+assert.equal(
+  identityResolutionRetryCall?.input,
+  "/api/v1/acquisition/candidates/candidate%2Fwith%20space"
+    + "/douyin-identity-resolution-operations"
+);
+assert.equal(identityResolutionRetryCall?.init?.method, "POST");
+assert.equal(identityResolutionRetryCall?.init?.credentials, "same-origin");
+assert.equal(identityResolutionRetryCall?.init?.body, "{}");
+const identityResolutionRetryHeaders = new Headers(
+  identityResolutionRetryCall?.init?.headers
+);
+assert.equal(
+  identityResolutionRetryHeaders.get("idempotency-key"),
+  "douyin-identity-retry-key-1"
+);
+assert.equal(
+  identityResolutionRetryHeaders.get("x-csrf-token"),
+  "csrf/identity-resolution"
+);
+assert.equal(
+  identityResolutionRetryHeaders.get("content-type"),
+  "application/json"
+);
+
+const failedIdentityResolutionRetryApi = createAcquisitionDetailApi(
+  async () => Response.json({
+    error: {
+      code: "provider_unavailable",
+      message: "官方搜索服务暂时不可用"
+    }
+  }, { status: 503 }),
+  { cookie: "gj_csrf=csrf" }
+);
+await assert.rejects(
+  () => failedIdentityResolutionRetryApi.retryDouyinIdentityResolution(
+    "candidate-1",
+    "douyin-identity-retry-key-2"
+  ),
+  /官方搜索服务暂时不可用/
 );
 
 const intelligenceWriteCalls: Array<{
