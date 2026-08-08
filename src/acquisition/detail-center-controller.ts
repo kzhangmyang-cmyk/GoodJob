@@ -261,15 +261,23 @@ function shouldPollSelectedCandidate(
 }
 
 const IDENTITY_HANDOFF_GRACE_POLLS = 3;
+const IDENTITY_HANDOFF_LEDGER_LIMIT = 8;
 
-function identityHandoffScope(
-  detail: AcquisitionCandidateDetail | null
-): {
+interface IdentityHandoffScope {
   candidateId: string;
   identityOperationId: string;
   intelligenceOperationId: string;
   serverCompletedAtMs: number;
-} | null {
+}
+
+interface IdentityHandoffLedgerEntry extends IdentityHandoffScope {
+  attempts: number;
+  terminalIntelligenceObserved: boolean;
+}
+
+function identityHandoffScope(
+  detail: AcquisitionCandidateDetail | null
+): IdentityHandoffScope | null {
   const identity = detail?.identityResolutionOperation;
   if (identity?.status !== "succeeded"
     || identity.outcome !== "verified_consensus"
@@ -287,6 +295,14 @@ function identityHandoffScope(
         serverCompletedAtMs
       }
     : null;
+}
+
+function identityHandoffLedgerKey(scope: IdentityHandoffScope): string {
+  return JSON.stringify([
+    scope.candidateId,
+    scope.identityOperationId,
+    scope.intelligenceOperationId
+  ]);
 }
 
 function runProgressFingerprint(detail: AcquisitionTaskDetail | null): string {
@@ -617,14 +633,7 @@ export function createAcquisitionDetailCenterController(
   let selectedCandidatePollFailureCount = 0;
   let selectedCandidatePollingEnabled = true;
   let detailOpen = false;
-  let identityHandoffGrace: {
-    candidateId: string;
-    identityOperationId: string;
-    intelligenceOperationId: string;
-    serverCompletedAtMs: number;
-    attempts: number;
-    terminalIntelligenceObserved: boolean;
-  } | null = null;
+  const identityHandoffLedger = new Map<string, IdentityHandoffLedgerEntry>();
   let paginatedRunId: string | null = null;
   let expectedRunId: string | null = null;
   let currentPlanId: string | null = null;
@@ -1252,25 +1261,23 @@ export function createAcquisitionDetailCenterController(
   function shouldContinueSelectedCandidatePolling(
     detail: AcquisitionCandidateDetail | null
   ): boolean {
-    const candidateId = requestedCandidateId(detail?.candidate?.id)
-      ?? requestedCandidateId(detail?.identityResolutionOperation?.candidateId);
-    const identity = detail?.identityResolutionOperation;
-    if (identityHandoffGrace
-      && ((candidateId && identityHandoffGrace.candidateId !== candidateId)
-        || (identity && identityHandoffGrace.identityOperationId !== identity.id))) {
-      identityHandoffGrace = null;
-    }
     const handoff = identityHandoffScope(detail);
     if (handoff) {
-      if (identityHandoffGrace?.candidateId !== handoff.candidateId
-        || identityHandoffGrace.identityOperationId !== handoff.identityOperationId
-        || identityHandoffGrace.intelligenceOperationId
-          !== handoff.intelligenceOperationId) {
-        identityHandoffGrace = {
+      const key = identityHandoffLedgerKey(handoff);
+      let entry = identityHandoffLedger.get(key);
+      if (!entry) {
+        entry = {
           ...handoff,
           attempts: 0,
           terminalIntelligenceObserved: false
         };
+        identityHandoffLedger.set(key, entry);
+        if (identityHandoffLedger.size > IDENTITY_HANDOFF_LEDGER_LIMIT) {
+          const oldestKey = identityHandoffLedger.keys().next().value;
+          if (typeof oldestKey === "string") {
+            identityHandoffLedger.delete(oldestKey);
+          }
+        }
       }
       const intelligence = detail?.intelligenceOperation;
       const intelligenceMatches = requestedPlanId(intelligence?.id)
@@ -1279,14 +1286,14 @@ export function createAcquisitionDetailCenterController(
         ? intelligence?.status
         : null;
       if (intelligenceStatus === "succeeded" || intelligenceStatus === "failed") {
-        identityHandoffGrace.terminalIntelligenceObserved = true;
+        entry.terminalIntelligenceObserved = true;
         return false;
       }
-      if (identityHandoffGrace.terminalIntelligenceObserved) return false;
+      if (entry.terminalIntelligenceObserved) return false;
       if (intelligenceStatus === "queued" || intelligenceStatus === "running") {
         return true;
       }
-      return identityHandoffGrace.attempts < IDENTITY_HANDOFF_GRACE_POLLS;
+      return entry.attempts < IDENTITY_HANDOFF_GRACE_POLLS;
     }
     return shouldPollSelectedCandidate(detail);
   }
@@ -1298,10 +1305,11 @@ export function createAcquisitionDetailCenterController(
       state.candidateDetail?.intelligenceOperation?.id
     );
     if (intelligenceId === handoff.intelligenceOperationId) return;
-    if (identityHandoffGrace
-      && !identityHandoffGrace.terminalIntelligenceObserved
-      && identityHandoffGrace.attempts < IDENTITY_HANDOFF_GRACE_POLLS) {
-      identityHandoffGrace.attempts += 1;
+    const entry = identityHandoffLedger.get(identityHandoffLedgerKey(handoff));
+    if (entry
+      && !entry.terminalIntelligenceObserved
+      && entry.attempts < IDENTITY_HANDOFF_GRACE_POLLS) {
+      entry.attempts += 1;
     }
   }
 
@@ -1317,9 +1325,13 @@ export function createAcquisitionDetailCenterController(
       || !shouldContinueSelectedCandidatePolling(state.candidateDetail)) return;
     const generation = selectedCandidatePollGeneration;
     const baseDelay = Math.max(2_000, pollIntervalMs);
+    const handoff = identityHandoffScope(state.candidateDetail);
+    const handoffAttempts = handoff
+      ? identityHandoffLedger.get(identityHandoffLedgerKey(handoff))?.attempts ?? 0
+      : 0;
     const delayExponent = Math.max(
       selectedCandidatePollFailureCount,
-      identityHandoffGrace?.attempts ?? 0
+      handoffAttempts
     );
     const delay = Math.min(
       30_000,
@@ -2471,6 +2483,7 @@ export function createAcquisitionDetailCenterController(
       requestSerial += 1;
       candidateSerial += 1;
       pendingIdempotencyKeys.clear();
+      identityHandoffLedger.clear();
       paginatedRunId = null;
       expectedRunId = null;
       eventTarget.removeEventListener(

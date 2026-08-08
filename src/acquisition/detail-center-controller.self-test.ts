@@ -947,6 +947,247 @@ function automaticIntelligenceOperation(
   controller.destroy();
 }
 
+// The operation ledger has a deterministic eight-entry FIFO bound: after nine
+// exhausted operations, the oldest operation receives a fresh grace window,
+// while a recent exhausted operation remains exhausted when revisited.
+{
+  const scheduler = new ManualPollScheduler();
+  let operationIndex = 0;
+  const api = {
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          subjectKind: "individual",
+          sourcePlatform: "douyin",
+          publicProfileUrl: "https://www.douyin.com/user/example",
+          status: "normalized",
+          version: 2,
+          identityResolved: true
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return null;
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestDouyinIdentityResolutionOperation(candidateId: string) {
+      return automaticIdentityOperation({
+        id: `identity-handoff-ledger-${operationIndex}`,
+        candidateId,
+        candidateVersion: 1,
+        status: "succeeded",
+        outcome: "verified_consensus",
+        canonicalProfileUrl: "https://www.douyin.com/user/example",
+        intelligenceOperationId: `intelligence-handoff-ledger-${operationIndex}`,
+        updatedAt: "2026-08-08T12:00:02.000Z",
+        completedAt: "2026-08-08T12:00:02.000Z"
+      });
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    pollIntervalMs: 100,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.openCandidate("candidate-handoff-ledger-bound");
+  for (operationIndex = 0; operationIndex < 9; operationIndex += 1) {
+    if (operationIndex > 0) {
+      await controller.selectCandidate("candidate-handoff-ledger-bound");
+    }
+    assert.equal(scheduler.pendingCount(), 1);
+    for (let poll = 0; poll < 3; poll += 1) {
+      scheduler.runNext();
+      await controller.whenIdle();
+    }
+    assert.equal(scheduler.pendingCount(), 0);
+  }
+
+  operationIndex = 0;
+  await controller.selectCandidate("candidate-handoff-ledger-bound");
+  assert.equal(scheduler.pendingCount(), 1);
+
+  operationIndex = 8;
+  await controller.selectCandidate("candidate-handoff-ledger-bound");
+  assert.equal(scheduler.pendingCount(), 0);
+  controller.destroy();
+}
+
+// Exhausting operation A, fully spending a fresh operation B, then reopening
+// the same candidate on A cannot refresh A's operation-scoped handoff budget.
+{
+  const scheduler = new ManualPollScheduler();
+  let operationName = "a";
+  const api = {
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          subjectKind: "individual",
+          sourcePlatform: "douyin",
+          publicProfileUrl: "https://www.douyin.com/user/example",
+          status: "normalized",
+          version: 2,
+          identityResolved: true
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return null;
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestDouyinIdentityResolutionOperation(candidateId: string) {
+      return automaticIdentityOperation({
+        id: `identity-handoff-${operationName}`,
+        candidateId,
+        candidateVersion: 1,
+        status: "succeeded",
+        outcome: "verified_consensus",
+        canonicalProfileUrl: "https://www.douyin.com/user/example",
+        intelligenceOperationId: `intelligence-handoff-${operationName}`,
+        updatedAt: "2026-08-08T12:00:02.000Z",
+        completedAt: "2026-08-08T12:00:02.000Z"
+      });
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    pollIntervalMs: 100,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.openCandidate("candidate-handoff-revisit");
+  for (let poll = 0; poll < 3; poll += 1) {
+    scheduler.runNext();
+    await controller.whenIdle();
+  }
+  assert.equal(scheduler.pendingCount(), 0);
+
+  operationName = "b";
+  await controller.selectCandidate("candidate-handoff-revisit");
+  assert.equal(scheduler.pendingCount(), 1);
+  for (let poll = 0; poll < 3; poll += 1) {
+    scheduler.runNext();
+    await controller.whenIdle();
+  }
+  assert.equal(scheduler.pendingCount(), 0);
+
+  controller.close();
+  operationName = "a";
+  await controller.openCandidate("candidate-handoff-revisit");
+  assert.equal(scheduler.pendingCount(), 0);
+  controller.destroy();
+}
+
+// Alternating latest identity operations keep independent monotonic handoff
+// budgets. Once A and B have each spent their three null-gap reads, revisiting
+// either exhausted operation cannot keep the poll loop alive.
+{
+  const scheduler = new ManualPollScheduler();
+  let snapshotReads = 0;
+  const api = {
+    async getCandidate(candidateId: string) {
+      snapshotReads += 1;
+      return {
+        candidate: {
+          id: candidateId,
+          subjectKind: "individual",
+          sourcePlatform: "douyin",
+          publicProfileUrl: "https://www.douyin.com/user/example",
+          status: "normalized",
+          version: 2,
+          identityResolved: true
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return { items: [], nextCursor: null };
+    },
+    async getCandidateQualification() {
+      return null;
+    },
+    async getCandidateFinancialValue() {
+      return null;
+    },
+    async getCandidateBattleCard() {
+      return null;
+    },
+    async getCandidateReviews() {
+      return { items: [], nextCursor: null };
+    },
+    async getLatestDouyinIdentityResolutionOperation(candidateId: string) {
+      const operationName = snapshotReads % 2 === 0 ? "new" : "old";
+      return automaticIdentityOperation({
+        id: `identity-handoff-${operationName}`,
+        candidateId,
+        candidateVersion: 1,
+        status: "succeeded",
+        outcome: "verified_consensus",
+        canonicalProfileUrl: "https://www.douyin.com/user/example",
+        intelligenceOperationId: `intelligence-handoff-${operationName}`,
+        updatedAt: "2026-08-08T12:00:02.000Z",
+        completedAt: "2026-08-08T12:00:02.000Z"
+      });
+    },
+    async getLatestIntelligenceOperation() {
+      return null;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    pollIntervalMs: 100,
+    schedulePoll: scheduler.schedule,
+    cancelPoll: scheduler.cancel
+  });
+
+  await controller.openCandidate("candidate-handoff-old-new");
+  let pollCallbacks = 0;
+  while (pollCallbacks < 12 && scheduler.pendingCount() > 0) {
+    scheduler.runNext();
+    await controller.whenIdle();
+    pollCallbacks += 1;
+  }
+
+  assert.equal(scheduler.pendingCount(), 0);
+  assert.equal(pollCallbacks, 6);
+  assert.equal(snapshotReads, 7);
+  controller.destroy();
+}
+
 // A response from an old selected-candidate poll cannot replace a newer
 // selection, even when it resolves after the new snapshot.
 {
