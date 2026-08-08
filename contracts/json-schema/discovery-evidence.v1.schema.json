@@ -80,6 +80,43 @@
           "additionalProperties": false,
           "required": [
             "kind",
+            "sourceUrl",
+            "discoveredFromEvidenceId",
+            "redirectChain",
+            "extractorVersion"
+          ],
+          "properties": {
+            "kind": { "const": "controlled_public_page" },
+            "sourceUrl": {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 2000,
+              "pattern": "^https://(?:[A-Za-z0-9-]+\\.)*(?:douyin\\.com|iesdouyin\\.com)/user/[^/?#]+/?(?:[?#].*)?$"
+            },
+            "discoveredFromEvidenceId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            "redirectChain": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4,
+              "items": {
+                "type": "string",
+                "format": "uri",
+                "maxLength": 2000,
+                "pattern": "^https://"
+              }
+            },
+            "extractorVersion": { "const": "douyin-public-profile-v1" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
             "importBatchId",
             "artifactHash",
             "sheetName",

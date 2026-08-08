@@ -54,6 +54,13 @@ export type EvidenceProvenance =
       submittedBy: string;
     }
   | {
+      kind: "controlled_public_page";
+      sourceUrl: string;
+      discoveredFromEvidenceId: string;
+      redirectChain: string[];
+      extractorVersion: "douyin-public-profile-v1";
+    }
+  | {
       kind: "import_artifact_row";
       importBatchId: string;
       artifactHash: string;

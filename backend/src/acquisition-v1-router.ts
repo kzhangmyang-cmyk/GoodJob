@@ -53,6 +53,10 @@ import type {
 import type {
   AcquisitionIdentityResolutionService
 } from "./acquisition-identity-resolution-service.js";
+import {
+  isVerifiedAcquisitionPublicProfileUrl
+} from "./acquisition-public-identity-resolver.js";
+import { classifyDouyinPublicSource } from "./acquisition-douyin-public-source.js";
 import { MODEL_PROVIDER_IDS } from "./model-providers/types.js";
 
 const candidateStatuses = [
@@ -75,6 +79,14 @@ const idSchema = z.string().trim().min(1).max(255);
 const idempotencyKeySchema = z.string().trim().min(1).max(200);
 const nullableText = (max: number) => z.string().trim().max(max).nullable();
 const requiredText = (max: number) => z.string().trim().min(1).max(max);
+const httpsUrl = z.string().url().max(2_000).refine((value) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}, "URL must use HTTPS without credentials");
 
 const provenanceSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -92,6 +104,17 @@ const provenanceSchema = z.discriminatedUnion("kind", [
     kind: z.literal("user_submitted_url"),
     sourceUrl: z.string().url().max(2_000),
     submittedBy: requiredText(100)
+  }).strict(),
+  z.object({
+    kind: z.literal("controlled_public_page"),
+    sourceUrl: httpsUrl.refine(
+      (value) => isVerifiedAcquisitionPublicProfileUrl(value)
+        && classifyDouyinPublicSource(value)?.sourceType === "profile",
+      "sourceUrl must be a supported public profile URL"
+    ),
+    discoveredFromEvidenceId: idSchema,
+    redirectChain: z.array(httpsUrl).min(1).max(4),
+    extractorVersion: z.literal("douyin-public-profile-v1")
   }).strict(),
   z.object({
     kind: z.literal("import_artifact_row"),

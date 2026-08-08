@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import type { Server } from "node:http";
+import { default as Ajv2020 } from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
 import express from "express";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type {
@@ -33,6 +35,7 @@ import {
   type AcquisitionV1QueryPort,
   type AcquisitionV1RouterOptions
 } from "./acquisition-v1-router.js";
+import discoveryEvidenceSchema from "../../contracts/json-schema/discovery-evidence.v1.schema.json" with { type: "json" };
 
 const OWNER_A = "owner-a";
 const TEAM_A = "team-a";
@@ -569,6 +572,143 @@ function evidenceBody(
     accessStatus: "public_content"
   };
 }
+
+function controlledPublicPageEvidenceBody() {
+  return {
+    ...evidenceBody("individual_signal", "controlled-public-page"),
+    sourcePlatform: "douyin",
+    sourceTitle: "抖音公开主页",
+    sourceSnippet: "由公开视频中的明确作者链接解析并公开验证。",
+    provenance: {
+      kind: "controlled_public_page",
+      sourceUrl: "https://www.douyin.com/user/actor",
+      discoveredFromEvidenceId: "evidence-video",
+      redirectChain: ["https://www.douyin.com/video/1"],
+      extractorVersion: "douyin-public-profile-v1"
+    }
+  };
+}
+
+test("v1 evidence accepts controlled Douyin public-page provenance", async () => {
+  const fixture = await createFixture();
+  try {
+    const result = await fixture.request(
+      "/api/v1/acquisition/evidence",
+      write(controlledPublicPageEvidenceBody(), "controlled-page-evidence")
+    );
+
+    assert.equal(result.response.status, 201);
+    assert.equal(result.json.provenance.kind, "controlled_public_page");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("v1 evidence rejects unsafe controlled public-page provenance", async () => {
+  const base = controlledPublicPageEvidenceBody();
+  const cases = [
+    {
+      name: "empty redirect chain",
+      provenance: { ...base.provenance, redirectChain: [] }
+    },
+    {
+      name: "non-HTTPS source URL",
+      provenance: {
+        ...base.provenance,
+        sourceUrl: "http://www.douyin.com/user/actor"
+      }
+    },
+    {
+      name: "non-HTTPS redirect URL",
+      provenance: {
+        ...base.provenance,
+        redirectChain: ["http://www.douyin.com/video/1"]
+      }
+    },
+    {
+      name: "unsupported final profile path",
+      provenance: {
+        ...base.provenance,
+        sourceUrl: "https://www.douyin.com/video/1"
+      }
+    },
+    {
+      name: "unsupported profile platform",
+      provenance: {
+        ...base.provenance,
+        sourceUrl: "https://github.com/public-actor"
+      }
+    },
+    {
+      name: "more than four redirects",
+      provenance: {
+        ...base.provenance,
+        redirectChain: Array.from(
+          { length: 5 },
+          (_, index) => `https://www.douyin.com/video/${index + 1}`
+        )
+      }
+    }
+  ];
+  const fixture = await createFixture();
+  try {
+    for (const item of cases) {
+      const result = await fixture.request(
+        "/api/v1/acquisition/evidence",
+        write(
+          { ...base, provenance: item.provenance },
+          `controlled-invalid-${item.name}`
+        )
+      );
+      assert.equal(result.response.status, 400, item.name);
+      assert.equal(result.json.code, "invalid_request", item.name);
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("discovery evidence schema rejects unsafe controlled public-page provenance", () => {
+  const ajv = new Ajv2020({ strict: false });
+  addFormats(ajv);
+  const validate = ajv.compile(discoveryEvidenceSchema);
+  const base = {
+    ...controlledPublicPageEvidenceBody(),
+    id: "evidence-controlled-page",
+    fetchedAt: "2026-08-08T00:00:00.000Z"
+  };
+  const invalidProvenance = [
+    { ...base.provenance, redirectChain: [] },
+    {
+      ...base.provenance,
+      sourceUrl: "http://www.douyin.com/user/actor"
+    },
+    {
+      ...base.provenance,
+      redirectChain: ["http://www.douyin.com/video/1"]
+    },
+    {
+      ...base.provenance,
+      sourceUrl: "https://www.douyin.com/video/1"
+    },
+    {
+      ...base.provenance,
+      sourceUrl: "https://github.com/public-actor"
+    },
+    {
+      ...base.provenance,
+      redirectChain: Array.from(
+        { length: 5 },
+        (_, index) => `https://www.douyin.com/video/${index + 1}`
+      )
+    }
+  ];
+
+  assert.equal(validate(base), true, JSON.stringify(validate.errors));
+  for (const provenance of invalidProvenance) {
+    assert.equal(validate({ ...base, provenance }), false);
+  }
+});
 
 function qualificationBody(evidenceId: string) {
   return {

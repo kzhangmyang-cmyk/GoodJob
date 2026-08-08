@@ -37,6 +37,10 @@ import type {
 import {
   normalizeOutcomeFeedbackEvent
 } from "./acquisition-outcome-compatibility.js";
+import {
+  isVerifiedAcquisitionPublicProfileUrl
+} from "./acquisition-public-identity-resolver.js";
+import { classifyDouyinPublicSource } from "./acquisition-douyin-public-source.js";
 import type {
   AcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
@@ -2258,6 +2262,34 @@ export class AcquisitionDomainService {
         "提交人",
         100
       );
+    } else if (provenance.kind === "controlled_public_page") {
+      provenance.sourceUrl = validUrl(provenance.sourceUrl, "受控公开主页 URL");
+      if (!provenance.sourceUrl.startsWith("https://")
+        || !isVerifiedAcquisitionPublicProfileUrl(provenance.sourceUrl)
+        || classifyDouyinPublicSource(provenance.sourceUrl)?.sourceType
+          !== "profile") {
+        fail("invalid_request", "受控公开主页 URL 无效", 400);
+      }
+      provenance.discoveredFromEvidenceId = requiredText(
+        provenance.discoveredFromEvidenceId,
+        "受控公开主页来源证据",
+        255
+      );
+      if (provenance.extractorVersion !== "douyin-public-profile-v1") {
+        fail("invalid_request", "受控公开主页提取器版本无效", 400);
+      }
+      if (!Array.isArray(provenance.redirectChain)
+        || provenance.redirectChain.length < 1
+        || provenance.redirectChain.length > 4) {
+        fail("invalid_request", "受控公开主页重定向链无效", 400);
+      }
+      provenance.redirectChain = provenance.redirectChain.map((value) => {
+        const normalized = validUrl(value, "受控公开主页重定向 URL");
+        if (!normalized.startsWith("https://")) {
+          fail("invalid_request", "受控公开主页重定向只允许 HTTPS", 400);
+        }
+        return normalized;
+      });
     } else if (provenance.kind === "import_artifact_row") {
       provenance.importBatchId = requiredText(
         provenance.importBatchId,
