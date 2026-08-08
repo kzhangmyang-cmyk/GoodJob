@@ -401,6 +401,7 @@ test("organization research accepts only non-conflicting strong identity matches
       searchCalls.push(structuredClone(input));
       return {
         providerConnectionId: input.providerConnectionId,
+        providerCredentialVersion: 1,
         provider: "brave",
         requestId: `request-${searchCalls.length}`,
         results: responses[searchCalls.length - 1] ?? []
@@ -489,6 +490,7 @@ test("individual research requires an exact normalized public profile and the re
     async search(input) {
       return {
         providerConnectionId: input.providerConnectionId,
+        providerCredentialVersion: 1,
         provider: "linkedin-search",
         requestId: "individual-research",
         results: input.query.includes("求购")
@@ -549,6 +551,7 @@ test("restricted results report access_restricted without attaching evidence", a
       async search(input) {
         return {
           providerConnectionId: input.providerConnectionId,
+          providerCredentialVersion: 1,
           provider: "brave",
           requestId: "restricted",
           results: [organizationResult({
@@ -586,6 +589,7 @@ test("revalidates the approved connection before every query and stops after dri
         searches += 1;
         return {
           providerConnectionId: input.providerConnectionId,
+          providerCredentialVersion: 1,
           provider: "brave",
           requestId: `request-${searches}`,
           results: []
@@ -644,6 +648,7 @@ test("propagates an external abort and never starts another query", async () => 
         controller.abort(new DOMException("cancelled", "AbortError"));
         return {
           providerConnectionId: input.providerConnectionId,
+          providerCredentialVersion: 1,
           provider: "brave",
           requestId: "aborted",
           results: []

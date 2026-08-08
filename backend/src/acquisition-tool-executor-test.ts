@@ -381,6 +381,7 @@ class TestSearchPort implements SearchPublicSourcesPort {
     }
     return {
       providerConnectionId: input.providerConnectionId,
+      providerCredentialVersion: 1,
       provider,
       requestId: `request-${input.providerConnectionId}`,
       results: rawResults.filter((result) =>

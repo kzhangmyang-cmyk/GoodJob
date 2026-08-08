@@ -44,6 +44,7 @@ function connection(
     ...identity,
     scope: "personal",
     credentialRef: `credential_${providerId}`,
+    credentialVersion: 1,
     configurationEncrypted: encryptProviderConfiguration(identity, {
       apiKey: `${providerId}-official-api-key`,
       baseUrl: ""
@@ -235,6 +236,7 @@ test("uses an authorized official BYOK connection and maps public organization a
   });
   assert.equal(response.provider, "baidu_ai_search");
   assert.equal(response.providerConnectionId, "connection_baidu_ai_search");
+  assert.equal(response.providerCredentialVersion, 1);
   assert.match(response.requestId || "", /^preq_/);
   assert.equal(response.results.length, 2);
   assert.deepEqual(
@@ -292,6 +294,48 @@ test("uses an authorized official BYOK connection and maps public organization a
   assert.equal(serialized.includes("13800000000"), false);
   assert.equal(serialized.includes("不应输出"), false);
   assert.equal(store.providerRequestLogs.length, 1);
+});
+
+test("rejects a live connection whose credential version differs from the frozen search request", async () => {
+  const store = createStore({
+    connections: [connection("baidu_ai_search", { credentialVersion: 2 })]
+  });
+  let executionCount = 0;
+  const port = createAcquisitionPublicSearchPort(store, {
+    async executeSearch(input) {
+      executionCount += 1;
+      input.onLogs([
+        requestLog({
+          provider: input.provider,
+          connection: input.connection,
+          runId: input.context.runId
+        })
+      ]);
+      return providerPage();
+    }
+  });
+
+  await assert.rejects(
+    port.search(searchInput({
+      expectedConnection: {
+        providerId: "baidu_ai_search",
+        credentialVersion: 1
+      }
+    })),
+    (error: unknown) => error instanceof AcquisitionPublicSearchPortError
+      && error.code === "PROVIDER_CONNECTION_SNAPSHOT_MISMATCH"
+  );
+  await assert.rejects(
+    port.search(searchInput({
+      expectedConnection: {
+        providerId: "brave",
+        credentialVersion: 2
+      }
+    })),
+    (error: unknown) => error instanceof AcquisitionPublicSearchPortError
+      && error.code === "PROVIDER_CONNECTION_SNAPSHOT_MISMATCH"
+  );
+  assert.equal(executionCount, 0);
 });
 
 test("classifies a non-bound Douyin result as content while retaining the search provider", async () => {

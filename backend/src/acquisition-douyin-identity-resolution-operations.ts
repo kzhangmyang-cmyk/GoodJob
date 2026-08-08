@@ -448,6 +448,7 @@ function validAuditedSearchResponse(
 ) {
   return response.providerConnectionId === connection.connectionId
     && response.provider === connection.providerId
+    && response.providerCredentialVersion === connection.credentialVersion
     && Boolean(response.requestId.trim());
 }
 
@@ -1383,6 +1384,10 @@ export class AcquisitionDouyinIdentityResolutionOperationService {
             sessionId: operation.planSessionId
               ?? `douyin-identity-search:${operation.requestHash}`,
             providerConnectionId: connection.connectionId,
+            expectedConnection: {
+              providerId: connection.providerId,
+              credentialVersion: connection.credentialVersion
+            },
             query,
             subjectKinds: ["individual"],
             maxResults: 10,

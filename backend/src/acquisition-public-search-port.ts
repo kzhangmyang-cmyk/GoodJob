@@ -44,6 +44,9 @@ import {
   isDouyinBoundPublicSearchQuery,
   type DouyinPublicSourceType
 } from "./acquisition-douyin-public-source.js";
+import {
+  acquisitionProviderConnectionVersion
+} from "./acquisition-provider-connection-version.js";
 
 export const ACQUISITION_PUBLIC_SEARCH_PROVIDER_IDS = [
   "baidu_ai_search",
@@ -71,6 +74,7 @@ const ACQUISITION_PUBLIC_SEARCH_PROVIDERS = Object.freeze(
 
 export type AcquisitionPublicSearchPortErrorCode =
   | "PROVIDER_CONNECTION_UNAVAILABLE"
+  | "PROVIDER_CONNECTION_SNAPSHOT_MISMATCH"
   | "PROVIDER_NOT_SUPPORTED"
   | "PROVIDER_CATALOG_UNAVAILABLE"
   | "INVALID_PROVIDER_AUDIT_LOG"
@@ -82,6 +86,8 @@ const ERROR_MESSAGES: Record<
   string
 > = {
   PROVIDER_CONNECTION_UNAVAILABLE: "公开搜索连接不可用，请检查当前账号的连接配置",
+  PROVIDER_CONNECTION_SNAPSHOT_MISMATCH:
+    "公开搜索连接已更新，请使用当前连接重新发起搜索",
   PROVIDER_NOT_SUPPORTED: "该连接不是受支持的公开搜索数据源",
   PROVIDER_CATALOG_UNAVAILABLE: "公开搜索数据源目录不可用",
   INVALID_PROVIDER_AUDIT_LOG: "公开搜索调用缺少有效审计记录",
@@ -440,7 +446,7 @@ async function persistAuditLogs(
   }
 }
 
-function authorizedConnection(
+function captureAuthorizedConnection(
   store: AcquisitionPublicSearchStore,
   input: SearchPublicSourcesRequest
 ) {
@@ -456,7 +462,18 @@ function authorizedConnection(
       "PROVIDER_CONNECTION_UNAVAILABLE"
     );
   }
-  return connection;
+  const captured = structuredClone(connection);
+  const credentialVersion = acquisitionProviderConnectionVersion(captured);
+  if (input.expectedConnection
+    && (
+      captured.providerId !== input.expectedConnection.providerId
+      || credentialVersion !== input.expectedConnection.credentialVersion
+    )) {
+    throw new AcquisitionPublicSearchPortError(
+      "PROVIDER_CONNECTION_SNAPSHOT_MISMATCH"
+    );
+  }
+  return { connection: captured, credentialVersion };
 }
 
 function assertReadableByokConnection(
@@ -527,7 +544,8 @@ implements SearchPublicSourcesPort {
     request: SearchPublicSourcesRequest
   ): Promise<SearchPublicSourcesResponse> {
     assertNotAborted(request.signal);
-    const connection = authorizedConnection(this.store, request);
+    const { connection, credentialVersion } =
+      captureAuthorizedConnection(this.store, request);
     const provider = this.providers.get(connection.providerId);
     if (!provider) {
       throw new AcquisitionPublicSearchPortError("PROVIDER_NOT_SUPPORTED");
@@ -633,6 +651,7 @@ implements SearchPublicSourcesPort {
       .slice(0, request.maxResults);
     return {
       providerConnectionId: connection.id,
+      providerCredentialVersion: credentialVersion,
       provider: provider.id,
       requestId: context.requestId,
       results

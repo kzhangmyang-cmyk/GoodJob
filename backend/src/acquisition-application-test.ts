@@ -228,6 +228,8 @@ function fakeSearchPort() {
         && input.subjectKinds[0] === "individual";
       return {
         providerConnectionId: input.providerConnectionId,
+        providerCredentialVersion:
+          input.expectedConnection?.credentialVersion ?? 1,
         provider: "fake-official-search",
         requestId: "search-request-application",
         results: [{
@@ -1944,6 +1946,8 @@ test("application automatically resolves a direct Douyin signal and runs one int
         searchCalls.push(input.query);
         return {
           providerConnectionId: input.providerConnectionId,
+          providerCredentialVersion:
+            input.expectedConnection?.credentialVersion ?? 1,
           provider: "brave",
           requestId: "direct-douyin-identity-search",
           results: [{
@@ -2121,6 +2125,8 @@ test("application Run replay reuses owned intelligence after an identity-stage p
         if (input.subjectKinds[0] === "organization") {
           return {
             providerConnectionId: input.providerConnectionId,
+            providerCredentialVersion:
+              input.expectedConnection?.credentialVersion ?? 1,
             provider: "brave",
             requestId: "run-organization-empty-request",
             results: []
@@ -2128,6 +2134,8 @@ test("application Run replay reuses owned intelligence after an identity-stage p
         }
         return {
           providerConnectionId: input.providerConnectionId,
+          providerCredentialVersion:
+            input.expectedConnection?.credentialVersion ?? 1,
           provider: "brave",
           requestId: identitySearch
             ? "run-identity-search-request"
@@ -2391,6 +2399,8 @@ test("application startup recovery continues a queued Douyin fetch into automati
       async search(input) {
         return {
           providerConnectionId: input.providerConnectionId,
+          providerCredentialVersion:
+            input.expectedConnection?.credentialVersion ?? 1,
           provider: "brave",
           requestId: "startup-recovery-identity-search",
           results: [{

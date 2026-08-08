@@ -6,9 +6,20 @@ import type {
   DouyinPublicProfileDiscoveryResult
 } from "./acquisition-douyin-public-profile-discovery.js";
 import type {
+  SearchPublicSourcesPort,
   SearchPublicSourcesResponse
 } from "./acquisition-tool-executor.js";
 import { AcquisitionDomainError } from "./acquisition-domain-service.js";
+import {
+  encryptProviderConfigurationWithSecret
+} from "./credential-security.js";
+import { createDefaultProviderCatalog } from "./provider-catalog.js";
+import type { ProviderPage } from "./provider-contract.js";
+import type { ProviderConnection } from "./types.js";
+import {
+  createAcquisitionPublicSearchPort,
+  type AcquisitionPublicSearchStore
+} from "./acquisition-public-search-port.js";
 import {
   AcquisitionDouyinIdentityResolutionOperationError,
   AcquisitionDouyinIdentityResolutionOperationService,
@@ -600,6 +611,9 @@ function executionFixture(
   options: {
     beforeDiscover?: (sourceUrl: string) => Promise<void>;
     beforeGetCandidate?: (call: number) => Promise<void>;
+    afterValidateSearchConnection?: () => Promise<void>;
+    search?: SearchPublicSourcesPort;
+    searchResponseCredentialVersion?: number;
     heartbeatIntervalMs?: number;
     heartbeatScheduler?: {
       setInterval(callback: () => void, delayMs: number): unknown;
@@ -759,24 +773,26 @@ function executionFixture(
       }
     };
     return {
-    providerConnectionId: connectionId,
-    provider: "baidu-search",
-    requestId: scenario === "search_append_then_crash"
-      ? `request-${connectionId}-${requestSequence}`
-      : `request-${connectionId}`,
-    results: scenario === "not_found"
-      || scenario === "insufficient_evidence"
-      || scenario === "ambiguous"
-      || scenario === "access_restricted"
-      || scenario === "redirect_not_allowed"
-      ? []
-      : scenario === "duplicate_search_url_records"
-        ? [result, {
-            ...result,
-            providerRecordId: `record-${connectionId}-duplicate`,
-            rawArtifactHash: `sha256:search-raw-${connectionId}-duplicate`
-          }]
-        : [result]
+      providerConnectionId: connectionId,
+      providerCredentialVersion:
+        options.searchResponseCredentialVersion ?? 1,
+      provider: "baidu-search",
+      requestId: scenario === "search_append_then_crash"
+        ? `request-${connectionId}-${requestSequence}`
+        : `request-${connectionId}`,
+      results: scenario === "not_found"
+        || scenario === "insufficient_evidence"
+        || scenario === "ambiguous"
+        || scenario === "access_restricted"
+        || scenario === "redirect_not_allowed"
+        ? []
+        : scenario === "duplicate_search_url_records"
+          ? [result, {
+              ...result,
+              providerRecordId: `record-${connectionId}-duplicate`,
+              rawArtifactHash: `sha256:search-raw-${connectionId}-duplicate`
+            }]
+          : [result]
     };
   };
 
@@ -839,7 +855,7 @@ function executionFixture(
         return discoveryResult(input.sourceUrl);
       }
     },
-    search: {
+    search: options.search ?? {
       async search(input) {
         searchCalls.push({
           providerConnectionId: input.providerConnectionId,
@@ -863,6 +879,7 @@ function executionFixture(
       if (input.connection.credentialVersion !== currentCredentialVersion) {
         throw new Error("simulated rotated provider credential");
       }
+      await options.afterValidateSearchConnection?.();
     },
     identityResolution: {
       async resolveCandidateIdentity(
@@ -1140,6 +1157,170 @@ test("recovery fails closed when a frozen search credential has rotated", async 
     "search-connection-success"
   ));
   assert.deepEqual(state.searchCalls, []);
+  assert.deepEqual(state.identityCommits, []);
+  assert.deepEqual(state.intelligenceCreates, []);
+});
+
+test("rejects audited search provenance from a different credential version", async () => {
+  const state = executionFixture("verified", {
+    searchResponseCredentialVersion: 2
+  });
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: searchConnections("search-connection-success"),
+    planSessionId: "acquisition-plan:run-response-version-mismatch"
+  }, "response-version-mismatch");
+
+  const completed = await state.service.execute(SCOPE, created.id);
+
+  assert.equal(completed.status, "failed");
+  assert.equal(completed.outcome, "provider_unavailable");
+  assert.equal(state.searchCalls.length, 1);
+  assert.deepEqual(state.identityCommits, []);
+  assert.deepEqual(state.intelligenceCreates, []);
+});
+
+test("rejects a credential rotated between identity validation and actual public search use", async () => {
+  const credentialSecret =
+    "identity-search-rotation-test-secret-at-least-32-characters";
+  function liveConnection(credentialVersion: number): ProviderConnection {
+    const identity = {
+      id: "identity-search-connection",
+      providerId: "baidu_ai_search",
+      ownerId: SCOPE.ownerId,
+      teamId: SCOPE.teamId
+    };
+    return {
+      ...identity,
+      scope: "personal",
+      credentialRef: "credential_identity_search",
+      credentialVersion,
+      configurationEncrypted: encryptProviderConfigurationWithSecret(
+        identity,
+        { apiKey: `official-key-v${credentialVersion}`, baseUrl: "" },
+        credentialSecret
+      ),
+      status: "active",
+      quotaPolicy: {},
+      budgetPolicy: {},
+      lastHealthAt: "",
+      lastHealthStatus: "untested",
+      lastErrorCode: "",
+      lastHealthMessage: "",
+      usage: "",
+      createdBy: SCOPE.ownerId,
+      createdAt: "2026-08-08T00:00:00.000Z",
+      updatedAt: `2026-08-08T00:00:0${credentialVersion}.000Z`
+    };
+  }
+  const store: AcquisitionPublicSearchStore = {
+    providerCatalog: createDefaultProviderCatalog(),
+    providerConnections: [liveConnection(1)],
+    providerRequestLogs: [],
+    async persist() {}
+  };
+  const executedCredentialVersions: number[] = [];
+  const search = createAcquisitionPublicSearchPort(store, {
+    credentialSecret,
+    async executeSearch(input) {
+      executedCredentialVersions.push(
+        Number(input.connection.credentialVersion)
+      );
+      input.onLogs([{
+        id: `rotation-log-${executedCredentialVersions.length}`,
+        teamId: input.context.teamId,
+        ownerId: input.context.ownerId,
+        providerId: input.provider.id,
+        connectionId: input.connection.id,
+        runId: input.context.runId,
+        runShardId: input.context.runShardId,
+        requestFingerprint: "a".repeat(64),
+        endpointCode: "search",
+        httpStatus: 200,
+        attempt: 1,
+        quotaUnits: 1,
+        costAmount: 0,
+        currency: "",
+        durationMs: 1,
+        responseSize: 100,
+        errorCode: "",
+        requestedAt: "2026-08-08T00:00:00.000Z"
+      }]);
+      const page: ProviderPage = {
+        status: "success",
+        records: [{
+          company: "林老师",
+          officialWebsite: "",
+          website: "",
+          country: "中国 厦门",
+          business: "门店经营",
+          contact: "",
+          contactInfo: "",
+          description: "正在比较 AI 获客供应商",
+          confidence: 0,
+          providerRecordId: "rotated-search-record",
+          sourceUrl: PROFILE_URL,
+          recordType: "discovery_page",
+          fetchedAt: "2026-08-08T00:00:00.000Z",
+          payloadHash: "b".repeat(64),
+          evidenceSummary: "独立公开搜索索引证据",
+          matchedFields: ["company", "description", "sourceUrl"],
+          adapterVersion: "1.0",
+          catalogPolicyVersion: "1.0",
+          sourceLevel: "discovery",
+          retentionPolicyRef: "public"
+        }],
+        nextCursor: null,
+        exhausted: true,
+        rawCount: 1,
+        validCount: 1,
+        invalidCount: 0,
+        duplicateCount: 0,
+        warnings: [],
+        usage: {
+          requestCount: 1,
+          quotaUsed: 1,
+          quotaRemaining: null,
+          costAmount: null,
+          currency: null,
+          estimated: false,
+          display: ""
+        }
+      };
+      return page;
+    }
+  });
+  let rotated = false;
+  const state = executionFixture("verified", {
+    search,
+    async afterValidateSearchConnection() {
+      if (rotated) return;
+      rotated = true;
+      store.providerConnections.splice(0, 1, liveConnection(2));
+    }
+  });
+  const created = await state.service.create(SCOPE, {
+    candidateId: "candidate-1",
+    expectedCandidateVersion: 3,
+    sourceEvidenceIds: ["source-evidence"],
+    searchConnections: [{
+      connectionId: "identity-search-connection",
+      providerId: "baidu_ai_search",
+      kind: "search",
+      status: "active",
+      credentialVersion: 1
+    }],
+    planSessionId: "acquisition-plan:run-use-boundary-rotation"
+  }, "credential-use-boundary-rotation");
+
+  const completed = await state.service.execute(SCOPE, created.id);
+
+  assert.equal(rotated, true);
+  assert.equal(completed.status, "failed");
+  assert.equal(completed.outcome, "provider_unavailable");
+  assert.deepEqual(executedCredentialVersions, []);
   assert.deepEqual(state.identityCommits, []);
   assert.deepEqual(state.intelligenceCreates, []);
 });

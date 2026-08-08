@@ -97,6 +97,10 @@ export interface SearchPublicSourcesRequest {
   actorId: string;
   sessionId: string;
   providerConnectionId: string;
+  expectedConnection?: {
+    readonly providerId: string;
+    readonly credentialVersion: number;
+  };
   query: string;
   subjectKinds: SubjectKind[];
   maxResults: number;
@@ -150,6 +154,7 @@ export interface SearchPublicSourceResult {
 
 export interface SearchPublicSourcesResponse {
   providerConnectionId: string;
+  providerCredentialVersion: number;
   provider: string;
   requestId: string;
   results: SearchPublicSourceResult[];
@@ -586,6 +591,8 @@ const searchResultSchema = z.object({
 
 const searchResponseEnvelopeSchema = z.object({
   providerConnectionId: z.string().trim().min(1).max(255),
+  providerCredentialVersion: z.number().int().positive()
+    .max(Number.MAX_SAFE_INTEGER),
   provider: z.string().trim().min(1).max(100),
   requestId: z.string().trim().min(1).max(500),
   results: z.array(z.unknown()).max(100)
