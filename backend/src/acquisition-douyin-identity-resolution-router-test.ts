@@ -159,6 +159,7 @@ async function fixture(input: {
   });
   const app = express();
   app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
   app.use((req, _res, next) => {
     if (input.user !== null) {
       req.user = input.user ?? {
@@ -476,6 +477,60 @@ test("retry body is present JSON and exactly an empty object", async () => {
   }
 });
 
+test("retry accepts only the application/json media type", async () => {
+  const rejectedMedia = [
+    { contentType: "application/x-www-form-urlencoded", body: "&" },
+    { contentType: "text/plain", body: "{}" },
+    { contentType: "multipart/form-data; boundary=empty", body: "--empty--" },
+    { contentType: "", body: "{}" }
+  ];
+  for (const [index, item] of rejectedMedia.entries()) {
+    const rejected = await fixture({ latest: operation({
+      status: "failed", outcome: "provider_unavailable", retryable: true
+    }) });
+    try {
+      const result = await rejected.request(
+        "/api/v1/acquisition/candidates/candidate-1/douyin-identity-resolution-operations",
+        {
+          method: "POST",
+          headers: {
+            "content-type": item.contentType,
+            "Idempotency-Key": `rejected-media-${index}`
+          },
+          body: item.body
+        }
+      );
+      assert.equal(result.response.status, 400, item.contentType || "missing");
+      assert.equal(rejected.creations.length, 0);
+      assert.equal(rejected.dispatched.length, 0);
+    } finally {
+      await rejected.close();
+    }
+  }
+
+  const accepted = await fixture({ latest: operation({
+    status: "failed", outcome: "provider_unavailable", retryable: true
+  }) });
+  try {
+    const result = await accepted.request(
+      "/api/v1/acquisition/candidates/candidate-1/douyin-identity-resolution-operations",
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "Idempotency-Key": "json-with-charset"
+        },
+        body: "{}"
+      }
+    );
+    assert.equal(result.response.status, 202);
+    assert.equal(accepted.creations.length, 1);
+    assert.equal(accepted.dispatched.length, 1);
+  } finally {
+    await accepted.close();
+  }
+});
+
 test("retry rejects physically duplicated Idempotency-Key headers", async () => {
   const subject = await fixture({ latest: operation({
     status: "failed", outcome: "provider_unavailable", retryable: true
@@ -499,7 +554,7 @@ test("retry rejects physically duplicated Idempotency-Key headers", async () => 
   }
 });
 
-test("an idempotency replay cannot be replayed through a different candidate", async () => {
+test("concurrent candidates cannot share one idempotency key", async () => {
   const subject = await fixture({
     latest: null,
     candidates: new Map([
@@ -508,16 +563,22 @@ test("an idempotency replay cannot be replayed through a different candidate", a
     ])
   });
   try {
-    const created = await subject.request(
-      "/api/v1/acquisition/candidates/candidate-1/douyin-identity-resolution-operations",
-      { method: "POST", headers: { "Idempotency-Key": "candidate-bound-key" }, body: "{}" }
+    const results = await Promise.all([
+      subject.request(
+        "/api/v1/acquisition/candidates/candidate-1/douyin-identity-resolution-operations",
+        { method: "POST", headers: { "Idempotency-Key": "candidate-bound-key" }, body: "{}" }
+      ),
+      subject.request(
+        "/api/v1/acquisition/candidates/candidate-2/douyin-identity-resolution-operations",
+        { method: "POST", headers: { "Idempotency-Key": "candidate-bound-key" }, body: "{}" }
+      )
+    ]);
+    assert.deepEqual(
+      results.map((result) => result.response.status).sort(),
+      [202, 409]
     );
-    assert.equal(created.response.status, 202);
-    const result = await subject.request(
-      "/api/v1/acquisition/candidates/candidate-2/douyin-identity-resolution-operations",
-      { method: "POST", headers: { "Idempotency-Key": "candidate-bound-key" }, body: "{}" }
-    );
-    assert.equal(result.response.status, 409);
+    assert.equal(subject.creations.length, 1);
+    assert.equal(subject.dispatched.length, 1);
   } finally {
     await subject.close();
   }
@@ -574,6 +635,18 @@ test("public projection filters sentinel evidence and caps related lists", async
       publicProfileUrl: item.publicProfileUrl,
       evidenceIds: [item.evidenceId, item.evidenceId]
     }));
+  Object.assign(evidence[0]!, {
+    ownerId: "private-owner",
+    providerConnectionSnapshot: { credentialVersion: 99 }
+  });
+  Object.assign(profileCandidates[0]!, {
+    internalScore: 0.99,
+    privateEvidence: { rawArtifact: "secret" }
+  });
+  profileCandidates.push({
+    publicProfileUrl: "https://WWW.DOUYIN.COM/user/0/#duplicate",
+    evidenceIds: ["evidence-1", "evidence-0"]
+  });
   const subject = await fixture({ latest: operation({
     canonicalProfileUrl: null,
     profileCandidates,
@@ -586,6 +659,25 @@ test("public projection filters sentinel evidence and caps related lists", async
     assert.equal(result.response.status, 200);
     assert.equal(result.json.evidence.length, 100);
     assert.equal(result.json.profileCandidates.length, 100);
+    assert.deepEqual(Object.keys(result.json.evidence[0]).sort(), [
+      "accessStatus",
+      "evidenceClass",
+      "evidenceId",
+      "fetchedAt",
+      "publicProfileUrl",
+      "sourceFingerprint",
+      "sourceUrl"
+    ]);
+    assert.deepEqual(result.json.profileCandidates[0], {
+      publicProfileUrl: "https://www.douyin.com/user/0",
+      evidenceIds: ["evidence-0", "evidence-1"]
+    });
+    assert.equal(
+      new Set(result.json.profileCandidates.map(
+        (item: { publicProfileUrl: string }) => item.publicProfileUrl
+      )).size,
+      result.json.profileCandidates.length
+    );
     assert.equal(
       result.json.evidence.some((item: { evidenceId: string }) =>
         item.evidenceId === "provider-unavailable-sentinel"),

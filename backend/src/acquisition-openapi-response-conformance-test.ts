@@ -233,6 +233,22 @@ test("Douyin identity public DTO conforms without private operation state", asyn
     accessStatus: "public_content" as const,
     fetchedAt: NOW
   }));
+  Object.assign(validEvidence[0]!, {
+    ownerId: "private-response-owner",
+    providerConnectionSnapshot: { credentialVersion: 99 }
+  });
+  const profileCandidates = validEvidence.map((item) => ({
+    publicProfileUrl: item.publicProfileUrl,
+    evidenceIds: [item.evidenceId]
+  }));
+  Object.assign(profileCandidates[0]!, {
+    internalScore: 0.99,
+    privateEvidence: { rawArtifact: "secret" }
+  });
+  profileCandidates.push({
+    publicProfileUrl: "https://WWW.DOUYIN.COM/user/response-0/#duplicate",
+    evidenceIds: ["evidence-response-1", "evidence-response-0"]
+  });
   const operation = {
     id: "douyin-response-1", ownerId: OWNER, teamId: TEAM, actorId: OWNER,
     candidateId: "candidate-response-1", candidateVersion: 3,
@@ -241,10 +257,7 @@ test("Douyin identity public DTO conforms without private operation state", asyn
     status: "failed" as const, currentStage: null,
     outcome: "provider_unavailable" as const, retryable: true,
     canonicalProfileUrl: null,
-    profileCandidates: validEvidence.map((item) => ({
-      publicProfileUrl: item.publicProfileUrl,
-      evidenceIds: [item.evidenceId]
-    })),
+    profileCandidates,
     evidence: [{
       evidenceId: "provider-unavailable-sentinel",
       evidenceClass: "independent_search_result" as const,
@@ -272,6 +285,10 @@ test("Douyin identity public DTO conforms without private operation state", asyn
     assert.equal(result.body.outcome, "provider_unavailable");
     assert.equal(result.body.evidence.length, 100);
     assert.equal(result.body.profileCandidates.length, 100);
+    assert.deepEqual(result.body.profileCandidates[0], {
+      publicProfileUrl: "https://www.douyin.com/user/response-0",
+      evidenceIds: ["evidence-response-0", "evidence-response-1"]
+    });
     assert.equal(result.body.evidence.some((item: Record<string, unknown>) =>
       item.evidenceId === "provider-unavailable-sentinel"), false);
   } finally { await fixture.close(); }

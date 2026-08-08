@@ -14,6 +14,9 @@ import type {
 import {
   AcquisitionDouyinIdentityResolutionOperationError
 } from "./acquisition-douyin-identity-resolution-operations.js";
+import {
+  normalizeAcquisitionPublicUrl
+} from "./acquisition-public-identity-resolver.js";
 
 const candidateIdSchema = z.string().trim().min(1).max(120);
 const emptyBodySchema = z.object({}).strict();
@@ -138,6 +141,13 @@ function requireRequestBody(req: Request) {
       400
     );
   }
+  if (req.is("application/json") !== "application/json") {
+    throw new DouyinIdentityResolutionHttpError(
+      "application_json_required",
+      "Content-Type 必须是 application/json",
+      400
+    );
+  }
 }
 
 function unresolvedDouyinCandidate(
@@ -154,16 +164,14 @@ function unresolvedDouyinCandidate(
 }
 
 function publicOperation(operation: AcquisitionDouyinIdentityResolutionOperation) {
-  const validUrl = (value: unknown) => {
+  const normalizedUrl = (value: unknown) => {
     if (typeof value !== "string" || value.length === 0 || value.length > 4096) {
-      return false;
+      return null;
     }
-    try {
-      const url = new URL(value);
-      return url.protocol === "https:" && !url.username && !url.password;
-    } catch {
-      return false;
-    }
+    const normalized = normalizeAcquisitionPublicUrl(value);
+    return normalized?.startsWith("https://") && normalized.length <= 4096
+      ? normalized
+      : null;
   };
   const evidenceClasses = new Set([
     "douyin_public_page",
@@ -180,13 +188,15 @@ function publicOperation(operation: AcquisitionDouyinIdentityResolutionOperation
   const evidenceIds = new Set<string>();
   for (const item of operation.evidence) {
     if (evidence.length === 100) break;
+    const publicProfileUrl = normalizedUrl(item.publicProfileUrl);
+    const sourceUrl = normalizedUrl(item.sourceUrl);
     if (typeof item.evidenceId !== "string"
       || item.evidenceId.length === 0
       || item.evidenceId.length > 255
       || evidenceIds.has(item.evidenceId)
       || !evidenceClasses.has(item.evidenceClass)
-      || !validUrl(item.publicProfileUrl)
-      || !validUrl(item.sourceUrl)
+      || !publicProfileUrl
+      || !sourceUrl
       || typeof item.sourceFingerprint !== "string"
       || item.sourceFingerprint.length === 0
       || item.sourceFingerprint.length > 255
@@ -196,12 +206,20 @@ function publicOperation(operation: AcquisitionDouyinIdentityResolutionOperation
       continue;
     }
     evidenceIds.add(item.evidenceId);
-    evidence.push(structuredClone(item));
+    evidence.push({
+      evidenceId: item.evidenceId,
+      evidenceClass: item.evidenceClass,
+      publicProfileUrl,
+      sourceUrl,
+      sourceFingerprint: item.sourceFingerprint,
+      accessStatus: item.accessStatus,
+      fetchedAt: item.fetchedAt
+    });
   }
-  const profileCandidates: AcquisitionDouyinIdentityResolutionOperation["profileCandidates"] = [];
+  const profileCandidatesByUrl = new Map<string, string[]>();
   for (const candidate of operation.profileCandidates) {
-    if (profileCandidates.length === 100) break;
-    if (!validUrl(candidate.publicProfileUrl)) continue;
+    const publicProfileUrl = normalizedUrl(candidate.publicProfileUrl);
+    if (!publicProfileUrl) continue;
     const referencedEvidenceIds: string[] = [];
     const seen = new Set<string>();
     for (const evidenceId of candidate.evidenceIds) {
@@ -217,11 +235,25 @@ function publicOperation(operation: AcquisitionDouyinIdentityResolutionOperation
       referencedEvidenceIds.push(evidenceId);
     }
     if (referencedEvidenceIds.length === 0) continue;
-    profileCandidates.push({
-      publicProfileUrl: candidate.publicProfileUrl,
-      evidenceIds: referencedEvidenceIds
-    });
+    const mergedEvidenceIds = profileCandidatesByUrl.get(publicProfileUrl);
+    if (!mergedEvidenceIds) {
+      if (profileCandidatesByUrl.size === 100) continue;
+      profileCandidatesByUrl.set(publicProfileUrl, referencedEvidenceIds);
+      continue;
+    }
+    const mergedSet = new Set(mergedEvidenceIds);
+    for (const evidenceId of referencedEvidenceIds) {
+      if (mergedEvidenceIds.length === 100) break;
+      if (!mergedSet.has(evidenceId)) {
+        mergedSet.add(evidenceId);
+        mergedEvidenceIds.push(evidenceId);
+      }
+    }
   }
+  const profileCandidates = [...profileCandidatesByUrl].map(([
+    publicProfileUrl,
+    evidenceIds
+  ]) => ({ publicProfileUrl, evidenceIds }));
   return {
     id: operation.id,
     candidateId: operation.candidateId,
@@ -230,10 +262,7 @@ function publicOperation(operation: AcquisitionDouyinIdentityResolutionOperation
     currentStage: operation.currentStage,
     outcome: operation.outcome,
     retryable: operation.retryable,
-    canonicalProfileUrl: operation.canonicalProfileUrl !== null
-      && validUrl(operation.canonicalProfileUrl)
-      ? operation.canonicalProfileUrl
-      : null,
+    canonicalProfileUrl: normalizedUrl(operation.canonicalProfileUrl),
     profileCandidates,
     evidence,
     intelligenceOperationId: typeof operation.intelligenceOperationId === "string"

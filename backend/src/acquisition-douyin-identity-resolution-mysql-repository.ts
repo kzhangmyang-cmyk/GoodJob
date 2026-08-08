@@ -54,6 +54,13 @@ export const ACQUISITION_DOUYIN_IDENTITY_RESOLUTION_MYSQL_SCHEMA_STATEMENTS = [
         AND lease_token IS NULL
         AND lease_expires_at IS NULL)
     )
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS acquisition_douyin_identity_resolution_idempotency_locks (
+    owner_id VARCHAR(100) NOT NULL,
+    team_id VARCHAR(100) NOT NULL,
+    idempotency_key_hash CHAR(64) NOT NULL,
+    created_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (owner_id, team_id, idempotency_key_hash)
   ) ENGINE=InnoDB`
 ] as const;
 
@@ -390,28 +397,28 @@ implements AcquisitionDouyinIdentityResolutionOperationRepository {
     try {
       await connection.beginTransaction();
       transactionStarted = true;
-      const candidateRows = await selectedRows(
-        connection,
-        `SELECT id
-         FROM acquisition_candidates
-         WHERE owner_id = ? AND team_id = ? AND id = ?
-         LIMIT 1
-         FOR UPDATE`,
-        [operation.ownerId, operation.teamId, operation.candidateId]
+      await connection.query(
+        `INSERT INTO acquisition_douyin_identity_resolution_idempotency_locks (
+          owner_id, team_id, idempotency_key_hash, created_at
+        ) VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          idempotency_key_hash = VALUES(idempotency_key_hash)`,
+        [
+          operation.ownerId,
+          operation.teamId,
+          operation.idempotencyKeyHash,
+          mysqlDate(operation.createdAt)
+        ]
       );
-      if (candidateRows.length === 0) {
-        throw new AcquisitionDouyinIdentityResolutionOperationError(
-          "RESOURCE_NOT_FOUND"
-        );
-      }
+      // The reservation row exclusively owns this tenant/key. Keep this a
+      // consistent read: a missing-key FOR UPDATE would reintroduce gap locks.
       const idempotentRows = await selectedRows(
         connection,
         `SELECT ${OPERATION_SELECT_COLUMNS}
          FROM acquisition_douyin_identity_resolution_operations
          WHERE owner_id = ? AND team_id = ?
            AND idempotency_key_hash = ?
-         LIMIT 1
-         FOR UPDATE`,
+         LIMIT 1`,
         [
           operation.ownerId,
           operation.teamId,
@@ -430,6 +437,20 @@ implements AcquisitionDouyinIdentityResolutionOperationRepository {
         await connection.commit();
         transactionStarted = false;
         return { operation: idempotent, created: false };
+      }
+      const candidateRows = await selectedRows(
+        connection,
+        `SELECT id
+         FROM acquisition_candidates
+         WHERE owner_id = ? AND team_id = ? AND id = ?
+         LIMIT 1
+         FOR UPDATE`,
+        [operation.ownerId, operation.teamId, operation.candidateId]
+      );
+      if (candidateRows.length === 0) {
+        throw new AcquisitionDouyinIdentityResolutionOperationError(
+          "RESOURCE_NOT_FOUND"
+        );
       }
       const blockingRows = await selectedRows(
         connection,
