@@ -186,6 +186,8 @@ assignedTo = 业务负责人 ID
 
 权限由 capability 判断，不在各路由重复硬编码角色名。字段投影也按 capability 脱敏：无 `pricing.sensitive.read` 时不返回标准成本、底价和详细实际毛利。
 
+新版前端登录后先读取 `GET /api/v1/growth/bootstrap`，响应只包含服务端已授权的具体 `workspaceId`、`capabilityRegistryVersion`、当前用户 `capabilities[]`、`contractVersion`、`contractHash`和已启用功能标识。不返回任何密钥、全租户工作区列表或未授权能力。`super_admin` 未选择具体 ActiveWorkspaceContext 时返回可操作的“需选择工作区”状态，不返回伪 workspaceId=`all`。
+
 Capability 使用版本化、封闭的注册表，首版至少包含：
 
 ```text
@@ -1137,6 +1139,8 @@ advisor-recommendation-service
 ### 11.1 核心 API
 
 ```text
+GET               /api/v1/growth/bootstrap
+
 GET/POST          /api/v1/catalog/items
 GET/PATCH         /api/v1/catalog/items/:id
 POST              /api/v1/catalog/items/:id/retire
