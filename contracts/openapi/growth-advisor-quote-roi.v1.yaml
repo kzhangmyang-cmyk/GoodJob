@@ -1,0 +1,1000 @@
+openapi: 3.1.0
+info:
+  title: GoodJob Growth Advisor, Quote and ROI API
+  version: 1.0.0
+servers:
+  - url: /
+
+x-goodjob-templates:
+  read: &read
+    security:
+      - bearerAuth: []
+      - cookieAuth: []
+    parameters:
+      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/cursor'
+      - $ref: '#/components/parameters/limit'
+      - $ref: '#/components/parameters/sort'
+    responses:
+      '200': &genericOk
+        description: Authorized workspace projection
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      '401': &apiErrorResponse
+        description: API error
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApiError'
+      '403': *apiErrorResponse
+      '404': *apiErrorResponse
+  write: &write
+    security:
+      - bearerAuth: []
+      - cookieAuth: []
+        csrfToken: []
+    parameters:
+      - $ref: '#/components/parameters/idempotencyKey'
+      - $ref: '#/components/parameters/ifMatch'
+    responses:
+      '200': *genericOk
+      '400': *apiErrorResponse
+      '401': *apiErrorResponse
+      '403': *apiErrorResponse
+      '404': *apiErrorResponse
+      '409': *apiErrorResponse
+      '412': *apiErrorResponse
+      '422': *apiErrorResponse
+      '428': *apiErrorResponse
+
+paths:
+  /api/v1/growth/bootstrap:
+    get:
+      operationId: getGrowthBootstrap
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Authorized concrete workspace context or actionable workspace-selection state
+          content:
+            application/json:
+              schema:
+                $ref: ../json-schema/growth-bootstrap.v1.schema.json
+        '401': *apiErrorResponse
+
+  /api/v1/catalog/items:
+    get:
+      <<: *read
+      operationId: listCatalogItems
+      responses:
+        '200': { $ref: '#/components/responses/CatalogItemPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+    post:
+      <<: *write
+      operationId: createCatalogItem
+      responses:
+        '201': { $ref: '#/components/responses/CatalogItem' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/catalog/items/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getCatalogItem
+      responses:
+        '200': { $ref: '#/components/responses/CatalogItem' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+    patch:
+      <<: *write
+      operationId: updateCatalogItem
+      responses:
+        '200': { $ref: '#/components/responses/CatalogItem' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/catalog/items/{id}/retire:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: retireCatalogItem
+      responses:
+        '200': { $ref: '#/components/responses/CatalogItem' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '428': *apiErrorResponse
+
+  /api/v1/catalog/pricing-policies:
+    get:
+      <<: *read
+      operationId: listPricingPolicyVersions
+    post:
+      <<: *write
+      operationId: createPricingPolicyVersion
+      responses:
+        '201': { $ref: '#/components/responses/PricingPolicyVersion' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/catalog/pricing-policies/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getPricingPolicyVersion
+      responses:
+        '200': { $ref: '#/components/responses/PricingPolicyVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+  /api/v1/catalog/pricing-policies/{id}/activate:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: activatePricingPolicyVersion
+      responses:
+        '200': { $ref: '#/components/responses/PricingPolicyVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/catalog/pricing-policies/{id}/retire:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: retirePricingPolicyVersion
+      responses:
+        '200': { $ref: '#/components/responses/PricingPolicyVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/catalog/packages/{itemId}/versions:
+    parameters: [{ $ref: '#/components/parameters/itemId' }]
+    get:
+      <<: *read
+      operationId: listPackageVersions
+    post:
+      <<: *write
+      operationId: createPackageVersion
+      responses:
+        '201': { $ref: '#/components/responses/PackageVersion' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/catalog/package-versions/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getPackageVersion
+      responses:
+        '200': { $ref: '#/components/responses/PackageVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+    patch:
+      <<: *write
+      operationId: updatePackageVersion
+      responses:
+        '200': { $ref: '#/components/responses/PackageVersion' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/catalog/package-versions/{id}/activate:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: activatePackageVersion
+      responses:
+        '200': { $ref: '#/components/responses/PackageVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/catalog/package-versions/{id}/retire:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: retirePackageVersion
+      responses:
+        '200': { $ref: '#/components/responses/PackageVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '428': *apiErrorResponse
+
+  /api/v1/quotes/cases:
+    get:
+      <<: *read
+      operationId: listQuoteCases
+    post:
+      <<: *write
+      operationId: createQuoteCase
+      responses:
+        '201': { $ref: '#/components/responses/QuoteCase' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/quotes/cases/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getQuoteCase
+      responses:
+        '200': { $ref: '#/components/responses/QuoteCase' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+  /api/v1/quotes/cases/{id}/bind-deal:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: bindQuoteCaseDeal
+      responses:
+        '200': { $ref: '#/components/responses/QuoteCase' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/quotes/cases/{id}/close:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: closeQuoteCase
+      responses:
+        '200': { $ref: '#/components/responses/QuoteCase' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/quotes/cases/{id}/cancel:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: cancelQuoteCase
+      responses:
+        '200': { $ref: '#/components/responses/QuoteCase' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/quotes/cases/{id}/preview:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: previewQuote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuotePreviewInput' }
+      responses:
+        '200': { $ref: '#/components/responses/QuotePreviewResult' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/quotes/cases/{id}/versions:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: listQuoteVersions
+    post:
+      <<: *write
+      operationId: createQuoteVersion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [previewIdentity]
+              properties:
+                previewIdentity: { $ref: '#/components/schemas/QuotePreviewIdentity' }
+      responses:
+        '201': { $ref: '#/components/responses/QuoteVersion' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/quotes/versions/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getQuoteVersion
+      responses:
+        '200': { $ref: '#/components/responses/QuoteVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+  /api/v1/quotes/versions/{id}/submit:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: submitQuoteVersion
+      responses:
+        '200': { $ref: '#/components/responses/QuoteApproval' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/quotes/versions/{id}/approve:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: approveQuoteVersion
+      responses:
+        '200': { $ref: '#/components/responses/QuoteVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/quotes/versions/{id}/reject:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: rejectQuoteVersion
+      responses:
+        '200': { $ref: '#/components/responses/QuoteApproval' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/quotes/versions/{id}/expire:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: expireQuoteVersion
+      responses:
+        '200': { $ref: '#/components/responses/QuoteVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/quotes/versions/{id}/approvals:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: listQuoteApprovals
+  /api/v1/quotes/publication-operations/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getQuotePublicationOperation
+      responses:
+        '200': { $ref: '#/components/responses/QuotePublicationOperation' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+  /api/v1/quotes/publication-operations/{id}/retry:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: retryQuotePublicationOperation
+      responses:
+        '202': { $ref: '#/components/responses/QuotePublicationOperation' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/quotes/deals/{dealId}/decision:
+    parameters: [{ $ref: '#/components/parameters/dealId' }]
+    post:
+      <<: *write
+      operationId: decideQuoteDeal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DealDecisionInput' }
+
+  /api/v1/acquisition/cost-entries:
+    get:
+      <<: *read
+      operationId: listAcquisitionCostEntries
+    post:
+      <<: *write
+      operationId: createAcquisitionCostEntry
+      responses:
+        '201': { $ref: '#/components/responses/AcquisitionCostEntry' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/acquisition/cost-estimates:
+    get:
+      <<: *read
+      operationId: listAcquisitionCostEstimates
+    post:
+      <<: *write
+      operationId: createAcquisitionCostEstimate
+      responses:
+        '201': { $ref: '#/components/responses/AcquisitionCostEstimate' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/acquisition/cost-estimates/{id}/activate:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: activateAcquisitionCostEstimate
+      responses:
+        '200': { $ref: '#/components/responses/AcquisitionCostEstimate' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/acquisition/cost-estimates/{id}/supersede:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: supersedeAcquisitionCostEstimate
+  /api/v1/acquisition/cost-entries/{id}/verify:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: verifyAcquisitionCostEntry
+  /api/v1/acquisition/cost-entries/{id}/reject:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: rejectAcquisitionCostEntry
+  /api/v1/acquisition/cost-entries/{id}/reverse:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: reverseAcquisitionCostEntry
+  /api/v1/acquisition/cost-entries/{id}/correct:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: correctAcquisitionCostEntry
+  /api/v1/acquisition/attribution-allocation-sets:
+    get:
+      <<: *read
+      operationId: listAttributionAllocationSets
+    post:
+      <<: *write
+      operationId: createAttributionAllocationSet
+      responses:
+        '201': { $ref: '#/components/responses/AttributionAllocationSet' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/acquisition/attribution-allocation-sets/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getAttributionAllocationSet
+      responses:
+        '200': { $ref: '#/components/responses/AttributionAllocationSet' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+  /api/v1/acquisition/attribution-allocation-sets/{id}/activate:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: activateAttributionAllocationSet
+
+  /api/v1/finance/facts:
+    get:
+      <<: *read
+      operationId: listFinancialFacts
+    post:
+      <<: *write
+      operationId: createFinancialFact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../json-schema/financial-ledger.v1.schema.json#/$defs/FinancialFactCreateInput' }
+      responses:
+        '201': { $ref: '#/components/responses/FinancialFact' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/finance/facts/{id}/verify:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: verifyFinancialFact
+  /api/v1/finance/facts/{id}/reject:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: rejectFinancialFact
+  /api/v1/finance/facts/{id}/reverse:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: reverseFinancialFact
+  /api/v1/finance/facts/{id}/correct:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: correctFinancialFact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FinancialFactCorrectionInput' }
+      responses:
+        '200': { $ref: '#/components/responses/FinancialFactCorrectionResult' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/finance/source-reports:
+    get:
+      <<: *read
+      operationId: listFinancialSourceReports
+    post:
+      <<: *write
+      operationId: createFinancialSourceReport
+      responses:
+        '201': { $ref: '#/components/responses/FinancialSourceReport' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/finance/source-reports/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getFinancialSourceReport
+      responses:
+        '200': { $ref: '#/components/responses/FinancialSourceReport' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+  /api/v1/finance/settlement-allocation-sets:
+    get:
+      <<: *read
+      operationId: listCashSettlementAllocationSets
+    post:
+      <<: *write
+      operationId: createCashSettlementAllocationSet
+      responses:
+        '201': { $ref: '#/components/responses/CashSettlementAllocationSet' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/finance/settlement-allocation-sets/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getCashSettlementAllocationSet
+      responses:
+        '200': { $ref: '#/components/responses/CashSettlementAllocationSet' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+  /api/v1/finance/settlement-allocation-sets/{id}/activate:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: activateCashSettlementAllocationSet
+  /api/v1/finance/import-templates/{kind}:
+    parameters: [{ $ref: '#/components/parameters/kind' }]
+    get:
+      <<: *read
+      operationId: getFinanceImportTemplate
+      responses:
+        '200':
+          description: Versioned import workbook template
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+  /api/v1/finance/imports/preview:
+    post:
+      <<: *write
+      operationId: previewFinanceImport
+      responses:
+        '200': { $ref: '#/components/responses/FinanceImportPreview' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '415': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/finance/imports/{previewId}/commit:
+    parameters: [{ $ref: '#/components/parameters/previewId' }]
+    post:
+      <<: *write
+      operationId: commitFinanceImport
+      responses:
+        '202': { $ref: '#/components/responses/FinanceImportOperation' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/finance/imports/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getFinanceImportOperation
+      responses:
+        '200': { $ref: '#/components/responses/FinanceImportOperation' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+  /api/v1/finance/imports/{id}/errors:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: listFinanceImportRowErrors
+
+  /api/v1/acquisition/cohorts:
+    get:
+      <<: *read
+      operationId: listAcquisitionCohorts
+    post:
+      <<: *write
+      operationId: createAcquisitionCohort
+      responses:
+        '201': { $ref: '#/components/responses/AcquisitionCohort' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/acquisition/cohorts/{id}:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: getAcquisitionCohort
+      responses:
+        '200': { $ref: '#/components/responses/AcquisitionCohort' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+  /api/v1/acquisition/cohorts/{id}/attestations:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: listClosureAttestations
+    post:
+      <<: *write
+      operationId: createClosureAttestation
+  /api/v1/acquisition/cohorts/{id}/close:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: closeAcquisitionCohortRoi
+      x-goodjob-as-of-upper-bound:
+        clock: commandStartedAt
+        maxFutureSkewSeconds: 1
+        effectiveCutoff: min(requestedAsOf,startedAt)
+        errorStatus: 422
+        errorCode: invalid_as_of
+        zeroWritesOnReject: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [currency, asOf, attestationIds]
+              properties:
+                currency: { type: string, pattern: '^[A-Z]{3}$' }
+                asOf: { type: string, format: date-time }
+                attestationIds: { type: array, minItems: 1, uniqueItems: true, items: { type: string, minLength: 1 } }
+      responses:
+        '201': { $ref: '#/components/responses/RoiClosureVersion' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/acquisition/cohorts/{id}/closures:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    get:
+      <<: *read
+      operationId: listRoiClosureVersions
+  /api/v1/acquisition/roi-closures/{closureVersionId}/reopen:
+    parameters: [{ $ref: '#/components/parameters/closureVersionId' }]
+    post:
+      <<: *write
+      operationId: reopenRoiClosureVersion
+
+  /api/v1/acquisition/growth-performance:
+    get:
+      <<: *read
+      operationId: getGrowthPerformance
+      x-goodjob-as-of-upper-bound:
+        clock: readStartedAt
+        maxFutureSkewSeconds: 1
+        effectiveCutoff: min(requestedAsOf,startedAt)
+        errorStatus: 422
+        errorCode: invalid_as_of
+        zeroWritesOnReject: true
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - { name: cohortId, in: query, required: true, schema: { type: string, minLength: 1 } }
+        - { name: currency, in: query, required: true, schema: { type: string, pattern: '^[A-Z]{3}$' } }
+        - { name: asOf, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: planId, in: query, required: false, schema: { type: string, minLength: 1 } }
+        - { name: closureVersionId, in: query, required: false, schema: { type: string, minLength: 1 } }
+      responses:
+        '200': { $ref: '#/components/responses/GrowthPerformanceResponse' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/acquisition/advisor/today:
+    get:
+      <<: *read
+      operationId: getAdvisorToday
+      x-goodjob-as-of-upper-bound:
+        clock: readStartedAt
+        maxFutureSkewSeconds: 1
+        effectiveCutoff: min(requestedAsOf,startedAt)
+        errorStatus: 422
+        errorCode: invalid_as_of
+        zeroWritesOnReject: true
+      parameters:
+        - $ref: '#/components/parameters/workspaceId'
+        - { name: asOf, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: audienceRole, in: query, required: false, schema: { type: string, enum: [sales, manager, admin, super_admin] } }
+        - { name: assignedTo, in: query, required: false, schema: { type: string, minLength: 1 } }
+        - $ref: '#/components/parameters/limit'
+      responses:
+        '200': { $ref: '#/components/responses/AdvisorTodayResponse' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '422': *apiErrorResponse
+  /api/v1/acquisition/advisor/recommendations/{id}/accept:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: acceptAdvisorRecommendation
+      requestBody: &recommendationTransitionBody
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdvisorRecommendationTransitionInput' }
+      responses: &recommendationTransitionResponses
+        '200': { $ref: '#/components/responses/AdvisorRecommendation' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+  /api/v1/acquisition/advisor/recommendations/{id}/ignore:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: ignoreAdvisorRecommendation
+      requestBody: *recommendationTransitionBody
+      responses: *recommendationTransitionResponses
+  /api/v1/acquisition/advisor/recommendations/{id}/complete:
+    parameters: [{ $ref: '#/components/parameters/id' }]
+    post:
+      <<: *write
+      operationId: completeAdvisorRecommendation
+      description: Resolves the exact persisted action receipt for the same recommendation revision and stable action hash; fails closed when none exists.
+      requestBody: *recommendationTransitionBody
+      responses: *recommendationTransitionResponses
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: gj_session
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+  parameters:
+    workspaceId: { name: workspaceId, in: query, required: true, schema: { type: string, minLength: 1, not: { const: all } } }
+    cursor: { name: cursor, in: query, required: false, schema: { type: string, minLength: 1 } }
+    limit: { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+    sort: { name: sort, in: query, required: false, schema: { type: string, minLength: 1 } }
+    idempotencyKey: { name: Idempotency-Key, in: header, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+    ifMatch: { name: If-Match, in: header, required: true, schema: { type: string, minLength: 1 } }
+    id: { name: id, in: path, required: true, schema: { type: string, minLength: 1 } }
+    itemId: { name: itemId, in: path, required: true, schema: { type: string, minLength: 1 } }
+    dealId: { name: dealId, in: path, required: true, schema: { type: string, minLength: 1 } }
+    previewId: { name: previewId, in: path, required: true, schema: { type: string, minLength: 1 } }
+    closureVersionId: { name: closureVersionId, in: path, required: true, schema: { type: string, minLength: 1 } }
+    kind: { name: kind, in: path, required: true, schema: { enum: [acquisition_cost, financial_fact] } }
+  schemas:
+    ApiError: { $ref: ../json-schema/api-error.v1.schema.json }
+    GrowthBootstrapResponse: { $ref: ../json-schema/growth-bootstrap.v1.schema.json }
+    CatalogItem: { $ref: ../json-schema/catalog-item.v1.schema.json }
+    CatalogItemPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/CatalogItem' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
+    PackageVersion: { $ref: ../json-schema/package-version.v1.schema.json }
+    PricingPolicyVersion: { $ref: ../json-schema/pricing-policy-version.v1.schema.json }
+    QuoteCase: { $ref: ../json-schema/quote-case.v1.schema.json }
+    CommercialBindingSnapshot: { $ref: '../json-schema/quote-case.v1.schema.json#/$defs/CommercialBindingSnapshot' }
+    QuotePreviewInput: { $ref: '../json-schema/quote-case.v1.schema.json#/$defs/QuotePreviewInput' }
+    QuotePreviewIdentity: { $ref: '../json-schema/quote-case.v1.schema.json#/$defs/QuotePreviewIdentity' }
+    QuotePreviewResult: { $ref: '../json-schema/quote-case.v1.schema.json#/$defs/QuotePreviewResult' }
+    QuoteVersion: { $ref: ../json-schema/quote-version.v1.schema.json }
+    QuoteApproval: { $ref: ../json-schema/quote-approval.v1.schema.json }
+    QuotePublicationOperation: { $ref: ../json-schema/quote-publication-operation.v1.schema.json }
+    DealDecisionInput:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [kind, quoteVersionId, commercialAmountHash]
+          properties:
+            kind: { enum: [won, lost] }
+            quoteVersionId: { type: string, minLength: 1 }
+            commercialAmountHash: { type: string, pattern: '^sha256:[0-9a-f]{64}$' }
+        - type: object
+          additionalProperties: false
+          required: [kind, reason]
+          properties:
+            kind: { const: pre_quote_disqualified }
+            reason: { type: string, minLength: 1 }
+    AcquisitionCostEntry: { $ref: ../json-schema/acquisition-cost-ledger.v1.schema.json }
+    AcquisitionCostEstimate: { $ref: '../json-schema/acquisition-cost-ledger.v1.schema.json#/$defs/AcquisitionCostEstimate' }
+    FinancialFact: { $ref: ../json-schema/financial-ledger.v1.schema.json }
+    FinancialFactCorrectionInput: { $ref: '../json-schema/financial-ledger.v1.schema.json#/$defs/FinancialFactCorrectionInput' }
+    FinancialFactCorrectionResult: { $ref: '../json-schema/financial-ledger.v1.schema.json#/$defs/FinancialFactCorrectionResult' }
+    LedgerVerificationEvent: { $ref: '../json-schema/financial-ledger.v1.schema.json#/$defs/LedgerVerificationEvent' }
+    FinancialSourceReport: { $ref: '../json-schema/financial-ledger.v1.schema.json#/$defs/FinancialSourceReport' }
+    AttributionAllocationSet: { $ref: ../json-schema/allocation-set.v1.schema.json }
+    CashSettlementAllocationSet: { $ref: '../json-schema/allocation-set.v1.schema.json#/$defs/CashSettlementAllocationSet' }
+    FinanceImportPreview: { $ref: '../json-schema/finance-import-operation.v1.schema.json#/$defs/FinanceImportPreview' }
+    FinanceImportOperation: { $ref: ../json-schema/finance-import-operation.v1.schema.json }
+    FinanceImportRowError: { $ref: '../json-schema/finance-import-operation.v1.schema.json#/$defs/FinanceImportRowError' }
+    AcquisitionCohort: { $ref: ../json-schema/acquisition-cohort.v1.schema.json }
+    RoiClosureVersion: { $ref: ../json-schema/roi-closure.v1.schema.json }
+    GrowthPerformanceQuery: { $ref: '../json-schema/growth-performance.v1.schema.json#/$defs/GrowthPerformanceQuery' }
+    ExpectedRoiCurrencyView: { $ref: '../json-schema/growth-performance.v1.schema.json#/$defs/ExpectedRoiCurrencyView' }
+    ActualRoiCurrencyView: { $ref: '../json-schema/growth-performance.v1.schema.json#/$defs/ActualRoiCurrencyView' }
+    CashCurrencyView: { $ref: '../json-schema/growth-performance.v1.schema.json#/$defs/CashCurrencyView' }
+    RoiCoverageSnapshot: { $ref: '../json-schema/growth-performance.v1.schema.json#/$defs/RoiCoverageSnapshot' }
+    RoiGapCode: { $ref: '../json-schema/growth-performance.v1.schema.json#/$defs/RoiGapCode' }
+    GrowthPerformanceResponse: { $ref: ../json-schema/growth-performance.v1.schema.json }
+    PriorityCustomerView: { $ref: '../json-schema/advisor-today.v1.schema.json#/$defs/PriorityCustomerView' }
+    PendingQuoteApprovalView: { $ref: '../json-schema/advisor-today.v1.schema.json#/$defs/PendingQuoteApprovalView' }
+    FinancialDataGapView: { $ref: '../json-schema/advisor-today.v1.schema.json#/$defs/FinancialDataGapView' }
+    AdvisorTodayQuery: { $ref: '../json-schema/advisor-today.v1.schema.json#/$defs/AdvisorTodayQuery' }
+    AdvisorTodayResponse: { $ref: ../json-schema/advisor-today.v1.schema.json }
+    AdvisorRecommendation: { $ref: ../json-schema/advisor-recommendation.v1.schema.json }
+    AdvisorRecommendationTransitionInput: { $ref: '../json-schema/advisor-recommendation.v1.schema.json#/$defs/AdvisorRecommendationTransitionInput' }
+    AdvisorCopilotTaskResult: { $ref: '../json-schema/advisor-recommendation.v1.schema.json#/$defs/AdvisorCopilotTaskResult' }
+    AsyncOperation: { $ref: ../json-schema/async-operation.v1.schema.json }
+    CopilotSession: { $ref: ../json-schema/copilot-session.v1.schema.json }
+    CopilotMessage: { $ref: ../json-schema/copilot-message.v1.schema.json }
+    CopilotMessagePagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/CopilotMessage' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
+    CopilotTask: { $ref: ../json-schema/copilot-task.v1.schema.json }
+  responses:
+    CatalogItem: &catalogItemResponse { description: Catalog item, content: { application/json: { schema: { $ref: '#/components/schemas/CatalogItem' } } } }
+    CatalogItemPagedResult: { description: Catalog page, content: { application/json: { schema: { $ref: '#/components/schemas/CatalogItemPagedResult' } } } }
+    PackageVersion: { description: Package version, content: { application/json: { schema: { $ref: '#/components/schemas/PackageVersion' } } } }
+    PricingPolicyVersion: { description: Pricing policy version with capability-projected sensitive fields, content: { application/json: { schema: { $ref: '#/components/schemas/PricingPolicyVersion' } } } }
+    QuoteCase: { description: Quote case, content: { application/json: { schema: { $ref: '#/components/schemas/QuoteCase' } } } }
+    QuotePreviewResult: { description: Deterministic quote preview, content: { application/json: { schema: { $ref: '#/components/schemas/QuotePreviewResult' } } } }
+    QuoteVersion: { description: Formal actionable quote version, content: { application/json: { schema: { $ref: '#/components/schemas/QuoteVersion' } } } }
+    QuoteApproval: { description: Quote approval, content: { application/json: { schema: { $ref: '#/components/schemas/QuoteApproval' } } } }
+    QuotePublicationOperation: { description: Quote publication operation, content: { application/json: { schema: { $ref: '#/components/schemas/QuotePublicationOperation' } } } }
+    AcquisitionCostEntry: { description: Acquisition cost entry, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCostEntry' } } } }
+    AcquisitionCostEstimate: { description: Acquisition cost estimate, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCostEstimate' } } } }
+    FinancialFact: { description: Financial fact with server-frozen binding, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialFact' } } } }
+    FinancialFactCorrectionResult: { description: Append-only financial correction, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialFactCorrectionResult' } } } }
+    FinancialSourceReport: { description: Financial source report, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialSourceReport' } } } }
+    AttributionAllocationSet: { description: Attribution allocation set, content: { application/json: { schema: { $ref: '#/components/schemas/AttributionAllocationSet' } } } }
+    CashSettlementAllocationSet: { description: Cash settlement allocation set, content: { application/json: { schema: { $ref: '#/components/schemas/CashSettlementAllocationSet' } } } }
+    FinanceImportPreview: { description: Finance import preview, content: { application/json: { schema: { $ref: '#/components/schemas/FinanceImportPreview' } } } }
+    FinanceImportOperation: { description: Finance import operation, content: { application/json: { schema: { $ref: '#/components/schemas/FinanceImportOperation' } } } }
+    AcquisitionCohort: { description: Acquisition cohort, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCohort' } } } }
+    RoiClosureVersion: { description: Immutable ROI closure, content: { application/json: { schema: { $ref: '#/components/schemas/RoiClosureVersion' } } } }
+    GrowthPerformanceResponse: { description: "Separate expected, actual and cash views", content: { application/json: { schema: { $ref: '#/components/schemas/GrowthPerformanceResponse' } } } }
+    AdvisorTodayResponse: { description: Advisor today projection, content: { application/json: { schema: { $ref: '#/components/schemas/AdvisorTodayResponse' } } } }
+    AdvisorRecommendation: { description: Advisor recommendation, content: { application/json: { schema: { $ref: '#/components/schemas/AdvisorRecommendation' } } } }

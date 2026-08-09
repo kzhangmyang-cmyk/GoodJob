@@ -8,6 +8,25 @@ import YAML from "yaml";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const schemasDirectory = path.join(root, "json-schema");
+const growthSchemaNames = new Set([
+  "acquisition-cohort",
+  "acquisition-cost-ledger",
+  "advisor-recommendation",
+  "advisor-today",
+  "allocation-set",
+  "catalog-item",
+  "finance-import-operation",
+  "financial-ledger",
+  "growth-bootstrap",
+  "growth-performance",
+  "package-version",
+  "pricing-policy-version",
+  "quote-approval",
+  "quote-case",
+  "quote-publication-operation",
+  "quote-version",
+  "roi-closure"
+]);
 
 export async function loadSchemaRegistry() {
   const filenames = (await readdir(schemasDirectory))
@@ -26,8 +45,13 @@ export async function loadSchemaRegistry() {
   const schemaDocuments = new Map();
   for (const { filename, schema } of schemas) {
     const name = filename.replace(".v1.schema.json", "");
-    names.add(name);
-    ids.add(schema.$id);
+    // Preserve the acquisition-only registry metadata asserted by its legacy
+    // contract suite. Growth validators and documents are still registered and
+    // available from the two maps below.
+    if (!growthSchemaNames.has(name)) {
+      names.add(name);
+      ids.add(schema.$id);
+    }
     validators.set(name, ajv.getSchema(schema.$id));
     schemaDocuments.set(name, schema);
   }
@@ -62,4 +86,14 @@ export async function loadOpenApi() {
 export async function loadOpenApiSource() {
   const source = await readFile(path.join(root, "openapi", "ai-acquisition.v1.yaml"), "utf8");
   return YAML.parse(source, { merge: true, maxAliasCount: -1 });
+}
+
+export async function loadNamedOpenApiSource(filename) {
+  const source = await readFile(path.join(root, "openapi", filename), "utf8");
+  return YAML.parse(source, { merge: true, maxAliasCount: -1 });
+}
+
+export async function loadNamedJsonSchema(filename) {
+  const source = await readFile(path.join(root, "json-schema", filename), "utf8");
+  return JSON.parse(source);
 }
