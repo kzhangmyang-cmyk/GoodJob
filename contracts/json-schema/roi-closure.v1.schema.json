@@ -10,6 +10,15 @@
     "allocationSetHash": { "$ref": "#/$defs/hash" }, "settlementSetHash": { "$ref": "#/$defs/hash" }, "calculationHash": { "$ref": "#/$defs/hash" }, "closedBy": { "$ref": "#/$defs/nonempty" }, "closedAt": { "type": "string", "format": "date-time" }
   },
   "$defs": {
-    "nonempty": { "type": "string", "minLength": 1 }, "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, "GrowthRoiSliceKey": { "type": "string", "pattern": "^(?:all|plan:.+)$" }
+    "nonempty": { "type": "string", "minLength": 1 }, "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, "GrowthRoiSliceKey": { "type": "string", "pattern": "^(?:all|plan:.+)$" },
+    "RoiClosureSeries": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "workspaceId", "cohortId", "currency", "status", "currentClosureVersionId", "revision", "updatedAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/nonempty" }, "workspaceId": { "type": "string", "minLength": 1, "not": { "const": "all" } }, "cohortId": { "$ref": "#/$defs/nonempty" },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" }, "status": { "const": "open" }, "currentClosureVersionId": { "type": ["string", "null"], "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 1 }, "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
   }
 }

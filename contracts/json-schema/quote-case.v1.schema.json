@@ -33,6 +33,31 @@
     "safeSigned": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
     "money": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
     "bps": { "type": "integer", "minimum": 0, "maximum": 10000 },
+    "QuoteCaseCreateInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["assignedTo"],
+      "properties": {
+        "candidateId": { "$ref": "#/$defs/nullableId" },
+        "customerId": { "$ref": "#/$defs/nullableId" },
+        "dealId": { "$ref": "#/$defs/nullableId" },
+        "assignedTo": { "$ref": "#/$defs/nonempty" }
+      },
+      "anyOf": [
+        { "required": ["candidateId"], "properties": { "candidateId": { "type": "string", "minLength": 1 } } },
+        { "required": ["customerId"], "properties": { "customerId": { "type": "string", "minLength": 1 } } },
+        { "required": ["dealId"], "properties": { "dealId": { "type": "string", "minLength": 1 } } }
+      ]
+    },
+    "BindQuoteCaseDealInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["dealId"],
+      "properties": { "dealId": { "$ref": "#/$defs/nonempty" } }
+    },
+    "QuoteDecisionInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reason"],
+      "properties": { "reason": { "type": "string", "minLength": 1 } }
+    },
     "CommercialBindingSnapshot": {
       "type": "object",
       "additionalProperties": false,
@@ -55,7 +80,7 @@
     "QuotePreviewInput": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["catalogItemId", "pricingPolicyVersionId", "quantityMicros", "offeredUnitPriceMinor", "orderDiscountMinor", "paymentTermDays", "giftItems", "customerTargetPriceMinor"],
+      "required": ["catalogItemId", "pricingPolicyVersionId", "quantityMicros", "offeredUnitPriceMinor", "orderDiscountMinor", "paymentTermDays", "giftItems", "surchargeContext", "customerTargetPriceMinor", "creditRiskBps", "manualEscalation"],
       "properties": {
         "catalogItemId": { "$ref": "#/$defs/nonempty" },
         "pricingPolicyVersionId": { "$ref": "#/$defs/nonempty" },
@@ -74,7 +99,17 @@
             }
           }
         },
-        "customerTargetPriceMinor": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/money" }] }
+        "surchargeContext": {
+          "type": "object", "additionalProperties": false,
+          "required": ["region", "deliveryMethod"],
+          "properties": {
+            "region": { "type": ["string", "null"], "minLength": 1 },
+            "deliveryMethod": { "type": ["string", "null"], "minLength": 1 }
+          }
+        },
+        "customerTargetPriceMinor": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/money" }] },
+        "creditRiskBps": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/bps" }] },
+        "manualEscalation": { "type": "boolean" }
       }
     },
     "QuotePreviewIdentity": {

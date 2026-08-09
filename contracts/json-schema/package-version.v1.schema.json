@@ -20,6 +20,25 @@
     "updatedAt": { "type": "string", "format": "date-time" }
   },
   "$defs": {
+    "PackageComponentInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["componentCatalogItemId", "componentPricingPolicyVersionId", "quantityMicros"],
+      "properties": {
+        "componentCatalogItemId": { "type": "string", "minLength": 1 },
+        "componentPricingPolicyVersionId": { "type": "string", "minLength": 1 },
+        "quantityMicros": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+      }
+    },
+    "PackageVersionDraftInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["currency", "validFrom", "validTo", "components"],
+      "properties": {
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "validFrom": { "type": "string", "format": "date-time" },
+        "validTo": { "type": ["string", "null"], "format": "date-time" },
+        "components": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/PackageComponentInput" } }
+      }
+    },
     "PackageComponent": {
       "type": "object",
       "additionalProperties": false,

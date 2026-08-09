@@ -182,6 +182,23 @@ function resolveInternalResponse(document, response) {
   return document.components.responses[response.$ref.slice(prefix.length)];
 }
 
+async function resolvePublishedSchema(document, unresolved) {
+  let schema = unresolved;
+  while (schema?.$ref) {
+    if (schema.$ref.startsWith("#/components/schemas/")) {
+      schema = document.components.schemas[schema.$ref.slice("#/components/schemas/".length)];
+      continue;
+    }
+    const match = schema.$ref.match(/^\.\.\/json-schema\/([^#]+)(?:#\/(.*))?$/);
+    assert.ok(match, schema.$ref);
+    schema = await loadNamedJsonSchema(match[1]);
+    for (const segment of match[2]?.split("/") ?? []) {
+      schema = schema[decodeURIComponent(segment.replaceAll("~1", "/").replaceAll("~0", "~"))];
+    }
+  }
+  return schema;
+}
+
 function allPublishedOperations(document) {
   const methods = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
   return Object.entries(document.paths).flatMap(([path, pathItem]) =>
@@ -197,6 +214,7 @@ const pricingPolicyFullFixture = () => ({
   workspaceId: "workspace-1",
   catalogItemId: "item-1",
   version: 1,
+  revision: 1,
   packageVersionId: null,
   currency: "CNY",
   listUnitPriceMinor: 20000,
@@ -244,6 +262,7 @@ const pricingPolicyRedactedFixture = () => ({
   workspaceId: "workspace-1",
   catalogItemId: "item-1",
   version: 1,
+  revision: 1,
   packageVersionId: null,
   currency: "CNY",
   listUnitPriceMinor: 20000,
@@ -664,7 +683,13 @@ test("fix round 1 every operation has a concrete closed success response", async
           || (schema?.type === "object"
             && schema.additionalProperties === false
             && Array.isArray(schema.required)
-            && schema.required.length > 0);
+            && schema.required.length > 0)
+          || (Array.isArray(schema?.oneOf)
+            && schema.oneOf.length > 0
+            && schema.oneOf.every((branch) => branch.type === "object"
+              && branch.additionalProperties === false
+              && Array.isArray(branch.required)
+              && branch.required.length > 0));
         if (!isConcreteRef && !isConcreteInline) {
           genericOperations.push(`${method.toUpperCase()} ${path} ${status}`);
         }
@@ -752,7 +777,6 @@ test("fix round 1 mutations require auth guards and versioned responses publish 
     ["/api/v1/quotes/versions/{id}/approve", "post"],
     ["/api/v1/acquisition/attribution-allocation-sets/{id}/activate", "post"],
     ["/api/v1/finance/settlement-allocation-sets/{id}/activate", "post"],
-    ["/api/v1/acquisition/cohorts/{id}/close", "post"],
     ["/api/v1/acquisition/roi-closures/{closureVersionId}/reopen", "post"]
   ]) {
     const operation = document.paths[path][method];
@@ -881,4 +905,141 @@ test("fix round 1 direct Finance commands expose only the three stable error cod
       }), false, `${method.toUpperCase()} ${path} ${status}`);
     }
   }
+});
+
+// Production break caught: replacing a domain command DTO with the generic empty body, omitting one of its downstream-required fields, or accepting caller-owned workspace/actor authority.
+test("fix round 2 data-bearing commands publish their exact closed inputs", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  const expected = {
+    createCatalogItem: ["type", "code", "name", "description", "unit"],
+    updateCatalogItem: [],
+    createPricingPolicyVersion: ["catalogItemId", "packageVersionId", "currency", "listUnitPriceMinor", "unitStandardCostMinor", "defaultOrderDeliveryCostMinor", "defaultOrderSalesCostMinor", "defaultOrderServiceCostMinor", "absoluteFloorUnitPriceMinor", "standardDiscountLimitBps", "absoluteDiscountLimitBps", "targetGrossMarginBps", "absoluteMinimumGrossMarginBps", "standardPaymentTermDays", "absolutePaymentTermDays", "approvalThresholds", "surchargePolicies", "giftPolicies", "validFrom", "validTo"],
+    createPackageVersion: ["currency", "validFrom", "validTo", "components"],
+    updatePackageVersion: ["currency", "validFrom", "validTo", "components"],
+    createQuoteCase: ["assignedTo"],
+    bindQuoteCaseDeal: ["dealId"],
+    previewQuote: ["catalogItemId", "pricingPolicyVersionId", "quantityMicros", "offeredUnitPriceMinor", "orderDiscountMinor", "paymentTermDays", "giftItems", "surchargeContext", "customerTargetPriceMinor", "creditRiskBps", "manualEscalation"],
+    createQuoteVersion: ["previewIdentity", "quoteInput"],
+    approveQuoteVersion: ["reason"],
+    rejectQuoteVersion: ["reason"],
+    expireQuoteVersion: ["reason"],
+    createAcquisitionCostEntry: ["platform", "planId", "runId", "providerId", "category", "amountMinor", "currency", "businessOccurredAt", "provenance", "sourceRef", "evidenceHash", "externalId", "sourceIdentityRoot", "estimateReconciliationId"],
+    createAcquisitionCostEstimate: ["cohortId", "planId", "runId", "amountMinor", "currency", "source", "sourceStableKey", "sourceVersion", "inputSnapshotHash", "validFrom", "validTo"],
+    verifyAcquisitionCostEntry: ["reason"],
+    rejectAcquisitionCostEntry: ["reason"],
+    reverseAcquisitionCostEntry: ["reason"],
+    correctAcquisitionCostEntry: ["amountMinor", "businessOccurredAt", "evidenceHash", "sourceRef", "reason"],
+    createAttributionAllocationSet: ["sourceType", "sourceId", "items"],
+    createFinancialFact: ["candidateId", "customerId", "dealId", "factType", "amountMinor", "currency", "businessOccurredAt", "provenance", "sourceRef", "evidenceHash", "externalId", "sourceIdentityRoot"],
+    verifyFinancialFact: ["reason"],
+    rejectFinancialFact: ["reason"],
+    reverseFinancialFact: ["reason"],
+    correctFinancialFact: ["reason", "replacement"],
+    createFinancialSourceReport: ["currency", "sourceSystem", "sourceCursor", "reportHash", "declaredTotalMinor", "periodFrom", "periodTo"],
+    createCashSettlementAllocationSet: ["sourceFactId", "items"],
+    createAcquisitionCohort: ["platform", "cohortFrom", "cohortTo", "definitionVersion", "firstTouchRuleVersion"],
+    createClosureAttestation: ["currency", "aspect", "periodFrom", "periodTo", "asOf", "declaredTotalMinor", "sourceSystem", "sourceCursor", "sourceReportId", "reportAllocationSetId", "reportHash", "evidenceRefs"],
+    closeAcquisitionCohortRoi: ["currency", "asOf", "attestationIds"],
+    acceptAdvisorRecommendation: ["reason"],
+    ignoreAdvisorRecommendation: ["reason"],
+    completeAdvisorRecommendation: ["reason"]
+  };
+  const operationsById = new Map(allPublishedOperations(document).map(({ operation }) => [operation.operationId, operation]));
+  for (const [operationId, required] of Object.entries(expected)) {
+    const operation = operationsById.get(operationId);
+    assert.ok(operation, operationId);
+    const schema = await resolvePublishedSchema(document, operation.requestBody.content["application/json"].schema);
+    assert.equal(schema.type, "object", operationId);
+    assert.equal(schema.additionalProperties, false, operationId);
+    assert.deepEqual([...(schema.required ?? [])].sort(), [...required].sort(), operationId);
+    for (const forbidden of ["workspaceId", "teamId", "ownerId", "actorId", "expectedRevision"]) {
+      assert.equal(forbidden in (schema.properties ?? {}), false, `${operationId}.${forbidden}`);
+    }
+  }
+  const update = await resolvePublishedSchema(document, operationsById.get("updateCatalogItem").requestBody.content["application/json"].schema);
+  assert.equal(update.minProperties, 1);
+  assert.deepEqual(Object.keys(update.properties).sort(), ["description", "name", "unit"]);
+});
+
+// Production break caught: returning an immutable ledger event or closed ROI version while publishing an ETag for a different mutable resource revision.
+test("fix round 2 transition ETags describe the returned next-If-Match resource", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  const revisionedResponses = {
+    createCatalogItem: "#/components/responses/CatalogItem", getCatalogItem: "#/components/responses/CatalogItem", updateCatalogItem: "#/components/responses/CatalogItem", retireCatalogItem: "#/components/responses/CatalogItem",
+    createPricingPolicyVersion: "#/components/responses/PricingPolicyVersion", getPricingPolicyVersion: "#/components/responses/PricingPolicyVersion", activatePricingPolicyVersion: "#/components/responses/PricingPolicyVersion", retirePricingPolicyVersion: "#/components/responses/PricingPolicyVersion",
+    createPackageVersion: "#/components/responses/PackageVersion", getPackageVersion: "#/components/responses/PackageVersion", updatePackageVersion: "#/components/responses/PackageVersion", activatePackageVersion: "#/components/responses/PackageVersion", retirePackageVersion: "#/components/responses/PackageVersion",
+    createQuoteCase: "#/components/responses/QuoteCase", getQuoteCase: "#/components/responses/QuoteCase", bindQuoteCaseDeal: "#/components/responses/QuoteCase", closeQuoteCase: "#/components/responses/QuoteCase", cancelQuoteCase: "#/components/responses/QuoteCase",
+    createQuoteVersion: "#/components/responses/QuoteVersion", getQuoteVersion: "#/components/responses/QuoteVersion", approveQuoteVersion: "#/components/responses/QuoteVersion", expireQuoteVersion: "#/components/responses/QuoteVersion",
+    createAcquisitionCostEntry: "#/components/responses/AcquisitionCostEntry", verifyAcquisitionCostEntry: "#/components/responses/AcquisitionCostEntry", rejectAcquisitionCostEntry: "#/components/responses/AcquisitionCostEntry", reverseAcquisitionCostEntry: "#/components/responses/AcquisitionCostEntry", correctAcquisitionCostEntry: "#/components/responses/AcquisitionCostEntry",
+    createAcquisitionCostEstimate: "#/components/responses/AcquisitionCostEstimate", activateAcquisitionCostEstimate: "#/components/responses/AcquisitionCostEstimate", supersedeAcquisitionCostEstimate: "#/components/responses/AcquisitionCostEstimate",
+    createAttributionAllocationSet: "#/components/responses/AttributionAllocationSet", getAttributionAllocationSet: "#/components/responses/AttributionAllocationSet", activateAttributionAllocationSet: "#/components/responses/AttributionAllocationSet",
+    createFinancialFact: "#/components/responses/FinancialFact", verifyFinancialFact: "#/components/responses/FinancialFact", rejectFinancialFact: "#/components/responses/FinancialFact", reverseFinancialFact: "#/components/responses/FinancialFact", correctFinancialFact: "#/components/responses/FinancialFactCorrectionResult",
+    createCashSettlementAllocationSet: "#/components/responses/CashSettlementAllocationSet", getCashSettlementAllocationSet: "#/components/responses/CashSettlementAllocationSet", activateCashSettlementAllocationSet: "#/components/responses/CashSettlementAllocationSet",
+    reopenRoiClosureVersion: "#/components/responses/RoiClosureSeries",
+    acceptAdvisorRecommendation: "#/components/responses/AdvisorRecommendation", ignoreAdvisorRecommendation: "#/components/responses/AdvisorRecommendation", completeAdvisorRecommendation: "#/components/responses/AdvisorRecommendation"
+  };
+  const actualRevisionedResponses = {};
+  for (const { operation } of allPublishedOperations(document)) {
+    for (const [status, unresolved] of Object.entries(operation.responses)) {
+      if (!/^2\d\d$/.test(status)) continue;
+      const response = resolveInternalResponse(document, unresolved);
+      if (response.headers?.ETag) actualRevisionedResponses[operation.operationId] = unresolved.$ref ?? "inline";
+    }
+  }
+  assert.deepEqual(actualRevisionedResponses, revisionedResponses);
+  for (const [path, responseRef, schemaRef] of [
+    ["/api/v1/acquisition/cost-entries/{id}/verify", "#/components/responses/AcquisitionCostEntry", "#/components/schemas/AcquisitionCostEntry"],
+    ["/api/v1/acquisition/cost-entries/{id}/reject", "#/components/responses/AcquisitionCostEntry", "#/components/schemas/AcquisitionCostEntry"],
+    ["/api/v1/acquisition/cost-entries/{id}/reverse", "#/components/responses/AcquisitionCostEntry", "#/components/schemas/AcquisitionCostEntry"],
+    ["/api/v1/finance/facts/{id}/verify", "#/components/responses/FinancialFact", "#/components/schemas/FinancialFact"],
+    ["/api/v1/finance/facts/{id}/reject", "#/components/responses/FinancialFact", "#/components/schemas/FinancialFact"],
+    ["/api/v1/finance/facts/{id}/reverse", "#/components/responses/FinancialFact", "#/components/schemas/FinancialFact"]
+  ]) {
+    const operation = document.paths[path].post;
+    assert.equal(operation.responses["200"].$ref, responseRef, path);
+    const response = resolveInternalResponse(document, operation.responses["200"]);
+    assert.deepEqual(response.headers.ETag, { $ref: "#/components/headers/ETag" }, path);
+    assert.equal(response.content["application/json"].schema.$ref, schemaRef, path);
+    const resource = await resolvePublishedSchema(document, response.content["application/json"].schema);
+    assert.ok(resource.required.includes("revision"), path);
+  }
+  const reopen = document.paths["/api/v1/acquisition/roi-closures/{closureVersionId}/reopen"].post;
+  assert.equal(reopen.responses["200"].$ref, "#/components/responses/RoiClosureSeries");
+  const reopenResponse = resolveInternalResponse(document, reopen.responses["200"]);
+  const series = await resolvePublishedSchema(document, reopenResponse.content["application/json"].schema);
+  assert.deepEqual(series.required, ["id", "workspaceId", "cohortId", "currency", "status", "currentClosureVersionId", "revision", "updatedAt"]);
+  assert.deepEqual(series.properties.status, { const: "open" });
+});
+
+// Production break caught: widening Deal decisions to the old kind/reason body or fabricating formal quote authority for a pre-quote disqualification.
+test("fix round 2 Deal decision request and response keep amountless and formal authority branches distinct", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  const operation = document.paths["/api/v1/quotes/deals/{dealId}/decision"].post;
+  const input = await resolvePublishedSchema(document, operation.requestBody.content["application/json"].schema);
+  assert.deepEqual(input.oneOf.map((branch) => branch.required), [
+    ["type", "quoteVersionId", "commercialAmountHash", "reasonCode", "reasonText", "occurredAt"],
+    ["type", "reasonCode", "reasonText", "occurredAt"]
+  ]);
+  const response = resolveInternalResponse(document, operation.responses["200"]);
+  const result = response.content["application/json"].schema;
+  assert.equal(result.oneOf.length, 2);
+  for (const branch of result.oneOf) {
+    assert.deepEqual(branch.required, ["deal", "event", "quoteCase", "authorityRevision", "cancelledPublicationOperationIds"]);
+    assert.equal(branch.additionalProperties, false);
+  }
+  const events = result.oneOf.map((branch) => branch.properties.event);
+  const ajv = new Ajv2020({ strict: true });
+  addFormats(ajv);
+  const validateFormal = ajv.compile(events[0]);
+  const validatePreQuote = ajv.compile(events[1]);
+  const validatePreQuoteDeal = ajv.compile(result.oneOf[1].properties.deal);
+  const common = {
+    id: "deal-event-1", dealId: "deal-1", quoteCaseIdSnapshot: "case-1",
+    reasonCode: null, reasonText: null, occurredAt: "2026-08-09T00:00:00.000Z",
+    recordedAt: "2026-08-09T00:00:01.000Z", authorityRevision: 3
+  };
+  assert.equal(validateFormal({ ...common, type: "won", commercialAuthority: "quote_projection", quoteVersionIdSnapshot: "quote-1", commercialAmountHash: `sha256:${"a".repeat(64)}`, amountMinorSnapshot: 50000, currencySnapshot: "CNY" }), true, JSON.stringify(validateFormal.errors));
+  assert.equal(validatePreQuote({ ...common, type: "lost", commercialAuthority: "pre_quote_disqualified", quoteVersionIdSnapshot: null, commercialAmountHash: null, amountMinorSnapshot: null, currencySnapshot: null, reasonCode: "no_budget" }), true, JSON.stringify(validatePreQuote.errors));
+  assert.equal(validatePreQuoteDeal({ id: "deal-1", customerId: "customer-1", stage: "丢单", amountType: "estimate", ownerId: "sales-1", teamId: "team-1" }), true, JSON.stringify(validatePreQuoteDeal.errors));
+  assert.equal(validatePreQuote({ ...common, type: "lost", commercialAuthority: "pre_quote_disqualified", quoteVersionIdSnapshot: "fabricated", commercialAmountHash: `sha256:${"a".repeat(64)}`, amountMinorSnapshot: 0, currencySnapshot: "CNY", reasonCode: "no_budget" }), false);
 });

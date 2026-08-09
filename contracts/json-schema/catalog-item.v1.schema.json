@@ -4,7 +4,7 @@
   "title": "CatalogItem",
   "type": "object",
   "additionalProperties": false,
-  "required": ["id", "workspaceId", "type", "code", "name", "description", "unit", "status", "createdAt", "updatedAt"],
+  "required": ["id", "workspaceId", "type", "code", "name", "description", "unit", "status", "revision", "createdAt", "updatedAt"],
   "properties": {
     "id": { "type": "string", "minLength": 1 },
     "workspaceId": { "type": "string", "minLength": 1, "not": { "const": "all" } },
@@ -14,7 +14,29 @@
     "description": { "type": ["string", "null"], "maxLength": 4000 },
     "unit": { "type": "string", "minLength": 1, "maxLength": 50 },
     "status": { "enum": ["active", "retired"] },
+    "revision": { "type": "integer", "minimum": 1 },
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "CatalogItemInput": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "code", "name", "description", "unit"],
+      "properties": {
+        "type": { "enum": ["product", "service", "package"] },
+        "code": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": ["string", "null"], "maxLength": 4000 },
+        "unit": { "type": "string", "minLength": 1, "maxLength": 50 }
+      }
+    },
+    "CatalogItemPatch": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": ["string", "null"], "maxLength": 4000 },
+        "unit": { "type": "string", "minLength": 1, "maxLength": 50 }
+      }
+    }
   }
 }
