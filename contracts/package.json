@@ -6,6 +6,8 @@
   "scripts": {
     "generate:types": "node scripts/generate-frontend-contract-types.mjs",
     "check:types": "node scripts/generate-frontend-contract-types.mjs --check",
+    "build:growth-release": "node scripts/build-growth-contract-release.mjs",
+    "check:growth-release": "node scripts/build-growth-contract-release.mjs --check",
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
