@@ -56,12 +56,11 @@
     },
     "CashSettlementAllocationItemInput": {
       "type": "object", "additionalProperties": false,
-      "required": ["targetRevenueFactId", "dealId", "quoteVersionId", "amountMinor", "currency", "originalPaymentFactId", "originalPaymentAllocationSetId", "originalPaymentAllocationItemId", "commercialBindingSnapshot"],
+      "required": ["targetRevenueFactId", "dealId", "quoteVersionId", "amountMinor", "currency", "originalPaymentFactId", "originalPaymentAllocationSetId", "originalPaymentAllocationItemId"],
       "properties": {
         "targetRevenueFactId": { "$ref": "#/$defs/nonempty" }, "dealId": { "$ref": "#/$defs/nonempty" }, "quoteVersionId": { "$ref": "#/$defs/nonempty" },
         "amountMinor": { "$ref": "#/$defs/money" }, "currency": { "$ref": "#/$defs/currency" }, "originalPaymentFactId": { "$ref": "#/$defs/nullableId" },
-        "originalPaymentAllocationSetId": { "$ref": "#/$defs/nullableId" }, "originalPaymentAllocationItemId": { "$ref": "#/$defs/nullableId" },
-        "commercialBindingSnapshot": { "$ref": "quote-case.v1.schema.json#/$defs/CommercialBindingSnapshot" }
+        "originalPaymentAllocationSetId": { "$ref": "#/$defs/nullableId" }, "originalPaymentAllocationItemId": { "$ref": "#/$defs/nullableId" }
       }
     },
     "CashSettlementAllocationSetCreateInput": {

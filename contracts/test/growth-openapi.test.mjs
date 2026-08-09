@@ -1022,7 +1022,7 @@ test("fix round 2 Deal decision request and response keep amountless and formal 
   ]);
   const response = resolveInternalResponse(document, operation.responses["200"]);
   const result = response.content["application/json"].schema;
-  assert.equal(result.oneOf.length, 2);
+  assert.equal(result.oneOf.length, 3);
   for (const branch of result.oneOf) {
     assert.deepEqual(branch.required, ["deal", "event", "quoteCase", "authorityRevision", "cancelledPublicationOperationIds"]);
     assert.equal(branch.additionalProperties, false);
@@ -1030,16 +1030,129 @@ test("fix round 2 Deal decision request and response keep amountless and formal 
   const events = result.oneOf.map((branch) => branch.properties.event);
   const ajv = new Ajv2020({ strict: true });
   addFormats(ajv);
-  const validateFormal = ajv.compile(events[0]);
-  const validatePreQuote = ajv.compile(events[1]);
-  const validatePreQuoteDeal = ajv.compile(result.oneOf[1].properties.deal);
+  const validateWon = ajv.compile(events[0]);
+  const validateLost = ajv.compile(events[1]);
+  const validatePreQuote = ajv.compile(events[2]);
+  const validatePreQuoteDeal = ajv.compile(result.oneOf[2].properties.deal);
   const common = {
     id: "deal-event-1", dealId: "deal-1", quoteCaseIdSnapshot: "case-1",
     reasonCode: null, reasonText: null, occurredAt: "2026-08-09T00:00:00.000Z",
     recordedAt: "2026-08-09T00:00:01.000Z", authorityRevision: 3
   };
-  assert.equal(validateFormal({ ...common, type: "won", commercialAuthority: "quote_projection", quoteVersionIdSnapshot: "quote-1", commercialAmountHash: `sha256:${"a".repeat(64)}`, amountMinorSnapshot: 50000, currencySnapshot: "CNY" }), true, JSON.stringify(validateFormal.errors));
+  assert.equal(validateWon({ ...common, type: "won", commercialAuthority: "quote_projection", quoteVersionIdSnapshot: "quote-1", commercialAmountHash: `sha256:${"a".repeat(64)}`, amountMinorSnapshot: 50000, currencySnapshot: "CNY" }), true, JSON.stringify(validateWon.errors));
+  assert.equal(validateLost({ ...common, type: "lost", commercialAuthority: "quote_projection", quoteVersionIdSnapshot: "quote-1", commercialAmountHash: `sha256:${"a".repeat(64)}`, amountMinorSnapshot: 50000, currencySnapshot: "CNY" }), true, JSON.stringify(validateLost.errors));
   assert.equal(validatePreQuote({ ...common, type: "lost", commercialAuthority: "pre_quote_disqualified", quoteVersionIdSnapshot: null, commercialAmountHash: null, amountMinorSnapshot: null, currencySnapshot: null, reasonCode: "no_budget" }), true, JSON.stringify(validatePreQuote.errors));
   assert.equal(validatePreQuoteDeal({ id: "deal-1", customerId: "customer-1", stage: "丢单", amountType: "estimate", ownerId: "sales-1", teamId: "team-1" }), true, JSON.stringify(validatePreQuoteDeal.errors));
   assert.equal(validatePreQuote({ ...common, type: "lost", commercialAuthority: "pre_quote_disqualified", quoteVersionIdSnapshot: "fabricated", commercialAmountHash: `sha256:${"a".repeat(64)}`, amountMinorSnapshot: 0, currencySnapshot: "CNY", reasonCode: "no_budget" }), false);
+});
+
+// Production break caught: allowing a settlement-allocation caller to forge the commercial authority snapshot that the server must derive from verified records.
+test("fix round 3 settlement allocation input rejects caller authority while output retains the frozen binding", async () => {
+  const validateInput = await loadDefinitionValidator("allocation-set.v1.schema.json", "CashSettlementAllocationSetCreateInput");
+  const validateOutput = await loadDefinitionValidator("allocation-set.v1.schema.json", "CashSettlementAllocationItem");
+  const commercialBindingSnapshot = {
+    candidateId: "candidate-1",
+    handoffId: "handoff-1",
+    leadId: "lead-1",
+    customerId: "customer-1",
+    dealId: "deal-1",
+    candidateVersion: 2,
+    handoffContentHash: `sha256:${"a".repeat(64)}`,
+    dealContentHash: `sha256:${"b".repeat(64)}`,
+    bindingHashSchemaVersion: "commercial-binding.v1",
+    attributionSnapshot: {
+      attributionVersion: "acquisition-run.v1",
+      runId: "run-1",
+      planId: "plan-1",
+      planVersionId: "plan-version-1",
+      planVersion: 3,
+      planSnapshotHash: `sha256:${"c".repeat(64)}`,
+      discoveredEventId: "event-1",
+      discoveredAt: "2026-08-09T00:00:00.000Z",
+      shardId: "shard-1",
+      operationId: "operation-1",
+      connectionId: "connection-1",
+      providerId: "provider-1",
+      evidenceIds: ["evidence-1"],
+      providerIds: ["provider-1"],
+      queryIds: ["query-1"],
+      strategyVersion: "strategy.v1",
+      qualificationDecisionId: "decision-1",
+      decisionVersion: "decision.v1",
+      decisionSnapshotHash: `sha256:${"d".repeat(64)}`,
+      decisionEngine: "rules",
+      ruleVersion: "rules.v1",
+      modelProvider: null,
+      model: null,
+      promptVersion: null
+    },
+    bindingHash: `sha256:${"e".repeat(64)}`,
+    verifiedAt: "2026-08-09T00:01:00.000Z"
+  };
+  const itemInput = {
+    targetRevenueFactId: "revenue-fact-1",
+    dealId: "deal-1",
+    quoteVersionId: "quote-version-1",
+    amountMinor: 50000,
+    currency: "CNY",
+    originalPaymentFactId: null,
+    originalPaymentAllocationSetId: null,
+    originalPaymentAllocationItemId: null
+  };
+  assert.equal(validateInput({ sourceFactId: "payment-fact-1", items: [itemInput] }), true, JSON.stringify(validateInput.errors));
+  assert.equal(validateInput({ sourceFactId: "payment-fact-1", items: [{ ...itemInput, commercialBindingSnapshot }] }), false);
+  assert.equal(validateOutput({ allocationSetId: "allocation-set-1", ...itemInput, commercialBindingSnapshot }), true, JSON.stringify(validateOutput.errors));
+});
+
+// Production break caught: independently-valid Deal and event fragments combining into contradictory won, lost, or pre-quote decision outcomes.
+test("fix round 3 Deal decision validates each outcome as one internally consistent result", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  const operation = document.paths["/api/v1/quotes/deals/{dealId}/decision"].post;
+  const response = resolveInternalResponse(document, operation.responses["200"]);
+  const resultSchema = structuredClone(response.content["application/json"].schema);
+  const replaceComponentRefs = (value) => {
+    if (!value || typeof value !== "object") return;
+    if (value.$ref === "#/components/schemas/QuoteCase") {
+      value.$ref = "https://goodjob.example/contracts/json-schema/quote-case.v1.schema.json";
+    }
+    for (const child of Object.values(value)) replaceComponentRefs(child);
+  };
+  replaceComponentRefs(resultSchema);
+  const registry = await loadSchemaRegistry();
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  addFormats(ajv);
+  for (const schema of registry.schemaDocuments.values()) ajv.addSchema(schema);
+  const validate = ajv.compile(resultSchema);
+  const quoteCase = {
+    id: "case-1", workspaceId: "workspace-1", candidateId: "candidate-1", customerId: "customer-1", dealId: "deal-1",
+    assignedTo: "sales-1", status: "closed", currentDraftVersionId: null, revision: 4, commercialBindingSnapshot: null,
+    createdAt: "2026-08-09T00:00:00.000Z", updatedAt: "2026-08-09T00:00:01.000Z"
+  };
+  const deal = { id: "deal-1", customerId: "customer-1", ownerId: "sales-1", teamId: "team-1" };
+  const commonEvent = {
+    id: "deal-event-1", dealId: "deal-1", quoteCaseIdSnapshot: "case-1", reasonCode: null, reasonText: null,
+    occurredAt: "2026-08-09T00:00:00.000Z", recordedAt: "2026-08-09T00:00:01.000Z", authorityRevision: 3
+  };
+  const formalAuthority = {
+    commercialAuthority: "quote_projection", quoteVersionIdSnapshot: "quote-1", commercialAmountHash: `sha256:${"a".repeat(64)}`,
+    amountMinorSnapshot: 50000, currencySnapshot: "CNY"
+  };
+  const result = (dealValue, eventValue, caseValue = quoteCase) => ({
+    deal: dealValue, event: eventValue, quoteCase: caseValue, authorityRevision: 3, cancelledPublicationOperationIds: []
+  });
+  const won = result({ ...deal, stage: "成交", amountType: "won" }, { ...commonEvent, ...formalAuthority, type: "won" });
+  const lost = result({ ...deal, stage: "丢单", amountType: "quoted" }, { ...commonEvent, ...formalAuthority, type: "lost", reasonCode: "competitor" });
+  const preQuote = result(
+    { ...deal, stage: "丢单", amountType: "estimate" },
+    { ...commonEvent, type: "lost", commercialAuthority: "pre_quote_disqualified", quoteVersionIdSnapshot: null, commercialAmountHash: null, amountMinorSnapshot: null, currencySnapshot: null, reasonCode: "no_budget" },
+    null
+  );
+  assert.equal(validate(won), true, JSON.stringify(validate.errors));
+  assert.equal(validate(lost), true, JSON.stringify(validate.errors));
+  assert.equal(validate(preQuote), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...won, deal: { ...won.deal, stage: "丢单" } }), false, "won + 丢单");
+  assert.equal(validate({ ...lost, deal: { ...lost.deal, stage: "成交" } }), false, "lost + 成交");
+  assert.equal(validate({ ...preQuote, deal: { ...preQuote.deal, stage: "成交" } }), false, "pre-quote + 成交");
+  assert.equal(validate({ ...preQuote, deal: { ...preQuote.deal, amountType: "won" } }), false, "pre-quote + won amount type");
+  assert.equal(validate({ ...preQuote, event: { ...preQuote.event, ...formalAuthority } }), false, "pre-quote + formal quote authority fields");
 });

@@ -511,25 +511,25 @@ paths:
                     additionalProperties: false
                     required: [deal, event, quoteCase, authorityRevision, cancelledPublicationOperationIds]
                     properties:
-                      deal: &dealDecisionDeal
+                      deal:
                         type: object
                         additionalProperties: false
                         required: [id, customerId, stage, amountType, ownerId, teamId]
-                        properties:
+                        properties: &dealDecisionWonFields
                           id: { type: string, minLength: 1 }
                           customerId: { type: string, minLength: 1 }
-                          stage: { enum: [成交, 丢单] }
-                          amountType: { enum: [estimate, quoted, won] }
+                          stage: { const: 成交 }
+                          amountType: { const: won }
                           ownerId: { type: string, minLength: 1 }
                           teamId: { type: string, minLength: 1 }
                       event:
                         type: object
                         additionalProperties: false
                         required: [id, dealId, type, commercialAuthority, quoteCaseIdSnapshot, quoteVersionIdSnapshot, commercialAmountHash, amountMinorSnapshot, currencySnapshot, reasonCode, reasonText, occurredAt, recordedAt, authorityRevision]
-                        properties:
+                        properties: &dealDecisionWonEventFields
                           id: { type: string, minLength: 1 }
                           dealId: { type: string, minLength: 1 }
-                          type: { enum: [won, lost] }
+                          type: { const: won }
                           commercialAuthority: { const: quote_projection }
                           quoteCaseIdSnapshot: { type: string, minLength: 1 }
                           quoteVersionIdSnapshot: { type: string, minLength: 1 }
@@ -551,7 +551,39 @@ paths:
                     additionalProperties: false
                     required: [deal, event, quoteCase, authorityRevision, cancelledPublicationOperationIds]
                     properties:
-                      deal: *dealDecisionDeal
+                      deal:
+                        type: object
+                        additionalProperties: false
+                        required: [id, customerId, stage, amountType, ownerId, teamId]
+                        properties:
+                          <<: *dealDecisionWonFields
+                          stage: { const: 丢单 }
+                          amountType: { const: quoted }
+                      event:
+                        type: object
+                        additionalProperties: false
+                        required: [id, dealId, type, commercialAuthority, quoteCaseIdSnapshot, quoteVersionIdSnapshot, commercialAmountHash, amountMinorSnapshot, currencySnapshot, reasonCode, reasonText, occurredAt, recordedAt, authorityRevision]
+                        properties:
+                          <<: *dealDecisionWonEventFields
+                          type: { const: lost }
+                      quoteCase: { $ref: '#/components/schemas/QuoteCase' }
+                      authorityRevision: { type: integer, minimum: 1 }
+                      cancelledPublicationOperationIds:
+                        type: array
+                        uniqueItems: true
+                        items: { type: string, minLength: 1 }
+                  - type: object
+                    additionalProperties: false
+                    required: [deal, event, quoteCase, authorityRevision, cancelledPublicationOperationIds]
+                    properties:
+                      deal:
+                        type: object
+                        additionalProperties: false
+                        required: [id, customerId, stage, amountType, ownerId, teamId]
+                        properties:
+                          <<: *dealDecisionWonFields
+                          stage: { const: 丢单 }
+                          amountType: { const: estimate }
                       event:
                         type: object
                         additionalProperties: false
