@@ -57,6 +57,36 @@ test("ordinary users default to their team and may select only their personal wo
   assert.equal(await resolveActiveWorkspace(baseUser, "team-b", directory), null);
 });
 
+test("another user's personal workspace is rejected before directory access", async () => {
+  const calls: string[] = [];
+  const directory = {
+    async canAccess(_user: SessionUser, workspaceId: string) {
+      calls.push(workspaceId);
+      return workspaceId === "personal:user-2";
+    }
+  };
+
+  assert.equal(
+    await resolveActiveWorkspace(baseUser, "personal:user-2", directory),
+    null
+  );
+  assert.deepEqual(calls, []);
+
+  const superAdmin = {
+    ...baseUser,
+    role: "super_admin" as const,
+    teamId: "all"
+  };
+  assert.equal(
+    (await resolveActiveWorkspace(superAdmin, "team-b", {
+      async canAccess(_user, workspaceId) {
+        return workspaceId === "team-b";
+      }
+    }))?.workspaceId,
+    "team-b"
+  );
+});
+
 test("middleware reads only X-Workspace-Id and preserves authenticated authority", async () => {
   const seen: string[] = [];
   const headers: Record<string, string> = {

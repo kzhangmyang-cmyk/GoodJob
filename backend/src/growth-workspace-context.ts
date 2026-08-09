@@ -97,6 +97,7 @@ export async function resolveActiveWorkspace(
   const requested = requestedWorkspaceId?.trim() || null;
   let workspaceId: string | null = null;
   if (requested === "all") return null;
+  if (requested?.startsWith("personal:") && requested !== personal) return null;
   if (requested === personal) {
     workspaceId = personal;
   } else if (
