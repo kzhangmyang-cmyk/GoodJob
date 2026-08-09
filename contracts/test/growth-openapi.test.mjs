@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import Ajv2020 from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
 import {
   loadNamedJsonSchema,
   loadNamedOpenApiSource,
@@ -150,6 +152,263 @@ function findClosedPropertyEnum(schema, definitionName, propertyName) {
   visit(start);
   assert.equal(matches.length, 1, `${definitionName}.${propertyName}`);
   return matches[0];
+}
+
+async function loadDefinitionValidator(filename, definitionName) {
+  const registry = await loadSchemaRegistry();
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  addFormats(ajv);
+  for (const schema of registry.schemaDocuments.values()) ajv.addSchema(schema);
+  const schema = await loadNamedJsonSchema(filename);
+  return ajv.compile({ $ref: `${schema.$id}#/$defs/${definitionName}` });
+}
+
+function effectiveParameters(document, pathItem, operation) {
+  const parameters = new Map();
+  for (const unresolved of [...(pathItem.parameters ?? []), ...(operation.parameters ?? [])]) {
+    const prefix = "#/components/parameters/";
+    const parameter = unresolved.$ref?.startsWith(prefix)
+      ? document.components.parameters[unresolved.$ref.slice(prefix.length)]
+      : unresolved;
+    parameters.set(`${parameter.in}:${parameter.name}`, parameter);
+  }
+  return [...parameters.values()];
+}
+
+function resolveInternalResponse(document, response) {
+  if (!response?.$ref) return response;
+  const prefix = "#/components/responses/";
+  assert.ok(response.$ref.startsWith(prefix), response.$ref);
+  return document.components.responses[response.$ref.slice(prefix.length)];
+}
+
+function allPublishedOperations(document) {
+  const methods = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
+  return Object.entries(document.paths).flatMap(([path, pathItem]) =>
+    Object.entries(pathItem)
+      .filter(([method]) => methods.has(method))
+      .map(([method, operation]) => ({ path, method, pathItem, operation }))
+  );
+}
+
+const pricingPolicyFullFixture = () => ({
+  amountVisibility: "full",
+  id: "policy-1",
+  workspaceId: "workspace-1",
+  catalogItemId: "item-1",
+  version: 1,
+  packageVersionId: null,
+  currency: "CNY",
+  listUnitPriceMinor: 20000,
+  unitStandardCostMinor: 8000,
+  defaultOrderDeliveryCostMinor: 1000,
+  defaultOrderSalesCostMinor: 500,
+  defaultOrderServiceCostMinor: 300,
+  absoluteFloorUnitPriceMinor: 12000,
+  standardDiscountLimitBps: 1000,
+  absoluteDiscountLimitBps: 3000,
+  targetGrossMarginBps: 5000,
+  absoluteMinimumGrossMarginBps: 2000,
+  standardPaymentTermDays: 30,
+  absolutePaymentTermDays: 90,
+  approvalThresholds: {
+    discountCapability: "quote.exception.discount.approve",
+    marginCapability: "quote.exception.margin.approve",
+    paymentTermsCapability: "quote.exception.payment_terms.approve",
+    giftCapability: "quote.exception.gift.approve",
+    creditCapability: "quote.exception.credit.approve",
+    manualCapability: "quote.exception.manual.approve",
+    creditRiskThresholdBps: 7000,
+    manualEscalationEnabled: false
+  },
+  surchargePolicies: [],
+  giftPolicies: [{
+    catalogItemId: "gift-1",
+    unitStandardCostMinor: 100,
+    standardQuantityMicros: 1000000,
+    absoluteQuantityMicros: 2000000,
+    standardCostLimitMinor: 100,
+    absoluteCostLimitMinor: 200
+  }],
+  validFrom: "2026-08-09T00:00:00.000Z",
+  validTo: null,
+  status: "active",
+  source: "native",
+  createdBy: "user-1",
+  createdAt: "2026-08-09T00:00:00.000Z"
+});
+
+const pricingPolicyRedactedFixture = () => ({
+  amountVisibility: "redacted",
+  id: "policy-1",
+  workspaceId: "workspace-1",
+  catalogItemId: "item-1",
+  version: 1,
+  packageVersionId: null,
+  currency: "CNY",
+  listUnitPriceMinor: 20000,
+  standardDiscountLimitBps: 1000,
+  absoluteDiscountLimitBps: 3000,
+  standardPaymentTermDays: 30,
+  absolutePaymentTermDays: 90,
+  surchargePolicies: [],
+  validFrom: "2026-08-09T00:00:00.000Z",
+  validTo: null,
+  status: "active",
+  source: "native",
+  createdBy: "user-1",
+  createdAt: "2026-08-09T00:00:00.000Z"
+});
+
+const quotePreviewIdentityFixture = () => ({
+  inputSnapshotHash: `sha256:${"1".repeat(64)}`,
+  calculationHash: `sha256:${"2".repeat(64)}`,
+  pricingPolicyVersionId: "policy-1",
+  pricingPolicyRevision: 1,
+  packageVersionId: null,
+  formulaVersion: "quote-calculation.v1"
+});
+
+const probabilityAssessmentFixture = () => ({
+  id: "probability-1",
+  candidateId: "candidate-1",
+  dealId: "deal-1",
+  closeProbabilityBps: 6500,
+  qualificationDecisionId: "qualification-1",
+  qualificationDecisionVersion: "v2",
+  evidenceRefs: ["evidence-1"],
+  ruleVersion: "qualification.v2",
+  modelSnapshotRef: null,
+  inputSnapshotHash: `sha256:${"3".repeat(64)}`,
+  assessedAt: "2026-08-09T00:00:00.000Z"
+});
+
+const quoteVersionFullFixture = () => ({
+  amountVisibility: "full",
+  id: "quote-version-1",
+  workspaceId: "workspace-1",
+  quoteCaseId: "quote-case-1",
+  version: 1,
+  lifecycleRevision: 1,
+  currency: "CNY",
+  lineItems: [{
+    catalogItemId: "item-1",
+    pricingPolicyVersionId: "policy-1",
+    packageVersionId: null,
+    quantityMicros: 1000000,
+    offeredUnitPriceMinor: 18000,
+    lineAmountMinor: 18000,
+    standardCostMinor: 8000
+  }],
+  customerTargetPriceMinor: null,
+  discountMinor: 0,
+  surchargeMinor: 0,
+  requiredSurchargeMinor: 0,
+  paymentTerms: { days: 30 },
+  giftItems: [],
+  listAmountMinor: 20000,
+  netProductAmountMinor: 18000,
+  quotedAmountMinor: 18000,
+  estimatedFulfillmentCostMinor: 8000,
+  estimatedSalesCostMinor: 500,
+  estimatedServiceCostMinor: 300,
+  estimatedGrossProfitMinor: 10000,
+  estimatedContributionMinor: 9200,
+  discountBps: 1000,
+  grossMarginBps: 5556,
+  approvalReasons: [],
+  pricingPolicySnapshot: pricingPolicyFullFixture(),
+  probabilityAssessmentSnapshot: probabilityAssessmentFixture(),
+  previewIdentity: quotePreviewIdentityFixture(),
+  commercialAmountHash: `sha256:${"4".repeat(64)}`,
+  status: "approved",
+  createdBy: "user-1",
+  createdAt: "2026-08-09T00:00:00.000Z"
+});
+
+const quoteVersionRedactedFixture = () => ({
+  amountVisibility: "redacted",
+  id: "quote-version-1",
+  workspaceId: "workspace-1",
+  quoteCaseId: "quote-case-1",
+  version: 1,
+  lifecycleRevision: 1,
+  currency: "CNY",
+  lineItems: [{
+    catalogItemId: "item-1",
+    pricingPolicyVersionId: "policy-1",
+    packageVersionId: null,
+    quantityMicros: 1000000,
+    offeredUnitPriceMinor: 18000,
+    lineAmountMinor: 18000
+  }],
+  customerTargetPriceMinor: null,
+  discountMinor: 0,
+  surchargeMinor: 0,
+  requiredSurchargeMinor: 0,
+  paymentTerms: { days: 30 },
+  giftItems: [],
+  listAmountMinor: 20000,
+  netProductAmountMinor: 18000,
+  quotedAmountMinor: 18000,
+  discountBps: 1000,
+  approvalReasons: [],
+  probabilityAssessmentSnapshot: probabilityAssessmentFixture(),
+  previewIdentity: quotePreviewIdentityFixture(),
+  commercialAmountHash: `sha256:${"4".repeat(64)}`,
+  status: "approved",
+  createdBy: "user-1",
+  createdAt: "2026-08-09T00:00:00.000Z"
+});
+
+function growthPerformanceFixture(expectedRoiByCurrency = [], cashByCurrency = []) {
+  return {
+    query: {
+      cohortId: "cohort-1",
+      currency: "CNY",
+      asOf: "2026-08-09T08:00:00.000Z",
+      planId: null,
+      closureVersionId: null,
+      sliceKey: "all"
+    },
+    expectedRoiByCurrency,
+    actualRoiByCurrency: [],
+    cashByCurrency,
+    coverage: {
+      costCoverageBps: 10000,
+      marginCoverageBps: 10000,
+      cashCoverageBps: 10000,
+      attributionCoverageBps: 10000
+    },
+    dataGaps: [],
+    dataAsOf: "2026-08-09T08:00:00.000Z"
+  };
+}
+
+function quoteDiagnosticFixture(reason, diagnosticNetProductAmountMinor, diagnosticQuotedAmountMinor) {
+  return {
+    amountState: "non_positive_diagnostic",
+    currency: "CNY",
+    listAmountMinor: 10000,
+    diagnosticNetProductAmountMinor,
+    diagnosticQuotedAmountMinor,
+    requiredSurchargeMinor: 0,
+    estimatedFulfillmentCostMinor: 1000,
+    estimatedSalesCostMinor: 0,
+    estimatedServiceCostMinor: 0,
+    estimatedGrossProfitMinor: -1000,
+    estimatedContributionMinor: -1000,
+    discountBps: 10000,
+    grossMarginBps: null,
+    minimumAllowedQuotedAmountMinor: 1000,
+    recommendedOpeningQuotedAmountMinor: 10000,
+    gate: {
+      status: "hard_blocked",
+      reasons: [reason],
+      requiredCapabilities: []
+    },
+    previewIdentity: quotePreviewIdentityFixture()
+  };
 }
 
 // Production break caught: deleting or changing a published Growth route/method, or leaking the internal reconciler capability.
@@ -362,4 +621,264 @@ test("financial data gap codes are one exact closed enum", async () => {
     "import_requires_review"
   ]);
   assert.equal(JSON.stringify(schema).includes("missing_verified_cost"), false);
+});
+
+// Production break caught: exposing cost, floor, profit, contribution, margin, or policy snapshots to callers without the sensitive-pricing capability.
+test("fix round 1 sensitive resources publish closed full and redacted projections", async () => {
+  const registry = await loadSchemaRegistry();
+  const validatePolicy = registry.validators.get("pricing-policy-version");
+  const validateQuote = registry.validators.get("quote-version");
+  assert.ok(validatePolicy);
+  assert.ok(validateQuote);
+
+  assert.equal(validatePolicy(pricingPolicyFullFixture()), true, JSON.stringify(validatePolicy.errors));
+  assert.equal(validatePolicy(pricingPolicyRedactedFixture()), true, JSON.stringify(validatePolicy.errors));
+  assert.equal(validateQuote(quoteVersionFullFixture()), true, JSON.stringify(validateQuote.errors));
+  assert.equal(validateQuote(quoteVersionRedactedFixture()), true, JSON.stringify(validateQuote.errors));
+
+  const leakedPolicy = { ...pricingPolicyRedactedFixture(), unitStandardCostMinor: 8000 };
+  assert.equal(validatePolicy(leakedPolicy), false);
+  const leakedQuote = { ...quoteVersionRedactedFixture(), estimatedGrossProfitMinor: 10000 };
+  assert.equal(validateQuote(leakedQuote), false);
+  const leakedLineCost = structuredClone(quoteVersionRedactedFixture());
+  leakedLineCost.lineItems[0].standardCostMinor = 8000;
+  assert.equal(validateQuote(leakedLineCost), false);
+});
+
+// Production break caught: returning an untyped empty object from any successful Growth operation.
+test("fix round 1 every operation has a concrete closed success response", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  const genericOperations = [];
+  for (const { path, method, operation } of allPublishedOperations(document)) {
+    const successes = Object.entries(operation.responses).filter(([status]) => /^2\d\d$/.test(status));
+    assert.ok(successes.length > 0, `${method.toUpperCase()} ${path}`);
+    for (const [status, unresolved] of successes) {
+      const response = resolveInternalResponse(document, unresolved);
+      const media = response.content ?? {};
+      assert.ok(Object.keys(media).length > 0, `${method.toUpperCase()} ${path} ${status}`);
+      for (const content of Object.values(media)) {
+        const schema = content.schema;
+        const isConcreteRef = typeof schema?.$ref === "string";
+        const isConcreteInline = schema?.type === "string"
+          || schema?.type === "array"
+          || (schema?.type === "object"
+            && schema.additionalProperties === false
+            && Array.isArray(schema.required)
+            && schema.required.length > 0);
+        if (!isConcreteRef && !isConcreteInline) {
+          genericOperations.push(`${method.toUpperCase()} ${path} ${status}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(genericOperations, []);
+});
+
+// Production break caught: accepting a mutation without an explicit closed command body or accepting Finance imports through JSON/multipart parsing.
+test("fix round 1 every mutation has a strict body and Finance preview accepts only raw CSV or XLSX", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  for (const { path, method, operation } of allPublishedOperations(document)) {
+    if (!["post", "put", "patch", "delete"].includes(method)) continue;
+    assert.equal(operation.requestBody?.required, true, `${method.toUpperCase()} ${path}`);
+    const contents = operation.requestBody.content;
+    assert.ok(contents && Object.keys(contents).length > 0, `${method.toUpperCase()} ${path}`);
+    for (const [mediaType, content] of Object.entries(contents)) {
+      const schema = content.schema;
+      if (mediaType === "application/json") {
+        assert.ok(
+          typeof schema?.$ref === "string"
+            || (schema?.type === "object" && schema.additionalProperties === false),
+          `${method.toUpperCase()} ${path}`
+        );
+      }
+    }
+  }
+
+  const preview = document.paths["/api/v1/finance/imports/preview"].post;
+  assert.deepEqual(Object.keys(preview.requestBody.content).sort(), [
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/csv"
+  ]);
+  for (const body of Object.values(preview.requestBody.content)) {
+    assert.deepEqual(body.schema, { type: "string", format: "binary" });
+  }
+  assert.ok(preview.responses["415"]);
+});
+
+// Production break caught: resolving a non-bootstrap operation from a query selector, omitting the Foundation header, or accepting the pseudo-workspace all.
+test("fix round 1 every operation uses the canonical concrete workspace header", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  for (const { path, method, pathItem, operation } of allPublishedOperations(document)) {
+    const parameters = effectiveParameters(document, pathItem, operation);
+    const workspaceHeaders = parameters.filter((parameter) =>
+      parameter.name?.toLowerCase() === "x-workspace-id" && parameter.in === "header"
+    );
+    assert.equal(workspaceHeaders.length, 1, `${method.toUpperCase()} ${path}`);
+    assert.equal(
+      workspaceHeaders[0].required,
+      path === "/api/v1/growth/bootstrap" ? false : true,
+      `${method.toUpperCase()} ${path}`
+    );
+    assert.deepEqual(workspaceHeaders[0].schema.not, { const: "all" });
+    assert.equal(
+      parameters.some((parameter) => parameter.name === "workspaceId" && parameter.in === "query"),
+      false,
+      `${method.toUpperCase()} ${path}`
+    );
+  }
+});
+
+// Production break caught: publishing a mutable command without cookie CSRF, idempotency, concurrency, or a response ETag that supplies the next revision.
+test("fix round 1 mutations require auth guards and versioned responses publish ETags", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  for (const { path, method, pathItem, operation } of allPublishedOperations(document)) {
+    if (!["post", "put", "patch", "delete"].includes(method)) continue;
+    assert.deepEqual(operation.security, [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }], `${method.toUpperCase()} ${path}`);
+    const parameters = effectiveParameters(document, pathItem, operation);
+    for (const name of ["Idempotency-Key", "If-Match"]) {
+      const header = parameters.find((parameter) => parameter.in === "header" && parameter.name === name);
+      assert.equal(header?.required, true, `${method.toUpperCase()} ${path} ${name}`);
+    }
+  }
+
+  for (const [path, method] of [
+    ["/api/v1/catalog/items", "post"],
+    ["/api/v1/catalog/items/{id}", "get"],
+    ["/api/v1/catalog/items/{id}", "patch"],
+    ["/api/v1/catalog/pricing-policies/{id}/activate", "post"],
+    ["/api/v1/catalog/package-versions/{id}", "get"],
+    ["/api/v1/quotes/cases/{id}", "get"],
+    ["/api/v1/quotes/versions/{id}", "get"],
+    ["/api/v1/quotes/versions/{id}/approve", "post"],
+    ["/api/v1/acquisition/attribution-allocation-sets/{id}/activate", "post"],
+    ["/api/v1/finance/settlement-allocation-sets/{id}/activate", "post"],
+    ["/api/v1/acquisition/cohorts/{id}/close", "post"],
+    ["/api/v1/acquisition/roi-closures/{closureVersionId}/reopen", "post"]
+  ]) {
+    const operation = document.paths[path][method];
+    const success = Object.entries(operation.responses).find(([status]) => /^2\d\d$/.test(status));
+    const response = resolveInternalResponse(document, success?.[1]);
+    assert.deepEqual(response.headers?.ETag, { $ref: "#/components/headers/ETag" }, `${method.toUpperCase()} ${path}`);
+  }
+});
+
+// Production break caught: returning a fabricated zero/null ROI for an incomplete expected-ROI input.
+test("fix round 1 expected ROI separates computed and not-computable redacted branches", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("growth-performance");
+  assert.ok(validate);
+
+  const computed = growthPerformanceFixture([{
+    currency: "CNY",
+    status: "computed",
+    basis: "probability_weighted_gross_profit",
+    amountVisibility: "redacted",
+    roiBps: -2500,
+    costCoverageBps: 10000,
+    formulaVersion: "expected-roi.v1"
+  }]);
+  assert.equal(validate(computed), true, JSON.stringify(validate.errors));
+
+  const notComputable = growthPerformanceFixture([{
+    currency: "CNY",
+    status: "not_computable",
+    basis: "probability_weighted_gross_profit",
+    amountVisibility: "redacted",
+    reason: "missing_estimated_cost",
+    costCoverageBps: 0,
+    formulaVersion: "expected-roi.v1"
+  }]);
+  assert.equal(validate(notComputable), true, JSON.stringify(validate.errors));
+
+  const fabricatedZero = structuredClone(notComputable);
+  fabricatedZero.expectedRoiByCurrency[0].roiBps = 0;
+  assert.equal(validate(fabricatedZero), false);
+});
+
+// Production break caught: labeling a positive diagnostic amount as non-positive, or attaching a reason to the wrong non-positive boundary.
+test("fix round 1 quote diagnostics enforce reason-aligned non-positive amounts", async () => {
+  const validate = await loadDefinitionValidator("quote-case.v1.schema.json", "QuotePreviewResult");
+
+  const netBlocked = quoteDiagnosticFixture("net_product_amount_not_positive", 0, 500);
+  assert.equal(validate(netBlocked), true, JSON.stringify(validate.errors));
+  const quoteBlocked = quoteDiagnosticFixture("quoted_amount_not_positive", 500, 0);
+  assert.equal(validate(quoteBlocked), true, JSON.stringify(validate.errors));
+  assert.equal(validate(quoteDiagnosticFixture("net_product_amount_not_positive", 1, 1)), false);
+  assert.equal(validate(quoteDiagnosticFixture("quoted_amount_not_positive", 1, 1)), false);
+  assert.equal(validate(quoteDiagnosticFixture("net_product_amount_not_positive", 1, 0)), false);
+  assert.equal(validate(quoteDiagnosticFixture("quoted_amount_not_positive", 0, 1)), false);
+});
+
+// Production break caught: interchanging contract ROAS, cash multiple, and collection-rate formulas or denominator failure reasons.
+test("fix round 1 cash ratio identities are not interchangeable", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("growth-performance");
+  assert.ok(validate);
+  const cash = {
+    currency: "CNY",
+    amountVisibility: "redacted",
+    contractRoas: { status: "computed", valueBps: 35000, formulaVersion: "contract-roas.v1" },
+    cashMultiple: { status: "not_available", reason: "zero_acquisition_cost", formulaVersion: "cash-multiple.v1" },
+    collectionRate: { status: "not_available", reason: "zero_verified_contract", formulaVersion: "collection-rate.v1" },
+    coverage: {
+      costCoverageBps: 10000,
+      marginCoverageBps: 10000,
+      cashCoverageBps: 10000,
+      attributionCoverageBps: 10000
+    }
+  };
+  assert.equal(validate(growthPerformanceFixture([], [cash])), true, JSON.stringify(validate.errors));
+
+  const swappedFormula = structuredClone(cash);
+  swappedFormula.contractRoas.formulaVersion = "collection-rate.v1";
+  assert.equal(validate(growthPerformanceFixture([], [swappedFormula])), false);
+  const wrongDenominator = structuredClone(cash);
+  wrongDenominator.collectionRate.reason = "zero_acquisition_cost";
+  assert.equal(validate(growthPerformanceFixture([], [wrongDenominator])), false);
+});
+
+// Production break caught: widening direct Finance conflict/amount failures to arbitrary API error codes.
+test("fix round 1 direct Finance commands expose only the three stable error codes", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  for (const [path, method] of [
+    ["/api/v1/finance/facts", "post"],
+    ["/api/v1/finance/facts/{id}/verify", "post"],
+    ["/api/v1/finance/facts/{id}/reject", "post"],
+    ["/api/v1/finance/facts/{id}/reverse", "post"],
+    ["/api/v1/finance/facts/{id}/correct", "post"]
+  ]) {
+    const operation = document.paths[path][method];
+    for (const status of ["409", "422"]) {
+      const response = resolveInternalResponse(document, operation.responses[status]);
+      assert.ok(response?.headers?.["X-Error-Code"], `${method.toUpperCase()} ${path} ${status}`);
+      assert.deepEqual(response.headers["X-Error-Code"].schema.enum, [
+        "financial_fact_conflict",
+        "financial_fact_amount_invalid",
+        "amount_out_of_range"
+      ], `${method.toUpperCase()} ${path} ${status}`);
+      const errorSchema = response.content["application/json"].schema;
+      assert.equal(errorSchema.$ref, undefined, `${method.toUpperCase()} ${path} ${status}`);
+      const validateError = new Ajv2020({ strict: true }).compile(errorSchema);
+      for (const code of [
+        "financial_fact_conflict",
+        "financial_fact_amount_invalid",
+        "amount_out_of_range"
+      ]) {
+        assert.equal(validateError({
+          code,
+          message: "Finance command rejected",
+          details: null,
+          requestId: "request-1",
+          retryable: false
+        }), true, `${method.toUpperCase()} ${path} ${status} ${code}`);
+      }
+      assert.equal(validateError({
+        code: "arbitrary_finance_error",
+        message: "Finance command rejected",
+        details: null,
+        requestId: "request-1",
+        retryable: false
+      }), false, `${method.toUpperCase()} ${path} ${status}`);
+    }
+  }
 });

@@ -31,15 +31,21 @@
         {
           "type": "object", "additionalProperties": false,
           "required": ["currency", "status", "basis", "amountVisibility", "roiBps", "costCoverageBps", "formulaVersion"],
-          "properties": { "currency": { "$ref": "#/$defs/currency" }, "status": { "enum": ["computed", "not_computable"] }, "basis": { "const": "probability_weighted_gross_profit" }, "amountVisibility": { "const": "redacted" }, "roiBps": { "type": ["integer", "null"], "minimum": -9007199254740991, "maximum": 9007199254740991 }, "costCoverageBps": { "$ref": "#/$defs/bps" }, "formulaVersion": { "const": "expected-roi.v1" } }
+          "properties": { "currency": { "$ref": "#/$defs/currency" }, "status": { "const": "computed" }, "basis": { "const": "probability_weighted_gross_profit" }, "amountVisibility": { "const": "redacted" }, "roiBps": { "$ref": "#/$defs/signed" }, "costCoverageBps": { "$ref": "#/$defs/bps" }, "formulaVersion": { "const": "expected-roi.v1" } }
         },
         {
           "type": "object", "additionalProperties": false,
           "required": ["currency", "status", "basis", "amountVisibility", "reason", "costCoverageBps", "formulaVersion"],
-          "properties": { "currency": { "$ref": "#/$defs/currency" }, "status": { "const": "not_computable" }, "basis": { "const": "probability_weighted_gross_profit" }, "amountVisibility": { "const": "full" }, "reason": { "enum": ["missing_probability", "missing_estimated_cost", "zero_estimated_cost", "query_truncated"] }, "costCoverageBps": { "$ref": "#/$defs/bps" }, "formulaVersion": { "const": "expected-roi.v1" } }
+          "properties": { "currency": { "$ref": "#/$defs/currency" }, "status": { "const": "not_computable" }, "basis": { "const": "probability_weighted_gross_profit" }, "amountVisibility": { "const": "full" }, "reason": { "$ref": "#/$defs/ExpectedRoiNotComputableReason" }, "costCoverageBps": { "$ref": "#/$defs/bps" }, "formulaVersion": { "const": "expected-roi.v1" } }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["currency", "status", "basis", "amountVisibility", "reason", "costCoverageBps", "formulaVersion"],
+          "properties": { "currency": { "$ref": "#/$defs/currency" }, "status": { "const": "not_computable" }, "basis": { "const": "probability_weighted_gross_profit" }, "amountVisibility": { "const": "redacted" }, "reason": { "$ref": "#/$defs/ExpectedRoiNotComputableReason" }, "costCoverageBps": { "$ref": "#/$defs/bps" }, "formulaVersion": { "const": "expected-roi.v1" } }
         }
       ]
     },
+    "ExpectedRoiNotComputableReason": { "enum": ["missing_probability", "missing_estimated_cost", "zero_estimated_cost", "query_truncated"] },
     "ActualRoiCurrencyView": {
       "oneOf": [
         {
@@ -59,10 +65,22 @@
         }
       ]
     },
-    "RatioResult": {
+    "ContractRoasResult": {
       "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["status", "valueBps", "formulaVersion"], "properties": { "status": { "const": "computed" }, "valueBps": { "$ref": "#/$defs/signed" }, "formulaVersion": { "enum": ["contract-roas.v1", "cash-multiple.v1", "collection-rate.v1"] } } },
-        { "type": "object", "additionalProperties": false, "required": ["status", "reason", "formulaVersion"], "properties": { "status": { "const": "not_available" }, "reason": { "enum": ["zero_acquisition_cost", "zero_verified_contract", "missing_verified_contract", "missing_cash_settlement"] }, "formulaVersion": { "enum": ["contract-roas.v1", "cash-multiple.v1", "collection-rate.v1"] } } }
+        { "type": "object", "additionalProperties": false, "required": ["status", "valueBps", "formulaVersion"], "properties": { "status": { "const": "computed" }, "valueBps": { "$ref": "#/$defs/signed" }, "formulaVersion": { "const": "contract-roas.v1" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "reason", "formulaVersion"], "properties": { "status": { "const": "not_available" }, "reason": { "const": "zero_acquisition_cost" }, "formulaVersion": { "const": "contract-roas.v1" } } }
+      ]
+    },
+    "CashMultipleResult": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "valueBps", "formulaVersion"], "properties": { "status": { "const": "computed" }, "valueBps": { "$ref": "#/$defs/signed" }, "formulaVersion": { "const": "cash-multiple.v1" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "reason", "formulaVersion"], "properties": { "status": { "const": "not_available" }, "reason": { "const": "zero_acquisition_cost" }, "formulaVersion": { "const": "cash-multiple.v1" } } }
+      ]
+    },
+    "CollectionRateResult": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["status", "valueBps", "formulaVersion"], "properties": { "status": { "const": "computed" }, "valueBps": { "$ref": "#/$defs/signed" }, "formulaVersion": { "const": "collection-rate.v1" } } },
+        { "type": "object", "additionalProperties": false, "required": ["status", "reason", "formulaVersion"], "properties": { "status": { "const": "not_available" }, "reason": { "const": "zero_verified_contract" }, "formulaVersion": { "const": "collection-rate.v1" } } }
       ]
     },
     "CashCurrencyView": {
@@ -70,12 +88,12 @@
         {
           "type": "object", "additionalProperties": false,
           "required": ["currency", "amountVisibility", "verifiedContractMinor", "verifiedAcquisitionCostMinor", "paymentReceivedMinor", "refundMinor", "badDebtMinor", "netCashMinor", "contractRoas", "cashMultiple", "collectionRate", "coverage"],
-          "properties": { "currency": { "$ref": "#/$defs/currency" }, "amountVisibility": { "const": "full" }, "verifiedContractMinor": { "$ref": "#/$defs/money" }, "verifiedAcquisitionCostMinor": { "$ref": "#/$defs/money" }, "paymentReceivedMinor": { "$ref": "#/$defs/money" }, "refundMinor": { "$ref": "#/$defs/money" }, "badDebtMinor": { "$ref": "#/$defs/money" }, "netCashMinor": { "$ref": "#/$defs/signed" }, "contractRoas": { "$ref": "#/$defs/RatioResult" }, "cashMultiple": { "$ref": "#/$defs/RatioResult" }, "collectionRate": { "$ref": "#/$defs/RatioResult" }, "coverage": { "$ref": "#/$defs/RoiCoverageSnapshot" } }
+          "properties": { "currency": { "$ref": "#/$defs/currency" }, "amountVisibility": { "const": "full" }, "verifiedContractMinor": { "$ref": "#/$defs/money" }, "verifiedAcquisitionCostMinor": { "$ref": "#/$defs/money" }, "paymentReceivedMinor": { "$ref": "#/$defs/money" }, "refundMinor": { "$ref": "#/$defs/money" }, "badDebtMinor": { "$ref": "#/$defs/money" }, "netCashMinor": { "$ref": "#/$defs/signed" }, "contractRoas": { "$ref": "#/$defs/ContractRoasResult" }, "cashMultiple": { "$ref": "#/$defs/CashMultipleResult" }, "collectionRate": { "$ref": "#/$defs/CollectionRateResult" }, "coverage": { "$ref": "#/$defs/RoiCoverageSnapshot" } }
         },
         {
           "type": "object", "additionalProperties": false,
           "required": ["currency", "amountVisibility", "contractRoas", "cashMultiple", "collectionRate", "coverage"],
-          "properties": { "currency": { "$ref": "#/$defs/currency" }, "amountVisibility": { "const": "redacted" }, "contractRoas": { "$ref": "#/$defs/RatioResult" }, "cashMultiple": { "$ref": "#/$defs/RatioResult" }, "collectionRate": { "$ref": "#/$defs/RatioResult" }, "coverage": { "$ref": "#/$defs/RoiCoverageSnapshot" } }
+          "properties": { "currency": { "$ref": "#/$defs/currency" }, "amountVisibility": { "const": "redacted" }, "contractRoas": { "$ref": "#/$defs/ContractRoasResult" }, "cashMultiple": { "$ref": "#/$defs/CashMultipleResult" }, "collectionRate": { "$ref": "#/$defs/CollectionRateResult" }, "coverage": { "$ref": "#/$defs/RoiCoverageSnapshot" } }
         }
       ]
     }

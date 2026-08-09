@@ -11,18 +11,11 @@ x-goodjob-templates:
       - bearerAuth: []
       - cookieAuth: []
     parameters:
-      - $ref: '#/components/parameters/workspaceId'
+      - $ref: '#/components/parameters/workspaceHeader'
       - $ref: '#/components/parameters/cursor'
       - $ref: '#/components/parameters/limit'
       - $ref: '#/components/parameters/sort'
     responses:
-      '200': &genericOk
-        description: Authorized workspace projection
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
       '401': &apiErrorResponse
         description: API error
         content:
@@ -37,10 +30,18 @@ x-goodjob-templates:
       - cookieAuth: []
         csrfToken: []
     parameters:
+      - $ref: '#/components/parameters/workspaceHeader'
       - $ref: '#/components/parameters/idempotencyKey'
       - $ref: '#/components/parameters/ifMatch'
+    requestBody: &emptyCommandBody
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            maxProperties: 0
     responses:
-      '200': *genericOk
       '400': *apiErrorResponse
       '401': *apiErrorResponse
       '403': *apiErrorResponse
@@ -57,6 +58,8 @@ paths:
       security:
         - bearerAuth: []
         - cookieAuth: []
+      parameters:
+        - $ref: '#/components/parameters/optionalWorkspaceHeader'
       responses:
         '200':
           description: Authorized concrete workspace context or actionable workspace-selection state
@@ -125,6 +128,10 @@ paths:
     get:
       <<: *read
       operationId: listPricingPolicyVersions
+      responses:
+        '200': { $ref: '#/components/responses/PricingPolicyVersionPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
     post:
       <<: *write
       operationId: createPricingPolicyVersion
@@ -177,6 +184,10 @@ paths:
     get:
       <<: *read
       operationId: listPackageVersions
+      responses:
+        '200': { $ref: '#/components/responses/PackageVersionPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
     post:
       <<: *write
       operationId: createPackageVersion
@@ -242,6 +253,10 @@ paths:
     get:
       <<: *read
       operationId: listQuoteCases
+      responses:
+        '200': { $ref: '#/components/responses/QuoteCasePagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
     post:
       <<: *write
       operationId: createQuoteCase
@@ -326,6 +341,11 @@ paths:
     get:
       <<: *read
       operationId: listQuoteVersions
+      responses:
+        '200': { $ref: '#/components/responses/QuoteVersionPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
     post:
       <<: *write
       operationId: createQuoteVersion
@@ -417,6 +437,11 @@ paths:
     get:
       <<: *read
       operationId: listQuoteApprovals
+      responses:
+        '200': { $ref: '#/components/responses/QuoteApprovalPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
   /api/v1/quotes/publication-operations/{id}:
     parameters: [{ $ref: '#/components/parameters/id' }]
     get:
@@ -450,11 +475,25 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/DealDecisionInput' }
+      responses:
+        '200': { $ref: '#/components/responses/QuoteVersion' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
 
   /api/v1/acquisition/cost-entries:
     get:
       <<: *read
       operationId: listAcquisitionCostEntries
+      responses:
+        '200': { $ref: '#/components/responses/AcquisitionCostEntryPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
     post:
       <<: *write
       operationId: createAcquisitionCostEntry
@@ -469,6 +508,10 @@ paths:
     get:
       <<: *read
       operationId: listAcquisitionCostEstimates
+      responses:
+        '200': { $ref: '#/components/responses/AcquisitionCostEstimatePagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
     post:
       <<: *write
       operationId: createAcquisitionCostEstimate
@@ -498,30 +541,63 @@ paths:
     post:
       <<: *write
       operationId: supersedeAcquisitionCostEstimate
+      responses:
+        '200': { $ref: '#/components/responses/AcquisitionCostEstimate' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
   /api/v1/acquisition/cost-entries/{id}/verify:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post:
       <<: *write
       operationId: verifyAcquisitionCostEntry
+      responses: &ledgerTransitionResponses
+        '200': { $ref: '#/components/responses/LedgerVerificationEvent' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
   /api/v1/acquisition/cost-entries/{id}/reject:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post:
       <<: *write
       operationId: rejectAcquisitionCostEntry
+      responses: *ledgerTransitionResponses
   /api/v1/acquisition/cost-entries/{id}/reverse:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post:
       <<: *write
       operationId: reverseAcquisitionCostEntry
+      responses: *ledgerTransitionResponses
   /api/v1/acquisition/cost-entries/{id}/correct:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post:
       <<: *write
       operationId: correctAcquisitionCostEntry
+      responses:
+        '200': { $ref: '#/components/responses/AcquisitionCostEntry' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
   /api/v1/acquisition/attribution-allocation-sets:
     get:
       <<: *read
       operationId: listAttributionAllocationSets
+      responses:
+        '200': { $ref: '#/components/responses/AttributionAllocationSetPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
     post:
       <<: *write
       operationId: createAttributionAllocationSet
@@ -547,11 +623,24 @@ paths:
     post:
       <<: *write
       operationId: activateAttributionAllocationSet
+      responses:
+        '200': { $ref: '#/components/responses/AttributionAllocationSet' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
 
   /api/v1/finance/facts:
     get:
       <<: *read
       operationId: listFinancialFacts
+      responses:
+        '200': { $ref: '#/components/responses/FinancialFactPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
     post:
       <<: *write
       operationId: createFinancialFact
@@ -565,23 +654,34 @@ paths:
         '400': *apiErrorResponse
         '401': *apiErrorResponse
         '403': *apiErrorResponse
-        '409': *apiErrorResponse
-        '422': *apiErrorResponse
+        '409': { $ref: '#/components/responses/FinancialFactCommandError' }
+        '422': { $ref: '#/components/responses/FinancialFactCommandError' }
   /api/v1/finance/facts/{id}/verify:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post:
       <<: *write
       operationId: verifyFinancialFact
+      responses: &financialFactTransitionResponses
+        '200': { $ref: '#/components/responses/LedgerVerificationEvent' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': { $ref: '#/components/responses/FinancialFactCommandError' }
+        '412': *apiErrorResponse
+        '422': { $ref: '#/components/responses/FinancialFactCommandError' }
+        '428': *apiErrorResponse
   /api/v1/finance/facts/{id}/reject:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post:
       <<: *write
       operationId: rejectFinancialFact
+      responses: *financialFactTransitionResponses
   /api/v1/finance/facts/{id}/reverse:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post:
       <<: *write
       operationId: reverseFinancialFact
+      responses: *financialFactTransitionResponses
   /api/v1/finance/facts/{id}/correct:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post:
@@ -598,14 +698,18 @@ paths:
         '401': *apiErrorResponse
         '403': *apiErrorResponse
         '404': *apiErrorResponse
-        '409': *apiErrorResponse
+        '409': { $ref: '#/components/responses/FinancialFactCommandError' }
         '412': *apiErrorResponse
-        '422': *apiErrorResponse
+        '422': { $ref: '#/components/responses/FinancialFactCommandError' }
         '428': *apiErrorResponse
   /api/v1/finance/source-reports:
     get:
       <<: *read
       operationId: listFinancialSourceReports
+      responses:
+        '200': { $ref: '#/components/responses/FinancialSourceReportPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
     post:
       <<: *write
       operationId: createFinancialSourceReport
@@ -630,6 +734,10 @@ paths:
     get:
       <<: *read
       operationId: listCashSettlementAllocationSets
+      responses:
+        '200': { $ref: '#/components/responses/CashSettlementAllocationSetPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
     post:
       <<: *write
       operationId: createCashSettlementAllocationSet
@@ -655,6 +763,15 @@ paths:
     post:
       <<: *write
       operationId: activateCashSettlementAllocationSet
+      responses:
+        '200': { $ref: '#/components/responses/CashSettlementAllocationSet' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
   /api/v1/finance/import-templates/{kind}:
     parameters: [{ $ref: '#/components/parameters/kind' }]
     get:
@@ -673,6 +790,13 @@ paths:
     post:
       <<: *write
       operationId: previewFinanceImport
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: { type: string, format: binary }
+          application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+            schema: { type: string, format: binary }
       responses:
         '200': { $ref: '#/components/responses/FinanceImportPreview' }
         '400': *apiErrorResponse
@@ -709,11 +833,20 @@ paths:
     get:
       <<: *read
       operationId: listFinanceImportRowErrors
+      responses:
+        '200': { $ref: '#/components/responses/FinanceImportRowErrorPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
 
   /api/v1/acquisition/cohorts:
     get:
       <<: *read
       operationId: listAcquisitionCohorts
+      responses:
+        '200': { $ref: '#/components/responses/AcquisitionCohortPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
     post:
       <<: *write
       operationId: createAcquisitionCohort
@@ -739,9 +872,22 @@ paths:
     get:
       <<: *read
       operationId: listClosureAttestations
+      responses:
+        '200': { $ref: '#/components/responses/ClosureAttestationPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
     post:
       <<: *write
       operationId: createClosureAttestation
+      responses:
+        '201': { $ref: '#/components/responses/ClosureAttestation' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
   /api/v1/acquisition/cohorts/{id}/close:
     parameters: [{ $ref: '#/components/parameters/id' }]
     post:
@@ -781,11 +927,25 @@ paths:
     get:
       <<: *read
       operationId: listRoiClosureVersions
+      responses:
+        '200': { $ref: '#/components/responses/RoiClosureVersionPagedResult' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
   /api/v1/acquisition/roi-closures/{closureVersionId}/reopen:
     parameters: [{ $ref: '#/components/parameters/closureVersionId' }]
     post:
       <<: *write
       operationId: reopenRoiClosureVersion
+      responses:
+        '200': { $ref: '#/components/responses/RoiClosureVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
 
   /api/v1/acquisition/growth-performance:
     get:
@@ -799,7 +959,7 @@ paths:
         errorCode: invalid_as_of
         zeroWritesOnReject: true
       parameters:
-        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/workspaceHeader'
         - { name: cohortId, in: query, required: true, schema: { type: string, minLength: 1 } }
         - { name: currency, in: query, required: true, schema: { type: string, pattern: '^[A-Z]{3}$' } }
         - { name: asOf, in: query, required: true, schema: { type: string, format: date-time } }
@@ -823,7 +983,7 @@ paths:
         errorCode: invalid_as_of
         zeroWritesOnReject: true
       parameters:
-        - $ref: '#/components/parameters/workspaceId'
+        - $ref: '#/components/parameters/workspaceHeader'
         - { name: asOf, in: query, required: true, schema: { type: string, format: date-time } }
         - { name: audienceRole, in: query, required: false, schema: { type: string, enum: [sales, manager, admin, super_admin] } }
         - { name: assignedTo, in: query, required: false, schema: { type: string, minLength: 1 } }
@@ -884,7 +1044,8 @@ components:
       in: header
       name: X-CSRF-Token
   parameters:
-    workspaceId: { name: workspaceId, in: query, required: true, schema: { type: string, minLength: 1, not: { const: all } } }
+    workspaceHeader: { name: X-Workspace-Id, in: header, required: true, schema: { type: string, minLength: 1, not: { const: all } } }
+    optionalWorkspaceHeader: { name: X-Workspace-Id, in: header, required: false, schema: { type: string, minLength: 1, not: { const: all } } }
     cursor: { name: cursor, in: query, required: false, schema: { type: string, minLength: 1 } }
     limit: { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
     sort: { name: sort, in: query, required: false, schema: { type: string, minLength: 1 } }
@@ -896,6 +1057,11 @@ components:
     previewId: { name: previewId, in: path, required: true, schema: { type: string, minLength: 1 } }
     closureVersionId: { name: closureVersionId, in: path, required: true, schema: { type: string, minLength: 1 } }
     kind: { name: kind, in: path, required: true, schema: { enum: [acquisition_cost, financial_fact] } }
+  headers:
+    ETag:
+      description: Strong revision token for the returned resource state
+      required: true
+      schema: { type: string, pattern: '^"[^" ]+"$' }
   schemas:
     ApiError: { $ref: ../json-schema/api-error.v1.schema.json }
     GrowthBootstrapResponse: { $ref: ../json-schema/growth-bootstrap.v1.schema.json }
@@ -910,13 +1076,53 @@ components:
         hasMore: { type: boolean }
     PackageVersion: { $ref: ../json-schema/package-version.v1.schema.json }
     PricingPolicyVersion: { $ref: ../json-schema/pricing-policy-version.v1.schema.json }
+    PricingPolicyVersionPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PricingPolicyVersion' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
+    PackageVersionPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PackageVersion' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     QuoteCase: { $ref: ../json-schema/quote-case.v1.schema.json }
+    QuoteCasePagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/QuoteCase' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     CommercialBindingSnapshot: { $ref: '../json-schema/quote-case.v1.schema.json#/$defs/CommercialBindingSnapshot' }
     QuotePreviewInput: { $ref: '../json-schema/quote-case.v1.schema.json#/$defs/QuotePreviewInput' }
     QuotePreviewIdentity: { $ref: '../json-schema/quote-case.v1.schema.json#/$defs/QuotePreviewIdentity' }
     QuotePreviewResult: { $ref: '../json-schema/quote-case.v1.schema.json#/$defs/QuotePreviewResult' }
     QuoteVersion: { $ref: ../json-schema/quote-version.v1.schema.json }
+    QuoteVersionPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/QuoteVersion' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     QuoteApproval: { $ref: ../json-schema/quote-approval.v1.schema.json }
+    QuoteApprovalPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/QuoteApproval' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     QuotePublicationOperation: { $ref: ../json-schema/quote-publication-operation.v1.schema.json }
     DealDecisionInput:
       oneOf:
@@ -934,19 +1140,100 @@ components:
             kind: { const: pre_quote_disqualified }
             reason: { type: string, minLength: 1 }
     AcquisitionCostEntry: { $ref: ../json-schema/acquisition-cost-ledger.v1.schema.json }
+    AcquisitionCostEntryPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AcquisitionCostEntry' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     AcquisitionCostEstimate: { $ref: '../json-schema/acquisition-cost-ledger.v1.schema.json#/$defs/AcquisitionCostEstimate' }
+    AcquisitionCostEstimatePagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AcquisitionCostEstimate' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     FinancialFact: { $ref: ../json-schema/financial-ledger.v1.schema.json }
+    FinancialFactPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/FinancialFact' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     FinancialFactCorrectionInput: { $ref: '../json-schema/financial-ledger.v1.schema.json#/$defs/FinancialFactCorrectionInput' }
     FinancialFactCorrectionResult: { $ref: '../json-schema/financial-ledger.v1.schema.json#/$defs/FinancialFactCorrectionResult' }
     LedgerVerificationEvent: { $ref: '../json-schema/financial-ledger.v1.schema.json#/$defs/LedgerVerificationEvent' }
     FinancialSourceReport: { $ref: '../json-schema/financial-ledger.v1.schema.json#/$defs/FinancialSourceReport' }
+    FinancialSourceReportPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/FinancialSourceReport' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     AttributionAllocationSet: { $ref: ../json-schema/allocation-set.v1.schema.json }
+    AttributionAllocationSetPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AttributionAllocationSet' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     CashSettlementAllocationSet: { $ref: '../json-schema/allocation-set.v1.schema.json#/$defs/CashSettlementAllocationSet' }
+    CashSettlementAllocationSetPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/CashSettlementAllocationSet' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     FinanceImportPreview: { $ref: '../json-schema/finance-import-operation.v1.schema.json#/$defs/FinanceImportPreview' }
     FinanceImportOperation: { $ref: ../json-schema/finance-import-operation.v1.schema.json }
     FinanceImportRowError: { $ref: '../json-schema/finance-import-operation.v1.schema.json#/$defs/FinanceImportRowError' }
+    FinanceImportRowErrorPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/FinanceImportRowError' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     AcquisitionCohort: { $ref: ../json-schema/acquisition-cohort.v1.schema.json }
+    AcquisitionCohortPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AcquisitionCohort' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
+    ClosureAttestation: { $ref: '../json-schema/acquisition-cohort.v1.schema.json#/$defs/ClosureAttestation' }
+    ClosureAttestationPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ClosureAttestation' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     RoiClosureVersion: { $ref: ../json-schema/roi-closure.v1.schema.json }
+    RoiClosureVersionPagedResult:
+      type: object
+      additionalProperties: false
+      required: [items, nextAfter, hasMore]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/RoiClosureVersion' } }
+        nextAfter: { type: [string, 'null'] }
+        hasMore: { type: boolean }
     GrowthPerformanceQuery: { $ref: '../json-schema/growth-performance.v1.schema.json#/$defs/GrowthPerformanceQuery' }
     ExpectedRoiCurrencyView: { $ref: '../json-schema/growth-performance.v1.schema.json#/$defs/ExpectedRoiCurrencyView' }
     ActualRoiCurrencyView: { $ref: '../json-schema/growth-performance.v1.schema.json#/$defs/ActualRoiCurrencyView' }
@@ -975,26 +1262,136 @@ components:
         hasMore: { type: boolean }
     CopilotTask: { $ref: ../json-schema/copilot-task.v1.schema.json }
   responses:
-    CatalogItem: &catalogItemResponse { description: Catalog item, content: { application/json: { schema: { $ref: '#/components/schemas/CatalogItem' } } } }
+    CatalogItem:
+      description: Catalog item
+      headers: &etagHeaders { ETag: { $ref: '#/components/headers/ETag' } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/CatalogItem' } } }
     CatalogItemPagedResult: { description: Catalog page, content: { application/json: { schema: { $ref: '#/components/schemas/CatalogItemPagedResult' } } } }
-    PackageVersion: { description: Package version, content: { application/json: { schema: { $ref: '#/components/schemas/PackageVersion' } } } }
-    PricingPolicyVersion: { description: Pricing policy version with capability-projected sensitive fields, content: { application/json: { schema: { $ref: '#/components/schemas/PricingPolicyVersion' } } } }
-    QuoteCase: { description: Quote case, content: { application/json: { schema: { $ref: '#/components/schemas/QuoteCase' } } } }
+    PackageVersion:
+      description: Package version
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/PackageVersion' } } }
+    PackageVersionPagedResult: { description: Package version page, content: { application/json: { schema: { $ref: '#/components/schemas/PackageVersionPagedResult' } } } }
+    PricingPolicyVersion:
+      description: Pricing policy version with capability-projected sensitive fields
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/PricingPolicyVersion' } } }
+    PricingPolicyVersionPagedResult: { description: Pricing policy page, content: { application/json: { schema: { $ref: '#/components/schemas/PricingPolicyVersionPagedResult' } } } }
+    QuoteCase:
+      description: Quote case
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/QuoteCase' } } }
+    QuoteCasePagedResult: { description: Quote case page, content: { application/json: { schema: { $ref: '#/components/schemas/QuoteCasePagedResult' } } } }
     QuotePreviewResult: { description: Deterministic quote preview, content: { application/json: { schema: { $ref: '#/components/schemas/QuotePreviewResult' } } } }
-    QuoteVersion: { description: Formal actionable quote version, content: { application/json: { schema: { $ref: '#/components/schemas/QuoteVersion' } } } }
-    QuoteApproval: { description: Quote approval, content: { application/json: { schema: { $ref: '#/components/schemas/QuoteApproval' } } } }
-    QuotePublicationOperation: { description: Quote publication operation, content: { application/json: { schema: { $ref: '#/components/schemas/QuotePublicationOperation' } } } }
-    AcquisitionCostEntry: { description: Acquisition cost entry, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCostEntry' } } } }
-    AcquisitionCostEstimate: { description: Acquisition cost estimate, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCostEstimate' } } } }
-    FinancialFact: { description: Financial fact with server-frozen binding, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialFact' } } } }
-    FinancialFactCorrectionResult: { description: Append-only financial correction, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialFactCorrectionResult' } } } }
-    FinancialSourceReport: { description: Financial source report, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialSourceReport' } } } }
-    AttributionAllocationSet: { description: Attribution allocation set, content: { application/json: { schema: { $ref: '#/components/schemas/AttributionAllocationSet' } } } }
-    CashSettlementAllocationSet: { description: Cash settlement allocation set, content: { application/json: { schema: { $ref: '#/components/schemas/CashSettlementAllocationSet' } } } }
+    QuoteVersion:
+      description: Formal actionable quote version
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/QuoteVersion' } } }
+    QuoteVersionPagedResult: { description: Quote version page, content: { application/json: { schema: { $ref: '#/components/schemas/QuoteVersionPagedResult' } } } }
+    QuoteApproval:
+      description: Quote approval and updated quote revision
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/QuoteApproval' } } }
+    QuoteApprovalPagedResult: { description: Quote approval page, content: { application/json: { schema: { $ref: '#/components/schemas/QuoteApprovalPagedResult' } } } }
+    QuotePublicationOperation:
+      description: Quote publication operation
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/QuotePublicationOperation' } } }
+    AcquisitionCostEntry:
+      description: Acquisition cost entry
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCostEntry' } } }
+    AcquisitionCostEntryPagedResult: { description: Acquisition cost entry page, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCostEntryPagedResult' } } } }
+    AcquisitionCostEstimate:
+      description: Acquisition cost estimate
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCostEstimate' } } }
+    AcquisitionCostEstimatePagedResult: { description: Acquisition cost estimate page, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCostEstimatePagedResult' } } } }
+    LedgerVerificationEvent:
+      description: Ledger verification transition and updated entry revision
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/LedgerVerificationEvent' } } }
+    FinancialFact:
+      description: Financial fact with server-frozen binding
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/FinancialFact' } } }
+    FinancialFactPagedResult: { description: Financial fact page, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialFactPagedResult' } } } }
+    FinancialFactCorrectionResult:
+      description: Append-only financial correction
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/FinancialFactCorrectionResult' } } }
+    FinancialFactCommandError:
+      description: Stable direct Financial Fact command error
+      headers:
+        X-Error-Code:
+          required: true
+          schema:
+            enum: [financial_fact_conflict, financial_fact_amount_invalid, amount_out_of_range]
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - type: object
+                additionalProperties: false
+                required: [code, message, details, requestId, retryable]
+                properties:
+                  code: { enum: [financial_fact_conflict, financial_fact_amount_invalid, amount_out_of_range] }
+                  message: { type: string, minLength: 1 }
+                  details: {}
+                  requestId: { type: string, minLength: 1 }
+                  retryable: { type: boolean }
+              - type: object
+                additionalProperties: false
+                required: [error]
+                properties:
+                  error:
+                    type: object
+                    additionalProperties: false
+                    required: [code, message]
+                    properties:
+                      code: { enum: [financial_fact_conflict, financial_fact_amount_invalid, amount_out_of_range] }
+                      message: { type: string, minLength: 1 }
+                      details: {}
+                      requestId: { type: string, minLength: 1 }
+    FinancialSourceReport:
+      description: Financial source report
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/FinancialSourceReport' } } }
+    FinancialSourceReportPagedResult: { description: Financial source report page, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialSourceReportPagedResult' } } } }
+    AttributionAllocationSet:
+      description: Attribution allocation set
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/AttributionAllocationSet' } } }
+    AttributionAllocationSetPagedResult: { description: Attribution allocation set page, content: { application/json: { schema: { $ref: '#/components/schemas/AttributionAllocationSetPagedResult' } } } }
+    CashSettlementAllocationSet:
+      description: Cash settlement allocation set
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/CashSettlementAllocationSet' } } }
+    CashSettlementAllocationSetPagedResult: { description: Cash settlement allocation set page, content: { application/json: { schema: { $ref: '#/components/schemas/CashSettlementAllocationSetPagedResult' } } } }
     FinanceImportPreview: { description: Finance import preview, content: { application/json: { schema: { $ref: '#/components/schemas/FinanceImportPreview' } } } }
-    FinanceImportOperation: { description: Finance import operation, content: { application/json: { schema: { $ref: '#/components/schemas/FinanceImportOperation' } } } }
-    AcquisitionCohort: { description: Acquisition cohort, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCohort' } } } }
-    RoiClosureVersion: { description: Immutable ROI closure, content: { application/json: { schema: { $ref: '#/components/schemas/RoiClosureVersion' } } } }
+    FinanceImportOperation:
+      description: Finance import operation
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/FinanceImportOperation' } } }
+    FinanceImportRowErrorPagedResult: { description: Finance import row error page, content: { application/json: { schema: { $ref: '#/components/schemas/FinanceImportRowErrorPagedResult' } } } }
+    AcquisitionCohort:
+      description: Acquisition cohort
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCohort' } } }
+    AcquisitionCohortPagedResult: { description: Acquisition cohort page, content: { application/json: { schema: { $ref: '#/components/schemas/AcquisitionCohortPagedResult' } } } }
+    ClosureAttestation:
+      description: Signed closure attestation
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/ClosureAttestation' } } }
+    ClosureAttestationPagedResult: { description: Closure attestation page, content: { application/json: { schema: { $ref: '#/components/schemas/ClosureAttestationPagedResult' } } } }
+    RoiClosureVersion:
+      description: Immutable ROI closure and series revision
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/RoiClosureVersion' } } }
+    RoiClosureVersionPagedResult: { description: ROI closure page, content: { application/json: { schema: { $ref: '#/components/schemas/RoiClosureVersionPagedResult' } } } }
     GrowthPerformanceResponse: { description: "Separate expected, actual and cash views", content: { application/json: { schema: { $ref: '#/components/schemas/GrowthPerformanceResponse' } } } }
     AdvisorTodayResponse: { description: Advisor today projection, content: { application/json: { schema: { $ref: '#/components/schemas/AdvisorTodayResponse' } } } }
-    AdvisorRecommendation: { description: Advisor recommendation, content: { application/json: { schema: { $ref: '#/components/schemas/AdvisorRecommendation' } } } }
+    AdvisorRecommendation:
+      description: Advisor recommendation
+      headers: *etagHeaders
+      content: { application/json: { schema: { $ref: '#/components/schemas/AdvisorRecommendation' } } }

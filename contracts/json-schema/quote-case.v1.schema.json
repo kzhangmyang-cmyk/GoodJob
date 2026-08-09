@@ -168,7 +168,49 @@
               }
             },
             "previewIdentity": { "$ref": "#/$defs/QuotePreviewIdentity" }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "type": "object",
+                "required": ["gate"],
+                "properties": {
+                  "gate": {
+                    "type": "object",
+                    "required": ["reasons"],
+                    "properties": {
+                      "reasons": { "type": "array", "contains": { "const": "net_product_amount_not_positive" } }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "diagnosticNetProductAmountMinor": { "type": "integer", "maximum": 0 }
+                }
+              }
+            },
+            {
+              "if": {
+                "type": "object",
+                "required": ["gate"],
+                "properties": {
+                  "gate": {
+                    "type": "object",
+                    "required": ["reasons"],
+                    "properties": {
+                      "reasons": { "type": "array", "contains": { "const": "quoted_amount_not_positive" } }
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "diagnosticQuotedAmountMinor": { "type": "integer", "maximum": 0 }
+                }
+              }
+            }
+          ]
         }
       ]
     }
