@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import SwaggerParser from "@apidevtools/swagger-parser";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -40,6 +41,35 @@ test("growth release derives the version directory and never overwrites differen
       buildGrowthContractRelease({ input, releasesRoot: firstRoot }),
       /immutable growth contract release collision for 1\.0\.0/u
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("growth release resolves YAML merges into a valid OpenAPI document", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "growth-contract-release-"));
+  try {
+    const input = new URL("../openapi/growth-advisor-quote-roi.v1.yaml", import.meta.url);
+    const releasesRoot = path.join(root, "releases");
+    const manifest = await buildGrowthContractRelease({ input, releasesRoot });
+    const bytes = await readFile(
+      path.join(releasesRoot, manifest.contractVersion, "openapi.json")
+    );
+    const document = JSON.parse(bytes);
+    const operation = document.paths["/api/v1/catalog/items"].post;
+
+    assert.doesNotMatch(bytes.toString("utf8"), /"<<"/u);
+    assert.deepEqual(operation.security, [
+      { bearerAuth: [] },
+      { cookieAuth: [], csrfToken: [] }
+    ]);
+    assert.deepEqual(operation.parameters, [
+      { $ref: "#/components/parameters/workspaceHeader" },
+      { $ref: "#/components/parameters/idempotencyKey" },
+      { $ref: "#/components/parameters/ifMatch" }
+    ]);
+    assert.deepEqual(Object.keys(operation.responses).sort(), ["201", "400", "401", "403", "409", "422"]);
+    await assert.doesNotReject(SwaggerParser.validate(document, {}));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

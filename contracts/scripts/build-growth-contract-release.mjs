@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { parseDocument } from "yaml";
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -33,7 +34,18 @@ async function releaseDirectoryExists(outputDirectory) {
 }
 
 export async function buildGrowthContractRelease({ input, releasesRoot, check = false }) {
-  const bundled = await SwaggerParser.bundle(input instanceof URL ? fileURLToPath(input) : input);
+  const inputPath = input instanceof URL ? fileURLToPath(input) : input;
+  const source = parseDocument(await readFile(inputPath, "utf8"), {
+    merge: true,
+    maxAliasCount: -1
+  });
+  if (source.errors.length > 0) throw source.errors[0];
+  const bundled = await SwaggerParser.bundle(
+    inputPath,
+    source.toJS({ maxAliasCount: -1 }),
+    {}
+  );
+  await SwaggerParser.validate(inputPath, structuredClone(bundled), {});
   const contractVersion = bundled.info?.version;
   if (typeof contractVersion !== "string" || !strictSemver.test(contractVersion)) {
     throw new Error("OpenAPI info.version must be a strict SemVer release directory name");
