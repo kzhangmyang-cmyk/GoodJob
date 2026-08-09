@@ -237,6 +237,13 @@ import type {
 import type {
   CrmStore
 } from "./store.js";
+import type {
+  GrowthCommercialToolPorts
+} from "./growth-commercial-application.js";
+import type { GrowthTemporalBarrier } from "./growth-temporal-barrier.js";
+import type {
+  GrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 export {
   acquisitionProviderConnectionVersion
@@ -307,6 +314,11 @@ export function createAcquisitionActiveSearchConnectionDirectory(
 export interface CreateAcquisitionApplicationOptions {
   store: CrmStore;
   masterSecret: string;
+  /** C0 forward seams; production supplies the one Growth runtime identities. */
+  growthToolPorts?: GrowthCommercialToolPorts;
+  acquisitionWorkspace?: GrowthAcquisitionWorkspaceResolver;
+  growthTemporalBarrier?: GrowthTemporalBarrier;
+  quoteProjectedDocumentAuthority?: never;
   databaseUrl?: string;
   searchPort?: SearchPublicSourcesPort;
   contentFetcher?: AcquisitionContentFetcherPort;
@@ -917,6 +929,23 @@ function assertTrustedPlanSnapshot(
 export async function createAcquisitionApplication(
   options: CreateAcquisitionApplicationOptions
 ): Promise<AcquisitionApplicationRuntime> {
+  if (process.env.NODE_ENV !== "test" && (
+    !options.growthToolPorts
+    || !options.acquisitionWorkspace
+    || !options.growthTemporalBarrier
+  )) {
+    throw new Error("GROWTH_ACQUISITION_INTEGRATIONS_REQUIRED");
+  }
+  const growthIntegrations = options.growthToolPorts
+    && options.acquisitionWorkspace
+    && options.growthTemporalBarrier
+    ? Object.freeze({
+        toolPorts: options.growthToolPorts,
+        acquisitionWorkspace: options.acquisitionWorkspace,
+        temporalBarrier: options.growthTemporalBarrier
+      })
+    : null;
+  void growthIntegrations;
   assertApplicationStore(options.store);
   const masterSecret = requireMasterSecret(options.masterSecret);
   const providerCredentialSecret = derivedSecret(

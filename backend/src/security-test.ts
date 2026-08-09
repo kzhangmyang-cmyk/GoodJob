@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import { Value } from "typebox/value";
 import apiErrorSchema from "../../contracts/json-schema/api-error.v1.schema.json" with { type: "json" };
 import { app } from "./server.js";
+import { createGrowthOpenApiPaths } from "./growth-openapi.js";
 import { completeAgentJob, enqueueAgentJob, failAgentJob, startAgentJob } from "./agent-jobs.js";
 import {
   decryptAiModelApiKey,
@@ -415,10 +416,16 @@ try {
     ).length,
     0
   );
+  const immutableGrowthPaths = new Set(Object.keys(createGrowthOpenApiPaths()));
+  if (!immutableGrowthPaths.has("/api/v1/growth/bootstrap")
+    || immutableGrowthPaths.has("/api/health")) {
+    throw new Error("Growth static path exclusion escaped its closed contract set");
+  }
   const documentedTopLevelOperations = Object.entries(
     docsAsAdmin.json.paths || {}
   ).reduce((total: number, [path, pathItem]) => {
-    if (path.startsWith("/api/v1/acquisition")) return total;
+    if (path.startsWith("/api/v1/acquisition")
+      || immutableGrowthPaths.has(path)) return total;
     return total + Object.keys(pathItem as object).filter((method) =>
       ["get", "post", "put", "patch", "delete"].includes(method)
     ).length;

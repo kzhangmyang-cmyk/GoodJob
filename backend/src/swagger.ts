@@ -4,6 +4,10 @@ import { requireAuth } from "./auth.js";
 import {
   createAcquisitionOpenApiPaths
 } from "./acquisition-openapi.js";
+import {
+  createGrowthOpenApiComponents,
+  createGrowthOpenApiPaths
+} from "./growth-openapi.js";
 
 type HttpMethod = "get" | "post" | "put" | "patch" | "delete";
 
@@ -2300,6 +2304,7 @@ function responsesFor(method: HttpMethod, path: string) {
 
 export function createOpenApiDocument(app: Application) {
   const routes = registeredApiRoutes(app);
+  const growthComponents = createGrowthOpenApiComponents();
   const paths: Record<string, Record<string, unknown>> = {};
   for (const route of routes) {
     const path = openApiPath(route.path);
@@ -2424,6 +2429,9 @@ export function createOpenApiDocument(app: Application) {
   )) {
     paths[path] = item;
   }
+  for (const [path, item] of Object.entries(createGrowthOpenApiPaths())) {
+    paths[path] = item;
+  }
 
   return {
     openapi: "3.0.3",
@@ -2443,6 +2451,7 @@ export function createOpenApiDocument(app: Application) {
     )].map((name) => ({ name })),
     paths,
     components: {
+      ...growthComponents,
       securitySchemes: {
         bearerAuth: {
           type: "http",
@@ -2467,7 +2476,8 @@ export function createOpenApiDocument(app: Application) {
           in: "header",
           name: "X-Twilio-Signature",
           description: "Twilio Webhook 签名。"
-        }
+        },
+        ...(growthComponents.securitySchemes ?? {})
       },
       schemas: {
         Error: {
@@ -2483,6 +2493,7 @@ export function createOpenApiDocument(app: Application) {
         MarketAnalysisProviderError: marketAnalysisProviderErrorSchema,
         TradeObservationListRequestError: tradeObservationListRequestErrorSchema,
         MarketOpportunityListRequestError: marketOpportunityListRequestErrorSchema,
+        ...(growthComponents.schemas ?? {}),
         ProspectCampaignSnapshotInput: {
           type: "object",
           properties: {
@@ -2743,7 +2754,8 @@ export function createOpenApiDocument(app: Application) {
         NotFound: {
           description: "资源不存在或不在当前账号的数据范围内",
           content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } }
-        }
+        },
+        ...(growthComponents.responses ?? {})
       }
     }
   };

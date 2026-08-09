@@ -13,6 +13,7 @@
     "check:generated-acquisition-types": "npm run check:types --workspace contracts",
     "build:growth-contract-release": "npm run build:growth-release --workspace contracts",
     "check:growth-contract-release": "npm run check:growth-release --workspace contracts",
+    "check:growth-contracts": "npm run check:growth-contract-release && npm run test:growth-openapi --workspace backend",
     "check:acquisition-contracts": "npm run test:contracts && npm run test:contract-drift --workspace backend && npm run test:security --workspace backend && npm run test:acquisition-openapi --workspace backend && npm run check:generated-acquisition-types && npm run build --workspace frontend && npm run test --workspace frontend && npm run test:baota-package",
     "test:contracts": "npm run test --workspace contracts",
     "test:baota-package": "node --test deploy/baota/build-package.test.mjs",

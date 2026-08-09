@@ -93,6 +93,16 @@ import {
   AcquisitionRuntimeBridge
 } from "./acquisition-runtime-bridge.js";
 import {
+  createGrowthCommercialApplication
+} from "./growth-commercial-application.js";
+import {
+  createGrowthCommercialCompositionForStore
+} from "./growth-commercial-composition.js";
+import {
+  GrowthCommercialRuntimeBridge
+} from "./growth-commercial-runtime-bridge.js";
+import { loadGrowthContractRelease } from "./growth-openapi.js";
+import {
   listTradeObservations,
   parseTradeObservationListQuery,
   TradeObservationListRequestError,
@@ -244,6 +254,7 @@ loadLocalEnv();
 export const app = express();
 let activeProspectWorkerService: ProspectWorkerService | null = null;
 const acquisitionRuntimeBridge = new AcquisitionRuntimeBridge();
+const growthRuntimeBridge = new GrowthCommercialRuntimeBridge();
 
 async function synchronizeProspectQueue() {
   try {
@@ -11853,6 +11864,7 @@ app.patch("/api/reports/executive/note", requireAuth, asyncRoute(async (req, res
   res.json({ note: user.reportNote });
 }));
 
+app.use(growthRuntimeBridge.middleware());
 app.use("/api/v1/acquisition", requireAuth);
 app.use(acquisitionRuntimeBridge.middleware());
 
@@ -11909,6 +11921,18 @@ async function startServer() {
   }
   const store = getStore();
   try {
+    const foundation = createGrowthCommercialCompositionForStore({
+      store,
+      databaseUrl: process.env.DATABASE_URL || process.env.MYSQL_URL
+    });
+    const growthRuntime = await createGrowthCommercialApplication({
+      manifest: loadGrowthContractRelease().manifest,
+      requireAuth,
+      workspaceMiddleware: foundation.workspaceMiddleware,
+      enabledFeatures: () => [],
+      composition: foundation.composition
+    });
+    growthRuntimeBridge.install(growthRuntime);
     const acquisitionRuntime = await createAcquisitionApplication({
       store,
       masterSecret: resolveAcquisitionMasterSecret({
@@ -11916,7 +11940,13 @@ async function startServer() {
         acquisitionMasterSecret:
           process.env.ACQUISITION_MASTER_SECRET,
         jwtSecret: process.env.JWT_SECRET
-      })
+      }),
+      growthToolPorts: growthRuntime.toolPorts,
+      acquisitionWorkspace:
+        growthRuntime.integrations.acquisitionWorkspace,
+      growthTemporalBarrier: growthRuntime.integrations.temporalBarrier,
+      quoteProjectedDocumentAuthority:
+        growthRuntime.integrations.quoteProjectedDocumentAuthority
     });
     acquisitionRuntimeBridge.install(acquisitionRuntime);
   } catch (error) {
@@ -11925,6 +11955,7 @@ async function startServer() {
         error instanceof Error ? error.message : String(error)
       }`
     );
+    await growthRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     process.exit(1);
     return;
@@ -11941,6 +11972,7 @@ async function startServer() {
       + "启用强制队列时不能关闭 PROSPECT_WORKER_ENABLED"
     );
     await acquisitionRuntimeBridge.close().catch(() => undefined);
+    await growthRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     process.exit(1);
     return;
@@ -11951,6 +11983,7 @@ async function startServer() {
   } catch (error) {
     console.error(`GoodJob CRM prospect worker startup failed: ${error instanceof Error ? error.message : String(error)}`);
     await acquisitionRuntimeBridge.close().catch(() => undefined);
+    await growthRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     process.exit(1);
     return;
@@ -11968,6 +12001,7 @@ async function startServer() {
     activeProspectWorkerService = null;
     await prospectWorkerService?.stop();
     await acquisitionRuntimeBridge.close().catch(() => undefined);
+    await growthRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     console.error(`GoodJob CRM prospect scheduler startup failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
@@ -11988,6 +12022,7 @@ async function startServer() {
       activeProspectWorkerService = null;
       await prospectWorkerService?.stop();
       await acquisitionRuntimeBridge.close();
+      await growthRuntimeBridge.close();
       await new Promise<void>((resolve, reject) => {
         httpServer.close((error) => {
           if (error) reject(error);

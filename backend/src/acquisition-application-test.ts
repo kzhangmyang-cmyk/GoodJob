@@ -81,6 +81,11 @@ import type {
 import {
   bindModelConnectionSnapshot
 } from "./model-providers/runtime.js";
+import { createGrowthCommercialToolPorts } from "./growth-commercial-application.js";
+import type { GrowthTemporalBarrier } from "./growth-temporal-barrier.js";
+import type {
+  GrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 const OWNER = "owner-application";
 const TEAM = "team-application";
@@ -2997,4 +3002,43 @@ test("acquisition application rejects weak master secrets", async () => {
     }),
     /masterSecret/u
   );
+});
+
+test("production acquisition startup requires the one Growth runtime seams", async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    const missing = isolatedMemoryStore();
+    await assert.rejects(createAcquisitionApplication({
+      store: missing.store,
+      masterSecret: MASTER_SECRET
+    }), /GROWTH_ACQUISITION_INTEGRATIONS_REQUIRED/u);
+
+    const fixture = isolatedMemoryStore();
+    const growthToolPorts = createGrowthCommercialToolPorts();
+    const acquisitionWorkspace = Object.freeze({
+      resolve: async () => null
+    }) as GrowthAcquisitionWorkspaceResolver;
+    const growthTemporalBarrier = Object.freeze({
+      allocateAppend: async () => ({
+        recordedAt: "2026-08-09T08:00:00.000Z",
+        temporalSequence: 1
+      }),
+      sealReadCutoff: async () => {
+        throw new Error("not used by C0 Acquisition");
+      }
+    }) as GrowthTemporalBarrier;
+    const runtime = await createAcquisitionApplication({
+      store: fixture.store,
+      masterSecret: MASTER_SECRET,
+      growthToolPorts,
+      acquisitionWorkspace,
+      growthTemporalBarrier
+    });
+    await runtime.close();
+    await runtime.close();
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
 });
