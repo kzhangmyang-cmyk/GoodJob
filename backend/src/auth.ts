@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import type { NextFunction, Request, Response } from "express";
 import { createHash, randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
+import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import { getStore } from "./store.js";
 import type { SessionUser } from "./types.js";
 
@@ -45,6 +46,7 @@ declare global {
   namespace Express {
     interface Request {
       user?: SessionUser;
+      activeWorkspace?: ActiveWorkspaceContext;
     }
   }
 }
