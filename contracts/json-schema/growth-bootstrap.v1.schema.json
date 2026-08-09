@@ -19,7 +19,10 @@
       "properties": {
         "capabilityRegistryVersion": { "type": "string", "minLength": 1 },
         "capabilities": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/capability" } },
-        "contractVersion": { "const": "growth-advisor-quote-roi.v1" },
+        "contractVersion": {
+          "type": "string",
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:(?:0|[1-9]\\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        },
         "contractHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
         "features": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/feature" } }
       }

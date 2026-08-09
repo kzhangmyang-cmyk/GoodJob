@@ -448,6 +448,41 @@ test("growth contract publishes the exact route surface", async () => {
   assert.equal(JSON.stringify(bootstrap).includes("acquisition.outcome.reconcile.internal"), false);
 });
 
+// Production break caught: returning the logical contract filename or a path-like value instead of the immutable release's strict SemVer identity.
+test("bootstrap responses require the release manifest's strict SemVer contract version", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("growth-bootstrap");
+  assert.ok(validate);
+
+  const ready = {
+    status: "ready",
+    workspaceId: "workspace-1",
+    capabilityRegistryVersion: "growth-capabilities.v1",
+    capabilities: ["catalog.read"],
+    contractVersion: "1.0.0",
+    contractHash: `sha256:${"a".repeat(64)}`,
+    features: ["catalog"]
+  };
+  const selectionRequired = {
+    status: "workspace_selection_required",
+    workspaceId: null,
+    capabilityRegistryVersion: "growth-capabilities.v1",
+    capabilities: [],
+    contractVersion: "1.0.0",
+    contractHash: `sha256:${"a".repeat(64)}`,
+    features: []
+  };
+
+  for (const contractVersion of ["1.0.0", "2.7.0-beta.1+build.42"]) {
+    assert.equal(validate({ ...ready, contractVersion }), true, JSON.stringify(validate.errors));
+    assert.equal(validate({ ...selectionRequired, contractVersion }), true, JSON.stringify(validate.errors));
+  }
+  for (const contractVersion of ["growth-advisor-quote-roi.v1", "../1.0.0", "1.0", "1.0.0/release"]) {
+    assert.equal(validate({ ...ready, contractVersion }), false, contractVersion);
+    assert.equal(validate({ ...selectionRequired, contractVersion }), false, contractVersion);
+  }
+});
+
 // Production break caught: accepting a future cutoff, using a per-layer clock, or writing during a rejected closure command.
 test("every asOf boundary rejects future cutoff from one server-owned request clock", async () => {
   const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
