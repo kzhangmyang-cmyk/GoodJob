@@ -23,7 +23,8 @@ import {
 import {
   acquisitionProviderConnectionVersion,
   createAcquisitionActiveSearchConnectionDirectory,
-  createAcquisitionApplication,
+  createAcquisitionApplication as createAcquisitionApplicationRuntime,
+  type CreateAcquisitionApplicationOptions,
   trackAcquisitionBackgroundTask
 } from "./acquisition-application.js";
 import type {
@@ -91,6 +92,39 @@ const OWNER = "owner-application";
 const TEAM = "team-application";
 const MASTER_SECRET =
   "acquisition-application-test-master-secret-at-least-32-characters";
+
+const testGrowthApplicationDependencies = Object.freeze({
+  growthToolPorts: createGrowthCommercialToolPorts(),
+  acquisitionWorkspace: Object.freeze({
+    resolve: async () => null
+  }) as GrowthAcquisitionWorkspaceResolver,
+  growthTemporalBarrier: Object.freeze({
+    allocateAppend: async () => ({
+      recordedAt: "2026-08-09T08:00:00.000Z",
+      temporalSequence: 1
+    }),
+    sealReadCutoff: async () => {
+      throw new Error("not used by legacy Acquisition application tests");
+    }
+  }) as GrowthTemporalBarrier
+});
+
+type AcquisitionApplicationTestOptions = Omit<
+  CreateAcquisitionApplicationOptions,
+  "growthToolPorts" | "acquisitionWorkspace" | "growthTemporalBarrier"
+> & Partial<Pick<
+  CreateAcquisitionApplicationOptions,
+  "growthToolPorts" | "acquisitionWorkspace" | "growthTemporalBarrier"
+>>;
+
+function createAcquisitionApplication(
+  options: AcquisitionApplicationTestOptions
+) {
+  return createAcquisitionApplicationRuntime({
+    ...testGrowthApplicationDependencies,
+    ...options
+  } as CreateAcquisitionApplicationOptions);
+}
 
 function modelConfig(): AiModelConfig {
   return {
@@ -3004,16 +3038,10 @@ test("acquisition application rejects weak master secrets", async () => {
   );
 });
 
-test("production acquisition startup requires the one Growth runtime seams", async () => {
+test("acquisition startup rejects missing and lookalike Growth runtime ports", async () => {
   const previousNodeEnv = process.env.NODE_ENV;
   process.env.NODE_ENV = "production";
   try {
-    const missing = isolatedMemoryStore();
-    await assert.rejects(createAcquisitionApplication({
-      store: missing.store,
-      masterSecret: MASTER_SECRET
-    }), /GROWTH_ACQUISITION_INTEGRATIONS_REQUIRED/u);
-
     const fixture = isolatedMemoryStore();
     const growthToolPorts = createGrowthCommercialToolPorts();
     const acquisitionWorkspace = Object.freeze({
@@ -3028,17 +3056,146 @@ test("production acquisition startup requires the one Growth runtime seams", asy
         throw new Error("not used by C0 Acquisition");
       }
     }) as GrowthTemporalBarrier;
-    const runtime = await createAcquisitionApplication({
+    const complete = {
       store: fixture.store,
       masterSecret: MASTER_SECRET,
       growthToolPorts,
       acquisitionWorkspace,
       growthTemporalBarrier
-    });
-    await runtime.close();
-    await runtime.close();
+    };
+
+    await assert.rejects(
+      createAcquisitionApplication({
+        ...complete,
+        growthToolPorts: undefined
+      } as never),
+      /MISSING_GROWTH_TOOL_PORTS/u
+    );
+    await assert.rejects(
+      createAcquisitionApplication({
+        ...complete,
+        acquisitionWorkspace: undefined
+      } as never),
+      /MISSING_GROWTH_ACQUISITION_WORKSPACE/u
+    );
+    await assert.rejects(
+      createAcquisitionApplication({
+        ...complete,
+        growthTemporalBarrier: undefined
+      } as never),
+      /MISSING_GROWTH_TEMPORAL_BARRIER/u
+    );
+    await assert.rejects(async () => {
+      const runtime = await createAcquisitionApplication({
+        ...complete,
+        growthToolPorts: Object.freeze({
+          register() {},
+          execute: async () => null
+        }) as never
+      });
+      await runtime.close();
+    }, /INVALID_GROWTH_TOOL_PORTS/u);
+    await assert.rejects(
+      createAcquisitionApplication({
+        ...complete,
+        acquisitionWorkspace: { resolve: null } as never
+      }),
+      /INVALID_GROWTH_ACQUISITION_WORKSPACE/u
+    );
+    await assert.rejects(
+      createAcquisitionApplication({
+        ...complete,
+        growthTemporalBarrier: {
+          allocateAppend: async () => ({
+            recordedAt: "2026-08-09T08:00:00.000Z",
+            temporalSequence: 1
+          })
+        } as never
+      }),
+      /INVALID_GROWTH_TEMPORAL_BARRIER/u
+    );
   } finally {
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;
+  }
+});
+
+test("the Acquisition domain graph consumes the exact Growth runtime ports", async () => {
+  const fixture = isolatedMemoryStore();
+  const growthToolPorts = createGrowthCommercialToolPorts();
+  const command = Object.freeze({ marker: "command" }) as never;
+  growthToolPorts.register("list_catalog_items", async (input, actual) => {
+    assert.equal(actual, command);
+    return input;
+  });
+  const scope = Object.freeze({ ownerId: OWNER, teamId: TEAM });
+  const resolvedWorkspace = Object.freeze({
+    workspaceId: TEAM,
+    kind: "team",
+    bindingRevision: "revision-1",
+    ownerId: OWNER,
+    teamId: TEAM
+  }) as never;
+  const acquisitionWorkspace = Object.freeze({
+    async resolve(actual: typeof scope) {
+      assert.equal(actual, scope);
+      return resolvedWorkspace;
+    }
+  }) as GrowthAcquisitionWorkspaceResolver;
+  const transaction = Object.freeze({ marker: "transaction" }) as never;
+  const growthTemporalBarrier = Object.freeze({
+    async allocateAppend(actual: unknown, workspaceId: string) {
+      assert.equal(actual, transaction);
+      assert.equal(workspaceId, TEAM);
+      return {
+        recordedAt: "2026-08-09T08:00:00.000Z",
+        temporalSequence: 7
+      };
+    },
+    sealReadCutoff: async () => {
+      throw new Error("not used by this consumer test");
+    }
+  }) as GrowthTemporalBarrier;
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    growthToolPorts,
+    acquisitionWorkspace,
+    growthTemporalBarrier
+  });
+  try {
+    assert.equal(runtime.growthIntegrations.toolPorts, growthToolPorts);
+    assert.equal(
+      runtime.growthIntegrations.acquisitionWorkspace,
+      acquisitionWorkspace
+    );
+    assert.equal(
+      runtime.growthIntegrations.temporalBarrier,
+      growthTemporalBarrier
+    );
+    assert.equal(Object.isFrozen(runtime.growthIntegrations), true);
+    assert.equal(
+      await runtime.growthIntegrations.resolveAcquisitionWorkspace(scope),
+      resolvedWorkspace
+    );
+    const toolInput = Object.freeze({ page: 1 });
+    assert.equal(await runtime.growthIntegrations.executeGrowthTool({
+      name: "list_catalog_items",
+      input: toolInput,
+      stableCallHash: `sha256:${"a".repeat(64)}`
+    }, command), toolInput);
+    assert.deepEqual(
+      await runtime.growthIntegrations.allocateGrowthAppend(
+        transaction,
+        TEAM
+      ),
+      {
+        recordedAt: "2026-08-09T08:00:00.000Z",
+        temporalSequence: 7
+      }
+    );
+  } finally {
+    await runtime.close();
+    await runtime.close();
   }
 });

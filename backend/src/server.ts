@@ -11888,6 +11888,36 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ message: "服务器处理请求失败" });
 });
 
+export interface ServerRuntimeCleanup {
+  stopScheduler(): Promise<void>;
+  stopWorker(): Promise<void>;
+  closeAcquisition(): Promise<void>;
+  closeGrowth(): Promise<void>;
+  closeHttpServer(): Promise<void>;
+  closeStore(): Promise<void>;
+}
+
+export async function closeServerRuntimeResources(
+  cleanup: ServerRuntimeCleanup
+): Promise<void> {
+  let firstFailure: unknown;
+  for (const close of [
+    cleanup.stopScheduler,
+    cleanup.stopWorker,
+    cleanup.closeAcquisition,
+    cleanup.closeGrowth,
+    cleanup.closeHttpServer,
+    cleanup.closeStore
+  ]) {
+    try {
+      await close.call(cleanup);
+    } catch (error) {
+      firstFailure ??= error;
+    }
+  }
+  if (firstFailure) throw firstFailure;
+}
+
 async function startServer() {
   const mysqlRequested = process.env.CRM_STORE === "mysql"
     || (process.env.CRM_STORE !== "memory" && Boolean(process.env.DATABASE_URL || process.env.MYSQL_URL));
@@ -12018,18 +12048,24 @@ async function startServer() {
     shuttingDown = true;
     console.log(`GoodJob CRM received ${signal}, shutting down`);
     try {
-      await prospectScheduler?.stop();
-      activeProspectWorkerService = null;
-      await prospectWorkerService?.stop();
-      await acquisitionRuntimeBridge.close();
-      await growthRuntimeBridge.close();
-      await new Promise<void>((resolve, reject) => {
-        httpServer.close((error) => {
-          if (error) reject(error);
-          else resolve();
-        });
+      await closeServerRuntimeResources({
+        stopScheduler: async () => prospectScheduler?.stop(),
+        stopWorker: async () => {
+          activeProspectWorkerService = null;
+          await prospectWorkerService?.stop();
+        },
+        closeAcquisition: () => acquisitionRuntimeBridge.close(),
+        closeGrowth: () => growthRuntimeBridge.close(),
+        closeHttpServer: () => new Promise<void>((resolve, reject) => {
+          httpServer.close((error) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        }),
+        closeStore: async () => {
+          await store.close?.();
+        }
       });
-      await store.close?.();
       process.exit(0);
     } catch (error) {
       console.error(`GoodJob CRM shutdown failed: ${error instanceof Error ? error.message : String(error)}`);

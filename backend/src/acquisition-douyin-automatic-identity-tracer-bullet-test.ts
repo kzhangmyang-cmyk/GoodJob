@@ -6,6 +6,14 @@ import {
   ACQUISITION_JUDGMENT_SUBMIT_TOOL
 } from "./acquisition-model-content.js";
 import { createAcquisitionApplication } from "./acquisition-application.js";
+import { createGrowthCommercialToolPorts } from "./growth-commercial-application.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import type {
+  GrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 import {
   InMemoryAcquisitionCandidateIntelligenceOperationRepository
 } from "./acquisition-candidate-intelligence-operations.js";
@@ -612,6 +620,13 @@ test("a real Baidu Douyin video result closes identity and AI intelligence witho
   const runtime = await createAcquisitionApplication({
     store,
     masterSecret: MASTER_SECRET,
+    growthToolPorts: createGrowthCommercialToolPorts(),
+    acquisitionWorkspace: Object.freeze({
+      resolve: async () => null
+    }) as GrowthAcquisitionWorkspaceResolver,
+    growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
+      new InMemoryGrowthTemporalTransactionRunner()
+    ),
     domainRepository,
     douyinIdentityResolutionRepository: identityRepository,
     candidateIntelligenceRepository: intelligenceRepository,

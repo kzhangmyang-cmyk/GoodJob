@@ -237,10 +237,16 @@ import type {
 import type {
   CrmStore
 } from "./store.js";
-import type {
-  GrowthCommercialToolPorts
+import {
+  assertGrowthCommercialToolPorts,
+  type GrowthCommercialToolCall,
+  type GrowthCommercialToolPorts
 } from "./growth-commercial-application.js";
-import type { GrowthTemporalBarrier } from "./growth-temporal-barrier.js";
+import type { CommandContext } from "./growth-command-context.js";
+import type {
+  GrowthTemporalBarrier,
+  GrowthTemporalTransaction
+} from "./growth-temporal-barrier.js";
 import type {
   GrowthAcquisitionWorkspaceResolver
 } from "./growth-workspace-context.js";
@@ -315,9 +321,9 @@ export interface CreateAcquisitionApplicationOptions {
   store: CrmStore;
   masterSecret: string;
   /** C0 forward seams; production supplies the one Growth runtime identities. */
-  growthToolPorts?: GrowthCommercialToolPorts;
-  acquisitionWorkspace?: GrowthAcquisitionWorkspaceResolver;
-  growthTemporalBarrier?: GrowthTemporalBarrier;
+  growthToolPorts: GrowthCommercialToolPorts;
+  acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
+  growthTemporalBarrier: GrowthTemporalBarrier;
   quoteProjectedDocumentAuthority?: never;
   databaseUrl?: string;
   searchPort?: SearchPublicSourcesPort;
@@ -359,6 +365,63 @@ export interface CreateAcquisitionApplicationOptions {
 export interface AcquisitionApplicationRuntime
 extends AcquisitionHttpRuntime {
   planDraftGenerator: AcquisitionPlanDraftGenerator;
+  growthIntegrations: AcquisitionGrowthIntegrationConsumer;
+}
+
+export interface AcquisitionGrowthIntegrationConsumer {
+  readonly toolPorts: GrowthCommercialToolPorts;
+  readonly acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
+  readonly temporalBarrier: GrowthTemporalBarrier;
+  resolveAcquisitionWorkspace(
+    scope: Parameters<GrowthAcquisitionWorkspaceResolver["resolve"]>[0]
+  ): ReturnType<GrowthAcquisitionWorkspaceResolver["resolve"]>;
+  executeGrowthTool(
+    call: GrowthCommercialToolCall,
+    command: CommandContext
+  ): Promise<unknown>;
+  allocateGrowthAppend(
+    transaction: GrowthTemporalTransaction,
+    workspaceId: string
+  ): ReturnType<GrowthTemporalBarrier["allocateAppend"]>;
+}
+
+function createAcquisitionGrowthIntegrationConsumer(
+  options: Pick<
+    CreateAcquisitionApplicationOptions,
+    "growthToolPorts" | "acquisitionWorkspace" | "growthTemporalBarrier"
+  >
+): AcquisitionGrowthIntegrationConsumer {
+  if (!options.growthToolPorts) throw new Error("MISSING_GROWTH_TOOL_PORTS");
+  if (!options.acquisitionWorkspace) {
+    throw new Error("MISSING_GROWTH_ACQUISITION_WORKSPACE");
+  }
+  if (!options.growthTemporalBarrier) {
+    throw new Error("MISSING_GROWTH_TEMPORAL_BARRIER");
+  }
+  const toolPorts = assertGrowthCommercialToolPorts(options.growthToolPorts);
+  const acquisitionWorkspace = options.acquisitionWorkspace;
+  const temporalBarrier = options.growthTemporalBarrier;
+  if (typeof acquisitionWorkspace.resolve !== "function") {
+    throw new Error("INVALID_GROWTH_ACQUISITION_WORKSPACE");
+  }
+  if (
+    typeof temporalBarrier.allocateAppend !== "function"
+    || typeof temporalBarrier.sealReadCutoff !== "function"
+  ) {
+    throw new Error("INVALID_GROWTH_TEMPORAL_BARRIER");
+  }
+  const consumer: AcquisitionGrowthIntegrationConsumer = {
+    toolPorts,
+    acquisitionWorkspace,
+    temporalBarrier,
+    resolveAcquisitionWorkspace: (scope) =>
+      acquisitionWorkspace.resolve(scope),
+    executeGrowthTool: (call, command) =>
+      toolPorts.execute(call, command),
+    allocateGrowthAppend: (transaction, workspaceId) =>
+      temporalBarrier.allocateAppend(transaction, workspaceId)
+  };
+  return Object.freeze(consumer);
 }
 
 interface AcquisitionRepositorySet {
@@ -929,23 +992,9 @@ function assertTrustedPlanSnapshot(
 export async function createAcquisitionApplication(
   options: CreateAcquisitionApplicationOptions
 ): Promise<AcquisitionApplicationRuntime> {
-  if (process.env.NODE_ENV !== "test" && (
-    !options.growthToolPorts
-    || !options.acquisitionWorkspace
-    || !options.growthTemporalBarrier
-  )) {
-    throw new Error("GROWTH_ACQUISITION_INTEGRATIONS_REQUIRED");
-  }
-  const growthIntegrations = options.growthToolPorts
-    && options.acquisitionWorkspace
-    && options.growthTemporalBarrier
-    ? Object.freeze({
-        toolPorts: options.growthToolPorts,
-        acquisitionWorkspace: options.acquisitionWorkspace,
-        temporalBarrier: options.growthTemporalBarrier
-      })
-    : null;
-  void growthIntegrations;
+  const growthIntegrations = createAcquisitionGrowthIntegrationConsumer(
+    options
+  );
   assertApplicationStore(options.store);
   const masterSecret = requireMasterSecret(options.masterSecret);
   const providerCredentialSecret = derivedSecret(
@@ -1086,16 +1135,20 @@ export async function createAcquisitionApplication(
       );
     }
 
-    const domainService = new AcquisitionDomainService({
-      repository: repositories.domain,
-      leadConversionPort: new AcquisitionCrmLeadConversionPort({
+    const domainGraph = Object.freeze({
+      service: new AcquisitionDomainService({
         repository: repositories.domain,
-        store: options.store,
+        leadConversionPort: new AcquisitionCrmLeadConversionPort({
+          repository: repositories.domain,
+          store: options.store,
+          now
+        }),
+        idFactory,
         now
       }),
-      idFactory,
-      now
+      growthIntegrations
     });
+    const domainService = domainGraph.service;
     const candidateRunAttribution =
       new AcquisitionCandidateRunAttributionResolver({
         planRuns: repositories.planRun
@@ -1831,6 +1884,7 @@ export async function createAcquisitionApplication(
     return {
       handler: router as RequestHandler,
       planDraftGenerator,
+      growthIntegrations: domainGraph.growthIntegrations,
       close() {
         if (closePromise) return closePromise;
         closing = true;

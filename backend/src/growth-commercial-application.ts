@@ -71,6 +71,16 @@ const growthToolNames = new Set<string>([
   "create_sales_todo",
   "record_recommendation_outcome"
 ]);
+const issuedGrowthCommercialToolPorts = new WeakSet<object>();
+
+export function assertGrowthCommercialToolPorts(
+  value: GrowthCommercialToolPorts
+): GrowthCommercialToolPorts {
+  if (!value || !issuedGrowthCommercialToolPorts.has(value)) {
+    throw new Error("INVALID_GROWTH_TOOL_PORTS");
+  }
+  return value;
+}
 
 export function createGrowthCommercialToolPorts():
 GrowthCommercialToolPorts {
@@ -78,7 +88,7 @@ GrowthCommercialToolPorts {
     GrowthCommercialToolName,
     GrowthCommercialToolHandler
   >();
-  return Object.freeze({
+  const ports = Object.freeze({
     register(
       name: GrowthCommercialToolName,
       handler: GrowthCommercialToolHandler
@@ -100,6 +110,8 @@ GrowthCommercialToolPorts {
       return handler(call.input, command);
     }
   });
+  issuedGrowthCommercialToolPorts.add(ports);
+  return ports;
 }
 
 export interface GrowthCommercialApplicationOptions<

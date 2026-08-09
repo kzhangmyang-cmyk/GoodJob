@@ -32,32 +32,95 @@ const releasesRoot = new URL(
   "../../contracts/releases/growth-advisor-quote-roi/",
   import.meta.url
 );
-const strictSemver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u;
+const strictSemver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
 
-function compareSemver(left: string, right: string) {
-  const leftParts = left.split(".").map(BigInt);
-  const rightParts = right.split(".").map(BigInt);
+interface ParsedSemver {
+  core: readonly [bigint, bigint, bigint];
+  prerelease: readonly string[] | null;
+  precedenceKey: string;
+}
+
+function parseStrictSemver(value: string): ParsedSemver | null {
+  if (!strictSemver.test(value)) return null;
+  const withoutBuild = value.split("+", 1)[0];
+  const prereleaseSeparator = withoutBuild.indexOf("-");
+  const coreValue = prereleaseSeparator === -1
+    ? withoutBuild
+    : withoutBuild.slice(0, prereleaseSeparator);
+  const prereleaseValue = prereleaseSeparator === -1
+    ? undefined
+    : withoutBuild.slice(prereleaseSeparator + 1);
+  const [major, minor, patch] = coreValue.split(".").map(BigInt);
+  return {
+    core: [major, minor, patch],
+    prerelease: prereleaseValue?.split(".") ?? null,
+    precedenceKey: withoutBuild
+  };
+}
+
+function compareSemver(
+  left: ParsedSemver,
+  right: ParsedSemver
+) {
   for (let index = 0; index < 3; index += 1) {
-    if (leftParts[index] < rightParts[index]) return -1;
-    if (leftParts[index] > rightParts[index]) return 1;
+    if (left.core[index] < right.core[index]) return -1;
+    if (left.core[index] > right.core[index]) return 1;
+  }
+  if (left.prerelease === null) return right.prerelease === null ? 0 : 1;
+  if (right.prerelease === null) return -1;
+  const length = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftIdentifier = left.prerelease[index];
+    const rightIdentifier = right.prerelease[index];
+    if (leftIdentifier === undefined) return -1;
+    if (rightIdentifier === undefined) return 1;
+    if (leftIdentifier === rightIdentifier) continue;
+    const leftNumeric = /^\d+$/u.test(leftIdentifier);
+    const rightNumeric = /^\d+$/u.test(rightIdentifier);
+    if (leftNumeric && rightNumeric) {
+      return BigInt(leftIdentifier) < BigInt(rightIdentifier) ? -1 : 1;
+    }
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftIdentifier < rightIdentifier ? -1 : 1;
   }
   return 0;
 }
 
-function currentReleaseRoot(): URL {
-  const versions = readdirSync(releasesRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && strictSemver.test(entry.name))
-    .map((entry) => entry.name)
-    .sort((left, right) => {
-      const order = compareSemver(left, right);
-      if (order === 0 && left !== right) {
-        throw new Error("AMBIGUOUS_GROWTH_CONTRACT_RELEASE");
-      }
-      return order;
-    });
-  const version = versions.at(-1);
-  if (!version) throw new Error("GROWTH_CONTRACT_RELEASE_NOT_FOUND");
-  return new URL(`${version}/`, releasesRoot);
+export function selectGrowthContractReleaseVersion(
+  candidates: readonly string[]
+): string {
+  let selected: { value: string; parsed: ParsedSemver } | null = null;
+  const versions = new Set(candidates);
+  const directoriesByPrecedence = new Map<string, string>();
+  for (const value of versions) {
+    const parsed = parseStrictSemver(value);
+    if (!parsed) continue;
+    const existing = directoriesByPrecedence.get(parsed.precedenceKey);
+    if (existing && existing !== value) {
+      throw new Error("AMBIGUOUS_GROWTH_CONTRACT_RELEASE");
+    }
+    directoriesByPrecedence.set(parsed.precedenceKey, value);
+    if (!selected) {
+      selected = { value, parsed };
+      continue;
+    }
+    const order = compareSemver(parsed, selected.parsed);
+    if (order > 0) selected = { value, parsed };
+  }
+  if (!selected) throw new Error("GROWTH_CONTRACT_RELEASE_NOT_FOUND");
+  return selected.value;
+}
+
+function currentReleaseRoot(): { root: URL; version: string } {
+  const version = selectGrowthContractReleaseVersion(
+    readdirSync(releasesRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+  );
+  return {
+    root: new URL(`${encodeURIComponent(version)}/`, releasesRoot),
+    version
+  };
 }
 
 function assertManifest(value: unknown): GrowthContractManifest {
@@ -66,6 +129,7 @@ function assertManifest(value: unknown): GrowthContractManifest {
     !manifest
     || manifest.name !== "growth-advisor-quote-roi"
     || typeof manifest.contractVersion !== "string"
+    || parseStrictSemver(manifest.contractVersion) === null
     || !/^sha256:[0-9a-f]{64}$/u.test(manifest.contractHash ?? "")
     || manifest.openapiVersion !== "3.1.0"
   ) {
@@ -78,13 +142,13 @@ let cachedRelease: GrowthContractRelease | undefined;
 
 export function loadGrowthContractRelease(): GrowthContractRelease {
   if (cachedRelease) return cachedRelease;
-  const releaseRoot = currentReleaseRoot();
+  const currentRelease = currentReleaseRoot();
+  const releaseRoot = currentRelease.root;
   const manifest = assertManifest(JSON.parse(readFileSync(
     new URL("manifest.json", releaseRoot),
     "utf8"
   )));
-  const directoryVersion = releaseRoot.pathname.split("/").filter(Boolean).at(-1);
-  if (manifest.contractVersion !== directoryVersion) {
+  if (manifest.contractVersion !== currentRelease.version) {
     throw new Error("GROWTH_CONTRACT_RELEASE_DIRECTORY_MISMATCH");
   }
   const openApiBytes = readFileSync(new URL("openapi.json", releaseRoot));

@@ -34,6 +34,14 @@ import {
   createAcquisitionPerformanceRouter
 } from "./acquisition-performance-router.js";
 import { getStore } from "./store.js";
+import { createGrowthCommercialToolPorts } from "./growth-commercial-application.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import type {
+  GrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 async function listen(application: typeof app = app): Promise<{
   server: Server;
@@ -319,6 +327,13 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
   const acquisitionRuntime = await createAcquisitionApplication({
     store,
     masterSecret: "closed-loop-integration-master-secret-at-least-32-bytes",
+    growthToolPorts: createGrowthCommercialToolPorts(),
+    acquisitionWorkspace: Object.freeze({
+      resolve: async () => null
+    }) as GrowthAcquisitionWorkspaceResolver,
+    growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
+      new InMemoryGrowthTemporalTransactionRunner()
+    ),
     domainRepository,
     planRunRepository,
     now: () => "2026-08-07T08:00:00.000Z",
