@@ -85,6 +85,11 @@ export interface CatalogLockedValidationView {
     id: string
   ): Promise<PricingPolicyVersion | null>;
   findPackageVersion(workspaceId: string, id: string): Promise<PackageVersion | null>;
+  listActivePricingPolicyWindowsForUpdate(
+    workspaceId: string,
+    catalogItemId: string,
+    currency: string
+  ): Promise<readonly PricingPolicyVersion[]>;
   listPackageComponents(
     workspaceId: string,
     packageVersionId: string
@@ -95,9 +100,11 @@ export interface PricingPolicyLifecycleCommand extends CommandIdentity {
   workspaceId: string;
   id: string;
   expectedRevision: number;
+  capabilityRegistryVersion?: string;
   validate?: (
     view: CatalogLockedValidationView,
-    policy: PricingPolicyVersion
+    policy: PricingPolicyVersion,
+    parent: CatalogItem
   ) => Promise<void>;
 }
 
@@ -1100,6 +1107,15 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         this.findPricingPolicyVersionNoWait(workspaceId, id),
       findPackageVersion: async (workspaceId, id) =>
         this.findPackageVersionNoWait(workspaceId, id),
+      listActivePricingPolicyWindowsForUpdate: async (
+        workspaceId, catalogItemId, currency
+      ) => immutableClone([...this.pricingPolicies.values()]
+        .filter((policy) => policy.workspaceId === workspaceId
+          && policy.catalogItemId === catalogItemId
+          && policy.currency === currency
+          && policy.status === "active")
+        .sort((left, right) => left.validFrom.localeCompare(right.validFrom)
+          || left.id.localeCompare(right.id))) as readonly PricingPolicyVersion[],
       listPackageComponents: async (workspaceId, id) =>
         this.listPackageComponentsNoWait(workspaceId, id)
     };
@@ -1182,11 +1198,17 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       if (command.validate) {
         await command.validate(
           this.memoryValidationView(),
-          immutableClone(current) as PricingPolicyVersion
+          immutableClone(current) as PricingPolicyVersion,
+          immutableClone(this.catalogItems.get(
+            key(command.workspaceId, current.catalogItemId)
+          )!) as CatalogItem
         );
       }
       const next = immutableClone(normalizePricingPolicyVersionInstants({
         ...current,
+        capabilityRegistryVersion: to === "active"
+          ? command.capabilityRegistryVersion ?? current.capabilityRegistryVersion
+          : current.capabilityRegistryVersion,
         status: to,
         revision: current.revision + 1
       })) as PricingPolicyVersion;

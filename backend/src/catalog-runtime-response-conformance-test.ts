@@ -7,6 +7,7 @@ import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import express from "express";
 import { CatalogService } from "./catalog-service.js";
+import { PricingPolicyService } from "./pricing-policy-service.js";
 import { createCatalogRouter } from "./catalog-router.js";
 import { InMemoryCatalogRepository } from "./catalog-repository.js";
 import {
@@ -24,6 +25,8 @@ import { capabilitiesForHumanRole } from "./growth-capabilities.js";
 function releasedValidators(): {
   item: ValidateFunction;
   page: ValidateFunction;
+  pricingPolicy: ValidateFunction;
+  pricingPolicyPage: ValidateFunction;
   assertOperationResponse(
     operationId: CatalogOperationId,
     status: number,
@@ -32,9 +35,13 @@ function releasedValidators(): {
 } {
   const release = loadGrowthContractRelease();
   assert.equal(release.manifest.contractVersion, "1.0.1");
+  const components = structuredClone(
+    (release.document as Record<string, any>).components
+  );
+  delete components.schemas.PricingPolicyVersion.$id;
   const root = {
     $schema: "https://json-schema.org/draft/2020-12/schema",
-    components: (release.document as Record<string, any>).components
+    components
   };
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   addFormats(ajv);
@@ -50,16 +57,35 @@ function releasedValidators(): {
     ...root,
     $ref: "#/components/schemas/ApiError"
   });
+  const pricingPolicy = ajv.compile({
+    ...root,
+    $ref: "#/components/schemas/PricingPolicyVersion"
+  });
+  const pricingPolicyPage = ajv.compile({
+    ...root,
+    $ref: "#/components/schemas/PricingPolicyVersionPagedResult"
+  });
   const operationLocations: Record<CatalogOperationId, readonly [string, string]> = {
     listCatalogItems: ["/api/v1/catalog/items", "get"],
     createCatalogItem: ["/api/v1/catalog/items", "post"],
     getCatalogItem: ["/api/v1/catalog/items/{id}", "get"],
     updateCatalogItem: ["/api/v1/catalog/items/{id}", "patch"],
-    retireCatalogItem: ["/api/v1/catalog/items/{id}/retire", "post"]
+    retireCatalogItem: ["/api/v1/catalog/items/{id}/retire", "post"],
+    listPricingPolicyVersions: ["/api/v1/catalog/pricing-policies", "get"],
+    createPricingPolicyVersion: ["/api/v1/catalog/pricing-policies", "post"],
+    getPricingPolicyVersion: ["/api/v1/catalog/pricing-policies/{id}", "get"],
+    activatePricingPolicyVersion: [
+      "/api/v1/catalog/pricing-policies/{id}/activate", "post"
+    ],
+    retirePricingPolicyVersion: [
+      "/api/v1/catalog/pricing-policies/{id}/retire", "post"
+    ]
   };
   return {
     item,
     page,
+    pricingPolicy,
+    pricingPolicyPage,
     assertOperationResponse(operationId, status, body) {
       const [path, method] = operationLocations[operationId];
       const operation = (release.document as Record<string, any>)
@@ -69,8 +95,11 @@ function releasedValidators(): {
         operation.responses[String(status)],
         `${operationId} does not release response status ${status}`
       );
-      const validate = status >= 400
-        ? apiError : operationId === "listCatalogItems" ? page : item;
+      const validate = status >= 400 ? apiError
+        : operationId === "listCatalogItems" ? page
+        : operationId === "listPricingPolicyVersions" ? pricingPolicyPage
+        : operationId.includes("PricingPolicy") ? pricingPolicy
+        : item;
       assert.equal(validate(body), true, JSON.stringify(validate.errors));
     }
   };
@@ -81,7 +110,12 @@ type CatalogOperationId =
   | "createCatalogItem"
   | "getCatalogItem"
   | "updateCatalogItem"
-  | "retireCatalogItem";
+  | "retireCatalogItem"
+  | "listPricingPolicyVersions"
+  | "createPricingPolicyVersion"
+  | "getPricingPolicyVersion"
+  | "activatePricingPolicyVersion"
+  | "retirePricingPolicyVersion";
 
 export async function assertCatalogRuntimeResponsesConform(): Promise<void> {
   const transactions = new InMemoryGrowthTemporalTransactionRunner(
@@ -93,16 +127,21 @@ export async function assertCatalogRuntimeResponsesConform(): Promise<void> {
     repository,
     idFactory: () => "catalog-item-conformance"
   });
+  const pricingPolicyService = new PricingPolicyService({
+    repository,
+    idFactory: () => "pricing-policy-conformance"
+  });
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
+    const role = req.header("X-Test-Role") === "sales" ? "sales" : "admin";
     req.activeWorkspace = Object.freeze({
       workspaceId: "team-a",
       kind: "team",
       actorId: "admin-1",
-      role: "admin",
+      role,
       teamId: "team-a",
-      capabilities: capabilitiesForHumanRole("admin"),
+      capabilities: capabilitiesForHumanRole(role),
       capabilityRegistryVersion: "growth-capabilities.v1"
     });
     next();
@@ -120,6 +159,7 @@ export async function assertCatalogRuntimeResponsesConform(): Promise<void> {
   };
   app.use("/api/v1/catalog", createCatalogRouter({
     catalogService: service,
+    pricingPolicyService,
     httpIdempotency,
     workspaceContext: (req) => req.activeWorkspace!,
     commandContextFactory: commandContextFromRequest
@@ -184,6 +224,110 @@ export async function assertCatalogRuntimeResponsesConform(): Promise<void> {
     assert.equal(replayed.response.headers.get("idempotency-replayed"), "true");
     validators.assertOperationResponse(
       "createCatalogItem", replayed.response.status, replayed.body
+    );
+
+    const pricingInput = {
+      catalogItemId: "catalog-item-conformance",
+      packageVersionId: null,
+      currency: "CNY",
+      listUnitPriceMinor: 12_000,
+      unitStandardCostMinor: 8_000,
+      defaultOrderDeliveryCostMinor: 100,
+      defaultOrderSalesCostMinor: 200,
+      defaultOrderServiceCostMinor: 300,
+      absoluteFloorUnitPriceMinor: 10_000,
+      standardDiscountLimitBps: 500,
+      absoluteDiscountLimitBps: 1_000,
+      targetGrossMarginBps: 3_000,
+      absoluteMinimumGrossMarginBps: 1_500,
+      standardPaymentTermDays: 30,
+      absolutePaymentTermDays: 60,
+      approvalThresholds: {
+        discountCapability: "quote.exception.discount.approve",
+        marginCapability: "quote.exception.margin.approve",
+        paymentTermsCapability: "quote.exception.payment_terms.approve",
+        giftCapability: "quote.exception.gift.approve",
+        creditCapability: "quote.exception.credit.approve",
+        manualCapability: "quote.exception.manual.approve",
+        creditRiskThresholdBps: 6_000,
+        manualEscalationEnabled: true
+      },
+      surchargePolicies: [],
+      giftPolicies: [],
+      validFrom: "2026-08-09T08:00:00.000Z",
+      validTo: "2026-09-09T08:00:00.000Z"
+    };
+    const pricingCreated = await call(
+      "POST", "/api/v1/catalog/pricing-policies", pricingInput,
+      { "Idempotency-Key": "pricing-conformance-create" }
+    );
+    assert.equal(pricingCreated.response.status, 201);
+    validators.assertOperationResponse(
+      "createPricingPolicyVersion",
+      pricingCreated.response.status,
+      pricingCreated.body
+    );
+    assert.equal(validators.pricingPolicy(pricingCreated.body), true,
+      JSON.stringify(validators.pricingPolicy.errors));
+    assert.equal(pricingCreated.response.headers.get("etag"),
+      '"pricing-policy:pricing-policy-conformance:1"');
+    const pricingListed = await call(
+      "GET", "/api/v1/catalog/pricing-policies?sort=code&limit=20"
+    );
+    assert.equal(pricingListed.response.status, 200);
+    validators.assertOperationResponse(
+      "listPricingPolicyVersions",
+      pricingListed.response.status,
+      pricingListed.body
+    );
+    const pricingFetched = await call(
+      "GET", "/api/v1/catalog/pricing-policies/pricing-policy-conformance"
+    );
+    assert.equal(pricingFetched.response.status, 200);
+    validators.assertOperationResponse(
+      "getPricingPolicyVersion",
+      pricingFetched.response.status,
+      pricingFetched.body
+    );
+    const pricingRedacted = await call(
+      "GET", "/api/v1/catalog/pricing-policies/pricing-policy-conformance",
+      undefined, { "X-Test-Role": "sales" }
+    );
+    assert.equal(pricingRedacted.response.status, 200);
+    assert.equal(pricingRedacted.body.amountVisibility, "redacted");
+    assert.equal("unitStandardCostMinor" in pricingRedacted.body, false);
+    validators.assertOperationResponse(
+      "getPricingPolicyVersion",
+      pricingRedacted.response.status,
+      pricingRedacted.body
+    );
+    const pricingActivated = await call(
+      "POST",
+      "/api/v1/catalog/pricing-policies/pricing-policy-conformance/activate",
+      {}, {
+        "Idempotency-Key": "pricing-conformance-activate",
+        "If-Match": '"pricing-policy:pricing-policy-conformance:1"'
+      }
+    );
+    assert.equal(pricingActivated.response.status, 200);
+    validators.assertOperationResponse(
+      "activatePricingPolicyVersion",
+      pricingActivated.response.status,
+      pricingActivated.body
+    );
+    const pricingRetired = await call(
+      "POST",
+      "/api/v1/catalog/pricing-policies/pricing-policy-conformance/retire",
+      {}, {
+        "Idempotency-Key": "pricing-conformance-retire",
+        "If-Match": '"pricing-policy:pricing-policy-conformance:2"'
+      }
+    );
+    assert.equal(pricingRetired.response.status, 200);
+    validators.assertOperationResponse(
+      "retirePricingPolicyVersion",
+      pricingRetired.response.status,
+      pricingRetired.body
     );
 
     const listed = await call("GET", "/api/v1/catalog/items?sort=code&limit=20");
@@ -305,7 +449,7 @@ export async function assertCatalogRuntimeResponsesConform(): Promise<void> {
 if (process.argv[1]
   && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   test(
-    "Catalog create/list/get/update/retire responses conform to release 1.0.1",
+    "Catalog and pricing policy responses conform to release 1.0.1",
     assertCatalogRuntimeResponsesConform
   );
 }

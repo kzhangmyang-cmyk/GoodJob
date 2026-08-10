@@ -1207,6 +1207,20 @@ export class MysqlCatalogRepository implements CatalogRepository {
          WHERE workspace_id = ? AND id = ? FOR UPDATE`,
         [workspaceId, id], parsePackageVersion
       ),
+      listActivePricingPolicyWindowsForUpdate: async (
+        workspaceId, catalogItemId, currency
+      ) => {
+        const [rows] = await connection.query(
+          `SELECT * FROM pricing_policy_versions
+           WHERE workspace_id = ? AND catalog_item_id = ? AND currency = ?
+             AND policy_status = 'active'
+           ORDER BY valid_from,id FOR UPDATE`,
+          [workspaceId, catalogItemId, currency]
+        );
+        return immutableClone(
+          (rows as MysqlRow[]).map(parsePricingPolicy)
+        ) as readonly PricingPolicyVersion[];
+      },
       listPackageComponents: async (workspaceId, id) => {
         const [rows] = await connection.query(
           `SELECT * FROM package_components
@@ -1322,7 +1336,9 @@ export class MysqlCatalogRepository implements CatalogRepository {
          WHERE workspace_id = ? AND id = ? FOR UPDATE`,
         [command.workspaceId, catalogItemId]
       );
-      if (!(parentRows as MysqlRow[])[0]) commandAbort({ kind: "not_found" });
+      const parentRow = (parentRows as MysqlRow[])[0];
+      if (!parentRow) commandAbort({ kind: "not_found" });
+      const parent = parseCatalogItem(parentRow);
       const [rows] = await connection.query(
         `SELECT * FROM pricing_policy_versions
          WHERE workspace_id = ? AND id = ? AND catalog_item_id = ? FOR UPDATE`,
@@ -1333,19 +1349,24 @@ export class MysqlCatalogRepository implements CatalogRepository {
       const current = parsePricingPolicy(row);
       lifecycleConflict(current, command.expectedRevision, from, invalidCode);
       if (command.validate) {
-        await command.validate(this.mysqlValidationView(connection), current);
+        await command.validate(this.mysqlValidationView(connection), current, parent);
       }
       const next = immutableClone(normalizePricingPolicyVersionInstants({
         ...current,
+        capabilityRegistryVersion: to === "active"
+          ? command.capabilityRegistryVersion ?? current.capabilityRegistryVersion
+          : current.capabilityRegistryVersion,
         status: to,
         revision: current.revision + 1
       })) as PricingPolicyVersion;
       assertClosedPricingPolicyVersion(next);
       await connection.query(
         `UPDATE pricing_policy_versions
-         SET policy_status = ?,revision = ?,recorded_at = ?,temporal_sequence = ?
+         SET policy_status = ?,capability_registry_version = ?,revision = ?,
+           recorded_at = ?,temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
-        [to, next.revision, growthMysqlDate(stamp.recordedAt), stamp.temporalSequence,
+        [to, next.capabilityRegistryVersion, next.revision,
+          growthMysqlDate(stamp.recordedAt), stamp.temporalSequence,
           command.workspaceId, command.id, command.expectedRevision]
       );
       await insertCatalogReceipt(

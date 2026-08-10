@@ -99,6 +99,7 @@ test("Catalog module wires the exact Foundation singletons into one shared graph
   };
   const routerOptions = captured.routerOptions as {
     catalogService: unknown;
+    pricingPolicyService: unknown;
     httpIdempotency: unknown;
     workspaceContext: unknown;
     commandContextFactory: unknown;
@@ -109,8 +110,10 @@ test("Catalog module wires the exact Foundation singletons into one shared graph
   assert.equal(routerOptions.workspaceContext, ports.workspaceContext);
   assert.equal(routerOptions.commandContextFactory, ports.commandContextFactory);
   assert.equal(routerOptions.catalogService, services.catalogItems);
+  assert.equal(routerOptions.pricingPolicyService, services.pricingPolicies);
   assert.equal(Object.isFrozen(services), true);
   assert.equal(Object.isFrozen(services.catalogItems), true);
+  assert.equal(Object.isFrozen(services.pricingPolicies), true);
   assert.equal(Object.isFrozen(services.commissionCatalogProjection), true);
   const serviceRepository = (services.catalogItems as unknown as {
     options: { repository: CatalogRepository }
@@ -118,7 +121,11 @@ test("Catalog module wires the exact Foundation singletons into one shared graph
   const projectionRepository = (services.commissionCatalogProjection as unknown as {
     options: { repository: CatalogRepository }
   }).options.repository;
+  const pricingRepository = (services.pricingPolicies as unknown as {
+    options: { repository: CatalogRepository }
+  }).options.repository;
   assert.equal(serviceRepository, projectionRepository);
+  assert.equal(serviceRepository, pricingRepository);
   await handle.close();
   await handle.close();
   assert.equal(closeCount, 1);

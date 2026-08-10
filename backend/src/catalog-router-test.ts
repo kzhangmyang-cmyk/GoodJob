@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import express from "express";
 import { CatalogService } from "./catalog-service.js";
+import { PricingPolicyService } from "./pricing-policy-service.js";
 import { createCatalogRouter } from "./catalog-router.js";
 import { InMemoryCatalogRepository } from "./catalog-repository.js";
 import {
@@ -39,21 +40,34 @@ async function catalogRouterFixture() {
     repository,
     idFactory: () => `item-${++nextId}`
   });
+  let nextPolicyId = 0;
+  const pricingPolicyService = new PricingPolicyService({
+    repository,
+    idFactory: () => `policy-${++nextPolicyId}`
+  });
   const httpIdempotency = new InMemoryGrowthHttpIdempotencyRepository();
   let workspaceCalls = 0;
   let commandCalls = 0;
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.activeWorkspace = adminContext(
+    const context = adminContext(
       typeof req.header("X-Test-Workspace") === "string"
         ? req.header("X-Test-Workspace")!
         : "team-a"
     );
+    req.activeWorkspace = req.header("X-Test-Role") === "sales"
+      ? Object.freeze({
+          ...context,
+          role: "sales" as const,
+          capabilities: capabilitiesForHumanRole("sales")
+        })
+      : context;
     next();
   });
   app.use("/api/v1/catalog", createCatalogRouter({
     catalogService,
+    pricingPolicyService,
     httpIdempotency,
     workspaceContext(req) {
       workspaceCalls += 1;
@@ -104,6 +118,38 @@ const createBody = {
   name: "诊断服务",
   description: "获客诊断",
   unit: "次"
+};
+
+const pricingBody = {
+  catalogItemId: "item-1",
+  packageVersionId: null,
+  currency: "CNY",
+  listUnitPriceMinor: 12_000,
+  unitStandardCostMinor: 8_000,
+  defaultOrderDeliveryCostMinor: 100,
+  defaultOrderSalesCostMinor: 200,
+  defaultOrderServiceCostMinor: 300,
+  absoluteFloorUnitPriceMinor: 10_000,
+  standardDiscountLimitBps: 500,
+  absoluteDiscountLimitBps: 1_000,
+  targetGrossMarginBps: 3_000,
+  absoluteMinimumGrossMarginBps: 1_500,
+  standardPaymentTermDays: 30,
+  absolutePaymentTermDays: 60,
+  approvalThresholds: {
+    discountCapability: "quote.exception.discount.approve",
+    marginCapability: "quote.exception.margin.approve",
+    paymentTermsCapability: "quote.exception.payment_terms.approve",
+    giftCapability: "quote.exception.gift.approve",
+    creditCapability: "quote.exception.credit.approve",
+    manualCapability: "quote.exception.manual.approve",
+    creditRiskThresholdBps: 6_000,
+    manualEscalationEnabled: true
+  },
+  surchargePolicies: [],
+  giftPolicies: [],
+  validFrom: NOW,
+  validTo: "2026-09-09T08:00:00.000Z"
 };
 
 test("create replay keeps the released 201 and update requires an ID-scoped ETag", async () => {
@@ -282,6 +328,129 @@ test("list/get use the sole workspace resolver and preserve nullable description
     assert.equal(fetched.response.status, 200);
     assert.equal(fetched.response.headers.get("etag"), '"catalog-item:item-1:1"');
     assert.deepEqual(app.calls(), { workspaceCalls: 2, commandCalls: 1 });
+  } finally {
+    await app.close();
+  }
+});
+
+test("pricing create and lifecycle replay keep released statuses, ID ETags, and current projection", async () => {
+  const app = await catalogRouterFixture();
+  try {
+    const item = await app.request("POST", "/api/v1/catalog/items", {
+      headers: { "Idempotency-Key": "pricing-parent-create" },
+      body: createBody
+    });
+    assert.equal(item.response.status, 201);
+    const created = await app.request("POST", "/api/v1/catalog/pricing-policies", {
+      headers: { "Idempotency-Key": "pricing-create" },
+      body: pricingBody
+    });
+    assert.equal(created.response.status, 201);
+    assert.equal(created.response.headers.get("etag"), '"pricing-policy:policy-1:1"');
+    assert.equal(created.body.amountVisibility, "full");
+    assert.equal("capabilityRegistryVersion" in created.body, false);
+    const createReplay = await app.request(
+      "POST", "/api/v1/catalog/pricing-policies", {
+        headers: {
+          "Idempotency-Key": "pricing-create",
+          "X-Test-Role": "sales"
+        },
+        body: pricingBody
+      }
+    );
+    assert.equal(createReplay.response.status, 201);
+    assert.equal(createReplay.response.headers.get("idempotency-replayed"), "true");
+    assert.equal(createReplay.body.amountVisibility, "redacted");
+    assert.equal("unitStandardCostMinor" in createReplay.body, false);
+    const activated = await app.request(
+      "POST", "/api/v1/catalog/pricing-policies/policy-1/activate", {
+        headers: {
+          "Idempotency-Key": "pricing-activate",
+          "If-Match": '"pricing-policy:policy-1:1"'
+        },
+        body: {}
+      }
+    );
+    assert.equal(activated.response.status, 200);
+    assert.equal(activated.response.headers.get("etag"), '"pricing-policy:policy-1:2"');
+    const activateReplay = await app.request(
+      "POST", "/api/v1/catalog/pricing-policies/policy-1/activate", {
+        headers: {
+          "Idempotency-Key": "pricing-activate",
+          "If-Match": '"pricing-policy:policy-1:1"',
+          "X-Test-Role": "sales"
+        },
+        body: {}
+      }
+    );
+    assert.equal(activateReplay.response.status, 200);
+    assert.equal(activateReplay.response.headers.get("idempotency-replayed"), "true");
+    assert.equal(activateReplay.body.amountVisibility, "redacted");
+    assert.equal("approvalThresholds" in activateReplay.body, false);
+  } finally {
+    await app.close();
+  }
+});
+
+test("every pricing policy route rejects absent workspace identity before adapters", async () => {
+  const app = await catalogRouterFixture();
+  try {
+    const operations = [
+      { method: "GET", path: "/api/v1/catalog/pricing-policies" },
+      {
+        method: "POST", path: "/api/v1/catalog/pricing-policies",
+        body: pricingBody, headers: { "Idempotency-Key": "missing-pricing-create" }
+      },
+      { method: "GET", path: "/api/v1/catalog/pricing-policies/policy-1" },
+      {
+        method: "POST", path: "/api/v1/catalog/pricing-policies/policy-1/activate",
+        body: {}, headers: {
+          "Idempotency-Key": "missing-pricing-activate",
+          "If-Match": '"pricing-policy:policy-1:1"'
+        }
+      },
+      {
+        method: "POST", path: "/api/v1/catalog/pricing-policies/policy-1/retire",
+        body: {}, headers: {
+          "Idempotency-Key": "missing-pricing-retire",
+          "If-Match": '"pricing-policy:policy-1:1"'
+        }
+      }
+    ] as const;
+    const before = app.calls();
+    for (const workspaceId of [null, " ", "all"] as const) {
+      for (const operation of operations) {
+        const result = await app.request(operation.method, operation.path, {
+          workspaceId,
+          body: "body" in operation ? operation.body : undefined,
+          headers: "headers" in operation ? operation.headers : undefined
+        });
+        assert.equal(result.response.status, 403);
+        assert.equal(result.body.code, "workspace_required");
+      }
+    }
+    assert.deepEqual(app.calls(), before);
+  } finally {
+    await app.close();
+  }
+});
+
+test("pricing policy bodies and queries reject unpublished keys", async () => {
+  const app = await catalogRouterFixture();
+  try {
+    const bodyOverride = await app.request(
+      "POST", "/api/v1/catalog/pricing-policies", {
+        headers: { "Idempotency-Key": "closed-pricing-body" },
+        body: { ...pricingBody, workspaceId: "team-b" }
+      }
+    );
+    assert.equal(bodyOverride.response.status, 400);
+    assert.equal(bodyOverride.body.code, "invalid_request");
+    const queryOverride = await app.request(
+      "GET", "/api/v1/catalog/pricing-policies?status=active"
+    );
+    assert.equal(queryOverride.response.status, 403);
+    assert.equal(queryOverride.body.code, "invalid_request");
   } finally {
     await app.close();
   }

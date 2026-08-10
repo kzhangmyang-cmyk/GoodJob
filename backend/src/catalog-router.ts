@@ -12,6 +12,11 @@ import {
   type CatalogItemPatch,
   type CatalogService
 } from "./catalog-service.js";
+import {
+  PricingPolicyServiceError,
+  type PricingPolicyDraftInput,
+  type PricingPolicyService
+} from "./pricing-policy-service.js";
 import { GrowthAuthorizationError } from "./growth-capabilities.js";
 import { GrowthHttpError, type CommandContext } from "./growth-command-context.js";
 import {
@@ -48,10 +53,68 @@ const listQuerySchema = z.object({
   ),
   sort: z.enum(["code", "name", "updatedAt"]).optional().default("updatedAt")
 }).strict();
+const nonnegativeMoneySchema = z.number().int().nonnegative()
+  .max(Number.MAX_SAFE_INTEGER);
+const bpsSchema = z.number().int().min(0).max(10_000);
+const approvalCapabilitySchema = z.enum([
+  "quote.confirm",
+  "quote.exception.discount.approve",
+  "quote.exception.margin.approve",
+  "quote.exception.payment_terms.approve",
+  "quote.exception.gift.approve",
+  "quote.exception.credit.approve",
+  "quote.exception.manual.approve"
+]);
+const approvalThresholdsSchema = z.object({
+  discountCapability: approvalCapabilitySchema,
+  marginCapability: approvalCapabilitySchema,
+  paymentTermsCapability: approvalCapabilitySchema,
+  giftCapability: approvalCapabilitySchema,
+  creditCapability: approvalCapabilitySchema,
+  manualCapability: approvalCapabilitySchema,
+  creditRiskThresholdBps: bpsSchema,
+  manualEscalationEnabled: z.boolean()
+}).strict();
+const surchargePolicySchema = z.object({
+  kind: z.enum(["region", "delivery", "payment_term"]),
+  condition: z.string().min(1),
+  fixedAmountMinor: nonnegativeMoneySchema,
+  unitAmountMinor: nonnegativeMoneySchema
+}).strict();
+const giftPolicySchema = z.object({
+  catalogItemId: z.string().min(1),
+  unitStandardCostMinor: nonnegativeMoneySchema,
+  standardQuantityMicros: nonnegativeMoneySchema,
+  absoluteQuantityMicros: nonnegativeMoneySchema,
+  standardCostLimitMinor: nonnegativeMoneySchema,
+  absoluteCostLimitMinor: nonnegativeMoneySchema
+}).strict();
+const pricingPolicyInputSchema = z.object({
+  catalogItemId: z.string().min(1),
+  packageVersionId: z.string().min(1).nullable(),
+  currency: z.string().regex(/^[A-Z]{3}$/u),
+  listUnitPriceMinor: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  unitStandardCostMinor: nonnegativeMoneySchema,
+  defaultOrderDeliveryCostMinor: nonnegativeMoneySchema,
+  defaultOrderSalesCostMinor: nonnegativeMoneySchema,
+  defaultOrderServiceCostMinor: nonnegativeMoneySchema,
+  absoluteFloorUnitPriceMinor: nonnegativeMoneySchema,
+  standardDiscountLimitBps: bpsSchema,
+  absoluteDiscountLimitBps: bpsSchema,
+  targetGrossMarginBps: bpsSchema,
+  absoluteMinimumGrossMarginBps: z.number().int().min(0).max(9_999),
+  standardPaymentTermDays: nonnegativeMoneySchema,
+  absolutePaymentTermDays: nonnegativeMoneySchema,
+  approvalThresholds: approvalThresholdsSchema,
+  surchargePolicies: z.array(surchargePolicySchema),
+  giftPolicies: z.array(giftPolicySchema),
+  validFrom: z.string().datetime({ offset: true }),
+  validTo: z.string().datetime({ offset: true }).nullable()
+}).strict();
 
 export interface CatalogRouterOptions {
   catalogService: CatalogService;
-  pricingPolicyService?: unknown;
+  pricingPolicyService: PricingPolicyService;
   packageVersionService?: unknown;
   httpIdempotency: GrowthHttpIdempotencyRepository;
   workspaceContext: GrowthWorkspaceContextResolver;
@@ -86,7 +149,14 @@ function releasedErrorStatus(req: Request, requestedStatus: number): number {
     "POST /items": [400, 401, 403, 409, 422],
     "GET /items/:id": [401, 403, 404],
     "PATCH /items/:id": [400, 401, 403, 404, 409, 412, 422, 428],
-    "POST /items/:id/retire": [401, 403, 404, 409, 412, 428]
+    "POST /items/:id/retire": [401, 403, 404, 409, 412, 428],
+    "GET /pricing-policies": [401, 403],
+    "POST /pricing-policies": [400, 401, 403, 409, 422],
+    "GET /pricing-policies/:id": [401, 403, 404],
+    "POST /pricing-policies/:id/activate": [
+      401, 403, 404, 409, 412, 422, 428
+    ],
+    "POST /pricing-policies/:id/retire": [401, 403, 404, 409, 412, 428]
   };
   const released = new Set<number>(releasedByOperation[key] ?? []);
   if (released.has(requestedStatus)) return requestedStatus;
@@ -95,7 +165,12 @@ function releasedErrorStatus(req: Request, requestedStatus: number): number {
     "POST /items": 400,
     "GET /items/:id": 403,
     "PATCH /items/:id": 400,
-    "POST /items/:id/retire": 409
+    "POST /items/:id/retire": 409,
+    "GET /pricing-policies": 403,
+    "POST /pricing-policies": 400,
+    "GET /pricing-policies/:id": 403,
+    "POST /pricing-policies/:id/activate": 409,
+    "POST /pricing-policies/:id/retire": 409
   };
   return fallbackByOperation[key] ?? requestedStatus;
 }
@@ -147,8 +222,93 @@ function respondItem(
   res.status(status).json(item);
 }
 
+function respondPricingPolicy(
+  res: Response,
+  policy: Awaited<ReturnType<PricingPolicyService["get"]>>,
+  replayed = false,
+  status = 200
+) {
+  setRevisionEtag(res, "pricing-policy", policy.id, policy.revision);
+  if (replayed) res.setHeader("Idempotency-Replayed", "true");
+  res.status(status).json(policy);
+}
+
 export function createCatalogRouter(options: CatalogRouterOptions): Router {
   const router = express.Router();
+
+  router.get("/pricing-policies", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
+    const query = listQuerySchema.parse(req.query);
+    const context = options.workspaceContext(req);
+    res.json(await options.pricingPolicyService.list(context, {
+      cursor: query.cursor ?? null,
+      limit: query.limit,
+      sort: query.sort
+    }));
+  }));
+
+  router.post("/pricing-policies", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
+    const payload = pricingPolicyInputSchema.parse(req.body) as PricingPolicyDraftInput;
+    const canonicalPath = "/api/v1/catalog/pricing-policies";
+    const context = options.commandContextFactory(req, {
+      canonicalPath,
+      pathParams: Object.freeze({}),
+      payload,
+      expectedRevision: null
+    });
+    const result = await executeGrowthIdempotentCommand({
+      repository: options.httpIdempotency,
+      reservation: reservation(req, context, canonicalPath)
+    }, async (resourceId) => {
+      if (!resourceId) throw new Error("pricing_idempotency_resource_missing");
+      return options.pricingPolicyService.get(context.workspace, resourceId);
+    }, async () => {
+      const policy = await options.pricingPolicyService.createDraft(context, payload);
+      return { resourceId: policy.id, operationId: null };
+    });
+    respondPricingPolicy(res, result.value, result.replayed, 201);
+  }));
+
+  router.get("/pricing-policies/:id", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
+    emptyQuerySchema.parse(req.query);
+    const id = idSchema.parse(req.params.id);
+    const context = options.workspaceContext(req);
+    respondPricingPolicy(res, await options.pricingPolicyService.get(context, id));
+  }));
+
+  const pricingLifecycle = (
+    action: "activate" | "retire"
+  ) => handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
+    const id = idSchema.parse(req.params.id);
+    const payload = emptyBodySchema.parse(req.body);
+    const canonicalPath = `/api/v1/catalog/pricing-policies/:id/${action}`;
+    const expectedRevision = parseIfMatchRevision(req, `pricing-policy:${id}`);
+    const context = options.commandContextFactory(req, {
+      canonicalPath,
+      pathParams: Object.freeze({ id }),
+      payload,
+      expectedRevision
+    });
+    const result = await executeGrowthIdempotentCommand({
+      repository: options.httpIdempotency,
+      reservation: reservation(req, context, canonicalPath)
+    }, async (resourceId) => {
+      if (resourceId !== id) {
+        throw new GrowthHttpError(409, "idempotency_conflict");
+      }
+      return options.pricingPolicyService.get(context.workspace, id);
+    }, async () => {
+      const policy = await options.pricingPolicyService[action](context, id);
+      return { resourceId: policy.id, operationId: null };
+    });
+    respondPricingPolicy(res, result.value, result.replayed);
+  });
+
+  router.post("/pricing-policies/:id/activate", pricingLifecycle("activate"));
+  router.post("/pricing-policies/:id/retire", pricingLifecycle("retire"));
 
   router.get("/items", handle(async (req, res) => {
     requireCatalogWorkspaceHeader(req);
@@ -272,7 +432,8 @@ export function createCatalogRouter(options: CatalogRouterOptions): Router {
       sendError(req, res, releasedErrorStatus(req, 403), error.code, error);
       return;
     }
-    if (error instanceof GrowthHttpError || error instanceof CatalogServiceError) {
+    if (error instanceof GrowthHttpError || error instanceof CatalogServiceError
+      || error instanceof PricingPolicyServiceError) {
       sendError(
         req,
         res,

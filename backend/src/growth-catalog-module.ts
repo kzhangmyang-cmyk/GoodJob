@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type express from "express";
 import type mysql from "mysql2/promise";
 import { CatalogService } from "./catalog-service.js";
+import { PricingPolicyService } from "./pricing-policy-service.js";
 import {
   InMemoryCatalogRepository,
   type CatalogRepository
@@ -29,6 +30,7 @@ import { createCatalogRouter, type CatalogRouterOptions } from "./catalog-router
 
 export interface GrowthCatalogServices {
   readonly catalogItems: CatalogService;
+  readonly pricingPolicies: PricingPolicyService;
   readonly commissionCatalogProjection: CommissionCatalogProjectionPort;
 }
 
@@ -128,16 +130,24 @@ export function createGrowthCatalogModule(
             ?? ((prefix) => `${prefix}-${randomUUID()}`)
         });
         Object.freeze(catalogItems);
+        const pricingPolicies = new PricingPolicyService({
+          repository: resources.repository,
+          idFactory: options.idFactory
+            ?? ((prefix) => `${prefix}-${randomUUID()}`)
+        });
+        Object.freeze(pricingPolicies);
         const commissionCatalogProjection = new CommissionCatalogProjection({
           repository: resources.repository
         });
         Object.freeze(commissionCatalogProjection);
         const services = Object.freeze({
           catalogItems,
+          pricingPolicies,
           commissionCatalogProjection
         }) satisfies GrowthCatalogServices;
         const routerOptions: CatalogRouterOptions = Object.freeze({
           catalogService: catalogItems,
+          pricingPolicyService: pricingPolicies,
           httpIdempotency: foundation.httpIdempotency,
           workspaceContext: foundation.workspaceContext,
           commandContextFactory: foundation.commandContextFactory
