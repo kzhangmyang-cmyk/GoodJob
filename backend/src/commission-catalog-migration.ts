@@ -50,8 +50,19 @@ interface PreparedProduct {
   snapshotHash: `sha256:${string}`;
 }
 
+const SNAPSHOT_ARRAY_HOLE = Symbol("commission_catalog_snapshot_array_hole");
+
 function hashBytes(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function canonicalArrayIndex(key: string): number | null {
+  if (!/^(?:0|[1-9]\d*)$/u.test(key)) return null;
+  const index = Number(key);
+  return Number.isInteger(index) && index >= 0 && index <= 4_294_967_294
+    && String(index) === key
+    ? index
+    : null;
 }
 
 function normalizedSnapshot(
@@ -92,10 +103,36 @@ function normalizedSnapshot(
   ancestors.add(value);
   try {
     if (Array.isArray(value)) {
+      const descriptors = Object.getOwnPropertyDescriptors(value) as unknown as Record<
+        PropertyKey,
+        PropertyDescriptor | undefined
+      >;
+      const lengthDescriptor = descriptors.length;
+      if (!lengthDescriptor || !("value" in lengthDescriptor)
+        || typeof lengthDescriptor.value !== "number"
+        || !Number.isSafeInteger(lengthDescriptor.value)
+        || lengthDescriptor.value < 0) {
+        throw migrationError("unsupported_commission_product_snapshot_value");
+      }
+      const arrayLength = lengthDescriptor.value;
+      for (const key of Reflect.ownKeys(value)) {
+        if (typeof key === "symbol") {
+          throw migrationError("unsupported_commission_product_snapshot_value");
+        }
+        if (key === "length") continue;
+        if (canonicalArrayIndex(key) === null) {
+          throw migrationError("unsupported_commission_product_snapshot_value");
+        }
+        const descriptor = descriptors[key];
+        if (!descriptor || !("value" in descriptor)) {
+          throw migrationError("unsupported_commission_product_snapshot_value");
+        }
+      }
       const items: CommissionCatalogSnapshotValue[] = [];
-      for (let index = 0; index < value.length; index += 1) {
-        items.push(Object.hasOwn(value, index)
-          ? normalizedSnapshot(value[index], ancestors)
+      for (let index = 0; index < arrayLength; index += 1) {
+        const descriptor = descriptors[String(index)];
+        items.push(descriptor && "value" in descriptor
+          ? normalizedSnapshot(descriptor.value, ancestors)
           : ["hole"]);
       }
       return ["array", items];
@@ -148,13 +185,86 @@ function normalizedSnapshot(
   }
 }
 
+function isolatedValueFromSnapshot(
+  snapshot: CommissionCatalogSnapshotValue
+): unknown {
+  switch (snapshot[0]) {
+    case "null": return null;
+    case "undefined": return undefined;
+    case "boolean": return snapshot[1];
+    case "string": return snapshot[1];
+    case "bigint": return BigInt(snapshot[1]);
+    case "number":
+      if (snapshot[1] === "NaN") return Number.NaN;
+      if (snapshot[1] === "Infinity") return Number.POSITIVE_INFINITY;
+      if (snapshot[1] === "-Infinity") return Number.NEGATIVE_INFINITY;
+      if (snapshot[1] === "-0") return -0;
+      return Number(snapshot[1]);
+    case "date":
+      return Object.freeze(new Date(
+        snapshot[1] === "Invalid Date" ? Number.NaN : snapshot[1]
+      ));
+    case "hole": return SNAPSHOT_ARRAY_HOLE;
+    case "array": {
+      const array = new Array<unknown>(snapshot[1].length);
+      snapshot[1].forEach((item, index) => {
+        const isolated = isolatedValueFromSnapshot(item);
+        if (isolated !== SNAPSHOT_ARRAY_HOLE) array[index] = isolated;
+      });
+      return Object.freeze(array);
+    }
+    case "map": {
+      const map = new Map<unknown, unknown>();
+      for (const [key, value] of snapshot[1]) {
+        map.set(isolatedValueFromSnapshot(key), isolatedValueFromSnapshot(value));
+      }
+      return Object.freeze(map);
+    }
+    case "set": {
+      const set = new Set<unknown>();
+      for (const value of snapshot[1]) set.add(isolatedValueFromSnapshot(value));
+      return Object.freeze(set);
+    }
+    case "regexp": {
+      const regexp = new RegExp(snapshot[1], snapshot[2]);
+      const lastIndex = isolatedValueFromSnapshot(snapshot[3]);
+      if (typeof lastIndex !== "number") {
+        throw migrationError("unsupported_commission_product_snapshot_value");
+      }
+      regexp.lastIndex = lastIndex;
+      return Object.freeze(regexp);
+    }
+    case "object": {
+      const record = Object.create(null) as Record<string, unknown>;
+      for (const [key, value] of snapshot[1]) {
+        Object.defineProperty(record, key, {
+          configurable: false,
+          enumerable: true,
+          writable: false,
+          value: isolatedValueFromSnapshot(value)
+        });
+      }
+      return Object.freeze(record);
+    }
+  }
+}
+
+function isolatedProductFromSnapshot(
+  snapshot: CommissionCatalogSnapshotValue
+): CommissionProductMigrationSource {
+  if (snapshot[0] !== "object") {
+    throw migrationError("unsupported_commission_product_snapshot_value");
+  }
+  return isolatedValueFromSnapshot(snapshot) as CommissionProductMigrationSource;
+}
+
 function prepareProduct(
   product: CommissionProductMigrationSource
 ): PreparedProduct {
   const snapshot = normalizedSnapshot(product);
   const snapshotBytes = JSON.stringify(snapshot);
   return Object.freeze({
-    product,
+    product: isolatedProductFromSnapshot(snapshot),
     snapshot,
     snapshotBytes,
     snapshotHash: hashBytes(snapshotBytes)
@@ -354,16 +464,19 @@ export class CommissionCatalogMigrationService {
 
   private async workspaceProducts(workspaceId: string): Promise<PreparedProduct[]> {
     const products = (await this.products(workspaceId))
-      .filter((product) => product.teamId === workspaceId)
-      .sort((left, right) => compareCodePoint(left.id, right.id));
+      .map(prepareProduct)
+      .filter((prepared) => prepared.product.teamId === workspaceId)
+      .sort((left, right) => compareCodePoint(
+        left.product.id, right.product.id
+      ));
     const ids = new Set<string>();
-    for (const product of products) {
+    for (const { product } of products) {
       if (!product.id || ids.has(product.id)) {
         throw migrationError("invalid_commission_product_identity");
       }
       ids.add(product.id);
     }
-    return products.map(prepareProduct);
+    return products;
   }
 
   private async plan(

@@ -317,6 +317,118 @@ test("structured snapshot tags are deterministic and reject unsupported prototyp
   );
 });
 
+test("array snapshots reject noncanonical own properties before repository mutation", async () => {
+  const diagnostic = Object.assign([1, 2], { extra: "first" });
+  const repository = new InMemoryCatalogRepository();
+  const service = new CommissionCatalogMigrationService({
+    repository,
+    products: async () => [{ ...BASE_PRODUCT, diagnostic }],
+    now: () => "2026-08-09T08:00:00.000Z"
+  });
+  await assert.rejects(
+    () => service.execute("team-a", "admin-1", "array-extra-key"),
+    { code: "unsupported_commission_product_snapshot_value" }
+  );
+  diagnostic.extra = "second";
+  await assert.rejects(
+    () => service.execute("team-a", "admin-1", "array-extra-key"),
+    { code: "unsupported_commission_product_snapshot_value" }
+  );
+  assert.equal(await repository.findCommissionCatalogMigrationRun(
+    "team-a", "array-extra-key"
+  ), null);
+
+  let accessorReads = 0;
+  const accessorArray: unknown[] = [];
+  Object.defineProperty(accessorArray, "0", {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      accessorReads += 1;
+      return "must-not-run";
+    }
+  });
+  const accessorService = new CommissionCatalogMigrationService({
+    repository: new InMemoryCatalogRepository(),
+    products: async () => [{ ...BASE_PRODUCT, diagnostic: accessorArray }],
+    now: () => "2026-08-09T08:00:00.000Z"
+  });
+  await assert.rejects(
+    () => accessorService.preview("team-a"),
+    { code: "unsupported_commission_product_snapshot_value" }
+  );
+  assert.equal(accessorReads, 0);
+});
+
+test("migration planning uses one pre-await isolated product capture", async () => {
+  const product = { ...BASE_PRODUCT };
+  let categoryReads = 0;
+  let identityReads = 0;
+  let workspaceReads = 0;
+  Object.defineProperty(product, "id", {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      identityReads += 1;
+      return "cp-1";
+    }
+  });
+  Object.defineProperty(product, "teamId", {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      workspaceReads += 1;
+      return "team-a";
+    }
+  });
+  Object.defineProperty(product, "category", {
+    configurable: true,
+    enumerable: true,
+    get: () => {
+      categoryReads += 1;
+      return "服务";
+    }
+  });
+  const repository = new InMemoryCatalogRepository();
+  const originalFindRun = repository.findCommissionCatalogMigrationRun.bind(repository);
+  let enterFindRun!: () => void;
+  let releaseFindRun!: () => void;
+  const enteredFindRun = new Promise<void>((resolve) => { enterFindRun = resolve; });
+  const findRunGate = new Promise<void>((resolve) => { releaseFindRun = resolve; });
+  repository.findCommissionCatalogMigrationRun = async (workspaceId, key) => {
+    enterFindRun();
+    await findRunGate;
+    return originalFindRun(workspaceId, key);
+  };
+  const service = new CommissionCatalogMigrationService({
+    repository,
+    products: async () => [product],
+    now: () => "2026-08-09T08:00:00.000Z",
+    idFactory: (prefix) => `${prefix}-isolated`
+  });
+
+  const executing = service.execute("team-a", "admin-1", "isolated-key");
+  await enteredFindRun;
+  product.name = "await 后名称";
+  product.defaultPrice = 99_999;
+  releaseFindRun();
+  const run = await executing;
+  const link = await repository.findCommissionProductLink("team-a", "cp-1");
+  assert.ok(link);
+  const item = await repository.findCatalogItem("team-a", link.catalogItemId);
+  const policy = await repository.findPricingPolicyVersion(
+    "team-a", link.pricingPolicyVersionId
+  );
+  const snapshotBytes = JSON.stringify(run.items[0]!.snapshot);
+  assert.match(snapshotBytes, /"name",\["string","标准服务"\]/u);
+  assert.match(snapshotBytes, /"defaultPrice",\["number","29800"\]/u);
+  assert.equal(item?.name, "标准服务");
+  assert.equal(policy?.listUnitPriceMinor, 2_980_000);
+  assert.equal(categoryReads, 1);
+  assert.equal(identityReads, 1);
+  assert.equal(workspaceReads, 1);
+});
+
 test("repository returns immutable independent clones", async () => {
   const state = migrationFixture();
   const result = await state.service.execute("team-a", "admin-1", "clone-key");
