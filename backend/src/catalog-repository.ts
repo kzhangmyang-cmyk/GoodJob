@@ -54,7 +54,7 @@ export interface CreateCatalogItemCommand extends CommandIdentity {
   type: CatalogItem["type"];
   code: string;
   name: string;
-  description: string;
+  description: CatalogItem["description"];
   unit: string;
 }
 

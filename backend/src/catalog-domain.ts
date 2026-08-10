@@ -40,7 +40,7 @@ export interface CatalogItem {
   type: "product" | "service" | "package";
   code: string;
   name: string;
-  description: string;
+  description: string | null;
   unit: string;
   status: "active" | "retired";
   revision: number;

@@ -68,7 +68,7 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     item_type ENUM('product','service','package') NOT NULL,
     code VARCHAR(191) NOT NULL,
     name VARCHAR(255) NOT NULL,
-    description TEXT NOT NULL,
+    description TEXT NULL,
     unit VARCHAR(100) NOT NULL,
     item_status ENUM('active','retired') NOT NULL,
     revision BIGINT UNSIGNED NOT NULL,
@@ -265,6 +265,21 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
 
 export async function ensureCatalogMysqlSchema(pool: mysql.Pool): Promise<void> {
   for (const statement of CATALOG_MYSQL_SCHEMA_STATEMENTS) await pool.query(statement);
+  const [descriptionRows] = await pool.query(
+    `SELECT column_name,is_nullable FROM information_schema.columns
+     WHERE table_schema = DATABASE() AND table_name = ?
+       AND column_name = 'description'`,
+    ["catalog_items"]
+  );
+  const descriptionColumn = (descriptionRows as MysqlRow[]).find((row) =>
+    String(row.column_name) === "description"
+  );
+  if (!descriptionColumn) throw new Error("catalog_items_description_missing");
+  if (String(descriptionColumn.is_nullable) !== "YES") {
+    await pool.query(
+      "ALTER TABLE catalog_items MODIFY COLUMN description TEXT NULL"
+    );
+  }
   const upgrades = [
     { table: "catalog_items", fallback: "updated_at" },
     { table: "pricing_policy_versions", fallback: "created_at" },
@@ -380,7 +395,8 @@ function parseCatalogItem(row: MysqlRow): CatalogItem {
   return immutableClone(normalizeCatalogItemInstants({
     id: String(row.id), workspaceId: String(row.workspace_id),
     type: row.item_type, code: String(row.code), name: String(row.name),
-    description: String(row.description), unit: String(row.unit),
+    description: row.description === null ? null : String(row.description),
+    unit: String(row.unit),
     status: row.item_status, revision: safeNumber(row.revision, "revision"),
     createdBy: String(row.created_by), createdAt: instant(row.created_at),
     updatedAt: instant(row.updated_at)

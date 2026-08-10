@@ -5,12 +5,18 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
+import type { publicUser as _publicUser } from "./auth.js";
 import type {
   ApprovalThresholds,
+  CatalogItem,
   GiftPolicy,
   PricingPolicyVersion,
   SurchargePolicy
 } from "./catalog-domain.js";
+import type {
+  CreateCatalogItemCommand,
+  UpdateCatalogItemCommand
+} from "./catalog-repository.js";
 
 const approvalThresholds = {
   discountCapability: "quote.exception.discount.approve",
@@ -76,6 +82,28 @@ const legacyPolicy = {
   source: "legacy_commission_product"
 } as const satisfies PricingPolicyVersion;
 
+const nullableCatalogItem = {
+  id: "item-null-description", workspaceId: "team-a", type: "service",
+  code: "NULL-DESCRIPTION", name: "可空描述", description: null, unit: "次",
+  status: "active", revision: 1, createdBy: "admin-1",
+  createdAt: "2026-08-09T08:00:00.000Z",
+  updatedAt: "2026-08-09T08:00:00.000Z"
+} as const satisfies CatalogItem;
+
+const nullableCatalogCreate = {
+  workspaceId: "team-a", id: "item-null-description", type: "service",
+  code: "NULL-DESCRIPTION", name: "可空描述", description: null, unit: "次",
+  actorId: "admin-1", idempotencyKey: "nullable-description-create",
+  requestHash: "sha256:nullable-description-create"
+} as const satisfies CreateCatalogItemCommand;
+
+const nullableCatalogPatch = {
+  workspaceId: "team-a", id: "item-null-description", expectedRevision: 1,
+  patch: { description: null }, actorId: "admin-1",
+  idempotencyKey: "nullable-description-update",
+  requestHash: "sha256:nullable-description-update"
+} as const satisfies UpdateCatalogItemCommand;
+
 // @ts-expect-error the frozen v1 source enum does not contain the old value
 const invalidSource: PricingPolicyVersion["source"] = "manual";
 // @ts-expect-error the frozen v1 surcharge kind does not contain the old variant
@@ -84,7 +112,10 @@ const invalidSurcharge: SurchargePolicy = { kind: "fixed_order", amountMinor: 1,
 const invalidGift: GiftPolicy = { kind: "quantity_limit", standardQuantityMicros: 1, absoluteQuantityMicros: 1 };
 // @ts-expect-error the frozen v1 approval shape has six named capabilities
 const invalidApproval: ApprovalThresholds = { discount: { standard: 0, absolute: 0, requiredCapability: "quote.confirm" } };
-void [invalidSource, invalidSurcharge, invalidGift, invalidApproval];
+void [
+  nullableCatalogItem, nullableCatalogCreate, nullableCatalogPatch,
+  invalidSource, invalidSurcharge, invalidGift, invalidApproval
+];
 
 function projectFull(policy: PricingPolicyVersion): object {
   const { capabilityRegistryVersion: _internalAudit, ...persisted } = policy;

@@ -698,6 +698,43 @@ test("catalog commands replay exact requests and fail closed on key conflicts", 
   }
 });
 
+test("memory catalog preserves nullable descriptions through create update and replay", async () => {
+  for (const repository of repositoryFixtures()) {
+    const created = okValue(await repository.createCatalogItem(
+      createItemCommand({ description: null })
+    ));
+    assert.equal(created.description, null);
+    assert.equal(
+      (await repository.findCatalogItem("team-a", created.id))?.description,
+      null
+    );
+
+    const described = await repository.updateCatalogItem({
+      workspaceId: "team-a", id: created.id, expectedRevision: 1,
+      patch: { description: "临时描述" }, actorId: "admin-1",
+      idempotencyKey: "nullable-description-set",
+      requestHash: hash({ description: "临时描述" })
+    });
+    assert.equal(described.kind, "ok");
+    assert.equal(described.value.description, "临时描述");
+
+    const update = {
+      workspaceId: "team-a", id: created.id, expectedRevision: 2,
+      patch: { description: null }, actorId: "admin-1",
+      idempotencyKey: "nullable-description-update",
+      requestHash: hash({ description: null })
+    } as const;
+    const updated = await repository.updateCatalogItem(update);
+    assert.equal(updated.kind, "ok");
+    assert.equal(updated.value.description, null);
+
+    const replay = await repository.updateCatalogItem(update);
+    assert.equal(replay.kind, "ok");
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.value.description, null);
+  }
+});
+
 test("domain receipts scope replay by workspace actor operation and key", async () => {
   for (const repository of repositoryFixtures()) {
     const created = okValue(await repository.createCatalogItem(

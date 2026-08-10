@@ -43,7 +43,8 @@ class FakePool extends FakeConnection {
 
 class ExistingSchemaPool extends FakePool {
   private readonly columns = new Map<string, Map<string, string>>([
-    ["catalog_items", new Map()], ["pricing_policy_versions", new Map()],
+    ["catalog_items", new Map([["description", "NO"]])],
+    ["pricing_policy_versions", new Map()],
     ["package_versions", new Map()], ["package_components", new Map()],
     ["catalog_command_receipts", new Map([["idempotency_key", "NO"]])]
   ]);
@@ -74,6 +75,10 @@ class ExistingSchemaPool extends FakePool {
       this.columns.get("catalog_command_receipts")?.delete("idempotency_key");
       this.columns.get("catalog_command_receipts")
         ?.set("idempotency_key_hash", "NO");
+    }
+    if (/^ALTER TABLE catalog_items MODIFY COLUMN description TEXT NULL/u
+      .test(normalized)) {
+      this.columns.get("catalog_items")?.set("description", "YES");
     }
     return [{ affectedRows: 1 }, []];
   }
@@ -390,6 +395,32 @@ test("catalog schema upgrades prerequisite tables and repeats idempotently", asy
   assert.match(sql, /temporal_sequence = COALESCE\([^\n]*,0\)/u);
   assert.equal(
     pool.calls.slice(firstRunCount).some((call) => / ADD COLUMN /u.test(call.sql)),
+    false
+  );
+});
+
+test("catalog schema creates and upgrades nullable descriptions idempotently", async () => {
+  const pool = new ExistingSchemaPool();
+  await ensureCatalogMysqlSchema(asPool(pool));
+  const firstRunCount = pool.calls.length;
+  await ensureCatalogMysqlSchema(asPool(pool));
+
+  const create = CATALOG_MYSQL_SCHEMA_STATEMENTS.find((statement) =>
+    /CREATE TABLE IF NOT EXISTS catalog_items/u.test(statement)
+  );
+  assert.match(create ?? "", /description TEXT NULL/u);
+  assert.equal(
+    pool.calls.slice(0, firstRunCount).filter((call) =>
+      /^ALTER TABLE catalog_items MODIFY COLUMN description TEXT NULL/u
+        .test(call.sql)
+    ).length,
+    1
+  );
+  assert.equal(
+    pool.calls.slice(firstRunCount).some((call) =>
+      /^ALTER TABLE catalog_items MODIFY COLUMN description TEXT NULL/u
+        .test(call.sql)
+    ),
     false
   );
 });
@@ -923,6 +954,56 @@ test("mysql domain receipts scope by actor and operation and survive intervening
     receiptScopes.every((call) => /^sha256:[a-f0-9]{64}$/u.test(String(call.values[3]))),
     true
   );
+});
+
+test("mysql catalog preserves nullable descriptions across updates and replay", async () => {
+  const connection = new ReceiptConnection();
+  const pool = new FakePool(connection);
+  const repository = new MysqlCatalogRepository(
+    asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+  );
+  const created = await repository.createCatalogItem({
+    workspaceId: "team-a", id: "nullable-item", type: "service",
+    code: "NULLABLE", name: "可空描述", description: null, unit: "次",
+    actorId: "admin-1", idempotencyKey: "nullable-create",
+    requestHash: "sha256:nullable-create"
+  });
+  assert.equal(created.kind, "ok");
+  assert.equal(created.value.description, null);
+
+  const renamed = await repository.updateCatalogItem({
+    workspaceId: "team-a", id: "nullable-item", expectedRevision: 1,
+    patch: { name: "仅修改名称" }, actorId: "admin-1",
+    idempotencyKey: "nullable-rename", requestHash: "sha256:nullable-rename"
+  });
+  assert.equal(renamed.kind, "ok");
+  assert.equal(renamed.value.description, null);
+
+  const described = await repository.updateCatalogItem({
+    workspaceId: "team-a", id: "nullable-item", expectedRevision: 2,
+    patch: { description: "临时描述" }, actorId: "admin-1",
+    idempotencyKey: "nullable-describe", requestHash: "sha256:nullable-describe"
+  });
+  assert.equal(described.kind, "ok");
+  assert.equal(described.value.description, "临时描述");
+
+  const clear = {
+    workspaceId: "team-a", id: "nullable-item", expectedRevision: 3,
+    patch: { description: null }, actorId: "admin-1",
+    idempotencyKey: "nullable-clear", requestHash: "sha256:nullable-clear"
+  } as const;
+  const cleared = await repository.updateCatalogItem(clear);
+  assert.equal(cleared.kind, "ok");
+  assert.equal(cleared.value.description, null);
+  const replay = await repository.updateCatalogItem(clear);
+  assert.equal(replay.kind, "ok");
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.value.description, null);
+
+  const insert = connection.calls.find((call) =>
+    /^INSERT INTO catalog_items/u.test(call.sql)
+  );
+  assert.equal(insert?.values[5], null);
 });
 
 test("mysql draft-component replacement takes the temporal barrier before its package lock", async () => {
