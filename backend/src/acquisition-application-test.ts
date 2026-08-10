@@ -3224,6 +3224,11 @@ test("the Acquisition domain graph consumes the exact Growth runtime ports", asy
     }
   });
   try {
+    assert.equal(
+      typeof Reflect.get(runtime, "runOutcomeReconciliation"),
+      "function",
+      "production runtime must expose its singleton reconciler for bounded drains"
+    );
     assert.ok(domainOptions && domainConsumer && toolOptions && toolConsumer);
     assert.equal(
       domainOptions.growthAcquisitionWorkspace,

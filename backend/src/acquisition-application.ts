@@ -389,6 +389,9 @@ export interface CreateAcquisitionApplicationOptions {
 export interface AcquisitionApplicationRuntime
 extends AcquisitionHttpRuntime {
   planDraftGenerator: AcquisitionPlanDraftGenerator;
+  runOutcomeReconciliation(
+    scope: { ownerId: string; teamId: string }
+  ): ReturnType<AcquisitionCrmOutcomeReconciliationService["runTenant"]>;
 }
 
 /**
@@ -1957,6 +1960,11 @@ export async function createAcquisitionApplication(
     return {
       handler: router as RequestHandler,
       planDraftGenerator,
+      runOutcomeReconciliation(scope) {
+        return outcomeReconciliation.runTenant(scope, {
+          limit: options.outcomeReconciliationBatchSize ?? 100
+        });
+      },
       close() {
         if (closePromise) return closePromise;
         closing = true;

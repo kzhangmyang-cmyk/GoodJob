@@ -80,6 +80,8 @@ export interface GrowthQuoteServices {
   readonly quoteCases: QuoteCaseService;
   readonly quoteVersions: QuoteVersionService;
   readonly quoteApprovals: QuoteApprovalService;
+  /** Application-owned publication executor used by recovery and release gates. */
+  readonly publicationWorker?: Pick<QuotePublicationWorker, "runOne">;
   readonly dealDecisions?: DealCommercialDecisionService;
   readonly authorityReaders: GrowthQuoteAuthorityReaders;
 }
@@ -367,6 +369,10 @@ async function defaultResources(
     : createQuoteCrmCommand({ store: options.store,
         temporalTransactions: input.temporalTransactions,
         temporalBarrier: input.temporalBarrier, repository })) : null;
+  const publicationWorker = crm
+    ? new QuotePublicationWorker({ repository, crm,
+        workerId: `quote-publication-${process.pid}` })
+    : null;
   const quote = trusted ? (() => {
     const dealAuthoritativeQuotes = new DealAuthoritativeQuoteReader(repository);
     const authoritativeContributions = new AuthoritativeQuoteAsOfReader(
@@ -401,6 +407,7 @@ async function defaultResources(
         repository, bindingVerifier: bindingVerifier!,
         foundation: input.foundation, catalog: input.catalog
       }),
+      ...(publicationWorker ? { publicationWorker } : {}),
       ...(crm ? { dealDecisions: new DealCommercialDecisionService({
         repository, crm, foundation: input.foundation
       }) } : {}),
@@ -424,11 +431,11 @@ async function defaultResources(
           });
         }
       }) as QuoteProjectedDocumentAuthorityValidator;
-  const publication = options.store && quote && crm ? (() => {
-    const worker = new QuotePublicationWorker({ repository, crm,
-      workerId: `quote-publication-${process.pid}` });
-    return new QuotePublicationRecoverySweeper({ repository, worker });
-  })() : null;
+  const publication = quote && publicationWorker
+    ? new QuotePublicationRecoverySweeper({
+        repository, worker: publicationWorker
+      })
+    : null;
   return {
     probabilityAssessments,
     ...(quote ? { quote } : {}),

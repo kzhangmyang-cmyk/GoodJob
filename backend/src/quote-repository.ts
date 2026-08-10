@@ -576,6 +576,7 @@ export function createQuoteVersionFromCalculation(input: Readonly<{
     versionKind: input.versionKind,
     sourceDraftVersionId: input.sourceDraftVersionId,
     currency: result.currency,
+    lineSnapshot: structuredClone(result.lineSnapshot),
     lineItems: [{
       catalogItemId: result.lineSnapshot.catalogItemId,
       pricingPolicyVersionId: result.lineSnapshot.pricingPolicyVersionId,
@@ -1406,6 +1407,7 @@ export class InMemoryQuoteRepository implements QuoteRepository {
         publicationOperation.id), publicationOperation);
       const projectedVersion = immutableQuoteValue({ ...version,
         status: nextStatus, lifecycleRevision: currentRevision + 1 });
+      this.versions.set(this.caseKey(workspaceId, version.id), projectedVersion);
       const result = immutableQuoteValue({ quoteVersion: projectedVersion,
         approval: decidedApproval, authority, authorityEvent,
         lifecycleEvents: Object.freeze(lifecycleEvents), publicationOperation });
