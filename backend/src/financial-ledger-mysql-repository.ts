@@ -116,6 +116,23 @@ export const FINANCIAL_LEDGER_MYSQL_SCHEMA_STATEMENTS = [
     UNIQUE KEY uk_cost_estimate_event_revision
       (workspace_id, currency, source_stable_key, revision)
   ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS acquisition_cost_evidence_projections (
+    workspace_id VARCHAR(191) NOT NULL,
+    source_kind VARCHAR(32) NOT NULL,
+    source_id VARCHAR(191) NOT NULL,
+    target_kind VARCHAR(32) NOT NULL,
+    target_id VARCHAR(191) NOT NULL,
+    evidence_fingerprint VARCHAR(255) NOT NULL,
+    source_version BIGINT UNSIGNED NOT NULL,
+    projected_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id, source_kind, source_id),
+    CONSTRAINT chk_cost_evidence_projection_source
+      CHECK (source_kind = 'provider_request'),
+    CONSTRAINT chk_cost_evidence_projection_target
+      CHECK (target_kind IN ('cost_entry', 'estimate')),
+    CONSTRAINT chk_cost_evidence_projection_version
+      CHECK (source_version >= 1)
+  ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS financial_facts (
     id VARCHAR(191) NOT NULL,
     workspace_id VARCHAR(191) NOT NULL,
@@ -742,8 +759,63 @@ export class MysqlFinancialLedgerRepository implements FinancialLedgerRepository
     ledgerEntryStatus(events);
     return events;
   }
+
+  async getProviderEvidenceProjection(workspaceId: string, sourceId: string) {
+    const row = await one(this.querySource(),
+      `SELECT target_kind, target_id, evidence_fingerprint, source_version
+       FROM acquisition_cost_evidence_projections
+       WHERE workspace_id = ? AND source_kind = 'provider_request'
+         AND source_id = ?`,
+      [assertConcreteGrowthWorkspaceId(workspaceId), sourceId]);
+    if (!row) return null;
+    return Object.freeze({
+      targetKind: enumValue(row.target_kind, ["cost_entry", "estimate"] as const,
+        "invalid_cost_evidence_projection_row"),
+      targetId: textValue(row.target_id, "invalid_cost_evidence_projection_row"),
+      evidenceFingerprint: textValue(
+        row.evidence_fingerprint, "invalid_cost_evidence_projection_row"
+      ),
+      sourceVersion: safeInteger(
+        row.source_version, "invalid_cost_evidence_projection_version", 1
+      )
+    });
+  }
+
+  async recordProviderEvidenceProjection(input: {
+    workspaceId: string;
+    sourceId: string;
+    targetKind: "cost_entry" | "estimate";
+    targetId: string;
+    evidenceFingerprint: string;
+    sourceVersion: number;
+    projectedAt: string;
+  }): Promise<void> {
+    safeInteger(input.sourceVersion, "invalid_cost_evidence_projection_version", 1);
+    try {
+      await this.querySource().query(
+        `INSERT INTO acquisition_cost_evidence_projections (
+          workspace_id, source_kind, source_id, target_kind, target_id,
+          evidence_fingerprint, source_version, projected_at
+        ) VALUES (?, 'provider_request', ?, ?, ?, ?, ?, ?)`,
+        [assertConcreteGrowthWorkspaceId(input.workspaceId), input.sourceId,
+          input.targetKind, input.targetId, input.evidenceFingerprint,
+          input.sourceVersion, growthMysqlDate(input.projectedAt)]
+      );
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== "ER_DUP_ENTRY") throw error;
+      const existing = await this.getProviderEvidenceProjection(
+        input.workspaceId, input.sourceId
+      );
+      if (!existing || existing.targetKind !== input.targetKind
+        || existing.targetId !== input.targetId
+        || existing.evidenceFingerprint !== input.evidenceFingerprint
+        || existing.sourceVersion !== input.sourceVersion) {
+        throw new Error("cost_evidence_projection_conflict");
+      }
+    }
+  }
 }
 
 export const financialLedgerMysqlRowParsers = Object.freeze({
-  costEntry, financialFact, verificationEvent
+  costEntry, financialFact, verificationEvent, costEstimate, estimateEvent
 });
