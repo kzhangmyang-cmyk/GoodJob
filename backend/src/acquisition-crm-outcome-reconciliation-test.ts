@@ -202,12 +202,15 @@ function persistedPlanRuns(overrides: {
 
 test("reconciles durable CRM activities and deal events without treating payment as verified cash", async () => {
   const recorded: OutcomeInput[] = [];
+  const authorities: unknown[] = [];
+  const fixture = store();
   const service = new AcquisitionCrmOutcomeReconciliationService({
-    store: store(),
+    store: fixture,
     planRuns: persistedPlanRuns(),
     outcomeRecorder: {
-      async recordOutcome(_scope, input) {
+      async recordOutcome(_scope, input, authority) {
         recorded.push(structuredClone(input));
+        authorities.push(structuredClone(authority));
         return { id: `outcome-${recorded.length}` };
       }
     },
@@ -224,24 +227,21 @@ test("reconciles durable CRM activities and deal events without treating payment
     item.idempotencyKey,
     item.amount
   ]), [
-    ["contacted", "crm:lead-activity:activity-call", null],
-    ["quoted", "crm:deal-event:event-quote", {
-      amountMinor: 128_850,
-      currency: "USD"
-    }],
-    ["won", "crm:deal-event:event-won", {
-      amountMinor: 128_850,
-      currency: "USD"
-    }]
+    ["contacted", "crm:lead-activity:activity-call", null]
   ]);
+  assert.deepEqual(authorities, [undefined]);
   assert.equal(recorded.some((item) => item.eventType === "payment_received"), false);
   assert.deepEqual(result, {
     scanned: 5,
-    reconciled: 3,
-    skipped: 2,
+    reconciled: 1,
+    skipped: 4,
     failed: 0,
     lastReconciledAt: "2026-08-07T08:00:00.000Z"
   });
+  assert.deepEqual(
+    fixture.acquisitionOutcomeReconciliationDiagnostics.map((item) => item.code),
+    ["commercial_authority_unverified", "commercial_authority_unverified"]
+  );
 });
 
 test("delayed replay consumes immutable DealEvent snapshots after the Deal changes", async () => {
@@ -262,6 +262,11 @@ test("delayed replay consumes immutable DealEvent snapshots after the Deal chang
     candidateIdSnapshot: "candidate-real",
     amountMinorSnapshot: 128_850,
     currencySnapshot: "USD",
+    commercialAuthority: "quote_projection",
+    quoteCaseIdSnapshot: "quote-case-real",
+    quoteVersionIdSnapshot: "quote-version-real",
+    commercialAmountHash: `sha256:${"a".repeat(64)}`,
+    dealAuthorityRevisionSnapshot: 3,
     createdAt: "2026-08-03T01:00:00.000Z"
   }];
   Object.assign(fixture.deals[0]!, {
@@ -272,12 +277,14 @@ test("delayed replay consumes immutable DealEvent snapshots after the Deal chang
     currency: "CNY"
   });
   const recorded: OutcomeInput[] = [];
+  const authorities: unknown[] = [];
   const service = new AcquisitionCrmOutcomeReconciliationService({
     store: fixture,
     planRuns: persistedPlanRuns(),
     outcomeRecorder: {
-      async recordOutcome(_scope, input) {
+      async recordOutcome(_scope, input, authority) {
         recorded.push(structuredClone(input));
+        authorities.push(structuredClone(authority));
         return { id: input.idempotencyKey };
       }
     }
@@ -295,6 +302,10 @@ test("delayed replay consumes immutable DealEvent snapshots after the Deal chang
     candidateId: "candidate-real",
     customerId: "customer-real",
     amount: { amountMinor: 128_850, currency: "USD" }
+  }]);
+  assert.deepEqual(authorities, [{
+    capability: "acquisition.outcome.reconcile.internal",
+    sourceStableKey: "deal-event:event-snapshot-quote"
   }]);
 });
 
@@ -470,6 +481,13 @@ test("rejects an ambiguous deal-to-handoff binding instead of selecting array or
   const fixture = store();
   fixture.leadActivities = [];
   fixture.dealEvents = [fixture.dealEvents[0]];
+  Object.assign(fixture.dealEvents[0]!, {
+    commercialAuthority: "quote_projection",
+    quoteCaseIdSnapshot: "quote-case-real",
+    quoteVersionIdSnapshot: "quote-version-real",
+    commercialAmountHash: `sha256:${"a".repeat(64)}`,
+    dealAuthorityRevisionSnapshot: 3
+  });
   fixture.leads.push({
     id: "lead-second",
     ownerId: "owner-real",
@@ -577,6 +595,11 @@ test("processes late and same-millisecond lower-id CRM events once across restar
     candidateIdSnapshot: "candidate-real",
     amountMinorSnapshot: 128_850,
     currencySnapshot: "USD",
+    commercialAuthority: "quote_projection",
+    quoteCaseIdSnapshot: "quote-case-real",
+    quoteVersionIdSnapshot: "quote-version-real",
+    commercialAmountHash: `sha256:${"a".repeat(64)}`,
+    dealAuthorityRevisionSnapshot: 3,
     createdAt: "2026-08-05T01:00:00.000Z"
   });
 

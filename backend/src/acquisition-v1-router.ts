@@ -385,9 +385,6 @@ const outcomeBodySchema = z.object({
     "do_not_contact",
     "private_domain_entered",
     "need_confirmed",
-    "quoted",
-    "won",
-    "lost",
     "payment_received"
   ]),
   occurredAt: z.string().datetime({ offset: true }),

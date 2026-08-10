@@ -10,7 +10,6 @@ import type {
   AcquisitionCandidate,
   DiscoveryEvidence,
   FinancialValueDecision,
-  OutcomeInput,
   QualificationDecision
 } from "./acquisition-domain.js";
 import {
@@ -21,18 +20,6 @@ import {
   type AcquisitionOperationShard,
   type AcquisitionRun
 } from "./acquisition-plan-run-repository.js";
-import {
-  AcquisitionCrmOutcomeReconciliationService
-} from "./acquisition-crm-outcome-reconciliation.js";
-import {
-  AcquisitionCrmOutcomeReconciliationWorker
-} from "./acquisition-crm-outcome-reconciliation-worker.js";
-import {
-  AcquisitionPerformanceQueryService
-} from "./acquisition-performance-query.js";
-import {
-  createAcquisitionPerformanceRouter
-} from "./acquisition-performance-router.js";
 import { getStore } from "./store.js";
 import { createGrowthCommercialToolPorts } from "./growth-commercial-application.js";
 import {
@@ -74,21 +61,10 @@ async function listen(application: typeof app = app): Promise<{
   };
 }
 
-test("real handoff HTTP output binds one Deal and reaches performance", async () => {
+test("real handoff HTTP output binds one Deal and blocks legacy commercial closure", async () => {
   const store = getStore();
   const owner = store.users.find((item) => item.email === "alex@goodjob.com");
   assert.ok(owner);
-  const originalReconciliationState = {
-    diagnostics: structuredClone(
-      store.acquisitionOutcomeReconciliationDiagnostics
-    ),
-    checkpoints: structuredClone(
-      store.acquisitionOutcomeReconciliationCheckpoints
-    ),
-    processedSources: structuredClone(
-      store.acquisitionOutcomeReconciliationProcessedSources
-    )
-  };
   const suffix = `closed-loop-${Date.now()}`;
   const candidateId = `candidate-${suffix}`;
   const evidenceId = `evidence-${suffix}`;
@@ -813,76 +789,28 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
       item.id === created.json.deal.id
       || item.title === "并发重复商机"
       || item.title === "不得创建的重复商机").length, 1);
-    const mutableDeal = store.deals.find((item) => item.id === created.json.deal.id);
-    assert.ok(mutableDeal);
-    mutableDeal.customerId = alternateCustomerId;
-    let quote: Awaited<ReturnType<typeof runtime.request>>;
-    try {
-      quote = await runtime.request(`/api/deals/${created.json.deal.id}/events`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${login.json.token}` },
-        body: JSON.stringify({
-          type: "quote",
-          content: "已发送 CNY 12,880 报价",
-          nextAction: "确认报价",
-          nextActionAt: "2026-08-10"
-        })
-      });
-    } finally {
-      mutableDeal.customerId = customerId;
-    }
-    assert.equal(quote.response.status, 200);
-    assert.deepEqual({
-      ownerIdSnapshot: quote.json.event.ownerIdSnapshot,
-      teamIdSnapshot: quote.json.event.teamIdSnapshot,
-      customerIdSnapshot: quote.json.event.customerIdSnapshot,
-      leadIdSnapshot: quote.json.event.leadIdSnapshot,
-      handoffIdSnapshot: quote.json.event.handoffIdSnapshot,
-      candidateIdSnapshot: quote.json.event.candidateIdSnapshot,
-      amountMinorSnapshot: quote.json.event.amountMinorSnapshot,
-      currencySnapshot: quote.json.event.currencySnapshot
-    }, {
-      ownerIdSnapshot: owner.id,
-      teamIdSnapshot: owner.teamId,
-      customerIdSnapshot: customerId,
-      leadIdSnapshot: leadId,
-      handoffIdSnapshot: handoffId,
-      candidateIdSnapshot: candidateId,
-      amountMinorSnapshot: 1_288_000,
-      currencySnapshot: "CNY"
+    const boundDeal = store.deals.find((item) =>
+      item.id === created.json.deal.id);
+    assert.ok(boundDeal);
+    const commercialEventsBefore = store.dealEvents
+      .filter((item) => item.dealId === boundDeal.id
+        && ["quote", "won", "lost"].includes(item.type))
+      .map((item) => item.id);
+    const feedbackBefore = store.acquisitionOutcomeFeedback
+      .filter((item) => item.dealId === boundDeal.id)
+      .map((item) => item.id);
+    const quote = await runtime.request(`/api/deals/${boundDeal.id}/events`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${login.json.token}` },
+      body: JSON.stringify({
+        type: "quote",
+        content: "不得通过 legacy route 发送获客报价",
+        nextAction: "等待正式 QuoteVersion",
+        nextActionAt: "2026-08-10"
+      })
     });
-    const ambiguousHandoff = {
-      ...structuredClone(validHandoff),
-      id: `${handoffId}-duplicate-bound`,
-      dealId: created.json.deal.id
-    };
-    store.acquisitionCustomerHandoffs.push(ambiguousHandoff);
-    let ambiguousEvent: Awaited<ReturnType<typeof runtime.request>>;
-    try {
-      ambiguousEvent = await runtime.request(`/api/deals/${created.json.deal.id}/events`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${login.json.token}` },
-        body: JSON.stringify({
-          type: "quote",
-          content: "重复 Handoff 时不得生成获客快照",
-          nextAction: "人工核验归因",
-          nextActionAt: "2026-08-10"
-        })
-      });
-    } finally {
-      store.acquisitionCustomerHandoffs = store.acquisitionCustomerHandoffs
-        .filter((item) => item.id !== ambiguousHandoff.id);
-    }
-    assert.equal(ambiguousEvent.response.status, 200);
-    assert.deepEqual({
-      leadIdSnapshot: ambiguousEvent.json.event.leadIdSnapshot,
-      handoffIdSnapshot: ambiguousEvent.json.event.handoffIdSnapshot,
-      candidateIdSnapshot: ambiguousEvent.json.event.candidateIdSnapshot
-    }, {
-      leadIdSnapshot: null,
-      handoffIdSnapshot: null,
-      candidateIdSnapshot: null
-    });
+    assert.equal(quote.response.status, 409);
+    assert.equal(quote.json.code, "authoritative_quote_required");
     const won = await runtime.request(`/api/deals/${created.json.deal.id}/stage`, {
       method: "PATCH",
       headers: { authorization: `Bearer ${login.json.token}` },
@@ -896,156 +824,20 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
         wonReason: "已收到客户签字合同"
       })
     });
-    assert.equal(won.response.status, 200);
-
-    const planRuns = {
-      async getRun(id: string) { return planRunRepository.getRun(id); },
-      async listRuns(resolvedScope: { ownerId: string; teamId: string }) {
-        return planRunRepository.listRuns(resolvedScope);
-      },
-      async getPlanVersion() {
-        return { payload: { targetPlatform: "douyin" } };
-      },
-      async listRunEvents(id: string) {
-        return planRunRepository.listRunEvents(id);
-      },
-      async listRunShards(id: string) {
-        return planRunRepository.listRunShards(id);
-      }
-    };
-    const outcomes: Array<OutcomeInput & {
-      id: string;
-      ownerId: string;
-      teamId: string;
-    }> = [];
-    const reconciliation = new AcquisitionCrmOutcomeReconciliationService({
-      store,
-      planRuns: planRuns as never,
-      outcomeRecorder: {
-        async recordOutcome(outcomeScope, input) {
-          outcomes.push({
-            ...structuredClone(input),
-            ...outcomeScope,
-            id: `outcome-${outcomes.length + 1}`
-          });
-          return outcomes.at(-1)!;
-        }
-      },
-      now: () => "2026-08-08T00:00:00.000Z"
-    });
-    const worker = new AcquisitionCrmOutcomeReconciliationWorker({
-      service: reconciliation,
-      listTenantScopes: () => [{ ownerId: owner.id, teamId: owner.teamId }],
-      intervalMs: 60_000,
-      batchSize: 100,
-      setTimer: () => ({ unref() {} }),
-      clearTimer() {}
-    });
-    await worker.start();
-    await worker.close();
-    assert.deepEqual(
-      [...new Set(outcomes.map((item) => item.eventType))].sort(),
-      ["quoted", "won"]
-    );
-
-    const performanceQuery = new AcquisitionPerformanceQueryService({
-      planRuns: planRuns as never,
-      domain: {
-        async getPresentationCandidateSnapshots() {
-          return [{
-            candidate: { id: candidateId, ownerId: owner.id, teamId: owner.teamId },
-            qualification: {
-              id: attribution.qualificationDecisionId,
-              candidateId,
-              ownerId: owner.id,
-              teamId: owner.teamId,
-              grade: "S",
-              createdAt: "2026-08-07T07:30:00.000Z"
-            },
-            financial: {
-              qualificationDecisionId: attribution.qualificationDecisionId,
-              currency: "CNY",
-              expectedRevenueMinor: 1_288_000
-            },
-            sourcePlatforms: ["douyin"]
-          }];
-        },
-        async listQualificationDecisions() {
-          return [{
-            id: attribution.qualificationDecisionId,
-            candidateId,
-            ownerId: owner.id,
-            teamId: owner.teamId,
-            grade: "S",
-            createdAt: "2026-08-07T07:30:00.000Z"
-          }];
-        },
-        async listFinancialValues() {
-          return [{
-            id: `financial-${suffix}`,
-            candidateId,
-            ownerId: owner.id,
-            teamId: owner.teamId,
-            qualificationDecisionId: attribution.qualificationDecisionId,
-            currency: "CNY",
-            expectedRevenueMinor: 1_288_000,
-            createdAt: "2026-08-07T07:31:00.000Z"
-          }];
-        },
-        async listOutcomes() { return outcomes; },
-        async listAuditEvents() {
-          return [{
-            id: `audit-approved-${suffix}`,
-            candidateId,
-            ownerId: owner.id,
-            teamId: owner.teamId,
-            toStatus: "approved",
-            createdAt: "2026-08-07T07:40:00.000Z"
-          }, {
-            id: `audit-converted-${suffix}`,
-            candidateId,
-            ownerId: owner.id,
-            teamId: owner.teamId,
-            toStatus: "converted_to_lead",
-            createdAt: "2026-08-07T08:00:00.000Z"
-          }];
-        }
-      } as never,
-      diagnostics: store.acquisitionOutcomeReconciliationDiagnostics,
-      checkpoints: store.acquisitionOutcomeReconciliationCheckpoints
-    });
-    const performanceApp = express();
-    performanceApp.use((request, _response, next) => {
-      (request as typeof request & { user: { id: string; teamId: string } }).user = {
-        id: owner.id,
-        name: owner.name,
-        email: owner.email,
-        role: owner.role,
-        teamId: owner.teamId,
-        avatar: owner.avatar,
-        authVersion: owner.authVersion ?? 1
-      };
-      next();
-    });
-    performanceApp.use(createAcquisitionPerformanceRouter({
-      query: performanceQuery
-    }));
-    const performanceRuntime = await listen(performanceApp as typeof app);
-    try {
-      const performance = await performanceRuntime.request(
-        "/api/v1/acquisition/performance?platform=douyin&from=2026-08-07&to=2026-08-08"
-      );
-      assert.equal(performance.response.status, 200);
-      assert.equal(performance.json.counts.won, 1);
-      assert.equal(
-        performance.json.valuesByCurrency[0]?.wonContractMinor,
-        1_288_000
-      );
-    } finally {
-      await new Promise<void>((resolve, reject) => performanceRuntime.server.close(
-        (error) => error ? reject(error) : resolve()
-      ));
-    }
+    assert.equal(won.response.status, 409);
+    assert.equal(won.json.code, "authoritative_quote_required");
+    assert.equal(boundDeal.stage, "询盘");
+    assert.deepEqual(store.dealEvents
+      .filter((item) => item.dealId === boundDeal.id
+        && ["quote", "won", "lost"].includes(item.type))
+      .map((item) => item.id), commercialEventsBefore);
+    assert.deepEqual(store.acquisitionOutcomeFeedback
+      .filter((item) => item.dealId === boundDeal.id)
+      .map((item) => item.id), feedbackBefore);
+    assert.deepEqual(await domainRepository.listOutcomes({
+      ownerId: owner.id,
+      teamId: owner.teamId
+    }, candidateId), []);
   } finally {
     await new Promise<void>((resolve, reject) => runtime.server.close(
       (error) => error ? reject(error) : resolve()
@@ -1084,11 +876,5 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
       item.leadId !== leadId);
     store.customers = store.customers.filter((item) => item.id !== customerId
       && item.id !== `${customerId}-alternate`);
-    store.acquisitionOutcomeReconciliationDiagnostics =
-      originalReconciliationState.diagnostics;
-    store.acquisitionOutcomeReconciliationCheckpoints =
-      originalReconciliationState.checkpoints;
-    store.acquisitionOutcomeReconciliationProcessedSources =
-      originalReconciliationState.processedSources;
   }
 });

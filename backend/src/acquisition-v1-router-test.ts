@@ -1326,9 +1326,7 @@ test("v1 router exposes the full evidence-to-outcome workflow without automatic 
     assert.equal(conversion.response.status, 200);
     assert.equal(conversion.json.leadId, `lead-${candidateId}`);
 
-    const outcomeResult = await fixture.request(
-      "/api/v1/acquisition/outcomes",
-      write({
+    const publicOutcomeInput = {
         candidateId,
         leadId: conversion.json.leadId,
         customerId: null,
@@ -1358,17 +1356,44 @@ test("v1 router exposes the full evidence-to-outcome workflow without automatic 
           decisionVersion: rawDecision.decisionVersion,
           decisionSnapshotHash: rawDecision.snapshotHash
         }
-      }, "outcome-contacted")
+      };
+    const outcomeResult = await fixture.request(
+      "/api/v1/acquisition/outcomes",
+      write(publicOutcomeInput, "outcome-contacted")
     );
     assert.equal(outcomeResult.response.status, 201);
     assert.equal(outcomeResult.json.recordKind, "live");
     assert.equal("snapshotHash" in outcomeResult.json, false);
+    for (const eventType of ["quoted", "won", "lost"] as const) {
+      const forbidden = await fixture.request(
+        "/api/v1/acquisition/outcomes",
+        write({ ...publicOutcomeInput, eventType }, `outcome-${eventType}`)
+      );
+      assert.equal(forbidden.response.status, 400);
+      assert.equal(forbidden.json.code, "invalid_request");
+    }
+    await fixture.domainService.recordOutcome({
+      ownerId: OWNER_A,
+      teamId: TEAM_A,
+      actorId: "acquisition-crm-reconciliation"
+    }, {
+      ...publicOutcomeInput,
+      eventType: "won",
+      amount: { amountMinor: 3_000_000, currency: "CNY" },
+      idempotencyKey: "crm:deal-event:won-router-fixture"
+    }, {
+      capability: "acquisition.outcome.reconcile.internal",
+      sourceStableKey: "deal-event:won-router-fixture"
+    });
 
     const outcomes = await fixture.request(
       `/api/v1/acquisition/outcomes?candidateId=${candidateId}`
     );
     assert.equal(outcomes.response.status, 200);
-    assert.equal(outcomes.json.items.length, 1);
+    assert.equal(outcomes.json.items.length, 2);
+    assert.equal(outcomes.json.items.some(
+      (item: { eventType: string }) => item.eventType === "won"
+    ), true);
     const audit = await fixture.request(
       `/api/v1/acquisition/audit-events?candidateId=${candidateId}`
     );

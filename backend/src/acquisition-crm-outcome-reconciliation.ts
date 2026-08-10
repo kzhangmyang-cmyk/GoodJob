@@ -4,7 +4,10 @@ import type {
   OutcomeEventType,
   OutcomeInput
 } from "./acquisition-domain.js";
-import type { AcquisitionActorScope } from "./acquisition-domain-service.js";
+import type {
+  AcquisitionActorScope,
+  AcquisitionOutcomeWriteAuthority
+} from "./acquisition-domain-service.js";
 import type {
   AcquisitionPlanRunRepository
 } from "./acquisition-plan-run-repository.js";
@@ -138,7 +141,8 @@ export interface AcquisitionCrmOutcomeReconciliationStore {
 export interface AcquisitionOutcomeRecorder {
   recordOutcome(
     scope: AcquisitionActorScope,
-    input: OutcomeInput
+    input: OutcomeInput,
+    authority?: AcquisitionOutcomeWriteAuthority
   ): Promise<unknown>;
 }
 
@@ -319,7 +323,17 @@ export class AcquisitionCrmOutcomeReconciliationService {
         result.skipped += 1;
       } else {
         try {
-          await this.#outcomeRecorder.recordOutcome(mapped.scope, mapped.input);
+          const authority = source.sourceKind === "deal_event"
+            ? {
+              capability: "acquisition.outcome.reconcile.internal" as const,
+              sourceStableKey: `deal-event:${source.event.id}`
+            }
+            : undefined;
+          await this.#outcomeRecorder.recordOutcome(
+            mapped.scope,
+            mapped.input,
+            authority
+          );
           result.reconciled += 1;
         } catch (error) {
           result.failed += 1;
@@ -366,6 +380,26 @@ export class AcquisitionCrmOutcomeReconciliationService {
     const deal = this.#store.deals.find((item) => item.id === event.dealId);
     const ownerId = event.ownerIdSnapshot || deal?.ownerId || "";
     const teamId = event.teamIdSnapshot || deal?.teamId || "";
+    const commercialAuthority = event.commercialAuthority
+      ?? "legacy_unverified";
+    const exactQuoteProjection = commercialAuthority === "quote_projection"
+      && Boolean(event.quoteCaseIdSnapshot?.trim())
+      && Boolean(event.quoteVersionIdSnapshot?.trim())
+      && /^sha256:[0-9a-f]{64}$/.test(event.commercialAmountHash ?? "")
+      && Number.isSafeInteger(event.dealAuthorityRevisionSnapshot)
+      && Number(event.dealAuthorityRevisionSnapshot) > 0;
+    if (!exactQuoteProjection) {
+      return ownerId && teamId ? { diagnostic: {
+        ownerId,
+        teamId,
+        sourceKind: "deal_event" as const,
+        sourceId: event.id,
+        candidateId: event.candidateIdSnapshot ?? null,
+        code: "commercial_authority_unverified" as const,
+        message: "DealEvent does not carry verified Quote projection authority",
+        occurredAt: event.createdAt
+      } } : null;
+    }
     const completeSnapshot = Boolean(
       event.ownerIdSnapshot
       && event.teamIdSnapshot

@@ -78,6 +78,7 @@ export interface LeadConversionPort {
 
 export type AcquisitionDomainErrorCode =
   | "invalid_request"
+  | "capability_forbidden"
   | "resource_not_found"
   | "idempotency_conflict"
   | "identity_conflict"
@@ -87,6 +88,13 @@ export type AcquisitionDomainErrorCode =
   | "evidence_required"
   | "stale_decision"
   | "conversion_failed";
+
+export interface AcquisitionOutcomeWriteAuthority {
+  capability: "acquisition.outcome.reconcile.internal";
+  sourceStableKey: string;
+}
+
+const COMMERCIAL_OUTCOMES = new Set(["quoted", "won", "lost"] as const);
 
 export class AcquisitionDomainError extends Error {
   constructor(
@@ -2000,9 +2008,21 @@ export class AcquisitionDomainService {
 
   async recordOutcome(
     scope: AcquisitionActorScope,
-    raw: OutcomeInput
+    raw: OutcomeInput,
+    authority?: AcquisitionOutcomeWriteAuthority
   ) {
     this.validateScope(scope);
+    if (COMMERCIAL_OUTCOMES.has(
+      raw.eventType as "quoted" | "won" | "lost"
+    ) && (authority?.capability
+      !== "acquisition.outcome.reconcile.internal"
+      || !authority.sourceStableKey.trim())) {
+      fail(
+        "capability_forbidden",
+        "商业结果只能由 CRM Reconciler 写入",
+        403
+      );
+    }
     validateOutcomeAttribution(raw.attribution);
     return this.idempotent(
       scope,

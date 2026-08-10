@@ -270,6 +270,7 @@ export interface AcquisitionOutcomeReconciliationDiagnostic {
     | "attribution_invalid"
     | "attribution_cross_tenant"
     | "deal_binding_ambiguous"
+    | "commercial_authority_unverified"
     | "outcome_write_failed";
   message: string;
   occurredAt: string;
@@ -2577,6 +2578,11 @@ export interface DealEvent {
   candidateIdSnapshot: string | null;
   amountMinorSnapshot: number | null;
   currencySnapshot: string | null;
+  commercialAuthority?: "legacy_unverified" | "quote_projection";
+  quoteCaseIdSnapshot?: string | null;
+  quoteVersionIdSnapshot?: string | null;
+  commercialAmountHash?: `sha256:${string}` | null;
+  dealAuthorityRevisionSnapshot?: number | null;
   fromStage?: Deal["stage"];
   toStage?: Deal["stage"];
   nextAction?: string;
@@ -2710,6 +2716,11 @@ export interface TradeDocument {
   customerId: string;
   dealId: string;
   revision: number;
+  commercialAuthority?: "legacy_unverified" | "quote_projection";
+  quoteCaseId?: string;
+  quoteVersionId?: string;
+  commercialAmountHash?: `sha256:${string}`;
+  dealAuthorityRevision?: number;
   type: "PI" | "CI" | "CUSTOMS";
   title: string;
   number: string;

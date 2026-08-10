@@ -12,6 +12,15 @@ import {
   acquisitionApiRateLimitHandler
 } from "./acquisition-api-error-response.js";
 import {
+  resolveTrustedAcquisitionDealBinding
+} from "./acquisition-deal-binding.js";
+import {
+  assertLegacyCommercialWriteAllowed,
+  CommercialAuthorityError,
+  type CommercialAuthorityAction,
+  type QuoteProjectedDocumentAuthorityValidator
+} from "./commercial-authority-guard.js";
+import {
   AI_MODEL_TIMEOUT_MS,
   aiGenerateLeads,
   callAiModel,
@@ -101,6 +110,11 @@ import {
 import {
   GrowthCommercialRuntimeBridge
 } from "./growth-commercial-runtime-bridge.js";
+import {
+  capabilitiesForHumanRole,
+  GROWTH_CAPABILITY_REGISTRY_VERSION
+} from "./growth-capabilities.js";
+import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import { loadGrowthContractRelease } from "./growth-openapi.js";
 import {
   listTradeObservations,
@@ -245,9 +259,8 @@ import {
   normalizeWebsiteReference,
   withProspectVerificationReport
 } from "./prospect-verification.js";
-import type { AcquisitionCustomerHandoff, AiModelConfig, CommissionCalculation, CommissionItem, CommissionProduct, CommissionRule, Customer, CustomerIntelligenceFieldKey, Deal, DealEvent, Exam, ExamAttempt, ExamQuestion, Lead, LeadSourceEvent, LeadSourceType, MonthlySalesRecord, OcrJob, PlanTask, PlanTemplate, ProspectOutreachChannel, ProviderCatalogItem, ProviderConnection, ProviderEvidenceSnapshot, SalesRecordAudit, SessionUser, Todo, TradeDocument, TradeDocumentAudit, TradeDocumentSendRecord, WebsiteOpportunity } from "./types.js";
+import type { AiModelConfig, CommissionCalculation, CommissionItem, CommissionProduct, CommissionRule, Customer, CustomerIntelligenceFieldKey, Deal, DealEvent, Exam, ExamAttempt, ExamQuestion, Lead, LeadSourceEvent, LeadSourceType, MonthlySalesRecord, OcrJob, PlanTask, PlanTemplate, ProspectOutreachChannel, ProviderCatalogItem, ProviderConnection, ProviderEvidenceSnapshot, SalesRecordAudit, SessionUser, Todo, TradeDocument, TradeDocumentAudit, TradeDocumentSendRecord, WebsiteOpportunity } from "./types.js";
 import type { CompanyProfile } from "./types.js";
-import type { OutcomeAttributionInput } from "./acquisition-domain.js";
 
 loadLocalEnv();
 
@@ -255,6 +268,50 @@ export const app = express();
 let activeProspectWorkerService: ProspectWorkerService | null = null;
 const acquisitionRuntimeBridge = new AcquisitionRuntimeBridge();
 const growthRuntimeBridge = new GrowthCommercialRuntimeBridge();
+let quoteProjectedDocumentAuthority:
+  QuoteProjectedDocumentAuthorityValidator | undefined;
+
+export function installLegacyCommercialAuthorityProjection(
+  validator: QuoteProjectedDocumentAuthorityValidator | undefined
+) {
+  quoteProjectedDocumentAuthority = validator;
+  return () => {
+    if (quoteProjectedDocumentAuthority === validator) {
+      quoteProjectedDocumentAuthority = undefined;
+    }
+  };
+}
+
+function legacyCommercialWorkspaceContext(req: Request): ActiveWorkspaceContext {
+  const user = req.user!;
+  const requested = String(req.header("X-Workspace-Id") || "").trim();
+  const workspaceId = requested || user.teamId;
+  return Object.freeze({
+    workspaceId,
+    kind: workspaceId === `personal:${user.id}` ? "personal" : "team",
+    actorId: user.id,
+    role: user.role,
+    teamId: user.teamId,
+    capabilities: capabilitiesForHumanRole(user.role),
+    capabilityRegistryVersion: GROWTH_CAPABILITY_REGISTRY_VERSION
+  });
+}
+
+async function assertLegacyRouteAllowed(
+  req: Request,
+  store: Pick<CrmStore, "acquisitionCustomerHandoffs" | "leads">,
+  dealId: string,
+  action: CommercialAuthorityAction,
+  document?: TradeDocument
+) {
+  await assertLegacyCommercialWriteAllowed(
+    store,
+    legacyCommercialWorkspaceContext(req),
+    dealId,
+    action,
+    { document, projectedDocumentAuthority: quoteProjectedDocumentAuthority }
+  );
+}
 
 async function synchronizeProspectQueue() {
   try {
@@ -2199,86 +2256,6 @@ function customerGradeFromHealth(health: number) {
   if (health >= 70) return "B" as const;
   if (health >= 55) return "C" as const;
   return "D" as const;
-}
-
-type TrustedAcquisitionDealBinding = {
-  handoff: AcquisitionCustomerHandoff;
-  lead: Lead;
-};
-
-type AcquisitionDealBindingLookup = {
-  handoffId: string;
-  leadId: string;
-  ownerId: string;
-  teamId: string;
-  customerId: string;
-} | {
-  dealId: string;
-};
-
-function isTrustedAcquisitionAttribution(
-  value: unknown
-): value is OutcomeAttributionInput {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const attribution = value as Record<string, unknown>;
-  const requiredTextFields = [
-    "runId",
-    "planId",
-    "planVersionId",
-    "planSnapshotHash",
-    "discoveredEventId",
-    "discoveredAt",
-    "shardId",
-    "operationId",
-    "connectionId",
-    "providerId",
-    "strategyVersion",
-    "qualificationDecisionId",
-    "decisionVersion",
-    "decisionSnapshotHash"
-  ];
-  const stringListFields = ["evidenceIds", "providerIds", "queryIds"];
-  return attribution.attributionVersion === "acquisition-run.v1"
-    && requiredTextFields.every((field) =>
-      typeof attribution[field] === "string"
-      && Boolean(String(attribution[field]).trim()))
-    && Number.isSafeInteger(attribution.planVersion)
-    && Number(attribution.planVersion) > 0
-    && Number.isFinite(Date.parse(String(attribution.discoveredAt)))
-    && stringListFields.every((field) =>
-      Array.isArray(attribution[field])
-      && (attribution[field] as unknown[]).every((item) =>
-        typeof item === "string" && Boolean(item.trim())));
-}
-
-function resolveTrustedAcquisitionDealBinding(
-  store: CrmStore,
-  lookup: AcquisitionDealBindingLookup
-): TrustedAcquisitionDealBinding | null {
-  const handoffs = store.acquisitionCustomerHandoffs.filter((handoff) =>
-    "dealId" in lookup
-      ? handoff.dealId === lookup.dealId
-      : handoff.id === lookup.handoffId
-        && handoff.leadId === lookup.leadId
-        && handoff.ownerId === lookup.ownerId
-        && handoff.teamId === lookup.teamId
-        && handoff.customerId === lookup.customerId);
-  if (handoffs.length !== 1) return null;
-  const handoff = handoffs[0];
-  if (!isTrustedAcquisitionAttribution(handoff.acquisitionAttribution)
-    || handoff.acquisitionAttribution.decisionVersion !== handoff.decisionVersion) {
-    return null;
-  }
-  const leads = store.leads.filter((lead) =>
-    lead.id === handoff.leadId
-    && lead.ownerId === handoff.ownerId
-    && lead.teamId === handoff.teamId
-    && lead.convertedCustomerId === handoff.customerId
-    && lead.externalId === handoff.candidateId);
-  if (leads.length !== 1) return null;
-  const lead = leads[0];
-  if ("dealId" in lookup && lead.convertedDealId !== lookup.dealId) return null;
-  return { handoff, lead };
 }
 
 function customerWithPipeline(customer: Customer) {
@@ -4231,7 +4208,11 @@ app.get("/api/deals", requireAuth, (req, res) => {
   const events = dealEvents
     .filter((event) => ids.has(event.dealId))
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-    .map((event) => ({ ...event, operatorName: users.find((user) => user.id === event.operatorId)?.name || "未知操作人" }));
+    .map((event) => ({
+      ...normalizeDealEventAuthority(event),
+      operatorName: users.find((user) => user.id === event.operatorId)?.name
+        || "未知操作人"
+    }));
   res.json({ deals: scoped, events });
 });
 
@@ -4261,6 +4242,18 @@ function calculatedDealAmount(body: { amount?: number; quantity: number; unitPri
   return Math.round(body.quantity * body.unitPrice * 100) / 100;
 }
 
+function normalizeDealEventAuthority(event: DealEvent): DealEvent {
+  return {
+    ...event,
+    commercialAuthority: event.commercialAuthority ?? "legacy_unverified",
+    quoteCaseIdSnapshot: event.quoteCaseIdSnapshot ?? null,
+    quoteVersionIdSnapshot: event.quoteVersionIdSnapshot ?? null,
+    commercialAmountHash: event.commercialAmountHash ?? null,
+    dealAuthorityRevisionSnapshot:
+      event.dealAuthorityRevisionSnapshot ?? null
+  };
+}
+
 function createDealEvent(input: Omit<
   DealEvent,
   | "id"
@@ -4283,6 +4276,11 @@ function createDealEvent(input: Omit<
   const currency = deal?.currency.trim().toUpperCase() ?? "";
   const event: DealEvent = {
     ...input,
+    commercialAuthority: "legacy_unverified",
+    quoteCaseIdSnapshot: null,
+    quoteVersionIdSnapshot: null,
+    commercialAmountHash: null,
+    dealAuthorityRevisionSnapshot: null,
     ownerIdSnapshot: binding?.handoff.ownerId ?? deal?.ownerId ?? null,
     teamIdSnapshot: binding?.handoff.teamId ?? deal?.teamId ?? null,
     customerIdSnapshot: binding?.handoff.customerId ?? deal?.customerId ?? null,
@@ -4609,6 +4607,18 @@ app.patch("/api/deals/:id", requireAuth, asyncRoute(async (req, res) => {
     return;
   }
   if (!ensureDealCustomerWritable(req.user!, deal, res)) return;
+  const commercialChanged = body.customerId !== deal.customerId
+    || body.title !== deal.title
+    || body.product !== deal.product
+    || body.quantity !== deal.quantity
+    || body.unitPrice !== deal.unitPrice
+    || calculatedDealAmount(body) !== deal.amount
+    || body.currency !== deal.currency;
+  if (commercialChanged) {
+    await assertLegacyRouteAllowed(
+      req, store, deal.id, "deal_commercial_patch"
+    );
+  }
   const acquisitionHandoff = store.acquisitionCustomerHandoffs.find((item) =>
     item.dealId === deal.id);
   if (acquisitionHandoff && body.customerId !== acquisitionHandoff.customerId) {
@@ -4706,6 +4716,14 @@ app.patch("/api/deals/:id/stage", requireAuth, asyncRoute(async (req, res) => {
     res.status(400).json({ message: "确认成交必须填写客户确认依据" });
     return;
   }
+  if (body.stage === "成交" || (fromIndex < 2 && toIndex >= 2)) {
+    await assertLegacyRouteAllowed(
+      req,
+      store,
+      deal.id,
+      body.stage === "成交" ? "deal_won" : "deal_quote_event"
+    );
+  }
   const fromStage = deal.stage;
   const now = new Date().toISOString();
   deal.stage = body.stage;
@@ -4760,6 +4778,9 @@ app.post("/api/deals/:id/events", requireAuth, asyncRoute(async (req, res) => {
   if (deal.archivedAt) {
     res.status(400).json({ message: "已归档商机不能记录新进展" });
     return;
+  }
+  if (body.type === "quote") {
+    await assertLegacyRouteAllowed(req, store, deal.id, "deal_quote_event");
   }
   deal.nextAction = body.nextAction;
   deal.nextActionAt = body.nextActionAt;
@@ -4826,6 +4847,7 @@ app.post("/api/deals/:id/lost", requireAuth, asyncRoute(async (req, res) => {
     res.status(400).json({ message: "成交商机请归档，不能标记丢单" });
     return;
   }
+  await assertLegacyRouteAllowed(req, store, deal.id, "deal_lost");
   const fromStage = deal.stage;
   const now = new Date().toISOString();
   deal.stage = "丢单";
@@ -6905,6 +6927,12 @@ function normalizeDocument(body: z.infer<typeof documentBodySchema>, user: Sessi
   return {
     ...body,
     id: existing?.id || `td_${Date.now()}`,
+    commercialAuthority: existing?.commercialAuthority
+      ?? "legacy_unverified",
+    quoteCaseId: existing?.quoteCaseId,
+    quoteVersionId: existing?.quoteVersionId,
+    commercialAmountHash: existing?.commercialAmountHash,
+    dealAuthorityRevision: existing?.dealAuthorityRevision,
     customerId: body.customerId || existing?.customerId || "",
     dealId: body.dealId || existing?.dealId || "",
     revision: body.revision || existing?.revision || 1,
@@ -6918,6 +6946,13 @@ function normalizeDocument(body: z.infer<typeof documentBodySchema>, user: Sessi
     sendRecords: existing?.sendRecords || [],
     updatedAt: new Date().toISOString(),
     items: body.items.map((item, index) => ({ ...item, id: item.id || `tdi_${Date.now()}_${index}` }))
+  };
+}
+
+function normalizeTradeDocumentAuthority(document: TradeDocument): TradeDocument {
+  return {
+    ...document,
+    commercialAuthority: document.commercialAuthority ?? "legacy_unverified"
   };
 }
 
@@ -6948,7 +6983,11 @@ function documentBusinessDefaults(customer?: Customer) {
 
 app.get("/api/trade-documents", requireAuth, (req, res) => {
   const { tradeDocuments } = getStore();
-  const documents = tradeDocuments.filter((document) => canSeeOwner(req.user!, document.ownerId, document.teamId));
+  const documents = tradeDocuments
+    .filter((document) => canSeeOwner(
+      req.user!, document.ownerId, document.teamId
+    ))
+    .map(normalizeTradeDocumentAuthority);
   res.json({ documents });
 });
 
@@ -6969,6 +7008,9 @@ app.post("/api/trade-documents", requireAuth, asyncRoute(async (req, res) => {
   if (deal && body.customerId && deal.customerId !== body.customerId) {
     res.status(400).json({ message: "单据客户与商机关联客户不一致" });
     return;
+  }
+  if (deal && body.type === "PI") {
+    await assertLegacyRouteAllowed(req, store, deal.id, "pi_create");
   }
   const defaults = documentBusinessDefaults(customer);
   const completedBody = {
@@ -7016,6 +7058,11 @@ app.patch("/api/trade-documents/:id", requireAuth, asyncRoute(async (req, res) =
     res.status(403).json({ message: "只有单据创建人或管理员可以修改单据内容" });
     return;
   }
+  if (existing.type === "PI" && existing.dealId) {
+    await assertLegacyRouteAllowed(
+      req, store, existing.dealId, "pi_commercial_patch", existing
+    );
+  }
   if (existing.status === "approved" || existing.status === "exported") {
     res.status(409).json({ message: "已审批或已导出的单据不能直接覆盖，请先另存新版本" });
     return;
@@ -7048,6 +7095,11 @@ app.post("/api/trade-documents/:id/revision", requireAuth, asyncRoute(async (req
     res.status(404).json({ message: "单据不存在" });
     return;
   }
+  if (source.type === "PI" && source.dealId) {
+    await assertLegacyRouteAllowed(
+      req, store, source.dealId, "pi_revision", source
+    );
+  }
   const revision = Math.max(0, ...store.tradeDocuments
     .filter((item) => item.number.split("-R")[0] === source.number.split("-R")[0] && item.type === source.type)
     .map((item) => item.revision || 1)) + 1;
@@ -7058,6 +7110,11 @@ app.post("/api/trade-documents/:id/revision", requireAuth, asyncRoute(async (req
     number: `${baseNumber}-R${revision}`,
     title: `${source.title.replace(/\s+v\d+$/, "")} v${revision}`,
     revision,
+    commercialAuthority: "legacy_unverified",
+    quoteCaseId: undefined,
+    quoteVersionId: undefined,
+    commercialAmountHash: undefined,
+    dealAuthorityRevision: undefined,
     status: "draft",
     approvalNote: "",
     approvedAt: undefined,
@@ -7083,6 +7140,11 @@ app.post("/api/trade-documents/:id/submit-approval", requireAuth, asyncRoute(asy
     res.status(403).json({ message: "只有单据创建人或管理员可以提交审批" });
     return;
   }
+  if (document.type === "PI" && document.dealId) {
+    await assertLegacyRouteAllowed(
+      req, store, document.dealId, "pi_submit_approval", document
+    );
+  }
   if (!["draft", "ready", "rejected"].includes(document.status)) {
     res.status(400).json({ message: "当前单据状态不能提交审批" });
     return;
@@ -7106,6 +7168,11 @@ app.post("/api/trade-documents/:id/approve", requireAuth, asyncRoute(async (req,
   if (!document || !canSeeOwner(req.user!, document.ownerId, document.teamId)) {
     res.status(404).json({ message: "单据不存在" });
     return;
+  }
+  if (document.type === "PI" && document.dealId) {
+    await assertLegacyRouteAllowed(
+      req, store, document.dealId, "pi_approve", document
+    );
   }
   if (document.status !== "pending_approval") {
     res.status(400).json({ message: "只有待审批单据可以审批通过" });
@@ -7138,6 +7205,11 @@ app.post("/api/trade-documents/:id/reject", requireAuth, asyncRoute(async (req, 
     res.status(404).json({ message: "单据不存在" });
     return;
   }
+  if (document.type === "PI" && document.dealId) {
+    await assertLegacyRouteAllowed(
+      req, store, document.dealId, "pi_commercial_patch", document
+    );
+  }
   if (document.status !== "pending_approval") {
     res.status(400).json({ message: "只有待审批单据可以驳回" });
     return;
@@ -7164,6 +7236,11 @@ app.post("/api/trade-documents/:id/send", requireAuth, asyncRoute(async (req, re
   if (!document || !canSeeOwner(req.user!, document.ownerId, document.teamId)) {
     res.status(404).json({ message: "单据不存在" });
     return;
+  }
+  if (document.type === "PI" && document.dealId) {
+    await assertLegacyRouteAllowed(
+      req, store, document.dealId, "pi_send", document
+    );
   }
   if (!["approved", "exported"].includes(document.status)) {
     res.status(409).json({ message: "单据审批通过后才能记录发送" });
@@ -7195,6 +7272,11 @@ app.post("/api/trade-documents/:id/export", requireAuth, asyncRoute(async (req, 
   if (!document || !canSeeOwner(req.user!, document.ownerId, document.teamId)) {
     res.status(404).json({ message: "单据不存在" });
     return;
+  }
+  if (document.type === "PI" && document.dealId) {
+    await assertLegacyRouteAllowed(
+      req, store, document.dealId, "pi_export", document
+    );
   }
   if (!["approved", "exported"].includes(document.status)) {
     res.status(409).json({ message: "单据审批通过后才能导出正式 PDF" });
@@ -11872,6 +11954,13 @@ registerSwagger(app);
 
 app.use(acquisitionApiErrorMiddleware);
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  if (error instanceof CommercialAuthorityError) {
+    res.status(error.status).json({
+      code: error.code,
+      message: error.message
+    });
+    return;
+  }
   if (error instanceof z.ZodError) {
     res.status(400).json({ message: "参数格式错误", issues: error.issues });
     return;
@@ -11963,6 +12052,9 @@ async function startServer() {
       composition: foundation.composition
     });
     growthRuntimeBridge.install(growthRuntime);
+    installLegacyCommercialAuthorityProjection(
+      growthRuntime.integrations.quoteProjectedDocumentAuthority
+    );
     const acquisitionRuntime = await createAcquisitionApplication({
       store,
       masterSecret: resolveAcquisitionMasterSecret({

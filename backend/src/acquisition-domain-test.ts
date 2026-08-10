@@ -1065,12 +1065,25 @@ test("live outcomes are append-only, idempotent, attributed, and tenant isolated
         decisionVersion: qualified.qualification.decisionVersion,
         decisionSnapshotHash: qualified.qualification.snapshotHash
       }
-    } as never),
+    } as never, {
+      capability: "acquisition.outcome.reconcile.internal",
+      sourceStableKey: "deal-event:incomplete-attribution"
+    }),
     (error: unknown) => error instanceof AcquisitionDomainError
       && error.code === "invalid_request"
   );
-  const first = await service.recordOutcome(ownerScope, outcomeInput);
-  const replay = await service.recordOutcome(ownerScope, outcomeInput);
+  await assert.rejects(
+    service.recordOutcome(ownerScope, outcomeInput),
+    (error: unknown) => error instanceof AcquisitionDomainError
+      && error.code === "capability_forbidden"
+      && error.status === 403
+  );
+  const authority = {
+    capability: "acquisition.outcome.reconcile.internal" as const,
+    sourceStableKey: "deal-event:event-won"
+  };
+  const first = await service.recordOutcome(ownerScope, outcomeInput, authority);
+  const replay = await service.recordOutcome(ownerScope, outcomeInput, authority);
   assert.equal(replay.id, first.id);
   assert.equal(first.recordKind, "live");
   assert.equal(first.attribution.ruleVersion, "qualification-rules.v1");
@@ -1081,7 +1094,7 @@ test("live outcomes are append-only, idempotent, attributed, and tenant isolated
       ...outcomeInput,
       idempotencyKey: "outcome:negative-amount",
       amount: { amountMinor: -1, currency: "CNY" }
-    }),
+    }, authority),
     (error: unknown) => error instanceof AcquisitionDomainError
       && error.code === "invalid_request"
   );

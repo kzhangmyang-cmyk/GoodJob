@@ -102,6 +102,9 @@ import {
   AcquisitionCandidateRunAttributionResolver,
   AcquisitionCrmOutcomeReconciliationService
 } from "./acquisition-crm-outcome-reconciliation.js";
+import type {
+  QuoteProjectedDocumentAuthorityValidator
+} from "./commercial-authority-guard.js";
 import {
   AcquisitionCrmOutcomeReconciliationWorker
 } from "./acquisition-crm-outcome-reconciliation-worker.js";
@@ -325,7 +328,7 @@ export interface CreateAcquisitionApplicationOptions {
   growthToolPorts: GrowthCommercialToolPorts;
   acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
   growthTemporalBarrier: GrowthTemporalBarrier;
-  quoteProjectedDocumentAuthority?: never;
+  quoteProjectedDocumentAuthority?: QuoteProjectedDocumentAuthorityValidator;
   databaseUrl?: string;
   searchPort?: SearchPublicSourcesPort;
   contentFetcher?: AcquisitionContentFetcherPort;
