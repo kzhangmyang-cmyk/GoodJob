@@ -19,7 +19,7 @@ test("growth release derives the version directory and never overwrites differen
     const second = path.join(secondRoot, secondManifest.contractVersion);
     const bytes = await readFile(path.join(first, "openapi.json"));
     const expectedHash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-    assert.equal(firstManifest.contractVersion, "1.0.1");
+    assert.equal(firstManifest.contractVersion, "1.0.2");
     assert.equal(firstManifest.contractHash, expectedHash);
     assert.deepEqual(firstManifest, secondManifest);
     assert.deepEqual(bytes, await readFile(path.join(second, "openapi.json")));
@@ -33,13 +33,13 @@ test("growth release derives the version directory and never overwrites differen
     );
     await assert.rejects(
       buildGrowthContractRelease({ input, releasesRoot: firstRoot }),
-      /immutable growth contract release collision for 1\.0\.1/u
+      /immutable growth contract release collision for 1\.0\.2/u
     );
     await writeFile(path.join(first, "manifest.json"), committedManifestBytes);
     await writeFile(path.join(first, "openapi.json"), "{}\n", "utf8");
     await assert.rejects(
       buildGrowthContractRelease({ input, releasesRoot: firstRoot }),
-      /immutable growth contract release collision for 1\.0\.1/u
+      /immutable growth contract release collision for 1\.0\.2/u
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -59,6 +59,17 @@ test("publishing a successor preserves the immutable 1.0.0 release bytes", async
     createHash("sha256").update(manifest).digest("hex"),
     "85ac612f8ac8b933786b642579141d5545b5b713262cd2681c4dc6eaef62efe0"
   );
+});
+
+test("publishing 1.0.2 preserves the immutable 1.0.1 release bytes", async () => {
+  const release = new URL("../releases/growth-advisor-quote-roi/1.0.1/",
+    import.meta.url);
+  assert.equal(createHash("sha256").update(
+    await readFile(new URL("openapi.json", release))).digest("hex"),
+  "a535375d2d7c83d9454fa17ce5178bb2d5fb1ac875747e6466979bd1991692fe");
+  assert.equal(createHash("sha256").update(
+    await readFile(new URL("manifest.json", release))).digest("hex"),
+  "d3008bf5d84d4583c38740605808cfa70e6d717db64534cb13dd68110def13ed");
 });
 
 test("growth release resolves YAML merges into a valid OpenAPI document", async () => {

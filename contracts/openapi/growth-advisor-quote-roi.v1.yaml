@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoodJob Growth Advisor, Quote and ROI API
-  version: 1.0.1
+  version: 1.0.2
 servers:
   - url: /
 

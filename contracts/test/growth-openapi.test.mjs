@@ -708,6 +708,29 @@ test("fix round 1 sensitive resources publish closed full and redacted projectio
   assert.equal(validateQuote(leakedLineCost), false);
 });
 
+// Production break caught: forcing a submit-time probability authority onto a
+// draft, or allowing a formal lifecycle state without its frozen assessment.
+test("QuoteVersion probability authority follows the lifecycle state", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("quote-version");
+  assert.ok(validate);
+
+  for (const fixture of [quoteVersionFullFixture, quoteVersionRedactedFixture]) {
+    const draft = { ...fixture(), status: "draft",
+      probabilityAssessmentSnapshot: null };
+    assert.equal(validate(draft), true, JSON.stringify(validate.errors));
+
+    const draftWithAuthority = { ...draft,
+      probabilityAssessmentSnapshot: probabilityAssessmentFixture() };
+    assert.equal(validate(draftWithAuthority), false);
+
+    const submitted = { ...fixture(), status: "submitted" };
+    assert.equal(validate(submitted), true, JSON.stringify(validate.errors));
+    assert.equal(validate({ ...submitted,
+      probabilityAssessmentSnapshot: null }), false);
+  }
+});
+
 // Production break caught: returning an untyped empty object from any successful Growth operation.
 test("fix round 1 every operation has a concrete closed success response", async () => {
   const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");

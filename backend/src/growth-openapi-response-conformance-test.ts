@@ -9,6 +9,9 @@ import { loadGrowthContractRelease } from "./growth-openapi.js";
 import {
   assertCatalogRuntimeResponsesConform
 } from "./catalog-runtime-response-conformance-test.js";
+import {
+  assertQuoteRuntimeResponsesConform
+} from "./quote-runtime-response-conformance-test.js";
 
 test("runtime bootstrap responses conform to GrowthBootstrapResponse", async () => {
   const release = loadGrowthContractRelease();
@@ -71,4 +74,9 @@ test("runtime bootstrap responses conform to GrowthBootstrapResponse", async () 
 test(
   "central Growth response suite validates released Catalog operations",
   assertCatalogRuntimeResponsesConform
+);
+
+test(
+  "central Growth response suite validates released Quote operations",
+  assertQuoteRuntimeResponsesConform
 );

@@ -86,6 +86,20 @@
     "FullProjection": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": ["status"],
+            "properties": { "status": { "const": "draft" } }
+          },
+          "then": {
+            "properties": { "probabilityAssessmentSnapshot": { "type": "null" } }
+          },
+          "else": {
+            "properties": { "probabilityAssessmentSnapshot": { "$ref": "#/$defs/ProbabilityAssessmentSnapshot" } }
+          }
+        }
+      ],
       "required": ["amountVisibility", "id", "workspaceId", "quoteCaseId", "version", "lifecycleRevision", "currency", "lineItems", "customerTargetPriceMinor", "discountMinor", "surchargeMinor", "requiredSurchargeMinor", "paymentTerms", "giftItems", "listAmountMinor", "netProductAmountMinor", "quotedAmountMinor", "estimatedFulfillmentCostMinor", "estimatedSalesCostMinor", "estimatedServiceCostMinor", "estimatedGrossProfitMinor", "estimatedContributionMinor", "discountBps", "grossMarginBps", "approvalReasons", "pricingPolicySnapshot", "probabilityAssessmentSnapshot", "previewIdentity", "commercialAmountHash", "status", "createdBy", "createdAt"],
       "properties": {
         "amountVisibility": { "const": "full" },
@@ -114,7 +128,7 @@
         "grossMarginBps": { "$ref": "#/$defs/signed" },
         "approvalReasons": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "pricingPolicySnapshot": { "$ref": "pricing-policy-version.v1.schema.json#/$defs/FullProjection" },
-        "probabilityAssessmentSnapshot": { "$ref": "#/$defs/ProbabilityAssessmentSnapshot" },
+        "probabilityAssessmentSnapshot": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/ProbabilityAssessmentSnapshot" }] },
         "previewIdentity": { "$ref": "quote-case.v1.schema.json#/$defs/QuotePreviewIdentity" },
         "commercialAmountHash": { "$ref": "#/$defs/hash" },
         "status": { "enum": ["draft", "submitted", "approved", "rejected", "superseded", "expired"] },
@@ -125,6 +139,20 @@
     "RedactedProjection": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": ["status"],
+            "properties": { "status": { "const": "draft" } }
+          },
+          "then": {
+            "properties": { "probabilityAssessmentSnapshot": { "type": "null" } }
+          },
+          "else": {
+            "properties": { "probabilityAssessmentSnapshot": { "$ref": "#/$defs/ProbabilityAssessmentSnapshot" } }
+          }
+        }
+      ],
       "required": ["amountVisibility", "id", "workspaceId", "quoteCaseId", "version", "lifecycleRevision", "currency", "lineItems", "customerTargetPriceMinor", "discountMinor", "surchargeMinor", "requiredSurchargeMinor", "paymentTerms", "giftItems", "listAmountMinor", "netProductAmountMinor", "quotedAmountMinor", "discountBps", "approvalReasons", "probabilityAssessmentSnapshot", "previewIdentity", "commercialAmountHash", "status", "createdBy", "createdAt"],
       "properties": {
         "amountVisibility": { "const": "redacted" },
@@ -146,7 +174,7 @@
         "quotedAmountMinor": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
         "discountBps": { "$ref": "#/$defs/bps" },
         "approvalReasons": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "probabilityAssessmentSnapshot": { "$ref": "#/$defs/ProbabilityAssessmentSnapshot" },
+        "probabilityAssessmentSnapshot": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/ProbabilityAssessmentSnapshot" }] },
         "previewIdentity": { "$ref": "quote-case.v1.schema.json#/$defs/QuotePreviewIdentity" },
         "commercialAmountHash": { "$ref": "#/$defs/hash" },
         "status": { "enum": ["draft", "submitted", "approved", "rejected", "superseded", "expired"] },

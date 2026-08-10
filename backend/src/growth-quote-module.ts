@@ -64,6 +64,10 @@ import {
   DealCommercialDecisionService,
   type DealCommercialDecisionInput
 } from "./deal-commercial-decision-service.js";
+import {
+  createQuoteRouter,
+  QuotePublicationService
+} from "./quote-router.js";
 
 export const GROWTH_PROBABILITY_ASSESSMENTS =
   defineGrowthPrivateServiceKey<ProbabilityAssessmentPersistence>(
@@ -481,14 +485,24 @@ export function createGrowthQuoteModule(
             GROWTH_QUOTE_AUTHORITY_READERS,
             resources.quote.authorityReaders
           );
-          mountQuoteVersionRoutes(input.router, resources.quote.quoteVersions,
-            foundation);
-          mountQuoteApprovalRoutes(input.router, resources.quote.quoteApprovals,
-            foundation);
-          if (resources.quote.dealDecisions) {
-            mountDealDecisionRoutes(input.router,
-              resources.quote.dealDecisions, foundation);
-          }
+          input.router.use(createQuoteRouter({
+            cases: resources.quote.quoteCases,
+            versions: resources.quote.quoteVersions,
+            approvals: resources.quote.quoteApprovals,
+            publications: new QuotePublicationService({
+              repository: resources.quote.repository,
+              httpIdempotency: foundation.httpIdempotency
+            }),
+            decisions: resources.quote.dealDecisions ?? {
+              async decide(): Promise<never> {
+                throw new GrowthHttpError(409,
+                  "quote_deal_decision_unavailable");
+              }
+            } as never,
+            workspaceContext: foundation.workspaceContext,
+            commandContextFactory: foundation.commandContextFactory,
+            temporalBarrier: foundation.temporalBarrier
+          }));
         }
         const validator = resources.quoteProjectedDocumentAuthority
           ?? Object.freeze({
