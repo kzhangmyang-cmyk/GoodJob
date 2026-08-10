@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   CatalogItem,
   CommissionCatalogMigrationItemResult,
@@ -46,6 +47,132 @@ export interface CatalogRepository {
   commitCommissionCatalogMigration(
     commit: CommissionCatalogMigrationCommit
   ): Promise<CommissionCatalogMigrationRun>;
+}
+
+function invalidMigrationCommit(): Error & { code: string } {
+  return Object.assign(new Error("invalid_commission_catalog_migration_commit"), {
+    code: "invalid_commission_catalog_migration_commit"
+  });
+}
+
+function concreteToken(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const token = value.trim();
+  return token !== "" && token === value && token !== "all";
+}
+
+function sha256(bytes: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function validSnapshot(value: unknown): boolean {
+  if (!Array.isArray(value) || typeof value[0] !== "string") return false;
+  const [tag, payload] = value;
+  if (["null", "undefined", "hole"].includes(tag)) return value.length === 1;
+  if (tag === "boolean") return value.length === 2 && typeof payload === "boolean";
+  if (["number", "string", "bigint", "date"].includes(tag)) {
+    return value.length === 2 && typeof payload === "string";
+  }
+  if (tag === "array") {
+    return value.length === 2 && Array.isArray(payload) && payload.every(validSnapshot);
+  }
+  if (tag === "object" && value.length === 2 && Array.isArray(payload)) {
+    let previous: string | null = null;
+    for (const entry of payload) {
+      if (!Array.isArray(entry) || entry.length !== 2
+        || typeof entry[0] !== "string" || !validSnapshot(entry[1])) return false;
+      if (previous !== null && previous >= entry[0]) return false;
+      previous = entry[0];
+    }
+    return true;
+  }
+  return false;
+}
+
+export function assertCommissionCatalogMigrationCommitInvariant(
+  commit: CommissionCatalogMigrationCommit
+): void {
+  const { run, entries } = commit;
+  if (!run || !Array.isArray(entries)
+    || !concreteToken(run.workspaceId) || !concreteToken(run.id)
+    || !concreteToken(run.actorId) || !concreteToken(run.idempotencyKey)
+    || run.status !== "completed"
+    || !Number.isFinite(Date.parse(run.startedAt))
+    || !Number.isFinite(Date.parse(run.completedAt))
+    || !Array.isArray(run.items)) throw invalidMigrationCommit();
+  if (![run.scanned, run.migrated, run.repairRequired].every((value) =>
+    Number.isSafeInteger(value) && value >= 0)) throw invalidMigrationCommit();
+  if (run.scanned !== run.items.length
+    || run.migrated + run.repairRequired !== run.scanned) {
+    throw invalidMigrationCommit();
+  }
+  const resultByProduct = new Map<string, CommissionCatalogMigrationItemResult>();
+  let migrated = 0;
+  for (const result of run.items) {
+    if (result.workspaceId !== run.workspaceId
+      || !concreteToken(result.commissionProductId)
+      || resultByProduct.has(result.commissionProductId)
+      || !validSnapshot(result.snapshot)) throw invalidMigrationCommit();
+    const snapshotBytes = JSON.stringify(result.snapshot);
+    if (result.snapshotHash !== sha256(snapshotBytes)) throw invalidMigrationCommit();
+    if (result.status === "migrated") {
+      migrated += 1;
+      if (result.code !== "migrated" || !concreteToken(result.catalogItemId)
+        || !concreteToken(result.pricingPolicyVersionId)) {
+        throw invalidMigrationCommit();
+      }
+    } else if (result.status === "repair_required") {
+      if (result.code === "migrated" || result.catalogItemId !== null
+        || result.pricingPolicyVersionId !== null) throw invalidMigrationCommit();
+    } else {
+      throw invalidMigrationCommit();
+    }
+    resultByProduct.set(result.commissionProductId, result);
+  }
+  if (run.migrated !== migrated || run.repairRequired !== run.scanned - migrated) {
+    throw invalidMigrationCommit();
+  }
+  if (entries.length !== migrated) throw invalidMigrationCommit();
+  const expectedInputHash = sha256(JSON.stringify([
+    "commission-catalog-migration-input.v1",
+    run.workspaceId,
+    run.items.map((item) => item.snapshot)
+  ]));
+  const expectedReportHash = sha256(JSON.stringify([
+    "commission-catalog-migration-report.v1",
+    run.workspaceId,
+    run.items.map((item) => [
+      item.commissionProductId, item.status, item.code, item.snapshotHash
+    ])
+  ]));
+  if (run.inputSnapshotHash !== expectedInputHash
+    || run.reportHash !== expectedReportHash) throw invalidMigrationCommit();
+
+  const itemIds = new Set<string>();
+  const policyIds = new Set<string>();
+  const productIds = new Set<string>();
+  for (const entry of entries) {
+    const { item, pricingPolicy, link } = entry;
+    if (item?.workspaceId !== run.workspaceId
+      || pricingPolicy?.workspaceId !== run.workspaceId
+      || link?.workspaceId !== run.workspaceId
+      || !concreteToken(item.id) || !concreteToken(pricingPolicy.id)
+      || !concreteToken(link.commissionProductId)
+      || pricingPolicy.catalogItemId !== item.id
+      || link.catalogItemId !== item.id
+      || link.pricingPolicyVersionId !== pricingPolicy.id
+      || itemIds.has(item.id) || policyIds.has(pricingPolicy.id)
+      || productIds.has(link.commissionProductId)) throw invalidMigrationCommit();
+    const result = resultByProduct.get(link.commissionProductId);
+    if (!result || result.status !== "migrated"
+      || result.catalogItemId !== item.id
+      || result.pricingPolicyVersionId !== pricingPolicy.id) {
+      throw invalidMigrationCommit();
+    }
+    itemIds.add(item.id);
+    policyIds.add(pricingPolicy.id);
+    productIds.add(link.commissionProductId);
+  }
 }
 
 function key(workspaceId: string, id: string): string {
@@ -149,6 +276,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   async commitCommissionCatalogMigration(
     commit: CommissionCatalogMigrationCommit
   ): Promise<CommissionCatalogMigrationRun> {
+    assertCommissionCatalogMigrationCommitInvariant(commit);
     const runKey = key(commit.run.workspaceId, commit.run.idempotencyKey);
     const existing = this.migrationRuns.get(runKey);
     if (existing) {

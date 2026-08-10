@@ -9,6 +9,7 @@ import type {
   CommissionCatalogMigrationItemResult,
   CommissionCatalogMigrationPreview,
   CommissionCatalogMigrationRun,
+  CommissionCatalogSnapshotValue,
   CommissionProductCatalogLink,
   PricingPolicyVersion
 } from "./catalog-domain.js";
@@ -18,9 +19,19 @@ import type {
   CommissionCatalogMigrationEntry
 } from "./catalog-repository.js";
 
+export type CommissionProductMigrationSource = Omit<
+  CommissionProduct,
+  "defaultPrice" | "costPrice"
+> & {
+  defaultPrice: unknown;
+  costPrice: unknown;
+};
+
 export interface CommissionCatalogMigrationDependencies {
   repository: CatalogRepository;
-  products: (workspaceId: string) => Promise<readonly CommissionProduct[]>;
+  products: (
+    workspaceId: string
+  ) => Promise<readonly CommissionProductMigrationSource[]>;
   now?: () => string;
   idFactory?: (prefix: string) => string;
 }
@@ -31,16 +42,89 @@ interface PlannedMigration {
   entries: readonly CommissionCatalogMigrationEntry[];
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) =>
-    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+interface PreparedProduct {
+  product: CommissionProductMigrationSource;
+  snapshot: CommissionCatalogSnapshotValue;
+  snapshotBytes: string;
+  snapshotHash: `sha256:${string}`;
 }
 
-function hash(value: unknown): `sha256:${string}` {
-  return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+function hashBytes(value: string): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function normalizedSnapshot(
+  value: unknown,
+  ancestors = new Set<object>()
+): CommissionCatalogSnapshotValue {
+  if (value === null) return ["null"];
+  if (value === undefined) return ["undefined"];
+  if (typeof value === "boolean") return ["boolean", value];
+  if (typeof value === "string") return ["string", value];
+  if (typeof value === "bigint") return ["bigint", value.toString()];
+  if (typeof value === "number") {
+    const representation = Number.isNaN(value)
+      ? "NaN"
+      : value === Number.POSITIVE_INFINITY
+        ? "Infinity"
+        : value === Number.NEGATIVE_INFINITY
+          ? "-Infinity"
+          : Object.is(value, -0) ? "-0" : String(value);
+    return ["number", representation];
+  }
+  if (typeof value === "symbol" || typeof value === "function") {
+    throw migrationError("unsupported_commission_product_snapshot_value");
+  }
+  if (value instanceof Date) {
+    const instant = value.toISOString();
+    return ["date", instant];
+  }
+  if (ancestors.has(value)) {
+    throw migrationError("circular_commission_product_snapshot");
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const items: CommissionCatalogSnapshotValue[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        items.push(Object.hasOwn(value, index)
+          ? normalizedSnapshot(value[index], ancestors)
+          : ["hole"]);
+      }
+      return ["array", items];
+    }
+    const record = value as Record<string, unknown>;
+    const entries = Object.keys(record)
+      .sort(compareCodePoint)
+      .map((key) => [key, normalizedSnapshot(record[key], ancestors)] as const);
+    return ["object", entries];
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function prepareProduct(
+  product: CommissionProductMigrationSource
+): PreparedProduct {
+  const snapshot = normalizedSnapshot(product);
+  const snapshotBytes = JSON.stringify(snapshot);
+  return Object.freeze({
+    product,
+    snapshot,
+    snapshotBytes,
+    snapshotHash: hashBytes(snapshotBytes)
+  });
+}
+
+function inputSnapshotHash(
+  workspaceId: string,
+  products: readonly PreparedProduct[]
+): `sha256:${string}` {
+  return hashBytes(JSON.stringify([
+    "commission-catalog-migration-input.v1",
+    workspaceId,
+    products.map((product) => product.snapshot)
+  ]));
 }
 
 function compareCodePoint(left: string, right: string): number {
@@ -58,19 +142,26 @@ function assertToken(value: string, field: string): string {
 }
 
 function decimalToMinor(
-  value: number,
+  value: unknown,
   exponent: number,
   valueCode: "default_price" | "cost_price"
 ): { minor: number } | { code: CommissionCatalogMigrationFailureCode } {
-  if (!Number.isFinite(value) || value < 0 || (valueCode === "default_price" && value === 0)) {
+  if (typeof value !== "number" && typeof value !== "string") {
     return { code: `invalid_${valueCode}` };
   }
-  const match = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/iu.exec(String(value));
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    return { code: `invalid_${valueCode}` };
+  }
+  const source = typeof value === "number" ? String(value) : value;
+  const match = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/iu.exec(source);
   if (!match) return { code: `invalid_${valueCode}` };
   const whole = match[1]!;
   const fraction = match[2] ?? "";
   const scientificExponent = Number(match[3] ?? 0);
-  if (!Number.isSafeInteger(scientificExponent)) return { code: "amount_out_of_range" };
+  if (!Number.isSafeInteger(scientificExponent)
+    || Math.abs(scientificExponent) > 1_000) {
+    return { code: "amount_out_of_range" };
+  }
   let coefficient = BigInt(`${whole}${fraction}`);
   const decimalShift = scientificExponent + exponent - fraction.length;
   if (decimalShift >= 0) {
@@ -83,7 +174,11 @@ function decimalToMinor(
     coefficient /= divisor;
   }
   try {
-    return { minor: safeMinor(coefficient, valueCode) };
+    const minor = safeMinor(coefficient, valueCode);
+    if (valueCode === "default_price" && minor === 0) {
+      return { code: "invalid_default_price" };
+    }
+    return { minor };
   } catch {
     return { code: "amount_out_of_range" };
   }
@@ -116,14 +211,11 @@ const LEGACY_APPROVAL_THRESHOLDS: ApprovalThresholds = Object.freeze({
   })
 });
 
-function snapshotOf(product: CommissionProduct): Readonly<Record<string, unknown>> {
-  return immutableClone({ ...product }) as Readonly<Record<string, unknown>>;
-}
-
 function resultForRepair(
   workspaceId: string,
-  product: CommissionProduct,
-  snapshot: Readonly<Record<string, unknown>>,
+  product: CommissionProductMigrationSource,
+  snapshot: CommissionCatalogSnapshotValue,
+  snapshotHash: `sha256:${string}`,
   code: CommissionCatalogMigrationFailureCode
 ): CommissionCatalogMigrationItemResult {
   return immutableClone({
@@ -132,7 +224,7 @@ function resultForRepair(
     status: "repair_required",
     code,
     snapshot,
-    snapshotHash: hash(snapshot),
+    snapshotHash,
     catalogItemId: null,
     pricingPolicyVersionId: null
   }) as CommissionCatalogMigrationItemResult;
@@ -142,16 +234,16 @@ function reportHashFor(
   workspaceId: string,
   items: readonly CommissionCatalogMigrationItemResult[]
 ): `sha256:${string}` {
-  return hash({
-    schema: "commission-catalog-migration-report.v1",
+  return hashBytes(JSON.stringify([
+    "commission-catalog-migration-report.v1",
     workspaceId,
-    items: items.map((item) => ({
-      commissionProductId: item.commissionProductId,
-      status: item.status,
-      code: item.code,
-      snapshotHash: item.snapshotHash
-    }))
-  });
+    items.map((item) => [
+      item.commissionProductId,
+      item.status,
+      item.code,
+      item.snapshotHash
+    ])
+  ]));
 }
 
 export class CommissionCatalogMigrationService {
@@ -180,17 +272,13 @@ export class CommissionCatalogMigrationService {
     const actor = assertToken(actorId, "actor_id");
     const key = assertToken(idempotencyKey, "idempotency_key");
     const products = await this.workspaceProducts(workspace);
-    const inputSnapshotHash = hash({
-      schema: "commission-catalog-migration-input.v1",
-      workspaceId: workspace,
-      products: products.map(snapshotOf)
-    });
+    const currentInputSnapshotHash = inputSnapshotHash(workspace, products);
     const existing = await this.repository.findCommissionCatalogMigrationRun(
       workspace,
       key
     );
     if (existing) {
-      if (existing.inputSnapshotHash !== inputSnapshotHash) {
+      if (existing.inputSnapshotHash !== currentInputSnapshotHash) {
         throw migrationError("commission_catalog_migration_conflict");
       }
       return immutableClone(existing) as CommissionCatalogMigrationRun;
@@ -219,7 +307,7 @@ export class CommissionCatalogMigrationService {
     });
   }
 
-  private async workspaceProducts(workspaceId: string): Promise<CommissionProduct[]> {
+  private async workspaceProducts(workspaceId: string): Promise<PreparedProduct[]> {
     const products = (await this.products(workspaceId))
       .filter((product) => product.teamId === workspaceId)
       .map((product) => ({ ...product }))
@@ -231,43 +319,44 @@ export class CommissionCatalogMigrationService {
       }
       ids.add(product.id);
     }
-    return products;
+    return products.map(prepareProduct);
   }
 
   private async plan(
     workspaceId: string,
-    suppliedProducts?: readonly CommissionProduct[],
+    suppliedProducts?: readonly PreparedProduct[],
     createdBy?: string,
     operationTime?: string
   ): Promise<PlannedMigration> {
     const timestamp = operationTime ?? this.now();
     if (!Number.isFinite(Date.parse(timestamp))) throw migrationError("invalid_migration_time");
     const products = suppliedProducts
-      ? suppliedProducts.map((product) => ({ ...product }))
+      ? [...suppliedProducts]
       : await this.workspaceProducts(workspaceId);
-    const inputSnapshotHash = hash({
-      schema: "commission-catalog-migration-input.v1",
-      workspaceId,
-      products: products.map(snapshotOf)
-    });
+    const currentInputSnapshotHash = inputSnapshotHash(workspaceId, products);
     const results: CommissionCatalogMigrationItemResult[] = [];
     const entries: CommissionCatalogMigrationEntry[] = [];
-    for (const product of products) {
-      const snapshot = snapshotOf(product);
-      const snapshotHash = hash(snapshot);
+    for (const prepared of products) {
+      const { product, snapshot, snapshotHash } = prepared;
       const exponent = currencyExponent(product.currency);
       if (exponent === null) {
-        results.push(resultForRepair(workspaceId, product, snapshot, "invalid_currency"));
+        results.push(resultForRepair(
+          workspaceId, product, snapshot, snapshotHash, "invalid_currency"
+        ));
         continue;
       }
       const price = decimalToMinor(product.defaultPrice, exponent, "default_price");
       if ("code" in price) {
-        results.push(resultForRepair(workspaceId, product, snapshot, price.code));
+        results.push(resultForRepair(
+          workspaceId, product, snapshot, snapshotHash, price.code
+        ));
         continue;
       }
       const cost = decimalToMinor(product.costPrice, exponent, "cost_price");
       if ("code" in cost) {
-        results.push(resultForRepair(workspaceId, product, snapshot, cost.code));
+        results.push(resultForRepair(
+          workspaceId, product, snapshot, snapshotHash, cost.code
+        ));
         continue;
       }
       const existingLink = await this.repository.findCommissionProductLink(
@@ -359,6 +448,10 @@ export class CommissionCatalogMigrationService {
       reportHash: reportHashFor(workspaceId, results),
       items: results
     }) as CommissionCatalogMigrationPreview;
-    return { preview, inputSnapshotHash, entries: immutableClone(entries) as unknown as readonly CommissionCatalogMigrationEntry[] };
+    return {
+      preview,
+      inputSnapshotHash: currentInputSnapshotHash,
+      entries: immutableClone(entries) as unknown as readonly CommissionCatalogMigrationEntry[]
+    };
   }
 }

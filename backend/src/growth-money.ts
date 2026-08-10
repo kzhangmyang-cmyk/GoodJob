@@ -1,34 +1,40 @@
-const ISO_4217_TWO_DECIMAL_CODES = [
-  "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG",
-  "AZN", "BAM", "BBD", "BDT", "BGN", "BIF", "BMD", "BND", "BOB",
-  "BOV", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF",
-  "CHE", "CHF", "CHW", "CNY", "COP", "COU", "CRC", "CUP", "CVE",
-  "CZK", "DJF", "DKK", "DOP", "DZD", "EGP", "ERN", "ETB", "EUR",
-  "FJD", "FKP", "GBP", "GEL", "GHS", "GIP", "GMD", "GNF", "GTQ",
-  "GYD", "HKD", "HNL", "HTG", "HUF", "IDR", "ILS", "INR", "IQD",
-  "IRR", "ISK", "JMD", "KES", "KGS", "KHR", "KMF", "KPW", "KYD",
-  "KZT", "LAK", "LBP", "LKR", "LRD", "LSL", "LYD", "MAD", "MDL",
-  "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR", "MVR", "MWK",
-  "MXN", "MXV", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR",
-  "NZD", "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG", "QAR",
-  "RON", "RSD", "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK",
-  "SGD", "SHP", "SLE", "SOS", "SRD", "SSP", "STN", "SVC", "SYP",
-  "SZL", "THB", "TJS", "TMT", "TOP", "TRY", "TTD", "TWD", "TZS",
-  "UAH", "UGX", "USD", "USN", "UYI", "UYU", "UZS", "VED", "VES",
-  "VND", "VUV", "WST", "XAF", "XCD", "XOF", "XPF", "YER", "ZAR",
-  "ZMW", "ZWG"
-] as const;
+export const ISO_4217_EXPONENT_V1_CUTOFF = Object.freeze({
+  authority: "SIX Financial Information AG",
+  amendment: 180,
+  effectiveDate: "2026-01-01"
+} as const);
 
-const exponents: Record<string, number> = Object.fromEntries(
-  ISO_4217_TWO_DECIMAL_CODES.map((currency) => [currency, 2])
-);
-for (const currency of [
+const ISO_4217_EXPONENT_V1_GROUPS = Object.freeze({
+  0: Object.freeze([
   "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "PYG",
   "RWF", "UGX", "UYI", "VND", "VUV", "XAF", "XOF", "XPF"
-]) exponents[currency] = 0;
-for (const currency of ["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"])
-  exponents[currency] = 3;
-for (const currency of ["CLF", "UYW"]) exponents[currency] = 4;
+  ]),
+  2: Object.freeze([
+    "AED", "AFN", "ALL", "AMD", "AOA", "ARS", "AUD", "AWG", "AZN",
+    "BAM", "BBD", "BDT", "BMD", "BND", "BOB", "BOV", "BRL", "BSD",
+    "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHE", "CHF", "CHW",
+    "CNY", "COP", "COU", "CRC", "CUP", "CVE", "CZK", "DKK", "DOP",
+    "DZD", "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL",
+    "GHS", "GIP", "GMD", "GTQ", "GYD", "HKD", "HNL", "HTG", "HUF",
+    "IDR", "ILS", "INR", "IRR", "JMD", "KES", "KGS", "KHR", "KPW",
+    "KYD", "KZT", "LAK", "LBP", "LKR", "LRD", "LSL", "MAD", "MDL",
+    "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR", "MVR", "MWK",
+    "MXN", "MXV", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR",
+    "NZD", "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "QAR", "RON",
+    "RSD", "RUB", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD", "SHP",
+    "SLE", "SOS", "SRD", "SSP", "STN", "SVC", "SYP", "SZL", "THB",
+    "TJS", "TMT", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "USD",
+    "USN", "UYU", "UZS", "VED", "VES", "WST", "XAD", "XCD", "XCG",
+    "YER", "ZAR", "ZMW", "ZWG"
+  ]),
+  3: Object.freeze(["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"]),
+  4: Object.freeze(["CLF", "UYW"])
+} as const);
+
+const exponents: Record<string, number> = {};
+for (const [exponent, currencies] of Object.entries(ISO_4217_EXPONENT_V1_GROUPS)) {
+  for (const currency of currencies) exponents[currency] = Number(exponent);
+}
 /** A frozen ISO 4217 currency exponent registry used by all Growth arithmetic. */
 export const ISO_4217_EXPONENT_V1: Readonly<Record<string, number>> =
   Object.freeze(exponents);
@@ -82,9 +88,14 @@ export function safeSignedInteger(value: bigint, field: string): number {
   return Number(value);
 }
 
-function integerBigInt(value: number, field: string): bigint {
+function nonnegativeIntegerBigInt(value: number, field: string): bigint {
   if (!Number.isSafeInteger(value)) {
     throw new TypeError(`${field} must be a safe integer`);
+  }
+  if (value < 0) {
+    throw Object.assign(new RangeError(field), {
+      code: `${field === "unitMinor" ? "unit_minor" : "quantity_micros"}_out_of_range`
+    });
   }
   return BigInt(value);
 }
@@ -94,8 +105,12 @@ export function multiplyQuantityMinor(
   quantityMicros: number,
   rounding: "half_up" | "ceil"
 ): number {
-  const numerator = integerBigInt(unitMinor, "unitMinor")
-    * integerBigInt(quantityMicros, "quantityMicros");
+  const unit = nonnegativeIntegerBigInt(unitMinor, "unitMinor");
+  const quantity = nonnegativeIntegerBigInt(quantityMicros, "quantityMicros");
+  if (rounding !== "half_up" && rounding !== "ceil") {
+    throw Object.assign(new RangeError("rounding"), { code: "invalid_rounding" });
+  }
+  const numerator = unit * quantity;
   return safeMinor(
     rounding === "ceil"
       ? ceilDiv(numerator, 1_000_000n)

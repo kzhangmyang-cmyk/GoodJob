@@ -13,6 +13,7 @@ import type {
   CatalogRepository,
   CommissionCatalogMigrationCommit
 } from "./catalog-repository.js";
+import { assertCommissionCatalogMigrationCommitInvariant } from "./catalog-repository.js";
 
 type QuerySource = Pick<mysql.Pool | mysql.PoolConnection, "query">;
 type MysqlRow = Record<string, unknown>;
@@ -36,6 +37,28 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     CONSTRAINT chk_catalog_items_workspace CHECK (
       workspace_id <> 'all' AND CHAR_LENGTH(TRIM(workspace_id)) > 0
     )
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS package_versions (
+    workspace_id VARCHAR(191) NOT NULL,
+    id VARCHAR(191) NOT NULL,
+    package_catalog_item_id VARCHAR(191) NOT NULL,
+    version BIGINT UNSIGNED NOT NULL,
+    currency CHAR(3) NOT NULL,
+    package_status ENUM('draft','active','retired') NOT NULL,
+    valid_from DATETIME(3) NOT NULL,
+    valid_to DATETIME(3) NULL,
+    revision BIGINT UNSIGNED NOT NULL,
+    created_by VARCHAR(191) NOT NULL,
+    created_at DATETIME(3) NOT NULL,
+    updated_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id, id),
+    UNIQUE KEY uk_package_versions_version
+      (workspace_id, package_catalog_item_id, version),
+    KEY idx_package_versions_window
+      (workspace_id, package_catalog_item_id, currency, package_status, valid_from, valid_to),
+    CONSTRAINT fk_package_version_catalog
+      FOREIGN KEY (workspace_id, package_catalog_item_id)
+      REFERENCES catalog_items (workspace_id, id)
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS pricing_policy_versions (
     workspace_id VARCHAR(191) NOT NULL,
@@ -71,26 +94,13 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     UNIQUE KEY uk_pricing_policy_versions_version
       (workspace_id, catalog_item_id, version),
     KEY idx_pricing_policy_versions_window
-      (workspace_id, catalog_item_id, currency, policy_status, valid_from, valid_to)
-  ) ENGINE=InnoDB`,
-  `CREATE TABLE IF NOT EXISTS package_versions (
-    workspace_id VARCHAR(191) NOT NULL,
-    id VARCHAR(191) NOT NULL,
-    package_catalog_item_id VARCHAR(191) NOT NULL,
-    version BIGINT UNSIGNED NOT NULL,
-    currency CHAR(3) NOT NULL,
-    package_status ENUM('draft','active','retired') NOT NULL,
-    valid_from DATETIME(3) NOT NULL,
-    valid_to DATETIME(3) NULL,
-    revision BIGINT UNSIGNED NOT NULL,
-    created_by VARCHAR(191) NOT NULL,
-    created_at DATETIME(3) NOT NULL,
-    updated_at DATETIME(3) NOT NULL,
-    PRIMARY KEY (workspace_id, id),
-    UNIQUE KEY uk_package_versions_version
-      (workspace_id, package_catalog_item_id, version),
-    KEY idx_package_versions_window
-      (workspace_id, package_catalog_item_id, currency, package_status, valid_from, valid_to)
+      (workspace_id, catalog_item_id, currency, policy_status, valid_from, valid_to),
+    CONSTRAINT fk_pricing_policy_catalog
+      FOREIGN KEY (workspace_id, catalog_item_id)
+      REFERENCES catalog_items (workspace_id, id),
+    CONSTRAINT fk_pricing_policy_package
+      FOREIGN KEY (workspace_id, package_version_id)
+      REFERENCES package_versions (workspace_id, id)
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS package_components (
     workspace_id VARCHAR(191) NOT NULL,
@@ -103,7 +113,16 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
       component_pricing_policy_version_id
     ),
     KEY idx_package_components_target
-      (workspace_id, component_catalog_item_id)
+      (workspace_id, component_catalog_item_id),
+    CONSTRAINT fk_package_component_version
+      FOREIGN KEY (workspace_id, package_version_id)
+      REFERENCES package_versions (workspace_id, id),
+    CONSTRAINT fk_package_component_catalog
+      FOREIGN KEY (workspace_id, component_catalog_item_id)
+      REFERENCES catalog_items (workspace_id, id),
+    CONSTRAINT fk_package_component_policy
+      FOREIGN KEY (workspace_id, component_pricing_policy_version_id)
+      REFERENCES pricing_policy_versions (workspace_id, id)
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS commission_product_catalog_links (
     workspace_id VARCHAR(191) NOT NULL,
@@ -113,7 +132,13 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     migrated_at DATETIME(3) NOT NULL,
     PRIMARY KEY (workspace_id, commission_product_id),
     UNIQUE KEY uk_commission_product_catalog_item (workspace_id, catalog_item_id),
-    UNIQUE KEY uk_commission_product_policy (workspace_id, pricing_policy_version_id)
+    UNIQUE KEY uk_commission_product_policy (workspace_id, pricing_policy_version_id),
+    CONSTRAINT fk_commission_product_catalog
+      FOREIGN KEY (workspace_id, catalog_item_id)
+      REFERENCES catalog_items (workspace_id, id),
+    CONSTRAINT fk_commission_product_policy
+      FOREIGN KEY (workspace_id, pricing_policy_version_id)
+      REFERENCES pricing_policy_versions (workspace_id, id)
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS commission_catalog_migration_runs (
     workspace_id VARCHAR(191) NOT NULL,
@@ -130,7 +155,10 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     report_hash CHAR(71) NOT NULL,
     PRIMARY KEY (workspace_id, id),
     UNIQUE KEY uk_commission_catalog_migration_idempotency
-      (workspace_id, idempotency_key)
+      (workspace_id, idempotency_key),
+    CONSTRAINT chk_commission_catalog_migration_workspace CHECK (
+      workspace_id <> 'all' AND CHAR_LENGTH(TRIM(workspace_id)) > 0
+    )
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS commission_catalog_migration_items (
     workspace_id VARCHAR(191) NOT NULL,
@@ -138,11 +166,23 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     commission_product_id VARCHAR(191) NOT NULL,
     item_status ENUM('migrated','repair_required') NOT NULL,
     result_code VARCHAR(100) NOT NULL,
-    snapshot_json JSON NOT NULL,
+    snapshot_json LONGTEXT NOT NULL,
     snapshot_hash CHAR(71) NOT NULL,
     catalog_item_id VARCHAR(191) NULL,
     pricing_policy_version_id VARCHAR(191) NULL,
-    PRIMARY KEY (workspace_id, migration_run_id, commission_product_id)
+    PRIMARY KEY (workspace_id, migration_run_id, commission_product_id),
+    CONSTRAINT fk_commission_catalog_migration_run
+      FOREIGN KEY (workspace_id, migration_run_id)
+      REFERENCES commission_catalog_migration_runs (workspace_id, id),
+    CONSTRAINT fk_commission_catalog_migration_item_catalog
+      FOREIGN KEY (workspace_id, catalog_item_id)
+      REFERENCES catalog_items (workspace_id, id),
+    CONSTRAINT fk_commission_catalog_migration_item_policy
+      FOREIGN KEY (workspace_id, pricing_policy_version_id)
+      REFERENCES pricing_policy_versions (workspace_id, id),
+    CONSTRAINT chk_commission_catalog_migration_snapshot_json CHECK (
+      JSON_VALID(snapshot_json)
+    )
   ) ENGINE=InnoDB`
 ] as const;
 
@@ -463,6 +503,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
   async commitCommissionCatalogMigration(
     commit: CommissionCatalogMigrationCommit
   ): Promise<CommissionCatalogMigrationRun> {
+    assertCommissionCatalogMigrationCommitInvariant(commit);
     const connection = await this.pool.getConnection();
     try {
       await connection.beginTransaction();

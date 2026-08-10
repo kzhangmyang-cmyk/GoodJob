@@ -1,23 +1,61 @@
 import mysql from "mysql2/promise";
-import type { CommissionProduct } from "./types.js";
 import {
   MysqlCatalogRepository,
   ensureCatalogMysqlSchema
 } from "./catalog-mysql-repository.js";
-import { CommissionCatalogMigrationService } from "./commission-catalog-migration.js";
+import {
+  CommissionCatalogMigrationService,
+  type CommissionProductMigrationSource
+} from "./commission-catalog-migration.js";
 
-function argument(name: string): string {
-  const inlinePrefix = `--${name}=`;
-  const inline = process.argv.find((value) => value.startsWith(inlinePrefix));
-  if (inline) return inline.slice(inlinePrefix.length).trim();
-  const index = process.argv.indexOf(`--${name}`);
-  return index >= 0 ? (process.argv[index + 1] ?? "").trim() : "";
+export interface CommissionCatalogMigrationCliArguments {
+  workspaceId: string;
+  actorId: string;
+  idempotencyKey: string;
 }
 
-function requiredArgument(name: string): string {
-  const value = argument(name);
-  if (!value) throw new Error(`missing --${name}`);
-  return value;
+const CLI_ARGUMENTS = ["workspace", "actor", "idempotency"] as const;
+type CliArgumentName = typeof CLI_ARGUMENTS[number];
+
+export function parseCommissionCatalogMigrationArguments(
+  arguments_: readonly string[]
+): CommissionCatalogMigrationCliArguments {
+  const allowed = new Set<string>(CLI_ARGUMENTS);
+  const values = new Map<CliArgumentName, string>();
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index]!;
+    if (!argument.startsWith("--")) {
+      throw new Error(`unknown argument ${argument}`);
+    }
+    const separator = argument.indexOf("=");
+    const flag = separator >= 0 ? argument.slice(0, separator) : argument;
+    const name = flag.slice(2);
+    if (!allowed.has(name)) throw new Error(`unknown argument ${flag}`);
+    const typedName = name as CliArgumentName;
+    if (values.has(typedName)) throw new Error(`duplicate --${name}`);
+    const rawValue = separator >= 0
+      ? argument.slice(separator + 1)
+      : arguments_[index + 1];
+    if (rawValue === undefined) throw new Error(`missing --${name}`);
+    if (separator < 0) {
+      if (rawValue.startsWith("-")) {
+        throw new Error(`flag-looking value for --${name}`);
+      }
+      index += 1;
+    }
+    const value = rawValue.trim();
+    if (!value) throw new Error(`blank --${name}`);
+    if (value === "all") throw new Error(`invalid --${name}`);
+    values.set(typedName, value);
+  }
+  for (const name of CLI_ARGUMENTS) {
+    if (!values.has(name)) throw new Error(`missing --${name}`);
+  }
+  return Object.freeze({
+    workspaceId: values.get("workspace")!,
+    actorId: values.get("actor")!,
+    idempotencyKey: values.get("idempotency")!
+  });
 }
 
 function databaseUrl(): string {
@@ -41,9 +79,8 @@ function iso(value: unknown): string {
 }
 
 async function main(): Promise<void> {
-  const workspaceId = requiredArgument("workspace");
-  const actorId = requiredArgument("actor");
-  const idempotencyKey = requiredArgument("idempotency");
+  const { workspaceId, actorId, idempotencyKey } =
+    parseCommissionCatalogMigrationArguments(process.argv.slice(2));
   const pool = mysql.createPool({
     uri: databaseUrl(),
     connectionLimit: 2,
@@ -64,20 +101,22 @@ async function main(): Promise<void> {
            ORDER BY id`,
           [workspace]
         );
-        return (rows as Array<Record<string, unknown>>).map((row): CommissionProduct => ({
+        return (rows as Array<Record<string, unknown>>).map(
+          (row): CommissionProductMigrationSource => ({
           id: String(row.id),
           name: String(row.name),
           category: String(row.category ?? ""),
           model: String(row.model ?? ""),
           currency: String(row.currency),
-          defaultPrice: Number(row.default_price),
-          costPrice: Number(row.cost_price),
+          defaultPrice: row.default_price,
+          costPrice: row.cost_price,
           status: row.status === "active" ? "active" : "disabled",
           remark: String(row.remark ?? ""),
           ownerId: String(row.owner_id),
           teamId: String(row.team_id),
           updatedAt: iso(row.updated_at)
-        }));
+          })
+        );
       }
     });
     const run = await service.execute(workspaceId, actorId, idempotencyKey);

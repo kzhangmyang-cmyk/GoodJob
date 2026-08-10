@@ -132,12 +132,27 @@ export type CommissionCatalogMigrationItemCode =
   | "migrated"
   | CommissionCatalogMigrationFailureCode;
 
+export type CommissionCatalogSnapshotValue =
+  | readonly ["null"]
+  | readonly ["undefined"]
+  | readonly ["boolean", boolean]
+  | readonly ["number", string]
+  | readonly ["string", string]
+  | readonly ["bigint", string]
+  | readonly ["date", string]
+  | readonly ["hole"]
+  | readonly ["array", readonly CommissionCatalogSnapshotValue[]]
+  | readonly [
+      "object",
+      readonly (readonly [string, CommissionCatalogSnapshotValue])[]
+    ];
+
 export interface CommissionCatalogMigrationItemResult {
   workspaceId: string;
   commissionProductId: string;
   status: "migrated" | "repair_required";
   code: CommissionCatalogMigrationItemCode;
-  snapshot: Readonly<Record<string, unknown>>;
+  snapshot: CommissionCatalogSnapshotValue;
   snapshotHash: `sha256:${string}`;
   catalogItemId: string | null;
   pricingPolicyVersionId: string | null;
