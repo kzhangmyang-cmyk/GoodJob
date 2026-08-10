@@ -342,7 +342,12 @@ function canonicalGrowthInstant(
 ): string {
   const milliseconds = growthInstantMilliseconds(value);
   if (milliseconds === null) throw invalid();
-  return new Date(milliseconds).toISOString();
+  const canonical = new Date(milliseconds).toISOString();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(canonical)
+    || canonical < "1000-01-01T00:00:00.000Z"
+    || canonical > "9999-12-31T23:59:59.999Z"
+    || growthInstantMilliseconds(canonical) === null) throw invalid();
+  return canonical;
 }
 
 /** Complete runtime boundary for persisted frozen PricingPolicy v1 records. */
@@ -399,6 +404,12 @@ function invalidPackageVersion(): Error & { code: string } {
   });
 }
 
+function invalidCommissionCatalogMigration(): Error & { code: string } {
+  return Object.assign(new Error("invalid_commission_catalog_migration_commit"), {
+    code: "invalid_commission_catalog_migration_commit"
+  });
+}
+
 export function normalizeCatalogItemInstants(item: CatalogItem): CatalogItem {
   return {
     ...item,
@@ -430,5 +441,30 @@ export function normalizePackageVersionInstants(
       : canonicalGrowthInstant(version.validTo, invalidPackageVersion),
     createdAt: canonicalGrowthInstant(version.createdAt, invalidPackageVersion),
     updatedAt: canonicalGrowthInstant(version.updatedAt, invalidPackageVersion)
+  };
+}
+
+export function normalizeCommissionProductCatalogLinkInstant(
+  link: CommissionProductCatalogLink
+): CommissionProductCatalogLink {
+  return {
+    ...link,
+    migratedAt: canonicalGrowthInstant(
+      link.migratedAt, invalidCommissionCatalogMigration
+    )
+  };
+}
+
+export function normalizeCommissionCatalogMigrationRunInstants(
+  run: CommissionCatalogMigrationRun
+): CommissionCatalogMigrationRun {
+  return {
+    ...run,
+    startedAt: canonicalGrowthInstant(
+      run.startedAt, invalidCommissionCatalogMigration
+    ),
+    completedAt: canonicalGrowthInstant(
+      run.completedAt, invalidCommissionCatalogMigration
+    )
   };
 }

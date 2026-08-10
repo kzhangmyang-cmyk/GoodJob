@@ -5,11 +5,18 @@ import {
   InMemoryCatalogRepository,
   type CatalogCommandResult,
   type CatalogRepository,
+  type CommissionCatalogMigrationCommit,
   type CreateCatalogItemCommand,
   type CreatePackageVersionDraftCommand,
   type CreatePricingPolicyDraftCommand,
   encodeCatalogCursor
 } from "./catalog-repository.js";
+import {
+  assertClosedPricingPolicyVersion,
+  type CatalogItem,
+  type PackageVersion,
+  type PricingPolicyVersion
+} from "./catalog-domain.js";
 import {
   DefaultGrowthTemporalBarrier,
   InMemoryGrowthTemporalTransactionRunner,
@@ -19,7 +26,7 @@ import {
 
 const NOW = "2026-08-09T08:00:00.000Z";
 
-function hash(value: unknown): string {
+function hash(value: unknown): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 }
 
@@ -248,6 +255,89 @@ function createPackageCommand(
   };
 }
 
+function persistedPolicy(
+  command: CreatePricingPolicyDraftCommand,
+  createdAt = NOW
+): PricingPolicyVersion {
+  const {
+    actorId: createdBy,
+    idempotencyKey: _idempotencyKey,
+    requestHash: _requestHash,
+    ...fields
+  } = command;
+  return {
+    ...fields, version: 1, status: "draft", revision: 1, createdBy, createdAt
+  };
+}
+
+function migrationCommit(
+  suffixes: readonly string[] = ["one"],
+  times: Readonly<{
+    startedAt?: string;
+    completedAt?: string;
+    migratedAt?: string;
+  }> = {}
+): CommissionCatalogMigrationCommit {
+  const snapshots = suffixes.map((suffix) => [
+    "object", [["id", ["string", suffix]]]
+  ] as const);
+  const items = suffixes.map((suffix, index) => ({
+    workspaceId: "team-a",
+    commissionProductId: `product-${suffix}`,
+    status: "migrated" as const,
+    code: "migrated" as const,
+    snapshot: snapshots[index]!,
+    snapshotHash: hash(snapshots[index]!),
+    catalogItemId: `migration-item-${suffix}`,
+    pricingPolicyVersionId: `migration-policy-${suffix}`
+  }));
+  const run = {
+    id: `migration-run-${suffixes.join("-")}`,
+    workspaceId: "team-a",
+    actorId: "migration-admin",
+    idempotencyKey: `migration-key-${suffixes.join("-")}`,
+    inputSnapshotHash: hash([
+      "commission-catalog-migration-input.v1", "team-a", snapshots
+    ]),
+    startedAt: times.startedAt ?? NOW,
+    completedAt: times.completedAt ?? NOW,
+    status: "completed" as const,
+    scanned: suffixes.length,
+    migrated: suffixes.length,
+    repairRequired: 0,
+    reportHash: hash([
+      "commission-catalog-migration-report.v1", "team-a",
+      items.map((item) => [
+        item.commissionProductId, item.status, item.code, item.snapshotHash
+      ])
+    ]),
+    items
+  };
+  return {
+    run,
+    entries: suffixes.map((suffix) => ({
+      item: {
+        id: `migration-item-${suffix}`, workspaceId: "team-a",
+        type: "service", code: `MIG-${suffix}`, name: `migration-${suffix}`,
+        description: "", unit: "次", status: "active", revision: 1,
+        createdBy: "migration-admin", createdAt: NOW, updatedAt: NOW
+      },
+      pricingPolicy: persistedPolicy(createPolicyCommand({
+        id: `migration-policy-${suffix}`,
+        catalogItemId: `migration-item-${suffix}`,
+        idempotencyKey: `migration-policy-key-${suffix}`,
+        requestHash: hash({ suffix })
+      })),
+      link: {
+        workspaceId: "team-a", commissionProductId: `product-${suffix}`,
+        catalogItemId: `migration-item-${suffix}`,
+        pricingPolicyVersionId: `migration-policy-${suffix}`,
+        migratedAt: times.migratedAt ?? NOW
+      }
+    }))
+  };
+}
+
 function okValue<T>(result: CatalogCommandResult<T>): T {
   assert.equal(result.kind, "ok");
   return result.value;
@@ -429,6 +519,163 @@ test("a successful memory commit releases pending reads to revision two", async 
   assert.equal((await repository.findCatalogItem(
     "team-a", "item-read-success"
   ))?.name, "revision-two");
+});
+
+test("legacy item append waits for failing command rollback and then owns authority", async () => {
+  const base = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const transactions = new PausingAfterWorkRunner(base, true);
+  const repository = new InMemoryCatalogRepository({
+    transactions,
+    temporalBarrier: new ObservingGrowthTemporalBarrier(base)
+  });
+  const failing = assert.rejects(repository.createCatalogItem(createItemCommand({
+    id: "legacy-item-race", code: "COMMAND-RACE",
+    idempotencyKey: "legacy-item-race-command"
+  })), /post_work_commit_failure/u);
+  await transactions.workComplete;
+  let appendSettled = false;
+  const append = repository.appendCatalogItem({
+    id: "legacy-item-race", workspaceId: "team-a", type: "service",
+    code: "LEGACY-WINS", name: "legacy-authority", description: "", unit: "次",
+    status: "active", revision: 1, createdBy: "migration",
+    createdAt: NOW, updatedAt: NOW
+  }).then(
+    (value) => { appendSettled = true; return { value }; },
+    (error: unknown) => { appendSettled = true; return { error }; }
+  );
+  let readSettled = false;
+  const read = repository.findCatalogItem("team-a", "legacy-item-race")
+    .then((value) => { readSettled = true; return value; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(appendSettled, false);
+  assert.equal(readSettled, false);
+  transactions.release();
+  await failing;
+  const outcome = await append;
+  assert.equal("error" in outcome, false);
+  assert.equal(outcome.value?.code, "LEGACY-WINS");
+  assert.equal((await read)?.name, "legacy-authority");
+});
+
+test("legacy policy append waits for failing draft rollback", async () => {
+  const base = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const transactions = new PausingAfterWorkRunner(base, true);
+  const repository = new InMemoryCatalogRepository({
+    transactions,
+    temporalBarrier: new ObservingGrowthTemporalBarrier(base)
+  });
+  await repository.appendCatalogItem({
+    id: "legacy-policy-item", workspaceId: "team-a", type: "service",
+    code: "LEGACY-POLICY-ITEM", name: "policy-parent", description: "", unit: "次",
+    status: "active", revision: 1, createdBy: "migration",
+    createdAt: NOW, updatedAt: NOW
+  });
+  const command = createPolicyCommand({
+    id: "legacy-policy-race", catalogItemId: "legacy-policy-item",
+    idempotencyKey: "legacy-policy-race-command"
+  });
+  const failing = assert.rejects(
+    repository.createPricingPolicyDraft(command), /post_work_commit_failure/u
+  );
+  await transactions.workComplete;
+  let settled = false;
+  const append = repository.appendPricingPolicyVersion(persistedPolicy(command))
+    .then(
+      (value) => { settled = true; return { value }; },
+      (error: unknown) => { settled = true; return { error }; }
+    );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  transactions.release();
+  await failing;
+  const outcome = await append;
+  assert.equal("error" in outcome, false);
+  assert.equal(outcome.value?.id, command.id);
+  assert.equal(
+    (await repository.findPricingPolicyVersion("team-a", command.id))?.revision,
+    1
+  );
+});
+
+test("legacy package append waits for failing draft rollback", async () => {
+  const base = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const transactions = new PausingAfterWorkRunner(base, true);
+  const repository = new InMemoryCatalogRepository({
+    transactions,
+    temporalBarrier: new ObservingGrowthTemporalBarrier(base)
+  });
+  await repository.appendCatalogItem({
+    id: "legacy-package-item", workspaceId: "team-a", type: "package",
+    code: "LEGACY-PACKAGE-ITEM", name: "package-parent", description: "", unit: "套",
+    status: "active", revision: 1, createdBy: "migration",
+    createdAt: NOW, updatedAt: NOW
+  });
+  const command = createPackageCommand({
+    id: "legacy-package-race", packageCatalogItemId: "legacy-package-item",
+    components: [], idempotencyKey: "legacy-package-race-command"
+  });
+  const failing = assert.rejects(
+    repository.createPackageVersionDraft(command), /post_work_commit_failure/u
+  );
+  await transactions.workComplete;
+  const legacy: PackageVersion = {
+    id: command.id, workspaceId: "team-a",
+    packageCatalogItemId: command.packageCatalogItemId, version: 1,
+    currency: "CNY", status: "draft", validFrom: NOW, validTo: null,
+    revision: 1, createdBy: "migration", createdAt: NOW, updatedAt: NOW
+  };
+  let settled = false;
+  const append = repository.appendPackageVersion(legacy).then(
+    (value) => { settled = true; return { value }; },
+    (error: unknown) => { settled = true; return { error }; }
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  transactions.release();
+  await failing;
+  const outcome = await append;
+  assert.equal("error" in outcome, false);
+  assert.equal(outcome.value?.id, command.id);
+  assert.equal((await repository.findPackageVersion("team-a", command.id))?.revision, 1);
+});
+
+test("legacy migration waits for failing command rollback and publishes atomically", async () => {
+  const base = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const transactions = new PausingAfterWorkRunner(base, true);
+  const repository = new InMemoryCatalogRepository({
+    transactions,
+    temporalBarrier: new ObservingGrowthTemporalBarrier(base)
+  });
+  const commit = migrationCommit(["race"]);
+  const failing = assert.rejects(repository.createCatalogItem(createItemCommand({
+    id: "migration-item-race", code: "MIG-race",
+    idempotencyKey: "migration-command-race"
+  })), /post_work_commit_failure/u);
+  await transactions.workComplete;
+  let migrationSettled = false;
+  const migration = repository.commitCommissionCatalogMigration(commit).then(
+    (value) => { migrationSettled = true; return { value }; },
+    (error: unknown) => { migrationSettled = true; return { error }; }
+  );
+  let readSettled = false;
+  const read = repository.findCommissionCatalogMigrationRun(
+    "team-a", commit.run.idempotencyKey
+  ).then((value) => { readSettled = true; return value; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(migrationSettled, false);
+  assert.equal(readSettled, false);
+  transactions.release();
+  await failing;
+  const outcome = await migration;
+  assert.equal("error" in outcome, false);
+  assert.equal(outcome.value?.id, commit.run.id);
+  assert.equal((await read)?.id, commit.run.id);
+  assert.equal((await repository.findCatalogItem(
+    "team-a", "migration-item-race"
+  ))?.code, "MIG-race");
+  assert.equal((await repository.findCommissionProductLink(
+    "team-a", "product-race"
+  ))?.pricingPolicyVersionId, "migration-policy-race");
 });
 
 test("catalog commands replay exact requests and fail closed on key conflicts", async () => {
@@ -669,6 +916,7 @@ test("memory append boundaries store and return canonical UTC catalog instants",
   assert.equal(policy.validFrom, "2026-08-09T08:00:00.123Z");
   assert.equal(policy.validTo, "2026-08-10T09:00:00.456Z");
   assert.equal(policy.createdAt, "2026-08-09T08:00:00.123Z");
+  assert.doesNotThrow(() => assertClosedPricingPolicyVersion(policy));
   assert.equal(
     (await repository.listPricingPolicies("team-a", {
       cursor: null, limit: 20, sort: "updatedAt", direction: "desc"
@@ -690,6 +938,86 @@ test("memory append boundaries store and return canonical UTC catalog instants",
     (await repository.findPackageVersion("team-a", version.id))?.validFrom,
     "2026-08-09T08:00:00.123Z"
   );
+});
+
+test("memory migration canonicalizes run and link instants for result find and replay", async () => {
+  const repository = new InMemoryCatalogRepository();
+  const commit = migrationCommit(["offset"], {
+    startedAt: "2026-08-09T16:00:00.123+08:00",
+    completedAt: "2026-08-10T17:00:00.456+08:00",
+    migratedAt: "2026-08-11T18:00:00.789+08:00"
+  });
+  const result = await repository.commitCommissionCatalogMigration(commit);
+  assert.equal(result.startedAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(result.completedAt, "2026-08-10T09:00:00.456Z");
+  assert.equal((await repository.findCommissionCatalogMigrationRun(
+    "team-a", commit.run.idempotencyKey
+  ))?.completedAt, "2026-08-10T09:00:00.456Z");
+  assert.equal((await repository.findCommissionProductLink(
+    "team-a", "product-offset"
+  ))?.migratedAt, "2026-08-11T10:00:00.789Z");
+  const replay = await repository.commitCommissionCatalogMigration(commit);
+  assert.equal(replay.startedAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(replay.completedAt, "2026-08-10T09:00:00.456Z");
+});
+
+test("memory migration prevalidates every canonical entry before atomic publication", async () => {
+  const repository = new InMemoryCatalogRepository();
+  const base = migrationCommit(["atomic-a", "atomic-b"]);
+  const commit: CommissionCatalogMigrationCommit = {
+    ...base,
+    entries: [base.entries[0]!, {
+      ...base.entries[1]!,
+      item: { ...base.entries[1]!.item, createdAt: "not-an-instant" }
+    }]
+  };
+  await assert.rejects(
+    () => repository.commitCommissionCatalogMigration(commit),
+    { code: "invalid_commission_catalog_migration_commit" }
+  );
+  assert.equal(await repository.findCatalogItem(
+    "team-a", "migration-item-atomic-a"
+  ), null);
+  assert.equal(await repository.findPricingPolicyVersion(
+    "team-a", "migration-policy-atomic-a"
+  ), null);
+  assert.equal(await repository.findCommissionProductLink(
+    "team-a", "product-atomic-a"
+  ), null);
+  assert.equal(await repository.findCommissionCatalogMigrationRun(
+    "team-a", base.run.idempotencyKey
+  ), null);
+});
+
+test("memory rejects canonical instants outside MySQL DATETIME four-digit range", async () => {
+  const repository = new InMemoryCatalogRepository();
+  const upperRollover = "9999-12-31T23:59:59.999-23:59";
+  const lowerRollover = "1000-01-01T00:00:00.000+23:59";
+  const item: CatalogItem = {
+    id: "range-item", workspaceId: "team-a", type: "service", code: "RANGE",
+    name: "range", description: "", unit: "次", status: "active", revision: 1,
+    createdBy: "migration", createdAt: upperRollover, updatedAt: NOW
+  };
+  const policy = persistedPolicy(createPolicyCommand({
+    id: "range-policy", catalogItemId: item.id, validFrom: upperRollover
+  }));
+  const version: PackageVersion = {
+    id: "range-package", workspaceId: "team-a",
+    packageCatalogItemId: item.id, version: 1, currency: "CNY",
+    status: "draft", validFrom: lowerRollover, validTo: null, revision: 1,
+    createdBy: "migration", createdAt: NOW, updatedAt: NOW
+  };
+  const results = await Promise.allSettled([
+    repository.appendCatalogItem(item),
+    repository.appendPricingPolicyVersion(policy),
+    repository.appendPackageVersion(version)
+  ]);
+  assert.deepEqual(results.map((result) => result.status), [
+    "rejected", "rejected", "rejected"
+  ]);
+  assert.equal(await repository.findCatalogItem("team-a", item.id), null);
+  assert.equal(await repository.findPricingPolicyVersion("team-a", policy.id), null);
+  assert.equal(await repository.findPackageVersion("team-a", version.id), null);
 });
 
 test("memory command results reads and receipt replays share canonical UTC bytes", async () => {
@@ -1044,6 +1372,51 @@ test("legacy draft-component replacement still uses the Foundation barrier first
     "componentCatalogItemId", "componentPricingPolicyVersionId",
     "packageVersionId", "quantityMicros", "workspaceId"
   ]);
+});
+
+test("legacy component replacement waits for failing package command rollback", async () => {
+  const base = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const transactions = new RacingPostWorkFailureRunner(base);
+  const repository = new InMemoryCatalogRepository({
+    transactions,
+    temporalBarrier: new ObservingGrowthTemporalBarrier(base)
+  });
+  await repository.appendPackageVersion({
+    id: "component-publication-race", workspaceId: "team-a",
+    packageCatalogItemId: "package-item-1", version: 1, currency: "CNY",
+    status: "draft", validFrom: NOW, validTo: null, revision: 1,
+    createdBy: "migration", createdAt: NOW, updatedAt: NOW
+  });
+  const failing = assert.rejects(repository.updatePackageVersionDraft({
+    workspaceId: "team-a", id: "component-publication-race", expectedRevision: 1,
+    patch: { components: [{
+      componentCatalogItemId: "uncommitted-item",
+      componentPricingPolicyVersionId: "uncommitted-policy",
+      quantityMicros: 1_000_000
+    }] },
+    actorId: "admin-1", idempotencyKey: "component-command-failure",
+    requestHash: hash({ components: "uncommitted" })
+  }), /post_work_commit_failure/u);
+  await transactions.workComplete;
+  const legacy = [{
+    workspaceId: "team-a", packageVersionId: "component-publication-race",
+    componentCatalogItemId: "legacy-item",
+    componentPricingPolicyVersionId: "legacy-policy",
+    quantityMicros: 2_000_000
+  }] as const;
+  let settled = false;
+  const replacement = repository.replaceDraftPackageComponents(
+    "team-a", "component-publication-race", legacy
+  ).then((value) => { settled = true; return value; });
+  const read = repository.listPackageComponents(
+    "team-a", "component-publication-race"
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  transactions.releaseFailure();
+  await failing;
+  assert.deepEqual(await replacement, legacy);
+  assert.deepEqual(await read, legacy);
 });
 
 test("empty component replacement retains one set-level authority stamp", async () => {

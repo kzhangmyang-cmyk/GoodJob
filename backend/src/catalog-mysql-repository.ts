@@ -13,6 +13,8 @@ import {
   assertClosedPricingPolicyVersion,
   immutableClone,
   normalizeCatalogItemInstants,
+  normalizeCommissionCatalogMigrationRunInstants,
+  normalizeCommissionProductCatalogLinkInstant,
   normalizePackageVersionInstants,
   normalizePricingPolicyVersionInstants
 } from "./catalog-domain.js";
@@ -33,7 +35,8 @@ import type {
   UpdatePackageVersionDraftCommand
 } from "./catalog-repository.js";
 import {
-  assertCommissionCatalogMigrationCommitInvariant
+  assertCommissionCatalogMigrationCommitInvariant,
+  normalizeCommissionCatalogMigrationCommit
 } from "./catalog-repository.js";
 import {
   MysqlGrowthTemporalTransaction,
@@ -445,13 +448,13 @@ function parsePackageComponent(row: MysqlRow): PackageComponent {
 }
 
 function parseLink(row: MysqlRow): CommissionProductCatalogLink {
-  return immutableClone({
+  return immutableClone(normalizeCommissionProductCatalogLinkInstant({
     workspaceId: String(row.workspace_id),
     commissionProductId: String(row.commission_product_id),
     catalogItemId: String(row.catalog_item_id),
     pricingPolicyVersionId: String(row.pricing_policy_version_id),
     migratedAt: instant(row.migrated_at)
-  }) as CommissionProductCatalogLink;
+  })) as CommissionProductCatalogLink;
 }
 
 async function first<T>(
@@ -550,7 +553,7 @@ async function findRun(
      ORDER BY commission_product_id`,
     [workspaceId, String(row.id)]
   );
-  return immutableClone({
+  return immutableClone(normalizeCommissionCatalogMigrationRunInstants({
     id: String(row.id), workspaceId: String(row.workspace_id),
     actorId: String(row.actor_id), idempotencyKey: String(row.idempotency_key),
     inputSnapshotHash: String(row.input_snapshot_hash),
@@ -560,7 +563,7 @@ async function findRun(
     repairRequired: safeNumber(row.repair_required, "repair_required"),
     reportHash: String(row.report_hash),
     items: (itemRows as MysqlRow[]).map(parseMigrationItem)
-  }) as CommissionCatalogMigrationRun;
+  } as CommissionCatalogMigrationRun)) as CommissionCatalogMigrationRun;
 }
 
 function migrationConflict(): Error & { code: string } {
@@ -1684,6 +1687,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
   async commitCommissionCatalogMigration(
     commit: CommissionCatalogMigrationCommit
   ): Promise<CommissionCatalogMigrationRun> {
+    commit = normalizeCommissionCatalogMigrationCommit(commit);
     assertCommissionCatalogMigrationCommitInvariant(commit);
     const connection = await this.pool.getConnection();
     try {

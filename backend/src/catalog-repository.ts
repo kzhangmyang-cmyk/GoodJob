@@ -13,6 +13,8 @@ import {
   assertClosedPricingPolicyVersion,
   immutableClone,
   normalizeCatalogItemInstants,
+  normalizeCommissionCatalogMigrationRunInstants,
+  normalizeCommissionProductCatalogLinkInstant,
   normalizePackageVersionInstants,
   normalizePricingPolicyVersionInstants
 } from "./catalog-domain.js";
@@ -288,6 +290,16 @@ export function assertCommissionCatalogMigrationCommitInvariant(
   commit: CommissionCatalogMigrationCommit
 ): void {
   const { run, entries } = commit;
+  try {
+    normalizeCommissionCatalogMigrationRunInstants(run);
+    for (const entry of entries) {
+      normalizeCatalogItemInstants(entry.item);
+      normalizePricingPolicyVersionInstants(entry.pricingPolicy);
+      normalizeCommissionProductCatalogLinkInstant(entry.link);
+    }
+  } catch {
+    throw invalidMigrationCommit();
+  }
   if (!run || !Array.isArray(entries)
     || !concreteToken(run.workspaceId) || !concreteToken(run.id)
     || !concreteToken(run.actorId) || !concreteToken(run.idempotencyKey)
@@ -378,6 +390,25 @@ function migrationEntryProductIds(
   commit: CommissionCatalogMigrationCommit
 ): ReadonlySet<string> {
   return new Set(commit.entries.map((entry) => entry.link.commissionProductId));
+}
+
+export function normalizeCommissionCatalogMigrationCommit(
+  commit: CommissionCatalogMigrationCommit
+): CommissionCatalogMigrationCommit {
+  try {
+    return immutableClone({
+      run: normalizeCommissionCatalogMigrationRunInstants(commit.run),
+      entries: commit.entries.map((entry) => ({
+        item: normalizeCatalogItemInstants(entry.item),
+        pricingPolicy: normalizePricingPolicyVersionInstants(
+          entry.pricingPolicy
+        ),
+        link: normalizeCommissionProductCatalogLinkInstant(entry.link)
+      }))
+    }) as CommissionCatalogMigrationCommit;
+  } catch {
+    throw invalidMigrationCommit();
+  }
 }
 
 function key(workspaceId: string, id: string): string {
@@ -643,6 +674,18 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     }
   }
 
+  private async legacyWrite<T>(
+    workspaceId: string,
+    write: () => T | Promise<T>
+  ): Promise<T> {
+    const release = await this.acquirePublication(workspaceId);
+    try {
+      return await write();
+    } finally {
+      release();
+    }
+  }
+
   private findCatalogItemNoWait(workspaceId: string, id: string): CatalogItem | null {
     const item = this.catalogItems.get(key(workspaceId, id));
     return item ? immutableClone(item) as CatalogItem : null;
@@ -719,11 +762,18 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   }
 
   async appendCatalogItem(item: CatalogItem): Promise<CatalogItem> {
-    const itemKey = key(item.workspaceId, item.id);
-    if (this.catalogItems.has(itemKey)) throw conflict("catalog_item_already_exists");
-    const stored = immutableClone(normalizeCatalogItemInstants(item)) as CatalogItem;
-    this.catalogItems.set(itemKey, stored);
-    return immutableClone(stored) as CatalogItem;
+    const input = immutableClone(item) as CatalogItem;
+    return this.legacyWrite(input.workspaceId, () => {
+      const stored = immutableClone(
+        normalizeCatalogItemInstants(input)
+      ) as CatalogItem;
+      const itemKey = key(stored.workspaceId, stored.id);
+      if (this.catalogItems.has(itemKey)) {
+        throw conflict("catalog_item_already_exists");
+      }
+      this.catalogItems.set(itemKey, stored);
+      return immutableClone(stored) as CatalogItem;
+    });
   }
 
   async findCatalogItem(workspaceId: string, id: string): Promise<CatalogItem | null> {
@@ -755,16 +805,18 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   async appendPricingPolicyVersion(
     policy: PricingPolicyVersion
   ): Promise<PricingPolicyVersion> {
-    assertClosedPricingPolicyVersion(policy);
-    const policyKey = key(policy.workspaceId, policy.id);
-    if (this.pricingPolicies.has(policyKey)) {
-      throw conflict("pricing_policy_version_already_exists");
-    }
-    const stored = immutableClone(
-      normalizePricingPolicyVersionInstants(policy)
-    ) as PricingPolicyVersion;
-    this.pricingPolicies.set(policyKey, stored);
-    return immutableClone(stored) as PricingPolicyVersion;
+    const input = immutableClone(policy) as PricingPolicyVersion;
+    return this.legacyWrite(input.workspaceId, () => {
+      const stored = immutableClone(
+        normalizePricingPolicyVersionInstants(input)
+      ) as PricingPolicyVersion;
+      const policyKey = key(stored.workspaceId, stored.id);
+      if (this.pricingPolicies.has(policyKey)) {
+        throw conflict("pricing_policy_version_already_exists");
+      }
+      this.pricingPolicies.set(policyKey, stored);
+      return immutableClone(stored) as PricingPolicyVersion;
+    });
   }
 
   async findPricingPolicyVersion(
@@ -802,15 +854,18 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   }
 
   async appendPackageVersion(version: PackageVersion): Promise<PackageVersion> {
-    const versionKey = key(version.workspaceId, version.id);
-    if (this.packageVersions.has(versionKey)) {
-      throw conflict("package_version_already_exists");
-    }
-    const stored = immutableClone(
-      normalizePackageVersionInstants(version)
-    ) as PackageVersion;
-    this.packageVersions.set(versionKey, stored);
-    return immutableClone(stored) as PackageVersion;
+    const input = immutableClone(version) as PackageVersion;
+    return this.legacyWrite(input.workspaceId, () => {
+      const stored = immutableClone(
+        normalizePackageVersionInstants(input)
+      ) as PackageVersion;
+      const versionKey = key(stored.workspaceId, stored.id);
+      if (this.packageVersions.has(versionKey)) {
+        throw conflict("package_version_already_exists");
+      }
+      this.packageVersions.set(versionKey, stored);
+      return immutableClone(stored) as PackageVersion;
+    });
   }
 
   async findPackageVersion(workspaceId: string, id: string): Promise<PackageVersion | null> {
@@ -1393,7 +1448,17 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   async commitCommissionCatalogMigration(
     commit: CommissionCatalogMigrationCommit
   ): Promise<CommissionCatalogMigrationRun> {
-    assertCommissionCatalogMigrationCommitInvariant(commit);
+    const input = immutableClone(commit) as CommissionCatalogMigrationCommit;
+    return this.legacyWrite(input.run.workspaceId, () => {
+      const canonicalCommit = normalizeCommissionCatalogMigrationCommit(input);
+      assertCommissionCatalogMigrationCommitInvariant(canonicalCommit);
+      return this.commitCommissionCatalogMigrationNoWait(canonicalCommit);
+    });
+  }
+
+  private commitCommissionCatalogMigrationNoWait(
+    commit: CommissionCatalogMigrationCommit
+  ): CommissionCatalogMigrationRun {
     const runKey = key(commit.run.workspaceId, commit.run.idempotencyKey);
     const existing = this.migrationRuns.get(runKey);
     if (existing) {
@@ -1455,13 +1520,11 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     for (const entry of commit.entries) {
       this.catalogItems.set(
         key(entry.item.workspaceId, entry.item.id),
-        immutableClone(normalizeCatalogItemInstants(entry.item)) as CatalogItem
+        immutableClone(entry.item) as CatalogItem
       );
       this.pricingPolicies.set(
         key(entry.pricingPolicy.workspaceId, entry.pricingPolicy.id),
-        immutableClone(normalizePricingPolicyVersionInstants(
-          entry.pricingPolicy
-        )) as PricingPolicyVersion
+        immutableClone(entry.pricingPolicy) as PricingPolicyVersion
       );
       this.commissionLinks.set(
         key(entry.link.workspaceId, entry.link.commissionProductId),

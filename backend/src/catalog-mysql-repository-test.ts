@@ -14,7 +14,11 @@ import type {
   PackageVersionLifecycleCommand,
   PricingPolicyLifecycleCommand
 } from "./catalog-repository.js";
-import type { PricingPolicyVersion } from "./catalog-domain.js";
+import type {
+  CatalogItem,
+  PackageVersion,
+  PricingPolicyVersion
+} from "./catalog-domain.js";
 import { MysqlGrowthTemporalBarrier } from "./growth-temporal-barrier-mysql-repository.js";
 
 class FakeConnection {
@@ -284,6 +288,60 @@ function policyValue(overrides: Record<string, unknown> = {}): PricingPolicyVers
   } as PricingPolicyVersion;
 }
 
+function testHash(value: unknown): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+}
+
+function mysqlMigrationCommit(
+  times: Readonly<{
+    startedAt: string;
+    completedAt: string;
+    migratedAt: string;
+  }>
+): CommissionCatalogMigrationCommit {
+  const snapshot = ["object", []] as const;
+  const snapshotHash = testHash(snapshot);
+  return {
+    run: {
+      id: "offset-run", workspaceId: "team-a", actorId: "admin-1",
+      idempotencyKey: "offset-run-key",
+      inputSnapshotHash: testHash([
+        "commission-catalog-migration-input.v1", "team-a", [snapshot]
+      ]),
+      startedAt: times.startedAt, completedAt: times.completedAt,
+      status: "completed", scanned: 1, migrated: 1, repairRequired: 0,
+      reportHash: testHash([
+        "commission-catalog-migration-report.v1", "team-a",
+        [["offset-product", "migrated", "migrated", snapshotHash]]
+      ]),
+      items: [{
+        workspaceId: "team-a", commissionProductId: "offset-product",
+        status: "migrated", code: "migrated", snapshot, snapshotHash,
+        catalogItemId: "offset-migration-item",
+        pricingPolicyVersionId: "offset-migration-policy"
+      }]
+    },
+    entries: [{
+      item: {
+        id: "offset-migration-item", workspaceId: "team-a", type: "service",
+        code: "OFFSET-MIG", name: "offset migration", description: "", unit: "次",
+        status: "active", revision: 1, createdBy: "admin-1",
+        createdAt: "2026-08-09T08:00:00.000Z",
+        updatedAt: "2026-08-09T08:00:00.000Z"
+      },
+      pricingPolicy: policyValue({
+        id: "offset-migration-policy", catalogItemId: "offset-migration-item"
+      }),
+      link: {
+        workspaceId: "team-a", commissionProductId: "offset-product",
+        catalogItemId: "offset-migration-item",
+        pricingPolicyVersionId: "offset-migration-policy",
+        migratedAt: times.migratedAt
+      }
+    }]
+  };
+}
+
 test("catalog schema uses dedicated append-oriented tables", async () => {
   const pool = new ExistingSchemaPool();
   await ensureCatalogMysqlSchema(asPool(pool));
@@ -482,6 +540,102 @@ test("mysql migration commit rejects a false existing-authority claim before wri
     pool.connection.calls.some((call) => /^(?:INSERT|UPDATE|DELETE)\b/u.test(call.sql)),
     false
   );
+});
+
+test("mysql migration result params find and replay share canonical UTC bytes", async () => {
+  const pool = new FakePool();
+  pool.connection.enqueue([]);
+  const repository = new MysqlCatalogRepository(asPool(pool));
+  const commit = mysqlMigrationCommit({
+    startedAt: "2026-08-09T16:00:00.123+08:00",
+    completedAt: "2026-08-10T17:00:00.456+08:00",
+    migratedAt: "2026-08-11T18:00:00.789+08:00"
+  });
+  const result = await repository.commitCommissionCatalogMigration(commit);
+  assert.equal(result.startedAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(result.completedAt, "2026-08-10T09:00:00.456Z");
+  const runInsert = pool.connection.calls.find((call) =>
+    /^INSERT INTO commission_catalog_migration_runs/u.test(call.sql)
+  )!;
+  assert.equal(runInsert.values[5], "2026-08-09 08:00:00.123");
+  assert.equal(runInsert.values[6], "2026-08-10 09:00:00.456");
+  const linkInsert = pool.connection.calls.find((call) =>
+    /^INSERT INTO commission_product_catalog_links/u.test(call.sql)
+  )!;
+  assert.equal(linkInsert.values[4], "2026-08-11 10:00:00.789");
+
+  const runRow = {
+    id: commit.run.id, workspace_id: "team-a", actor_id: "admin-1",
+    idempotency_key: commit.run.idempotencyKey,
+    input_snapshot_hash: commit.run.inputSnapshotHash,
+    started_at: "2026-08-09T16:00:00.123+08:00",
+    completed_at: "2026-08-10T17:00:00.456+08:00",
+    run_status: "completed", scanned: 1, migrated: 1, repair_required: 0,
+    report_hash: commit.run.reportHash
+  };
+  const itemRow = {
+    workspace_id: "team-a", migration_run_id: commit.run.id,
+    commission_product_id: "offset-product", item_status: "migrated",
+    result_code: "migrated", snapshot_json: JSON.stringify(
+      commit.run.items[0]!.snapshot
+    ), snapshot_hash: commit.run.items[0]!.snapshotHash,
+    catalog_item_id: "offset-migration-item",
+    pricing_policy_version_id: "offset-migration-policy"
+  };
+  pool.connection.enqueue([runRow]);
+  pool.connection.enqueue([itemRow]);
+  const replay = await repository.commitCommissionCatalogMigration(commit);
+  assert.equal(replay.startedAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(replay.completedAt, "2026-08-10T09:00:00.456Z");
+
+  pool.enqueue([{
+    workspace_id: "team-a", commission_product_id: "offset-product",
+    catalog_item_id: "offset-migration-item",
+    pricing_policy_version_id: "offset-migration-policy",
+    migrated_at: "2026-08-11T18:00:00.789+08:00"
+  }]);
+  assert.equal((await repository.findCommissionProductLink(
+    "team-a", "offset-product"
+  ))?.migratedAt, "2026-08-11T10:00:00.789Z");
+  pool.enqueue([runRow]);
+  pool.enqueue([itemRow]);
+  assert.equal((await repository.findCommissionCatalogMigrationRun(
+    "team-a", commit.run.idempotencyKey
+  ))?.completedAt, "2026-08-10T09:00:00.456Z");
+});
+
+test("mysql rejects canonical instants outside DATETIME range before I/O", async () => {
+  const upperRollover = "9999-12-31T23:59:59.999-23:59";
+  const lowerRollover = "1000-01-01T00:00:00.000+23:59";
+  const item: CatalogItem = {
+    id: "range-item", workspaceId: "team-a", type: "service", code: "RANGE",
+    name: "range", description: "", unit: "次", status: "active", revision: 1,
+    createdBy: "admin-1", createdAt: upperRollover,
+    updatedAt: "2026-08-09T08:00:00.000Z"
+  };
+  const version: PackageVersion = {
+    id: "range-package", workspaceId: "team-a",
+    packageCatalogItemId: "range-item", version: 1, currency: "CNY",
+    status: "draft", validFrom: lowerRollover, validTo: null, revision: 1,
+    createdBy: "admin-1", createdAt: "2026-08-09T08:00:00.000Z",
+    updatedAt: "2026-08-09T08:00:00.000Z"
+  };
+  const itemPool = new FakePool();
+  const policyPool = new FakePool();
+  const packagePool = new FakePool();
+  const results = await Promise.allSettled([
+    new MysqlCatalogRepository(asPool(itemPool)).appendCatalogItem(item),
+    new MysqlCatalogRepository(asPool(policyPool)).appendPricingPolicyVersion(
+      policyValue({ id: "range-policy", validFrom: upperRollover })
+    ),
+    new MysqlCatalogRepository(asPool(packagePool)).appendPackageVersion(version)
+  ]);
+  assert.deepEqual(results.map((result) => result.status), [
+    "rejected", "rejected", "rejected"
+  ]);
+  assert.equal(itemPool.calls.length, 0);
+  assert.equal(policyPool.calls.length, 0);
+  assert.equal(packagePool.calls.length, 0);
 });
 
 test("mysql catalog reads are workspace-scoped and clone parsed JSON", async () => {
