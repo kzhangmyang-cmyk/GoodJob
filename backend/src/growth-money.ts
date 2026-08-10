@@ -45,8 +45,46 @@ export function currencyExponent(currency: string): number | null {
     : null;
 }
 
+export function assertCurrencyCode(value: string): string {
+  if (typeof value !== "string" || !/^[A-Z]{3}$/u.test(value)
+    || currencyExponent(value) === null) {
+    throw Object.assign(new RangeError("currency"), {
+      code: "currency_invalid"
+    });
+  }
+  return value;
+}
+
 function amountRangeError(field: string): RangeError & { code: string } {
   return Object.assign(new RangeError(field), { code: "amount_out_of_range" });
+}
+
+export function assertMinorAmount(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw amountRangeError("amountMinor");
+  }
+  return value;
+}
+
+export function decimalMajorToMinor(
+  value: string,
+  currency: string
+): number {
+  const exponent = currencyExponent(assertCurrencyCode(currency))!;
+  const match = typeof value === "string"
+    ? /^(\d+)(?:\.(\d+))?$/u.exec(value)
+    : null;
+  if (!match || (match[2]?.length ?? 0) > exponent) {
+    throw Object.assign(new RangeError("decimal amount"), {
+      code: "decimal_amount_invalid"
+    });
+  }
+  const scale = 10n ** BigInt(exponent);
+  const fraction = (match[2] ?? "").padEnd(exponent, "0");
+  return safeMinor(
+    BigInt(match[1]!) * scale + BigInt(fraction || "0"),
+    "decimal amount"
+  );
 }
 
 export function roundHalfUpDiv(
