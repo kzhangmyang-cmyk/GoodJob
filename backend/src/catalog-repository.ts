@@ -20,6 +20,7 @@ import {
   type GrowthTemporalTransaction,
   type GrowthTemporalTransactionRunner
 } from "./growth-temporal-barrier.js";
+import { growthHttpIdempotencyKeyHash } from "./growth-http-idempotency-repository.js";
 
 export interface CatalogListQuery {
   cursor: string | null;
@@ -409,7 +410,7 @@ function abort<T>(result: CatalogCommandResult<T>): never {
 
 function commandIdentity(command: CommandIdentity): CommandIdentity {
   if (!command.actorId.trim() || !command.idempotencyKey.trim()
-    || !command.requestHash.trim()) {
+    || command.idempotencyKey.length > 200 || !command.requestHash.trim()) {
     throw conflict("invalid_catalog_command_identity");
   }
   return command;
@@ -420,7 +421,9 @@ function receiptKey(
   command: CommandIdentity,
   operation: CatalogCommandOperation
 ): string {
-  return `${workspaceId}\u0000${command.actorId}\u0000${operation}\u0000${command.idempotencyKey}`;
+  return `${workspaceId}\u0000${command.actorId}\u0000${operation}\u0000${
+    growthHttpIdempotencyKeyHash(command.idempotencyKey)
+  }`;
 }
 
 function snapshotMap<V>(
@@ -534,6 +537,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   }>>();
   private readonly transactions: GrowthTemporalTransactionRunner | null;
   private readonly temporalBarrier: GrowthTemporalBarrier | null;
+  private readonly publicationTails = new Map<string, Promise<void>>();
 
   constructor(options: Readonly<{
     transactions: GrowthTemporalTransactionRunner;
@@ -614,6 +618,20 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     };
   }
 
+  private async acquirePublication(workspaceId: string): Promise<() => void> {
+    const predecessor = this.publicationTails.get(workspaceId) ?? Promise.resolve();
+    let resolveCurrent!: () => void;
+    const current = new Promise<void>((resolve) => { resolveCurrent = resolve; });
+    this.publicationTails.set(workspaceId, current);
+    await predecessor;
+    return () => {
+      resolveCurrent();
+      if (this.publicationTails.get(workspaceId) === current) {
+        this.publicationTails.delete(workspaceId);
+      }
+    };
+  }
+
   private async command<T>(
     workspaceId: string,
     work: (
@@ -627,21 +645,33 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     }
     const transactions = this.transactions;
     const temporalBarrier = this.temporalBarrier;
-    const restore = this.workspaceJournal(concreteWorkspaceId);
+    const publication: {
+      restore?: () => void;
+      release?: () => void;
+    } = {};
     try {
       return await transactions.run(async (tx) => {
         const stamp = await temporalBarrier.allocateAppend(
           tx,
           concreteWorkspaceId
         );
-        return work(tx, stamp);
+        publication.release = await this.acquirePublication(concreteWorkspaceId);
+        publication.restore = this.workspaceJournal(concreteWorkspaceId);
+        try {
+          return await work(tx, stamp);
+        } catch (error) {
+          publication.restore();
+          throw error;
+        }
       });
     } catch (error) {
-      restore();
+      publication.restore?.();
       if (error instanceof CatalogCommandAbort) {
         return error.result as CatalogCommandResult<T>;
       }
       throw error;
+    } finally {
+      publication.release?.();
     }
   }
 
@@ -783,7 +813,10 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       throw new Error("catalog_temporal_adapter_required");
     }
     const temporalBarrier = this.temporalBarrier;
-    const restore = this.workspaceJournal(concrete);
+    const publication: {
+      restore?: () => void;
+      release?: () => void;
+    } = {};
     try {
       return await this.transactions.run(async (tx) => {
         const stamped: PackageComponent[] = [];
@@ -791,33 +824,44 @@ export class InMemoryCatalogRepository implements CatalogRepository {
           recordedAt: string;
           temporalSequence: number;
         }>> = [];
-        if (components.length === 0) {
-          const stamp = await temporalBarrier.allocateAppend(tx, concrete);
-          this.rememberAppend(
-            "package-component-set", concrete, packageVersionId, stamp
-          );
-        } else {
-          for (const component of components) {
-            stamps.push(await temporalBarrier.allocateAppend(tx, concrete));
-            stamped.push({ ...component });
+        const firstStamp = await temporalBarrier.allocateAppend(tx, concrete);
+        publication.release = await this.acquirePublication(concrete);
+        publication.restore = this.workspaceJournal(concrete);
+        try {
+          if (components.length === 0) {
+            this.rememberAppend(
+              "package-component-set", concrete, packageVersionId, firstStamp
+            );
+          } else {
+            stamps.push(firstStamp);
+            stamped.push({ ...components[0]! });
+            for (const component of components.slice(1)) {
+              stamps.push(await temporalBarrier.allocateAppend(tx, concrete));
+              stamped.push({ ...component });
+            }
           }
+          const version = this.packageVersions.get(key(concrete, packageVersionId));
+          if (!version) throw conflict("package_version_not_found");
+          if (version.status !== "draft") throw conflict("package_version_immutable");
+          const stored = immutableClone(stamped) as readonly PackageComponent[];
+          this.packageComponents.set(key(concrete, packageVersionId), stored);
+          stored.forEach((component, index) => this.rememberAppend(
+            "package-component",
+            concrete,
+            `${packageVersionId}\u0000${component.componentCatalogItemId}\u0000${component.componentPricingPolicyVersionId}`,
+            stamps[index]!
+          ));
+          return immutableClone(stored) as readonly PackageComponent[];
+        } catch (error) {
+          publication.restore();
+          throw error;
         }
-        const version = this.packageVersions.get(key(concrete, packageVersionId));
-        if (!version) throw conflict("package_version_not_found");
-        if (version.status !== "draft") throw conflict("package_version_immutable");
-        const stored = immutableClone(stamped) as readonly PackageComponent[];
-        this.packageComponents.set(key(concrete, packageVersionId), stored);
-        stored.forEach((component, index) => this.rememberAppend(
-          "package-component",
-          concrete,
-          `${packageVersionId}\u0000${component.componentCatalogItemId}\u0000${component.componentPricingPolicyVersionId}`,
-          stamps[index]!
-        ));
-        return immutableClone(stored) as readonly PackageComponent[];
       });
     } catch (error) {
-      restore();
+      publication.restore?.();
       throw error;
+    } finally {
+      publication.release?.();
     }
   }
 

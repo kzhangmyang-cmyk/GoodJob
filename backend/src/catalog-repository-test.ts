@@ -57,6 +57,64 @@ class ToggleAfterWorkRunner implements GrowthTemporalTransactionRunner {
   }
 }
 
+class RacingPostWorkFailureRunner implements GrowthTemporalTransactionRunner {
+  private failFirst = true;
+  private readonly workCompleteResolve: () => void;
+  private readonly releaseFailureResolve: () => void;
+  readonly workComplete: Promise<void>;
+  private readonly releaseFailurePromise: Promise<void>;
+
+  constructor(private readonly inner: GrowthTemporalTransactionRunner) {
+    let complete!: () => void;
+    let release!: () => void;
+    this.workComplete = new Promise<void>((resolve) => { complete = resolve; });
+    this.releaseFailurePromise = new Promise<void>((resolve) => { release = resolve; });
+    this.workCompleteResolve = complete;
+    this.releaseFailureResolve = release;
+  }
+
+  releaseFailure(): void { this.releaseFailureResolve(); }
+
+  async run<T>(work: (tx: GrowthTemporalTransaction) => Promise<T>): Promise<T> {
+    if (!this.failFirst) return this.inner.run(work);
+    this.failFirst = false;
+    await this.inner.run(work);
+    this.workCompleteResolve();
+    await this.releaseFailurePromise;
+    throw new Error("post_work_commit_failure");
+  }
+}
+
+class GateSecondAllocationBarrier extends ObservingGrowthTemporalBarrier {
+  private allocationsSeen = 0;
+  private readonly secondAllocationResolve: () => void;
+  private readonly returnSecondResolve: () => void;
+  readonly secondAllocation: Promise<void>;
+  private readonly returnSecond: Promise<void>;
+
+  constructor(transactions: GrowthTemporalTransactionRunner) {
+    super(transactions);
+    let seen!: () => void;
+    let release!: () => void;
+    this.secondAllocation = new Promise<void>((resolve) => { seen = resolve; });
+    this.returnSecond = new Promise<void>((resolve) => { release = resolve; });
+    this.secondAllocationResolve = seen;
+    this.returnSecondResolve = release;
+  }
+
+  releaseSecondAllocation(): void { this.returnSecondResolve(); }
+
+  override async allocateAppend(tx: GrowthTemporalTransaction, workspaceId: string) {
+    const stamp = await super.allocateAppend(tx, workspaceId);
+    this.allocationsSeen += 1;
+    if (this.allocationsSeen === 2) {
+      this.secondAllocationResolve();
+      await this.returnSecond;
+    }
+    return stamp;
+  }
+}
+
 const observedBarriers = new WeakMap<CatalogRepository, ObservingGrowthTemporalBarrier>();
 
 function repositoryFixtures(): readonly CatalogRepository[] {
@@ -184,6 +242,79 @@ test("memory repository rejects a stale catalog revision", async () => {
   }
 });
 
+test("concurrent memory CAS loser never restores over the committed winner", async () => {
+  const repository = repositoryFixtures()[0]!;
+  await repository.appendCatalogItem({
+    id: "item-race", workspaceId: "team-a", type: "service", code: "RACE",
+    name: "original", description: "", unit: "次", status: "active",
+    revision: 1, createdBy: "seed", createdAt: NOW, updatedAt: NOW
+  });
+  const results = await Promise.all([
+    repository.updateCatalogItem({
+      workspaceId: "team-a", id: "item-race", expectedRevision: 1,
+      patch: { name: "winner-a" }, actorId: "admin-a",
+      idempotencyKey: "race-a", requestHash: hash({ name: "winner-a" })
+    }),
+    repository.updateCatalogItem({
+      workspaceId: "team-a", id: "item-race", expectedRevision: 1,
+      patch: { name: "winner-b" }, actorId: "admin-b",
+      idempotencyKey: "race-b", requestHash: hash({ name: "winner-b" })
+    })
+  ]);
+  assert.equal(results.filter((result) => result.kind === "ok").length, 1);
+  assert.equal(
+    results.filter((result) => result.kind === "revision_conflict").length,
+    1
+  );
+  const winner = results.find((result) => result.kind === "ok")!;
+  const persisted = await repository.findCatalogItem("team-a", "item-race");
+  assert.equal(persisted?.revision, 2);
+  assert.equal(persisted?.name, winner.value.name);
+});
+
+test("post-work failure restores before a queued memory winner can publish", async () => {
+  const base = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const transactions = new RacingPostWorkFailureRunner(base);
+  const temporalBarrier = new GateSecondAllocationBarrier(base);
+  const repository = new InMemoryCatalogRepository({
+    transactions,
+    temporalBarrier
+  });
+  await repository.appendCatalogItem({
+    id: "item-post-work-race", workspaceId: "team-a", type: "service",
+    code: "POST-WORK-RACE", name: "original", description: "", unit: "次",
+    status: "active", revision: 1, createdBy: "seed",
+    createdAt: NOW, updatedAt: NOW
+  });
+  const failing = assert.rejects(repository.updateCatalogItem({
+    workspaceId: "team-a", id: "item-post-work-race", expectedRevision: 1,
+    patch: { name: "must-rollback" }, actorId: "admin-failing",
+    idempotencyKey: "post-work-failing",
+    requestHash: hash({ name: "must-rollback" })
+  }), /post_work_commit_failure/u);
+  await transactions.workComplete;
+  const winner = repository.updateCatalogItem({
+    workspaceId: "team-a", id: "item-post-work-race", expectedRevision: 1,
+    patch: { name: "queued-winner" }, actorId: "admin-winner",
+    idempotencyKey: "post-work-winner",
+    requestHash: hash({ name: "queued-winner" })
+  });
+  await temporalBarrier.secondAllocation;
+  temporalBarrier.releaseSecondAllocation();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  transactions.releaseFailure();
+  await failing;
+  assert.equal((await winner).kind, "ok");
+  assert.equal(
+    (await repository.findCatalogItem("team-a", "item-post-work-race"))?.name,
+    "queued-winner"
+  );
+  assert.equal(
+    (await repository.findCatalogItem("team-a", "item-post-work-race"))?.revision,
+    2
+  );
+});
+
 test("catalog commands replay exact requests and fail closed on key conflicts", async () => {
   for (const repository of repositoryFixtures()) {
     const command = createItemCommand();
@@ -233,6 +364,46 @@ test("domain receipts scope replay by workspace actor operation and key", async 
       kind: "state_conflict", code: "idempotency_conflict"
     });
   }
+});
+
+test("domain receipt keys preserve Foundation 200-character raw identity", async () => {
+  const repository = repositoryFixtures()[0]!;
+  const keys = [
+    "x".repeat(200), "Case", "case", "caf\u00e9", "cafe\u0301", "trail", "trail "
+  ];
+  for (const [index, idempotencyKey] of keys.entries()) {
+    const result = await repository.createCatalogItem(createItemCommand({
+      id: `receipt-key-${index}`, code: `RECEIPT-${index}`,
+      actorId: "receipt-actor", idempotencyKey,
+      requestHash: hash({ index })
+    }));
+    assert.equal(result.kind, "ok");
+    assert.equal(result.replayed, false);
+  }
+  const storedScopes = [...(repository as unknown as {
+    commandReceipts: Map<string, unknown>;
+  }).commandReceipts.keys()];
+  assert.equal(storedScopes.length, keys.length);
+  assert.equal(storedScopes.some((scope) => keys.some((raw) => scope.includes(raw))), false);
+  assert.equal(
+    storedScopes.every((scope) => /sha256:[a-f0-9]{64}/u.test(scope)),
+    true
+  );
+  const replay = await repository.createCatalogItem(createItemCommand({
+    id: "ignored-replay-id", code: "IGNORED-REPLAY",
+    actorId: "receipt-actor", idempotencyKey: "trail ",
+    requestHash: hash({ index: 6 })
+  }));
+  assert.equal(replay.kind, "ok");
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.value.id, "receipt-key-6");
+  await assert.rejects(
+    () => repository.createCatalogItem(createItemCommand({
+      id: "too-long", code: "TOO-LONG", actorId: "receipt-actor",
+      idempotencyKey: "x".repeat(201), requestHash: hash({ tooLong: true })
+    })),
+    { code: "invalid_catalog_command_identity" }
+  );
 });
 
 test("a lost HTTP completion replays its stable domain receipt after intervening mutation", async () => {
@@ -428,6 +599,44 @@ test("the full persisted policy object is exact and rejects historical source va
   assert.equal(
     await repository.findPricingPolicyVersion("team-a", "policy-full-closed"),
     null
+  );
+});
+
+test("persisted policy rejects zero price, 10000 minimum margin, and non-RFC3339 windows", async () => {
+  const repository = new InMemoryCatalogRepository();
+  const command = createPolicyCommand({ id: "strict-policy" });
+  const {
+    actorId: createdBy,
+    idempotencyKey: _idempotencyKey,
+    requestHash: _requestHash,
+    ...fields
+  } = command;
+  const base = {
+    ...fields, version: 1, status: "draft" as const,
+    revision: 1, createdBy, createdAt: NOW
+  };
+  for (const invalid of [
+    { ...base, listUnitPriceMinor: 0 },
+    { ...base, absoluteMinimumGrossMarginBps: 10_000 },
+    { ...base, validFrom: "2026-08-09" },
+    { ...base, validTo: "2026-08-10" },
+    { ...base, validFrom: "2026-02-30T08:00:00.000Z" },
+    { ...base, validFrom: new Date(NOW) }
+  ]) {
+    await assert.rejects(
+      () => repository.appendPricingPolicyVersion(invalid as never),
+      { code: "invalid_pricing_policy_version" }
+    );
+  }
+  const offset = {
+    ...base,
+    id: "strict-policy-offset",
+    validFrom: "2026-08-09T16:00:00.000+08:00",
+    validTo: "2026-08-10T16:00:00.000+08:00"
+  };
+  assert.equal(
+    (await repository.appendPricingPolicyVersion(offset)).id,
+    "strict-policy-offset"
   );
 });
 

@@ -34,13 +34,15 @@ import {
 } from "./catalog-repository.js";
 import {
   MysqlGrowthTemporalTransaction,
-  growthMysqlDate
+  growthMysqlDate,
+  growthMysqlInstant
 } from "./growth-temporal-barrier-mysql-repository.js";
 import {
   assertConcreteGrowthWorkspaceId,
   assertGrowthTemporalBarrier,
   type GrowthTemporalBarrier
 } from "./growth-temporal-barrier.js";
+import { growthHttpIdempotencyKeyHash } from "./growth-http-idempotency-repository.js";
 
 type QuerySource = Pick<mysql.Pool | mysql.PoolConnection, "query">;
 type MysqlRow = Record<string, unknown>;
@@ -182,13 +184,13 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
       'package_version.create_draft','package_version.update_draft',
       'package_version.activate','package_version.retire'
     ) NOT NULL,
-    idempotency_key VARCHAR(191) NOT NULL,
+    idempotency_key_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     request_hash VARCHAR(191) NOT NULL,
     resource_kind ENUM('catalog_item','pricing_policy','package_version') NOT NULL,
     resource_id VARCHAR(191) NOT NULL,
     recorded_at DATETIME(3) NOT NULL,
     temporal_sequence BIGINT UNSIGNED NOT NULL,
-    PRIMARY KEY (workspace_id, actor_id, operation, idempotency_key),
+    PRIMARY KEY (workspace_id, actor_id, operation, idempotency_key_hash),
     CONSTRAINT chk_catalog_command_receipts_workspace CHECK (
       workspace_id <> 'all' AND CHAR_LENGTH(TRIM(workspace_id)) > 0
     )
@@ -309,19 +311,52 @@ export async function ensureCatalogMysqlSchema(pool: mysql.Pool): Promise<void> 
       );
     }
   }
-}
-
-function mysqlDate(instant: string): string {
-  return instant.slice(0, 23).replace("T", " ");
+  const [receiptColumnRows] = await pool.query(
+    `SELECT column_name,is_nullable FROM information_schema.columns
+     WHERE table_schema = DATABASE() AND table_name = ?
+       AND column_name IN ('idempotency_key','idempotency_key_hash')`,
+    ["catalog_command_receipts"]
+  );
+  const receiptColumns = new Map((receiptColumnRows as MysqlRow[]).map((row) => [
+    String(row.column_name), String(row.is_nullable)
+  ]));
+  if (receiptColumns.has("idempotency_key")) {
+    if (!receiptColumns.has("idempotency_key_hash")) {
+      await pool.query(
+        `ALTER TABLE catalog_command_receipts
+         ADD COLUMN idempotency_key_hash
+           CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NULL`
+      );
+    }
+    await pool.query(
+      `UPDATE catalog_command_receipts
+       SET idempotency_key_hash = CONCAT('sha256:',
+         SHA2(CAST(idempotency_key AS BINARY),256))
+       WHERE idempotency_key_hash IS NULL`
+    );
+    await pool.query(
+      `ALTER TABLE catalog_command_receipts
+       DROP PRIMARY KEY,
+       MODIFY COLUMN idempotency_key_hash
+         CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+       ADD PRIMARY KEY (workspace_id,actor_id,operation,idempotency_key_hash),
+       DROP COLUMN idempotency_key`
+    );
+  }
 }
 
 function instant(value: unknown): string {
-  if (value instanceof Date) return value.toISOString();
-  const text = String(value);
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/u.test(text)) {
-    return new Date(`${text.replace(" ", "T")}Z`).toISOString();
+  return growthMysqlInstant(value);
+}
+
+function pricingInstant(value: unknown): string {
+  try {
+    return instant(value);
+  } catch {
+    throw Object.assign(new Error("invalid_pricing_policy_version"), {
+      code: "invalid_pricing_policy_version"
+    });
   }
-  return new Date(text).toISOString();
 }
 
 function json<T>(value: unknown): T {
@@ -368,12 +403,13 @@ function parsePricingPolicy(row: MysqlRow): PricingPolicyVersion {
     absolutePaymentTermDays: safeNumber(row.absolute_payment_term_days, "absolute_payment_term_days"),
     approvalThresholds: json(row.approval_thresholds_json),
     surchargePolicies: json(row.surcharge_policies_json),
-    giftPolicies: json(row.gift_policies_json), validFrom: instant(row.valid_from),
-    validTo: row.valid_to === null ? null : instant(row.valid_to),
+    giftPolicies: json(row.gift_policies_json),
+    validFrom: pricingInstant(row.valid_from),
+    validTo: row.valid_to === null ? null : pricingInstant(row.valid_to),
     status: row.policy_status ?? row.status, source: row.source,
     capabilityRegistryVersion: String(row.capability_registry_version),
     revision: safeNumber(row.revision, "revision"),
-    createdBy: String(row.created_by), createdAt: instant(row.created_at)
+    createdBy: String(row.created_by), createdAt: pricingInstant(row.created_at)
   } as PricingPolicyVersion;
   assertClosedPricingPolicyVersion(policy);
   return immutableClone(policy) as PricingPolicyVersion;
@@ -437,8 +473,8 @@ async function insertCatalogItem(
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [item.workspaceId, item.id, item.type, item.code, item.name, item.description,
       item.unit, item.status, item.revision, item.createdBy,
-      mysqlDate(item.createdAt), mysqlDate(item.updatedAt),
-      mysqlDate(stamp.recordedAt), stamp.temporalSequence]
+      growthMysqlDate(item.createdAt), growthMysqlDate(item.updatedAt),
+      growthMysqlDate(stamp.recordedAt), stamp.temporalSequence]
   );
 }
 
@@ -469,10 +505,11 @@ async function insertPricingPolicy(
       policy.absoluteMinimumGrossMarginBps, policy.standardPaymentTermDays,
       policy.absolutePaymentTermDays, JSON.stringify(policy.approvalThresholds),
       JSON.stringify(policy.surchargePolicies), JSON.stringify(policy.giftPolicies),
-      mysqlDate(policy.validFrom), policy.validTo ? mysqlDate(policy.validTo) : null,
+      growthMysqlDate(policy.validFrom),
+      policy.validTo ? growthMysqlDate(policy.validTo) : null,
       policy.status, policy.source, policy.capabilityRegistryVersion,
-      policy.revision, policy.createdBy, mysqlDate(policy.createdAt),
-      mysqlDate(stamp.recordedAt), stamp.temporalSequence]
+      policy.revision, policy.createdBy, growthMysqlDate(policy.createdAt),
+      growthMysqlDate(stamp.recordedAt), stamp.temporalSequence]
   );
 }
 
@@ -544,7 +581,7 @@ function assertCommandIdentity(command: Readonly<{
   requestHash: string;
 }>): void {
   if (!command.actorId.trim() || !command.idempotencyKey.trim()
-    || !command.requestHash.trim()) {
+    || command.idempotencyKey.length > 200 || !command.requestHash.trim()) {
     throw Object.assign(new Error("invalid_catalog_command_identity"), {
       code: "invalid_catalog_command_identity"
     });
@@ -573,8 +610,9 @@ async function mysqlReceiptReplay<T>(
     `SELECT request_hash,resource_kind,resource_id
      FROM catalog_command_receipts
      WHERE workspace_id = ? AND actor_id = ? AND operation = ?
-       AND idempotency_key = ? FOR UPDATE`,
-    [workspaceId, command.actorId, operation, command.idempotencyKey]
+       AND idempotency_key_hash = ? FOR UPDATE`,
+    [workspaceId, command.actorId, operation,
+      growthHttpIdempotencyKeyHash(command.idempotencyKey)]
   );
   const receipt = (rows as MysqlRow[])[0];
   if (!receipt) return null;
@@ -601,12 +639,13 @@ async function insertCatalogReceipt(
 ): Promise<void> {
   await connection.query(
     `INSERT INTO catalog_command_receipts (
-      workspace_id,actor_id,operation,idempotency_key,request_hash,
+      workspace_id,actor_id,operation,idempotency_key_hash,request_hash,
       resource_kind,resource_id,recorded_at,temporal_sequence
     ) VALUES (?,?,?,?,?,?,?,?,?)`,
-    [workspaceId, command.actorId, operation, command.idempotencyKey,
+    [workspaceId, command.actorId, operation,
+      growthHttpIdempotencyKeyHash(command.idempotencyKey),
       command.requestHash, resourceKind, resourceId,
-      mysqlDate(stamp.recordedAt), stamp.temporalSequence]
+      growthMysqlDate(stamp.recordedAt), stamp.temporalSequence]
   );
 }
 
@@ -828,9 +867,10 @@ export class MysqlCatalogRepository implements CatalogRepository {
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [version.workspaceId, version.id, version.packageCatalogItemId,
         version.version, version.currency, version.status,
-        mysqlDate(version.validFrom), version.validTo ? mysqlDate(version.validTo) : null,
-        version.revision, version.createdBy, mysqlDate(version.createdAt),
-        mysqlDate(version.updatedAt), mysqlDate(version.updatedAt),
+        growthMysqlDate(version.validFrom),
+        version.validTo ? growthMysqlDate(version.validTo) : null,
+        version.revision, version.createdBy, growthMysqlDate(version.createdAt),
+        growthMysqlDate(version.updatedAt), growthMysqlDate(version.updatedAt),
         0]
     );
     return immutableClone(version) as PackageVersion;
@@ -946,7 +986,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
         await connection.query(
           `UPDATE package_versions SET recorded_at = ?,temporal_sequence = ?
            WHERE workspace_id = ? AND id = ?`,
-          [mysqlDate(emptyStamp.recordedAt), emptyStamp.temporalSequence,
+          [growthMysqlDate(emptyStamp.recordedAt), emptyStamp.temporalSequence,
             workspaceId, packageVersionId]
         );
       }
@@ -959,7 +999,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
           ) VALUES (?,?,?,?,?,?,?)`,
           [workspaceId, packageVersionId, component.componentCatalogItemId,
             component.componentPricingPolicyVersionId, component.quantityMicros,
-            mysqlDate(stamp.recordedAt), stamp.temporalSequence]
+            growthMysqlDate(stamp.recordedAt), stamp.temporalSequence]
         );
       }
       await connection.commit();
@@ -1060,7 +1100,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
            recorded_at = ?,temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
         [next.name, next.description, next.unit, next.revision,
-          mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
+          growthMysqlDate(next.updatedAt), growthMysqlDate(stamp.recordedAt),
           stamp.temporalSequence,
           command.workspaceId, command.id, command.expectedRevision]
       );
@@ -1107,7 +1147,8 @@ export class MysqlCatalogRepository implements CatalogRepository {
          SET item_status = 'retired',revision = ?,updated_at = ?,
            recorded_at = ?,temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
-        [next.revision, mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
+        [next.revision, growthMysqlDate(next.updatedAt),
+          growthMysqlDate(stamp.recordedAt),
           stamp.temporalSequence,
           command.workspaceId, command.id, command.expectedRevision]
       );
@@ -1279,7 +1320,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
         `UPDATE pricing_policy_versions
          SET policy_status = ?,revision = ?,recorded_at = ?,temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
-        [to, next.revision, mysqlDate(stamp.recordedAt), stamp.temporalSequence,
+        [to, next.revision, growthMysqlDate(stamp.recordedAt), stamp.temporalSequence,
           command.workspaceId, command.id, command.expectedRevision]
       );
       await insertCatalogReceipt(
@@ -1354,7 +1395,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
         [component.workspaceId, component.packageVersionId,
           component.componentCatalogItemId,
           component.componentPricingPolicyVersionId, component.quantityMicros,
-          mysqlDate(stamp.recordedAt), stamp.temporalSequence]
+          growthMysqlDate(stamp.recordedAt), stamp.temporalSequence]
       );
     }
   }
@@ -1428,9 +1469,10 @@ export class MysqlCatalogRepository implements CatalogRepository {
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [version.workspaceId, version.id, version.packageCatalogItemId,
           version.version, version.currency, version.status,
-          mysqlDate(version.validFrom), version.validTo ? mysqlDate(version.validTo) : null,
-          version.revision, version.createdBy, mysqlDate(version.createdAt),
-          mysqlDate(version.updatedAt), mysqlDate(stamp.recordedAt),
+          growthMysqlDate(version.validFrom),
+          version.validTo ? growthMysqlDate(version.validTo) : null,
+          version.revision, version.createdBy, growthMysqlDate(version.createdAt),
+          growthMysqlDate(version.updatedAt), growthMysqlDate(stamp.recordedAt),
           stamp.temporalSequence]
       );
       await this.insertPackageComponents(connection, components);
@@ -1496,9 +1538,9 @@ export class MysqlCatalogRepository implements CatalogRepository {
          SET currency = ?,valid_from = ?,valid_to = ?,revision = ?,updated_at = ?,
            recorded_at = ?,temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
-        [next.currency, mysqlDate(next.validFrom),
-          next.validTo ? mysqlDate(next.validTo) : null, next.revision,
-          mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
+        [next.currency, growthMysqlDate(next.validFrom),
+          next.validTo ? growthMysqlDate(next.validTo) : null, next.revision,
+          growthMysqlDate(next.updatedAt), growthMysqlDate(stamp.recordedAt),
           stamp.temporalSequence,
           command.workspaceId, command.id, command.expectedRevision]
       );
@@ -1585,7 +1627,8 @@ export class MysqlCatalogRepository implements CatalogRepository {
          SET package_status = ?,revision = ?,updated_at = ?,recorded_at = ?,
            temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
-        [to, next.revision, mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
+        [to, next.revision, growthMysqlDate(next.updatedAt),
+          growthMysqlDate(stamp.recordedAt),
           stamp.temporalSequence,
           command.workspaceId, command.id, command.expectedRevision]
       );
@@ -1695,7 +1738,8 @@ export class MysqlCatalogRepository implements CatalogRepository {
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
         [commit.run.workspaceId, commit.run.id, commit.run.actorId,
           commit.run.idempotencyKey, commit.run.inputSnapshotHash,
-          mysqlDate(commit.run.startedAt), mysqlDate(commit.run.completedAt),
+          growthMysqlDate(commit.run.startedAt),
+          growthMysqlDate(commit.run.completedAt),
           commit.run.status, commit.run.scanned, commit.run.migrated,
           commit.run.repairRequired, commit.run.reportHash]
       );
@@ -1709,7 +1753,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
           ) VALUES (?,?,?,?,?)`,
           [entry.link.workspaceId, entry.link.commissionProductId,
             entry.link.catalogItemId, entry.link.pricingPolicyVersionId,
-            mysqlDate(entry.link.migratedAt)]
+            growthMysqlDate(entry.link.migratedAt)]
         );
       }
       for (const item of commit.run.items) {

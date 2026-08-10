@@ -297,6 +297,35 @@ function nonblankToken(value: unknown): value is string {
     && value !== "all";
 }
 
+function strictGrowthInstant(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})(Z|([+-])(\d{2}):(\d{2}))$/u
+    .exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const millisecond = Number(match[7]);
+  const offsetHour = Number(match[10] ?? 0);
+  const offsetMinute = Number(match[11] ?? 0);
+  if (month < 1 || month > 12 || day < 1 || day > 31
+    || hour > 23 || minute > 59 || second > 59
+    || offsetHour > 23 || offsetMinute > 59) return false;
+  const local = new Date(Date.UTC(
+    year, month - 1, day, hour, minute, second, millisecond
+  ));
+  return local.getUTCFullYear() === year
+    && local.getUTCMonth() === month - 1
+    && local.getUTCDate() === day
+    && local.getUTCHours() === hour
+    && local.getUTCMinutes() === minute
+    && local.getUTCSeconds() === second
+    && local.getUTCMilliseconds() === millisecond;
+}
+
 /** Complete runtime boundary for persisted frozen PricingPolicy v1 records. */
 export function assertClosedPricingPolicyVersion(
   value: unknown
@@ -324,14 +353,16 @@ export function assertClosedPricingPolicyVersion(
     || typeof policy.currency !== "string" || !/^[A-Z]{3}$/u.test(policy.currency)
     || nonnegativeFields.some((field) => !nonnegativeSafeInteger(policy[field]))
     || bpsFields.some((field) => policy[field] > 10_000)
-    || !Number.isFinite(Date.parse(policy.validFrom))
-    || (policy.validTo !== null && !Number.isFinite(Date.parse(policy.validTo)))
+    || policy.listUnitPriceMinor < 1
+    || policy.absoluteMinimumGrossMarginBps > 9_999
+    || !strictGrowthInstant(policy.validFrom)
+    || (policy.validTo !== null && !strictGrowthInstant(policy.validTo))
     || !["draft", "active", "retired"].includes(policy.status)
     || !["native", "legacy_commission_product"].includes(policy.source)
     || !nonblankToken(policy.capabilityRegistryVersion)
     || !Number.isSafeInteger(policy.revision) || policy.revision < 1
     || !nonblankToken(policy.createdBy)
-    || !Number.isFinite(Date.parse(policy.createdAt))) {
+    || !strictGrowthInstant(policy.createdAt)) {
     throw invalidPricingPolicyVersion();
   }
   assertClosedPricingPolicyRules(policy);

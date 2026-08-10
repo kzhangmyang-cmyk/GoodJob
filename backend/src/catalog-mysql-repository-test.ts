@@ -40,7 +40,8 @@ class FakePool extends FakeConnection {
 class ExistingSchemaPool extends FakePool {
   private readonly columns = new Map<string, Map<string, string>>([
     ["catalog_items", new Map()], ["pricing_policy_versions", new Map()],
-    ["package_versions", new Map()], ["package_components", new Map()]
+    ["package_versions", new Map()], ["package_components", new Map()],
+    ["catalog_command_receipts", new Map([["idempotency_key", "NO"]])]
   ]);
 
   override async query(sql: string, values: unknown[] = []) {
@@ -59,6 +60,16 @@ class ExistingSchemaPool extends FakePool {
     if (modify) {
       this.columns.get(modify[1]!)?.set("recorded_at", "NO");
       this.columns.get(modify[1]!)?.set("temporal_sequence", "NO");
+    }
+    if (/^ALTER TABLE catalog_command_receipts ADD COLUMN idempotency_key_hash/u
+      .test(normalized)) {
+      this.columns.get("catalog_command_receipts")
+        ?.set("idempotency_key_hash", "YES");
+    }
+    if (/^ALTER TABLE catalog_command_receipts DROP PRIMARY KEY/u.test(normalized)) {
+      this.columns.get("catalog_command_receipts")?.delete("idempotency_key");
+      this.columns.get("catalog_command_receipts")
+        ?.set("idempotency_key_hash", "NO");
     }
     return [{ affectedRows: 1 }, []];
   }
@@ -282,6 +293,14 @@ test("catalog schema uses dedicated append-oriented tables", async () => {
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS package_versions/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS package_components/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS catalog_command_receipts/u);
+  const receiptSchema = pool.calls.find((call) =>
+    /CREATE TABLE IF NOT EXISTS catalog_command_receipts/u.test(call.sql)
+  )!.sql;
+  assert.match(
+    receiptSchema,
+    /idempotency_key_hash CHAR\(71\) CHARACTER SET ascii COLLATE ascii_bin NOT NULL/u
+  );
+  assert.doesNotMatch(receiptSchema, /\bidempotency_key VARCHAR/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_product_catalog_links/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_catalog_migration_runs/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_catalog_migration_items/u);
@@ -315,6 +334,25 @@ test("catalog schema upgrades prerequisite tables and repeats idempotently", asy
     pool.calls.slice(firstRunCount).some((call) => / ADD COLUMN /u.test(call.sql)),
     false
   );
+});
+
+test("catalog schema migrates legacy raw receipt keys to fixed ASCII hashes once", async () => {
+  const pool = new ExistingSchemaPool();
+  await ensureCatalogMysqlSchema(asPool(pool));
+  const firstRunCount = pool.calls.length;
+  await ensureCatalogMysqlSchema(asPool(pool));
+  const first = pool.calls.slice(0, firstRunCount).map((call) => call.sql).join("\n");
+  const second = pool.calls.slice(firstRunCount).map((call) => call.sql).join("\n");
+  assert.match(
+    first,
+    /ALTER TABLE catalog_command_receipts ADD COLUMN idempotency_key_hash CHAR\(71\)/u
+  );
+  assert.match(
+    first,
+    /SET idempotency_key_hash = CONCAT\('sha256:',\s*SHA2\(CAST\(idempotency_key AS BINARY\),256\)\)/u
+  );
+  assert.match(first, /DROP PRIMARY KEY[\s\S]*DROP COLUMN idempotency_key/u);
+  assert.doesNotMatch(second, /ADD COLUMN idempotency_key_hash|DROP COLUMN idempotency_key/u);
 });
 
 test("catalog schema deterministically upgrades and closes the pricing source enum", async () => {
@@ -513,6 +551,114 @@ test("mysql policy boundaries reject full unknown and retired manual shapes befo
   );
 });
 
+test("mysql policy write and read reject strict scalar and RFC3339 boundary violations", async () => {
+  for (const invalid of [
+    policyValue({ listUnitPriceMinor: 0 }),
+    policyValue({ absoluteMinimumGrossMarginBps: 10_000 }),
+    policyValue({ validFrom: "2026-08-09" }),
+    policyValue({ validTo: "2026-08-10" }),
+    policyValue({ validFrom: "2026-02-30T08:00:00.000Z" }),
+    policyValue({ validFrom: new Date("2026-08-09T08:00:00.000Z") })
+  ]) {
+    const pool = new FakePool();
+    const repository = new MysqlCatalogRepository(asPool(pool));
+    await assert.rejects(
+      () => repository.appendPricingPolicyVersion(invalid),
+      { code: "invalid_pricing_policy_version" }
+    );
+    assert.equal(pool.calls.length, 0);
+  }
+  for (const invalidRow of [
+    pricingRow({ list_unit_price_minor: 0 }),
+    pricingRow({ absolute_minimum_gross_margin_bps: 10_000 }),
+    pricingRow({ valid_from: "2026-08-09" })
+  ]) {
+    const pool = new FakePool();
+    pool.enqueue([invalidRow]);
+    const repository = new MysqlCatalogRepository(asPool(pool));
+    await assert.rejects(
+      () => repository.findPricingPolicyVersion("team-a", "policy-1"),
+      { code: "invalid_pricing_policy_version" }
+    );
+  }
+});
+
+test("mysql item policy and package timestamps normalize RFC3339 offsets to UTC parameters", async () => {
+  const offset = "2026-08-09T16:00:00.123+08:00";
+  const offsetEnd = "2026-08-10T16:00:00.456+08:00";
+
+  const itemPool = new FakePool();
+  await new MysqlCatalogRepository(asPool(itemPool)).appendCatalogItem({
+    id: "offset-item", workspaceId: "team-a", type: "service", code: "OFFSET",
+    name: "offset", description: "", unit: "次", status: "active", revision: 1,
+    createdBy: "admin-1", createdAt: offset, updatedAt: offsetEnd
+  });
+  assert.deepEqual(itemPool.calls[0]!.values.slice(10, 14), [
+    "2026-08-09 08:00:00.123", "2026-08-10 08:00:00.456",
+    "2026-08-10 08:00:00.456", 0
+  ]);
+
+  const policyPool = new FakePool();
+  await new MysqlCatalogRepository(asPool(policyPool)).appendPricingPolicyVersion(
+    policyValue({ validFrom: offset, validTo: offsetEnd, createdAt: offset })
+  );
+  assert.equal(policyPool.calls[0]!.values[21], "2026-08-09 08:00:00.123");
+  assert.equal(policyPool.calls[0]!.values[22], "2026-08-10 08:00:00.456");
+  assert.equal(policyPool.calls[0]!.values[28], "2026-08-09 08:00:00.123");
+  assert.equal(policyPool.calls[0]!.values[29], "2026-08-09 08:00:00.123");
+
+  const packagePool = new FakePool();
+  await new MysqlCatalogRepository(asPool(packagePool)).appendPackageVersion({
+    id: "offset-package", workspaceId: "team-a",
+    packageCatalogItemId: "package-item-1", version: 1, currency: "CNY",
+    status: "draft", validFrom: offset, validTo: offsetEnd, revision: 1,
+    createdBy: "admin-1", createdAt: offset, updatedAt: offsetEnd
+  });
+  assert.deepEqual(packagePool.calls[0]!.values.slice(6, 14), [
+    "2026-08-09 08:00:00.123", "2026-08-10 08:00:00.456", 1, "admin-1",
+    "2026-08-09 08:00:00.123", "2026-08-10 08:00:00.456",
+    "2026-08-10 08:00:00.456", 0
+  ]);
+});
+
+test("mysql item policy and package reads normalize offset timestamps to UTC", async () => {
+  const itemPool = new FakePool();
+  itemPool.enqueue([catalogRow({
+    created_at: "2026-08-09T16:00:00.123+08:00",
+    updated_at: "2026-08-10T16:00:00.456+08:00"
+  })]);
+  const item = await new MysqlCatalogRepository(asPool(itemPool))
+    .findCatalogItem("team-a", "item-1");
+  assert.equal(item?.createdAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(item?.updatedAt, "2026-08-10T08:00:00.456Z");
+
+  const policyPool = new FakePool();
+  policyPool.enqueue([pricingRow({
+    valid_from: "2026-08-09T16:00:00.123+08:00",
+    valid_to: "2026-08-10T16:00:00.456+08:00",
+    created_at: "2026-08-09T16:00:00.123+08:00"
+  })]);
+  const policy = await new MysqlCatalogRepository(asPool(policyPool))
+    .findPricingPolicyVersion("team-a", "policy-1");
+  assert.equal(policy?.validFrom, "2026-08-09T08:00:00.123Z");
+  assert.equal(policy?.validTo, "2026-08-10T08:00:00.456Z");
+  assert.equal(policy?.createdAt, "2026-08-09T08:00:00.123Z");
+
+  const packagePool = new FakePool();
+  packagePool.enqueue([packageRow({
+    valid_from: "2026-08-09T16:00:00.123+08:00",
+    valid_to: "2026-08-10T16:00:00.456+08:00",
+    created_at: "2026-08-09T16:00:00.123+08:00",
+    updated_at: "2026-08-10T16:00:00.456+08:00"
+  })]);
+  const version = await new MysqlCatalogRepository(asPool(packagePool))
+    .findPackageVersion("team-a", "package-1");
+  assert.equal(version?.validFrom, "2026-08-09T08:00:00.123Z");
+  assert.equal(version?.validTo, "2026-08-10T08:00:00.456Z");
+  assert.equal(version?.createdAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(version?.updatedAt, "2026-08-10T08:00:00.456Z");
+});
+
 test("mysql catalog command locks the temporal barrier before domain rows and commits", async () => {
   const pool = new FakePool();
   pool.connection.enqueue({ affectedRows: 1 });
@@ -575,27 +721,28 @@ test("mysql domain receipts scope by actor and operation and survive intervening
   const repository = new MysqlCatalogRepository(
     asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
   );
+  const maximumKey = "x".repeat(200);
   const create: CreateCatalogItemCommand = {
     workspaceId: "team-a", id: "item-1", type: "service", code: "SVC-001",
     name: "原名称", description: "获客诊断", unit: "次",
-    actorId: "admin-1", idempotencyKey: "shared-key",
+    actorId: "admin-1", idempotencyKey: maximumKey,
     requestHash: "sha256:create"
   };
   assert.equal((await repository.createCatalogItem(create)).kind, "ok");
   assert.equal((await repository.updateCatalogItem({
     workspaceId: "team-a", id: "item-1", expectedRevision: 1,
     patch: { name: "actor-one" }, actorId: "admin-1",
-    idempotencyKey: "shared-key", requestHash: "sha256:update-one"
+    idempotencyKey: maximumKey, requestHash: "sha256:update-one"
   })).kind, "ok");
   assert.equal((await repository.updateCatalogItem({
     workspaceId: "team-a", id: "item-1", expectedRevision: 2,
     patch: { name: "actor-two" }, actorId: "admin-2",
-    idempotencyKey: "shared-key", requestHash: "sha256:update-two"
+    idempotencyKey: maximumKey, requestHash: "sha256:update-two"
   })).kind, "ok");
   assert.deepEqual(await repository.updateCatalogItem({
     workspaceId: "team-a", id: "item-1", expectedRevision: 3,
     patch: { name: "conflict" }, actorId: "admin-1",
-    idempotencyKey: "shared-key", requestHash: "sha256:changed"
+    idempotencyKey: maximumKey, requestHash: "sha256:changed"
   }), { kind: "state_conflict", code: "idempotency_conflict" });
 
   const replay = await repository.createCatalogItem({ ...create, id: "ignored-new-id" });
@@ -604,6 +751,15 @@ test("mysql domain receipts scope by actor and operation and survive intervening
   assert.equal(replay.value.id, "item-1");
   assert.equal(replay.value.name, "actor-two");
   assert.equal(replay.value.revision, 3);
+  const receiptScopes = connection.calls.filter((call) =>
+    /FROM catalog_command_receipts/u.test(call.sql)
+  );
+  assert.ok(receiptScopes.length > 0);
+  assert.equal(receiptScopes.some((call) => call.values.includes(maximumKey)), false);
+  assert.equal(
+    receiptScopes.every((call) => /^sha256:[a-f0-9]{64}$/u.test(String(call.values[3]))),
+    true
+  );
 });
 
 test("mysql draft-component replacement takes the temporal barrier before its package lock", async () => {
