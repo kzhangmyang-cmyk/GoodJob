@@ -14,6 +14,13 @@ import {
   type GrowthWorkspaceDirectory
 } from "./growth-workspace-context.js";
 import { GROWTH_FOUNDATION_SERVICES, createGrowthFoundationModule } from "./growth-foundation-module.js";
+import {
+  GROWTH_CATALOG_SERVICES,
+  createGrowthCatalogModule
+} from "./growth-catalog-module.js";
+import type {
+  CommissionCatalogProjectionPort
+} from "./commission-catalog-projection.js";
 import type { CrmStore } from "./store.js";
 
 export interface GrowthCommercialModule {
@@ -55,6 +62,7 @@ export function createGrowthMysqlPool(
 export interface GrowthAcquisitionIntegrations {
   acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
   temporalBarrier: GrowthTemporalBarrier;
+  commissionCatalogProjection: CommissionCatalogProjectionPort;
   /** Foundation 0.3/Quote Task 6 replaces this absent, fail-closed seam. */
   quoteProjectedDocumentAuthority?: never;
 }
@@ -75,6 +83,7 @@ export function createGrowthCommercialComposition(
     ]) as readonly GrowthCommercialModule[],
     projectIntegrations(privateServices: GrowthPrivateServiceRegistry) {
       const services = privateServices.get(GROWTH_FOUNDATION_SERVICES);
+      const catalog = privateServices.require(GROWTH_CATALOG_SERVICES);
       const acquisitionWorkspace = services?.acquisitionWorkspace
         ?? foundation.acquisitionWorkspace;
       const temporalBarrier = services?.temporalBarrier
@@ -82,7 +91,8 @@ export function createGrowthCommercialComposition(
       if (!temporalBarrier) throw new Error("MISSING_GROWTH_FOUNDATION_SERVICES");
       return Object.freeze({
         acquisitionWorkspace,
-        temporalBarrier
+        temporalBarrier,
+        commissionCatalogProjection: catalog.commissionCatalogProjection
       });
     }
   });
@@ -127,8 +137,10 @@ export function createGrowthCommercialCompositionForStore(options: {
     modules.push(createGrowthFoundationModule({
       mode: "mysql", pool, acquisitionWorkspace, closePool: () => pool.end()
     }));
+    modules.push(createGrowthCatalogModule({ mode: "mysql", pool }));
   } else {
     modules.push(createGrowthFoundationModule({ mode: "memory", acquisitionWorkspace }));
+    modules.push(createGrowthCatalogModule({ mode: "memory" }));
   }
   return Object.freeze({
     composition: createGrowthCommercialComposition({

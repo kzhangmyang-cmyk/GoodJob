@@ -1,5 +1,5 @@
 import cors from "cors";
-import express, { type NextFunction, type Request, type Response } from "express";
+import express, { type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { randomUUID } from "node:crypto";
@@ -116,6 +116,11 @@ import {
 } from "./growth-capabilities.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import { loadGrowthContractRelease } from "./growth-openapi.js";
+import {
+  CommissionCatalogProjectionError,
+  type CommissionCatalogProjectionPort,
+  type CommissionProductPatch
+} from "./commission-catalog-projection.js";
 import {
   listTradeObservations,
   parseTradeObservationListQuery,
@@ -268,6 +273,109 @@ export const app = express();
 let activeProspectWorkerService: ProspectWorkerService | null = null;
 const acquisitionRuntimeBridge = new AcquisitionRuntimeBridge();
 const growthRuntimeBridge = new GrowthCommercialRuntimeBridge();
+type LegacyCommissionCatalogBinding = Readonly<{
+  workspaceMiddleware: RequestHandler;
+  commissionCatalogProjection: CommissionCatalogProjectionPort;
+}>;
+
+function commissionProductNeedsCatalog(product: CommissionProduct): boolean {
+  return product.catalogMigrationStatus === "migrated"
+    || typeof product.catalogItemId === "string";
+}
+
+export class LegacyCommissionCatalogBridge {
+  #binding: LegacyCommissionCatalogBinding | null = null;
+
+  install(binding: LegacyCommissionCatalogBinding): () => void {
+    if (this.#binding) throw new Error("LEGACY_COMMISSION_CATALOG_ALREADY_INSTALLED");
+    if (!binding
+      || typeof binding.workspaceMiddleware !== "function"
+      || !binding.commissionCatalogProjection
+      || typeof binding.commissionCatalogProjection.projectProduct !== "function"
+      || typeof binding.commissionCatalogProjection.assertCommercialPatchAllowed
+        !== "function") {
+      throw new TypeError("INVALID_LEGACY_COMMISSION_CATALOG_BINDING");
+    }
+    const installed = Object.freeze({ ...binding });
+    this.#binding = installed;
+    return () => {
+      if (this.#binding === installed) this.#binding = null;
+    };
+  }
+
+  middleware(): RequestHandler {
+    return (req, res, next) => {
+      const binding = this.#binding;
+      if (!binding) {
+        next();
+        return;
+      }
+      binding.workspaceMiddleware(req, res, next);
+    };
+  }
+
+  async projectProducts(
+    req: Request,
+    products: readonly CommissionProduct[]
+  ): Promise<readonly CommissionProduct[]> {
+    const binding = this.#binding;
+    if (!binding) {
+      if (products.some(commissionProductNeedsCatalog)) {
+        throw new CommissionCatalogProjectionError(
+          503,
+          "catalog_projection_unavailable"
+        );
+      }
+      return products;
+    }
+    if (!req.activeWorkspace) {
+      throw new CommissionCatalogProjectionError(
+        503,
+        "catalog_projection_unavailable"
+      );
+    }
+    return Promise.all(products.map((product) =>
+      binding.commissionCatalogProjection.projectProduct(
+        req.activeWorkspace!,
+        product
+      )));
+  }
+
+  async assertCommercialPatchAllowed(
+    req: Request,
+    product: CommissionProduct,
+    patch: CommissionProductPatch
+  ): Promise<void> {
+    const binding = this.#binding;
+    if (!binding) {
+      if (commissionProductNeedsCatalog(product)) {
+        throw new CommissionCatalogProjectionError(
+          503,
+          "catalog_projection_unavailable"
+        );
+      }
+      return;
+    }
+    if (!req.activeWorkspace) {
+      throw new CommissionCatalogProjectionError(
+        503,
+        "catalog_projection_unavailable"
+      );
+    }
+    await binding.commissionCatalogProjection.projectProduct(
+      req.activeWorkspace,
+      product
+    );
+    await binding.commissionCatalogProjection.assertCommercialPatchAllowed(
+      req.activeWorkspace,
+      product.id,
+      patch
+    );
+  }
+}
+
+const legacyCommissionCatalogBridge = new LegacyCommissionCatalogBridge();
+let uninstallGrowthLegacyBridges: (() => void) | null = null;
 let quoteProjectedDocumentAuthority:
   QuoteProjectedDocumentAuthorityValidator | undefined;
 
@@ -5142,9 +5250,18 @@ const salesRecordSchema = z.object({
   editNote: z.string().optional().default("")
 });
 
-app.get("/api/commission/products", requireAuth, (req, res) => {
+app.use(
+  "/api/commission/products",
+  requireAuth,
+  legacyCommissionCatalogBridge.middleware()
+);
+
+app.get("/api/commission/products", requireAuth, asyncRoute(async (req, res) => {
   const store = getStore();
-  const products = visibleCommissionProducts(req.user!);
+  const products = await legacyCommissionCatalogBridge.projectProducts(
+    req,
+    visibleCommissionProducts(req.user!)
+  );
   const productIds = new Set(products.map((product) => product.id));
   res.json({
     products,
@@ -5153,7 +5270,7 @@ app.get("/api/commission/products", requireAuth, (req, res) => {
     canSelectOwner: canReviewCommission(req.user),
     owners: commissionOwnersFor(req.user!)
   });
-});
+}));
 
 app.post("/api/commission/products", requireAuth, asyncRoute(async (req, res) => {
   if (!canManageCommissionRules(req.user)) {
@@ -5186,9 +5303,18 @@ app.patch("/api/commission/products/:id", requireAuth, asyncRoute(async (req, re
     res.status(404).json({ message: "产品不存在" });
     return;
   }
+  await legacyCommissionCatalogBridge.assertCommercialPatchAllowed(
+    req,
+    product,
+    body
+  );
   Object.assign(product, body, { updatedAt: new Date().toISOString() });
   await store.persist();
-  res.json({ product });
+  const [projected] = await legacyCommissionCatalogBridge.projectProducts(
+    req,
+    [product]
+  );
+  res.json({ product: projected });
 }));
 
 app.post("/api/commission/products/:id/rules", requireAuth, asyncRoute(async (req, res) => {
@@ -11961,6 +12087,13 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     });
     return;
   }
+  if (error instanceof CommissionCatalogProjectionError) {
+    res.status(error.status).json({
+      code: error.code,
+      message: error.message
+    });
+    return;
+  }
   if (error instanceof z.ZodError) {
     res.status(400).json({ message: "参数格式错误", issues: error.issues });
     return;
@@ -12048,13 +12181,28 @@ async function startServer() {
       manifest: loadGrowthContractRelease().manifest,
       requireAuth,
       workspaceMiddleware: foundation.workspaceMiddleware,
-      enabledFeatures: () => [],
+      enabledFeatures: () => ["catalog"],
       composition: foundation.composition
     });
     growthRuntimeBridge.install(growthRuntime);
-    installLegacyCommercialAuthorityProjection(
+    const uninstallCommercialAuthority = installLegacyCommercialAuthorityProjection(
       growthRuntime.integrations.quoteProjectedDocumentAuthority
     );
+    try {
+      const uninstallCommissionCatalog = legacyCommissionCatalogBridge.install({
+        workspaceMiddleware: foundation.workspaceMiddleware,
+        commissionCatalogProjection:
+          growthRuntime.integrations.commissionCatalogProjection
+      });
+      uninstallGrowthLegacyBridges = () => {
+        uninstallCommissionCatalog();
+        uninstallCommercialAuthority();
+        uninstallGrowthLegacyBridges = null;
+      };
+    } catch (error) {
+      uninstallCommercialAuthority();
+      throw error;
+    }
     const acquisitionRuntime = await createAcquisitionApplication({
       store,
       masterSecret: resolveAcquisitionMasterSecret({
@@ -12077,6 +12225,7 @@ async function startServer() {
         error instanceof Error ? error.message : String(error)
       }`
     );
+    uninstallGrowthLegacyBridges?.();
     await growthRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     process.exit(1);
@@ -12094,6 +12243,7 @@ async function startServer() {
       + "启用强制队列时不能关闭 PROSPECT_WORKER_ENABLED"
     );
     await acquisitionRuntimeBridge.close().catch(() => undefined);
+    uninstallGrowthLegacyBridges?.();
     await growthRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     process.exit(1);
@@ -12105,6 +12255,7 @@ async function startServer() {
   } catch (error) {
     console.error(`GoodJob CRM prospect worker startup failed: ${error instanceof Error ? error.message : String(error)}`);
     await acquisitionRuntimeBridge.close().catch(() => undefined);
+    uninstallGrowthLegacyBridges?.();
     await growthRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     process.exit(1);
@@ -12123,6 +12274,7 @@ async function startServer() {
     activeProspectWorkerService = null;
     await prospectWorkerService?.stop();
     await acquisitionRuntimeBridge.close().catch(() => undefined);
+    uninstallGrowthLegacyBridges?.();
     await growthRuntimeBridge.close().catch(() => undefined);
     await store.close?.();
     console.error(`GoodJob CRM prospect scheduler startup failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -12147,7 +12299,10 @@ async function startServer() {
           await prospectWorkerService?.stop();
         },
         closeAcquisition: () => acquisitionRuntimeBridge.close(),
-        closeGrowth: () => growthRuntimeBridge.close(),
+        closeGrowth: () => {
+          uninstallGrowthLegacyBridges?.();
+          return growthRuntimeBridge.close();
+        },
         closeHttpServer: () => new Promise<void>((resolve, reject) => {
           httpServer.close((error) => {
             if (error) reject(error);

@@ -6,6 +6,9 @@ import Ajv2020 from "ajv/dist/2020.js";
 import express from "express";
 import { createGrowthBootstrapRouter } from "./growth-bootstrap-router.js";
 import { loadGrowthContractRelease } from "./growth-openapi.js";
+import {
+  assertCatalogRuntimeResponsesConform
+} from "./catalog-runtime-response-conformance-test.js";
 
 test("runtime bootstrap responses conform to GrowthBootstrapResponse", async () => {
   const release = loadGrowthContractRelease();
@@ -64,3 +67,8 @@ test("runtime bootstrap responses conform to GrowthBootstrapResponse", async () 
       error ? reject(error) : resolve()));
   }
 });
+
+test(
+  "central Growth response suite validates released Catalog operations",
+  assertCatalogRuntimeResponsesConform
+);

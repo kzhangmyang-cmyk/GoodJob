@@ -12,6 +12,11 @@ import {
   createGrowthCommercialCompositionForStore
 } from "./growth-commercial-composition.js";
 import { growthMysqlInstant } from "./growth-temporal-barrier-mysql-repository.js";
+import {
+  GROWTH_CATALOG_SERVICES,
+  type GrowthCatalogServices
+} from "./growth-catalog-module.js";
+import type { CommissionCatalogProjectionPort } from "./commission-catalog-projection.js";
 
 function foundationPorts() {
   const acquisitionWorkspace = Object.freeze({
@@ -29,15 +34,38 @@ function foundationPorts() {
   return { acquisitionWorkspace, temporalBarrier };
 }
 
-test("C0 composition projects exact Foundation ports and no PI authority", () => {
+function catalogProjection(): CommissionCatalogProjectionPort {
+  return Object.freeze({
+    async projectProduct(_context, product) { return product; },
+    async assertCommercialPatchAllowed() {}
+  });
+}
+
+function registryWithCatalog(
+  commissionCatalogProjection: CommissionCatalogProjectionPort
+) {
+  const registry = createGrowthPrivateServiceRegistry();
+  registry.provide(GROWTH_CATALOG_SERVICES, Object.freeze({
+    catalogItems: {} as GrowthCatalogServices["catalogItems"],
+    commissionCatalogProjection
+  }));
+  return registry;
+}
+
+test("composition projects exact Foundation and Catalog ports with no PI authority", () => {
   const foundation = foundationPorts();
+  const commissionCatalogProjection = catalogProjection();
   const composition = createGrowthCommercialComposition(foundation);
   const integrations = composition.projectIntegrations(
-    createGrowthPrivateServiceRegistry()
+    registryWithCatalog(commissionCatalogProjection)
   );
   assert.deepEqual(composition.modules, []);
   assert.equal(integrations.acquisitionWorkspace, foundation.acquisitionWorkspace);
   assert.equal(integrations.temporalBarrier, foundation.temporalBarrier);
+  assert.equal(
+    integrations.commissionCatalogProjection,
+    commissionCatalogProjection
+  );
   assert.equal(integrations.quoteProjectedDocumentAuthority, undefined);
   assert.equal(Object.isFrozen(integrations), true);
 });
@@ -61,15 +89,21 @@ test("composition rejects missing Foundation ports before publication", () => {
 test("composition factories preserve isolated Foundation identities", () => {
   const first = foundationPorts();
   const second = foundationPorts();
+  const firstCatalog = catalogProjection();
+  const secondCatalog = catalogProjection();
   const firstProjection = createGrowthCommercialComposition(first)
-    .projectIntegrations(createGrowthPrivateServiceRegistry());
+    .projectIntegrations(registryWithCatalog(firstCatalog));
   const secondProjection = createGrowthCommercialComposition(second)
-    .projectIntegrations(createGrowthPrivateServiceRegistry());
+    .projectIntegrations(registryWithCatalog(secondCatalog));
   assert.notEqual(firstProjection.acquisitionWorkspace, secondProjection.acquisitionWorkspace);
   assert.notEqual(firstProjection.temporalBarrier, secondProjection.temporalBarrier);
+  assert.notEqual(
+    firstProjection.commissionCatalogProjection,
+    secondProjection.commissionCatalogProjection
+  );
 });
 
-test("production memory composition installs the Foundation module first", async () => {
+test("production memory composition installs Foundation then one Catalog module", async () => {
   const production = createGrowthCommercialCompositionForStore({
     store: {
       mode: "memory",
@@ -86,8 +120,10 @@ test("production memory composition installs the Foundation module first", async
       }]
     }
   });
-  assert.equal(production.composition.modules.length, 1);
-  assert.equal(production.composition.modules[0]?.name, "growth-foundation");
+  assert.deepEqual(
+    production.composition.modules.map((module) => module.name),
+    ["growth-foundation", "growth-catalog"]
+  );
   const runtime = await createGrowthCommercialApplication({
     manifest: { name: "growth-advisor-quote-roi", contractVersion: "1.0.0", contractHash: `sha256:${"a".repeat(64)}`, openapiVersion: "3.1.0" },
     requireAuth: ((_req, _res, next) => next()) as express.RequestHandler,
@@ -98,6 +134,10 @@ test("production memory composition installs the Foundation module first", async
     const resolved = await runtime.integrations.acquisitionWorkspace.resolve({ ownerId: "owner-1", teamId: "workspace-1" });
     assert.equal(resolved?.workspaceId, "workspace-1");
     assert.equal(resolved?.bindingRevision, "crm-user-auth:3");
+    assert.equal(
+      typeof runtime.integrations.commissionCatalogProjection.projectProduct,
+      "function"
+    );
   } finally {
     await runtime.close();
   }
@@ -114,6 +154,7 @@ test("production MySQL composition pins DATETIME values to UTC strings", () => {
     }
   });
   assert.equal(production.composition.modules[0]?.name, "growth-foundation");
+  assert.equal(production.composition.modules[1]?.name, "growth-catalog");
   assert.deepEqual(captured, {
     uri: "mysql://user:password@localhost:3306/growth",
     connectionLimit: 4,
