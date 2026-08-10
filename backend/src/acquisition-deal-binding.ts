@@ -1,7 +1,8 @@
 import type { OutcomeAttributionInput } from "./acquisition-domain.js";
+import type { CrmStore } from "./store.js";
 import type { AcquisitionCustomerHandoff, Lead } from "./types.js";
 
-type TrustedBindingHandoff = Pick<
+type AcquisitionDealBindingHandoffRow = Pick<
   AcquisitionCustomerHandoff,
   | "id"
   | "ownerId"
@@ -14,7 +15,7 @@ type TrustedBindingHandoff = Pick<
   | "acquisitionAttribution"
 >;
 
-type TrustedBindingLead = Pick<
+type AcquisitionDealBindingLeadRow = Pick<
   Lead,
   | "id"
   | "ownerId"
@@ -24,14 +25,19 @@ type TrustedBindingLead = Pick<
   | "externalId"
 >;
 
-export interface AcquisitionDealBindingStore {
-  acquisitionCustomerHandoffs: TrustedBindingHandoff[];
-  leads: TrustedBindingLead[];
+export interface AcquisitionDealBindingStore<
+  Handoff extends AcquisitionDealBindingHandoffRow =
+    AcquisitionDealBindingHandoffRow,
+  BindingLead extends AcquisitionDealBindingLeadRow =
+    AcquisitionDealBindingLeadRow
+> {
+  acquisitionCustomerHandoffs: Handoff[];
+  leads: BindingLead[];
 }
 
 export interface TrustedAcquisitionDealBinding {
-  handoff: TrustedBindingHandoff;
-  lead: TrustedBindingLead;
+  handoff: AcquisitionCustomerHandoff;
+  lead: Lead;
 }
 
 export type AcquisitionDealBindingLookup = {
@@ -70,9 +76,23 @@ function isTrustedAcquisitionAttribution(
 }
 
 export function resolveTrustedAcquisitionDealBinding(
-  store: AcquisitionDealBindingStore,
+  store: Pick<CrmStore, "acquisitionCustomerHandoffs" | "leads">,
   lookup: AcquisitionDealBindingLookup
-): TrustedAcquisitionDealBinding | null {
+): TrustedAcquisitionDealBinding | null;
+export function resolveTrustedAcquisitionDealBinding<
+  Handoff extends AcquisitionDealBindingHandoffRow,
+  BindingLead extends AcquisitionDealBindingLeadRow
+>(
+  store: AcquisitionDealBindingStore<Handoff, BindingLead>,
+  lookup: AcquisitionDealBindingLookup
+): { handoff: Handoff; lead: BindingLead } | null;
+export function resolveTrustedAcquisitionDealBinding<
+  Handoff extends AcquisitionDealBindingHandoffRow,
+  BindingLead extends AcquisitionDealBindingLeadRow
+>(
+  store: AcquisitionDealBindingStore<Handoff, BindingLead>,
+  lookup: AcquisitionDealBindingLookup
+): { handoff: Handoff; lead: BindingLead } | null {
   const handoffs = store.acquisitionCustomerHandoffs.filter((handoff) =>
     "dealId" in lookup
       ? handoff.dealId === lookup.dealId

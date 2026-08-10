@@ -4,6 +4,7 @@ import {
   resolveTrustedAcquisitionDealBinding
 } from "./acquisition-deal-binding.js";
 import type { CrmStore } from "./store.js";
+import type { AcquisitionCustomerHandoff, Lead } from "./types.js";
 
 function bindingFixture(overrides: { dealId?: string } = {}) {
   const dealId = overrides.dealId ?? "deal-1";
@@ -100,6 +101,18 @@ test("only one complete candidate to handoff to lead to deal chain is trusted", 
   assert.equal(resolveTrustedAcquisitionDealBinding(store, {
     dealId: "deal-1"
   }), null);
+});
+
+test("a full CrmStore binding returns complete Handoff and Lead objects", () => {
+  const binding = resolveTrustedAcquisitionDealBinding(bindingFixture(), {
+    dealId: "deal-1"
+  });
+  assert.ok(binding);
+  const handoff: AcquisitionCustomerHandoff = binding.handoff;
+  const lead: Lead = binding.lead;
+
+  assert.equal(handoff.todoId, "todo-1");
+  assert.equal(lead.company, "Acme");
 });
 
 test("handoff lookup requires the exact tenant, customer, and lead chain", () => {
