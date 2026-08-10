@@ -2583,6 +2583,8 @@ export interface DealEvent {
   quoteVersionIdSnapshot?: string | null;
   commercialAmountHash?: `sha256:${string}` | null;
   dealAuthorityRevisionSnapshot?: number | null;
+  recordedAt?: string;
+  temporalSequence?: number;
   fromStage?: Deal["stage"];
   toStage?: Deal["stage"];
   nextAction?: string;
@@ -2721,6 +2723,12 @@ export interface TradeDocument {
   quoteVersionId?: string;
   commercialAmountHash?: `sha256:${string}`;
   dealAuthorityRevision?: number;
+  projectionState?: "current" | "superseded";
+  quotedAmountMinor?: number;
+  quoteLineSnapshot?: Readonly<Record<string, unknown>>;
+  quotePackageSnapshot?: unknown;
+  recordedAt?: string;
+  temporalSequence?: number;
   type: "PI" | "CI" | "CUSTOMS";
   title: string;
   number: string;

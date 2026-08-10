@@ -4,6 +4,7 @@ import type { GrowthCommercialToolPorts } from "./growth-commercial-application.
 import type { GrowthCommercialModule } from "./growth-commercial-composition.js";
 import {
   defineGrowthPrivateServiceKey,
+  type GrowthPrivateServiceKey,
   type GrowthPrivateServiceRegistry
 } from "./growth-commercial-private-services.js";
 import { GROWTH_FOUNDATION_SERVICES } from "./growth-foundation-module.js";
@@ -51,6 +52,14 @@ import {
   QuoteVersionEvidenceReader
 } from "./authoritative-quote-reader.js";
 import { QuotePreviewEvidenceReader } from "./quote-preview-evidence-reader.js";
+import type { ProbabilityAssessmentWriter } from "./probability-assessment.js";
+import type { QuoteProjectedDocumentAuthorityValidator } from "./commercial-authority-guard.js";
+import { createQuoteProjectedDocumentAuthorityValidator } from "./quote-projected-document-authority.js";
+import { createQuoteCrmCommand } from "./quote-crm-command.js";
+import { createMysqlQuoteCrmCommand } from "./quote-crm-command-mysql.js";
+import { QuotePublicationWorker } from "./quote-publication-worker.js";
+import { QuotePublicationRecoverySweeper } from "./quote-publication-recovery-sweeper.js";
+import type { CrmStore } from "./store.js";
 
 export const GROWTH_PROBABILITY_ASSESSMENTS =
   defineGrowthPrivateServiceKey<ProbabilityAssessmentPersistence>(
@@ -82,6 +91,18 @@ export const GROWTH_QUOTE_AUTHORITY_READERS =
     "growth-quote-authority-readers"
   );
 
+export interface GrowthQuoteAcquisitionIntegrations {
+  readonly probabilityAssessments: ProbabilityAssessmentWriter;
+  readonly quoteProjectedDocumentAuthority:
+    QuoteProjectedDocumentAuthorityValidator;
+}
+
+export const GROWTH_QUOTE_ACQUISITION_INTEGRATIONS:
+GrowthPrivateServiceKey<GrowthQuoteAcquisitionIntegrations> =
+  defineGrowthPrivateServiceKey<GrowthQuoteAcquisitionIntegrations>(
+    "growth-quote-acquisition-integrations"
+  );
+
 export interface GrowthQuoteTrustedAuthority {
   readonly assignments: GrowthWorkspaceMemberAssignabilityReader;
   readonly subjects: QuoteSubjectReader;
@@ -103,6 +124,8 @@ export interface GrowthQuoteResourceFactoryInput {
 export interface GrowthQuoteResourceHandle {
   probabilityAssessments: ProbabilityAssessmentPersistence;
   quote?: GrowthQuoteServices;
+  quoteProjectedDocumentAuthority?: QuoteProjectedDocumentAuthorityValidator;
+  start?(): void;
   close(): Promise<void>;
 }
 
@@ -251,6 +274,7 @@ function mountQuoteApprovalRoutes(
 
 export type GrowthQuoteModuleOptions = GrowthQuoteModuleHooks & {
   trustedAuthority?: GrowthQuoteTrustedAuthority;
+  store?: CrmStore;
 } & (
   | { mode: "memory" }
   | { mode: "mysql"; pool: mysql.Pool }
@@ -316,10 +340,34 @@ async function defaultResources(
       authorityReaders
     });
   })() : undefined;
+  const quoteProjectedDocumentAuthority = options.store && quote
+    ? createQuoteProjectedDocumentAuthorityValidator({
+        store: options.store, repository
+      })
+    : Object.freeze({
+        async assertAuthorized(): Promise<never> {
+          throw Object.assign(new Error("authoritative_quote_required"), {
+            code: "authoritative_quote_required"
+          });
+        }
+      }) as QuoteProjectedDocumentAuthorityValidator;
+  const publication = options.store && quote ? (() => {
+    const crm = options.mode === "mysql"
+      ? createMysqlQuoteCrmCommand({ pool: options.pool,
+          temporalBarrier: input.temporalBarrier })
+      : createQuoteCrmCommand({ store: options.store!,
+          temporalTransactions: input.temporalTransactions,
+          temporalBarrier: input.temporalBarrier, repository });
+    const worker = new QuotePublicationWorker({ repository, crm,
+      workerId: `quote-publication-${process.pid}` });
+    return new QuotePublicationRecoverySweeper({ repository, worker });
+  })() : null;
   return {
     probabilityAssessments,
     ...(quote ? { quote } : {}),
-    async close() {}
+    quoteProjectedDocumentAuthority,
+    start() { publication?.start(); },
+    async close() { await publication?.close(); }
   };
 }
 
@@ -360,6 +408,7 @@ export function createGrowthQuoteModule(
         resources = options.resourceFactory
           ? await options.resourceFactory(factoryInput)
           : await defaultResources(options, factoryInput);
+        Object.freeze(resources.probabilityAssessments);
         input.privateServices.provide(
           GROWTH_PROBABILITY_ASSESSMENTS,
           resources.probabilityAssessments
@@ -375,6 +424,23 @@ export function createGrowthQuoteModule(
           mountQuoteApprovalRoutes(input.router, resources.quote.quoteApprovals,
             foundation);
         }
+        const validator = resources.quoteProjectedDocumentAuthority
+          ?? Object.freeze({
+            async assertAuthorized(): Promise<never> {
+              throw Object.assign(new Error("authoritative_quote_required"), {
+                code: "authoritative_quote_required"
+              });
+            }
+          }) as QuoteProjectedDocumentAuthorityValidator;
+        Object.freeze(validator);
+        input.privateServices.provide(
+          GROWTH_QUOTE_ACQUISITION_INTEGRATIONS,
+          Object.freeze({
+            probabilityAssessments: resources.probabilityAssessments,
+            quoteProjectedDocumentAuthority: validator
+          })
+        );
+        resources.start?.();
         return Object.freeze({ close });
       } catch (error) {
         await close().catch(() => undefined);

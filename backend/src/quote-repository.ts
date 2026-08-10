@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { canonicalJsonStringify } from "./canonical-json.js";
 import type { ProbabilityAssessmentV2 } from "./probability-assessment.js";
 import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js";
+import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
+import { requireGrowthCapabilities } from "./growth-capabilities.js";
 import type {
   QuoteCalculationResult,
   QuotePreviewIdentity
@@ -213,8 +215,35 @@ export interface QuotePublicationOperation {
   readonly attempts: number;
   readonly lastErrorCode: string | null;
   readonly idempotencyKey: string;
+  readonly leaseOwner: string | null;
+  readonly fencingToken: number;
+  readonly leaseExpiresAt: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+export interface QuotePublicationClaim {
+  readonly operationId: string;
+  readonly leaseOwner: string;
+  readonly fencingToken: number;
+  readonly leaseExpiresAt: string;
+  readonly authorityRevision: number;
+}
+
+export interface QuotePublicationHistory {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly operationId: string;
+  readonly status: QuotePublicationOperation["status"];
+  readonly leaseOwner: string | null;
+  readonly fencingToken: number;
+  readonly authorityRevision: number;
+  readonly piDocumentId: string | null;
+  readonly dealEventId: string | null;
+  readonly errorCode: string | null;
+  readonly actorId: string | null;
+  readonly recordedAt: string;
+  readonly temporalSequence: number;
 }
 
 export interface DecideQuoteApprovalCommand {
@@ -351,6 +380,27 @@ export interface QuoteRepository {
     workspaceId: string,
     stableCommandHash: string
   ): Promise<QuoteApprovalDecisionPersistenceResult | null>;
+  getPublication(operationId: string): Promise<QuotePublicationOperation | null>;
+  claimPublication(operationId: string, workerId: string, now: string,
+    nextExpiry: string): Promise<QuotePublicationClaim | null>;
+  renewPublicationLease(claim: QuotePublicationClaim, now: string,
+    nextExpiry: string): Promise<boolean>;
+  recordPiPublished(claim: QuotePublicationClaim, piDocumentId: string,
+    now: string): Promise<boolean>;
+  recordCrmPublished(claim: QuotePublicationClaim, dealEventId: string,
+    now: string): Promise<boolean>;
+  finishPublication(claim: QuotePublicationClaim, now: string): Promise<boolean>;
+  failPublication(claim: QuotePublicationClaim, errorCode: string,
+    now: string): Promise<boolean>;
+  cancelPublication(claim: QuotePublicationClaim, errorCode: string,
+    now: string): Promise<boolean>;
+  isPublicationAuthorityCurrent(claim: QuotePublicationClaim): Promise<boolean>;
+  listRecoverablePublications(now?: string, limit?: number):
+    Promise<readonly QuotePublicationOperation[]>;
+  retryPublication(operationId: string, context: ActiveWorkspaceContext,
+    now: string): Promise<QuotePublicationOperation>;
+  listPublicationHistory(operationId: string):
+    Promise<readonly QuotePublicationHistory[]>;
 }
 
 interface Receipt {
@@ -366,6 +416,13 @@ function required(value: string, code: string) {
   const result = value.trim();
   if (!result) throw quoteError(code);
   return result;
+}
+
+function growthInstant(value: string | null): number {
+  if (value === null) return Number.NEGATIVE_INFINITY;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) throw quoteError("invalid_publication_instant");
+  return parsed;
 }
 
 function immutableCase(value: QuoteCase): QuoteCase {
@@ -541,6 +598,8 @@ export interface InMemoryQuoteRepositorySeed {
   readonly authority?: readonly DealAuthoritativeQuote[];
   readonly authorityEvents?: readonly DealAuthoritativeQuoteEvent[];
   readonly previewEvidence?: readonly QuotePreviewEvidenceRecord[];
+  readonly publicationOperations?: readonly QuotePublicationOperation[];
+  readonly publicationHistory?: readonly QuotePublicationHistory[];
 }
 
 export class InMemoryQuoteRepository implements QuoteRepository {
@@ -556,6 +615,7 @@ export class InMemoryQuoteRepository implements QuoteRepository {
   private readonly dealAuthorities = new Map<string, DealAuthoritativeQuote>();
   private readonly authorityEvents: DealAuthoritativeQuoteEvent[] = [];
   private readonly publicationOperations = new Map<string, QuotePublicationOperation>();
+  private readonly publicationHistory: QuotePublicationHistory[] = [];
   private readonly approvalDecisions = new Map<string,
     QuoteApprovalDecisionPersistenceResult>();
   private readonly receipts = new Map<string, Receipt>();
@@ -605,6 +665,12 @@ export class InMemoryQuoteRepository implements QuoteRepository {
     }
     this.authorityEvents.push(...(seed.authorityEvents ?? []).map((event) =>
       immutableQuoteValue(structuredClone(event))));
+    for (const operation of seed.publicationOperations ?? []) {
+      this.publicationOperations.set(this.caseKey(operation.workspaceId,
+        operation.id), immutableQuoteValue(structuredClone(operation)));
+    }
+    this.publicationHistory.push(...(seed.publicationHistory ?? []).map((row) =>
+      immutableQuoteValue(structuredClone(row))));
     for (const evidence of seed.previewEvidence ?? []) {
       this.previewEvidence.set(this.caseKey(evidence.workspaceId, evidence.id),
         immutableQuoteValue(structuredClone(evidence)));
@@ -630,6 +696,7 @@ export class InMemoryQuoteRepository implements QuoteRepository {
       dealAuthorities: new Map(this.dealAuthorities),
       authorityEvents: [...this.authorityEvents],
       publicationOperations: new Map(this.publicationOperations),
+      publicationHistory: [...this.publicationHistory],
       approvalDecisions: new Map(this.approvalDecisions),
       receipts: new Map(this.receipts)
     };
@@ -657,6 +724,8 @@ export class InMemoryQuoteRepository implements QuoteRepository {
       ...snapshot.authorityEvents);
     this.approvalEvents.splice(0, this.approvalEvents.length,
       ...snapshot.approvalEvents);
+    this.publicationHistory.splice(0, this.publicationHistory.length,
+      ...snapshot.publicationHistory);
   }
 
   private async acquireWorkspaceMutationGate(workspaceId: string) {
@@ -1036,6 +1105,7 @@ export class InMemoryQuoteRepository implements QuoteRepository {
           : "cancelled" as const,
         piDocumentId: null, dealEventId: null, attempts: 0,
         lastErrorCode: null, idempotencyKey: stableKey,
+        leaseOwner: null, fencingToken: 0, leaseExpiresAt: null,
         createdAt: publicationStamp.recordedAt,
         updatedAt: publicationStamp.recordedAt
       });
@@ -1476,6 +1546,265 @@ export class InMemoryQuoteRepository implements QuoteRepository {
 
   cancelCase(command: CancelQuoteCaseCommand) {
     return this.terminal(command, "cancelled");
+  }
+
+  private publicationEntry(operationId: string) {
+    const matches = [...this.publicationOperations.entries()].filter(([, row]) =>
+      row.id === operationId);
+    if (matches.length > 1) throw quoteError("publication_identity_ambiguous");
+    return matches[0] ?? null;
+  }
+
+  private async publicationMutation<T>(
+    operationId: string,
+    work: (
+      tx: GrowthTemporalTransaction,
+      key: string,
+      operation: QuotePublicationOperation,
+      databaseNow: string
+    ) => Promise<T>
+  ): Promise<T | null> {
+    const initial = this.publicationEntry(operationId);
+    if (!initial) return null;
+    const workspaceId = initial[1].workspaceId;
+    let release: (() => void) | undefined;
+    let snapshot: ReturnType<InMemoryQuoteRepository["snapshotState"]>
+      | undefined;
+    try {
+      return await this.transactions.run(async (tx) => {
+        await tx.lockWorkspaceTemporalBarrierForUpdate(workspaceId);
+        release = await this.acquireWorkspaceMutationGate(workspaceId);
+        snapshot = this.snapshotState();
+        const current = this.publicationEntry(operationId);
+        if (!current || current[1].workspaceId !== workspaceId) return null;
+        return work(tx, current[0], current[1], await tx.currentTimestamp3());
+      });
+    } catch (error) {
+      if (snapshot) this.restoreState(snapshot);
+      throw error;
+    } finally {
+      release?.();
+    }
+  }
+
+  private livePublication(
+    operation: QuotePublicationOperation,
+    claim: QuotePublicationClaim,
+    databaseNow: string
+  ) {
+    return operation.status === "running"
+      && operation.leaseOwner === claim.leaseOwner
+      && operation.fencingToken === claim.fencingToken
+      && operation.dealAuthorityRevision === claim.authorityRevision
+      && growthInstant(operation.leaseExpiresAt) > growthInstant(databaseNow);
+  }
+
+  private async appendPublicationHistory(
+    tx: GrowthTemporalTransaction,
+    operation: QuotePublicationOperation,
+    errorCode: string | null,
+    actorId: string | null
+  ) {
+    const stamp = await this.temporalBarrier.allocateAppend(
+      tx,
+      operation.workspaceId
+    );
+    this.publicationHistory.push(immutableQuoteValue({
+      id: `quote-publication-history-${operation.workspaceId}-${stamp.temporalSequence}`,
+      workspaceId: operation.workspaceId, operationId: operation.id,
+      status: operation.status, leaseOwner: operation.leaseOwner,
+      fencingToken: operation.fencingToken,
+      authorityRevision: operation.dealAuthorityRevision,
+      piDocumentId: operation.piDocumentId,
+      dealEventId: operation.dealEventId,
+      errorCode, actorId, ...stamp
+    }));
+    return stamp;
+  }
+
+  async getPublication(operationId: string) {
+    const operation = this.publicationEntry(required(operationId,
+      "invalid_publication_operation_id"))?.[1] ?? null;
+    return operation ? immutableQuoteValue(structuredClone(operation)) : null;
+  }
+
+  async claimPublication(
+    operationId: string,
+    workerId: string,
+    _now: string,
+    nextExpiry: string
+  ): Promise<QuotePublicationClaim | null> {
+    const result = await this.publicationMutation(operationId,
+      async (tx, key, operation, databaseNow) => {
+        const recoverable = operation.status === "queued"
+          || operation.status === "failed"
+          || operation.status === "partial_failure"
+          || operation.status === "running"
+            && growthInstant(operation.leaseExpiresAt) <= growthInstant(databaseNow);
+        if (!recoverable
+          || growthInstant(nextExpiry) <= growthInstant(databaseNow)) return null;
+        const running = immutableQuoteValue({ ...operation,
+          status: "running" as const,
+          leaseOwner: required(workerId, "invalid_publication_worker_id"),
+          fencingToken: operation.fencingToken + 1,
+          leaseExpiresAt: nextExpiry,
+          attempts: operation.attempts + 1,
+          lastErrorCode: null,
+          updatedAt: databaseNow
+        });
+        this.publicationOperations.set(key, running);
+        await this.appendPublicationHistory(tx, running, null, null);
+        const reread = this.publicationOperations.get(key)!;
+        if (reread.status !== "running" || reread.leaseOwner !== workerId
+          || reread.fencingToken !== running.fencingToken
+          || reread.dealAuthorityRevision !== operation.dealAuthorityRevision
+          || growthInstant(reread.leaseExpiresAt) <= growthInstant(databaseNow)) {
+          throw quoteError("publication_claim_readback_failed");
+        }
+        return Object.freeze({ operationId: reread.id,
+          leaseOwner: workerId, fencingToken: reread.fencingToken,
+          leaseExpiresAt: reread.leaseExpiresAt!,
+          authorityRevision: reread.dealAuthorityRevision });
+      });
+    return result ?? null;
+  }
+
+  private async transitionPublication(
+    claim: QuotePublicationClaim,
+    change: (operation: QuotePublicationOperation, databaseNow: string) =>
+      QuotePublicationOperation,
+    errorCode: string | null = null
+  ) {
+    const result = await this.publicationMutation(claim.operationId,
+      async (tx, key, operation, databaseNow) => {
+        if (!this.livePublication(operation, claim, databaseNow)) return false;
+        const next = immutableQuoteValue(change(operation, databaseNow));
+        this.publicationOperations.set(key, next);
+        await this.appendPublicationHistory(tx, next, errorCode, null);
+        return true;
+      });
+    return result === true;
+  }
+
+  renewPublicationLease(claim: QuotePublicationClaim, _now: string,
+    nextExpiry: string) {
+    return this.transitionPublication(claim, (operation, databaseNow) => {
+      if (growthInstant(nextExpiry) <= growthInstant(databaseNow)) {
+        throw quoteError("invalid_publication_lease_expiry");
+      }
+      return { ...operation, leaseExpiresAt: nextExpiry,
+        updatedAt: databaseNow };
+    });
+  }
+
+  recordPiPublished(claim: QuotePublicationClaim, piDocumentId: string,
+    _now: string) {
+    return this.transitionPublication(claim, (operation, databaseNow) => ({
+      ...operation,
+      piDocumentId: operation.piDocumentId
+        ?? required(piDocumentId, "invalid_pi_document_id"),
+      updatedAt: databaseNow
+    }));
+  }
+
+  recordCrmPublished(claim: QuotePublicationClaim, dealEventId: string,
+    _now: string) {
+    return this.transitionPublication(claim, (operation, databaseNow) => ({
+      ...operation,
+      dealEventId: operation.dealEventId
+        ?? required(dealEventId, "invalid_deal_event_id"),
+      updatedAt: databaseNow
+    }));
+  }
+
+  finishPublication(claim: QuotePublicationClaim, _now: string) {
+    return this.transitionPublication(claim, (operation, databaseNow) => {
+      if (!operation.piDocumentId || !operation.dealEventId) {
+        throw quoteError("publication_receipts_incomplete");
+      }
+      return { ...operation, status: "succeeded" as const,
+        leaseOwner: null, leaseExpiresAt: null, updatedAt: databaseNow };
+    });
+  }
+
+  failPublication(claim: QuotePublicationClaim, errorCode: string,
+    _now: string) {
+    const code = required(errorCode, "invalid_publication_error_code");
+    return this.transitionPublication(claim, (operation, databaseNow) => ({
+      ...operation,
+      status: operation.piDocumentId || operation.dealEventId
+        ? "partial_failure" as const : "failed" as const,
+      leaseOwner: null, leaseExpiresAt: null, lastErrorCode: code,
+      updatedAt: databaseNow
+    }), code);
+  }
+
+  cancelPublication(claim: QuotePublicationClaim, errorCode: string,
+    _now: string) {
+    const code = required(errorCode, "invalid_publication_error_code");
+    return this.transitionPublication(claim, (operation, databaseNow) => ({
+      ...operation, status: code === "publication_superseded"
+        ? "superseded" as const : "cancelled" as const,
+      leaseOwner: null, leaseExpiresAt: null, lastErrorCode: code,
+      updatedAt: databaseNow
+    }), code);
+  }
+
+  async isPublicationAuthorityCurrent(claim: QuotePublicationClaim) {
+    const operation = await this.getPublication(claim.operationId);
+    if (!operation) return false;
+    const authority = this.dealAuthorities.get(this.caseKey(
+      operation.workspaceId,
+      operation.dealId
+    ));
+    return Boolean(authority
+      && authority.authorityRevision === claim.authorityRevision
+      && authority.quoteVersionId === operation.quoteVersionId
+      && authority.openQuoteCaseId === operation.quoteCaseId
+      && authority.commercialAmountHash === operation.commercialAmountHash);
+  }
+
+  async listRecoverablePublications(now?: string, limit = 100) {
+    const databaseNow = now ?? "9999-12-31T23:59:59.999Z";
+    return Object.freeze([...this.publicationOperations.values()]
+      .filter((row) => row.status === "queued" || row.status === "failed"
+        || row.status === "partial_failure" || row.status === "running"
+          && growthInstant(row.leaseExpiresAt) <= growthInstant(databaseNow))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id))
+      .slice(0, Math.max(0, limit))
+      .map((row) => immutableQuoteValue(structuredClone(row))));
+  }
+
+  async retryPublication(operationId: string, context: ActiveWorkspaceContext,
+    _now: string) {
+    requireGrowthCapabilities(context, ["quote.confirm"]);
+    const result = await this.publicationMutation(operationId,
+      async (tx, key, operation, databaseNow) => {
+        if (context.workspaceId !== operation.workspaceId) {
+          throw quoteError("publication_workspace_mismatch");
+        }
+        if (operation.status !== "failed"
+          && operation.status !== "partial_failure") {
+          throw quoteError("publication_not_retryable");
+        }
+        const queued = immutableQuoteValue({ ...operation,
+          status: "queued" as const, leaseOwner: null, leaseExpiresAt: null,
+          fencingToken: operation.fencingToken + 1, lastErrorCode: null,
+          updatedAt: databaseNow
+        });
+        this.publicationOperations.set(key, queued);
+        await this.appendPublicationHistory(tx, queued, null, context.actorId);
+        return queued;
+      });
+    if (!result) throw quoteError("publication_not_found");
+    return result;
+  }
+
+  async listPublicationHistory(operationId: string) {
+    return Object.freeze(this.publicationHistory.filter((row) =>
+      row.operationId === operationId).map((row) =>
+        immutableQuoteValue(structuredClone(row))));
   }
 
   async countCases(workspaceId: string) {

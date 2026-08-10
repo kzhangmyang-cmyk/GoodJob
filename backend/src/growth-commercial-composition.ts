@@ -23,11 +23,12 @@ import type {
 } from "./commission-catalog-projection.js";
 import type { CrmStore } from "./store.js";
 import {
-  GROWTH_PROBABILITY_ASSESSMENTS,
+  GROWTH_QUOTE_ACQUISITION_INTEGRATIONS,
   createGrowthQuoteModule,
   type GrowthQuoteTrustedAuthority
 } from "./growth-quote-module.js";
 import type { ProbabilityAssessmentWriter } from "./probability-assessment.js";
+import type { QuoteProjectedDocumentAuthorityValidator } from "./commercial-authority-guard.js";
 import { createGrowthWorkspaceMemberAssignabilityReader } from "./growth-workspace-member-assignability.js";
 import { resolveTrustedAcquisitionDealBinding } from "./acquisition-deal-binding.js";
 import type { AcquisitionCandidate } from "./acquisition-domain.js";
@@ -73,8 +74,7 @@ export interface GrowthAcquisitionIntegrations {
   temporalBarrier: GrowthTemporalBarrier;
   commissionCatalogProjection: CommissionCatalogProjectionPort;
   probabilityAssessments: ProbabilityAssessmentWriter;
-  /** Foundation 0.3/Quote Task 6 replaces this absent, fail-closed seam. */
-  quoteProjectedDocumentAuthority?: never;
+  quoteProjectedDocumentAuthority: QuoteProjectedDocumentAuthorityValidator;
 }
 
 export function createGrowthCommercialComposition(
@@ -94,9 +94,18 @@ export function createGrowthCommercialComposition(
     projectIntegrations(privateServices: GrowthPrivateServiceRegistry) {
       const services = privateServices.get(GROWTH_FOUNDATION_SERVICES);
       const catalog = privateServices.require(GROWTH_CATALOG_SERVICES);
-      const probabilityAssessments = privateServices.require(
-        GROWTH_PROBABILITY_ASSESSMENTS
+      const quoteAcquisition = privateServices.require(
+        GROWTH_QUOTE_ACQUISITION_INTEGRATIONS
       );
+      if (!Object.isFrozen(quoteAcquisition)
+        || !quoteAcquisition.probabilityAssessments
+        || typeof quoteAcquisition.probabilityAssessments
+          .recordFromQualification !== "function"
+        || !quoteAcquisition.quoteProjectedDocumentAuthority
+        || typeof quoteAcquisition.quoteProjectedDocumentAuthority
+          .assertAuthorized !== "function") {
+        throw new Error("invalid_growth_quote_acquisition_integrations");
+      }
       const acquisitionWorkspace = services?.acquisitionWorkspace
         ?? foundation.acquisitionWorkspace;
       const temporalBarrier = services?.temporalBarrier
@@ -106,7 +115,9 @@ export function createGrowthCommercialComposition(
         acquisitionWorkspace,
         temporalBarrier,
         commissionCatalogProjection: catalog.commissionCatalogProjection,
-        probabilityAssessments
+        probabilityAssessments: quoteAcquisition.probabilityAssessments,
+        quoteProjectedDocumentAuthority:
+          quoteAcquisition.quoteProjectedDocumentAuthority
       });
     }
   });
@@ -213,6 +224,12 @@ export function createGrowthCommercialCompositionForStore(options: {
       findCandidate
     }
   };
+  const quoteStore = Array.isArray((options.store as Partial<CrmStore>)
+    .tradeDocuments)
+    && Array.isArray((options.store as Partial<CrmStore>).dealEvents)
+    && typeof (options.store as Partial<CrmStore>)
+      .mutateAuthoritativeQuoteProjection === "function"
+    ? options.store as CrmStore : undefined;
   const modules: GrowthCommercialModule[] = [];
   if (options.store.mode === "mysql") {
     const databaseUrl = options.databaseUrl?.trim();
@@ -223,12 +240,13 @@ export function createGrowthCommercialCompositionForStore(options: {
     }));
     modules.push(createGrowthCatalogModule({ mode: "mysql", pool }));
     modules.push(createGrowthQuoteModule({
-      mode: "mysql", pool, trustedAuthority
+      mode: "mysql", pool, trustedAuthority, store: quoteStore
     }));
   } else {
     modules.push(createGrowthFoundationModule({ mode: "memory", acquisitionWorkspace }));
     modules.push(createGrowthCatalogModule({ mode: "memory" }));
-    modules.push(createGrowthQuoteModule({ mode: "memory", trustedAuthority }));
+    modules.push(createGrowthQuoteModule({ mode: "memory", trustedAuthority,
+      store: quoteStore }));
   }
   return Object.freeze({
     composition: createGrowthCommercialComposition({

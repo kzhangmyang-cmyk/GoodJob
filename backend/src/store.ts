@@ -162,6 +162,10 @@ import type {
 } from "./types.js";
 import { mutateCustomerOwnershipMemory } from "./customer-public-pool.js";
 import type {
+  AuthoritativeQuoteProjectionMutation,
+  AuthoritativeQuoteProjectionMutationResult
+} from "./quote-crm-command.js";
+import type {
   CompanyVerificationSnapshot,
   ProspectContact,
   ProspectContactChannel,
@@ -357,6 +361,9 @@ export interface CrmStore {
   mutateCustomerOwnership?(
     input: CustomerOwnershipMutationInput
   ): Promise<CustomerOwnershipMutationResult>;
+  mutateAuthoritativeQuoteProjection?(
+    input: AuthoritativeQuoteProjectionMutation
+  ): Promise<AuthoritativeQuoteProjectionMutationResult>;
   reloadProspectCandidates?(): Promise<void>;
   reloadProspectRuns?(): Promise<void>;
   resolveOrganizationStrongIdentity?(
@@ -534,6 +541,9 @@ export const memoryStore: CrmStore = {
   async mutateCustomerOwnership(input) {
     return mutateCustomerOwnershipMemory(memoryStore, input);
   },
+  async mutateAuthoritativeQuoteProjection(input) {
+    return mutateAuthoritativeQuoteProjectionMemory(memoryStore, input);
+  },
   async reloadOrganizationIdentityTeam() {
     // Memory mode already reads the current in-process identity state.
   },
@@ -579,6 +589,136 @@ export const memoryStore: CrmStore = {
     // Memory mode has no external resources.
   }
 };
+
+export function createMemoryStore(overrides: Partial<CrmStore> = {}): CrmStore {
+  const store = {
+    ...memoryStore,
+    ...overrides
+  } as CrmStore;
+  store.mutateAuthoritativeQuoteProjection = async (input) =>
+    mutateAuthoritativeQuoteProjectionMemory(store, input);
+  return store;
+}
+
+function mutateAuthoritativeQuoteProjectionMemory(
+  store: Pick<CrmStore, "deals" | "dealEvents" | "tradeDocuments"
+    | "customers" | "companyProfiles">,
+  input: AuthoritativeQuoteProjectionMutation
+): AuthoritativeQuoteProjectionMutationResult {
+  const deal = store.deals.find((row) => row.id === input.dealId
+    && row.teamId === input.workspaceId);
+  if (!deal) throw new Error("authoritative_projection_deal_not_found");
+  if (input.quoteVersion.versionKind !== "formal"
+    || input.quoteVersion.id === ""
+    || input.quoteVersion.workspaceId !== input.workspaceId
+    || input.quoteVersion.quoteCaseId !== input.quoteCaseId
+    || input.quoteVersion.commercialAmountHash !== input.commercialAmountHash) {
+    throw new Error("authoritative_projection_version_mismatch");
+  }
+  const line = input.quoteVersion.lineSnapshot as Record<string, unknown>;
+  const quantity = Number(line.quantityMicros) / 1_000_000;
+  const unitPrice = Number(line.offeredUnitPriceMinor) / 100;
+  const quotedAmountMinor = Number(input.quoteVersion.quotedAmountMinor);
+  if (!Number.isFinite(quantity) || quantity <= 0
+    || !Number.isSafeInteger(quotedAmountMinor) || quotedAmountMinor <= 0
+    || !Number.isFinite(unitPrice) || unitPrice < 0) {
+    throw new Error("authoritative_projection_amount_invalid");
+  }
+  if (input.kind === "pi") {
+    const existing = store.tradeDocuments.find((row) => row.id === input.stableId);
+    if (existing) {
+      if (existing.quoteVersionId !== input.quoteVersion.id
+        || existing.commercialAmountHash !== input.commercialAmountHash
+        || existing.dealAuthorityRevision !== input.dealAuthorityRevision) {
+        throw new Error("authoritative_projection_stable_key_conflict");
+      }
+      return { kind: "pi", document: existing };
+    }
+    const customer = store.customers.find((row) => row.id === deal.customerId);
+    const company = store.companyProfiles.find((row) =>
+      row.teamId === input.workspaceId);
+    for (let index = 0; index < store.tradeDocuments.length; index += 1) {
+      const document = store.tradeDocuments[index]!;
+      if (document.teamId === input.workspaceId
+        && document.dealId === input.dealId
+        && document.type === "PI"
+        && document.commercialAuthority === "quote_projection"
+        && document.projectionState === "current") {
+        store.tradeDocuments[index] = { ...document,
+          projectionState: "superseded", updatedAt: input.recordedAt };
+      }
+    }
+    const document = Object.freeze({
+      id: input.stableId, customerId: deal.customerId, dealId: deal.id,
+      revision: 1, commercialAuthority: "quote_projection" as const,
+      quoteCaseId: input.quoteCaseId, quoteVersionId: input.quoteVersion.id,
+      commercialAmountHash: input.commercialAmountHash,
+      dealAuthorityRevision: input.dealAuthorityRevision,
+      projectionState: "current" as const, quotedAmountMinor,
+      quoteLineSnapshot: Object.freeze(structuredClone(line)),
+      quotePackageSnapshot: structuredClone(
+        input.quoteVersion.packageSnapshot ?? null
+      ),
+      recordedAt: input.recordedAt, temporalSequence: input.temporalSequence,
+      type: "PI" as const, title: `PI ${input.quoteVersion.id}`,
+      number: input.stableId, issueDate: input.recordedAt.slice(0, 10),
+      buyer: customer?.billingName || customer?.company || "",
+      buyerAddress: customer?.billingAddress || "",
+      buyerContact: customer?.documentContact || customer?.contact || "",
+      seller: company?.companyName || "", sellerAddress: company?.address || "",
+      currency: String(input.quoteVersion.currency),
+      incoterm: customer?.defaultIncoterm || "FOB",
+      paymentTerm: customer?.defaultPaymentTerm || "", shippingMethod: "",
+      portLoading: "", portDischarge: customer?.defaultPortDischarge || "",
+      validityDate: "", bankInfo: "", notes: "",
+      templateStyle: "executive" as const, status: "draft" as const,
+      audits: [], sendRecords: [], ownerId: deal.ownerId,
+      teamId: deal.teamId, updatedAt: input.recordedAt,
+      items: [{ id: `${input.stableId}-line-1`,
+        product: String(line.catalogItemId), model: "", hsCode: "", quantity,
+        unit: "PCS", unitPrice, originCountry: "", weightKg: 0,
+        packageCount: 0 }]
+    });
+    store.tradeDocuments.push(document);
+    return { kind: "pi", document };
+  }
+  const existing = store.dealEvents.find((row) => row.id === input.stableId);
+  if (existing) {
+    if (existing.quoteVersionIdSnapshot !== input.quoteVersion.id
+      || existing.commercialAmountHash !== input.commercialAmountHash
+      || existing.dealAuthorityRevisionSnapshot
+        !== input.dealAuthorityRevision) {
+      throw new Error("authoritative_projection_stable_key_conflict");
+    }
+    return { kind: "crm", event: existing };
+  }
+  const previousStage = deal.stage;
+  Object.assign(deal, {
+    product: String(line.catalogItemId), quantity, unitPrice,
+    amount: quotedAmountMinor / 100,
+    currency: String(input.quoteVersion.currency), amountType: "quoted",
+    stage: "已报价", stageChangedAt: input.recordedAt
+  });
+  const event = Object.freeze({
+    id: input.stableId, dealId: deal.id, type: "quote" as const,
+    content: "Authoritative quote published", operatorId: input.actorId,
+    ownerIdSnapshot: deal.ownerId, teamIdSnapshot: deal.teamId,
+    customerIdSnapshot: deal.customerId, leadIdSnapshot: null,
+    handoffIdSnapshot: null, candidateIdSnapshot: null,
+    amountMinorSnapshot: quotedAmountMinor,
+    currencySnapshot: String(input.quoteVersion.currency),
+    commercialAuthority: "quote_projection" as const,
+    quoteCaseIdSnapshot: input.quoteCaseId,
+    quoteVersionIdSnapshot: input.quoteVersion.id,
+    commercialAmountHash: input.commercialAmountHash,
+    dealAuthorityRevisionSnapshot: input.dealAuthorityRevision,
+    fromStage: previousStage, toStage: "已报价" as const,
+    relatedDocumentId: input.piDocumentId, recordedAt: input.recordedAt,
+    temporalSequence: input.temporalSequence, createdAt: input.recordedAt
+  });
+  store.dealEvents.push(event);
+  return { kind: "crm", event };
+}
 
 let activeStore: CrmStore = memoryStore;
 

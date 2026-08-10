@@ -34,8 +34,12 @@ import {
   type DealAuthoritativeQuoteEvent,
   type DecideQuoteApprovalCommand,
   type QuoteApprovalDecisionPersistenceResult,
-  type QuotePublicationOperation
+  type QuotePublicationOperation,
+  type QuotePublicationClaim,
+  type QuotePublicationHistory
 } from "./quote-repository.js";
+import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
+import { requireGrowthCapabilities } from "./growth-capabilities.js";
 import { createHash } from "node:crypto";
 import { canonicalJsonStringify } from "./canonical-json.js";
 import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js";
@@ -234,11 +238,29 @@ export const QUOTE_MYSQL_SCHEMA_STATEMENTS = [
     workspace_id VARCHAR(191) NOT NULL, id VARCHAR(191) NOT NULL,
     quote_case_id VARCHAR(191) NOT NULL, quote_version_id VARCHAR(191) NOT NULL,
     deal_id VARCHAR(191) NOT NULL, stable_key_hash CHAR(71) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    authority_revision BIGINT UNSIGNED NOT NULL,
+    lease_owner VARCHAR(191) NULL,
+    fencing_token BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    lease_expires_at DATETIME(3) NULL,
+    pi_document_id VARCHAR(191) NULL,
+    deal_event_id VARCHAR(191) NULL,
     operation_json JSON NOT NULL,
     recorded_at DATETIME(3) NOT NULL, temporal_sequence BIGINT UNSIGNED NOT NULL,
     PRIMARY KEY (workspace_id,id),
     UNIQUE KEY uk_quote_publication_stable (workspace_id,stable_key_hash),
     CONSTRAINT chk_quote_publication_json CHECK (JSON_VALID(operation_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS quote_publication_history (
+    workspace_id VARCHAR(191) NOT NULL, id VARCHAR(191) NOT NULL,
+    operation_id VARCHAR(191) NOT NULL, status VARCHAR(32) NOT NULL,
+    lease_owner VARCHAR(191) NULL, fencing_token BIGINT UNSIGNED NOT NULL,
+    authority_revision BIGINT UNSIGNED NOT NULL,
+    pi_document_id VARCHAR(191) NULL, deal_event_id VARCHAR(191) NULL,
+    error_code VARCHAR(191) NULL, actor_id VARCHAR(191) NULL,
+    recorded_at DATETIME(3) NOT NULL, temporal_sequence BIGINT UNSIGNED NOT NULL,
+    PRIMARY KEY (workspace_id,id),
+    KEY idx_quote_publication_history (workspace_id,operation_id,temporal_sequence)
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS quote_command_idempotency (
     workspace_id VARCHAR(191) NOT NULL, command_key VARCHAR(255) NOT NULL,
@@ -253,7 +275,30 @@ export const QUOTE_MYSQL_SCHEMA_STATEMENTS = [
     decision_json JSON NOT NULL, completed_at DATETIME(3) NOT NULL,
     PRIMARY KEY (workspace_id,stable_command_hash),
     CONSTRAINT chk_quote_approval_decision_json CHECK (JSON_VALID(decision_json))
-  ) ENGINE=InnoDB`
+  ) ENGINE=InnoDB`,
+  `ALTER TABLE quote_publication_operations
+    ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'queued',
+    ADD COLUMN IF NOT EXISTS authority_revision BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS lease_owner VARCHAR(191) NULL,
+    ADD COLUMN IF NOT EXISTS fencing_token BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS lease_expires_at DATETIME(3) NULL,
+    ADD COLUMN IF NOT EXISTS pi_document_id VARCHAR(191) NULL,
+    ADD COLUMN IF NOT EXISTS deal_event_id VARCHAR(191) NULL`,
+  `UPDATE quote_publication_operations SET
+     status = JSON_UNQUOTE(JSON_EXTRACT(operation_json,'$.status')),
+     authority_revision = CAST(JSON_UNQUOTE(JSON_EXTRACT(
+       operation_json,'$.dealAuthorityRevision')) AS UNSIGNED),
+     lease_owner = NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+       operation_json,'$.leaseOwner')),'null'),
+     fencing_token = COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(
+       operation_json,'$.fencingToken')) AS UNSIGNED),0),
+     lease_expires_at = STR_TO_DATE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+       operation_json,'$.leaseExpiresAt')),'null'),'%Y-%m-%dT%H:%i:%s.%fZ'),
+     pi_document_id = NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+       operation_json,'$.piDocumentId')),'null'),
+     deal_event_id = NULLIF(JSON_UNQUOTE(JSON_EXTRACT(
+       operation_json,'$.dealEventId')),'null')
+   WHERE authority_revision = 0`
 ] as const;
 
 export async function ensureQuoteMysqlSchema(pool: mysql.Pool): Promise<void> {
@@ -334,6 +379,32 @@ function parseAuthorityRow(row: MysqlRow): DealAuthoritativeQuote {
       ? null : String(row.commercial_amount_hash) as `sha256:${string}`,
     authorityRevision: Number(row.authority_revision),
     updatedAt: growthMysqlInstant(row.updated_at)
+  });
+}
+
+function parsePublicationRow(row: MysqlRow): QuotePublicationOperation {
+  const stored = immutableQuoteValue(json<QuotePublicationOperation>(
+    row.operation_json
+  ));
+  return immutableQuoteValue({ ...stored,
+    status: String(row.status ?? stored.status) as
+      QuotePublicationOperation["status"],
+    dealAuthorityRevision: Number(row.authority_revision
+      ?? stored.dealAuthorityRevision),
+    leaseOwner: row.lease_owner === undefined
+      ? stored.leaseOwner ?? null
+      : row.lease_owner === null ? null : String(row.lease_owner),
+    fencingToken: Number(row.fencing_token ?? stored.fencingToken ?? 0),
+    leaseExpiresAt: row.lease_expires_at === undefined
+      ? stored.leaseExpiresAt ?? null
+      : row.lease_expires_at === null ? null
+        : growthMysqlInstant(row.lease_expires_at),
+    piDocumentId: row.pi_document_id === undefined
+      ? stored.piDocumentId : row.pi_document_id === null ? null
+        : String(row.pi_document_id),
+    dealEventId: row.deal_event_id === undefined
+      ? stored.dealEventId : row.deal_event_id === null ? null
+        : String(row.deal_event_id)
   });
 }
 
@@ -420,6 +491,64 @@ export class MysqlQuoteRepository implements QuoteRepository {
     } finally {
       connection.release();
     }
+  }
+
+  private async publicationWorkspace(operationId: string) {
+    const [rows] = await this.pool.query(
+      `SELECT workspace_id FROM quote_publication_operations WHERE id = ?`,
+      [operationId]
+    );
+    const matches = rows as MysqlRow[];
+    if (matches.length > 1) throw quoteError("publication_identity_ambiguous");
+    return matches[0] ? String(matches[0].workspace_id) : null;
+  }
+
+  private async lockedPublication(
+    connection: mysql.PoolConnection,
+    workspaceId: string,
+    operationId: string
+  ) {
+    const [rows] = await connection.query(
+      `SELECT * FROM quote_publication_operations
+       WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+      [workspaceId, operationId]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parsePublicationRow(row) : null;
+  }
+
+  private async appendPublicationHistory(
+    connection: mysql.PoolConnection,
+    temporal: MysqlGrowthTemporalTransaction,
+    operation: QuotePublicationOperation,
+    errorCode: string | null,
+    actorId: string | null
+  ) {
+    const stamp = await this.temporalBarrier.allocateAppend(
+      temporal,
+      operation.workspaceId
+    );
+    const history: QuotePublicationHistory = immutableQuoteValue({
+      id: `quote-publication-history-${operation.workspaceId}-${stamp.temporalSequence}`,
+      workspaceId: operation.workspaceId, operationId: operation.id,
+      status: operation.status, leaseOwner: operation.leaseOwner,
+      fencingToken: operation.fencingToken,
+      authorityRevision: operation.dealAuthorityRevision,
+      piDocumentId: operation.piDocumentId,
+      dealEventId: operation.dealEventId, errorCode, actorId, ...stamp
+    });
+    await connection.query(
+      `INSERT INTO quote_publication_history
+       (workspace_id,id,operation_id,status,lease_owner,fencing_token,
+        authority_revision,pi_document_id,deal_event_id,error_code,actor_id,
+        recorded_at,temporal_sequence) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [history.workspaceId, history.id, history.operationId, history.status,
+        history.leaseOwner, history.fencingToken, history.authorityRevision,
+        history.piDocumentId, history.dealEventId, history.errorCode,
+        history.actorId, growthMysqlDate(history.recordedAt),
+        history.temporalSequence]
+    );
+    return stamp;
   }
 
   private async receipt(
@@ -1204,16 +1333,21 @@ export class MysqlQuoteRepository implements QuoteRepository {
               : "cancelled" as const,
             piDocumentId: null, dealEventId: null, attempts: 0,
             lastErrorCode: null, idempotencyKey: stableKey,
+            leaseOwner: null, fencingToken: 0, leaseExpiresAt: null,
             createdAt: publicationStamp.recordedAt,
             updatedAt: publicationStamp.recordedAt
           });
         await connection.query(
           `INSERT INTO quote_publication_operations
            (workspace_id,id,quote_case_id,quote_version_id,deal_id,
-            stable_key_hash,operation_json,recorded_at,temporal_sequence)
-           VALUES (?,?,?,?,?,?,?,?,?)`,
+            stable_key_hash,status,authority_revision,lease_owner,fencing_token,
+            lease_expires_at,pi_document_id,deal_event_id,operation_json,
+            recorded_at,temporal_sequence)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
           [workspace, publicationOperation.id, quoteCase.id, version.id,
-            quoteCase.dealId, hash(stableKey), JSON.stringify(publicationOperation),
+            quoteCase.dealId, hash(stableKey), publicationOperation.status,
+            authorityRevision, null, 0, null, null, null,
+            JSON.stringify(publicationOperation),
             growthMysqlDate(publicationStamp.recordedAt),
             publicationStamp.temporalSequence]
         );
@@ -1577,6 +1711,252 @@ export class MysqlQuoteRepository implements QuoteRepository {
 
   closeCase(command: CloseQuoteCaseCommand) { return this.terminal(command, "closed"); }
   cancelCase(command: CancelQuoteCaseCommand) { return this.terminal(command, "cancelled"); }
+
+  async getPublication(operationId: string) {
+    const [rows] = await this.pool.query(
+      `SELECT * FROM quote_publication_operations WHERE id = ?`, [operationId]
+    );
+    const matches = rows as MysqlRow[];
+    if (matches.length > 1) throw quoteError("publication_identity_ambiguous");
+    return matches[0] ? parsePublicationRow(matches[0]) : null;
+  }
+
+  async claimPublication(operationId: string, workerId: string, _now: string,
+    nextExpiry: string): Promise<QuotePublicationClaim | null> {
+    const workspace = await this.publicationWorkspace(operationId);
+    if (!workspace) return null;
+    return this.transaction(async (connection, temporal) => {
+      await temporal.lockWorkspaceTemporalBarrierForUpdate(workspace);
+      const databaseNow = await temporal.currentTimestamp3();
+      const current = await this.lockedPublication(connection, workspace,
+        operationId);
+      if (!current) return null;
+      const recoverable = current.status === "queued" || current.status === "failed"
+        || current.status === "partial_failure" || current.status === "running"
+          && current.leaseExpiresAt !== null
+          && Date.parse(current.leaseExpiresAt) <= Date.parse(databaseNow);
+      if (!recoverable || Date.parse(nextExpiry) <= Date.parse(databaseNow)) {
+        return null;
+      }
+      const running: QuotePublicationOperation = immutableQuoteValue({ ...current,
+        status: "running", leaseOwner: workerId,
+        fencingToken: current.fencingToken + 1, leaseExpiresAt: nextExpiry,
+        attempts: current.attempts + 1, lastErrorCode: null,
+        updatedAt: databaseNow
+      });
+      const stamp = await this.appendPublicationHistory(connection, temporal,
+        running, null, null);
+      const [updated] = await connection.query(
+        `UPDATE quote_publication_operations SET status = 'running',
+         lease_owner = ?,fencing_token = ?,lease_expires_at = ?,
+         pi_document_id = ?,deal_event_id = ?,operation_json = ?,recorded_at = ?,
+         temporal_sequence = ? WHERE workspace_id = ? AND id = ?`,
+        [workerId, running.fencingToken, growthMysqlDate(nextExpiry),
+          running.piDocumentId, running.dealEventId, JSON.stringify(running),
+          growthMysqlDate(stamp.recordedAt), stamp.temporalSequence, workspace,
+          operationId]
+      );
+      if (affectedRows(updated) !== 1) throw quoteError("publication_claim_lost");
+      const reread = await this.lockedPublication(connection, workspace,
+        operationId);
+      if (!reread || reread.status !== "running"
+        || reread.leaseOwner !== workerId
+        || reread.fencingToken !== running.fencingToken
+        || reread.dealAuthorityRevision !== current.dealAuthorityRevision
+        || !reread.leaseExpiresAt
+        || Date.parse(reread.leaseExpiresAt) <= Date.parse(databaseNow)) {
+        throw quoteError("publication_claim_readback_failed");
+      }
+      return Object.freeze({ operationId, leaseOwner: workerId,
+        fencingToken: reread.fencingToken,
+        leaseExpiresAt: reread.leaseExpiresAt,
+        authorityRevision: reread.dealAuthorityRevision });
+    });
+  }
+
+  private async transitionPublication(
+    claim: QuotePublicationClaim,
+    change: (operation: QuotePublicationOperation, databaseNow: string) =>
+      QuotePublicationOperation,
+    errorCode: string | null = null
+  ) {
+    const workspace = await this.publicationWorkspace(claim.operationId);
+    if (!workspace) return false;
+    return this.transaction(async (connection, temporal) => {
+      await temporal.lockWorkspaceTemporalBarrierForUpdate(workspace);
+      const databaseNow = await temporal.currentTimestamp3();
+      const current = await this.lockedPublication(connection, workspace,
+        claim.operationId);
+      if (!current || current.status !== "running"
+        || current.leaseOwner !== claim.leaseOwner
+        || current.fencingToken !== claim.fencingToken
+        || current.dealAuthorityRevision !== claim.authorityRevision
+        || !current.leaseExpiresAt
+        || Date.parse(current.leaseExpiresAt) <= Date.parse(databaseNow)) {
+        return false;
+      }
+      const next = immutableQuoteValue(change(current, databaseNow));
+      const stamp = await this.appendPublicationHistory(connection, temporal,
+        next, errorCode, null);
+      const [updated] = await connection.query(
+        `UPDATE quote_publication_operations SET status = ?,lease_owner = ?,
+         fencing_token = ?,lease_expires_at = ?,pi_document_id = ?,
+         deal_event_id = ?,operation_json = ?,recorded_at = ?,temporal_sequence = ?
+         WHERE workspace_id = ? AND id = ? AND status = 'running'
+           AND lease_owner = ? AND fencing_token = ? AND authority_revision = ?
+           AND lease_expires_at > ?`,
+        [next.status, next.leaseOwner, next.fencingToken,
+          next.leaseExpiresAt ? growthMysqlDate(next.leaseExpiresAt) : null,
+          next.piDocumentId, next.dealEventId, JSON.stringify(next),
+          growthMysqlDate(stamp.recordedAt), stamp.temporalSequence, workspace,
+          claim.operationId, claim.leaseOwner, claim.fencingToken,
+          claim.authorityRevision, growthMysqlDate(databaseNow)]
+      );
+      if (affectedRows(updated) !== 1) {
+        throw quoteError("publication_fence_lost_after_lock");
+      }
+      return true;
+    });
+  }
+
+  renewPublicationLease(claim: QuotePublicationClaim, _now: string,
+    nextExpiry: string) {
+    return this.transitionPublication(claim, (operation, databaseNow) => {
+      if (Date.parse(nextExpiry) <= Date.parse(databaseNow)) {
+        throw quoteError("invalid_publication_lease_expiry");
+      }
+      return { ...operation, leaseExpiresAt: nextExpiry,
+        updatedAt: databaseNow };
+    });
+  }
+
+  recordPiPublished(claim: QuotePublicationClaim, piDocumentId: string,
+    _now: string) {
+    return this.transitionPublication(claim, (operation, databaseNow) => ({
+      ...operation, piDocumentId: operation.piDocumentId || piDocumentId,
+      updatedAt: databaseNow
+    }));
+  }
+
+  recordCrmPublished(claim: QuotePublicationClaim, dealEventId: string,
+    _now: string) {
+    return this.transitionPublication(claim, (operation, databaseNow) => ({
+      ...operation, dealEventId: operation.dealEventId || dealEventId,
+      updatedAt: databaseNow
+    }));
+  }
+
+  finishPublication(claim: QuotePublicationClaim, _now: string) {
+    return this.transitionPublication(claim, (operation, databaseNow) => {
+      if (!operation.piDocumentId || !operation.dealEventId) {
+        throw quoteError("publication_receipts_incomplete");
+      }
+      return { ...operation, status: "succeeded", leaseOwner: null,
+        leaseExpiresAt: null, updatedAt: databaseNow };
+    });
+  }
+
+  failPublication(claim: QuotePublicationClaim, errorCode: string, _now: string) {
+    return this.transitionPublication(claim, (operation, databaseNow) => ({
+      ...operation, status: operation.piDocumentId || operation.dealEventId
+        ? "partial_failure" : "failed", leaseOwner: null,
+      leaseExpiresAt: null, lastErrorCode: errorCode, updatedAt: databaseNow
+    }), errorCode);
+  }
+
+  cancelPublication(claim: QuotePublicationClaim, errorCode: string,
+    _now: string) {
+    return this.transitionPublication(claim, (operation, databaseNow) => ({
+      ...operation, status: errorCode === "publication_superseded"
+        ? "superseded" : "cancelled", leaseOwner: null, leaseExpiresAt: null,
+      lastErrorCode: errorCode, updatedAt: databaseNow
+    }), errorCode);
+  }
+
+  async isPublicationAuthorityCurrent(claim: QuotePublicationClaim) {
+    const operation = await this.getPublication(claim.operationId);
+    if (!operation) return false;
+    const authority = await this.findCurrentDealAuthority(
+      operation.workspaceId,
+      operation.dealId
+    );
+    return Boolean(authority
+      && authority.authorityRevision === claim.authorityRevision
+      && authority.openQuoteCaseId === operation.quoteCaseId
+      && authority.quoteVersionId === operation.quoteVersionId
+      && authority.commercialAmountHash === operation.commercialAmountHash);
+  }
+
+  async listRecoverablePublications(now?: string, limit = 100) {
+    const [rows] = await this.pool.query(
+      `SELECT * FROM quote_publication_operations
+       WHERE status IN ('queued','failed','partial_failure')
+          OR (status = 'running' AND lease_expires_at <= COALESCE(?,CURRENT_TIMESTAMP(3)))
+       ORDER BY recorded_at,id LIMIT ?`,
+      [now ? growthMysqlDate(now) : null, Math.max(0, limit)]
+    );
+    return Object.freeze((rows as MysqlRow[]).map(parsePublicationRow));
+  }
+
+  async retryPublication(operationId: string, context: ActiveWorkspaceContext,
+    _now: string) {
+    requireGrowthCapabilities(context, ["quote.confirm"]);
+    const workspace = await this.publicationWorkspace(operationId);
+    if (!workspace) throw quoteError("publication_not_found");
+    if (workspace !== context.workspaceId) {
+      throw quoteError("publication_workspace_mismatch");
+    }
+    return this.transaction(async (connection, temporal) => {
+      await temporal.lockWorkspaceTemporalBarrierForUpdate(workspace);
+      const databaseNow = await temporal.currentTimestamp3();
+      const current = await this.lockedPublication(connection, workspace,
+        operationId);
+      if (!current || current.status !== "failed"
+        && current.status !== "partial_failure") {
+        throw quoteError("publication_not_retryable");
+      }
+      const queued: QuotePublicationOperation = immutableQuoteValue({ ...current,
+        status: "queued", leaseOwner: null, leaseExpiresAt: null,
+        fencingToken: current.fencingToken + 1, lastErrorCode: null,
+        updatedAt: databaseNow
+      });
+      const stamp = await this.appendPublicationHistory(connection, temporal,
+        queued, null, context.actorId);
+      await connection.query(
+        `UPDATE quote_publication_operations SET status = 'queued',
+         lease_owner = NULL,lease_expires_at = NULL,fencing_token = ?,
+         operation_json = ?,recorded_at = ?,temporal_sequence = ?
+         WHERE workspace_id = ? AND id = ? AND status IN ('failed','partial_failure')`,
+        [queued.fencingToken, JSON.stringify(queued),
+          growthMysqlDate(stamp.recordedAt), stamp.temporalSequence,
+          workspace, operationId]
+      );
+      return queued;
+    });
+  }
+
+  async listPublicationHistory(operationId: string) {
+    const [rows] = await this.pool.query(
+      `SELECT * FROM quote_publication_history WHERE operation_id = ?
+       ORDER BY temporal_sequence`, [operationId]
+    );
+    return Object.freeze((rows as MysqlRow[]).map((row) =>
+      immutableQuoteValue({
+        id: String(row.id), workspaceId: String(row.workspace_id), operationId,
+        status: String(row.status) as QuotePublicationOperation["status"],
+        leaseOwner: row.lease_owner === null ? null : String(row.lease_owner),
+        fencingToken: Number(row.fencing_token),
+        authorityRevision: Number(row.authority_revision),
+        piDocumentId: row.pi_document_id === null
+          ? null : String(row.pi_document_id),
+        dealEventId: row.deal_event_id === null
+          ? null : String(row.deal_event_id),
+        errorCode: row.error_code === null ? null : String(row.error_code),
+        actorId: row.actor_id === null ? null : String(row.actor_id),
+        recordedAt: growthMysqlInstant(row.recorded_at),
+        temporalSequence: Number(row.temporal_sequence)
+      })));
+  }
 }
 
 function valueConflictCode(dealId: string | null) {

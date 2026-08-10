@@ -17,7 +17,9 @@ import {
   type GrowthCatalogServices
 } from "./growth-catalog-module.js";
 import type { CommissionCatalogProjectionPort } from "./commission-catalog-projection.js";
-import { GROWTH_PROBABILITY_ASSESSMENTS } from "./growth-quote-module.js";
+import {
+  GROWTH_QUOTE_ACQUISITION_INTEGRATIONS
+} from "./growth-quote-module.js";
 
 function foundationPorts() {
   const acquisitionWorkspace = Object.freeze({
@@ -50,17 +52,26 @@ function registryWithCatalog(
     catalogItems: {} as GrowthCatalogServices["catalogItems"],
     commissionCatalogProjection
   }));
-  registry.provide(GROWTH_PROBABILITY_ASSESSMENTS, {} as never);
+  registry.provide(GROWTH_QUOTE_ACQUISITION_INTEGRATIONS, Object.freeze({
+    probabilityAssessments: Object.freeze({
+      async recordFromQualification() { throw new Error("unused"); }
+    }),
+    quoteProjectedDocumentAuthority: Object.freeze({
+      async assertAuthorized() { throw new Error("unused"); }
+    })
+  }) as never);
   return registry;
 }
 
-test("composition projects exact Foundation and Catalog ports with no PI authority", () => {
+test("composition projects exact reference-identical Quote acquisition ports", () => {
   const foundation = foundationPorts();
   const commissionCatalogProjection = catalogProjection();
   const composition = createGrowthCommercialComposition(foundation);
-  const integrations = composition.projectIntegrations(
-    registryWithCatalog(commissionCatalogProjection)
+  const registry = registryWithCatalog(commissionCatalogProjection);
+  const privateIntegration = registry.require(
+    GROWTH_QUOTE_ACQUISITION_INTEGRATIONS
   );
+  const integrations = composition.projectIntegrations(registry);
   assert.deepEqual(composition.modules, []);
   assert.equal(integrations.acquisitionWorkspace, foundation.acquisitionWorkspace);
   assert.equal(integrations.temporalBarrier, foundation.temporalBarrier);
@@ -68,8 +79,36 @@ test("composition projects exact Foundation and Catalog ports with no PI authori
     integrations.commissionCatalogProjection,
     commissionCatalogProjection
   );
-  assert.equal(integrations.quoteProjectedDocumentAuthority, undefined);
+  assert.strictEqual(integrations.probabilityAssessments,
+    privateIntegration.probabilityAssessments);
+  assert.strictEqual(integrations.quoteProjectedDocumentAuthority,
+    privateIntegration.quoteProjectedDocumentAuthority);
+  assert.equal(Object.isFrozen(privateIntegration), true);
   assert.equal(Object.isFrozen(integrations), true);
+});
+
+test("composition rejects a missing Quote acquisition integration", () => {
+  const foundation = foundationPorts();
+  const registry = createGrowthPrivateServiceRegistry();
+  registry.provide(GROWTH_CATALOG_SERVICES, Object.freeze({
+    catalogItems: {} as GrowthCatalogServices["catalogItems"],
+    commissionCatalogProjection: catalogProjection()
+  }));
+  assert.throws(() => createGrowthCommercialComposition(foundation)
+    .projectIntegrations(registry), /growth-quote-acquisition-integrations/u);
+});
+
+test("composition rejects a partial Quote acquisition integration", () => {
+  const foundation = foundationPorts();
+  const registry = createGrowthPrivateServiceRegistry();
+  registry.provide(GROWTH_CATALOG_SERVICES, Object.freeze({
+    catalogItems: {} as GrowthCatalogServices["catalogItems"],
+    commissionCatalogProjection: catalogProjection()
+  }));
+  registry.provide(GROWTH_QUOTE_ACQUISITION_INTEGRATIONS,
+    Object.freeze({ probabilityAssessments: Object.freeze({}) }) as never);
+  assert.throws(() => createGrowthCommercialComposition(foundation)
+    .projectIntegrations(registry), /growth_quote_acquisition_integrations/u);
 });
 
 test("composition rejects missing Foundation ports before publication", () => {
