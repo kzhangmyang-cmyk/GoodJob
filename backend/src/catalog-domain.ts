@@ -197,3 +197,79 @@ export function deepFreeze<T>(value: T): Readonly<T> {
 export function immutableClone<T>(value: T): Readonly<T> {
   return deepFreeze(structuredClone(value));
 }
+
+const APPROVAL_CAPABILITIES = new Set<ApprovalCapability>([
+  "quote.confirm",
+  "quote.exception.discount.approve",
+  "quote.exception.margin.approve",
+  "quote.exception.payment_terms.approve",
+  "quote.exception.gift.approve",
+  "quote.exception.credit.approve",
+  "quote.exception.manual.approve"
+]);
+
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
+function nonnegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+/** Runtime boundary for the released, closed PricingPolicy v1 rule objects. */
+export function assertClosedPricingPolicyRules(
+  value: Pick<PricingPolicyVersion,
+    "approvalThresholds" | "surchargePolicies" | "giftPolicies">
+): void {
+  const approval = value.approvalThresholds;
+  const capabilityFields = [
+    "discountCapability", "marginCapability", "paymentTermsCapability",
+    "giftCapability", "creditCapability", "manualCapability"
+  ] as const;
+  if (!hasExactKeys(approval, [
+    ...capabilityFields, "creditRiskThresholdBps", "manualEscalationEnabled"
+  ]) || capabilityFields.some((field) =>
+    !APPROVAL_CAPABILITIES.has(approval[field] as ApprovalCapability))
+    || !nonnegativeSafeInteger(approval.creditRiskThresholdBps)
+    || approval.creditRiskThresholdBps > 10_000
+    || typeof approval.manualEscalationEnabled !== "boolean") {
+    throw Object.assign(new Error("invalid_approval_rule"), {
+      code: "invalid_approval_rule"
+    });
+  }
+
+  if (!Array.isArray(value.surchargePolicies)
+    || value.surchargePolicies.some((policy) =>
+      !hasExactKeys(policy, [
+        "kind", "condition", "fixedAmountMinor", "unitAmountMinor"
+      ])
+      || !["region", "delivery", "payment_term"].includes(String(policy.kind))
+      || typeof policy.condition !== "string" || policy.condition.trim() === ""
+      || !nonnegativeSafeInteger(policy.fixedAmountMinor)
+      || !nonnegativeSafeInteger(policy.unitAmountMinor))) {
+    throw Object.assign(new Error("invalid_surcharge_policy"), {
+      code: "invalid_surcharge_policy"
+    });
+  }
+
+  if (!Array.isArray(value.giftPolicies)
+    || value.giftPolicies.some((policy) =>
+      !hasExactKeys(policy, [
+        "catalogItemId", "unitStandardCostMinor", "standardQuantityMicros",
+        "absoluteQuantityMicros", "standardCostLimitMinor", "absoluteCostLimitMinor"
+      ])
+      || typeof policy.catalogItemId !== "string" || policy.catalogItemId.trim() === ""
+      || !nonnegativeSafeInteger(policy.unitStandardCostMinor)
+      || !nonnegativeSafeInteger(policy.standardQuantityMicros)
+      || !nonnegativeSafeInteger(policy.absoluteQuantityMicros)
+      || !nonnegativeSafeInteger(policy.standardCostLimitMinor)
+      || !nonnegativeSafeInteger(policy.absoluteCostLimitMinor))) {
+    throw Object.assign(new Error("invalid_gift_policy"), {
+      code: "invalid_gift_policy"
+    });
+  }
+}

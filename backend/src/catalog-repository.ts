@@ -8,7 +8,125 @@ import type {
   PackageVersion,
   PricingPolicyVersion
 } from "./catalog-domain.js";
-import { immutableClone } from "./catalog-domain.js";
+import {
+  assertClosedPricingPolicyRules,
+  immutableClone
+} from "./catalog-domain.js";
+import {
+  assertConcreteGrowthWorkspaceId,
+  assertGrowthTemporalBarrier,
+  type GrowthTemporalBarrier,
+  type GrowthTemporalTransaction,
+  type GrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+
+export interface CatalogListQuery {
+  cursor: string | null;
+  limit: number;
+  sort: "code" | "name" | "updatedAt";
+  direction: "asc" | "desc";
+  type?: CatalogItem["type"];
+  status?: CatalogItem["status"];
+}
+
+export type CatalogCommandResult<T> =
+  | { kind: "ok"; value: T; replayed: boolean }
+  | { kind: "revision_conflict"; actualRevision: number }
+  | { kind: "state_conflict"; code: string }
+  | { kind: "not_found" };
+
+interface CommandIdentity {
+  actorId: string;
+  idempotencyKey: string;
+  requestHash: string;
+}
+
+export interface CreateCatalogItemCommand extends CommandIdentity {
+  workspaceId: string;
+  id: string;
+  type: CatalogItem["type"];
+  code: string;
+  name: string;
+  description: string;
+  unit: string;
+}
+
+export interface UpdateCatalogItemCommand extends CommandIdentity {
+  workspaceId: string;
+  id: string;
+  expectedRevision: number;
+  patch: Readonly<Partial<Pick<CatalogItem, "name" | "description" | "unit">>>;
+}
+
+export interface RetireCatalogItemCommand extends CommandIdentity {
+  workspaceId: string;
+  id: string;
+  expectedRevision: number;
+}
+
+type PricingPolicyDraftFields = Omit<PricingPolicyVersion,
+  "version" | "status" | "revision" | "createdBy" | "createdAt"
+>;
+
+export interface CreatePricingPolicyDraftCommand
+extends PricingPolicyDraftFields, CommandIdentity {}
+
+export interface CatalogLockedValidationView {
+  findCatalogItem(workspaceId: string, id: string): Promise<CatalogItem | null>;
+  findPricingPolicyVersion(
+    workspaceId: string,
+    id: string
+  ): Promise<PricingPolicyVersion | null>;
+  findPackageVersion(workspaceId: string, id: string): Promise<PackageVersion | null>;
+  listPackageComponents(
+    workspaceId: string,
+    packageVersionId: string
+  ): Promise<readonly PackageComponent[]>;
+}
+
+export interface PricingPolicyLifecycleCommand extends CommandIdentity {
+  workspaceId: string;
+  id: string;
+  expectedRevision: number;
+  validate?: (
+    view: CatalogLockedValidationView,
+    policy: PricingPolicyVersion
+  ) => Promise<void>;
+}
+
+export interface PackageComponentDraft {
+  componentCatalogItemId: string;
+  componentPricingPolicyVersionId: string;
+  quantityMicros: number;
+}
+
+type PackageVersionDraftFields = Omit<PackageVersion,
+  "version" | "status" | "revision" | "createdBy" | "createdAt" | "updatedAt"
+>;
+
+export interface CreatePackageVersionDraftCommand
+extends PackageVersionDraftFields, CommandIdentity {
+  components: readonly PackageComponentDraft[];
+}
+
+export interface UpdatePackageVersionDraftCommand extends CommandIdentity {
+  workspaceId: string;
+  id: string;
+  expectedRevision: number;
+  patch: Readonly<Partial<Pick<PackageVersion, "currency" | "validFrom" | "validTo">>>
+    & { components?: readonly PackageComponentDraft[] };
+}
+
+export interface PackageVersionLifecycleCommand extends CommandIdentity {
+  workspaceId: string;
+  id: string;
+  expectedRevision: number;
+  validate?: (
+    view: CatalogLockedValidationView,
+    version: PackageVersion,
+    components: readonly PackageComponent[]
+  ) => Promise<void>;
+}
 
 export interface CommissionCatalogMigrationEntry {
   item: CatalogItem;
@@ -24,13 +142,30 @@ export interface CommissionCatalogMigrationCommit {
 export interface CatalogRepository {
   appendCatalogItem(item: CatalogItem): Promise<CatalogItem>;
   findCatalogItem(workspaceId: string, id: string): Promise<CatalogItem | null>;
+  listCatalogItems(
+    workspaceId: string,
+    query: CatalogListQuery
+  ): Promise<readonly CatalogItem[]>;
   appendPricingPolicyVersion(policy: PricingPolicyVersion): Promise<PricingPolicyVersion>;
   findPricingPolicyVersion(
     workspaceId: string,
     pricingPolicyVersionId: string
   ): Promise<PricingPolicyVersion | null>;
+  listPricingPolicies(
+    workspaceId: string,
+    query: CatalogListQuery
+  ): Promise<readonly PricingPolicyVersion[]>;
   appendPackageVersion(version: PackageVersion): Promise<PackageVersion>;
   findPackageVersion(workspaceId: string, id: string): Promise<PackageVersion | null>;
+  listPackageVersions(
+    workspaceId: string,
+    itemId: string,
+    query: CatalogListQuery
+  ): Promise<readonly PackageVersion[]>;
+  listPackageComponents(
+    workspaceId: string,
+    packageVersionId: string
+  ): Promise<readonly PackageComponent[]>;
   replaceDraftPackageComponents(
     workspaceId: string,
     packageVersionId: string,
@@ -47,6 +182,36 @@ export interface CatalogRepository {
   commitCommissionCatalogMigration(
     commit: CommissionCatalogMigrationCommit
   ): Promise<CommissionCatalogMigrationRun>;
+  createCatalogItem(
+    command: CreateCatalogItemCommand
+  ): Promise<CatalogCommandResult<CatalogItem>>;
+  updateCatalogItem(
+    command: UpdateCatalogItemCommand
+  ): Promise<CatalogCommandResult<CatalogItem>>;
+  retireCatalogItem(
+    command: RetireCatalogItemCommand
+  ): Promise<CatalogCommandResult<CatalogItem>>;
+  createPricingPolicyDraft(
+    command: CreatePricingPolicyDraftCommand
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>>;
+  activatePricingPolicy(
+    command: PricingPolicyLifecycleCommand
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>>;
+  retirePricingPolicy(
+    command: PricingPolicyLifecycleCommand
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>>;
+  createPackageVersionDraft(
+    command: CreatePackageVersionDraftCommand
+  ): Promise<CatalogCommandResult<PackageVersion>>;
+  updatePackageVersionDraft(
+    command: UpdatePackageVersionDraftCommand
+  ): Promise<CatalogCommandResult<PackageVersion>>;
+  activatePackageVersion(
+    command: PackageVersionLifecycleCommand
+  ): Promise<CatalogCommandResult<PackageVersion>>;
+  retirePackageVersion(
+    command: PackageVersionLifecycleCommand
+  ): Promise<CatalogCommandResult<PackageVersion>>;
 }
 
 function invalidMigrationCommit(): Error & { code: string } {
@@ -177,6 +342,11 @@ export function assertCommissionCatalogMigrationCommitInvariant(
   const productIds = new Set<string>();
   for (const entry of entries) {
     const { item, pricingPolicy, link } = entry;
+    try {
+      assertClosedPricingPolicyRules(pricingPolicy);
+    } catch {
+      throw invalidMigrationCommit();
+    }
     if (item?.workspaceId !== run.workspaceId
       || pricingPolicy?.workspaceId !== run.workspaceId
       || link?.workspaceId !== run.workspaceId
@@ -213,6 +383,125 @@ function conflict(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });
 }
 
+interface StoredCommandIdentity {
+  idempotencyKey: string;
+  requestHash: string;
+}
+
+class CatalogCommandAbort<T> extends Error {
+  constructor(readonly result: CatalogCommandResult<T>) {
+    super("catalog_command_aborted");
+  }
+}
+
+function abort<T>(result: CatalogCommandResult<T>): never {
+  throw new CatalogCommandAbort(result);
+}
+
+function commandIdentity(command: CommandIdentity): StoredCommandIdentity {
+  if (!command.actorId.trim() || !command.idempotencyKey.trim()
+    || !command.requestHash.trim()) {
+    throw conflict("invalid_catalog_command_identity");
+  }
+  return {
+    idempotencyKey: command.idempotencyKey,
+    requestHash: command.requestHash
+  };
+}
+
+function replayOrConflict<T>(
+  previous: StoredCommandIdentity | undefined,
+  command: CommandIdentity,
+  value: T
+): CatalogCommandResult<T> | null {
+  if (!previous || previous.idempotencyKey !== command.idempotencyKey) return null;
+  if (previous.requestHash !== command.requestHash) {
+    return { kind: "state_conflict", code: "idempotency_conflict" };
+  }
+  return { kind: "ok", value, replayed: true };
+}
+
+function assertCatalogListQuery(query: CatalogListQuery): CatalogListQuery {
+  if (!query || !Number.isSafeInteger(query.limit)
+    || query.limit < 1 || query.limit > 100
+    || !["code", "name", "updatedAt"].includes(query.sort)
+    || !["asc", "desc"].includes(query.direction)
+    || (query.cursor !== null && (
+      typeof query.cursor !== "string" || query.cursor.trim() === ""
+    ))
+    || (query.type !== undefined
+      && !["product", "service", "package"].includes(query.type))
+    || (query.status !== undefined
+      && !["active", "retired"].includes(query.status))) {
+    throw conflict("invalid_catalog_list_query");
+  }
+  if (query.cursor !== null) decodeCatalogCursor(query.cursor);
+  return query;
+}
+
+type CatalogCursor = readonly [string, string];
+
+function decodeCatalogCursor(cursor: string): CatalogCursor {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (!Array.isArray(parsed) || parsed.length !== 2
+      || parsed.some((value) => typeof value !== "string")) throw new Error();
+    return parsed as unknown as CatalogCursor;
+  } catch {
+    throw conflict("invalid_catalog_cursor");
+  }
+}
+
+export function encodeCatalogCursor(sortValue: string, id: string): string {
+  return Buffer.from(JSON.stringify([sortValue, id])).toString("base64url");
+}
+
+function codePointCompare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function paginate<T>(
+  values: readonly T[],
+  query: CatalogListQuery,
+  sortValue: (value: T) => string,
+  id: (value: T) => string
+): readonly T[] {
+  const validated = assertCatalogListQuery(query);
+  const direction = validated.direction === "asc" ? 1 : -1;
+  const sorted = [...values].sort((left, right) => {
+    const byValue = codePointCompare(sortValue(left), sortValue(right));
+    return direction * (byValue || codePointCompare(id(left), id(right)));
+  });
+  const cursor = validated.cursor === null
+    ? null : decodeCatalogCursor(validated.cursor);
+  const after = cursor === null ? sorted : sorted.filter((value) => {
+    const byValue = codePointCompare(sortValue(value), cursor[0]);
+    const comparison = byValue || codePointCompare(id(value), cursor[1]);
+    return direction * comparison > 0;
+  });
+  return after.slice(0, validated.limit);
+}
+
+function catalogSortValue(item: CatalogItem, sort: CatalogListQuery["sort"]): string {
+  return sort === "updatedAt" ? item.updatedAt : item[sort];
+}
+
+function lifecycleState<T extends { status: string; revision: number }>(
+  current: T,
+  command: CommandIdentity & { expectedRevision: number },
+  from: string,
+  to: string,
+  invalidCode: string
+): void {
+  if (current.revision !== command.expectedRevision) {
+    abort({ kind: "revision_conflict", actualRevision: current.revision });
+  }
+  if (current.status !== from) {
+    abort({ kind: "state_conflict", code: invalidCode });
+  }
+  void to;
+}
+
 export class InMemoryCatalogRepository implements CatalogRepository {
   private readonly catalogItems = new Map<string, CatalogItem>();
   private readonly pricingPolicies = new Map<string, PricingPolicyVersion>();
@@ -220,6 +509,64 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   private readonly packageComponents = new Map<string, readonly PackageComponent[]>();
   private readonly commissionLinks = new Map<string, CommissionProductCatalogLink>();
   private readonly migrationRuns = new Map<string, CommissionCatalogMigrationRun>();
+  private readonly commandIdentities = new Map<string, StoredCommandIdentity>();
+  private readonly appendEvidence = new Map<string, Readonly<{
+    recordedAt: string;
+    temporalSequence: number;
+  }>>();
+  private readonly transactions: GrowthTemporalTransactionRunner | null;
+  private readonly temporalBarrier: GrowthTemporalBarrier | null;
+
+  constructor(options: Readonly<{
+    transactions: GrowthTemporalTransactionRunner;
+    temporalBarrier: GrowthTemporalBarrier;
+  }> | undefined = undefined) {
+    if (options) {
+      this.transactions = options.transactions;
+      this.temporalBarrier = assertGrowthTemporalBarrier(options.temporalBarrier);
+    } else {
+      this.transactions = null;
+      this.temporalBarrier = null;
+    }
+  }
+
+  private rememberAppend(
+    kind: string,
+    workspaceId: string,
+    id: string,
+    stamp: Readonly<{ recordedAt: string; temporalSequence: number }>
+  ): void {
+    this.appendEvidence.set(`${kind}\u0000${key(workspaceId, id)}`, { ...stamp });
+  }
+
+  private async command<T>(
+    workspaceId: string,
+    work: (
+      tx: GrowthTemporalTransaction,
+      stamp: { recordedAt: string; temporalSequence: number }
+    ) => Promise<CatalogCommandResult<T>>
+  ): Promise<CatalogCommandResult<T>> {
+    const concreteWorkspaceId = assertConcreteGrowthWorkspaceId(workspaceId);
+    if (!this.transactions || !this.temporalBarrier) {
+      throw new Error("catalog_temporal_adapter_required");
+    }
+    const transactions = this.transactions;
+    const temporalBarrier = this.temporalBarrier;
+    try {
+      return await transactions.run(async (tx) => {
+        const stamp = await temporalBarrier.allocateAppend(
+          tx,
+          concreteWorkspaceId
+        );
+        return work(tx, stamp);
+      });
+    } catch (error) {
+      if (error instanceof CatalogCommandAbort) {
+        return error.result as CatalogCommandResult<T>;
+      }
+      throw error;
+    }
+  }
 
   async appendCatalogItem(item: CatalogItem): Promise<CatalogItem> {
     const itemKey = key(item.workspaceId, item.id);
@@ -234,9 +581,27 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     return item ? immutableClone(item) as CatalogItem : null;
   }
 
+  async listCatalogItems(
+    workspaceId: string,
+    query: CatalogListQuery
+  ): Promise<readonly CatalogItem[]> {
+    const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
+    const values = [...this.catalogItems.values()].filter((item) =>
+      item.workspaceId === concrete
+      && (query.type === undefined || item.type === query.type)
+      && (query.status === undefined || item.status === query.status));
+    return immutableClone(paginate(
+      values,
+      query,
+      (item) => catalogSortValue(item, query.sort),
+      (item) => item.id
+    )) as readonly CatalogItem[];
+  }
+
   async appendPricingPolicyVersion(
     policy: PricingPolicyVersion
   ): Promise<PricingPolicyVersion> {
+    assertClosedPricingPolicyRules(policy);
     const policyKey = key(policy.workspaceId, policy.id);
     if (this.pricingPolicies.has(policyKey)) {
       throw conflict("pricing_policy_version_already_exists");
@@ -254,6 +619,29 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     return policy ? immutableClone(policy) as PricingPolicyVersion : null;
   }
 
+  async listPricingPolicies(
+    workspaceId: string,
+    query: CatalogListQuery
+  ): Promise<readonly PricingPolicyVersion[]> {
+    const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
+    const values = [...this.pricingPolicies.values()].filter((policy) => {
+      if (policy.workspaceId !== concrete) return false;
+      const item = this.catalogItems.get(key(concrete, policy.catalogItemId));
+      return Boolean(item)
+        && (query.type === undefined || item!.type === query.type)
+        && (query.status === undefined || item!.status === query.status);
+    });
+    return immutableClone(paginate(
+      values,
+      query,
+      (policy) => {
+        const item = this.catalogItems.get(key(concrete, policy.catalogItemId))!;
+        return catalogSortValue(item, query.sort);
+      },
+      (policy) => policy.id
+    )) as readonly PricingPolicyVersion[];
+  }
+
   async appendPackageVersion(version: PackageVersion): Promise<PackageVersion> {
     const versionKey = key(version.workspaceId, version.id);
     if (this.packageVersions.has(versionKey)) {
@@ -269,22 +657,487 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     return version ? immutableClone(version) as PackageVersion : null;
   }
 
+  async listPackageVersions(
+    workspaceId: string,
+    itemId: string,
+    query: CatalogListQuery
+  ): Promise<readonly PackageVersion[]> {
+    const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
+    const parent = this.catalogItems.get(key(concrete, itemId));
+    if (!parent
+      || (query.type !== undefined && parent.type !== query.type)
+      || (query.status !== undefined && parent.status !== query.status)) return [];
+    const values = [...this.packageVersions.values()].filter((version) =>
+      version.workspaceId === concrete
+      && version.packageCatalogItemId === itemId);
+    return immutableClone(paginate(
+      values,
+      query,
+      (version) => query.sort === "updatedAt"
+        ? version.updatedAt
+        : catalogSortValue(parent, query.sort),
+      (version) => version.id
+    )) as readonly PackageVersion[];
+  }
+
+  async listPackageComponents(
+    workspaceId: string,
+    packageVersionId: string
+  ): Promise<readonly PackageComponent[]> {
+    const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
+    if (!this.packageVersions.has(key(concrete, packageVersionId))) return [];
+    const components = this.packageComponents.get(key(concrete, packageVersionId)) ?? [];
+    return immutableClone(components) as readonly PackageComponent[];
+  }
+
   async replaceDraftPackageComponents(
     workspaceId: string,
     packageVersionId: string,
     components: readonly PackageComponent[]
   ): Promise<readonly PackageComponent[]> {
-    const version = this.packageVersions.get(key(workspaceId, packageVersionId));
-    if (!version) throw conflict("package_version_not_found");
-    if (version.status !== "draft") throw conflict("package_version_immutable");
     if (components.some((component) =>
       component.workspaceId !== workspaceId
       || component.packageVersionId !== packageVersionId)) {
       throw conflict("invalid_package_component_scope");
     }
-    const stored = immutableClone(components) as readonly PackageComponent[];
-    this.packageComponents.set(key(workspaceId, packageVersionId), stored);
-    return immutableClone(stored) as readonly PackageComponent[];
+    const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
+    if (!this.transactions || !this.temporalBarrier) {
+      throw new Error("catalog_temporal_adapter_required");
+    }
+    const temporalBarrier = this.temporalBarrier;
+    return this.transactions.run(async (tx) => {
+      const stamped: PackageComponent[] = [];
+      const stamps: Array<Readonly<{
+        recordedAt: string;
+        temporalSequence: number;
+      }>> = [];
+      if (components.length === 0) {
+        await temporalBarrier.allocateAppend(tx, concrete);
+      } else {
+        for (const component of components) {
+          stamps.push(await temporalBarrier.allocateAppend(tx, concrete));
+          stamped.push({ ...component });
+        }
+      }
+      const version = this.packageVersions.get(key(concrete, packageVersionId));
+      if (!version) throw conflict("package_version_not_found");
+      if (version.status !== "draft") throw conflict("package_version_immutable");
+      const stored = immutableClone(stamped) as readonly PackageComponent[];
+      this.packageComponents.set(key(concrete, packageVersionId), stored);
+      stored.forEach((component, index) => this.rememberAppend(
+        "package-component",
+        concrete,
+        `${packageVersionId}\u0000${component.componentCatalogItemId}\u0000${component.componentPricingPolicyVersionId}`,
+        stamps[index]!
+      ));
+      return immutableClone(stored) as readonly PackageComponent[];
+    });
+  }
+
+  async createCatalogItem(
+    command: CreateCatalogItemCommand
+  ): Promise<CatalogCommandResult<CatalogItem>> {
+    return this.command(command.workspaceId, async (_tx, stamp) => {
+      const identity = commandIdentity(command);
+      const itemKey = key(command.workspaceId, command.id);
+      const existing = this.catalogItems.get(itemKey);
+      if (existing) {
+        const replay = replayOrConflict(
+          this.commandIdentities.get(itemKey), command,
+          immutableClone(existing) as CatalogItem
+        );
+        abort(replay ?? {
+          kind: "state_conflict", code: "catalog_item_id_conflict"
+        });
+      }
+      if ([...this.catalogItems.values()].some((item) =>
+        item.workspaceId === command.workspaceId && item.code === command.code)) {
+        abort({ kind: "state_conflict", code: "catalog_code_conflict" });
+      }
+      const item = immutableClone({
+        id: command.id,
+        workspaceId: command.workspaceId,
+        type: command.type,
+        code: command.code,
+        name: command.name,
+        description: command.description,
+        unit: command.unit,
+        status: "active" as const,
+        revision: 1,
+        createdBy: command.actorId,
+        createdAt: stamp.recordedAt,
+        updatedAt: stamp.recordedAt
+      }) as CatalogItem;
+      this.catalogItems.set(itemKey, item);
+      this.commandIdentities.set(itemKey, identity);
+      this.rememberAppend("catalog-item", command.workspaceId, command.id, stamp);
+      return { kind: "ok", value: immutableClone(item) as CatalogItem, replayed: false };
+    });
+  }
+
+  async updateCatalogItem(
+    command: UpdateCatalogItemCommand
+  ): Promise<CatalogCommandResult<CatalogItem>> {
+    return this.command(command.workspaceId, async (_tx, stamp) => {
+      const identity = commandIdentity(command);
+      const itemKey = key(command.workspaceId, command.id);
+      const current = this.catalogItems.get(itemKey);
+      if (!current) abort({ kind: "not_found" });
+      const replay = replayOrConflict(
+        this.commandIdentities.get(itemKey), command,
+        immutableClone(current) as CatalogItem
+      );
+      if (replay) abort(replay);
+      if (current.revision !== command.expectedRevision) {
+        abort({ kind: "revision_conflict", actualRevision: current.revision });
+      }
+      if (current.status !== "active") {
+        abort({ kind: "state_conflict", code: "catalog_item_retired" });
+      }
+      const next = immutableClone({
+        ...current,
+        ...command.patch,
+        revision: current.revision + 1,
+        updatedAt: stamp.recordedAt
+      }) as CatalogItem;
+      this.catalogItems.set(itemKey, next);
+      this.commandIdentities.set(itemKey, identity);
+      this.rememberAppend("catalog-item", command.workspaceId, command.id, stamp);
+      return { kind: "ok", value: immutableClone(next) as CatalogItem, replayed: false };
+    });
+  }
+
+  async retireCatalogItem(
+    command: RetireCatalogItemCommand
+  ): Promise<CatalogCommandResult<CatalogItem>> {
+    return this.command(command.workspaceId, async (_tx, stamp) => {
+      const identity = commandIdentity(command);
+      const itemKey = key(command.workspaceId, command.id);
+      const current = this.catalogItems.get(itemKey);
+      if (!current) abort({ kind: "not_found" });
+      const replay = replayOrConflict(
+        this.commandIdentities.get(itemKey), command,
+        immutableClone(current) as CatalogItem
+      );
+      if (replay) abort(replay);
+      if (current.revision !== command.expectedRevision) {
+        abort({ kind: "revision_conflict", actualRevision: current.revision });
+      }
+      if (current.status !== "active") {
+        abort({ kind: "state_conflict", code: "catalog_item_retired" });
+      }
+      const next = immutableClone({
+        ...current,
+        status: "retired" as const,
+        revision: current.revision + 1,
+        updatedAt: stamp.recordedAt
+      }) as CatalogItem;
+      this.catalogItems.set(itemKey, next);
+      this.commandIdentities.set(itemKey, identity);
+      this.rememberAppend("catalog-item", command.workspaceId, command.id, stamp);
+      return { kind: "ok", value: immutableClone(next) as CatalogItem, replayed: false };
+    });
+  }
+
+  private memoryValidationView(): CatalogLockedValidationView {
+    return {
+      findCatalogItem: (workspaceId, id) => this.findCatalogItem(workspaceId, id),
+      findPricingPolicyVersion: (workspaceId, id) =>
+        this.findPricingPolicyVersion(workspaceId, id),
+      findPackageVersion: (workspaceId, id) =>
+        this.findPackageVersion(workspaceId, id),
+      listPackageComponents: (workspaceId, id) =>
+        this.listPackageComponents(workspaceId, id)
+    };
+  }
+
+  async createPricingPolicyDraft(
+    command: CreatePricingPolicyDraftCommand
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
+    return this.command(command.workspaceId, async (_tx, stamp) => {
+      const identity = commandIdentity(command);
+      assertClosedPricingPolicyRules(command);
+      const parent = this.catalogItems.get(key(command.workspaceId, command.catalogItemId));
+      if (!parent) abort({ kind: "not_found" });
+      if (parent.status !== "active") {
+        abort({ kind: "state_conflict", code: "catalog_item_retired" });
+      }
+      const policyKey = key(command.workspaceId, command.id);
+      const existing = this.pricingPolicies.get(policyKey);
+      if (existing) {
+        const replay = replayOrConflict(
+          this.commandIdentities.get(policyKey), command,
+          immutableClone(existing) as PricingPolicyVersion
+        );
+        abort(replay ?? {
+          kind: "state_conflict", code: "pricing_policy_id_conflict"
+        });
+      }
+      const version = Math.max(0, ...[...this.pricingPolicies.values()]
+        .filter((policy) => policy.workspaceId === command.workspaceId
+          && policy.catalogItemId === command.catalogItemId)
+        .map((policy) => policy.version)) + 1;
+      const {
+        actorId, idempotencyKey: _idempotencyKey,
+        requestHash: _requestHash, ...fields
+      } = command;
+      const policy = immutableClone({
+        ...fields,
+        version,
+        status: "draft" as const,
+        revision: 1,
+        createdBy: actorId,
+        createdAt: stamp.recordedAt
+      }) as PricingPolicyVersion;
+      this.pricingPolicies.set(policyKey, policy);
+      this.commandIdentities.set(policyKey, identity);
+      this.rememberAppend("pricing-policy", command.workspaceId, command.id, stamp);
+      return {
+        kind: "ok", value: immutableClone(policy) as PricingPolicyVersion,
+        replayed: false
+      };
+    });
+  }
+
+  private pricingLifecycle(
+    command: PricingPolicyLifecycleCommand,
+    from: PricingPolicyVersion["status"],
+    to: PricingPolicyVersion["status"],
+    invalidCode: string
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
+    return this.command(command.workspaceId, async (_tx, stamp) => {
+      const identity = commandIdentity(command);
+      const policyKey = key(command.workspaceId, command.id);
+      const current = this.pricingPolicies.get(policyKey);
+      if (!current) abort({ kind: "not_found" });
+      const replay = replayOrConflict(
+        this.commandIdentities.get(policyKey), command,
+        immutableClone(current) as PricingPolicyVersion
+      );
+      if (replay) abort(replay);
+      lifecycleState(current, command, from, to, invalidCode);
+      if (command.validate) {
+        await command.validate(
+          this.memoryValidationView(),
+          immutableClone(current) as PricingPolicyVersion
+        );
+      }
+      const next = immutableClone({
+        ...current,
+        status: to,
+        revision: current.revision + 1
+      }) as PricingPolicyVersion;
+      this.pricingPolicies.set(policyKey, next);
+      this.commandIdentities.set(policyKey, identity);
+      this.rememberAppend("pricing-policy", command.workspaceId, command.id, stamp);
+      return {
+        kind: "ok", value: immutableClone(next) as PricingPolicyVersion,
+        replayed: false
+      };
+    });
+  }
+
+  activatePricingPolicy(
+    command: PricingPolicyLifecycleCommand
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
+    return this.pricingLifecycle(
+      command, "draft", "active", "pricing_policy_not_draft"
+    );
+  }
+
+  retirePricingPolicy(
+    command: PricingPolicyLifecycleCommand
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
+    return this.pricingLifecycle(
+      command, "active", "retired", "pricing_policy_not_active"
+    );
+  }
+
+  private async packageComponentsWithStamps(
+    tx: GrowthTemporalTransaction,
+    workspaceId: string,
+    packageVersionId: string,
+    components: readonly PackageComponentDraft[]
+  ): Promise<readonly PackageComponent[]> {
+    if (!this.temporalBarrier) {
+      throw new Error("catalog_temporal_adapter_required");
+    }
+    const temporalBarrier = this.temporalBarrier;
+    const stamped: PackageComponent[] = [];
+    const stamps: Array<Readonly<{
+      recordedAt: string;
+      temporalSequence: number;
+    }>> = [];
+    for (const component of components) {
+      if (!Number.isSafeInteger(component.quantityMicros)
+        || component.quantityMicros <= 0) {
+        throw conflict("invalid_package_component_quantity");
+      }
+      stamps.push(await temporalBarrier.allocateAppend(tx, workspaceId));
+      stamped.push({
+        workspaceId,
+        packageVersionId,
+        ...component
+      });
+    }
+    stamped.forEach((component, index) => this.rememberAppend(
+      "package-component",
+      workspaceId,
+      `${packageVersionId}\u0000${component.componentCatalogItemId}\u0000${component.componentPricingPolicyVersionId}`,
+      stamps[index]!
+    ));
+    return immutableClone(stamped) as readonly PackageComponent[];
+  }
+
+  async createPackageVersionDraft(
+    command: CreatePackageVersionDraftCommand
+  ): Promise<CatalogCommandResult<PackageVersion>> {
+    return this.command(command.workspaceId, async (tx, stamp) => {
+      const identity = commandIdentity(command);
+      const parent = this.catalogItems.get(key(
+        command.workspaceId, command.packageCatalogItemId
+      ));
+      if (!parent) abort({ kind: "not_found" });
+      if (parent.type !== "package" || parent.status !== "active") {
+        abort({ kind: "state_conflict", code: "invalid_package_catalog_item" });
+      }
+      const versionKey = key(command.workspaceId, command.id);
+      const existing = this.packageVersions.get(versionKey);
+      if (existing) {
+        const replay = replayOrConflict(
+          this.commandIdentities.get(versionKey), command,
+          immutableClone(existing) as PackageVersion
+        );
+        abort(replay ?? {
+          kind: "state_conflict", code: "package_version_id_conflict"
+        });
+      }
+      const version = Math.max(0, ...[...this.packageVersions.values()]
+        .filter((candidate) => candidate.workspaceId === command.workspaceId
+          && candidate.packageCatalogItemId === command.packageCatalogItemId)
+        .map((candidate) => candidate.version)) + 1;
+      const components = await this.packageComponentsWithStamps(
+        tx, command.workspaceId, command.id, command.components
+      );
+      const packageVersion = immutableClone({
+        id: command.id,
+        workspaceId: command.workspaceId,
+        packageCatalogItemId: command.packageCatalogItemId,
+        version,
+        currency: command.currency,
+        status: "draft" as const,
+        validFrom: command.validFrom,
+        validTo: command.validTo,
+        revision: 1,
+        createdBy: command.actorId,
+        createdAt: stamp.recordedAt,
+        updatedAt: stamp.recordedAt
+      }) as PackageVersion;
+      this.packageVersions.set(versionKey, packageVersion);
+      this.packageComponents.set(versionKey, components);
+      this.commandIdentities.set(versionKey, identity);
+      this.rememberAppend("package-version", command.workspaceId, command.id, stamp);
+      return {
+        kind: "ok", value: immutableClone(packageVersion) as PackageVersion,
+        replayed: false
+      };
+    });
+  }
+
+  async updatePackageVersionDraft(
+    command: UpdatePackageVersionDraftCommand
+  ): Promise<CatalogCommandResult<PackageVersion>> {
+    return this.command(command.workspaceId, async (tx, stamp) => {
+      const identity = commandIdentity(command);
+      const versionKey = key(command.workspaceId, command.id);
+      const current = this.packageVersions.get(versionKey);
+      if (!current) abort({ kind: "not_found" });
+      const replay = replayOrConflict(
+        this.commandIdentities.get(versionKey), command,
+        immutableClone(current) as PackageVersion
+      );
+      if (replay) abort(replay);
+      lifecycleState(
+        current, command, "draft", "draft", "package_version_immutable"
+      );
+      const { components: componentPatch, ...fieldPatch } = command.patch;
+      const components = componentPatch === undefined
+        ? this.packageComponents.get(versionKey) ?? []
+        : await this.packageComponentsWithStamps(
+          tx, command.workspaceId, command.id, componentPatch
+        );
+      const next = immutableClone({
+        ...current,
+        ...fieldPatch,
+        revision: current.revision + 1,
+        updatedAt: stamp.recordedAt
+      }) as PackageVersion;
+      this.packageVersions.set(versionKey, next);
+      if (componentPatch !== undefined) this.packageComponents.set(versionKey, components);
+      this.commandIdentities.set(versionKey, identity);
+      this.rememberAppend("package-version", command.workspaceId, command.id, stamp);
+      return {
+        kind: "ok", value: immutableClone(next) as PackageVersion,
+        replayed: false
+      };
+    });
+  }
+
+  private packageLifecycle(
+    command: PackageVersionLifecycleCommand,
+    from: PackageVersion["status"],
+    to: PackageVersion["status"],
+    invalidCode: string
+  ): Promise<CatalogCommandResult<PackageVersion>> {
+    return this.command(command.workspaceId, async (_tx, stamp) => {
+      const identity = commandIdentity(command);
+      const versionKey = key(command.workspaceId, command.id);
+      const current = this.packageVersions.get(versionKey);
+      if (!current) abort({ kind: "not_found" });
+      const replay = replayOrConflict(
+        this.commandIdentities.get(versionKey), command,
+        immutableClone(current) as PackageVersion
+      );
+      if (replay) abort(replay);
+      lifecycleState(current, command, from, to, invalidCode);
+      const components = this.packageComponents.get(versionKey) ?? [];
+      if (command.validate) {
+        await command.validate(
+          this.memoryValidationView(),
+          immutableClone(current) as PackageVersion,
+          immutableClone(components) as readonly PackageComponent[]
+        );
+      }
+      const next = immutableClone({
+        ...current,
+        status: to,
+        revision: current.revision + 1,
+        updatedAt: stamp.recordedAt
+      }) as PackageVersion;
+      this.packageVersions.set(versionKey, next);
+      this.commandIdentities.set(versionKey, identity);
+      this.rememberAppend("package-version", command.workspaceId, command.id, stamp);
+      return {
+        kind: "ok", value: immutableClone(next) as PackageVersion,
+        replayed: false
+      };
+    });
+  }
+
+  activatePackageVersion(
+    command: PackageVersionLifecycleCommand
+  ): Promise<CatalogCommandResult<PackageVersion>> {
+    return this.packageLifecycle(
+      command, "draft", "active", "package_version_not_draft"
+    );
+  }
+
+  retirePackageVersion(
+    command: PackageVersionLifecycleCommand
+  ): Promise<CatalogCommandResult<PackageVersion>> {
+    return this.packageLifecycle(
+      command, "active", "retired", "package_version_not_active"
+    );
   }
 
   async findCommissionProductLink(

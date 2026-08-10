@@ -7,7 +7,12 @@ import {
   MysqlCatalogRepository,
   ensureCatalogMysqlSchema
 } from "./catalog-mysql-repository.js";
-import type { CommissionCatalogMigrationCommit } from "./catalog-repository.js";
+import type {
+  CommissionCatalogMigrationCommit,
+  CreateCatalogItemCommand,
+  CreatePricingPolicyDraftCommand
+} from "./catalog-repository.js";
+import { MysqlGrowthTemporalBarrier } from "./growth-temporal-barrier-mysql-repository.js";
 
 class FakeConnection {
   readonly calls: Array<{ sql: string; values: unknown[] }> = [];
@@ -30,6 +35,31 @@ class FakePool extends FakeConnection {
 }
 
 function asPool(pool: FakePool) { return pool as unknown as mysql.Pool; }
+
+function catalogRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "item-1", workspace_id: "team-a", item_type: "service",
+    code: "SVC-001", name: "诊断服务", description: "获客诊断",
+    unit: "次", item_status: "active", revision: 1,
+    created_by: "admin-1", created_at: "2026-08-09 08:00:00.001",
+    updated_at: "2026-08-09 08:00:00.001",
+    last_idempotency_key: "catalog-create-0001",
+    last_request_hash: "sha256:catalog-create-0001",
+    ...overrides
+  };
+}
+
+function enqueueBarrier(pool: FakePool, sequence: number) {
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue([{
+    last_recorded_at: "2026-08-09 08:00:00.000",
+    temporal_sequence: sequence
+  }]);
+  pool.connection.enqueue([{
+    current_timestamp_3: "2026-08-09 08:00:00.000"
+  }]);
+  pool.connection.enqueue({ affectedRows: 1 });
+}
 
 test("catalog schema uses dedicated append-oriented tables", async () => {
   const pool = new FakePool();
@@ -220,4 +250,169 @@ test("mysql catalog reads are workspace-scoped and clone parsed JSON", async () 
   }]);
   assert.deepEqual(pool.calls.at(-1)?.values, ["team-a", "policy-1"]);
   assert.match(pool.calls.at(-1)!.sql, /workspace_id = \? AND id = \?/u);
+});
+
+test("mysql catalog command locks the temporal barrier before domain rows and commits", async () => {
+  const pool = new FakePool();
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue([{
+    last_recorded_at: "2026-08-09 08:00:00.000",
+    temporal_sequence: 4
+  }]);
+  pool.connection.enqueue([{
+    current_timestamp_3: "2026-08-09 08:00:00.000"
+  }]);
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue([]);
+  const repository = new MysqlCatalogRepository(
+    asPool(pool),
+    new MysqlGrowthTemporalBarrier(asPool(pool))
+  );
+  const command: CreateCatalogItemCommand = {
+    workspaceId: "team-a", id: "item-1", type: "service", code: "SVC-001",
+    name: "诊断服务", description: "获客诊断", unit: "次",
+    actorId: "admin-1", idempotencyKey: "catalog-create-0001",
+    requestHash: "sha256:catalog-create-0001"
+  };
+
+  const result = await repository.createCatalogItem(command);
+
+  assert.equal(result.kind, "ok");
+  assert.equal(result.replayed, false);
+  assert.deepEqual(result.value, {
+    id: "item-1", workspaceId: "team-a", type: "service", code: "SVC-001",
+    name: "诊断服务", description: "获客诊断", unit: "次", status: "active",
+    revision: 1, createdBy: "admin-1",
+    createdAt: "2026-08-09T08:00:00.001Z",
+    updatedAt: "2026-08-09T08:00:00.001Z"
+  });
+  assert.deepEqual(pool.connection.transactions, ["begin", "commit", "release"]);
+  const sql = pool.connection.calls.map((call) => call.sql);
+  assert.match(sql[0]!, /^INSERT INTO growth_workspace_temporal_barriers/u);
+  assert.match(sql[1]!, /growth_workspace_temporal_barriers[\s\S]*FOR UPDATE/u);
+  const firstDomainLock = sql.findIndex((statement) =>
+    /FROM catalog_items/u.test(statement) && /FOR UPDATE/u.test(statement)
+  );
+  assert.ok(firstDomainLock > 3);
+  assert.ok(sql.slice(0, firstDomainLock).every((statement) =>
+    /growth_workspace_temporal_barriers|CURRENT_TIMESTAMP/u.test(statement)
+  ));
+  const insert = pool.connection.calls.at(-1)!;
+  assert.match(insert.sql, /^INSERT INTO catalog_items/u);
+  assert.equal(insert.values[12], "2026-08-09 08:00:00.001");
+  assert.equal(insert.values[13], 5);
+  assert.doesNotMatch(sql.join("\n"), /persistAll|replaceRows/u);
+});
+
+test("mysql draft-component replacement takes the temporal barrier before its package lock", async () => {
+  const pool = new FakePool();
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue([{
+    last_recorded_at: "2026-08-09 08:00:00.000",
+    temporal_sequence: 8
+  }]);
+  pool.connection.enqueue([{
+    current_timestamp_3: "2026-08-09 08:00:00.000"
+  }]);
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue([{
+    package_status: "draft", updated_at: "2026-08-09 08:00:00.000"
+  }]);
+  const repository = new MysqlCatalogRepository(
+    asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+  );
+
+  const components = await repository.replaceDraftPackageComponents(
+    "team-a", "package-version-1", [{
+      workspaceId: "team-a", packageVersionId: "package-version-1",
+      componentCatalogItemId: "item-1",
+      componentPricingPolicyVersionId: "policy-1", quantityMicros: 1_000_000
+    }]
+  );
+
+  assert.deepEqual(Object.keys(components[0]!).sort(), [
+    "componentCatalogItemId", "componentPricingPolicyVersionId",
+    "packageVersionId", "quantityMicros", "workspaceId"
+  ]);
+  const sql = pool.connection.calls.map((call) => call.sql);
+  assert.match(sql[0]!, /^INSERT INTO growth_workspace_temporal_barriers/u);
+  assert.match(sql[1]!, /growth_workspace_temporal_barriers[\s\S]*FOR UPDATE/u);
+  assert.match(sql[4]!, /FROM package_versions[\s\S]*FOR UPDATE/u);
+  const componentInsert = pool.connection.calls.at(-1)!;
+  assert.equal(componentInsert.values.at(-2), "2026-08-09 08:00:00.001");
+  assert.equal(componentInsert.values.at(-1), 9);
+  assert.deepEqual(pool.connection.transactions, ["begin", "commit", "release"]);
+});
+
+test("mysql stale revision matches memory semantics and rolls back its barrier allocation", async () => {
+  const pool = new FakePool();
+  enqueueBarrier(pool, 5);
+  pool.connection.enqueue([catalogRow({ revision: 2 })]);
+  const repository = new MysqlCatalogRepository(
+    asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+  );
+
+  const result = await repository.updateCatalogItem({
+    workspaceId: "team-a", id: "item-1", expectedRevision: 1,
+    patch: { name: "并发覆盖" }, actorId: "admin-2",
+    idempotencyKey: "catalog-update-stale",
+    requestHash: "sha256:catalog-update-stale"
+  });
+
+  assert.deepEqual(result, { kind: "revision_conflict", actualRevision: 2 });
+  assert.deepEqual(pool.connection.transactions, ["begin", "rollback", "release"]);
+  assert.equal(
+    pool.connection.calls.some((call) => /^UPDATE catalog_items/u.test(call.sql)),
+    false
+  );
+});
+
+test("mysql pricing version allocation locks one parent before reading MAX(version)", async () => {
+  const pool = new FakePool();
+  enqueueBarrier(pool, 10);
+  pool.connection.enqueue([catalogRow()]);
+  pool.connection.enqueue([]);
+  pool.connection.enqueue([{ max_version: 4 }]);
+  const repository = new MysqlCatalogRepository(
+    asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+  );
+  const command: CreatePricingPolicyDraftCommand = {
+    workspaceId: "team-a", id: "policy-5", catalogItemId: "item-1",
+    packageVersionId: null, currency: "CNY", listUnitPriceMinor: 10_000,
+    unitStandardCostMinor: 4_000, defaultOrderDeliveryCostMinor: 0,
+    defaultOrderSalesCostMinor: 0, defaultOrderServiceCostMinor: 0,
+    absoluteFloorUnitPriceMinor: 4_000, standardDiscountLimitBps: 500,
+    absoluteDiscountLimitBps: 1_000, targetGrossMarginBps: 5_000,
+    absoluteMinimumGrossMarginBps: 2_000, standardPaymentTermDays: 30,
+    absolutePaymentTermDays: 60,
+    approvalThresholds: {
+      discountCapability: "quote.exception.discount.approve",
+      marginCapability: "quote.exception.margin.approve",
+      paymentTermsCapability: "quote.exception.payment_terms.approve",
+      giftCapability: "quote.exception.gift.approve",
+      creditCapability: "quote.exception.credit.approve",
+      manualCapability: "quote.exception.manual.approve",
+      creditRiskThresholdBps: 7_000,
+      manualEscalationEnabled: true
+    },
+    surchargePolicies: [], giftPolicies: [],
+    validFrom: "2026-08-09T08:00:00.000Z", validTo: null,
+    source: "native", capabilityRegistryVersion: "growth-capabilities.v1",
+    actorId: "admin-1", idempotencyKey: "policy-create-5",
+    requestHash: "sha256:policy-create-5"
+  };
+
+  const result = await repository.createPricingPolicyDraft(command);
+
+  assert.equal(result.kind, "ok");
+  assert.equal(result.value.version, 5);
+  const sql = pool.connection.calls.map((call) => call.sql);
+  const parentLock = sql.findIndex((statement) =>
+    /FROM catalog_items/u.test(statement) && /FOR UPDATE/u.test(statement)
+  );
+  const maxRead = sql.findIndex((statement) => /SELECT MAX\(version\)/u.test(statement));
+  assert.ok(parentLock > 3);
+  assert.ok(maxRead > parentLock);
+  assert.deepEqual(pool.connection.calls[maxRead]!.values, ["team-a", "item-1"]);
+  assert.deepEqual(pool.connection.transactions, ["begin", "commit", "release"]);
 });

@@ -8,15 +8,49 @@ import type {
   PackageVersion,
   PricingPolicyVersion
 } from "./catalog-domain.js";
-import { immutableClone } from "./catalog-domain.js";
+import {
+  assertClosedPricingPolicyRules,
+  immutableClone
+} from "./catalog-domain.js";
 import type {
+  CatalogCommandResult,
+  CatalogListQuery,
+  CatalogLockedValidationView,
   CatalogRepository,
-  CommissionCatalogMigrationCommit
+  CommissionCatalogMigrationCommit,
+  CreateCatalogItemCommand,
+  CreatePackageVersionDraftCommand,
+  CreatePricingPolicyDraftCommand,
+  PackageComponentDraft,
+  PackageVersionLifecycleCommand,
+  PricingPolicyLifecycleCommand,
+  RetireCatalogItemCommand,
+  UpdateCatalogItemCommand,
+  UpdatePackageVersionDraftCommand
 } from "./catalog-repository.js";
-import { assertCommissionCatalogMigrationCommitInvariant } from "./catalog-repository.js";
+import {
+  assertCommissionCatalogMigrationCommitInvariant
+} from "./catalog-repository.js";
+import {
+  MysqlGrowthTemporalTransaction,
+  growthMysqlDate
+} from "./growth-temporal-barrier-mysql-repository.js";
+import {
+  assertConcreteGrowthWorkspaceId,
+  assertGrowthTemporalBarrier,
+  type GrowthTemporalBarrier
+} from "./growth-temporal-barrier.js";
 
 type QuerySource = Pick<mysql.Pool | mysql.PoolConnection, "query">;
 type MysqlRow = Record<string, unknown>;
+type CatalogAppendStamp = Readonly<{
+  recordedAt: string;
+  temporalSequence: number;
+}>;
+type StampedPackageComponent = Readonly<{
+  component: PackageComponent;
+  stamp: CatalogAppendStamp;
+}>;
 
 export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS catalog_items (
@@ -32,6 +66,10 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     created_by VARCHAR(191) NOT NULL,
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
+    recorded_at DATETIME(3) NOT NULL,
+    temporal_sequence BIGINT UNSIGNED NOT NULL,
+    last_idempotency_key VARCHAR(191) NULL,
+    last_request_hash VARCHAR(191) NULL,
     PRIMARY KEY (workspace_id, id),
     UNIQUE KEY uk_catalog_items_code (workspace_id, code),
     CONSTRAINT chk_catalog_items_workspace CHECK (
@@ -51,6 +89,10 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     created_by VARCHAR(191) NOT NULL,
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
+    recorded_at DATETIME(3) NOT NULL,
+    temporal_sequence BIGINT UNSIGNED NOT NULL,
+    last_idempotency_key VARCHAR(191) NULL,
+    last_request_hash VARCHAR(191) NULL,
     PRIMARY KEY (workspace_id, id),
     UNIQUE KEY uk_package_versions_version
       (workspace_id, package_catalog_item_id, version),
@@ -90,6 +132,10 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     revision BIGINT UNSIGNED NOT NULL,
     created_by VARCHAR(191) NOT NULL,
     created_at DATETIME(3) NOT NULL,
+    recorded_at DATETIME(3) NOT NULL,
+    temporal_sequence BIGINT UNSIGNED NOT NULL,
+    last_idempotency_key VARCHAR(191) NULL,
+    last_request_hash VARCHAR(191) NULL,
     PRIMARY KEY (workspace_id, id),
     UNIQUE KEY uk_pricing_policy_versions_version
       (workspace_id, catalog_item_id, version),
@@ -114,6 +160,8 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     component_catalog_item_id VARCHAR(191) NOT NULL,
     component_pricing_policy_version_id VARCHAR(191) NOT NULL,
     quantity_micros BIGINT UNSIGNED NOT NULL,
+    recorded_at DATETIME(3) NOT NULL,
+    temporal_sequence BIGINT UNSIGNED NOT NULL,
     PRIMARY KEY (
       workspace_id, package_version_id, component_catalog_item_id,
       component_pricing_policy_version_id
@@ -232,7 +280,7 @@ function parseCatalogItem(row: MysqlRow): CatalogItem {
 }
 
 function parsePricingPolicy(row: MysqlRow): PricingPolicyVersion {
-  return immutableClone({
+  const policy = {
     id: String(row.id), workspaceId: String(row.workspace_id),
     catalogItemId: String(row.catalog_item_id),
     version: safeNumber(row.version, "version"),
@@ -259,7 +307,9 @@ function parsePricingPolicy(row: MysqlRow): PricingPolicyVersion {
     capabilityRegistryVersion: String(row.capability_registry_version),
     revision: safeNumber(row.revision, "revision"),
     createdBy: String(row.created_by), createdAt: instant(row.created_at)
-  }) as PricingPolicyVersion;
+  } as PricingPolicyVersion;
+  assertClosedPricingPolicyRules(policy);
+  return immutableClone(policy) as PricingPolicyVersion;
 }
 
 function parsePackageVersion(row: MysqlRow): PackageVersion {
@@ -273,6 +323,18 @@ function parsePackageVersion(row: MysqlRow): PackageVersion {
     createdBy: String(row.created_by), createdAt: instant(row.created_at),
     updatedAt: instant(row.updated_at)
   }) as PackageVersion;
+}
+
+function parsePackageComponent(row: MysqlRow): PackageComponent {
+  return immutableClone({
+    workspaceId: String(row.workspace_id),
+    packageVersionId: String(row.package_version_id),
+    componentCatalogItemId: String(row.component_catalog_item_id),
+    componentPricingPolicyVersionId: String(
+      row.component_pricing_policy_version_id
+    ),
+    quantityMicros: safeNumber(row.quantity_micros, "quantity_micros")
+  }) as PackageComponent;
 }
 
 function parseLink(row: MysqlRow): CommissionProductCatalogLink {
@@ -296,21 +358,31 @@ async function first<T>(
   return row ? parse(row) : null;
 }
 
-async function insertCatalogItem(source: QuerySource, item: CatalogItem): Promise<void> {
+async function insertCatalogItem(
+  source: QuerySource,
+  item: CatalogItem,
+  identity?: Readonly<{ idempotencyKey: string; requestHash: string }>,
+  stamp: CatalogAppendStamp = { recordedAt: item.updatedAt, temporalSequence: 0 }
+): Promise<void> {
   await source.query(
     `INSERT INTO catalog_items (
       workspace_id,id,item_type,code,name,description,unit,item_status,revision,
-      created_by,created_at,updated_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      created_by,created_at,updated_at,recorded_at,temporal_sequence,
+      last_idempotency_key,last_request_hash
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [item.workspaceId, item.id, item.type, item.code, item.name, item.description,
       item.unit, item.status, item.revision, item.createdBy,
-      mysqlDate(item.createdAt), mysqlDate(item.updatedAt)]
+      mysqlDate(item.createdAt), mysqlDate(item.updatedAt),
+      mysqlDate(stamp.recordedAt), stamp.temporalSequence,
+      identity?.idempotencyKey ?? null, identity?.requestHash ?? null]
   );
 }
 
 async function insertPricingPolicy(
   source: QuerySource,
-  policy: PricingPolicyVersion
+  policy: PricingPolicyVersion,
+  identity?: Readonly<{ idempotencyKey: string; requestHash: string }>,
+  stamp: CatalogAppendStamp = { recordedAt: policy.createdAt, temporalSequence: 0 }
 ): Promise<void> {
   await source.query(
     `INSERT INTO pricing_policy_versions (
@@ -323,8 +395,9 @@ async function insertPricingPolicy(
       standard_payment_term_days,absolute_payment_term_days,
       approval_thresholds_json,surcharge_policies_json,gift_policies_json,
       valid_from,valid_to,policy_status,source,capability_registry_version,
-      revision,created_by,created_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      revision,created_by,created_at,recorded_at,temporal_sequence,
+      last_idempotency_key,last_request_hash
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [policy.workspaceId, policy.id, policy.catalogItemId, policy.version,
       policy.packageVersionId, policy.currency, policy.listUnitPriceMinor,
       policy.unitStandardCostMinor, policy.defaultOrderDeliveryCostMinor,
@@ -336,7 +409,9 @@ async function insertPricingPolicy(
       JSON.stringify(policy.surchargePolicies), JSON.stringify(policy.giftPolicies),
       mysqlDate(policy.validFrom), policy.validTo ? mysqlDate(policy.validTo) : null,
       policy.status, policy.source, policy.capabilityRegistryVersion,
-      policy.revision, policy.createdBy, mysqlDate(policy.createdAt)]
+      policy.revision, policy.createdBy, mysqlDate(policy.createdAt),
+      mysqlDate(stamp.recordedAt), stamp.temporalSequence,
+      identity?.idempotencyKey ?? null, identity?.requestHash ?? null]
   );
 }
 
@@ -392,8 +467,163 @@ function migrationConflict(): Error & { code: string } {
   });
 }
 
+class MysqlCatalogCommandAbort<T> extends Error {
+  constructor(readonly result: CatalogCommandResult<T>) {
+    super("catalog_command_aborted");
+  }
+}
+
+function commandAbort<T>(result: CatalogCommandResult<T>): never {
+  throw new MysqlCatalogCommandAbort(result);
+}
+
+function assertCommandIdentity(command: Readonly<{
+  actorId: string;
+  idempotencyKey: string;
+  requestHash: string;
+}>): Readonly<{ idempotencyKey: string; requestHash: string }> {
+  if (!command.actorId.trim() || !command.idempotencyKey.trim()
+    || !command.requestHash.trim()) {
+    throw Object.assign(new Error("invalid_catalog_command_identity"), {
+      code: "invalid_catalog_command_identity"
+    });
+  }
+  return {
+    idempotencyKey: command.idempotencyKey,
+    requestHash: command.requestHash
+  };
+}
+
+function mysqlReplay<T>(
+  row: MysqlRow,
+  command: Readonly<{ idempotencyKey: string; requestHash: string }>,
+  value: T
+): CatalogCommandResult<T> | null {
+  if (row.last_idempotency_key !== command.idempotencyKey) return null;
+  if (row.last_request_hash !== command.requestHash) {
+    return { kind: "state_conflict", code: "idempotency_conflict" };
+  }
+  return { kind: "ok", value, replayed: true };
+}
+
+function decodeCursor(cursor: string): readonly [string, string] {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (!Array.isArray(parsed) || parsed.length !== 2
+      || parsed.some((value) => typeof value !== "string")) throw new Error();
+    return parsed as [string, string];
+  } catch {
+    throw Object.assign(new Error("invalid_catalog_cursor"), {
+      code: "invalid_catalog_cursor"
+    });
+  }
+}
+
+function checkedListQuery(query: CatalogListQuery): CatalogListQuery {
+  if (!query || !Number.isSafeInteger(query.limit)
+    || query.limit < 1 || query.limit > 100
+    || !["code", "name", "updatedAt"].includes(query.sort)
+    || !["asc", "desc"].includes(query.direction)
+    || (query.cursor !== null && (
+      typeof query.cursor !== "string" || query.cursor.trim() === ""
+    ))
+    || (query.type !== undefined
+      && !["product", "service", "package"].includes(query.type))
+    || (query.status !== undefined
+      && !["active", "retired"].includes(query.status))) {
+    throw Object.assign(new Error("invalid_catalog_list_query"), {
+      code: "invalid_catalog_list_query"
+    });
+  }
+  if (query.cursor !== null) decodeCursor(query.cursor);
+  return query;
+}
+
+function compareCodePoints(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function mysqlPage<T>(
+  values: readonly T[],
+  query: CatalogListQuery,
+  sortValue: (value: T) => string,
+  id: (value: T) => string
+): readonly T[] {
+  const checked = checkedListQuery(query);
+  const multiplier = checked.direction === "asc" ? 1 : -1;
+  const sorted = [...values].sort((left, right) => multiplier * (
+    compareCodePoints(sortValue(left), sortValue(right))
+    || compareCodePoints(id(left), id(right))
+  ));
+  const cursor = checked.cursor === null ? null : decodeCursor(checked.cursor);
+  return sorted.filter((value) => {
+    if (!cursor) return true;
+    return multiplier * (
+      compareCodePoints(sortValue(value), cursor[0])
+      || compareCodePoints(id(value), cursor[1])
+    ) > 0;
+  }).slice(0, checked.limit);
+}
+
+function lifecycleConflict<T extends { status: string; revision: number }>(
+  current: T,
+  expectedRevision: number,
+  expectedStatus: string,
+  code: string
+): void {
+  if (current.revision !== expectedRevision) {
+    commandAbort({ kind: "revision_conflict", actualRevision: current.revision });
+  }
+  if (current.status !== expectedStatus) {
+    commandAbort({ kind: "state_conflict", code });
+  }
+}
+
 export class MysqlCatalogRepository implements CatalogRepository {
-  constructor(private readonly pool: mysql.Pool) {}
+  private readonly temporalBarrier: GrowthTemporalBarrier | null;
+
+  constructor(
+    private readonly pool: mysql.Pool,
+    temporalBarrier?: GrowthTemporalBarrier
+  ) {
+    this.temporalBarrier = temporalBarrier
+      ? assertGrowthTemporalBarrier(temporalBarrier) : null;
+  }
+
+  private async command<T>(
+    workspaceId: string,
+    work: (
+      connection: mysql.PoolConnection,
+      transaction: MysqlGrowthTemporalTransaction,
+      stamp: { recordedAt: string; temporalSequence: number }
+    ) => Promise<CatalogCommandResult<T>>
+  ): Promise<CatalogCommandResult<T>> {
+    const concreteWorkspaceId = assertConcreteGrowthWorkspaceId(workspaceId);
+    if (!this.temporalBarrier) {
+      throw new Error("catalog_temporal_adapter_required");
+    }
+    const temporalBarrier = this.temporalBarrier;
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const transaction = new MysqlGrowthTemporalTransaction(connection);
+      const stamp = await temporalBarrier.allocateAppend(
+        transaction,
+        concreteWorkspaceId
+      );
+      const result = await work(connection, transaction, stamp);
+      await connection.commit();
+      return result;
+    } catch (error) {
+      await connection.rollback();
+      if (error instanceof MysqlCatalogCommandAbort) {
+        return error.result as CatalogCommandResult<T>;
+      }
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
 
   async appendCatalogItem(item: CatalogItem): Promise<CatalogItem> {
     await insertCatalogItem(this.pool, item);
@@ -406,9 +636,35 @@ export class MysqlCatalogRepository implements CatalogRepository {
       [workspaceId, id], parseCatalogItem);
   }
 
+  async listCatalogItems(
+    workspaceId: string,
+    query: CatalogListQuery
+  ): Promise<readonly CatalogItem[]> {
+    const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
+    checkedListQuery(query);
+    const values: unknown[] = [concrete];
+    let sql = "SELECT * FROM catalog_items WHERE workspace_id = ?";
+    if (query.type !== undefined) {
+      sql += " AND item_type = ?";
+      values.push(query.type);
+    }
+    if (query.status !== undefined) {
+      sql += " AND item_status = ?";
+      values.push(query.status);
+    }
+    const [rows] = await this.pool.query(sql, values);
+    const items = (rows as MysqlRow[]).map(parseCatalogItem);
+    return immutableClone(mysqlPage(
+      items, query,
+      (item) => query.sort === "updatedAt" ? item.updatedAt : item[query.sort],
+      (item) => item.id
+    )) as readonly CatalogItem[];
+  }
+
   async appendPricingPolicyVersion(
     policy: PricingPolicyVersion
   ): Promise<PricingPolicyVersion> {
+    assertClosedPricingPolicyRules(policy);
     await insertPricingPolicy(this.pool, policy);
     return immutableClone(policy) as PricingPolicyVersion;
   }
@@ -422,17 +678,56 @@ export class MysqlCatalogRepository implements CatalogRepository {
       [workspaceId, pricingPolicyVersionId], parsePricingPolicy);
   }
 
+  async listPricingPolicies(
+    workspaceId: string,
+    query: CatalogListQuery
+  ): Promise<readonly PricingPolicyVersion[]> {
+    const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
+    checkedListQuery(query);
+    const values: unknown[] = [concrete];
+    let sql = `SELECT p.*,i.code AS parent_code,i.name AS parent_name,
+      i.updated_at AS parent_updated_at
+      FROM pricing_policy_versions p
+      INNER JOIN catalog_items i
+        ON i.workspace_id = p.workspace_id AND i.id = p.catalog_item_id
+      WHERE p.workspace_id = ?`;
+    if (query.type !== undefined) {
+      sql += " AND i.item_type = ?";
+      values.push(query.type);
+    }
+    if (query.status !== undefined) {
+      sql += " AND i.item_status = ?";
+      values.push(query.status);
+    }
+    const [rows] = await this.pool.query(sql, values);
+    const rowList = rows as MysqlRow[];
+    const byId = new Map(rowList.map((row) => [String(row.id), row]));
+    const policies = rowList.map(parsePricingPolicy);
+    return immutableClone(mysqlPage(
+      policies, query,
+      (policy) => {
+        const row = byId.get(policy.id)!;
+        return query.sort === "code" ? String(row.parent_code)
+          : query.sort === "name" ? String(row.parent_name)
+            : instant(row.parent_updated_at);
+      },
+      (policy) => policy.id
+    )) as readonly PricingPolicyVersion[];
+  }
+
   async appendPackageVersion(version: PackageVersion): Promise<PackageVersion> {
     await this.pool.query(
       `INSERT INTO package_versions (
         workspace_id,id,package_catalog_item_id,version,currency,package_status,
-        valid_from,valid_to,revision,created_by,created_at,updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        valid_from,valid_to,revision,created_by,created_at,updated_at,
+        recorded_at,temporal_sequence,last_idempotency_key,last_request_hash
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [version.workspaceId, version.id, version.packageCatalogItemId,
         version.version, version.currency, version.status,
         mysqlDate(version.validFrom), version.validTo ? mysqlDate(version.validTo) : null,
         version.revision, version.createdBy, mysqlDate(version.createdAt),
-        mysqlDate(version.updatedAt)]
+        mysqlDate(version.updatedAt), mysqlDate(version.updatedAt),
+        0, null, null]
     );
     return immutableClone(version) as PackageVersion;
   }
@@ -441,6 +736,62 @@ export class MysqlCatalogRepository implements CatalogRepository {
     return first(this.pool,
       "SELECT * FROM package_versions WHERE workspace_id = ? AND id = ?",
       [workspaceId, id], parsePackageVersion);
+  }
+
+  async listPackageVersions(
+    workspaceId: string,
+    itemId: string,
+    query: CatalogListQuery
+  ): Promise<readonly PackageVersion[]> {
+    const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
+    checkedListQuery(query);
+    const values: unknown[] = [concrete, itemId];
+    let sql = `SELECT v.*,i.code AS parent_code,i.name AS parent_name,
+      i.updated_at AS parent_updated_at
+      FROM package_versions v
+      INNER JOIN catalog_items i
+        ON i.workspace_id = v.workspace_id AND i.id = v.package_catalog_item_id
+      WHERE v.workspace_id = ? AND v.package_catalog_item_id = ?`;
+    if (query.type !== undefined) {
+      sql += " AND i.item_type = ?";
+      values.push(query.type);
+    }
+    if (query.status !== undefined) {
+      sql += " AND i.item_status = ?";
+      values.push(query.status);
+    }
+    const [rows] = await this.pool.query(sql, values);
+    const rowList = rows as MysqlRow[];
+    const byId = new Map(rowList.map((row) => [String(row.id), row]));
+    const versions = rowList.map(parsePackageVersion);
+    return immutableClone(mysqlPage(
+      versions, query,
+      (version) => {
+        const row = byId.get(version.id)!;
+        return query.sort === "code" ? String(row.parent_code)
+          : query.sort === "name" ? String(row.parent_name)
+            : version.updatedAt;
+      },
+      (version) => version.id
+    )) as readonly PackageVersion[];
+  }
+
+  async listPackageComponents(
+    workspaceId: string,
+    packageVersionId: string
+  ): Promise<readonly PackageComponent[]> {
+    const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT c.* FROM package_components c
+       INNER JOIN package_versions v
+         ON v.workspace_id = c.workspace_id AND v.id = c.package_version_id
+       WHERE c.workspace_id = ? AND c.package_version_id = ?
+       ORDER BY c.component_catalog_item_id,c.component_pricing_policy_version_id`,
+      [concrete, packageVersionId]
+    );
+    return immutableClone(
+      (rows as MysqlRow[]).map(parsePackageComponent)
+    ) as readonly PackageComponent[];
   }
 
   async replaceDraftPackageComponents(
@@ -454,11 +805,28 @@ export class MysqlCatalogRepository implements CatalogRepository {
         code: "invalid_package_component_scope"
       });
     }
+    if (!this.temporalBarrier) {
+      throw new Error("catalog_temporal_adapter_required");
+    }
+    const temporalBarrier = this.temporalBarrier;
     const connection = await this.pool.getConnection();
     try {
       await connection.beginTransaction();
+      const transaction = new MysqlGrowthTemporalTransaction(connection);
+      const stamped: StampedPackageComponent[] = [];
+      if (components.length === 0) {
+        await temporalBarrier.allocateAppend(transaction, workspaceId);
+      } else {
+        for (const component of components) {
+          const stamp = await temporalBarrier.allocateAppend(
+            transaction,
+            workspaceId
+          );
+          stamped.push({ component, stamp });
+        }
+      }
       const [rows] = await connection.query(
-        `SELECT package_status FROM package_versions
+        `SELECT package_status,updated_at FROM package_versions
          WHERE workspace_id = ? AND id = ? FOR UPDATE`,
         [workspaceId, packageVersionId]
       );
@@ -469,24 +837,548 @@ export class MysqlCatalogRepository implements CatalogRepository {
         "DELETE FROM package_components WHERE workspace_id = ? AND package_version_id = ?",
         [workspaceId, packageVersionId]
       );
-      for (const component of components) {
+      for (const { component, stamp } of stamped) {
         await connection.query(
           `INSERT INTO package_components (
             workspace_id,package_version_id,component_catalog_item_id,
-            component_pricing_policy_version_id,quantity_micros
-          ) VALUES (?,?,?,?,?)`,
+            component_pricing_policy_version_id,quantity_micros,
+            recorded_at,temporal_sequence
+          ) VALUES (?,?,?,?,?,?,?)`,
           [workspaceId, packageVersionId, component.componentCatalogItemId,
-            component.componentPricingPolicyVersionId, component.quantityMicros]
+            component.componentPricingPolicyVersionId, component.quantityMicros,
+            mysqlDate(stamp.recordedAt), stamp.temporalSequence]
         );
       }
       await connection.commit();
-      return immutableClone(components) as readonly PackageComponent[];
+      return immutableClone(
+        stamped.map((entry) => entry.component)
+      ) as readonly PackageComponent[];
     } catch (error) {
       await connection.rollback();
       throw error;
     } finally {
       connection.release();
     }
+  }
+
+  async createCatalogItem(
+    command: CreateCatalogItemCommand
+  ): Promise<CatalogCommandResult<CatalogItem>> {
+    return this.command(command.workspaceId, async (connection, _tx, stamp) => {
+      const identity = assertCommandIdentity(command);
+      const [rows] = await connection.query(
+        `SELECT * FROM catalog_items
+         WHERE workspace_id = ? AND (id = ? OR code = ?)
+         ORDER BY id FOR UPDATE`,
+        [command.workspaceId, command.id, command.code]
+      );
+      const matches = rows as MysqlRow[];
+      const idRow = matches.find((row) => row.id === command.id);
+      if (idRow) {
+        const current = parseCatalogItem(idRow);
+        const replay = mysqlReplay(idRow, command, current);
+        commandAbort(replay ?? {
+          kind: "state_conflict", code: "catalog_item_id_conflict"
+        });
+      }
+      if (matches.some((row) => row.code === command.code)) {
+        commandAbort({ kind: "state_conflict", code: "catalog_code_conflict" });
+      }
+      const item = immutableClone({
+        id: command.id,
+        workspaceId: command.workspaceId,
+        type: command.type,
+        code: command.code,
+        name: command.name,
+        description: command.description,
+        unit: command.unit,
+        status: "active" as const,
+        revision: 1,
+        createdBy: command.actorId,
+        createdAt: stamp.recordedAt,
+        updatedAt: stamp.recordedAt
+      }) as CatalogItem;
+      await insertCatalogItem(connection, item, identity, stamp);
+      return { kind: "ok", value: item, replayed: false };
+    });
+  }
+
+  async updateCatalogItem(
+    command: UpdateCatalogItemCommand
+  ): Promise<CatalogCommandResult<CatalogItem>> {
+    return this.command(command.workspaceId, async (connection, _tx, stamp) => {
+      const identity = assertCommandIdentity(command);
+      const [rows] = await connection.query(
+        `SELECT * FROM catalog_items
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [command.workspaceId, command.id]
+      );
+      const row = (rows as MysqlRow[])[0];
+      if (!row) commandAbort({ kind: "not_found" });
+      const current = parseCatalogItem(row);
+      const replay = mysqlReplay(row, command, current);
+      if (replay) commandAbort(replay);
+      lifecycleConflict(
+        current, command.expectedRevision, "active", "catalog_item_retired"
+      );
+      const next = immutableClone({
+        ...current,
+        ...command.patch,
+        revision: current.revision + 1,
+        updatedAt: stamp.recordedAt
+      }) as CatalogItem;
+      await connection.query(
+        `UPDATE catalog_items
+         SET name = ?,description = ?,unit = ?,revision = ?,updated_at = ?,
+           recorded_at = ?,temporal_sequence = ?,last_idempotency_key = ?,
+           last_request_hash = ?
+         WHERE workspace_id = ? AND id = ? AND revision = ?`,
+        [next.name, next.description, next.unit, next.revision,
+          mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
+          stamp.temporalSequence, identity.idempotencyKey, identity.requestHash,
+          command.workspaceId, command.id, command.expectedRevision]
+      );
+      return { kind: "ok", value: next, replayed: false };
+    });
+  }
+
+  async retireCatalogItem(
+    command: RetireCatalogItemCommand
+  ): Promise<CatalogCommandResult<CatalogItem>> {
+    return this.command(command.workspaceId, async (connection, _tx, stamp) => {
+      const identity = assertCommandIdentity(command);
+      const [rows] = await connection.query(
+        `SELECT * FROM catalog_items
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [command.workspaceId, command.id]
+      );
+      const row = (rows as MysqlRow[])[0];
+      if (!row) commandAbort({ kind: "not_found" });
+      const current = parseCatalogItem(row);
+      const replay = mysqlReplay(row, command, current);
+      if (replay) commandAbort(replay);
+      lifecycleConflict(
+        current, command.expectedRevision, "active", "catalog_item_retired"
+      );
+      const next = immutableClone({
+        ...current,
+        status: "retired" as const,
+        revision: current.revision + 1,
+        updatedAt: stamp.recordedAt
+      }) as CatalogItem;
+      await connection.query(
+        `UPDATE catalog_items
+         SET item_status = 'retired',revision = ?,updated_at = ?,
+           recorded_at = ?,temporal_sequence = ?,last_idempotency_key = ?,
+           last_request_hash = ?
+         WHERE workspace_id = ? AND id = ? AND revision = ?`,
+        [next.revision, mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
+          stamp.temporalSequence, identity.idempotencyKey, identity.requestHash,
+          command.workspaceId, command.id, command.expectedRevision]
+      );
+      return { kind: "ok", value: next, replayed: false };
+    });
+  }
+
+  private mysqlValidationView(
+    connection: mysql.PoolConnection
+  ): CatalogLockedValidationView {
+    return {
+      findCatalogItem: (workspaceId, id) => first(
+        connection,
+        `SELECT * FROM catalog_items
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [workspaceId, id], parseCatalogItem
+      ),
+      findPricingPolicyVersion: (workspaceId, id) => first(
+        connection,
+        `SELECT * FROM pricing_policy_versions
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [workspaceId, id], parsePricingPolicy
+      ),
+      findPackageVersion: (workspaceId, id) => first(
+        connection,
+        `SELECT * FROM package_versions
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [workspaceId, id], parsePackageVersion
+      ),
+      listPackageComponents: async (workspaceId, id) => {
+        const [rows] = await connection.query(
+          `SELECT * FROM package_components
+           WHERE workspace_id = ? AND package_version_id = ?
+           ORDER BY component_catalog_item_id,component_pricing_policy_version_id
+           FOR UPDATE`,
+          [workspaceId, id]
+        );
+        return immutableClone(
+          (rows as MysqlRow[]).map(parsePackageComponent)
+        ) as readonly PackageComponent[];
+      }
+    };
+  }
+
+  async createPricingPolicyDraft(
+    command: CreatePricingPolicyDraftCommand
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
+    return this.command(command.workspaceId, async (connection, _tx, stamp) => {
+      const identity = assertCommandIdentity(command);
+      assertClosedPricingPolicyRules(command);
+      const [parentRows] = await connection.query(
+        `SELECT * FROM catalog_items
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [command.workspaceId, command.catalogItemId]
+      );
+      const parentRow = (parentRows as MysqlRow[])[0];
+      if (!parentRow) commandAbort({ kind: "not_found" });
+      const parent = parseCatalogItem(parentRow);
+      if (parent.status !== "active") {
+        commandAbort({ kind: "state_conflict", code: "catalog_item_retired" });
+      }
+      const [existingRows] = await connection.query(
+        `SELECT * FROM pricing_policy_versions
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [command.workspaceId, command.id]
+      );
+      const existingRow = (existingRows as MysqlRow[])[0];
+      if (existingRow) {
+        const existing = parsePricingPolicy(existingRow);
+        const replay = mysqlReplay(existingRow, command, existing);
+        commandAbort(replay ?? {
+          kind: "state_conflict", code: "pricing_policy_id_conflict"
+        });
+      }
+      const [versionRows] = await connection.query(
+        `SELECT MAX(version) AS max_version FROM pricing_policy_versions
+         WHERE workspace_id = ? AND catalog_item_id = ?`,
+        [command.workspaceId, command.catalogItemId]
+      );
+      const maxVersion = Number((versionRows as MysqlRow[])[0]?.max_version ?? 0);
+      if (!Number.isSafeInteger(maxVersion) || maxVersion < 0) {
+        throw new Error("invalid_pricing_policy_version");
+      }
+      const {
+        actorId, idempotencyKey: _idempotencyKey,
+        requestHash: _requestHash, ...fields
+      } = command;
+      const policy = immutableClone({
+        ...fields,
+        version: maxVersion + 1,
+        status: "draft" as const,
+        revision: 1,
+        createdBy: actorId,
+        createdAt: stamp.recordedAt
+      }) as PricingPolicyVersion;
+      await insertPricingPolicy(connection, policy, identity, stamp);
+      return { kind: "ok", value: policy, replayed: false };
+    });
+  }
+
+  private pricingLifecycle(
+    command: PricingPolicyLifecycleCommand,
+    from: PricingPolicyVersion["status"],
+    to: PricingPolicyVersion["status"],
+    invalidCode: string
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
+    return this.command(command.workspaceId, async (connection, _tx, stamp) => {
+      const identity = assertCommandIdentity(command);
+      const [rows] = await connection.query(
+        `SELECT p.* FROM catalog_items i
+         INNER JOIN pricing_policy_versions p
+           ON p.workspace_id = i.workspace_id AND p.catalog_item_id = i.id
+         WHERE p.workspace_id = ? AND p.id = ? FOR UPDATE`,
+        [command.workspaceId, command.id]
+      );
+      const row = (rows as MysqlRow[])[0];
+      if (!row) commandAbort({ kind: "not_found" });
+      const current = parsePricingPolicy(row);
+      const replay = mysqlReplay(row, command, current);
+      if (replay) commandAbort(replay);
+      lifecycleConflict(current, command.expectedRevision, from, invalidCode);
+      if (command.validate) {
+        await command.validate(this.mysqlValidationView(connection), current);
+      }
+      const next = immutableClone({
+        ...current,
+        status: to,
+        revision: current.revision + 1
+      }) as PricingPolicyVersion;
+      await connection.query(
+        `UPDATE pricing_policy_versions
+         SET policy_status = ?,revision = ?,recorded_at = ?,temporal_sequence = ?,
+           last_idempotency_key = ?,last_request_hash = ?
+         WHERE workspace_id = ? AND id = ? AND revision = ?`,
+        [to, next.revision, mysqlDate(stamp.recordedAt), stamp.temporalSequence,
+          identity.idempotencyKey, identity.requestHash,
+          command.workspaceId, command.id, command.expectedRevision]
+      );
+      return { kind: "ok", value: next, replayed: false };
+    });
+  }
+
+  activatePricingPolicy(
+    command: PricingPolicyLifecycleCommand
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
+    return this.pricingLifecycle(
+      command, "draft", "active", "pricing_policy_not_draft"
+    );
+  }
+
+  retirePricingPolicy(
+    command: PricingPolicyLifecycleCommand
+  ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
+    return this.pricingLifecycle(
+      command, "active", "retired", "pricing_policy_not_active"
+    );
+  }
+
+  private async mysqlPackageComponentsWithStamps(
+    connection: mysql.PoolConnection,
+    transaction: MysqlGrowthTemporalTransaction,
+    workspaceId: string,
+    packageVersionId: string,
+    components: readonly PackageComponentDraft[]
+  ): Promise<readonly StampedPackageComponent[]> {
+    if (!this.temporalBarrier) {
+      throw new Error("catalog_temporal_adapter_required");
+    }
+    const temporalBarrier = this.temporalBarrier;
+    const result: StampedPackageComponent[] = [];
+    for (const component of components) {
+      if (!Number.isSafeInteger(component.quantityMicros)
+        || component.quantityMicros <= 0) {
+        throw Object.assign(new Error("invalid_package_component_quantity"), {
+          code: "invalid_package_component_quantity"
+        });
+      }
+      const stamp = await temporalBarrier.allocateAppend(
+        transaction,
+        workspaceId
+      );
+      result.push({
+        component: { workspaceId, packageVersionId, ...component },
+        stamp
+      });
+    }
+    void connection;
+    return immutableClone(result) as readonly StampedPackageComponent[];
+  }
+
+  private async insertPackageComponents(
+    connection: mysql.PoolConnection,
+    components: readonly StampedPackageComponent[]
+  ): Promise<void> {
+    for (const { component, stamp } of components) {
+      await connection.query(
+        `INSERT INTO package_components (
+          workspace_id,package_version_id,component_catalog_item_id,
+          component_pricing_policy_version_id,quantity_micros,
+          recorded_at,temporal_sequence
+        ) VALUES (?,?,?,?,?,?,?)`,
+        [component.workspaceId, component.packageVersionId,
+          component.componentCatalogItemId,
+          component.componentPricingPolicyVersionId, component.quantityMicros,
+          mysqlDate(stamp.recordedAt), stamp.temporalSequence]
+      );
+    }
+  }
+
+  async createPackageVersionDraft(
+    command: CreatePackageVersionDraftCommand
+  ): Promise<CatalogCommandResult<PackageVersion>> {
+    return this.command(command.workspaceId, async (connection, tx, stamp) => {
+      const identity = assertCommandIdentity(command);
+      const [parentRows] = await connection.query(
+        `SELECT * FROM catalog_items
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [command.workspaceId, command.packageCatalogItemId]
+      );
+      const parentRow = (parentRows as MysqlRow[])[0];
+      if (!parentRow) commandAbort({ kind: "not_found" });
+      const parent = parseCatalogItem(parentRow);
+      if (parent.type !== "package" || parent.status !== "active") {
+        commandAbort({ kind: "state_conflict", code: "invalid_package_catalog_item" });
+      }
+      const [existingRows] = await connection.query(
+        `SELECT * FROM package_versions
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [command.workspaceId, command.id]
+      );
+      const existingRow = (existingRows as MysqlRow[])[0];
+      if (existingRow) {
+        const existing = parsePackageVersion(existingRow);
+        const replay = mysqlReplay(existingRow, command, existing);
+        commandAbort(replay ?? {
+          kind: "state_conflict", code: "package_version_id_conflict"
+        });
+      }
+      const [versionRows] = await connection.query(
+        `SELECT MAX(version) AS max_version FROM package_versions
+         WHERE workspace_id = ? AND package_catalog_item_id = ?`,
+        [command.workspaceId, command.packageCatalogItemId]
+      );
+      const maxVersion = Number((versionRows as MysqlRow[])[0]?.max_version ?? 0);
+      if (!Number.isSafeInteger(maxVersion) || maxVersion < 0) {
+        throw new Error("invalid_package_version");
+      }
+      const components = await this.mysqlPackageComponentsWithStamps(
+        connection, tx, command.workspaceId, command.id, command.components
+      );
+      const version = immutableClone({
+        id: command.id,
+        workspaceId: command.workspaceId,
+        packageCatalogItemId: command.packageCatalogItemId,
+        version: maxVersion + 1,
+        currency: command.currency,
+        status: "draft" as const,
+        validFrom: command.validFrom,
+        validTo: command.validTo,
+        revision: 1,
+        createdBy: command.actorId,
+        createdAt: stamp.recordedAt,
+        updatedAt: stamp.recordedAt
+      }) as PackageVersion;
+      await connection.query(
+        `INSERT INTO package_versions (
+          workspace_id,id,package_catalog_item_id,version,currency,package_status,
+          valid_from,valid_to,revision,created_by,created_at,updated_at,
+          recorded_at,temporal_sequence,last_idempotency_key,last_request_hash
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [version.workspaceId, version.id, version.packageCatalogItemId,
+          version.version, version.currency, version.status,
+          mysqlDate(version.validFrom), version.validTo ? mysqlDate(version.validTo) : null,
+          version.revision, version.createdBy, mysqlDate(version.createdAt),
+          mysqlDate(version.updatedAt), mysqlDate(stamp.recordedAt),
+          stamp.temporalSequence, identity.idempotencyKey, identity.requestHash]
+      );
+      await this.insertPackageComponents(connection, components);
+      return { kind: "ok", value: version, replayed: false };
+    });
+  }
+
+  async updatePackageVersionDraft(
+    command: UpdatePackageVersionDraftCommand
+  ): Promise<CatalogCommandResult<PackageVersion>> {
+    return this.command(command.workspaceId, async (connection, tx, stamp) => {
+      const identity = assertCommandIdentity(command);
+      const [rows] = await connection.query(
+        `SELECT v.* FROM catalog_items i
+         INNER JOIN package_versions v
+           ON v.workspace_id = i.workspace_id AND v.package_catalog_item_id = i.id
+         WHERE v.workspace_id = ? AND v.id = ? FOR UPDATE`,
+        [command.workspaceId, command.id]
+      );
+      const row = (rows as MysqlRow[])[0];
+      if (!row) commandAbort({ kind: "not_found" });
+      const current = parsePackageVersion(row);
+      const replay = mysqlReplay(row, command, current);
+      if (replay) commandAbort(replay);
+      lifecycleConflict(
+        current, command.expectedRevision, "draft", "package_version_immutable"
+      );
+      const { components: componentPatch, ...fieldPatch } = command.patch;
+      const components = componentPatch === undefined ? null
+        : await this.mysqlPackageComponentsWithStamps(
+          connection, tx, command.workspaceId, command.id, componentPatch
+        );
+      const next = immutableClone({
+        ...current,
+        ...fieldPatch,
+        revision: current.revision + 1,
+        updatedAt: stamp.recordedAt
+      }) as PackageVersion;
+      await connection.query(
+        `UPDATE package_versions
+         SET currency = ?,valid_from = ?,valid_to = ?,revision = ?,updated_at = ?,
+           recorded_at = ?,temporal_sequence = ?,last_idempotency_key = ?,
+           last_request_hash = ?
+         WHERE workspace_id = ? AND id = ? AND revision = ?`,
+        [next.currency, mysqlDate(next.validFrom),
+          next.validTo ? mysqlDate(next.validTo) : null, next.revision,
+          mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
+          stamp.temporalSequence, identity.idempotencyKey, identity.requestHash,
+          command.workspaceId, command.id, command.expectedRevision]
+      );
+      if (components) {
+        await connection.query(
+          `DELETE FROM package_components
+           WHERE workspace_id = ? AND package_version_id = ?`,
+          [command.workspaceId, command.id]
+        );
+        await this.insertPackageComponents(connection, components);
+      }
+      return { kind: "ok", value: next, replayed: false };
+    });
+  }
+
+  private packageLifecycle(
+    command: PackageVersionLifecycleCommand,
+    from: PackageVersion["status"],
+    to: PackageVersion["status"],
+    invalidCode: string
+  ): Promise<CatalogCommandResult<PackageVersion>> {
+    return this.command(command.workspaceId, async (connection, _tx, stamp) => {
+      const identity = assertCommandIdentity(command);
+      const [rows] = await connection.query(
+        `SELECT v.* FROM catalog_items i
+         INNER JOIN package_versions v
+           ON v.workspace_id = i.workspace_id AND v.package_catalog_item_id = i.id
+         WHERE v.workspace_id = ? AND v.id = ? FOR UPDATE`,
+        [command.workspaceId, command.id]
+      );
+      const row = (rows as MysqlRow[])[0];
+      if (!row) commandAbort({ kind: "not_found" });
+      const current = parsePackageVersion(row);
+      const replay = mysqlReplay(row, command, current);
+      if (replay) commandAbort(replay);
+      lifecycleConflict(current, command.expectedRevision, from, invalidCode);
+      const [componentRows] = await connection.query(
+        `SELECT * FROM package_components
+         WHERE workspace_id = ? AND package_version_id = ?
+         ORDER BY component_catalog_item_id,component_pricing_policy_version_id
+         FOR UPDATE`,
+        [command.workspaceId, command.id]
+      );
+      const components = immutableClone(
+        (componentRows as MysqlRow[]).map(parsePackageComponent)
+      ) as readonly PackageComponent[];
+      if (command.validate) {
+        await command.validate(
+          this.mysqlValidationView(connection), current, components
+        );
+      }
+      const next = immutableClone({
+        ...current,
+        status: to,
+        revision: current.revision + 1,
+        updatedAt: stamp.recordedAt
+      }) as PackageVersion;
+      await connection.query(
+        `UPDATE package_versions
+         SET package_status = ?,revision = ?,updated_at = ?,recorded_at = ?,
+           temporal_sequence = ?,last_idempotency_key = ?,last_request_hash = ?
+         WHERE workspace_id = ? AND id = ? AND revision = ?`,
+        [to, next.revision, mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
+          stamp.temporalSequence, identity.idempotencyKey, identity.requestHash,
+          command.workspaceId, command.id, command.expectedRevision]
+      );
+      return { kind: "ok", value: next, replayed: false };
+    });
+  }
+
+  activatePackageVersion(
+    command: PackageVersionLifecycleCommand
+  ): Promise<CatalogCommandResult<PackageVersion>> {
+    return this.packageLifecycle(
+      command, "draft", "active", "package_version_not_draft"
+    );
+  }
+
+  retirePackageVersion(
+    command: PackageVersionLifecycleCommand
+  ): Promise<CatalogCommandResult<PackageVersion>> {
+    return this.packageLifecycle(
+      command, "active", "retired", "package_version_not_active"
+    );
   }
 
   findCommissionProductLink(
