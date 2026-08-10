@@ -11,7 +11,10 @@ import type {
 import {
   assertClosedPricingPolicyRules,
   assertClosedPricingPolicyVersion,
-  immutableClone
+  immutableClone,
+  normalizeCatalogItemInstants,
+  normalizePackageVersionInstants,
+  normalizePricingPolicyVersionInstants
 } from "./catalog-domain.js";
 import {
   assertConcreteGrowthWorkspaceId,
@@ -632,6 +635,46 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     };
   }
 
+  private async publishedRead<T>(workspaceId: string, read: () => T): Promise<T> {
+    for (;;) {
+      const tail = this.publicationTails.get(workspaceId);
+      if (!tail) return read();
+      await tail;
+    }
+  }
+
+  private findCatalogItemNoWait(workspaceId: string, id: string): CatalogItem | null {
+    const item = this.catalogItems.get(key(workspaceId, id));
+    return item ? immutableClone(item) as CatalogItem : null;
+  }
+
+  private findPricingPolicyVersionNoWait(
+    workspaceId: string,
+    pricingPolicyVersionId: string
+  ): PricingPolicyVersion | null {
+    const policy = this.pricingPolicies.get(key(workspaceId, pricingPolicyVersionId));
+    return policy ? immutableClone(policy) as PricingPolicyVersion : null;
+  }
+
+  private findPackageVersionNoWait(
+    workspaceId: string,
+    id: string
+  ): PackageVersion | null {
+    const version = this.packageVersions.get(key(workspaceId, id));
+    return version ? immutableClone(version) as PackageVersion : null;
+  }
+
+  private listPackageComponentsNoWait(
+    workspaceId: string,
+    packageVersionId: string
+  ): readonly PackageComponent[] {
+    if (!this.packageVersions.has(key(workspaceId, packageVersionId))) return [];
+    const components = this.packageComponents.get(key(
+      workspaceId, packageVersionId
+    )) ?? [];
+    return immutableClone(components) as readonly PackageComponent[];
+  }
+
   private async command<T>(
     workspaceId: string,
     work: (
@@ -678,14 +721,15 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   async appendCatalogItem(item: CatalogItem): Promise<CatalogItem> {
     const itemKey = key(item.workspaceId, item.id);
     if (this.catalogItems.has(itemKey)) throw conflict("catalog_item_already_exists");
-    const stored = immutableClone(item) as CatalogItem;
+    const stored = immutableClone(normalizeCatalogItemInstants(item)) as CatalogItem;
     this.catalogItems.set(itemKey, stored);
     return immutableClone(stored) as CatalogItem;
   }
 
   async findCatalogItem(workspaceId: string, id: string): Promise<CatalogItem | null> {
-    const item = this.catalogItems.get(key(workspaceId, id));
-    return item ? immutableClone(item) as CatalogItem : null;
+    return this.publishedRead(
+      workspaceId, () => this.findCatalogItemNoWait(workspaceId, id)
+    );
   }
 
   async listCatalogItems(
@@ -693,16 +737,19 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     query: CatalogListQuery
   ): Promise<readonly CatalogItem[]> {
     const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
-    const values = [...this.catalogItems.values()].filter((item) =>
-      item.workspaceId === concrete
-      && (query.type === undefined || item.type === query.type)
-      && (query.status === undefined || item.status === query.status));
-    return immutableClone(paginate(
-      values,
-      query,
-      (item) => catalogSortValue(item, query.sort),
-      (item) => item.id
-    )) as readonly CatalogItem[];
+    assertCatalogListQuery(query);
+    return this.publishedRead(concrete, () => {
+      const values = [...this.catalogItems.values()].filter((item) =>
+        item.workspaceId === concrete
+        && (query.type === undefined || item.type === query.type)
+        && (query.status === undefined || item.status === query.status));
+      return immutableClone(paginate(
+        values,
+        query,
+        (item) => catalogSortValue(item, query.sort),
+        (item) => item.id
+      )) as readonly CatalogItem[];
+    });
   }
 
   async appendPricingPolicyVersion(
@@ -713,7 +760,9 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     if (this.pricingPolicies.has(policyKey)) {
       throw conflict("pricing_policy_version_already_exists");
     }
-    const stored = immutableClone(policy) as PricingPolicyVersion;
+    const stored = immutableClone(
+      normalizePricingPolicyVersionInstants(policy)
+    ) as PricingPolicyVersion;
     this.pricingPolicies.set(policyKey, stored);
     return immutableClone(stored) as PricingPolicyVersion;
   }
@@ -722,8 +771,8 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     workspaceId: string,
     pricingPolicyVersionId: string
   ): Promise<PricingPolicyVersion | null> {
-    const policy = this.pricingPolicies.get(key(workspaceId, pricingPolicyVersionId));
-    return policy ? immutableClone(policy) as PricingPolicyVersion : null;
+    return this.publishedRead(workspaceId, () =>
+      this.findPricingPolicyVersionNoWait(workspaceId, pricingPolicyVersionId));
   }
 
   async listPricingPolicies(
@@ -731,22 +780,25 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     query: CatalogListQuery
   ): Promise<readonly PricingPolicyVersion[]> {
     const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
-    const values = [...this.pricingPolicies.values()].filter((policy) => {
-      if (policy.workspaceId !== concrete) return false;
-      const item = this.catalogItems.get(key(concrete, policy.catalogItemId));
-      return Boolean(item)
-        && (query.type === undefined || item!.type === query.type)
-        && (query.status === undefined || item!.status === query.status);
+    assertCatalogListQuery(query);
+    return this.publishedRead(concrete, () => {
+      const values = [...this.pricingPolicies.values()].filter((policy) => {
+        if (policy.workspaceId !== concrete) return false;
+        const item = this.catalogItems.get(key(concrete, policy.catalogItemId));
+        return Boolean(item)
+          && (query.type === undefined || item!.type === query.type)
+          && (query.status === undefined || item!.status === query.status);
+      });
+      return immutableClone(paginate(
+        values,
+        query,
+        (policy) => {
+          const item = this.catalogItems.get(key(concrete, policy.catalogItemId))!;
+          return catalogSortValue(item, query.sort);
+        },
+        (policy) => policy.id
+      )) as readonly PricingPolicyVersion[];
     });
-    return immutableClone(paginate(
-      values,
-      query,
-      (policy) => {
-        const item = this.catalogItems.get(key(concrete, policy.catalogItemId))!;
-        return catalogSortValue(item, query.sort);
-      },
-      (policy) => policy.id
-    )) as readonly PricingPolicyVersion[];
   }
 
   async appendPackageVersion(version: PackageVersion): Promise<PackageVersion> {
@@ -754,14 +806,17 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     if (this.packageVersions.has(versionKey)) {
       throw conflict("package_version_already_exists");
     }
-    const stored = immutableClone(version) as PackageVersion;
+    const stored = immutableClone(
+      normalizePackageVersionInstants(version)
+    ) as PackageVersion;
     this.packageVersions.set(versionKey, stored);
     return immutableClone(stored) as PackageVersion;
   }
 
   async findPackageVersion(workspaceId: string, id: string): Promise<PackageVersion | null> {
-    const version = this.packageVersions.get(key(workspaceId, id));
-    return version ? immutableClone(version) as PackageVersion : null;
+    return this.publishedRead(
+      workspaceId, () => this.findPackageVersionNoWait(workspaceId, id)
+    );
   }
 
   async listPackageVersions(
@@ -771,21 +826,23 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   ): Promise<readonly PackageVersion[]> {
     const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
     assertCatalogListQuery(query);
-    const parent = this.catalogItems.get(key(concrete, itemId));
-    if (!parent
-      || (query.type !== undefined && parent.type !== query.type)
-      || (query.status !== undefined && parent.status !== query.status)) return [];
-    const values = [...this.packageVersions.values()].filter((version) =>
-      version.workspaceId === concrete
-      && version.packageCatalogItemId === itemId);
-    return immutableClone(paginate(
-      values,
-      query,
-      (version) => query.sort === "updatedAt"
-        ? version.updatedAt
-        : catalogSortValue(parent, query.sort),
-      (version) => version.id
-    )) as readonly PackageVersion[];
+    return this.publishedRead(concrete, () => {
+      const parent = this.catalogItems.get(key(concrete, itemId));
+      if (!parent
+        || (query.type !== undefined && parent.type !== query.type)
+        || (query.status !== undefined && parent.status !== query.status)) return [];
+      const values = [...this.packageVersions.values()].filter((version) =>
+        version.workspaceId === concrete
+        && version.packageCatalogItemId === itemId);
+      return immutableClone(paginate(
+        values,
+        query,
+        (version) => query.sort === "updatedAt"
+          ? version.updatedAt
+          : catalogSortValue(parent, query.sort),
+        (version) => version.id
+      )) as readonly PackageVersion[];
+    });
   }
 
   async listPackageComponents(
@@ -793,9 +850,8 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     packageVersionId: string
   ): Promise<readonly PackageComponent[]> {
     const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
-    if (!this.packageVersions.has(key(concrete, packageVersionId))) return [];
-    const components = this.packageComponents.get(key(concrete, packageVersionId)) ?? [];
-    return immutableClone(components) as readonly PackageComponent[];
+    return this.publishedRead(concrete, () =>
+      this.listPackageComponentsNoWait(concrete, packageVersionId));
   }
 
   async replaceDraftPackageComponents(
@@ -886,7 +942,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         item.workspaceId === command.workspaceId && item.code === command.code)) {
         abort({ kind: "state_conflict", code: "catalog_code_conflict" });
       }
-      const item = immutableClone({
+      const item = immutableClone(normalizeCatalogItemInstants({
         id: command.id,
         workspaceId: command.workspaceId,
         type: command.type,
@@ -899,7 +955,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         createdBy: command.actorId,
         createdAt: stamp.recordedAt,
         updatedAt: stamp.recordedAt
-      }) as CatalogItem;
+      })) as CatalogItem;
       this.catalogItems.set(itemKey, item);
       this.recordReceipt(
         command.workspaceId, command, "catalog_item.create", "catalog_item", command.id
@@ -930,12 +986,12 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       if (current.status !== "active") {
         abort({ kind: "state_conflict", code: "catalog_item_retired" });
       }
-      const next = immutableClone({
+      const next = immutableClone(normalizeCatalogItemInstants({
         ...current,
         ...command.patch,
         revision: current.revision + 1,
         updatedAt: stamp.recordedAt
-      }) as CatalogItem;
+      })) as CatalogItem;
       this.catalogItems.set(itemKey, next);
       this.recordReceipt(
         command.workspaceId, command, "catalog_item.update", "catalog_item", command.id
@@ -966,12 +1022,12 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       if (current.status !== "active") {
         abort({ kind: "state_conflict", code: "catalog_item_retired" });
       }
-      const next = immutableClone({
+      const next = immutableClone(normalizeCatalogItemInstants({
         ...current,
         status: "retired" as const,
         revision: current.revision + 1,
         updatedAt: stamp.recordedAt
-      }) as CatalogItem;
+      })) as CatalogItem;
       this.catalogItems.set(itemKey, next);
       this.recordReceipt(
         command.workspaceId, command, "catalog_item.retire", "catalog_item", command.id
@@ -983,13 +1039,14 @@ export class InMemoryCatalogRepository implements CatalogRepository {
 
   private memoryValidationView(): CatalogLockedValidationView {
     return {
-      findCatalogItem: (workspaceId, id) => this.findCatalogItem(workspaceId, id),
-      findPricingPolicyVersion: (workspaceId, id) =>
-        this.findPricingPolicyVersion(workspaceId, id),
-      findPackageVersion: (workspaceId, id) =>
-        this.findPackageVersion(workspaceId, id),
-      listPackageComponents: (workspaceId, id) =>
-        this.listPackageComponents(workspaceId, id)
+      findCatalogItem: async (workspaceId, id) =>
+        this.findCatalogItemNoWait(workspaceId, id),
+      findPricingPolicyVersion: async (workspaceId, id) =>
+        this.findPricingPolicyVersionNoWait(workspaceId, id),
+      findPackageVersion: async (workspaceId, id) =>
+        this.findPackageVersionNoWait(workspaceId, id),
+      listPackageComponents: async (workspaceId, id) =>
+        this.listPackageComponentsNoWait(workspaceId, id)
     };
   }
 
@@ -1024,14 +1081,14 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         actorId, idempotencyKey: _idempotencyKey,
         requestHash: _requestHash, ...fields
       } = command;
-      const policy = immutableClone({
+      const policy = immutableClone(normalizePricingPolicyVersionInstants({
         ...fields,
         version,
         status: "draft" as const,
         revision: 1,
         createdBy: actorId,
         createdAt: stamp.recordedAt
-      }) as PricingPolicyVersion;
+      })) as PricingPolicyVersion;
       assertClosedPricingPolicyVersion(policy);
       this.pricingPolicies.set(policyKey, policy);
       this.recordReceipt(
@@ -1073,11 +1130,11 @@ export class InMemoryCatalogRepository implements CatalogRepository {
           immutableClone(current) as PricingPolicyVersion
         );
       }
-      const next = immutableClone({
+      const next = immutableClone(normalizePricingPolicyVersionInstants({
         ...current,
         status: to,
         revision: current.revision + 1
-      }) as PricingPolicyVersion;
+      })) as PricingPolicyVersion;
       assertClosedPricingPolicyVersion(next);
       this.pricingPolicies.set(policyKey, next);
       this.recordReceipt(
@@ -1176,7 +1233,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       const components = await this.packageComponentsWithStamps(
         tx, command.workspaceId, command.id, command.components
       );
-      const packageVersion = immutableClone({
+      const packageVersion = immutableClone(normalizePackageVersionInstants({
         id: command.id,
         workspaceId: command.workspaceId,
         packageCatalogItemId: command.packageCatalogItemId,
@@ -1189,7 +1246,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         createdBy: command.actorId,
         createdAt: stamp.recordedAt,
         updatedAt: stamp.recordedAt
-      }) as PackageVersion;
+      })) as PackageVersion;
       this.packageVersions.set(versionKey, packageVersion);
       this.packageComponents.set(versionKey, components);
       this.recordReceipt(
@@ -1228,12 +1285,12 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         : await this.packageComponentsWithStamps(
           tx, command.workspaceId, command.id, componentPatch
         );
-      const next = immutableClone({
+      const next = immutableClone(normalizePackageVersionInstants({
         ...current,
         ...fieldPatch,
         revision: current.revision + 1,
         updatedAt: stamp.recordedAt
-      }) as PackageVersion;
+      })) as PackageVersion;
       this.packageVersions.set(versionKey, next);
       if (componentPatch !== undefined) this.packageComponents.set(versionKey, components);
       this.recordReceipt(
@@ -1277,12 +1334,12 @@ export class InMemoryCatalogRepository implements CatalogRepository {
           immutableClone(components) as readonly PackageComponent[]
         );
       }
-      const next = immutableClone({
+      const next = immutableClone(normalizePackageVersionInstants({
         ...current,
         status: to,
         revision: current.revision + 1,
         updatedAt: stamp.recordedAt
-      }) as PackageVersion;
+      })) as PackageVersion;
       this.packageVersions.set(versionKey, next);
       this.recordReceipt(
         command.workspaceId, command, operation, "package_version", command.id
@@ -1317,16 +1374,20 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     workspaceId: string,
     commissionProductId: string
   ): Promise<CommissionProductCatalogLink | null> {
-    const link = this.commissionLinks.get(key(workspaceId, commissionProductId));
-    return link ? immutableClone(link) as CommissionProductCatalogLink : null;
+    return this.publishedRead(workspaceId, () => {
+      const link = this.commissionLinks.get(key(workspaceId, commissionProductId));
+      return link ? immutableClone(link) as CommissionProductCatalogLink : null;
+    });
   }
 
   async findCommissionCatalogMigrationRun(
     workspaceId: string,
     idempotencyKey: string
   ): Promise<CommissionCatalogMigrationRun | null> {
-    const run = this.migrationRuns.get(key(workspaceId, idempotencyKey));
-    return run ? immutableClone(run) as CommissionCatalogMigrationRun : null;
+    return this.publishedRead(workspaceId, () => {
+      const run = this.migrationRuns.get(key(workspaceId, idempotencyKey));
+      return run ? immutableClone(run) as CommissionCatalogMigrationRun : null;
+    });
   }
 
   async commitCommissionCatalogMigration(
@@ -1394,11 +1455,13 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     for (const entry of commit.entries) {
       this.catalogItems.set(
         key(entry.item.workspaceId, entry.item.id),
-        immutableClone(entry.item) as CatalogItem
+        immutableClone(normalizeCatalogItemInstants(entry.item)) as CatalogItem
       );
       this.pricingPolicies.set(
         key(entry.pricingPolicy.workspaceId, entry.pricingPolicy.id),
-        immutableClone(entry.pricingPolicy) as PricingPolicyVersion
+        immutableClone(normalizePricingPolicyVersionInstants(
+          entry.pricingPolicy
+        )) as PricingPolicyVersion
       );
       this.commissionLinks.set(
         key(entry.link.workspaceId, entry.link.commissionProductId),

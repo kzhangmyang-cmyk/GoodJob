@@ -588,7 +588,7 @@ test("mysql item policy and package timestamps normalize RFC3339 offsets to UTC 
   const offsetEnd = "2026-08-10T16:00:00.456+08:00";
 
   const itemPool = new FakePool();
-  await new MysqlCatalogRepository(asPool(itemPool)).appendCatalogItem({
+  const item = await new MysqlCatalogRepository(asPool(itemPool)).appendCatalogItem({
     id: "offset-item", workspaceId: "team-a", type: "service", code: "OFFSET",
     name: "offset", description: "", unit: "次", status: "active", revision: 1,
     createdBy: "admin-1", createdAt: offset, updatedAt: offsetEnd
@@ -597,18 +597,23 @@ test("mysql item policy and package timestamps normalize RFC3339 offsets to UTC 
     "2026-08-09 08:00:00.123", "2026-08-10 08:00:00.456",
     "2026-08-10 08:00:00.456", 0
   ]);
+  assert.equal(item.createdAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(item.updatedAt, "2026-08-10T08:00:00.456Z");
 
   const policyPool = new FakePool();
-  await new MysqlCatalogRepository(asPool(policyPool)).appendPricingPolicyVersion(
+  const policy = await new MysqlCatalogRepository(asPool(policyPool)).appendPricingPolicyVersion(
     policyValue({ validFrom: offset, validTo: offsetEnd, createdAt: offset })
   );
   assert.equal(policyPool.calls[0]!.values[21], "2026-08-09 08:00:00.123");
   assert.equal(policyPool.calls[0]!.values[22], "2026-08-10 08:00:00.456");
   assert.equal(policyPool.calls[0]!.values[28], "2026-08-09 08:00:00.123");
   assert.equal(policyPool.calls[0]!.values[29], "2026-08-09 08:00:00.123");
+  assert.equal(policy.validFrom, "2026-08-09T08:00:00.123Z");
+  assert.equal(policy.validTo, "2026-08-10T08:00:00.456Z");
+  assert.equal(policy.createdAt, "2026-08-09T08:00:00.123Z");
 
   const packagePool = new FakePool();
-  await new MysqlCatalogRepository(asPool(packagePool)).appendPackageVersion({
+  const version = await new MysqlCatalogRepository(asPool(packagePool)).appendPackageVersion({
     id: "offset-package", workspaceId: "team-a",
     packageCatalogItemId: "package-item-1", version: 1, currency: "CNY",
     status: "draft", validFrom: offset, validTo: offsetEnd, revision: 1,
@@ -619,6 +624,10 @@ test("mysql item policy and package timestamps normalize RFC3339 offsets to UTC 
     "2026-08-09 08:00:00.123", "2026-08-10 08:00:00.456",
     "2026-08-10 08:00:00.456", 0
   ]);
+  assert.equal(version.validFrom, "2026-08-09T08:00:00.123Z");
+  assert.equal(version.validTo, "2026-08-10T08:00:00.456Z");
+  assert.equal(version.createdAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(version.updatedAt, "2026-08-10T08:00:00.456Z");
 });
 
 test("mysql item policy and package reads normalize offset timestamps to UTC", async () => {
@@ -939,7 +948,8 @@ test("mysql pricing version allocation locks one parent before reading MAX(versi
       manualEscalationEnabled: true
     },
     surchargePolicies: [], giftPolicies: [],
-    validFrom: "2026-08-09T08:00:00.000Z", validTo: null,
+    validFrom: "2026-08-09T16:00:00.123+08:00",
+    validTo: "2026-08-10T17:00:00.456+08:00",
     source: "native", capabilityRegistryVersion: "growth-capabilities.v1",
     actorId: "admin-1", idempotencyKey: "policy-create-5",
     requestHash: "sha256:policy-create-5"
@@ -949,6 +959,8 @@ test("mysql pricing version allocation locks one parent before reading MAX(versi
 
   assert.equal(result.kind, "ok");
   assert.equal(result.value.version, 5);
+  assert.equal(result.value.validFrom, "2026-08-09T08:00:00.123Z");
+  assert.equal(result.value.validTo, "2026-08-10T09:00:00.456Z");
   const sql = pool.connection.calls.map((call) => call.sql);
   const parentLock = sql.findIndex((statement) =>
     /FROM catalog_items/u.test(statement) && /FOR UPDATE/u.test(statement)
@@ -958,4 +970,86 @@ test("mysql pricing version allocation locks one parent before reading MAX(versi
   assert.ok(maxRead > parentLock);
   assert.deepEqual(pool.connection.calls[maxRead]!.values, ["team-a", "item-1"]);
   assert.deepEqual(pool.connection.transactions, ["begin", "commit", "release"]);
+});
+
+test("mysql package create and receipt replay return canonical UTC bytes", async () => {
+  const pool = new FakePool();
+  enqueueBarrier(pool, 30);
+  pool.connection.enqueue([catalogRow({
+    id: "package-item-offset", item_type: "package"
+  })]);
+  pool.connection.enqueue([]);
+  pool.connection.enqueue([{ max_version: 0 }]);
+  const repository = new MysqlCatalogRepository(
+    asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+  );
+  const command = {
+    workspaceId: "team-a", id: "package-offset",
+    packageCatalogItemId: "package-item-offset", currency: "CNY",
+    validFrom: "2026-08-12T16:00:00.123+08:00",
+    validTo: "2026-08-13T17:00:00.456+08:00", components: [],
+    actorId: "admin-1", idempotencyKey: "package-offset-create",
+    requestHash: "sha256:package-offset-create"
+  } as const;
+  const created = await repository.createPackageVersionDraft(command);
+  assert.equal(created.kind, "ok");
+  assert.equal(created.value.validFrom, "2026-08-12T08:00:00.123Z");
+  assert.equal(created.value.validTo, "2026-08-13T09:00:00.456Z");
+
+  enqueueBarrier(pool, 31, false);
+  pool.connection.enqueue([{
+    request_hash: command.requestHash,
+    resource_kind: "package_version",
+    resource_id: command.id
+  }]);
+  pool.connection.enqueue([packageRow({
+    id: command.id, package_catalog_item_id: command.packageCatalogItemId,
+    valid_from: "2026-08-12 08:00:00.123",
+    valid_to: "2026-08-13 09:00:00.456"
+  })]);
+  const replay = await repository.createPackageVersionDraft(command);
+  assert.equal(replay.kind, "ok");
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.value.validFrom, "2026-08-12T08:00:00.123Z");
+  assert.equal(replay.value.validTo, "2026-08-13T09:00:00.456Z");
+});
+
+test("mysql package update and receipt replay return canonical UTC bytes", async () => {
+  const pool = new FakePool();
+  enqueueBarrier(pool, 40);
+  pool.connection.enqueue([{ package_catalog_item_id: "package-item-1" }]);
+  pool.connection.enqueue([catalogRow({ id: "package-item-1", item_type: "package" })]);
+  pool.connection.enqueue([packageRow()]);
+  const repository = new MysqlCatalogRepository(
+    asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+  );
+  const command = {
+    workspaceId: "team-a", id: "package-1", expectedRevision: 1,
+    patch: {
+      validFrom: "2026-08-14T16:00:00.123+08:00",
+      validTo: "2026-08-15T17:00:00.456+08:00"
+    },
+    actorId: "admin-1", idempotencyKey: "package-offset-update",
+    requestHash: "sha256:package-offset-update"
+  } as const;
+  const updated = await repository.updatePackageVersionDraft(command);
+  assert.equal(updated.kind, "ok");
+  assert.equal(updated.value.validFrom, "2026-08-14T08:00:00.123Z");
+  assert.equal(updated.value.validTo, "2026-08-15T09:00:00.456Z");
+
+  enqueueBarrier(pool, 41, false);
+  pool.connection.enqueue([{
+    request_hash: command.requestHash,
+    resource_kind: "package_version",
+    resource_id: command.id
+  }]);
+  pool.connection.enqueue([packageRow({
+    revision: 2, valid_from: "2026-08-14 08:00:00.123",
+    valid_to: "2026-08-15 09:00:00.456"
+  })]);
+  const replay = await repository.updatePackageVersionDraft(command);
+  assert.equal(replay.kind, "ok");
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.value.validFrom, "2026-08-14T08:00:00.123Z");
+  assert.equal(replay.value.validTo, "2026-08-15T09:00:00.456Z");
 });

@@ -297,11 +297,11 @@ function nonblankToken(value: unknown): value is string {
     && value !== "all";
 }
 
-function strictGrowthInstant(value: unknown): value is string {
-  if (typeof value !== "string") return false;
+function growthInstantMilliseconds(value: unknown): number | null {
+  if (typeof value !== "string") return null;
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})(Z|([+-])(\d{2}):(\d{2}))$/u
     .exec(value);
-  if (!match) return false;
+  if (!match) return null;
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
@@ -313,17 +313,36 @@ function strictGrowthInstant(value: unknown): value is string {
   const offsetMinute = Number(match[11] ?? 0);
   if (month < 1 || month > 12 || day < 1 || day > 31
     || hour > 23 || minute > 59 || second > 59
-    || offsetHour > 23 || offsetMinute > 59) return false;
-  const local = new Date(Date.UTC(
+    || offsetHour > 23 || offsetMinute > 59) return null;
+  const localMilliseconds = Date.UTC(
     year, month - 1, day, hour, minute, second, millisecond
-  ));
-  return local.getUTCFullYear() === year
-    && local.getUTCMonth() === month - 1
-    && local.getUTCDate() === day
-    && local.getUTCHours() === hour
-    && local.getUTCMinutes() === minute
-    && local.getUTCSeconds() === second
-    && local.getUTCMilliseconds() === millisecond;
+  );
+  const local = new Date(localMilliseconds);
+  if (local.getUTCFullYear() !== year
+    || local.getUTCMonth() !== month - 1
+    || local.getUTCDate() !== day
+    || local.getUTCHours() !== hour
+    || local.getUTCMinutes() !== minute
+    || local.getUTCSeconds() !== second
+    || local.getUTCMilliseconds() !== millisecond) return null;
+  const direction = match[9] === "-" ? -1 : 1;
+  const offset = match[8] === "Z"
+    ? 0 : direction * (offsetHour * 60 + offsetMinute) * 60_000;
+  const instant = localMilliseconds - offset;
+  return Number.isSafeInteger(instant) ? instant : null;
+}
+
+function strictGrowthInstant(value: unknown): value is string {
+  return growthInstantMilliseconds(value) !== null;
+}
+
+function canonicalGrowthInstant(
+  value: unknown,
+  invalid: () => Error
+): string {
+  const milliseconds = growthInstantMilliseconds(value);
+  if (milliseconds === null) throw invalid();
+  return new Date(milliseconds).toISOString();
 }
 
 /** Complete runtime boundary for persisted frozen PricingPolicy v1 records. */
@@ -366,4 +385,50 @@ export function assertClosedPricingPolicyVersion(
     throw invalidPricingPolicyVersion();
   }
   assertClosedPricingPolicyRules(policy);
+}
+
+function invalidCatalogItem(): Error & { code: string } {
+  return Object.assign(new Error("invalid_catalog_item"), {
+    code: "invalid_catalog_item"
+  });
+}
+
+function invalidPackageVersion(): Error & { code: string } {
+  return Object.assign(new Error("invalid_package_version"), {
+    code: "invalid_package_version"
+  });
+}
+
+export function normalizeCatalogItemInstants(item: CatalogItem): CatalogItem {
+  return {
+    ...item,
+    createdAt: canonicalGrowthInstant(item.createdAt, invalidCatalogItem),
+    updatedAt: canonicalGrowthInstant(item.updatedAt, invalidCatalogItem)
+  };
+}
+
+export function normalizePricingPolicyVersionInstants(
+  policy: PricingPolicyVersion
+): PricingPolicyVersion {
+  assertClosedPricingPolicyVersion(policy);
+  return {
+    ...policy,
+    validFrom: canonicalGrowthInstant(policy.validFrom, invalidPricingPolicyVersion),
+    validTo: policy.validTo === null ? null
+      : canonicalGrowthInstant(policy.validTo, invalidPricingPolicyVersion),
+    createdAt: canonicalGrowthInstant(policy.createdAt, invalidPricingPolicyVersion)
+  };
+}
+
+export function normalizePackageVersionInstants(
+  version: PackageVersion
+): PackageVersion {
+  return {
+    ...version,
+    validFrom: canonicalGrowthInstant(version.validFrom, invalidPackageVersion),
+    validTo: version.validTo === null ? null
+      : canonicalGrowthInstant(version.validTo, invalidPackageVersion),
+    createdAt: canonicalGrowthInstant(version.createdAt, invalidPackageVersion),
+    updatedAt: canonicalGrowthInstant(version.updatedAt, invalidPackageVersion)
+  };
 }

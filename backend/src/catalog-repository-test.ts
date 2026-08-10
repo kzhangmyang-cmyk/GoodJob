@@ -85,6 +85,35 @@ class RacingPostWorkFailureRunner implements GrowthTemporalTransactionRunner {
   }
 }
 
+class PausingAfterWorkRunner implements GrowthTemporalTransactionRunner {
+  private readonly workCompleteResolve: () => void;
+  private readonly releaseResolve: () => void;
+  readonly workComplete: Promise<void>;
+  private readonly releasePromise: Promise<void>;
+
+  constructor(
+    private readonly inner: GrowthTemporalTransactionRunner,
+    private readonly rejectAfterWork: boolean
+  ) {
+    let complete!: () => void;
+    let release!: () => void;
+    this.workComplete = new Promise<void>((resolve) => { complete = resolve; });
+    this.releasePromise = new Promise<void>((resolve) => { release = resolve; });
+    this.workCompleteResolve = complete;
+    this.releaseResolve = release;
+  }
+
+  release(): void { this.releaseResolve(); }
+
+  async run<T>(work: (tx: GrowthTemporalTransaction) => Promise<T>): Promise<T> {
+    const result = await this.inner.run(work);
+    this.workCompleteResolve();
+    await this.releasePromise;
+    if (this.rejectAfterWork) throw new Error("post_work_commit_failure");
+    return result;
+  }
+}
+
 class GateSecondAllocationBarrier extends ObservingGrowthTemporalBarrier {
   private allocationsSeen = 0;
   private readonly secondAllocationResolve: () => void;
@@ -315,6 +344,93 @@ test("post-work failure restores before a queued memory winner can publish", asy
   );
 });
 
+test("every public memory read waits for rollback before observing live maps", async () => {
+  const base = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const transactions = new PausingAfterWorkRunner(base, true);
+  const repository = new InMemoryCatalogRepository({
+    transactions,
+    temporalBarrier: new ObservingGrowthTemporalBarrier(base)
+  });
+  await repository.appendCatalogItem({
+    id: "item-read-fence", workspaceId: "team-a", type: "service",
+    code: "READ-FENCE", name: "committed", description: "", unit: "次",
+    status: "active", revision: 1, createdBy: "seed",
+    createdAt: NOW, updatedAt: NOW
+  });
+  const failing = assert.rejects(repository.updateCatalogItem({
+    workspaceId: "team-a", id: "item-read-fence", expectedRevision: 1,
+    patch: { name: "uncommitted" }, actorId: "admin-failing",
+    idempotencyKey: "read-fence-failure",
+    requestHash: hash({ name: "uncommitted" })
+  }), /post_work_commit_failure/u);
+  await transactions.workComplete;
+
+  let settled = 0;
+  const reads = [
+    repository.findCatalogItem("team-a", "item-read-fence"),
+    repository.listCatalogItems("team-a", {
+      cursor: null, limit: 20, sort: "updatedAt", direction: "desc"
+    }),
+    repository.findPricingPolicyVersion("team-a", "missing-policy"),
+    repository.listPricingPolicies("team-a", {
+      cursor: null, limit: 20, sort: "updatedAt", direction: "desc"
+    }),
+    repository.findPackageVersion("team-a", "missing-package"),
+    repository.listPackageVersions("team-a", "item-read-fence", {
+      cursor: null, limit: 20, sort: "updatedAt", direction: "desc"
+    }),
+    repository.listPackageComponents("team-a", "missing-package"),
+    repository.findCommissionProductLink("team-a", "missing-product"),
+    repository.findCommissionCatalogMigrationRun("team-a", "missing-run")
+  ].map(async (read) => {
+    const value = await read;
+    settled += 1;
+    return value;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, 0);
+
+  transactions.release();
+  await failing;
+  const values = await Promise.all(reads);
+  assert.equal((values[0] as { revision: number; name: string }).revision, 1);
+  assert.equal((values[0] as { revision: number; name: string }).name, "committed");
+  assert.equal((values[1] as readonly { revision: number }[])[0]?.revision, 1);
+});
+
+test("a successful memory commit releases pending reads to revision two", async () => {
+  const base = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const transactions = new PausingAfterWorkRunner(base, false);
+  const repository = new InMemoryCatalogRepository({
+    transactions,
+    temporalBarrier: new ObservingGrowthTemporalBarrier(base)
+  });
+  await repository.appendCatalogItem({
+    id: "item-read-success", workspaceId: "team-a", type: "service",
+    code: "READ-SUCCESS", name: "revision-one", description: "", unit: "次",
+    status: "active", revision: 1, createdBy: "seed",
+    createdAt: NOW, updatedAt: NOW
+  });
+  const update = repository.updateCatalogItem({
+    workspaceId: "team-a", id: "item-read-success", expectedRevision: 1,
+    patch: { name: "revision-two" }, actorId: "admin-success",
+    idempotencyKey: "read-fence-success",
+    requestHash: hash({ name: "revision-two" })
+  });
+  await transactions.workComplete;
+  let settled = false;
+  const read = repository.findCatalogItem("team-a", "item-read-success")
+    .then((value) => { settled = true; return value; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  transactions.release();
+  assert.equal((await update).kind, "ok");
+  assert.equal((await read)?.revision, 2);
+  assert.equal((await repository.findCatalogItem(
+    "team-a", "item-read-success"
+  ))?.name, "revision-two");
+});
+
 test("catalog commands replay exact requests and fail closed on key conflicts", async () => {
   for (const repository of repositoryFixtures()) {
     const command = createItemCommand();
@@ -518,6 +634,140 @@ test("policy and package reads are immutable clones", async () => {
     assert.notEqual(firstPackage, secondPackage);
     assert.equal(Object.isFrozen(firstPackage), true);
   }
+});
+
+test("memory append boundaries store and return canonical UTC catalog instants", async () => {
+  const repository = new InMemoryCatalogRepository();
+  const offsetStart = "2026-08-09T16:00:00.123+08:00";
+  const offsetEnd = "2026-08-10T17:00:00.456+08:00";
+  const item = await repository.appendCatalogItem({
+    id: "offset-item", workspaceId: "team-a", type: "service", code: "OFFSET",
+    name: "offset", description: "", unit: "次", status: "active", revision: 1,
+    createdBy: "seed", createdAt: offsetStart, updatedAt: offsetEnd
+  });
+  assert.equal(item.createdAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(item.updatedAt, "2026-08-10T09:00:00.456Z");
+  assert.equal(
+    (await repository.findCatalogItem("team-a", item.id))?.createdAt,
+    "2026-08-09T08:00:00.123Z"
+  );
+
+  const policyCommand = createPolicyCommand({
+    id: "offset-policy", catalogItemId: item.id,
+    validFrom: offsetStart, validTo: offsetEnd
+  });
+  const {
+    actorId: createdBy,
+    idempotencyKey: _idempotencyKey,
+    requestHash: _requestHash,
+    ...policyFields
+  } = policyCommand;
+  const policy = await repository.appendPricingPolicyVersion({
+    ...policyFields, version: 1, status: "draft", revision: 1,
+    createdBy, createdAt: offsetStart
+  });
+  assert.equal(policy.validFrom, "2026-08-09T08:00:00.123Z");
+  assert.equal(policy.validTo, "2026-08-10T09:00:00.456Z");
+  assert.equal(policy.createdAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(
+    (await repository.listPricingPolicies("team-a", {
+      cursor: null, limit: 20, sort: "updatedAt", direction: "desc"
+    }))[0]?.validFrom,
+    "2026-08-09T08:00:00.123Z"
+  );
+
+  const version = await repository.appendPackageVersion({
+    id: "offset-package", workspaceId: "team-a",
+    packageCatalogItemId: item.id, version: 1, currency: "CNY",
+    status: "draft", validFrom: offsetStart, validTo: offsetEnd, revision: 1,
+    createdBy: "seed", createdAt: offsetStart, updatedAt: offsetEnd
+  });
+  assert.equal(version.validFrom, "2026-08-09T08:00:00.123Z");
+  assert.equal(version.validTo, "2026-08-10T09:00:00.456Z");
+  assert.equal(version.createdAt, "2026-08-09T08:00:00.123Z");
+  assert.equal(version.updatedAt, "2026-08-10T09:00:00.456Z");
+  assert.equal(
+    (await repository.findPackageVersion("team-a", version.id))?.validFrom,
+    "2026-08-09T08:00:00.123Z"
+  );
+});
+
+test("memory command results reads and receipt replays share canonical UTC bytes", async () => {
+  const offsetNow = "2026-08-09T16:00:00.000+08:00";
+  const base = new InMemoryGrowthTemporalTransactionRunner(offsetNow);
+  const repository = new InMemoryCatalogRepository({
+    transactions: base,
+    temporalBarrier: new ObservingGrowthTemporalBarrier(base)
+  });
+  const itemCommand = createItemCommand({ id: "offset-command-item", code: "OFFSET-CMD" });
+  const item = okValue(await repository.createCatalogItem(itemCommand));
+  assert.equal(item.createdAt, "2026-08-09T08:00:00.000Z");
+  const updatedItem = okValue(await repository.updateCatalogItem({
+    workspaceId: "team-a", id: item.id, expectedRevision: 1,
+    patch: { name: "offset-updated" }, actorId: "admin-1",
+    idempotencyKey: "offset-item-update",
+    requestHash: hash({ name: "offset-updated" })
+  }));
+  assert.equal(updatedItem.updatedAt, "2026-08-09T08:00:00.001Z");
+
+  const policyCommand = createPolicyCommand({
+    id: "offset-command-policy", catalogItemId: item.id,
+    validFrom: "2026-08-10T16:00:00.123+08:00",
+    validTo: "2026-08-11T17:00:00.456+08:00",
+    idempotencyKey: "offset-policy-create"
+  });
+  const policy = okValue(await repository.createPricingPolicyDraft(policyCommand));
+  assert.equal(policy.validFrom, "2026-08-10T08:00:00.123Z");
+  assert.equal(policy.validTo, "2026-08-11T09:00:00.456Z");
+  const policyReplay = await repository.createPricingPolicyDraft(policyCommand);
+  assert.equal(policyReplay.kind, "ok");
+  assert.equal(policyReplay.replayed, true);
+  assert.equal(policyReplay.value.validFrom, "2026-08-10T08:00:00.123Z");
+  assert.equal(
+    (await repository.findPricingPolicyVersion("team-a", policy.id))?.validTo,
+    "2026-08-11T09:00:00.456Z"
+  );
+
+  await repository.createCatalogItem(createItemCommand({
+    id: "offset-package-item", type: "package", code: "OFFSET-PKG",
+    idempotencyKey: "offset-package-item-create"
+  }));
+  const packageCommand = createPackageCommand({
+    id: "offset-command-package", packageCatalogItemId: "offset-package-item",
+    validFrom: "2026-08-12T16:00:00.123+08:00",
+    validTo: "2026-08-13T17:00:00.456+08:00", components: [],
+    idempotencyKey: "offset-package-create"
+  });
+  const version = okValue(await repository.createPackageVersionDraft(packageCommand));
+  assert.equal(version.validFrom, "2026-08-12T08:00:00.123Z");
+  assert.equal(version.validTo, "2026-08-13T09:00:00.456Z");
+  const createReplay = await repository.createPackageVersionDraft(packageCommand);
+  assert.equal(createReplay.kind, "ok");
+  assert.equal(createReplay.replayed, true);
+  assert.equal(createReplay.value.validFrom, "2026-08-12T08:00:00.123Z");
+
+  const updateCommand = {
+    workspaceId: "team-a", id: version.id, expectedRevision: 1,
+    patch: {
+      validFrom: "2026-08-14T16:00:00.123+08:00",
+      validTo: "2026-08-15T17:00:00.456+08:00"
+    },
+    actorId: "admin-1", idempotencyKey: "offset-package-update",
+    requestHash: hash({ offset: "package-update" })
+  } as const;
+  const updated = okValue(await repository.updatePackageVersionDraft(updateCommand));
+  assert.equal(updated.validFrom, "2026-08-14T08:00:00.123Z");
+  assert.equal(updated.validTo, "2026-08-15T09:00:00.456Z");
+  const updateReplay = await repository.updatePackageVersionDraft(updateCommand);
+  assert.equal(updateReplay.kind, "ok");
+  assert.equal(updateReplay.replayed, true);
+  assert.equal(updateReplay.value.validFrom, "2026-08-14T08:00:00.123Z");
+  assert.equal(
+    (await repository.listPackageVersions("team-a", "offset-package-item", {
+      cursor: null, limit: 20, sort: "updatedAt", direction: "desc"
+    }))[0]?.validTo,
+    "2026-08-15T09:00:00.456Z"
+  );
 });
 
 test("every pricing persistence boundary rejects unknown frozen-rule keys", async () => {

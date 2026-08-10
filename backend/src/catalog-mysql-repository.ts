@@ -11,7 +11,10 @@ import type {
 import {
   assertClosedPricingPolicyRules,
   assertClosedPricingPolicyVersion,
-  immutableClone
+  immutableClone,
+  normalizeCatalogItemInstants,
+  normalizePackageVersionInstants,
+  normalizePricingPolicyVersionInstants
 } from "./catalog-domain.js";
 import type {
   CatalogCommandResult,
@@ -371,14 +374,14 @@ function safeNumber(value: unknown, field: string): number {
 }
 
 function parseCatalogItem(row: MysqlRow): CatalogItem {
-  return immutableClone({
+  return immutableClone(normalizeCatalogItemInstants({
     id: String(row.id), workspaceId: String(row.workspace_id),
     type: row.item_type, code: String(row.code), name: String(row.name),
     description: String(row.description), unit: String(row.unit),
     status: row.item_status, revision: safeNumber(row.revision, "revision"),
     createdBy: String(row.created_by), createdAt: instant(row.created_at),
     updatedAt: instant(row.updated_at)
-  }) as CatalogItem;
+  } as CatalogItem)) as CatalogItem;
 }
 
 function parsePricingPolicy(row: MysqlRow): PricingPolicyVersion {
@@ -411,12 +414,13 @@ function parsePricingPolicy(row: MysqlRow): PricingPolicyVersion {
     revision: safeNumber(row.revision, "revision"),
     createdBy: String(row.created_by), createdAt: pricingInstant(row.created_at)
   } as PricingPolicyVersion;
-  assertClosedPricingPolicyVersion(policy);
-  return immutableClone(policy) as PricingPolicyVersion;
+  return immutableClone(
+    normalizePricingPolicyVersionInstants(policy)
+  ) as PricingPolicyVersion;
 }
 
 function parsePackageVersion(row: MysqlRow): PackageVersion {
-  return immutableClone({
+  return immutableClone(normalizePackageVersionInstants({
     id: String(row.id), workspaceId: String(row.workspace_id),
     packageCatalogItemId: String(row.package_catalog_item_id),
     version: safeNumber(row.version, "version"), currency: String(row.currency),
@@ -425,7 +429,7 @@ function parsePackageVersion(row: MysqlRow): PackageVersion {
     revision: safeNumber(row.revision, "revision"),
     createdBy: String(row.created_by), createdAt: instant(row.created_at),
     updatedAt: instant(row.updated_at)
-  }) as PackageVersion;
+  } as PackageVersion)) as PackageVersion;
 }
 
 function parsePackageComponent(row: MysqlRow): PackageComponent {
@@ -769,8 +773,9 @@ export class MysqlCatalogRepository implements CatalogRepository {
   }
 
   async appendCatalogItem(item: CatalogItem): Promise<CatalogItem> {
-    await insertCatalogItem(this.pool, item);
-    return immutableClone(item) as CatalogItem;
+    const stored = normalizeCatalogItemInstants(item);
+    await insertCatalogItem(this.pool, stored);
+    return immutableClone(stored) as CatalogItem;
   }
 
   findCatalogItem(workspaceId: string, id: string): Promise<CatalogItem | null> {
@@ -807,9 +812,9 @@ export class MysqlCatalogRepository implements CatalogRepository {
   async appendPricingPolicyVersion(
     policy: PricingPolicyVersion
   ): Promise<PricingPolicyVersion> {
-    assertClosedPricingPolicyVersion(policy);
-    await insertPricingPolicy(this.pool, policy);
-    return immutableClone(policy) as PricingPolicyVersion;
+    const stored = normalizePricingPolicyVersionInstants(policy);
+    await insertPricingPolicy(this.pool, stored);
+    return immutableClone(stored) as PricingPolicyVersion;
   }
 
   findPricingPolicyVersion(
@@ -859,21 +864,22 @@ export class MysqlCatalogRepository implements CatalogRepository {
   }
 
   async appendPackageVersion(version: PackageVersion): Promise<PackageVersion> {
+    const stored = normalizePackageVersionInstants(version);
     await this.pool.query(
       `INSERT INTO package_versions (
         workspace_id,id,package_catalog_item_id,version,currency,package_status,
         valid_from,valid_to,revision,created_by,created_at,updated_at,
         recorded_at,temporal_sequence
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [version.workspaceId, version.id, version.packageCatalogItemId,
-        version.version, version.currency, version.status,
-        growthMysqlDate(version.validFrom),
-        version.validTo ? growthMysqlDate(version.validTo) : null,
-        version.revision, version.createdBy, growthMysqlDate(version.createdAt),
-        growthMysqlDate(version.updatedAt), growthMysqlDate(version.updatedAt),
+      [stored.workspaceId, stored.id, stored.packageCatalogItemId,
+        stored.version, stored.currency, stored.status,
+        growthMysqlDate(stored.validFrom),
+        stored.validTo ? growthMysqlDate(stored.validTo) : null,
+        stored.revision, stored.createdBy, growthMysqlDate(stored.createdAt),
+        growthMysqlDate(stored.updatedAt), growthMysqlDate(stored.updatedAt),
         0]
     );
-    return immutableClone(version) as PackageVersion;
+    return immutableClone(stored) as PackageVersion;
   }
 
   findPackageVersion(workspaceId: string, id: string): Promise<PackageVersion | null> {
@@ -1041,7 +1047,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
       if (matches.some((row) => row.code === command.code)) {
         commandAbort({ kind: "state_conflict", code: "catalog_code_conflict" });
       }
-      const item = immutableClone({
+      const item = immutableClone(normalizeCatalogItemInstants({
         id: command.id,
         workspaceId: command.workspaceId,
         type: command.type,
@@ -1054,7 +1060,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
         createdBy: command.actorId,
         createdAt: stamp.recordedAt,
         updatedAt: stamp.recordedAt
-      }) as CatalogItem;
+      })) as CatalogItem;
       await insertCatalogItem(connection, item, stamp);
       await insertCatalogReceipt(
         connection, command.workspaceId, command, "catalog_item.create",
@@ -1088,12 +1094,12 @@ export class MysqlCatalogRepository implements CatalogRepository {
       lifecycleConflict(
         current, command.expectedRevision, "active", "catalog_item_retired"
       );
-      const next = immutableClone({
+      const next = immutableClone(normalizeCatalogItemInstants({
         ...current,
         ...command.patch,
         revision: current.revision + 1,
         updatedAt: stamp.recordedAt
-      }) as CatalogItem;
+      })) as CatalogItem;
       await connection.query(
         `UPDATE catalog_items
          SET name = ?,description = ?,unit = ?,revision = ?,updated_at = ?,
@@ -1136,12 +1142,12 @@ export class MysqlCatalogRepository implements CatalogRepository {
       lifecycleConflict(
         current, command.expectedRevision, "active", "catalog_item_retired"
       );
-      const next = immutableClone({
+      const next = immutableClone(normalizeCatalogItemInstants({
         ...current,
         status: "retired" as const,
         revision: current.revision + 1,
         updatedAt: stamp.recordedAt
-      }) as CatalogItem;
+      })) as CatalogItem;
       await connection.query(
         `UPDATE catalog_items
          SET item_status = 'retired',revision = ?,updated_at = ?,
@@ -1247,14 +1253,14 @@ export class MysqlCatalogRepository implements CatalogRepository {
         actorId, idempotencyKey: _idempotencyKey,
         requestHash: _requestHash, ...fields
       } = command;
-      const policy = immutableClone({
+      const policy = immutableClone(normalizePricingPolicyVersionInstants({
         ...fields,
         version: maxVersion + 1,
         status: "draft" as const,
         revision: 1,
         createdBy: actorId,
         createdAt: stamp.recordedAt
-      }) as PricingPolicyVersion;
+      })) as PricingPolicyVersion;
       assertClosedPricingPolicyVersion(policy);
       await insertPricingPolicy(connection, policy, stamp);
       await insertCatalogReceipt(
@@ -1310,11 +1316,11 @@ export class MysqlCatalogRepository implements CatalogRepository {
       if (command.validate) {
         await command.validate(this.mysqlValidationView(connection), current);
       }
-      const next = immutableClone({
+      const next = immutableClone(normalizePricingPolicyVersionInstants({
         ...current,
         status: to,
         revision: current.revision + 1
-      }) as PricingPolicyVersion;
+      })) as PricingPolicyVersion;
       assertClosedPricingPolicyVersion(next);
       await connection.query(
         `UPDATE pricing_policy_versions
@@ -1447,7 +1453,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
       const components = await this.mysqlPackageComponentsWithStamps(
         connection, tx, command.workspaceId, command.id, command.components
       );
-      const version = immutableClone({
+      const version = immutableClone(normalizePackageVersionInstants({
         id: command.id,
         workspaceId: command.workspaceId,
         packageCatalogItemId: command.packageCatalogItemId,
@@ -1460,7 +1466,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
         createdBy: command.actorId,
         createdAt: stamp.recordedAt,
         updatedAt: stamp.recordedAt
-      }) as PackageVersion;
+      })) as PackageVersion;
       await connection.query(
         `INSERT INTO package_versions (
           workspace_id,id,package_catalog_item_id,version,currency,package_status,
@@ -1527,12 +1533,12 @@ export class MysqlCatalogRepository implements CatalogRepository {
         : await this.mysqlPackageComponentsWithStamps(
           connection, tx, command.workspaceId, command.id, componentPatch
         );
-      const next = immutableClone({
+      const next = immutableClone(normalizePackageVersionInstants({
         ...current,
         ...fieldPatch,
         revision: current.revision + 1,
         updatedAt: stamp.recordedAt
-      }) as PackageVersion;
+      })) as PackageVersion;
       await connection.query(
         `UPDATE package_versions
          SET currency = ?,valid_from = ?,valid_to = ?,revision = ?,updated_at = ?,
@@ -1616,12 +1622,12 @@ export class MysqlCatalogRepository implements CatalogRepository {
           this.mysqlValidationView(connection), current, components
         );
       }
-      const next = immutableClone({
+      const next = immutableClone(normalizePackageVersionInstants({
         ...current,
         status: to,
         revision: current.revision + 1,
         updatedAt: stamp.recordedAt
-      }) as PackageVersion;
+      })) as PackageVersion;
       await connection.query(
         `UPDATE package_versions
          SET package_status = ?,revision = ?,updated_at = ?,recorded_at = ?,
@@ -1744,8 +1750,13 @@ export class MysqlCatalogRepository implements CatalogRepository {
           commit.run.repairRequired, commit.run.reportHash]
       );
       for (const entry of commit.entries) {
-        await insertCatalogItem(connection, entry.item);
-        await insertPricingPolicy(connection, entry.pricingPolicy);
+        await insertCatalogItem(
+          connection, normalizeCatalogItemInstants(entry.item)
+        );
+        await insertPricingPolicy(
+          connection,
+          normalizePricingPolicyVersionInstants(entry.pricingPolicy)
+        );
         await connection.query(
           `INSERT INTO commission_product_catalog_links (
             workspace_id,commission_product_id,catalog_item_id,
