@@ -7,7 +7,21 @@ import {
   type GrowthTemporalTransactionRunner
 } from "./growth-temporal-barrier.js";
 import type { QuoteVersion } from "./quote-repository.js";
-import type { QuoteRepository } from "./quote-repository.js";
+import type {
+  DealCommercialDecisionPersistenceInput,
+  DealCommercialDecisionPersistenceResult,
+  QuoteRepository
+} from "./quote-repository.js";
+
+export interface DecideDealInput {
+  readonly workspaceId: string;
+  readonly actorId: string;
+  readonly dealId: string;
+  readonly expectedAuthorityRevision: number;
+  readonly input: DealCommercialDecisionPersistenceInput;
+  readonly stableCommandHash: `sha256:${string}`;
+  readonly requestHash: string;
+}
 
 export interface EnsurePiProjectionInput {
     workspaceId: string;
@@ -36,6 +50,8 @@ export interface QuoteCrmCommand {
     Promise<{ piDocumentId: string }>;
   publishQuotedDeal(input: PublishQuotedDealInput):
     Promise<{ dealEventId: string }>;
+  decideDeal(input: DecideDealInput):
+    Promise<DealCommercialDecisionPersistenceResult>;
 }
 
 interface ProjectionBase {
@@ -74,10 +90,12 @@ function amountHash(value: string): `sha256:${string}` {
 }
 
 export function createQuoteCrmCommand(options: {
-  store: Pick<CrmStore, "mutateAuthoritativeQuoteProjection">;
+  store: Pick<CrmStore, "mutateAuthoritativeQuoteProjection" | "deals"
+    | "dealEvents">;
   temporalTransactions: GrowthTemporalTransactionRunner;
   temporalBarrier: GrowthTemporalBarrier;
-  repository?: Pick<QuoteRepository, "findCurrentDealAuthority">;
+  repository?: Pick<QuoteRepository,
+    "findCurrentDealAuthority" | "decideDeal">;
 }): QuoteCrmCommand {
   const temporalBarrier = assertGrowthTemporalBarrier(options.temporalBarrier);
   if (!options.store.mutateAuthoritativeQuoteProjection) {
@@ -129,7 +147,38 @@ export function createQuoteCrmCommand(options: {
       if (result.kind !== "crm") {
         throw new Error("invalid_crm_projection_result");
       }
-      return { dealEventId: result.event.id };
+      const binding = input.quoteVersion.commercialBindingSnapshot;
+      if (!binding || typeof binding !== "object") {
+        return { dealEventId: result.event.id };
+      }
+      const snapshot = binding as import("./commercial-binding-snapshot.js")
+        .CommercialBindingSnapshot;
+      const enriched = Object.freeze({ ...result.event,
+        leadIdSnapshot: snapshot.leadId,
+        handoffIdSnapshot: snapshot.handoffId,
+        candidateIdSnapshot: snapshot.candidateId,
+        customerIdSnapshot: snapshot.customerId,
+        commercialBindingSnapshot: Object.freeze(structuredClone(snapshot)),
+        commercialBindingEvidence: Object.freeze({
+          candidateId: snapshot.candidateId,
+          customerId: snapshot.customerId,
+          dealId: snapshot.dealId,
+          handoffContentHash: snapshot.handoffContentHash,
+          dealContentHash: snapshot.dealContentHash,
+          bindingHashSchemaVersion: snapshot.bindingHashSchemaVersion,
+          bindingHash: snapshot.bindingHash
+        })
+      });
+      const index = options.store.dealEvents.findIndex((event) =>
+        event.id === enriched.id);
+      if (index >= 0) options.store.dealEvents[index] = enriched;
+      return { dealEventId: enriched.id };
+    },
+    async decideDeal(input: DecideDealInput) {
+      if (!options.repository) throw new Error("quote_repository_required");
+      return options.repository.decideDeal({ ...input, crm: {
+        deals: options.store.deals, dealEvents: options.store.dealEvents
+      } });
     }
   });
 }

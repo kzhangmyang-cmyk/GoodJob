@@ -8,10 +8,13 @@ import type {
   AcquisitionActorScope,
   AcquisitionOutcomeWriteAuthority
 } from "./acquisition-domain-service.js";
-import {
-  resolveTrustedAcquisitionDealBinding,
-  type AcquisitionDealBindingStore
-} from "./acquisition-deal-binding.js";
+import type { AcquisitionDealBindingStore } from "./acquisition-deal-binding.js";
+import { canonicalJsonStringify } from "./canonical-json.js";
+import { assertFrozenCommercialBinding } from "./authoritative-quote-reader.js";
+import type {
+  DealAuthoritativeQuoteEvent,
+  QuoteVersion
+} from "./quote-repository.js";
 import type {
   AcquisitionPlanRunRepository
 } from "./acquisition-plan-run-repository.js";
@@ -134,6 +137,12 @@ export interface AcquisitionOutcomeRecorder {
   ): Promise<unknown>;
 }
 
+export interface AcquisitionCommercialOutcomeAuthority {
+  getVersion(workspaceId: string, id: string): Promise<QuoteVersion | null>;
+  listAuthorityEvents(workspaceId: string, dealId?: string):
+    Promise<readonly DealAuthoritativeQuoteEvent[]>;
+}
+
 export interface AcquisitionCrmOutcomeReconciliationResult {
   scanned: number;
   reconciled: number;
@@ -227,6 +236,7 @@ export class AcquisitionCrmOutcomeReconciliationService {
     "getRun" | "listRunEvents" | "listRunShards"
   >;
   readonly #now: () => string;
+  readonly #commercialAuthority: AcquisitionCommercialOutcomeAuthority | null;
 
   constructor(options: {
     store: AcquisitionCrmOutcomeReconciliationStore;
@@ -235,11 +245,13 @@ export class AcquisitionCrmOutcomeReconciliationService {
       AcquisitionPlanRunRepository,
       "getRun" | "listRunEvents" | "listRunShards"
     >;
+    commercialAuthority?: AcquisitionCommercialOutcomeAuthority;
     now?: () => string;
   }) {
     this.#store = options.store;
     this.#outcomeRecorder = options.outcomeRecorder;
     this.#planRuns = options.planRuns;
+    this.#commercialAuthority = options.commercialAuthority ?? null;
     this.#now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -370,6 +382,7 @@ export class AcquisitionCrmOutcomeReconciliationService {
     const teamId = event.teamIdSnapshot || deal?.teamId || "";
     const commercialAuthority = event.commercialAuthority
       ?? "legacy_unverified";
+    if (commercialAuthority === "pre_quote_disqualified") return null;
     const exactQuoteProjection = commercialAuthority === "quote_projection"
       && Boolean(event.quoteCaseIdSnapshot?.trim())
       && Boolean(event.quoteVersionIdSnapshot?.trim())
@@ -388,15 +401,12 @@ export class AcquisitionCrmOutcomeReconciliationService {
         occurredAt: event.createdAt
       } } : null;
     }
-    const completeSnapshot = Boolean(
-      event.ownerIdSnapshot
-      && event.teamIdSnapshot
-      && event.customerIdSnapshot
-      && event.leadIdSnapshot
-      && event.handoffIdSnapshot
-      && event.candidateIdSnapshot
-      && amountForDealEvent(event)
-    );
+    const completeSnapshot = Boolean(event.ownerIdSnapshot
+      && event.teamIdSnapshot && event.customerIdSnapshot
+      && event.leadIdSnapshot && event.handoffIdSnapshot
+      && event.candidateIdSnapshot && amountForDealEvent(event)
+      && event.commercialBindingSnapshot
+      && event.commercialBindingEvidence);
     if (!completeSnapshot) {
       return ownerId && teamId ? { diagnostic: {
         ownerId,
@@ -404,48 +414,86 @@ export class AcquisitionCrmOutcomeReconciliationService {
         sourceKind: "deal_event" as const,
         sourceId: event.id,
         candidateId: event.candidateIdSnapshot ?? null,
-        code: "deal_binding_ambiguous" as const,
-        message: "DealEvent is missing its immutable acquisition binding snapshot",
+        code: "commercial_authority_mismatch" as const,
+        message: "DealEvent is missing its frozen commercial authority",
         occurredAt: event.createdAt
       } } : null;
     }
-    const binding = resolveTrustedAcquisitionDealBinding(this.#store, {
-      dealId: event.dealId
-    });
-    const exactBindingSnapshot = binding
-      && binding.handoff.id === event.handoffIdSnapshot
-      && binding.lead.id === event.leadIdSnapshot
-      && binding.handoff.ownerId === event.ownerIdSnapshot
-      && binding.lead.ownerId === event.ownerIdSnapshot
-      && binding.handoff.teamId === event.teamIdSnapshot
-      && binding.lead.teamId === event.teamIdSnapshot
-      && binding.handoff.customerId === event.customerIdSnapshot
-      && binding.lead.convertedCustomerId === event.customerIdSnapshot
-      && binding.handoff.candidateId === event.candidateIdSnapshot
-      && binding.lead.externalId === event.candidateIdSnapshot
-      && binding.handoff.dealId === event.dealId
-      && binding.lead.convertedDealId === event.dealId;
-    if (!exactBindingSnapshot) {
+    const snapshot = event.commercialBindingSnapshot!;
+    const evidence = event.commercialBindingEvidence!;
+    const amount = amountForDealEvent(event)!;
+    let authorityEvent: DealAuthoritativeQuoteEvent | undefined;
+    let version: QuoteVersion | null = null;
+    try {
+      assertFrozenCommercialBinding(snapshot, evidence);
+      authorityEvent = (await this.#commercialAuthority?.listAuthorityEvents(
+        event.teamIdSnapshot!, event.dealId))?.find((item) =>
+          item.authorityRevision === event.dealAuthorityRevisionSnapshot);
+      version = this.#commercialAuthority
+        ? await this.#commercialAuthority.getVersion(
+            event.teamIdSnapshot!, event.quoteVersionIdSnapshot!)
+        : null;
+    } catch {
+      authorityEvent = undefined;
+    }
+    const expectedAuthorityType = event.type === "quote" ? "approved"
+      : event.type;
+    const exactAuthority = authorityEvent
+      && authorityEvent.eventType === expectedAuthorityType
+      && authorityEvent.dealId === event.dealId
+      && authorityEvent.quoteCaseId === event.quoteCaseIdSnapshot
+      && authorityEvent.quoteVersionId === event.quoteVersionIdSnapshot
+      && authorityEvent.commercialAmountHash === event.commercialAmountHash
+      && authorityEvent.currency === amount.currency
+      && authorityEvent.quotedAmountMinor === amount.amountMinor
+      && canonicalJsonStringify(authorityEvent.commercialBindingSnapshot)
+        === canonicalJsonStringify(snapshot)
+      && canonicalJsonStringify(authorityEvent.commercialBindingEvidence)
+        === canonicalJsonStringify(evidence)
+      && version?.versionKind === "formal"
+      && version.quoteCaseId === event.quoteCaseIdSnapshot
+      && version.commercialAmountHash === event.commercialAmountHash
+      && version.currency === amount.currency
+      && version.quotedAmountMinor === amount.amountMinor
+      && canonicalJsonStringify(version.commercialBindingSnapshot)
+        === canonicalJsonStringify(snapshot)
+      && snapshot.dealId === event.dealId
+      && snapshot.customerId === event.customerIdSnapshot
+      && snapshot.candidateId === event.candidateIdSnapshot
+      && snapshot.leadId === event.leadIdSnapshot
+      && snapshot.handoffId === event.handoffIdSnapshot
+      && evidence.dealId === event.dealId
+      && evidence.customerId === event.customerIdSnapshot
+      && evidence.candidateId === event.candidateIdSnapshot;
+    if (!exactAuthority) {
       return { diagnostic: {
         ownerId: event.ownerIdSnapshot!,
         teamId: event.teamIdSnapshot!,
         sourceKind: "deal_event" as const,
         sourceId: event.id,
         candidateId: event.candidateIdSnapshot,
-        code: "deal_binding_ambiguous" as const,
-        message: "Deal does not have exactly one evidence-backed acquisition binding",
+        code: "commercial_authority_mismatch" as const,
+        message: "DealEvent does not match an immutable Quote authority event",
         occurredAt: event.createdAt
       } };
     }
     return this.#outcomeInput({
       sourceKind: "deal_event",
       sourceId: event.id,
-      lead: binding.lead,
+      lead: {
+        id: event.leadIdSnapshot!, ownerId: event.ownerIdSnapshot!,
+        teamId: event.teamIdSnapshot!,
+        convertedCustomerId: event.customerIdSnapshot!,
+        convertedDealId: event.dealId,
+        externalId: event.candidateIdSnapshot!
+      },
       customerId: event.customerIdSnapshot,
       eventType,
-      occurredAt: event.createdAt,
-      amount: amountForDealEvent(event),
-      reasonText: event.content
+      occurredAt: event.occurredAt ?? event.createdAt,
+      amount,
+      reasonText: event.reasonText ?? event.content,
+      frozenCandidateId: snapshot.candidateId,
+      frozenAttribution: snapshot.attributionSnapshot
     });
   }
 
@@ -458,6 +506,8 @@ export class AcquisitionCrmOutcomeReconciliationService {
     occurredAt: string;
     amount: OutcomeInput["amount"];
     reasonText: string;
+    frozenCandidateId?: string;
+    frozenAttribution?: OutcomeAttributionInput;
   }) {
     const source = this.#store.leadSourceEvents
       .filter((item) =>
@@ -474,15 +524,15 @@ export class AcquisitionCrmOutcomeReconciliationService {
       candidateId: source?.externalId ?? null,
       occurredAt: input.occurredAt
     };
-    if (!source) {
+    if (!source && !input.frozenAttribution) {
       return { diagnostic: {
         ...baseDiagnostic,
         code: "attribution_missing" as const,
         message: "Acquisition handoff attribution is missing"
       } };
     }
-    if (source.ownerId !== input.lead.ownerId
-      || source.teamId !== input.lead.teamId) {
+    if (source && (source.ownerId !== input.lead.ownerId
+      || source.teamId !== input.lead.teamId)) {
       return { diagnostic: {
         ...baseDiagnostic,
         code: "attribution_cross_tenant" as const,
@@ -491,21 +541,25 @@ export class AcquisitionCrmOutcomeReconciliationService {
     }
     let payload: Record<string, unknown>;
     try {
-      payload = JSON.parse(source.rawPayload) as Record<string, unknown>;
+      payload = source
+        ? JSON.parse(source.rawPayload) as Record<string, unknown>
+        : {};
     } catch {
       payload = {};
     }
-    const candidateId = isText(payload.candidateId)
+    const candidateId = input.frozenCandidateId ?? (isText(payload.candidateId)
       ? payload.candidateId
-      : source.externalId;
+      : source?.externalId ?? "");
+    const acquisitionAttribution = input.frozenAttribution
+      ?? payload.acquisitionAttribution;
     if (!candidateId
-      || candidateId !== source.externalId
+      || (!input.frozenCandidateId && candidateId !== source?.externalId)
       || candidateId !== input.lead.externalId
-      || !validAttribution(payload.acquisitionAttribution)) {
+      || !validAttribution(acquisitionAttribution)) {
       return { diagnostic: {
         ...baseDiagnostic,
         candidateId: candidateId || null,
-        code: payload.acquisitionAttribution === null
+        code: acquisitionAttribution === null
           ? "attribution_missing" as const
           : "attribution_invalid" as const,
         message: "Acquisition handoff attribution is absent or invalid"
@@ -514,7 +568,7 @@ export class AcquisitionCrmOutcomeReconciliationService {
     const attributionValidation = await this.#validateAttribution(
       { ownerId: input.lead.ownerId, teamId: input.lead.teamId },
       candidateId,
-      payload.acquisitionAttribution
+      acquisitionAttribution
     );
     if (attributionValidation) {
       return { diagnostic: {
@@ -539,7 +593,7 @@ export class AcquisitionCrmOutcomeReconciliationService {
       reasonText: input.reasonText || null,
       candidateId,
       idempotencyKey: `crm:${input.sourceKind.replace("_", "-")}:${input.sourceId}`,
-      attribution: structuredClone(payload.acquisitionAttribution)
+      attribution: structuredClone(acquisitionAttribution)
     };
     return { scope, input: outcome };
   }

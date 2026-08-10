@@ -60,6 +60,10 @@ import { createMysqlQuoteCrmCommand } from "./quote-crm-command-mysql.js";
 import { QuotePublicationWorker } from "./quote-publication-worker.js";
 import { QuotePublicationRecoverySweeper } from "./quote-publication-recovery-sweeper.js";
 import type { CrmStore } from "./store.js";
+import {
+  DealCommercialDecisionService,
+  type DealCommercialDecisionInput
+} from "./deal-commercial-decision-service.js";
 
 export const GROWTH_PROBABILITY_ASSESSMENTS =
   defineGrowthPrivateServiceKey<ProbabilityAssessmentPersistence>(
@@ -71,6 +75,7 @@ export interface GrowthQuoteServices {
   readonly quoteCases: QuoteCaseService;
   readonly quoteVersions: QuoteVersionService;
   readonly quoteApprovals: QuoteApprovalService;
+  readonly dealDecisions?: DealCommercialDecisionService;
   readonly authorityReaders: GrowthQuoteAuthorityReaders;
 }
 
@@ -272,6 +277,54 @@ function mountQuoteApprovalRoutes(
     decisionRoute("expire"));
 }
 
+function dealDecisionInput(value: unknown): DealCommercialDecisionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new GrowthHttpError(400, "invalid_deal_decision_input");
+  }
+  const input = value as Record<string, unknown>;
+  const type = input.type;
+  const common = typeof input.occurredAt === "string"
+    && (typeof input.reasonText === "string" || input.reasonText === null)
+    && (typeof input.reasonCode === "string" || input.reasonCode === null);
+  if (!common) throw new GrowthHttpError(400, "invalid_deal_decision_input");
+  if (type === "pre_quote_disqualified") {
+    if (Object.keys(input).length !== 4
+      || typeof input.reasonCode !== "string" || !input.reasonCode.trim()) {
+      throw new GrowthHttpError(400, "invalid_deal_decision_input");
+    }
+    return input as unknown as DealCommercialDecisionInput;
+  }
+  if ((type !== "won" && type !== "lost")
+    || Object.keys(input).length !== 6
+    || typeof input.quoteVersionId !== "string"
+    || typeof input.commercialAmountHash !== "string") {
+    throw new GrowthHttpError(400, "invalid_deal_decision_input");
+  }
+  return input as unknown as DealCommercialDecisionInput;
+}
+
+function mountDealDecisionRoutes(
+  router: express.Router,
+  service: DealCommercialDecisionService,
+  foundation: GrowthFoundationServices
+) {
+  router.post("/api/v1/quotes/deals/:dealId/decision", route(async (req, res) => {
+    const dealId = routeId(req.params.dealId);
+    const payload = dealDecisionInput(req.body);
+    const expectedRevision = parseIfMatchRevision(req,
+      `deal-authority:${dealId}`);
+    const command = foundation.commandContextFactory(req, {
+      canonicalPath: "/api/v1/quotes/deals/:dealId/decision",
+      pathParams: Object.freeze({ dealId }), payload, expectedRevision
+    });
+    const result = await service.decide(command, dealId, payload);
+    replayHeader(res, result.replayed);
+    setRevisionEtag(res, "deal-authority", dealId,
+      result.value.authorityRevision);
+    res.status(200).json(result.value);
+  }));
+}
+
 export type GrowthQuoteModuleOptions = GrowthQuoteModuleHooks & {
   trustedAuthority?: GrowthQuoteTrustedAuthority;
   store?: CrmStore;
@@ -303,6 +356,12 @@ async function defaultResources(
   const bindingVerifier = trusted
     ? new CommercialBindingVerifier(trusted.commercialBindings)
     : null;
+  const crm = options.store ? (options.mode === "mysql"
+    ? createMysqlQuoteCrmCommand({ pool: options.pool,
+        temporalBarrier: input.temporalBarrier, repository })
+    : createQuoteCrmCommand({ store: options.store,
+        temporalTransactions: input.temporalTransactions,
+        temporalBarrier: input.temporalBarrier, repository })) : null;
   const quote = trusted ? (() => {
     const dealAuthoritativeQuotes = new DealAuthoritativeQuoteReader(repository);
     const authoritativeContributions = new AuthoritativeQuoteAsOfReader(
@@ -337,13 +396,22 @@ async function defaultResources(
         repository, bindingVerifier: bindingVerifier!,
         foundation: input.foundation, catalog: input.catalog
       }),
+      ...(crm ? { dealDecisions: new DealCommercialDecisionService({
+        repository, crm, foundation: input.foundation
+      }) } : {}),
       authorityReaders
     });
   })() : undefined;
   const quoteProjectedDocumentAuthority = options.store && quote
-    ? createQuoteProjectedDocumentAuthorityValidator({
-        store: options.store, repository
-      })
+    ? (() => {
+        const validator = createQuoteProjectedDocumentAuthorityValidator({
+          store: options.store!, repository
+        });
+        return Object.freeze({
+          assertAuthorized: validator.assertAuthorized.bind(validator),
+          commercialOutcomeAuthority: repository
+        });
+      })()
     : Object.freeze({
         async assertAuthorized(): Promise<never> {
           throw Object.assign(new Error("authoritative_quote_required"), {
@@ -351,13 +419,7 @@ async function defaultResources(
           });
         }
       }) as QuoteProjectedDocumentAuthorityValidator;
-  const publication = options.store && quote ? (() => {
-    const crm = options.mode === "mysql"
-      ? createMysqlQuoteCrmCommand({ pool: options.pool,
-          temporalBarrier: input.temporalBarrier })
-      : createQuoteCrmCommand({ store: options.store!,
-          temporalTransactions: input.temporalTransactions,
-          temporalBarrier: input.temporalBarrier, repository });
+  const publication = options.store && quote && crm ? (() => {
     const worker = new QuotePublicationWorker({ repository, crm,
       workerId: `quote-publication-${process.pid}` });
     return new QuotePublicationRecoverySweeper({ repository, worker });
@@ -423,6 +485,10 @@ export function createGrowthQuoteModule(
             foundation);
           mountQuoteApprovalRoutes(input.router, resources.quote.quoteApprovals,
             foundation);
+          if (resources.quote.dealDecisions) {
+            mountDealDecisionRoutes(input.router,
+              resources.quote.dealDecisions, foundation);
+          }
         }
         const validator = resources.quoteProjectedDocumentAuthority
           ?? Object.freeze({

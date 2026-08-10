@@ -36,7 +36,10 @@ import {
   type QuoteApprovalDecisionPersistenceResult,
   type QuotePublicationOperation,
   type QuotePublicationClaim,
-  type QuotePublicationHistory
+  type QuotePublicationHistory,
+  type DecideDealPersistenceCommand,
+  type DealCommercialDecisionPersistenceResult,
+  type CommercialBindingEvidenceSnapshot
 } from "./quote-repository.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import { requireGrowthCapabilities } from "./growth-capabilities.js";
@@ -44,6 +47,7 @@ import { createHash } from "node:crypto";
 import { canonicalJsonStringify } from "./canonical-json.js";
 import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js";
 import type { OutcomeAttributionInput } from "./acquisition-domain.js";
+import type { Deal, DealEvent } from "./types.js";
 
 type MysqlRow = Record<string, unknown>;
 
@@ -276,6 +280,25 @@ export const QUOTE_MYSQL_SCHEMA_STATEMENTS = [
     PRIMARY KEY (workspace_id,stable_command_hash),
     CONSTRAINT chk_quote_approval_decision_json CHECK (JSON_VALID(decision_json))
   ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS deal_commercial_decision_results (
+    workspace_id VARCHAR(191) NOT NULL,
+    stable_command_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    request_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    event_id VARCHAR(191) NOT NULL, decision_json JSON NOT NULL,
+    completed_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id,stable_command_hash),
+    UNIQUE KEY uk_deal_commercial_decision_event (workspace_id,event_id),
+    CONSTRAINT chk_deal_commercial_decision_json CHECK (
+      JSON_VALID(decision_json)
+    )
+  ) ENGINE=InnoDB`,
+  `ALTER TABLE deal_events
+    ADD COLUMN IF NOT EXISTS commercial_binding_evidence_json JSON NULL,
+    ADD COLUMN IF NOT EXISTS commercial_binding_snapshot_json JSON NULL,
+    ADD COLUMN IF NOT EXISTS decision_reason_code VARCHAR(191) NULL,
+    ADD COLUMN IF NOT EXISTS decision_reason_text TEXT NULL,
+    ADD COLUMN IF NOT EXISTS decision_occurred_at DATETIME(3) NULL,
+    ADD COLUMN IF NOT EXISTS decision_authority_revision BIGINT UNSIGNED NULL`,
   `ALTER TABLE quote_publication_operations
     ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'queued',
     ADD COLUMN IF NOT EXISTS authority_revision BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -747,6 +770,352 @@ export class MysqlQuoteRepository implements QuoteRepository {
     return row ? immutableQuoteValue(
       json<QuoteApprovalDecisionPersistenceResult>(row.decision_json)
     ) : null;
+  }
+
+  async findDealDecisionByStableCommandHash(
+    workspaceId: string,
+    stableCommandHash: string
+  ) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT decision_json FROM deal_commercial_decision_results
+       WHERE workspace_id = ? AND stable_command_hash = ?`,
+      [workspace, stableCommandHash]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? immutableQuoteValue(
+      json<DealCommercialDecisionPersistenceResult>(row.decision_json)
+    ) : null;
+  }
+
+  async decideDeal(
+    command: DecideDealPersistenceCommand
+  ): Promise<DealCommercialDecisionPersistenceResult> {
+    const workspaceId = assertConcreteGrowthWorkspaceId(command.workspaceId);
+    return this.transaction(async (connection, temporal) => {
+      const authorityStamp = await this.temporalBarrier.allocateAppend(
+        temporal, workspaceId
+      );
+      const [replayRows] = await connection.query(
+        `SELECT request_hash,decision_json
+         FROM deal_commercial_decision_results
+         WHERE workspace_id = ? AND stable_command_hash = ? FOR UPDATE`,
+        [workspaceId, command.stableCommandHash]
+      );
+      const replay = (replayRows as MysqlRow[])[0];
+      if (replay) {
+        if (String(replay.request_hash) !== command.requestHash) {
+          throw quoteError("quote_command_identity_conflict");
+        }
+        return immutableQuoteValue(
+          json<DealCommercialDecisionPersistenceResult>(replay.decision_json)
+        );
+      }
+      const [guardRows] = await connection.query(
+        `SELECT * FROM deal_authoritative_quotes
+         WHERE workspace_id = ? AND deal_id = ? FOR UPDATE`,
+        [workspaceId, command.dealId]
+      );
+      const guard = (guardRows as MysqlRow[])[0] ?? null;
+      const currentRevision = guard ? Number(guard.authority_revision) : 0;
+      if (command.expectedAuthorityRevision !== Math.max(1, currentRevision)) {
+        throw quoteError("revision_conflict");
+      }
+      const [terminalRows] = await connection.query(
+        `SELECT id FROM deal_authoritative_quote_events
+         WHERE workspace_id = ? AND deal_id = ?
+           AND event_type IN ('won','lost') LIMIT 1 FOR UPDATE`,
+        [workspaceId, command.dealId]
+      );
+      if ((terminalRows as MysqlRow[]).length) {
+        throw quoteError("deal_already_decided");
+      }
+      const commercial = command.input.type !== "pre_quote_disqualified";
+      if (commercial && (!guard?.quote_version_id
+        || guard.quote_version_id !== command.input.quoteVersionId)) {
+        throw quoteError("quote_version_conflict");
+      }
+      if (commercial && guard!.commercial_amount_hash
+        !== command.input.commercialAmountHash) {
+        throw quoteError("commercial_amount_hash_mismatch");
+      }
+      if (!commercial && guard?.quote_version_id) {
+        throw quoteError("authoritative_quote_already_exists");
+      }
+      const [dealRows] = await connection.query(
+        `SELECT * FROM deals WHERE id = ? AND team_id = ? FOR UPDATE`,
+        [command.dealId, workspaceId]
+      );
+      const dealRow = (dealRows as MysqlRow[])[0];
+      if (!dealRow) throw quoteError("deal_not_found");
+      let quoteCase: QuoteCase | null = null;
+      if (guard?.open_quote_case_id) {
+        quoteCase = await this.load(connection, workspaceId,
+          String(guard.open_quote_case_id), true);
+      } else {
+        const [caseRows] = await connection.query(
+          `${CASE_SELECT} WHERE qc.workspace_id = ? AND qc.deal_id = ?
+           AND qc.status = 'open' LIMIT 1 FOR UPDATE`,
+          [workspaceId, command.dealId]
+        );
+        quoteCase = (caseRows as MysqlRow[])[0]
+          ? parseCase((caseRows as MysqlRow[])[0]!) : null;
+      }
+      const version = commercial
+        ? await this.loadVersion(connection, workspaceId,
+            command.input.quoteVersionId, true)
+        : null;
+      let binding: CommercialBindingSnapshot | null = null;
+      let evidence: CommercialBindingEvidenceSnapshot | null = null;
+      let amountMinor: number | null = null;
+      let currency: string | null = null;
+      if (commercial) {
+        binding = version?.commercialBindingSnapshot as
+          CommercialBindingSnapshot | null;
+        amountMinor = Number(version?.quotedAmountMinor);
+        currency = String(version?.currency ?? "").toUpperCase();
+        const expectedBindingHash = binding ? hash({
+          customerId: binding.customerId,
+          handoffContentHash: binding.handoffContentHash,
+          dealContentHash: binding.dealContentHash,
+          bindingHashSchemaVersion: binding.bindingHashSchemaVersion
+        }) : null;
+        if (!version || version.versionKind !== "formal"
+          || version.status !== "approved" || !quoteCase
+          || quoteCase.id !== version.quoteCaseId
+          || quoteCase.dealId !== command.dealId || !binding
+          || canonicalJsonStringify(quoteCase.commercialBindingSnapshot)
+            !== canonicalJsonStringify(binding)
+          || binding.bindingHash !== expectedBindingHash
+          || binding.bindingHashSchemaVersion !== "commercial-binding.v1"
+          || !Number.isSafeInteger(amountMinor) || amountMinor <= 0
+          || !/^[A-Z]{3}$/u.test(currency)
+          || version.commercialAmountHash
+            !== command.input.commercialAmountHash) {
+          throw quoteError("commercial_binding_authority_mismatch");
+        }
+        evidence = immutableQuoteValue({ candidateId: binding.candidateId,
+          customerId: binding.customerId, dealId: binding.dealId,
+          handoffContentHash: binding.handoffContentHash,
+          dealContentHash: binding.dealContentHash,
+          bindingHashSchemaVersion: binding.bindingHashSchemaVersion,
+          bindingHash: binding.bindingHash });
+      }
+      const authorityRevision = currentRevision + 1;
+      const eventType = command.input.type === "won" ? "won" : "lost";
+      const authorityEvent: DealAuthoritativeQuoteEvent = immutableQuoteValue({
+        id: `deal-authority-${workspaceId}-${authorityStamp.temporalSequence}`,
+        workspaceId, dealId: command.dealId, authorityRevision,
+        quoteCaseId: quoteCase?.id ?? "",
+        quoteVersionId: commercial ? command.input.quoteVersionId : null,
+        previousQuoteVersionId: guard?.quote_version_id
+          ? String(guard.quote_version_id) : null,
+        eventType, ...(commercial ? { currency: currency!,
+          quotedAmountMinor: amountMinor!,
+          commercialAmountHash: command.input.commercialAmountHash,
+          commercialBindingEvidence: evidence!,
+          commercialBindingSnapshot: binding! } : {}),
+        reasonCode: command.input.reasonCode,
+        reasonText: command.input.reasonText,
+        decisionCommandHash: command.stableCommandHash,
+        decidedAt: command.input.occurredAt, ...authorityStamp
+      });
+      await connection.query(
+        `INSERT INTO deal_authoritative_quote_events
+         (workspace_id,id,deal_id,authority_revision,quote_case_id,
+          quote_version_id,event_type,recorded_at,temporal_sequence)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+        [workspaceId, authorityEvent.id, command.dealId, authorityRevision,
+          authorityEvent.quoteCaseId, authorityEvent.quoteVersionId, eventType,
+          growthMysqlDate(authorityStamp.recordedAt),
+          authorityStamp.temporalSequence]
+      );
+      await connection.query(
+        `INSERT INTO deal_authoritative_quote_event_payloads
+         (workspace_id,event_id,event_json) VALUES (?,?,?)`,
+        [workspaceId, authorityEvent.id, JSON.stringify(authorityEvent)]
+      );
+      const [operationRows] = await connection.query(
+        `SELECT * FROM quote_publication_operations
+         WHERE workspace_id = ? AND deal_id = ?
+           AND status IN ('queued','running','partial_failure','failed')
+         FOR UPDATE`, [workspaceId, command.dealId]
+      );
+      const cancelledPublicationOperationIds: string[] = [];
+      for (const row of operationRows as MysqlRow[]) {
+        const operation = parsePublicationRow(row);
+        const cancelled = immutableQuoteValue({ ...operation,
+          status: "cancelled" as const, leaseOwner: null,
+          leaseExpiresAt: null, lastErrorCode: "deal_decided",
+          updatedAt: authorityStamp.recordedAt });
+        await connection.query(
+          `UPDATE quote_publication_operations SET status = 'cancelled',
+           lease_owner = NULL,lease_expires_at = NULL,operation_json = ?
+           WHERE workspace_id = ? AND id = ?`,
+          [JSON.stringify(cancelled), workspaceId, operation.id]
+        );
+        await this.appendPublicationHistory(connection, temporal, cancelled,
+          "deal_decided", command.actorId);
+        cancelledPublicationOperationIds.push(operation.id);
+      }
+      const dealEventStamp = await this.temporalBarrier.allocateAppend(
+        temporal, workspaceId
+      );
+      const eventId = `deal-decision-${command.stableCommandHash.slice(7, 47)}`;
+      await connection.query(
+        `UPDATE deals SET stage = ?,amount_type = ?,
+         amount = IF(?,?/100,amount),currency = IF(?,?,currency),
+         stage_changed_at = ?,closed_at = ?,won_reason = ?,
+         lost_reason_category = ?,lost_reason = ?
+         WHERE id = ? AND team_id = ?`,
+        [eventType === "won" ? "成交" : "丢单",
+          command.input.type === "won" ? "won" : commercial
+            ? "quoted" : "estimate", commercial, amountMinor, commercial,
+          currency, growthMysqlDate(dealEventStamp.recordedAt),
+          growthMysqlDate(command.input.occurredAt),
+          eventType === "won" ? command.input.reasonText : null,
+          eventType === "lost" ? command.input.reasonCode : null,
+          eventType === "lost" ? command.input.reasonText : null,
+          command.dealId, workspaceId]
+      );
+      await connection.query(
+        `INSERT INTO deal_events
+         (id,deal_id,event_type,content,operator_id,owner_id_snapshot,
+          team_id_snapshot,customer_id_snapshot,lead_id_snapshot,
+          handoff_id_snapshot,candidate_id_snapshot,amount_minor_snapshot,
+          currency_snapshot,commercial_authority,quote_case_id_snapshot,
+          quote_version_id_snapshot,commercial_amount_hash,
+          deal_authority_revision_snapshot,commercial_binding_evidence_json,
+          commercial_binding_snapshot_json,decision_reason_code,
+          decision_reason_text,decision_occurred_at,
+          decision_authority_revision,recorded_at,temporal_sequence,created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [eventId, command.dealId, eventType,
+          command.input.reasonText ?? command.input.reasonCode ?? "",
+          command.actorId, dealRow.owner_id, workspaceId,
+          commercial ? binding!.customerId : dealRow.customer_id,
+          commercial ? binding!.leadId : null,
+          commercial ? binding!.handoffId : null,
+          commercial ? binding!.candidateId : null,
+          commercial ? amountMinor : null, commercial ? currency : null,
+          commercial ? "quote_projection" : "pre_quote_disqualified",
+          quoteCase?.id ?? null,
+          commercial ? command.input.quoteVersionId : null,
+          commercial ? command.input.commercialAmountHash : null,
+          authorityRevision, commercial ? JSON.stringify(evidence) : null,
+          commercial ? JSON.stringify(binding) : null,
+          command.input.reasonCode, command.input.reasonText,
+          growthMysqlDate(command.input.occurredAt), authorityRevision,
+          growthMysqlDate(dealEventStamp.recordedAt),
+          dealEventStamp.temporalSequence,
+          growthMysqlDate(dealEventStamp.recordedAt)]
+      );
+      let closedCase = quoteCase;
+      if (quoteCase) {
+        const lifecycleStamp = await this.temporalBarrier.allocateAppend(
+          temporal, workspaceId
+        );
+        closedCase = immutableQuoteValue({ ...quoteCase, status: "closed",
+          currentDraftVersionId: null, revision: quoteCase.revision + 1,
+          updatedAt: lifecycleStamp.recordedAt });
+        await connection.query(
+          `UPDATE quote_cases SET status = 'closed',
+           current_draft_version_id = NULL,revision = ?,updated_at = ?
+           WHERE workspace_id = ? AND id = ?`,
+          [closedCase.revision, growthMysqlDate(closedCase.updatedAt),
+            workspaceId, quoteCase.id]
+        );
+        await connection.query(
+          `INSERT INTO quote_lifecycle_events
+           (workspace_id,id,quote_case_id,quote_version_id,lifecycle_revision,
+            from_status,to_status,event_type,actor_id,recorded_at,
+            temporal_sequence) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          [workspaceId,
+            `quote-lifecycle-${workspaceId}-${lifecycleStamp.temporalSequence}`,
+            quoteCase.id, commercial ? command.input.quoteVersionId : null,
+            closedCase.revision, quoteCase.status, "closed", "case_closed",
+            command.actorId, growthMysqlDate(lifecycleStamp.recordedAt),
+            lifecycleStamp.temporalSequence]
+        );
+      }
+      await connection.query(
+        `INSERT INTO deal_authoritative_quotes
+         (workspace_id,deal_id,open_quote_case_id,quote_version_id,
+          commercial_amount_hash,authority_revision,updated_at)
+         VALUES (?,?,NULL,NULL,NULL,?,?) AS next
+         ON DUPLICATE KEY UPDATE open_quote_case_id = NULL,
+          quote_version_id = NULL,commercial_amount_hash = NULL,
+          authority_revision = next.authority_revision,
+          updated_at = next.updated_at`,
+        [workspaceId, command.dealId, authorityRevision,
+          growthMysqlDate(authorityStamp.recordedAt)]
+      );
+      const deal: Deal = {
+        id: command.dealId, customerId: String(dealRow.customer_id),
+        title: String(dealRow.title ?? ""),
+        stage: eventType === "won" ? "成交" : "丢单",
+        product: String(dealRow.product ?? ""),
+        quantity: Number(dealRow.quantity ?? 0),
+        unitPrice: Number(dealRow.unit_price ?? 0),
+        amount: commercial ? amountMinor! / 100 : Number(dealRow.amount ?? 0),
+        currency: commercial ? currency! : String(dealRow.currency ?? "USD"),
+        amountType: command.input.type === "won" ? "won"
+          : commercial ? "quoted" : "estimate",
+        ownerId: String(dealRow.owner_id), teamId: workspaceId,
+        nextAction: String(dealRow.next_action ?? ""),
+        nextActionAt: growthMysqlInstant(dealRow.next_action_at ??
+          command.input.occurredAt),
+        expectedCloseAt: growthMysqlInstant(dealRow.expected_close_at ??
+          command.input.occurredAt),
+        stageChangedAt: dealEventStamp.recordedAt,
+        closedAt: command.input.occurredAt
+      };
+      const event: DealEvent = immutableQuoteValue({
+        id: eventId, dealId: command.dealId, type: eventType,
+        content: command.input.reasonText ?? command.input.reasonCode ?? "",
+        operatorId: command.actorId, ownerIdSnapshot: deal.ownerId,
+        teamIdSnapshot: workspaceId,
+        customerIdSnapshot: commercial ? binding!.customerId : deal.customerId,
+        leadIdSnapshot: commercial ? binding!.leadId : null,
+        handoffIdSnapshot: commercial ? binding!.handoffId : null,
+        candidateIdSnapshot: commercial ? binding!.candidateId : null,
+        amountMinorSnapshot: commercial ? amountMinor : null,
+        currencySnapshot: commercial ? currency : null,
+        commercialAuthority: commercial ? "quote_projection"
+          : "pre_quote_disqualified",
+        quoteCaseIdSnapshot: quoteCase?.id ?? null,
+        quoteVersionIdSnapshot: commercial ? command.input.quoteVersionId : null,
+        commercialAmountHash: commercial
+          ? command.input.commercialAmountHash : null,
+        dealAuthorityRevisionSnapshot: authorityRevision,
+        authorityRevision,
+        commercialBindingEvidence: commercial ? evidence : null,
+        commercialBindingSnapshot: commercial ? binding : null,
+        reasonCode: command.input.reasonCode,
+        reasonText: command.input.reasonText,
+        occurredAt: command.input.occurredAt,
+        recordedAt: dealEventStamp.recordedAt,
+        temporalSequence: dealEventStamp.temporalSequence,
+        createdAt: dealEventStamp.recordedAt
+      });
+      const result = immutableQuoteValue({ deal: {
+        id: deal.id, customerId: deal.customerId, stage: deal.stage,
+        amountType: deal.amountType, ownerId: deal.ownerId,
+        teamId: deal.teamId
+      }, event,
+        quoteCase: closedCase, authorityRevision,
+        cancelledPublicationOperationIds: Object.freeze(
+          cancelledPublicationOperationIds) });
+      await connection.query(
+        `INSERT INTO deal_commercial_decision_results
+         (workspace_id,stable_command_hash,request_hash,event_id,decision_json,
+          completed_at) VALUES (?,?,?,?,?,?)`,
+        [workspaceId, command.stableCommandHash, command.requestHash,
+          event.id, JSON.stringify(result),
+          growthMysqlDate(authorityStamp.recordedAt)]
+      );
+      return result;
+    });
   }
 
   private async loadEvidence(

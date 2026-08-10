@@ -2,11 +2,13 @@ import type mysql from "mysql2/promise";
 import { createHash } from "node:crypto";
 import type {
   EnsurePiProjectionInput,
+  DecideDealInput,
   PublishQuotedDealInput,
   QuoteCrmCommand,
   AuthoritativeQuoteProjectionMutation,
   AuthoritativeQuoteProjectionMutationResult
 } from "./quote-crm-command.js";
+import type { QuoteRepository } from "./quote-repository.js";
 import {
   assertGrowthTemporalBarrier,
   type GrowthTemporalBarrier
@@ -116,6 +118,15 @@ export async function mutateAuthoritativeQuoteProjectionMysql(
     );
     if (!(existingRows as unknown[]).length) {
       const line = input.quoteVersion.lineSnapshot as Record<string, unknown>;
+      const binding = input.quoteVersion.commercialBindingSnapshot as
+        import("./commercial-binding-snapshot.js").CommercialBindingSnapshot
+        | null;
+      const evidence = binding ? { candidateId: binding.candidateId,
+        customerId: binding.customerId, dealId: binding.dealId,
+        handoffContentHash: binding.handoffContentHash,
+        dealContentHash: binding.dealContentHash,
+        bindingHashSchemaVersion: binding.bindingHashSchemaVersion,
+        bindingHash: binding.bindingHash } : null;
       await connection.query(
         `UPDATE deals SET stage = '已报价',product = ?,quantity = ?,unit_price = ?,
          amount = ?,currency = ?,amount_type = 'quoted',stage_changed_at = ?
@@ -129,19 +140,25 @@ export async function mutateAuthoritativeQuoteProjectionMysql(
       await connection.query(
         `INSERT INTO deal_events
          (id,deal_id,event_type,content,operator_id,owner_id_snapshot,
-          team_id_snapshot,customer_id_snapshot,amount_minor_snapshot,
+          team_id_snapshot,customer_id_snapshot,lead_id_snapshot,
+          handoff_id_snapshot,candidate_id_snapshot,amount_minor_snapshot,
           currency_snapshot,commercial_authority,quote_case_id_snapshot,
           quote_version_id_snapshot,commercial_amount_hash,
-          deal_authority_revision_snapshot,related_document_id,recorded_at,
+          deal_authority_revision_snapshot,commercial_binding_evidence_json,
+          commercial_binding_snapshot_json,related_document_id,recorded_at,
           temporal_sequence,created_at)
          SELECT ?,d.id,'quote','Authoritative quote published',?,d.owner_id,
-          d.team_id,d.customer_id,? ,?,'quote_projection',?,?,?,?,?,?,?,?
+          d.team_id,?,?,?,?,? ,?,'quote_projection',?,?,?,?,?,?,?,?,?,?
          FROM deals d WHERE d.id = ? AND d.team_id = ?`,
-        [input.stableId, input.actorId,
+        [input.stableId, input.actorId, binding?.customerId ?? null,
+          binding?.leadId ?? null, binding?.handoffId ?? null,
+          binding?.candidateId ?? null,
           Number(input.quoteVersion.quotedAmountMinor),
           String(input.quoteVersion.currency), input.quoteCaseId,
           input.quoteVersion.id, input.commercialAmountHash,
-          input.dealAuthorityRevision, input.piDocumentId, input.recordedAt,
+          input.dealAuthorityRevision, evidence ? JSON.stringify(evidence) : null,
+          binding ? JSON.stringify(binding) : null, input.piDocumentId,
+          input.recordedAt,
           input.temporalSequence, input.recordedAt, input.dealId,
           input.workspaceId]
       );
@@ -169,6 +186,7 @@ function stableId(kind: "pi" | "event", key: string) {
 export function createMysqlQuoteCrmCommand(options: {
   pool: mysql.Pool;
   temporalBarrier: GrowthTemporalBarrier;
+  repository: Pick<QuoteRepository, "decideDeal">;
 }): QuoteCrmCommand {
   const barrier = assertGrowthTemporalBarrier(options.temporalBarrier);
   return Object.freeze({
@@ -191,6 +209,9 @@ export function createMysqlQuoteCrmCommand(options: {
         throw new Error("invalid_crm_projection_result");
       }
       return { dealEventId: result.event.id };
+    },
+    async decideDeal(input: DecideDealInput) {
+      return options.repository.decideDeal(input);
     }
   });
 }
@@ -258,6 +279,10 @@ function mysqlEvent(row: Record<string, any>) {
     quoteVersionIdSnapshot: row.quote_version_id_snapshot,
     commercialAmountHash: row.commercial_amount_hash,
     dealAuthorityRevisionSnapshot: Number(row.deal_authority_revision_snapshot),
+    commercialBindingEvidence: parseJson(
+      row.commercial_binding_evidence_json) ?? null,
+    commercialBindingSnapshot: parseJson(
+      row.commercial_binding_snapshot_json) ?? null,
     relatedDocumentId: row.related_document_id,
     recordedAt: iso(row.recorded_at), temporalSequence: Number(row.temporal_sequence),
     createdAt: iso(row.created_at)

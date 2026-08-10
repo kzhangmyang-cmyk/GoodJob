@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import type { OutcomeInput } from "./acquisition-domain.js";
 import {
@@ -9,6 +10,8 @@ import {
 import type {
   AcquisitionPlanRunRepository
 } from "./acquisition-plan-run-repository.js";
+import { canonicalJsonStringify } from "./canonical-json.js";
+import type { DealEvent } from "./types.js";
 
 const attribution = {
   attributionVersion: "acquisition-run.v1" as const,
@@ -149,6 +152,73 @@ function store(): AcquisitionCrmOutcomeReconciliationStore {
   };
 }
 
+function sha(value: unknown): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(canonicalJsonStringify(value) ?? "").digest("hex")}`;
+}
+
+function frozenCommercialAuthority(event: DealEvent, overrides: {
+  authoritativeHash?: `sha256:${string}`;
+} = {}) {
+  const bindingBase = {
+    candidateId: "candidate-real", handoffId: "handoff-real",
+    leadId: "lead-real", customerId: "customer-real", dealId: "deal-real",
+    candidateVersion: 4,
+    handoffContentHash: `sha256:${"c".repeat(64)}` as const,
+    dealContentHash: `sha256:${"d".repeat(64)}` as const,
+    bindingHashSchemaVersion: "commercial-binding.v1" as const,
+    attributionSnapshot: structuredClone(attribution),
+    verifiedAt: "2026-08-02T00:00:00.000Z"
+  };
+  const bindingHash = sha({ customerId: bindingBase.customerId,
+    handoffContentHash: bindingBase.handoffContentHash,
+    dealContentHash: bindingBase.dealContentHash,
+    bindingHashSchemaVersion: bindingBase.bindingHashSchemaVersion });
+  const snapshot = Object.freeze({ ...bindingBase, bindingHash });
+  const evidence = Object.freeze({ candidateId: snapshot.candidateId,
+    customerId: snapshot.customerId, dealId: snapshot.dealId,
+    handoffContentHash: snapshot.handoffContentHash,
+    dealContentHash: snapshot.dealContentHash,
+    bindingHashSchemaVersion: snapshot.bindingHashSchemaVersion,
+    bindingHash: snapshot.bindingHash });
+  Object.assign(event, {
+    commercialBindingSnapshot: snapshot,
+    commercialBindingEvidence: evidence
+  });
+  const authoritativeHash = overrides.authoritativeHash
+    ?? event.commercialAmountHash!;
+  const version = {
+    id: event.quoteVersionIdSnapshot!, workspaceId: "team-real",
+    quoteCaseId: event.quoteCaseIdSnapshot!, version: 2,
+    lifecycleRevision: 2, versionKind: "formal", sourceDraftVersionId: "draft-1",
+    probabilityAssessmentSnapshot: {}, status: "approved", createdBy: "sales",
+    createdAt: event.createdAt, effectiveAt: event.createdAt,
+    recordedAt: event.createdAt, temporalSequence: 2,
+    currency: event.currencySnapshot,
+    quotedAmountMinor: event.amountMinorSnapshot,
+    commercialAmountHash: authoritativeHash,
+    commercialBindingSnapshot: snapshot
+  } as never;
+  const authorityEvent = {
+    id: `authority-${event.id}`, workspaceId: "team-real",
+    dealId: event.dealId,
+    authorityRevision: event.dealAuthorityRevisionSnapshot!,
+    quoteCaseId: event.quoteCaseIdSnapshot!,
+    quoteVersionId: event.quoteVersionIdSnapshot!,
+    eventType: event.type === "quote" ? "approved" : event.type,
+    currency: event.currencySnapshot!,
+    quotedAmountMinor: event.amountMinorSnapshot!,
+    commercialAmountHash: authoritativeHash,
+    commercialBindingSnapshot: snapshot,
+    commercialBindingEvidence: evidence,
+    recordedAt: event.createdAt, temporalSequence: 1
+  } as never;
+  return {
+    async getVersion() { return version; },
+    async listAuthorityEvents() { return [authorityEvent]; }
+  };
+}
+
 function persistedPlanRuns(overrides: {
   providerId?: string;
   ownerId?: string;
@@ -271,6 +341,9 @@ test("delayed replay consumes immutable DealEvent snapshots after the Deal chang
     dealAuthorityRevisionSnapshot: 3,
     createdAt: "2026-08-03T01:00:00.000Z"
   }];
+  const commercialAuthority = frozenCommercialAuthority(
+    fixture.dealEvents[0]!
+  );
   Object.assign(fixture.deals[0]!, {
     customerId: "customer-mutated",
     ownerId: "owner-mutated",
@@ -283,6 +356,7 @@ test("delayed replay consumes immutable DealEvent snapshots after the Deal chang
   const service = new AcquisitionCrmOutcomeReconciliationService({
     store: fixture,
     planRuns: persistedPlanRuns(),
+    commercialAuthority,
     outcomeRecorder: {
       async recordOutcome(_scope, input, authority) {
         recorded.push(structuredClone(input));
@@ -309,6 +383,46 @@ test("delayed replay consumes immutable DealEvent snapshots after the Deal chang
     capability: "acquisition.outcome.reconcile.internal",
     sourceStableKey: "deal-event:event-snapshot-quote"
   }]);
+});
+
+test("Reconciler rejects a tampered Deal amount hash and never writes Outcome", async () => {
+  const fixture = store();
+  fixture.leadActivities = [];
+  fixture.dealEvents = [{
+    id: "event-tampered-won", dealId: "deal-real", type: "won",
+    content: "won", operatorId: "owner-real",
+    ownerIdSnapshot: "owner-real", teamIdSnapshot: "team-real",
+    customerIdSnapshot: "customer-real", leadIdSnapshot: "lead-real",
+    handoffIdSnapshot: "handoff-real", candidateIdSnapshot: "candidate-real",
+    amountMinorSnapshot: 128_850, currencySnapshot: "USD",
+    commercialAuthority: "quote_projection",
+    quoteCaseIdSnapshot: "quote-case-real",
+    quoteVersionIdSnapshot: "quote-version-real",
+    commercialAmountHash: `sha256:${"f".repeat(64)}`,
+    dealAuthorityRevisionSnapshot: 4,
+    createdAt: "2026-08-05T01:00:00.000Z"
+  }];
+  const commercialAuthority = frozenCommercialAuthority(
+    fixture.dealEvents[0]!, {
+      authoritativeHash: `sha256:${"a".repeat(64)}`
+    }
+  );
+  const outcomes: OutcomeInput[] = [];
+  const service = new AcquisitionCrmOutcomeReconciliationService({
+    store: fixture, planRuns: persistedPlanRuns(), commercialAuthority,
+    outcomeRecorder: {
+      async recordOutcome(_scope, input) { outcomes.push(input); }
+    }
+  });
+
+  const result = await service.runTenant({
+    ownerId: "owner-real", teamId: "team-real"
+  });
+
+  assert.equal(result.reconciled, 0);
+  assert.equal(outcomes.length, 0);
+  assert.equal(fixture.acquisitionOutcomeReconciliationDiagnostics[0]?.code,
+    "commercial_authority_mismatch");
 });
 
 test("leaves the checkpoint before an Outcome failure so the durable CRM event can be retried", async () => {
@@ -514,7 +628,7 @@ test("rejects an ambiguous deal-to-handoff binding instead of selecting array or
 
   assert.equal(result.reconciled, 0);
   assert.equal(fixture.acquisitionOutcomeReconciliationDiagnostics[0]?.code,
-    "deal_binding_ambiguous");
+    "commercial_authority_mismatch");
 });
 
 for (const invalidBinding of [{
@@ -574,7 +688,7 @@ for (const invalidBinding of [{
     assert.deepEqual(
       fixture.acquisitionOutcomeReconciliationDiagnostics.map((item) =>
         item.code),
-      ["deal_binding_ambiguous"]
+      ["commercial_authority_mismatch"]
     );
   });
 }
@@ -675,8 +789,7 @@ test("processes late and same-millisecond lower-id CRM events once across restar
 
   assert.deepEqual(recorded, [
     ...initiallyRecorded,
-    "crm:lead-activity:activity-late",
-    "crm:deal-event:event-aaa"
+    "crm:lead-activity:activity-late"
   ]);
   assert.equal(
     (fixture as AcquisitionCrmOutcomeReconciliationStore & {

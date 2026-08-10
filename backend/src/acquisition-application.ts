@@ -100,7 +100,8 @@ import {
 } from "./acquisition-lead-conversion-reconciliation.js";
 import {
   AcquisitionCandidateRunAttributionResolver,
-  AcquisitionCrmOutcomeReconciliationService
+  AcquisitionCrmOutcomeReconciliationService,
+  type AcquisitionCommercialOutcomeAuthority
 } from "./acquisition-crm-outcome-reconciliation.js";
 import type {
   QuoteProjectedDocumentAuthorityValidator
@@ -333,6 +334,7 @@ export interface CreateAcquisitionApplicationOptions {
   growthTemporalBarrier: GrowthTemporalBarrier;
   probabilityAssessments?: ProbabilityAssessmentWriter;
   quoteProjectedDocumentAuthority?: QuoteProjectedDocumentAuthorityValidator;
+  commercialOutcomeAuthority?: AcquisitionCommercialOutcomeAuthority;
   databaseUrl?: string;
   searchPort?: SearchPublicSourcesPort;
   contentFetcher?: AcquisitionContentFetcherPort;
@@ -1194,6 +1196,18 @@ export async function createAcquisitionApplication(
         store: options.store,
         outcomeRecorder: domainService,
         planRuns: repositories.planRun,
+        commercialAuthority: options.commercialOutcomeAuthority
+          ?? (() => {
+            const projected = options.quoteProjectedDocumentAuthority as
+              (QuoteProjectedDocumentAuthorityValidator & {
+                commercialOutcomeAuthority?: AcquisitionCommercialOutcomeAuthority;
+              }) | undefined;
+            const authority = projected?.commercialOutcomeAuthority;
+            return authority
+              && typeof authority.getVersion === "function"
+              && typeof authority.listAuthorityEvents === "function"
+              ? authority : undefined;
+          })(),
         now
       });
     const performanceQuery = new AcquisitionPerformanceQueryService({

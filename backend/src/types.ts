@@ -271,6 +271,8 @@ export interface AcquisitionOutcomeReconciliationDiagnostic {
     | "attribution_cross_tenant"
     | "deal_binding_ambiguous"
     | "commercial_authority_unverified"
+    | "commercial_authority_mismatch"
+    | "commercial_publication_incomplete"
     | "outcome_write_failed";
   message: string;
   occurredAt: string;
@@ -2578,11 +2580,20 @@ export interface DealEvent {
   candidateIdSnapshot: string | null;
   amountMinorSnapshot: number | null;
   currencySnapshot: string | null;
-  commercialAuthority?: "legacy_unverified" | "quote_projection";
+  commercialAuthority?: "legacy_unverified" | "quote_projection"
+    | "pre_quote_disqualified";
   quoteCaseIdSnapshot?: string | null;
   quoteVersionIdSnapshot?: string | null;
   commercialAmountHash?: `sha256:${string}` | null;
   dealAuthorityRevisionSnapshot?: number | null;
+  authorityRevision?: number | null;
+  commercialBindingEvidence?: import("./quote-repository.js")
+    .CommercialBindingEvidenceSnapshot | null;
+  commercialBindingSnapshot?: import("./commercial-binding-snapshot.js")
+    .CommercialBindingSnapshot | null;
+  reasonCode?: string | null;
+  reasonText?: string | null;
+  occurredAt?: string;
   recordedAt?: string;
   temporalSequence?: number;
   fromStage?: Deal["stage"];

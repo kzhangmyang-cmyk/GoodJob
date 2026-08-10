@@ -3,6 +3,7 @@ import { canonicalJsonStringify } from "./canonical-json.js";
 import type { ProbabilityAssessmentV2 } from "./probability-assessment.js";
 import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
+import type { Deal, DealEvent } from "./types.js";
 import { requireGrowthCapabilities } from "./growth-capabilities.js";
 import type {
   QuoteCalculationResult,
@@ -57,6 +58,9 @@ export interface DealAuthoritativeQuoteEvent {
   readonly commercialBindingEvidence?: CommercialBindingEvidenceSnapshot;
   readonly commercialBindingSnapshot?: CommercialBindingSnapshot;
   readonly decidedAt?: string;
+  readonly reasonCode?: string | null;
+  readonly reasonText?: string | null;
+  readonly decisionCommandHash?: `sha256:${string}`;
   readonly recordedAt: string;
   readonly temporalSequence: number;
 }
@@ -267,6 +271,38 @@ export interface QuoteApprovalDecisionPersistenceResult {
   readonly publicationOperation: QuotePublicationOperation;
 }
 
+export type DealCommercialDecisionPersistenceInput =
+  | { readonly type: "won" | "lost"; readonly quoteVersionId: string;
+      readonly commercialAmountHash: `sha256:${string}`;
+      readonly reasonCode: string | null; readonly reasonText: string | null;
+      readonly occurredAt: string }
+  | { readonly type: "pre_quote_disqualified";
+      readonly reasonCode: string; readonly reasonText: string | null;
+      readonly occurredAt: string };
+
+export interface DecideDealPersistenceCommand {
+  readonly workspaceId: string;
+  readonly actorId: string;
+  readonly dealId: string;
+  readonly expectedAuthorityRevision: number;
+  readonly input: DealCommercialDecisionPersistenceInput;
+  readonly stableCommandHash: `sha256:${string}`;
+  readonly requestHash: string;
+  readonly crm?: {
+    readonly deals: Deal[];
+    readonly dealEvents: DealEvent[];
+  };
+}
+
+export interface DealCommercialDecisionPersistenceResult {
+  readonly deal: Pick<Deal,
+    "id" | "customerId" | "stage" | "amountType" | "ownerId" | "teamId">;
+  readonly event: DealEvent;
+  readonly quoteCase: QuoteCase | null;
+  readonly authorityRevision: number;
+  readonly cancelledPublicationOperationIds: readonly string[];
+}
+
 export interface QuoteCaseListQuery {
   readonly status?: QuoteCase["status"];
   readonly assignedTo?: string;
@@ -380,6 +416,13 @@ export interface QuoteRepository {
     workspaceId: string,
     stableCommandHash: string
   ): Promise<QuoteApprovalDecisionPersistenceResult | null>;
+  decideDeal(
+    command: DecideDealPersistenceCommand
+  ): Promise<DealCommercialDecisionPersistenceResult>;
+  findDealDecisionByStableCommandHash(
+    workspaceId: string,
+    stableCommandHash: string
+  ): Promise<DealCommercialDecisionPersistenceResult | null>;
   getPublication(operationId: string): Promise<QuotePublicationOperation | null>;
   claimPublication(operationId: string, workerId: string, now: string,
     nextExpiry: string): Promise<QuotePublicationClaim | null>;
@@ -618,6 +661,8 @@ export class InMemoryQuoteRepository implements QuoteRepository {
   private readonly publicationHistory: QuotePublicationHistory[] = [];
   private readonly approvalDecisions = new Map<string,
     QuoteApprovalDecisionPersistenceResult>();
+  private readonly dealDecisions = new Map<string,
+    DealCommercialDecisionPersistenceResult>();
   private readonly receipts = new Map<string, Receipt>();
   private readonly workspaceMutationTails = new Map<string, Promise<void>>();
   private readonly temporalBarrier: GrowthTemporalBarrier;
@@ -698,6 +743,7 @@ export class InMemoryQuoteRepository implements QuoteRepository {
       publicationOperations: new Map(this.publicationOperations),
       publicationHistory: [...this.publicationHistory],
       approvalDecisions: new Map(this.approvalDecisions),
+      dealDecisions: new Map(this.dealDecisions),
       receipts: new Map(this.receipts)
     };
   }
@@ -716,6 +762,7 @@ export class InMemoryQuoteRepository implements QuoteRepository {
     restoreMap(this.approvals, snapshot.approvals);
     restoreMap(this.publicationOperations, snapshot.publicationOperations);
     restoreMap(this.approvalDecisions, snapshot.approvalDecisions);
+    restoreMap(this.dealDecisions, snapshot.dealDecisions);
     restoreMap(this.dealAuthorities, snapshot.dealAuthorities);
     restoreMap(this.receipts, snapshot.receipts);
     this.lifecycleEvents.splice(0, this.lifecycleEvents.length,
@@ -932,6 +979,252 @@ export class InMemoryQuoteRepository implements QuoteRepository {
     return this.approvalDecisions.get(this.caseKey(
       assertConcreteGrowthWorkspaceId(workspaceId), stableCommandHash
     )) ?? null;
+  }
+
+  async findDealDecisionByStableCommandHash(
+    workspaceId: string,
+    stableCommandHash: string
+  ) {
+    return this.dealDecisions.get(this.caseKey(
+      assertConcreteGrowthWorkspaceId(workspaceId),
+      required(stableCommandHash, "invalid_quote_stable_command_hash")
+    )) ?? null;
+  }
+
+  async decideDeal(
+    command: DecideDealPersistenceCommand
+  ): Promise<DealCommercialDecisionPersistenceResult> {
+    const workspaceId = assertConcreteGrowthWorkspaceId(command.workspaceId);
+    const decisionKey = this.caseKey(workspaceId, command.stableCommandHash);
+    const replay = this.dealDecisions.get(decisionKey);
+    if (replay) return replay;
+    if (!command.crm) throw quoteError("deal_crm_transaction_required");
+    const crmDeal = command.crm.deals.find((deal) =>
+      deal.id === command.dealId && deal.teamId === workspaceId);
+    if (!crmDeal) throw quoteError("deal_not_found");
+    const originalDeal = structuredClone(crmDeal);
+    const originalEventLength = command.crm.dealEvents.length;
+    let crmMutationStarted = false;
+    try {
+      return await this.mutation(workspaceId, async (tx, authorityStamp) => {
+        const secondReplay = this.dealDecisions.get(decisionKey);
+        if (secondReplay) return secondReplay;
+        const authorityKey = this.caseKey(workspaceId, command.dealId);
+        const currentAuthority = this.dealAuthorities.get(authorityKey) ?? null;
+        const currentRevision = currentAuthority?.authorityRevision ?? 0;
+        if (command.expectedAuthorityRevision !== Math.max(1, currentRevision)) {
+          throw quoteError("revision_conflict");
+        }
+        const priorDecision = this.authorityEvents.find((event) =>
+          event.workspaceId === workspaceId && event.dealId === command.dealId
+          && (event.eventType === "won" || event.eventType === "lost"));
+        if (priorDecision) throw quoteError("deal_already_decided");
+
+        const commercial = command.input.type !== "pre_quote_disqualified";
+        if (commercial && (!currentAuthority?.quoteVersionId
+          || currentAuthority.quoteVersionId !== command.input.quoteVersionId)) {
+          throw quoteError("quote_version_conflict");
+        }
+        if (commercial && currentAuthority?.commercialAmountHash
+          !== command.input.commercialAmountHash) {
+          throw quoteError("commercial_amount_hash_mismatch");
+        }
+        if (!commercial && currentAuthority?.quoteVersionId) {
+          throw quoteError("authoritative_quote_already_exists");
+        }
+
+        const quoteCase = currentAuthority?.openQuoteCaseId
+          ? this.cases.get(this.caseKey(workspaceId,
+              currentAuthority.openQuoteCaseId)) ?? null
+          : [...this.cases.values()].find((item) =>
+              item.workspaceId === workspaceId
+              && item.dealId === command.dealId && item.status === "open") ?? null;
+        const version = commercial
+          ? this.versions.get(this.caseKey(workspaceId,
+              command.input.quoteVersionId)) ?? null
+          : null;
+        let binding: CommercialBindingSnapshot | null = null;
+        let evidence: CommercialBindingEvidenceSnapshot | null = null;
+        let amountMinor: number | null = null;
+        let currency: string | null = null;
+        if (commercial) {
+          binding = version?.commercialBindingSnapshot as
+            CommercialBindingSnapshot | null;
+          amountMinor = Number(version?.quotedAmountMinor);
+          currency = String(version?.currency ?? "").toUpperCase();
+          if (!version || version.versionKind !== "formal"
+            || version.status !== "approved" || !quoteCase
+            || quoteCase.id !== version.quoteCaseId
+            || quoteCase.dealId !== command.dealId
+            || !binding || binding.dealId !== command.dealId
+            || binding.customerId !== quoteCase.customerId
+            || binding.candidateId !== quoteCase.candidateId
+            || canonicalJsonStringify(quoteCase.commercialBindingSnapshot)
+              !== canonicalJsonStringify(binding)
+            || !Number.isSafeInteger(amountMinor) || amountMinor <= 0
+            || !/^[A-Z]{3}$/u.test(currency)
+            || version.commercialAmountHash
+              !== command.input.commercialAmountHash) {
+            throw quoteError("commercial_binding_authority_mismatch");
+          }
+          const expectedBindingHash = hash({
+            customerId: binding.customerId,
+            handoffContentHash: binding.handoffContentHash,
+            dealContentHash: binding.dealContentHash,
+            bindingHashSchemaVersion: binding.bindingHashSchemaVersion
+          });
+          if (binding.bindingHashSchemaVersion !== "commercial-binding.v1"
+            || binding.bindingHash !== expectedBindingHash) {
+            throw quoteError("commercial_binding_authority_mismatch");
+          }
+          evidence = immutableQuoteValue({
+            candidateId: binding.candidateId,
+            customerId: binding.customerId,
+            dealId: binding.dealId,
+            handoffContentHash: binding.handoffContentHash,
+            dealContentHash: binding.dealContentHash,
+            bindingHashSchemaVersion: binding.bindingHashSchemaVersion,
+            bindingHash: binding.bindingHash
+          });
+        }
+
+        const authorityRevision = currentRevision + 1;
+        const eventType = command.input.type === "won" ? "won" : "lost";
+        const authorityEvent: DealAuthoritativeQuoteEvent = immutableQuoteValue({
+          id: `deal-authority-${workspaceId}-${authorityStamp.temporalSequence}`,
+          workspaceId, dealId: command.dealId, authorityRevision,
+          quoteCaseId: quoteCase?.id ?? "",
+          quoteVersionId: commercial ? command.input.quoteVersionId : null,
+          previousQuoteVersionId: currentAuthority?.quoteVersionId ?? null,
+          eventType, ...(commercial ? {
+            currency: currency!, quotedAmountMinor: amountMinor!,
+            commercialAmountHash: command.input.commercialAmountHash,
+            commercialBindingEvidence: evidence!,
+            commercialBindingSnapshot: immutableQuoteValue(
+              structuredClone(binding!))
+          } : {}),
+          reasonCode: command.input.reasonCode,
+          reasonText: command.input.reasonText,
+          decisionCommandHash: command.stableCommandHash,
+          decidedAt: command.input.occurredAt,
+          ...authorityStamp
+        });
+        this.authorityEvents.push(authorityEvent);
+
+        const cancelledIds: string[] = [];
+        const unfinished = new Set<QuotePublicationOperation["status"]>([
+          "queued", "running", "partial_failure", "failed"
+        ]);
+        for (const [key, operation] of this.publicationOperations) {
+          if (operation.workspaceId !== workspaceId
+            || operation.dealId !== command.dealId
+            || !unfinished.has(operation.status)) continue;
+          const stamp = await this.temporalBarrier.allocateAppend(tx,
+            workspaceId);
+          const cancelled = immutableQuoteValue({ ...operation,
+            status: "cancelled" as const, leaseOwner: null,
+            leaseExpiresAt: null, lastErrorCode: "deal_decided",
+            updatedAt: stamp.recordedAt });
+          this.publicationOperations.set(key, cancelled);
+          this.publicationHistory.push(immutableQuoteValue({
+            id: `quote-publication-history-${workspaceId}-${stamp.temporalSequence}`,
+            workspaceId, operationId: operation.id, status: "cancelled" as const,
+            leaseOwner: operation.leaseOwner,
+            fencingToken: operation.fencingToken, authorityRevision,
+            piDocumentId: operation.piDocumentId,
+            dealEventId: operation.dealEventId,
+            errorCode: "deal_decided", actorId: command.actorId, ...stamp
+          }));
+          cancelledIds.push(operation.id);
+        }
+
+        const dealEventStamp = await this.temporalBarrier.allocateAppend(tx,
+          workspaceId);
+        const previousStage = crmDeal.stage;
+        crmMutationStarted = true;
+        Object.assign(crmDeal, {
+          stage: eventType === "won" ? "成交" : "丢单",
+          amountType: command.input.type === "won" ? "won"
+            : commercial ? "quoted" : "estimate",
+          ...(commercial ? { amount: amountMinor! / 100, currency } : {}),
+          stageChangedAt: dealEventStamp.recordedAt,
+          closedAt: command.input.occurredAt,
+          ...(eventType === "won"
+            ? { wonReason: command.input.reasonText ?? undefined }
+            : { lostReasonCategory: command.input.reasonCode ?? undefined,
+                lostReason: command.input.reasonText ?? undefined })
+        });
+        const dealEvent: DealEvent = Object.freeze({
+          id: `deal-decision-${command.stableCommandHash.slice(7, 47)}`,
+          dealId: command.dealId, type: eventType,
+          content: command.input.reasonText ?? command.input.reasonCode ?? "",
+          operatorId: command.actorId, ownerIdSnapshot: crmDeal.ownerId,
+          teamIdSnapshot: crmDeal.teamId,
+          customerIdSnapshot: commercial ? binding!.customerId : crmDeal.customerId,
+          leadIdSnapshot: commercial ? binding!.leadId : null,
+          handoffIdSnapshot: commercial ? binding!.handoffId : null,
+          candidateIdSnapshot: commercial ? binding!.candidateId : null,
+          amountMinorSnapshot: commercial ? amountMinor : null,
+          currencySnapshot: commercial ? currency : null,
+          commercialAuthority: commercial ? "quote_projection"
+            : "pre_quote_disqualified",
+          quoteCaseIdSnapshot: quoteCase?.id ?? null,
+          quoteVersionIdSnapshot: commercial ? command.input.quoteVersionId : null,
+          commercialAmountHash: commercial
+            ? command.input.commercialAmountHash : null,
+          dealAuthorityRevisionSnapshot: authorityRevision,
+          authorityRevision,
+          commercialBindingEvidence: commercial ? evidence : null,
+          commercialBindingSnapshot: commercial
+            ? immutableQuoteValue(structuredClone(binding!)) : null,
+          reasonCode: command.input.reasonCode,
+          reasonText: command.input.reasonText,
+          occurredAt: command.input.occurredAt,
+          fromStage: previousStage,
+          toStage: eventType === "won" ? "成交" : "丢单",
+          recordedAt: dealEventStamp.recordedAt,
+          temporalSequence: dealEventStamp.temporalSequence,
+          createdAt: dealEventStamp.recordedAt
+        });
+        command.crm!.dealEvents.push(dealEvent);
+
+        let closedCase: QuoteCase | null = quoteCase;
+        if (quoteCase) {
+          const lifecycleStamp = await this.temporalBarrier.allocateAppend(tx,
+            workspaceId);
+          closedCase = immutableCase({ ...quoteCase, status: "closed",
+            currentDraftVersionId: null, revision: quoteCase.revision + 1,
+            updatedAt: lifecycleStamp.recordedAt });
+          this.cases.set(this.caseKey(workspaceId, quoteCase.id), closedCase);
+          this.appendCaseLifecycle({ workspaceId, quoteCaseId: quoteCase.id,
+            quoteVersionId: commercial ? command.input.quoteVersionId : null,
+            revision: closedCase.revision, fromStatus: quoteCase.status,
+            toStatus: "closed", eventType: "case_closed",
+            actorId: command.actorId }, lifecycleStamp);
+        }
+        this.dealAuthorities.set(authorityKey, immutableQuoteValue({
+          workspaceId, dealId: command.dealId, openQuoteCaseId: null,
+          quoteVersionId: null, commercialAmountHash: null,
+          authorityRevision, updatedAt: authorityStamp.recordedAt
+        }));
+        const result = immutableQuoteValue({
+          deal: { id: crmDeal.id, customerId: crmDeal.customerId,
+            stage: crmDeal.stage, amountType: crmDeal.amountType,
+            ownerId: crmDeal.ownerId, teamId: crmDeal.teamId },
+          event: dealEvent,
+          quoteCase: closedCase, authorityRevision,
+          cancelledPublicationOperationIds: Object.freeze(cancelledIds)
+        });
+        this.dealDecisions.set(decisionKey, result);
+        return result;
+      });
+    } catch (error) {
+      if (crmMutationStarted) {
+        Object.assign(crmDeal, originalDeal);
+        command.crm.dealEvents.splice(originalEventLength);
+      }
+      throw error;
+    }
   }
 
   async decideApproval(
