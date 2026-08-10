@@ -1071,6 +1071,42 @@ export interface CatalogItem {
   updatedAt: string;
 }
 
+export type ApprovalCapability =
+  | "quote.confirm"
+  | "quote.exception.discount.approve"
+  | "quote.exception.margin.approve"
+  | "quote.exception.payment_terms.approve"
+  | "quote.exception.gift.approve"
+  | "quote.exception.credit.approve"
+  | "quote.exception.manual.approve";
+
+export interface ApprovalThresholds {
+  discountCapability: ApprovalCapability;
+  marginCapability: ApprovalCapability;
+  paymentTermsCapability: ApprovalCapability;
+  giftCapability: ApprovalCapability;
+  creditCapability: ApprovalCapability;
+  manualCapability: ApprovalCapability;
+  creditRiskThresholdBps: number;
+  manualEscalationEnabled: boolean;
+}
+
+export interface SurchargePolicy {
+  kind: "region" | "delivery" | "payment_term";
+  condition: string;
+  fixedAmountMinor: number;
+  unitAmountMinor: number;
+}
+
+export interface GiftPolicy {
+  catalogItemId: string;
+  unitStandardCostMinor: number;
+  standardQuantityMicros: number;
+  absoluteQuantityMicros: number;
+  standardCostLimitMinor: number;
+  absoluteCostLimitMinor: number;
+}
+
 export interface PricingPolicyVersion {
   id: string;
   workspaceId: string;
@@ -1096,7 +1132,7 @@ export interface PricingPolicyVersion {
   validFrom: string;
   validTo: string | null;
   status: "draft" | "active" | "retired";
-  source: "manual" | "legacy_commission_product";
+  source: "native" | "legacy_commission_product";
   capabilityRegistryVersion: string;
   revision: number;
   createdBy: string;
@@ -1104,7 +1140,7 @@ export interface PricingPolicyVersion {
 }
 ```
 
-Define `PackageVersion`, `PackageComponent`, the closed threshold/surcharge/gift unions, migration link/run/item records, and immutable clone-on-read behavior in the same domain/repository files. Stage 1 reuses these exported names without introducing a second catalog model.
+Define `PackageVersion`, `PackageComponent`, the exact closed approval-threshold, surcharge, and gift objects above, migration link/run/item records, and immutable clone-on-read behavior in the same domain/repository files. `capabilityRegistryVersion` is internal persisted audit metadata and every later DTO projector omits it. Stage 1 reuses these exported names without introducing a second catalog model.
 
 - [ ] **Step 4: Implement safe migration and freeze the legacy-link authority**
 

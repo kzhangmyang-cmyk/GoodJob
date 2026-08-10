@@ -1,46 +1,38 @@
-import type { GrowthCapability } from "./growth-capabilities.js";
-
-export interface ApprovalThreshold {
-  standard: number;
-  absolute: number;
-  requiredCapability: GrowthCapability;
-}
+export type ApprovalCapability =
+  | "quote.confirm"
+  | "quote.exception.discount.approve"
+  | "quote.exception.margin.approve"
+  | "quote.exception.payment_terms.approve"
+  | "quote.exception.gift.approve"
+  | "quote.exception.credit.approve"
+  | "quote.exception.manual.approve";
 
 export interface ApprovalThresholds {
-  discount: ApprovalThreshold;
-  margin: ApprovalThreshold;
-  paymentTerms: ApprovalThreshold;
-  gift: ApprovalThreshold;
-  credit: ApprovalThreshold;
-  manualEscalation: Readonly<{
-    enabled: boolean;
-    requiredCapability: GrowthCapability;
-  }>;
+  discountCapability: ApprovalCapability;
+  marginCapability: ApprovalCapability;
+  paymentTermsCapability: ApprovalCapability;
+  giftCapability: ApprovalCapability;
+  creditCapability: ApprovalCapability;
+  manualCapability: ApprovalCapability;
+  creditRiskThresholdBps: number;
+  manualEscalationEnabled: boolean;
 }
 
-export interface SurchargePredicate {
-  region?: string;
-  deliveryMethod?: string;
-  paymentTermDays?: Readonly<{ minimum: number | null; maximum: number | null }>;
+export interface SurchargePolicy {
+  kind: "region" | "delivery" | "payment_term";
+  condition: string;
+  fixedAmountMinor: number;
+  unitAmountMinor: number;
 }
 
-export type SurchargePolicy =
-  | { kind: "fixed_order"; amountMinor: number; when: SurchargePredicate }
-  | { kind: "per_unit"; unitAmountMinor: number; when: SurchargePredicate };
-
-export type GiftPolicy =
-  | {
-      kind: "quantity_limit";
-      standardQuantityMicros: number;
-      absoluteQuantityMicros: number;
-      requiredCapability: GrowthCapability;
-    }
-  | {
-      kind: "cost_limit";
-      standardCostMinor: number;
-      absoluteCostMinor: number;
-      requiredCapability: GrowthCapability;
-    };
+export interface GiftPolicy {
+  catalogItemId: string;
+  unitStandardCostMinor: number;
+  standardQuantityMicros: number;
+  absoluteQuantityMicros: number;
+  standardCostLimitMinor: number;
+  absoluteCostLimitMinor: number;
+}
 
 export interface CatalogItem {
   id: string;
@@ -82,7 +74,7 @@ export interface PricingPolicyVersion {
   validFrom: string;
   validTo: string | null;
   status: "draft" | "active" | "retired";
-  source: "manual" | "legacy_commission_product";
+  source: "native" | "legacy_commission_product";
   capabilityRegistryVersion: string;
   revision: number;
   createdBy: string;

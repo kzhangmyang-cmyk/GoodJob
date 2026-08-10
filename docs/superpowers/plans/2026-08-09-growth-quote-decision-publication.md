@@ -111,8 +111,8 @@ test("fractional quantity floors use ceiling before surcharge", () => {
       unitStandardCostMinor: 100,
       absoluteFloorUnitPriceMinor: 333,
       surchargePolicies: [{
-        kind: "fixed_order", amountMinor: 1_000,
-        when: { region: "CN-FJ", deliveryMethod: "onsite" }
+        kind: "region", condition: "CN-FJ",
+        fixedAmountMinor: 1_000, unitAmountMinor: 0
       }]
     }),
     { giftPolicies: [], packageSnapshot: null }

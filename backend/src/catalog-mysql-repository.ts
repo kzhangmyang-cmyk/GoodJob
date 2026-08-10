@@ -85,7 +85,7 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     valid_from DATETIME(3) NOT NULL,
     valid_to DATETIME(3) NULL,
     policy_status ENUM('draft','active','retired') NOT NULL,
-    source ENUM('manual','legacy_commission_product') NOT NULL,
+    source ENUM('native','legacy_commission_product') NOT NULL,
     capability_registry_version VARCHAR(100) NOT NULL,
     revision BIGINT UNSIGNED NOT NULL,
     created_by VARCHAR(191) NOT NULL,

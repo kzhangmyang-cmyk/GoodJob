@@ -44,7 +44,7 @@
 
 **Interfaces:**
 - Consumes: foundation `CatalogItem`, `PricingPolicyVersion`, `PackageVersion`, `PackageComponent`, `ActiveWorkspaceContext`, `CommandContext`, the sole `growth-money.ts` fixed-point/ISO registry implementation, and the exact Foundation `GrowthTemporalTransaction`/`GrowthTemporalBarrier` ports. The repository transaction adapter, not a caller timestamp, owns append authority.
-- Produces: closed `ApprovalThresholds`, `SurchargePolicy`, and `GiftPolicy` discriminated unions; no index signature or unrecognized rule key is accepted.
+- Produces: the frozen v1 closed `ApprovalThresholds`, `SurchargePolicy`, and `GiftPolicy` objects; no index signature, old union variant, or unrecognized field is accepted.
 - Produces: `CatalogListQuery { cursor: string | null; limit: number; sort: "code" | "name" | "updatedAt"; direction: "asc" | "desc"; type?: CatalogItem["type"]; status?: CatalogItem["status"] }`.
 - Produces repository reads: `listCatalogItems(workspaceId, query)`, `findCatalogItem(workspaceId,id)`, `listPricingPolicies(workspaceId,query)`, `findPricingPolicyVersion(workspaceId,id)`, `listPackageVersions(workspaceId,itemId,query)`, `findPackageVersion(workspaceId,id)`, and `listPackageComponents(workspaceId,packageVersionId)`.
 - Produces repository commands: `createCatalogItem(command)`, `updateCatalogItem(command)`, `retireCatalogItem(command)`, `createPricingPolicyDraft(command)`, `activatePricingPolicy(command)`, `retirePricingPolicy(command)`, `createPackageVersionDraft(command)`, `updatePackageVersionDraft(command)`, `activatePackageVersion(command)`, and `retirePackageVersion(command)`.
@@ -84,18 +84,24 @@ Expected: FAIL because the foundation repository lacks the complete command surf
 - [ ] **Step 3: Implement closed domain unions**
 
 ```ts
-export type SurchargePolicy =
-  | { kind: "fixed_order"; amountMinor: number; when: SurchargePredicate }
-  | { kind: "per_unit"; unitAmountMinor: number; when: SurchargePredicate };
+export interface SurchargePolicy {
+  kind: "region" | "delivery" | "payment_term";
+  condition: string;
+  fixedAmountMinor: number;
+  unitAmountMinor: number;
+}
 
-export type GiftPolicy =
-  | { kind: "quantity_limit"; standardQuantityMicros: number;
-      absoluteQuantityMicros: number; requiredCapability: GrowthCapability }
-  | { kind: "cost_limit"; standardCostMinor: number;
-      absoluteCostMinor: number; requiredCapability: GrowthCapability };
+export interface GiftPolicy {
+  catalogItemId: string;
+  unitStandardCostMinor: number;
+  standardQuantityMicros: number;
+  absoluteQuantityMicros: number;
+  standardCostLimitMinor: number;
+  absoluteCostLimitMinor: number;
+}
 ```
 
-Define surcharge variants for fixed order amount and per-unit amount, each with closed structured predicates for region, delivery method, and payment-term range. Define gift thresholds for ordinary and absolute quantity/cost limits. Define approval rule keys exactly as discount, margin, payment terms, gift, credit, and manual escalation, each mapped to one registered capability.
+Use the Foundation `ApprovalThresholds` object with its six named capability fields, `creditRiskThresholdBps`, and `manualEscalationEnabled`. A surcharge selects exactly one v1 condition kind (`region`, `delivery`, or `payment_term`) and carries both fixed and per-unit amounts. A gift policy references its catalog item and carries both ordinary/absolute quantity and cost limits.
 
 - [ ] **Step 4: Implement repository commands and MySQL locking**
 
@@ -324,19 +330,32 @@ Expected: FAIL because `PricingPolicyService` and policy routes are absent.
 - [ ] **Step 3: Implement closed validation and immutable versioning**
 
 ```ts
-const RULE_CAPABILITIES = Object.freeze({
-  discount: "quote.exception.discount.approve",
-  margin: "quote.exception.margin.approve",
-  payment_terms: "quote.exception.payment_terms.approve",
-  gift: "quote.exception.gift.approve",
-  credit: "quote.exception.credit.approve",
-  manual: "quote.exception.manual.approve"
-} as const satisfies Record<ApprovalRuleKey, GrowthCapability>);
+const APPROVAL_CAPABILITIES = Object.freeze({
+  discountCapability: "quote.exception.discount.approve",
+  marginCapability: "quote.exception.margin.approve",
+  paymentTermsCapability: "quote.exception.payment_terms.approve",
+  giftCapability: "quote.exception.gift.approve",
+  creditCapability: "quote.exception.credit.approve",
+  manualCapability: "quote.exception.manual.approve"
+} as const satisfies Partial<ApprovalThresholds>);
 
 export function requiredCapabilitiesForPolicy(policy: PricingPolicyVersion) {
-  return Object.freeze([...new Set(
-    policy.approvalThresholds.rules.map((rule) => RULE_CAPABILITIES[rule.kind])
-  )]);
+  const thresholds = policy.approvalThresholds;
+  for (const [field, required] of Object.entries(APPROVAL_CAPABILITIES)) {
+    if (thresholds[field as keyof typeof APPROVAL_CAPABILITIES] !== required) {
+      throw Object.assign(new Error("invalid approval capability mapping"), {
+        code: "invalid_approval_capability_mapping"
+      });
+    }
+  }
+  return Object.freeze([
+    thresholds.discountCapability,
+    thresholds.marginCapability,
+    thresholds.paymentTermsCapability,
+    thresholds.giftCapability,
+    thresholds.creditCapability,
+    thresholds.manualCapability
+  ]);
 }
 ```
 
@@ -344,7 +363,7 @@ Create always appends a draft with the next parent-locked version. Activation lo
 
 - [ ] **Step 4: Add policy routes and current-capability replay projection**
 
-Implement strict bodies, cursor list, ETags, idempotency, `If-Match`, error codes, and response projection. A replay after a user's sensitive capability is removed reloads and returns the redacted object; it never returns the first response body.
+Implement strict bodies, cursor list, ETags, idempotency, `If-Match`, error codes, and explicit response projectors. The Full projector adds `amountVisibility: "full"` and strips internal `capabilityRegistryVersion`. The Redacted projector adds `amountVisibility: "redacted"`, strips that internal audit field, and strips every sensitive field declared absent by the frozen v1 RedactedProjection schema. A replay after a user's sensitive capability is removed reloads and returns the redacted object; it never returns the first response body.
 
 - [ ] **Step 5: Verify GREEN**
 

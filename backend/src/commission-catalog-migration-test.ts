@@ -66,6 +66,16 @@ test("migration creates one traceable catalog item and initial policy", async ()
   assert.equal(policy?.listUnitPriceMinor, 2_980_000);
   assert.equal(policy?.unitStandardCostMinor, 800_000);
   assert.equal(policy?.absoluteFloorUnitPriceMinor, 800_000);
+  assert.deepEqual(policy?.approvalThresholds, {
+    discountCapability: "quote.exception.discount.approve",
+    marginCapability: "quote.exception.margin.approve",
+    paymentTermsCapability: "quote.exception.payment_terms.approve",
+    giftCapability: "quote.exception.gift.approve",
+    creditCapability: "quote.exception.credit.approve",
+    manualCapability: "quote.exception.manual.approve",
+    creditRiskThresholdBps: 0,
+    manualEscalationEnabled: false
+  });
   assert.match(result.items[0]!.snapshotHash, /^sha256:[a-f0-9]{64}$/u);
   assert.match(result.reportHash, /^sha256:[a-f0-9]{64}$/u);
   assert.equal(Object.isFrozen(result), true);

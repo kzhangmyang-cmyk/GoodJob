@@ -43,6 +43,8 @@ test("catalog schema uses dedicated append-oriented tables", async () => {
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_product_catalog_links/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_catalog_migration_runs/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_catalog_migration_items/u);
+  assert.match(schemaSql, /source ENUM\('native','legacy_commission_product'\)/u);
+  assert.doesNotMatch(schemaSql, /source ENUM\('manual'/u);
   assert.match(schemaSql, /FOREIGN KEY \(workspace_id, catalog_item_id\)/u);
   assert.match(schemaSql, /FOREIGN KEY \(workspace_id, package_version_id\)/u);
   assert.match(schemaSql, /FOREIGN KEY \(workspace_id, pricing_policy_version_id\)/u);
@@ -154,9 +156,22 @@ test("mysql catalog reads are workspace-scoped and clone parsed JSON", async () 
     standard_discount_limit_bps: 0, absolute_discount_limit_bps: 0,
     target_gross_margin_bps: 0, absolute_minimum_gross_margin_bps: 0,
     standard_payment_term_days: 0, absolute_payment_term_days: 0,
-    approval_thresholds_json: "{}", surcharge_policies_json: "[]",
+    approval_thresholds_json: JSON.stringify({
+      discountCapability: "quote.exception.discount.approve",
+      marginCapability: "quote.exception.margin.approve",
+      paymentTermsCapability: "quote.exception.payment_terms.approve",
+      giftCapability: "quote.exception.gift.approve",
+      creditCapability: "quote.exception.credit.approve",
+      manualCapability: "quote.exception.manual.approve",
+      creditRiskThresholdBps: 0,
+      manualEscalationEnabled: false
+    }),
+    surcharge_policies_json: JSON.stringify([{
+      kind: "region", condition: "CN-FJ",
+      fixedAmountMinor: 1_000, unitAmountMinor: 0
+    }]),
     gift_policies_json: "[]", valid_from: "2026-08-09T08:00:00.000Z",
-    valid_to: null, status: "draft", source: "manual",
+    valid_to: null, status: "draft", source: "native",
     capability_registry_version: "growth-capabilities.v1", revision: 1,
     created_by: "admin-1", created_at: "2026-08-09T08:00:00.000Z"
   }]);
@@ -164,6 +179,12 @@ test("mysql catalog reads are workspace-scoped and clone parsed JSON", async () 
   const policy = await repository.findPricingPolicyVersion("team-a", "policy-1");
   assert.ok(policy);
   assert.equal(Object.isFrozen(policy), true);
+  assert.equal(policy.source, "native");
+  assert.equal(policy.approvalThresholds.manualEscalationEnabled, false);
+  assert.deepEqual(policy.surchargePolicies, [{
+    kind: "region", condition: "CN-FJ",
+    fixedAmountMinor: 1_000, unitAmountMinor: 0
+  }]);
   assert.deepEqual(pool.calls.at(-1)?.values, ["team-a", "policy-1"]);
   assert.match(pool.calls.at(-1)!.sql, /workspace_id = \? AND id = \?/u);
 });

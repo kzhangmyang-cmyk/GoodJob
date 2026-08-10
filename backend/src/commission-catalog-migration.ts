@@ -340,30 +340,14 @@ function decimalToMinor(
 }
 
 const LEGACY_APPROVAL_THRESHOLDS: ApprovalThresholds = Object.freeze({
-  discount: Object.freeze({
-    standard: 0, absolute: 0,
-    requiredCapability: "quote.exception.discount.approve" as const
-  }),
-  margin: Object.freeze({
-    standard: 0, absolute: 0,
-    requiredCapability: "quote.exception.margin.approve" as const
-  }),
-  paymentTerms: Object.freeze({
-    standard: 0, absolute: 0,
-    requiredCapability: "quote.exception.payment_terms.approve" as const
-  }),
-  gift: Object.freeze({
-    standard: 0, absolute: 0,
-    requiredCapability: "quote.exception.gift.approve" as const
-  }),
-  credit: Object.freeze({
-    standard: 0, absolute: 0,
-    requiredCapability: "quote.exception.credit.approve" as const
-  }),
-  manualEscalation: Object.freeze({
-    enabled: false,
-    requiredCapability: "quote.exception.manual.approve" as const
-  })
+  discountCapability: "quote.exception.discount.approve",
+  marginCapability: "quote.exception.margin.approve",
+  paymentTermsCapability: "quote.exception.payment_terms.approve",
+  giftCapability: "quote.exception.gift.approve",
+  creditCapability: "quote.exception.credit.approve",
+  manualCapability: "quote.exception.manual.approve",
+  creditRiskThresholdBps: 0,
+  manualEscalationEnabled: false
 });
 
 function resultForRepair(
