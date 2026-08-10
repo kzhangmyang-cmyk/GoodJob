@@ -12270,6 +12270,8 @@ async function startServer() {
       acquisitionWorkspace:
         growthRuntime.integrations.acquisitionWorkspace,
       growthTemporalBarrier: growthRuntime.integrations.temporalBarrier,
+      probabilityAssessments:
+        growthRuntime.integrations.probabilityAssessments,
       quoteProjectedDocumentAuthority:
         growthRuntime.integrations.quoteProjectedDocumentAuthority
     });

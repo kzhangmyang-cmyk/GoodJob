@@ -105,6 +105,9 @@ import {
 import type {
   QuoteProjectedDocumentAuthorityValidator
 } from "./commercial-authority-guard.js";
+import type {
+  ProbabilityAssessmentWriter
+} from "./probability-assessment.js";
 import {
   AcquisitionCrmOutcomeReconciliationWorker
 } from "./acquisition-crm-outcome-reconciliation-worker.js";
@@ -328,6 +331,7 @@ export interface CreateAcquisitionApplicationOptions {
   growthToolPorts: GrowthCommercialToolPorts;
   acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
   growthTemporalBarrier: GrowthTemporalBarrier;
+  probabilityAssessments?: ProbabilityAssessmentWriter;
   quoteProjectedDocumentAuthority?: QuoteProjectedDocumentAuthorityValidator;
   databaseUrl?: string;
   searchPort?: SearchPublicSourcesPort;
@@ -375,6 +379,49 @@ export interface CreateAcquisitionApplicationOptions {
 export interface AcquisitionApplicationRuntime
 extends AcquisitionHttpRuntime {
   planDraftGenerator: AcquisitionPlanDraftGenerator;
+}
+
+/**
+ * The sole qualification decorator. Keeping it at the application boundary
+ * makes HTTP, Pi, pipelines and recovery paths share the same required write.
+ */
+export function createProbabilityAssessmentQualificationService(
+  rawDomainService: AcquisitionDomainService,
+  probabilityAssessments: ProbabilityAssessmentWriter
+): AcquisitionDomainService {
+  const qualifyCandidate: AcquisitionDomainService["qualifyCandidate"] =
+    async (...args) => {
+      const result = await rawDomainService.qualifyCandidate(...args);
+      const workspace = await rawDomainService
+        .resolveGrowthAcquisitionWorkspace(args[0]);
+      if (!workspace) {
+        throw new Error("growth_acquisition_workspace_not_found");
+      }
+      const source = result.probabilityAssessmentSource;
+      await probabilityAssessments.recordFromQualification({
+        workspaceId: workspace.workspaceId,
+        candidateId: result.candidate.id,
+        dealId: null,
+        qualificationDecisionId: source.qualificationDecisionId,
+        qualificationDecisionVersion: source.qualificationDecisionVersion,
+        qualificationInputHash: source.qualificationInputHash,
+        evidenceRefs: source.evidenceRefs,
+        ruleVersion: source.ruleVersion,
+        modelSnapshotRef: source.modelSnapshotRef,
+        financial: { closeProbabilityBps: source.closeProbabilityBps },
+        assessedAt: source.assessedAt
+      });
+      return result;
+    };
+  return new Proxy(rawDomainService, {
+    get(target, property) {
+      if (property === "qualifyCandidate") return qualifyCandidate;
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function"
+        ? value.bind(target)
+        : value;
+    }
+  });
 }
 
 interface AcquisitionRepositorySet {
@@ -1101,7 +1148,7 @@ export async function createAcquisitionApplication(
       );
     }
 
-    const domainService = (
+    const rawDomainService = (
       options.domainServiceFactory
       ?? ((input) => new AcquisitionDomainService(input))
     )({
@@ -1116,6 +1163,12 @@ export async function createAcquisitionApplication(
       idFactory,
       now
     });
+    const domainService = options.probabilityAssessments
+      ? createProbabilityAssessmentQualificationService(
+          rawDomainService,
+          options.probabilityAssessments
+        )
+      : rawDomainService;
     const candidateRunAttribution =
       new AcquisitionCandidateRunAttributionResolver({
         planRuns: repositories.planRun

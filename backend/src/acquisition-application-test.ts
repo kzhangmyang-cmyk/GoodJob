@@ -22,6 +22,7 @@ import {
 } from "./acquisition-plan-contract.js";
 import {
   acquisitionProviderConnectionVersion,
+  createProbabilityAssessmentQualificationService,
   createAcquisitionActiveSearchConnectionDirectory,
   createAcquisitionApplication as createAcquisitionApplicationRuntime,
   type CreateAcquisitionApplicationOptions,
@@ -98,6 +99,7 @@ import {
 import {
   createGrowthAcquisitionWorkspaceResolver
 } from "./growth-workspace-context.js";
+import type { ProbabilityAssessmentWriter } from "./probability-assessment.js";
 
 const OWNER = "owner-application";
 const TEAM = "team-application";
@@ -130,6 +132,58 @@ function createAcquisitionApplication(
     ...options
   } as CreateAcquisitionApplicationOptions);
 }
+
+test("application qualification wrapper records fresh and replayed domain results", async () => {
+  const writes: Parameters<ProbabilityAssessmentWriter["recordFromQualification"]>[0][] = [];
+  const result = {
+    candidate: { id: "candidate-wrapper" },
+    qualification: { id: "qualification-wrapper" },
+    financialValue: { id: "financial-wrapper" },
+    probabilityAssessmentSource: {
+      closeProbabilityBps: 4_321,
+      qualificationDecisionId: "qualification-wrapper",
+      qualificationDecisionVersion: "decision-v2",
+      qualificationInputHash: `sha256:${"a".repeat(64)}` as const,
+      evidenceRefs: ["evidence-wrapper"],
+      ruleVersion: "qualification-rules.v2",
+      modelSnapshotRef: "model-snapshot-wrapper",
+      assessedAt: "2026-08-09T08:00:00.000Z"
+    }
+  };
+  let domainCalls = 0;
+  const raw = {
+    async resolveGrowthAcquisitionWorkspace() {
+      return { workspaceId: TEAM, kind: "team", bindingRevision: "binding-1" };
+    },
+    async qualifyCandidate() {
+      domainCalls += 1;
+      return structuredClone(result);
+    }
+  } as unknown as AcquisitionDomainService;
+  const wrapped = createProbabilityAssessmentQualificationService(raw, {
+    async recordFromQualification(input) {
+      writes.push(structuredClone(input));
+      return {} as never;
+    }
+  });
+  assert.notEqual(wrapped, raw);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    assert.deepEqual(await wrapped.qualifyCandidate(
+      { ownerId: OWNER, teamId: TEAM, actorId: OWNER },
+      "candidate-wrapper",
+      {} as never,
+      {} as never,
+      "stable-idempotency-key"
+    ), result);
+  }
+  assert.equal(domainCalls, 2);
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes[0], writes[1]);
+  assert.equal(writes[0]?.workspaceId, TEAM);
+  assert.equal(writes[0]?.financial.closeProbabilityBps, 4_321);
+  assert.equal(writes[0]?.qualificationDecisionVersion, "decision-v2");
+  assert.equal(writes[0]?.qualificationInputHash, `sha256:${"a".repeat(64)}`);
+});
 
 function modelConfig(): AiModelConfig {
   return {

@@ -22,6 +22,11 @@ import type {
   CommissionCatalogProjectionPort
 } from "./commission-catalog-projection.js";
 import type { CrmStore } from "./store.js";
+import {
+  GROWTH_PROBABILITY_ASSESSMENTS,
+  createGrowthQuoteModule
+} from "./growth-quote-module.js";
+import type { ProbabilityAssessmentWriter } from "./probability-assessment.js";
 
 export interface GrowthCommercialModule {
   readonly name: string;
@@ -63,6 +68,7 @@ export interface GrowthAcquisitionIntegrations {
   acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
   temporalBarrier: GrowthTemporalBarrier;
   commissionCatalogProjection: CommissionCatalogProjectionPort;
+  probabilityAssessments: ProbabilityAssessmentWriter;
   /** Foundation 0.3/Quote Task 6 replaces this absent, fail-closed seam. */
   quoteProjectedDocumentAuthority?: never;
 }
@@ -84,6 +90,9 @@ export function createGrowthCommercialComposition(
     projectIntegrations(privateServices: GrowthPrivateServiceRegistry) {
       const services = privateServices.get(GROWTH_FOUNDATION_SERVICES);
       const catalog = privateServices.require(GROWTH_CATALOG_SERVICES);
+      const probabilityAssessments = privateServices.require(
+        GROWTH_PROBABILITY_ASSESSMENTS
+      );
       const acquisitionWorkspace = services?.acquisitionWorkspace
         ?? foundation.acquisitionWorkspace;
       const temporalBarrier = services?.temporalBarrier
@@ -92,7 +101,8 @@ export function createGrowthCommercialComposition(
       return Object.freeze({
         acquisitionWorkspace,
         temporalBarrier,
-        commissionCatalogProjection: catalog.commissionCatalogProjection
+        commissionCatalogProjection: catalog.commissionCatalogProjection,
+        probabilityAssessments
       });
     }
   });
@@ -138,9 +148,11 @@ export function createGrowthCommercialCompositionForStore(options: {
       mode: "mysql", pool, acquisitionWorkspace, closePool: () => pool.end()
     }));
     modules.push(createGrowthCatalogModule({ mode: "mysql", pool }));
+    modules.push(createGrowthQuoteModule({ mode: "mysql", pool }));
   } else {
     modules.push(createGrowthFoundationModule({ mode: "memory", acquisitionWorkspace }));
     modules.push(createGrowthCatalogModule({ mode: "memory" }));
+    modules.push(createGrowthQuoteModule({ mode: "memory" }));
   }
   return Object.freeze({
     composition: createGrowthCommercialComposition({

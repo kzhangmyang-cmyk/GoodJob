@@ -480,6 +480,46 @@ test("rules qualification creates append-only decisions and a separate financial
   );
 });
 
+test("qualification replay preserves the original lossless probability source", async () => {
+  const { service } = createHarness();
+  const { candidate, evidence } = await createOrganizationCandidate(
+    service,
+    "probability-source"
+  );
+  const financial = healthyFinancialValue();
+  financial.closeProbabilityBps = 4_321;
+  const first = await service.qualifyCandidate(
+    ownerScope,
+    candidate.id,
+    strongQualification(),
+    financial,
+    "qualify:probability-source"
+  );
+  const replay = await service.qualifyCandidate(
+    ownerScope,
+    candidate.id,
+    strongQualification(),
+    financial,
+    "qualify:probability-source"
+  );
+  assert.deepEqual(replay.probabilityAssessmentSource, {
+    closeProbabilityBps: 4_321,
+    qualificationDecisionId: first.qualification.id,
+    qualificationDecisionVersion: first.qualification.decisionVersion,
+    qualificationInputHash: replay.probabilityAssessmentSource
+      .qualificationInputHash,
+    evidenceRefs: [evidence.id],
+    ruleVersion: "qualification-rules.v1",
+    modelSnapshotRef: null,
+    assessedAt: first.qualification.createdAt
+  });
+  assert.match(
+    replay.probabilityAssessmentSource.qualificationInputHash,
+    /^sha256:[a-f0-9]{64}$/u
+  );
+  assert.deepEqual(replay.probabilityAssessmentSource, first.probabilityAssessmentSource);
+});
+
 test("current financial value selects the newest record for the latest qualification without mutating state", async () => {
   const { repository, service } = createHarness();
   const { candidate } = await createOrganizationCandidate(service);

@@ -4,8 +4,32 @@ import type { CommandContext } from "./growth-command-context.js";
 import type { QuoteCalculationInput } from "./quote-domain.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import type { Role } from "./types.js";
+import type { ProbabilityAssessmentV2 } from "./probability-assessment.js";
 
 const FIXED_INSTANT = "2026-08-01T00:00:00.000Z";
+
+export function probabilityRecordFixture(
+  overrides: Partial<ProbabilityAssessmentV2> = {}
+): ProbabilityAssessmentV2 {
+  return {
+    id: "probability-assessment-1",
+    workspaceId: "team-a",
+    candidateId: "candidate-1",
+    dealId: null,
+    closeProbabilityBps: 4_321,
+    qualificationDecisionId: "qualification-1",
+    qualificationDecisionVersion: "decision-v1",
+    evidenceRefs: ["evidence-1"],
+    ruleVersion: "qualification-rules.v2",
+    modelSnapshotRef: null,
+    inputSnapshotHash: `sha256:${"a".repeat(64)}`,
+    assessedAt: FIXED_INSTANT,
+    recordedAt: FIXED_INSTANT,
+    temporalSequence: 1,
+    precision: "bps",
+    ...overrides
+  };
+}
 
 export function quotePolicyFixture(
   overrides: Partial<PricingPolicyVersion> = {}

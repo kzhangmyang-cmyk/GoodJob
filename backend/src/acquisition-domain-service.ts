@@ -876,6 +876,7 @@ export class AcquisitionDomainService {
       qualification: rawQualification,
       financial: rawFinancial
     };
+    const qualificationInputHash = hash(request) as `sha256:${string}`;
     return this.idempotent(
       scope,
       "qualify_candidate",
@@ -946,7 +947,27 @@ export class AcquisitionDomainService {
             financialValueId: financial.id
           }
         });
-        return { candidate, qualification: decision, financialValue: financial };
+        return {
+          candidate,
+          qualification: decision,
+          financialValue: financial,
+          probabilityAssessmentSource: {
+            closeProbabilityBps: rawFinancial.closeProbabilityBps,
+            qualificationDecisionId: decision.id,
+            qualificationDecisionVersion: decision.decisionVersion,
+            qualificationInputHash,
+            evidenceRefs: decision.evidence.map((item) => item.evidenceId),
+            ruleVersion: decision.ruleVersion,
+            modelSnapshotRef: decision.decisionEngine === "model"
+              ? hash({
+                  modelProvider: decision.modelProvider,
+                  model: decision.model,
+                  promptVersion: decision.promptVersion
+                })
+              : null,
+            assessedAt: decision.createdAt
+          }
+        };
       }
     );
   }
