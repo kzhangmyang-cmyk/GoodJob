@@ -43,6 +43,14 @@ import type { GrowthCatalogServices } from "./growth-catalog-module.js";
 import type { GrowthFoundationServices } from "./growth-foundation-module.js";
 import { parseIfMatchRevision, setRevisionEtag } from "./growth-http-preconditions.js";
 import { GrowthHttpError } from "./growth-command-context.js";
+import { QuoteApprovalService } from "./quote-approval-service.js";
+import {
+  AuthoritativeQuoteAsOfReader,
+  DealAuthoritativeQuoteReader,
+  QuoteApprovalAsOfReader,
+  QuoteVersionEvidenceReader
+} from "./authoritative-quote-reader.js";
+import { QuotePreviewEvidenceReader } from "./quote-preview-evidence-reader.js";
 
 export const GROWTH_PROBABILITY_ASSESSMENTS =
   defineGrowthPrivateServiceKey<ProbabilityAssessmentPersistence>(
@@ -53,10 +61,26 @@ export interface GrowthQuoteServices {
   readonly repository: QuoteRepository;
   readonly quoteCases: QuoteCaseService;
   readonly quoteVersions: QuoteVersionService;
+  readonly quoteApprovals: QuoteApprovalService;
+  readonly authorityReaders: GrowthQuoteAuthorityReaders;
 }
 
 export const GROWTH_QUOTE_SERVICES =
   defineGrowthPrivateServiceKey<GrowthQuoteServices>("growth-quote-services");
+
+export interface GrowthQuoteAuthorityReaders {
+  readonly commercialBindingVerifier: CommercialBindingVerifier;
+  readonly dealAuthoritativeQuotes: DealAuthoritativeQuoteReader;
+  readonly authoritativeContributions: AuthoritativeQuoteAsOfReader;
+  readonly quoteApprovals: QuoteApprovalAsOfReader;
+  readonly quoteVersions: QuoteVersionEvidenceReader;
+  readonly quotePreviews: QuotePreviewEvidenceReader;
+}
+
+export const GROWTH_QUOTE_AUTHORITY_READERS =
+  defineGrowthPrivateServiceKey<GrowthQuoteAuthorityReaders>(
+    "growth-quote-authority-readers"
+  );
 
 export interface GrowthQuoteTrustedAuthority {
   readonly assignments: GrowthWorkspaceMemberAssignabilityReader;
@@ -176,6 +200,55 @@ function mountQuoteVersionRoutes(
   }));
 }
 
+function decisionInput(value: unknown): { reason: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.keys(value).length !== 1
+    || typeof Reflect.get(value, "reason") !== "string"
+    || !String(Reflect.get(value, "reason")).trim()) {
+    throw new GrowthHttpError(400, "invalid_quote_decision_input");
+  }
+  return { reason: String(Reflect.get(value, "reason")).trim() };
+}
+
+function mountQuoteApprovalRoutes(
+  router: express.Router,
+  service: QuoteApprovalService,
+  foundation: GrowthFoundationServices
+) {
+  router.get("/api/v1/quotes/versions/:id/approvals", route(async (req, res) => {
+    const id = routeId(req.params.id);
+    const items = await service.listForVersion(
+      foundation.workspaceContext(req), id
+    );
+    res.status(200).json({ items, nextCursor: null });
+  }));
+  const decisionRoute = (kind: "approve" | "reject" | "expire") =>
+    route(async (req, res) => {
+      const id = routeId(req.params.id);
+      const payload = decisionInput(req.body);
+      const expectedRevision = parseIfMatchRevision(req, `quote-version:${id}`);
+      const command = foundation.commandContextFactory(req, {
+        canonicalPath: `/api/v1/quotes/versions/:id/${kind}`,
+        pathParams: Object.freeze({ id }), payload, expectedRevision
+      });
+      const result = await service[kind](command, id, payload);
+      replayHeader(res, result.replayed);
+      if (kind === "reject") {
+        res.status(200).json(result.value.approval);
+        return;
+      }
+      setRevisionEtag(res, "quote-version", result.value.quoteVersion.id,
+        result.value.quoteVersion.lifecycleRevision);
+      res.status(200).json(result.value.quoteVersion);
+    });
+  router.post("/api/v1/quotes/versions/:id/approve",
+    decisionRoute("approve"));
+  router.post("/api/v1/quotes/versions/:id/reject",
+    decisionRoute("reject"));
+  router.post("/api/v1/quotes/versions/:id/expire",
+    decisionRoute("expire"));
+}
+
 export type GrowthQuoteModuleOptions = GrowthQuoteModuleHooks & {
   trustedAuthority?: GrowthQuoteTrustedAuthority;
 } & (
@@ -206,29 +279,46 @@ async function defaultResources(
   const bindingVerifier = trusted
     ? new CommercialBindingVerifier(trusted.commercialBindings)
     : null;
+  const quote = trusted ? (() => {
+    const dealAuthoritativeQuotes = new DealAuthoritativeQuoteReader(repository);
+    const authoritativeContributions = new AuthoritativeQuoteAsOfReader(
+      repository
+    );
+    const quoteApprovals = new QuoteApprovalAsOfReader(repository);
+    const quoteVersions = new QuoteVersionEvidenceReader(repository);
+    const quotePreviews = new QuotePreviewEvidenceReader(repository);
+    const authorityReaders: GrowthQuoteAuthorityReaders = Object.freeze({
+      commercialBindingVerifier: bindingVerifier!, dealAuthoritativeQuotes,
+      authoritativeContributions, quoteApprovals, quoteVersions, quotePreviews
+    });
+    return Object.freeze({
+      repository,
+      quoteCases: new QuoteCaseService({
+        repository,
+        httpIdempotency: input.httpIdempotency,
+        assignments: trusted.assignments,
+        subjects: trusted.subjects,
+        bindingVerifier: bindingVerifier!,
+        probabilityAssessments
+      }),
+      quoteVersions: new QuoteVersionService({
+        repository,
+        probabilityAssessments,
+        bindingVerifier: bindingVerifier!,
+        catalog: input.catalog,
+        foundation: input.foundation,
+        qualificationAuthority: trusted.qualificationAuthority
+      }),
+      quoteApprovals: new QuoteApprovalService({
+        repository, bindingVerifier: bindingVerifier!,
+        foundation: input.foundation, catalog: input.catalog
+      }),
+      authorityReaders
+    });
+  })() : undefined;
   return {
     probabilityAssessments,
-    ...(trusted ? {
-      quote: Object.freeze({
-        repository,
-        quoteCases: new QuoteCaseService({
-          repository,
-          httpIdempotency: input.httpIdempotency,
-          assignments: trusted.assignments,
-          subjects: trusted.subjects,
-          bindingVerifier: bindingVerifier!,
-          probabilityAssessments
-        }),
-        quoteVersions: new QuoteVersionService({
-          repository,
-          probabilityAssessments,
-          bindingVerifier: bindingVerifier!,
-          catalog: input.catalog,
-          foundation: input.foundation,
-          qualificationAuthority: trusted.qualificationAuthority
-        })
-      })
-    } : {}),
+    ...(quote ? { quote } : {}),
     async close() {}
   };
 }
@@ -276,7 +366,13 @@ export function createGrowthQuoteModule(
         );
         if (resources.quote) {
           input.privateServices.provide(GROWTH_QUOTE_SERVICES, resources.quote);
+          input.privateServices.provide(
+            GROWTH_QUOTE_AUTHORITY_READERS,
+            resources.quote.authorityReaders
+          );
           mountQuoteVersionRoutes(input.router, resources.quote.quoteVersions,
+            foundation);
+          mountQuoteApprovalRoutes(input.router, resources.quote.quoteApprovals,
             foundation);
         }
         return Object.freeze({ close });

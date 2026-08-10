@@ -21,6 +21,14 @@ import { canonicalGrowthRequestHash } from "./growth-http-preconditions.js";
 import { QuoteCalculationService } from "./quote-calculation-service.js";
 import { QuoteVersionService, type QuotePreviewInput } from "./quote-version-service.js";
 import { createQuoteVersionFromCalculation } from "./quote-repository.js";
+import { QuoteApprovalService } from "./quote-approval-service.js";
+import {
+  AuthoritativeQuoteAsOfReader,
+  DealAuthoritativeQuoteReader,
+  QuoteApprovalAsOfReader,
+  QuoteVersionEvidenceReader
+} from "./authoritative-quote-reader.js";
+import { QuotePreviewEvidenceReader } from "./quote-preview-evidence-reader.js";
 
 const FIXED_INSTANT = "2026-08-01T00:00:00.000Z";
 
@@ -568,5 +576,137 @@ export function quoteVersionFixture(options: QuoteVersionFixtureOptions = {}) {
     revoke() {},
     async waitForDraftCaseLock() {},
     releaseDraftCaseLock() {}
+  };
+}
+
+export function managerDecisionContext(
+  overrides: Partial<CommandContext> & {
+    capabilities?: readonly GrowthCapability[];
+  } = {}
+): CommandContext {
+  const actorId = overrides.actorId ?? "manager-1";
+  const workspace = overrides.workspace ?? workspaceContextFixture(
+    "manager", overrides.capabilities, actorId
+  );
+  return commandContextFixture({
+    workspace,
+    actorId,
+    idempotencyKey: "approval-decision-0001",
+    requestHash: `sha256:${"7".repeat(64)}`,
+    expectedRevision: 1,
+    ...overrides
+  });
+}
+
+export interface ApprovalFixtureOptions {
+  readonly submittedBy?: string;
+  readonly requiredCapabilities?: readonly string[];
+}
+
+export function approvalFixture(options: ApprovalFixtureOptions = {}) {
+  const transactions = new InMemoryGrowthTemporalTransactionRunner(
+    "2026-08-09T08:00:00.000Z"
+  );
+  const temporalBarrier = new DefaultGrowthTemporalBarrier(transactions);
+  const binding = createCommercialBindingSnapshot(bindingInputFixture({
+    verifiedAt: "2026-08-09T07:00:00.000Z"
+  }));
+  const quoteCase: QuoteCase = {
+    id: "case-1", workspaceId: "team-a", candidateId: "candidate-1",
+    customerId: "customer-1", dealId: "deal-1", assignedTo: "sales-a",
+    status: "open", currentDraftVersionId: "version-draft-1", revision: 2,
+    commercialBindingSnapshot: binding,
+    createdAt: "2026-08-09T07:00:00.000Z",
+    updatedAt: "2026-08-09T08:00:00.000Z"
+  };
+  const calculator = new QuoteCalculationService();
+  const calculated = calculator.preview(quoteInputFixture(),
+    quotePolicyFixture(), { giftPolicies: [], packageSnapshot: null });
+  const draftVersion = createQuoteVersionFromCalculation({
+    id: "version-draft-1", quoteCase, version: 1, versionKind: "draft",
+    sourceDraftVersionId: null, probabilityAssessmentSnapshot: null,
+    calculated, actorId: options.submittedBy ?? "sales-a",
+    effectiveAt: "2026-08-09T07:30:00.000Z",
+    recordedAt: "2026-08-09T07:30:00.000Z", temporalSequence: 1,
+    stableCommandHash: `sha256:${"8".repeat(64)}`,
+    requestHash: `sha256:${"9".repeat(64)}`
+  });
+  const formalVersion = createQuoteVersionFromCalculation({
+    id: "version-formal-2", quoteCase, version: 2, versionKind: "formal",
+    sourceDraftVersionId: draftVersion.id,
+    probabilityAssessmentSnapshot: probabilityRecordFixture({
+      dealId: "deal-1", recordedAt: "2026-08-09T07:45:00.000Z"
+    }),
+    calculated, actorId: options.submittedBy ?? "sales-a",
+    effectiveAt: "2026-08-09T08:00:00.000Z",
+    recordedAt: "2026-08-09T08:00:00.000Z", temporalSequence: 2,
+    stableCommandHash: `sha256:${"a".repeat(64)}`,
+    requestHash: `sha256:${"b".repeat(64)}`
+  });
+  const submittedBy = options.submittedBy ?? "sales-a";
+  const requiredCapabilities = options.requiredCapabilities
+    ?? ["quote.confirm"];
+  const repository = new InMemoryQuoteRepository(transactions,
+    temporalBarrier, {
+      cases: [quoteCase], versions: [draftVersion, formalVersion],
+      approvals: [{
+        id: "approval-1", workspaceId: "team-a",
+        quoteVersionId: formalVersion.id, status: "pending",
+        approvalKind: requiredCapabilities.length === 1
+          && requiredCapabilities[0] === "quote.confirm"
+          ? "confirmation" : "exception",
+        requiredCapabilities, triggeredRules: ["manager_confirmation"],
+        pricingPolicyVersionId: "pricing-policy-1",
+        policySnapshotHash: `sha256:${"c".repeat(64)}`,
+        capabilityRegistryVersion: "growth-capabilities.v1",
+        submittedBy, submittedAt: "2026-08-09T08:00:00.000Z",
+        decidedBy: null, decidedAt: null, reason: null
+      }],
+      lifecycleEvents: [{
+        id: "lifecycle-submitted-1", workspaceId: "team-a",
+        quoteCaseId: quoteCase.id, quoteVersionId: formalVersion.id,
+        revision: 1, fromStatus: null, toStatus: "submitted",
+        eventType: "version_transition", actorId: submittedBy,
+        recordedAt: "2026-08-09T08:00:00.000Z", temporalSequence: 3
+      }],
+      authority: [{
+        workspaceId: "team-a", dealId: "deal-1",
+        openQuoteCaseId: quoteCase.id, quoteVersionId: null,
+        commercialAmountHash: null, authorityRevision: 1,
+        updatedAt: "2026-08-09T07:00:00.000Z"
+      }],
+      authorityEvents: [{
+        id: "authority-case-bound-1", workspaceId: "team-a",
+        dealId: "deal-1", authorityRevision: 1,
+        quoteCaseId: quoteCase.id, quoteVersionId: null,
+        eventType: "case_bound", recordedAt: "2026-08-09T07:00:00.000Z",
+        temporalSequence: 1
+      }]
+    });
+  const httpIdempotency = new InMemoryGrowthHttpIdempotencyRepository();
+  const bindingVerifier = { async verify() { return binding; } } as
+    unknown as CommercialBindingVerifier;
+  const foundation = {
+    httpIdempotency, temporalTransactions: transactions, temporalBarrier
+  } as never;
+  const service = new QuoteApprovalService({
+    repository, bindingVerifier, foundation,
+    now: () => "2026-08-09T08:30:00.000Z",
+    executionId: () => "approval-fixture-execution"
+  });
+  return {
+    repository, service, draftVersion, formalVersion,
+    dealReader: new DealAuthoritativeQuoteReader(repository),
+    asOfReader: new AuthoritativeQuoteAsOfReader(repository),
+    approvalReader: new QuoteApprovalAsOfReader(repository),
+    versionReader: new QuoteVersionEvidenceReader(repository),
+    previewReader: new QuotePreviewEvidenceReader(repository),
+    cutoff: (asOf: string) => temporalBarrier.sealReadCutoff(
+      workspaceContextFixture("manager"), asOf
+    ),
+    otherWorkspace: Object.freeze({
+      ...workspaceContextFixture("manager"),
+      workspaceId: "team-b", teamId: "team-b"
+    }) as ActiveWorkspaceContext
   };
 }

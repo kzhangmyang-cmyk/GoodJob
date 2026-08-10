@@ -27,7 +27,14 @@ import {
   type QuoteRepository,
   type QuoteVersion,
   type QuotePreviewEvidenceRecord,
-  type QuoteApproval
+  type QuoteApproval,
+  type QuoteApprovalEvent,
+  type QuoteLifecycleEvent,
+  type DealAuthoritativeQuote,
+  type DealAuthoritativeQuoteEvent,
+  type DecideQuoteApprovalCommand,
+  type QuoteApprovalDecisionPersistenceResult,
+  type QuotePublicationOperation
 } from "./quote-repository.js";
 import { createHash } from "node:crypto";
 import { canonicalJsonStringify } from "./canonical-json.js";
@@ -183,6 +190,19 @@ export const QUOTE_MYSQL_SCHEMA_STATEMENTS = [
     UNIQUE KEY uk_quote_active_approval (workspace_id,active_quote_version_id),
     CONSTRAINT chk_quote_approval_json CHECK (JSON_VALID(approval_json))
   ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS quote_approval_events (
+    workspace_id VARCHAR(191) NOT NULL, id VARCHAR(191) NOT NULL,
+    quote_version_id VARCHAR(191) NOT NULL, approval_id VARCHAR(191) NOT NULL,
+    approval_revision BIGINT UNSIGNED NOT NULL, status VARCHAR(32) NOT NULL,
+    event_json JSON NOT NULL, recorded_at DATETIME(3) NOT NULL,
+    temporal_sequence BIGINT UNSIGNED NOT NULL,
+    PRIMARY KEY (workspace_id,id),
+    UNIQUE KEY uk_quote_approval_revision
+      (workspace_id,approval_id,approval_revision),
+    KEY idx_quote_approval_as_of
+      (workspace_id,quote_version_id,recorded_at,approval_revision),
+    CONSTRAINT chk_quote_approval_event_json CHECK (JSON_VALID(event_json))
+  ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS deal_authoritative_quotes (
     workspace_id VARCHAR(191) NOT NULL, deal_id VARCHAR(191) NOT NULL,
     open_quote_case_id VARCHAR(191) NULL, quote_version_id VARCHAR(191) NULL,
@@ -202,6 +222,14 @@ export const QUOTE_MYSQL_SCHEMA_STATEMENTS = [
     UNIQUE KEY uk_deal_authority_revision
       (workspace_id,deal_id,authority_revision)
   ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS deal_authoritative_quote_event_payloads (
+    workspace_id VARCHAR(191) NOT NULL, event_id VARCHAR(191) NOT NULL,
+    event_json JSON NOT NULL,
+    PRIMARY KEY (workspace_id,event_id),
+    CONSTRAINT chk_deal_authority_event_payload_json CHECK (
+      JSON_VALID(event_json)
+    )
+  ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS quote_publication_operations (
     workspace_id VARCHAR(191) NOT NULL, id VARCHAR(191) NOT NULL,
     quote_case_id VARCHAR(191) NOT NULL, quote_version_id VARCHAR(191) NOT NULL,
@@ -217,6 +245,14 @@ export const QUOTE_MYSQL_SCHEMA_STATEMENTS = [
     request_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     quote_case_id VARCHAR(191) NOT NULL, completed_at DATETIME(3) NOT NULL,
     PRIMARY KEY (workspace_id,command_key)
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS quote_approval_command_results (
+    workspace_id VARCHAR(191) NOT NULL,
+    stable_command_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    request_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    decision_json JSON NOT NULL, completed_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id,stable_command_hash),
+    CONSTRAINT chk_quote_approval_decision_json CHECK (JSON_VALID(decision_json))
   ) ENGINE=InnoDB`
 ] as const;
 
@@ -252,6 +288,53 @@ function parseEvidenceRow(row: MysqlRow): QuotePreviewEvidenceRecord {
 
 function parseApprovalRow(row: MysqlRow): QuoteApproval {
   return immutableQuoteValue(json<QuoteApproval>(row.approval_json));
+}
+
+function parseLifecycleRow(row: MysqlRow): QuoteLifecycleEvent {
+  return immutableQuoteValue({
+    id: String(row.id), workspaceId: String(row.workspace_id),
+    quoteCaseId: String(row.quote_case_id),
+    quoteVersionId: row.quote_version_id === null
+      ? null : String(row.quote_version_id),
+    revision: Number(row.lifecycle_revision),
+    fromStatus: row.from_status === null ? null
+      : String(row.from_status) as QuoteLifecycleEvent["fromStatus"],
+    toStatus: String(row.to_status) as QuoteLifecycleEvent["toStatus"],
+    eventType: String(row.event_type) as QuoteLifecycleEvent["eventType"],
+    actorId: String(row.actor_id),
+    recordedAt: growthMysqlInstant(row.recorded_at),
+    temporalSequence: Number(row.temporal_sequence)
+  });
+}
+
+function parseAuthorityEventRow(row: MysqlRow): DealAuthoritativeQuoteEvent {
+  if (row.event_json) {
+    return immutableQuoteValue(json<DealAuthoritativeQuoteEvent>(row.event_json));
+  }
+  return immutableQuoteValue({
+    id: String(row.id), workspaceId: String(row.workspace_id),
+    dealId: String(row.deal_id), authorityRevision: Number(row.authority_revision),
+    quoteCaseId: String(row.quote_case_id),
+    quoteVersionId: row.quote_version_id === null
+      ? null : String(row.quote_version_id),
+    eventType: String(row.event_type) as DealAuthoritativeQuoteEvent["eventType"],
+    recordedAt: growthMysqlInstant(row.recorded_at),
+    temporalSequence: Number(row.temporal_sequence)
+  });
+}
+
+function parseAuthorityRow(row: MysqlRow): DealAuthoritativeQuote {
+  return immutableQuoteValue({
+    workspaceId: String(row.workspace_id), dealId: String(row.deal_id),
+    openQuoteCaseId: row.open_quote_case_id === null
+      ? null : String(row.open_quote_case_id),
+    quoteVersionId: row.quote_version_id === null
+      ? null : String(row.quote_version_id),
+    commercialAmountHash: row.commercial_amount_hash === null
+      ? null : String(row.commercial_amount_hash) as `sha256:${string}`,
+    authorityRevision: Number(row.authority_revision),
+    updatedAt: growthMysqlInstant(row.updated_at)
+  });
 }
 
 function bindingFromRow(row: MysqlRow): CommercialBindingSnapshot | null {
@@ -447,6 +530,94 @@ export class MysqlQuoteRepository implements QuoteRepository {
       [workspace, quoteCaseId]
     );
     return Object.freeze((rows as MysqlRow[]).map(parseVersionRow));
+  }
+
+  async listApprovals(workspaceId: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT approval_json FROM quote_approvals
+       WHERE workspace_id = ? ORDER BY recorded_at,id`, [workspace]
+    );
+    return Object.freeze((rows as MysqlRow[]).map(parseApprovalRow));
+  }
+
+  async listApprovalEvents(workspaceId: string, quoteVersionId?: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT event_json FROM quote_approval_events
+       WHERE workspace_id = ?${quoteVersionId ? " AND quote_version_id = ?" : ""}
+       ORDER BY approval_revision`, quoteVersionId
+        ? [workspace, quoteVersionId] : [workspace]
+    );
+    return Object.freeze((rows as MysqlRow[]).map((row) =>
+      immutableQuoteValue(json<QuoteApprovalEvent>(row.event_json))));
+  }
+
+  async listLifecycleEvents(workspaceId: string, quoteVersionId?: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT * FROM quote_lifecycle_events
+       WHERE workspace_id = ?${quoteVersionId ? " AND quote_version_id = ?" : ""}
+       ORDER BY lifecycle_revision`, quoteVersionId
+        ? [workspace, quoteVersionId] : [workspace]
+    );
+    return Object.freeze((rows as MysqlRow[]).map(parseLifecycleRow));
+  }
+
+  async listAuthorityEvents(workspaceId: string, dealId?: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT daqe.*,payload.event_json
+       FROM deal_authoritative_quote_events daqe
+       LEFT JOIN deal_authoritative_quote_event_payloads payload
+         ON payload.workspace_id = daqe.workspace_id
+        AND payload.event_id = daqe.id
+       WHERE daqe.workspace_id = ?${dealId ? " AND daqe.deal_id = ?" : ""}
+       ORDER BY daqe.authority_revision`, dealId
+        ? [workspace, dealId] : [workspace]
+    );
+    return Object.freeze((rows as MysqlRow[]).map(parseAuthorityEventRow));
+  }
+
+  async listPreviewEvidenceAsOf(
+    workspaceId: string,
+    quoteCaseId: string,
+    effectiveAsOf: string
+  ) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT evidence_json FROM quote_preview_evidence
+       WHERE workspace_id = ? AND quote_case_id = ? AND recorded_at <= ?
+       ORDER BY temporal_sequence`,
+      [workspace, quoteCaseId, growthMysqlDate(effectiveAsOf)]
+    );
+    return Object.freeze((rows as MysqlRow[]).map(parseEvidenceRow));
+  }
+
+  async findCurrentDealAuthority(workspaceId: string, dealId: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT * FROM deal_authoritative_quotes
+       WHERE workspace_id = ? AND deal_id = ?`, [workspace, dealId]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseAuthorityRow(row) : null;
+  }
+
+  async findApprovalDecisionByStableCommandHash(
+    workspaceId: string,
+    stableCommandHash: string
+  ) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT decision_json FROM quote_approval_command_results
+       WHERE workspace_id = ? AND stable_command_hash = ?`,
+      [workspace, stableCommandHash]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? immutableQuoteValue(
+      json<QuoteApprovalDecisionPersistenceResult>(row.decision_json)
+    ) : null;
   }
 
   private async loadEvidence(
@@ -736,6 +907,338 @@ export class MysqlQuoteRepository implements QuoteRepository {
       if (duplicate(error)) {
         throw quoteError(command.versionKind === "formal"
           ? "quote_draft_already_submitted" : "revision_conflict");
+      }
+      throw error;
+    }
+  }
+
+  async decideApproval(
+    command: DecideQuoteApprovalCommand
+  ): Promise<QuoteApprovalDecisionPersistenceResult> {
+    const workspace = assertConcreteGrowthWorkspaceId(command.workspaceId);
+    try {
+      return await this.transaction(async (connection, temporal) => {
+        const firstStamp = await this.temporalBarrier.allocateAppend(
+          temporal, workspace
+        );
+        const [replayRows] = await connection.query(
+          `SELECT request_hash,decision_json FROM quote_approval_command_results
+           WHERE workspace_id = ? AND stable_command_hash = ? FOR UPDATE`,
+          [workspace, command.stableCommandHash]
+        );
+        const replay = (replayRows as MysqlRow[])[0];
+        if (replay) {
+          if (String(replay.request_hash) !== command.requestHash) {
+            throw quoteError("quote_command_identity_conflict");
+          }
+          return immutableQuoteValue(
+            json<QuoteApprovalDecisionPersistenceResult>(replay.decision_json)
+          );
+        }
+        const discoveredVersion = await this.loadVersion(connection, workspace,
+          command.quoteVersionId);
+        if (!discoveredVersion) throw quoteError("quote_version_not_found");
+        const discoveredCase = await this.load(connection, workspace,
+          discoveredVersion.quoteCaseId);
+        if (!discoveredCase?.dealId) {
+          throw quoteError("quote_deal_binding_required");
+        }
+
+        // Fixed domain order: Foundation temporal barrier, Deal guard, Case,
+        // Approval/Version, lifecycle/authority/publication streams.
+        await connection.query(
+          `INSERT INTO deal_authoritative_quotes
+           (workspace_id,deal_id,open_quote_case_id,quote_version_id,
+            commercial_amount_hash,authority_revision,updated_at)
+           VALUES (?,?,NULL,NULL,NULL,0,?)
+           ON DUPLICATE KEY UPDATE deal_id = VALUES(deal_id)`,
+          [workspace, discoveredCase.dealId,
+            growthMysqlDate(firstStamp.recordedAt)]
+        );
+        const [guardRows] = await connection.query(
+          `SELECT * FROM deal_authoritative_quotes
+           WHERE workspace_id = ? AND deal_id = ? FOR UPDATE`,
+          [workspace, discoveredCase.dealId]
+        );
+        const guardRow = (guardRows as MysqlRow[])[0]!;
+        const quoteCase = await this.load(connection, workspace,
+          discoveredVersion.quoteCaseId, true);
+        if (!quoteCase || quoteCase.dealId !== discoveredCase.dealId) {
+          throw quoteError("commercial_binding_authority_mismatch");
+        }
+        const [approvalRows] = await connection.query(
+          `SELECT * FROM quote_approvals
+           WHERE workspace_id = ? AND quote_version_id = ? FOR UPDATE`,
+          [workspace, command.quoteVersionId]
+        );
+        const approvalRow = (approvalRows as MysqlRow[])[0];
+        if (!approvalRow) throw quoteError("quote_approval_not_found");
+        const approval = parseApprovalRow(approvalRow);
+        const version = await this.loadVersion(connection, workspace,
+          command.quoteVersionId, true);
+        if (!version || version.versionKind !== "formal"
+          || !version.sourceDraftVersionId
+          || version.probabilityAssessmentSnapshot?.precision !== "bps") {
+          throw quoteError("formal_quote_version_required");
+        }
+        const [lifecycleRows] = await connection.query(
+          `SELECT * FROM quote_lifecycle_events
+           WHERE workspace_id = ? AND quote_case_id = ?
+             AND quote_version_id = ?
+           ORDER BY lifecycle_revision DESC LIMIT 1 FOR UPDATE`,
+          [workspace, quoteCase.id, version.id]
+        );
+        const currentLifecycleRow = (lifecycleRows as MysqlRow[])[0];
+        const [lastAuthorityRows] = await connection.query(
+          `SELECT event_type FROM deal_authoritative_quote_events
+           WHERE workspace_id = ? AND deal_id = ?
+           ORDER BY authority_revision DESC LIMIT 1 FOR UPDATE`,
+          [workspace, quoteCase.dealId]
+        );
+        const lastAuthorityType = (lastAuthorityRows as MysqlRow[])[0]
+          ?.event_type;
+        if (lastAuthorityType === "won" || lastAuthorityType === "lost") {
+          throw quoteError("deal_already_decided");
+        }
+        const currentRevision = currentLifecycleRow
+          ? Number(currentLifecycleRow.lifecycle_revision)
+          : version.lifecycleRevision;
+        if (currentRevision !== command.expectedRevision) {
+          throw quoteError("revision_conflict");
+        }
+        if (approval.status !== "pending") {
+          throw quoteError("quote_approval_already_decided");
+        }
+        const gate = version.gate as { status?: string } | undefined;
+        if (gate?.status === "hard_blocked") {
+          throw quoteError("quote_hard_blocked");
+        }
+        const binding = version.commercialBindingSnapshot as
+          CommercialBindingSnapshot | null;
+        if (!binding || binding.dealId !== quoteCase.dealId
+          || binding.customerId !== quoteCase.customerId
+          || binding.candidateId !== quoteCase.candidateId
+          || command.verifiedBindingSnapshot.bindingHash !== binding.bindingHash
+          || command.verifiedBindingSnapshot.dealContentHash
+            !== binding.dealContentHash
+          || command.verifiedBindingSnapshot.handoffContentHash
+            !== binding.handoffContentHash) {
+          throw quoteError("commercial_binding_authority_mismatch");
+        }
+
+        const lifecycleEvents: QuoteLifecycleEvent[] = [];
+        const previousQuoteVersionId = guardRow.quote_version_id === null
+          ? null : String(guardRow.quote_version_id);
+        if (command.decision === "approve" && previousQuoteVersionId
+          && previousQuoteVersionId !== version.id) {
+          const [previousRows] = await connection.query(
+            `SELECT qv.frozen_version_json,
+              COALESCE(MAX(qle.lifecycle_revision),1) AS lifecycle_revision
+             FROM quote_versions qv LEFT JOIN quote_lifecycle_events qle
+               ON qle.workspace_id = qv.workspace_id
+              AND qle.quote_version_id = qv.id
+             WHERE qv.workspace_id = ? AND qv.id = ?
+             GROUP BY qv.frozen_version_json FOR UPDATE`,
+            [workspace, previousQuoteVersionId]
+          );
+          const previousRow = (previousRows as MysqlRow[])[0];
+          if (previousRow) {
+            const previous = parseVersionRow(previousRow);
+            const previousRevision = Number(previousRow.lifecycle_revision) + 1;
+            const event = immutableQuoteValue({
+              id: `quote-lifecycle-${workspace}-${firstStamp.temporalSequence}`,
+              workspaceId: workspace, quoteCaseId: previous.quoteCaseId,
+              quoteVersionId: previous.id, revision: previousRevision,
+              fromStatus: "approved" as const, toStatus: "superseded" as const,
+              eventType: "version_transition" as const,
+              actorId: command.actorId, ...firstStamp
+            });
+            await this.insertLifecycle(connection, event, firstStamp);
+            lifecycleEvents.push(event);
+          }
+          const [oldOperationRows] = await connection.query(
+            `SELECT operation_json FROM quote_publication_operations
+             WHERE workspace_id = ? AND deal_id = ? AND quote_version_id = ?
+             ORDER BY recorded_at DESC LIMIT 1 FOR UPDATE`,
+            [workspace, quoteCase.dealId, previousQuoteVersionId]
+          );
+          const oldOperationRow = (oldOperationRows as MysqlRow[])[0];
+          if (oldOperationRow) {
+            const old = json<QuotePublicationOperation>(
+              oldOperationRow.operation_json
+            );
+            if (old.status !== "succeeded" && old.status !== "cancelled") {
+              await connection.query(
+                `UPDATE quote_publication_operations SET operation_json = ?
+                 WHERE workspace_id = ? AND id = ?`,
+                [JSON.stringify({ ...old, status: "superseded",
+                  updatedAt: firstStamp.recordedAt }), workspace, old.id]
+              );
+            }
+          }
+        }
+        const decisionStamp = lifecycleEvents.length
+          ? await this.temporalBarrier.allocateAppend(temporal, workspace)
+          : firstStamp;
+        const nextStatus = command.decision === "approve" ? "approved" as const
+          : command.decision === "reject" ? "rejected" as const
+            : "expired" as const;
+        const lifecycle = immutableQuoteValue({
+          id: `quote-lifecycle-${workspace}-${decisionStamp.temporalSequence}`,
+          workspaceId: workspace, quoteCaseId: quoteCase.id,
+          quoteVersionId: version.id, revision: currentRevision + 1,
+          fromStatus: "submitted" as const, toStatus: nextStatus,
+          eventType: "version_transition" as const, actorId: command.actorId,
+          ...decisionStamp
+        });
+        await this.insertLifecycle(connection, lifecycle, decisionStamp);
+        lifecycleEvents.push(lifecycle);
+
+        const approvalStamp = await this.temporalBarrier.allocateAppend(
+          temporal, workspace
+        );
+        const approvalStatus = command.decision === "approve"
+          ? "approved" as const : command.decision === "reject"
+            ? "rejected" as const : "cancelled" as const;
+        const decidedApproval = immutableQuoteValue({ ...approval,
+          status: approvalStatus, decidedBy: command.actorId,
+          decidedAt: approvalStamp.recordedAt, reason: command.reason });
+        await connection.query(
+          `UPDATE quote_approvals SET status = ?,approval_json = ?
+           WHERE workspace_id = ? AND id = ? AND status = 'pending'`,
+          [approvalStatus, JSON.stringify(decidedApproval), workspace,
+            approval.id]
+        );
+        const approvalEvent = immutableQuoteValue({
+          id: `quote-approval-event-${workspace}-${approvalStamp.temporalSequence}`,
+          workspaceId: workspace, quoteVersionId: version.id,
+          approvalId: approval.id, revision: 2, status: approvalStatus,
+          actorId: command.actorId, reason: command.reason, ...approvalStamp
+        });
+        await connection.query(
+          `INSERT INTO quote_approval_events
+           (workspace_id,id,quote_version_id,approval_id,approval_revision,
+            status,event_json,recorded_at,temporal_sequence)
+           VALUES (?,?,?,?,?,?,?,?,?)`,
+          [workspace, approvalEvent.id, version.id, approval.id, 2,
+            approvalStatus, JSON.stringify(approvalEvent),
+            growthMysqlDate(approvalStamp.recordedAt),
+            approvalStamp.temporalSequence]
+        );
+
+        const authorityStamp = await this.temporalBarrier.allocateAppend(
+          temporal, workspace
+        );
+        const authorityRevision = Number(guardRow.authority_revision) + 1;
+        const commercialAmountHash = String(version.commercialAmountHash) as
+          `sha256:${string}`;
+        const evidence = immutableQuoteValue({
+          candidateId: binding.candidateId, customerId: binding.customerId,
+          dealId: binding.dealId,
+          handoffContentHash: binding.handoffContentHash,
+          dealContentHash: binding.dealContentHash,
+          bindingHashSchemaVersion: binding.bindingHashSchemaVersion,
+          bindingHash: binding.bindingHash
+        });
+        const authorityEvent = immutableQuoteValue({
+          id: `deal-authority-${workspace}-${authorityStamp.temporalSequence}`,
+          workspaceId: workspace, dealId: quoteCase.dealId, authorityRevision,
+          quoteCaseId: quoteCase.id, quoteVersionId: version.id,
+          previousQuoteVersionId,
+          eventType: command.decision === "approve" ? "approved" as const
+            : command.decision === "reject" ? "rejected" as const
+              : "expired" as const,
+          currency: String(version.currency),
+          quotedAmountMinor: Number(version.quotedAmountMinor),
+          commercialAmountHash, commercialBindingEvidence: evidence,
+          commercialBindingSnapshot: immutableQuoteValue(
+            structuredClone(binding)
+          ),
+          decidedAt: authorityStamp.recordedAt, ...authorityStamp
+        });
+        await connection.query(
+          `INSERT INTO deal_authoritative_quote_events
+           (workspace_id,id,deal_id,authority_revision,quote_case_id,
+            quote_version_id,event_type,recorded_at,temporal_sequence)
+           VALUES (?,?,?,?,?,?,?,?,?)`,
+          [workspace, authorityEvent.id, quoteCase.dealId, authorityRevision,
+            quoteCase.id, version.id, authorityEvent.eventType,
+            growthMysqlDate(authorityStamp.recordedAt),
+            authorityStamp.temporalSequence]
+        );
+        await connection.query(
+          `INSERT INTO deal_authoritative_quote_event_payloads
+           (workspace_id,event_id,event_json) VALUES (?,?,?)`,
+          [workspace, authorityEvent.id, JSON.stringify(authorityEvent)]
+        );
+        await connection.query(
+          `UPDATE deal_authoritative_quotes SET open_quote_case_id = ?,
+           quote_version_id = ?,commercial_amount_hash = ?,
+           authority_revision = ?,updated_at = ?
+           WHERE workspace_id = ? AND deal_id = ?`,
+          [quoteCase.id, command.decision === "approve" ? version.id : null,
+            command.decision === "approve" ? commercialAmountHash : null,
+            authorityRevision, growthMysqlDate(authorityStamp.recordedAt),
+            workspace, quoteCase.dealId]
+        );
+        const authority: DealAuthoritativeQuote = immutableQuoteValue({
+          workspaceId: workspace, dealId: quoteCase.dealId,
+          openQuoteCaseId: quoteCase.id,
+          quoteVersionId: command.decision === "approve" ? version.id : null,
+          commercialAmountHash: command.decision === "approve"
+            ? commercialAmountHash : null,
+          authorityRevision, updatedAt: authorityStamp.recordedAt
+        });
+
+        const publicationStamp = await this.temporalBarrier.allocateAppend(
+          temporal, workspace
+        );
+        const stableKey = `quote-publication:${quoteCase.dealId}:${version.id}:${authorityRevision}`;
+        const publicationOperation: QuotePublicationOperation =
+          immutableQuoteValue({
+            id: `quote-publication-${workspace}-${publicationStamp.temporalSequence}`,
+            workspaceId: workspace, quoteCaseId: quoteCase.id,
+            quoteVersionId: version.id, dealId: quoteCase.dealId,
+            dealAuthorityRevision: authorityRevision, commercialAmountHash,
+            status: command.decision === "approve" ? "queued" as const
+              : "cancelled" as const,
+            piDocumentId: null, dealEventId: null, attempts: 0,
+            lastErrorCode: null, idempotencyKey: stableKey,
+            createdAt: publicationStamp.recordedAt,
+            updatedAt: publicationStamp.recordedAt
+          });
+        await connection.query(
+          `INSERT INTO quote_publication_operations
+           (workspace_id,id,quote_case_id,quote_version_id,deal_id,
+            stable_key_hash,operation_json,recorded_at,temporal_sequence)
+           VALUES (?,?,?,?,?,?,?,?,?)`,
+          [workspace, publicationOperation.id, quoteCase.id, version.id,
+            quoteCase.dealId, hash(stableKey), JSON.stringify(publicationOperation),
+            growthMysqlDate(publicationStamp.recordedAt),
+            publicationStamp.temporalSequence]
+        );
+        const projectedVersion = immutableQuoteValue({ ...version,
+          status: nextStatus, lifecycleRevision: currentRevision + 1 });
+        const result: QuoteApprovalDecisionPersistenceResult =
+          immutableQuoteValue({ quoteVersion: projectedVersion,
+            approval: decidedApproval, authority, authorityEvent,
+            lifecycleEvents: Object.freeze(lifecycleEvents),
+            publicationOperation });
+        await connection.query(
+          `INSERT INTO quote_approval_command_results
+           (workspace_id,stable_command_hash,request_hash,decision_json,completed_at)
+           VALUES (?,?,?,?,?)`,
+          [workspace, command.stableCommandHash, command.requestHash,
+            JSON.stringify(result), growthMysqlDate(publicationStamp.recordedAt)]
+        );
+        return result;
+      });
+    } catch (error) {
+      if (duplicate(error)) {
+        const replay = await this.findApprovalDecisionByStableCommandHash(
+          workspace, command.stableCommandHash
+        );
+        if (replay) return replay;
       }
       throw error;
     }
