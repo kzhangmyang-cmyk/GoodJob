@@ -12,11 +12,11 @@ export class GrowthHttpError extends Error {
 }
 
 export interface CommandContext {
-  workspace: ActiveWorkspaceContext;
-  actorId: string;
-  idempotencyKey: string;
-  requestHash: string;
-  expectedRevision: number | null;
+  readonly workspace: ActiveWorkspaceContext;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly requestHash: string;
+  readonly expectedRevision: number | null;
 }
 
 export function requireExpectedRevision(context: CommandContext): number {

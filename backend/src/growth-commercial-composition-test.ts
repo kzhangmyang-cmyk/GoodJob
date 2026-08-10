@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import express from "express";
 import type { GrowthTemporalBarrier } from "./growth-temporal-barrier.js";
 import type {
   GrowthAcquisitionWorkspaceResolver
 } from "./growth-workspace-context.js";
 import { createGrowthPrivateServiceRegistry } from "./growth-commercial-private-services.js";
+import { createGrowthCommercialApplication } from "./growth-commercial-application.js";
 import {
   createGrowthCommercialComposition,
   createGrowthCommercialCompositionForStore
@@ -66,7 +68,7 @@ test("composition factories preserve isolated Foundation identities", () => {
   assert.notEqual(firstProjection.temporalBarrier, secondProjection.temporalBarrier);
 });
 
-test("production memory composition owns one concrete Foundation projection", async () => {
+test("production memory composition installs the Foundation module first", async () => {
   const production = createGrowthCommercialCompositionForStore({
     store: {
       mode: "memory",
@@ -83,14 +85,19 @@ test("production memory composition owns one concrete Foundation projection", as
       }]
     }
   });
-  const integrations = production.composition.projectIntegrations(
-    createGrowthPrivateServiceRegistry()
-  );
-  const resolved = await integrations.acquisitionWorkspace.resolve({
-    ownerId: "owner-1",
-    teamId: "workspace-1"
+  assert.equal(production.composition.modules.length, 1);
+  assert.equal(production.composition.modules[0]?.name, "growth-foundation");
+  const runtime = await createGrowthCommercialApplication({
+    manifest: { name: "growth", contractVersion: "1.0.0", contractHash: `sha256:${"a".repeat(64)}`, openapiVersion: "3.1.0" },
+    requireAuth: ((_req, _res, next) => next()) as express.RequestHandler,
+    workspaceMiddleware: ((_req, _res, next) => next()) as express.RequestHandler,
+    enabledFeatures: () => [], composition: production.composition
   });
-  assert.equal(resolved?.workspaceId, "workspace-1");
-  assert.equal(resolved?.bindingRevision, "crm-user-auth:3");
-  assert.equal(production.composition.modules.length, 0);
+  try {
+    const resolved = await runtime.integrations.acquisitionWorkspace.resolve({ ownerId: "owner-1", teamId: "workspace-1" });
+    assert.equal(resolved?.workspaceId, "workspace-1");
+    assert.equal(resolved?.bindingRevision, "crm-user-auth:3");
+  } finally {
+    await runtime.close();
+  }
 });

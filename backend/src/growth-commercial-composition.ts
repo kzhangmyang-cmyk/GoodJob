@@ -5,8 +5,6 @@ import type {
   GrowthPrivateServiceRegistry
 } from "./growth-commercial-private-services.js";
 import {
-  DefaultGrowthTemporalBarrier,
-  InMemoryGrowthTemporalTransactionRunner,
   type GrowthTemporalBarrier
 } from "./growth-temporal-barrier.js";
 import {
@@ -15,10 +13,7 @@ import {
   type GrowthAcquisitionWorkspaceResolver,
   type GrowthWorkspaceDirectory
 } from "./growth-workspace-context.js";
-import {
-  ensureGrowthTemporalBarrierMysqlSchema,
-  MysqlGrowthTemporalBarrier
-} from "./growth-temporal-barrier-mysql-repository.js";
+import { GROWTH_FOUNDATION_SERVICES, createGrowthFoundationModule } from "./growth-foundation-module.js";
 import type { CrmStore } from "./store.js";
 
 export interface GrowthCommercialModule {
@@ -39,7 +34,7 @@ export interface GrowthCommercialComposition<TIntegrations extends object> {
 
 export interface GrowthCommercialCompositionDependencies {
   acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
-  temporalBarrier: GrowthTemporalBarrier;
+  temporalBarrier?: GrowthTemporalBarrier;
   /** Foundation resource owners installed before future business modules. */
   modules?: readonly GrowthCommercialModule[];
 }
@@ -57,7 +52,7 @@ export function createGrowthCommercialComposition(
   if (!dependencies?.acquisitionWorkspace) {
     throw new Error("MISSING_GROWTH_ACQUISITION_WORKSPACE");
   }
-  if (!dependencies.temporalBarrier) {
+  if (!dependencies.temporalBarrier && !(dependencies.modules?.length)) {
     throw new Error("MISSING_GROWTH_TEMPORAL_BARRIER");
   }
   const foundation = Object.freeze({ ...dependencies });
@@ -65,10 +60,16 @@ export function createGrowthCommercialComposition(
     modules: Object.freeze([
       ...(dependencies.modules ?? [])
     ]) as readonly GrowthCommercialModule[],
-    projectIntegrations() {
+    projectIntegrations(privateServices: GrowthPrivateServiceRegistry) {
+      const services = privateServices.get(GROWTH_FOUNDATION_SERVICES);
+      const acquisitionWorkspace = services?.acquisitionWorkspace
+        ?? foundation.acquisitionWorkspace;
+      const temporalBarrier = services?.temporalBarrier
+        ?? foundation.temporalBarrier;
+      if (!temporalBarrier) throw new Error("MISSING_GROWTH_FOUNDATION_SERVICES");
       return Object.freeze({
-        acquisitionWorkspace: foundation.acquisitionWorkspace,
-        temporalBarrier: foundation.temporalBarrier
+        acquisitionWorkspace,
+        temporalBarrier
       });
     }
   });
@@ -104,7 +105,6 @@ export function createGrowthCommercialCompositionForStore(options: {
       };
     }
   });
-  let temporalBarrier: GrowthTemporalBarrier;
   const modules: GrowthCommercialModule[] = [];
   if (options.store.mode === "mysql") {
     const databaseUrl = options.databaseUrl?.trim();
@@ -114,35 +114,15 @@ export function createGrowthCommercialCompositionForStore(options: {
       connectionLimit: 4,
       namedPlaceholders: true
     });
-    temporalBarrier = new MysqlGrowthTemporalBarrier(pool);
-    modules.push({
-      name: "growth-foundation-temporal-barrier",
-      async install() {
-        let closed = false;
-        try {
-          await ensureGrowthTemporalBarrierMysqlSchema(pool);
-        } catch (error) {
-          await pool.end().catch(() => undefined);
-          throw error;
-        }
-        return {
-          async close() {
-            if (closed) return;
-            closed = true;
-            await pool.end();
-          }
-        };
-      }
-    });
+    modules.push(createGrowthFoundationModule({
+      mode: "mysql", pool, acquisitionWorkspace, closePool: () => pool.end()
+    }));
   } else {
-    temporalBarrier = new DefaultGrowthTemporalBarrier(
-      new InMemoryGrowthTemporalTransactionRunner()
-    );
+    modules.push(createGrowthFoundationModule({ mode: "memory", acquisitionWorkspace }));
   }
   return Object.freeze({
     composition: createGrowthCommercialComposition({
       acquisitionWorkspace,
-      temporalBarrier,
       modules
     }),
     workspaceMiddleware: createGrowthWorkspaceMiddleware(workspaceDirectory)

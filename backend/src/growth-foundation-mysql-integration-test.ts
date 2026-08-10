@@ -4,6 +4,10 @@ import { capabilitiesForHumanRole } from "./growth-capabilities.js";
 import { growthInstantMilliseconds } from "./growth-as-of.js";
 import { withGrowthFoundationMysqlTestDatabase } from "./growth-foundation-mysql-test-support.js";
 import { MysqlGrowthTemporalTransaction, growthMysqlInstant } from "./growth-temporal-barrier-mysql-repository.js";
+import {
+  ensureGrowthHttpIdempotencyMysqlSchema,
+  MysqlGrowthHttpIdempotencyRepository
+} from "./growth-http-idempotency-mysql-repository.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 
 function workspace(workspaceId: string): ActiveWorkspaceContext {
@@ -126,6 +130,25 @@ test("real MySQL foundation globally fences writes and preserves settings histor
     assert.ok(row);
     assert.ok(growthMysqlInstant(row.last_recorded_at) > token.effectiveAsOf);
     assert.ok(Number(row.temporal_sequence) > token.temporalSequence);
+
+    await ensureGrowthHttpIdempotencyMysqlSchema(pool);
+    const idempotency = new MysqlGrowthHttpIdempotencyRepository(pool);
+    const input = {
+      workspaceId: "workspace-a", actorId: "mysql-user", method: "POST",
+      canonicalPath: "/api/v1/quotes/cases", key: "mysql-foundation-key-0001",
+      requestHash: `sha256:${"a".repeat(64)}`,
+      attemptedAt: "2026-08-09T08:00:00.000Z", leaseOwner: "connection-a", leaseDurationMs: 1_000
+    };
+    const firstReservation = await idempotency.reserve(input);
+    assert.equal(firstReservation.kind, "claimed");
+    assert.deepEqual(await idempotency.reserve({ ...input, leaseOwner: "connection-b", attemptedAt: "2026-08-09T08:00:00.500Z" }), { kind: "in_progress", retryAfterMs: 500 });
+    const reclaimed = await idempotency.reserve({ ...input, leaseOwner: "connection-b", attemptedAt: "2026-08-09T08:00:01.001Z" });
+    assert.equal(reclaimed.kind, "claimed");
+    if (firstReservation.kind !== "claimed" || reclaimed.kind !== "claimed") throw new Error("expected_idempotency_claims");
+    assert.ok(reclaimed.fencingToken > firstReservation.fencingToken);
+    await assert.rejects(() => idempotency.complete(firstReservation.reservationId, firstReservation.leaseOwner, firstReservation.fencingToken, { resourceId: "stale", operationId: null }), /stale_idempotency_fence/u);
+    await idempotency.complete(reclaimed.reservationId, reclaimed.leaseOwner, reclaimed.fencingToken, { resourceId: "resource-1", operationId: null });
+    assert.deepEqual(await idempotency.reserve({ ...input, leaseOwner: "connection-a", attemptedAt: "2026-08-09T08:00:02.000Z" }), { kind: "replay", resourceId: "resource-1", operationId: null });
   });
-  console.log("GROWTH_REAL_MYSQL foundation connections=2 tests=3");
+  console.log("GROWTH_REAL_MYSQL foundation connections=2 tests=4");
 });
