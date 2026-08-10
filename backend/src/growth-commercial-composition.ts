@@ -24,9 +24,13 @@ import type {
 import type { CrmStore } from "./store.js";
 import {
   GROWTH_PROBABILITY_ASSESSMENTS,
-  createGrowthQuoteModule
+  createGrowthQuoteModule,
+  type GrowthQuoteTrustedAuthority
 } from "./growth-quote-module.js";
 import type { ProbabilityAssessmentWriter } from "./probability-assessment.js";
+import { createGrowthWorkspaceMemberAssignabilityReader } from "./growth-workspace-member-assignability.js";
+import { resolveTrustedAcquisitionDealBinding } from "./acquisition-deal-binding.js";
+import type { AcquisitionCandidate } from "./acquisition-domain.js";
 
 export interface GrowthCommercialModule {
   readonly name: string;
@@ -109,7 +113,13 @@ export function createGrowthCommercialComposition(
 }
 
 export function createGrowthCommercialCompositionForStore(options: {
-  store: Pick<CrmStore, "mode" | "users">;
+  store: Pick<CrmStore, "mode" | "users"> & Partial<Pick<CrmStore,
+    "acquisitionCustomerHandoffs" | "leads" | "customers" | "deals">>;
+  findCandidate?: (
+    workspaceId: string,
+    candidateId: string
+  ) => Promise<Pick<AcquisitionCandidate,
+    "id" | "ownerId" | "teamId" | "version"> | null>;
   databaseUrl?: string;
   createMysqlPool?: typeof mysql.createPool;
 }): {
@@ -139,6 +149,70 @@ export function createGrowthCommercialCompositionForStore(options: {
       };
     }
   });
+  const acquisitionCustomerHandoffs =
+    options.store.acquisitionCustomerHandoffs ?? [];
+  const leads = options.store.leads ?? [];
+  const customers = options.store.customers ?? [];
+  const deals = options.store.deals ?? [];
+  const findCandidate = options.findCandidate ?? (async () => null);
+  const trustedAuthority: GrowthQuoteTrustedAuthority = {
+    assignments: createGrowthWorkspaceMemberAssignabilityReader({
+      members: () => options.store.users
+    }),
+    subjects: Object.freeze({
+      async resolve(
+        context: import("./growth-workspace-context.js").ActiveWorkspaceContext,
+        requested: { candidateId?: string; customerId?: string; dealId?: string }
+      ) {
+        if (requested.dealId) {
+          const trusted = resolveTrustedAcquisitionDealBinding({
+            acquisitionCustomerHandoffs,
+            leads
+          }, { dealId: requested.dealId });
+          if (!trusted || trusted.handoff.teamId !== context.workspaceId
+            || (requested.candidateId
+              && requested.candidateId !== trusted.handoff.candidateId)
+            || (requested.customerId
+              && requested.customerId !== trusted.handoff.customerId)
+            || customers.filter((row) => row.id === trusted.handoff.customerId
+              && row.teamId === context.workspaceId).length !== 1
+            || deals.filter((row) => row.id === requested.dealId
+              && row.customerId === trusted.handoff.customerId
+              && row.teamId === context.workspaceId).length !== 1
+            || !(await findCandidate(context.workspaceId,
+              trusted.handoff.candidateId))) return null;
+          return {
+            candidateId: trusted.handoff.candidateId,
+            customerId: trusted.handoff.customerId,
+            dealId: requested.dealId
+          };
+        }
+        const candidate = requested.candidateId
+          ? await findCandidate(context.workspaceId, requested.candidateId)
+          : null;
+        if (requested.candidateId && !candidate) return null;
+        const customer = requested.customerId
+          ? customers.filter((row) => row.id === requested.customerId
+            && row.teamId === context.workspaceId)
+          : [];
+        if (requested.customerId && customer.length !== 1) return null;
+        if (candidate && customer[0]
+          && candidate.ownerId !== customer[0].ownerId) return null;
+        return {
+          candidateId: candidate?.id ?? null,
+          customerId: customer[0]?.id ?? null,
+          dealId: null
+        };
+      }
+    }),
+    commercialBindings: {
+      acquisitionCustomerHandoffs,
+      leads,
+      customers,
+      deals,
+      findCandidate
+    }
+  };
   const modules: GrowthCommercialModule[] = [];
   if (options.store.mode === "mysql") {
     const databaseUrl = options.databaseUrl?.trim();
@@ -148,11 +222,13 @@ export function createGrowthCommercialCompositionForStore(options: {
       mode: "mysql", pool, acquisitionWorkspace, closePool: () => pool.end()
     }));
     modules.push(createGrowthCatalogModule({ mode: "mysql", pool }));
-    modules.push(createGrowthQuoteModule({ mode: "mysql", pool }));
+    modules.push(createGrowthQuoteModule({
+      mode: "mysql", pool, trustedAuthority
+    }));
   } else {
     modules.push(createGrowthFoundationModule({ mode: "memory", acquisitionWorkspace }));
     modules.push(createGrowthCatalogModule({ mode: "memory" }));
-    modules.push(createGrowthQuoteModule({ mode: "memory" }));
+    modules.push(createGrowthQuoteModule({ mode: "memory", trustedAuthority }));
   }
   return Object.freeze({
     composition: createGrowthCommercialComposition({

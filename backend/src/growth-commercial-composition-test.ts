@@ -17,6 +17,7 @@ import {
   type GrowthCatalogServices
 } from "./growth-catalog-module.js";
 import type { CommissionCatalogProjectionPort } from "./commission-catalog-projection.js";
+import { GROWTH_PROBABILITY_ASSESSMENTS } from "./growth-quote-module.js";
 
 function foundationPorts() {
   const acquisitionWorkspace = Object.freeze({
@@ -49,6 +50,7 @@ function registryWithCatalog(
     catalogItems: {} as GrowthCatalogServices["catalogItems"],
     commissionCatalogProjection
   }));
+  registry.provide(GROWTH_PROBABILITY_ASSESSMENTS, {} as never);
   return registry;
 }
 
@@ -103,7 +105,7 @@ test("composition factories preserve isolated Foundation identities", () => {
   );
 });
 
-test("production memory composition installs Foundation then one Catalog module", async () => {
+test("production memory composition installs Foundation, Catalog, then Quote", async () => {
   const production = createGrowthCommercialCompositionForStore({
     store: {
       mode: "memory",
@@ -122,7 +124,7 @@ test("production memory composition installs Foundation then one Catalog module"
   });
   assert.deepEqual(
     production.composition.modules.map((module) => module.name),
-    ["growth-foundation", "growth-catalog"]
+    ["growth-foundation", "growth-catalog", "growth-quote"]
   );
   const runtime = await createGrowthCommercialApplication({
     manifest: { name: "growth-advisor-quote-roi", contractVersion: "1.0.0", contractHash: `sha256:${"a".repeat(64)}`, openapiVersion: "3.1.0" },
