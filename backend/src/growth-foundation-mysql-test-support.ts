@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import mysql from "mysql2/promise";
 import {
   MysqlGrowthTemporalBarrier,
+  MysqlGrowthTemporalTransactionRunner,
   ensureGrowthTemporalBarrierMysqlSchema
 } from "./growth-temporal-barrier-mysql-repository.js";
 import {
@@ -78,7 +79,8 @@ export async function withGrowthFoundationMysqlTestDatabase<T>(
       connectionB.threadId,
       "real-MySQL foundation fixture requires two distinct connections"
     );
-    const barrier = new MysqlGrowthTemporalBarrier(pool);
+    const transactions = new MysqlGrowthTemporalTransactionRunner(pool);
+    const barrier = new MysqlGrowthTemporalBarrier(transactions);
     return await run({
       pool,
       connectionA,

@@ -9,8 +9,8 @@ import {
 import { InMemoryGrowthHttpIdempotencyRepository, type GrowthHttpIdempotencyRepository } from "./growth-http-idempotency-repository.js";
 import { ensureGrowthHttpIdempotencyMysqlSchema, MysqlGrowthHttpIdempotencyRepository } from "./growth-http-idempotency-mysql-repository.js";
 import { commandContextFromRequest, type GrowthCommandContextFactory, type GrowthWorkspaceContextResolver } from "./growth-http-preconditions.js";
-import { InMemoryGrowthTemporalTransactionRunner, DefaultGrowthTemporalBarrier, type GrowthTemporalBarrier } from "./growth-temporal-barrier.js";
-import { ensureGrowthTemporalBarrierMysqlSchema, MysqlGrowthTemporalBarrier } from "./growth-temporal-barrier-mysql-repository.js";
+import { InMemoryGrowthTemporalTransactionRunner, DefaultGrowthTemporalBarrier, type GrowthTemporalBarrier, type GrowthTemporalTransactionRunner } from "./growth-temporal-barrier.js";
+import { ensureGrowthTemporalBarrierMysqlSchema, MysqlGrowthTemporalBarrier, MysqlGrowthTemporalTransactionRunner } from "./growth-temporal-barrier-mysql-repository.js";
 import {
   InMemoryGrowthWorkspaceSettingsRepository,
   type GrowthWorkspaceSettingsReader
@@ -26,6 +26,7 @@ export interface GrowthFoundationServices {
   workspaceSettings: GrowthWorkspaceSettingsReader;
   workspaceContext: GrowthWorkspaceContextResolver;
   acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
+  temporalTransactions: GrowthTemporalTransactionRunner;
   temporalBarrier: GrowthTemporalBarrier;
   commandContextFactory: GrowthCommandContextFactory;
 }
@@ -52,19 +53,30 @@ export function createGrowthFoundationModule(options: GrowthFoundationModuleOpti
       try {
         let httpIdempotency: GrowthHttpIdempotencyRepository;
         let workspaceSettings: GrowthWorkspaceSettingsReader;
+        let temporalTransactions: GrowthTemporalTransactionRunner;
         let temporalBarrier: GrowthTemporalBarrier;
         if (options.mode === "mysql") {
           await ensureGrowthHttpIdempotencyMysqlSchema(options.pool);
           await ensureGrowthTemporalBarrierMysqlSchema(options.pool);
           await ensureGrowthWorkspaceSettingsMysqlSchema(options.pool);
-          temporalBarrier = new MysqlGrowthTemporalBarrier(options.pool);
+          temporalTransactions = new MysqlGrowthTemporalTransactionRunner(
+            options.pool
+          );
+          temporalBarrier = new MysqlGrowthTemporalBarrier(
+            temporalTransactions
+          );
           httpIdempotency = new MysqlGrowthHttpIdempotencyRepository(options.pool);
           workspaceSettings = new MysqlGrowthWorkspaceSettingsRepository(options.pool, temporalBarrier);
         } else {
-          const transactions = new InMemoryGrowthTemporalTransactionRunner();
-          temporalBarrier = new DefaultGrowthTemporalBarrier(transactions);
+          temporalTransactions = new InMemoryGrowthTemporalTransactionRunner();
+          temporalBarrier = new DefaultGrowthTemporalBarrier(
+            temporalTransactions
+          );
           httpIdempotency = new InMemoryGrowthHttpIdempotencyRepository();
-          workspaceSettings = new InMemoryGrowthWorkspaceSettingsRepository(transactions, temporalBarrier);
+          workspaceSettings = new InMemoryGrowthWorkspaceSettingsRepository(
+            temporalTransactions,
+            temporalBarrier
+          );
         }
         const workspaceContext: GrowthWorkspaceContextResolver = (req) => {
           if (!req.activeWorkspace) throw new Error("workspace_required");
@@ -75,6 +87,7 @@ export function createGrowthFoundationModule(options: GrowthFoundationModuleOpti
           workspaceSettings,
           workspaceContext,
           acquisitionWorkspace,
+          temporalTransactions,
           temporalBarrier,
           commandContextFactory: commandContextFromRequest
         });

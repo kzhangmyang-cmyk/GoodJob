@@ -27,7 +27,7 @@ test("revision parser rejects a malformed ETag", () => {
 test("revision precondition distinguishes stale from exact revisions", () => {
   assert.throws(() => assertRevisionPrecondition(2, 3), (error: unknown) => error instanceof GrowthHttpError && error.status === 412 && error.code === "revision_conflict");
   assert.equal(assertRevisionPrecondition(3, 3), 3);
-  assert.equal(parseIfMatchRevision(request({ "If-Match": '"catalog-item:3"' }), "catalog-item"), 3);
+  assert.equal(parseIfMatchRevision(request({ "If-Match": '"catalog-item:item-1:3"' }), "catalog-item:item-1"), 3);
 });
 
 test("request context trusts workspace identity and hashes resource and revision", () => {
@@ -47,7 +47,8 @@ test("request helpers reject malformed idempotency and path inputs and emit pars
   assert.throws(() => commandContextFromRequest(request({ "Idempotency-Key": "key-0001" }), { canonicalPath: "/x/:id", pathParams: Object.freeze({ id: "item-1", extra: "forged" }), payload: {}, expectedRevision: null }), /invalid_growth_path_params/u);
   const headers = new Map<string, string>();
   setRevisionEtag({ setHeader: (name: string, value: string) => { headers.set(name, value); } } as unknown as Response, "catalog-item", "item-1", 7);
-  assert.equal(headers.get("ETag"), '"catalog-item:7"');
-  assert.equal(parseIfMatchRevision(request({ "If-Match": headers.get("ETag")! }), "catalog-item"), 7);
-  assert.throws(() => parseIfMatchRevision(request({ "If-Match": headers.get("ETag")! }), "quote-version"), /invalid_if_match/u);
+  assert.equal(headers.get("ETag"), '"catalog-item:item-1:7"');
+  assert.equal(parseIfMatchRevision(request({ "If-Match": headers.get("ETag")! }), "catalog-item:item-1"), 7);
+  assert.throws(() => parseIfMatchRevision(request({ "If-Match": headers.get("ETag")! }), "catalog-item:item-2"), /invalid_if_match/u);
+  assert.throws(() => parseIfMatchRevision(request({ "If-Match": headers.get("ETag")! }), "quote-version:quote-1"), /invalid_if_match/u);
 });

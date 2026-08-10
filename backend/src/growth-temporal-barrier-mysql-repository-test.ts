@@ -6,6 +6,7 @@ import {
   GROWTH_TEMPORAL_BARRIER_MYSQL_SCHEMA_STATEMENTS,
   MysqlGrowthTemporalBarrier,
   MysqlGrowthTemporalTransaction,
+  MysqlGrowthTemporalTransactionRunner,
   ensureGrowthTemporalBarrierMysqlSchema
 } from "./growth-temporal-barrier-mysql-repository.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
@@ -75,7 +76,9 @@ test("mysql allocation uses the caller connection and lock-first query order", a
   }]);
   connection.enqueue({ affectedRows: 1 });
   const pool = new FakePool(connection);
-  const barrier = new MysqlGrowthTemporalBarrier(asPool(pool));
+  const barrier = new MysqlGrowthTemporalBarrier(
+    new MysqlGrowthTemporalTransactionRunner(asPool(pool))
+  );
   const transaction = new MysqlGrowthTemporalTransaction(asConnection(connection));
 
   assert.deepEqual(await barrier.allocateAppend(transaction, "workspace-a"), {
@@ -97,7 +100,10 @@ test("mysql seal owns a short transaction and advances the global fence", async 
     temporal_sequence: 3
   }]);
   connection.enqueue({ affectedRows: 1 });
-  const barrier = new MysqlGrowthTemporalBarrier(asPool(new FakePool(connection)));
+  const runner = new MysqlGrowthTemporalTransactionRunner(
+    asPool(new FakePool(connection))
+  );
+  const barrier = new MysqlGrowthTemporalBarrier(runner);
 
   const cutoff = await barrier.sealReadCutoff(
     workspace("workspace-a"),
@@ -122,7 +128,9 @@ test("mysql seal owns a short transaction and advances the global fence", async 
 
 test("mysql barrier rejects the non-concrete all workspace before I/O", async () => {
   const pool = new FakePool();
-  const barrier = new MysqlGrowthTemporalBarrier(asPool(pool));
+  const barrier = new MysqlGrowthTemporalBarrier(
+    new MysqlGrowthTemporalTransactionRunner(asPool(pool))
+  );
   await assert.rejects(
     () => barrier.sealReadCutoff(workspace("all"), "2026-08-09T08:00:00.000Z"),
     /invalid_growth_workspace_id/
@@ -131,6 +139,8 @@ test("mysql barrier rejects the non-concrete all workspace before I/O", async ()
 });
 
 test("mysql temporal barriers carry Foundation provenance", () => {
-  const barrier = new MysqlGrowthTemporalBarrier(asPool(new FakePool()));
+  const barrier = new MysqlGrowthTemporalBarrier(
+    new MysqlGrowthTemporalTransactionRunner(asPool(new FakePool()))
+  );
   assert.equal(assertGrowthTemporalBarrier(barrier), barrier);
 });

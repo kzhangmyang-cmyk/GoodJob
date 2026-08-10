@@ -109,7 +109,7 @@ implements GrowthTemporalTransaction {
   }
 }
 
-class MysqlGrowthTemporalTransactionRunner
+export class MysqlGrowthTemporalTransactionRunner
 implements GrowthTemporalTransactionRunner {
   constructor(private readonly pool: mysql.Pool) {}
 
@@ -130,7 +130,9 @@ implements GrowthTemporalTransactionRunner {
 }
 
 export class MysqlGrowthTemporalBarrier extends DefaultGrowthTemporalBarrier {
-  constructor(pool: mysql.Pool) {
-    super(new MysqlGrowthTemporalTransactionRunner(pool));
+  constructor(transactions: GrowthTemporalTransactionRunner | mysql.Pool) {
+    super("run" in transactions
+      ? transactions
+      : new MysqlGrowthTemporalTransactionRunner(transactions));
   }
 }

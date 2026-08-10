@@ -19,12 +19,12 @@ export function parseGrowthIdempotencyKey(req: Request): string {
   return value;
 }
 
-export function parseIfMatchRevision(req: Request, resource: string): number {
-  const normalizedResource = resource.trim();
-  if (!normalizedResource) throw new GrowthHttpError(400, "invalid_if_match");
+export function parseIfMatchRevision(req: Request, resourceScope: string): number {
+  const normalizedScope = resourceScope.trim();
+  if (!normalizedScope) throw new GrowthHttpError(400, "invalid_if_match");
   const raw = req.header("If-Match");
   if (!raw?.trim()) throw new GrowthHttpError(428, "revision_required");
-  const match = new RegExp(`^"${normalizedResource.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}:([1-9]\\d*)"$`, "u").exec(raw.trim());
+  const match = new RegExp(`^"${normalizedScope.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}:([1-9]\\d*)"$`, "u").exec(raw.trim());
   if (!match) throw new GrowthHttpError(400, "invalid_if_match");
   const revision = Number(match[1]);
   if (!Number.isSafeInteger(revision)) throw new GrowthHttpError(400, "invalid_if_match");
@@ -72,5 +72,5 @@ export function commandContextFromRequest(req: Request, input: { canonicalPath: 
 
 export function setRevisionEtag(res: Response, resource: string, id: string, revision: number): void {
   if (!resource.trim() || !id.trim() || !Number.isSafeInteger(revision) || revision < 1) throw new Error("invalid_growth_revision_etag");
-  res.setHeader("ETag", `"${resource}:${revision}"`);
+  res.setHeader("ETag", `"${resource}:${id}:${revision}"`);
 }
