@@ -19,6 +19,13 @@ import type {
 import {
   acquisitionCandidateIdentityResolved
 } from "./acquisition-domain.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import {
+  createGrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 const ownerScope: AcquisitionActorScope = {
   ownerId: "owner-1",
@@ -30,6 +37,26 @@ const intruderScope: AcquisitionActorScope = {
   teamId: "team-1",
   actorId: "reviewer-2"
 };
+
+function growthFoundationPorts() {
+  const acquisitionWorkspace = createGrowthAcquisitionWorkspaceResolver({
+    async resolve(scope) {
+      return scope.ownerId === ownerScope.ownerId
+        && scope.teamId === ownerScope.teamId
+        ? {
+            workspaceId: ownerScope.teamId,
+            kind: "team" as const,
+            bindingRevision: "binding-1"
+          }
+        : null;
+    }
+  });
+  const transactionRunner = new InMemoryGrowthTemporalTransactionRunner(
+    "2026-08-09T08:00:00.000Z"
+  );
+  const temporalBarrier = new DefaultGrowthTemporalBarrier(transactionRunner);
+  return { acquisitionWorkspace, temporalBarrier, transactionRunner };
+}
 
 function createHarness() {
   let id = 0;
@@ -51,14 +78,65 @@ function createHarness() {
     }
   };
   const repository = new InMemoryAcquisitionDomainRepository();
+  const growth = growthFoundationPorts();
   const service = new AcquisitionDomainService({
     repository,
     leadConversionPort: leadPort,
+    growthAcquisitionWorkspace: growth.acquisitionWorkspace,
+    growthTemporalBarrier: growth.temporalBarrier,
     idFactory: (prefix) => `${prefix}-${++id}`,
     now: () => new Date(Date.UTC(2026, 6, 24, 1, 0, tick++)).toISOString()
   });
-  return { repository, service, converted };
+  return { repository, service, converted, growth };
 }
+
+test("the domain service consumes its issued Growth workspace and temporal ports", async () => {
+  const { service, growth } = createHarness();
+  const resolved = await service.resolveGrowthAcquisitionWorkspace({
+    ownerId: ownerScope.ownerId,
+    teamId: ownerScope.teamId
+  });
+  assert.equal(resolved?.workspaceId, ownerScope.teamId);
+  const allocated = await growth.transactionRunner.run((transaction) =>
+    service.allocateGrowthAppend(transaction, ownerScope.teamId));
+  assert.deepEqual(allocated, {
+    recordedAt: "2026-08-09T08:00:00.000Z",
+    temporalSequence: 1
+  });
+});
+
+test("the domain service rejects forged Growth workspace and temporal ports", () => {
+  const growth = growthFoundationPorts();
+  const repository = new InMemoryAcquisitionDomainRepository();
+  const leadConversionPort: LeadConversionPort = {
+    createLead: async () => {
+      throw new Error("not used");
+    }
+  };
+  assert.throws(() => new AcquisitionDomainService({
+    repository,
+    leadConversionPort,
+    growthAcquisitionWorkspace: {
+      resolve: growth.acquisitionWorkspace.resolve.bind(
+        growth.acquisitionWorkspace
+      )
+    } as never,
+    growthTemporalBarrier: growth.temporalBarrier
+  }), /invalid_growth_acquisition_workspace_resolver/u);
+  assert.throws(() => new AcquisitionDomainService({
+    repository,
+    leadConversionPort,
+    growthAcquisitionWorkspace: growth.acquisitionWorkspace,
+    growthTemporalBarrier: {
+      allocateAppend: growth.temporalBarrier.allocateAppend.bind(
+        growth.temporalBarrier
+      ),
+      sealReadCutoff: growth.temporalBarrier.sealReadCutoff.bind(
+        growth.temporalBarrier
+      )
+    }
+  }), /invalid_growth_temporal_barrier/u);
+});
 
 function searchEvidence(
   targetType: "organization" | "individual_signal",
@@ -1016,6 +1094,7 @@ test("live outcomes are append-only, idempotent, attributed, and tenant isolated
 
 test("domain mutations roll back state when the audit append fails", async () => {
   const baseRepository = new InMemoryAcquisitionDomainRepository();
+  const growth = growthFoundationPorts();
   const repository = new Proxy(baseRepository, {
     get(target, property, receiver) {
       if (property === "appendAuditEvent") {
@@ -1035,6 +1114,8 @@ test("domain mutations roll back state when the audit append fails", async () =>
         partyRef: request.partyRef
       })
     },
+    growthAcquisitionWorkspace: growth.acquisitionWorkspace,
+    growthTemporalBarrier: growth.temporalBarrier,
     idFactory: (prefix) => `${prefix}-rollback`,
     now: () => "2026-07-24T12:00:00.000Z"
   });

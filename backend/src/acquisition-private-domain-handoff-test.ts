@@ -20,6 +20,13 @@ import {
   type AcquisitionPrivateDomainHandoffStore
 } from "./acquisition-private-domain-handoff.js";
 import { canonicalJsonStringify } from "./canonical-json.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import {
+  createGrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 import type {
   AcquisitionCustomerHandoff,
   AcquisitionCustomerHandoffOperation,
@@ -215,6 +222,12 @@ async function fixture(
   const domainService = new AcquisitionDomainService({
     repository,
     leadConversionPort,
+    growthAcquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
+      resolve: async () => null
+    }),
+    growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
+      new InMemoryGrowthTemporalTransactionRunner()
+    ),
     now,
     idFactory: (prefix) => `${prefix}-generated`
   });

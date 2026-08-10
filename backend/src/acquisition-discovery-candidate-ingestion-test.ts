@@ -30,6 +30,16 @@ import {
   InMemoryAcquisitionCandidateDirectory,
   InMemoryAcquisitionToolResultLedger
 } from "./acquisition-tool-support-repositories.js";
+import {
+  createGrowthCommercialToolPorts
+} from "./growth-commercial-application.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import {
+  createGrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 const NOW = "2026-08-07T08:00:00.000Z";
 const scope = {
@@ -57,6 +67,12 @@ function fixture(options: {
         };
       }
     },
+    growthAcquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
+      resolve: async () => null
+    }),
+    growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
+      new InMemoryGrowthTemporalTransactionRunner()
+    ),
     idFactory: (prefix) => `${prefix}-${++sequence}`,
     now: () => NOW
   });
@@ -94,6 +110,7 @@ function fixture(options: {
   });
   const executor = new ProductionAcquisitionAgentToolExecutor({
     domain,
+    growthToolPorts: createGrowthCommercialToolPorts(),
     search: {
       async search() {
         throw new Error("search is not used in this test");

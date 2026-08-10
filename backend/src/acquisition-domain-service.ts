@@ -44,6 +44,15 @@ import { classifyDouyinPublicSource } from "./acquisition-douyin-public-source.j
 import type {
   AcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
+import {
+  assertGrowthTemporalBarrier,
+  type GrowthTemporalBarrier,
+  type GrowthTemporalTransaction
+} from "./growth-temporal-barrier.js";
+import {
+  assertGrowthAcquisitionWorkspaceResolver,
+  type GrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 export interface AcquisitionActorScope {
   ownerId: string;
@@ -93,6 +102,8 @@ export class AcquisitionDomainError extends Error {
 export interface AcquisitionDomainServiceOptions {
   repository: AcquisitionDomainRepository;
   leadConversionPort: LeadConversionPort;
+  growthAcquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
+  growthTemporalBarrier: GrowthTemporalBarrier;
   idFactory?: (prefix: string) => string;
   now?: () => string;
 }
@@ -323,6 +334,9 @@ function financialSummary(
 export class AcquisitionDomainService {
   private readonly repository: AcquisitionDomainRepository;
   private readonly leadConversionPort: LeadConversionPort;
+  private readonly growthAcquisitionWorkspace:
+    GrowthAcquisitionWorkspaceResolver;
+  private readonly growthTemporalBarrier: GrowthTemporalBarrier;
   private readonly idFactory: (prefix: string) => string;
   private readonly clock: () => string;
   private readonly inFlightIdempotency = new Map<string, {
@@ -337,9 +351,32 @@ export class AcquisitionDomainService {
   constructor(options: AcquisitionDomainServiceOptions) {
     this.repository = options.repository;
     this.leadConversionPort = options.leadConversionPort;
+    this.growthAcquisitionWorkspace =
+      assertGrowthAcquisitionWorkspaceResolver(
+        options.growthAcquisitionWorkspace
+      );
+    this.growthTemporalBarrier = assertGrowthTemporalBarrier(
+      options.growthTemporalBarrier
+    );
     this.idFactory = options.idFactory
       ?? ((prefix) => `${prefix}_${crypto.randomUUID()}`);
     this.clock = options.now ?? (() => new Date().toISOString());
+  }
+
+  resolveGrowthAcquisitionWorkspace(
+    scope: Readonly<{ ownerId: string; teamId: string }>
+  ) {
+    return this.growthAcquisitionWorkspace.resolve(scope);
+  }
+
+  allocateGrowthAppend(
+    transaction: GrowthTemporalTransaction,
+    workspaceId: string
+  ) {
+    return this.growthTemporalBarrier.allocateAppend(
+      transaction,
+      workspaceId
+    );
   }
 
   async appendEvidence(

@@ -46,6 +46,12 @@ import type {
 import {
   normalizeShanghaiPerformanceWindow
 } from "./acquisition-performance-window.js";
+import {
+  assertGrowthCommercialToolPorts,
+  type GrowthCommercialToolCall,
+  type GrowthCommercialToolPorts
+} from "./growth-commercial-application.js";
+import type { CommandContext } from "./growth-command-context.js";
 
 const TOOL_NAMES = new Set<string>(ACQUISITION_AGENT_TOOL_NAMES);
 const GRADE_RANK = { S: 0, A: 1, B: 2, C: 3, D: 4 } as const;
@@ -391,6 +397,7 @@ export interface AcquisitionJudgmentPort {
 
 export interface ProductionAcquisitionAgentToolExecutorOptions {
   domain: AcquisitionDomainService;
+  growthToolPorts: GrowthCommercialToolPorts;
   search: SearchPublicSourcesPort;
   searchConnections: AcquisitionSearchConnectionDirectoryPort;
   candidateDirectory: AcquisitionCandidateDirectoryPort;
@@ -1176,6 +1183,7 @@ export function iso4217CurrencyExponent(currency: string) {
 export class ProductionAcquisitionAgentToolExecutor
 implements AcquisitionAgentToolExecutor {
   private readonly domain: AcquisitionDomainService;
+  private readonly growthToolPorts: GrowthCommercialToolPorts;
   private readonly search: SearchPublicSourcesPort;
   private readonly searchConnections: AcquisitionSearchConnectionDirectoryPort;
   private readonly directory: AcquisitionCandidateDirectoryPort;
@@ -1191,6 +1199,9 @@ implements AcquisitionAgentToolExecutor {
 
   constructor(options: ProductionAcquisitionAgentToolExecutorOptions) {
     this.domain = options.domain;
+    this.growthToolPorts = assertGrowthCommercialToolPorts(
+      options.growthToolPorts
+    );
     this.search = options.search;
     this.searchConnections = options.searchConnections;
     this.directory = options.candidateDirectory;
@@ -1212,6 +1223,13 @@ implements AcquisitionAgentToolExecutor {
       || this.maxEvidenceAgeDays > 3_650) {
       throw new TypeError("maxEvidenceAgeDays must be an integer from 1 to 3650");
     }
+  }
+
+  executeGrowthTool(
+    call: GrowthCommercialToolCall,
+    command: CommandContext
+  ): Promise<unknown> {
+    return this.growthToolPorts.execute(call, command);
   }
 
   async execute(input: AcquisitionToolExecutionInput): Promise<unknown> {

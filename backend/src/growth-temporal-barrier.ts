@@ -45,6 +45,16 @@ export interface GrowthTemporalBarrier {
 }
 
 const issuedCutoffs = new WeakSet<object>();
+const issuedGrowthTemporalBarriers = new WeakSet<object>();
+
+export function assertGrowthTemporalBarrier(
+  value: GrowthTemporalBarrier
+): GrowthTemporalBarrier {
+  if (!value || !issuedGrowthTemporalBarriers.has(value)) {
+    throw new Error("invalid_growth_temporal_barrier");
+  }
+  return value;
+}
 
 export function assertConcreteGrowthWorkspaceId(workspaceId: string): string {
   const normalized = workspaceId.trim();
@@ -82,7 +92,9 @@ export function assertGrowthSealedReadCutoff(
 }
 
 export class DefaultGrowthTemporalBarrier implements GrowthTemporalBarrier {
-  constructor(private readonly transactions: GrowthTemporalTransactionRunner) {}
+  constructor(private readonly transactions: GrowthTemporalTransactionRunner) {
+    issuedGrowthTemporalBarriers.add(this);
+  }
 
   async allocateAppend(
     tx: GrowthTemporalTransaction,

@@ -38,6 +38,10 @@ import {
   InMemoryAcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
 import {
+  AcquisitionDomainService,
+  type AcquisitionDomainServiceOptions
+} from "./acquisition-domain-service.js";
+import {
   acquisitionCandidateIdentityResolved
 } from "./acquisition-domain.js";
 import {
@@ -66,6 +70,10 @@ import {
 import type {
   SearchPublicSourcesPort
 } from "./acquisition-tool-executor.js";
+import {
+  ProductionAcquisitionAgentToolExecutor,
+  type ProductionAcquisitionAgentToolExecutorOptions
+} from "./acquisition-tool-executor.js";
 import type {
   AcquisitionPiGatewayPort
 } from "./acquisition-pi-gateway-runtime.js";
@@ -83,9 +91,12 @@ import {
   bindModelConnectionSnapshot
 } from "./model-providers/runtime.js";
 import { createGrowthCommercialToolPorts } from "./growth-commercial-application.js";
-import type { GrowthTemporalBarrier } from "./growth-temporal-barrier.js";
-import type {
-  GrowthAcquisitionWorkspaceResolver
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import {
+  createGrowthAcquisitionWorkspaceResolver
 } from "./growth-workspace-context.js";
 
 const OWNER = "owner-application";
@@ -95,18 +106,12 @@ const MASTER_SECRET =
 
 const testGrowthApplicationDependencies = Object.freeze({
   growthToolPorts: createGrowthCommercialToolPorts(),
-  acquisitionWorkspace: Object.freeze({
+  acquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
     resolve: async () => null
-  }) as GrowthAcquisitionWorkspaceResolver,
-  growthTemporalBarrier: Object.freeze({
-    allocateAppend: async () => ({
-      recordedAt: "2026-08-09T08:00:00.000Z",
-      temporalSequence: 1
-    }),
-    sealReadCutoff: async () => {
-      throw new Error("not used by legacy Acquisition application tests");
-    }
-  }) as GrowthTemporalBarrier
+  }),
+  growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
+    new InMemoryGrowthTemporalTransactionRunner()
+  )
 });
 
 type AcquisitionApplicationTestOptions = Omit<
@@ -3044,18 +3049,12 @@ test("acquisition startup rejects missing and lookalike Growth runtime ports", a
   try {
     const fixture = isolatedMemoryStore();
     const growthToolPorts = createGrowthCommercialToolPorts();
-    const acquisitionWorkspace = Object.freeze({
+    const acquisitionWorkspace = createGrowthAcquisitionWorkspaceResolver({
       resolve: async () => null
-    }) as GrowthAcquisitionWorkspaceResolver;
-    const growthTemporalBarrier = Object.freeze({
-      allocateAppend: async () => ({
-        recordedAt: "2026-08-09T08:00:00.000Z",
-        temporalSequence: 1
-      }),
-      sealReadCutoff: async () => {
-        throw new Error("not used by C0 Acquisition");
-      }
-    }) as GrowthTemporalBarrier;
+    });
+    const growthTemporalBarrier = new DefaultGrowthTemporalBarrier(
+      new InMemoryGrowthTemporalTransactionRunner()
+    );
     const complete = {
       store: fixture.store,
       masterSecret: MASTER_SECRET,
@@ -3098,21 +3097,25 @@ test("acquisition startup rejects missing and lookalike Growth runtime ports", a
     await assert.rejects(
       createAcquisitionApplication({
         ...complete,
-        acquisitionWorkspace: { resolve: null } as never
+        acquisitionWorkspace: Object.freeze({
+          resolve: acquisitionWorkspace.resolve.bind(acquisitionWorkspace)
+        })
       }),
-      /INVALID_GROWTH_ACQUISITION_WORKSPACE/u
+      /invalid_growth_acquisition_workspace_resolver/u
     );
     await assert.rejects(
       createAcquisitionApplication({
         ...complete,
-        growthTemporalBarrier: {
-          allocateAppend: async () => ({
-            recordedAt: "2026-08-09T08:00:00.000Z",
-            temporalSequence: 1
-          })
-        } as never
+        growthTemporalBarrier: Object.freeze({
+          allocateAppend: growthTemporalBarrier.allocateAppend.bind(
+            growthTemporalBarrier
+          ),
+          sealReadCutoff: growthTemporalBarrier.sealReadCutoff.bind(
+            growthTemporalBarrier
+          )
+        })
       }),
-      /INVALID_GROWTH_TEMPORAL_BARRIER/u
+      /invalid_growth_temporal_barrier/u
     );
   } finally {
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
@@ -3129,71 +3132,67 @@ test("the Acquisition domain graph consumes the exact Growth runtime ports", asy
     return input;
   });
   const scope = Object.freeze({ ownerId: OWNER, teamId: TEAM });
-  const resolvedWorkspace = Object.freeze({
-    workspaceId: TEAM,
-    kind: "team",
-    bindingRevision: "revision-1",
-    ownerId: OWNER,
-    teamId: TEAM
-  }) as never;
-  const acquisitionWorkspace = Object.freeze({
-    async resolve(actual: typeof scope) {
-      assert.equal(actual, scope);
-      return resolvedWorkspace;
-    }
-  }) as GrowthAcquisitionWorkspaceResolver;
-  const transaction = Object.freeze({ marker: "transaction" }) as never;
-  const growthTemporalBarrier = Object.freeze({
-    async allocateAppend(actual: unknown, workspaceId: string) {
-      assert.equal(actual, transaction);
-      assert.equal(workspaceId, TEAM);
+  const acquisitionWorkspace = createGrowthAcquisitionWorkspaceResolver({
+    async resolve(actual) {
+      assert.deepEqual(actual, scope);
       return {
-        recordedAt: "2026-08-09T08:00:00.000Z",
-        temporalSequence: 7
+        workspaceId: TEAM,
+        kind: "team",
+        bindingRevision: "revision-1"
       };
-    },
-    sealReadCutoff: async () => {
-      throw new Error("not used by this consumer test");
     }
-  }) as GrowthTemporalBarrier;
+  });
+  const transactionRunner = new InMemoryGrowthTemporalTransactionRunner(
+    "2026-08-09T08:00:00.000Z"
+  );
+  const growthTemporalBarrier = new DefaultGrowthTemporalBarrier(
+    transactionRunner
+  );
+  let domainOptions: AcquisitionDomainServiceOptions | null = null;
+  let toolOptions: ProductionAcquisitionAgentToolExecutorOptions | null = null;
+  let domainConsumer: AcquisitionDomainService | null = null;
+  let toolConsumer: ProductionAcquisitionAgentToolExecutor | null = null;
   const runtime = await createAcquisitionApplication({
     store: fixture.store,
     masterSecret: MASTER_SECRET,
     growthToolPorts,
     acquisitionWorkspace,
-    growthTemporalBarrier
+    growthTemporalBarrier,
+    domainServiceFactory(options) {
+      domainOptions = options;
+      domainConsumer = new AcquisitionDomainService(options);
+      return domainConsumer;
+    },
+    toolExecutorFactory(options) {
+      toolOptions = options;
+      toolConsumer = new ProductionAcquisitionAgentToolExecutor(options);
+      return toolConsumer;
+    }
   });
   try {
-    assert.equal(runtime.growthIntegrations.toolPorts, growthToolPorts);
+    assert.ok(domainOptions && domainConsumer && toolOptions && toolConsumer);
     assert.equal(
-      runtime.growthIntegrations.acquisitionWorkspace,
+      domainOptions.growthAcquisitionWorkspace,
       acquisitionWorkspace
     );
-    assert.equal(
-      runtime.growthIntegrations.temporalBarrier,
-      growthTemporalBarrier
+    assert.equal(domainOptions.growthTemporalBarrier, growthTemporalBarrier);
+    assert.equal(toolOptions.growthToolPorts, growthToolPorts);
+    const resolved = await domainConsumer.resolveGrowthAcquisitionWorkspace(
+      scope
     );
-    assert.equal(Object.isFrozen(runtime.growthIntegrations), true);
-    assert.equal(
-      await runtime.growthIntegrations.resolveAcquisitionWorkspace(scope),
-      resolvedWorkspace
-    );
+    assert.equal(resolved?.workspaceId, TEAM);
+    assert.deepEqual(await transactionRunner.run((transaction) =>
+      domainConsumer!.allocateGrowthAppend(transaction, TEAM)), {
+      recordedAt: "2026-08-09T08:00:00.000Z",
+      temporalSequence: 1
+    });
     const toolInput = Object.freeze({ page: 1 });
-    assert.equal(await runtime.growthIntegrations.executeGrowthTool({
+    assert.equal(await toolConsumer.executeGrowthTool({
       name: "list_catalog_items",
       input: toolInput,
       stableCallHash: `sha256:${"a".repeat(64)}`
     }, command), toolInput);
-    assert.deepEqual(
-      await runtime.growthIntegrations.allocateGrowthAppend(
-        transaction,
-        TEAM
-      ),
-      {
-        recordedAt: "2026-08-09T08:00:00.000Z",
-        temporalSequence: 7
-      }
-    );
+    assert.equal("growthIntegrations" in runtime, false);
   } finally {
     await runtime.close();
     await runtime.close();

@@ -25,6 +25,13 @@ import type {
   SearchPublicSourceResult,
   SearchPublicSourcesPort
 } from "./acquisition-tool-executor.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import {
+  createGrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 const OWNER = "owner-research";
 const TEAM = "team-research";
@@ -242,6 +249,12 @@ async function fixture(candidate: AcquisitionCandidate) {
         throw new Error("not used");
       }
     },
+    growthAcquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
+      resolve: async () => null
+    }),
+    growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
+      new InMemoryGrowthTemporalTransactionRunner()
+    ),
     idFactory: (prefix) => `${prefix}-research-${++sequence}`,
     now: () => "2026-07-26T01:00:00.000Z"
   });

@@ -19,6 +19,13 @@ import {
 import {
   AcquisitionLeadConversionReconciliationService
 } from "./acquisition-lead-conversion-reconciliation.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import {
+  createGrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 const ownerScope = {
   ownerId: "owner-a",
@@ -152,6 +159,12 @@ function serviceFixture(
         return crm.createLead(request);
       }
     },
+    growthAcquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
+      resolve: async () => null
+    }),
+    growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
+      new InMemoryGrowthTemporalTransactionRunner()
+    ),
     idFactory: (prefix) => `${prefix}-${crypto.randomUUID()}`,
     now: () => "2026-07-24T08:00:00.000Z"
   });

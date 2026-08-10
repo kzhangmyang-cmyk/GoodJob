@@ -3,12 +3,9 @@ import { normalizeGrowthInstant } from "./growth-as-of.js";
 import {
   DefaultGrowthTemporalBarrier,
   assertConcreteGrowthWorkspaceId,
-  type GrowthSealedReadCutoff,
-  type GrowthTemporalBarrier,
   type GrowthTemporalTransaction,
   type GrowthTemporalTransactionRunner
 } from "./growth-temporal-barrier.js";
-import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 
 type MysqlRow = Record<string, unknown>;
 
@@ -132,23 +129,8 @@ implements GrowthTemporalTransactionRunner {
   }
 }
 
-export class MysqlGrowthTemporalBarrier implements GrowthTemporalBarrier {
-  private readonly delegate: DefaultGrowthTemporalBarrier;
-
+export class MysqlGrowthTemporalBarrier extends DefaultGrowthTemporalBarrier {
   constructor(pool: mysql.Pool) {
-    this.delegate = new DefaultGrowthTemporalBarrier(
-      new MysqlGrowthTemporalTransactionRunner(pool)
-    );
-  }
-
-  allocateAppend(tx: GrowthTemporalTransaction, workspaceId: string) {
-    return this.delegate.allocateAppend(tx, workspaceId);
-  }
-
-  sealReadCutoff(
-    context: ActiveWorkspaceContext,
-    effectiveAsOf: string
-  ): Promise<GrowthSealedReadCutoff> {
-    return this.delegate.sealReadCutoff(context, effectiveAsOf);
+    super(new MysqlGrowthTemporalTransactionRunner(pool));
   }
 }

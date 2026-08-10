@@ -11,8 +11,8 @@ import {
   DefaultGrowthTemporalBarrier,
   InMemoryGrowthTemporalTransactionRunner
 } from "./growth-temporal-barrier.js";
-import type {
-  GrowthAcquisitionWorkspaceResolver
+import {
+  createGrowthAcquisitionWorkspaceResolver
 } from "./growth-workspace-context.js";
 import {
   InMemoryAcquisitionCandidateIntelligenceOperationRepository
@@ -621,9 +621,9 @@ test("a real Baidu Douyin video result closes identity and AI intelligence witho
     store,
     masterSecret: MASTER_SECRET,
     growthToolPorts: createGrowthCommercialToolPorts(),
-    acquisitionWorkspace: Object.freeze({
+    acquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
       resolve: async () => null
-    }) as GrowthAcquisitionWorkspaceResolver,
+    }),
     growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
       new InMemoryGrowthTemporalTransactionRunner()
     ),

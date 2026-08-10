@@ -4,6 +4,7 @@ import { capabilitiesForHumanRole } from "./growth-capabilities.js";
 import {
   DefaultGrowthTemporalBarrier,
   InMemoryGrowthTemporalTransactionRunner,
+  assertGrowthTemporalBarrier,
   assertGrowthSealedReadCutoff,
   withGrowthSealedReadCutoff,
   type GrowthSealedReadCutoff,
@@ -127,6 +128,20 @@ test("sealed cutoff provenance and exact workspace identity are enforced", async
       /invalid_growth_sealed_read_cutoff/
     );
   }
+});
+
+test("only Foundation-issued temporal barriers have provenance", () => {
+  const barrier = new DefaultGrowthTemporalBarrier(
+    new InMemoryGrowthTemporalTransactionRunner()
+  );
+  assert.equal(assertGrowthTemporalBarrier(barrier), barrier);
+  assert.throws(
+    () => assertGrowthTemporalBarrier(Object.freeze({
+      allocateAppend: barrier.allocateAppend.bind(barrier),
+      sealReadCutoff: barrier.sealReadCutoff.bind(barrier)
+    })),
+    /invalid_growth_temporal_barrier/u
+  );
 });
 
 test("one public boundary seals once and passes the identical token to every reader", async () => {

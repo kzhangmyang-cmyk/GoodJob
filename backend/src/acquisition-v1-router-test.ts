@@ -27,6 +27,13 @@ import {
   AcquisitionCopilotService,
   InMemoryAcquisitionCopilotRepository
 } from "./acquisition-copilot-service.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import {
+  createGrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 import type {
   AcquisitionCopilotScope
 } from "./acquisition-copilot-service.js";
@@ -87,6 +94,12 @@ async function createFixture(options: {
         };
       }
     },
+    growthAcquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
+      resolve: async () => null
+    }),
+    growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
+      new InMemoryGrowthTemporalTransactionRunner()
+    ),
     idFactory,
     now
   });

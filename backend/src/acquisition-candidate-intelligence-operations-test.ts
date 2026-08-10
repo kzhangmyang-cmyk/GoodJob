@@ -30,6 +30,16 @@ import {
   InMemoryAcquisitionCandidateDirectory,
   InMemoryAcquisitionToolResultLedger
 } from "./acquisition-tool-support-repositories.js";
+import {
+  createGrowthCommercialToolPorts
+} from "./growth-commercial-application.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import {
+  createGrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 const NOW = "2026-08-07T02:00:00.000Z";
 const scope = {
@@ -438,6 +448,12 @@ test("runs the durable workflow through the production executor and persists dom
         };
       }
     },
+    growthAcquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
+      resolve: async () => null
+    }),
+    growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
+      new InMemoryGrowthTemporalTransactionRunner()
+    ),
     idFactory: (prefix) => `${prefix}-production-${++domainId}`,
     now: () => NOW
   });
@@ -526,6 +542,7 @@ test("runs the durable workflow through the production executor and persists dom
   };
   const productionExecutor = new ProductionAcquisitionAgentToolExecutor({
     domain,
+    growthToolPorts: createGrowthCommercialToolPorts(),
     search: {
       async search() {
         throw new Error("search is not used by candidate intelligence");

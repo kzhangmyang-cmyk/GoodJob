@@ -45,6 +45,16 @@ export interface GrowthAcquisitionWorkspaceResolver {
 }
 
 const resolvedAcquisitionWorkspaces = new WeakSet<object>();
+const issuedAcquisitionWorkspaceResolvers = new WeakSet<object>();
+
+export function assertGrowthAcquisitionWorkspaceResolver(
+  value: GrowthAcquisitionWorkspaceResolver
+): GrowthAcquisitionWorkspaceResolver {
+  if (!value || !issuedAcquisitionWorkspaceResolvers.has(value)) {
+    throw new Error("invalid_growth_acquisition_workspace_resolver");
+  }
+  return value;
+}
 
 function concrete(value: string) {
   const normalized = value.trim();
@@ -63,7 +73,7 @@ export function assertResolvedAcquisitionWorkspace(
 export function createGrowthAcquisitionWorkspaceResolver(
   directory: GrowthAcquisitionWorkspaceDirectory
 ): GrowthAcquisitionWorkspaceResolver {
-  return Object.freeze({
+  const resolver = Object.freeze({
     async resolve(scope: Readonly<{ ownerId: string; teamId: string }>) {
       const ownerId = concrete(scope.ownerId);
       const teamId = concrete(scope.teamId);
@@ -86,6 +96,8 @@ export function createGrowthAcquisitionWorkspaceResolver(
       return resolved;
     }
   });
+  issuedAcquisitionWorkspaceResolvers.add(resolver);
+  return resolver;
 }
 
 export async function resolveActiveWorkspace(

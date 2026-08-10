@@ -39,8 +39,8 @@ import {
   DefaultGrowthTemporalBarrier,
   InMemoryGrowthTemporalTransactionRunner
 } from "./growth-temporal-barrier.js";
-import type {
-  GrowthAcquisitionWorkspaceResolver
+import {
+  createGrowthAcquisitionWorkspaceResolver
 } from "./growth-workspace-context.js";
 
 async function listen(application: typeof app = app): Promise<{
@@ -328,9 +328,9 @@ test("real handoff HTTP output binds one Deal and reaches performance", async ()
     store,
     masterSecret: "closed-loop-integration-master-secret-at-least-32-bytes",
     growthToolPorts: createGrowthCommercialToolPorts(),
-    acquisitionWorkspace: Object.freeze({
+    acquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
       resolve: async () => null
-    }) as GrowthAcquisitionWorkspaceResolver,
+    }),
     growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
       new InMemoryGrowthTemporalTransactionRunner()
     ),

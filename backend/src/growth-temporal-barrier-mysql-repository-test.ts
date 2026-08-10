@@ -9,6 +9,7 @@ import {
   ensureGrowthTemporalBarrierMysqlSchema
 } from "./growth-temporal-barrier-mysql-repository.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
+import { assertGrowthTemporalBarrier } from "./growth-temporal-barrier.js";
 
 class FakeConnection {
   readonly calls: string[] = [];
@@ -127,4 +128,9 @@ test("mysql barrier rejects the non-concrete all workspace before I/O", async ()
     /invalid_growth_workspace_id/
   );
   assert.equal(pool.connection.calls.length, 0);
+});
+
+test("mysql temporal barriers carry Foundation provenance", () => {
+  const barrier = new MysqlGrowthTemporalBarrier(asPool(new FakePool()));
+  assert.equal(assertGrowthTemporalBarrier(barrier), barrier);
 });

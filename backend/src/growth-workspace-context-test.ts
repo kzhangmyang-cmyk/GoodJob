@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Request } from "express";
 import {
+  assertGrowthAcquisitionWorkspaceResolver,
   assertResolvedAcquisitionWorkspace,
   createGrowthAcquisitionWorkspaceResolver,
   createGrowthWorkspaceMiddleware,
@@ -196,6 +197,19 @@ test("fabricated acquisition workspace values do not have runtime provenance", (
   assert.throws(
     () => assertResolvedAcquisitionWorkspace(forged),
     /invalid_resolved_acquisition_workspace/
+  );
+});
+
+test("only Foundation-issued acquisition workspace resolvers have provenance", () => {
+  const resolver = createGrowthAcquisitionWorkspaceResolver({
+    resolve: async () => null
+  });
+  assert.equal(assertGrowthAcquisitionWorkspaceResolver(resolver), resolver);
+  assert.throws(
+    () => assertGrowthAcquisitionWorkspaceResolver(Object.freeze({
+      resolve: resolver.resolve.bind(resolver)
+    })),
+    /invalid_growth_acquisition_workspace_resolver/u
   );
 });
 

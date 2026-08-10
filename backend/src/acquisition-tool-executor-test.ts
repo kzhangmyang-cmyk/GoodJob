@@ -35,6 +35,17 @@ import {
   type SearchPublicSourcesRequest,
   type SearchPublicSourcesResponse
 } from "./acquisition-tool-executor.js";
+import {
+  createGrowthCommercialToolPorts,
+  type GrowthCommercialToolPorts
+} from "./growth-commercial-application.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import {
+  createGrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 const identity: AcquisitionAgentIdentity = {
   ownerId: "owner-1",
@@ -424,6 +435,7 @@ function createHarness(options: {
   individualSourceType?: SearchPublicSourceResult["sourceType"];
   searchConnectionIds?: string[];
   candidateIdFactory?: () => string;
+  growthToolPorts?: GrowthCommercialToolPorts;
   performance?: {
     get(scope: { ownerId: string; teamId: string }, query: {
       platform?: "douyin" | "web";
@@ -445,9 +457,23 @@ function createHarness(options: {
       };
     }
   };
+  const growthAcquisitionWorkspace = createGrowthAcquisitionWorkspaceResolver({
+    async resolve(scope) {
+      return {
+        workspaceId: scope.teamId,
+        kind: "team" as const,
+        bindingRevision: "tool-executor-test-binding"
+      };
+    }
+  });
+  const growthTemporalBarrier = new DefaultGrowthTemporalBarrier(
+    new InMemoryGrowthTemporalTransactionRunner()
+  );
   const domain = new AcquisitionDomainService({
     repository,
     leadConversionPort,
+    growthAcquisitionWorkspace,
+    growthTemporalBarrier,
     idFactory: (prefix) => prefix === "candidate" && options.candidateIdFactory
       ? options.candidateIdFactory()
       : `${prefix}-${++id}`,
@@ -473,6 +499,8 @@ function createHarness(options: {
   const toolResults = new TestToolResultLedger();
   const executor = new ProductionAcquisitionAgentToolExecutor({
     domain,
+    growthToolPorts: options.growthToolPorts
+      ?? createGrowthCommercialToolPorts(),
     search,
     searchConnections,
     candidateDirectory: directory,
@@ -498,6 +526,31 @@ function createHarness(options: {
     converted
   };
 }
+
+test("the production Acquisition tool executor consumes the issued Growth registry", async () => {
+  const growthToolPorts = createGrowthCommercialToolPorts();
+  const command = Object.freeze({ marker: "command" }) as never;
+  const payload = Object.freeze({ query: "catalog" });
+  growthToolPorts.register("list_catalog_items", async (input, actual) => {
+    assert.equal(actual, command);
+    return input;
+  });
+  const { executor } = createHarness({ growthToolPorts });
+  assert.equal(await executor.executeGrowthTool({
+    name: "list_catalog_items",
+    input: payload,
+    stableCallHash: `sha256:${"a".repeat(64)}`
+  }, command), payload);
+});
+
+test("the production Acquisition tool executor rejects a forged Growth registry", () => {
+  assert.throws(() => createHarness({
+    growthToolPorts: Object.freeze({
+      register() {},
+      execute: async () => null
+    }) as never
+  }), /INVALID_GROWTH_TOOL_PORTS/u);
+});
 
 async function execute(
   executor: ProductionAcquisitionAgentToolExecutor,

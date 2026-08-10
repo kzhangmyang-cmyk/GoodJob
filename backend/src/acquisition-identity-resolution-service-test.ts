@@ -17,6 +17,13 @@ import {
 import {
   InMemoryAcquisitionCandidateDirectory
 } from "./acquisition-tool-support-repositories.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
+import {
+  createGrowthAcquisitionWorkspaceResolver
+} from "./growth-workspace-context.js";
 
 const scope: AcquisitionActorScope = {
   ownerId: "owner-identity",
@@ -38,6 +45,12 @@ function harness() {
         };
       }
     },
+    growthAcquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
+      resolve: async () => null
+    }),
+    growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
+      new InMemoryGrowthTemporalTransactionRunner()
+    ),
     idFactory: (prefix) => `${prefix}-${++sequence}`,
     now: () => new Date(
       Date.parse("2026-07-24T06:00:00.000Z") + tick++
