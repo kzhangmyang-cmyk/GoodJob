@@ -19,7 +19,7 @@ test("growth release derives the version directory and never overwrites differen
     const second = path.join(secondRoot, secondManifest.contractVersion);
     const bytes = await readFile(path.join(first, "openapi.json"));
     const expectedHash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-    assert.equal(firstManifest.contractVersion, "1.0.0");
+    assert.equal(firstManifest.contractVersion, "1.0.1");
     assert.equal(firstManifest.contractHash, expectedHash);
     assert.deepEqual(firstManifest, secondManifest);
     assert.deepEqual(bytes, await readFile(path.join(second, "openapi.json")));
@@ -33,17 +33,32 @@ test("growth release derives the version directory and never overwrites differen
     );
     await assert.rejects(
       buildGrowthContractRelease({ input, releasesRoot: firstRoot }),
-      /immutable growth contract release collision for 1\.0\.0/u
+      /immutable growth contract release collision for 1\.0\.1/u
     );
     await writeFile(path.join(first, "manifest.json"), committedManifestBytes);
     await writeFile(path.join(first, "openapi.json"), "{}\n", "utf8");
     await assert.rejects(
       buildGrowthContractRelease({ input, releasesRoot: firstRoot }),
-      /immutable growth contract release collision for 1\.0\.0/u
+      /immutable growth contract release collision for 1\.0\.1/u
     );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("publishing a successor preserves the immutable 1.0.0 release bytes", async () => {
+  const release = new URL("../releases/growth-advisor-quote-roi/1.0.0/", import.meta.url);
+  const openApi = await readFile(new URL("openapi.json", release));
+  const manifest = await readFile(new URL("manifest.json", release));
+
+  assert.equal(
+    createHash("sha256").update(openApi).digest("hex"),
+    "fb38e95326241fbc3fb5a4e3b75bc572b3fb3944baedd0ecbcf2117a7fcbe707"
+  );
+  assert.equal(
+    createHash("sha256").update(manifest).digest("hex"),
+    "85ac612f8ac8b933786b642579141d5545b5b713262cd2681c4dc6eaef62efe0"
+  );
 });
 
 test("growth release resolves YAML merges into a valid OpenAPI document", async () => {
@@ -65,8 +80,7 @@ test("growth release resolves YAML merges into a valid OpenAPI document", async 
     ]);
     assert.deepEqual(operation.parameters, [
       { $ref: "#/components/parameters/workspaceHeader" },
-      { $ref: "#/components/parameters/idempotencyKey" },
-      { $ref: "#/components/parameters/ifMatch" }
+      { $ref: "#/components/parameters/idempotencyKey" }
     ]);
     assert.deepEqual(Object.keys(operation.responses).sort(), ["201", "400", "401", "403", "409", "422"]);
     await assert.doesNotReject(SwaggerParser.validate(document, {}));

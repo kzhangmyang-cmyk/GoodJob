@@ -448,6 +448,15 @@ test("growth contract publishes the exact route surface", async () => {
   assert.equal(JSON.stringify(bootstrap).includes("acquisition.outcome.reconcile.internal"), false);
 });
 
+// Production break caught: requiring a revision precondition for creation even though no catalog item revision exists yet.
+test("catalog item creation requires workspace and idempotency without If-Match", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  assert.deepEqual(document.paths["/api/v1/catalog/items"].post.parameters, [
+    { $ref: "#/components/parameters/workspaceHeader" },
+    { $ref: "#/components/parameters/idempotencyKey" }
+  ]);
+});
+
 // Production break caught: returning the logical contract filename or a path-like value instead of the immutable release's strict SemVer identity.
 test("bootstrap responses require the release manifest's strict SemVer contract version", async () => {
   const registry = await loadSchemaRegistry();
@@ -788,16 +797,24 @@ test("fix round 1 every operation uses the canonical concrete workspace header",
   }
 });
 
-// Production break caught: publishing a mutable command without cookie CSRF, idempotency, concurrency, or a response ETag that supplies the next revision.
+// Production break caught: publishing a command without cookie CSRF/idempotency, requiring a nonexistent create revision, or omitting mutation concurrency and the next ETag.
 test("fix round 1 mutations require auth guards and versioned responses publish ETags", async () => {
   const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
   for (const { path, method, pathItem, operation } of allPublishedOperations(document)) {
     if (!["post", "put", "patch", "delete"].includes(method)) continue;
     assert.deepEqual(operation.security, [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }], `${method.toUpperCase()} ${path}`);
     const parameters = effectiveParameters(document, pathItem, operation);
-    for (const name of ["Idempotency-Key", "If-Match"]) {
+    for (const name of ["Idempotency-Key"]) {
       const header = parameters.find((parameter) => parameter.in === "header" && parameter.name === name);
       assert.equal(header?.required, true, `${method.toUpperCase()} ${path} ${name}`);
+    }
+    const ifMatch = parameters.find((parameter) =>
+      parameter.in === "header" && parameter.name === "If-Match"
+    );
+    if (operation.operationId === "createCatalogItem") {
+      assert.equal(ifMatch, undefined, `${method.toUpperCase()} ${path} If-Match`);
+    } else {
+      assert.equal(ifMatch?.required, true, `${method.toUpperCase()} ${path} If-Match`);
     }
   }
 
