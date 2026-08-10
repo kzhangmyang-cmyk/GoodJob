@@ -314,6 +314,22 @@ export class LegacyCommissionCatalogBridge {
     };
   }
 
+  scopeProducts(
+    req: Request,
+    products: readonly CommissionProduct[]
+  ): readonly CommissionProduct[] {
+    if (!this.#binding) return products;
+    if (!req.activeWorkspace) {
+      throw new CommissionCatalogProjectionError(
+        503,
+        "catalog_projection_unavailable"
+      );
+    }
+    return products.filter((product) =>
+      product.teamId === req.activeWorkspace!.workspaceId
+    );
+  }
+
   async projectProducts(
     req: Request,
     products: readonly CommissionProduct[]
@@ -334,7 +350,8 @@ export class LegacyCommissionCatalogBridge {
         "catalog_projection_unavailable"
       );
     }
-    return Promise.all(products.map((product) =>
+    const scoped = this.scopeProducts(req, products);
+    return Promise.all(scoped.map((product) =>
       binding.commissionCatalogProjection.projectProduct(
         req.activeWorkspace!,
         product
@@ -372,6 +389,43 @@ export class LegacyCommissionCatalogBridge {
       patch
     );
   }
+
+  async prepareCommercialPatch(
+    req: Request,
+    product: CommissionProduct,
+    patch: CommissionProductPatch,
+    updatedAt: string
+  ): Promise<CommissionProduct> {
+    await this.assertCommercialPatchAllowed(req, product, patch);
+    const candidate = { ...product, ...patch, updatedAt };
+    const [projected] = await this.projectProducts(req, [candidate]);
+    if (!projected) {
+      throw new CommissionCatalogProjectionError(
+        409,
+        "catalog_projection_inconsistent"
+      );
+    }
+    return projected;
+  }
+}
+
+export async function applyLegacyCommissionProductPatch(input: Readonly<{
+  bridge: LegacyCommissionCatalogBridge;
+  req: Request;
+  product: CommissionProduct;
+  patch: CommissionProductPatch;
+  updatedAt: string;
+  persist(): Promise<void>;
+}>): Promise<CommissionProduct> {
+  const projected = await input.bridge.prepareCommercialPatch(
+    input.req,
+    input.product,
+    input.patch,
+    input.updatedAt
+  );
+  Object.assign(input.product, input.patch, { updatedAt: input.updatedAt });
+  await input.persist();
+  return projected;
 }
 
 const legacyCommissionCatalogBridge = new LegacyCommissionCatalogBridge();
@@ -5298,22 +5352,22 @@ app.patch("/api/commission/products/:id", requireAuth, asyncRoute(async (req, re
   }
   const body = commissionProductSchema.partial().parse(req.body);
   const store = getStore();
-  const product = store.commissionProducts.find((item) => item.id === req.params.id);
+  const product = legacyCommissionCatalogBridge.scopeProducts(
+    req,
+    visibleCommissionProducts(req.user!)
+  ).find((item) => item.id === req.params.id);
   if (!product || !canManageCommissionProduct(req.user!, product)) {
     res.status(404).json({ message: "产品不存在" });
     return;
   }
-  await legacyCommissionCatalogBridge.assertCommercialPatchAllowed(
+  const projected = await applyLegacyCommissionProductPatch({
+    bridge: legacyCommissionCatalogBridge,
     req,
     product,
-    body
-  );
-  Object.assign(product, body, { updatedAt: new Date().toISOString() });
-  await store.persist();
-  const [projected] = await legacyCommissionCatalogBridge.projectProducts(
-    req,
-    [product]
-  );
+    patch: body,
+    updatedAt: new Date().toISOString(),
+    persist: () => store.persist()
+  });
   res.json({ product: projected });
 }));
 
@@ -12090,7 +12144,8 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (error instanceof CommissionCatalogProjectionError) {
     res.status(error.status).json({
       code: error.code,
-      message: error.message
+      message: error.message,
+      retryable: error.retryable
     });
     return;
   }

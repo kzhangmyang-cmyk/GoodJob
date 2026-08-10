@@ -43,7 +43,7 @@ const emptyQuerySchema = z.object({}).strict();
 const listQuerySchema = z.object({
   cursor: z.string().trim().min(1).optional(),
   limit: z.preprocess(
-    (value) => value === undefined ? 20 : Number(value),
+    (value) => value === undefined ? 50 : Number(value),
     z.number().int().min(1).max(100)
   ),
   sort: z.enum(["code", "name", "updatedAt"]).optional().default("updatedAt")
@@ -72,8 +72,53 @@ function reservation(req: Request, context: CommandContext, canonicalPath: strin
   };
 }
 
-function sendError(req: Request, res: Response, status: number, code: string) {
+function requireCatalogWorkspaceHeader(req: Request): void {
+  const workspaceId = req.header("X-Workspace-Id")?.trim();
+  if (!workspaceId || workspaceId === "all") {
+    throw new GrowthHttpError(403, "workspace_required");
+  }
+}
+
+function releasedErrorStatus(req: Request, requestedStatus: number): number {
+  const key = `${req.method.toUpperCase()} ${req.route?.path ?? ""}`;
+  const releasedByOperation: Readonly<Record<string, readonly number[]>> = {
+    "GET /items": [401, 403],
+    "POST /items": [400, 401, 403, 409, 422],
+    "GET /items/:id": [401, 403, 404],
+    "PATCH /items/:id": [400, 401, 403, 404, 409, 412, 422, 428],
+    "POST /items/:id/retire": [401, 403, 404, 409, 412, 428]
+  };
+  const released = new Set<number>(releasedByOperation[key] ?? []);
+  if (released.has(requestedStatus)) return requestedStatus;
+  const fallbackByOperation: Readonly<Record<string, number>> = {
+    "GET /items": 403,
+    "POST /items": 400,
+    "GET /items/:id": 403,
+    "PATCH /items/:id": 400,
+    "POST /items/:id/retire": 409
+  };
+  return fallbackByOperation[key] ?? requestedStatus;
+}
+
+function retryAfter(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const value = Reflect.get(error, "retryAfter");
+  return Number.isSafeInteger(value) && Number(value) > 0
+    ? Number(value) : null;
+}
+
+function sendError(
+  req: Request,
+  res: Response,
+  status: number,
+  code: string,
+  error?: unknown
+) {
   res.setHeader("Cache-Control", "no-store");
+  const retryAfterSeconds = retryAfter(error);
+  if (retryAfterSeconds !== null) {
+    res.setHeader("Retry-After", String(retryAfterSeconds));
+  }
   res.status(status).json({
     code,
     message: code,
@@ -106,6 +151,7 @@ export function createCatalogRouter(options: CatalogRouterOptions): Router {
   const router = express.Router();
 
   router.get("/items", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
     const query = listQuerySchema.parse(req.query);
     const context = options.workspaceContext(req);
     res.json(await options.catalogService.list(context, {
@@ -116,6 +162,7 @@ export function createCatalogRouter(options: CatalogRouterOptions): Router {
   }));
 
   router.post("/items", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
     const payload = itemInputSchema.parse(req.body) as CatalogItemInput;
     const canonicalPath = "/api/v1/catalog/items";
     const context = options.commandContextFactory(req, {
@@ -134,10 +181,11 @@ export function createCatalogRouter(options: CatalogRouterOptions): Router {
       const item = await options.catalogService.create(context, payload);
       return { resourceId: item.id, operationId: null };
     });
-    respondItem(res, result.value, result.replayed, result.replayed ? 200 : 201);
+    respondItem(res, result.value, result.replayed, 201);
   }));
 
   router.get("/items/:id", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
     emptyQuerySchema.parse(req.query);
     const id = idSchema.parse(req.params.id);
     const context = options.workspaceContext(req);
@@ -145,6 +193,7 @@ export function createCatalogRouter(options: CatalogRouterOptions): Router {
   }));
 
   router.patch("/items/:id", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
     const id = idSchema.parse(req.params.id);
     const payload = itemPatchSchema.parse(req.body) as CatalogItemPatch;
     const canonicalPath = "/api/v1/catalog/items/:id";
@@ -172,6 +221,7 @@ export function createCatalogRouter(options: CatalogRouterOptions): Router {
   }));
 
   router.post("/items/:id/retire", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
     const id = idSchema.parse(req.params.id);
     const payload = emptyBodySchema.parse(req.body);
     const canonicalPath = "/api/v1/catalog/items/:id/retire";
@@ -209,15 +259,27 @@ export function createCatalogRouter(options: CatalogRouterOptions): Router {
       return;
     }
     if (error instanceof z.ZodError) {
-      sendError(req, res, 400, "invalid_request");
+      sendError(
+        req,
+        res,
+        releasedErrorStatus(req, 400),
+        "invalid_request",
+        error
+      );
       return;
     }
     if (error instanceof GrowthAuthorizationError) {
-      sendError(req, res, 403, error.code);
+      sendError(req, res, releasedErrorStatus(req, 403), error.code, error);
       return;
     }
     if (error instanceof GrowthHttpError || error instanceof CatalogServiceError) {
-      sendError(req, res, error.status, error.code);
+      sendError(
+        req,
+        res,
+        releasedErrorStatus(req, error.status),
+        error.code,
+        error
+      );
       return;
     }
     next(error);

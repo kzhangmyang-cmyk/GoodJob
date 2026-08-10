@@ -142,6 +142,16 @@ function sortValue(item: CatalogItemProjection, sort: CatalogQuery["sort"]): str
   return sort === "updatedAt" ? item.updatedAt : item[sort];
 }
 
+function mapCatalogListFailure(error: unknown): never {
+  const code = error && typeof error === "object"
+    ? Reflect.get(error, "code") : undefined;
+  if (code === "invalid_catalog_cursor"
+    || code === "invalid_catalog_list_query") {
+    throw new CatalogServiceError(403, code);
+  }
+  throw error;
+}
+
 export class CatalogService {
   constructor(private readonly options: Readonly<{
     repository: CatalogRepository;
@@ -155,36 +165,40 @@ export class CatalogService {
     requireGrowthCapabilities(context, ["catalog.read"]);
     const validated = validateQuery(query);
     const direction = validated.sort === "updatedAt" ? "desc" : "asc";
-    const rows = await this.options.repository.listCatalogItems(
-      context.workspaceId,
-      {
-        cursor: validated.cursor,
-        limit: Math.min(100, validated.limit + 1),
-        sort: validated.sort,
-        direction
-      }
-    );
-    const pageRows = rows.slice(0, validated.limit).map(project);
-    const last = pageRows.at(-1);
-    const lastCursor = last
-      ? encodeCatalogCursor(sortValue(last, validated.sort), last.id)
-      : null;
-    const hasMore = rows.length > validated.limit
-      || (validated.limit === 100 && rows.length === 100 && lastCursor !== null
-        && (await this.options.repository.listCatalogItems(
-          context.workspaceId,
-          {
-            cursor: lastCursor,
-            limit: 1,
-            sort: validated.sort,
-            direction
-          }
-        )).length > 0);
-    return Object.freeze({
-      items: Object.freeze(pageRows),
-      nextAfter: hasMore ? lastCursor : null,
-      hasMore
-    });
+    try {
+      const rows = await this.options.repository.listCatalogItems(
+        context.workspaceId,
+        {
+          cursor: validated.cursor,
+          limit: Math.min(100, validated.limit + 1),
+          sort: validated.sort,
+          direction
+        }
+      );
+      const pageRows = rows.slice(0, validated.limit).map(project);
+      const last = pageRows.at(-1);
+      const lastCursor = last
+        ? encodeCatalogCursor(sortValue(last, validated.sort), last.id)
+        : null;
+      const hasMore = rows.length > validated.limit
+        || (validated.limit === 100 && rows.length === 100 && lastCursor !== null
+          && (await this.options.repository.listCatalogItems(
+            context.workspaceId,
+            {
+              cursor: lastCursor,
+              limit: 1,
+              sort: validated.sort,
+              direction
+            }
+          )).length > 0);
+      return Object.freeze({
+        items: Object.freeze(pageRows),
+        nextAfter: hasMore ? lastCursor : null,
+        hasMore
+      });
+    } catch (error) {
+      mapCatalogListFailure(error);
+    }
   }
 
   async get(

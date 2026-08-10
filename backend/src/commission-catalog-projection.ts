@@ -23,6 +23,8 @@ export interface CommissionCatalogProjectionPort {
 }
 
 export class CommissionCatalogProjectionError extends Error {
+  readonly retryable: boolean;
+
   constructor(
     readonly status: number,
     readonly code: string,
@@ -30,6 +32,7 @@ export class CommissionCatalogProjectionError extends Error {
   ) {
     super(message);
     this.name = "CommissionCatalogProjectionError";
+    this.retryable = code === "catalog_projection_unavailable";
   }
 }
 
@@ -40,16 +43,39 @@ function unavailable(): never {
   );
 }
 
+function inconsistent(): never {
+  throw new CommissionCatalogProjectionError(
+    409,
+    "catalog_projection_inconsistent"
+  );
+}
+
+async function requireAvailable<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof CommissionCatalogProjectionError) throw error;
+    const code = error && typeof error === "object"
+      ? Reflect.get(error, "code") : undefined;
+    const evidence = typeof code === "string"
+      ? code : error instanceof Error ? error.message : "";
+    if (evidence.startsWith("invalid_") || evidence.endsWith("_corrupt")) {
+      inconsistent();
+    }
+    unavailable();
+  }
+}
+
 function minorToMajor(minor: number, currency: string): number {
   const exponent = currencyExponent(currency);
   if (exponent === null || !Number.isSafeInteger(minor) || minor < 0) {
-    unavailable();
+    inconsistent();
   }
   if (exponent === 0) return minor;
   const digits = String(minor).padStart(exponent + 1, "0");
   const split = digits.length - exponent;
   const value = Number(`${digits.slice(0, split)}.${digits.slice(split)}`);
-  if (!Number.isFinite(value)) unavailable();
+  if (!Number.isFinite(value)) inconsistent();
   return value;
 }
 
@@ -69,14 +95,18 @@ implements CommissionCatalogProjectionPort {
     context: ActiveWorkspaceContext,
     productId: string
   ) {
-    const link = await this.options.repository.findCommissionProductLink(
-      context.workspaceId,
-      productId
+    const link = await requireAvailable(() =>
+      this.options.repository.findCommissionProductLink(
+        context.workspaceId,
+        productId
+      )
     );
     if (!link) return null;
-    const linkedPolicy = await this.options.repository.findPricingPolicyVersion(
-      context.workspaceId,
-      link.pricingPolicyVersionId
+    const linkedPolicy = await requireAvailable(() =>
+      this.options.repository.findPricingPolicyVersion(
+        context.workspaceId,
+        link.pricingPolicyVersionId
+      )
     );
     if (!linkedPolicy
       || link.workspaceId !== context.workspaceId
@@ -84,7 +114,7 @@ implements CommissionCatalogProjectionPort {
       || linkedPolicy.workspaceId !== context.workspaceId
       || linkedPolicy.id !== link.pricingPolicyVersionId
       || linkedPolicy.catalogItemId !== link.catalogItemId) {
-      unavailable();
+      inconsistent();
     }
     return { link, linkedPolicy };
   }
@@ -94,15 +124,16 @@ implements CommissionCatalogProjectionPort {
     product: CommissionProduct
   ): Promise<CommissionProduct> {
     requireGrowthCapabilities(context, ["catalog.read"]);
+    if (product.teamId !== context.workspaceId) inconsistent();
     const authority = await this.linkedAuthority(context, product.id);
     if (!authority) {
-      if (markedMigrated(product)) unavailable();
+      if (markedMigrated(product)) inconsistent();
       return product;
     }
     const { link, linkedPolicy } = authority;
     if (product.catalogItemId !== undefined
       && product.catalogItemId !== link.catalogItemId) {
-      unavailable();
+      inconsistent();
     }
     return Object.freeze({
       ...product,

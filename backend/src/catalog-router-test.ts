@@ -70,12 +70,18 @@ async function catalogRouterFixture() {
   const request = async (
     method: string,
     path: string,
-    options: { body?: unknown; headers?: Record<string, string> } = {}
+    options: {
+      body?: unknown;
+      headers?: Record<string, string>;
+      workspaceId?: string | null;
+    } = {}
   ) => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
       method,
       headers: {
         ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+        ...(options.workspaceId === null
+          ? {} : { "X-Workspace-Id": options.workspaceId ?? "team-a" }),
         ...options.headers
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body)
@@ -100,7 +106,7 @@ const createBody = {
   unit: "次"
 };
 
-test("create is idempotent without If-Match and update requires an ID-scoped ETag", async () => {
+test("create replay keeps the released 201 and update requires an ID-scoped ETag", async () => {
   const app = await catalogRouterFixture();
   try {
     const first = await app.request("POST", "/api/v1/catalog/items", {
@@ -114,7 +120,7 @@ test("create is idempotent without If-Match and update requires an ID-scoped ETa
       headers: { "Idempotency-Key": "catalog-create-0001" },
       body: createBody
     });
-    assert.equal(replay.response.status, 200);
+    assert.equal(replay.response.status, 201);
     assert.equal(replay.response.headers.get("idempotency-replayed"), "true");
     assert.equal(replay.body.id, first.body.id);
     const missing = await app.request(
@@ -128,6 +134,77 @@ test("create is idempotent without If-Match and update requires an ID-scoped ETa
     assert.equal(missing.response.status, 428);
     assert.equal(missing.body.code, "revision_required");
     assert.deepEqual(app.calls(), { workspaceCalls: 0, commandCalls: 2 });
+  } finally {
+    await app.close();
+  }
+});
+
+test("every Catalog operation rejects missing, blank, and all workspace headers before trusted adapters", async () => {
+  const app = await catalogRouterFixture();
+  try {
+    const operations = [
+      { method: "GET", path: "/api/v1/catalog/items" },
+      {
+        method: "POST",
+        path: "/api/v1/catalog/items",
+        body: createBody,
+        headers: { "Idempotency-Key": "workspace-create" }
+      },
+      { method: "GET", path: "/api/v1/catalog/items/item-1" },
+      {
+        method: "PATCH",
+        path: "/api/v1/catalog/items/item-1",
+        body: { name: "Blocked" },
+        headers: {
+          "Idempotency-Key": "workspace-update",
+          "If-Match": '"catalog-item:item-1:1"'
+        }
+      },
+      {
+        method: "POST",
+        path: "/api/v1/catalog/items/item-1/retire",
+        body: {},
+        headers: {
+          "Idempotency-Key": "workspace-retire",
+          "If-Match": '"catalog-item:item-1:1"'
+        }
+      }
+    ] as const;
+    for (const workspaceId of [null, " ", "all"] as const) {
+      for (const operation of operations) {
+        const result = await app.request(operation.method, operation.path, {
+          workspaceId,
+          body: "body" in operation ? operation.body : undefined,
+          headers: "headers" in operation ? operation.headers : undefined
+        });
+        assert.equal(result.response.status, 403);
+        assert.equal(result.body.code, "workspace_required");
+      }
+    }
+    assert.deepEqual(app.calls(), { workspaceCalls: 0, commandCalls: 0 });
+  } finally {
+    await app.close();
+  }
+});
+
+test("omitted Catalog list limit uses the released default of 50", async () => {
+  const app = await catalogRouterFixture();
+  try {
+    for (let index = 1; index <= 21; index += 1) {
+      const created = await app.request("POST", "/api/v1/catalog/items", {
+        headers: { "Idempotency-Key": `default-limit-${index}` },
+        body: {
+          ...createBody,
+          code: `DEFAULT-${String(index).padStart(2, "0")}`,
+          name: `Default ${index}`
+        }
+      });
+      assert.equal(created.response.status, 201);
+    }
+    const listed = await app.request("GET", "/api/v1/catalog/items?sort=code");
+    assert.equal(listed.response.status, 200);
+    assert.equal(listed.body.items.length, 21);
+    assert.equal(listed.body.hasMore, false);
   } finally {
     await app.close();
   }
@@ -182,7 +259,7 @@ test("request bodies and list queries are closed to the released 1.0.1 keys", as
       "GET",
       "/api/v1/catalog/items?sort=code&direction=desc&type=service"
     );
-    assert.equal(unpublished.response.status, 400);
+    assert.equal(unpublished.response.status, 403);
     assert.equal(unpublished.body.code, "invalid_request");
   } finally {
     await app.close();
