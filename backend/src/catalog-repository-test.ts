@@ -13,7 +13,8 @@ import {
 import {
   DefaultGrowthTemporalBarrier,
   InMemoryGrowthTemporalTransactionRunner,
-  type GrowthTemporalTransaction
+  type GrowthTemporalTransaction,
+  type GrowthTemporalTransactionRunner
 } from "./growth-temporal-barrier.js";
 
 const NOW = "2026-08-09T08:00:00.000Z";
@@ -29,6 +30,30 @@ class ObservingGrowthTemporalBarrier extends DefaultGrowthTemporalBarrier {
     const stamp = await super.allocateAppend(tx, workspaceId);
     this.allocations.push(stamp);
     return stamp;
+  }
+}
+
+class FailAfterWorkRunner implements GrowthTemporalTransactionRunner {
+  constructor(private readonly inner: GrowthTemporalTransactionRunner) {}
+
+  run<T>(work: (tx: GrowthTemporalTransaction) => Promise<T>): Promise<T> {
+    return this.inner.run(async (tx) => {
+      await work(tx);
+      throw new Error("post_work_commit_failure");
+    });
+  }
+}
+
+class ToggleAfterWorkRunner implements GrowthTemporalTransactionRunner {
+  fail = false;
+  constructor(private readonly inner: GrowthTemporalTransactionRunner) {}
+
+  run<T>(work: (tx: GrowthTemporalTransaction) => Promise<T>): Promise<T> {
+    return this.inner.run(async (tx) => {
+      const result = await work(tx);
+      if (this.fail) throw new Error("post_work_commit_failure");
+      return result;
+    });
   }
 }
 
@@ -179,6 +204,61 @@ test("catalog commands replay exact requests and fail closed on key conflicts", 
   }
 });
 
+test("domain receipts scope replay by workspace actor operation and key", async () => {
+  for (const repository of repositoryFixtures()) {
+    const created = okValue(await repository.createCatalogItem(
+      createItemCommand({ idempotencyKey: "shared-key" })
+    ));
+    const crossOperation = await repository.updateCatalogItem({
+      workspaceId: "team-a", id: created.id, expectedRevision: 1,
+      patch: { name: "跨操作可用" }, actorId: "admin-1",
+      idempotencyKey: "shared-key", requestHash: hash({ name: "跨操作可用" })
+    });
+    assert.equal(crossOperation.kind, "ok");
+
+    const crossActor = await repository.updateCatalogItem({
+      workspaceId: "team-a", id: created.id, expectedRevision: 2,
+      patch: { name: "跨操作员可用" }, actorId: "admin-2",
+      idempotencyKey: "shared-key", requestHash: hash({ name: "跨操作员可用" })
+    });
+    assert.equal(crossActor.kind, "ok");
+
+    const sameScopeConflict = await repository.updateCatalogItem({
+      workspaceId: "team-a", id: created.id, expectedRevision: 3,
+      patch: { name: "同作用域冲突" }, actorId: "admin-2",
+      idempotencyKey: "shared-key",
+      requestHash: hash({ name: "同作用域冲突", changed: true })
+    });
+    assert.deepEqual(sameScopeConflict, {
+      kind: "state_conflict", code: "idempotency_conflict"
+    });
+  }
+});
+
+test("a lost HTTP completion replays its stable domain receipt after intervening mutation", async () => {
+  for (const repository of repositoryFixtures()) {
+    const create = createItemCommand({ idempotencyKey: "lost-completion-create" });
+    await repository.createCatalogItem(create);
+    await repository.updateCatalogItem({
+      workspaceId: "team-a", id: "item-1", expectedRevision: 1,
+      patch: { name: "已有后续修改" }, actorId: "admin-1",
+      idempotencyKey: "intervening-update",
+      requestHash: hash({ name: "已有后续修改" })
+    });
+
+    const replay = await repository.createCatalogItem({
+      ...create,
+      id: "new-id-from-reclaimed-http-execution"
+    });
+
+    assert.equal(replay.kind, "ok");
+    assert.equal(replay.replayed, true);
+    assert.equal(replay.value.id, "item-1");
+    assert.equal(replay.value.name, "已有后续修改");
+    assert.equal(replay.value.revision, 2);
+  }
+});
+
 test("catalog reads and commands never cross a workspace boundary", async () => {
   for (const repository of repositoryFixtures()) {
     await repository.createCatalogItem(createItemCommand());
@@ -219,6 +299,19 @@ test("catalog cursor order is stable and malformed cursors fail closed", async (
         cursor: "not-a-cursor", limit: 20, sort: "code", direction: "asc"
       }),
       { code: "invalid_catalog_cursor" }
+    );
+  }
+});
+
+test("package list validates pagination before looking up a missing parent", async () => {
+  for (const repository of repositoryFixtures()) {
+    await assert.rejects(
+      () => repository.listPackageVersions("team-a", "missing", {
+        cursor: "malformed", limit: 0, sort: "updatedAt", direction: "desc"
+      }),
+      (error: unknown) => [
+        "invalid_catalog_list_query", "invalid_catalog_cursor"
+      ].includes((error as { code?: string }).code ?? "")
     );
   }
 });
@@ -292,6 +385,48 @@ test("every pricing persistence boundary rejects unknown frozen-rule keys", asyn
   );
   assert.equal(
     await repository.findPricingPolicyVersion("team-a", "policy-closed"),
+    null
+  );
+});
+
+test("the full persisted policy object is exact and rejects historical source values", async () => {
+  const repository = new InMemoryCatalogRepository();
+  await repository.appendCatalogItem({
+    id: "item-full-closed", workspaceId: "team-a", type: "service",
+    code: "SVC-FULL-CLOSED", name: "全闭合规则", description: "", unit: "次",
+    status: "active", revision: 1, createdBy: "migration",
+    createdAt: NOW, updatedAt: NOW
+  });
+  const command = createPolicyCommand({
+    id: "policy-full-closed", catalogItemId: "item-full-closed"
+  });
+  const {
+    actorId: createdBy,
+    idempotencyKey: _idempotencyKey,
+    requestHash: _requestHash,
+    ...fields
+  } = command;
+  const base = {
+    ...fields, version: 1, status: "retired" as const,
+    revision: 1, createdBy, createdAt: NOW
+  };
+
+  await assert.rejects(
+    () => repository.appendPricingPolicyVersion({
+      ...base,
+      source: "manual"
+    } as never),
+    { code: "invalid_pricing_policy_version" }
+  );
+  await assert.rejects(
+    () => repository.appendPricingPolicyVersion({
+      ...base,
+      unknownTopLevel: true
+    } as never),
+    { code: "invalid_pricing_policy_version" }
+  );
+  assert.equal(
+    await repository.findPricingPolicyVersion("team-a", "policy-full-closed"),
     null
   );
 });
@@ -450,4 +585,145 @@ test("legacy draft-component replacement still uses the Foundation barrier first
     "componentCatalogItemId", "componentPricingPolicyVersionId",
     "packageVersionId", "quantityMicros", "workspaceId"
   ]);
+});
+
+test("empty component replacement retains one set-level authority stamp", async () => {
+  const transactions = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const temporalBarrier = new ObservingGrowthTemporalBarrier(transactions);
+  const repository = new InMemoryCatalogRepository({ transactions, temporalBarrier });
+  await repository.appendCatalogItem({
+    id: "package-empty", workspaceId: "team-a", type: "package",
+    code: "PKG-EMPTY", name: "空套餐", description: "", unit: "套",
+    status: "active", revision: 1, createdBy: "migration",
+    createdAt: NOW, updatedAt: NOW
+  });
+  await repository.appendPackageVersion({
+    id: "package-empty-v1", workspaceId: "team-a",
+    packageCatalogItemId: "package-empty", version: 1, currency: "CNY",
+    status: "draft", validFrom: NOW, validTo: null, revision: 1,
+    createdBy: "migration", createdAt: NOW, updatedAt: NOW
+  });
+
+  await repository.replaceDraftPackageComponents("team-a", "package-empty-v1", []);
+
+  assert.equal(temporalBarrier.allocations.length, 1);
+  const evidence = (repository as unknown as {
+    appendEvidence: Map<string, { recordedAt: string; temporalSequence: number }>;
+  }).appendEvidence;
+  assert.deepEqual(
+    [...evidence.entries()].filter(([entry]) => entry.startsWith("package-component-set")),
+    [[
+      "package-component-set\u0000team-a\u0000package-empty-v1",
+      temporalBarrier.allocations[0]
+    ]]
+  );
+});
+
+test("failed empty component replacement restores components and set evidence", async () => {
+  const base = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const transactions = new ToggleAfterWorkRunner(base);
+  const temporalBarrier = new ObservingGrowthTemporalBarrier(base);
+  const repository = new InMemoryCatalogRepository({ transactions, temporalBarrier });
+  await repository.appendPackageVersion({
+    id: "package-empty-rollback", workspaceId: "team-a",
+    packageCatalogItemId: "package-item-1", version: 1, currency: "CNY",
+    status: "draft", validFrom: NOW, validTo: null, revision: 1,
+    createdBy: "admin-1", createdAt: NOW, updatedAt: NOW
+  });
+  const original = [{
+    workspaceId: "team-a", packageVersionId: "package-empty-rollback",
+    componentCatalogItemId: "item-1",
+    componentPricingPolicyVersionId: "policy-1", quantityMicros: 1_000_000
+  }] as const;
+  await repository.replaceDraftPackageComponents(
+    "team-a", "package-empty-rollback", original
+  );
+  transactions.fail = true;
+  await assert.rejects(
+    () => repository.replaceDraftPackageComponents(
+      "team-a", "package-empty-rollback", []
+    ),
+    /post_work_commit_failure/u
+  );
+  assert.deepEqual(
+    await repository.listPackageComponents("team-a", "package-empty-rollback"),
+    original
+  );
+  const evidence = (repository as unknown as {
+    appendEvidence: Map<string, unknown>;
+  }).appendEvidence;
+  assert.equal(
+    evidence.has("package-component-set\u0000team-a\u0000package-empty-rollback"),
+    false
+  );
+});
+
+test("post-work transaction failure restores every workspace mutation", async () => {
+  const base = new InMemoryGrowthTemporalTransactionRunner(NOW);
+  const temporalBarrier = new ObservingGrowthTemporalBarrier(base);
+  const failing = new FailAfterWorkRunner(base);
+  const repository = new InMemoryCatalogRepository({
+    transactions: failing,
+    temporalBarrier
+  });
+  await repository.appendCatalogItem({
+    id: "item-existing", workspaceId: "team-a", type: "service",
+    code: "EXISTING", name: "原名", description: "", unit: "次",
+    status: "active", revision: 1, createdBy: "seed",
+    createdAt: NOW, updatedAt: NOW
+  });
+  await repository.appendCatalogItem({
+    id: "package-existing", workspaceId: "team-a", type: "package",
+    code: "PACKAGE-EXISTING", name: "原套餐", description: "", unit: "套",
+    status: "active", revision: 1, createdBy: "seed",
+    createdAt: NOW, updatedAt: NOW
+  });
+
+  await assert.rejects(
+    () => repository.createCatalogItem(createItemCommand({
+      id: "item-new", code: "NEW", idempotencyKey: "fail-create"
+    })),
+    /post_work_commit_failure/u
+  );
+  await assert.rejects(
+    () => repository.updateCatalogItem({
+      workspaceId: "team-a", id: "item-existing", expectedRevision: 1,
+      patch: { name: "不应提交" }, actorId: "admin-1",
+      idempotencyKey: "fail-update", requestHash: hash({ name: "不应提交" })
+    }),
+    /post_work_commit_failure/u
+  );
+  await assert.rejects(
+    () => repository.createPricingPolicyDraft(createPolicyCommand({
+      id: "policy-failed", catalogItemId: "item-existing",
+      idempotencyKey: "fail-policy"
+    })),
+    /post_work_commit_failure/u
+  );
+  await assert.rejects(
+    () => repository.createPackageVersionDraft(createPackageCommand({
+      id: "package-version-failed",
+      packageCatalogItemId: "package-existing",
+      idempotencyKey: "fail-package"
+    })),
+    /post_work_commit_failure/u
+  );
+
+  assert.equal(await repository.findCatalogItem("team-a", "item-new"), null);
+  assert.equal(
+    (await repository.findCatalogItem("team-a", "item-existing"))?.name,
+    "原名"
+  );
+  assert.equal(
+    await repository.findPricingPolicyVersion("team-a", "policy-failed"),
+    null
+  );
+  assert.equal(
+    await repository.findPackageVersion("team-a", "package-version-failed"),
+    null
+  );
+  assert.deepEqual(
+    await repository.listPackageComponents("team-a", "package-version-failed"),
+    []
+  );
 });

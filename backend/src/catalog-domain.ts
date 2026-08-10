@@ -273,3 +273,66 @@ export function assertClosedPricingPolicyRules(
     });
   }
 }
+
+const PRICING_POLICY_VERSION_KEYS = [
+  "id", "workspaceId", "catalogItemId", "version", "packageVersionId",
+  "currency", "listUnitPriceMinor", "unitStandardCostMinor",
+  "defaultOrderDeliveryCostMinor", "defaultOrderSalesCostMinor",
+  "defaultOrderServiceCostMinor", "absoluteFloorUnitPriceMinor",
+  "standardDiscountLimitBps", "absoluteDiscountLimitBps",
+  "targetGrossMarginBps", "absoluteMinimumGrossMarginBps",
+  "standardPaymentTermDays", "absolutePaymentTermDays", "approvalThresholds",
+  "surchargePolicies", "giftPolicies", "validFrom", "validTo", "status",
+  "source", "capabilityRegistryVersion", "revision", "createdBy", "createdAt"
+] as const;
+
+function invalidPricingPolicyVersion(): Error & { code: string } {
+  return Object.assign(new Error("invalid_pricing_policy_version"), {
+    code: "invalid_pricing_policy_version"
+  });
+}
+
+function nonblankToken(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "" && value === value.trim()
+    && value !== "all";
+}
+
+/** Complete runtime boundary for persisted frozen PricingPolicy v1 records. */
+export function assertClosedPricingPolicyVersion(
+  value: unknown
+): asserts value is PricingPolicyVersion {
+  if (!hasExactKeys(value, PRICING_POLICY_VERSION_KEYS)) {
+    throw invalidPricingPolicyVersion();
+  }
+  const policy = value as unknown as PricingPolicyVersion;
+  const nonnegativeFields = [
+    "listUnitPriceMinor", "unitStandardCostMinor",
+    "defaultOrderDeliveryCostMinor", "defaultOrderSalesCostMinor",
+    "defaultOrderServiceCostMinor", "absoluteFloorUnitPriceMinor",
+    "standardDiscountLimitBps", "absoluteDiscountLimitBps",
+    "targetGrossMarginBps", "absoluteMinimumGrossMarginBps",
+    "standardPaymentTermDays", "absolutePaymentTermDays"
+  ] as const;
+  const bpsFields = [
+    "standardDiscountLimitBps", "absoluteDiscountLimitBps",
+    "targetGrossMarginBps", "absoluteMinimumGrossMarginBps"
+  ] as const;
+  if (!nonblankToken(policy.id) || !nonblankToken(policy.workspaceId)
+    || !nonblankToken(policy.catalogItemId)
+    || (policy.packageVersionId !== null && !nonblankToken(policy.packageVersionId))
+    || !Number.isSafeInteger(policy.version) || policy.version < 1
+    || typeof policy.currency !== "string" || !/^[A-Z]{3}$/u.test(policy.currency)
+    || nonnegativeFields.some((field) => !nonnegativeSafeInteger(policy[field]))
+    || bpsFields.some((field) => policy[field] > 10_000)
+    || !Number.isFinite(Date.parse(policy.validFrom))
+    || (policy.validTo !== null && !Number.isFinite(Date.parse(policy.validTo)))
+    || !["draft", "active", "retired"].includes(policy.status)
+    || !["native", "legacy_commission_product"].includes(policy.source)
+    || !nonblankToken(policy.capabilityRegistryVersion)
+    || !Number.isSafeInteger(policy.revision) || policy.revision < 1
+    || !nonblankToken(policy.createdBy)
+    || !Number.isFinite(Date.parse(policy.createdAt))) {
+    throw invalidPricingPolicyVersion();
+  }
+  assertClosedPricingPolicyRules(policy);
+}

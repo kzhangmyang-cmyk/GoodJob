@@ -10,6 +10,7 @@ import type {
 } from "./catalog-domain.js";
 import {
   assertClosedPricingPolicyRules,
+  assertClosedPricingPolicyVersion,
   immutableClone
 } from "./catalog-domain.js";
 import {
@@ -343,7 +344,7 @@ export function assertCommissionCatalogMigrationCommitInvariant(
   for (const entry of entries) {
     const { item, pricingPolicy, link } = entry;
     try {
-      assertClosedPricingPolicyRules(pricingPolicy);
+      assertClosedPricingPolicyVersion(pricingPolicy);
     } catch {
       throw invalidMigrationCommit();
     }
@@ -383,9 +384,17 @@ function conflict(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });
 }
 
-interface StoredCommandIdentity {
-  idempotencyKey: string;
+type CatalogCommandOperation =
+  | "catalog_item.create" | "catalog_item.update" | "catalog_item.retire"
+  | "pricing_policy.create_draft" | "pricing_policy.activate"
+  | "pricing_policy.retire" | "package_version.create_draft"
+  | "package_version.update_draft" | "package_version.activate"
+  | "package_version.retire";
+
+interface StoredCommandReceipt {
   requestHash: string;
+  resourceKind: "catalog_item" | "pricing_policy" | "package_version";
+  resourceId: string;
 }
 
 class CatalogCommandAbort<T> extends Error {
@@ -398,27 +407,36 @@ function abort<T>(result: CatalogCommandResult<T>): never {
   throw new CatalogCommandAbort(result);
 }
 
-function commandIdentity(command: CommandIdentity): StoredCommandIdentity {
+function commandIdentity(command: CommandIdentity): CommandIdentity {
   if (!command.actorId.trim() || !command.idempotencyKey.trim()
     || !command.requestHash.trim()) {
     throw conflict("invalid_catalog_command_identity");
   }
-  return {
-    idempotencyKey: command.idempotencyKey,
-    requestHash: command.requestHash
-  };
+  return command;
 }
 
-function replayOrConflict<T>(
-  previous: StoredCommandIdentity | undefined,
+function receiptKey(
+  workspaceId: string,
   command: CommandIdentity,
-  value: T
-): CatalogCommandResult<T> | null {
-  if (!previous || previous.idempotencyKey !== command.idempotencyKey) return null;
-  if (previous.requestHash !== command.requestHash) {
-    return { kind: "state_conflict", code: "idempotency_conflict" };
-  }
-  return { kind: "ok", value, replayed: true };
+  operation: CatalogCommandOperation
+): string {
+  return `${workspaceId}\u0000${command.actorId}\u0000${operation}\u0000${command.idempotencyKey}`;
+}
+
+function snapshotMap<V>(
+  map: ReadonlyMap<string, V>,
+  includes: (mapKey: string) => boolean
+): Array<readonly [string, V]> {
+  return [...map.entries()].filter(([mapKey]) => includes(mapKey));
+}
+
+function restoreMap<V>(
+  map: Map<string, V>,
+  includes: (mapKey: string) => boolean,
+  snapshot: readonly (readonly [string, V])[]
+): void {
+  for (const mapKey of map.keys()) if (includes(mapKey)) map.delete(mapKey);
+  for (const [mapKey, value] of snapshot) map.set(mapKey, value);
 }
 
 function assertCatalogListQuery(query: CatalogListQuery): CatalogListQuery {
@@ -509,7 +527,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   private readonly packageComponents = new Map<string, readonly PackageComponent[]>();
   private readonly commissionLinks = new Map<string, CommissionProductCatalogLink>();
   private readonly migrationRuns = new Map<string, CommissionCatalogMigrationRun>();
-  private readonly commandIdentities = new Map<string, StoredCommandIdentity>();
+  private readonly commandReceipts = new Map<string, StoredCommandReceipt>();
   private readonly appendEvidence = new Map<string, Readonly<{
     recordedAt: string;
     temporalSequence: number;
@@ -539,6 +557,63 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     this.appendEvidence.set(`${kind}\u0000${key(workspaceId, id)}`, { ...stamp });
   }
 
+  private replayFromReceipt<T>(
+    workspaceId: string,
+    command: CommandIdentity,
+    operation: CatalogCommandOperation,
+    resourceKind: StoredCommandReceipt["resourceKind"],
+    read: (resourceId: string) => T | undefined
+  ): CatalogCommandResult<T> | null {
+    commandIdentity(command);
+    const receipt = this.commandReceipts.get(receiptKey(
+      workspaceId, command, operation
+    ));
+    if (!receipt) return null;
+    if (receipt.requestHash !== command.requestHash) {
+      return { kind: "state_conflict", code: "idempotency_conflict" };
+    }
+    if (receipt.resourceKind !== resourceKind) {
+      return { kind: "state_conflict", code: "catalog_command_receipt_corrupt" };
+    }
+    const value = read(receipt.resourceId);
+    return value === undefined
+      ? { kind: "state_conflict", code: "catalog_command_receipt_corrupt" }
+      : { kind: "ok", value, replayed: true };
+  }
+
+  private recordReceipt(
+    workspaceId: string,
+    command: CommandIdentity,
+    operation: CatalogCommandOperation,
+    resourceKind: StoredCommandReceipt["resourceKind"],
+    resourceId: string
+  ): void {
+    this.commandReceipts.set(receiptKey(workspaceId, command, operation), {
+      requestHash: command.requestHash, resourceKind, resourceId
+    });
+  }
+
+  private workspaceJournal(workspaceId: string): () => void {
+    const workspacePrefix = `${workspaceId}\u0000`;
+    const evidenceMarker = `\u0000${workspaceId}\u0000`;
+    const scoped = (mapKey: string) => mapKey.startsWith(workspacePrefix);
+    const evidenceScoped = (mapKey: string) => mapKey.includes(evidenceMarker);
+    const itemSnapshot = snapshotMap(this.catalogItems, scoped);
+    const policySnapshot = snapshotMap(this.pricingPolicies, scoped);
+    const versionSnapshot = snapshotMap(this.packageVersions, scoped);
+    const componentSnapshot = snapshotMap(this.packageComponents, scoped);
+    const receiptSnapshot = snapshotMap(this.commandReceipts, scoped);
+    const evidenceSnapshot = snapshotMap(this.appendEvidence, evidenceScoped);
+    return () => {
+      restoreMap(this.catalogItems, scoped, itemSnapshot);
+      restoreMap(this.pricingPolicies, scoped, policySnapshot);
+      restoreMap(this.packageVersions, scoped, versionSnapshot);
+      restoreMap(this.packageComponents, scoped, componentSnapshot);
+      restoreMap(this.commandReceipts, scoped, receiptSnapshot);
+      restoreMap(this.appendEvidence, evidenceScoped, evidenceSnapshot);
+    };
+  }
+
   private async command<T>(
     workspaceId: string,
     work: (
@@ -552,6 +627,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     }
     const transactions = this.transactions;
     const temporalBarrier = this.temporalBarrier;
+    const restore = this.workspaceJournal(concreteWorkspaceId);
     try {
       return await transactions.run(async (tx) => {
         const stamp = await temporalBarrier.allocateAppend(
@@ -561,6 +637,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         return work(tx, stamp);
       });
     } catch (error) {
+      restore();
       if (error instanceof CatalogCommandAbort) {
         return error.result as CatalogCommandResult<T>;
       }
@@ -601,7 +678,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   async appendPricingPolicyVersion(
     policy: PricingPolicyVersion
   ): Promise<PricingPolicyVersion> {
-    assertClosedPricingPolicyRules(policy);
+    assertClosedPricingPolicyVersion(policy);
     const policyKey = key(policy.workspaceId, policy.id);
     if (this.pricingPolicies.has(policyKey)) {
       throw conflict("pricing_policy_version_already_exists");
@@ -663,6 +740,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     query: CatalogListQuery
   ): Promise<readonly PackageVersion[]> {
     const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
+    assertCatalogListQuery(query);
     const parent = this.catalogItems.get(key(concrete, itemId));
     if (!parent
       || (query.type !== undefined && parent.type !== query.type)
@@ -705,50 +783,60 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       throw new Error("catalog_temporal_adapter_required");
     }
     const temporalBarrier = this.temporalBarrier;
-    return this.transactions.run(async (tx) => {
-      const stamped: PackageComponent[] = [];
-      const stamps: Array<Readonly<{
-        recordedAt: string;
-        temporalSequence: number;
-      }>> = [];
-      if (components.length === 0) {
-        await temporalBarrier.allocateAppend(tx, concrete);
-      } else {
-        for (const component of components) {
-          stamps.push(await temporalBarrier.allocateAppend(tx, concrete));
-          stamped.push({ ...component });
+    const restore = this.workspaceJournal(concrete);
+    try {
+      return await this.transactions.run(async (tx) => {
+        const stamped: PackageComponent[] = [];
+        const stamps: Array<Readonly<{
+          recordedAt: string;
+          temporalSequence: number;
+        }>> = [];
+        if (components.length === 0) {
+          const stamp = await temporalBarrier.allocateAppend(tx, concrete);
+          this.rememberAppend(
+            "package-component-set", concrete, packageVersionId, stamp
+          );
+        } else {
+          for (const component of components) {
+            stamps.push(await temporalBarrier.allocateAppend(tx, concrete));
+            stamped.push({ ...component });
+          }
         }
-      }
-      const version = this.packageVersions.get(key(concrete, packageVersionId));
-      if (!version) throw conflict("package_version_not_found");
-      if (version.status !== "draft") throw conflict("package_version_immutable");
-      const stored = immutableClone(stamped) as readonly PackageComponent[];
-      this.packageComponents.set(key(concrete, packageVersionId), stored);
-      stored.forEach((component, index) => this.rememberAppend(
-        "package-component",
-        concrete,
-        `${packageVersionId}\u0000${component.componentCatalogItemId}\u0000${component.componentPricingPolicyVersionId}`,
-        stamps[index]!
-      ));
-      return immutableClone(stored) as readonly PackageComponent[];
-    });
+        const version = this.packageVersions.get(key(concrete, packageVersionId));
+        if (!version) throw conflict("package_version_not_found");
+        if (version.status !== "draft") throw conflict("package_version_immutable");
+        const stored = immutableClone(stamped) as readonly PackageComponent[];
+        this.packageComponents.set(key(concrete, packageVersionId), stored);
+        stored.forEach((component, index) => this.rememberAppend(
+          "package-component",
+          concrete,
+          `${packageVersionId}\u0000${component.componentCatalogItemId}\u0000${component.componentPricingPolicyVersionId}`,
+          stamps[index]!
+        ));
+        return immutableClone(stored) as readonly PackageComponent[];
+      });
+    } catch (error) {
+      restore();
+      throw error;
+    }
   }
 
   async createCatalogItem(
     command: CreateCatalogItemCommand
   ): Promise<CatalogCommandResult<CatalogItem>> {
     return this.command(command.workspaceId, async (_tx, stamp) => {
-      const identity = commandIdentity(command);
+      const replay = this.replayFromReceipt(
+        command.workspaceId, command, "catalog_item.create", "catalog_item",
+        (resourceId) => {
+          const item = this.catalogItems.get(key(command.workspaceId, resourceId));
+          return item ? immutableClone(item) as CatalogItem : undefined;
+        }
+      );
+      if (replay) abort(replay);
       const itemKey = key(command.workspaceId, command.id);
       const existing = this.catalogItems.get(itemKey);
       if (existing) {
-        const replay = replayOrConflict(
-          this.commandIdentities.get(itemKey), command,
-          immutableClone(existing) as CatalogItem
-        );
-        abort(replay ?? {
-          kind: "state_conflict", code: "catalog_item_id_conflict"
-        });
+        abort({ kind: "state_conflict", code: "catalog_item_id_conflict" });
       }
       if ([...this.catalogItems.values()].some((item) =>
         item.workspaceId === command.workspaceId && item.code === command.code)) {
@@ -769,7 +857,9 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         updatedAt: stamp.recordedAt
       }) as CatalogItem;
       this.catalogItems.set(itemKey, item);
-      this.commandIdentities.set(itemKey, identity);
+      this.recordReceipt(
+        command.workspaceId, command, "catalog_item.create", "catalog_item", command.id
+      );
       this.rememberAppend("catalog-item", command.workspaceId, command.id, stamp);
       return { kind: "ok", value: immutableClone(item) as CatalogItem, replayed: false };
     });
@@ -779,15 +869,17 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: UpdateCatalogItemCommand
   ): Promise<CatalogCommandResult<CatalogItem>> {
     return this.command(command.workspaceId, async (_tx, stamp) => {
-      const identity = commandIdentity(command);
+      const replay = this.replayFromReceipt(
+        command.workspaceId, command, "catalog_item.update", "catalog_item",
+        (resourceId) => {
+          const item = this.catalogItems.get(key(command.workspaceId, resourceId));
+          return item ? immutableClone(item) as CatalogItem : undefined;
+        }
+      );
+      if (replay) abort(replay);
       const itemKey = key(command.workspaceId, command.id);
       const current = this.catalogItems.get(itemKey);
       if (!current) abort({ kind: "not_found" });
-      const replay = replayOrConflict(
-        this.commandIdentities.get(itemKey), command,
-        immutableClone(current) as CatalogItem
-      );
-      if (replay) abort(replay);
       if (current.revision !== command.expectedRevision) {
         abort({ kind: "revision_conflict", actualRevision: current.revision });
       }
@@ -801,7 +893,9 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         updatedAt: stamp.recordedAt
       }) as CatalogItem;
       this.catalogItems.set(itemKey, next);
-      this.commandIdentities.set(itemKey, identity);
+      this.recordReceipt(
+        command.workspaceId, command, "catalog_item.update", "catalog_item", command.id
+      );
       this.rememberAppend("catalog-item", command.workspaceId, command.id, stamp);
       return { kind: "ok", value: immutableClone(next) as CatalogItem, replayed: false };
     });
@@ -811,15 +905,17 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: RetireCatalogItemCommand
   ): Promise<CatalogCommandResult<CatalogItem>> {
     return this.command(command.workspaceId, async (_tx, stamp) => {
-      const identity = commandIdentity(command);
+      const replay = this.replayFromReceipt(
+        command.workspaceId, command, "catalog_item.retire", "catalog_item",
+        (resourceId) => {
+          const item = this.catalogItems.get(key(command.workspaceId, resourceId));
+          return item ? immutableClone(item) as CatalogItem : undefined;
+        }
+      );
+      if (replay) abort(replay);
       const itemKey = key(command.workspaceId, command.id);
       const current = this.catalogItems.get(itemKey);
       if (!current) abort({ kind: "not_found" });
-      const replay = replayOrConflict(
-        this.commandIdentities.get(itemKey), command,
-        immutableClone(current) as CatalogItem
-      );
-      if (replay) abort(replay);
       if (current.revision !== command.expectedRevision) {
         abort({ kind: "revision_conflict", actualRevision: current.revision });
       }
@@ -833,7 +929,9 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         updatedAt: stamp.recordedAt
       }) as CatalogItem;
       this.catalogItems.set(itemKey, next);
-      this.commandIdentities.set(itemKey, identity);
+      this.recordReceipt(
+        command.workspaceId, command, "catalog_item.retire", "catalog_item", command.id
+      );
       this.rememberAppend("catalog-item", command.workspaceId, command.id, stamp);
       return { kind: "ok", value: immutableClone(next) as CatalogItem, replayed: false };
     });
@@ -855,7 +953,14 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: CreatePricingPolicyDraftCommand
   ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
     return this.command(command.workspaceId, async (_tx, stamp) => {
-      const identity = commandIdentity(command);
+      const replay = this.replayFromReceipt(
+        command.workspaceId, command, "pricing_policy.create_draft", "pricing_policy",
+        (resourceId) => {
+          const policy = this.pricingPolicies.get(key(command.workspaceId, resourceId));
+          return policy ? immutableClone(policy) as PricingPolicyVersion : undefined;
+        }
+      );
+      if (replay) abort(replay);
       assertClosedPricingPolicyRules(command);
       const parent = this.catalogItems.get(key(command.workspaceId, command.catalogItemId));
       if (!parent) abort({ kind: "not_found" });
@@ -865,13 +970,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       const policyKey = key(command.workspaceId, command.id);
       const existing = this.pricingPolicies.get(policyKey);
       if (existing) {
-        const replay = replayOrConflict(
-          this.commandIdentities.get(policyKey), command,
-          immutableClone(existing) as PricingPolicyVersion
-        );
-        abort(replay ?? {
-          kind: "state_conflict", code: "pricing_policy_id_conflict"
-        });
+        abort({ kind: "state_conflict", code: "pricing_policy_id_conflict" });
       }
       const version = Math.max(0, ...[...this.pricingPolicies.values()]
         .filter((policy) => policy.workspaceId === command.workspaceId
@@ -889,8 +988,12 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         createdBy: actorId,
         createdAt: stamp.recordedAt
       }) as PricingPolicyVersion;
+      assertClosedPricingPolicyVersion(policy);
       this.pricingPolicies.set(policyKey, policy);
-      this.commandIdentities.set(policyKey, identity);
+      this.recordReceipt(
+        command.workspaceId, command, "pricing_policy.create_draft",
+        "pricing_policy", command.id
+      );
       this.rememberAppend("pricing-policy", command.workspaceId, command.id, stamp);
       return {
         kind: "ok", value: immutableClone(policy) as PricingPolicyVersion,
@@ -903,18 +1006,22 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: PricingPolicyLifecycleCommand,
     from: PricingPolicyVersion["status"],
     to: PricingPolicyVersion["status"],
-    invalidCode: string
+    invalidCode: string,
+    operation: Extract<CatalogCommandOperation,
+      "pricing_policy.activate" | "pricing_policy.retire">
   ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
     return this.command(command.workspaceId, async (_tx, stamp) => {
-      const identity = commandIdentity(command);
+      const replay = this.replayFromReceipt(
+        command.workspaceId, command, operation, "pricing_policy",
+        (resourceId) => {
+          const policy = this.pricingPolicies.get(key(command.workspaceId, resourceId));
+          return policy ? immutableClone(policy) as PricingPolicyVersion : undefined;
+        }
+      );
+      if (replay) abort(replay);
       const policyKey = key(command.workspaceId, command.id);
       const current = this.pricingPolicies.get(policyKey);
       if (!current) abort({ kind: "not_found" });
-      const replay = replayOrConflict(
-        this.commandIdentities.get(policyKey), command,
-        immutableClone(current) as PricingPolicyVersion
-      );
-      if (replay) abort(replay);
       lifecycleState(current, command, from, to, invalidCode);
       if (command.validate) {
         await command.validate(
@@ -927,8 +1034,11 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         status: to,
         revision: current.revision + 1
       }) as PricingPolicyVersion;
+      assertClosedPricingPolicyVersion(next);
       this.pricingPolicies.set(policyKey, next);
-      this.commandIdentities.set(policyKey, identity);
+      this.recordReceipt(
+        command.workspaceId, command, operation, "pricing_policy", command.id
+      );
       this.rememberAppend("pricing-policy", command.workspaceId, command.id, stamp);
       return {
         kind: "ok", value: immutableClone(next) as PricingPolicyVersion,
@@ -941,7 +1051,8 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: PricingPolicyLifecycleCommand
   ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
     return this.pricingLifecycle(
-      command, "draft", "active", "pricing_policy_not_draft"
+      command, "draft", "active", "pricing_policy_not_draft",
+      "pricing_policy.activate"
     );
   }
 
@@ -949,7 +1060,8 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: PricingPolicyLifecycleCommand
   ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
     return this.pricingLifecycle(
-      command, "active", "retired", "pricing_policy_not_active"
+      command, "active", "retired", "pricing_policy_not_active",
+      "pricing_policy.retire"
     );
   }
 
@@ -993,7 +1105,14 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: CreatePackageVersionDraftCommand
   ): Promise<CatalogCommandResult<PackageVersion>> {
     return this.command(command.workspaceId, async (tx, stamp) => {
-      const identity = commandIdentity(command);
+      const replay = this.replayFromReceipt(
+        command.workspaceId, command, "package_version.create_draft",
+        "package_version", (resourceId) => {
+          const version = this.packageVersions.get(key(command.workspaceId, resourceId));
+          return version ? immutableClone(version) as PackageVersion : undefined;
+        }
+      );
+      if (replay) abort(replay);
       const parent = this.catalogItems.get(key(
         command.workspaceId, command.packageCatalogItemId
       ));
@@ -1004,13 +1123,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       const versionKey = key(command.workspaceId, command.id);
       const existing = this.packageVersions.get(versionKey);
       if (existing) {
-        const replay = replayOrConflict(
-          this.commandIdentities.get(versionKey), command,
-          immutableClone(existing) as PackageVersion
-        );
-        abort(replay ?? {
-          kind: "state_conflict", code: "package_version_id_conflict"
-        });
+        abort({ kind: "state_conflict", code: "package_version_id_conflict" });
       }
       const version = Math.max(0, ...[...this.packageVersions.values()]
         .filter((candidate) => candidate.workspaceId === command.workspaceId
@@ -1035,7 +1148,10 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       }) as PackageVersion;
       this.packageVersions.set(versionKey, packageVersion);
       this.packageComponents.set(versionKey, components);
-      this.commandIdentities.set(versionKey, identity);
+      this.recordReceipt(
+        command.workspaceId, command, "package_version.create_draft",
+        "package_version", command.id
+      );
       this.rememberAppend("package-version", command.workspaceId, command.id, stamp);
       return {
         kind: "ok", value: immutableClone(packageVersion) as PackageVersion,
@@ -1048,15 +1164,17 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: UpdatePackageVersionDraftCommand
   ): Promise<CatalogCommandResult<PackageVersion>> {
     return this.command(command.workspaceId, async (tx, stamp) => {
-      const identity = commandIdentity(command);
+      const replay = this.replayFromReceipt(
+        command.workspaceId, command, "package_version.update_draft",
+        "package_version", (resourceId) => {
+          const version = this.packageVersions.get(key(command.workspaceId, resourceId));
+          return version ? immutableClone(version) as PackageVersion : undefined;
+        }
+      );
+      if (replay) abort(replay);
       const versionKey = key(command.workspaceId, command.id);
       const current = this.packageVersions.get(versionKey);
       if (!current) abort({ kind: "not_found" });
-      const replay = replayOrConflict(
-        this.commandIdentities.get(versionKey), command,
-        immutableClone(current) as PackageVersion
-      );
-      if (replay) abort(replay);
       lifecycleState(
         current, command, "draft", "draft", "package_version_immutable"
       );
@@ -1074,7 +1192,10 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       }) as PackageVersion;
       this.packageVersions.set(versionKey, next);
       if (componentPatch !== undefined) this.packageComponents.set(versionKey, components);
-      this.commandIdentities.set(versionKey, identity);
+      this.recordReceipt(
+        command.workspaceId, command, "package_version.update_draft",
+        "package_version", command.id
+      );
       this.rememberAppend("package-version", command.workspaceId, command.id, stamp);
       return {
         kind: "ok", value: immutableClone(next) as PackageVersion,
@@ -1087,18 +1208,22 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: PackageVersionLifecycleCommand,
     from: PackageVersion["status"],
     to: PackageVersion["status"],
-    invalidCode: string
+    invalidCode: string,
+    operation: Extract<CatalogCommandOperation,
+      "package_version.activate" | "package_version.retire">
   ): Promise<CatalogCommandResult<PackageVersion>> {
     return this.command(command.workspaceId, async (_tx, stamp) => {
-      const identity = commandIdentity(command);
+      const replay = this.replayFromReceipt(
+        command.workspaceId, command, operation, "package_version",
+        (resourceId) => {
+          const version = this.packageVersions.get(key(command.workspaceId, resourceId));
+          return version ? immutableClone(version) as PackageVersion : undefined;
+        }
+      );
+      if (replay) abort(replay);
       const versionKey = key(command.workspaceId, command.id);
       const current = this.packageVersions.get(versionKey);
       if (!current) abort({ kind: "not_found" });
-      const replay = replayOrConflict(
-        this.commandIdentities.get(versionKey), command,
-        immutableClone(current) as PackageVersion
-      );
-      if (replay) abort(replay);
       lifecycleState(current, command, from, to, invalidCode);
       const components = this.packageComponents.get(versionKey) ?? [];
       if (command.validate) {
@@ -1115,7 +1240,9 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         updatedAt: stamp.recordedAt
       }) as PackageVersion;
       this.packageVersions.set(versionKey, next);
-      this.commandIdentities.set(versionKey, identity);
+      this.recordReceipt(
+        command.workspaceId, command, operation, "package_version", command.id
+      );
       this.rememberAppend("package-version", command.workspaceId, command.id, stamp);
       return {
         kind: "ok", value: immutableClone(next) as PackageVersion,
@@ -1128,7 +1255,8 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: PackageVersionLifecycleCommand
   ): Promise<CatalogCommandResult<PackageVersion>> {
     return this.packageLifecycle(
-      command, "draft", "active", "package_version_not_draft"
+      command, "draft", "active", "package_version_not_draft",
+      "package_version.activate"
     );
   }
 
@@ -1136,7 +1264,8 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     command: PackageVersionLifecycleCommand
   ): Promise<CatalogCommandResult<PackageVersion>> {
     return this.packageLifecycle(
-      command, "active", "retired", "package_version_not_active"
+      command, "active", "retired", "package_version_not_active",
+      "package_version.retire"
     );
   }
 

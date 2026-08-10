@@ -10,8 +10,11 @@ import {
 import type {
   CommissionCatalogMigrationCommit,
   CreateCatalogItemCommand,
-  CreatePricingPolicyDraftCommand
+  CreatePricingPolicyDraftCommand,
+  PackageVersionLifecycleCommand,
+  PricingPolicyLifecycleCommand
 } from "./catalog-repository.js";
+import type { PricingPolicyVersion } from "./catalog-domain.js";
 import { MysqlGrowthTemporalBarrier } from "./growth-temporal-barrier-mysql-repository.js";
 
 class FakeConnection {
@@ -34,6 +37,147 @@ class FakePool extends FakeConnection {
   async getConnection() { return this.connection; }
 }
 
+class ExistingSchemaPool extends FakePool {
+  private readonly columns = new Map<string, Map<string, string>>([
+    ["catalog_items", new Map()], ["pricing_policy_versions", new Map()],
+    ["package_versions", new Map()], ["package_components", new Map()]
+  ]);
+
+  override async query(sql: string, values: unknown[] = []) {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    this.calls.push({ sql: normalized, values });
+    if (/FROM information_schema\.columns/u.test(normalized)) {
+      const table = String(values[0]);
+      return [[...(this.columns.get(table) ?? new Map()).entries()].map(
+        ([column_name, is_nullable]) => ({ column_name, is_nullable })
+      ), []];
+    }
+    const add = /^ALTER TABLE (\w+) ADD COLUMN (recorded_at|temporal_sequence)/u
+      .exec(normalized);
+    if (add) this.columns.get(add[1]!)?.set(add[2]!, "YES");
+    const modify = /^ALTER TABLE (\w+) MODIFY COLUMN recorded_at/u.exec(normalized);
+    if (modify) {
+      this.columns.get(modify[1]!)?.set("recorded_at", "NO");
+      this.columns.get(modify[1]!)?.set("temporal_sequence", "NO");
+    }
+    return [{ affectedRows: 1 }, []];
+  }
+}
+
+class LifecycleConnection extends FakeConnection {
+  constructor(private readonly lifecycle: "activate" | "retire") { super(); }
+
+  override async query(sql: string, values: unknown[] = []) {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    this.calls.push({ sql: normalized, values });
+    if (/^INSERT INTO growth_workspace_temporal_barriers/u.test(normalized)) {
+      return [{ affectedRows: 1 }, []];
+    }
+    if (/FROM growth_workspace_temporal_barriers/u.test(normalized)) {
+      return [[{ last_recorded_at: "2026-08-09 08:00:00.000", temporal_sequence: 20 }], []];
+    }
+    if (/CURRENT_TIMESTAMP\(3\)/u.test(normalized)) {
+      return [[{ current_timestamp_3: "2026-08-09 08:00:00.000" }], []];
+    }
+    if (/^UPDATE growth_workspace_temporal_barriers/u.test(normalized)) {
+      return [{ affectedRows: 1 }, []];
+    }
+    if (/FROM catalog_command_receipts/u.test(normalized)) return [[], []];
+    if (/^SELECT catalog_item_id FROM pricing_policy_versions/u.test(normalized)) {
+      return [[{ catalog_item_id: "item-1" }], []];
+    }
+    if (/^SELECT package_catalog_item_id FROM package_versions/u.test(normalized)) {
+      return [[{ package_catalog_item_id: "package-item-1" }], []];
+    }
+    if (/^SELECT \* FROM catalog_items/u.test(normalized)) {
+      return [[catalogRow({ id: String(values[1] ?? "item-1"), item_type: "package" })], []];
+    }
+    if (/pricing_policy_versions/u.test(normalized)) {
+      return [[pricingRow({ policy_status: this.lifecycle === "retire" ? "active" : "draft" })], []];
+    }
+    if (/package_versions/u.test(normalized)) {
+      return [[packageRow({ package_status: this.lifecycle === "retire" ? "active" : "draft" })], []];
+    }
+    if (/FROM package_components/u.test(normalized)) return [[], []];
+    return [{ affectedRows: 1 }, []];
+  }
+}
+
+class ReceiptConnection extends FakeConnection {
+  private sequence = 0;
+  private readonly items = new Map<string, Record<string, unknown>>();
+  private readonly receipts = new Map<string, Record<string, unknown>>();
+
+  override async query(sql: string, values: unknown[] = []) {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    this.calls.push({ sql: normalized, values });
+    if (/^INSERT INTO growth_workspace_temporal_barriers/u.test(normalized)) {
+      return [{ affectedRows: 1 }, []];
+    }
+    if (/FROM growth_workspace_temporal_barriers/u.test(normalized)) {
+      return [[{
+        last_recorded_at: "2026-08-09 08:00:00.000",
+        temporal_sequence: this.sequence
+      }], []];
+    }
+    if (/CURRENT_TIMESTAMP\(3\)/u.test(normalized)) {
+      return [[{ current_timestamp_3: "2026-08-09 08:00:00.000" }], []];
+    }
+    if (/^UPDATE growth_workspace_temporal_barriers/u.test(normalized)) {
+      this.sequence = Number(values[1]);
+      return [{ affectedRows: 1 }, []];
+    }
+    if (/^SELECT request_hash,resource_kind,resource_id/u.test(normalized)) {
+      const receipt = this.receipts.get(values.slice(0, 4).join("\u0000"));
+      return [receipt ? [receipt] : [], []];
+    }
+    if (/^INSERT INTO catalog_command_receipts/u.test(normalized)) {
+      this.receipts.set(values.slice(0, 4).join("\u0000"), {
+        request_hash: values[4], resource_kind: values[5], resource_id: values[6]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (/^SELECT \* FROM catalog_items/u.test(normalized)) {
+      const workspaceId = String(values[0]);
+      const id = String(values[1]);
+      const code = values[2] === undefined ? null : String(values[2]);
+      const rows = [...this.items.values()].filter((row) =>
+        row.workspace_id === workspaceId && (row.id === id || row.code === code));
+      return [rows, []];
+    }
+    if (/^INSERT INTO catalog_items/u.test(normalized)) {
+      this.items.set(`${values[0]}\u0000${values[1]}`, catalogRow({
+        workspace_id: values[0], id: values[1], item_type: values[2], code: values[3],
+        name: values[4], description: values[5], unit: values[6],
+        item_status: values[7], revision: values[8], created_by: values[9],
+        created_at: values[10], updated_at: values[11]
+      }));
+      return [{ affectedRows: 1 }, []];
+    }
+    if (/^UPDATE catalog_items SET name/u.test(normalized)) {
+      const mapKey = `${values[7]}\u0000${values[8]}`;
+      const current = this.items.get(mapKey)!;
+      this.items.set(mapKey, {
+        ...current, name: values[0], description: values[1], unit: values[2],
+        revision: values[3], updated_at: values[4]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    return [{ affectedRows: 1 }, []];
+  }
+}
+
+class FailingEmptyStampConnection extends FakeConnection {
+  override async query(sql: string, values: unknown[] = []) {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    if (/^UPDATE package_versions SET recorded_at/u.test(normalized)) {
+      this.calls.push({ sql: normalized, values });
+      throw new Error("stamp_write_failed");
+    }
+    return super.query(sql, values);
+  }
+}
+
 function asPool(pool: FakePool) { return pool as unknown as mysql.Pool; }
 
 function catalogRow(overrides: Record<string, unknown> = {}) {
@@ -49,7 +193,7 @@ function catalogRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function enqueueBarrier(pool: FakePool, sequence: number) {
+function enqueueBarrier(pool: FakePool, sequence: number, withReceipt = true) {
   pool.connection.enqueue({ affectedRows: 1 });
   pool.connection.enqueue([{
     last_recorded_at: "2026-08-09 08:00:00.000",
@@ -59,17 +203,85 @@ function enqueueBarrier(pool: FakePool, sequence: number) {
     current_timestamp_3: "2026-08-09 08:00:00.000"
   }]);
   pool.connection.enqueue({ affectedRows: 1 });
+  if (withReceipt) pool.connection.enqueue([]);
+}
+
+function pricingRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "policy-1", workspace_id: "team-a", catalog_item_id: "item-1",
+    version: 1, package_version_id: null, currency: "CNY",
+    list_unit_price_minor: 10_000, unit_standard_cost_minor: 4_000,
+    default_order_delivery_cost_minor: 0, default_order_sales_cost_minor: 0,
+    default_order_service_cost_minor: 0, absolute_floor_unit_price_minor: 4_000,
+    standard_discount_limit_bps: 500, absolute_discount_limit_bps: 1_000,
+    target_gross_margin_bps: 5_000, absolute_minimum_gross_margin_bps: 2_000,
+    standard_payment_term_days: 30, absolute_payment_term_days: 60,
+    approval_thresholds_json: JSON.stringify({
+      discountCapability: "quote.exception.discount.approve",
+      marginCapability: "quote.exception.margin.approve",
+      paymentTermsCapability: "quote.exception.payment_terms.approve",
+      giftCapability: "quote.exception.gift.approve",
+      creditCapability: "quote.exception.credit.approve",
+      manualCapability: "quote.exception.manual.approve",
+      creditRiskThresholdBps: 7_000, manualEscalationEnabled: true
+    }),
+    surcharge_policies_json: "[]", gift_policies_json: "[]",
+    valid_from: "2026-08-09 08:00:00.000", valid_to: null,
+    policy_status: "draft", source: "native",
+    capability_registry_version: "growth-capabilities.v1", revision: 1,
+    created_by: "admin-1", created_at: "2026-08-09 08:00:00.000",
+    ...overrides
+  };
+}
+
+function packageRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "package-1", workspace_id: "team-a",
+    package_catalog_item_id: "package-item-1", version: 1, currency: "CNY",
+    package_status: "draft", valid_from: "2026-08-09 08:00:00.000",
+    valid_to: null, revision: 1, created_by: "admin-1",
+    created_at: "2026-08-09 08:00:00.000",
+    updated_at: "2026-08-09 08:00:00.000", ...overrides
+  };
+}
+
+function policyValue(overrides: Record<string, unknown> = {}): PricingPolicyVersion {
+  return {
+    id: "policy-1", workspaceId: "team-a", catalogItemId: "item-1", version: 1,
+    packageVersionId: null, currency: "CNY", listUnitPriceMinor: 10_000,
+    unitStandardCostMinor: 4_000, defaultOrderDeliveryCostMinor: 0,
+    defaultOrderSalesCostMinor: 0, defaultOrderServiceCostMinor: 0,
+    absoluteFloorUnitPriceMinor: 4_000, standardDiscountLimitBps: 500,
+    absoluteDiscountLimitBps: 1_000, targetGrossMarginBps: 5_000,
+    absoluteMinimumGrossMarginBps: 2_000, standardPaymentTermDays: 30,
+    absolutePaymentTermDays: 60,
+    approvalThresholds: {
+      discountCapability: "quote.exception.discount.approve",
+      marginCapability: "quote.exception.margin.approve",
+      paymentTermsCapability: "quote.exception.payment_terms.approve",
+      giftCapability: "quote.exception.gift.approve",
+      creditCapability: "quote.exception.credit.approve",
+      manualCapability: "quote.exception.manual.approve",
+      creditRiskThresholdBps: 7_000, manualEscalationEnabled: true
+    },
+    surchargePolicies: [], giftPolicies: [],
+    validFrom: "2026-08-09T08:00:00.000Z", validTo: null,
+    status: "draft", source: "native",
+    capabilityRegistryVersion: "growth-capabilities.v1", revision: 1,
+    createdBy: "admin-1", createdAt: "2026-08-09T08:00:00.000Z",
+    ...overrides
+  } as PricingPolicyVersion;
 }
 
 test("catalog schema uses dedicated append-oriented tables", async () => {
-  const pool = new FakePool();
+  const pool = new ExistingSchemaPool();
   await ensureCatalogMysqlSchema(asPool(pool));
-  assert.equal(pool.calls.length, CATALOG_MYSQL_SCHEMA_STATEMENTS.length);
   const schemaSql = pool.calls.map((call) => call.sql).join("\n");
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS catalog_items/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS pricing_policy_versions/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS package_versions/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS package_components/u);
+  assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS catalog_command_receipts/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_product_catalog_links/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_catalog_migration_runs/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_catalog_migration_items/u);
@@ -82,13 +294,39 @@ test("catalog schema uses dedicated append-oriented tables", async () => {
   assert.doesNotMatch(schemaSql, /replaceRows|persistAll/u);
 });
 
-test("catalog schema deterministically upgrades and closes the pricing source enum", async () => {
-  const pool = new FakePool();
+test("catalog schema upgrades prerequisite tables and repeats idempotently", async () => {
+  const pool = new ExistingSchemaPool();
   await ensureCatalogMysqlSchema(asPool(pool));
+  const firstRunCount = pool.calls.length;
+  await ensureCatalogMysqlSchema(asPool(pool));
+  const firstRunSql = pool.calls.slice(0, firstRunCount).map((call) => call.sql);
+  const sql = firstRunSql.join("\n");
+  for (const table of [
+    "catalog_items", "pricing_policy_versions", "package_versions",
+    "package_components"
+  ]) {
+    assert.match(sql, new RegExp(`ALTER TABLE ${table} ADD COLUMN recorded_at`, "u"));
+    assert.match(sql, new RegExp(`ALTER TABLE ${table} ADD COLUMN temporal_sequence`, "u"));
+  }
+  assert.match(sql, /SET recorded_at = COALESCE\(recorded_at,updated_at\)/u);
+  assert.match(sql, /SET recorded_at = COALESCE\(recorded_at,created_at\)/u);
+  assert.match(sql, /temporal_sequence = COALESCE\([^\n]*,0\)/u);
+  assert.equal(
+    pool.calls.slice(firstRunCount).some((call) => / ADD COLUMN /u.test(call.sql)),
+    false
+  );
+});
+
+test("catalog schema deterministically upgrades and closes the pricing source enum", async () => {
+  const pool = new ExistingSchemaPool();
+  await ensureCatalogMysqlSchema(asPool(pool));
+  const firstRunCount = pool.calls.length;
   await ensureCatalogMysqlSchema(asPool(pool));
 
   const firstRun = pool.calls.slice(0, CATALOG_MYSQL_SCHEMA_STATEMENTS.length);
-  const secondRun = pool.calls.slice(CATALOG_MYSQL_SCHEMA_STATEMENTS.length);
+  const secondRun = pool.calls.slice(
+    firstRunCount, firstRunCount + CATALOG_MYSQL_SCHEMA_STATEMENTS.length
+  );
   assert.deepEqual(secondRun, firstRun);
 
   const sourceStatements = firstRun
@@ -252,6 +490,29 @@ test("mysql catalog reads are workspace-scoped and clone parsed JSON", async () 
   assert.match(pool.calls.at(-1)!.sql, /workspace_id = \? AND id = \?/u);
 });
 
+test("mysql policy boundaries reject full unknown and retired manual shapes before I/O", async () => {
+  for (const invalid of [
+    { ...policyValue(), source: "manual" },
+    { ...policyValue(), futureRule: true }
+  ]) {
+    const pool = new FakePool();
+    const repository = new MysqlCatalogRepository(asPool(pool));
+    await assert.rejects(
+      () => repository.appendPricingPolicyVersion(invalid as PricingPolicyVersion),
+      { code: "invalid_pricing_policy_version" }
+    );
+    assert.equal(pool.calls.length, 0);
+  }
+
+  const pool = new FakePool();
+  pool.enqueue([pricingRow({ source: "manual" })]);
+  const repository = new MysqlCatalogRepository(asPool(pool));
+  await assert.rejects(
+    () => repository.findPricingPolicyVersion("team-a", "policy-1"),
+    { code: "invalid_pricing_policy_version" }
+  );
+});
+
 test("mysql catalog command locks the temporal barrier before domain rows and commits", async () => {
   const pool = new FakePool();
   pool.connection.enqueue({ affectedRows: 1 });
@@ -263,6 +524,7 @@ test("mysql catalog command locks the temporal barrier before domain rows and co
     current_timestamp_3: "2026-08-09 08:00:00.000"
   }]);
   pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue([]);
   pool.connection.enqueue([]);
   const repository = new MysqlCatalogRepository(
     asPool(pool),
@@ -295,13 +557,53 @@ test("mysql catalog command locks the temporal barrier before domain rows and co
   );
   assert.ok(firstDomainLock > 3);
   assert.ok(sql.slice(0, firstDomainLock).every((statement) =>
-    /growth_workspace_temporal_barriers|CURRENT_TIMESTAMP/u.test(statement)
+    /growth_workspace_temporal_barriers|CURRENT_TIMESTAMP|catalog_command_receipts/u
+      .test(statement)
   ));
-  const insert = pool.connection.calls.at(-1)!;
+  const insert = pool.connection.calls.find((call) =>
+    /^INSERT INTO catalog_items/u.test(call.sql)
+  )!;
   assert.match(insert.sql, /^INSERT INTO catalog_items/u);
   assert.equal(insert.values[12], "2026-08-09 08:00:00.001");
   assert.equal(insert.values[13], 5);
   assert.doesNotMatch(sql.join("\n"), /persistAll|replaceRows/u);
+});
+
+test("mysql domain receipts scope by actor and operation and survive intervening commands", async () => {
+  const connection = new ReceiptConnection();
+  const pool = new FakePool(connection);
+  const repository = new MysqlCatalogRepository(
+    asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+  );
+  const create: CreateCatalogItemCommand = {
+    workspaceId: "team-a", id: "item-1", type: "service", code: "SVC-001",
+    name: "原名称", description: "获客诊断", unit: "次",
+    actorId: "admin-1", idempotencyKey: "shared-key",
+    requestHash: "sha256:create"
+  };
+  assert.equal((await repository.createCatalogItem(create)).kind, "ok");
+  assert.equal((await repository.updateCatalogItem({
+    workspaceId: "team-a", id: "item-1", expectedRevision: 1,
+    patch: { name: "actor-one" }, actorId: "admin-1",
+    idempotencyKey: "shared-key", requestHash: "sha256:update-one"
+  })).kind, "ok");
+  assert.equal((await repository.updateCatalogItem({
+    workspaceId: "team-a", id: "item-1", expectedRevision: 2,
+    patch: { name: "actor-two" }, actorId: "admin-2",
+    idempotencyKey: "shared-key", requestHash: "sha256:update-two"
+  })).kind, "ok");
+  assert.deepEqual(await repository.updateCatalogItem({
+    workspaceId: "team-a", id: "item-1", expectedRevision: 3,
+    patch: { name: "conflict" }, actorId: "admin-1",
+    idempotencyKey: "shared-key", requestHash: "sha256:changed"
+  }), { kind: "state_conflict", code: "idempotency_conflict" });
+
+  const replay = await repository.createCatalogItem({ ...create, id: "ignored-new-id" });
+  assert.equal(replay.kind, "ok");
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.value.id, "item-1");
+  assert.equal(replay.value.name, "actor-two");
+  assert.equal(replay.value.revision, 3);
 });
 
 test("mysql draft-component replacement takes the temporal barrier before its package lock", async () => {
@@ -343,6 +645,91 @@ test("mysql draft-component replacement takes the temporal barrier before its pa
   assert.equal(componentInsert.values.at(-1), 9);
   assert.deepEqual(pool.connection.transactions, ["begin", "commit", "release"]);
 });
+
+test("mysql empty draft-component replacement persists its set-level authority stamp", async () => {
+  const pool = new FakePool();
+  enqueueBarrier(pool, 8, false);
+  pool.connection.enqueue([{
+    package_status: "draft", updated_at: "2026-08-09 08:00:00.000"
+  }]);
+  const repository = new MysqlCatalogRepository(
+    asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+  );
+
+  assert.deepEqual(
+    await repository.replaceDraftPackageComponents("team-a", "package-version-1", []),
+    []
+  );
+  const stampUpdate = pool.connection.calls.find((call) =>
+    /^UPDATE package_versions SET recorded_at/u.test(call.sql)
+  );
+  assert.ok(stampUpdate);
+  assert.deepEqual(stampUpdate.values, [
+    "2026-08-09 08:00:00.001", 9, "team-a", "package-version-1"
+  ]);
+});
+
+test("mysql empty draft-component replacement rolls back delete when stamp write fails", async () => {
+  const connection = new FailingEmptyStampConnection();
+  const pool = new FakePool(connection);
+  enqueueBarrier(pool, 8, false);
+  connection.enqueue([{
+    package_status: "draft", updated_at: "2026-08-09 08:00:00.000"
+  }]);
+  const repository = new MysqlCatalogRepository(
+    asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+  );
+  await assert.rejects(
+    () => repository.replaceDraftPackageComponents(
+      "team-a", "package-version-1", []
+    ),
+    /stamp_write_failed/u
+  );
+  assert.deepEqual(connection.transactions, ["begin", "rollback", "release"]);
+  const sql = connection.calls.map((call) => call.sql);
+  assert.ok(sql.findIndex((statement) => /^DELETE FROM package_components/u.test(statement))
+    < sql.findIndex((statement) => /^UPDATE package_versions SET recorded_at/u.test(statement)));
+});
+
+for (const lifecycle of ["activate", "retire"] as const) {
+  test(`mysql pricing ${lifecycle} locks discovered parent then child separately`, async () => {
+    const pool = new FakePool(new LifecycleConnection(lifecycle));
+    const repository = new MysqlCatalogRepository(
+      asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+    );
+    const command: PricingPolicyLifecycleCommand = {
+      workspaceId: "team-a", id: "policy-1", expectedRevision: 1,
+      actorId: "admin-1", idempotencyKey: `policy-${lifecycle}`,
+      requestHash: `sha256:policy-${lifecycle}`
+    };
+    await repository[lifecycle === "activate"
+      ? "activatePricingPolicy" : "retirePricingPolicy"](command);
+    const domain = pool.connection.calls.slice(5).map((call) => call.sql);
+    assert.match(domain[0]!, /^SELECT catalog_item_id FROM pricing_policy_versions/u);
+    assert.match(domain[1]!, /^SELECT \* FROM catalog_items[\s\S]*FOR UPDATE/u);
+    assert.match(domain[2]!, /^SELECT \* FROM pricing_policy_versions[\s\S]*FOR UPDATE/u);
+    assert.doesNotMatch(domain.slice(0, 3).join("\n"), /INNER JOIN/u);
+  });
+
+  test(`mysql package ${lifecycle} locks discovered parent then child separately`, async () => {
+    const pool = new FakePool(new LifecycleConnection(lifecycle));
+    const repository = new MysqlCatalogRepository(
+      asPool(pool), new MysqlGrowthTemporalBarrier(asPool(pool))
+    );
+    const command: PackageVersionLifecycleCommand = {
+      workspaceId: "team-a", id: "package-1", expectedRevision: 1,
+      actorId: "admin-1", idempotencyKey: `package-${lifecycle}`,
+      requestHash: `sha256:package-${lifecycle}`
+    };
+    await repository[lifecycle === "activate"
+      ? "activatePackageVersion" : "retirePackageVersion"](command);
+    const domain = pool.connection.calls.slice(5).map((call) => call.sql);
+    assert.match(domain[0]!, /^SELECT package_catalog_item_id FROM package_versions/u);
+    assert.match(domain[1]!, /^SELECT \* FROM catalog_items[\s\S]*FOR UPDATE/u);
+    assert.match(domain[2]!, /^SELECT \* FROM package_versions[\s\S]*FOR UPDATE/u);
+    assert.doesNotMatch(domain.slice(0, 3).join("\n"), /INNER JOIN/u);
+  });
+}
 
 test("mysql stale revision matches memory semantics and rolls back its barrier allocation", async () => {
   const pool = new FakePool();

@@ -10,6 +10,7 @@ import type {
 } from "./catalog-domain.js";
 import {
   assertClosedPricingPolicyRules,
+  assertClosedPricingPolicyVersion,
   immutableClone
 } from "./catalog-domain.js";
 import type {
@@ -68,8 +69,6 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     updated_at DATETIME(3) NOT NULL,
     recorded_at DATETIME(3) NOT NULL,
     temporal_sequence BIGINT UNSIGNED NOT NULL,
-    last_idempotency_key VARCHAR(191) NULL,
-    last_request_hash VARCHAR(191) NULL,
     PRIMARY KEY (workspace_id, id),
     UNIQUE KEY uk_catalog_items_code (workspace_id, code),
     CONSTRAINT chk_catalog_items_workspace CHECK (
@@ -91,8 +90,6 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     updated_at DATETIME(3) NOT NULL,
     recorded_at DATETIME(3) NOT NULL,
     temporal_sequence BIGINT UNSIGNED NOT NULL,
-    last_idempotency_key VARCHAR(191) NULL,
-    last_request_hash VARCHAR(191) NULL,
     PRIMARY KEY (workspace_id, id),
     UNIQUE KEY uk_package_versions_version
       (workspace_id, package_catalog_item_id, version),
@@ -134,8 +131,6 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     created_at DATETIME(3) NOT NULL,
     recorded_at DATETIME(3) NOT NULL,
     temporal_sequence BIGINT UNSIGNED NOT NULL,
-    last_idempotency_key VARCHAR(191) NULL,
-    last_request_hash VARCHAR(191) NULL,
     PRIMARY KEY (workspace_id, id),
     UNIQUE KEY uk_pricing_policy_versions_version
       (workspace_id, catalog_item_id, version),
@@ -177,6 +172,26 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     CONSTRAINT fk_package_component_policy
       FOREIGN KEY (workspace_id, component_pricing_policy_version_id)
       REFERENCES pricing_policy_versions (workspace_id, id)
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS catalog_command_receipts (
+    workspace_id VARCHAR(191) NOT NULL,
+    actor_id VARCHAR(191) NOT NULL,
+    operation ENUM(
+      'catalog_item.create','catalog_item.update','catalog_item.retire',
+      'pricing_policy.create_draft','pricing_policy.activate','pricing_policy.retire',
+      'package_version.create_draft','package_version.update_draft',
+      'package_version.activate','package_version.retire'
+    ) NOT NULL,
+    idempotency_key VARCHAR(191) NOT NULL,
+    request_hash VARCHAR(191) NOT NULL,
+    resource_kind ENUM('catalog_item','pricing_policy','package_version') NOT NULL,
+    resource_id VARCHAR(191) NOT NULL,
+    recorded_at DATETIME(3) NOT NULL,
+    temporal_sequence BIGINT UNSIGNED NOT NULL,
+    PRIMARY KEY (workspace_id, actor_id, operation, idempotency_key),
+    CONSTRAINT chk_catalog_command_receipts_workspace CHECK (
+      workspace_id <> 'all' AND CHAR_LENGTH(TRIM(workspace_id)) > 0
+    )
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS commission_product_catalog_links (
     workspace_id VARCHAR(191) NOT NULL,
@@ -242,6 +257,58 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
 
 export async function ensureCatalogMysqlSchema(pool: mysql.Pool): Promise<void> {
   for (const statement of CATALOG_MYSQL_SCHEMA_STATEMENTS) await pool.query(statement);
+  const upgrades = [
+    { table: "catalog_items", fallback: "updated_at" },
+    { table: "pricing_policy_versions", fallback: "created_at" },
+    { table: "package_versions", fallback: "updated_at" },
+    { table: "package_components", fallback: null }
+  ] as const;
+  for (const { table, fallback } of upgrades) {
+    const [rows] = await pool.query(
+      `SELECT column_name,is_nullable FROM information_schema.columns
+       WHERE table_schema = DATABASE() AND table_name = ?
+         AND column_name IN ('recorded_at','temporal_sequence')`,
+      [table]
+    );
+    const columns = new Map((rows as MysqlRow[]).map((row) => [
+      String(row.column_name), String(row.is_nullable)
+    ]));
+    const missingRecordedAt = !columns.has("recorded_at");
+    const missingSequence = !columns.has("temporal_sequence");
+    if (missingRecordedAt) {
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN recorded_at DATETIME(3) NULL`);
+    }
+    if (missingSequence) {
+      await pool.query(
+        `ALTER TABLE ${table} ADD COLUMN temporal_sequence BIGINT UNSIGNED NULL`
+      );
+    }
+    if (fallback) {
+      await pool.query(
+        `UPDATE ${table} SET recorded_at = COALESCE(recorded_at,${fallback}),
+           temporal_sequence = COALESCE(temporal_sequence,0)
+         WHERE recorded_at IS NULL OR temporal_sequence IS NULL`
+      );
+    } else {
+      await pool.query(
+        `UPDATE package_components c
+         INNER JOIN package_versions v
+           ON v.workspace_id = c.workspace_id AND v.id = c.package_version_id
+         SET c.recorded_at = COALESCE(c.recorded_at,v.updated_at),
+           c.temporal_sequence = COALESCE(c.temporal_sequence,0)
+         WHERE c.recorded_at IS NULL OR c.temporal_sequence IS NULL`
+      );
+    }
+    if (missingRecordedAt || missingSequence
+      || columns.get("recorded_at") === "YES"
+      || columns.get("temporal_sequence") === "YES") {
+      await pool.query(
+        `ALTER TABLE ${table}
+         MODIFY COLUMN recorded_at DATETIME(3) NOT NULL,
+         MODIFY COLUMN temporal_sequence BIGINT UNSIGNED NOT NULL`
+      );
+    }
+  }
 }
 
 function mysqlDate(instant: string): string {
@@ -308,7 +375,7 @@ function parsePricingPolicy(row: MysqlRow): PricingPolicyVersion {
     revision: safeNumber(row.revision, "revision"),
     createdBy: String(row.created_by), createdAt: instant(row.created_at)
   } as PricingPolicyVersion;
-  assertClosedPricingPolicyRules(policy);
+  assertClosedPricingPolicyVersion(policy);
   return immutableClone(policy) as PricingPolicyVersion;
 }
 
@@ -361,27 +428,23 @@ async function first<T>(
 async function insertCatalogItem(
   source: QuerySource,
   item: CatalogItem,
-  identity?: Readonly<{ idempotencyKey: string; requestHash: string }>,
   stamp: CatalogAppendStamp = { recordedAt: item.updatedAt, temporalSequence: 0 }
 ): Promise<void> {
   await source.query(
     `INSERT INTO catalog_items (
       workspace_id,id,item_type,code,name,description,unit,item_status,revision,
-      created_by,created_at,updated_at,recorded_at,temporal_sequence,
-      last_idempotency_key,last_request_hash
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      created_by,created_at,updated_at,recorded_at,temporal_sequence
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [item.workspaceId, item.id, item.type, item.code, item.name, item.description,
       item.unit, item.status, item.revision, item.createdBy,
       mysqlDate(item.createdAt), mysqlDate(item.updatedAt),
-      mysqlDate(stamp.recordedAt), stamp.temporalSequence,
-      identity?.idempotencyKey ?? null, identity?.requestHash ?? null]
+      mysqlDate(stamp.recordedAt), stamp.temporalSequence]
   );
 }
 
 async function insertPricingPolicy(
   source: QuerySource,
   policy: PricingPolicyVersion,
-  identity?: Readonly<{ idempotencyKey: string; requestHash: string }>,
   stamp: CatalogAppendStamp = { recordedAt: policy.createdAt, temporalSequence: 0 }
 ): Promise<void> {
   await source.query(
@@ -395,9 +458,8 @@ async function insertPricingPolicy(
       standard_payment_term_days,absolute_payment_term_days,
       approval_thresholds_json,surcharge_policies_json,gift_policies_json,
       valid_from,valid_to,policy_status,source,capability_registry_version,
-      revision,created_by,created_at,recorded_at,temporal_sequence,
-      last_idempotency_key,last_request_hash
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      revision,created_by,created_at,recorded_at,temporal_sequence
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [policy.workspaceId, policy.id, policy.catalogItemId, policy.version,
       policy.packageVersionId, policy.currency, policy.listUnitPriceMinor,
       policy.unitStandardCostMinor, policy.defaultOrderDeliveryCostMinor,
@@ -410,8 +472,7 @@ async function insertPricingPolicy(
       mysqlDate(policy.validFrom), policy.validTo ? mysqlDate(policy.validTo) : null,
       policy.status, policy.source, policy.capabilityRegistryVersion,
       policy.revision, policy.createdBy, mysqlDate(policy.createdAt),
-      mysqlDate(stamp.recordedAt), stamp.temporalSequence,
-      identity?.idempotencyKey ?? null, identity?.requestHash ?? null]
+      mysqlDate(stamp.recordedAt), stamp.temporalSequence]
   );
 }
 
@@ -481,29 +542,72 @@ function assertCommandIdentity(command: Readonly<{
   actorId: string;
   idempotencyKey: string;
   requestHash: string;
-}>): Readonly<{ idempotencyKey: string; requestHash: string }> {
+}>): void {
   if (!command.actorId.trim() || !command.idempotencyKey.trim()
     || !command.requestHash.trim()) {
     throw Object.assign(new Error("invalid_catalog_command_identity"), {
       code: "invalid_catalog_command_identity"
     });
   }
-  return {
-    idempotencyKey: command.idempotencyKey,
-    requestHash: command.requestHash
-  };
 }
 
-function mysqlReplay<T>(
-  row: MysqlRow,
-  command: Readonly<{ idempotencyKey: string; requestHash: string }>,
-  value: T
-): CatalogCommandResult<T> | null {
-  if (row.last_idempotency_key !== command.idempotencyKey) return null;
-  if (row.last_request_hash !== command.requestHash) {
+type CatalogCommandOperation =
+  | "catalog_item.create" | "catalog_item.update" | "catalog_item.retire"
+  | "pricing_policy.create_draft" | "pricing_policy.activate"
+  | "pricing_policy.retire" | "package_version.create_draft"
+  | "package_version.update_draft" | "package_version.activate"
+  | "package_version.retire";
+type CatalogReceiptResourceKind =
+  | "catalog_item" | "pricing_policy" | "package_version";
+
+async function mysqlReceiptReplay<T>(
+  connection: mysql.PoolConnection,
+  workspaceId: string,
+  command: Readonly<{ actorId: string; idempotencyKey: string; requestHash: string }>,
+  operation: CatalogCommandOperation,
+  resourceKind: CatalogReceiptResourceKind,
+  read: (resourceId: string) => Promise<T | null>
+): Promise<CatalogCommandResult<T> | null> {
+  assertCommandIdentity(command);
+  const [rows] = await connection.query(
+    `SELECT request_hash,resource_kind,resource_id
+     FROM catalog_command_receipts
+     WHERE workspace_id = ? AND actor_id = ? AND operation = ?
+       AND idempotency_key = ? FOR UPDATE`,
+    [workspaceId, command.actorId, operation, command.idempotencyKey]
+  );
+  const receipt = (rows as MysqlRow[])[0];
+  if (!receipt) return null;
+  if (receipt.request_hash !== command.requestHash) {
     return { kind: "state_conflict", code: "idempotency_conflict" };
   }
-  return { kind: "ok", value, replayed: true };
+  if (receipt.resource_kind !== resourceKind) {
+    return { kind: "state_conflict", code: "catalog_command_receipt_corrupt" };
+  }
+  const value = await read(String(receipt.resource_id));
+  return value === null
+    ? { kind: "state_conflict", code: "catalog_command_receipt_corrupt" }
+    : { kind: "ok", value, replayed: true };
+}
+
+async function insertCatalogReceipt(
+  connection: mysql.PoolConnection,
+  workspaceId: string,
+  command: Readonly<{ actorId: string; idempotencyKey: string; requestHash: string }>,
+  operation: CatalogCommandOperation,
+  resourceKind: CatalogReceiptResourceKind,
+  resourceId: string,
+  stamp: CatalogAppendStamp
+): Promise<void> {
+  await connection.query(
+    `INSERT INTO catalog_command_receipts (
+      workspace_id,actor_id,operation,idempotency_key,request_hash,
+      resource_kind,resource_id,recorded_at,temporal_sequence
+    ) VALUES (?,?,?,?,?,?,?,?,?)`,
+    [workspaceId, command.actorId, operation, command.idempotencyKey,
+      command.requestHash, resourceKind, resourceId,
+      mysqlDate(stamp.recordedAt), stamp.temporalSequence]
+  );
 }
 
 function decodeCursor(cursor: string): readonly [string, string] {
@@ -664,7 +768,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
   async appendPricingPolicyVersion(
     policy: PricingPolicyVersion
   ): Promise<PricingPolicyVersion> {
-    assertClosedPricingPolicyRules(policy);
+    assertClosedPricingPolicyVersion(policy);
     await insertPricingPolicy(this.pool, policy);
     return immutableClone(policy) as PricingPolicyVersion;
   }
@@ -720,14 +824,14 @@ export class MysqlCatalogRepository implements CatalogRepository {
       `INSERT INTO package_versions (
         workspace_id,id,package_catalog_item_id,version,currency,package_status,
         valid_from,valid_to,revision,created_by,created_at,updated_at,
-        recorded_at,temporal_sequence,last_idempotency_key,last_request_hash
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        recorded_at,temporal_sequence
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [version.workspaceId, version.id, version.packageCatalogItemId,
         version.version, version.currency, version.status,
         mysqlDate(version.validFrom), version.validTo ? mysqlDate(version.validTo) : null,
         version.revision, version.createdBy, mysqlDate(version.createdAt),
         mysqlDate(version.updatedAt), mysqlDate(version.updatedAt),
-        0, null, null]
+        0]
     );
     return immutableClone(version) as PackageVersion;
   }
@@ -814,8 +918,9 @@ export class MysqlCatalogRepository implements CatalogRepository {
       await connection.beginTransaction();
       const transaction = new MysqlGrowthTemporalTransaction(connection);
       const stamped: StampedPackageComponent[] = [];
+      let emptyStamp: CatalogAppendStamp | null = null;
       if (components.length === 0) {
-        await temporalBarrier.allocateAppend(transaction, workspaceId);
+        emptyStamp = await temporalBarrier.allocateAppend(transaction, workspaceId);
       } else {
         for (const component of components) {
           const stamp = await temporalBarrier.allocateAppend(
@@ -837,6 +942,14 @@ export class MysqlCatalogRepository implements CatalogRepository {
         "DELETE FROM package_components WHERE workspace_id = ? AND package_version_id = ?",
         [workspaceId, packageVersionId]
       );
+      if (emptyStamp) {
+        await connection.query(
+          `UPDATE package_versions SET recorded_at = ?,temporal_sequence = ?
+           WHERE workspace_id = ? AND id = ?`,
+          [mysqlDate(emptyStamp.recordedAt), emptyStamp.temporalSequence,
+            workspaceId, packageVersionId]
+        );
+      }
       for (const { component, stamp } of stamped) {
         await connection.query(
           `INSERT INTO package_components (
@@ -865,7 +978,15 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: CreateCatalogItemCommand
   ): Promise<CatalogCommandResult<CatalogItem>> {
     return this.command(command.workspaceId, async (connection, _tx, stamp) => {
-      const identity = assertCommandIdentity(command);
+      const replay = await mysqlReceiptReplay(
+        connection, command.workspaceId, command, "catalog_item.create",
+        "catalog_item", (resourceId) => first(
+          connection,
+          "SELECT * FROM catalog_items WHERE workspace_id = ? AND id = ? FOR UPDATE",
+          [command.workspaceId, resourceId], parseCatalogItem
+        )
+      );
+      if (replay) commandAbort(replay);
       const [rows] = await connection.query(
         `SELECT * FROM catalog_items
          WHERE workspace_id = ? AND (id = ? OR code = ?)
@@ -875,11 +996,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
       const matches = rows as MysqlRow[];
       const idRow = matches.find((row) => row.id === command.id);
       if (idRow) {
-        const current = parseCatalogItem(idRow);
-        const replay = mysqlReplay(idRow, command, current);
-        commandAbort(replay ?? {
-          kind: "state_conflict", code: "catalog_item_id_conflict"
-        });
+        commandAbort({ kind: "state_conflict", code: "catalog_item_id_conflict" });
       }
       if (matches.some((row) => row.code === command.code)) {
         commandAbort({ kind: "state_conflict", code: "catalog_code_conflict" });
@@ -898,7 +1015,11 @@ export class MysqlCatalogRepository implements CatalogRepository {
         createdAt: stamp.recordedAt,
         updatedAt: stamp.recordedAt
       }) as CatalogItem;
-      await insertCatalogItem(connection, item, identity, stamp);
+      await insertCatalogItem(connection, item, stamp);
+      await insertCatalogReceipt(
+        connection, command.workspaceId, command, "catalog_item.create",
+        "catalog_item", command.id, stamp
+      );
       return { kind: "ok", value: item, replayed: false };
     });
   }
@@ -907,7 +1028,15 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: UpdateCatalogItemCommand
   ): Promise<CatalogCommandResult<CatalogItem>> {
     return this.command(command.workspaceId, async (connection, _tx, stamp) => {
-      const identity = assertCommandIdentity(command);
+      const replay = await mysqlReceiptReplay(
+        connection, command.workspaceId, command, "catalog_item.update",
+        "catalog_item", (resourceId) => first(
+          connection,
+          "SELECT * FROM catalog_items WHERE workspace_id = ? AND id = ? FOR UPDATE",
+          [command.workspaceId, resourceId], parseCatalogItem
+        )
+      );
+      if (replay) commandAbort(replay);
       const [rows] = await connection.query(
         `SELECT * FROM catalog_items
          WHERE workspace_id = ? AND id = ? FOR UPDATE`,
@@ -916,8 +1045,6 @@ export class MysqlCatalogRepository implements CatalogRepository {
       const row = (rows as MysqlRow[])[0];
       if (!row) commandAbort({ kind: "not_found" });
       const current = parseCatalogItem(row);
-      const replay = mysqlReplay(row, command, current);
-      if (replay) commandAbort(replay);
       lifecycleConflict(
         current, command.expectedRevision, "active", "catalog_item_retired"
       );
@@ -930,13 +1057,16 @@ export class MysqlCatalogRepository implements CatalogRepository {
       await connection.query(
         `UPDATE catalog_items
          SET name = ?,description = ?,unit = ?,revision = ?,updated_at = ?,
-           recorded_at = ?,temporal_sequence = ?,last_idempotency_key = ?,
-           last_request_hash = ?
+           recorded_at = ?,temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
         [next.name, next.description, next.unit, next.revision,
           mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
-          stamp.temporalSequence, identity.idempotencyKey, identity.requestHash,
+          stamp.temporalSequence,
           command.workspaceId, command.id, command.expectedRevision]
+      );
+      await insertCatalogReceipt(
+        connection, command.workspaceId, command, "catalog_item.update",
+        "catalog_item", command.id, stamp
       );
       return { kind: "ok", value: next, replayed: false };
     });
@@ -946,7 +1076,15 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: RetireCatalogItemCommand
   ): Promise<CatalogCommandResult<CatalogItem>> {
     return this.command(command.workspaceId, async (connection, _tx, stamp) => {
-      const identity = assertCommandIdentity(command);
+      const replay = await mysqlReceiptReplay(
+        connection, command.workspaceId, command, "catalog_item.retire",
+        "catalog_item", (resourceId) => first(
+          connection,
+          "SELECT * FROM catalog_items WHERE workspace_id = ? AND id = ? FOR UPDATE",
+          [command.workspaceId, resourceId], parseCatalogItem
+        )
+      );
+      if (replay) commandAbort(replay);
       const [rows] = await connection.query(
         `SELECT * FROM catalog_items
          WHERE workspace_id = ? AND id = ? FOR UPDATE`,
@@ -955,8 +1093,6 @@ export class MysqlCatalogRepository implements CatalogRepository {
       const row = (rows as MysqlRow[])[0];
       if (!row) commandAbort({ kind: "not_found" });
       const current = parseCatalogItem(row);
-      const replay = mysqlReplay(row, command, current);
-      if (replay) commandAbort(replay);
       lifecycleConflict(
         current, command.expectedRevision, "active", "catalog_item_retired"
       );
@@ -969,12 +1105,15 @@ export class MysqlCatalogRepository implements CatalogRepository {
       await connection.query(
         `UPDATE catalog_items
          SET item_status = 'retired',revision = ?,updated_at = ?,
-           recorded_at = ?,temporal_sequence = ?,last_idempotency_key = ?,
-           last_request_hash = ?
+           recorded_at = ?,temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
         [next.revision, mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
-          stamp.temporalSequence, identity.idempotencyKey, identity.requestHash,
+          stamp.temporalSequence,
           command.workspaceId, command.id, command.expectedRevision]
+      );
+      await insertCatalogReceipt(
+        connection, command.workspaceId, command, "catalog_item.retire",
+        "catalog_item", command.id, stamp
       );
       return { kind: "ok", value: next, replayed: false };
     });
@@ -1021,7 +1160,16 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: CreatePricingPolicyDraftCommand
   ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
     return this.command(command.workspaceId, async (connection, _tx, stamp) => {
-      const identity = assertCommandIdentity(command);
+      const replay = await mysqlReceiptReplay(
+        connection, command.workspaceId, command, "pricing_policy.create_draft",
+        "pricing_policy", (resourceId) => first(
+          connection,
+          `SELECT * FROM pricing_policy_versions
+           WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+          [command.workspaceId, resourceId], parsePricingPolicy
+        )
+      );
+      if (replay) commandAbort(replay);
       assertClosedPricingPolicyRules(command);
       const [parentRows] = await connection.query(
         `SELECT * FROM catalog_items
@@ -1041,9 +1189,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
       );
       const existingRow = (existingRows as MysqlRow[])[0];
       if (existingRow) {
-        const existing = parsePricingPolicy(existingRow);
-        const replay = mysqlReplay(existingRow, command, existing);
-        commandAbort(replay ?? {
+        commandAbort({
           kind: "state_conflict", code: "pricing_policy_id_conflict"
         });
       }
@@ -1068,7 +1214,12 @@ export class MysqlCatalogRepository implements CatalogRepository {
         createdBy: actorId,
         createdAt: stamp.recordedAt
       }) as PricingPolicyVersion;
-      await insertPricingPolicy(connection, policy, identity, stamp);
+      assertClosedPricingPolicyVersion(policy);
+      await insertPricingPolicy(connection, policy, stamp);
+      await insertCatalogReceipt(
+        connection, command.workspaceId, command, "pricing_policy.create_draft",
+        "pricing_policy", command.id, stamp
+      );
       return { kind: "ok", value: policy, replayed: false };
     });
   }
@@ -1077,22 +1228,43 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: PricingPolicyLifecycleCommand,
     from: PricingPolicyVersion["status"],
     to: PricingPolicyVersion["status"],
-    invalidCode: string
+    invalidCode: string,
+    operation: Extract<CatalogCommandOperation,
+      "pricing_policy.activate" | "pricing_policy.retire">
   ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
     return this.command(command.workspaceId, async (connection, _tx, stamp) => {
-      const identity = assertCommandIdentity(command);
-      const [rows] = await connection.query(
-        `SELECT p.* FROM catalog_items i
-         INNER JOIN pricing_policy_versions p
-           ON p.workspace_id = i.workspace_id AND p.catalog_item_id = i.id
-         WHERE p.workspace_id = ? AND p.id = ? FOR UPDATE`,
+      const replay = await mysqlReceiptReplay(
+        connection, command.workspaceId, command, operation,
+        "pricing_policy", (resourceId) => first(
+          connection,
+          `SELECT * FROM pricing_policy_versions
+           WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+          [command.workspaceId, resourceId], parsePricingPolicy
+        )
+      );
+      if (replay) commandAbort(replay);
+      const [discoveryRows] = await connection.query(
+        `SELECT catalog_item_id FROM pricing_policy_versions
+         WHERE workspace_id = ? AND id = ?`,
         [command.workspaceId, command.id]
+      );
+      const discovery = (discoveryRows as MysqlRow[])[0];
+      if (!discovery) commandAbort({ kind: "not_found" });
+      const catalogItemId = String(discovery.catalog_item_id);
+      const [parentRows] = await connection.query(
+        `SELECT * FROM catalog_items
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [command.workspaceId, catalogItemId]
+      );
+      if (!(parentRows as MysqlRow[])[0]) commandAbort({ kind: "not_found" });
+      const [rows] = await connection.query(
+        `SELECT * FROM pricing_policy_versions
+         WHERE workspace_id = ? AND id = ? AND catalog_item_id = ? FOR UPDATE`,
+        [command.workspaceId, command.id, catalogItemId]
       );
       const row = (rows as MysqlRow[])[0];
       if (!row) commandAbort({ kind: "not_found" });
       const current = parsePricingPolicy(row);
-      const replay = mysqlReplay(row, command, current);
-      if (replay) commandAbort(replay);
       lifecycleConflict(current, command.expectedRevision, from, invalidCode);
       if (command.validate) {
         await command.validate(this.mysqlValidationView(connection), current);
@@ -1102,14 +1274,17 @@ export class MysqlCatalogRepository implements CatalogRepository {
         status: to,
         revision: current.revision + 1
       }) as PricingPolicyVersion;
+      assertClosedPricingPolicyVersion(next);
       await connection.query(
         `UPDATE pricing_policy_versions
-         SET policy_status = ?,revision = ?,recorded_at = ?,temporal_sequence = ?,
-           last_idempotency_key = ?,last_request_hash = ?
+         SET policy_status = ?,revision = ?,recorded_at = ?,temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
         [to, next.revision, mysqlDate(stamp.recordedAt), stamp.temporalSequence,
-          identity.idempotencyKey, identity.requestHash,
           command.workspaceId, command.id, command.expectedRevision]
+      );
+      await insertCatalogReceipt(
+        connection, command.workspaceId, command, operation,
+        "pricing_policy", command.id, stamp
       );
       return { kind: "ok", value: next, replayed: false };
     });
@@ -1119,7 +1294,8 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: PricingPolicyLifecycleCommand
   ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
     return this.pricingLifecycle(
-      command, "draft", "active", "pricing_policy_not_draft"
+      command, "draft", "active", "pricing_policy_not_draft",
+      "pricing_policy.activate"
     );
   }
 
@@ -1127,7 +1303,8 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: PricingPolicyLifecycleCommand
   ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
     return this.pricingLifecycle(
-      command, "active", "retired", "pricing_policy_not_active"
+      command, "active", "retired", "pricing_policy_not_active",
+      "pricing_policy.retire"
     );
   }
 
@@ -1186,7 +1363,15 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: CreatePackageVersionDraftCommand
   ): Promise<CatalogCommandResult<PackageVersion>> {
     return this.command(command.workspaceId, async (connection, tx, stamp) => {
-      const identity = assertCommandIdentity(command);
+      const replay = await mysqlReceiptReplay(
+        connection, command.workspaceId, command, "package_version.create_draft",
+        "package_version", (resourceId) => first(
+          connection,
+          "SELECT * FROM package_versions WHERE workspace_id = ? AND id = ? FOR UPDATE",
+          [command.workspaceId, resourceId], parsePackageVersion
+        )
+      );
+      if (replay) commandAbort(replay);
       const [parentRows] = await connection.query(
         `SELECT * FROM catalog_items
          WHERE workspace_id = ? AND id = ? FOR UPDATE`,
@@ -1205,9 +1390,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
       );
       const existingRow = (existingRows as MysqlRow[])[0];
       if (existingRow) {
-        const existing = parsePackageVersion(existingRow);
-        const replay = mysqlReplay(existingRow, command, existing);
-        commandAbort(replay ?? {
+        commandAbort({
           kind: "state_conflict", code: "package_version_id_conflict"
         });
       }
@@ -1241,16 +1424,20 @@ export class MysqlCatalogRepository implements CatalogRepository {
         `INSERT INTO package_versions (
           workspace_id,id,package_catalog_item_id,version,currency,package_status,
           valid_from,valid_to,revision,created_by,created_at,updated_at,
-          recorded_at,temporal_sequence,last_idempotency_key,last_request_hash
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          recorded_at,temporal_sequence
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [version.workspaceId, version.id, version.packageCatalogItemId,
           version.version, version.currency, version.status,
           mysqlDate(version.validFrom), version.validTo ? mysqlDate(version.validTo) : null,
           version.revision, version.createdBy, mysqlDate(version.createdAt),
           mysqlDate(version.updatedAt), mysqlDate(stamp.recordedAt),
-          stamp.temporalSequence, identity.idempotencyKey, identity.requestHash]
+          stamp.temporalSequence]
       );
       await this.insertPackageComponents(connection, components);
+      await insertCatalogReceipt(
+        connection, command.workspaceId, command, "package_version.create_draft",
+        "package_version", command.id, stamp
+      );
       return { kind: "ok", value: version, replayed: false };
     });
   }
@@ -1259,19 +1446,37 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: UpdatePackageVersionDraftCommand
   ): Promise<CatalogCommandResult<PackageVersion>> {
     return this.command(command.workspaceId, async (connection, tx, stamp) => {
-      const identity = assertCommandIdentity(command);
-      const [rows] = await connection.query(
-        `SELECT v.* FROM catalog_items i
-         INNER JOIN package_versions v
-           ON v.workspace_id = i.workspace_id AND v.package_catalog_item_id = i.id
-         WHERE v.workspace_id = ? AND v.id = ? FOR UPDATE`,
+      const replay = await mysqlReceiptReplay(
+        connection, command.workspaceId, command, "package_version.update_draft",
+        "package_version", (resourceId) => first(
+          connection,
+          "SELECT * FROM package_versions WHERE workspace_id = ? AND id = ? FOR UPDATE",
+          [command.workspaceId, resourceId], parsePackageVersion
+        )
+      );
+      if (replay) commandAbort(replay);
+      const [discoveryRows] = await connection.query(
+        `SELECT package_catalog_item_id FROM package_versions
+         WHERE workspace_id = ? AND id = ?`,
         [command.workspaceId, command.id]
+      );
+      const discovery = (discoveryRows as MysqlRow[])[0];
+      if (!discovery) commandAbort({ kind: "not_found" });
+      const catalogItemId = String(discovery.package_catalog_item_id);
+      const [parentRows] = await connection.query(
+        `SELECT * FROM catalog_items
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [command.workspaceId, catalogItemId]
+      );
+      if (!(parentRows as MysqlRow[])[0]) commandAbort({ kind: "not_found" });
+      const [rows] = await connection.query(
+        `SELECT * FROM package_versions
+         WHERE workspace_id = ? AND id = ? AND package_catalog_item_id = ? FOR UPDATE`,
+        [command.workspaceId, command.id, catalogItemId]
       );
       const row = (rows as MysqlRow[])[0];
       if (!row) commandAbort({ kind: "not_found" });
       const current = parsePackageVersion(row);
-      const replay = mysqlReplay(row, command, current);
-      if (replay) commandAbort(replay);
       lifecycleConflict(
         current, command.expectedRevision, "draft", "package_version_immutable"
       );
@@ -1289,13 +1494,12 @@ export class MysqlCatalogRepository implements CatalogRepository {
       await connection.query(
         `UPDATE package_versions
          SET currency = ?,valid_from = ?,valid_to = ?,revision = ?,updated_at = ?,
-           recorded_at = ?,temporal_sequence = ?,last_idempotency_key = ?,
-           last_request_hash = ?
+           recorded_at = ?,temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
         [next.currency, mysqlDate(next.validFrom),
           next.validTo ? mysqlDate(next.validTo) : null, next.revision,
           mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
-          stamp.temporalSequence, identity.idempotencyKey, identity.requestHash,
+          stamp.temporalSequence,
           command.workspaceId, command.id, command.expectedRevision]
       );
       if (components) {
@@ -1306,6 +1510,10 @@ export class MysqlCatalogRepository implements CatalogRepository {
         );
         await this.insertPackageComponents(connection, components);
       }
+      await insertCatalogReceipt(
+        connection, command.workspaceId, command, "package_version.update_draft",
+        "package_version", command.id, stamp
+      );
       return { kind: "ok", value: next, replayed: false };
     });
   }
@@ -1314,22 +1522,42 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: PackageVersionLifecycleCommand,
     from: PackageVersion["status"],
     to: PackageVersion["status"],
-    invalidCode: string
+    invalidCode: string,
+    operation: Extract<CatalogCommandOperation,
+      "package_version.activate" | "package_version.retire">
   ): Promise<CatalogCommandResult<PackageVersion>> {
     return this.command(command.workspaceId, async (connection, _tx, stamp) => {
-      const identity = assertCommandIdentity(command);
-      const [rows] = await connection.query(
-        `SELECT v.* FROM catalog_items i
-         INNER JOIN package_versions v
-           ON v.workspace_id = i.workspace_id AND v.package_catalog_item_id = i.id
-         WHERE v.workspace_id = ? AND v.id = ? FOR UPDATE`,
+      const replay = await mysqlReceiptReplay(
+        connection, command.workspaceId, command, operation,
+        "package_version", (resourceId) => first(
+          connection,
+          "SELECT * FROM package_versions WHERE workspace_id = ? AND id = ? FOR UPDATE",
+          [command.workspaceId, resourceId], parsePackageVersion
+        )
+      );
+      if (replay) commandAbort(replay);
+      const [discoveryRows] = await connection.query(
+        `SELECT package_catalog_item_id FROM package_versions
+         WHERE workspace_id = ? AND id = ?`,
         [command.workspaceId, command.id]
+      );
+      const discovery = (discoveryRows as MysqlRow[])[0];
+      if (!discovery) commandAbort({ kind: "not_found" });
+      const catalogItemId = String(discovery.package_catalog_item_id);
+      const [parentRows] = await connection.query(
+        `SELECT * FROM catalog_items
+         WHERE workspace_id = ? AND id = ? FOR UPDATE`,
+        [command.workspaceId, catalogItemId]
+      );
+      if (!(parentRows as MysqlRow[])[0]) commandAbort({ kind: "not_found" });
+      const [rows] = await connection.query(
+        `SELECT * FROM package_versions
+         WHERE workspace_id = ? AND id = ? AND package_catalog_item_id = ? FOR UPDATE`,
+        [command.workspaceId, command.id, catalogItemId]
       );
       const row = (rows as MysqlRow[])[0];
       if (!row) commandAbort({ kind: "not_found" });
       const current = parsePackageVersion(row);
-      const replay = mysqlReplay(row, command, current);
-      if (replay) commandAbort(replay);
       lifecycleConflict(current, command.expectedRevision, from, invalidCode);
       const [componentRows] = await connection.query(
         `SELECT * FROM package_components
@@ -1355,11 +1583,15 @@ export class MysqlCatalogRepository implements CatalogRepository {
       await connection.query(
         `UPDATE package_versions
          SET package_status = ?,revision = ?,updated_at = ?,recorded_at = ?,
-           temporal_sequence = ?,last_idempotency_key = ?,last_request_hash = ?
+           temporal_sequence = ?
          WHERE workspace_id = ? AND id = ? AND revision = ?`,
         [to, next.revision, mysqlDate(next.updatedAt), mysqlDate(stamp.recordedAt),
-          stamp.temporalSequence, identity.idempotencyKey, identity.requestHash,
+          stamp.temporalSequence,
           command.workspaceId, command.id, command.expectedRevision]
+      );
+      await insertCatalogReceipt(
+        connection, command.workspaceId, command, operation,
+        "package_version", command.id, stamp
       );
       return { kind: "ok", value: next, replayed: false };
     });
@@ -1369,7 +1601,8 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: PackageVersionLifecycleCommand
   ): Promise<CatalogCommandResult<PackageVersion>> {
     return this.packageLifecycle(
-      command, "draft", "active", "package_version_not_draft"
+      command, "draft", "active", "package_version_not_draft",
+      "package_version.activate"
     );
   }
 
@@ -1377,7 +1610,8 @@ export class MysqlCatalogRepository implements CatalogRepository {
     command: PackageVersionLifecycleCommand
   ): Promise<CatalogCommandResult<PackageVersion>> {
     return this.packageLifecycle(
-      command, "active", "retired", "package_version_not_active"
+      command, "active", "retired", "package_version_not_active",
+      "package_version.retire"
     );
   }
 
