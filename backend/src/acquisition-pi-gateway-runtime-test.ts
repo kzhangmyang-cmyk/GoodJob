@@ -106,6 +106,31 @@ const contentBundle = createAcquisitionModelContentBundle({
   });
 }
 
+{
+  const runtime = new ActiveModelGatewayAcquisitionPiRuntime({
+    snapshot,
+    contentBundle: ACQUISITION_LEGACY_MODEL_CONTENT_BUNDLE,
+    systemPrompt: baseTurn.systemPrompt,
+    gateway: {
+      async callTools() {
+        return {
+          toolCalls: [{
+            id: "call-forged-legacy-quote",
+            name: "preview_quote",
+            arguments: {}
+          }],
+          usage: { inputTokens: 1, outputTokens: 1, reasoningTokens: 0 },
+          providerRequestId: "legacy-forged-quote"
+        };
+      }
+    }
+  });
+  await assert.rejects(() => runtime.run({
+    ...baseTurn,
+    tools: acquisitionAgentToolDefinitions()
+  }), /MODEL_RESPONSE_INVALID/);
+}
+
 function createRuntime(gateway: AcquisitionPiGatewayPort) {
   return new ActiveModelGatewayAcquisitionPiRuntime({
     snapshot,

@@ -35,12 +35,12 @@ export const ACQUISITION_PREVIOUS_MODEL_SCHEMA_VERSION =
 export const ACQUISITION_MODEL_PROMPT_VERSION =
   "acquisition-model-prompt-bundle.v5";
 export const ACQUISITION_MODEL_SCHEMA_VERSION =
-  "acquisition-model-schema-bundle.v5";
+  "acquisition-model-schema-bundle.v6";
 
 const ACQUISITION_RETIRED_MODEL_PROMPT_VERSION =
   "acquisition-model-prompt-bundle.v5";
 const ACQUISITION_RETIRED_MODEL_SCHEMA_VERSION =
-  "acquisition-model-schema-bundle.v4";
+  "acquisition-model-schema-bundle.v5";
 
 const MAX_FINAL_ANSWER_CHARS = 100_000;
 

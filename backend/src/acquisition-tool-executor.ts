@@ -398,6 +398,7 @@ export interface AcquisitionJudgmentPort {
 export interface ProductionAcquisitionAgentToolExecutorOptions {
   domain: AcquisitionDomainService;
   growthToolPorts: GrowthCommercialToolPorts;
+  growthCommercialTools?: GrowthAcquisitionToolDelegate;
   search: SearchPublicSourcesPort;
   searchConnections: AcquisitionSearchConnectionDirectoryPort;
   candidateDirectory: AcquisitionCandidateDirectoryPort;
@@ -410,6 +411,15 @@ export interface ProductionAcquisitionAgentToolExecutorOptions {
   performance?: Pick<AcquisitionPerformanceQueryService, "get">;
   now?: () => string;
   maxEvidenceAgeDays?: number;
+}
+
+/**
+ * Domain-neutral Acquisition-owned seam for the single Growth delegate (or
+ * later composite). It deliberately exposes no Quote or Advisor services.
+ */
+export interface GrowthAcquisitionToolDelegate {
+  owns(toolName: string): boolean;
+  execute(input: AcquisitionToolExecutionInput): Promise<unknown>;
 }
 
 const httpUrl = z.string().url().refine((value) => {
@@ -1184,6 +1194,7 @@ export class ProductionAcquisitionAgentToolExecutor
 implements AcquisitionAgentToolExecutor {
   private readonly domain: AcquisitionDomainService;
   private readonly growthToolPorts: GrowthCommercialToolPorts;
+  private readonly growthCommercialTools?: GrowthAcquisitionToolDelegate;
   private readonly search: SearchPublicSourcesPort;
   private readonly searchConnections: AcquisitionSearchConnectionDirectoryPort;
   private readonly directory: AcquisitionCandidateDirectoryPort;
@@ -1202,6 +1213,7 @@ implements AcquisitionAgentToolExecutor {
     this.growthToolPorts = assertGrowthCommercialToolPorts(
       options.growthToolPorts
     );
+    this.growthCommercialTools = options.growthCommercialTools;
     this.search = options.search;
     this.searchConnections = options.searchConnections;
     this.directory = options.candidateDirectory;
@@ -1236,6 +1248,15 @@ implements AcquisitionAgentToolExecutor {
     try {
       this.validateIdentity(input);
       assertNotAborted(input.signal);
+    } catch (error) {
+      if (error instanceof AcquisitionToolExecutorError) throw error;
+      if (isAbort(error) || input.signal?.aborted) throw abortError();
+      throw toolError("TOOL_EXECUTION_FAILED");
+    }
+    if (this.growthCommercialTools?.owns(input.toolName)) {
+      return this.growthCommercialTools.execute(input);
+    }
+    try {
       if (!TOOL_NAMES.has(input.toolName)) {
         throw toolError("UNKNOWN_TOOL");
       }

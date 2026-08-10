@@ -30,6 +30,7 @@ import {
   type AcquisitionReviewTaskPort,
   type AcquisitionSearchConnectionDirectoryPort,
   type AcquisitionToolResultLedgerPort,
+  type GrowthAcquisitionToolDelegate,
   type SearchPublicSourceResult,
   type SearchPublicSourcesPort,
   type SearchPublicSourcesRequest,
@@ -240,6 +241,7 @@ class TestActionExecutionPort implements AcquisitionActionExecutionPort {
 }
 
 class TestToolResultLedger implements AcquisitionToolResultLedgerPort {
+  calls = 0;
   private readonly records = new Map<string, {
     requestHash: string;
     result: unknown;
@@ -272,6 +274,7 @@ class TestToolResultLedger implements AcquisitionToolResultLedgerPort {
     },
     operation: () => Promise<T>
   ): Promise<T> {
+    this.calls += 1;
     const key = this.key(input);
     const existing = this.records.get(key);
     if (existing) {
@@ -436,6 +439,7 @@ function createHarness(options: {
   searchConnectionIds?: string[];
   candidateIdFactory?: () => string;
   growthToolPorts?: GrowthCommercialToolPorts;
+  growthCommercialTools?: GrowthAcquisitionToolDelegate;
   performance?: {
     get(scope: { ownerId: string; teamId: string }, query: {
       platform?: "douyin" | "web";
@@ -501,6 +505,7 @@ function createHarness(options: {
     domain,
     growthToolPorts: options.growthToolPorts
       ?? createGrowthCommercialToolPorts(),
+    growthCommercialTools: options.growthCommercialTools,
     search,
     searchConnections,
     candidateDirectory: directory,
@@ -550,6 +555,29 @@ test("the production Acquisition tool executor rejects a forged Growth registry"
       execute: async () => null
     }) as never
   }), /INVALID_GROWTH_TOOL_PORTS/u);
+});
+
+test("owned Growth tools bypass the generic outer result ledger", async () => {
+  const delegated: string[] = [];
+  const state = createHarness({
+    growthCommercialTools: {
+      owns(toolName) { return toolName === "preview_quote"; },
+      async execute(input) {
+        delegated.push(input.toolName);
+        return { delegated: true };
+      }
+    }
+  });
+  const result = await state.executor.execute({
+    identity,
+    toolName: "preview_quote",
+    toolCallId: "quote-call-1",
+    idempotencyKey: "quote-key-1",
+    payload: { deliberately: "parsed only by the owned delegate" }
+  });
+  assert.deepEqual(result, { delegated: true });
+  assert.deepEqual(delegated, ["preview_quote"]);
+  assert.equal(state.toolResults.calls, 0);
 });
 
 async function execute(

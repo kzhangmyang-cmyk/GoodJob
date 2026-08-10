@@ -10,6 +10,10 @@ import {
   Type,
   type TSchema
 } from "typebox";
+import {
+  GROWTH_QUOTE_TOOL_BLUEPRINTS,
+  GROWTH_QUOTE_TOOL_NAMES
+} from "./growth-advisor-quote-tools.js";
 
 export const ACQUISITION_AGENT_TOOL_NAMES = [
   "search_public_sources",
@@ -22,7 +26,8 @@ export const ACQUISITION_AGENT_TOOL_NAMES = [
   "list_priority_candidates",
   "create_review_task",
   "record_outcome",
-  "get_acquisition_performance"
+  "get_acquisition_performance",
+  ...GROWTH_QUOTE_TOOL_NAMES
 ] as const;
 
 export type AcquisitionAgentToolName =
@@ -288,7 +293,8 @@ const TOOL_BLUEPRINTS: readonly ToolBlueprint[] = [
       })
     }, { additionalProperties: false }),
     executionMode: "parallel"
-  }
+  },
+  ...GROWTH_QUOTE_TOOL_BLUEPRINTS
 ];
 
 const LEGACY_RECORD_OUTCOME_BLUEPRINT: ToolBlueprint = {
@@ -341,7 +347,8 @@ export function legacyAcquisitionAgentToolDefinitions():
 AcquisitionAgentToolDefinition[] {
   return [
     ...TOOL_BLUEPRINTS.filter((blueprint) =>
-      blueprint.name !== "get_acquisition_performance"),
+      blueprint.name !== "get_acquisition_performance"
+      && !GROWTH_QUOTE_TOOL_NAMES.includes(blueprint.name as never)),
     LEGACY_RECORD_OUTCOME_BLUEPRINT
   ].map((blueprint) => ({
     name: blueprint.name,

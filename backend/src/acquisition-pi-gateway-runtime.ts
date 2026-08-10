@@ -18,6 +18,7 @@ import type {
   ToolCallingRequest,
   ToolCallingResult
 } from "./model-providers/gateway.js";
+import { GROWTH_QUOTE_TOOL_NAMES } from "./growth-advisor-quote-tools.js";
 
 export { ACQUISITION_FINAL_ANSWER_TOOL };
 
@@ -153,14 +154,19 @@ implements AcquisitionPiTurnRuntime {
 
     const exactTools = canonical(businessTools)
       === canonical(this.#expectedBusinessTools);
+    const quoteToolNames = new Set<string>(GROWTH_QUOTE_TOOL_NAMES);
     const legacyCompatible = this.#legacyOutcomeAdapter
       && canonical(businessTools.filter((tool) =>
-        tool.name !== "get_acquisition_performance"))
+        tool.name !== "get_acquisition_performance"
+        && !quoteToolNames.has(tool.name)))
         === canonical(this.#expectedBusinessTools.filter((tool) =>
           tool.name !== "record_outcome"));
     if (!exactTools && !legacyCompatible) {
       fail("MODEL_TOOL_DEFINITION_INVALID");
     }
+    const authorizedNames = legacyCompatible
+      ? new Set(this.#expectedBusinessTools.map((tool) => tool.name))
+      : allowedNames;
     const dynamicData = {
       immutableModelSnapshot: {
         jobId: input.snapshot.jobId,
@@ -238,7 +244,7 @@ implements AcquisitionPiTurnRuntime {
       if (
         !id
         || ids.has(id)
-        || !allowedNames.has(call.name)
+        || !authorizedNames.has(call.name)
         || !isRecord(call.arguments)
       ) {
         fail("MODEL_RESPONSE_INVALID");

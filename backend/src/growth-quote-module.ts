@@ -68,6 +68,7 @@ import {
   createQuoteRouter,
   QuotePublicationService
 } from "./quote-router.js";
+import { registerGrowthAdvisorQuoteTools } from "./growth-advisor-quote-tools.js";
 
 export const GROWTH_PROBABILITY_ASSESSMENTS =
   defineGrowthPrivateServiceKey<ProbabilityAssessmentPersistence>(
@@ -480,6 +481,26 @@ export function createGrowthQuoteModule(
           resources.probabilityAssessments
         );
         if (resources.quote) {
+          registerGrowthAdvisorQuoteTools(input.toolPorts, {
+            catalog,
+            temporalBarrier: foundation.temporalBarrier,
+            quotes: {
+              preview: (context, caseId, quoteInput) =>
+                resources!.quote!.quoteVersions.preview(
+                  context, caseId, quoteInput
+                ),
+              createDraft: (context, caseId, quoteInput) =>
+                resources!.quote!.quoteVersions.createVersion(
+                  context, caseId, quoteInput
+                ),
+              submitDraft: (context, draftVersionId) =>
+                resources!.quote!.quoteVersions.submit(
+                  context, draftVersionId
+                ),
+              quoteApprovals: resources.quote.authorityReaders.quoteApprovals,
+              quoteVersions: resources.quote.authorityReaders.quoteVersions
+            }
+          });
           input.privateServices.provide(GROWTH_QUOTE_SERVICES, resources.quote);
           input.privateServices.provide(
             GROWTH_QUOTE_AUTHORITY_READERS,
