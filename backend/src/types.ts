@@ -2833,6 +2833,8 @@ export type CommissionCalculationStatus = "pending" | "calculated" | "reviewed" 
 
 export interface CommissionProduct {
   id: string;
+  catalogItemId?: string;
+  catalogMigrationStatus?: "pending" | "migrated" | "repair_required";
   name: string;
   category: string;
   model: string;
