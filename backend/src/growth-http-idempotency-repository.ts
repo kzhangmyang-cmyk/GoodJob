@@ -125,14 +125,21 @@ export async function executeGrowthIdempotentCommand<T>(input: {
     throw error;
   }
   if (reservation.kind === "replay") return { value: await authorizeAndProject(reservation.resourceId, reservation.operationId), replayed: true };
-  let completed = false;
+  let executed = false;
   try {
     const result = await execute();
+    executed = true;
     await input.repository.complete(reservation.reservationId, reservation.leaseOwner, reservation.fencingToken, result);
-    completed = true;
     return { value: await authorizeAndProject(result.resourceId, result.operationId), replayed: false };
-  } finally {
-    if (!completed) await input.repository.release(reservation.reservationId, reservation.leaseOwner, reservation.fencingToken);
+  } catch (error) {
+    if (!executed) {
+      await input.repository.release(
+        reservation.reservationId,
+        reservation.leaseOwner,
+        reservation.fencingToken
+      ).catch(() => undefined);
+    }
+    throw error;
   }
 }
 

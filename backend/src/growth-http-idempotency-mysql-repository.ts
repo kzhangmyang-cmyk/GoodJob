@@ -9,6 +9,13 @@ import {
 } from "./growth-http-idempotency-repository.js";
 
 type MysqlRow = Record<string, unknown>;
+type MysqlConnection = Pick<mysql.PoolConnection,
+  "beginTransaction" | "commit" | "rollback" | "release" | "query">;
+
+export interface GrowthHttpIdempotencyMysqlSource {
+  getConnection(): Promise<MysqlConnection>;
+  query: mysql.Pool["query"];
+}
 
 export const GROWTH_HTTP_IDEMPOTENCY_MYSQL_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS growth_http_idempotency (
@@ -59,12 +66,15 @@ function claimed(row: MysqlRow): GrowthHttpIdempotencyReservation {
 }
 
 export class MysqlGrowthHttpIdempotencyRepository implements GrowthHttpIdempotencyRepository {
-  constructor(private readonly pool: mysql.Pool, private readonly createId: () => string = randomUUID) {}
+  constructor(
+    private readonly source: GrowthHttpIdempotencyMysqlSource,
+    private readonly createId: () => string = randomUUID
+  ) {}
 
   async reserve(input: GrowthHttpIdempotencyReservationInput): Promise<GrowthHttpIdempotencyReservation> {
     const at = attempted(input);
     const expires = leaseExpiresAt(input, at);
-    const connection = await this.pool.getConnection();
+    const connection = await this.source.getConnection();
     try {
       await connection.beginTransaction();
       const id = this.createId();
@@ -126,7 +136,7 @@ export class MysqlGrowthHttpIdempotencyRepository implements GrowthHttpIdempoten
   }
 
   async complete(reservationId: string, leaseOwner: string, fencingToken: number, result: { resourceId: string | null; operationId: string | null }): Promise<void> {
-    const [updated] = await this.pool.query(
+    const [updated] = await this.source.query(
       `UPDATE growth_http_idempotency
        SET status = 'completed', resource_id = ?, operation_id = ?, completed_at = CURRENT_TIMESTAMP(3)
        WHERE id = ? AND lease_owner = ? AND fencing_token = ? AND status = 'reserved'`,
@@ -136,7 +146,7 @@ export class MysqlGrowthHttpIdempotencyRepository implements GrowthHttpIdempoten
   }
 
   async release(reservationId: string, leaseOwner: string, fencingToken: number): Promise<void> {
-    const [deleted] = await this.pool.query(
+    const [deleted] = await this.source.query(
       `DELETE FROM growth_http_idempotency
        WHERE id = ? AND lease_owner = ? AND fencing_token = ? AND status = 'reserved'`,
       [reservationId, leaseOwner, fencingToken]

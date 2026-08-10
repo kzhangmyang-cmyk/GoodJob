@@ -41,11 +41,13 @@ test("request context trusts workspace identity and hashes resource and revision
   assert.notEqual(context.requestHash, canonicalGrowthRequestHash({ method: "POST", canonicalPath: "/api/v1/catalog/items/:id/retire", pathParams: { id: "item-a" }, payload: { ignoredActorId: "forged" }, expectedRevision: 4 }));
 });
 
-test("request helpers reject malformed idempotency and path inputs and emit revision ETags", () => {
+test("request helpers reject malformed idempotency and path inputs and emit parseable revision ETags", () => {
   assert.throws(() => parseGrowthIdempotencyKey(request({ "Idempotency-Key": " " })), /invalid_idempotency_key/u);
   assert.throws(() => commandContextFromRequest(request({ "Idempotency-Key": "key-0001" }), { canonicalPath: "/x", pathParams: { id: " " }, payload: {}, expectedRevision: null }), /invalid_growth_path_params/u);
   assert.throws(() => commandContextFromRequest(request({ "Idempotency-Key": "key-0001" }), { canonicalPath: "/x/:id", pathParams: Object.freeze({ id: "item-1", extra: "forged" }), payload: {}, expectedRevision: null }), /invalid_growth_path_params/u);
   const headers = new Map<string, string>();
   setRevisionEtag({ setHeader: (name: string, value: string) => { headers.set(name, value); } } as unknown as Response, "catalog-item", "item-1", 7);
-  assert.equal(headers.get("ETag"), '"catalog-item:item-1:7"');
+  assert.equal(headers.get("ETag"), '"catalog-item:7"');
+  assert.equal(parseIfMatchRevision(request({ "If-Match": headers.get("ETag")! }), "catalog-item"), 7);
+  assert.throws(() => parseIfMatchRevision(request({ "If-Match": headers.get("ETag")! }), "quote-version"), /invalid_if_match/u);
 });

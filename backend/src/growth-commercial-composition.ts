@@ -39,6 +39,19 @@ export interface GrowthCommercialCompositionDependencies {
   modules?: readonly GrowthCommercialModule[];
 }
 
+export function createGrowthMysqlPool(
+  databaseUrl: string,
+  createPool: typeof mysql.createPool = mysql.createPool
+): mysql.Pool {
+  return createPool({
+    uri: databaseUrl,
+    connectionLimit: 4,
+    namedPlaceholders: true,
+    timezone: "Z",
+    dateStrings: true
+  });
+}
+
 export interface GrowthAcquisitionIntegrations {
   acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
   temporalBarrier: GrowthTemporalBarrier;
@@ -78,6 +91,7 @@ export function createGrowthCommercialComposition(
 export function createGrowthCommercialCompositionForStore(options: {
   store: Pick<CrmStore, "mode" | "users">;
   databaseUrl?: string;
+  createMysqlPool?: typeof mysql.createPool;
 }): {
   composition: GrowthCommercialComposition<GrowthAcquisitionIntegrations>;
   workspaceMiddleware: express.RequestHandler;
@@ -109,11 +123,7 @@ export function createGrowthCommercialCompositionForStore(options: {
   if (options.store.mode === "mysql") {
     const databaseUrl = options.databaseUrl?.trim();
     if (!databaseUrl) throw new Error("GROWTH_DATABASE_URL_REQUIRED");
-    const pool = mysql.createPool({
-      uri: databaseUrl,
-      connectionLimit: 4,
-      namedPlaceholders: true
-    });
+    const pool = createGrowthMysqlPool(databaseUrl, options.createMysqlPool);
     modules.push(createGrowthFoundationModule({
       mode: "mysql", pool, acquisitionWorkspace, closePool: () => pool.end()
     }));

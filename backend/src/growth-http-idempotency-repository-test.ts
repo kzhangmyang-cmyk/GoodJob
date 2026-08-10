@@ -72,3 +72,42 @@ test("a reclaimed command returns its stable domain resource after lost completi
   assert.deepEqual(replay, { value: { id: "resource-stable-key" }, replayed: false });
   assert.deepEqual(await repository.reserve({ ...base, attemptedAt: "2026-08-09T08:00:02.000Z", leaseOwner: "request-c" }), { kind: "replay", resourceId: "resource-stable-key", operationId: null });
 });
+
+test("an execute failure releases its exact uncompleted claim", async () => {
+  const repository = new InMemoryGrowthHttpIdempotencyRepository();
+  const input = reservation();
+  await assert.rejects(() => executeGrowthIdempotentCommand({ repository, reservation: input }, async () => ({ id: "never" }), async () => {
+    throw new Error("business_failed");
+  }), /business_failed/u);
+  assert.equal((await repository.reserve({ ...input, leaseOwner: "request-b", attemptedAt: "2026-08-09T08:00:00.001Z" })).kind, "claimed");
+});
+
+test("a release failure preserves the original execute error", async () => {
+  const repository = new class extends InMemoryGrowthHttpIdempotencyRepository {
+    override async release(): Promise<void> { throw new Error("release_failed"); }
+  }();
+  await assert.rejects(() => executeGrowthIdempotentCommand({ repository, reservation: reservation() }, async () => ({ id: "never" }), async () => {
+    throw new Error("business_failed");
+  }), /business_failed/u);
+});
+
+test("a completion failure preserves the reservation and prevents immediate duplicate execution", async () => {
+  const storage = new InMemoryGrowthHttpIdempotencyRepository();
+  const repository = {
+    reserve: storage.reserve.bind(storage),
+    complete: async () => { throw new Error("completion_failed"); },
+    release: storage.release.bind(storage)
+  };
+  const input = reservation({ leaseDurationMs: 1_000 });
+  let executions = 0;
+  const command = (attemptedAt: string) => executeGrowthIdempotentCommand({
+    repository,
+    reservation: { ...input, attemptedAt, leaseOwner: randomUUID() }
+  }, async () => ({ id: "resource-1" }), async () => {
+    executions += 1;
+    return { resourceId: "resource-1", operationId: null };
+  });
+  await assert.rejects(() => command("2026-08-09T08:00:00.000Z"), /completion_failed/u);
+  await assert.rejects(() => command("2026-08-09T08:00:00.500Z"), (error: unknown) => (error as { code?: string }).code === "idempotency_in_progress");
+  assert.equal(executions, 1);
+});

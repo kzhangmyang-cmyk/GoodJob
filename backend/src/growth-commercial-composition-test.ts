@@ -11,6 +11,7 @@ import {
   createGrowthCommercialComposition,
   createGrowthCommercialCompositionForStore
 } from "./growth-commercial-composition.js";
+import { growthMysqlInstant } from "./growth-temporal-barrier-mysql-repository.js";
 
 function foundationPorts() {
   const acquisitionWorkspace = Object.freeze({
@@ -88,7 +89,7 @@ test("production memory composition installs the Foundation module first", async
   assert.equal(production.composition.modules.length, 1);
   assert.equal(production.composition.modules[0]?.name, "growth-foundation");
   const runtime = await createGrowthCommercialApplication({
-    manifest: { name: "growth", contractVersion: "1.0.0", contractHash: `sha256:${"a".repeat(64)}`, openapiVersion: "3.1.0" },
+    manifest: { name: "growth-advisor-quote-roi", contractVersion: "1.0.0", contractHash: `sha256:${"a".repeat(64)}`, openapiVersion: "3.1.0" },
     requireAuth: ((_req, _res, next) => next()) as express.RequestHandler,
     workspaceMiddleware: ((_req, _res, next) => next()) as express.RequestHandler,
     enabledFeatures: () => [], composition: production.composition
@@ -100,4 +101,25 @@ test("production memory composition installs the Foundation module first", async
   } finally {
     await runtime.close();
   }
+});
+
+test("production MySQL composition pins DATETIME values to UTC strings", () => {
+  let captured: Record<string, unknown> | undefined;
+  const production = createGrowthCommercialCompositionForStore({
+    store: { mode: "mysql", users: [] },
+    databaseUrl: "mysql://user:password@localhost:3306/growth",
+    createMysqlPool: (options) => {
+      captured = options as Record<string, unknown>;
+      return { end: async () => undefined } as never;
+    }
+  });
+  assert.equal(production.composition.modules[0]?.name, "growth-foundation");
+  assert.deepEqual(captured, {
+    uri: "mysql://user:password@localhost:3306/growth",
+    connectionLimit: 4,
+    namedPlaceholders: true,
+    timezone: "Z",
+    dateStrings: true
+  });
+  assert.equal(growthMysqlInstant("2026-08-09 08:00:30.000"), "2026-08-09T08:00:30.000Z");
 });

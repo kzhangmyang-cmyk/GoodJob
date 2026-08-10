@@ -72,5 +72,5 @@ export function commandContextFromRequest(req: Request, input: { canonicalPath: 
 
 export function setRevisionEtag(res: Response, resource: string, id: string, revision: number): void {
   if (!resource.trim() || !id.trim() || !Number.isSafeInteger(revision) || revision < 1) throw new Error("invalid_growth_revision_etag");
-  res.setHeader("ETag", `"${resource}:${id}:${revision}"`);
+  res.setHeader("ETag", `"${resource}:${revision}"`);
 }
