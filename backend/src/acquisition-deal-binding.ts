@@ -1,10 +1,37 @@
 import type { OutcomeAttributionInput } from "./acquisition-domain.js";
-import type { CrmStore } from "./store.js";
 import type { AcquisitionCustomerHandoff, Lead } from "./types.js";
 
+type TrustedBindingHandoff = Pick<
+  AcquisitionCustomerHandoff,
+  | "id"
+  | "ownerId"
+  | "teamId"
+  | "candidateId"
+  | "leadId"
+  | "customerId"
+  | "dealId"
+  | "decisionVersion"
+  | "acquisitionAttribution"
+>;
+
+type TrustedBindingLead = Pick<
+  Lead,
+  | "id"
+  | "ownerId"
+  | "teamId"
+  | "convertedCustomerId"
+  | "convertedDealId"
+  | "externalId"
+>;
+
+export interface AcquisitionDealBindingStore {
+  acquisitionCustomerHandoffs: TrustedBindingHandoff[];
+  leads: TrustedBindingLead[];
+}
+
 export interface TrustedAcquisitionDealBinding {
-  handoff: AcquisitionCustomerHandoff;
-  lead: Lead;
+  handoff: TrustedBindingHandoff;
+  lead: TrustedBindingLead;
 }
 
 export type AcquisitionDealBindingLookup = {
@@ -43,7 +70,7 @@ function isTrustedAcquisitionAttribution(
 }
 
 export function resolveTrustedAcquisitionDealBinding(
-  store: Pick<CrmStore, "acquisitionCustomerHandoffs" | "leads">,
+  store: AcquisitionDealBindingStore,
   lookup: AcquisitionDealBindingLookup
 ): TrustedAcquisitionDealBinding | null {
   const handoffs = store.acquisitionCustomerHandoffs.filter((handoff) =>

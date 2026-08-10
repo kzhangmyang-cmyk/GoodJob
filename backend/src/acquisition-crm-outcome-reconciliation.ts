@@ -8,6 +8,10 @@ import type {
   AcquisitionActorScope,
   AcquisitionOutcomeWriteAuthority
 } from "./acquisition-domain-service.js";
+import {
+  resolveTrustedAcquisitionDealBinding,
+  type AcquisitionDealBindingStore
+} from "./acquisition-deal-binding.js";
 import type {
   AcquisitionPlanRunRepository
 } from "./acquisition-plan-run-repository.js";
@@ -17,20 +21,11 @@ import type {
   AcquisitionOutcomeReconciliationProcessedSource,
   Deal,
   DealEvent,
-  Lead,
   LeadActivity,
   LeadSourceEvent
 } from "./types.js";
 
-type ReconciliationLead = Pick<
-  Lead,
-  | "id"
-  | "ownerId"
-  | "teamId"
-  | "convertedCustomerId"
-  | "convertedDealId"
-  | "externalId"
->;
+type ReconciliationLead = AcquisitionDealBindingStore["leads"][number];
 type ReconciliationDeal = Pick<
   Deal,
   "id" | "customerId" | "ownerId" | "teamId" | "amount" | "currency"
@@ -117,15 +112,8 @@ export interface AcquisitionCrmOutcomeReconciliationStore {
   leads: ReconciliationLead[];
   leadActivities: LeadActivity[];
   leadSourceEvents: LeadSourceEvent[];
-  acquisitionCustomerHandoffs: Array<{
-    id: string;
-    candidateId: string;
-    leadId: string;
-    customerId: string;
-    ownerId: string;
-    teamId: string;
-    dealId?: string;
-  }>;
+  acquisitionCustomerHandoffs:
+    AcquisitionDealBindingStore["acquisitionCustomerHandoffs"];
   deals: ReconciliationDeal[];
   dealEvents: DealEvent[];
   acquisitionOutcomeReconciliationDiagnostics:
@@ -421,26 +409,23 @@ export class AcquisitionCrmOutcomeReconciliationService {
         occurredAt: event.createdAt
       } } : null;
     }
-    const bindings = this.#store.acquisitionCustomerHandoffs
-      .filter((item) =>
-        item.id === event.handoffIdSnapshot
-        && item.dealId === event.dealId
-        && item.customerId === event.customerIdSnapshot
-        && item.candidateId === event.candidateIdSnapshot
-        && item.leadId === event.leadIdSnapshot
-        && item.ownerId === event.ownerIdSnapshot
-        && item.teamId === event.teamIdSnapshot)
-      .flatMap((handoff) => {
-        const lead = this.#store.leads.find((item) =>
-          item.id === handoff.leadId
-          && item.ownerId === event.ownerIdSnapshot
-          && item.teamId === event.teamIdSnapshot
-          && item.convertedCustomerId === event.customerIdSnapshot
-          && item.convertedDealId === event.dealId
-          && item.externalId === handoff.candidateId);
-        return lead ? [{ handoff, lead }] : [];
-      });
-    if (bindings.length !== 1) {
+    const binding = resolveTrustedAcquisitionDealBinding(this.#store, {
+      dealId: event.dealId
+    });
+    const exactBindingSnapshot = binding
+      && binding.handoff.id === event.handoffIdSnapshot
+      && binding.lead.id === event.leadIdSnapshot
+      && binding.handoff.ownerId === event.ownerIdSnapshot
+      && binding.lead.ownerId === event.ownerIdSnapshot
+      && binding.handoff.teamId === event.teamIdSnapshot
+      && binding.lead.teamId === event.teamIdSnapshot
+      && binding.handoff.customerId === event.customerIdSnapshot
+      && binding.lead.convertedCustomerId === event.customerIdSnapshot
+      && binding.handoff.candidateId === event.candidateIdSnapshot
+      && binding.lead.externalId === event.candidateIdSnapshot
+      && binding.handoff.dealId === event.dealId
+      && binding.lead.convertedDealId === event.dealId;
+    if (!exactBindingSnapshot) {
       return { diagnostic: {
         ownerId: event.ownerIdSnapshot!,
         teamId: event.teamIdSnapshot!,
@@ -452,11 +437,10 @@ export class AcquisitionCrmOutcomeReconciliationService {
         occurredAt: event.createdAt
       } };
     }
-    const [{ lead }] = bindings;
     return this.#outcomeInput({
       sourceKind: "deal_event",
       sourceId: event.id,
-      lead,
+      lead: binding.lead,
       customerId: event.customerIdSnapshot,
       eventType,
       occurredAt: event.createdAt,

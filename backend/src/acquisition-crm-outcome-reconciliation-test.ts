@@ -83,7 +83,9 @@ function store(): AcquisitionCrmOutcomeReconciliationStore {
       customerId: "customer-real",
       ownerId: "owner-real",
       teamId: "team-real",
-      dealId: "deal-real"
+      dealId: "deal-real",
+      decisionVersion: "decision-v2",
+      acquisitionAttribution: structuredClone(attribution)
     }],
     deals: [{
       id: "deal-real",
@@ -496,15 +498,9 @@ test("rejects an ambiguous deal-to-handoff binding instead of selecting array or
     convertedDealId: "deal-real",
     externalId: "candidate-second"
   });
-  fixture.acquisitionCustomerHandoffs.push({
-    id: "handoff-real",
-    candidateId: "candidate-real",
-    leadId: "lead-real",
-    customerId: "customer-real",
-    ownerId: "owner-real",
-    teamId: "team-real",
-    dealId: "deal-real"
-  });
+  fixture.acquisitionCustomerHandoffs.push(structuredClone(
+    fixture.acquisitionCustomerHandoffs[0]!
+  ));
   const service = new AcquisitionCrmOutcomeReconciliationService({
     store: fixture,
     planRuns: persistedPlanRuns(),
@@ -520,6 +516,68 @@ test("rejects an ambiguous deal-to-handoff binding instead of selecting array or
   assert.equal(fixture.acquisitionOutcomeReconciliationDiagnostics[0]?.code,
     "deal_binding_ambiguous");
 });
+
+for (const invalidBinding of [{
+  name: "missing trusted acquisition attribution",
+  mutate(fixture: AcquisitionCrmOutcomeReconciliationStore) {
+    Object.assign(fixture.acquisitionCustomerHandoffs[0]!, {
+      acquisitionAttribution: null
+    });
+  }
+}, {
+  name: "an attribution decisionVersion mismatch",
+  mutate(fixture: AcquisitionCrmOutcomeReconciliationStore) {
+    Object.assign(fixture.acquisitionCustomerHandoffs[0]!, {
+      decisionVersion: "decision-v3"
+    });
+  }
+}, {
+  name: "two distinct handoffs sharing one Deal",
+  mutate(fixture: AcquisitionCrmOutcomeReconciliationStore) {
+    fixture.acquisitionCustomerHandoffs.push({
+      ...structuredClone(fixture.acquisitionCustomerHandoffs[0]!),
+      id: "handoff-second"
+    });
+  }
+}]) {
+  test(`commercial reconciliation rejects ${invalidBinding.name}`, async () => {
+    const fixture = store();
+    fixture.leadActivities = [];
+    fixture.dealEvents = [fixture.dealEvents[0]!];
+    Object.assign(fixture.dealEvents[0]!, {
+      commercialAuthority: "quote_projection",
+      quoteCaseIdSnapshot: "quote-case-real",
+      quoteVersionIdSnapshot: "quote-version-real",
+      commercialAmountHash: `sha256:${"a".repeat(64)}`,
+      dealAuthorityRevisionSnapshot: 3
+    });
+    invalidBinding.mutate(fixture);
+    const recorded: OutcomeInput[] = [];
+    const service = new AcquisitionCrmOutcomeReconciliationService({
+      store: fixture,
+      planRuns: persistedPlanRuns(),
+      outcomeRecorder: {
+        async recordOutcome(_scope, input) {
+          recorded.push(input);
+          return { id: "unexpected" };
+        }
+      }
+    });
+
+    const result = await service.runTenant({
+      ownerId: "owner-real",
+      teamId: "team-real"
+    });
+
+    assert.equal(result.reconciled, 0);
+    assert.deepEqual(recorded, []);
+    assert.deepEqual(
+      fixture.acquisitionOutcomeReconciliationDiagnostics.map((item) =>
+        item.code),
+      ["deal_binding_ambiguous"]
+    );
+  });
+}
 
 test("rolls back a failed diagnostic write so the same source remains retryable", async () => {
   const fixture = store();
