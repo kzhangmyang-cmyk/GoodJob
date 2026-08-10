@@ -8,6 +8,7 @@ import addFormats from "ajv-formats";
 import express from "express";
 import { CatalogService } from "./catalog-service.js";
 import { PricingPolicyService } from "./pricing-policy-service.js";
+import { PackageVersionService } from "./package-version-service.js";
 import { createCatalogRouter } from "./catalog-router.js";
 import { InMemoryCatalogRepository } from "./catalog-repository.js";
 import {
@@ -27,6 +28,8 @@ function releasedValidators(): {
   page: ValidateFunction;
   pricingPolicy: ValidateFunction;
   pricingPolicyPage: ValidateFunction;
+  packageVersion: ValidateFunction;
+  packageVersionPage: ValidateFunction;
   assertOperationResponse(
     operationId: CatalogOperationId,
     status: number,
@@ -39,6 +42,7 @@ function releasedValidators(): {
     (release.document as Record<string, any>).components
   );
   delete components.schemas.PricingPolicyVersion.$id;
+  delete components.schemas.PackageVersion.$id;
   const root = {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     components
@@ -65,6 +69,14 @@ function releasedValidators(): {
     ...root,
     $ref: "#/components/schemas/PricingPolicyVersionPagedResult"
   });
+  const packageVersion = ajv.compile({
+    ...root,
+    $ref: "#/components/schemas/PackageVersion"
+  });
+  const packageVersionPage = ajv.compile({
+    ...root,
+    $ref: "#/components/schemas/PackageVersionPagedResult"
+  });
   const operationLocations: Record<CatalogOperationId, readonly [string, string]> = {
     listCatalogItems: ["/api/v1/catalog/items", "get"],
     createCatalogItem: ["/api/v1/catalog/items", "post"],
@@ -79,6 +91,16 @@ function releasedValidators(): {
     ],
     retirePricingPolicyVersion: [
       "/api/v1/catalog/pricing-policies/{id}/retire", "post"
+    ],
+    listPackageVersions: ["/api/v1/catalog/packages/{itemId}/versions", "get"],
+    createPackageVersion: ["/api/v1/catalog/packages/{itemId}/versions", "post"],
+    getPackageVersion: ["/api/v1/catalog/package-versions/{id}", "get"],
+    updatePackageVersion: ["/api/v1/catalog/package-versions/{id}", "patch"],
+    activatePackageVersion: [
+      "/api/v1/catalog/package-versions/{id}/activate", "post"
+    ],
+    retirePackageVersion: [
+      "/api/v1/catalog/package-versions/{id}/retire", "post"
     ]
   };
   return {
@@ -86,6 +108,8 @@ function releasedValidators(): {
     page,
     pricingPolicy,
     pricingPolicyPage,
+    packageVersion,
+    packageVersionPage,
     assertOperationResponse(operationId, status, body) {
       const [path, method] = operationLocations[operationId];
       const operation = (release.document as Record<string, any>)
@@ -98,6 +122,8 @@ function releasedValidators(): {
       const validate = status >= 400 ? apiError
         : operationId === "listCatalogItems" ? page
         : operationId === "listPricingPolicyVersions" ? pricingPolicyPage
+        : operationId === "listPackageVersions" ? packageVersionPage
+        : operationId.includes("PackageVersion") ? packageVersion
         : operationId.includes("PricingPolicy") ? pricingPolicy
         : item;
       assert.equal(validate(body), true, JSON.stringify(validate.errors));
@@ -115,7 +141,13 @@ type CatalogOperationId =
   | "createPricingPolicyVersion"
   | "getPricingPolicyVersion"
   | "activatePricingPolicyVersion"
-  | "retirePricingPolicyVersion";
+  | "retirePricingPolicyVersion"
+  | "listPackageVersions"
+  | "createPackageVersion"
+  | "getPackageVersion"
+  | "updatePackageVersion"
+  | "activatePackageVersion"
+  | "retirePackageVersion";
 
 export async function assertCatalogRuntimeResponsesConform(): Promise<void> {
   const transactions = new InMemoryGrowthTemporalTransactionRunner(
@@ -130,6 +162,10 @@ export async function assertCatalogRuntimeResponsesConform(): Promise<void> {
   const pricingPolicyService = new PricingPolicyService({
     repository,
     idFactory: () => "pricing-policy-conformance"
+  });
+  const packageVersionService = new PackageVersionService({
+    repository,
+    idFactory: () => "package-version-conformance"
   });
   const app = express();
   app.use(express.json());
@@ -160,6 +196,7 @@ export async function assertCatalogRuntimeResponsesConform(): Promise<void> {
   app.use("/api/v1/catalog", createCatalogRouter({
     catalogService: service,
     pricingPolicyService,
+    packageVersionService,
     httpIdempotency,
     workspaceContext: (req) => req.activeWorkspace!,
     commandContextFactory: commandContextFromRequest
@@ -328,6 +365,95 @@ export async function assertCatalogRuntimeResponsesConform(): Promise<void> {
       "retirePricingPolicyVersion",
       pricingRetired.response.status,
       pricingRetired.body
+    );
+
+    await repository.appendCatalogItem({
+      id: "package-conformance", workspaceId: "team-a", type: "package",
+      code: "PKG-CONFORMANCE", name: "Contract package", description: null,
+      unit: "set", status: "active", revision: 1, createdBy: "admin-1",
+      createdAt: "2026-08-09T08:00:00.000Z",
+      updatedAt: "2026-08-09T08:00:00.000Z"
+    });
+    await repository.appendCatalogItem({
+      id: "component-conformance", workspaceId: "team-a", type: "service",
+      code: "CMP-CONFORMANCE", name: "Contract component", description: null,
+      unit: "unit", status: "active", revision: 1, createdBy: "admin-1",
+      createdAt: "2026-08-09T08:00:00.000Z",
+      updatedAt: "2026-08-09T08:00:00.000Z"
+    });
+    await repository.appendPricingPolicyVersion({
+      ...pricingInput,
+      id: "component-policy-conformance", workspaceId: "team-a",
+      catalogItemId: "component-conformance", version: 1, status: "active",
+      source: "native", capabilityRegistryVersion: "growth-capabilities.v1",
+      revision: 2, createdBy: "admin-1",
+      createdAt: "2026-08-09T08:00:00.000Z"
+    });
+    const packageInput = {
+      currency: "CNY", validFrom: "2026-08-09T08:00:00.000Z",
+      validTo: "2026-09-09T08:00:00.000Z",
+      components: [{
+        componentCatalogItemId: "component-conformance",
+        componentPricingPolicyVersionId: "component-policy-conformance",
+        quantityMicros: 1_000_000
+      }]
+    };
+    const packageCreated = await call(
+      "POST", "/api/v1/catalog/packages/package-conformance/versions",
+      packageInput, {
+        "Idempotency-Key": "package-conformance-create",
+        "If-Match": '"catalog-item:package-conformance:1"'
+      }
+    );
+    assert.equal(packageCreated.response.status, 201);
+    validators.assertOperationResponse(
+      "createPackageVersion", packageCreated.response.status, packageCreated.body
+    );
+    assert.equal(validators.packageVersion(packageCreated.body), true,
+      JSON.stringify(validators.packageVersion.errors));
+    const packageListed = await call(
+      "GET", "/api/v1/catalog/packages/package-conformance/versions"
+    );
+    validators.assertOperationResponse(
+      "listPackageVersions", packageListed.response.status, packageListed.body
+    );
+    const packageFetched = await call(
+      "GET", "/api/v1/catalog/package-versions/package-version-conformance"
+    );
+    validators.assertOperationResponse(
+      "getPackageVersion", packageFetched.response.status, packageFetched.body
+    );
+    const packageUpdated = await call(
+      "PATCH", "/api/v1/catalog/package-versions/package-version-conformance",
+      packageInput, {
+        "Idempotency-Key": "package-conformance-update",
+        "If-Match": '"package-version:package-version-conformance:1"'
+      }
+    );
+    validators.assertOperationResponse(
+      "updatePackageVersion", packageUpdated.response.status, packageUpdated.body
+    );
+    const packageActivated = await call(
+      "POST",
+      "/api/v1/catalog/package-versions/package-version-conformance/activate",
+      {}, {
+        "Idempotency-Key": "package-conformance-activate",
+        "If-Match": '"package-version:package-version-conformance:2"'
+      }
+    );
+    validators.assertOperationResponse(
+      "activatePackageVersion", packageActivated.response.status,
+      packageActivated.body
+    );
+    const packageRetired = await call(
+      "POST", "/api/v1/catalog/package-versions/package-version-conformance/retire",
+      {}, {
+        "Idempotency-Key": "package-conformance-retire",
+        "If-Match": '"package-version:package-version-conformance:3"'
+      }
+    );
+    validators.assertOperationResponse(
+      "retirePackageVersion", packageRetired.response.status, packageRetired.body
     );
 
     const listed = await call("GET", "/api/v1/catalog/items?sort=code&limit=20");

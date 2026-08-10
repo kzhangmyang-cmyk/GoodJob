@@ -28,6 +28,7 @@ import type {
   CreatePackageVersionDraftCommand,
   CreatePricingPolicyDraftCommand,
   PackageComponentDraft,
+  PackageCostSnapshot,
   PackageVersionLifecycleCommand,
   PricingPolicyLifecycleCommand,
   RetireCatalogItemCommand,
@@ -62,6 +63,13 @@ type StampedPackageComponent = Readonly<{
 }>;
 
 export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS catalog_package_graph_guards (
+    workspace_id VARCHAR(191) NOT NULL,
+    PRIMARY KEY (workspace_id),
+    CONSTRAINT chk_catalog_package_graph_guard_workspace CHECK (
+      workspace_id <> 'all' AND CHAR_LENGTH(TRIM(workspace_id)) > 0
+    )
+  ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS catalog_items (
     workspace_id VARCHAR(191) NOT NULL,
     id VARCHAR(191) NOT NULL,
@@ -180,6 +188,26 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
     CONSTRAINT fk_package_component_policy
       FOREIGN KEY (workspace_id, component_pricing_policy_version_id)
       REFERENCES pricing_policy_versions (workspace_id, id)
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS package_cost_snapshots (
+    workspace_id VARCHAR(191) NOT NULL,
+    pricing_policy_version_id VARCHAR(191) NOT NULL,
+    package_version_id VARCHAR(191) NOT NULL,
+    component_unit_standard_cost_minor BIGINT UNSIGNED NOT NULL,
+    package_own_unit_service_cost_minor BIGINT UNSIGNED NOT NULL,
+    total_unit_standard_cost_minor BIGINT UNSIGNED NOT NULL,
+    component_snapshot_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    components_json JSON NOT NULL,
+    recorded_at DATETIME(3) NOT NULL,
+    temporal_sequence BIGINT UNSIGNED NOT NULL,
+    PRIMARY KEY (workspace_id, pricing_policy_version_id),
+    KEY idx_package_cost_snapshot_version (workspace_id, package_version_id),
+    CONSTRAINT fk_package_cost_snapshot_policy
+      FOREIGN KEY (workspace_id, pricing_policy_version_id)
+      REFERENCES pricing_policy_versions (workspace_id, id),
+    CONSTRAINT fk_package_cost_snapshot_version
+      FOREIGN KEY (workspace_id, package_version_id)
+      REFERENCES package_versions (workspace_id, id)
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS catalog_command_receipts (
     workspace_id VARCHAR(191) NOT NULL,
@@ -461,6 +489,28 @@ function parsePackageComponent(row: MysqlRow): PackageComponent {
     ),
     quantityMicros: safeNumber(row.quantity_micros, "quantity_micros")
   }) as PackageComponent;
+}
+
+function parsePackageCostSnapshot(row: MysqlRow): PackageCostSnapshot {
+  return immutableClone({
+    workspaceId: String(row.workspace_id),
+    pricingPolicyVersionId: String(row.pricing_policy_version_id),
+    packageVersionId: String(row.package_version_id),
+    componentUnitStandardCostMinor: safeNumber(
+      row.component_unit_standard_cost_minor,
+      "component_unit_standard_cost_minor"
+    ),
+    packageOwnUnitServiceCostMinor: safeNumber(
+      row.package_own_unit_service_cost_minor,
+      "package_own_unit_service_cost_minor"
+    ),
+    totalUnitStandardCostMinor: safeNumber(
+      row.total_unit_standard_cost_minor,
+      "total_unit_standard_cost_minor"
+    ),
+    componentSnapshotHash: String(row.component_snapshot_hash),
+    components: json(row.components_json)
+  }) as PackageCostSnapshot;
 }
 
 function parseLink(row: MysqlRow): CommissionProductCatalogLink {
@@ -762,7 +812,8 @@ export class MysqlCatalogRepository implements CatalogRepository {
       connection: mysql.PoolConnection,
       transaction: MysqlGrowthTemporalTransaction,
       stamp: { recordedAt: string; temporalSequence: number }
-    ) => Promise<CatalogCommandResult<T>>
+    ) => Promise<CatalogCommandResult<T>>,
+    packageGraphGuard = false
   ): Promise<CatalogCommandResult<T>> {
     const concreteWorkspaceId = assertConcreteGrowthWorkspaceId(workspaceId);
     if (!this.temporalBarrier) {
@@ -777,6 +828,9 @@ export class MysqlCatalogRepository implements CatalogRepository {
         transaction,
         concreteWorkspaceId
       );
+      if (packageGraphGuard) {
+        await this.withPackageGraphGuard(connection, concreteWorkspaceId);
+      }
       const result = await work(connection, transaction, stamp);
       await connection.commit();
       return result;
@@ -788,6 +842,39 @@ export class MysqlCatalogRepository implements CatalogRepository {
       throw error;
     } finally {
       connection.release();
+    }
+  }
+
+  private async withPackageGraphGuard(
+    connection: mysql.PoolConnection,
+    workspaceId: string
+  ): Promise<void> {
+    await connection.query(
+      `INSERT INTO catalog_package_graph_guards (workspace_id) VALUES (?)
+       ON DUPLICATE KEY UPDATE workspace_id = VALUES(workspace_id)`,
+      [workspaceId]
+    );
+    await connection.query(
+      `SELECT workspace_id FROM catalog_package_graph_guards
+       WHERE workspace_id = ? FOR UPDATE`,
+      [workspaceId]
+    );
+    const locks: readonly [string, string][] = [
+      ["catalog_items", "id"],
+      ["package_versions", "id"],
+      ["pricing_policy_versions", "id"],
+      ["package_components",
+        "package_version_id,component_catalog_item_id,component_pricing_policy_version_id"],
+      ["package_versions", "package_catalog_item_id,currency,valid_from,id"],
+      ["package_cost_snapshots", "pricing_policy_version_id"]
+    ];
+    for (const [table, order] of locks) {
+      await connection.query(
+        `SELECT * FROM ${table} WHERE workspace_id = ?
+         ORDER BY ${order.split(",").map((column) => `BINARY ${column}`).join(",")}
+         FOR UPDATE`,
+        [workspaceId]
+      );
     }
   }
 
@@ -961,6 +1048,19 @@ export class MysqlCatalogRepository implements CatalogRepository {
     return immutableClone(
       (rows as MysqlRow[]).map(parsePackageComponent)
     ) as readonly PackageComponent[];
+  }
+
+  findPackageCostSnapshot(
+    workspaceId: string,
+    pricingPolicyVersionId: string
+  ): Promise<PackageCostSnapshot | null> {
+    return first(
+      this.pool,
+      `SELECT * FROM package_cost_snapshots
+       WHERE workspace_id = ? AND pricing_policy_version_id = ?`,
+      [workspaceId, pricingPolicyVersionId],
+      parsePackageCostSnapshot
+    );
   }
 
   async replaceDraftPackageComponents(
@@ -1232,6 +1332,20 @@ export class MysqlCatalogRepository implements CatalogRepository {
         return immutableClone(
           (rows as MysqlRow[]).map(parsePackageComponent)
         ) as readonly PackageComponent[];
+      },
+      listActivePackageVersionWindowsForUpdate: async (
+        workspaceId, catalogItemId, currency
+      ) => {
+        const [rows] = await connection.query(
+          `SELECT * FROM package_versions
+           WHERE workspace_id = ? AND package_catalog_item_id = ?
+             AND currency = ? AND package_status = 'active'
+           ORDER BY BINARY valid_from,BINARY id FOR UPDATE`,
+          [workspaceId, catalogItemId, currency]
+        );
+        return immutableClone(
+          (rows as MysqlRow[]).map(parsePackageVersion)
+        ) as readonly PackageVersion[];
       }
     };
   }
@@ -1312,7 +1426,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
     operation: Extract<CatalogCommandOperation,
       "pricing_policy.activate" | "pricing_policy.retire">
   ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
-    return this.command(command.workspaceId, async (connection, _tx, stamp) => {
+    return this.command(command.workspaceId, async (connection, tx, initialStamp) => {
       const replay = await mysqlReceiptReplay(
         connection, command.workspaceId, command, operation,
         "pricing_policy", (resourceId) => first(
@@ -1348,8 +1462,50 @@ export class MysqlCatalogRepository implements CatalogRepository {
       if (!row) commandAbort({ kind: "not_found" });
       const current = parsePricingPolicy(row);
       lifecycleConflict(current, command.expectedRevision, from, invalidCode);
-      if (command.validate) {
-        await command.validate(this.mysqlValidationView(connection), current, parent);
+      const snapshot = command.validate
+        ? await command.validate(this.mysqlValidationView(connection), current, parent)
+        : undefined;
+      let stamp = initialStamp;
+      if (snapshot) {
+        if (snapshot.workspaceId !== command.workspaceId
+          || snapshot.pricingPolicyVersionId !== command.id
+          || snapshot.packageVersionId !== current.packageVersionId) {
+          commandAbort({
+            kind: "state_conflict", code: "invalid_package_cost_snapshot"
+          });
+        }
+        await connection.query(
+          `INSERT INTO package_cost_snapshots (
+            workspace_id,pricing_policy_version_id,package_version_id,
+            component_unit_standard_cost_minor,package_own_unit_service_cost_minor,
+            total_unit_standard_cost_minor,component_snapshot_hash,components_json,
+            recorded_at,temporal_sequence
+          ) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+          [snapshot.workspaceId, snapshot.pricingPolicyVersionId,
+            snapshot.packageVersionId, snapshot.componentUnitStandardCostMinor,
+            snapshot.packageOwnUnitServiceCostMinor,
+            snapshot.totalUnitStandardCostMinor, snapshot.componentSnapshotHash,
+            JSON.stringify(snapshot.components), growthMysqlDate(initialStamp.recordedAt),
+            initialStamp.temporalSequence]
+        );
+        if (!this.temporalBarrier) throw new Error("catalog_temporal_adapter_required");
+        stamp = await this.temporalBarrier.allocateAppend(tx, command.workspaceId);
+      }
+      if (to === "retired") {
+        const [inUseRows] = await connection.query(
+          `SELECT c.package_version_id FROM package_components c
+           INNER JOIN package_versions v
+             ON v.workspace_id = c.workspace_id AND v.id = c.package_version_id
+           WHERE c.workspace_id = ?
+             AND c.component_pricing_policy_version_id = ?
+             AND v.package_status = 'active'
+           ORDER BY BINARY c.package_version_id LIMIT 1 FOR UPDATE`,
+          [command.workspaceId, command.id]
+        );
+        if ((inUseRows as MysqlRow[]).length > 0) commandAbort({
+          kind: "state_conflict",
+          code: "pricing_policy_in_use_by_active_package"
+        });
       }
       const next = immutableClone(normalizePricingPolicyVersionInstants({
         ...current,
@@ -1374,7 +1530,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
         "pricing_policy", command.id, stamp
       );
       return { kind: "ok", value: next, replayed: false };
-    });
+    }, command.validate !== undefined);
   }
 
   activatePricingPolicy(
@@ -1467,6 +1623,10 @@ export class MysqlCatalogRepository implements CatalogRepository {
       const parentRow = (parentRows as MysqlRow[])[0];
       if (!parentRow) commandAbort({ kind: "not_found" });
       const parent = parseCatalogItem(parentRow);
+      if (command.expectedParentRevision !== undefined
+        && parent.revision !== command.expectedParentRevision) {
+        commandAbort({ kind: "revision_conflict", actualRevision: parent.revision });
+      }
       if (parent.type !== "package" || parent.status !== "active") {
         commandAbort({ kind: "state_conflict", code: "invalid_package_catalog_item" });
       }
@@ -1507,6 +1667,13 @@ export class MysqlCatalogRepository implements CatalogRepository {
         createdAt: stamp.recordedAt,
         updatedAt: stamp.recordedAt
       })) as PackageVersion;
+      if (command.validate) {
+        await command.validate(
+          this.mysqlValidationView(connection),
+          version,
+          components.map((entry) => entry.component)
+        );
+      }
       await connection.query(
         `INSERT INTO package_versions (
           workspace_id,id,package_catalog_item_id,version,currency,package_status,
@@ -1527,7 +1694,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
         "package_version", command.id, stamp
       );
       return { kind: "ok", value: version, replayed: false };
-    });
+    }, command.validate !== undefined);
   }
 
   async updatePackageVersionDraft(
@@ -1579,6 +1746,16 @@ export class MysqlCatalogRepository implements CatalogRepository {
         revision: current.revision + 1,
         updatedAt: stamp.recordedAt
       })) as PackageVersion;
+      if (command.validate) {
+        const lockedComponents = components
+          ? components.map((entry) => entry.component)
+          : await this.mysqlValidationView(connection).listPackageComponents(
+              command.workspaceId, command.id
+            );
+        await command.validate(
+          this.mysqlValidationView(connection), next, lockedComponents
+        );
+      }
       await connection.query(
         `UPDATE package_versions
          SET currency = ?,valid_from = ?,valid_to = ?,revision = ?,updated_at = ?,
@@ -1603,7 +1780,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
         "package_version", command.id, stamp
       );
       return { kind: "ok", value: next, replayed: false };
-    });
+    }, command.validate !== undefined);
   }
 
   private packageLifecycle(
@@ -1662,6 +1839,18 @@ export class MysqlCatalogRepository implements CatalogRepository {
           this.mysqlValidationView(connection), current, components
         );
       }
+      if (to === "retired") {
+        const [inUseRows] = await connection.query(
+          `SELECT id FROM pricing_policy_versions
+           WHERE workspace_id = ? AND package_version_id = ?
+             AND policy_status = 'active'
+           ORDER BY BINARY id LIMIT 1 FOR UPDATE`,
+          [command.workspaceId, command.id]
+        );
+        if ((inUseRows as MysqlRow[]).length > 0) commandAbort({
+          kind: "state_conflict", code: "package_version_in_use"
+        });
+      }
       const next = immutableClone(normalizePackageVersionInstants({
         ...current,
         status: to,
@@ -1683,7 +1872,7 @@ export class MysqlCatalogRepository implements CatalogRepository {
         "package_version", command.id, stamp
       );
       return { kind: "ok", value: next, replayed: false };
-    });
+    }, command.validate !== undefined);
   }
 
   activatePackageVersion(

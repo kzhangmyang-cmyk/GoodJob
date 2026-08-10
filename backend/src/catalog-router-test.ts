@@ -4,6 +4,7 @@ import test from "node:test";
 import express from "express";
 import { CatalogService } from "./catalog-service.js";
 import { PricingPolicyService } from "./pricing-policy-service.js";
+import { PackageVersionService } from "./package-version-service.js";
 import { createCatalogRouter } from "./catalog-router.js";
 import { InMemoryCatalogRepository } from "./catalog-repository.js";
 import {
@@ -45,6 +46,11 @@ async function catalogRouterFixture() {
     repository,
     idFactory: () => `policy-${++nextPolicyId}`
   });
+  let nextPackageId = 0;
+  const packageVersionService = new PackageVersionService({
+    repository,
+    idFactory: () => `package-version-${++nextPackageId}`
+  });
   const httpIdempotency = new InMemoryGrowthHttpIdempotencyRepository();
   let workspaceCalls = 0;
   let commandCalls = 0;
@@ -68,6 +74,7 @@ async function catalogRouterFixture() {
   app.use("/api/v1/catalog", createCatalogRouter({
     catalogService,
     pricingPolicyService,
+    packageVersionService,
     httpIdempotency,
     workspaceContext(req) {
       workspaceCalls += 1;
@@ -111,6 +118,87 @@ async function catalogRouterFixture() {
       error ? reject(error) : resolve()))
   };
 }
+
+test("package routes preserve released statuses, scoped ETags, and closed bodies", async () => {
+  const app = await catalogRouterFixture();
+  try {
+    await app.repository.appendCatalogItem({
+      id: "package-a", workspaceId: "team-a", type: "package", code: "PKG-A",
+      name: "Package A", description: null, unit: "set", status: "active",
+      revision: 1, createdBy: "admin-1", createdAt: NOW, updatedAt: NOW
+    });
+    await app.repository.appendCatalogItem({
+      id: "component-a", workspaceId: "team-a", type: "service", code: "CMP-A",
+      name: "Component A", description: null, unit: "unit", status: "active",
+      revision: 1, createdBy: "admin-1", createdAt: NOW, updatedAt: NOW
+    });
+    await app.repository.appendPricingPolicyVersion({
+      ...pricingBody,
+      id: "component-policy-a", workspaceId: "team-a",
+      catalogItemId: "component-a", version: 1, status: "active",
+      source: "native", capabilityRegistryVersion: "growth-capabilities.v1",
+      revision: 2, createdBy: "admin-1", createdAt: NOW
+    });
+    const body = {
+      currency: "CNY", validFrom: NOW,
+      validTo: "2026-09-09T08:00:00.000Z",
+      components: [{
+        componentCatalogItemId: "component-a",
+        componentPricingPolicyVersionId: "component-policy-a",
+        quantityMicros: 1_000_000
+      }]
+    };
+    const created = await app.request(
+      "POST", "/api/v1/catalog/packages/package-a/versions", {
+        headers: {
+          "Idempotency-Key": "package-create-1",
+          "If-Match": '"catalog-item:package-a:1"'
+        }, body
+      }
+    );
+    assert.equal(created.response.status, 201);
+    assert.equal(created.response.headers.get("etag"),
+      '"package-version:package-version-1:1"');
+    assert.equal("createdBy" in created.body, false);
+    assert.deepEqual(Object.keys(created.body.components[0]).sort(), [
+      "componentCatalogItemId", "componentPricingPolicyVersionId",
+      "packageVersionId", "quantityMicros"
+    ]);
+    const replay = await app.request(
+      "POST", "/api/v1/catalog/packages/package-a/versions", {
+        headers: {
+          "Idempotency-Key": "package-create-1",
+          "If-Match": '"catalog-item:package-a:1"'
+        }, body
+      }
+    );
+    assert.equal(replay.response.status, 201);
+    assert.equal(replay.response.headers.get("idempotency-replayed"), "true");
+    const activated = await app.request(
+      "POST", `/api/v1/catalog/package-versions/${created.body.id}/activate`, {
+        headers: {
+          "Idempotency-Key": "package-activate-1",
+          "If-Match": `"package-version:${created.body.id}:1"`
+        }, body: {}
+      }
+    );
+    assert.equal(activated.response.status, 200);
+    assert.equal(activated.response.headers.get("etag"),
+      `"package-version:${created.body.id}:2"`);
+    const closed = await app.request(
+      "PATCH", `/api/v1/catalog/package-versions/${created.body.id}`, {
+        headers: {
+          "Idempotency-Key": "package-closed-1",
+          "If-Match": `"package-version:${created.body.id}:2"`
+        }, body: { ...body, workspaceId: "team-b" }
+      }
+    );
+    assert.equal(closed.response.status, 400);
+    assert.equal(closed.body.code, "invalid_request");
+  } finally {
+    await app.close();
+  }
+});
 
 const createBody = {
   type: "service",

@@ -100,6 +100,7 @@ test("Catalog module wires the exact Foundation singletons into one shared graph
   const routerOptions = captured.routerOptions as {
     catalogService: unknown;
     pricingPolicyService: unknown;
+    packageVersionService: unknown;
     httpIdempotency: unknown;
     workspaceContext: unknown;
     commandContextFactory: unknown;
@@ -111,9 +112,16 @@ test("Catalog module wires the exact Foundation singletons into one shared graph
   assert.equal(routerOptions.commandContextFactory, ports.commandContextFactory);
   assert.equal(routerOptions.catalogService, services.catalogItems);
   assert.equal(routerOptions.pricingPolicyService, services.pricingPolicies);
+  assert.equal(routerOptions.packageVersionService, services.packageVersions);
+  assert.deepEqual(Object.keys(services).sort(), [
+    "catalogItems", "commissionCatalogProjection", "packageVersions",
+    "pricingPolicies", "quoteCatalog"
+  ]);
   assert.equal(Object.isFrozen(services), true);
   assert.equal(Object.isFrozen(services.catalogItems), true);
   assert.equal(Object.isFrozen(services.pricingPolicies), true);
+  assert.equal(Object.isFrozen(services.packageVersions), true);
+  assert.equal(Object.isFrozen(services.quoteCatalog), true);
   assert.equal(Object.isFrozen(services.commissionCatalogProjection), true);
   const serviceRepository = (services.catalogItems as unknown as {
     options: { repository: CatalogRepository }
@@ -124,8 +132,16 @@ test("Catalog module wires the exact Foundation singletons into one shared graph
   const pricingRepository = (services.pricingPolicies as unknown as {
     options: { repository: CatalogRepository }
   }).options.repository;
+  const packageRepository = (services.packageVersions as unknown as {
+    options: { repository: CatalogRepository }
+  }).options.repository;
+  const quoteRepository = (services.quoteCatalog as unknown as {
+    options: { repository: CatalogRepository }
+  }).options.repository;
   assert.equal(serviceRepository, projectionRepository);
   assert.equal(serviceRepository, pricingRepository);
+  assert.equal(serviceRepository, packageRepository);
+  assert.equal(serviceRepository, quoteRepository);
   await handle.close();
   await handle.close();
   assert.equal(closeCount, 1);

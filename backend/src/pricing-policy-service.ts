@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   ApprovalThresholds,
   PricingPolicyVersion
@@ -8,8 +9,11 @@ import {
   type CatalogCommandResult,
   type CatalogListQuery,
   type CatalogLockedValidationView,
-  type CatalogRepository
+  type CatalogRepository,
+  type FrozenPackageCostComponent,
+  type PackageCostSnapshot
 } from "./catalog-repository.js";
+import { calculateFrozenComponentUnitCost } from "./package-version-service.js";
 import {
   GROWTH_CAPABILITIES,
   requireGrowthCapabilities,
@@ -282,7 +286,7 @@ async function validateActivation(
   view: CatalogLockedValidationView,
   policy: PricingPolicyVersion,
   parentType: "product" | "service" | "package"
-): Promise<void> {
+): Promise<void | PackageCostSnapshot> {
   requiredCapabilitiesForPolicy(policy);
   const activeWindows = await view.listActivePricingPolicyWindowsForUpdate(
     policy.workspaceId,
@@ -309,10 +313,68 @@ async function validateActivation(
   if (!version || version.status !== "active"
     || version.packageCatalogItemId !== policy.catalogItemId
     || version.currency !== policy.currency
-    || version.validFrom !== policy.validFrom
-    || version.validTo !== policy.validTo) {
+    || version.validFrom > policy.validFrom
+    || (version.validTo !== null && policy.validFrom >= version.validTo)) {
     fail(409, "invalid_package_version_reference");
   }
+  const components = await view.listPackageComponents(
+    policy.workspaceId, version.id
+  );
+  const frozen: FrozenPackageCostComponent[] = [];
+  for (const component of components) {
+    const componentPolicy = await view.findPricingPolicyVersion(
+      policy.workspaceId, component.componentPricingPolicyVersionId
+    );
+    if (!componentPolicy
+      || componentPolicy.catalogItemId !== component.componentCatalogItemId
+      || componentPolicy.status !== "active") {
+      fail(409, "component_policy_not_active");
+    }
+    if (componentPolicy.currency !== policy.currency) {
+      fail(409, "package_component_currency_mismatch");
+    }
+    const extendedStandardCostMinor = calculateFrozenComponentUnitCost([{
+      unitStandardCostMinor: componentPolicy.unitStandardCostMinor,
+      quantityMicros: component.quantityMicros
+    }]);
+    frozen.push({
+      componentCatalogItemId: component.componentCatalogItemId,
+      componentPricingPolicyVersionId: component.componentPricingPolicyVersionId,
+      quantityMicros: component.quantityMicros,
+      unitStandardCostMinor: componentPolicy.unitStandardCostMinor,
+      extendedStandardCostMinor
+    });
+  }
+  frozen.sort((left, right) =>
+    left.componentCatalogItemId < right.componentCatalogItemId ? -1
+      : left.componentCatalogItemId > right.componentCatalogItemId ? 1
+        : left.componentPricingPolicyVersionId
+          < right.componentPricingPolicyVersionId ? -1
+          : left.componentPricingPolicyVersionId
+            > right.componentPricingPolicyVersionId ? 1 : 0);
+  const componentUnitStandardCostMinor = calculateFrozenComponentUnitCost(
+    frozen.map((component) => ({
+      unitStandardCostMinor: component.unitStandardCostMinor,
+      quantityMicros: component.quantityMicros
+    }))
+  );
+  if (policy.unitStandardCostMinor < componentUnitStandardCostMinor) {
+    fail(409, "package_total_cost_below_component_cost");
+  }
+  const componentSnapshotHash = `sha256:${createHash("sha256")
+    .update(JSON.stringify(["package-cost-components.v1", frozen]))
+    .digest("hex")}` as const;
+  return Object.freeze({
+    workspaceId: policy.workspaceId,
+    pricingPolicyVersionId: policy.id,
+    packageVersionId: version.id,
+    componentUnitStandardCostMinor,
+    packageOwnUnitServiceCostMinor:
+      policy.unitStandardCostMinor - componentUnitStandardCostMinor,
+    totalUnitStandardCostMinor: policy.unitStandardCostMinor,
+    componentSnapshotHash,
+    components: Object.freeze(structuredClone(frozen))
+  });
 }
 
 function mapListFailure(error: unknown): never {
@@ -449,7 +511,8 @@ export class PricingPolicyService {
       expectedRevision: requireExpectedRevision(context),
       actorId: context.actorId,
       idempotencyKey: context.idempotencyKey,
-      requestHash: context.requestHash
+      requestHash: context.requestHash,
+      validate: async () => undefined
     });
     return projectPricingPolicy(resultValue(result), context.workspace.capabilities);
   }

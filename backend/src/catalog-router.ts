@@ -17,6 +17,11 @@ import {
   type PricingPolicyDraftInput,
   type PricingPolicyService
 } from "./pricing-policy-service.js";
+import {
+  PackageVersionError,
+  type PackageVersionDraftInput,
+  type PackageVersionService
+} from "./package-version-service.js";
 import { GrowthAuthorizationError } from "./growth-capabilities.js";
 import { GrowthHttpError, type CommandContext } from "./growth-command-context.js";
 import {
@@ -111,11 +116,22 @@ const pricingPolicyInputSchema = z.object({
   validFrom: z.string().datetime({ offset: true }),
   validTo: z.string().datetime({ offset: true }).nullable()
 }).strict();
+const packageComponentInputSchema = z.object({
+  componentCatalogItemId: z.string().min(1),
+  componentPricingPolicyVersionId: z.string().min(1),
+  quantityMicros: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER)
+}).strict();
+const packageVersionInputSchema = z.object({
+  currency: z.string().regex(/^[A-Z]{3}$/u),
+  validFrom: z.string().datetime({ offset: true }),
+  validTo: z.string().datetime({ offset: true }).nullable(),
+  components: z.array(packageComponentInputSchema).min(1)
+}).strict();
 
 export interface CatalogRouterOptions {
   catalogService: CatalogService;
   pricingPolicyService: PricingPolicyService;
-  packageVersionService?: unknown;
+  packageVersionService: PackageVersionService;
   httpIdempotency: GrowthHttpIdempotencyRepository;
   workspaceContext: GrowthWorkspaceContextResolver;
   commandContextFactory: GrowthCommandContextFactory;
@@ -157,6 +173,12 @@ function releasedErrorStatus(req: Request, requestedStatus: number): number {
       401, 403, 404, 409, 412, 422, 428
     ],
     "POST /pricing-policies/:id/retire": [401, 403, 404, 409, 412, 428]
+    ,"GET /packages/:itemId/versions": [401, 403]
+    ,"POST /packages/:itemId/versions": [400, 401, 403, 409, 422]
+    ,"GET /package-versions/:id": [401, 403, 404]
+    ,"PATCH /package-versions/:id": [400, 401, 403, 404, 409, 412, 422, 428]
+    ,"POST /package-versions/:id/activate": [401, 403, 404, 409, 412, 422, 428]
+    ,"POST /package-versions/:id/retire": [401, 403, 404, 409, 412, 428]
   };
   const released = new Set<number>(releasedByOperation[key] ?? []);
   if (released.has(requestedStatus)) return requestedStatus;
@@ -171,6 +193,12 @@ function releasedErrorStatus(req: Request, requestedStatus: number): number {
     "GET /pricing-policies/:id": 403,
     "POST /pricing-policies/:id/activate": 409,
     "POST /pricing-policies/:id/retire": 409
+    ,"GET /packages/:itemId/versions": 403
+    ,"POST /packages/:itemId/versions": 400
+    ,"GET /package-versions/:id": 403
+    ,"PATCH /package-versions/:id": 400
+    ,"POST /package-versions/:id/activate": 409
+    ,"POST /package-versions/:id/retire": 409
   };
   return fallbackByOperation[key] ?? requestedStatus;
 }
@@ -233,8 +261,118 @@ function respondPricingPolicy(
   res.status(status).json(policy);
 }
 
+function respondPackageVersion(
+  res: Response,
+  version: Awaited<ReturnType<PackageVersionService["get"]>>,
+  replayed = false,
+  status = 200
+) {
+  setRevisionEtag(res, "package-version", version.id, version.revision);
+  if (replayed) res.setHeader("Idempotency-Replayed", "true");
+  res.status(status).json(version);
+}
+
 export function createCatalogRouter(options: CatalogRouterOptions): Router {
   const router = express.Router();
+
+  router.get("/packages/:itemId/versions", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
+    const itemId = idSchema.parse(req.params.itemId);
+    const query = listQuerySchema.parse(req.query);
+    const context = options.workspaceContext(req);
+    res.json(await options.packageVersionService.list(context, itemId, {
+      cursor: query.cursor ?? null, limit: query.limit, sort: query.sort
+    }));
+  }));
+
+  router.post("/packages/:itemId/versions", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
+    const itemId = idSchema.parse(req.params.itemId);
+    const payload = packageVersionInputSchema.parse(req.body) as PackageVersionDraftInput;
+    const canonicalPath = "/api/v1/catalog/packages/:itemId/versions";
+    const expectedRevision = parseIfMatchRevision(req, `catalog-item:${itemId}`);
+    const context = options.commandContextFactory(req, {
+      canonicalPath, pathParams: Object.freeze({ itemId }), payload,
+      expectedRevision
+    });
+    const result = await executeGrowthIdempotentCommand({
+      repository: options.httpIdempotency,
+      reservation: reservation(req, context, canonicalPath)
+    }, async (resourceId) => {
+      if (!resourceId) throw new Error("package_idempotency_resource_missing");
+      return options.packageVersionService.get(context.workspace, resourceId);
+    }, async () => {
+      const version = await options.packageVersionService.createDraft(
+        context, itemId, payload
+      );
+      return { resourceId: version.id, operationId: null };
+    });
+    respondPackageVersion(res, result.value, result.replayed, 201);
+  }));
+
+  router.get("/package-versions/:id", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
+    emptyQuerySchema.parse(req.query);
+    const id = idSchema.parse(req.params.id);
+    const context = options.workspaceContext(req);
+    respondPackageVersion(
+      res, await options.packageVersionService.get(context, id)
+    );
+  }));
+
+  router.patch("/package-versions/:id", handle(async (req, res) => {
+    requireCatalogWorkspaceHeader(req);
+    const id = idSchema.parse(req.params.id);
+    const payload = packageVersionInputSchema.parse(req.body) as PackageVersionDraftInput;
+    const canonicalPath = "/api/v1/catalog/package-versions/:id";
+    const expectedRevision = parseIfMatchRevision(req, `package-version:${id}`);
+    const context = options.commandContextFactory(req, {
+      canonicalPath, pathParams: Object.freeze({ id }), payload,
+      expectedRevision
+    });
+    const result = await executeGrowthIdempotentCommand({
+      repository: options.httpIdempotency,
+      reservation: reservation(req, context, canonicalPath)
+    }, async (resourceId) => {
+      if (resourceId !== id) throw new GrowthHttpError(409, "idempotency_conflict");
+      return options.packageVersionService.get(context.workspace, id);
+    }, async () => {
+      const version = await options.packageVersionService.updateDraft(
+        context, id, payload
+      );
+      return { resourceId: version.id, operationId: null };
+    });
+    respondPackageVersion(res, result.value, result.replayed);
+  }));
+
+  const packageLifecycle = (action: "activate" | "retire") =>
+    handle(async (req, res) => {
+      requireCatalogWorkspaceHeader(req);
+      const id = idSchema.parse(req.params.id);
+      const payload = emptyBodySchema.parse(req.body);
+      const canonicalPath = `/api/v1/catalog/package-versions/:id/${action}`;
+      const expectedRevision = parseIfMatchRevision(req, `package-version:${id}`);
+      const context = options.commandContextFactory(req, {
+        canonicalPath, pathParams: Object.freeze({ id }), payload,
+        expectedRevision
+      });
+      const result = await executeGrowthIdempotentCommand({
+        repository: options.httpIdempotency,
+        reservation: reservation(req, context, canonicalPath)
+      }, async (resourceId) => {
+        if (resourceId !== id) {
+          throw new GrowthHttpError(409, "idempotency_conflict");
+        }
+        return options.packageVersionService.get(context.workspace, id);
+      }, async () => {
+        const version = await options.packageVersionService[action](context, id);
+        return { resourceId: version.id, operationId: null };
+      });
+      respondPackageVersion(res, result.value, result.replayed);
+    });
+
+  router.post("/package-versions/:id/activate", packageLifecycle("activate"));
+  router.post("/package-versions/:id/retire", packageLifecycle("retire"));
 
   router.get("/pricing-policies", handle(async (req, res) => {
     requireCatalogWorkspaceHeader(req);
@@ -433,7 +571,8 @@ export function createCatalogRouter(options: CatalogRouterOptions): Router {
       return;
     }
     if (error instanceof GrowthHttpError || error instanceof CatalogServiceError
-      || error instanceof PricingPolicyServiceError) {
+      || error instanceof PricingPolicyServiceError
+      || error instanceof PackageVersionError) {
       sendError(
         req,
         res,

@@ -3,6 +3,8 @@ import type express from "express";
 import type mysql from "mysql2/promise";
 import { CatalogService } from "./catalog-service.js";
 import { PricingPolicyService } from "./pricing-policy-service.js";
+import { PackageVersionService } from "./package-version-service.js";
+import { QuoteCatalogReader } from "./quote-catalog-reader.js";
 import {
   InMemoryCatalogRepository,
   type CatalogRepository
@@ -31,6 +33,8 @@ import { createCatalogRouter, type CatalogRouterOptions } from "./catalog-router
 export interface GrowthCatalogServices {
   readonly catalogItems: CatalogService;
   readonly pricingPolicies: PricingPolicyService;
+  readonly packageVersions: PackageVersionService;
+  readonly quoteCatalog: QuoteCatalogReader;
   readonly commissionCatalogProjection: CommissionCatalogProjectionPort;
 }
 
@@ -136,6 +140,16 @@ export function createGrowthCatalogModule(
             ?? ((prefix) => `${prefix}-${randomUUID()}`)
         });
         Object.freeze(pricingPolicies);
+        const packageVersions = new PackageVersionService({
+          repository: resources.repository,
+          idFactory: options.idFactory
+            ?? ((prefix) => `${prefix}-${randomUUID()}`)
+        });
+        Object.freeze(packageVersions);
+        const quoteCatalog = new QuoteCatalogReader({
+          repository: resources.repository
+        });
+        Object.freeze(quoteCatalog);
         const commissionCatalogProjection = new CommissionCatalogProjection({
           repository: resources.repository
         });
@@ -143,11 +157,14 @@ export function createGrowthCatalogModule(
         const services = Object.freeze({
           catalogItems,
           pricingPolicies,
+          packageVersions,
+          quoteCatalog,
           commissionCatalogProjection
         }) satisfies GrowthCatalogServices;
         const routerOptions: CatalogRouterOptions = Object.freeze({
           catalogService: catalogItems,
           pricingPolicyService: pricingPolicies,
+          packageVersionService: packageVersions,
           httpIdempotency: foundation.httpIdempotency,
           workspaceContext: foundation.workspaceContext,
           commandContextFactory: foundation.commandContextFactory

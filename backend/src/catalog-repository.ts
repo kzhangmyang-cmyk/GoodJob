@@ -42,6 +42,25 @@ export type CatalogCommandResult<T> =
   | { kind: "state_conflict"; code: string }
   | { kind: "not_found" };
 
+export interface FrozenPackageCostComponent {
+  componentCatalogItemId: string;
+  componentPricingPolicyVersionId: string;
+  quantityMicros: number;
+  unitStandardCostMinor: number;
+  extendedStandardCostMinor: number;
+}
+
+export interface PackageCostSnapshot {
+  workspaceId: string;
+  pricingPolicyVersionId: string;
+  packageVersionId: string;
+  componentUnitStandardCostMinor: number;
+  packageOwnUnitServiceCostMinor: number;
+  totalUnitStandardCostMinor: number;
+  componentSnapshotHash: `sha256:${string}`;
+  components: readonly FrozenPackageCostComponent[];
+}
+
 interface CommandIdentity {
   actorId: string;
   idempotencyKey: string;
@@ -94,6 +113,11 @@ export interface CatalogLockedValidationView {
     workspaceId: string,
     packageVersionId: string
   ): Promise<readonly PackageComponent[]>;
+  listActivePackageVersionWindowsForUpdate(
+    workspaceId: string,
+    catalogItemId: string,
+    currency: string
+  ): Promise<readonly PackageVersion[]>;
 }
 
 export interface PricingPolicyLifecycleCommand extends CommandIdentity {
@@ -105,7 +129,7 @@ export interface PricingPolicyLifecycleCommand extends CommandIdentity {
     view: CatalogLockedValidationView,
     policy: PricingPolicyVersion,
     parent: CatalogItem
-  ) => Promise<void>;
+  ) => Promise<void | PackageCostSnapshot>;
 }
 
 export interface PackageComponentDraft {
@@ -120,7 +144,13 @@ type PackageVersionDraftFields = Omit<PackageVersion,
 
 export interface CreatePackageVersionDraftCommand
 extends PackageVersionDraftFields, CommandIdentity {
+  expectedParentRevision?: number;
   components: readonly PackageComponentDraft[];
+  validate?: (
+    view: CatalogLockedValidationView,
+    version: PackageVersion,
+    components: readonly PackageComponent[]
+  ) => Promise<void>;
 }
 
 export interface UpdatePackageVersionDraftCommand extends CommandIdentity {
@@ -129,6 +159,11 @@ export interface UpdatePackageVersionDraftCommand extends CommandIdentity {
   expectedRevision: number;
   patch: Readonly<Partial<Pick<PackageVersion, "currency" | "validFrom" | "validTo">>>
     & { components?: readonly PackageComponentDraft[] };
+  validate?: (
+    view: CatalogLockedValidationView,
+    version: PackageVersion,
+    components: readonly PackageComponent[]
+  ) => Promise<void>;
 }
 
 export interface PackageVersionLifecycleCommand extends CommandIdentity {
@@ -180,6 +215,10 @@ export interface CatalogRepository {
     workspaceId: string,
     packageVersionId: string
   ): Promise<readonly PackageComponent[]>;
+  findPackageCostSnapshot(
+    workspaceId: string,
+    pricingPolicyVersionId: string
+  ): Promise<PackageCostSnapshot | null>;
   replaceDraftPackageComponents(
     workspaceId: string,
     packageVersionId: string,
@@ -569,6 +608,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   private readonly pricingPolicies = new Map<string, PricingPolicyVersion>();
   private readonly packageVersions = new Map<string, PackageVersion>();
   private readonly packageComponents = new Map<string, readonly PackageComponent[]>();
+  private readonly packageCostSnapshots = new Map<string, PackageCostSnapshot>();
   private readonly commissionLinks = new Map<string, CommissionProductCatalogLink>();
   private readonly migrationRuns = new Map<string, CommissionCatalogMigrationRun>();
   private readonly commandReceipts = new Map<string, StoredCommandReceipt>();
@@ -579,6 +619,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
   private readonly transactions: GrowthTemporalTransactionRunner | null;
   private readonly temporalBarrier: GrowthTemporalBarrier | null;
   private readonly publicationTails = new Map<string, Promise<void>>();
+  private readonly packageGraphTails = new Map<string, Promise<void>>();
 
   constructor(options: Readonly<{
     transactions: GrowthTemporalTransactionRunner;
@@ -647,6 +688,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     const policySnapshot = snapshotMap(this.pricingPolicies, scoped);
     const versionSnapshot = snapshotMap(this.packageVersions, scoped);
     const componentSnapshot = snapshotMap(this.packageComponents, scoped);
+    const costSnapshot = snapshotMap(this.packageCostSnapshots, scoped);
     const receiptSnapshot = snapshotMap(this.commandReceipts, scoped);
     const evidenceSnapshot = snapshotMap(this.appendEvidence, evidenceScoped);
     return () => {
@@ -654,6 +696,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       restoreMap(this.pricingPolicies, scoped, policySnapshot);
       restoreMap(this.packageVersions, scoped, versionSnapshot);
       restoreMap(this.packageComponents, scoped, componentSnapshot);
+      restoreMap(this.packageCostSnapshots, scoped, costSnapshot);
       restoreMap(this.commandReceipts, scoped, receiptSnapshot);
       restoreMap(this.appendEvidence, evidenceScoped, evidenceSnapshot);
     };
@@ -671,6 +714,25 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         this.publicationTails.delete(workspaceId);
       }
     };
+  }
+
+  private async withPackageGraphGuard<T>(
+    workspaceId: string,
+    command: () => Promise<T>
+  ): Promise<T> {
+    const predecessor = this.packageGraphTails.get(workspaceId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => { release = resolve; });
+    this.packageGraphTails.set(workspaceId, current);
+    await predecessor;
+    try {
+      return await command();
+    } finally {
+      release();
+      if (this.packageGraphTails.get(workspaceId) === current) {
+        this.packageGraphTails.delete(workspaceId);
+      }
+    }
   }
 
   private async publishedRead<T>(workspaceId: string, read: () => T): Promise<T> {
@@ -730,7 +792,8 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     work: (
       tx: GrowthTemporalTransaction,
       stamp: { recordedAt: string; temporalSequence: number }
-    ) => Promise<CatalogCommandResult<T>>
+    ) => Promise<CatalogCommandResult<T>>,
+    packageGraphGuard = false
   ): Promise<CatalogCommandResult<T>> {
     const concreteWorkspaceId = assertConcreteGrowthWorkspaceId(workspaceId);
     if (!this.transactions || !this.temporalBarrier) {
@@ -751,7 +814,12 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         publication.release = await this.acquirePublication(concreteWorkspaceId);
         publication.restore = this.workspaceJournal(concreteWorkspaceId);
         try {
-          return await work(tx, stamp);
+          return packageGraphGuard
+            ? await this.withPackageGraphGuard(
+                concreteWorkspaceId,
+                () => work(tx, stamp)
+              )
+            : await work(tx, stamp);
         } catch (error) {
           publication.restore();
           throw error;
@@ -914,6 +982,20 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     const concrete = assertConcreteGrowthWorkspaceId(workspaceId);
     return this.publishedRead(concrete, () =>
       this.listPackageComponentsNoWait(concrete, packageVersionId));
+  }
+
+  async findPackageCostSnapshot(
+    workspaceId: string,
+    pricingPolicyVersionId: string
+  ): Promise<PackageCostSnapshot | null> {
+    return this.publishedRead(workspaceId, () => {
+      const snapshot = this.packageCostSnapshots.get(key(
+        workspaceId, pricingPolicyVersionId
+      ));
+      return snapshot
+        ? immutableClone(snapshot) as PackageCostSnapshot
+        : null;
+    });
   }
 
   async replaceDraftPackageComponents(
@@ -1114,10 +1196,19 @@ export class InMemoryCatalogRepository implements CatalogRepository {
           && policy.catalogItemId === catalogItemId
           && policy.currency === currency
           && policy.status === "active")
-        .sort((left, right) => left.validFrom.localeCompare(right.validFrom)
-          || left.id.localeCompare(right.id))) as readonly PricingPolicyVersion[],
+        .sort((left, right) => codePointCompare(left.validFrom, right.validFrom)
+          || codePointCompare(left.id, right.id))) as readonly PricingPolicyVersion[],
       listPackageComponents: async (workspaceId, id) =>
-        this.listPackageComponentsNoWait(workspaceId, id)
+        this.listPackageComponentsNoWait(workspaceId, id),
+      listActivePackageVersionWindowsForUpdate: async (
+        workspaceId, catalogItemId, currency
+      ) => immutableClone([...this.packageVersions.values()]
+        .filter((version) => version.workspaceId === workspaceId
+          && version.packageCatalogItemId === catalogItemId
+          && version.currency === currency
+          && version.status === "active")
+        .sort((left, right) => codePointCompare(left.validFrom, right.validFrom)
+          || codePointCompare(left.id, right.id))) as readonly PackageVersion[]
     };
   }
 
@@ -1182,7 +1273,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     operation: Extract<CatalogCommandOperation,
       "pricing_policy.activate" | "pricing_policy.retire">
   ): Promise<CatalogCommandResult<PricingPolicyVersion>> {
-    return this.command(command.workspaceId, async (_tx, stamp) => {
+    return this.command(command.workspaceId, async (tx, initialStamp) => {
       const replay = this.replayFromReceipt(
         command.workspaceId, command, operation, "pricing_policy",
         (resourceId) => {
@@ -1195,14 +1286,42 @@ export class InMemoryCatalogRepository implements CatalogRepository {
       const current = this.pricingPolicies.get(policyKey);
       if (!current) abort({ kind: "not_found" });
       lifecycleState(current, command, from, to, invalidCode);
-      if (command.validate) {
-        await command.validate(
+      const snapshot = command.validate
+        ? await command.validate(
           this.memoryValidationView(),
           immutableClone(current) as PricingPolicyVersion,
           immutableClone(this.catalogItems.get(
             key(command.workspaceId, current.catalogItemId)
           )!) as CatalogItem
+        ) : undefined;
+      let stamp = initialStamp;
+      if (snapshot) {
+        if (snapshot.workspaceId !== command.workspaceId
+          || snapshot.pricingPolicyVersionId !== command.id
+          || snapshot.packageVersionId !== current.packageVersionId) {
+          abort({ kind: "state_conflict", code: "invalid_package_cost_snapshot" });
+        }
+        this.packageCostSnapshots.set(
+          key(command.workspaceId, command.id),
+          immutableClone(snapshot) as PackageCostSnapshot
         );
+        this.rememberAppend(
+          "package-cost-snapshot", command.workspaceId, command.id, initialStamp
+        );
+        if (!this.temporalBarrier) throw new Error("catalog_temporal_adapter_required");
+        stamp = await this.temporalBarrier.allocateAppend(tx, command.workspaceId);
+      }
+      if (to === "retired") {
+        const inUse = [...this.packageVersions.values()].some((version) =>
+          version.workspaceId === command.workspaceId
+          && version.status === "active"
+          && (this.packageComponents.get(key(command.workspaceId, version.id)) ?? [])
+            .some((component) =>
+              component.componentPricingPolicyVersionId === command.id));
+        if (inUse) abort({
+          kind: "state_conflict",
+          code: "pricing_policy_in_use_by_active_package"
+        });
       }
       const next = immutableClone(normalizePricingPolicyVersionInstants({
         ...current,
@@ -1222,7 +1341,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         kind: "ok", value: immutableClone(next) as PricingPolicyVersion,
         replayed: false
       };
-    });
+    }, command.validate !== undefined);
   }
 
   activatePricingPolicy(
@@ -1295,6 +1414,10 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         command.workspaceId, command.packageCatalogItemId
       ));
       if (!parent) abort({ kind: "not_found" });
+      if (command.expectedParentRevision !== undefined
+        && parent.revision !== command.expectedParentRevision) {
+        abort({ kind: "revision_conflict", actualRevision: parent.revision });
+      }
       if (parent.type !== "package" || parent.status !== "active") {
         abort({ kind: "state_conflict", code: "invalid_package_catalog_item" });
       }
@@ -1324,6 +1447,9 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         createdAt: stamp.recordedAt,
         updatedAt: stamp.recordedAt
       })) as PackageVersion;
+      if (command.validate) {
+        await command.validate(this.memoryValidationView(), packageVersion, components);
+      }
       this.packageVersions.set(versionKey, packageVersion);
       this.packageComponents.set(versionKey, components);
       this.recordReceipt(
@@ -1335,7 +1461,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         kind: "ok", value: immutableClone(packageVersion) as PackageVersion,
         replayed: false
       };
-    });
+    }, command.validate !== undefined);
   }
 
   async updatePackageVersionDraft(
@@ -1368,6 +1494,9 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         revision: current.revision + 1,
         updatedAt: stamp.recordedAt
       })) as PackageVersion;
+      if (command.validate) {
+        await command.validate(this.memoryValidationView(), next, components);
+      }
       this.packageVersions.set(versionKey, next);
       if (componentPatch !== undefined) this.packageComponents.set(versionKey, components);
       this.recordReceipt(
@@ -1379,7 +1508,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         kind: "ok", value: immutableClone(next) as PackageVersion,
         replayed: false
       };
-    });
+    }, command.validate !== undefined);
   }
 
   private packageLifecycle(
@@ -1411,6 +1540,15 @@ export class InMemoryCatalogRepository implements CatalogRepository {
           immutableClone(components) as readonly PackageComponent[]
         );
       }
+      if (to === "retired") {
+        const inUse = [...this.pricingPolicies.values()].some((policy) =>
+          policy.workspaceId === command.workspaceId
+          && policy.status === "active"
+          && policy.packageVersionId === command.id);
+        if (inUse) abort({
+          kind: "state_conflict", code: "package_version_in_use"
+        });
+      }
       const next = immutableClone(normalizePackageVersionInstants({
         ...current,
         status: to,
@@ -1426,7 +1564,7 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         kind: "ok", value: immutableClone(next) as PackageVersion,
         replayed: false
       };
-    });
+    }, command.validate !== undefined);
   }
 
   activatePackageVersion(
