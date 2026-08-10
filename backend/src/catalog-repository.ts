@@ -76,6 +76,31 @@ function validSnapshot(value: unknown): boolean {
   if (tag === "array") {
     return value.length === 2 && Array.isArray(payload) && payload.every(validSnapshot);
   }
+  if (tag === "map" && value.length === 2 && Array.isArray(payload)) {
+    let previous: string | null = null;
+    for (const entry of payload) {
+      if (!Array.isArray(entry) || entry.length !== 2
+        || !validSnapshot(entry[0]) || !validSnapshot(entry[1])) return false;
+      const bytes = JSON.stringify(entry);
+      if (previous !== null && previous > bytes) return false;
+      previous = bytes;
+    }
+    return true;
+  }
+  if (tag === "set" && value.length === 2 && Array.isArray(payload)) {
+    let previous: string | null = null;
+    for (const item of payload) {
+      if (!validSnapshot(item)) return false;
+      const bytes = JSON.stringify(item);
+      if (previous !== null && previous > bytes) return false;
+      previous = bytes;
+    }
+    return true;
+  }
+  if (tag === "regexp") {
+    return value.length === 4 && typeof value[1] === "string"
+      && typeof value[2] === "string" && validSnapshot(value[3]);
+  }
   if (tag === "object" && value.length === 2 && Array.isArray(payload)) {
     let previous: string | null = null;
     for (const entry of payload) {
@@ -132,7 +157,6 @@ export function assertCommissionCatalogMigrationCommitInvariant(
   if (run.migrated !== migrated || run.repairRequired !== run.scanned - migrated) {
     throw invalidMigrationCommit();
   }
-  if (entries.length !== migrated) throw invalidMigrationCommit();
   const expectedInputHash = sha256(JSON.stringify([
     "commission-catalog-migration-input.v1",
     run.workspaceId,
@@ -173,6 +197,12 @@ export function assertCommissionCatalogMigrationCommitInvariant(
     policyIds.add(pricingPolicy.id);
     productIds.add(link.commissionProductId);
   }
+}
+
+function migrationEntryProductIds(
+  commit: CommissionCatalogMigrationCommit
+): ReadonlySet<string> {
+  return new Set(commit.entries.map((entry) => entry.link.commissionProductId));
 }
 
 function key(workspaceId: string, id: string): string {
@@ -284,6 +314,34 @@ export class InMemoryCatalogRepository implements CatalogRepository {
         throw conflict("commission_catalog_migration_conflict");
       }
       return immutableClone(existing) as CommissionCatalogMigrationRun;
+    }
+
+    const entryProductIds = migrationEntryProductIds(commit);
+    for (const result of commit.run.items) {
+      if (result.status !== "migrated"
+        || entryProductIds.has(result.commissionProductId)) continue;
+      if (result.catalogItemId === null
+        || result.pricingPolicyVersionId === null) throw invalidMigrationCommit();
+      const link = this.commissionLinks.get(key(
+        commit.run.workspaceId, result.commissionProductId
+      ));
+      const item = this.catalogItems.get(key(
+        commit.run.workspaceId, result.catalogItemId
+      ));
+      const policy = this.pricingPolicies.get(key(
+        commit.run.workspaceId, result.pricingPolicyVersionId
+      ));
+      if (!link || !item || !policy
+        || link.workspaceId !== commit.run.workspaceId
+        || link.catalogItemId !== result.catalogItemId
+        || link.pricingPolicyVersionId !== result.pricingPolicyVersionId
+        || item.workspaceId !== commit.run.workspaceId
+        || item.id !== result.catalogItemId
+        || policy.workspaceId !== commit.run.workspaceId
+        || policy.id !== result.pricingPolicyVersionId
+        || policy.catalogItemId !== result.catalogItemId) {
+        throw invalidMigrationCommit();
+      }
     }
 
     const seenItems = new Set<string>();

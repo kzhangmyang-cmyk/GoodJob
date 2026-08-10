@@ -520,6 +520,41 @@ export class MysqlCatalogRepository implements CatalogRepository {
         await connection.commit();
         return existing;
       }
+      const entryProductIds = new Set(
+        commit.entries.map((entry) => entry.link.commissionProductId)
+      );
+      for (const result of commit.run.items) {
+        if (result.status !== "migrated"
+          || entryProductIds.has(result.commissionProductId)) continue;
+        const [authorityRows] = await connection.query(
+          `SELECT l.workspace_id,l.commission_product_id,l.catalog_item_id,
+             l.pricing_policy_version_id,i.id AS item_id,
+             p.id AS policy_id,p.catalog_item_id AS policy_catalog_item_id
+           FROM commission_product_catalog_links l
+           INNER JOIN catalog_items i
+             ON i.workspace_id = l.workspace_id AND i.id = l.catalog_item_id
+           INNER JOIN pricing_policy_versions p
+             ON p.workspace_id = l.workspace_id
+            AND p.id = l.pricing_policy_version_id
+           WHERE l.workspace_id = ? AND l.commission_product_id = ?
+           FOR UPDATE`,
+          [commit.run.workspaceId, result.commissionProductId]
+        );
+        const authority = (authorityRows as MysqlRow[])[0];
+        if (!authority
+          || authority.workspace_id !== commit.run.workspaceId
+          || authority.commission_product_id !== result.commissionProductId
+          || authority.catalog_item_id !== result.catalogItemId
+          || authority.pricing_policy_version_id !== result.pricingPolicyVersionId
+          || authority.item_id !== result.catalogItemId
+          || authority.policy_id !== result.pricingPolicyVersionId
+          || authority.policy_catalog_item_id !== result.catalogItemId) {
+          throw Object.assign(
+            new Error("invalid_commission_catalog_migration_commit"),
+            { code: "invalid_commission_catalog_migration_commit" }
+          );
+        }
+      }
       await connection.query(
         `INSERT INTO commission_catalog_migration_runs (
           workspace_id,id,actor_id,idempotency_key,input_snapshot_hash,

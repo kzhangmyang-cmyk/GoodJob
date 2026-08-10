@@ -97,6 +97,52 @@ test("mysql migration commit rejects cross-workspace references before I/O", asy
   assert.equal(pool.connection.transactions.length, 0);
 });
 
+test("mysql migration commit rejects a false existing-authority claim before writes", async () => {
+  const pool = new FakePool();
+  pool.connection.enqueue([]);
+  pool.connection.enqueue([{
+    workspace_id: "team-a", commission_product_id: "cp-1",
+    catalog_item_id: "actual-item", pricing_policy_version_id: "policy-1",
+    item_id: "actual-item", policy_id: "policy-1",
+    policy_catalog_item_id: "actual-item"
+  }]);
+  const snapshot = ["object", []] as const;
+  const snapshotHash = `sha256:${createHash("sha256")
+    .update(JSON.stringify(snapshot)).digest("hex")}` as const;
+  const commit = {
+    run: {
+      id: "run-existing-claim", workspaceId: "team-a", actorId: "admin-1",
+      idempotencyKey: "existing-claim", inputSnapshotHash:
+        `sha256:${createHash("sha256").update(JSON.stringify([
+          "commission-catalog-migration-input.v1", "team-a", [snapshot]
+        ])).digest("hex")}`,
+      startedAt: "2026-08-09T08:00:00.000Z",
+      completedAt: "2026-08-09T08:00:00.000Z", status: "completed",
+      scanned: 1, migrated: 1, repairRequired: 0,
+      reportHash: `sha256:${createHash("sha256").update(JSON.stringify([
+        "commission-catalog-migration-report.v1", "team-a",
+        [["cp-1", "migrated", "migrated", snapshotHash]]
+      ])).digest("hex")}`,
+      items: [{
+        workspaceId: "team-a", commissionProductId: "cp-1",
+        status: "migrated", code: "migrated", snapshot, snapshotHash,
+        catalogItemId: "claimed-item", pricingPolicyVersionId: "policy-1"
+      }]
+    },
+    entries: []
+  } as CommissionCatalogMigrationCommit;
+  const repository = new MysqlCatalogRepository(asPool(pool));
+  await assert.rejects(
+    () => repository.commitCommissionCatalogMigration(commit),
+    { code: "invalid_commission_catalog_migration_commit" }
+  );
+  assert.deepEqual(pool.connection.transactions, ["begin", "rollback", "release"]);
+  assert.equal(
+    pool.connection.calls.some((call) => /^(?:INSERT|UPDATE|DELETE)\b/u.test(call.sql)),
+    false
+  );
+});
+
 test("mysql catalog reads are workspace-scoped and clone parsed JSON", async () => {
   const pool = new FakePool();
   pool.enqueue([{

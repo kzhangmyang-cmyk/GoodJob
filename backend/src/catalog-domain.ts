@@ -143,6 +143,15 @@ export type CommissionCatalogSnapshotValue =
   | readonly ["hole"]
   | readonly ["array", readonly CommissionCatalogSnapshotValue[]]
   | readonly [
+      "map",
+      readonly (readonly [
+        CommissionCatalogSnapshotValue,
+        CommissionCatalogSnapshotValue
+      ])[]
+    ]
+  | readonly ["set", readonly CommissionCatalogSnapshotValue[]]
+  | readonly ["regexp", string, string, CommissionCatalogSnapshotValue]
+  | readonly [
       "object",
       readonly (readonly [string, CommissionCatalogSnapshotValue])[]
     ];

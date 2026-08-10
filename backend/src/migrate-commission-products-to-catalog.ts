@@ -1,4 +1,6 @@
 import mysql from "mysql2/promise";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import {
   MysqlCatalogRepository,
   ensureCatalogMysqlSchema
@@ -37,15 +39,15 @@ export function parseCommissionCatalogMigrationArguments(
       ? argument.slice(separator + 1)
       : arguments_[index + 1];
     if (rawValue === undefined) throw new Error(`missing --${name}`);
-    if (separator < 0) {
-      if (rawValue.startsWith("-")) {
-        throw new Error(`flag-looking value for --${name}`);
-      }
-      index += 1;
-    }
     const value = rawValue.trim();
     if (!value) throw new Error(`blank --${name}`);
+    if (value.startsWith("-")) {
+      throw new Error(`flag-looking value for --${name}`);
+    }
     if (value === "all") throw new Error(`invalid --${name}`);
+    if (separator < 0) {
+      index += 1;
+    }
     values.set(typedName, value);
   }
   for (const name of CLI_ARGUMENTS) {
@@ -69,13 +71,23 @@ function databaseUrl(): string {
   return configured;
 }
 
-function iso(value: unknown): string {
-  if (value instanceof Date) return value.toISOString();
-  const text = String(value);
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,3})?$/u.test(text)) {
-    return new Date(`${text.replace(" ", "T")}Z`).toISOString();
-  }
-  return new Date(text).toISOString();
+export function commissionProductMigrationSourceFromRow(
+  row: Record<string, unknown>
+): CommissionProductMigrationSource {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    category: String(row.category ?? ""),
+    model: String(row.model ?? ""),
+    currency: String(row.currency),
+    defaultPrice: row.default_price,
+    costPrice: row.cost_price,
+    status: row.status === "active" ? "active" : "disabled",
+    remark: String(row.remark ?? ""),
+    ownerId: String(row.owner_id),
+    teamId: String(row.team_id),
+    updatedAt: row.updated_at
+  };
 }
 
 async function main(): Promise<void> {
@@ -101,22 +113,8 @@ async function main(): Promise<void> {
            ORDER BY id`,
           [workspace]
         );
-        return (rows as Array<Record<string, unknown>>).map(
-          (row): CommissionProductMigrationSource => ({
-          id: String(row.id),
-          name: String(row.name),
-          category: String(row.category ?? ""),
-          model: String(row.model ?? ""),
-          currency: String(row.currency),
-          defaultPrice: row.default_price,
-          costPrice: row.cost_price,
-          status: row.status === "active" ? "active" : "disabled",
-          remark: String(row.remark ?? ""),
-          ownerId: String(row.owner_id),
-          teamId: String(row.team_id),
-          updatedAt: iso(row.updated_at)
-          })
-        );
+        return (rows as Array<Record<string, unknown>>)
+          .map(commissionProductMigrationSourceFromRow);
       }
     });
     const run = await service.execute(workspaceId, actorId, idempotencyKey);
@@ -137,4 +135,7 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (process.argv[1]
+  && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
+}

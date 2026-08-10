@@ -21,10 +21,11 @@ import type {
 
 export type CommissionProductMigrationSource = Omit<
   CommissionProduct,
-  "defaultPrice" | "costPrice"
+  "defaultPrice" | "costPrice" | "updatedAt"
 > & {
   defaultPrice: unknown;
   costPrice: unknown;
+  updatedAt: unknown;
 };
 
 export interface CommissionCatalogMigrationDependencies {
@@ -75,8 +76,14 @@ function normalizedSnapshot(
   if (typeof value === "symbol" || typeof value === "function") {
     throw migrationError("unsupported_commission_product_snapshot_value");
   }
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    throw migrationError("unsupported_commission_product_snapshot_value");
+  }
   if (value instanceof Date) {
-    const instant = value.toISOString();
+    if (Object.keys(value).length > 0) {
+      throw migrationError("unsupported_commission_product_snapshot_value");
+    }
+    const instant = Number.isNaN(value.getTime()) ? "Invalid Date" : value.toISOString();
     return ["date", instant];
   }
   if (ancestors.has(value)) {
@@ -92,6 +99,44 @@ function normalizedSnapshot(
           : ["hole"]);
       }
       return ["array", items];
+    }
+    if (value instanceof Map) {
+      if (Object.keys(value).length > 0) {
+        throw migrationError("unsupported_commission_product_snapshot_value");
+      }
+      const entries = [...value.entries()].map(([key, nested]) => [
+        normalizedSnapshot(key, ancestors),
+        normalizedSnapshot(nested, ancestors)
+      ] as const);
+      entries.sort((left, right) => compareCodePoint(
+        JSON.stringify(left), JSON.stringify(right)
+      ));
+      return ["map", entries];
+    }
+    if (value instanceof Set) {
+      if (Object.keys(value).length > 0) {
+        throw migrationError("unsupported_commission_product_snapshot_value");
+      }
+      const items = [...value].map((nested) => normalizedSnapshot(nested, ancestors));
+      items.sort((left, right) => compareCodePoint(
+        JSON.stringify(left), JSON.stringify(right)
+      ));
+      return ["set", items];
+    }
+    if (value instanceof RegExp) {
+      if (Object.keys(value).length > 0) {
+        throw migrationError("unsupported_commission_product_snapshot_value");
+      }
+      return [
+        "regexp",
+        value.source,
+        value.flags,
+        normalizedSnapshot(value.lastIndex, ancestors)
+      ];
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== null && prototype !== Object.prototype) {
+      throw migrationError("unsupported_commission_product_snapshot_value");
     }
     const record = value as Record<string, unknown>;
     const entries = Object.keys(record)
@@ -310,7 +355,6 @@ export class CommissionCatalogMigrationService {
   private async workspaceProducts(workspaceId: string): Promise<PreparedProduct[]> {
     const products = (await this.products(workspaceId))
       .filter((product) => product.teamId === workspaceId)
-      .map((product) => ({ ...product }))
       .sort((left, right) => compareCodePoint(left.id, right.id));
     const ids = new Set<string>();
     for (const product of products) {
