@@ -14,6 +14,7 @@ test("MySQL schema owns all quote streams, closed version authority, and concurr
   const schema = QUOTE_MYSQL_SCHEMA_STATEMENTS.join("\n").toLowerCase();
   for (const table of [
     "quote_cases", "commercial_binding_snapshots", "quote_versions",
+    "quote_preview_evidence",
     "quote_version_line_snapshots", "quote_version_gift_snapshots",
     "quote_version_package_snapshots", "quote_lifecycle_events",
     "quote_approvals", "deal_authoritative_quotes",

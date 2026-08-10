@@ -1,5 +1,11 @@
+import { createHash } from "node:crypto";
+import { canonicalJsonStringify } from "./canonical-json.js";
 import type { ProbabilityAssessmentV2 } from "./probability-assessment.js";
 import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js";
+import type {
+  QuoteCalculationResult,
+  QuotePreviewIdentity
+} from "./quote-domain.js";
 import {
   assertConcreteGrowthWorkspaceId,
   assertGrowthTemporalBarrier,
@@ -96,6 +102,71 @@ export interface QuoteApproval {
   readonly reason: string | null;
 }
 
+export interface QuoteSubjectEvidenceSnapshot {
+  readonly candidateId: string | null;
+  readonly customerId: string | null;
+  readonly dealId: string | null;
+}
+
+export interface QuotePreviewEvidenceRecord {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly quoteCaseId: string;
+  readonly quoteCaseRevision: number;
+  readonly salesOwnerActorId: string;
+  readonly subjectEvidence: QuoteSubjectEvidenceSnapshot;
+  readonly createdBy: string;
+  readonly requestHash: string;
+  readonly stableCommandHash: `sha256:${string}`;
+  readonly previewIdentity: Readonly<QuotePreviewIdentity>;
+  readonly frozenCalculationResult: Readonly<QuoteCalculationResult>;
+  readonly inputSnapshotHash: `sha256:${string}`;
+  readonly calculationHash: `sha256:${string}`;
+  readonly effectiveAt: string;
+  readonly recordedAt: string;
+  readonly temporalSequence: number;
+  readonly evidenceHash: `sha256:${string}`;
+}
+
+export interface AppendQuotePreviewEvidenceCommand {
+  readonly workspaceId: string;
+  readonly quoteCaseId: string;
+  readonly expectedQuoteCaseRevision: number;
+  readonly createdBy: string;
+  readonly requestHash: string;
+  readonly stableCommandHash: `sha256:${string}`;
+  readonly effectiveAt: string;
+  readonly calculated: QuoteCalculationResult;
+}
+
+export interface AppendQuoteVersionCommand {
+  readonly workspaceId: string;
+  readonly quoteCaseId: string;
+  readonly expectedQuoteCaseRevision: number;
+  readonly stableCommandHash: `sha256:${string}`;
+  readonly versionKind: "draft" | "formal";
+  readonly sourceDraftVersionId: string | null;
+  readonly effectiveAt: string;
+  readonly calculated: QuoteCalculationResult;
+  readonly probabilityAssessmentSnapshot: ProbabilityAssessmentV2 | null;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly requestHash: string;
+  readonly approval?: Readonly<{
+    approvalKind: QuoteApproval["approvalKind"];
+    requiredCapabilities: readonly string[];
+    triggeredRules: readonly string[];
+    pricingPolicyVersionId: string;
+    policySnapshotHash: `sha256:${string}`;
+    capabilityRegistryVersion: string;
+  }>;
+}
+
+export interface AppendQuoteVersionResult {
+  readonly version: QuoteVersion;
+  readonly approval: QuoteApproval | null;
+}
+
 export interface QuotePublicationOperation {
   readonly id: string;
   readonly workspaceId: string;
@@ -169,6 +240,36 @@ export interface QuoteRepository {
   bindCaseDeal(command: BindQuoteCaseDealCommand): Promise<QuoteCaseCommandResult>;
   closeCase(command: CloseQuoteCaseCommand): Promise<QuoteCaseCommandResult>;
   cancelCase(command: CancelQuoteCaseCommand): Promise<QuoteCaseCommandResult>;
+  assertCaseAccessible(
+    workspaceId: string,
+    id: string,
+    actorId: string
+  ): Promise<QuoteCase>;
+  getVersion(workspaceId: string, id: string): Promise<QuoteVersion | null>;
+  listVersions(workspaceId: string, quoteCaseId: string): Promise<readonly QuoteVersion[]>;
+  findPreviewEvidence(
+    workspaceId: string,
+    id: string
+  ): Promise<QuotePreviewEvidenceRecord | null>;
+  findPreviewEvidenceByStableCommandHash(
+    workspaceId: string,
+    stableCommandHash: string
+  ): Promise<QuotePreviewEvidenceRecord | null>;
+  appendOrGetPreviewEvidence(
+    command: AppendQuotePreviewEvidenceCommand
+  ): Promise<QuotePreviewEvidenceRecord>;
+  findDraftByStableCommandHash(
+    workspaceId: string,
+    stableCommandHash: string
+  ): Promise<QuoteVersion | null>;
+  appendVersionFromCalculation(
+    command: AppendQuoteVersionCommand
+  ): Promise<AppendQuoteVersionResult>;
+  getApproval(workspaceId: string, id: string): Promise<QuoteApproval | null>;
+  findApprovalByQuoteVersion(
+    workspaceId: string,
+    quoteVersionId: string
+  ): Promise<QuoteApproval | null>;
 }
 
 interface Receipt {
@@ -202,7 +303,153 @@ function validateVersion(version: QuoteVersion): QuoteVersion {
     : Boolean(version.sourceDraftVersionId)
       && version.probabilityAssessmentSnapshot !== null;
   if (!valid) throw quoteError("invalid_quote_version_authority");
-  return Object.freeze(structuredClone(version));
+  return immutableQuoteValue(structuredClone(version));
+}
+
+export function immutableQuoteValue<T>(value: T): T {
+  if (!value || typeof value !== "object") return value;
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    immutableQuoteValue(child);
+  }
+  return Object.freeze(value);
+}
+
+function hash(value: unknown): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(canonicalJsonStringify(value) ?? "")
+    .digest("hex")}`;
+}
+
+export function snapshotQuoteCalculation(
+  result: QuoteCalculationResult
+): QuoteCalculationResult {
+  return immutableQuoteValue(structuredClone({
+    ...result,
+    offeredLineAmountMinor: result.offeredLineAmountMinor,
+    diagnosticNetProductAmountMinor: result.diagnosticNetProductAmountMinor,
+    diagnosticQuotedAmountMinor: result.diagnosticQuotedAmountMinor,
+    surchargeMinor: result.surchargeMinor,
+    absoluteFloorAmountMinor: result.absoluteFloorAmountMinor,
+    lineStandardCostMinor: result.lineStandardCostMinor,
+    giftCostMinor: result.giftCostMinor,
+    minimumMarginPriceMinor: result.minimumMarginPriceMinor,
+    lineSnapshot: result.lineSnapshot,
+    packageSnapshot: result.packageSnapshot,
+    giftSnapshots: result.giftSnapshots,
+    giftPolicySnapshots: result.giftPolicySnapshots,
+    pricingPolicySnapshot: result.pricingPolicySnapshot,
+    inputSnapshot: result.inputSnapshot,
+    inputSnapshotHash: result.inputSnapshotHash,
+    calculationHash: result.calculationHash,
+    commercialAmountHash: result.commercialAmountHash
+  })) as QuoteCalculationResult;
+}
+
+export function quoteSubjectEvidence(
+  quoteCase: QuoteCase
+): QuoteSubjectEvidenceSnapshot {
+  const subject = immutableQuoteValue({
+    candidateId: quoteCase.candidateId,
+    customerId: quoteCase.customerId,
+    dealId: quoteCase.dealId
+  });
+  if (!subject.candidateId && !subject.customerId && !subject.dealId) {
+    throw quoteError("quote_case_subject_required");
+  }
+  const binding = quoteCase.commercialBindingSnapshot;
+  if (binding && (subject.candidateId !== binding.candidateId
+    || subject.customerId !== binding.customerId
+    || subject.dealId !== binding.dealId)) {
+    throw quoteError("commercial_binding_authority_mismatch");
+  }
+  return subject;
+}
+
+export function createQuoteVersionFromCalculation(input: Readonly<{
+  id: string;
+  quoteCase: QuoteCase;
+  version: number;
+  versionKind: "draft" | "formal";
+  sourceDraftVersionId: string | null;
+  probabilityAssessmentSnapshot: ProbabilityAssessmentV2 | null;
+  calculated: QuoteCalculationResult;
+  actorId: string;
+  effectiveAt: string;
+  recordedAt: string;
+  temporalSequence: number;
+  stableCommandHash: `sha256:${string}`;
+  requestHash: string;
+}>): QuoteVersion {
+  const result = input.calculated;
+  if (result.amountState !== "actionable" || result.commercialAmountHash === null) {
+    throw quoteError("quote_not_actionable");
+  }
+  const { workspaceId: _workspaceId, ...transportInput } = result.inputSnapshot;
+  const version: QuoteVersion = {
+    amountVisibility: "full",
+    id: input.id,
+    workspaceId: input.quoteCase.workspaceId,
+    quoteCaseId: input.quoteCase.id,
+    version: input.version,
+    lifecycleRevision: 1,
+    versionKind: input.versionKind,
+    sourceDraftVersionId: input.sourceDraftVersionId,
+    currency: result.currency,
+    lineItems: [{
+      catalogItemId: result.lineSnapshot.catalogItemId,
+      pricingPolicyVersionId: result.lineSnapshot.pricingPolicyVersionId,
+      packageVersionId: result.lineSnapshot.packageVersionId,
+      quantityMicros: result.lineSnapshot.quantityMicros,
+      offeredUnitPriceMinor: result.lineSnapshot.offeredUnitPriceMinor,
+      lineAmountMinor: result.lineSnapshot.offeredLineAmountMinor,
+      standardCostMinor: result.lineSnapshot.lineStandardCostMinor
+    }],
+    customerTargetPriceMinor: result.inputSnapshot.customerTargetPriceMinor,
+    discountMinor: result.inputSnapshot.orderDiscountMinor,
+    surchargeMinor: result.surchargeMinor,
+    requiredSurchargeMinor: result.requiredSurchargeMinor,
+    paymentTerms: { days: result.inputSnapshot.paymentTermDays },
+    giftItems: result.giftSnapshots.map((gift) => ({
+      catalogItemId: gift.catalogItemId,
+      quantityMicros: gift.quantityMicros,
+      standardCostMinor: gift.standardCostMinor
+    })),
+    listAmountMinor: result.listAmountMinor,
+    netProductAmountMinor: result.netProductAmountMinor,
+    quotedAmountMinor: result.quotedAmountMinor,
+    estimatedFulfillmentCostMinor: result.estimatedFulfillmentCostMinor,
+    estimatedSalesCostMinor: result.estimatedSalesCostMinor,
+    estimatedServiceCostMinor: result.estimatedServiceCostMinor,
+    estimatedGrossProfitMinor: result.estimatedGrossProfitMinor,
+    estimatedContributionMinor: result.estimatedContributionMinor,
+    discountBps: result.discountBps,
+    grossMarginBps: result.grossMarginBps,
+    approvalReasons: result.gate.reasons.map((reason) => reason.code),
+    pricingPolicySnapshot: structuredClone(result.pricingPolicySnapshot),
+    packageSnapshot: result.packageSnapshot
+      ? structuredClone(result.packageSnapshot) : null,
+    probabilityAssessmentSnapshot: input.probabilityAssessmentSnapshot
+      ? structuredClone(input.probabilityAssessmentSnapshot) : null,
+    previewIdentity: structuredClone(result.previewIdentity),
+    commercialAmountHash: result.commercialAmountHash,
+    inputSnapshot: structuredClone(transportInput),
+    inputSnapshotHash: result.inputSnapshotHash,
+    calculationHash: result.calculationHash,
+    gate: structuredClone(result.gate),
+    salesOwnerActorId: input.quoteCase.assignedTo,
+    subjectEvidence: quoteSubjectEvidence(input.quoteCase),
+    commercialBindingSnapshot: input.quoteCase.commercialBindingSnapshot
+      ? structuredClone(input.quoteCase.commercialBindingSnapshot) : null,
+    stableCommandHash: input.stableCommandHash,
+    requestHash: input.requestHash,
+    status: input.versionKind === "draft" ? "draft" : "submitted",
+    createdBy: input.actorId,
+    createdAt: input.recordedAt,
+    effectiveAt: input.effectiveAt,
+    recordedAt: input.recordedAt,
+    temporalSequence: input.temporalSequence
+  };
+  return validateVersion(immutableQuoteValue(version));
 }
 
 export interface InMemoryQuoteRepositorySeed {
@@ -214,6 +461,9 @@ export class InMemoryQuoteRepository implements QuoteRepository {
   private readonly cases = new Map<string, QuoteCase>();
   private readonly versions = new Map<string, QuoteVersion>();
   private readonly lifecycleEvents: QuoteLifecycleEvent[] = [];
+  private readonly previewEvidence = new Map<string, QuotePreviewEvidenceRecord>();
+  private readonly previewByStableHash = new Map<string, string>();
+  private readonly approvals = new Map<string, QuoteApproval>();
   private readonly bindingSnapshots = new Map<string, CommercialBindingSnapshot>();
   private readonly boundAssessments = new Map<string, ProbabilityAssessmentV2>();
   private readonly dealAuthorities = new Map<string, DealAuthoritativeQuote>();
@@ -259,6 +509,9 @@ export class InMemoryQuoteRepository implements QuoteRepository {
     return {
       cases: new Map(this.cases), versions: new Map(this.versions),
       lifecycleEvents: [...this.lifecycleEvents],
+      previewEvidence: new Map(this.previewEvidence),
+      previewByStableHash: new Map(this.previewByStableHash),
+      approvals: new Map(this.approvals),
       bindingSnapshots: new Map(this.bindingSnapshots),
       boundAssessments: new Map(this.boundAssessments),
       dealAuthorities: new Map(this.dealAuthorities),
@@ -275,6 +528,9 @@ export class InMemoryQuoteRepository implements QuoteRepository {
     restoreMap(this.versions, snapshot.versions);
     restoreMap(this.bindingSnapshots, snapshot.bindingSnapshots);
     restoreMap(this.boundAssessments, snapshot.boundAssessments);
+    restoreMap(this.previewEvidence, snapshot.previewEvidence);
+    restoreMap(this.previewByStableHash, snapshot.previewByStableHash);
+    restoreMap(this.approvals, snapshot.approvals);
     restoreMap(this.dealAuthorities, snapshot.dealAuthorities);
     restoreMap(this.receipts, snapshot.receipts);
     this.lifecycleEvents.splice(0, this.lifecycleEvents.length,
@@ -403,6 +659,243 @@ export class InMemoryQuoteRepository implements QuoteRepository {
       assertConcreteGrowthWorkspaceId(workspaceId),
       required(id, "invalid_quote_case_id")
     )) ?? null;
+  }
+
+  async assertCaseAccessible(workspaceId: string, id: string, actorId: string) {
+    required(actorId, "invalid_growth_actor_id");
+    const quoteCase = await this.findCase(workspaceId, id);
+    if (!quoteCase) throw quoteError("quote_case_not_found");
+    return quoteCase;
+  }
+
+  async getVersion(workspaceId: string, id: string) {
+    return this.versions.get(this.caseKey(
+      assertConcreteGrowthWorkspaceId(workspaceId),
+      required(id, "invalid_quote_version_id")
+    )) ?? null;
+  }
+
+  async getApproval(workspaceId: string, id: string) {
+    return this.approvals.get(this.caseKey(
+      assertConcreteGrowthWorkspaceId(workspaceId),
+      required(id, "invalid_quote_approval_id")
+    )) ?? null;
+  }
+
+  async findApprovalByQuoteVersion(workspaceId: string, quoteVersionId: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    return [...this.approvals.values()].find((row) =>
+      row.workspaceId === workspace
+      && row.quoteVersionId === quoteVersionId) ?? null;
+  }
+
+  async listVersions(workspaceId: string, quoteCaseId: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    required(quoteCaseId, "invalid_quote_case_id");
+    return Object.freeze([...this.versions.values()]
+      .filter((row) => row.workspaceId === workspace
+        && row.quoteCaseId === quoteCaseId)
+      .sort((left, right) => left.version - right.version));
+  }
+
+  async findPreviewEvidence(workspaceId: string, id: string) {
+    return this.previewEvidence.get(this.caseKey(
+      assertConcreteGrowthWorkspaceId(workspaceId),
+      required(id, "invalid_quote_preview_evidence_id")
+    )) ?? null;
+  }
+
+  async findPreviewEvidenceByStableCommandHash(
+    workspaceId: string,
+    stableCommandHash: string
+  ) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const evidenceId = this.previewByStableHash.get(this.caseKey(
+      workspace,
+      required(stableCommandHash, "invalid_quote_stable_command_hash")
+    ));
+    return evidenceId ? this.previewEvidence.get(this.caseKey(
+      workspace,
+      evidenceId
+    )) ?? null : null;
+  }
+
+  async appendOrGetPreviewEvidence(command: AppendQuotePreviewEvidenceCommand) {
+    const workspaceId = assertConcreteGrowthWorkspaceId(command.workspaceId);
+    return this.mutation(workspaceId, async (_tx, stamp) => {
+      const stableKey = this.caseKey(workspaceId, command.stableCommandHash);
+      const existingId = this.previewByStableHash.get(stableKey);
+      if (existingId) {
+        return this.previewEvidence.get(this.caseKey(workspaceId, existingId))!;
+      }
+      const quoteCase = this.cases.get(this.caseKey(
+        workspaceId,
+        required(command.quoteCaseId, "invalid_quote_case_id")
+      ));
+      if (!quoteCase) throw quoteError("quote_case_not_found");
+      if (quoteCase.status !== "open") throw quoteError("quote_case_not_open");
+      if (quoteCase.revision !== command.expectedQuoteCaseRevision) {
+        throw quoteError("revision_conflict");
+      }
+      const subjectEvidence = quoteSubjectEvidence(quoteCase);
+      const identity = {
+        workspaceId,
+        quoteCaseId: quoteCase.id,
+        quoteCaseRevision: quoteCase.revision,
+        salesOwnerActorId: quoteCase.assignedTo,
+        subjectEvidence,
+        createdBy: command.createdBy,
+        requestHash: command.requestHash,
+        stableCommandHash: command.stableCommandHash,
+        previewIdentity: command.calculated.previewIdentity,
+        inputSnapshotHash: command.calculated.inputSnapshotHash,
+        calculationHash: command.calculated.calculationHash,
+        effectiveAt: command.effectiveAt,
+        recordedAt: stamp.recordedAt,
+        temporalSequence: stamp.temporalSequence
+      };
+      const evidence: QuotePreviewEvidenceRecord = immutableQuoteValue({
+        id: `quote-preview-${command.stableCommandHash.slice(7)}`,
+        ...identity,
+        frozenCalculationResult: snapshotQuoteCalculation(command.calculated),
+        evidenceHash: hash({ schemaVersion: "quote-preview-evidence.v1", ...identity })
+      });
+      this.previewEvidence.set(this.caseKey(workspaceId, evidence.id), evidence);
+      this.previewByStableHash.set(stableKey, evidence.id);
+      return evidence;
+    });
+  }
+
+  async findDraftByStableCommandHash(
+    workspaceId: string,
+    stableCommandHash: string
+  ) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    return [...this.versions.values()].find((row) =>
+      row.workspaceId === workspace && row.versionKind === "draft"
+      && row.stableCommandHash === stableCommandHash) ?? null;
+  }
+
+  async appendVersionFromCalculation(
+    command: AppendQuoteVersionCommand
+  ): Promise<AppendQuoteVersionResult> {
+    const workspaceId = assertConcreteGrowthWorkspaceId(command.workspaceId);
+    return this.mutation(workspaceId, async (tx, versionStamp) => {
+      const existingStable = [...this.versions.values()].find((row) =>
+        row.workspaceId === workspaceId
+        && row.stableCommandHash === command.stableCommandHash);
+      if (existingStable) {
+        const approval = [...this.approvals.values()].find((row) =>
+          row.workspaceId === workspaceId
+          && row.quoteVersionId === existingStable.id) ?? null;
+        return { version: existingStable, approval };
+      }
+      const quoteCase = this.cases.get(this.caseKey(
+        workspaceId,
+        required(command.quoteCaseId, "invalid_quote_case_id")
+      ));
+      if (!quoteCase) throw quoteError("quote_case_not_found");
+      if (quoteCase.status !== "open") throw quoteError("quote_case_not_open");
+      if (command.versionKind === "draft"
+        && quoteCase.revision !== command.expectedQuoteCaseRevision) {
+        throw quoteError("revision_conflict");
+      }
+      if (command.versionKind === "draft"
+        && (command.sourceDraftVersionId !== null
+          || command.probabilityAssessmentSnapshot !== null)) {
+        throw quoteError("invalid_quote_version_authority");
+      }
+      let sourceDraft: QuoteVersion | null = null;
+      if (command.versionKind === "formal") {
+        if (!command.sourceDraftVersionId
+          || !command.probabilityAssessmentSnapshot || !command.approval) {
+          throw quoteError("invalid_quote_version_authority");
+        }
+        sourceDraft = this.versions.get(this.caseKey(
+          workspaceId,
+          command.sourceDraftVersionId
+        )) ?? null;
+        if (!sourceDraft || sourceDraft.quoteCaseId !== quoteCase.id
+          || sourceDraft.versionKind !== "draft") {
+          throw quoteError("quote_draft_not_found");
+        }
+        if (sourceDraft.lifecycleRevision !== command.expectedQuoteCaseRevision) {
+          throw quoteError("revision_conflict");
+        }
+        const existingFormal = [...this.versions.values()].find((row) =>
+          row.workspaceId === workspaceId
+          && row.sourceDraftVersionId === sourceDraft!.id);
+        if (existingFormal) throw quoteError("quote_draft_already_submitted");
+      }
+      const nextVersion = Math.max(0, ...[...this.versions.values()]
+        .filter((row) => row.workspaceId === workspaceId
+          && row.quoteCaseId === quoteCase.id)
+        .map((row) => row.version)) + 1;
+      const id = `${command.versionKind === "draft" ? "quote-draft" : "quote-formal"}-${command.stableCommandHash.slice(7)}`;
+      const version = createQuoteVersionFromCalculation({
+        id, quoteCase, version: nextVersion,
+        versionKind: command.versionKind,
+        sourceDraftVersionId: sourceDraft?.id ?? null,
+        probabilityAssessmentSnapshot: command.probabilityAssessmentSnapshot,
+        calculated: command.calculated, actorId: command.actorId,
+        effectiveAt: command.effectiveAt,
+        recordedAt: versionStamp.recordedAt,
+        temporalSequence: versionStamp.temporalSequence,
+        stableCommandHash: command.stableCommandHash,
+        requestHash: command.requestHash
+      });
+      this.versions.set(this.caseKey(workspaceId, version.id), version);
+      let approval: QuoteApproval | null = null;
+      if (command.versionKind === "formal") {
+        const lifecycleStamp = await this.temporalBarrier.allocateAppend(
+          tx,
+          workspaceId
+        );
+        this.lifecycleEvents.push(immutableQuoteValue({
+          id: `quote-lifecycle-${workspaceId}-${lifecycleStamp.temporalSequence}`,
+          workspaceId,
+          quoteCaseId: quoteCase.id,
+          quoteVersionId: version.id,
+          revision: 1,
+          fromStatus: null,
+          toStatus: "submitted",
+          eventType: "version_transition",
+          actorId: command.actorId,
+          ...lifecycleStamp
+        }));
+        const approvalStamp = await this.temporalBarrier.allocateAppend(
+          tx,
+          workspaceId
+        );
+        approval = immutableQuoteValue({
+          id: `quote-approval-${workspaceId}-${approvalStamp.temporalSequence}`,
+          workspaceId,
+          quoteVersionId: version.id,
+          status: "pending",
+          approvalKind: command.approval!.approvalKind,
+          requiredCapabilities: [...command.approval!.requiredCapabilities],
+          triggeredRules: [...command.approval!.triggeredRules],
+          pricingPolicyVersionId: command.approval!.pricingPolicyVersionId,
+          policySnapshotHash: command.approval!.policySnapshotHash,
+          capabilityRegistryVersion: command.approval!.capabilityRegistryVersion,
+          submittedBy: command.actorId,
+          submittedAt: approvalStamp.recordedAt,
+          decidedBy: null,
+          decidedAt: null,
+          reason: null
+        });
+        this.approvals.set(this.caseKey(workspaceId, approval.id), approval);
+      }
+      const storedCase = immutableCase({
+        ...quoteCase,
+        currentDraftVersionId: command.versionKind === "draft"
+          ? version.id : quoteCase.currentDraftVersionId,
+        revision: quoteCase.revision + 1,
+        updatedAt: versionStamp.recordedAt
+      });
+      this.cases.set(this.caseKey(workspaceId, quoteCase.id), storedCase);
+      return { version, approval };
+    });
   }
 
   async createCase(command: CreateQuoteCaseCommand) {
@@ -625,6 +1118,37 @@ export class InMemoryQuoteRepository implements QuoteRepository {
 
   async countCases(workspaceId: string) {
     return [...this.cases.values()].filter((row) =>
+      row.workspaceId === workspaceId).length;
+  }
+
+  async countVersions(workspaceId: string, quoteCaseId: string) {
+    return (await this.listVersions(workspaceId, quoteCaseId)).length;
+  }
+
+  async countFormalVersions(workspaceId: string, quoteCaseId: string) {
+    return (await this.listVersions(workspaceId, quoteCaseId)).filter((row) =>
+      row.versionKind === "formal").length;
+  }
+
+  async countPreviewEvidence(workspaceId: string, quoteCaseId: string) {
+    return [...this.previewEvidence.values()].filter((row) =>
+      row.workspaceId === workspaceId && row.quoteCaseId === quoteCaseId).length;
+  }
+
+  async listPreviewEvidence(
+    workspaceId: string,
+    quoteCaseId: string,
+    inputSnapshotHash?: string,
+    calculationHash?: string
+  ) {
+    return [...this.previewEvidence.values()].filter((row) =>
+      row.workspaceId === workspaceId && row.quoteCaseId === quoteCaseId
+      && (!inputSnapshotHash || row.inputSnapshotHash === inputSnapshotHash)
+      && (!calculationHash || row.calculationHash === calculationHash));
+  }
+
+  async countApprovals(workspaceId: string) {
+    return [...this.approvals.values()].filter((row) =>
       row.workspaceId === workspaceId).length;
   }
 

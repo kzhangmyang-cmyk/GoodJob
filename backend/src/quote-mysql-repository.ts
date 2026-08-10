@@ -9,16 +9,28 @@ import {
   assertGrowthTemporalBarrier,
   type GrowthTemporalBarrier
 } from "./growth-temporal-barrier.js";
-import type {
-  BindQuoteCaseDealCommand,
-  CancelQuoteCaseCommand,
-  CloseQuoteCaseCommand,
-  CreateQuoteCaseCommand,
-  QuoteCase,
-  QuoteCaseCommandResult,
-  QuoteCaseListQuery,
-  QuoteRepository
+import {
+  createQuoteVersionFromCalculation,
+  immutableQuoteValue,
+  quoteSubjectEvidence,
+  snapshotQuoteCalculation,
+  type BindQuoteCaseDealCommand,
+  type AppendQuotePreviewEvidenceCommand,
+  type AppendQuoteVersionCommand,
+  type AppendQuoteVersionResult,
+  type CancelQuoteCaseCommand,
+  type CloseQuoteCaseCommand,
+  type CreateQuoteCaseCommand,
+  type QuoteCase,
+  type QuoteCaseCommandResult,
+  type QuoteCaseListQuery,
+  type QuoteRepository,
+  type QuoteVersion,
+  type QuotePreviewEvidenceRecord,
+  type QuoteApproval
 } from "./quote-repository.js";
+import { createHash } from "node:crypto";
+import { canonicalJsonStringify } from "./canonical-json.js";
 import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js";
 import type { OutcomeAttributionInput } from "./acquisition-domain.js";
 
@@ -90,14 +102,38 @@ export const QUOTE_MYSQL_SCHEMA_STATEMENTS = [
     created_at DATETIME(3) NOT NULL,
     recorded_at DATETIME(3) NOT NULL,
     temporal_sequence BIGINT UNSIGNED NOT NULL,
+    stable_command_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    request_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     PRIMARY KEY (workspace_id,id),
     UNIQUE KEY uk_quote_case_version (workspace_id,quote_case_id,version),
+    UNIQUE KEY uk_quote_version_stable (workspace_id,stable_command_hash),
     UNIQUE KEY uk_quote_formal_source_draft (workspace_id,source_draft_version_id),
     CONSTRAINT chk_quote_version_authority CHECK ((version_kind = 'draft'
       AND source_draft_version_id IS NULL AND probability_assessment_json IS NULL)
       OR (version_kind = 'formal' AND source_draft_version_id IS NOT NULL
         AND probability_assessment_json IS NOT NULL)),
     CONSTRAINT chk_quote_version_json CHECK (JSON_VALID(frozen_version_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS quote_preview_evidence (
+    workspace_id VARCHAR(191) NOT NULL,
+    id VARCHAR(191) NOT NULL,
+    quote_case_id VARCHAR(191) NOT NULL,
+    quote_case_revision BIGINT UNSIGNED NOT NULL,
+    created_by VARCHAR(191) NOT NULL,
+    request_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    stable_command_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    input_snapshot_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    calculation_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    evidence_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    effective_at DATETIME(3) NOT NULL,
+    recorded_at DATETIME(3) NOT NULL,
+    temporal_sequence BIGINT UNSIGNED NOT NULL,
+    evidence_json JSON NOT NULL,
+    PRIMARY KEY (workspace_id,id),
+    UNIQUE KEY uk_quote_preview_stable (workspace_id,stable_command_hash),
+    KEY idx_quote_preview_identity
+      (workspace_id,quote_case_id,input_snapshot_hash,calculation_hash),
+    CONSTRAINT chk_quote_preview_json CHECK (JSON_VALID(evidence_json))
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS quote_version_line_snapshots (
     workspace_id VARCHAR(191) NOT NULL, quote_version_id VARCHAR(191) NOT NULL,
@@ -196,6 +232,26 @@ function quoteError(code: string): Error & { code: string } {
 
 function json<T>(value: unknown): T {
   return (typeof value === "string" ? JSON.parse(value) : value) as T;
+}
+
+function hash(value: unknown): `sha256:${string}` {
+  return `sha256:${createHash("sha256")
+    .update(canonicalJsonStringify(value) ?? "")
+    .digest("hex")}`;
+}
+
+function parseVersionRow(row: MysqlRow): QuoteVersion {
+  return immutableQuoteValue(json<QuoteVersion>(row.frozen_version_json));
+}
+
+function parseEvidenceRow(row: MysqlRow): QuotePreviewEvidenceRecord {
+  return immutableQuoteValue(
+    json<QuotePreviewEvidenceRecord>(row.evidence_json)
+  );
+}
+
+function parseApprovalRow(row: MysqlRow): QuoteApproval {
+  return immutableQuoteValue(json<QuoteApproval>(row.approval_json));
 }
 
 function bindingFromRow(row: MysqlRow): CommercialBindingSnapshot | null {
@@ -354,6 +410,335 @@ export class MysqlQuoteRepository implements QuoteRepository {
 
   findCase(workspaceId: string, id: string) {
     return this.load(this.pool, assertConcreteGrowthWorkspaceId(workspaceId), id);
+  }
+
+  async assertCaseAccessible(workspaceId: string, id: string, actorId: string) {
+    if (!actorId.trim()) throw quoteError("invalid_growth_actor_id");
+    const quoteCase = await this.findCase(workspaceId, id);
+    if (!quoteCase) throw quoteError("quote_case_not_found");
+    return quoteCase;
+  }
+
+  private async loadVersion(
+    connection: mysql.Pool | mysql.PoolConnection,
+    workspaceId: string,
+    id: string,
+    forUpdate = false
+  ) {
+    const [rows] = await connection.query(
+      `SELECT frozen_version_json FROM quote_versions
+       WHERE workspace_id = ? AND id = ?${forUpdate ? " FOR UPDATE" : ""}`,
+      [workspaceId, id]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseVersionRow(row) : null;
+  }
+
+  getVersion(workspaceId: string, id: string) {
+    return this.loadVersion(this.pool,
+      assertConcreteGrowthWorkspaceId(workspaceId), id);
+  }
+
+  async listVersions(workspaceId: string, quoteCaseId: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT frozen_version_json FROM quote_versions
+       WHERE workspace_id = ? AND quote_case_id = ? ORDER BY version`,
+      [workspace, quoteCaseId]
+    );
+    return Object.freeze((rows as MysqlRow[]).map(parseVersionRow));
+  }
+
+  private async loadEvidence(
+    connection: mysql.Pool | mysql.PoolConnection,
+    workspaceId: string,
+    column: "id" | "stable_command_hash",
+    value: string,
+    forUpdate = false
+  ) {
+    const [rows] = await connection.query(
+      `SELECT evidence_json FROM quote_preview_evidence
+       WHERE workspace_id = ? AND ${column} = ?${forUpdate ? " FOR UPDATE" : ""}`,
+      [workspaceId, value]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseEvidenceRow(row) : null;
+  }
+
+  findPreviewEvidence(workspaceId: string, id: string) {
+    return this.loadEvidence(this.pool,
+      assertConcreteGrowthWorkspaceId(workspaceId), "id", id);
+  }
+
+  findPreviewEvidenceByStableCommandHash(
+    workspaceId: string,
+    stableCommandHash: string
+  ) {
+    return this.loadEvidence(this.pool,
+      assertConcreteGrowthWorkspaceId(workspaceId),
+      "stable_command_hash", stableCommandHash);
+  }
+
+  async appendOrGetPreviewEvidence(command: AppendQuotePreviewEvidenceCommand) {
+    const workspace = assertConcreteGrowthWorkspaceId(command.workspaceId);
+    return this.transaction(async (connection, temporal) => {
+      const stamp = await this.temporalBarrier.allocateAppend(temporal, workspace);
+      const existing = await this.loadEvidence(connection, workspace,
+        "stable_command_hash", command.stableCommandHash, true);
+      if (existing) return existing;
+      const quoteCase = await this.load(connection, workspace,
+        command.quoteCaseId, true);
+      if (!quoteCase) throw quoteError("quote_case_not_found");
+      if (quoteCase.status !== "open") throw quoteError("quote_case_not_open");
+      if (quoteCase.revision !== command.expectedQuoteCaseRevision) {
+        throw quoteError("revision_conflict");
+      }
+      const subjectEvidence = quoteSubjectEvidence(quoteCase);
+      const identity = {
+        workspaceId: workspace, quoteCaseId: quoteCase.id,
+        quoteCaseRevision: quoteCase.revision,
+        salesOwnerActorId: quoteCase.assignedTo, subjectEvidence,
+        createdBy: command.createdBy, requestHash: command.requestHash,
+        stableCommandHash: command.stableCommandHash,
+        previewIdentity: command.calculated.previewIdentity,
+        inputSnapshotHash: command.calculated.inputSnapshotHash,
+        calculationHash: command.calculated.calculationHash,
+        effectiveAt: command.effectiveAt, ...stamp
+      };
+      const evidence: QuotePreviewEvidenceRecord = immutableQuoteValue({
+        id: `quote-preview-${command.stableCommandHash.slice(7)}`,
+        ...identity,
+        frozenCalculationResult: snapshotQuoteCalculation(command.calculated),
+        evidenceHash: hash({ schemaVersion: "quote-preview-evidence.v1", ...identity })
+      });
+      await connection.query(
+        `INSERT INTO quote_preview_evidence
+         (workspace_id,id,quote_case_id,quote_case_revision,created_by,
+          request_hash,stable_command_hash,input_snapshot_hash,calculation_hash,
+          evidence_hash,effective_at,recorded_at,temporal_sequence,evidence_json)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [workspace, evidence.id, evidence.quoteCaseId,
+          evidence.quoteCaseRevision, evidence.createdBy, evidence.requestHash,
+          evidence.stableCommandHash, evidence.inputSnapshotHash,
+          evidence.calculationHash, evidence.evidenceHash,
+          growthMysqlDate(evidence.effectiveAt), growthMysqlDate(evidence.recordedAt),
+          evidence.temporalSequence, JSON.stringify(evidence)]
+      );
+      return evidence;
+    });
+  }
+
+  async findDraftByStableCommandHash(workspaceId: string, stableCommandHash: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT frozen_version_json FROM quote_versions
+       WHERE workspace_id = ? AND stable_command_hash = ? AND version_kind = 'draft'`,
+      [workspace, stableCommandHash]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseVersionRow(row) : null;
+  }
+
+  async getApproval(workspaceId: string, id: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT approval_json FROM quote_approvals
+       WHERE workspace_id = ? AND id = ?`, [workspace, id]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseApprovalRow(row) : null;
+  }
+
+  async findApprovalByQuoteVersion(workspaceId: string, quoteVersionId: string) {
+    const workspace = assertConcreteGrowthWorkspaceId(workspaceId);
+    const [rows] = await this.pool.query(
+      `SELECT approval_json FROM quote_approvals
+       WHERE workspace_id = ? AND quote_version_id = ?
+       ORDER BY recorded_at DESC LIMIT 1`, [workspace, quoteVersionId]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseApprovalRow(row) : null;
+  }
+
+  async appendVersionFromCalculation(
+    command: AppendQuoteVersionCommand
+  ): Promise<AppendQuoteVersionResult> {
+    const workspace = assertConcreteGrowthWorkspaceId(command.workspaceId);
+    try {
+      return await this.transaction(async (connection, temporal) => {
+        const versionStamp = await this.temporalBarrier.allocateAppend(
+          temporal, workspace
+        );
+        const [stableRows] = await connection.query(
+          `SELECT frozen_version_json FROM quote_versions
+           WHERE workspace_id = ? AND stable_command_hash = ? FOR UPDATE`,
+          [workspace, command.stableCommandHash]
+        );
+        const stable = (stableRows as MysqlRow[])[0];
+        if (stable) {
+          const version = parseVersionRow(stable);
+          const [approvalRows] = await connection.query(
+            `SELECT approval_json FROM quote_approvals
+             WHERE workspace_id = ? AND quote_version_id = ? LIMIT 1`,
+            [workspace, version.id]
+          );
+          const approvalRow = (approvalRows as MysqlRow[])[0];
+          return { version,
+            approval: approvalRow ? parseApprovalRow(approvalRow) : null };
+        }
+        const quoteCase = await this.load(connection, workspace,
+          command.quoteCaseId, true);
+        if (!quoteCase) throw quoteError("quote_case_not_found");
+        if (quoteCase.status !== "open") throw quoteError("quote_case_not_open");
+        let sourceDraft: QuoteVersion | null = null;
+        if (command.versionKind === "draft") {
+          if (quoteCase.revision !== command.expectedQuoteCaseRevision) {
+            throw quoteError("revision_conflict");
+          }
+          if (command.sourceDraftVersionId !== null
+            || command.probabilityAssessmentSnapshot !== null) {
+            throw quoteError("invalid_quote_version_authority");
+          }
+        } else {
+          if (!command.sourceDraftVersionId
+            || !command.probabilityAssessmentSnapshot || !command.approval) {
+            throw quoteError("invalid_quote_version_authority");
+          }
+          sourceDraft = await this.loadVersion(connection, workspace,
+            command.sourceDraftVersionId, true);
+          if (!sourceDraft || sourceDraft.quoteCaseId !== quoteCase.id
+            || sourceDraft.versionKind !== "draft") {
+            throw quoteError("quote_draft_not_found");
+          }
+          if (sourceDraft.lifecycleRevision !== command.expectedQuoteCaseRevision) {
+            throw quoteError("revision_conflict");
+          }
+          const [formalRows] = await connection.query(
+            `SELECT id FROM quote_versions WHERE workspace_id = ?
+             AND source_draft_version_id = ? FOR UPDATE`,
+            [workspace, sourceDraft.id]
+          );
+          if ((formalRows as MysqlRow[]).length) {
+            throw quoteError("quote_draft_already_submitted");
+          }
+        }
+        const [tailRows] = await connection.query(
+          `SELECT COALESCE(MAX(version),0) AS version FROM quote_versions
+           WHERE workspace_id = ? AND quote_case_id = ? FOR UPDATE`,
+          [workspace, quoteCase.id]
+        );
+        const nextVersion = Number((tailRows as MysqlRow[])[0]!.version) + 1;
+        const id = `${command.versionKind === "draft" ? "quote-draft" : "quote-formal"}-${command.stableCommandHash.slice(7)}`;
+        const version = createQuoteVersionFromCalculation({
+          id, quoteCase, version: nextVersion, versionKind: command.versionKind,
+          sourceDraftVersionId: sourceDraft?.id ?? null,
+          probabilityAssessmentSnapshot: command.probabilityAssessmentSnapshot,
+          calculated: command.calculated, actorId: command.actorId,
+          effectiveAt: command.effectiveAt,
+          recordedAt: versionStamp.recordedAt,
+          temporalSequence: versionStamp.temporalSequence,
+          stableCommandHash: command.stableCommandHash,
+          requestHash: command.requestHash
+        });
+        await connection.query(
+          `INSERT INTO quote_versions
+           (workspace_id,id,quote_case_id,version,version_kind,
+            source_draft_version_id,probability_assessment_json,
+            frozen_version_json,effective_at,created_by,created_at,recorded_at,
+            temporal_sequence,stable_command_hash,request_hash)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [workspace, version.id, quoteCase.id, version.version,
+            version.versionKind, version.sourceDraftVersionId,
+            version.probabilityAssessmentSnapshot
+              ? JSON.stringify(version.probabilityAssessmentSnapshot) : null,
+            JSON.stringify(version), growthMysqlDate(version.effectiveAt),
+            version.createdBy, growthMysqlDate(version.createdAt),
+            growthMysqlDate(version.recordedAt), version.temporalSequence,
+            command.stableCommandHash, command.requestHash]
+        );
+        const lineItems = version.lineItems as readonly unknown[];
+        for (const [index, line] of lineItems.entries()) {
+          await connection.query(
+            `INSERT INTO quote_version_line_snapshots
+             (workspace_id,quote_version_id,line_number,snapshot_json)
+             VALUES (?,?,?,?)`, [workspace, version.id, index + 1,
+              JSON.stringify(line)]
+          );
+        }
+        const giftItems = version.giftItems as readonly unknown[];
+        for (const [index, gift] of giftItems.entries()) {
+          await connection.query(
+            `INSERT INTO quote_version_gift_snapshots
+             (workspace_id,quote_version_id,gift_number,snapshot_json)
+             VALUES (?,?,?,?)`, [workspace, version.id, index + 1,
+              JSON.stringify(gift)]
+          );
+        }
+        const packageSnapshot = version.packageSnapshot;
+        if (packageSnapshot && typeof packageSnapshot === "object") {
+          await connection.query(
+            `INSERT INTO quote_version_package_snapshots
+             (workspace_id,quote_version_id,package_version_id,snapshot_json)
+             VALUES (?,?,?,?)`, [workspace, version.id,
+              String(Reflect.get(packageSnapshot, "packageVersionId")),
+              JSON.stringify(packageSnapshot)]
+          );
+        }
+        let approval: QuoteApproval | null = null;
+        if (command.versionKind === "formal") {
+          const lifecycleStamp = await this.temporalBarrier.allocateAppend(
+            temporal, workspace
+          );
+          await this.insertLifecycle(connection, {
+            workspaceId: workspace, quoteCaseId: quoteCase.id,
+            quoteVersionId: version.id, revision: 1, fromStatus: null,
+            toStatus: "submitted", eventType: "version_transition",
+            actorId: command.actorId
+          }, lifecycleStamp);
+          const approvalStamp = await this.temporalBarrier.allocateAppend(
+            temporal, workspace
+          );
+          approval = immutableQuoteValue({
+            id: `quote-approval-${workspace}-${approvalStamp.temporalSequence}`,
+            workspaceId: workspace, quoteVersionId: version.id,
+            status: "pending", approvalKind: command.approval!.approvalKind,
+            requiredCapabilities: [...command.approval!.requiredCapabilities],
+            triggeredRules: [...command.approval!.triggeredRules],
+            pricingPolicyVersionId: command.approval!.pricingPolicyVersionId,
+            policySnapshotHash: command.approval!.policySnapshotHash,
+            capabilityRegistryVersion: command.approval!.capabilityRegistryVersion,
+            submittedBy: command.actorId, submittedAt: approvalStamp.recordedAt,
+            decidedBy: null, decidedAt: null, reason: null
+          });
+          await connection.query(
+            `INSERT INTO quote_approvals
+             (workspace_id,id,quote_version_id,status,approval_kind,
+              approval_json,recorded_at,temporal_sequence)
+             VALUES (?,?,?,'pending',?,?,?,?)`,
+            [workspace, approval.id, version.id, approval.approvalKind,
+              JSON.stringify(approval), growthMysqlDate(approvalStamp.recordedAt),
+              approvalStamp.temporalSequence]
+          );
+        }
+        const [updated] = await connection.query(
+          `UPDATE quote_cases SET current_draft_version_id = ?,
+           revision = revision + 1,updated_at = ?
+           WHERE workspace_id = ? AND id = ? AND revision = ?`,
+          [command.versionKind === "draft" ? version.id
+            : quoteCase.currentDraftVersionId,
+            growthMysqlDate(versionStamp.recordedAt), workspace, quoteCase.id,
+            quoteCase.revision]
+        );
+        if (affectedRows(updated) !== 1) throw quoteError("revision_conflict");
+        return { version, approval };
+      });
+    } catch (error) {
+      if (duplicate(error)) {
+        throw quoteError(command.versionKind === "formal"
+          ? "quote_draft_already_submitted" : "revision_conflict");
+      }
+      throw error;
+    }
   }
 
   async createCase(command: CreateQuoteCaseCommand) {

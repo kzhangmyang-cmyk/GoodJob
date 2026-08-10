@@ -17,6 +17,10 @@ import { InMemoryQuoteRepository, type QuoteCase, type QuoteVersion } from "./qu
 import { InMemoryGrowthHttpIdempotencyRepository, type GrowthHttpIdempotencyRepository } from "./growth-http-idempotency-repository.js";
 import { createGrowthWorkspaceMemberAssignabilityReader } from "./growth-workspace-member-assignability.js";
 import { QuoteCaseService } from "./quote-case-service.js";
+import { canonicalGrowthRequestHash } from "./growth-http-preconditions.js";
+import { QuoteCalculationService } from "./quote-calculation-service.js";
+import { QuoteVersionService, type QuotePreviewInput } from "./quote-version-service.js";
+import { createQuoteVersionFromCalculation } from "./quote-repository.js";
 
 const FIXED_INSTANT = "2026-08-01T00:00:00.000Z";
 
@@ -135,6 +139,35 @@ export function commandContextFixture(
     idempotencyKey: "quote-command-1",
     requestHash: `sha256:${"1".padStart(64, "0")}`,
     expectedRevision: null,
+    ...overrides
+  });
+}
+
+export const managerContext = workspaceContextFixture(
+  "manager",
+  undefined,
+  "manager-1"
+);
+
+export function previewCommand(
+  caseId: string,
+  idempotencyKey: string,
+  overrides: Partial<CommandContext> = {}
+): CommandContext {
+  const expectedRevision = overrides.expectedRevision === undefined
+    ? 1 : overrides.expectedRevision;
+  const workspace = overrides.workspace
+    ?? workspaceContextFixture("sales", undefined, overrides.actorId ?? "sales-a");
+  const actorId = overrides.actorId ?? workspace.actorId;
+  return commandContextFixture({
+    workspace, actorId, idempotencyKey, expectedRevision,
+    requestHash: canonicalGrowthRequestHash({
+      method: "POST",
+      canonicalPath: "/api/v1/quotes/cases/:id/preview",
+      pathParams: { id: caseId },
+      payload: {},
+      expectedRevision
+    }),
     ...overrides
   });
 }
@@ -381,5 +414,159 @@ export function quoteCaseFixture(options: QuoteCaseFixtureOptions = {}) {
         ...overrides
       } as Partial<CommandContext>);
     }
+  };
+}
+
+export interface QuoteVersionFixtureOptions {
+  readonly cases?: readonly string[];
+  readonly caseRevision?: number;
+  readonly boundDeal?: boolean;
+  readonly assessment?: "legacy_percent_precision" | null;
+  readonly closeProbabilityBps?: number;
+  readonly now?: string;
+  readonly quoteEffectiveAt?: string;
+  readonly policyWindow?: readonly [string, string];
+  readonly packageWindow?: readonly [string, string];
+  readonly failHttpIdempotencyCompleteOnce?: boolean;
+  readonly previousPreviewEvidenceRecordedAt?: string;
+  readonly previewAppendServerNow?: string;
+  readonly pauseDraftAfterCaseLock?: boolean;
+}
+
+export function quoteVersionFixture(options: QuoteVersionFixtureOptions = {}) {
+  const initialNow = options.now ?? options.quoteEffectiveAt ?? FIXED_INSTANT;
+  const transactions = new InMemoryGrowthTemporalTransactionRunner(
+    options.previousPreviewEvidenceRecordedAt ?? options.previewAppendServerNow
+      ?? initialNow
+  );
+  const temporalBarrier = new DefaultGrowthTemporalBarrier(transactions);
+  const binding = createCommercialBindingSnapshot(bindingInputFixture());
+  const boundDeal = options.boundDeal !== false;
+  const ids = options.cases ?? ["case-1"];
+  const cases: QuoteCase[] = ids.map((id) => ({
+    id, workspaceId: "team-a", candidateId: "candidate-1",
+    customerId: boundDeal ? "customer-1" : null,
+    dealId: boundDeal ? "deal-1" : null,
+    assignedTo: "sales-a", status: "open", currentDraftVersionId: null,
+    revision: options.caseRevision ?? 1,
+    commercialBindingSnapshot: boundDeal ? binding : null,
+    createdAt: FIXED_INSTANT, updatedAt: FIXED_INSTANT
+  }));
+  const calculator = new QuoteCalculationService();
+  const policy = quotePolicyFixture({
+    validFrom: options.policyWindow?.[0] ?? FIXED_INSTANT,
+    validTo: options.policyWindow?.[1] ?? null
+  });
+  const calculated = calculator.preview(quoteInputFixture(), policy, {
+    giftPolicies: policy.giftPolicies,
+    packageSnapshot: null
+  });
+  const seedDraftId = options.closeProbabilityBps !== undefined
+    ? "version-draft-1"
+    : options.policyWindow || options.packageWindow
+      ? "draft-with-package-gap"
+      : options.boundDeal !== undefined || options.assessment !== undefined
+        ? "version-1" : null;
+  const versions: QuoteVersion[] = seedDraftId ? [createQuoteVersionFromCalculation({
+    id: seedDraftId, quoteCase: cases[0]!, version: 1,
+    versionKind: "draft", sourceDraftVersionId: null,
+    probabilityAssessmentSnapshot: null, calculated, actorId: "sales-a",
+    effectiveAt: FIXED_INSTANT, recordedAt: FIXED_INSTANT,
+    temporalSequence: 1,
+    stableCommandHash: `sha256:${"8".repeat(64)}`,
+    requestHash: `sha256:${"9".repeat(64)}`
+  })] : [];
+  const repository = new InMemoryQuoteRepository(transactions, temporalBarrier, {
+    cases, versions
+  });
+  let now = initialNow;
+  let catalogCalls = 0;
+  let windowsExpired = false;
+  const baseIdempotency = new InMemoryGrowthHttpIdempotencyRepository();
+  let failComplete = options.failHttpIdempotencyCompleteOnce === true;
+  const httpIdempotency: GrowthHttpIdempotencyRepository = {
+    reserve: (input) => baseIdempotency.reserve(input),
+    async complete(...args) {
+      if (failComplete) {
+        failComplete = false;
+        throw new Error("simulated_http_completion_failure");
+      }
+      return baseIdempotency.complete(...args);
+    },
+    release: (...args) => baseIdempotency.release(...args)
+  };
+  const assessment = options.assessment === null ? null
+    : options.assessment === "legacy_percent_precision"
+      ? ({ ...probabilityRecordFixture(), precision: "percent" } as never)
+      : probabilityRecordFixture({
+          dealId: "deal-1",
+          closeProbabilityBps: options.closeProbabilityBps ?? 4_321
+        });
+  const service = new QuoteVersionService({
+    repository,
+    probabilityAssessments: {
+      async findCurrent() { return assessment; }
+    } as never,
+    bindingVerifier: {
+      async verify() { return binding; }
+    } as never,
+    catalog: {
+      quoteCatalog: {
+        async resolveAt(_context: unknown, input: { effectiveAt: string }) {
+          catalogCalls += 1;
+          if (windowsExpired
+            || input.effectiveAt < policy.validFrom
+            || policy.validTo !== null && input.effectiveAt >= policy.validTo) {
+            throw Object.assign(new Error("pricing_policy_not_effective"), {
+              code: "pricing_policy_not_effective"
+            });
+          }
+          if (options.packageWindow
+            && (input.effectiveAt < options.packageWindow[0]
+              || input.effectiveAt >= options.packageWindow[1])) {
+            throw Object.assign(new Error("package_version_not_effective"), {
+              code: "package_version_not_effective"
+            });
+          }
+          return { catalogItem: { id: policy.catalogItemId },
+            pricingPolicy: policy, packageVersion: null,
+            packageCostSnapshot: null };
+        }
+      }
+    } as never,
+    foundation: {
+      httpIdempotency, temporalTransactions: transactions, temporalBarrier
+    } as never,
+    calculator,
+    now: () => now,
+    qualificationAuthority: {
+      async findCurrent() {
+        return {
+          qualificationDecisionId: "qualification-1",
+          qualificationDecisionVersion: "decision-v1",
+          inputSnapshotHash: probabilityRecordFixture().inputSnapshotHash
+        };
+      }
+    }
+  });
+  const previewInput = (input: QuoteCalculationInput): QuotePreviewInput => {
+    const { workspaceId: _workspaceId, ...transport } = input;
+    return transport;
+  };
+  return {
+    repository,
+    service,
+    previewIdentityFor(input: QuoteCalculationInput) {
+      return calculator.preview(input, policy, {
+        giftPolicies: policy.giftPolicies, packageSnapshot: null
+      }).previewIdentity;
+    },
+    previewInput,
+    catalogResolveCalls: () => catalogCalls,
+    expireCurrentCatalogWindows() { windowsExpired = true; },
+    advanceClock(value: string) { now = value; },
+    revoke() {},
+    async waitForDraftCaseLock() {},
+    releaseDraftCaseLock() {}
   };
 }
