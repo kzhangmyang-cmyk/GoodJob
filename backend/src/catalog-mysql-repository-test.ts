@@ -43,8 +43,6 @@ test("catalog schema uses dedicated append-oriented tables", async () => {
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_product_catalog_links/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_catalog_migration_runs/u);
   assert.match(schemaSql, /CREATE TABLE IF NOT EXISTS commission_catalog_migration_items/u);
-  assert.match(schemaSql, /source ENUM\('native','legacy_commission_product'\)/u);
-  assert.doesNotMatch(schemaSql, /source ENUM\('manual'/u);
   assert.match(schemaSql, /FOREIGN KEY \(workspace_id, catalog_item_id\)/u);
   assert.match(schemaSql, /FOREIGN KEY \(workspace_id, package_version_id\)/u);
   assert.match(schemaSql, /FOREIGN KEY \(workspace_id, pricing_policy_version_id\)/u);
@@ -52,6 +50,41 @@ test("catalog schema uses dedicated append-oriented tables", async () => {
   assert.match(schemaSql, /snapshot_json LONGTEXT NOT NULL/u);
   assert.match(schemaSql, /JSON_VALID\(snapshot_json\)/u);
   assert.doesNotMatch(schemaSql, /replaceRows|persistAll/u);
+});
+
+test("catalog schema deterministically upgrades and closes the pricing source enum", async () => {
+  const pool = new FakePool();
+  await ensureCatalogMysqlSchema(asPool(pool));
+  await ensureCatalogMysqlSchema(asPool(pool));
+
+  const firstRun = pool.calls.slice(0, CATALOG_MYSQL_SCHEMA_STATEMENTS.length);
+  const secondRun = pool.calls.slice(CATALOG_MYSQL_SCHEMA_STATEMENTS.length);
+  assert.deepEqual(secondRun, firstRun);
+
+  const sourceStatements = firstRun
+    .map((call) => call.sql)
+    .filter((sql) => /pricing_policy_versions/u.test(sql) && /\bsource\b/u.test(sql));
+  assert.equal(sourceStatements.length, 4);
+  assert.match(sourceStatements[0]!, /CREATE TABLE IF NOT EXISTS pricing_policy_versions/u);
+  assert.match(
+    sourceStatements[0]!,
+    /source ENUM\('native','legacy_commission_product'\) NOT NULL/u
+  );
+  assert.equal(
+    sourceStatements[1],
+    "ALTER TABLE pricing_policy_versions MODIFY COLUMN source "
+      + "ENUM('manual','native','legacy_commission_product') NOT NULL"
+  );
+  assert.equal(
+    sourceStatements[2],
+    "UPDATE pricing_policy_versions SET source = 'native' WHERE source = 'manual'"
+  );
+  assert.equal(
+    sourceStatements[3],
+    "ALTER TABLE pricing_policy_versions MODIFY COLUMN source "
+      + "ENUM('native','legacy_commission_product') NOT NULL"
+  );
+  assert.doesNotMatch(sourceStatements.at(-1)!, /manual/u);
 });
 
 test("mysql migration commit rejects cross-workspace references before I/O", async () => {

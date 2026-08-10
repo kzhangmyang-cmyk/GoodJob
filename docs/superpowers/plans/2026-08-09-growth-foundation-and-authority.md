@@ -1000,7 +1000,7 @@ assert.doesNotMatch(schemaSql, /replaceRows|persistAll/u);
 
 - [ ] **Step 2: Run tests to verify RED**
 
-Run: `cd backend && NODE_ENV=test node --import tsx --test --test-concurrency=1 src/growth-money-test.ts src/catalog-mysql-repository-test.ts src/commission-catalog-migration-test.ts`
+Run: `cd backend && NODE_ENV=test node --import tsx --test --test-concurrency=1 src/growth-money-test.ts src/catalog-domain-contract-test.ts src/catalog-mysql-repository-test.ts src/commission-catalog-migration-test.ts`
 
 Expected: FAIL because `growth-money.ts`, catalog repository, and migration modules do not exist.
 
@@ -1156,7 +1156,7 @@ Add these exact scripts to `backend/package.json` only after every referenced te
 {
   "scripts": {
     "migrate:commission-catalog": "tsx src/migrate-commission-products-to-catalog.ts",
-    "test:growth-foundation": "NODE_ENV=test node --import tsx --test --test-concurrency=1 src/growth-capabilities-test.ts src/growth-workspace-context-test.ts src/growth-workspace-settings-test.ts src/growth-workspace-settings-mysql-repository-test.ts src/growth-as-of-test.ts src/growth-temporal-barrier-test.ts src/growth-temporal-barrier-mysql-repository-test.ts src/growth-http-idempotency-repository-test.ts src/growth-http-idempotency-mysql-repository-test.ts src/growth-http-preconditions-test.ts src/growth-foundation-module-test.ts src/acquisition-deal-binding-test.ts src/commercial-authority-guard-test.ts src/growth-money-test.ts src/commission-catalog-migration-test.ts",
+    "test:growth-foundation": "NODE_ENV=test node --import tsx --test --test-concurrency=1 src/growth-capabilities-test.ts src/growth-workspace-context-test.ts src/growth-workspace-settings-test.ts src/growth-workspace-settings-mysql-repository-test.ts src/growth-as-of-test.ts src/growth-temporal-barrier-test.ts src/growth-temporal-barrier-mysql-repository-test.ts src/growth-http-idempotency-repository-test.ts src/growth-http-idempotency-mysql-repository-test.ts src/growth-http-preconditions-test.ts src/growth-foundation-module-test.ts src/acquisition-deal-binding-test.ts src/commercial-authority-guard-test.ts src/growth-money-test.ts src/catalog-domain-contract-test.ts src/commission-catalog-migration-test.ts",
     "test:growth-foundation:mysql": "NODE_ENV=test TZ=UTC node --import tsx --test --test-concurrency=1 src/growth-foundation-mysql-integration-test.ts"
   }
 }
@@ -1164,7 +1164,7 @@ Add these exact scripts to `backend/package.json` only after every referenced te
 
 The migration CLI constructs one short-lived `MysqlCatalogRepository`, runs `ensureCatalogMysqlSchema(pool)`, executes the requested migration, prints only the immutable run summary, and closes its pool. Memory repositories are test-only. Do not add catalog arrays to `CrmStore`, do not edit `growth-commercial-application.ts`, and do not install a runtime module in this task; Catalog Task 2 creates the sole long-lived repository/service graph through `createGrowthCatalogModule`.
 
-Run: `cd backend && NODE_ENV=test node --import tsx --test --test-concurrency=1 src/growth-money-test.ts src/catalog-mysql-repository-test.ts src/commission-catalog-migration-test.ts && npm run test:growth-foundation && npm run build`
+Run: `cd backend && NODE_ENV=test node --import tsx --test --test-concurrency=1 src/growth-money-test.ts src/catalog-domain-contract-test.ts src/catalog-mysql-repository-test.ts src/commission-catalog-migration-test.ts && npm run test:growth-foundation && npm run build`
 
 Expected: repository, migration, complete foundation suite, and build PASS.
 

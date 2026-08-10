@@ -102,6 +102,12 @@ export const CATALOG_MYSQL_SCHEMA_STATEMENTS = [
       FOREIGN KEY (workspace_id, package_version_id)
       REFERENCES package_versions (workspace_id, id)
   ) ENGINE=InnoDB`,
+  `ALTER TABLE pricing_policy_versions MODIFY COLUMN source
+    ENUM('manual','native','legacy_commission_product') NOT NULL`,
+  `UPDATE pricing_policy_versions
+    SET source = 'native' WHERE source = 'manual'`,
+  `ALTER TABLE pricing_policy_versions MODIFY COLUMN source
+    ENUM('native','legacy_commission_product') NOT NULL`,
   `CREATE TABLE IF NOT EXISTS package_components (
     workspace_id VARCHAR(191) NOT NULL,
     package_version_id VARCHAR(191) NOT NULL,

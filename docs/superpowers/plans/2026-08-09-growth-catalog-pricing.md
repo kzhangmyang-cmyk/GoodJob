@@ -344,7 +344,7 @@ export function requiredCapabilitiesForPolicy(policy: PricingPolicyVersion) {
   for (const [field, required] of Object.entries(APPROVAL_CAPABILITIES)) {
     if (thresholds[field as keyof typeof APPROVAL_CAPABILITIES] !== required) {
       throw Object.assign(new Error("invalid approval capability mapping"), {
-        code: "invalid_approval_capability_mapping"
+        code: "invalid_approval_rule"
       });
     }
   }
