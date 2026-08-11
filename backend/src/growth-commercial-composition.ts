@@ -32,6 +32,11 @@ import type { QuoteProjectedDocumentAuthorityValidator } from "./commercial-auth
 import { createGrowthWorkspaceMemberAssignabilityReader } from "./growth-workspace-member-assignability.js";
 import { resolveTrustedAcquisitionDealBinding } from "./acquisition-deal-binding.js";
 import type { AcquisitionCandidate } from "./acquisition-domain.js";
+import { createGrowthFinanceModule } from "./growth-finance-module.js";
+import {
+  CurrentFinanceImportRecoveryAuthorizer
+} from "./finance-import-worker.js";
+import { GrowthHttpError } from "./growth-command-context.js";
 
 export interface GrowthCommercialModule {
   readonly name: string;
@@ -231,10 +236,12 @@ export function createGrowthCommercialCompositionForStore(options: {
       .mutateAuthoritativeQuoteProjection === "function"
     ? options.store as CrmStore : undefined;
   const modules: GrowthCommercialModule[] = [];
+  let financePool: mysql.Pool | undefined;
   if (options.store.mode === "mysql") {
     const databaseUrl = options.databaseUrl?.trim();
     if (!databaseUrl) throw new Error("GROWTH_DATABASE_URL_REQUIRED");
     const pool = createGrowthMysqlPool(databaseUrl, options.createMysqlPool);
+    financePool = pool;
     modules.push(createGrowthFoundationModule({
       mode: "mysql", pool, acquisitionWorkspace, closePool: () => pool.end()
     }));
@@ -248,6 +255,43 @@ export function createGrowthCommercialCompositionForStore(options: {
     modules.push(createGrowthQuoteModule({ mode: "memory", trustedAuthority,
       store: quoteStore }));
   }
+  const financeModuleOptions = financePool
+    ? {
+        mode: "mysql" as const,
+        pool: financePool
+      }
+    : {
+        mode: "memory" as const
+      };
+  modules.push(createGrowthFinanceModule({
+    ...financeModuleOptions,
+    processWorkerId: `finance-worker-${process.pid}`,
+    recoveryAuthorizer: new CurrentFinanceImportRecoveryAuthorizer(
+      async (workspaceId, actorId) => {
+        const user = options.store.users.find((candidate) =>
+          candidate.status === "active"
+          && candidate.id === actorId
+          && candidate.teamId === workspaceId);
+        if (!user) {
+          throw new GrowthHttpError(
+            403, "finance_import_authority_mismatch"
+          );
+        }
+        return Object.freeze({
+          workspaceId,
+          kind: "team" as const,
+          actorId,
+          role: "admin" as const,
+          teamId: workspaceId,
+          capabilities: Object.freeze([
+            "ledger.pending.create" as const,
+            "ledger.verify" as const
+          ]),
+          capabilityRegistryVersion: "growth-capabilities.v1"
+        });
+      }
+    )
+  }));
   return Object.freeze({
     composition: createGrowthCommercialComposition({
       acquisitionWorkspace,

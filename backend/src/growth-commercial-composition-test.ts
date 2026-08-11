@@ -163,7 +163,7 @@ test("production memory composition installs Foundation, Catalog, then Quote", a
   });
   assert.deepEqual(
     production.composition.modules.map((module) => module.name),
-    ["growth-foundation", "growth-catalog", "growth-quote"]
+    ["growth-foundation", "growth-catalog", "growth-quote", "growth-finance"]
   );
   const runtime = await createGrowthCommercialApplication({
     manifest: { name: "growth-advisor-quote-roi", contractVersion: "1.0.0", contractHash: `sha256:${"a".repeat(64)}`, openapiVersion: "3.1.0" },

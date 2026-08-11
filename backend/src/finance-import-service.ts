@@ -29,6 +29,7 @@ import type { GrowthSealedReadCutoff } from "./growth-temporal-barrier.js";
 import {
   type FinanceImportKind,
   type FinanceImportOperation,
+  type FinanceImportPreviewRecord,
   type FinanceImportPreviewRow,
   type FinanceImportPublicNormalizedRow,
   type FinanceImportRepository,
@@ -61,7 +62,9 @@ export interface FinanceImportPreviewCommand {
 
 export interface FinanceImportPreviewResult {
   previewId: string;
+  kind: FinanceImportKind;
   fileHash: string;
+  replayed: boolean;
   status: "preview_ready" | "partial_success" | "failed";
   resolvedTimeZone: string;
   workspaceSettingsRevision: string;
@@ -424,86 +427,130 @@ export class FinanceImportService {
   ): Promise<FinanceImportPreviewResult> {
     this.requireCapability(context);
     const input = parseFinancePreviewBody(rawInput);
-    const previewStartedAt = this.now();
-    const cutoff = await this.foundation.temporalBarrier.sealReadCutoff(
-      context.workspace, previewStartedAt
-    );
-    const settings = await this.foundation.workspaceSettings.getAt(
-      context.workspace, cutoff
-    );
-    const artifact = parseSecureSpreadsheetArtifact({
-      content: input.content,
-      mediaType: input.mediaType,
-      limits: IMPORT_LIMITS
-    });
-    const previewId = this.ids.next();
-    const storedRows: FinanceImportStoredRowInput[] = [];
-    let validRows = 0;
-    let invalidRows = 0;
-    for (const sheet of artifact.sheets) {
-      const headerRow = sheet.rows[0] ?? [];
-      const columnIndexes = columnIndexesForMapping(headerRow, input.mapping);
-      const dataRows = sheet.rows.slice(1);
-      for (let index = 0; index < dataRows.length; index += 1) {
-        const row = dataRows[index]!;
-        const rowNumber = index + 1;
-        const normalizedRow = await this.normalizeStoredRow({
-          context,
-          cutoff,
-          kind: input.kind,
-          row,
-          columnIndexes,
-          timeZone: settings.timeZone,
-          fileHash: artifact.fileHash,
-          sheetName: sheet.name,
-          rowNumber,
-          previewId
+    const execution = await executeGrowthIdempotentCommand(
+      {
+        repository: this.foundation.httpIdempotency,
+        reservation: {
+          workspaceId: context.workspace.workspaceId,
+          actorId: context.actorId,
+          method: "POST",
+          canonicalPath: "/api/v1/finance/imports/preview",
+          key: context.idempotencyKey,
+          requestHash: context.requestHash,
+          attemptedAt: this.now(),
+          leaseOwner: this.requestExecutionId(),
+          leaseDurationMs: 30_000
+        }
+      },
+      async (resourceId, operationId) => {
+        this.requireCapability(context);
+        if (!resourceId || operationId !== null) {
+          throw new FinanceImportError("idempotency_reference_invalid", 409);
+        }
+        const preview = await this.repository.getPreview(resourceId);
+        if (!preview) {
+          throw new FinanceImportError("idempotency_conflict", 409);
+        }
+        const rows = await this.repository.listStoredRows(preview.id);
+        return this.projectPreview(preview, rows);
+      },
+      async () => {
+        const previewStartedAt = this.now();
+        const cutoff = await this.foundation.temporalBarrier.sealReadCutoff(
+          context.workspace, previewStartedAt
+        );
+        const settings = await this.foundation.workspaceSettings.getAt(
+          context.workspace, cutoff
+        );
+        const artifact = parseSecureSpreadsheetArtifact({
+          content: input.content,
+          mediaType: input.mediaType,
+          limits: IMPORT_LIMITS
         });
-        if (normalizedRow.status === "valid") validRows += 1;
-        else invalidRows += 1;
-        storedRows.push(normalizedRow);
+        const previewId = this.ids.next();
+        const storedRows: FinanceImportStoredRowInput[] = [];
+        let validRows = 0;
+        let invalidRows = 0;
+        for (const sheet of artifact.sheets) {
+          const headerRow = sheet.rows[0] ?? [];
+          const columnIndexes = columnIndexesForMapping(
+            headerRow, input.mapping
+          );
+          const dataRows = sheet.rows.slice(1);
+          for (let index = 0; index < dataRows.length; index += 1) {
+            const row = dataRows[index]!;
+            const rowNumber = index + 1;
+            const normalizedRow = await this.normalizeStoredRow({
+              context,
+              cutoff,
+              kind: input.kind,
+              row,
+              columnIndexes,
+              timeZone: settings.timeZone,
+              fileHash: artifact.fileHash,
+              sheetName: sheet.name,
+              rowNumber,
+              previewId
+            });
+            if (normalizedRow.status === "valid") validRows += 1;
+            else invalidRows += 1;
+            storedRows.push(normalizedRow);
+          }
+        }
+        const previewRequestHash = canonicalGrowthRequestHash({
+          workspaceId: context.workspace.workspaceId,
+          actorId: context.actorId,
+          kind: input.kind,
+          fileName: input.fileName,
+          mediaType: input.mediaType,
+          fileHash: artifact.fileHash,
+          mapping: input.mapping
+        });
+        const preview = await this.repository.appendPreview({
+          id: previewId,
+          workspaceId: context.workspace.workspaceId,
+          createdBy: context.actorId,
+          previewRequestHash,
+          fileHash: artifact.fileHash,
+          templateVersion: input.kind === "acquisition_cost"
+            ? FINANCE_COST_IMPORT_TEMPLATE_VERSION
+            : FINANCE_FACT_IMPORT_TEMPLATE_VERSION,
+          kind: input.kind,
+          resolvedTimeZone: settings.timeZone,
+          workspaceSettingsRevision: settings.revision,
+          workspaceSettingsRecordedAt: settings.recordedAt,
+          workspaceSettingsEventSequence: settings.eventSequence,
+          validRows,
+          invalidRows,
+          authorityEffectiveAsOf: previewStartedAt,
+          authorityTemporalSequence: cutoff.temporalSequence
+        }, storedRows);
+        return {
+          resourceId: preview.id,
+          operationId: null
+        };
       }
-    }
-    const previewRequestHash = canonicalGrowthRequestHash({
-      workspaceId: context.workspace.workspaceId,
-      actorId: context.actorId,
-      kind: input.kind,
-      fileName: input.fileName,
-      mediaType: input.mediaType,
-      fileHash: artifact.fileHash,
-      mapping: input.mapping
-    });
-    const preview = await this.repository.appendPreview({
-      id: previewId,
-      workspaceId: context.workspace.workspaceId,
-      createdBy: context.actorId,
-      previewRequestHash,
-      fileHash: artifact.fileHash,
-      templateVersion: input.kind === "acquisition_cost"
-        ? FINANCE_COST_IMPORT_TEMPLATE_VERSION
-        : FINANCE_FACT_IMPORT_TEMPLATE_VERSION,
-      kind: input.kind,
-      resolvedTimeZone: settings.timeZone,
-      workspaceSettingsRevision: settings.revision,
-      workspaceSettingsRecordedAt: settings.recordedAt,
-      workspaceSettingsEventSequence: settings.eventSequence,
-      validRows,
-      invalidRows,
-      authorityEffectiveAsOf: previewStartedAt,
-      authorityTemporalSequence: cutoff.temporalSequence
-    }, storedRows);
-    const persistedRows = await this.repository.listStoredRows(preview.id);
+    );
+    return { ...execution.value, replayed: execution.replayed };
+  }
+
+  private async projectPreview(
+    preview: FinanceImportPreviewRecord,
+    rows: readonly FinanceImportStoredRow[]
+  ): Promise<FinanceImportPreviewResult> {
     return {
       previewId: preview.id,
-      fileHash: artifact.fileHash,
-      status: invalidRows === 0
+      kind: preview.kind,
+      fileHash: preview.fileHash,
+      replayed: false,
+      status: preview.invalidRows === 0
         ? "preview_ready"
-        : validRows > 0 ? "partial_success" : "failed",
-      resolvedTimeZone: settings.timeZone,
-      workspaceSettingsRevision: settings.revision,
-      validRows,
-      invalidRows,
-      rows: persistedRows.map(projectFinanceImportPreviewRow)
+        : preview.validRows > 0 ? "partial_success" : "failed",
+      resolvedTimeZone: preview.resolvedTimeZone,
+      workspaceSettingsRevision: preview.workspaceSettingsRevision,
+      validRows: preview.validRows,
+      invalidRows: preview.invalidRows,
+      rows: rows.map(projectFinanceImportPreviewRow)
     };
   }
 
