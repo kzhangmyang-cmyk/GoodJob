@@ -50,6 +50,7 @@ export interface MountedGrowthFinanceRouters {
     id: string;
     etag: string;
     response: globalThis.Response;
+    body: any;
   }>;
   verifyCost(id: string, etag: string): Promise<{
     response: globalThis.Response;
@@ -273,7 +274,8 @@ export async function mountGrowthFinanceRouters(options: {
         id: (result.body as { id: string }).id,
         etag: `"cost-entry:${(result.body as { id: string }).id}`
           + `:${(result.body as { revision: number }).revision}"`,
-        response: result.response
+        response: result.response,
+        body: result.body
       };
     },
     verifyCost: async (id: string, etag: string) =>
