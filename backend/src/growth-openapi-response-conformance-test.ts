@@ -12,6 +12,9 @@ import {
 import {
   assertQuoteRuntimeResponsesConform
 } from "./quote-runtime-response-conformance-test.js";
+import {
+  assertFinanceRuntimeResponsesConform
+} from "./growth-finance-openapi-response-conformance-test.js";
 
 test("runtime bootstrap responses conform to GrowthBootstrapResponse", async () => {
   const release = loadGrowthContractRelease();
@@ -79,4 +82,9 @@ test(
 test(
   "central Growth response suite validates released Quote operations",
   assertQuoteRuntimeResponsesConform
+);
+
+test(
+  "central Growth response suite validates released Finance operations",
+  assertFinanceRuntimeResponsesConform
 );

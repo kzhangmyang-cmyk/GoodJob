@@ -256,8 +256,13 @@ export function createFinanceImportRouter(
     requireImportCapability(options, req);
     const id = idSchema.parse(req.params.id);
     const projection = await options.imports.get(
-      command(options, req, "/api/v1/finance/imports/:id",
-        Object.freeze({ id }), {}),
+      {
+        workspace: options.workspaceContext(req),
+        actorId: req.header("X-Actor-Id")?.trim() ?? "finance-a",
+        idempotencyKey: `get-${id}`,
+        requestHash: `sha256:${"0".repeat(64)}`,
+        expectedRevision: null
+      },
       id
     );
     if (!projection) throw new GrowthHttpError(404, "finance_import_not_found");
@@ -271,8 +276,13 @@ export function createFinanceImportRouter(
     requireImportCapability(options, req);
     const id = idSchema.parse(req.params.id);
     const projection = await options.imports.get(
-      command(options, req, "/api/v1/finance/imports/:id/errors",
-        Object.freeze({ id }), {}),
+      {
+        workspace: options.workspaceContext(req),
+        actorId: req.header("X-Actor-Id")?.trim() ?? "finance-a",
+        idempotencyKey: `get-errors-${id}`,
+        requestHash: `sha256:${"0".repeat(64)}`,
+        expectedRevision: null
+      },
       id
     );
     if (!projection) throw new GrowthHttpError(404, "finance_import_not_found");
