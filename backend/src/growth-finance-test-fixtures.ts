@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
 import type { Request } from "express";
 import type { OutcomeAttributionInput } from "./acquisition-domain.js";
 import { AcquisitionCostLedgerService, type CreatePendingCostInput } from "./acquisition-cost-ledger.js";
+import type { AuthoritativeDealDecisionRef } from
+  "./authoritative-quote-reader.js";
 import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { GrowthFoundationServices } from "./growth-foundation-module.js";
@@ -26,11 +29,17 @@ import {
   type FinancialLedgerTransaction
 } from "./financial-ledger-repository.js";
 import {
+  FinancialFactLedgerService,
+  parseCreateFinancialFactInput,
+  type CreateFinancialFactInput
+} from "./financial-fact-ledger.js";
+import {
   DefaultGrowthTemporalBarrier,
   InMemoryGrowthTemporalTransactionRunner,
   type GrowthSealedReadCutoff,
   type GrowthTemporalBarrier
 } from "./growth-temporal-barrier.js";
+import { canonicalJsonStringify } from "./canonical-json.js";
 import {
   createGrowthAcquisitionWorkspaceResolver,
   type ActiveWorkspaceContext
@@ -335,8 +344,10 @@ const attributionSnapshot: OutcomeAttributionInput = Object.freeze({
   decisionSnapshotHash: "sha256:decision"
 });
 
-function bindingSnapshot(bindingHash = "sha256:binding-1"): CommercialBindingSnapshot {
-  return Object.freeze({
+function bindingSnapshot(
+  bindingHash?: string
+): CommercialBindingSnapshot {
+  const base = {
     candidateId: "candidate-1",
     handoffId: "handoff-1",
     leadId: "lead-1",
@@ -345,9 +356,20 @@ function bindingSnapshot(bindingHash = "sha256:binding-1"): CommercialBindingSna
     candidateVersion: 1,
     handoffContentHash: "sha256:handoff" as `sha256:${string}`,
     dealContentHash: "sha256:deal" as `sha256:${string}`,
-    bindingHashSchemaVersion: "commercial-binding.v1",
-    attributionSnapshot,
-    bindingHash: bindingHash as `sha256:${string}`,
+    bindingHashSchemaVersion: "commercial-binding.v1" as const,
+    attributionSnapshot
+  };
+  const computedHash = `sha256:${createHash("sha256")
+    .update(canonicalJsonStringify({
+      customerId: base.customerId,
+      handoffContentHash: base.handoffContentHash,
+      dealContentHash: base.dealContentHash,
+      bindingHashSchemaVersion: base.bindingHashSchemaVersion
+    }) ?? "")
+    .digest("hex")}` as `sha256:${string}`;
+  return Object.freeze({
+    ...base,
+    bindingHash: (bindingHash ?? computedHash) as `sha256:${string}`,
     verifiedAt: "2026-08-09T01:00:00.000Z"
   });
 }
@@ -463,6 +485,199 @@ export function verifiedFinancialFactAsOfFixture(input: {
 export function financialFactProjectionFixture() {
   const fact = financialFact();
   return { fact, verification: verification(fact) };
+}
+
+export function financialFactFixture(options: {
+  factType?: FinancialFact["factType"];
+  dealDecision?: AuthoritativeDealDecisionRef | null;
+  status?: "pending" | "verified" | "rejected" | "reversed";
+  revision?: number;
+} = {}) {
+  const formalBinding = bindingSnapshot();
+  const defaultDecision: AuthoritativeDealDecisionRef = Object.freeze({
+    type: "won",
+    dealId: "deal-1",
+    quoteCaseId: "case-1",
+    quoteVersionId: "quote-1",
+    currency: "CNY",
+    quotedAmountMinor: 298_000,
+    commercialAmountHash: "sha256:commercial-1",
+    commercialBindingEvidence: Object.freeze({
+      candidateId: formalBinding.candidateId,
+      customerId: formalBinding.customerId,
+      dealId: formalBinding.dealId,
+      handoffContentHash: formalBinding.handoffContentHash,
+      dealContentHash: formalBinding.dealContentHash,
+      bindingHashSchemaVersion: formalBinding.bindingHashSchemaVersion,
+      bindingHash: formalBinding.bindingHash
+    }),
+    commercialBindingSnapshot: formalBinding,
+    authorityRevision: 3,
+    decidedAt: "2026-08-08T00:00:00.000Z"
+  });
+  const decision = options.dealDecision === undefined
+    ? defaultDecision : options.dealDecision;
+  let currentBinding: CommercialBindingSnapshot = Object.freeze({
+    ...formalBinding,
+    verifiedAt: "2026-08-09T02:00:00.000Z"
+  });
+  const factType = options.factType ?? "refund";
+  const input: CreateFinancialFactInput = Object.freeze({
+    candidateId: "candidate-1",
+    customerId: "customer-1",
+    dealId: "deal-1",
+    factType,
+    amountMinor: factType === "contract_won" ? 298_000 : 50_000,
+    currency: "CNY",
+    businessOccurredAt: "2026-08-08T00:00:00.000Z",
+    provenance: "invoice_confirmed",
+    sourceRef: "invoice:1",
+    evidenceHash: "sha256:invoice-1",
+    externalId: "invoice-1",
+    sourceIdentityRoot: "external:invoice:invoice-1"
+  });
+  const replacement: CreateFinancialFactInput = Object.freeze({
+    ...input,
+    businessOccurredAt: "2026-08-08T01:00:00.000Z",
+    evidenceHash: "sha256:invoice-corrected",
+    sourceRef: "invoice:corrected"
+  });
+  const seededFact = financialFact({
+    id: "fact-1",
+    factType,
+    amountMinor: input.amountMinor,
+    currency: input.currency,
+    businessOccurredAt: input.businessOccurredAt,
+    provenance: input.provenance,
+    sourceRef: input.sourceRef,
+    evidenceHash: input.evidenceHash,
+    externalId: input.externalId,
+    sourceIdentityRoot: input.sourceIdentityRoot,
+    commercialBindingSnapshot: formalBinding,
+    attributionSnapshot: formalBinding.attributionSnapshot,
+    quoteVersionId: defaultDecision.quoteVersionId,
+    commercialAmountHash: defaultDecision.commercialAmountHash,
+    dealAuthorityRevision: defaultDecision.authorityRevision
+  });
+  const status = options.status ?? "pending";
+  const seededEvents: LedgerVerificationEvent[] = [];
+  if (status !== "pending") {
+    seededEvents.push(verification(seededFact, {
+      eventType: status === "rejected" ? "rejected" : "verified"
+    }));
+  }
+  if (status === "reversed") {
+    seededEvents.push(verification(seededFact, {
+      id: "reverse-fact-1",
+      eventType: "reversed",
+      reversesEventId: seededEvents[0]!.id,
+      eventSequence: 2,
+      revision: 3,
+      recordedAt: "2026-08-09T02:30:00.000Z",
+      temporalSequence: 2
+    }));
+  }
+  const expectedRevision = status === "pending" ? 1
+    : status === "reversed" ? 3 : 2;
+  if (options.revision !== undefined && options.revision !== expectedRevision) {
+    throw new Error("financial_fact_fixture_revision_mismatch");
+  }
+  const repository = new InMemoryFinancialLedgerRepository({
+    financialFacts: options.status ? [seededFact] : [],
+    sourceHeads: options.status ? [{
+      workspaceId: seededFact.workspaceId,
+      ledgerType: "financial",
+      sourceIdentityRoot: seededFact.sourceIdentityRoot,
+      currentLedgerEntryId: seededFact.id,
+      currentSourceVersion: 1,
+      revision: 1
+    }] : [],
+    verificationEvents: options.status ? seededEvents : [],
+    temporalTails: options.status ? {
+      "workspace-a": {
+        lastRecordedAt: status === "reversed"
+          ? "2026-08-09T02:30:00.000Z"
+          : "2026-08-09T02:00:00.000Z",
+        temporalSequence: status === "reversed" ? 2 : 1
+      }
+    } : {}
+  }, DEFAULT_NOW);
+  let seals = 0;
+  let lastCutoff: GrowthSealedReadCutoff | null = null;
+  class CountingBarrier extends DefaultGrowthTemporalBarrier {
+    override async sealReadCutoff(
+      context: ActiveWorkspaceContext,
+      effectiveAsOf: string
+    ) {
+      seals += 1;
+      lastCutoff = await super.sealReadCutoff(context, effectiveAsOf);
+      return lastCutoff;
+    }
+  }
+  const temporalBarrier = new CountingBarrier(repository);
+  const foundation = foundationServicesFixture({
+    temporalTransactions: repository,
+    temporalBarrier
+  });
+  const quoteCutoffs: GrowthSealedReadCutoff[] = [];
+  const service = new FinancialFactLedgerService({
+    repository,
+    foundation,
+    now: () => DEFAULT_NOW,
+    requestExecutionId: () => "financial-fact-fixture-execution",
+    bindingVerifier: {
+      async verify() { return currentBinding; }
+    },
+    dealQuoteReader: {
+      async getDecisionAt(_context, _dealId, cutoff) {
+        quoteCutoffs.push(cutoff);
+        return decision;
+      }
+    }
+  });
+  const command = ledgerCommandContext("workspace-a", "finance-a");
+  return {
+    service,
+    repository,
+    foundation,
+    workspace: workspace("workspace-a"),
+    command,
+    commandWith(overrides: {
+      idempotencyKey?: string;
+      expectedRevision?: number | null;
+    }) {
+      return ledgerCommandContext(
+        "workspace-a",
+        "finance-a",
+        overrides.idempotencyKey ?? command.idempotencyKey,
+        overrides.expectedRevision ?? null
+      );
+    },
+    input,
+    replacement,
+    fact: seededFact,
+    dealDecision: decision,
+    currentBinding: () => currentBinding,
+    replaceCurrentBinding(overrides: Partial<CommercialBindingSnapshot>) {
+      currentBinding = Object.freeze({ ...currentBinding, ...overrides });
+    },
+    parseCreateBody: parseCreateFinancialFactInput,
+    foundationSealCallCount: () => seals,
+    lastFoundationCutoff: () => lastCutoff,
+    quoteReaderCutoffs: () => [...quoteCutoffs],
+    issueCutoff: (workspaceId: string) => temporalBarrier.sealReadCutoff(
+      workspace(workspaceId), DEFAULT_NOW
+    ),
+    async snapshotCounts() {
+      const facts = await repository.listFinancialFacts("workspace-a");
+      const eventCounts = await Promise.all(facts.map((fact) =>
+        repository.listVerificationEvents(
+          "workspace-a", "financial", fact.id
+        ).then((events) => events.length)));
+      return { facts: facts.length,
+        events: eventCounts.reduce((sum, count) => sum + count, 0) };
+    }
+  };
 }
 
 export function verifiedLedgerReaderBoundaryFixture(options: {

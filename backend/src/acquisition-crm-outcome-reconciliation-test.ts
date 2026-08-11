@@ -219,6 +219,24 @@ function frozenCommercialAuthority(event: DealEvent, overrides: {
   };
 }
 
+function matchingFrozenBindingVerifier(event: DealEvent) {
+  return {
+    async verify(
+      _context: unknown,
+      input: { candidateId: string; customerId: string; dealId: string }
+    ) {
+      assert.deepEqual(input, {
+        candidateId: "candidate-real",
+        customerId: "customer-real",
+        dealId: "deal-real"
+      });
+      const snapshot = event.commercialBindingSnapshot;
+      if (!snapshot) throw new Error("frozen binding missing");
+      return snapshot;
+    }
+  };
+}
+
 function persistedPlanRuns(overrides: {
   providerId?: string;
   ownerId?: string;
@@ -344,6 +362,9 @@ test("delayed replay consumes immutable DealEvent snapshots after the Deal chang
   const commercialAuthority = frozenCommercialAuthority(
     fixture.dealEvents[0]!
   );
+  const bindingVerifier = matchingFrozenBindingVerifier(
+    fixture.dealEvents[0]!
+  );
   Object.assign(fixture.deals[0]!, {
     customerId: "customer-mutated",
     ownerId: "owner-mutated",
@@ -357,6 +378,7 @@ test("delayed replay consumes immutable DealEvent snapshots after the Deal chang
     store: fixture,
     planRuns: persistedPlanRuns(),
     commercialAuthority,
+    bindingVerifier,
     outcomeRecorder: {
       async recordOutcome(_scope, input, authority) {
         recorded.push(structuredClone(input));
@@ -407,9 +429,13 @@ test("Reconciler rejects a tampered Deal amount hash and never writes Outcome", 
       authoritativeHash: `sha256:${"a".repeat(64)}`
     }
   );
+  const bindingVerifier = matchingFrozenBindingVerifier(
+    fixture.dealEvents[0]!
+  );
   const outcomes: OutcomeInput[] = [];
   const service = new AcquisitionCrmOutcomeReconciliationService({
     store: fixture, planRuns: persistedPlanRuns(), commercialAuthority,
+    bindingVerifier,
     outcomeRecorder: {
       async recordOutcome(_scope, input) { outcomes.push(input); }
     }
@@ -421,6 +447,56 @@ test("Reconciler rejects a tampered Deal amount hash and never writes Outcome", 
 
   assert.equal(result.reconciled, 0);
   assert.equal(outcomes.length, 0);
+  assert.equal(fixture.acquisitionOutcomeReconciliationDiagnostics[0]?.code,
+    "commercial_authority_mismatch");
+});
+
+test("same-workspace unrelated candidate/customer/deal is rejected by the shared binding verifier", async () => {
+  const fixture = store();
+  fixture.leadActivities = [];
+  fixture.dealEvents = [fixture.dealEvents[0]!];
+  Object.assign(fixture.dealEvents[0]!, {
+    commercialAuthority: "quote_projection",
+    quoteCaseIdSnapshot: "quote-case-real",
+    quoteVersionIdSnapshot: "quote-version-real",
+    commercialAmountHash: `sha256:${"a".repeat(64)}`,
+    dealAuthorityRevisionSnapshot: 3
+  });
+  const commercialAuthority = frozenCommercialAuthority(
+    fixture.dealEvents[0]!
+  );
+  const recorded: OutcomeInput[] = [];
+  const service = new AcquisitionCrmOutcomeReconciliationService({
+    store: fixture,
+    planRuns: persistedPlanRuns(),
+    commercialAuthority,
+    bindingVerifier: {
+      async verify() {
+        return {
+          ...fixture.dealEvents[0]!.commercialBindingSnapshot!,
+          candidateId: "candidate-unrelated",
+          handoffId: "handoff-unrelated",
+          leadId: "lead-unrelated",
+          bindingHash: `sha256:${"f".repeat(64)}`
+        };
+      }
+    },
+    outcomeRecorder: {
+      async recordOutcome(_scope, input) {
+        recorded.push(input);
+        return { id: "unexpected" };
+      }
+    }
+  });
+
+  const result = await service.runTenant({
+    ownerId: "owner-real",
+    teamId: "team-real"
+  });
+
+  assert.equal(result.reconciled, 0);
+  assert.equal(result.skipped, 1);
+  assert.deepEqual(recorded, []);
   assert.equal(fixture.acquisitionOutcomeReconciliationDiagnostics[0]?.code,
     "commercial_authority_mismatch");
 });

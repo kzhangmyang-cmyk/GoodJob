@@ -11,10 +11,13 @@ import type {
 import type { AcquisitionDealBindingStore } from "./acquisition-deal-binding.js";
 import { canonicalJsonStringify } from "./canonical-json.js";
 import { assertFrozenCommercialBinding } from "./authoritative-quote-reader.js";
+import type { CommercialBindingVerifier } from "./commercial-binding-snapshot.js";
 import type {
   DealAuthoritativeQuoteEvent,
+  CommercialBindingEvidenceSnapshot,
   QuoteVersion
 } from "./quote-repository.js";
+import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import type {
   AcquisitionPlanRunRepository
 } from "./acquisition-plan-run-repository.js";
@@ -228,6 +231,21 @@ function amountForDealEvent(event: DealEvent) {
   return { amountMinor: Number(event.amountMinorSnapshot), currency };
 }
 
+function matchesCommercialBindingEvidence(
+  verified: { candidateId: string; customerId: string; dealId: string;
+    handoffContentHash: string; dealContentHash: string;
+    bindingHashSchemaVersion: string; bindingHash: string },
+  evidence: CommercialBindingEvidenceSnapshot
+): boolean {
+  return verified.candidateId === evidence.candidateId
+    && verified.customerId === evidence.customerId
+    && verified.dealId === evidence.dealId
+    && verified.handoffContentHash === evidence.handoffContentHash
+    && verified.dealContentHash === evidence.dealContentHash
+    && verified.bindingHashSchemaVersion === evidence.bindingHashSchemaVersion
+    && verified.bindingHash === evidence.bindingHash;
+}
+
 export class AcquisitionCrmOutcomeReconciliationService {
   readonly #store: AcquisitionCrmOutcomeReconciliationStore;
   readonly #outcomeRecorder: AcquisitionOutcomeRecorder;
@@ -237,6 +255,7 @@ export class AcquisitionCrmOutcomeReconciliationService {
   >;
   readonly #now: () => string;
   readonly #commercialAuthority: AcquisitionCommercialOutcomeAuthority | null;
+  readonly #bindingVerifier: Pick<CommercialBindingVerifier, "verify"> | null;
 
   constructor(options: {
     store: AcquisitionCrmOutcomeReconciliationStore;
@@ -246,12 +265,14 @@ export class AcquisitionCrmOutcomeReconciliationService {
       "getRun" | "listRunEvents" | "listRunShards"
     >;
     commercialAuthority?: AcquisitionCommercialOutcomeAuthority;
+    bindingVerifier?: Pick<CommercialBindingVerifier, "verify"> | null;
     now?: () => string;
   }) {
     this.#store = options.store;
     this.#outcomeRecorder = options.outcomeRecorder;
     this.#planRuns = options.planRuns;
     this.#commercialAuthority = options.commercialAuthority ?? null;
+    this.#bindingVerifier = options.bindingVerifier ?? null;
     this.#now = options.now ?? (() => new Date().toISOString());
   }
 
@@ -438,6 +459,9 @@ export class AcquisitionCrmOutcomeReconciliationService {
     }
     const expectedAuthorityType = event.type === "quote" ? "approved"
       : event.type;
+    const bindingMatches = await this.#persistedBindingMatches(
+      event, snapshot, evidence
+    );
     const exactAuthority = authorityEvent
       && authorityEvent.eventType === expectedAuthorityType
       && authorityEvent.dealId === event.dealId
@@ -457,14 +481,7 @@ export class AcquisitionCrmOutcomeReconciliationService {
       && version.quotedAmountMinor === amount.amountMinor
       && canonicalJsonStringify(version.commercialBindingSnapshot)
         === canonicalJsonStringify(snapshot)
-      && snapshot.dealId === event.dealId
-      && snapshot.customerId === event.customerIdSnapshot
-      && snapshot.candidateId === event.candidateIdSnapshot
-      && snapshot.leadId === event.leadIdSnapshot
-      && snapshot.handoffId === event.handoffIdSnapshot
-      && evidence.dealId === event.dealId
-      && evidence.customerId === event.customerIdSnapshot
-      && evidence.candidateId === event.candidateIdSnapshot;
+      && bindingMatches;
     if (!exactAuthority) {
       return { diagnostic: {
         ownerId: event.ownerIdSnapshot!,
@@ -495,6 +512,36 @@ export class AcquisitionCrmOutcomeReconciliationService {
       frozenCandidateId: snapshot.candidateId,
       frozenAttribution: snapshot.attributionSnapshot
     });
+  }
+
+  async #persistedBindingMatches(
+    event: DealEvent,
+    snapshot: NonNullable<DealEvent["commercialBindingSnapshot"]>,
+    evidence: NonNullable<DealEvent["commercialBindingEvidence"]>
+  ): Promise<boolean> {
+    if (!this.#bindingVerifier) {
+      return snapshot.dealId === event.dealId
+        && snapshot.customerId === event.customerIdSnapshot
+        && snapshot.candidateId === event.candidateIdSnapshot
+        && snapshot.leadId === event.leadIdSnapshot
+        && snapshot.handoffId === event.handoffIdSnapshot
+        && evidence.dealId === event.dealId
+        && evidence.customerId === event.customerIdSnapshot
+        && evidence.candidateId === event.candidateIdSnapshot;
+    }
+    try {
+      const verified = await this.#bindingVerifier.verify(
+        { workspaceId: event.teamIdSnapshot! } as ActiveWorkspaceContext,
+        {
+          candidateId: event.candidateIdSnapshot!,
+          customerId: event.customerIdSnapshot!,
+          dealId: event.dealId
+        }
+      );
+      return matchesCommercialBindingEvidence(verified, evidence);
+    } catch {
+      return false;
+    }
   }
 
   async #outcomeInput(input: {
