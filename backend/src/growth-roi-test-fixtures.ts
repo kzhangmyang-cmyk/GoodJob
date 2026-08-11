@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { OutcomeAttributionInput } from "./acquisition-domain.js";
 import {
   InMemoryAuthoritativeDiscoverySource,
@@ -27,6 +27,17 @@ import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import type { GrowthCapability } from "./growth-capabilities.js";
 import { canonicalGrowthRequestHash } from "./growth-http-idempotency-repository.js";
 import type { CanonicalSubjectMaterial } from "./acquisition-canonical-subject.js";
+import {
+  AttributionAllocationService,
+  type AttributionAllocationServiceLike
+} from "./acquisition-attribution-allocation.js";
+import {
+  InMemoryAttributionAllocationRepository
+} from "./acquisition-attribution-allocation-repository.js";
+import {
+  DefaultFinancialSourceReportService,
+  type FinancialSourceReportService
+} from "./financial-source-report.js";
 
 export interface DiscoveryRowSeed {
   eventId: string;
@@ -314,4 +325,167 @@ export function lateRecordedDiscoveryFixture(options: {
 export function sha256Of(value: unknown): `sha256:${string}` {
   return `sha256:${createHash("sha256")
     .update(JSON.stringify(value)).digest("hex")}`;
+}
+
+export function allocationFixture(options: {
+  failFoundationCompletionOncePerMutation?: boolean;
+} = {}) {
+  const transactions = new InMemoryGrowthTemporalTransactionRunner(
+    "2026-08-09T00:00:00.000Z"
+  );
+  const barrier = new DefaultGrowthTemporalBarrier(transactions);
+  const foundation = foundationServicesFixture({
+    temporalTransactions: transactions,
+    temporalBarrier: barrier
+  });
+  const failedCompletions = new Set<string>();
+  if (options.failFoundationCompletionOncePerMutation) {
+    const originalComplete = foundation.httpIdempotency.complete.bind(
+      foundation.httpIdempotency
+    );
+    foundation.httpIdempotency.complete = async (...args) => {
+      const [reservationId] = args;
+      if (!failedCompletions.has(reservationId as string)) {
+        failedCompletions.add(reservationId as string);
+        throw new Error("injected_completion_loss");
+      }
+      return originalComplete(...args);
+    };
+  }
+  let clock = "2026-08-09T00:00:00.000Z";
+  const commandExecutor = new FoundationRoiCommandExecutor({
+    foundation,
+    now: () => clock
+  });
+  const capabilities: string[] = ["ledger.pending.create", "ledger.verify"];
+  const repository = new InMemoryAttributionAllocationRepository();
+  const dependencies = {
+    repository,
+    foundation,
+    commandExecutor,
+    sources: {
+      async requireEffectiveAmountMinor() {
+        return 10_000;
+      }
+    },
+    now: () => clock,
+    ids: { next: () => randomUUID() }
+  };
+  const service = new AttributionAllocationService(dependencies);
+  const buildContext = (
+    key = "allocation-0001",
+    requestHash?: string
+  ) => Object.freeze({
+    workspace: Object.freeze({
+      workspaceId: "workspace-a",
+      kind: "team",
+      actorId: "finance-a",
+      role: "admin",
+      teamId: "workspace-a",
+      capabilities: capabilities as unknown as readonly string[],
+      capabilityRegistryVersion: "growth-capabilities.v1"
+    }) as ActiveWorkspaceContext,
+    actorId: "finance-a",
+    idempotencyKey: key,
+    requestHash: requestHash ?? canonicalGrowthRequestHash({
+      workspaceId: "workspace-a",
+      actorId: "finance-a",
+      idempotencyKey: key
+    }),
+    expectedRevision: null
+  });
+  const context = Object.assign(
+    buildContext,
+    buildContext()
+  ) as ReturnType<typeof buildContext> & typeof buildContext;
+  const reportServiceInstance = new DefaultFinancialSourceReportService({
+    commandExecutor,
+    now: () => clock,
+    ids: { next: () => randomUUID() }
+  });
+  const reportService = () => reportServiceInstance;
+  const reportInput = Object.freeze({
+    currency: "CNY",
+    sourceSystem: "bank",
+    sourceCursor: null,
+    reportHash: `sha256:${"a".repeat(64)}`,
+    declaredTotalMinor: 10_000,
+    periodFrom: "2026-08-01T00:00:00.000Z",
+    periodTo: "2026-08-08T00:00:00.000Z"
+  });
+  const item = (
+    cohortId: string,
+    bps: number,
+    targetStableKey: string
+  ): import("./acquisition-attribution-allocation.js")
+    .AttributionAllocationItemInput => ({
+    cohortId,
+    candidateId: null,
+    planId: null,
+    runId: null,
+    allocationBps: bps,
+    allocationRule: "manual" as const,
+    ruleVersion: "manual.v1",
+    evidenceRefs: [{
+      kind: "ledger_source" as const,
+      ledgerType: "cost" as const,
+      ledgerEntryId: "cost-1",
+      evidenceHash: `sha256:${"b".repeat(64)}`
+    }],
+    targetStableKey
+  });
+  return {
+    dependencies,
+    service,
+    context,
+    financialSourceReports: reportService,
+    reportInput,
+    allocationDraft: (reportId: string) => ({
+      sourceType: "source_report" as const,
+      sourceId: reportId,
+      items: [
+        item("cohort-a", 6000, "cohort-a"),
+        item("cohort-b", 4000, "cohort-b")
+      ]
+    }),
+    twoCompleteDrafts: async (allocationService: AttributionAllocationServiceLike) => {
+      const draftInput = (sourceId: string) => ({
+        sourceType: "cost_entry" as const,
+        sourceId,
+        items: [
+          item("cohort-a", 6000, "cohort-a"),
+          item("cohort-b", 4000, "cohort-b")
+        ]
+      });
+      const a = await allocationService.createDraft(
+        context("draft-a"), draftInput("cost-a")
+      );
+      const b = await allocationService.createDraft(
+        context("draft-b"), draftInput("cost-b")
+      );
+      return [a, b] as const;
+    },
+    expireFoundationLease: () => {
+      clock = new Date(
+        Date.parse(clock) + 60_000
+      ).toISOString();
+      transactions.setDatabaseNow(clock);
+    },
+    revoke: (capability: string) => {
+      const index = capabilities.indexOf(capability);
+      if (index >= 0) capabilities.splice(index, 1);
+    },
+    restore: (capability: string) => {
+      if (!capabilities.includes(capability)) capabilities.push(capability);
+    },
+    activationCount: (allocationSetId: string) =>
+      repository.activationCount(allocationSetId),
+    domainCommandRowCounts: async () => {
+      return {
+        reports: reportServiceInstance.countReports(),
+        drafts: repository.countDrafts(),
+        activations: repository.countActivations()
+      };
+    }
+  };
 }
