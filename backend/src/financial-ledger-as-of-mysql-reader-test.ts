@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import type mysql from "mysql2/promise";
+import { canonicalJsonStringify } from "./canonical-json.js";
 import { MysqlVerifiedFinancialLedgerSealedReader } from "./financial-ledger-as-of-mysql-reader.js";
 import { VerifiedFinancialLedgerAsOfBoundary } from "./financial-ledger-as-of-reader.js";
 import { withGrowthFinanceMysqlTestDatabase } from "./growth-finance-mysql-test-support.js";
@@ -21,6 +23,33 @@ const workspace: ActiveWorkspaceContext = Object.freeze({
   capabilityRegistryVersion: "growth-capabilities.v1"
 });
 
+const frozenBinding = Object.freeze({
+  candidateId: "candidate-1", handoffId: "handoff-1", leadId: "lead-1",
+  customerId: "customer-1", dealId: "deal-1", candidateVersion: 1,
+  handoffContentHash: "sha256:handoff", dealContentHash: "sha256:deal",
+  bindingHashSchemaVersion: "commercial-binding.v1",
+  attributionSnapshot: {
+    attributionVersion: "acquisition-run.v1", runId: "run-1", planId: "plan-1",
+    planVersionId: "plan-version-1", planVersion: 1,
+    planSnapshotHash: "sha256:plan", discoveredEventId: "discovered-1",
+    discoveredAt: "2026-08-01T00:00:00.000Z", shardId: "shard-1",
+    operationId: "operation-1", connectionId: "connection-1",
+    providerId: "provider-1", evidenceIds: ["evidence-1"],
+    providerIds: ["provider-1"], queryIds: ["query-1"],
+    strategyVersion: "strategy-1", qualificationDecisionId: "qualification-1",
+    decisionVersion: "decision-1", decisionSnapshotHash: "sha256:decision"
+  },
+  bindingHash: `sha256:${createHash("sha256").update(
+    canonicalJsonStringify({
+      customerId: "customer-1",
+      handoffContentHash: "sha256:handoff",
+      dealContentHash: "sha256:deal",
+      bindingHashSchemaVersion: "commercial-binding.v1"
+    }) ?? ""
+  ).digest("hex")}`,
+  verifiedAt: "2026-08-01T00:00:00.000Z"
+});
+
 async function token(asOf: string): Promise<GrowthSealedReadCutoff> {
   const runner = new InMemoryGrowthTemporalTransactionRunner(asOf);
   return new DefaultGrowthTemporalBarrier(runner).sealReadCutoff(workspace, asOf);
@@ -36,9 +65,7 @@ const factRow = Object.freeze({
   evidence_hash: "sha256:revenue-evidence", external_id: "revenue-1",
   source_identity_root: "external:seed:revenue-1", source_version: "1",
   attribution_snapshot_json: null,
-  commercial_binding_snapshot_json: JSON.stringify({
-    candidateId: "candidate-1", bindingHash: "sha256:binding-1"
-  }),
+  commercial_binding_snapshot_json: JSON.stringify(frozenBinding),
   commercial_amount_hash: "sha256:commercial", deal_authority_revision: "1",
   corrects_fact_id: null, correction_group_id: null, created_by: "finance-a"
 });

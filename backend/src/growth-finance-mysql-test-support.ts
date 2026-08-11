@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Request } from "express";
 import mysql from "mysql2/promise";
 import { AcquisitionCostLedgerService, type CreatePendingCostInput } from "./acquisition-cost-ledger.js";
+import {
+  deriveRevenueAndCogs,
+  FinancialFactLedgerService
+} from "./financial-fact-ledger.js";
+import type { AuthoritativeDealDecisionRef } from "./authoritative-quote-reader.js";
+import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js";
 import { MysqlVerifiedFinancialLedgerSealedReader } from "./financial-ledger-as-of-mysql-reader.js";
 import { ensureFinancialLedgerMysqlSchema, MysqlFinancialLedgerRepository } from "./financial-ledger-mysql-repository.js";
 import type { CommandContext } from "./growth-command-context.js";
@@ -10,6 +16,7 @@ import type { GrowthFoundationServices } from "./growth-foundation-module.js";
 import { ensureGrowthHttpIdempotencyMysqlSchema, MysqlGrowthHttpIdempotencyRepository } from "./growth-http-idempotency-mysql-repository.js";
 import { canonicalGrowthRequestHash } from "./growth-http-idempotency-repository.js";
 import { commandContextFromRequest } from "./growth-http-preconditions.js";
+import { canonicalJsonStringify } from "./canonical-json.js";
 import { MysqlGrowthTemporalBarrier, growthMysqlDate, growthMysqlInstant } from "./growth-temporal-barrier-mysql-repository.js";
 import type { GrowthSealedReadCutoff } from "./growth-temporal-barrier.js";
 import { createGrowthAcquisitionWorkspaceResolver, type ActiveWorkspaceContext } from "./growth-workspace-context.js";
@@ -94,6 +101,36 @@ export interface GrowthFinanceMysqlTestDatabase {
   command: typeof command;
   newCostInput(overrides?: Partial<CreatePendingCostInput>): CreatePendingCostInput;
   costLedgerOnConnection(name: "a" | "b"): AcquisitionCostLedgerService;
+  factServiceOnConnection(name: "a" | "b"): FinancialFactLedgerService;
+  seedWonAuthority(input: {
+    quotedAmountMinor: number;
+    currency: string;
+    commercialAmountHash: string;
+  }): Promise<void>;
+  replaceCurrentBinding(
+    overrides: Partial<CommercialBindingSnapshot>
+  ): void;
+  createDirectRevenueAndGrossProfit(input: {
+    revenueMinor: number;
+    grossProfitMinor: number;
+    currency: string;
+  }): Promise<{ ids: string[] }>;
+  correctDirectRevenueAndGrossProfit(input: {
+    ids: string[];
+    expectedRevision: number;
+    revenueMinor: number;
+    grossProfitMinor: number;
+    currency: string;
+  }): Promise<void>;
+  readFactAmounts(ids: readonly string[]): Promise<Array<number | undefined>>;
+  verifyFacts(ids: readonly string[], input: {
+    expectedRevision: number;
+  }): Promise<void>;
+  financialLedgerCounts(): Promise<{
+    facts: number;
+    events: number;
+    sourceHeads: number;
+  }>;
   setSessionTimestamp3(name: "a" | "b", value: string): Promise<void>;
   currentTimestamp3OnConnection(name: "a" | "b"): Promise<string>;
   sealReadCutoffOnConnection(name: "a", workspace: ActiveWorkspaceContext,
@@ -160,6 +197,44 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
       a: new AcquisitionCostLedgerService({ repository: repositoryA, foundation }),
       b: new AcquisitionCostLedgerService({ repository: repositoryB, foundation })
     } as const;
+    let wonDecision: AuthoritativeDealDecisionRef | null = null;
+    let currentBinding: CommercialBindingSnapshot | null = null;
+    const factServices = {
+      a: new FinancialFactLedgerService({
+        repository: repositoryA,
+        foundation,
+        bindingVerifier: {
+          async verify() {
+            if (!currentBinding) {
+              throw new Error("commercial_binding_authority_mismatch");
+            }
+            return currentBinding;
+          }
+        },
+        dealQuoteReader: {
+          async getDecisionAt() {
+            return wonDecision;
+          }
+        }
+      }),
+      b: new FinancialFactLedgerService({
+        repository: repositoryB,
+        foundation,
+        bindingVerifier: {
+          async verify() {
+            if (!currentBinding) {
+              throw new Error("commercial_binding_authority_mismatch");
+            }
+            return currentBinding;
+          }
+        },
+        dealQuoteReader: {
+          async getDecisionAt() {
+            return wonDecision;
+          }
+        }
+      })
+    } as const;
     const verifiedSealedReader = new MysqlVerifiedFinancialLedgerSealedReader(connectionA);
     const fixture: GrowthFinanceMysqlTestDatabase = {
       databaseName,
@@ -181,6 +256,205 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
         estimateReconciliationId: null, ...overrides
       }),
       costLedgerOnConnection: (name) => services[name],
+      factServiceOnConnection: (name) => factServices[name],
+      seedWonAuthority: async (input) => {
+        const attributionSnapshot = {
+          attributionVersion: "acquisition-run.v1", runId: "run-1",
+          planId: "plan-1", planVersionId: "plan-version-1", planVersion: 1,
+          planSnapshotHash: "sha256:plan", discoveredEventId: "discovered-1",
+          discoveredAt: "2026-08-01T00:00:00.000Z", shardId: "shard-1",
+          operationId: "operation-1", connectionId: "connection-1",
+          providerId: "provider-1", evidenceIds: ["evidence-1"],
+          providerIds: ["provider-1"], queryIds: ["query-1"],
+          strategyVersion: "strategy-1", qualificationDecisionId: "qualification-1",
+          decisionVersion: "decision-1", decisionSnapshotHash: "sha256:decision"
+        };
+        const bindingBase = {
+          candidateId: "candidate-1", handoffId: "handoff-1",
+          leadId: "lead-1", customerId: "customer-1", dealId: "deal-1",
+          candidateVersion: 1, handoffContentHash: "sha256:handoff",
+          dealContentHash: "sha256:deal",
+          bindingHashSchemaVersion: "commercial-binding.v1",
+          attributionSnapshot,
+          verifiedAt: "2026-08-08T02:00:00.000Z"
+        };
+        const bindingHash = `sha256:${createHash("sha256")
+          .update(canonicalJsonStringify({
+            customerId: bindingBase.customerId,
+            handoffContentHash: bindingBase.handoffContentHash,
+            dealContentHash: bindingBase.dealContentHash,
+            bindingHashSchemaVersion: bindingBase.bindingHashSchemaVersion
+          }) ?? "")
+          .digest("hex")}` as `sha256:${string}`;
+        const snapshot = Object.freeze({
+          ...bindingBase,
+          bindingHash
+        }) as unknown as CommercialBindingSnapshot;
+        const evidence = Object.freeze({
+          candidateId: snapshot.candidateId,
+          customerId: snapshot.customerId,
+          dealId: snapshot.dealId,
+          handoffContentHash: snapshot.handoffContentHash,
+          dealContentHash: snapshot.dealContentHash,
+          bindingHashSchemaVersion: snapshot.bindingHashSchemaVersion,
+          bindingHash: snapshot.bindingHash
+        });
+        wonDecision = Object.freeze({
+          type: "won",
+          dealId: "deal-1",
+          quoteCaseId: "case-1",
+          quoteVersionId: "quote-1",
+          currency: input.currency,
+          quotedAmountMinor: input.quotedAmountMinor,
+          commercialAmountHash: input.commercialAmountHash as
+            `sha256:${string}`,
+          commercialBindingEvidence: evidence,
+          commercialBindingSnapshot: snapshot,
+          authorityRevision: 3,
+          decidedAt: "2026-08-08T00:00:00.000Z"
+        });
+        currentBinding = Object.freeze({
+          ...snapshot,
+          verifiedAt: "2026-08-09T02:00:00.000Z"
+        });
+      },
+      replaceCurrentBinding: (overrides) => {
+        if (!currentBinding) {
+          throw new Error("won_authority_required");
+        }
+        currentBinding = Object.freeze({
+          ...currentBinding,
+          ...overrides
+        });
+      },
+      createDirectRevenueAndGrossProfit: async ({
+        revenueMinor, grossProfitMinor, currency
+      }) => {
+        const derived = deriveRevenueAndCogs({
+          revenueMinor, grossProfitMinor
+        });
+        if (!derived) throw new Error("revenue_required");
+        const base = {
+          candidateId: null,
+          customerId: null,
+          dealId: null,
+          currency,
+          businessOccurredAt: "2026-08-08T00:00:00.000Z",
+          provenance: "derived_from_import" as const,
+          sourceRef: null,
+          externalId: null
+        };
+        const revenue = await factServices.a.createPending(
+          command("workspace-a", `direct-revenue-${randomUUID()}`),
+          {
+            ...base,
+            factType: "revenue_recognized",
+            amountMinor: derived.revenueMinor,
+            evidenceHash: `sha256:revenue-${randomUUID()}`,
+            sourceIdentityRoot: `external:direct:revenue-${randomUUID()}`
+          }
+        );
+        const cogs = await factServices.a.createPending(
+          command("workspace-a", `direct-cogs-${randomUUID()}`),
+          {
+            ...base,
+            factType: "cogs_recognized",
+            amountMinor: derived.cogsMinor ?? 0,
+            evidenceHash: `sha256:cogs-${randomUUID()}`,
+            sourceIdentityRoot: `external:direct:cogs-${randomUUID()}`
+          }
+        );
+        return { ids: [revenue.fact.id, cogs.fact.id] };
+      },
+      correctDirectRevenueAndGrossProfit: async ({
+        ids, expectedRevision, revenueMinor, grossProfitMinor, currency
+      }) => {
+        const derived = deriveRevenueAndCogs({
+          revenueMinor, grossProfitMinor
+        });
+        if (!derived) throw new Error("revenue_required");
+        const [revenueId, cogsId] = ids;
+        if (!revenueId || !cogsId) throw new Error("invalid_fact_ids");
+        const revenueFact = await repositoryA.getFinancialFact(
+          "workspace-a", revenueId
+        );
+        const cogsFact = await repositoryA.getFinancialFact(
+          "workspace-a", cogsId
+        );
+        if (!revenueFact || !cogsFact) {
+          throw new Error("financial_fact_not_found");
+        }
+        await factServices.a.correct(
+          command("workspace-a", `correct-revenue-${randomUUID()}`, expectedRevision),
+          {
+            factId: revenueId,
+            replacement: {
+              candidateId: null, customerId: null, dealId: null,
+              factType: "revenue_recognized",
+              amountMinor: derived.revenueMinor,
+              currency,
+              businessOccurredAt: "2026-08-08T00:00:00.000Z",
+              provenance: "derived_from_import",
+              sourceRef: null,
+              evidenceHash: `sha256:revenue-corrected-${randomUUID()}`,
+              externalId: null,
+              sourceIdentityRoot: revenueFact.sourceIdentityRoot
+            },
+            reason: "reissue"
+          }
+        );
+        await factServices.a.correct(
+          command("workspace-a", `correct-cogs-${randomUUID()}`, expectedRevision),
+          {
+            factId: cogsId,
+            replacement: {
+              candidateId: null, customerId: null, dealId: null,
+              factType: "cogs_recognized",
+              amountMinor: derived.cogsMinor ?? 0,
+              currency,
+              businessOccurredAt: "2026-08-08T00:00:00.000Z",
+              provenance: "derived_from_import",
+              sourceRef: null,
+              evidenceHash: `sha256:cogs-corrected-${randomUUID()}`,
+              externalId: null,
+              sourceIdentityRoot: cogsFact.sourceIdentityRoot
+            },
+            reason: "reissue"
+          }
+        );
+      },
+      readFactAmounts: async (ids) => {
+        const rows = await Promise.all(ids.map((id) =>
+          repositoryA.getFinancialFact("workspace-a", id)));
+        return rows.map((row) => row?.amountMinor);
+      },
+      verifyFacts: async (ids, { expectedRevision }) => {
+        for (const id of ids) {
+          await factServices.a.verify(
+            command("workspace-a", `verify-fact-${id}`, expectedRevision),
+            { factId: id, reason: "checked" }
+          );
+        }
+      },
+      financialLedgerCounts: async () => {
+        const [factRows] = await pool!.query(
+          `SELECT COUNT(*) AS count FROM financial_facts
+           WHERE workspace_id = 'workspace-a'`
+        );
+        const [eventRows] = await pool!.query(
+          `SELECT COUNT(*) AS count FROM ledger_verification_events
+           WHERE workspace_id = 'workspace-a' AND ledger_type = 'financial'`
+        );
+        const [headRows] = await pool!.query(
+          `SELECT COUNT(*) AS count FROM ledger_source_heads
+           WHERE workspace_id = 'workspace-a' AND ledger_type = 'financial'`
+        );
+        return {
+          facts: Number((factRows as Array<{ count: string }>)[0]?.count),
+          events: Number((eventRows as Array<{ count: string }>)[0]?.count),
+          sourceHeads: Number((headRows as Array<{ count: string }>)[0]?.count)
+        };
+      },
       setSessionTimestamp3: async (name, value) => {
         const seconds = Math.floor(Date.parse(value) / 1000);
         if (!Number.isSafeInteger(seconds)) throw new Error("invalid_test_timestamp");
@@ -204,6 +478,14 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
         }),
       seedHistoricalLedger: async (input) => {
         if (!Number.isSafeInteger(input.amountMinor)) throw new Error("invalid_ledger_amount_minor");
+        const bindingHash = `sha256:${createHash("sha256")
+          .update(canonicalJsonStringify({
+            customerId: input.customerId,
+            handoffContentHash: "sha256:handoff",
+            dealContentHash: "sha256:deal",
+            bindingHashSchemaVersion: "commercial-binding.v1"
+          }) ?? "")
+          .digest("hex")}`;
         const binding = JSON.stringify({
           candidateId: input.candidateId, handoffId: "handoff-1", leadId: "lead-1",
           customerId: input.customerId, dealId: input.dealId, candidateVersion: 1,
@@ -220,7 +502,7 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
             strategyVersion: "strategy-1", qualificationDecisionId: "qualification-1",
             decisionVersion: "decision-1", decisionSnapshotHash: "sha256:decision"
           },
-          bindingHash: input.commercialBindingHash,
+          bindingHash,
           verifiedAt: "2026-08-01T00:00:00.000Z"
         });
         await pool!.query(

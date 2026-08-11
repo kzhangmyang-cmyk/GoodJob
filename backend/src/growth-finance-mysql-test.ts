@@ -6,6 +6,7 @@ import {
   FINANCIAL_LEDGER_MYSQL_SCHEMA_STATEMENTS,
   MysqlFinancialLedgerRepository
 } from "./financial-ledger-mysql-repository.js";
+import { financialLedgerRepositoryContractCases } from "./financial-ledger-repository-contract-test.js";
 import { withGrowthFinanceMysqlTestDatabase } from "./growth-finance-mysql-test-support.js";
 import { ledgerCommandContext } from "./growth-finance-test-fixtures.js";
 
@@ -143,5 +144,162 @@ test("live two MySQL connections preserve a sealed cutoff across a rolled-back c
     assert.deepEqual(fixture.businessLockTrace("create-after-seal").slice(0, 2), [
       "temporal:workspace-cutoff", "source:cost:external:portal:new-stream"
     ]);
+  });
+});
+
+test("MySQL repository satisfies the financial ledger repository contract", async () => {
+  await withGrowthFinanceMysqlTestDatabase(async (fixture) => {
+    for (const item of financialLedgerRepositoryContractCases(
+      "mysql-live",
+      async () => ({
+        repository: new MysqlFinancialLedgerRepository(fixture.pool),
+        foundation: fixture.foundation,
+        close: async () => undefined
+      })
+    )) {
+      await item.run();
+    }
+  });
+});
+
+test("MySQL loss COGS round-trips and invalid direct create/correct write nothing", async () => {
+  await withGrowthFinanceMysqlTestDatabase(async (fixture) => {
+    const created = await fixture.createDirectRevenueAndGrossProfit({
+      revenueMinor: 1000, grossProfitMinor: -400, currency: "CNY"
+    });
+    assert.deepEqual(await fixture.readFactAmounts(created.ids), [1000, 1400]);
+    await fixture.verifyFacts(created.ids, { expectedRevision: 1 });
+    const before = await fixture.financialLedgerCounts();
+    await assert.rejects(() => fixture.createDirectRevenueAndGrossProfit({
+      revenueMinor: 1000, grossProfitMinor: 1001, currency: "CNY"
+    }), /financial_fact_amount_invalid/);
+    await assert.rejects(() => fixture.correctDirectRevenueAndGrossProfit({
+      ids: created.ids, expectedRevision: 2,
+      revenueMinor: Number.MAX_SAFE_INTEGER, grossProfitMinor: -1,
+      currency: "CNY"
+    }), /amount_out_of_range/);
+    assert.deepEqual(await fixture.financialLedgerCounts(), before);
+  });
+});
+
+test("MySQL contract_won round-trips the frozen binding and rejects mismatches", async () => {
+  await withGrowthFinanceMysqlTestDatabase(async (fixture) => {
+    await fixture.seedWonAuthority({
+      quotedAmountMinor: 298_000, currency: "CNY",
+      commercialAmountHash: "sha256:commercial-1"
+    });
+    const service = fixture.factServiceOnConnection("a");
+    const input = {
+      candidateId: "candidate-1", customerId: "customer-1", dealId: "deal-1",
+      factType: "contract_won" as const, amountMinor: 298_000, currency: "CNY",
+      businessOccurredAt: "2026-08-08T00:00:00.000Z",
+      provenance: "invoice_confirmed" as const, sourceRef: "invoice:1",
+      evidenceHash: "sha256:invoice-1", externalId: "invoice-1",
+      sourceIdentityRoot: "external:invoice:invoice-1"
+    };
+    const created = await service.createPending(
+      fixture.command("workspace-a", "contract-won-create"), input
+    );
+    const reread = await fixture.factServiceOnConnection("b").get(
+      fixture.workspaceContext("workspace-a"), created.fact.id
+    );
+    assert.equal(reread?.quoteVersionId, "quote-1");
+    assert.equal(reread?.amountMinor, 298_000);
+    assert.equal(reread?.commercialAmountHash, "sha256:commercial-1");
+    assert.deepEqual(
+      reread?.commercialBindingSnapshot,
+      created.fact.commercialBindingSnapshot
+    );
+    await service.verify(
+      fixture.command("workspace-a", "contract-won-verify", 1),
+      { factId: created.fact.id, reason: "matched signed contract" }
+    );
+    const before = await fixture.financialLedgerCounts();
+    await assert.rejects(() => service.createPending(
+      fixture.command("workspace-a", "contract-won-wrong-amount"),
+      { ...input, amountMinor: 1 }
+    ), (error: unknown) =>
+      (error as { code?: string }).code === "financial_fact_conflict");
+    await assert.rejects(() => service.createPending(
+      fixture.command("workspace-a", "contract-won-wrong-currency"),
+      { ...input, currency: "USD" }
+    ), (error: unknown) =>
+      (error as { code?: string }).code === "financial_fact_conflict");
+    await assert.rejects(() => service.correct(
+      fixture.command("workspace-a", "contract-won-correct-wrong", 2),
+      { factId: created.fact.id, replacement: { ...input, amountMinor: 1 },
+        reason: "attempted change" }
+    ), (error: unknown) =>
+      (error as { code?: string }).code === "financial_fact_conflict");
+    assert.deepEqual(await fixture.financialLedgerCounts(), before);
+
+    fixture.replaceCurrentBinding({
+      candidateId: "candidate-rebound",
+      customerId: "customer-rebound",
+      handoffContentHash: "sha256:rebound-handoff",
+      bindingHash: "sha256:rebound-binding"
+    });
+    await assert.rejects(() => service.createPending(
+      fixture.command("workspace-a", "contract-won-rebound-create"),
+      { ...input, externalId: "after-rebind",
+        sourceIdentityRoot: "external:invoice:after-rebind" }
+    ), (error: unknown) =>
+      (error as { code?: string }).code === "financial_fact_conflict");
+    await assert.rejects(() => service.correct(
+      fixture.command("workspace-a", "contract-won-rebound-correct", 2),
+      { factId: created.fact.id, replacement: input,
+        reason: "must not reattribute" }
+    ), (error: unknown) =>
+      (error as { code?: string }).code === "financial_fact_conflict");
+    assert.deepEqual(await fixture.financialLedgerCounts(), before);
+    const afterRebind = await fixture.factServiceOnConnection("b").get(
+      fixture.workspaceContext("workspace-a"), created.fact.id
+    );
+    assert.equal(afterRebind?.commercialBindingSnapshot?.candidateId,
+      "candidate-1");
+  });
+});
+
+test("live two MySQL connections permit only one financial fact correction", async () => {
+  await withGrowthFinanceMysqlTestDatabase(async (fixture) => {
+    await fixture.seedWonAuthority({
+      quotedAmountMinor: 298_000, currency: "CNY",
+      commercialAmountHash: "sha256:commercial-1"
+    });
+    const input = {
+      candidateId: "candidate-1", customerId: "customer-1", dealId: "deal-1",
+      factType: "contract_won" as const, amountMinor: 298_000, currency: "CNY",
+      businessOccurredAt: "2026-08-08T00:00:00.000Z",
+      provenance: "invoice_confirmed" as const, sourceRef: "invoice:1",
+      evidenceHash: "sha256:invoice-1", externalId: "invoice-1",
+      sourceIdentityRoot: "external:invoice:invoice-1"
+    };
+    const created = await fixture.factServiceOnConnection("a").createPending(
+      fixture.command("workspace-a", "race-create"), input
+    );
+    await fixture.factServiceOnConnection("a").verify(
+      fixture.command("workspace-a", "race-verify", 1),
+      { factId: created.fact.id, reason: "matched signed contract" }
+    );
+    const attempts = await Promise.allSettled([
+      fixture.factServiceOnConnection("a").correct(
+        fixture.command("workspace-a", "race-correct-a", 2),
+        { factId: created.fact.id, replacement: {
+          ...input, evidenceHash: "sha256:corrected-a" },
+          reason: "reissue-a" }
+      ),
+      fixture.factServiceOnConnection("b").correct(
+        fixture.command("workspace-a", "race-correct-b", 2),
+        { factId: created.fact.id, replacement: {
+          ...input, evidenceHash: "sha256:corrected-b" },
+          reason: "reissue-b" }
+      )
+    ]);
+    assert.equal(
+      attempts.filter((item) => item.status === "fulfilled").length, 1
+    );
+    assert.equal(
+      attempts.filter((item) => item.status === "rejected").length, 1
+    );
   });
 });

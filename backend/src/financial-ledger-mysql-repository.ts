@@ -10,6 +10,7 @@ import {
   type LedgerType,
   type LedgerVerificationEvent
 } from "./financial-ledger-domain.js";
+import { assertFrozenCommercialBinding } from "./authoritative-quote-reader.js";
 import type {
   FinancialLedgerRepository,
   FinancialLedgerTransaction
@@ -235,6 +236,31 @@ function signedMinor(value: unknown): number {
   return parsed;
 }
 
+function parseSafeMinor(value: unknown, field: string): number {
+  const text = typeof value === "bigint" ? value.toString() : String(value);
+  if (!/^[0-9]+$/u.test(text)) {
+    throw new Error(`FINANCIAL_LEDGER_MYSQL_INTEGRITY:${field}`);
+  }
+  const amount = BigInt(text);
+  if (amount > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(`FINANCIAL_LEDGER_MYSQL_INTEGRITY:${field}`);
+  }
+  return Number(amount);
+}
+
+function assertFrozenBindingIntegrity(
+  snapshot: FinancialFact["commercialBindingSnapshot"]
+): void {
+  if (!snapshot) return;
+  try {
+    assertFrozenCommercialBinding(snapshot);
+  } catch {
+    throw new Error(
+      "FINANCIAL_LEDGER_MYSQL_INTEGRITY:commercial_binding_snapshot_json"
+    );
+  }
+}
+
 function enumValue<T extends string>(value: unknown, allowed: readonly T[], code: string): T {
   if (typeof value !== "string" || !allowed.includes(value as T)) throw new Error(code);
   return value as T;
@@ -317,15 +343,19 @@ function costEntry(row: MysqlRow): AcquisitionCostEntry {
 function financialFact(row: MysqlRow): FinancialFact {
   const attributionSnapshot = structuredJson(row.attribution_snapshot_json, "invalid_financial_fact_json");
   const commercialBindingSnapshot = structuredJson(row.commercial_binding_snapshot_json, "invalid_financial_fact_json");
-  return Object.freeze({
-    id: textValue(row.id, "invalid_financial_fact_row"),
-    workspaceId: assertConcreteGrowthWorkspaceId(textValue(row.workspace_id, "invalid_financial_fact_row")),
+  const id = textValue(row.id, "invalid_financial_fact_row");
+  const workspaceId = assertConcreteGrowthWorkspaceId(
+    textValue(row.workspace_id, "invalid_financial_fact_row")
+  );
+  const fact = Object.freeze({
+    id,
+    workspaceId,
     candidateId: nullableText(row.candidate_id, "invalid_financial_fact_row"),
     customerId: nullableText(row.customer_id, "invalid_financial_fact_row"),
     dealId: nullableText(row.deal_id, "invalid_financial_fact_row"),
     quoteVersionId: nullableText(row.quote_version_id, "invalid_financial_fact_row"),
     factType: enumValue(row.fact_type, ["contract_won", "payment_received", "revenue_recognized", "cogs_recognized", "refund", "bad_debt_written_off"] as const, "invalid_financial_fact_row"),
-    amountMinor: signedMinor(row.amount_minor),
+    amountMinor: parseSafeMinor(row.amount_minor, "amount_minor"),
     currency: textValue(row.currency, "invalid_financial_fact_row"),
     businessOccurredAt: growthMysqlInstant(row.business_occurred_at),
     recordedAt: growthMysqlInstant(row.recorded_at),
@@ -337,13 +367,20 @@ function financialFact(row: MysqlRow): FinancialFact {
     sourceIdentityRoot: textValue(row.source_identity_root, "invalid_financial_fact_row"),
     sourceVersion: safeInteger(row.source_version, "invalid_ledger_source_version", 1),
     attributionSnapshot: attributionSnapshot as FinancialFact["attributionSnapshot"],
-    commercialBindingSnapshot: commercialBindingSnapshot as FinancialFact["commercialBindingSnapshot"],
+    commercialBindingSnapshot: commercialBindingSnapshot as
+      FinancialFact["commercialBindingSnapshot"],
     commercialAmountHash: nullableText(row.commercial_amount_hash, "invalid_financial_fact_row"),
     dealAuthorityRevision: row.deal_authority_revision === null ? null : safeInteger(row.deal_authority_revision, "invalid_deal_authority_revision", 1),
     correctsFactId: nullableText(row.corrects_fact_id, "invalid_financial_fact_row"),
     correctionGroupId: nullableText(row.correction_group_id, "invalid_financial_fact_row"),
     createdBy: textValue(row.created_by, "invalid_financial_fact_row")
   });
+  if (fact.workspaceId !== String(row.workspace_id)
+    || fact.id !== String(row.id)) {
+    throw new Error("FINANCIAL_LEDGER_MYSQL_INTEGRITY:financial_fact_scope");
+  }
+  assertFrozenBindingIntegrity(fact.commercialBindingSnapshot);
+  return fact;
 }
 
 function verificationEvent(row: MysqlRow): LedgerVerificationEvent {
@@ -516,12 +553,13 @@ export class MysqlFinancialLedgerTransaction implements FinancialLedgerTransacti
     return row ? financialFact(row) : null;
   }
   async insertFinancialFact(fact: FinancialFact) {
-    signedMinor(fact.amountMinor);
+    parseSafeMinor(fact.amountMinor, "amount_minor");
     safeInteger(fact.sourceVersion, "invalid_ledger_source_version", 1);
     safeInteger(fact.temporalSequence, "invalid_growth_temporal_sequence", 1);
     if (fact.dealAuthorityRevision !== null) {
       safeInteger(fact.dealAuthorityRevision, "invalid_deal_authority_revision", 1);
     }
+    assertFrozenBindingIntegrity(fact.commercialBindingSnapshot);
     await this.connection.query(
       `INSERT INTO financial_facts (
         id, workspace_id, candidate_id, customer_id, deal_id, quote_version_id,
