@@ -28,6 +28,20 @@ import {
   ensureAuthoritativeDiscoveryMysqlSchema
 } from "./acquisition-authoritative-discovery-mysql-repository.js";
 import { InMemoryAuthoritativeDiscoverySource } from "./acquisition-authoritative-discovery-projection.js";
+import {
+  DefaultAcquisitionGrowthPerformanceQueryService,
+  type GrowthPerformanceDataSource,
+  type GrowthPerformanceQueryPage
+} from "./acquisition-growth-performance-query.js";
+import {
+  createAcquisitionGrowthPerformanceRouter
+} from "./acquisition-growth-performance-router.js";
+import {
+  InMemoryRoiClosureRepository
+} from "./acquisition-roi-closure-repository.js";
+import type {
+  RoiClosureVersion
+} from "./acquisition-roi-closure.js";
 
 export interface GrowthRoiAcquisitionIntegrations {
   authoritativeDiscoveryProjectionWriter: AuthoritativeDiscoveryProjectionWriter;
@@ -45,6 +59,7 @@ export interface GrowthRoiDiscoveryServices {
   acquisitionIntegrations: GrowthRoiAcquisitionIntegrations;
   cohorts: AcquisitionCohortRepository;
   cohortService: DefaultAcquisitionCohortService;
+  growthPerformance: DefaultAcquisitionGrowthPerformanceQueryService;
 }
 
 export const GROWTH_ROI_DISCOVERY_SERVICES:
@@ -110,6 +125,46 @@ export function createGrowthRoiModule(
           discoveries: projection,
           now: options.now
         });
+        const closureRepository = new InMemoryRoiClosureRepository();
+        const performanceSource: GrowthPerformanceDataSource = {
+          async listCohortMembersAsOf(
+            workspaceId,
+            cohortId,
+            planId,
+            cutoff
+          ): Promise<GrowthPerformanceQueryPage<any>> {
+            const rows = (await cohortRepository.listMembersAt(
+              workspaceId, cohortId, cutoff
+            )).filter((member) =>
+              planId === null || member.firstPlanId === planId);
+            return { rows, truncated: false };
+          },
+          async listCohortMemberSourcesAsOf(
+            _workspaceId,
+            _cohortMemberIds,
+            _cutoff
+          ) {
+            return { rows: [], truncated: false };
+          },
+          async selectPublishedClosure() {
+            return null;
+          },
+          async getExactPublishedClosure() {
+            return null;
+          },
+          async readMaterializedSnapshot() {
+            return null;
+          }
+        };
+        const growthPerformance =
+          new DefaultAcquisitionGrowthPerformanceQueryService(
+            performanceSource,
+            {
+              async listQuoteContributions() {
+                return [];
+              }
+            }
+          );
         input.privateServices.provide(GROWTH_ROI_ACQUISITION_INTEGRATIONS,
           Object.freeze({
             authoritativeDiscoveryProjectionWriter: projection
@@ -122,8 +177,15 @@ export function createGrowthRoiModule(
               authoritativeDiscoveryProjectionWriter: projection
             }),
             cohorts: cohortRepository,
-            cohortService
+            cohortService,
+            growthPerformance
           }));
+        input.router.use(createAcquisitionGrowthPerformanceRouter({
+          queryService: growthPerformance,
+          workspaceContext: foundation.workspaceContext,
+          temporalBarrier: foundation.temporalBarrier,
+          now: options.now
+        }));
         return Object.freeze({
           close: () => closePromise ??= Promise.resolve()
         });
