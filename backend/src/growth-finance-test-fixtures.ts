@@ -7,6 +7,8 @@ import type { AuthoritativeDealDecisionRef } from
 import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { GrowthFoundationServices } from "./growth-foundation-module.js";
+import type { GrowthCapability } from "./growth-capabilities.js";
+import type { GrowthWorkspaceSettingsReader } from "./growth-workspace-settings.js";
 import {
   canonicalGrowthRequestHash,
   InMemoryGrowthHttpIdempotencyRepository
@@ -33,18 +35,30 @@ import {
   parseCreateFinancialFactInput,
   type CreateFinancialFactInput
 } from "./financial-fact-ledger.js";
+import { deriveRevenueAndCogs } from "./financial-fact-ledger.js";
+import {
+  FinanceImportService,
+  type FinanceImportPreviewCommand
+} from "./finance-import-service.js";
+import {
+  InMemoryFinanceImportRepository
+} from "./finance-import-repository.js";
 import {
   DefaultGrowthTemporalBarrier,
   InMemoryGrowthTemporalTransactionRunner,
   type GrowthSealedReadCutoff,
   type GrowthTemporalBarrier
 } from "./growth-temporal-barrier.js";
+import { growthInstantMilliseconds } from "./growth-as-of.js";
 import { canonicalJsonStringify } from "./canonical-json.js";
 import {
   createGrowthAcquisitionWorkspaceResolver,
   type ActiveWorkspaceContext
 } from "./growth-workspace-context.js";
-import { InMemoryGrowthWorkspaceSettingsReader } from "./growth-workspace-settings.js";
+import {
+  InMemoryGrowthWorkspaceSettingsReader,
+  InMemoryGrowthWorkspaceSettingsRepository
+} from "./growth-workspace-settings.js";
 
 const DEFAULT_NOW = "2026-08-09T03:00:00.000Z";
 
@@ -100,7 +114,10 @@ function workspace(workspaceId: string, actorId = "finance-a"): ActiveWorkspaceC
 }
 
 export function foundationServicesFixture(
-  overrides: Partial<GrowthFoundationServices> = {}
+  overrides: Partial<GrowthFoundationServices> & {
+    timeZone?: string;
+    settingsRevision?: string;
+  } = {}
 ): GrowthFoundationServices {
   const temporalTransactions = overrides.temporalTransactions
     ?? new InMemoryGrowthTemporalTransactionRunner(DEFAULT_NOW);
@@ -116,11 +133,20 @@ export function foundationServicesFixture(
         };
       }
     });
+  const defaultSettings = overrides.timeZone ? {
+    "workspace-a": [{
+      timeZone: overrides.timeZone,
+      revision: overrides.settingsRevision
+        ?? "growth-workspace-settings.v1",
+      recordedAt: DEFAULT_NOW,
+      eventSequence: 1
+    }]
+  } : undefined;
   return Object.freeze({
     httpIdempotency: overrides.httpIdempotency
       ?? new InMemoryGrowthHttpIdempotencyRepository(),
     workspaceSettings: overrides.workspaceSettings
-      ?? new InMemoryGrowthWorkspaceSettingsReader(),
+      ?? new InMemoryGrowthWorkspaceSettingsReader(defaultSettings),
     workspaceContext: overrides.workspaceContext
       ?? ((request: Request) => {
         if (!request.activeWorkspace) throw new Error("workspace_required");
@@ -757,4 +783,480 @@ export function verifiedLedgerReaderBoundaryFixture(options: {
       temporalSequence: 1
     }) as GrowthSealedReadCutoff
   };
+}
+
+export interface FinancePreviewFixtureOptions {
+  previews?: string[];
+  createdBy?: string;
+  financialRows?: Array<{
+    externalId: string;
+    revenueMinor: number;
+    grossProfitMinor: number;
+  }>;
+  businessOccurredAt?: string;
+  timeZone?: string;
+  settingsRevision?: string;
+  pauseAfterSeal?: boolean;
+  physicalConnections?: number;
+  wonQuote?: AuthoritativeDealDecisionRef | null;
+  currentBinding?: CommercialBindingSnapshot | null;
+}
+
+export function financePreviewFixture(
+  options: FinancePreviewFixtureOptions = {}
+) {
+  const ledgerRepository = new InMemoryFinancialLedgerRepository(
+    {}, DEFAULT_NOW
+  );
+  const transactions = new InMemoryGrowthTemporalTransactionRunner(DEFAULT_NOW);
+  const baseBarrier = new DefaultGrowthTemporalBarrier(transactions);
+  const settingsRepository = new InMemoryGrowthWorkspaceSettingsRepository(
+    transactions,
+    baseBarrier,
+    options.timeZone ? {
+      "workspace-a": [{
+        timeZone: options.timeZone,
+        revision: options.settingsRevision
+          ?? "growth-workspace-settings.v1",
+        recordedAt: DEFAULT_NOW,
+        eventSequence: 1
+      }]
+    } : {}
+  );
+  const getAtTokens: GrowthSealedReadCutoff[] = [];
+  const previewCutoffs: GrowthSealedReadCutoff[] = [];
+  let currentGetCalls = 0;
+  let seals = 0;
+  let lastCutoff: GrowthSealedReadCutoff | null = null;
+  let releaseGate: (() => void) | null = null;
+  let gatePromise: Promise<void> | null = null;
+  let pausedOnce = false;
+  let resolveFirstSeal: (() => void) | null = null;
+  const firstSealPromise = new Promise<void>((resolve) => {
+    resolveFirstSeal = resolve;
+  });
+  class CountingPreviewBarrier extends DefaultGrowthTemporalBarrier {
+    override async sealReadCutoff(
+      context: ActiveWorkspaceContext,
+      effectiveAsOf: string
+    ) {
+      const token = await super.sealReadCutoff(context, effectiveAsOf);
+      seals += 1;
+      lastCutoff = token;
+      previewCutoffs.push(token);
+      if (seals === 1) resolveFirstSeal?.();
+      if (options.pauseAfterSeal && !pausedOnce) {
+        pausedOnce = true;
+        gatePromise = new Promise<void>((resolve) => {
+          releaseGate = resolve;
+        });
+      }
+      if (options.pauseAfterSeal && gatePromise) await gatePromise;
+      return token;
+    }
+  }
+  const countingBarrier = new CountingPreviewBarrier(transactions);
+  const settingsReader: GrowthWorkspaceSettingsReader = {
+    async get(context) {
+      currentGetCalls += 1;
+      return settingsRepository.get(context);
+    },
+    async getAt(context, cutoff) {
+      getAtTokens.push(cutoff);
+      return settingsRepository.getAt(context, cutoff);
+    }
+  };
+  const sealSnapshots = new Map<string, number>();
+  const commandOrder: string[] = [];
+  let clock = growthInstantMilliseconds(DEFAULT_NOW);
+  const now = () => new Date(clock += 1).toISOString();
+  let deriveCalls = 0;
+  const countingDerive = ((
+    input: { revenueMinor: number | null; grossProfitMinor: number | null }
+  ) => {
+    deriveCalls += 1;
+    return deriveRevenueAndCogs(input);
+  }) as typeof deriveRevenueAndCogs;
+  const capabilityLists = new Map<string, GrowthCapability[]>();
+  function capabilitiesFor(actorId: string): readonly GrowthCapability[] {
+    let capabilities = capabilityLists.get(actorId);
+    if (!capabilities) {
+      capabilities = [
+        "ledger.pending.create" as const,
+        "ledger.verify" as const,
+        "roi.close" as const,
+        "growth.performance.workspace.read" as const,
+        "pricing.sensitive.read" as const
+      ];
+      capabilityLists.set(actorId, capabilities);
+    }
+    return capabilities;
+  }
+  let wonDecision = options.wonQuote ?? null;
+  let currentBinding = options.currentBinding
+    ?? (options.wonQuote
+      ? Object.freeze({
+          ...options.wonQuote.commercialBindingSnapshot,
+          verifiedAt: "2026-08-09T02:00:00.000Z"
+        })
+      : null);
+  const quoteCutoffs: GrowthSealedReadCutoff[] = [];
+  const quoteReaderSeals = 0;
+  const foundation = foundationServicesFixture({
+    temporalTransactions: transactions,
+    temporalBarrier: countingBarrier,
+    workspaceSettings: settingsReader
+  });
+  const repository = new InMemoryFinanceImportRepository(
+    transactions, countingBarrier
+  );
+  const service = new FinanceImportService({
+    repository,
+    foundation,
+    now,
+    derive: countingDerive,
+    bindingVerifier: {
+      async verify() {
+        if (!currentBinding) {
+          throw new Error("commercial_binding_authority_mismatch");
+        }
+        return currentBinding;
+      }
+    },
+    dealQuoteReader: {
+      async getDecisionAt(_context, _dealId, cutoff) {
+        quoteCutoffs.push(cutoff);
+        return wonDecision;
+      }
+    }
+  });
+  function workspaceFor(actorId: string): ActiveWorkspaceContext {
+    return Object.freeze({
+      workspaceId: "workspace-a",
+      kind: "team" as const,
+      actorId,
+      role: "admin" as const,
+      teamId: "workspace-a",
+      capabilities: capabilitiesFor(actorId),
+      capabilityRegistryVersion: "growth-capabilities.v1"
+    });
+  }
+  function buildCommand(overrides?: string | Partial<{
+    actorId: string;
+    idempotencyKey: string;
+    expectedRevision: number | null;
+    method: string;
+    canonicalPath: string;
+    pathParams: Readonly<Record<string, string>>;
+    payload: unknown;
+  }>): CommandContext {
+    const key = typeof overrides === "string"
+      ? overrides : overrides?.idempotencyKey ?? "finance-preview-0001";
+    commandOrder.push(key);
+    sealSnapshots.set(key, seals);
+    const actorId = typeof overrides === "object"
+      ? overrides.actorId ?? "finance-a" : "finance-a";
+    const method = typeof overrides === "object"
+      ? overrides.method ?? "POST" : "POST";
+    const canonicalPath = typeof overrides === "object"
+      ? overrides.canonicalPath ?? "/api/v1/finance/imports/preview"
+      : "/api/v1/finance/imports/preview";
+    const pathParams = typeof overrides === "object"
+      ? overrides.pathParams ?? Object.freeze({})
+      : Object.freeze({});
+    const payload = typeof overrides === "object"
+      ? overrides.payload ?? Object.freeze({}) : Object.freeze({});
+    const expectedRevision = typeof overrides === "object"
+      ? overrides.expectedRevision ?? null : null;
+    return Object.freeze({
+      workspace: workspaceFor(actorId),
+      actorId,
+      idempotencyKey: key,
+      requestHash: canonicalGrowthRequestHash({
+        method,
+        canonicalPath,
+        pathParams: Object.fromEntries(
+          Object.entries(pathParams).sort(([left], [right]) =>
+            left < right ? -1 : left > right ? 1 : 0)
+        ),
+        payload,
+        expectedRevision
+      }),
+      expectedRevision
+    });
+  }
+  function buildInput(overrides: {
+    businessOccurredAt?: string;
+    amountMinor?: number;
+    currency?: string;
+  } = {}): FinanceImportPreviewCommand {
+    const rows = options.financialRows ?? [{
+      externalId: "fact-1", revenueMinor: 1000, grossProfitMinor: 400
+    }];
+    const businessOccurredAt = overrides.businessOccurredAt
+      ?? options.businessOccurredAt ?? "2026-08-09";
+    const csv = [
+      "externalId,factType,amount,currency,businessOccurredAt,provenance,revenue,grossProfit,status",
+      ...rows.map((row) => {
+        const amount = overrides.amountMinor !== undefined
+          ? (overrides.amountMinor / 100).toFixed(2)
+          : (row.revenueMinor / 100).toFixed(2);
+        const currency = overrides.currency ?? "CNY";
+        const formatMinor = (value: number) => (value < 0 ? "\u2212" : "")
+          + (Math.abs(value) / 100).toFixed(2);
+        const revenue = formatMinor(row.revenueMinor);
+        const grossProfit = formatMinor(row.grossProfitMinor);
+        return `${row.externalId},revenue_recognized,${amount},${currency},${businessOccurredAt},derived_from_import,${revenue},${grossProfit},pending`;
+      })
+    ].join("\n");
+    return Object.freeze({
+      kind: "financial_fact",
+      fileName: "facts.csv",
+      mediaType: "text/csv",
+      content: Buffer.from(csv),
+      mapping: Object.freeze({
+        externalId: "externalId",
+        factType: "factType",
+        amount: "amount",
+        currency: "currency",
+        businessOccurredAt: "businessOccurredAt",
+        provenance: "provenance",
+        revenue: "revenue",
+        grossProfit: "grossProfit",
+        status: "status"
+      })
+    });
+  }
+  const baseCommand = buildCommand();
+  const baseInput = buildInput();
+  const command = Object.assign(
+    buildCommand,
+    baseCommand
+  ) as CommandContext & ((overrides?: Parameters<typeof buildCommand>[0])
+    => CommandContext);
+  const input = Object.assign(
+    buildInput,
+    baseInput
+  ) as FinanceImportPreviewCommand & ((
+    overrides?: Parameters<typeof buildInput>[0]
+  ) => FinanceImportPreviewCommand);
+  const previewIds = options.previews ?? ["preview-1"];
+  for (const previewId of previewIds) {
+    repository.seedPreview({
+      id: previewId,
+      workspaceId: "workspace-a",
+      createdBy: options.createdBy ?? "finance-a",
+      previewRequestHash: canonicalGrowthRequestHash({
+        workspaceId: "workspace-a",
+        previewId
+      }),
+      fileHash: "sha256:seeded-preview",
+      templateVersion: "finance-fact-import.v1",
+      kind: "financial_fact",
+      resolvedTimeZone: "Asia/Shanghai",
+      workspaceSettingsRevision: "settings-1",
+      workspaceSettingsRecordedAt: DEFAULT_NOW,
+      workspaceSettingsEventSequence: 1,
+      validRows: 1,
+      invalidRows: 0,
+      authorityEffectiveAsOf: DEFAULT_NOW,
+      authorityTemporalSequence: 1
+    }, [{
+      id: `row-${previewId}-1`,
+      previewId,
+      rowNumber: 1,
+      sheetName: "CSV",
+      status: "valid",
+      sourceIdentityRoot: `finance-import-row:${previewId}`,
+      normalized: {
+        kind: "financial_fact",
+        candidateId: null,
+        customerId: null,
+        dealId: null,
+        currency: "CNY",
+        businessOccurredAt: "2026-08-08T16:00:00.000Z",
+        externalId: "fact-1",
+        evidenceHash: "sha256:seeded-row",
+        derivedFacts: [{
+          factType: "revenue_recognized",
+          amountMinor: 100000
+        }],
+        authoritativeDecision: null
+      },
+      errors: []
+    }]);
+  }
+  return {
+    service,
+    repository,
+    foundation,
+    workspace: workspaceFor("finance-a"),
+    command,
+    input,
+    previewId: previewIds[0]!,
+    previewIds,
+    countLedgerRows: async () =>
+      (await ledgerRepository.listFinancialFacts("workspace-a")).length,
+    dealDecision: () => wonDecision,
+    deriveHelperCallCount: () => deriveCalls,
+    foundationSealCallCount: () => seals,
+    previewSealCallCount: (key: string) => {
+      const start = sealSnapshots.get(key) ?? 0;
+      const index = commandOrder.indexOf(key);
+      const end = index >= 0 && index + 1 < commandOrder.length
+        ? sealSnapshots.get(commandOrder[index + 1]!) ?? seals
+        : seals;
+      return end - start;
+    },
+    lastFoundationCutoff: () => lastCutoff,
+    previewCutoffs: () => [...previewCutoffs],
+    quoteReaderCutoffs: () => [...quoteCutoffs],
+    quoteReaderSealCallCount: () => quoteReaderSeals,
+    workspaceSettingsGetAtTokens: () => [...getAtTokens],
+    workspaceSettingsCurrentGetCallCount: () => currentGetCalls,
+    waitForPreviewSeal: () => firstSealPromise,
+    releasePreviewAfterSeal: () => {
+      releaseGate?.();
+      releaseGate = null;
+      gatePromise = null;
+    },
+    appendWorkspaceSettingsOnConnectionB: (input: {
+      timeZone: string;
+      revision: string;
+    }) => settingsRepository.appendTrustedSettingsEvent(
+      "workspace-a", input
+    ),
+    revoke: (actorId: string, capability: string) => {
+      const capabilities = capabilityLists.get(actorId);
+      const index = capabilities?.indexOf(
+        capability as GrowthCapability
+      ) ?? -1;
+      if (index >= 0) capabilities!.splice(index, 1);
+    },
+    replaceCurrentBinding: (overrides: Partial<CommercialBindingSnapshot>) => {
+      if (!currentBinding) throw new Error("won_authority_required");
+      currentBinding = Object.freeze({ ...currentBinding, ...overrides });
+    },
+    currentBinding: () => currentBinding,
+    setWonQuote: (decision: AuthoritativeDealDecisionRef | null) => {
+      wonDecision = decision;
+    }
+  };
+}
+
+export function contractWonImportFixture(options: {
+  rows?: number;
+  wonQuote?: AuthoritativeDealDecisionRef | null;
+} = {}) {
+  const state = financePreviewFixture({
+    wonQuote: options.wonQuote ?? wonQuoteFixture()
+  });
+  const rows = options.rows ?? 1;
+  const wonQuote = options.wonQuote ?? wonQuoteFixture();
+  state.setWonQuote(wonQuote);
+  if (!state.currentBinding()) {
+    state.replaceCurrentBinding({
+      ...wonQuote.commercialBindingSnapshot
+    });
+  }
+  return {
+    ...state,
+    input(overrides: {
+      amountMinor?: number;
+      currency?: string;
+    } = {}): FinanceImportPreviewCommand {
+      const amountMinor = overrides.amountMinor ?? 298_000;
+      const currency = overrides.currency ?? "CNY";
+      const csv = [
+        "externalId,factType,amount,currency,businessOccurredAt,provenance,status,candidateId,customerId,dealId",
+        ...Array.from({ length: rows }, (_, index) =>
+          `contract-${index + 1},contract_won,${(amountMinor / 100).toFixed(2)},${currency},2026-08-09,portal_export,pending,candidate-1,customer-1,deal-1`)
+      ].join("\n");
+      return Object.freeze({
+        kind: "financial_fact",
+        fileName: "facts.csv",
+        mediaType: "text/csv",
+        content: Buffer.from(csv),
+        mapping: Object.freeze({
+          externalId: "externalId",
+          factType: "factType",
+          amount: "amount",
+          currency: "currency",
+          businessOccurredAt: "businessOccurredAt",
+          provenance: "provenance",
+          revenue: "revenue",
+          grossProfit: "grossProfit",
+          status: "status",
+          candidateId: "candidateId",
+          customerId: "customerId",
+          dealId: "dealId"
+        })
+      });
+    }
+  };
+}
+
+export function wonQuoteFixture(): AuthoritativeDealDecisionRef {
+  const snapshot = Object.freeze({
+    candidateId: "candidate-1", handoffId: "handoff-1", leadId: "lead-1",
+    customerId: "customer-1", dealId: "deal-1", candidateVersion: 3,
+    handoffContentHash: "sha256:h", dealContentHash: "sha256:d",
+    bindingHashSchemaVersion: "commercial-binding.v1",
+    attributionSnapshot: Object.freeze({
+      attributionVersion: "acquisition-run.v1",
+      runId: "run-1",
+      planId: "plan-1",
+      planVersionId: "plan-version-1",
+      planVersion: 1,
+      planSnapshotHash: "sha256:plan",
+      discoveredEventId: "discovered-1",
+      discoveredAt: "2026-08-01T00:00:00.000Z",
+      shardId: "shard-1",
+      operationId: "operation-1",
+      connectionId: "connection-1",
+      providerId: "provider-1",
+      evidenceIds: ["evidence-1"],
+      providerIds: ["provider-1"],
+      queryIds: ["query-1"],
+      strategyVersion: "strategy-1",
+      qualificationDecisionId: "qualification-1",
+      decisionVersion: "decision-1",
+      decisionSnapshotHash: "sha256:decision"
+    }),
+    verifiedAt: "2026-08-08T02:00:00.000Z"
+  });
+  const bindingHash = `sha256:${createHash("sha256")
+    .update(canonicalJsonStringify({
+      customerId: snapshot.customerId,
+      handoffContentHash: snapshot.handoffContentHash,
+      dealContentHash: snapshot.dealContentHash,
+      bindingHashSchemaVersion: snapshot.bindingHashSchemaVersion
+    }) ?? "")
+    .digest("hex")}`;
+  const fullSnapshot = Object.freeze({
+    ...snapshot,
+    bindingHash
+  }) as CommercialBindingSnapshot;
+  const evidence = Object.freeze({
+    candidateId: fullSnapshot.candidateId,
+    customerId: fullSnapshot.customerId,
+    dealId: fullSnapshot.dealId,
+    handoffContentHash: fullSnapshot.handoffContentHash,
+    dealContentHash: fullSnapshot.dealContentHash,
+    bindingHashSchemaVersion: fullSnapshot.bindingHashSchemaVersion,
+    bindingHash: fullSnapshot.bindingHash
+  });
+  return Object.freeze({
+    type: "won",
+    dealId: "deal-1",
+    quoteCaseId: "case-1",
+    quoteVersionId: "quote-1",
+    currency: "CNY",
+    quotedAmountMinor: 298_000,
+    commercialAmountHash: "sha256:commercial-1",
+    commercialBindingEvidence: evidence,
+    commercialBindingSnapshot: fullSnapshot,
+    authorityRevision: 3,
+    decidedAt: "2026-08-08T00:00:00.000Z"
+  });
 }
