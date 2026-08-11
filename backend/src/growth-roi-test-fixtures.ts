@@ -27,6 +27,7 @@ import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import type { GrowthCapability } from "./growth-capabilities.js";
 import { canonicalGrowthRequestHash } from "./growth-http-idempotency-repository.js";
 import type { CanonicalSubjectMaterial } from "./acquisition-canonical-subject.js";
+import { wonQuoteFixture } from "./growth-finance-test-fixtures.js";
 import {
   AttributionAllocationService,
   type AttributionAllocationServiceLike
@@ -38,6 +39,14 @@ import {
   DefaultFinancialSourceReportService,
   type FinancialSourceReportService
 } from "./financial-source-report.js";
+import {
+  CashSettlementAllocationService,
+  activeSettlementSetIdAsOf,
+  type CashSettlementAllocationItemInput
+} from "./financial-settlement-allocation.js";
+import {
+  InMemoryFinancialSettlementRepository
+} from "./financial-settlement-allocation-repository.js";
 
 export interface DiscoveryRowSeed {
   eventId: string;
@@ -531,5 +540,319 @@ export function completeTwoCohortDraft(
         targetStableKey: "cohort-b"
       }
     ]
+  };
+}
+
+export function settlementFixture(options: {
+  revenues?: Array<{ id: string; dealId: string; amountMinor: number }>;
+  payments?: Array<{ id: string; dealId: string; amountMinor: number }>;
+  refunds?: Array<{ id: string; dealId: string; amountMinor: number }>;
+  failFoundationCompletionOncePerMutation?: boolean;
+} = {}) {
+  const revenues = options.revenues ?? [];
+  const payments = options.payments ?? [];
+  const refunds = options.refunds ?? [];
+  const transactions = new InMemoryGrowthTemporalTransactionRunner(
+    "2026-08-09T00:00:00.000Z"
+  );
+  const barrier = new DefaultGrowthTemporalBarrier(transactions);
+  const foundation = foundationServicesFixture({
+    temporalTransactions: transactions,
+    temporalBarrier: barrier
+  });
+  const failedCompletions = new Set<string>();
+  if (options.failFoundationCompletionOncePerMutation) {
+    const originalComplete = foundation.httpIdempotency.complete.bind(
+      foundation.httpIdempotency
+    );
+    foundation.httpIdempotency.complete = async (...args) => {
+      const [reservationId] = args;
+      if (!failedCompletions.has(reservationId as string)) {
+        failedCompletions.add(reservationId as string);
+        throw new Error("injected_completion_loss");
+      }
+      return originalComplete(...args);
+    };
+  }
+  let clock = "2026-08-09T00:00:00.000Z";
+  const commandExecutor = new FoundationRoiCommandExecutor({
+    foundation,
+    now: () => clock
+  });
+  const capabilities: string[] = ["ledger.pending.create", "ledger.verify"];
+  const repository = new InMemoryFinancialSettlementRepository();
+  const workspace = workspaceContext("workspace-a");
+  const binding = wonQuoteFixture().commercialBindingSnapshot;
+  const factReader = {
+    async requireFact(
+      _workspace: ActiveWorkspaceContext,
+      factId: string
+    ) {
+      const revenue = revenues.find((item) => item.id === factId);
+      if (revenue) {
+        return {
+          id: revenue.id,
+          factType: "revenue_recognized",
+          dealId: revenue.dealId,
+          quoteVersionId: "quote-1",
+          amountMinor: revenue.amountMinor,
+          currency: "CNY",
+          commercialBindingSnapshot: binding
+        };
+      }
+      const payment = payments.find((item) => item.id === factId);
+      if (payment) {
+        return {
+          id: payment.id,
+          factType: "payment_received",
+          dealId: payment.dealId,
+          quoteVersionId: "quote-1",
+          amountMinor: payment.amountMinor,
+          currency: "CNY",
+          commercialBindingSnapshot: binding
+        };
+      }
+      const refund = refunds.find((item) => item.id === factId);
+      if (refund) {
+        return {
+          id: refund.id,
+          factType: "refund",
+          dealId: refund.dealId,
+          quoteVersionId: "quote-1",
+          amountMinor: refund.amountMinor,
+          currency: "CNY",
+          commercialBindingSnapshot: binding
+        };
+      }
+      throw new Error("financial_fact_not_found");
+    }
+  };
+  const service = new CashSettlementAllocationService({
+    repository,
+    foundation,
+    commandExecutor,
+    facts: factReader,
+    now: () => clock,
+    ids: { next: () => randomUUID() }
+  });
+  const context = (
+    key = "settlement-0001",
+    requestHash?: string
+  ) => Object.freeze({
+    workspace: Object.freeze({
+      workspaceId: "workspace-a",
+      kind: "team",
+      actorId: "finance-a",
+      role: "admin",
+      teamId: "workspace-a",
+      capabilities: capabilities as unknown as readonly string[],
+      capabilityRegistryVersion: "growth-capabilities.v1"
+    }) as ActiveWorkspaceContext,
+    actorId: "finance-a",
+    idempotencyKey: key,
+    requestHash: requestHash ?? canonicalGrowthRequestHash({
+      workspaceId: "workspace-a",
+      actorId: "finance-a",
+      idempotencyKey: key
+    }),
+    expectedRevision: null
+  });
+  const item = (
+    revId: string,
+    dealId: string,
+    amountMinor: number,
+    paymentRef: {
+      paymentFactId: string | null;
+      paymentSetId: string | null;
+      paymentItemId: string | null;
+    } = {
+      paymentFactId: null,
+      paymentSetId: null,
+      paymentItemId: null
+    }
+  ): CashSettlementAllocationItemInput => ({
+    targetRevenueFactId: revId,
+    dealId,
+    quoteVersionId: "quote-1",
+    amountMinor,
+    currency: "CNY",
+    originalPaymentFactId: paymentRef.paymentFactId,
+    originalPaymentAllocationSetId: paymentRef.paymentSetId,
+    originalPaymentAllocationItemId: paymentRef.paymentItemId,
+    commercialBindingSnapshot: binding
+  });
+  const dealOf = (factId: string) =>
+    revenues.find((item) => item.id === factId)?.dealId
+    ?? payments.find((item) => item.id === factId)?.dealId
+    ?? refunds.find((item) => item.id === factId)?.dealId
+    ?? "deal-a";
+  return {
+    dependencies: {
+      repository,
+      foundation,
+      commandExecutor,
+      facts: factReader,
+      now: () => clock
+    },
+    service,
+    workspace,
+    foundation,
+    context,
+    completeDraft: {
+      sourceFactId: payments[0]?.id ?? "pay-a",
+      items: [
+        item(
+          revenues[0]?.id ?? "rev-a",
+          dealOf(payments[0]?.id ?? "pay-a"),
+          payments[0]?.amountMinor ?? 100
+        )
+      ]
+    },
+    activatePayment: async (
+      settlementService: CashSettlementAllocationService,
+      paymentId: string,
+      revenueId: string,
+      amountMinor: number
+    ) => {
+      const draft = await settlementService.createDraft(
+        context(`draft-${paymentId}`),
+        {
+          sourceFactId: paymentId,
+          items: [item(revenueId, dealOf(paymentId), amountMinor)]
+        }
+      );
+      return settlementService.activate(
+        { ...context(`activate-${paymentId}`), expectedRevision: 1 },
+        draft.id
+      );
+    },
+    activateRefund: async (
+      settlementService: CashSettlementAllocationService,
+      refundId: string,
+      revenueId: string,
+      amountMinor: number,
+      paymentRef: {
+        paymentFactId: string;
+        paymentSetId: string;
+        paymentItemId: string;
+      }
+    ) => {
+      const draft = await settlementService.createDraft(
+        context(`refund-draft-${refundId}`),
+        {
+          sourceFactId: refundId,
+          items: [item(
+            revenueId, dealOf(refundId), amountMinor, paymentRef
+          )]
+        }
+      );
+      return settlementService.activate(
+        { ...context(`refund-activate-${refundId}`), expectedRevision: 1 },
+        draft.id
+      );
+    },
+    twoCompleteDrafts: async (
+      settlementService: CashSettlementAllocationService
+    ) => {
+      const a = await settlementService.createDraft(
+        context("settlement-draft-a"),
+        {
+          sourceFactId: payments[0]?.id ?? "pay-a",
+          items: [item(
+            revenues[0]?.id ?? "rev-a",
+            dealOf(payments[0]?.id ?? "pay-a"),
+            payments[0]?.amountMinor ?? 100
+          )]
+        }
+      );
+      const b = await settlementService.createDraft(
+        context("settlement-draft-b"),
+        {
+          sourceFactId: payments[1]?.id ?? "pay-b",
+          items: [item(
+            revenues[1]?.id ?? "rev-b",
+            dealOf(payments[1]?.id ?? "pay-b"),
+            payments[1]?.amountMinor ?? 100
+          )]
+        }
+      );
+      return [a, b] as const;
+    },
+    expireFoundationLease: () => {
+      clock = new Date(Date.parse(clock) + 60_000).toISOString();
+      transactions.setDatabaseNow(clock);
+    },
+    revoke: (capability: string) => {
+      const index = capabilities.indexOf(capability);
+      if (index >= 0) capabilities.splice(index, 1);
+    },
+    restore: (capability: string) => {
+      if (!capabilities.includes(capability)) capabilities.push(capability);
+    },
+    activationCount: (allocationSetId: string) =>
+      repository.activationCount(allocationSetId),
+    domainCommandRowCounts: async () => ({
+      drafts: (await repository.listSets("workspace-a")).length,
+      activations: (await repository.listSets("workspace-a"))
+        .filter((set) => set.status === "active").length
+    })
+  };
+}
+
+export function settlementLifecycleFixture() {
+  const events = [
+    {
+      id: "event-1",
+      workspaceId: "workspace-a",
+      sourceFactId: "pay-a",
+      allocationSetId: "payment-v1",
+      eventType: "activated" as const,
+      eventSequence: 1,
+      revision: 1,
+      effectiveAt: "2026-08-01T00:00:00.000Z",
+      supersedesAllocationSetId: null,
+      actorId: "finance-a",
+      recordedAt: "2026-08-01T00:00:00.000Z",
+      temporalSequence: 1
+    },
+    {
+      id: "event-z",
+      workspaceId: "workspace-a",
+      sourceFactId: "pay-a",
+      allocationSetId: "payment-v1",
+      eventType: "superseded" as const,
+      eventSequence: 2,
+      revision: 2,
+      effectiveAt: "2026-08-09T00:00:00.000Z",
+      supersedesAllocationSetId: null,
+      actorId: "finance-a",
+      recordedAt: "2026-08-09T00:00:00.000Z",
+      temporalSequence: 2
+    },
+    {
+      id: "event-a",
+      workspaceId: "workspace-a",
+      sourceFactId: "pay-a",
+      allocationSetId: "payment-v2",
+      eventType: "activated" as const,
+      eventSequence: 3,
+      revision: 3,
+      effectiveAt: "2026-08-09T00:00:00.000Z",
+      supersedesAllocationSetId: "payment-v1",
+      actorId: "finance-a",
+      recordedAt: "2026-08-09T00:00:00.001Z",
+      temporalSequence: 3
+    }
+  ];
+  return {
+    events,
+    asOfReader: {
+      getActiveId: (
+        source: typeof events,
+        asOf: string
+      ) => {
+        return activeSettlementSetIdAsOf(source, asOf);
+      }
+    }
   };
 }
