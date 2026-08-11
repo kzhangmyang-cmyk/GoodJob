@@ -856,3 +856,26 @@ export function settlementLifecycleFixture() {
     }
   };
 }
+
+export function settlementDraft(
+  sourceFactId: string,
+  revenueFactId: string,
+  amountMinor: number,
+  dealId = "deal-a"
+) {
+  return {
+    sourceFactId,
+    items: [{
+      targetRevenueFactId: revenueFactId,
+      dealId,
+      quoteVersionId: "quote-1",
+      amountMinor,
+      currency: "CNY",
+      originalPaymentFactId: null,
+      originalPaymentAllocationSetId: null,
+      originalPaymentAllocationItemId: null,
+      commercialBindingSnapshot:
+        wonQuoteFixture().commercialBindingSnapshot
+    }]
+  };
+}

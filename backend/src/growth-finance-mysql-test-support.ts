@@ -38,6 +38,13 @@ import {
 import {
   FoundationRoiCommandExecutor
 } from "./growth-roi-command-executor.js";
+import {
+  ensureFinancialSettlementMysqlSchema,
+  MysqlFinancialSettlementRepository
+} from "./financial-settlement-allocation-mysql-repository.js";
+import {
+  CashSettlementAllocationService
+} from "./financial-settlement-allocation.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { GrowthFoundationServices } from "./growth-foundation-module.js";
 import { ensureGrowthHttpIdempotencyMysqlSchema, MysqlGrowthHttpIdempotencyRepository } from "./growth-http-idempotency-mysql-repository.js";
@@ -202,6 +209,23 @@ export interface GrowthFinanceMysqlTestDatabase {
   attributionService(): AttributionAllocationService;
   repository: MysqlAttributionAllocationRepository;
   context(key: string): CommandContext;
+  settlementService(): CashSettlementAllocationService;
+  settlementRepository: MysqlFinancialSettlementRepository;
+  insertVerifiedRevenue(
+    id: string,
+    dealId: string,
+    amountMinor: number
+  ): Promise<void>;
+  insertVerifiedPayment(
+    id: string,
+    dealId: string,
+    amountMinor: number
+  ): Promise<void>;
+  insertVerifiedBadDebt(
+    id: string,
+    dealId: string,
+    amountMinor: number
+  ): Promise<void>;
 }
 
 export async function withGrowthFinanceMysqlTestDatabase<T>(
@@ -225,6 +249,7 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
     await ensureGrowthHttpIdempotencyMysqlSchema(pool);
     await ensureFinancialLedgerMysqlSchema(pool);
     await ensureAttributionAllocationMysqlSchema(pool);
+    await ensureFinancialSettlementMysqlSchema(pool);
     await ensureGrowthWorkspaceSettingsMysqlSchema(pool);
     // Schema installation is an upgrade path and must remain retry-safe.
     await ensureFinancialLedgerMysqlSchema(pool);
@@ -368,6 +393,30 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
       sources: {
         async requireEffectiveAmountMinor() {
           return 10_000;
+        }
+      },
+      now: importNow
+    });
+    const settlementRepository =
+      new MysqlFinancialSettlementRepository(pool, temporalBarrier);
+    const settlementService = new CashSettlementAllocationService({
+      repository: settlementRepository,
+      foundation,
+      commandExecutor: new FoundationRoiCommandExecutor({
+        foundation,
+        now: importNow
+      }),
+      facts: {
+        async requireFact() {
+          return {
+            id: "fact",
+            factType: "payment_received",
+            dealId: "deal-a",
+            quoteVersionId: "quote-1",
+            amountMinor: 100,
+            currency: "CNY",
+            commercialBindingSnapshot: null
+          };
         }
       },
       now: importNow
@@ -895,7 +944,66 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
       },
       attributionService: () => attributionService,
       repository: attributionRepository,
-      context: (key: string) => command("workspace-a", key)
+      context: (key: string) => command("workspace-a", key),
+      settlementService: () => settlementService,
+      settlementRepository,
+      insertVerifiedRevenue: async (id: string, dealId: string, amountMinor: number) => {
+        await pool!.query(
+          `INSERT INTO financial_facts (
+            id, workspace_id, candidate_id, customer_id, deal_id,
+            quote_version_id, fact_type, amount_minor, currency,
+            business_occurred_at, recorded_at, temporal_sequence,
+            provenance, source_ref, evidence_hash, external_id,
+            source_identity_root, source_version, attribution_snapshot_json,
+            commercial_binding_snapshot_json, commercial_amount_hash,
+            deal_authority_revision, corrects_fact_id, correction_group_id,
+            created_by
+          ) VALUES (?, 'workspace-a', NULL, NULL, ?, 'quote-1',
+            'revenue_recognized', ?, 'CNY', '2026-08-09 00:00:00.000',
+            '2026-08-09 00:00:00.000', 1, 'invoice_confirmed', NULL,
+            'sha256:test', NULL, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL,
+            'finance-a')`,
+          [id, dealId, amountMinor, `external:${id}`]
+        );
+      },
+      insertVerifiedPayment: async (id: string, dealId: string, amountMinor: number) => {
+        await pool!.query(
+          `INSERT INTO financial_facts (
+            id, workspace_id, candidate_id, customer_id, deal_id,
+            quote_version_id, fact_type, amount_minor, currency,
+            business_occurred_at, recorded_at, temporal_sequence,
+            provenance, source_ref, evidence_hash, external_id,
+            source_identity_root, source_version, attribution_snapshot_json,
+            commercial_binding_snapshot_json, commercial_amount_hash,
+            deal_authority_revision, corrects_fact_id, correction_group_id,
+            created_by
+          ) VALUES (?, 'workspace-a', NULL, NULL, ?, 'quote-1',
+            'payment_received', ?, 'CNY', '2026-08-09 00:00:00.000',
+            '2026-08-09 00:00:00.000', 1, 'bank_statement', NULL,
+            'sha256:test', NULL, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL,
+            'finance-a')`,
+          [id, dealId, amountMinor, `external:${id}`]
+        );
+      },
+      insertVerifiedBadDebt: async (id: string, dealId: string, amountMinor: number) => {
+        await pool!.query(
+          `INSERT INTO financial_facts (
+            id, workspace_id, candidate_id, customer_id, deal_id,
+            quote_version_id, fact_type, amount_minor, currency,
+            business_occurred_at, recorded_at, temporal_sequence,
+            provenance, source_ref, evidence_hash, external_id,
+            source_identity_root, source_version, attribution_snapshot_json,
+            commercial_binding_snapshot_json, commercial_amount_hash,
+            deal_authority_revision, corrects_fact_id, correction_group_id,
+            created_by
+          ) VALUES (?, 'workspace-a', NULL, NULL, ?, 'quote-1',
+            'bad_debt_written_off', ?, 'CNY', '2026-08-09 00:00:00.000',
+            '2026-08-09 00:00:00.000', 1, 'manual_verified', NULL,
+            'sha256:test', NULL, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL,
+            'finance-a')`,
+          [id, dealId, amountMinor, `external:${id}`]
+        );
+      }
     };
     return await testBody(fixture);
   } finally {
