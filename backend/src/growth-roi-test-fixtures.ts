@@ -47,6 +47,14 @@ import {
 import {
   InMemoryFinancialSettlementRepository
 } from "./financial-settlement-allocation-repository.js";
+import {
+  RoiClosureService,
+  type ClosureAttestation,
+  type ClosureEvidenceRef
+} from "./acquisition-roi-closure.js";
+import {
+  InMemoryRoiClosureRepository
+} from "./acquisition-roi-closure-repository.js";
 
 export interface DiscoveryRowSeed {
   eventId: string;
@@ -877,5 +885,260 @@ export function settlementDraft(
       commercialBindingSnapshot:
         wonQuoteFixture().commercialBindingSnapshot
     }]
+  };
+}
+
+export async function completeClosureFixture(options: {
+  currency?: string;
+  costMinor?: number;
+  revenueMinor?: number;
+  cogsMinor?: number;
+  paymentMinor?: number;
+  refundMinor?: number;
+  contractWonMinor?: number;
+  sharedCohortCostMinor?: number;
+  explicitPlanCostAllocations?: string[];
+  members?: Array<{
+    id: string;
+    firstPlanId: string;
+    revenueMinor: number;
+    cogsMinor: number;
+    acquisitionCostMinor: number;
+  }>;
+  failFoundationCompletionOncePerMutation?: boolean;
+  serverNow?: string;
+  deferCohortProjection?: boolean;
+} = {}) {
+  const currency = options.currency ?? "CNY";
+  const members = options.members ?? [{
+    id: "member-a",
+    firstPlanId: "plan-a",
+    revenueMinor: 1000,
+    cogsMinor: 200,
+    acquisitionCostMinor: 200
+  }];
+  const transactions = new InMemoryGrowthTemporalTransactionRunner(
+    options.serverNow ?? "2026-08-09T00:00:00.000Z"
+  );
+  const barrier = new DefaultGrowthTemporalBarrier(transactions);
+  const foundation = foundationServicesFixture({
+    temporalTransactions: transactions,
+    temporalBarrier: barrier
+  });
+  const failedCompletions = new Set<string>();
+  let clock = options.serverNow ?? "2026-08-09T00:00:00.000Z";
+  const commandExecutor = new FoundationRoiCommandExecutor({
+    foundation,
+    now: () => clock
+  });
+  const capabilities: string[] = ["roi.close", "ledger.verify"];
+  const repository = new InMemoryRoiClosureRepository();
+  const workspace = workspaceContext("workspace-a");
+  const cohortId = "cohort-a";
+  const hash = (label: string) =>
+    `sha256:${createHash("sha256").update(label).digest("hex")}`;
+  const closureEvidence = {
+    membershipSnapshotHash: hash("membership"),
+    attestationSetHash: hash("attestations"),
+    factSetHash: hash("facts"),
+    costSetHash: hash("costs"),
+    allocationSetHash: hash("allocations"),
+    settlementSetHash: hash("settlements")
+  };
+  const reader = {
+    async freezeEvidence(input: {
+      workspace: ActiveWorkspaceContext;
+      cutoff: import("./growth-temporal-barrier.js").GrowthSealedReadCutoff;
+      attestations: ClosureAttestation[];
+    }) {
+      void input;
+      const revenueMinor = members.reduce(
+        (sum, member) => sum + member.revenueMinor, 0
+      );
+      const cogsMinor = members.reduce(
+        (sum, member) => sum + member.cogsMinor, 0
+      );
+      const acquisitionCostMinor = members.reduce(
+        (sum, member) => sum + member.acquisitionCostMinor, 0
+      )
+        + (options.sharedCohortCostMinor ?? 0);
+      return {
+        closureEvidence,
+        verifiedRevenueMinor: options.revenueMinor ?? revenueMinor,
+        verifiedCogsMinor: options.cogsMinor ?? cogsMinor,
+        verifiedRefundMinor: options.refundMinor ?? 0,
+        verifiedBadDebtMinor: 0,
+        verifiedAcquisitionCostMinor: options.costMinor
+          ?? acquisitionCostMinor,
+        allCoverageBps: 10000,
+        cashReconciled: true,
+        members: members.map((member) => ({
+          cohortMemberId: member.id,
+          ownershipVersionId: `version-${member.id}`,
+          firstPlanId: member.firstPlanId
+        })),
+        verifiedContractWonMinor: options.contractWonMinor ?? 1000,
+        allocatedPaymentMinor: options.paymentMinor ?? 900,
+        netCashMinor: (options.paymentMinor ?? 900)
+          - (options.refundMinor ?? 0)
+      };
+    }
+  };
+  const service = new RoiClosureService({
+    repository,
+    foundation,
+    commandExecutor,
+    reader,
+    now: () => clock
+  });
+  const context = (key = "closure-0001") => Object.freeze({
+    workspace: Object.freeze({
+      workspaceId: "workspace-a",
+      kind: "team",
+      actorId: "finance-a",
+      role: "admin",
+      teamId: "workspace-a",
+      capabilities: capabilities as unknown as readonly string[],
+      capabilityRegistryVersion: "growth-capabilities.v1"
+    }) as ActiveWorkspaceContext,
+    actorId: "finance-a",
+    idempotencyKey: key,
+    requestHash: canonicalGrowthRequestHash({
+      workspaceId: "workspace-a",
+      actorId: "finance-a",
+      idempotencyKey: key
+    }),
+    expectedRevision: null
+  });
+  const evidenceRef = (id: string): ClosureEvidenceRef => ({
+    kind: "ledger_entry",
+    ledgerType: "financial",
+    ledgerEntryId: id,
+    evidenceHash: hash(id)
+  });
+  const attestationInput = {
+    cohortId,
+    currency,
+    aspect: "revenue" as const,
+    periodFrom: "2026-08-01T00:00:00.000Z",
+    periodTo: "2026-08-08T00:00:00.000Z",
+    declaredTotalMinor: 1000,
+    sourceSystem: "bank",
+    sourceCursor: null,
+    sourceReportId: null,
+    reportAllocationSetId: null,
+    reportHash: hash("report"),
+    evidenceRefs: [evidenceRef("rev-a")]
+  };
+  const attestationIds: string[] = [];
+  const createAttestation = async (
+    closureService: RoiClosureService,
+    commandContext: ReturnType<typeof context>,
+    input: typeof attestationInput
+  ) => {
+    if (Date.parse(input.periodTo) > Date.parse(clock)) {
+      throw Object.assign(new Error("invalid_as_of"), {
+        code: "invalid_as_of"
+      });
+    }
+    const cutoff = await barrier.sealReadCutoff(
+      workspace, input.periodTo
+    );
+    const attestation = await closureService.createAttestationAt(
+      commandContext, input, cutoff
+    );
+    attestationIds.push(attestation.id);
+    return attestation;
+  };
+  const closeInput = {
+    cohortId,
+    currency,
+    attestationIds
+  };
+  for (const aspect of [
+    "acquisition_cost",
+    "revenue",
+    "cogs",
+    "cash",
+    "refund_bad_debt",
+    "attribution"
+  ] as const) {
+    const cutoff = await barrier.sealReadCutoff(
+      workspace, "2026-08-08T00:00:00.000Z"
+    );
+    const attestation = await service.createAttestationAt(
+      context(`seed-attestation-${aspect}`),
+      {
+        ...attestationInput,
+        aspect
+      },
+      cutoff
+    );
+    attestationIds.push(attestation.id);
+  }
+  if (options.failFoundationCompletionOncePerMutation) {
+    const originalComplete = foundation.httpIdempotency.complete.bind(
+      foundation.httpIdempotency
+    );
+    foundation.httpIdempotency.complete = async (...args) => {
+      const [reservationId] = args;
+      if (!failedCompletions.has(reservationId as string)) {
+        failedCompletions.add(reservationId as string);
+        throw new Error("injected_completion_loss");
+      }
+      return originalComplete(...args);
+    };
+  }
+  return {
+    dependencies: {
+      repository,
+      foundation,
+      commandExecutor,
+      reader,
+      now: () => clock
+    },
+    service,
+    repository,
+    workspace,
+    foundation,
+    cohortId,
+    attestationIds,
+    attestationInput,
+    closeInput,
+    context,
+    createAttestation,
+    close: async (
+      closureService: RoiClosureService,
+      commandContext: ReturnType<typeof context>,
+      input: { cohortId: string; currency: string; asOf: string; attestationIds: string[] }
+    ) => {
+      const cutoff = await barrier.sealReadCutoff(workspace, input.asOf);
+      return closureService.closeAt(commandContext, {
+        cohortId: input.cohortId,
+        currency: input.currency,
+        attestationIds: input.attestationIds
+      }, cutoff);
+    },
+    expireFoundationLease: () => {
+      clock = new Date(Date.parse(clock) + 60_000).toISOString();
+      transactions.setDatabaseNow(clock);
+    },
+    revoke: (capability: string) => {
+      const index = capabilities.indexOf(capability);
+      if (index >= 0) capabilities.splice(index, 1);
+    },
+    restore: (capability: string) => {
+      if (!capabilities.includes(capability)) capabilities.push(capability);
+    },
+    insertLateVerifiedRefund: async (
+      _amountMinor: number,
+      _recordedAt: string
+    ) => undefined,
+    domainCommandRowCounts: async () => ({
+      attestations: Math.max(0, await repository.countAttestations() - 6),
+      closeOperations: await repository.countCloseOperations(),
+      closureVersions: await repository.countClosureVersions(),
+      reopenEvents: await repository.countTotalReopenEvents()
+    })
   };
 }
