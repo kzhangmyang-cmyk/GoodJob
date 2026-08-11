@@ -55,6 +55,11 @@ import {
 import {
   InMemoryRoiClosureRepository
 } from "./acquisition-roi-closure-repository.js";
+import {
+  DefaultAcquisitionGrowthPerformanceQueryService,
+  type GrowthPerformanceDataSource,
+  type GrowthPerformanceQueryPage
+} from "./acquisition-growth-performance-query.js";
 
 export interface DiscoveryRowSeed {
   eventId: string;
@@ -1140,5 +1145,234 @@ export async function completeClosureFixture(options: {
       closureVersions: await repository.countClosureVersions(),
       reopenEvents: await repository.countTotalReopenEvents()
     })
+  };
+}
+
+export function growthPerformanceFixture(options: {
+  closures?: Array<{
+    id: string;
+    version: number;
+    asOf: string;
+    closedAt?: string;
+    status?: "closed" | "superseded";
+    roiBps?: number;
+  }>;
+  members?: Array<{ id: string; firstPlanId: string }>;
+  memberSources?: Array<{ cohortMemberId: string; candidateId: string }>;
+  quoteCandidateId?: string;
+} = {}) {
+  const closures = options.closures ?? [];
+  const members = options.members ?? [{ id: "member-a", firstPlanId: "plan-a" }];
+  const memberSources = options.memberSources ?? [];
+  const workspace = workspaceContext("workspace-a");
+  const cohortId = "cohort-1";
+  const hash = (label: string) =>
+    `sha256:${createHash("sha256").update(label).digest("hex")}`;
+  const source: GrowthPerformanceDataSource = {
+    async listCohortMembersAsOf(
+      _workspaceId,
+      requestedCohortId,
+      planId,
+      _cutoff
+    ): Promise<GrowthPerformanceQueryPage<
+      import("./acquisition-cohort-repository.js").AcquisitionCohortMember
+    >> {
+      const rows = members
+        .filter((member) =>
+          requestedCohortId === cohortId
+          && (planId === null || member.firstPlanId === planId))
+        .map((member) => ({
+          id: member.id,
+          primaryCandidateId: `candidate-${member.id}`,
+          firstPlanId: member.firstPlanId
+        }));
+      void rows;
+      const typedRows = rows as unknown as
+        import("./acquisition-cohort-repository.js")
+          .AcquisitionCohortMember[];
+      return { rows: typedRows, truncated: false };
+    },
+    async listCohortMemberSourcesAsOf(
+      _workspaceId,
+      memberIds,
+      _cutoff
+    ): Promise<GrowthPerformanceQueryPage<
+      import("./acquisition-cohort-repository.js")
+        .AcquisitionCohortMemberSource
+    >> {
+      return {
+        rows: memberSources.filter((source) =>
+          memberIds.includes(source.cohortMemberId)) as unknown as
+          import("./acquisition-cohort-repository.js")
+            .AcquisitionCohortMemberSource[],
+        truncated: false
+      };
+    },
+    async selectPublishedClosure(
+      _workspaceId,
+      requestedCohortId,
+      currency,
+      cutoff
+    ) {
+      const selected = closures
+        .filter((closure) =>
+          requestedCohortId === cohortId
+          && currency === "CNY"
+          && (closure.closedAt ?? closure.asOf) <= cutoff.effectiveAsOf)
+        .sort((a, b) =>
+          (b.closedAt ?? b.asOf).localeCompare(a.closedAt ?? a.asOf)
+          || b.version - a.version)[0];
+      return selected
+        ? {
+            closure: Object.freeze({
+              id: selected.id,
+              workspaceId: "workspace-a",
+              cohortId,
+              currency,
+              version: selected.version,
+              asOf: selected.asOf,
+              status: selected.status ?? "closed",
+              previousClosureVersionId: null,
+              formulaVersion: "verified-gross-profit-roi.v1",
+              membershipSnapshotHash: hash("membership"),
+              attestationSetHash: hash("attestations"),
+              factSetHash: hash("facts"),
+              costSetHash: hash("costs"),
+              allocationSetHash: hash("allocations"),
+              settlementSetHash: hash("settlements"),
+              closedBy: "finance-a",
+              closedAt: selected.closedAt ?? selected.asOf
+            }),
+            truncated: false
+          }
+        : null;
+    },
+    async getExactPublishedClosure(
+      _workspaceId,
+      requestedCohortId,
+      currency,
+      closureVersionId,
+      cutoff
+    ) {
+      const closure = closures.find((candidate) =>
+        candidate.id === closureVersionId);
+      if (!closure) return null;
+      const publishedAt = closure.closedAt ?? closure.asOf;
+      if (publishedAt > cutoff.effectiveAsOf) return null;
+      return {
+        closure: Object.freeze({
+          id: closure.id,
+          workspaceId: "workspace-a",
+          cohortId,
+          currency,
+          version: closure.version,
+          asOf: closure.asOf,
+          status: closure.status ?? "closed",
+          previousClosureVersionId: null,
+          formulaVersion: "verified-gross-profit-roi.v1",
+          membershipSnapshotHash: hash("membership"),
+          attestationSetHash: hash("attestations"),
+          factSetHash: hash("facts"),
+          costSetHash: hash("costs"),
+          allocationSetHash: hash("allocations"),
+          settlementSetHash: hash("settlements"),
+          closedBy: "finance-a",
+          closedAt: publishedAt
+        }),
+        truncated: false
+      };
+    },
+    async readMaterializedSnapshot(
+      _workspaceId,
+      closureVersionId,
+      sliceKey
+    ) {
+      const closure = closures.find((candidate) =>
+        candidate.id === closureVersionId);
+      if (!closure) return null;
+      const metrics = closure.roiBps !== undefined
+        ? {
+            status: "computed" as const,
+            verifiedGrossProfitMinor: 1000,
+            verifiedAcquisitionCostMinor: 200,
+            roiBps: closure.roiBps,
+            formulaVersion: "verified-gross-profit-roi.v1"
+          }
+        : {
+            status: "not_computable" as const,
+            reason: "cohort_not_closed" as const,
+            formulaVersion: "verified-gross-profit-roi.v1" as const
+          };
+      return Object.freeze({
+        closureVersionId,
+        sliceKey,
+        planId: sliceKey === "all" ? null : sliceKey.slice(5),
+        memberCount: members.length,
+        memberSetHash: hash("members"),
+        computedMetrics: metrics,
+        commercialRatios: {
+          verifiedContractWonMinor: 1000,
+          allocatedPaymentMinor: 900,
+          netCashMinor: 900,
+          verifiedAcquisitionCostMinor: 200,
+          contractRoas: {
+            status: "computed",
+            bps: 50_000,
+            formulaVersion: "contract-roas.v1"
+          },
+          cashMultiple: {
+            status: "computed",
+            bps: 45_000,
+            formulaVersion: "cash-multiple.v1"
+          },
+          collectionRate: {
+            status: "computed",
+            bps: 9_000,
+            formulaVersion: "collection-rate.v1"
+          }
+        },
+        commercialAuthoritySetHash: hash("authority"),
+        coverage: {
+          costCoverageBps: 10000,
+          marginCoverageBps: 10000,
+          cashCoverageBps: 10000,
+          attributionCoverageBps: 10000,
+          gapCodes: metrics.status === "computed" ? [] : ["cohort_not_closed"]
+        },
+        calculationHash: hash("calculation")
+      } as unknown as import("./acquisition-roi-closure.js").RoiSnapshot);
+    }
+  };
+  const contributions = {
+    async listQuoteContributions(
+      _workspaceId: string,
+      _candidateIds: string[],
+      _currency: string,
+      _cutoff: import("./growth-temporal-barrier.js")
+        .GrowthSealedReadCutoff
+    ) {
+      const candidateId = options.quoteCandidateId;
+      if (!candidateId) return [];
+      return [{
+        dealId: "deal-1",
+        approvedGrossProfitMinor: 10000,
+        closeProbabilityBps: 5000,
+        quoteVersionId: "quote-secondary",
+        probabilityAssessmentId: "assessment-secondary"
+      }];
+    }
+  };
+  const service = new DefaultAcquisitionGrowthPerformanceQueryService(
+    source, contributions
+  );
+  return {
+    dependencies: {
+      source,
+      contributions
+    },
+    service,
+    workspace,
+    cohortId,
+    seal: (asOf: string) => sealedCutoff(workspace, asOf)
   };
 }
