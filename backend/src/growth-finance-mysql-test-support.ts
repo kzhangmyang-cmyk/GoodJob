@@ -28,6 +28,16 @@ import {
 } from "./finance-import-repository.js";
 import { wonQuoteFixture } from "./growth-finance-test-fixtures.js";
 import { growthInstantMilliseconds } from "./growth-as-of.js";
+import {
+  ensureAttributionAllocationMysqlSchema,
+  MysqlAttributionAllocationRepository
+} from "./acquisition-attribution-allocation-mysql-repository.js";
+import {
+  AttributionAllocationService
+} from "./acquisition-attribution-allocation.js";
+import {
+  FoundationRoiCommandExecutor
+} from "./growth-roi-command-executor.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { GrowthFoundationServices } from "./growth-foundation-module.js";
 import { ensureGrowthHttpIdempotencyMysqlSchema, MysqlGrowthHttpIdempotencyRepository } from "./growth-http-idempotency-mysql-repository.js";
@@ -189,6 +199,9 @@ export interface GrowthFinanceMysqlTestDatabase {
   advanceNowBy(milliseconds: number): string;
   replaceWonAuthority(overrides: Partial<AuthoritativeDealDecisionRef>): void;
   restoreWonAuthorityFor(quoteVersionId: string): void;
+  attributionService(): AttributionAllocationService;
+  repository: MysqlAttributionAllocationRepository;
+  context(key: string): CommandContext;
 }
 
 export async function withGrowthFinanceMysqlTestDatabase<T>(
@@ -211,6 +224,7 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
     });
     await ensureGrowthHttpIdempotencyMysqlSchema(pool);
     await ensureFinancialLedgerMysqlSchema(pool);
+    await ensureAttributionAllocationMysqlSchema(pool);
     await ensureGrowthWorkspaceSettingsMysqlSchema(pool);
     // Schema installation is an upgrade path and must remain retry-safe.
     await ensureFinancialLedgerMysqlSchema(pool);
@@ -341,6 +355,22 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
       },
       now: importNow,
       leaseDurationMs: 5 * 60_000
+    });
+    const attributionRepository =
+      new MysqlAttributionAllocationRepository(pool, temporalBarrier);
+    const attributionService = new AttributionAllocationService({
+      repository: attributionRepository,
+      foundation,
+      commandExecutor: new FoundationRoiCommandExecutor({
+        foundation,
+        now: importNow
+      }),
+      sources: {
+        async requireEffectiveAmountMinor() {
+          return 10_000;
+        }
+      },
+      now: importNow
     });
     const fixture: GrowthFinanceMysqlTestDatabase = {
       databaseName,
@@ -863,6 +893,9 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
       restoreWonAuthorityFor: () => {
         wonDecision = wonQuoteFixture();
       },
+      attributionService: () => attributionService,
+      repository: attributionRepository,
+      context: (key: string) => command("workspace-a", key)
     };
     return await testBody(fixture);
   } finally {

@@ -489,3 +489,47 @@ export function allocationFixture(options: {
     }
   };
 }
+
+export function completeTwoCohortDraft(
+  sourceId: string,
+  firstBps: number
+) {
+  return {
+    sourceType: "cost_entry" as const,
+    sourceId,
+    items: [
+      {
+        cohortId: "cohort-a",
+        candidateId: null,
+        planId: null,
+        runId: null,
+        allocationBps: firstBps,
+        allocationRule: "manual" as const,
+        ruleVersion: "manual.v1",
+        evidenceRefs: [{
+          kind: "ledger_source" as const,
+          ledgerType: "cost" as const,
+          ledgerEntryId: sourceId,
+          evidenceHash: `sha256:${"a".repeat(64)}`
+        }],
+        targetStableKey: "cohort-a"
+      },
+      {
+        cohortId: "cohort-b",
+        candidateId: null,
+        planId: null,
+        runId: null,
+        allocationBps: 10_000 - firstBps,
+        allocationRule: "manual" as const,
+        ruleVersion: "manual.v1",
+        evidenceRefs: [{
+          kind: "ledger_source" as const,
+          ledgerType: "cost" as const,
+          ledgerEntryId: sourceId,
+          evidenceHash: `sha256:${"b".repeat(64)}`
+        }],
+        targetStableKey: "cohort-b"
+      }
+    ]
+  };
+}
