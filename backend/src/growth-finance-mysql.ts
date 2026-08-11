@@ -17,6 +17,9 @@ import {
 import {
   ensureFinancialSettlementMysqlSchema
 } from "./financial-settlement-allocation-mysql-repository.js";
+import {
+  ensureRoiClosureMysqlSchema
+} from "./acquisition-roi-closure-mysql-repository.js";
 import type { GrowthFoundationServices } from "./growth-foundation-module.js";
 import { assertGrowthTemporalBarrier } from "./growth-temporal-barrier.js";
 
@@ -28,6 +31,7 @@ export async function createGrowthFinanceMysql(input: {
   await ensureFinanceImportMysqlSchema(input.pool);
   await ensureAttributionAllocationMysqlSchema(input.pool);
   await ensureFinancialSettlementMysqlSchema(input.pool);
+  await ensureRoiClosureMysqlSchema(input.pool);
   assertGrowthTemporalBarrier(input.foundation.temporalBarrier);
   const repository = new MysqlFinancialLedgerRepository(input.pool);
   const financeImportRepository = new MysqlFinanceImportRepository(

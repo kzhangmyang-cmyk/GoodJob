@@ -45,6 +45,10 @@ import {
 import {
   CashSettlementAllocationService
 } from "./financial-settlement-allocation.js";
+import {
+  ensureRoiClosureMysqlSchema,
+  MysqlRoiClosureRepository
+} from "./acquisition-roi-closure-mysql-repository.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { GrowthFoundationServices } from "./growth-foundation-module.js";
 import { ensureGrowthHttpIdempotencyMysqlSchema, MysqlGrowthHttpIdempotencyRepository } from "./growth-http-idempotency-mysql-repository.js";
@@ -226,6 +230,7 @@ export interface GrowthFinanceMysqlTestDatabase {
     dealId: string,
     amountMinor: number
   ): Promise<void>;
+  closureRepository(): MysqlRoiClosureRepository;
 }
 
 export async function withGrowthFinanceMysqlTestDatabase<T>(
@@ -250,6 +255,7 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
     await ensureFinancialLedgerMysqlSchema(pool);
     await ensureAttributionAllocationMysqlSchema(pool);
     await ensureFinancialSettlementMysqlSchema(pool);
+    await ensureRoiClosureMysqlSchema(pool);
     await ensureGrowthWorkspaceSettingsMysqlSchema(pool);
     // Schema installation is an upgrade path and must remain retry-safe.
     await ensureFinancialLedgerMysqlSchema(pool);
@@ -421,6 +427,8 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
       },
       now: importNow
     });
+    const roiClosureRepository =
+      new MysqlRoiClosureRepository(pool, temporalBarrier);
     const fixture: GrowthFinanceMysqlTestDatabase = {
       databaseName,
       pool,
@@ -1003,7 +1011,8 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
             'finance-a')`,
           [id, dealId, amountMinor, `external:${id}`]
         );
-      }
+      },
+      closureRepository: () => roiClosureRepository
     };
     return await testBody(fixture);
   } finally {
