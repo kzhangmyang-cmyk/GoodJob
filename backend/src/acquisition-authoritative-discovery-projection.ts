@@ -78,11 +78,30 @@ export interface InMemoryDiscoveryRow {
 }
 
 export class InMemoryAuthoritativeDiscoverySource
-implements AuthoritativeDiscoverySource {
+implements AuthoritativeDiscoveryProjectionWriter, AuthoritativeDiscoverySource {
   constructor(private rows: readonly InMemoryDiscoveryRow[] = []) {}
 
   appendRows(rows: readonly InMemoryDiscoveryRow[]): void {
     this.rows = [...this.rows, ...rows];
+  }
+
+  async appendBatchFirst(
+    workspace: ResolvedAcquisitionWorkspace,
+    events: readonly AuthoritativeDiscoveryAppendInput[]
+  ): Promise<readonly AuthoritativeDiscoveryProjectionRow[]> {
+    const appended = events.map((event, index) => {
+      const row: AuthoritativeDiscoveryProjectionRow = Object.freeze({
+        ...event,
+        workspaceId: workspace.workspaceId,
+        sourceRecordedAt: new Date(
+          Date.parse("2026-08-09T00:00:00.000Z") + index
+        ).toISOString(),
+        sourceTemporalSequence: index + 1
+      });
+      this.rows = [...this.rows, row];
+      return row;
+    });
+    return appended;
   }
 
   async listDiscoveries(

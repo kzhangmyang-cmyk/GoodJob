@@ -33,6 +33,8 @@ import { createGrowthWorkspaceMemberAssignabilityReader } from "./growth-workspa
 import { resolveTrustedAcquisitionDealBinding } from "./acquisition-deal-binding.js";
 import type { AcquisitionCandidate } from "./acquisition-domain.js";
 import { createGrowthFinanceModule } from "./growth-finance-module.js";
+import { createGrowthRoiModule } from "./growth-roi-module.js";
+import { GROWTH_ROI_ACQUISITION_INTEGRATIONS } from "./growth-roi-module.js";
 import {
   CurrentFinanceImportRecoveryAuthorizer
 } from "./finance-import-worker.js";
@@ -80,6 +82,9 @@ export interface GrowthAcquisitionIntegrations {
   commissionCatalogProjection: CommissionCatalogProjectionPort;
   probabilityAssessments: ProbabilityAssessmentWriter;
   quoteProjectedDocumentAuthority: QuoteProjectedDocumentAuthorityValidator;
+  authoritativeDiscoveryProjectionWriter: import(
+    "./acquisition-authoritative-discovery-projection.js"
+  ).AuthoritativeDiscoveryProjectionWriter;
 }
 
 export function createGrowthCommercialComposition(
@@ -102,6 +107,14 @@ export function createGrowthCommercialComposition(
       const quoteAcquisition = privateServices.require(
         GROWTH_QUOTE_ACQUISITION_INTEGRATIONS
       );
+      const roiIntegration = privateServices.require(
+        GROWTH_ROI_ACQUISITION_INTEGRATIONS
+      );
+      if (!Object.isFrozen(roiIntegration)
+        || typeof roiIntegration.authoritativeDiscoveryProjectionWriter
+          ?.appendBatchFirst !== "function") {
+        throw new Error("invalid_growth_roi_acquisition_integrations");
+      }
       if (!Object.isFrozen(quoteAcquisition)
         || !quoteAcquisition.probabilityAssessments
         || typeof quoteAcquisition.probabilityAssessments
@@ -122,7 +135,9 @@ export function createGrowthCommercialComposition(
         commissionCatalogProjection: catalog.commissionCatalogProjection,
         probabilityAssessments: quoteAcquisition.probabilityAssessments,
         quoteProjectedDocumentAuthority:
-          quoteAcquisition.quoteProjectedDocumentAuthority
+          quoteAcquisition.quoteProjectedDocumentAuthority,
+        authoritativeDiscoveryProjectionWriter:
+          roiIntegration.authoritativeDiscoveryProjectionWriter
       });
     }
   });
@@ -292,6 +307,11 @@ export function createGrowthCommercialCompositionForStore(options: {
       }
     )
   }));
+  modules.push(createGrowthRoiModule(
+    financePool
+      ? { mode: "mysql", pool: financePool }
+      : { mode: "memory" }
+  ));
   return Object.freeze({
     composition: createGrowthCommercialComposition({
       acquisitionWorkspace,

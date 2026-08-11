@@ -20,6 +20,17 @@ import type { CommissionCatalogProjectionPort } from "./commission-catalog-proje
 import {
   GROWTH_QUOTE_ACQUISITION_INTEGRATIONS
 } from "./growth-quote-module.js";
+import {
+  GROWTH_ROI_ACQUISITION_INTEGRATIONS
+} from "./growth-roi-module.js";
+
+function roiIntegration() {
+  return Object.freeze({
+    authoritativeDiscoveryProjectionWriter: Object.freeze({
+      async appendBatchFirst() { return []; }
+    })
+  });
+}
 
 function foundationPorts() {
   const acquisitionWorkspace = Object.freeze({
@@ -60,6 +71,7 @@ function registryWithCatalog(
       async assertAuthorized() { throw new Error("unused"); }
     })
   }) as never);
+  registry.provide(GROWTH_ROI_ACQUISITION_INTEGRATIONS, roiIntegration());
   return registry;
 }
 
@@ -94,6 +106,7 @@ test("composition rejects a missing Quote acquisition integration", () => {
     catalogItems: {} as GrowthCatalogServices["catalogItems"],
     commissionCatalogProjection: catalogProjection()
   }));
+  registry.provide(GROWTH_ROI_ACQUISITION_INTEGRATIONS, roiIntegration());
   assert.throws(() => createGrowthCommercialComposition(foundation)
     .projectIntegrations(registry), /growth-quote-acquisition-integrations/u);
 });
@@ -107,6 +120,7 @@ test("composition rejects a partial Quote acquisition integration", () => {
   }));
   registry.provide(GROWTH_QUOTE_ACQUISITION_INTEGRATIONS,
     Object.freeze({ probabilityAssessments: Object.freeze({}) }) as never);
+  registry.provide(GROWTH_ROI_ACQUISITION_INTEGRATIONS, roiIntegration());
   assert.throws(() => createGrowthCommercialComposition(foundation)
     .projectIntegrations(registry), /growth_quote_acquisition_integrations/u);
 });
@@ -163,7 +177,13 @@ test("production memory composition installs Foundation, Catalog, then Quote", a
   });
   assert.deepEqual(
     production.composition.modules.map((module) => module.name),
-    ["growth-foundation", "growth-catalog", "growth-quote", "growth-finance"]
+    [
+      "growth-foundation",
+      "growth-catalog",
+      "growth-quote",
+      "growth-finance",
+      "growth-roi"
+    ]
   );
   const runtime = await createGrowthCommercialApplication({
     manifest: { name: "growth-advisor-quote-roi", contractVersion: "1.0.0", contractHash: `sha256:${"a".repeat(64)}`, openapiVersion: "3.1.0" },
