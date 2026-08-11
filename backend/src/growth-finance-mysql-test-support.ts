@@ -11,6 +11,23 @@ import type { AuthoritativeDealDecisionRef } from "./authoritative-quote-reader.
 import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js";
 import { MysqlVerifiedFinancialLedgerSealedReader } from "./financial-ledger-as-of-mysql-reader.js";
 import { ensureFinancialLedgerMysqlSchema, MysqlFinancialLedgerRepository } from "./financial-ledger-mysql-repository.js";
+import {
+  MysqlFinanceImportRepository
+} from "./finance-import-mysql-repository.js";
+import {
+  FinanceImportWorker
+} from "./finance-import-worker.js";
+import {
+  DefaultFinanceImportRecoverySweeper
+} from "./finance-import-recovery-sweeper.js";
+import {
+  type FinanceImportOperationEvent,
+  type FinanceImportOperationInput,
+  type FinanceImportRowResult,
+  type FinanceImportStoredRowInput
+} from "./finance-import-repository.js";
+import { wonQuoteFixture } from "./growth-finance-test-fixtures.js";
+import { growthInstantMilliseconds } from "./growth-as-of.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { GrowthFoundationServices } from "./growth-foundation-module.js";
 import { ensureGrowthHttpIdempotencyMysqlSchema, MysqlGrowthHttpIdempotencyRepository } from "./growth-http-idempotency-mysql-repository.js";
@@ -21,6 +38,8 @@ import { MysqlGrowthTemporalBarrier, growthMysqlDate, growthMysqlInstant } from 
 import type { GrowthSealedReadCutoff } from "./growth-temporal-barrier.js";
 import { createGrowthAcquisitionWorkspaceResolver, type ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import { ensureGrowthWorkspaceSettingsMysqlSchema, MysqlGrowthWorkspaceSettingsRepository } from "./growth-workspace-settings-mysql-repository.js";
+
+const DEFAULT_NOW = "2026-08-09T03:00:00.000Z";
 
 function connectionOptions(url: URL) {
   return {
@@ -139,6 +158,37 @@ export interface GrowthFinanceMysqlTestDatabase {
   reReadOldCutoffAfterLaterAppend(cutoff: GrowthSealedReadCutoff,
     entryId: string): Promise<readonly unknown[]>;
   seedHistoricalLedger(input: HistoricalLedgerSeed): Promise<void>;
+  importRepository: MysqlFinanceImportRepository;
+  financeImportWorker(input: { connection: "a" | "b" }): FinanceImportWorker;
+  financeImportRecoverySweeper(): DefaultFinanceImportRecoverySweeper;
+  insertFinanceImportOperation(input: {
+    status?: "queued" | "running";
+    rows?: number;
+    factType?: "contract_won" | "revenue_recognized" | "cogs_recognized";
+    amountMinor?: number;
+    currency?: string;
+    revenueMinor?: number;
+    grossProfitMinor?: number;
+    bypassPreviewForCommitIntegrityTest?: boolean;
+    expiredOwner?: string;
+    frozenCandidateId?: string;
+  }): Promise<string>;
+  commandContext(operationId: string): CommandContext;
+  rowResult(): FinanceImportRowResult;
+  countCreatedLedgerRows(operationId?: string): Promise<number>;
+  countFinanceImportRowResults(operationId: string): Promise<number>;
+  listImportOperationEvents(
+    operationId: string
+  ): Promise<FinanceImportOperationEvent[]>;
+  writeLockTraces(operationId: string): string[][];
+  tamperOperationPreviewLink(
+    operationId: string,
+    input: { fileHash: string }
+  ): Promise<void>;
+  setNow(value: string): void;
+  advanceNowBy(milliseconds: number): string;
+  replaceWonAuthority(overrides: Partial<AuthoritativeDealDecisionRef>): void;
+  restoreWonAuthorityFor(quoteVersionId: string): void;
 }
 
 export async function withGrowthFinanceMysqlTestDatabase<T>(
@@ -236,6 +286,62 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
       })
     } as const;
     const verifiedSealedReader = new MysqlVerifiedFinancialLedgerSealedReader(connectionA);
+    const lockLabels: string[] = [];
+    let importClock = growthInstantMilliseconds(DEFAULT_NOW);
+    const importNow = () => new Date(importClock).toISOString();
+    wonDecision = wonQuoteFixture();
+    currentBinding = Object.freeze({
+      ...wonDecision.commercialBindingSnapshot,
+      verifiedAt: "2026-08-09T02:00:00.000Z"
+    }) as CommercialBindingSnapshot;
+    const importRepository = new MysqlFinanceImportRepository(
+      pool, temporalBarrier, (label) => {
+        lockLabels.push(label);
+      }
+    );
+    const importLedgerRepository = new MysqlFinancialLedgerRepository(pool);
+    const importFactService = new FinancialFactLedgerService({
+      repository: importLedgerRepository,
+      foundation,
+      bindingVerifier: {
+        async verify() {
+          if (!currentBinding) {
+            throw new Error("commercial_binding_authority_mismatch");
+          }
+          return currentBinding;
+        }
+      },
+      dealQuoteReader: {
+        async getDecisionAt() {
+          return wonDecision;
+        }
+      }
+    });
+    const importCostService = new AcquisitionCostLedgerService({
+      repository: importLedgerRepository,
+      foundation
+    });
+    const importWorker = new FinanceImportWorker({
+      repository: importRepository,
+      foundation,
+      costLedger: importCostService,
+      financialFactLedger: importFactService,
+      bindingVerifier: {
+        async verify() {
+          if (!currentBinding) {
+            throw new Error("commercial_binding_authority_mismatch");
+          }
+          return currentBinding;
+        }
+      },
+      dealQuoteReader: {
+        async getDecisionAt() {
+          return wonDecision;
+        }
+      },
+      now: importNow,
+      leaseDurationMs: 5 * 60_000
+    });
     const fixture: GrowthFinanceMysqlTestDatabase = {
       databaseName,
       pool,
@@ -555,7 +661,208 @@ export async function withGrowthFinanceMysqlTestDatabase<T>(
             temporal_sequence = VALUES(temporal_sequence)`,
           [growthMysqlDate(lastRecordedAt), sequence]
         );
-      }
+      },
+      importRepository,
+      financeImportWorker: () => importWorker,
+      financeImportRecoverySweeper: () =>
+        new DefaultFinanceImportRecoverySweeper({
+          repository: importRepository,
+          worker: importWorker,
+          authorizer: {
+            async commandFor(current) {
+              return command(current.workspaceId, current.idempotencyKey);
+            }
+          },
+          workerId: "finance-mysql-recovery",
+          intervalMs: 5_000,
+          batchSize: 10,
+          now: importNow,
+          onError: () => undefined
+        }),
+      insertFinanceImportOperation: async (input) => {
+        const previewId = `preview-${randomUUID()}`;
+        const operationId = `operation-${randomUUID()}`;
+        const rows = input.rows ?? 1;
+        const factType = input.factType ?? "revenue_recognized";
+        const amountMinor = input.amountMinor ?? 1000;
+        const currency = input.currency ?? "CNY";
+        const fileHash = `sha256:file-${randomUUID()}`;
+        const derivedFacts = input.revenueMinor !== undefined
+          ? (() => {
+              const bypass = input.bypassPreviewForCommitIntegrityTest;
+              const revenue = input.revenueMinor!;
+              const grossProfit = input.grossProfitMinor ?? null;
+              if (bypass) {
+                return [
+                  { factType: "revenue_recognized" as const,
+                    amountMinor: revenue },
+                  { factType: "cogs_recognized" as const,
+                    amountMinor: revenue - (grossProfit ?? 0),
+                    provenance: "derived_from_import" as const }
+                ];
+              }
+              const derived = deriveRevenueAndCogs({
+                revenueMinor: revenue,
+                grossProfitMinor: grossProfit
+              });
+              const facts: Array<{
+                factType: "revenue_recognized" | "cogs_recognized";
+                amountMinor: number;
+                provenance?: "derived_from_import";
+              }> = derived ? [{
+                factType: "revenue_recognized",
+                amountMinor: derived.revenueMinor
+              }] : [];
+              if (derived?.cogsMinor !== null && derived) {
+                facts.push({
+                  factType: "cogs_recognized",
+                  amountMinor: derived.cogsMinor!,
+                  provenance: "derived_from_import"
+                });
+              }
+              return facts;
+            })()
+          : [{ factType, amountMinor }];
+        const storedRows: FinanceImportStoredRowInput[] = Array.from(
+          { length: rows },
+          (_, rowIndex) => {
+            const rowNumber = rowIndex + 1;
+            const isContract = factType === "contract_won";
+            return Object.freeze({
+              id: `row-${previewId}-${rowNumber}`,
+              previewId,
+              rowNumber,
+              sheetName: "CSV",
+              status: "valid",
+              sourceIdentityRoot: `finance-import-row:${previewId}:${rowNumber}`,
+              normalized: Object.freeze({
+                kind: "financial_fact",
+                candidateId: isContract
+                  ? input.frozenCandidateId ?? "candidate-1" : null,
+                customerId: isContract ? "customer-1" : null,
+                dealId: isContract ? "deal-1" : null,
+                currency,
+                businessOccurredAt: "2026-08-08T16:00:00.000Z",
+                externalId: `external-${previewId}-${rowNumber}`,
+                evidenceHash: `sha256:row-${previewId}-${rowNumber}`,
+                derivedFacts: derivedFacts.map((fact) => ({ ...fact })),
+                authoritativeDecision: isContract ? wonDecision : null,
+                derivationInputs: input.revenueMinor !== undefined
+                  ? {
+                      revenueMinor: input.revenueMinor,
+                      grossProfitMinor: input.grossProfitMinor ?? null
+                    }
+                  : null
+              }),
+              errors: []
+            });
+          }
+        );
+        const previewRequestHash = canonicalGrowthRequestHash({
+          workspaceId: "workspace-a",
+          fileHash
+        });
+        await importRepository.appendPreview({
+          id: previewId,
+          workspaceId: "workspace-a",
+          createdBy: "finance-a",
+          previewRequestHash,
+          fileHash,
+          templateVersion: "finance-fact-import.v1",
+          kind: "financial_fact",
+          resolvedTimeZone: "Asia/Shanghai",
+          workspaceSettingsRevision: "settings-1",
+          workspaceSettingsRecordedAt: DEFAULT_NOW,
+          workspaceSettingsEventSequence: 1,
+          validRows: rows,
+          invalidRows: 0,
+          authorityEffectiveAsOf: DEFAULT_NOW,
+          authorityTemporalSequence: 1
+        }, storedRows);
+        const operationInput: FinanceImportOperationInput = Object.freeze({
+          id: operationId,
+          previewId,
+          workspaceId: "workspace-a",
+          requestingActorId: "finance-a",
+          idempotencyKey: "finance-commit-0001",
+          requestHash: canonicalGrowthRequestHash({
+            workspaceId: "workspace-a",
+            previewId,
+            operationId
+          }),
+          previewRequestHash,
+          fileHash,
+          templateVersion: "finance-fact-import.v1",
+          status: input.status === "running" ? "running" : "queued",
+          validRows: rows,
+          invalidRows: 0,
+          leaseOwner: input.expiredOwner ?? null,
+          leaseExpiresAt: input.status === "running"
+            ? new Date(importClock - 60_000).toISOString() : null,
+          fencingToken: input.status === "running" ? 1 : 0,
+          resultCreatedIds: [],
+          lastErrorCode: null
+        });
+        await importRepository.appendOperation(operationInput);
+        return operationId;
+      },
+      commandContext: (operationId) => command(
+        "workspace-a", "finance-commit-0001"
+      ),
+      rowResult: () => ({
+        rowId: "row-1",
+        status: "created",
+        createdLedgerIds: []
+      }),
+      countCreatedLedgerRows: async (operationId) => {
+        const [rows] = await pool!.query(
+          `SELECT COUNT(*) AS count FROM financial_facts
+           WHERE workspace_id = 'workspace-a'
+             AND source_identity_root LIKE 'import:%'`
+        );
+        void operationId;
+        return Number((rows as Array<{ count: string }>)[0]?.count);
+      },
+      countFinanceImportRowResults: async (operationId) =>
+        (await importRepository.listRowResults(operationId)).length,
+      listImportOperationEvents: (operationId) =>
+        importRepository.listOperationEvents(operationId),
+      writeLockTraces: (operationId) => {
+        const traces: string[][] = [];
+        let current: string[] = [];
+        for (const label of lockLabels) {
+          if (label.startsWith("temporal:")) {
+            if (current.length > 0) traces.push(current);
+            current = [label];
+          } else {
+            current.push(label);
+          }
+        }
+        if (current.length > 0) traces.push(current);
+        return traces.filter((trace) =>
+          trace.includes(`operation:${operationId}`)
+          || trace.length === 1);
+      },
+      tamperOperationPreviewLink: async (operationId, { fileHash }) => {
+        await pool!.query(
+          "UPDATE finance_import_operations SET file_hash = ? WHERE id = ?",
+          [fileHash, operationId]
+        );
+      },
+      setNow: (value) => {
+        importClock = growthInstantMilliseconds(value);
+      },
+      advanceNowBy: (milliseconds) => {
+        importClock += milliseconds;
+        return importNow();
+      },
+      replaceWonAuthority: (overrides) => {
+        if (!wonDecision) throw new Error("won_authority_required");
+        wonDecision = Object.freeze({ ...wonDecision, ...overrides });
+      },
+      restoreWonAuthorityFor: () => {
+        wonDecision = wonQuoteFixture();
+      },
     };
     return await testBody(fixture);
   } finally {

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Request } from "express";
 import type { OutcomeAttributionInput } from "./acquisition-domain.js";
 import { AcquisitionCostLedgerService, type CreatePendingCostInput } from "./acquisition-cost-ledger.js";
@@ -8,6 +8,7 @@ import type { CommercialBindingSnapshot } from "./commercial-binding-snapshot.js
 import type { CommandContext } from "./growth-command-context.js";
 import type { GrowthFoundationServices } from "./growth-foundation-module.js";
 import type { GrowthCapability } from "./growth-capabilities.js";
+import { requireGrowthCapabilities } from "./growth-capabilities.js";
 import type { GrowthWorkspaceSettingsReader } from "./growth-workspace-settings.js";
 import {
   canonicalGrowthRequestHash,
@@ -38,11 +39,27 @@ import {
 import { deriveRevenueAndCogs } from "./financial-fact-ledger.js";
 import {
   FinanceImportService,
+  FinanceImportError,
   type FinanceImportPreviewCommand
 } from "./finance-import-service.js";
 import {
   InMemoryFinanceImportRepository
 } from "./finance-import-repository.js";
+import type {
+  FinanceImportOperation,
+  FinanceImportOperationInput,
+  FinanceImportPreviewRecordInput,
+  FinanceImportStoredRowInput,
+  FinanceImportClaim,
+  FinanceImportRowResult
+} from "./finance-import-repository.js";
+import {
+  FinanceImportWorker
+} from "./finance-import-worker.js";
+import {
+  DefaultFinanceImportRecoverySweeper
+} from "./finance-import-recovery-sweeper.js";
+import type { FinancialFactType } from "./financial-ledger-domain.js";
 import {
   DefaultGrowthTemporalBarrier,
   InMemoryGrowthTemporalTransactionRunner,
@@ -930,13 +947,16 @@ export function financePreviewFixture(
       }
     }
   });
-  function workspaceFor(actorId: string): ActiveWorkspaceContext {
+  function workspaceFor(
+    actorId: string,
+    workspaceId = "workspace-a"
+  ): ActiveWorkspaceContext {
     return Object.freeze({
-      workspaceId: "workspace-a",
+      workspaceId,
       kind: "team" as const,
       actorId,
       role: "admin" as const,
-      teamId: "workspace-a",
+      teamId: workspaceId,
       capabilities: capabilitiesFor(actorId),
       capabilityRegistryVersion: "growth-capabilities.v1"
     });
@@ -1259,4 +1279,531 @@ export function wonQuoteFixture(): AuthoritativeDealDecisionRef {
     authorityRevision: 3,
     decidedAt: "2026-08-08T00:00:00.000Z"
   });
+}
+
+export interface CreateFinanceImportFixtureOptions {
+  rows?: number;
+  factType?: FinancialFactType;
+  amountMinor?: number;
+  currency?: string;
+  wonQuote?: AuthoritativeDealDecisionRef | null;
+  status?: "queued" | "running";
+  expiredOwner?: string;
+  operations?: string[];
+  requestingActorId?: string;
+  revenueMinor?: number;
+  grossProfitMinor?: number;
+  bypassPreviewForCommitIntegrityTest?: boolean;
+}
+
+export async function createFinanceImportFixture(
+  options: CreateFinanceImportFixtureOptions = {}
+) {
+  const ledgerRepository = new InMemoryFinancialLedgerRepository(
+    {}, DEFAULT_NOW
+  );
+  const transactions = new InMemoryGrowthTemporalTransactionRunner(DEFAULT_NOW);
+  const baseBarrier = new DefaultGrowthTemporalBarrier(transactions);
+  const seals: GrowthSealedReadCutoff[] = [];
+  class CountingFinanceBarrier extends DefaultGrowthTemporalBarrier {
+    override async sealReadCutoff(
+      context: ActiveWorkspaceContext,
+      effectiveAsOf: string
+    ) {
+      const token = await super.sealReadCutoff(context, effectiveAsOf);
+      seals.push(token);
+      return token;
+    }
+  }
+  const countingBarrier = new CountingFinanceBarrier(transactions);
+  const foundation = foundationServicesFixture({
+    temporalTransactions: transactions,
+    temporalBarrier: countingBarrier
+  });
+  const importRepository = new InMemoryFinanceImportRepository(
+    transactions, baseBarrier
+  );
+  let clock = growthInstantMilliseconds(DEFAULT_NOW);
+  const now = () => new Date(clock).toISOString();
+  const setNow = (value: string) => {
+    clock = growthInstantMilliseconds(value);
+  };
+  const advanceNowBy = (milliseconds: number) => {
+    clock += milliseconds;
+    return now();
+  };
+  const rowCount = options.rows ?? 1;
+  const factType = options.factType ?? "revenue_recognized";
+  const amountMinor = options.amountMinor ?? 1000;
+  const currency = options.currency ?? "CNY";
+  const revenueMinor = options.revenueMinor;
+  const grossProfitMinor = options.grossProfitMinor;
+  const requestingActorId = options.requestingActorId ?? "finance-a";
+  const wonQuote = options.wonQuote ?? wonQuoteFixture();
+  let wonDecision = options.wonQuote === null ? null : wonQuote;
+  let currentBinding = wonDecision
+    ? Object.freeze({
+        ...wonDecision.commercialBindingSnapshot,
+        verifiedAt: "2026-08-09T02:00:00.000Z"
+      }) as CommercialBindingSnapshot
+    : null;
+  const quoteCutoffs: GrowthSealedReadCutoff[] = [];
+  const financialFactService = new FinancialFactLedgerService({
+    repository: ledgerRepository,
+    foundation,
+    now,
+    requestExecutionId: () => "finance-import-fixture-execution",
+    bindingVerifier: {
+      async verify() {
+        if (!currentBinding) {
+          throw new Error("commercial_binding_authority_mismatch");
+        }
+        return currentBinding;
+      }
+    },
+    dealQuoteReader: {
+      async getDecisionAt(_context, _dealId, cutoff) {
+        quoteCutoffs.push(cutoff);
+        return wonDecision;
+      }
+    }
+  });
+  const costLedgerService = new AcquisitionCostLedgerService({
+    repository: ledgerRepository,
+    foundation
+  });
+  const worker = new FinanceImportWorker({
+    repository: importRepository,
+    foundation,
+    costLedger: costLedgerService,
+    financialFactLedger: financialFactService,
+    bindingVerifier: {
+      async verify() {
+        if (!currentBinding) {
+          throw new Error("commercial_binding_authority_mismatch");
+        }
+        return currentBinding;
+      }
+    },
+    dealQuoteReader: {
+      async getDecisionAt(_context, _dealId, cutoff) {
+        quoteCutoffs.push(cutoff);
+        return wonDecision;
+      }
+    },
+    now,
+    leaseDurationMs: 5 * 60_000,
+    ids: { next: () => randomUUID() }
+  });
+  const previewIds = options.operations ?? ["preview-1"];
+  const operationIds = previewIds.map((_, index) =>
+    `operation-${index + 1}`);
+  const previewId = previewIds[0]!;
+  const operationId = operationIds[0]!;
+  const fileHash = "sha256:fixture-file";
+  const previewRequestHash = canonicalGrowthRequestHash({
+    workspaceId: "workspace-a",
+    fileHash
+  });
+  const operationRequestHash = canonicalGrowthRequestHash({
+    workspaceId: "workspace-a",
+    actorId: requestingActorId,
+    previewId,
+    idempotencyKey: "finance-commit-0001"
+  });
+  const expiredOwner = options.expiredOwner ?? null;
+  const status = options.status ?? "queued";
+  for (let index = 0; index < previewIds.length; index += 1) {
+    const currentPreviewId = previewIds[index]!;
+    const derivedFacts: Array<{
+      factType: FinancialFactType;
+      amountMinor: number;
+      provenance?: "derived_from_import";
+    }> = [];
+    let derivationInputs: {
+      revenueMinor: number | null;
+      grossProfitMinor: number | null;
+    } | null = null;
+    const bypass = options.bypassPreviewForCommitIntegrityTest
+      && revenueMinor !== undefined;
+    if (bypass) {
+      derivedFacts.push({
+        factType: "revenue_recognized",
+        amountMinor: revenueMinor!
+      });
+      derivedFacts.push({
+        factType: "cogs_recognized",
+        amountMinor: revenueMinor! - (grossProfitMinor ?? 0),
+        provenance: "derived_from_import"
+      });
+      derivationInputs = {
+        revenueMinor,
+        grossProfitMinor: grossProfitMinor ?? null
+      };
+    } else if (revenueMinor !== undefined) {
+      const derived = deriveRevenueAndCogs({
+        revenueMinor,
+        grossProfitMinor: grossProfitMinor ?? null
+      });
+      if (derived) {
+        derivedFacts.push({
+          factType: "revenue_recognized",
+          amountMinor: derived.revenueMinor
+        });
+        if (derived.cogsMinor !== null) {
+          derivedFacts.push({
+            factType: "cogs_recognized",
+            amountMinor: derived.cogsMinor,
+            provenance: "derived_from_import"
+          });
+        }
+      }
+      derivationInputs = {
+        revenueMinor,
+        grossProfitMinor: grossProfitMinor ?? null
+      };
+    } else {
+      derivedFacts.push({ factType, amountMinor });
+    }
+    const storedRows: FinanceImportStoredRowInput[] = Array.from(
+      { length: rowCount },
+      (_, rowIndex) => {
+        const rowNumber = rowIndex + 1;
+        return Object.freeze({
+          id: `row-${currentPreviewId}-${rowNumber}`,
+          previewId: currentPreviewId,
+          rowNumber,
+          sheetName: "CSV",
+          status: "valid",
+          sourceIdentityRoot: `finance-import-row:${currentPreviewId}:${rowNumber}`,
+          normalized: Object.freeze({
+            kind: "financial_fact",
+            candidateId: factType === "contract_won"
+              ? "candidate-1" : null,
+            customerId: factType === "contract_won"
+              ? "customer-1" : null,
+            dealId: factType === "contract_won" ? "deal-1" : null,
+            currency,
+            businessOccurredAt: "2026-08-08T16:00:00.000Z",
+            externalId: `external-${currentPreviewId}-${rowNumber}`,
+            evidenceHash: `sha256:row-${currentPreviewId}-${rowNumber}`,
+            derivedFacts: derivedFacts.map((fact) => ({ ...fact })),
+            authoritativeDecision: factType === "contract_won"
+              ? wonDecision : null,
+            derivationInputs
+          }),
+          errors: []
+        });
+      }
+    );
+    const previewRecord: FinanceImportPreviewRecordInput = Object.freeze({
+      id: currentPreviewId,
+      workspaceId: "workspace-a",
+      createdBy: requestingActorId,
+      previewRequestHash,
+      fileHash,
+      templateVersion: "finance-fact-import.v1",
+      kind: "financial_fact",
+      resolvedTimeZone: "Asia/Shanghai",
+      workspaceSettingsRevision: "settings-1",
+      workspaceSettingsRecordedAt: DEFAULT_NOW,
+      workspaceSettingsEventSequence: 1,
+      validRows: rowCount,
+      invalidRows: 0,
+      authorityEffectiveAsOf: DEFAULT_NOW,
+      authorityTemporalSequence: 1
+    });
+    importRepository.seedPreview(previewRecord, storedRows);
+    const operationInput: FinanceImportOperationInput = Object.freeze({
+      id: operationIds[index]!,
+      previewId: currentPreviewId,
+      workspaceId: "workspace-a",
+      requestingActorId,
+      idempotencyKey: "finance-commit-0001",
+      requestHash: operationRequestHash,
+      previewRequestHash,
+      fileHash,
+      templateVersion: "finance-fact-import.v1",
+      status: status === "running" ? "running" : "queued",
+      validRows: rowCount,
+      invalidRows: 0,
+      leaseOwner: status === "running" ? expiredOwner : null,
+      leaseExpiresAt: status === "running"
+        ? new Date(clock - 60_000).toISOString() : null,
+      fencingToken: status === "running" ? 1 : 0,
+      resultCreatedIds: [],
+      lastErrorCode: null
+    });
+    await importRepository.appendOperation(operationInput);
+  }
+  const capabilityLists = new Map<string, GrowthCapability[]>();
+  function capabilitiesFor(actorId: string): readonly GrowthCapability[] {
+    let capabilities = capabilityLists.get(actorId);
+    if (!capabilities) {
+      capabilities = [
+        "ledger.pending.create" as const,
+        "ledger.verify" as const,
+        "roi.close" as const,
+        "growth.performance.workspace.read" as const,
+        "pricing.sensitive.read" as const
+      ];
+      capabilityLists.set(actorId, capabilities);
+    }
+    return capabilities;
+  }
+  function workspaceFor(
+    actorId: string,
+    workspaceId = "workspace-a"
+  ): ActiveWorkspaceContext {
+    return Object.freeze({
+      workspaceId,
+      kind: "team" as const,
+      actorId,
+      role: "admin" as const,
+      teamId: workspaceId,
+      capabilities: capabilitiesFor(actorId),
+      capabilityRegistryVersion: "growth-capabilities.v1"
+    });
+  }
+  const frozenContext = Object.freeze({
+    workspace: workspaceFor(requestingActorId),
+    actorId: requestingActorId,
+    idempotencyKey: "finance-commit-0001",
+    requestHash: operationRequestHash,
+    expectedRevision: null
+  }) as CommandContext;
+  function commandContext(patch: Partial<{
+    workspaceId: string;
+    actorId: string;
+    idempotencyKey: string;
+    requestHash: string;
+  }> = {}): CommandContext {
+    return Object.freeze({
+      workspace: workspaceFor(
+        patch.actorId ?? requestingActorId,
+        patch.workspaceId
+      ),
+      actorId: patch.actorId ?? requestingActorId,
+      idempotencyKey: patch.idempotencyKey ?? frozenContext.idempotencyKey,
+      requestHash: patch.requestHash ?? frozenContext.requestHash,
+      expectedRevision: null
+    });
+  }
+  const failedAuthorizationPreviews = new Set<string>();
+  const recoveryAuthorizationInputs: Array<{ operationId: string }> = [];
+  let lastRecoveryContext: CommandContext | null = null;
+  let recoveryPauseGate: Promise<void> | null = null;
+  let releaseRecoveryPause: (() => void) | null = null;
+  let waitForClaimResolve: (() => void) | null = null;
+  const waitForClaimPromise = new Promise<void>((resolve) => {
+    waitForClaimResolve = resolve;
+  });
+  let waitForPauseResolve: (() => void) | null = null;
+  const waitForPausePromise = new Promise<void>((resolve) => {
+    waitForPauseResolve = resolve;
+  });
+  let recoveryClaimObserved = false;
+  const activeSweepers = new Set<{ closed: boolean }>();
+  const pauseNextLedgerCall = options.status === "running"
+    && Boolean(options.expiredOwner);
+  let pauseArmed = pauseNextLedgerCall;
+  const originalCreatePendingAt = financialFactService.createPendingAt.bind(
+    financialFactService
+  );
+  financialFactService.createPendingAt = async (context, cutoff, input) => {
+    if (pauseArmed) {
+      pauseArmed = false;
+      if (!recoveryPauseGate) {
+        recoveryPauseGate = new Promise<void>((resolve) => {
+          releaseRecoveryPause = resolve;
+        });
+        waitForPauseResolve?.();
+      }
+      await recoveryPauseGate;
+    }
+    return originalCreatePendingAt(context, cutoff, input);
+  };
+  const originalClaim = importRepository.claim.bind(importRepository);
+  importRepository.claim = async (operationId, workerId, now, expiry) => {
+    const claim = await originalClaim(operationId, workerId, now, expiry);
+    if (claim && workerId.startsWith("finance-recovery")
+      && !recoveryClaimObserved) {
+      recoveryClaimObserved = true;
+      waitForClaimResolve?.();
+    }
+    return claim;
+  };
+  function recoverySweeper(input: {
+    workerId: string;
+    intervalMs: number;
+  }) {
+    const handle = { closed: false };
+    activeSweepers.add(handle);
+    const authorizer = {
+      async commandFor(operation: FinanceImportOperation) {
+        recoveryAuthorizationInputs.push({ operationId: operation.id });
+        if (failedAuthorizationPreviews.has(operation.previewId)) {
+          throw new FinanceImportError(
+            "finance_import_authority_mismatch", 403
+          );
+        }
+        const context = commandContext({
+          actorId: operation.requestingActorId
+        });
+        requireGrowthCapabilities(
+          context.workspace, ["ledger.pending.create"]
+        );
+        lastRecoveryContext = context;
+        return context;
+      }
+    };
+    const sweeper = new DefaultFinanceImportRecoverySweeper({
+      repository: importRepository,
+      worker,
+      authorizer,
+      workerId: input.workerId,
+      intervalMs: input.intervalMs,
+      batchSize: 10,
+      now,
+      onError: () => undefined
+    });
+    const originalClose = sweeper.close.bind(sweeper);
+    sweeper.close = async () => {
+      handle.closed = true;
+      return originalClose();
+    };
+    return sweeper;
+  }
+  return {
+    dependencies: {
+      repository: importRepository,
+      foundation,
+      costLedger: costLedgerService,
+      financialFactLedger: financialFactService,
+      bindingVerifier: {
+        async verify() {
+          if (!currentBinding) {
+            throw new Error("commercial_binding_authority_mismatch");
+          }
+          return currentBinding;
+        }
+      },
+      dealQuoteReader: {
+        async getDecisionAt(
+          _context: ActiveWorkspaceContext,
+          _dealId: string,
+          cutoff: GrowthSealedReadCutoff
+        ) {
+          quoteCutoffs.push(cutoff);
+          return wonDecision;
+        }
+      },
+      now,
+      leaseDurationMs: 5 * 60_000
+    },
+    repository: importRepository,
+    foundation,
+    worker,
+    operationId,
+    operationIds,
+    previewId,
+    context: frozenContext,
+    commandContext,
+    now,
+    setNow,
+    advanceNowBy,
+    expiredFencingToken: status === "running" ? 1 : 0,
+    savedRowFences: () => [...importRepository.savedRowFences],
+    operationEvents: () =>
+      importRepository.listOperationEvents(operationId),
+    writeLockTraces: () => importRepository.writeLockTracesSnapshot(),
+    commitBoundarySealCallCount: () => seals.length,
+    internalFactSealCallCount: () => 0,
+    quoteReaderSealCallCount: () => 0,
+    authorityCutoffs: () => [...quoteCutoffs],
+    lastCommitBoundaryCutoff: () => seals.at(-1) ?? null,
+    replaceOperationPreviewId: (value: string) =>
+      importRepository.replaceOperationPreviewId(operationId, value),
+    countCreatedLedgerRows: async () =>
+      (await ledgerRepository.listFinancialFacts("workspace-a")).length,
+    countSavedRowResults: async () =>
+      (await importRepository.listRowResults(operationId)).length,
+    normalizedAuthoritativeDecision: async () => {
+      const row = await importRepository.getStoredRow(previewId, 1);
+      return row?.normalized?.kind === "financial_fact"
+        ? row.normalized.authoritativeDecision : null;
+    },
+    replaceWonAuthority: (overrides: Partial<AuthoritativeDealDecisionRef>) => {
+      if (!wonDecision) throw new Error("won_authority_required");
+      wonDecision = Object.freeze({ ...wonDecision, ...overrides });
+    },
+    restoreWonAuthorityFor: () => {
+      wonDecision = wonQuote;
+    },
+    replaceCurrentBinding: (
+      overrides: Partial<CommercialBindingSnapshot>
+    ) => {
+      if (!currentBinding) throw new Error("won_authority_required");
+      currentBinding = Object.freeze({ ...currentBinding, ...overrides });
+    },
+    recoverySweeper,
+    waitUntilRecoveryClaimed: () => pauseNextLedgerCall
+      ? waitForPausePromise
+      : waitForClaimPromise,
+    releaseRecoveryRow: () => {
+      releaseRecoveryPause?.();
+      releaseRecoveryPause = null;
+      recoveryPauseGate = null;
+    },
+    stopResolved: (promise: Promise<unknown>) => {
+      let resolved = false;
+      void promise.then(() => {
+        resolved = true;
+      });
+      return resolved;
+    },
+    operation: async (id?: string) => {
+      const target = id ?? operationId;
+      const byOperation = await importRepository.getOperation(target);
+      if (byOperation) return byOperation;
+      for (const candidate of operationIds) {
+        const operation = await importRepository.getOperation(candidate);
+        if (operation?.previewId === target) return operation;
+      }
+      return null;
+    },
+    activeTimerCount: () =>
+      [...activeSweepers].filter((sweeper) => !sweeper.closed).length,
+    failAuthorizationFor: (previewId: string) => {
+      failedAuthorizationPreviews.add(previewId);
+    },
+    revoke: (actorId: string, capability: string) => {
+      const capabilities = capabilityLists.get(actorId);
+      const index = capabilities?.indexOf(
+        capability as GrowthCapability
+      ) ?? -1;
+      if (index >= 0) capabilities!.splice(index, 1);
+    },
+    recoveryAuthorizationInputs: () => [...recoveryAuthorizationInputs],
+    lastRecoveryContextIdentity: () => {
+      if (!lastRecoveryContext) return null;
+      return {
+        workspaceId: lastRecoveryContext.workspace.workspaceId,
+        actorId: lastRecoveryContext.actorId,
+        idempotencyKey: lastRecoveryContext.idempotencyKey,
+        requestHash: lastRecoveryContext.requestHash
+      };
+    },
+    frozenOperationContextIdentity: () => ({
+      workspaceId: frozenContext.workspace.workspaceId,
+      actorId: frozenContext.actorId,
+      idempotencyKey: frozenContext.idempotencyKey,
+      requestHash: frozenContext.requestHash
+    }),
+    domainAndRowResultWriteCounts: async () => ({
+      ledgerRows: (await ledgerRepository.listFinancialFacts("workspace-a"))
+        .length,
+      rowResults: (await importRepository.listRowResults(operationId)).length
+    })
+  };
 }

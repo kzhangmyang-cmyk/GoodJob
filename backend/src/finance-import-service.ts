@@ -668,6 +668,10 @@ export class FinanceImportService {
       amountMinor: number;
       provenance?: "derived_from_import";
     }> = [];
+    let derivationInputs: {
+      revenueMinor: number | null;
+      grossProfitMinor: number | null;
+    } | null = null;
     const derivationPresent = revenueText.length > 0
       || grossProfitText.length > 0;
     if (derivationPresent) {
@@ -676,6 +680,7 @@ export class FinanceImportService {
           ? signedDecimalToMinor(revenueText, currency || "CNY") : null;
         const grossProfitMinor = grossProfitText
           ? signedDecimalToMinor(grossProfitText, currency || "CNY") : null;
+        derivationInputs = { revenueMinor, grossProfitMinor };
         if (grossProfitText && revenueMinor === null) {
           input.errors.push("required_field_missing");
         } else {
@@ -766,7 +771,8 @@ export class FinanceImportService {
     }
     return Object.freeze({
       ...publicRow,
-      authoritativeDecision
+      authoritativeDecision,
+      derivationInputs
     });
   }
 

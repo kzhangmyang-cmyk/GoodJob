@@ -6,6 +6,11 @@ import {
   ensureFinancialLedgerMysqlSchema,
   MysqlFinancialLedgerRepository
 } from "./financial-ledger-mysql-repository.js";
+import {
+  ensureFinanceImportMysqlSchema,
+  MysqlFinanceImportRepository
+} from "./finance-import-mysql-repository.js";
+import { FinanceImportService } from "./finance-import-service.js";
 import type { GrowthFoundationServices } from "./growth-foundation-module.js";
 import { assertGrowthTemporalBarrier } from "./growth-temporal-barrier.js";
 
@@ -14,11 +19,20 @@ export async function createGrowthFinanceMysql(input: {
   foundation: GrowthFoundationServices;
 }) {
   await ensureFinancialLedgerMysqlSchema(input.pool);
+  await ensureFinanceImportMysqlSchema(input.pool);
   assertGrowthTemporalBarrier(input.foundation.temporalBarrier);
   const repository = new MysqlFinancialLedgerRepository(input.pool);
+  const financeImportRepository = new MysqlFinanceImportRepository(
+    input.pool, input.foundation.temporalBarrier
+  );
   const sealedReader = new MysqlVerifiedFinancialLedgerSealedReader(input.pool);
   return Object.freeze({
     repository,
+    financeImportRepository,
+    financeImportService: new FinanceImportService({
+      repository: financeImportRepository,
+      foundation: input.foundation
+    }),
     costLedger: new AcquisitionCostLedgerService({
       repository,
       foundation: input.foundation

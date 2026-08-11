@@ -8,6 +8,7 @@ import type {
 import {
   DefaultGrowthTemporalBarrier,
   InMemoryGrowthTemporalTransactionRunner,
+  type GrowthTemporalTransaction,
   type GrowthTemporalBarrier,
   type GrowthTemporalTransactionRunner
 } from "./growth-temporal-barrier.js";
@@ -60,6 +61,10 @@ export type FinanceImportStoredNormalizedRow =
         { kind: "financial_fact" }
       > & {
         readonly authoritativeDecision: AuthoritativeDealDecisionRef | null;
+        readonly derivationInputs?: {
+          readonly revenueMinor: number | null;
+          readonly grossProfitMinor: number | null;
+        } | null;
       });
 
 export interface FinanceImportPreviewRow {
@@ -177,6 +182,39 @@ export interface FinanceImportOperationInput {
   readonly lastErrorCode: string | null;
 }
 
+export interface FinanceImportClaim {
+  workspaceId: string;
+  operationId: string;
+  leaseOwner: string;
+  leaseExpiresAt: string;
+  fencingToken: number;
+}
+
+export interface FinanceImportRowResult {
+  rowId: string;
+  status: "created" | "replayed";
+  createdLedgerIds: string[];
+}
+
+export interface FinanceImportOperationEvent {
+  readonly id: string;
+  readonly workspaceId: string;
+  readonly operationId: string;
+  readonly eventType:
+    | "queued"
+    | "claimed"
+    | "renewed"
+    | "row_saved"
+    | "completed"
+    | "failed";
+  readonly eventSequence: number;
+  readonly revision: number;
+  readonly leaseOwner: string | null;
+  readonly fencingToken: number;
+  readonly recordedAt: string;
+  readonly temporalSequence: number;
+}
+
 export interface FinanceImportRepository {
   getPreview(
     previewId: string
@@ -194,6 +232,39 @@ export interface FinanceImportRepository {
   appendOperation(
     input: FinanceImportOperationInput
   ): Promise<FinanceImportOperation>;
+}
+
+export interface FinanceImportExecutionRepository
+extends FinanceImportRepository {
+  listRecoverable(now: string, limit: number): Promise<FinanceImportOperation[]>;
+  claim(
+    operationId: string,
+    workerId: string,
+    now: string,
+    leaseExpiresAt: string
+  ): Promise<FinanceImportClaim | null>;
+  assertLiveClaim(claim: FinanceImportClaim, now: string): Promise<void>;
+  renewLease(input: {
+    operationId: string;
+    leaseOwner: string;
+    fencingToken: number;
+    now: string;
+    nextExpiry: string;
+  }): Promise<boolean>;
+  saveRowResult(
+    claim: FinanceImportClaim,
+    result: FinanceImportRowResult,
+    now: string
+  ): Promise<void>;
+  complete(
+    claim: FinanceImportClaim,
+    result: { status: "succeeded" | "partial_success"; createdIds: string[] },
+    now: string
+  ): Promise<void>;
+  fail(claim: FinanceImportClaim, errorCode: string, now: string): Promise<void>;
+  listValidRows(operationId: string): Promise<FinanceImportStoredRow[]>;
+  listRowResults(operationId: string): Promise<FinanceImportRowResult[]>;
+  listOperationEvents(operationId: string): Promise<FinanceImportOperationEvent[]>;
 }
 
 function immutablePreviewRecord(
@@ -224,12 +295,16 @@ function immutableOperation(
 }
 
 export class InMemoryFinanceImportRepository
-implements FinanceImportRepository {
+implements FinanceImportExecutionRepository {
   private readonly transactions: GrowthTemporalTransactionRunner;
   private readonly barrier: GrowthTemporalBarrier;
   private readonly previews = new Map<string, FinanceImportPreviewRecord>();
   private readonly rows = new Map<string, FinanceImportStoredRow>();
   private readonly operations = new Map<string, FinanceImportOperation>();
+  private readonly rowResults = new Map<string, FinanceImportRowResult[]>();
+  private readonly operationEvents = new Map<string, FinanceImportOperationEvent[]>();
+  private readonly writeLockTraces: string[][] = [];
+  readonly savedRowFences: number[] = [];
 
   constructor(
     temporalTransactions?: GrowthTemporalTransactionRunner,
@@ -303,25 +378,340 @@ implements FinanceImportRepository {
   async appendOperation(
     input: FinanceImportOperationInput
   ): Promise<FinanceImportOperation> {
-    const stamp = await this.transactions.run(async (tx) => {
+    const stamps = await this.transactions.run(async (tx) => {
+      const trace = [`temporal:${input.workspaceId}`];
+      this.writeLockTraces.push(trace);
       const allocated = await this.barrier.allocateAppend(
         tx, input.workspaceId
       );
       if (this.operations.has(input.id)) {
         throw new Error("finance_import_operation_exists");
       }
-      return allocated;
+      const eventStamp = await this.barrier.allocateAppend(
+        tx, input.workspaceId
+      );
+      return { allocated, eventStamp };
     });
     const operation = immutableOperation({
       ...input,
       resultCreatedIds: [...input.resultCreatedIds],
-      createdAt: stamp.recordedAt,
-      createdTemporalSequence: stamp.temporalSequence,
-      updatedAt: stamp.recordedAt,
-      temporalSequence: stamp.temporalSequence
+      createdAt: stamps.allocated.recordedAt,
+      createdTemporalSequence: stamps.allocated.temporalSequence,
+      updatedAt: stamps.allocated.recordedAt,
+      temporalSequence: stamps.allocated.temporalSequence
     });
     this.operations.set(operation.id, operation);
+    this.appendEvent(operation, "queued", null, 0, stamps.eventStamp);
     return operation;
+  }
+
+  private appendEvent(
+    operation: FinanceImportOperation,
+    eventType: FinanceImportOperationEvent["eventType"],
+    leaseOwner: string | null,
+    fencingToken: number,
+    stamp: { recordedAt: string; temporalSequence: number }
+  ): void {
+    const events = this.operationEvents.get(operation.id) ?? [];
+    const eventSequence = events.length + 1;
+    const event: FinanceImportOperationEvent = Object.freeze({
+      id: `${operation.id}:${eventType}:${eventSequence}`,
+      workspaceId: operation.workspaceId,
+      operationId: operation.id,
+      eventType,
+      eventSequence,
+      revision: eventSequence,
+      leaseOwner,
+      fencingToken,
+      recordedAt: stamp.recordedAt,
+      temporalSequence: stamp.temporalSequence
+    });
+    events.push(event);
+    this.operationEvents.set(operation.id, events);
+  }
+
+  async listRecoverable(
+    now: string,
+    limit: number
+  ): Promise<FinanceImportOperation[]> {
+    return [...this.operations.values()]
+      .filter((operation) => operation.status === "queued"
+        || (operation.status === "running"
+          && operation.leaseExpiresAt !== null
+          && operation.leaseExpiresAt <= now))
+      .sort((left, right) =>
+        left.updatedAt.localeCompare(right.updatedAt)
+        || left.id.localeCompare(right.id))
+      .slice(0, limit);
+  }
+
+  async claim(
+    operationId: string,
+    workerId: string,
+    now: string,
+    leaseExpiresAt: string
+  ): Promise<FinanceImportClaim | null> {
+    const result = await this.transactions.run(async (tx) => {
+      const operation = this.operations.get(operationId);
+      if (!operation) return null;
+      const trace = [`temporal:${operation.workspaceId}`];
+      this.writeLockTraces.push(trace);
+      const stamp = await this.barrier.allocateAppend(
+        tx, operation.workspaceId
+      );
+      const current = this.operations.get(operationId)!;
+      const claimable = current.status === "queued"
+        || (current.status === "running"
+          && current.leaseExpiresAt !== null
+          && current.leaseExpiresAt <= now);
+      if (!claimable) return null;
+      const next = immutableOperation({
+        ...current,
+        status: "running",
+        leaseOwner: workerId,
+        leaseExpiresAt,
+        fencingToken: current.fencingToken + 1,
+        updatedAt: stamp.recordedAt,
+        temporalSequence: stamp.temporalSequence
+      });
+      this.operations.set(operationId, next);
+      const eventStamp = await this.barrier.allocateAppend(
+        tx, operation.workspaceId
+      );
+      return { next, eventStamp };
+    });
+    if (!result) return null;
+    this.appendEvent(
+      result.next, "claimed", workerId, result.next.fencingToken,
+      result.eventStamp
+    );
+    return Object.freeze({
+      workspaceId: result.next.workspaceId,
+      operationId: result.next.id,
+      leaseOwner: result.next.leaseOwner!,
+      leaseExpiresAt: result.next.leaseExpiresAt!,
+      fencingToken: result.next.fencingToken
+    });
+  }
+
+  private async withLiveClaim(
+    claim: FinanceImportClaim,
+    now: string,
+    work: (
+      operation: FinanceImportOperation,
+      tx: GrowthTemporalTransaction,
+      stamp: { recordedAt: string; temporalSequence: number }
+    ) => Promise<void>
+  ): Promise<void> {
+    await this.transactions.run(async (tx) => {
+      const trace = [`temporal:${claim.workspaceId}`];
+      this.writeLockTraces.push(trace);
+      const stamp = await this.barrier.allocateAppend(
+        tx, claim.workspaceId
+      );
+      const current = this.operations.get(claim.operationId);
+      if (!current
+        || current.workspaceId !== claim.workspaceId
+        || current.leaseOwner !== claim.leaseOwner
+        || current.fencingToken !== claim.fencingToken
+        || current.status !== "running"
+        || current.leaseExpiresAt === null
+        || current.leaseExpiresAt <= now) {
+        throw new Error("stale_fencing_token");
+      }
+      await work(current, tx, stamp);
+    });
+  }
+
+  async assertLiveClaim(
+    claim: FinanceImportClaim,
+    now: string
+  ): Promise<void> {
+    const current = this.operations.get(claim.operationId);
+    if (!current
+      || current.workspaceId !== claim.workspaceId
+      || current.leaseOwner !== claim.leaseOwner
+      || current.fencingToken !== claim.fencingToken
+      || current.status !== "running"
+      || current.leaseExpiresAt === null
+      || current.leaseExpiresAt <= now) {
+      throw new Error("stale_fencing_token");
+    }
+  }
+
+  async renewLease(input: {
+    operationId: string;
+    leaseOwner: string;
+    fencingToken: number;
+    now: string;
+    nextExpiry: string;
+  }): Promise<boolean> {
+    let changed = false;
+    let renewed: FinanceImportOperation | null = null;
+    let eventStamp: { recordedAt: string; temporalSequence: number } | null =
+      null;
+    await this.transactions.run(async (tx) => {
+      const current = this.operations.get(input.operationId);
+      if (!current
+        || current.leaseOwner !== input.leaseOwner
+        || current.fencingToken !== input.fencingToken
+        || current.status !== "running"
+        || current.leaseExpiresAt === null
+        || current.leaseExpiresAt <= input.now) {
+        return;
+      }
+      const trace = [`temporal:${current.workspaceId}`];
+      this.writeLockTraces.push(trace);
+      const stamp = await this.barrier.allocateAppend(
+        tx, current.workspaceId
+      );
+      renewed = immutableOperation({
+        ...current,
+        leaseExpiresAt: input.nextExpiry,
+        updatedAt: stamp.recordedAt,
+        temporalSequence: stamp.temporalSequence
+      });
+      this.operations.set(input.operationId, renewed);
+      eventStamp = await this.barrier.allocateAppend(
+        tx, current.workspaceId
+      );
+      changed = true;
+    });
+    if (changed && renewed && eventStamp) {
+      this.appendEvent(
+        renewed, "renewed", input.leaseOwner, input.fencingToken, eventStamp
+      );
+    }
+    return changed;
+  }
+
+  async saveRowResult(
+    claim: FinanceImportClaim,
+    result: FinanceImportRowResult,
+    now: string
+  ): Promise<void> {
+    let operation: FinanceImportOperation | null = null;
+    let eventStamp: { recordedAt: string; temporalSequence: number } | null =
+      null;
+    await this.withLiveClaim(claim, now, async (current, tx) => {
+      this.savedRowFences.push(claim.fencingToken);
+      const results = this.rowResults.get(claim.operationId) ?? [];
+      if (!results.some((item) => item.rowId === result.rowId)) {
+        results.push(Object.freeze({
+          ...result,
+          createdLedgerIds: [...result.createdLedgerIds]
+        }));
+        this.rowResults.set(claim.operationId, results);
+      }
+      const eventStampAllocated = await this.barrier.allocateAppend(
+        tx, claim.workspaceId
+      );
+      eventStamp = eventStampAllocated;
+      operation = current;
+    });
+    if (operation && eventStamp) {
+      this.appendEvent(
+        operation, "row_saved", claim.leaseOwner, claim.fencingToken,
+        eventStamp
+      );
+    }
+  }
+
+  async complete(
+    claim: FinanceImportClaim,
+    result: { status: "succeeded" | "partial_success"; createdIds: string[] },
+    now: string
+  ): Promise<void> {
+    let operation: FinanceImportOperation | null = null;
+    let eventStamp: { recordedAt: string; temporalSequence: number } | null =
+      null;
+    await this.withLiveClaim(claim, now, async (current, tx, stamp) => {
+      const next = immutableOperation({
+        ...current,
+        status: result.status,
+        resultCreatedIds: [...result.createdIds],
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        updatedAt: stamp.recordedAt,
+        temporalSequence: stamp.temporalSequence
+      });
+      this.operations.set(claim.operationId, next);
+      eventStamp = await this.barrier.allocateAppend(
+        tx, claim.workspaceId
+      );
+      operation = next;
+    });
+    if (operation && eventStamp) {
+      this.appendEvent(
+        operation, "completed", null, claim.fencingToken, eventStamp
+      );
+    }
+  }
+
+  async fail(
+    claim: FinanceImportClaim,
+    errorCode: string,
+    now: string
+  ): Promise<void> {
+    let operation: FinanceImportOperation | null = null;
+    let eventStamp: { recordedAt: string; temporalSequence: number } | null =
+      null;
+    await this.withLiveClaim(claim, now, async (current, tx, stamp) => {
+      const next = immutableOperation({
+        ...current,
+        status: "failed",
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        lastErrorCode: errorCode,
+        updatedAt: stamp.recordedAt,
+        temporalSequence: stamp.temporalSequence
+      });
+      this.operations.set(claim.operationId, next);
+      eventStamp = await this.barrier.allocateAppend(
+        tx, claim.workspaceId
+      );
+      operation = next;
+    });
+    if (operation && eventStamp) {
+      this.appendEvent(
+        operation, "failed", null, claim.fencingToken, eventStamp
+      );
+    }
+  }
+
+  async listValidRows(operationId: string): Promise<FinanceImportStoredRow[]> {
+    const operation = this.operations.get(operationId);
+    if (!operation) return [];
+    return (await this.listStoredRows(operation.previewId))
+      .filter((row) => row.status === "valid");
+  }
+
+  async listRowResults(
+    operationId: string
+  ): Promise<FinanceImportRowResult[]> {
+    return [...(this.rowResults.get(operationId) ?? [])];
+  }
+
+  async listOperationEvents(
+    operationId: string
+  ): Promise<FinanceImportOperationEvent[]> {
+    return [...(this.operationEvents.get(operationId) ?? [])];
+  }
+
+  writeLockTracesSnapshot(): string[][] {
+    return this.writeLockTraces.map((trace) => [...trace]);
+  }
+
+  replaceOperationPreviewId(
+    operationId: string,
+    previewId: string
+  ): void {
+    const current = this.operations.get(operationId);
+    if (!current) throw new Error("finance_import_operation_not_found");
+    this.operations.set(operationId, immutableOperation({
+      ...current,
+      previewId
+    }));
   }
 
   countPreviews(): number {
