@@ -1,4 +1,5 @@
 import type { DemoModule } from "./demo-types";
+import { parseGrowthHash } from "../growth/router";
 
 export interface DemoRouter {
   current(): DemoModule;
@@ -79,6 +80,15 @@ function moduleFromHash(fallback: DemoModule): DemoModule {
 }
 
 export function createDemoRouter(initial: DemoModule = "acquisition"): DemoRouter {
+  if (parseGrowthHash(window.location.hash)) {
+    return {
+      current: () => "acquisition",
+      navigate() {},
+      subscribe() {
+        return () => undefined;
+      }
+    };
+  }
   let active = moduleFromHash(initial);
   const listeners = new Set<(module: DemoModule) => void>();
 
@@ -119,6 +129,7 @@ export function createDemoRouter(initial: DemoModule = "acquisition"): DemoRoute
   }
 
   window.addEventListener("hashchange", () => {
+    if (parseGrowthHash(window.location.hash)) return;
     const next = moduleFromHash(initial);
     if (next === active) return;
     active = next;

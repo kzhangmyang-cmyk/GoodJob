@@ -25,6 +25,12 @@ import "./private-domain/controller.self-test";
 import "./private-domain/view.self-test";
 import "./connections/connection-api.self-test";
 import "./connections/connection-controller.self-test";
+import "./growth/router.self-test";
+import "./growth/mode.self-test";
+import "./growth/http.self-test";
+import "./growth/bootstrap-api.self-test";
+import "./growth/runtime.self-test";
+import "./growth/demo/adapter.self-test";
 import "./connections/connection-view.self-test";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");

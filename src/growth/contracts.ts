@@ -11,8 +11,10 @@ export type GrowthPaths = paths;
 export type GrowthOperations = operations;
 export type GrowthComponents = components;
 
-export type GrowthBootstrapResponse =
-  components["schemas"]["GrowthBootstrapResponse"];
+export type GrowthBootstrapResponse = Omit<
+  components["schemas"]["GrowthBootstrapResponse"],
+  "$defs"
+>;
 export type GrowthCatalogItem = components["schemas"]["CatalogItem"];
 export type GrowthPackageVersion = components["schemas"]["PackageVersion"];
 export type GrowthPricingPolicyVersion =
@@ -25,9 +27,9 @@ export type GrowthFinancialDataGapView =
 export type GrowthAdvisorTodayQuery =
   components["schemas"]["AdvisorTodayResponse_AdvisorTodayQuery"];
 export type GrowthAdvisorTodayResponse =
-  components["schemas"]["AdvisorTodayResponse"];
+  Omit<components["schemas"]["AdvisorTodayResponse"], "$defs">;
 export type GrowthAdvisorRecommendation =
-  components["schemas"]["AdvisorRecommendation"];
+  Omit<components["schemas"]["AdvisorRecommendation"], "$defs">;
 export type GrowthAdvisorRecommendationTransitionInput =
   components["schemas"]["AdvisorRecommendationTransitionInput"];
 export type GrowthAdvisorRecommendedAction =
