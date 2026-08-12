@@ -42,6 +42,10 @@ import {
 import type {
   RoiClosureVersion
 } from "./acquisition-roi-closure.js";
+import {
+  RoiClosureEvidenceReader,
+  type RoiClosureEvidenceSealedReader
+} from "./roi-closure-evidence-reader.js";
 
 export interface GrowthRoiAcquisitionIntegrations {
   authoritativeDiscoveryProjectionWriter: AuthoritativeDiscoveryProjectionWriter;
@@ -61,6 +65,14 @@ export interface GrowthRoiDiscoveryServices {
   cohortService: DefaultAcquisitionCohortService;
   growthPerformance: DefaultAcquisitionGrowthPerformanceQueryService;
 }
+
+export interface GrowthRoiServices {
+  readonly growthPerformance: DefaultAcquisitionGrowthPerformanceQueryService;
+  readonly closureEvidence: RoiClosureEvidenceSealedReader;
+}
+
+export const GROWTH_ROI_SERVICES =
+  defineGrowthPrivateServiceKey<GrowthRoiServices>("growth-roi-services");
 
 export const GROWTH_ROI_DISCOVERY_SERVICES:
 GrowthPrivateServiceKey<GrowthRoiDiscoveryServices> =
@@ -179,6 +191,11 @@ export function createGrowthRoiModule(
             cohorts: cohortRepository,
             cohortService,
             growthPerformance
+          }));
+        input.privateServices.provide(GROWTH_ROI_SERVICES,
+          Object.freeze({
+            growthPerformance,
+            closureEvidence: new RoiClosureEvidenceReader(closureRepository)
           }));
         input.router.use(createAcquisitionGrowthPerformanceRouter({
           queryService: growthPerformance,

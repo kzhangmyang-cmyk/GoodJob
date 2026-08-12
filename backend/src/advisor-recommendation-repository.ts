@@ -124,6 +124,15 @@ implements AdvisorRecommendationRepository {
     this.now = () => value;
   }
 
+  /** Test/support seam: seeds an aggregate without appending a created event
+   *  or allocating a temporal stamp. Runtime creation goes through `create`. */
+  seed(aggregate: AdvisorRecommendation): void {
+    this.recommendations.set(
+      this.key(aggregate.workspaceId, aggregate.id),
+      Object.freeze({ ...aggregate })
+    );
+  }
+
   private key(workspaceId: string, id: string): string {
     return `${workspaceId}\u0000${id}`;
   }

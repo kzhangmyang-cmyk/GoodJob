@@ -148,6 +148,24 @@ export interface AdvisorVisibilitySnapshot {
   readonly sourceSnapshotHash: `sha256:${string}`;
 }
 
+const issuedVisibilitySnapshots = new WeakSet<object>();
+
+export function markAdvisorVisibilitySnapshot(
+  snapshot: AdvisorVisibilitySnapshot
+): AdvisorVisibilitySnapshot {
+  issuedVisibilitySnapshots.add(snapshot);
+  return snapshot;
+}
+
+export function assertAdvisorVisibilitySnapshot(
+  snapshot: AdvisorVisibilitySnapshot
+): AdvisorVisibilitySnapshot {
+  if (!snapshot || !issuedVisibilitySnapshots.has(snapshot)) {
+    throw new Error("advisor_visibility_snapshot_invalid");
+  }
+  return snapshot;
+}
+
 export interface AdvisorVisibilityResolver {
   resolveAt(
     context: ActiveWorkspaceContext,
@@ -295,12 +313,12 @@ implements AdvisorVisibilityResolver {
       ]),
       cohorts: cohorts.map((cohort) => cohort.cohortId)
     });
-    return Object.freeze({
+    return markAdvisorVisibilitySnapshot(Object.freeze({
       scope,
       subjectVisibility,
       financialGapVisibility,
       sourceSnapshotHash
-    });
+    }));
   }
 }
 

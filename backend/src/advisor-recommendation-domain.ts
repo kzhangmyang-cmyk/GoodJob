@@ -67,6 +67,8 @@ export interface AdvisorTransitionInput {
   recommendationId: string;
   kind: AdvisorTransitionKind;
   reason: string | null;
+  /** Server-resolved completion outcome (never caller-supplied). */
+  outcomeRefs?: AdvisorRecommendation["outcomeRefs"];
 }
 
 export interface AdvisorTransitionMetadata {
@@ -101,6 +103,7 @@ export function applyAdvisorTransition(
     status: nextStatus,
     acceptedBy: accepted ? metadata.actorId : current.acceptedBy,
     acceptedAt: accepted ? metadata.occurredAt : current.acceptedAt,
+    outcomeRefs: input.outcomeRefs ?? current.outcomeRefs,
     updatedAt: metadata.occurredAt
   });
 }
