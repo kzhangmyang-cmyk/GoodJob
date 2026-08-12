@@ -34,6 +34,7 @@ type PagedMessages = {
 
 export type GrowthPageName =
   | "advisor"
+  | "agents"
   | "catalog"
   | "quotes"
   | "finance"

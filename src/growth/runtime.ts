@@ -26,6 +26,11 @@ import { createAdvisorApi } from "./advisor/api";
 import { createAdvisorCopilotWorkflow } from "./advisor/copilot-workflow";
 import { createAdvisorController } from "./advisor/controller";
 import { renderAdvisorHome } from "./advisor/view";
+import { parseAgentsHash } from "./agents/entry";
+import {
+  renderAgentDetail,
+  renderAgentsOverview
+} from "./agents/view";
 
 export type GrowthModeState = GrowthMode | GrowthUnavailable;
 
@@ -91,6 +96,20 @@ export async function startGrowthRuntime(
   options: StartGrowthRuntimeOptions = {}
 ): Promise<GrowthModeState> {
   const registry = options.registry ?? new GrowthPageRegistry();
+  registry.register("agents", {
+    async mount() {
+      const host = growthWorkspaceHost();
+      if (!host) return;
+      const route = parseAgentsHash(window.location.hash);
+      host.innerHTML = route?.view === "detail"
+        ? renderAgentDetail(route.agentId)
+        : renderAgentsOverview();
+    },
+    unmount() {
+      const host = growthWorkspaceHost();
+      if (host) host.replaceChildren();
+    }
+  });
   let mode: GrowthModeState;
   if (options.requested === "demo") {
     mode = { kind: "demo" };

@@ -1,5 +1,6 @@
 export type GrowthRoute =
   | { name: "advisor" }
+  | { name: "agents" }
   | { name: "catalog" }
   | { name: "finance" }
   | {
@@ -19,6 +20,10 @@ export function parseGrowthHash(hash: string): GrowthRoute | null {
   const [pathname, query = ""] = hash.replace(/^#/, "").split("?", 2);
   const params = new URLSearchParams(query);
   if (pathname === "growth/advisor") return { name: "advisor" };
+  if (pathname === "growth/agents"
+    || /^growth\/agents\/[A-Za-z0-9_-]+$/u.test(pathname)) {
+    return { name: "agents" };
+  }
   if (pathname === "growth/catalog") return { name: "catalog" };
   if (pathname === "growth/finance") return { name: "finance" };
   if (pathname === "growth/quotes") {
@@ -45,6 +50,7 @@ export function parseGrowthHash(hash: string): GrowthRoute | null {
 export function growthHash(route: GrowthRoute): string {
   switch (route.name) {
     case "advisor":
+    case "agents":
     case "catalog":
     case "finance":
       return `#growth/${route.name}`;

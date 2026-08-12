@@ -43,3 +43,21 @@ test("quote workbench loads a case and its immutable versions from typed fixture
   ).toBeGreaterThan(0);
   await installed.dispose();
 });
+
+test("business agent team overview renders inside the product workspace", async ({ page }) => {
+  const scenario = growthContractScenario("happy_path");
+  const installed = await installGrowthContractScenario(page, scenario);
+  await enterRealGrowth(page, "agents");
+  await expect(page.getByRole("heading", { name: "AI 经营顾问团队" })).toBeVisible();
+  await expect(page.getByText("利润分析")).toBeVisible();
+  await expect(page.getByText("现金流分析")).toBeVisible();
+  await page.evaluate(() => {
+    window.location.hash = "#growth/agents/profit";
+  });
+  await expect(page.getByRole("heading", {
+    name: "利润分析",
+    exact: true
+  })).toBeVisible();
+  await expect(page.getByText("哪个产品是假利润？")).toBeVisible();
+  await installed.dispose();
+});
