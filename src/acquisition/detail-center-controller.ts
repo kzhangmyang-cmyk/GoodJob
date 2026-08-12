@@ -2577,6 +2577,25 @@ export function createAcquisitionDetailCenterController(
     } else if (action === "open-private-domain-handoff") {
       event.preventDefault();
       controller.openPrivateDomainHandoff();
+    } else if (action === "open-quote-workbench") {
+      event.preventDefault();
+      const candidateId = target.dataset.candidateId?.trim() ?? "";
+      const customerId = target.dataset.customerId?.trim() ?? "";
+      if (!candidateId && !customerId) return;
+      window.dispatchEvent(new CustomEvent(
+        "goodjob:quote-workbench-requested",
+        {
+          detail: Object.freeze({
+            candidateId: candidateId || undefined,
+            customerId: customerId || undefined
+          })
+        }
+      ));
+      if (candidateId) {
+        window.location.hash = `#growth/quotes?candidate=${
+          encodeURIComponent(candidateId)
+        }`;
+      }
     } else if (action === "close-private-domain-handoff") {
       event.preventDefault();
       controller.closePrivateDomainHandoff();

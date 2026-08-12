@@ -1059,6 +1059,9 @@ function renderPrivateDomainHandoff(
         <div class="replica-acquisition-review-actions">
           <a href="#private-domain" data-private-domain-customer-id="${escapeHtml(handoff.customerId)}">查看客户</a>
           <a href="#private-domain" data-private-domain-customer-id="${escapeHtml(handoff.customerId)}" data-todo-id="${escapeHtml(handoff.todoId)}">查看待办</a>
+          <button type="button" data-acquisition-detail-action="open-quote-workbench"
+            data-candidate-id="${escapeHtml(candidate.id)}"
+            data-customer-id="${escapeHtml(handoff.customerId)}">打开报价工作台</button>
           ${recoveryAction}
         </div>
       </div>

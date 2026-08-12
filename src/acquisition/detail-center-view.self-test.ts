@@ -554,6 +554,9 @@ function state(
   assert.match(html, /2026-08-08T09:00:00\.000Z/);
   assert.match(html, /查看客户/);
   assert.match(html, /查看待办/);
+  assert.match(html, /data-acquisition-detail-action="open-quote-workbench"/);
+  assert.match(html, /打开报价工作台/);
+  assert.match(html, /data-candidate-id="candidate-org"/);
   assert.match(
     html,
     /data-private-domain-customer-id="customer-1" data-todo-id="todo-1"/
