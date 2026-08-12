@@ -7,7 +7,11 @@
     "dev": "vite --host 127.0.0.1 --port 5188",
     "build": "tsc -b && vite build",
     "test": "tsx src/self-test.ts",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "contract:import": "node scripts/import-growth-contract.mjs",
+    "contract:generate": "node scripts/generate-growth-contract-types.mjs",
+    "contract:check": "node scripts/check-growth-contract.mjs && node scripts/generate-growth-contract-types.mjs --check",
+    "test:types": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
@@ -22,7 +26,9 @@
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
+    "openapi-typescript": "7.13.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "yaml": "2.8.1"
   }
 }
