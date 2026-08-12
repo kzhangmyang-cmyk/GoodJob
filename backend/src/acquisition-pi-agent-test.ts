@@ -113,7 +113,12 @@ assert.deepEqual(
     "create_quote_draft",
     "list_pending_quote_approvals",
     "get_quote_decision",
-    "create_quote_approval_task"
+    "create_quote_approval_task",
+    "get_growth_performance",
+    "list_financial_data_gaps",
+    "create_advisor_recommendation",
+    "create_sales_todo",
+    "record_recommendation_outcome"
   ]
 );
 assert.equal(toolExecutions.length, 1);

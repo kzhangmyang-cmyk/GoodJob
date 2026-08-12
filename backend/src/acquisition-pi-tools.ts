@@ -14,6 +14,10 @@ import {
   GROWTH_QUOTE_TOOL_BLUEPRINTS,
   GROWTH_QUOTE_TOOL_NAMES
 } from "./growth-advisor-quote-tools.js";
+import {
+  ADVISOR_TOOL_BLUEPRINTS,
+  ADVISOR_TOOL_NAMES
+} from "./growth-advisor-tools.js";
 
 export const ACQUISITION_AGENT_TOOL_NAMES = [
   "search_public_sources",
@@ -27,7 +31,8 @@ export const ACQUISITION_AGENT_TOOL_NAMES = [
   "create_review_task",
   "record_outcome",
   "get_acquisition_performance",
-  ...GROWTH_QUOTE_TOOL_NAMES
+  ...GROWTH_QUOTE_TOOL_NAMES,
+  ...ADVISOR_TOOL_NAMES
 ] as const;
 
 export type AcquisitionAgentToolName =
@@ -295,6 +300,7 @@ const TOOL_BLUEPRINTS: readonly ToolBlueprint[] = [
     executionMode: "parallel"
   },
   ...GROWTH_QUOTE_TOOL_BLUEPRINTS
+  ,...ADVISOR_TOOL_BLUEPRINTS
 ];
 
 const LEGACY_RECORD_OUTCOME_BLUEPRINT: ToolBlueprint = {
@@ -348,7 +354,8 @@ AcquisitionAgentToolDefinition[] {
   return [
     ...TOOL_BLUEPRINTS.filter((blueprint) =>
       blueprint.name !== "get_acquisition_performance"
-      && !GROWTH_QUOTE_TOOL_NAMES.includes(blueprint.name as never)),
+      && !GROWTH_QUOTE_TOOL_NAMES.includes(blueprint.name as never)
+      && !ADVISOR_TOOL_NAMES.includes(blueprint.name as never)),
     LEGACY_RECORD_OUTCOME_BLUEPRINT
   ].map((blueprint) => ({
     name: blueprint.name,

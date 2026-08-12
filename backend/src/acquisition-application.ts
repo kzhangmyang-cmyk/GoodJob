@@ -272,6 +272,11 @@ import {
   GrowthQuoteAcquisitionToolDelegate
 } from "./growth-advisor-quote-tools.js";
 import {
+  GrowthAdvisorAcquisitionToolDelegate,
+  GrowthAdvisorToolExecutor,
+  composeGrowthAcquisitionToolDelegates
+} from "./growth-advisor-tools.js";
+import {
   capabilitiesForHumanRole,
   GROWTH_CAPABILITY_REGISTRY_VERSION
 } from "./growth-capabilities.js";
@@ -1353,33 +1358,62 @@ export async function createAcquisitionApplication(
     )({
       domain: domainService,
       growthToolPorts,
-      growthCommercialTools: new GrowthQuoteAcquisitionToolDelegate({
-        workspaceResolver: acquisitionWorkspace,
-        sessions: repositories.copilot,
-        async resolveCurrentActor(identity) {
-          await options.store.readBarrier();
-          const actor = options.store.users.find((candidate) =>
-            candidate.id === identity.actorId
-            && candidate.teamId === identity.teamId
-          );
-          if (!actor) return null;
-          return Object.freeze({
-            id: actor.id,
-            teamId: actor.teamId,
-            role: actor.role,
-            status: actor.status,
-            capabilities: capabilitiesForHumanRole(actor.role),
-            capabilityRegistryVersion: GROWTH_CAPABILITY_REGISTRY_VERSION
-          });
-        },
-        executor: new GrowthAdvisorQuoteToolExecutor({
-          toolPorts: growthToolPorts,
-          resultLedger: toolResults,
-          modelSnapshotRef: ACQUISITION_MODEL_SCHEMA_VERSION,
-          promptSnapshotRef: ACQUISITION_MODEL_PROMPT_VERSION,
-          now
+      growthCommercialTools: composeGrowthAcquisitionToolDelegates(
+        new GrowthQuoteAcquisitionToolDelegate({
+          workspaceResolver: acquisitionWorkspace,
+          sessions: repositories.copilot,
+          async resolveCurrentActor(identity) {
+            await options.store.readBarrier();
+            const actor = options.store.users.find((candidate) =>
+              candidate.id === identity.actorId
+              && candidate.teamId === identity.teamId
+            );
+            if (!actor) return null;
+            return Object.freeze({
+              id: actor.id,
+              teamId: actor.teamId,
+              role: actor.role,
+              status: actor.status,
+              capabilities: capabilitiesForHumanRole(actor.role),
+              capabilityRegistryVersion: GROWTH_CAPABILITY_REGISTRY_VERSION
+            });
+          },
+          executor: new GrowthAdvisorQuoteToolExecutor({
+            toolPorts: growthToolPorts,
+            resultLedger: toolResults,
+            modelSnapshotRef: ACQUISITION_MODEL_SCHEMA_VERSION,
+            promptSnapshotRef: ACQUISITION_MODEL_PROMPT_VERSION,
+            now
+          })
+        }),
+        new GrowthAdvisorAcquisitionToolDelegate({
+          workspaceResolver: acquisitionWorkspace,
+          sessions: repositories.copilot,
+          async resolveCurrentActor(identity) {
+            await options.store.readBarrier();
+            const actor = options.store.users.find((candidate) =>
+              candidate.id === identity.actorId
+              && candidate.teamId === identity.teamId
+            );
+            if (!actor) return null;
+            return Object.freeze({
+              id: actor.id,
+              teamId: actor.teamId,
+              role: actor.role,
+              status: actor.status,
+              capabilities: capabilitiesForHumanRole(actor.role),
+              capabilityRegistryVersion: GROWTH_CAPABILITY_REGISTRY_VERSION
+            });
+          },
+          executor: new GrowthAdvisorToolExecutor({
+            toolPorts: growthToolPorts,
+            resultLedger: toolResults,
+            modelSnapshotRef: ACQUISITION_MODEL_SCHEMA_VERSION,
+            promptSnapshotRef: ACQUISITION_MODEL_PROMPT_VERSION,
+            now
+          })
         })
-      }),
+      ),
       search: searchPort,
       searchConnections: {
         async listActiveConnectionIds(scope) {

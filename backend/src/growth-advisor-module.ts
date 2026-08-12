@@ -62,6 +62,129 @@ import type { CommandContext } from "./growth-command-context.js";
 import type {
   AdvisorActionOperation
 } from "./advisor-action-operation.js";
+import { assertGrowthAsOfNotFuture } from "./growth-as-of.js";
+
+function registerGrowthAdvisorToolHandlers(input: {
+  toolPorts: GrowthCommercialToolPorts;
+  resources: GrowthAdvisorResources;
+  foundation: GrowthFoundationServices;
+  finance: GrowthFinanceServices;
+  roi: GrowthRoiServices;
+  visibility: DefaultAdvisorVisibilityResolver | undefined;
+}): void {
+  const now = () => new Date().toISOString();
+  input.toolPorts.register(
+    "get_growth_performance",
+    async (raw, command) => {
+      const value = raw as {
+        currency: string;
+        asOf: string;
+        planId?: string | null;
+        cohortId?: string;
+      };
+      const effectiveAsOf = assertGrowthAsOfNotFuture(
+        value.asOf, now(), 1_000
+      );
+      const cutoff = await input.foundation.temporalBarrier.sealReadCutoff(
+        command.workspace, effectiveAsOf
+      );
+      if (!value.cohortId) {
+        return Object.freeze({
+          cohortId: null,
+          currency: value.currency,
+          planId: value.planId ?? null,
+          dataAsOf: cutoff.effectiveAsOf,
+          expectedRoiByCurrency: Object.freeze([]),
+          actualRoiByCurrency: Object.freeze([]),
+          cashByCurrency: Object.freeze([]),
+          dataGaps: Object.freeze([]),
+          formulaVersion: "growth-performance.v1"
+        });
+      }
+      return input.roi.growthPerformance.getAt(
+        command.workspace,
+        {
+          cohortId: value.cohortId,
+          currency: value.currency,
+          planId: value.planId ?? null,
+          closureVersionId: null
+        },
+        cutoff
+      );
+    }
+  );
+  input.toolPorts.register(
+    "list_financial_data_gaps",
+    async (raw, command) => {
+      const value = raw as { currency: string; asOf: string; limit?: number };
+      const effectiveAsOf = assertGrowthAsOfNotFuture(
+        value.asOf, now(), 1_000
+      );
+      const cutoff = await input.foundation.temporalBarrier.sealReadCutoff(
+        command.workspace, effectiveAsOf
+      );
+      if (!input.visibility) {
+        throw new Error("advisor_visibility_resolver_required");
+      }
+      const visibility = await input.visibility.resolveAt(
+        command.workspace, cutoff
+      );
+      return input.finance.financialGaps.listForBindingsAt(
+        command.workspace,
+        {
+          visibility: visibility.financialGapVisibility,
+          currency: value.currency,
+          cutoff,
+          limit: value.limit ?? 100
+        }
+      );
+    }
+  );
+  input.toolPorts.register(
+    "create_advisor_recommendation",
+    async (raw, command) => {
+      const value = raw as Parameters<
+        AdvisorRecommendationService["create"]
+      >[1];
+      return input.resources.recommendations.create(command, value);
+    }
+  );
+  input.toolPorts.register(
+    "create_sales_todo",
+    async (raw, command) => {
+      const value = raw as { customerId: string; dueAt: string };
+      if (!command.workspace.capabilities.includes("catalog.read")) {
+        throw Object.assign(new Error("advisor_todo_forbidden"), {
+          code: "advisor_todo_forbidden"
+        });
+      }
+      return Object.freeze({
+        kind: "sales_todo",
+        id: `sales-todo-${command.workspace.workspaceId}-${value.customerId}`,
+        customerId: value.customerId,
+        dueAt: value.dueAt,
+        createdBy: command.actorId,
+        createdAt: now()
+      });
+    }
+  );
+  input.toolPorts.register(
+    "record_recommendation_outcome",
+    async (raw, command) => {
+      const value = raw as {
+        recommendationId: string;
+        recommendationRevision: number;
+      };
+      const child: CommandContext = Object.freeze({
+        ...command,
+        expectedRevision: value.recommendationRevision
+      });
+      return input.resources.dispatcher.dispatch(
+        child, value.recommendationId
+      );
+    }
+  );
+}
 
 export interface GrowthAdvisorServices {
   readonly today: GrowthAdvisorQueryService;
@@ -277,6 +400,7 @@ export async function createGrowthAdvisorResources(input: {
     await recommendationExpiry.close();
   });
   return Object.freeze({
+    visibility,
     today: createGrowthAdvisorQueryService({
       temporalBarrier,
       workspaceSettings: input.foundation.workspaceSettings,
@@ -362,6 +486,16 @@ export function createGrowthAdvisorModule(
           dispatcher: resources.dispatcher
         });
         privateServices.provide(GROWTH_ADVISOR_SERVICES, services);
+        registerGrowthAdvisorToolHandlers({
+          toolPorts,
+          resources,
+          foundation,
+          finance,
+          roi,
+          visibility: (resources as {
+            visibility?: DefaultAdvisorVisibilityResolver;
+          }).visibility
+        });
         router.use(
           "/api/v1/acquisition/advisor",
           createGrowthAdvisorRouter({
