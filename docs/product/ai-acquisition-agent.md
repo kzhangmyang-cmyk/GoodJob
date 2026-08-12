@@ -473,6 +473,35 @@ GET    /api/v1/acquisition/copilot/sessions/:id/messages
 POST   /api/v1/acquisition/copilot/sessions/:id/messages
 GET    /api/v1/acquisition/copilot/tasks/:id
 
+# AI 增长参谋：今日经营视图与受控建议闭环
+
+增长参谋新增以下权威入口：
+
+GET    /api/v1/acquisition/advisor/today?currency=CNY&asOf=<date-time>
+POST   /api/v1/acquisition/advisor/recommendations/:id/accept
+POST   /api/v1/acquisition/advisor/recommendations/:id/ignore
+POST   /api/v1/acquisition/advisor/recommendations/:id/complete
+
+`today` 只接受 `currency` 与 `asOf` 两个查询参数；工作区、角色与时区全部由
+服务端推导。响应包含 `priorityCustomers`、`pendingQuoteApprovals`、
+`expectedRoi`、`actualRoi`、`financialDataGaps`、`recommendations` 与
+`sourceSnapshotHash`，敏感毛利/成本字段只在调用方具备
+`pricing.sensitive.read` 能力时投影。`asOf` 超过服务端时钟 1 秒返回
+`422 invalid_as_of`，且不会发起任何读取。
+
+建议命令使用闭合的 `{ reason: string | null }` 请求体，要求单次
+`Idempotency-Key` 与 `If-Match: advisor-recommendation-v:<revision>`；
+`complete` 不接受任何调用方提供的结果引用，只附加服务端解析到的那一条
+`action_receipt`。接受建议只会改变建议状态，不会执行任何动作。
+
+受控动作只允许六种：`open_candidate`、`create_quote_draft`、
+`create_quote_approval_task`、`create_sales_todo`、`complete_cost_data`、
+`complete_financial_fact`。AI 只能通过这些白名单动作把建议转成报价草稿、
+审批任务、销售待办或数据补全导航；不能批准/发布报价、核销财务事实、发送
+触达或补造 ROI。建议必须携带同工作区的强类型 `metricRefs`/`evidenceRefs`/
+`entityRefs`，引用缺失、过期或跨工作区时创建被拒绝，且不会写入任何建议或
+动作记录。
+
 # 官方数据源与客户 BYOK 连接
 GET    /api/v1/acquisition/providers
 GET    /api/v1/acquisition/provider-connections
