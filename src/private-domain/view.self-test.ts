@@ -90,3 +90,30 @@ assert.doesNotMatch(
   noBindingInspector.innerHTML,
   /data-private-domain-action="create-deal"/
 );
+
+const dealInspector = { innerHTML: "" } as HTMLElement;
+renderPrivateDomainView({
+  ...state,
+  customers: [{
+    ...state.customers[0]!,
+    activeDealCount: 1
+  }]
+}, { innerHTML: "" } as HTMLElement, dealInspector);
+assert.match(
+  dealInspector.innerHTML,
+  /data-private-domain-action="open-quote-workbench"/
+);
+assert.match(dealInspector.innerHTML, /打开报价工作台/);
+
+const zeroDealInspector = { innerHTML: "" } as HTMLElement;
+renderPrivateDomainView({
+  ...state,
+  customers: [{
+    ...state.customers[0]!,
+    activeDealCount: 0
+  }]
+}, { innerHTML: "" } as HTMLElement, zeroDealInspector);
+assert.doesNotMatch(
+  zeroDealInspector.innerHTML,
+  /data-private-domain-action="open-quote-workbench"/
+);

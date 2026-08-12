@@ -145,6 +145,21 @@ export function createPrivateDomainController(
         "goodjob:deal-create-requested",
         { detail: { customerId } }
       ));
+    } else if (target.dataset.privateDomainAction === "open-quote-workbench") {
+      const customerId = target.dataset.customerId?.trim() ?? "";
+      const customer = state.customers.find((item) => item.id === customerId);
+      if (!customer) return;
+      const binding = (customer.acquisitionBindings ?? []).find((item) =>
+        typeof item?.handoffId === "string" && Boolean(item.handoffId.trim()));
+      eventTarget.dispatchEvent(new CustomEvent(
+        "goodjob:quote-workbench-requested",
+        {
+          detail: {
+            customerId,
+            candidateId: binding?.candidateId ?? undefined
+          }
+        }
+      ));
     } else if (target.dataset.privateDomainAction === "retry") {
       void controller.open(state.selectedCustomerId ?? undefined).catch(
         () => undefined

@@ -80,6 +80,11 @@ function renderInspector(
         <div><b>预期金额</b><span>${escapeHtml(formatAmount(customer.amount))}</span></div>
       </div>
       ${pendingBindings.length > 0 ? `<div class="demo-customer-actions"><button type="button" class="demo-primary" data-private-domain-action="create-deal" data-customer-id="${escapeHtml(customer.id)}">创建真实商机</button></div>` : ""}
+      ${(customer.activeDealCount ?? 0) > 0 && customer.acquisitionBindings?.some(
+        (binding) => typeof binding?.handoffId === "string"
+          && Boolean(binding.handoffId.trim()))
+        ? `<div class="demo-customer-actions"><button type="button" data-private-domain-action="open-quote-workbench" data-customer-id="${escapeHtml(customer.id)}">打开报价工作台</button></div>`
+        : ""}
       <div class="demo-analysis-block demo-customer-timeline"><b>真实客户活动</b><ol>${customer.activities.length > 0
         ? customer.activities.map((activity) => `<li><time>${escapeHtml(activity.createdAt)}</time><span><b>${escapeHtml(activity.operatorName ?? activity.operatorId)}</b>${escapeHtml(activity.content)}</span></li>`).join("")
         : "<li><span><b>暂无活动</b>客户尚无跟进记录。</span></li>"}</ol></div>

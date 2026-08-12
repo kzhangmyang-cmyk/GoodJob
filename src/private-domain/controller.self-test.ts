@@ -78,6 +78,72 @@ const todo = {
 }
 
 {
+  const events: Array<{ type: string; detail: unknown }> = [];
+  const eventTarget = new EventTarget();
+  eventTarget.addEventListener("goodjob:quote-workbench-requested", (event) => {
+    events.push({
+      type: event.type,
+      detail: (event as CustomEvent<unknown>).detail
+    });
+  });
+  const listeners = new Map<string, (event: Event) => void>();
+  const main = {
+    innerHTML: "",
+    addEventListener(type: string, fn: (event: Event) => void) {
+      listeners.set(type, fn);
+    },
+    removeEventListener(type: string) {
+      listeners.delete(type);
+    },
+    contains() { return true; },
+    dispatch(type: string, event: Event) {
+      listeners.get(type)?.(event);
+    }
+  };
+  const inspector = fakeElement();
+  const boundCustomer = {
+    ...customer,
+    activeDealCount: 1,
+    acquisitionBindings: [{
+      handoffId: "handoff-1",
+      leadId: "lead-1",
+      candidateId: "candidate-1",
+      createdAt: "2026-08-09T08:00:00.000Z"
+    }]
+  };
+  const api = {
+    async getCustomers() {
+      return [boundCustomer];
+    },
+    async getTodos() {
+      return [todo];
+    }
+  } satisfies PrivateDomainRuntimeApi;
+  const controller = createPrivateDomainController({
+    api,
+    main: main as unknown as HTMLElement,
+    inspector: inspector as unknown as HTMLElement,
+    eventTarget
+  });
+  await controller.open("customer-1");
+  const button = {
+    dataset: {
+      privateDomainAction: "open-quote-workbench",
+      customerId: "customer-1"
+    },
+    closest: () => button
+  };
+  const click = { target: button } as unknown as Event;
+  main.dispatch("click", click);
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0]?.detail, {
+    customerId: "customer-1",
+    candidateId: "candidate-1"
+  });
+  controller.destroy();
+}
+
+{
   let fail = false;
   const api = {
     async getCustomers() {
