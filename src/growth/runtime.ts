@@ -19,6 +19,9 @@ import { renderQuoteWorkbench } from "./quotes/view";
 import { createFinanceApi } from "./finance/api";
 import { createFinanceController } from "./finance/controller";
 import { renderFinancePage } from "./finance/view";
+import { createGrowthPerformanceApi } from "./roi/api";
+import { createRoiController } from "./roi/controller";
+import { renderRoiPage } from "./roi/view";
 
 export type GrowthModeState = GrowthMode | GrowthUnavailable;
 
@@ -178,6 +181,31 @@ export async function startGrowthRuntime(
         host.innerHTML = renderFinancePage({ kind: "loading" });
         const state = await financeController.load();
         host.innerHTML = renderFinancePage(state);
+      },
+      unmount() {
+        const host = growthWorkspaceHost();
+        if (host) host.replaceChildren();
+      }
+    });
+  }
+  if (registry.get("roi") === null && mode.kind === "real") {
+    const http = createGrowthHttpClient();
+    const roiController = createRoiController({
+      api: createGrowthPerformanceApi(http),
+      hasFeature: (feature) =>
+        mode.kind === "real"
+        && (mode.bootstrap.features as readonly string[]).includes(feature),
+      hasCapability: (capability) =>
+        mode.kind === "real"
+        && (mode.bootstrap.capabilities as readonly string[]).includes(capability)
+    });
+    registry.register("roi", {
+      async mount() {
+        const host = growthWorkspaceHost();
+        if (!host) return;
+        host.innerHTML = renderRoiPage({ kind: "loading" });
+        const state = await roiController.loadCohorts();
+        host.innerHTML = renderRoiPage(state);
       },
       unmount() {
         const host = growthWorkspaceHost();

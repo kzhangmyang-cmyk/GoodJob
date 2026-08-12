@@ -150,6 +150,47 @@
   cursor: pointer;
 }
 
+.roi-region {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.375rem;
+}
+
+.roi-expected-region {
+  border-left: 3px solid #0ea5e9;
+}
+
+.roi-actual-region {
+  border-left: 3px solid #10b981;
+}
+
+.roi-cash-region {
+  border-left: 3px solid #8b5cf6;
+}
+
+.roi-region ul,
+.roi-evidence ul {
+  list-style: none;
+  padding: 0;
+}
+
+.roi-region li,
+.roi-evidence li {
+  padding: 0.3rem 0;
+  font-size: 0.875rem;
+}
+
+.roi-page button {
+  padding: 0.25rem 0.6rem;
+  border: 1px solid #fbbf24;
+  border-radius: 0.3rem;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
 .growth-unavailable {
   display: grid;
   place-items: center;

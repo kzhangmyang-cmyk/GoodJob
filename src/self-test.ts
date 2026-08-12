@@ -42,6 +42,9 @@ import "./growth/finance/api.self-test";
 import "./growth/finance/import-workflow.self-test";
 import "./growth/finance/controller.self-test";
 import "./growth/finance/view.self-test";
+import "./growth/roi/api.self-test";
+import "./growth/roi/controller.self-test";
+import "./growth/roi/view.self-test";
 import "./connections/connection-view.self-test";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");
