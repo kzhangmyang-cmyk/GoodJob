@@ -686,6 +686,37 @@ test("financial data gap codes are one exact closed enum", async () => {
   assert.equal(JSON.stringify(schema).includes("missing_verified_cost"), false);
 });
 
+test("advisor today query is closed to currency and asOf with a server-derived view", async () => {
+  const schema = await loadNamedJsonSchema("advisor-today.v1.schema.json");
+  const query = schema.$defs.AdvisorTodayQuery;
+  assert.deepEqual(query.required, ["currency", "asOf"]);
+  assert.deepEqual(schema.$defs.currency, {
+    type: "string", pattern: "^[A-Z]{3}$"
+  });
+  assert.deepEqual(query.properties.currency, { $ref: "#/$defs/currency" });
+  assert.equal(query.additionalProperties, false);
+  assert.deepEqual(
+    schema.required,
+    ["workspaceId", "audienceRole", "dataAsOf", "priorityCustomers",
+      "pendingQuoteApprovals", "expectedRoi", "actualRoi",
+      "financialDataGaps", "recommendations", "sourceSnapshotHash"]
+  );
+  assert.equal(schema.properties.audienceRole.enum.includes("sales"), true);
+  assert.equal(
+    JSON.stringify(schema).includes("assignedTo"),
+    false
+  );
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  const today = document.paths["/api/v1/acquisition/advisor/today"].get;
+  const parameterNames = today.parameters.map((parameter) =>
+    typeof parameter === "object" && "name" in parameter
+      ? parameter.name
+      : null).filter((name) => name !== null);
+  assert.deepEqual(parameterNames, ["currency", "asOf"]);
+  assert.equal(parameterNames.includes("audienceRole"), false);
+  assert.equal(parameterNames.includes("assignedTo"), false);
+});
+
 // Production break caught: exposing cost, floor, profit, contribution, margin, or policy snapshots to callers without the sensitive-pricing capability.
 test("fix round 1 sensitive resources publish closed full and redacted projections", async () => {
   const registry = await loadSchemaRegistry();

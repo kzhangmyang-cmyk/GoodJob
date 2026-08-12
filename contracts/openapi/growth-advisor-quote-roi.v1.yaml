@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoodJob Growth Advisor, Quote and ROI API
-  version: 1.0.2
+  version: 1.0.3
 servers:
   - url: /
 
@@ -1153,10 +1153,8 @@ paths:
         zeroWritesOnReject: true
       parameters:
         - $ref: '#/components/parameters/workspaceHeader'
+        - { name: currency, in: query, required: true, schema: { type: string, pattern: '^[A-Z]{3}$' } }
         - { name: asOf, in: query, required: true, schema: { type: string, format: date-time } }
-        - { name: audienceRole, in: query, required: false, schema: { type: string, enum: [sales, manager, admin, super_admin] } }
-        - { name: assignedTo, in: query, required: false, schema: { type: string, minLength: 1 } }
-        - $ref: '#/components/parameters/limit'
       responses:
         '200': { $ref: '#/components/responses/AdvisorTodayResponse' }
         '401': *apiErrorResponse

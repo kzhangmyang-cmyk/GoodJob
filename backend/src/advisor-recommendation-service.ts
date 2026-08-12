@@ -793,6 +793,23 @@ export class AdvisorRecommendationService {
     });
   }
 
+  async getProjection(
+    context: ActiveWorkspaceContext,
+    recommendationId: string
+  ): Promise<AdvisorRecommendation> {
+    const current = await this.repository.findById(
+      context, recommendationId
+    );
+    if (!current) {
+      throw Object.assign(
+        new Error("advisor_recommendation_not_found"),
+        { code: "advisor_recommendation_not_found" }
+      );
+    }
+    await this.authorizer.assertCanTransition(context, current);
+    return current;
+  }
+
   async complete(
     command: CommandContext,
     recommendationId: string

@@ -3,6 +3,7 @@ import type {
 } from "./advisor-recommendation-repository.js";
 
 export interface AdvisorRecommendationExpirySweeper {
+  start(): void;
   sweep(): Promise<void>;
   close(): Promise<void>;
 }
@@ -12,6 +13,7 @@ implements AdvisorRecommendationExpirySweeper {
   private inFlight: Promise<void> | null = null;
   private closed = false;
   private closePromise: Promise<void> | null = null;
+  private timer: NodeJS.Timeout | null = null;
 
   constructor(private readonly options: {
     repository: AdvisorRecommendationRepository;
@@ -24,6 +26,14 @@ implements AdvisorRecommendationExpirySweeper {
     now(): number;
     onError(error: unknown, recommendationId: string | null): void;
   }) {}
+
+  start(): void {
+    if (this.timer !== null || this.closed) return;
+    this.timer = setInterval(() => {
+      void this.sweep().catch(() => undefined);
+    }, 5_000);
+    this.timer.unref?.();
+  }
 
   async sweep(): Promise<void> {
     if (this.closed) return;
@@ -58,8 +68,12 @@ implements AdvisorRecommendationExpirySweeper {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
+    if (this.timer !== null) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
     if (this.closePromise === null) {
-      this.closed = true;
       this.closePromise = this.inFlight ?? Promise.resolve();
     }
     return this.closePromise;

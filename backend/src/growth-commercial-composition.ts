@@ -37,6 +37,10 @@ import { createGrowthFinanceModule } from "./growth-finance-module.js";
 import { createGrowthRoiModule } from "./growth-roi-module.js";
 import { GROWTH_ROI_ACQUISITION_INTEGRATIONS } from "./growth-roi-module.js";
 import {
+  createGrowthAdvisorModule,
+  createGrowthAdvisorResources
+} from "./growth-advisor-module.js";
+import {
   CurrentFinanceImportRecoveryAuthorizer
 } from "./finance-import-worker.js";
 import { GrowthHttpError } from "./growth-command-context.js";
@@ -319,6 +323,9 @@ export function createGrowthCommercialCompositionForStore(options: {
       ? { mode: "mysql", pool: financePool }
       : { mode: "memory" }
   ));
+  modules.push(createGrowthAdvisorModule({
+    createResources: createGrowthAdvisorResources
+  }));
   return Object.freeze({
     composition: createGrowthCommercialComposition({
       acquisitionWorkspace,

@@ -45,7 +45,7 @@ type OperationId = keyof typeof operations;
 
 export async function assertQuoteRuntimeResponsesConform(): Promise<void> {
   const release = loadGrowthContractRelease();
-  assert.equal(release.manifest.contractVersion, "1.0.2");
+  assert.equal(release.manifest.contractVersion, "1.0.3");
   const document = release.document as Record<string, any>;
   const components = structuredClone(document.components);
   for (const schema of Object.values(components.schemas)) {
@@ -258,5 +258,5 @@ export async function assertQuoteRuntimeResponsesConform(): Promise<void> {
   }
 }
 
-test("real Quote router responses conform to every frozen Growth 1.0.2 operation",
+test("real Quote router responses conform to every frozen Growth 1.0.3 operation",
   assertQuoteRuntimeResponsesConform);

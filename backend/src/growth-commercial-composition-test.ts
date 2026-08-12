@@ -211,7 +211,8 @@ test("production memory composition installs Foundation, Catalog, then Quote", a
       "growth-catalog",
       "growth-quote",
       "growth-finance",
-      "growth-roi"
+      "growth-roi",
+      "growth-advisor"
     ]
   );
   const runtime = await createGrowthCommercialApplication({

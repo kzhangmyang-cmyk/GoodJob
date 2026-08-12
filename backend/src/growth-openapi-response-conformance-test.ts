@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -88,3 +88,38 @@ test(
   "central Growth response suite validates released Finance operations",
   assertFinanceRuntimeResponsesConform
 );
+
+test("advisor today runtime response conforms to the released schema", async () => {
+  const release = loadGrowthContractRelease();
+  assert.equal(release.manifest.contractVersion, "1.0.3");
+  const schema = JSON.parse(await readFile(new URL(
+    "../../contracts/json-schema/advisor-today.v1.schema.json",
+    import.meta.url
+  ), "utf8"));
+  const ajv = new Ajv2020({ strict: false });
+  const schemaRoot = new URL("../../contracts/json-schema/", import.meta.url);
+  for (const filename of await readdir(schemaRoot)) {
+    if (!filename.endsWith(".schema.json")) continue;
+    if (filename === "advisor-today.v1.schema.json") continue;
+    const schema = JSON.parse(await readFile(
+      new URL(filename, schemaRoot), "utf8"
+    ));
+    ajv.addSchema(schema);
+  }
+  const validate = ajv.compile(schema);
+  const body = {
+    workspaceId: "workspace-1",
+    audienceRole: "manager",
+    dataAsOf: "2026-08-09T08:00:00.000Z",
+    priorityCustomers: [],
+    pendingQuoteApprovals: [],
+    expectedRoi: [],
+    actualRoi: [],
+    financialDataGaps: [],
+    recommendations: [],
+    sourceSnapshotHash: `sha256:${"a".repeat(64)}`
+  };
+  assert.equal(validate(body), true, JSON.stringify(validate.errors));
+  const negative = { ...body, audienceRole: "engineer" };
+  assert.equal(validate(negative), false);
+});
