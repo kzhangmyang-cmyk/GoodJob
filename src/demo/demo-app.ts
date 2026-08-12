@@ -17,6 +17,7 @@ import { createDemoStore } from "./demo-store";
 import type { DemoModule, DemoState } from "./demo-types";
 import { showDemoToast } from "./demo-ui";
 import { createPrivateDomainController } from "../private-domain/controller";
+import { startGrowthWhenRequested } from "../growth/entry";
 
 function renderModule(module: DemoModule, state: DemoState, host: HTMLElement, inspector: HTMLElement): void {
   if (module === "dashboard") {
@@ -55,6 +56,7 @@ export function startDemoApp(): void {
 
   const store = createDemoStore();
   const router = createDemoRouter();
+  startGrowthWhenRequested();
   const privateDomainController = createPrivateDomainController({
     main: host,
     inspector

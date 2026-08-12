@@ -1,8 +1,21 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
-import pinnedManifest from "../../contracts/pinned/growth-advisor-quote-roi.manifest.json";
+import { fileURLToPath } from "node:url";
 import { growthContractScenario } from "./growth-contract";
+
+const pinnedManifest = JSON.parse(await readFile(
+  path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    "contracts",
+    "pinned",
+    "growth-advisor-quote-roi.manifest.json"
+  ),
+  "utf8"
+)) as { contractVersion: string; contractHash: string };
 
 test("every named growth scenario carries the pinned bootstrap identity", () => {
   const names = [

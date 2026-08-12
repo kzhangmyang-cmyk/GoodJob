@@ -1,6 +1,25 @@
 import type { Page, Route } from "@playwright/test";
-import manifest from "../../contracts/pinned/growth-advisor-quote-roi.manifest.json";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { components } from "../../src/generated/growth-advisor-quote-roi";
+
+const manifest = JSON.parse(readFileSync(
+  path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "..",
+    "contracts",
+    "pinned",
+    "growth-advisor-quote-roi.manifest.json"
+  ),
+  "utf8"
+)) as {
+  name: string;
+  contractVersion: string;
+  contractHash: string;
+  openapiVersion: string;
+};
 
 type Schema<Name extends keyof components["schemas"]> =
   Omit<components["schemas"][Name], "$defs">;
@@ -75,7 +94,7 @@ const selectionRequiredBootstrap = {
 } satisfies Schema<"GrowthBootstrapResponse">;
 
 const mismatchBootstrap = {
-  ...selectionRequiredBootstrap,
+  ...readyBootstrap,
   contractHash: `sha256:${"f".repeat(64)}`
 } satisfies Schema<"GrowthBootstrapResponse">;
 
@@ -438,6 +457,16 @@ function baseResponses(scenario: GrowthContractScenario) {
         nextCursor: null
       }
     },
+    "GET /api/v1/catalog/pricing-policies": {
+      status: 200,
+      headers: {},
+      body: { items: [], nextCursor: null }
+    },
+    "GET /api/v1/catalog/packages/catalog-1/versions": {
+      status: 200,
+      headers: {},
+      body: { items: [], nextCursor: null }
+    },
     "GET /api/v1/acquisition/cost-entries": {
       status: 200,
       headers: {},
@@ -457,6 +486,42 @@ function baseResponses(scenario: GrowthContractScenario) {
       status: 200,
       headers: {},
       body: { items: [], nextCursor: null }
+    },
+    "GET /api/v1/quotes/cases/case-1": {
+      status: 200,
+      headers: {},
+      body: {
+        id: "case-1",
+        workspaceId: "workspace-e2e",
+        candidateId: "candidate-1",
+        customerId: "customer-1",
+        dealId: "deal-1",
+        assignedTo: "sales-e2e",
+        status: "open",
+        currentDraftVersionId: null,
+        revision: 4,
+        bindingSnapshotId: null,
+        createdAt: "2026-08-09T08:00:00.000Z",
+        updatedAt: "2026-08-09T08:00:00.000Z"
+      }
+    },
+    "GET /api/v1/quotes/cases/case-1/versions": {
+      status: 200,
+      headers: {},
+      body: { items: [{
+        id: "quote-v1",
+        workspaceId: "workspace-e2e",
+        quoteCaseId: "case-1",
+        version: 1,
+        versionKind: "draft",
+        sourceDraftVersionId: null,
+        status: "draft",
+        lifecycleRevision: 1,
+        currency: "CNY",
+        quotedAmountMinor: 1_000_000,
+        createdAt: "2026-08-09T08:00:00.000Z",
+        updatedAt: "2026-08-09T08:00:00.000Z"
+      }], nextCursor: null }
     },
     "POST /api/v1/acquisition/copilot/sessions": {
       status: 201,

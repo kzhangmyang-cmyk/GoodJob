@@ -12,6 +12,7 @@
     "contract:generate": "node scripts/generate-growth-contract-types.mjs",
     "contract:check": "node scripts/check-growth-contract.mjs && node scripts/generate-growth-contract-types.mjs --check",
     "test:growth:fixture": "tsx --test tests/fixtures/growth-contract.self-test.ts",
+    "test:e2e:growth": "playwright test growth-bootstrap.spec.ts",
     "test:types": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
   },
   "dependencies": {

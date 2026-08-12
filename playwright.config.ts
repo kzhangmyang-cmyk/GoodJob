@@ -5,7 +5,8 @@ export default defineConfig({
   testMatch: [
     "demo-auth.spec.ts",
     "acquisition-performance.spec.ts",
-    "acquisition-identity-resolution.spec.ts"
+    "acquisition-identity-resolution.spec.ts",
+    "growth-bootstrap.spec.ts"
   ],
   timeout: 20_000,
   expect: { timeout: 5_000 },
