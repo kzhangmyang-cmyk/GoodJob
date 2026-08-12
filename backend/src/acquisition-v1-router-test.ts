@@ -95,7 +95,15 @@ async function createFixture(options: {
       }
     },
     growthAcquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
-      resolve: async () => null
+      async resolve(input) {
+        return input.teamId === TEAM_A && input.teamId !== "all"
+          ? {
+              workspaceId: input.teamId,
+              kind: "team" as const,
+              bindingRevision: "binding-1"
+            }
+          : null;
+      }
     }),
     growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
       new InMemoryGrowthTemporalTransactionRunner()

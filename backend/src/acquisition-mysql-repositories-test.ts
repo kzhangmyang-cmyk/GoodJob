@@ -1383,6 +1383,48 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
   ]);
 }
 
+async function testQualificationBundleAppendsAuthorityWithBarrierAndGuard() {
+  const pool = new FakePool();
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue({ affectedRows: 1 });
+  const repository = new MysqlAcquisitionDomainRepository(asPool(pool));
+  const scope = { ownerId: "owner-a", teamId: "team-a" };
+  await assert.rejects(
+    repository.commitQualificationBundle({
+      workspace: {
+        workspaceId: "all",
+        workspaceBindingRevision: "binding-1"
+      },
+      candidate: candidate(),
+      qualification: qualification(),
+      financialValue: financial(),
+      auditEvents: [],
+      authority: {
+        workspaceId: "all",
+        workspaceBindingRevision: "binding-1",
+        candidateId: "candidate-1",
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        qualificationDecisionId: "qualification-1",
+        qualificationDecisionVersion: "decision-v1",
+        qualificationSnapshotHash: `sha256:${"a".repeat(64)}`,
+        financialValueDecisionId: "financial-value-1",
+        financialValueDecisionVersion: "financial-value-v1",
+        financialValueInputSnapshotHash: `sha256:${"b".repeat(64)}`,
+        grade: "A",
+        score: 80,
+        evidence: []
+      }
+    }),
+    /growth_workspace_required/u
+  );
+  assert.equal(pool.connection.beginCount, 0);
+}
+
 async function run() {
   await testSchemaIsCompleteAndHasNoSecretColumns();
   await testEnsureSchemaExecutesEveryStatement();
@@ -1408,6 +1450,7 @@ async function run() {
   await testPlanRunTransactionLocksAndRollsBack();
   await testConversionIntentsAreDurableScopedAndRecoverable();
   await testPresentationReadsAreTenantBoundedPagedAndBatched();
+  await testQualificationBundleAppendsAuthorityWithBarrierAndGuard();
   console.log("acquisition mysql repositories tests passed");
 }
 

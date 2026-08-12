@@ -109,10 +109,21 @@ const MASTER_SECRET =
 const testGrowthApplicationDependencies = Object.freeze({
   growthToolPorts: createGrowthCommercialToolPorts(),
   acquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
-    resolve: async () => null
+    async resolve(scope) {
+      return scope.ownerId === OWNER && scope.teamId === TEAM
+        ? {
+            workspaceId: TEAM,
+            kind: "team" as const,
+            bindingRevision: "binding-1"
+          }
+        : null;
+    }
   }),
   growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
     new InMemoryGrowthTemporalTransactionRunner()
+  ),
+  temporalTransactions: new InMemoryGrowthTemporalTransactionRunner(
+    "2026-08-09T08:00:00.000Z"
   )
 });
 

@@ -7,6 +7,7 @@ import type {
 import {
   type GrowthTemporalBarrier
 } from "./growth-temporal-barrier.js";
+import type { GrowthTemporalTransactionRunner } from "./growth-temporal-barrier.js";
 import {
   createGrowthAcquisitionWorkspaceResolver,
   createGrowthWorkspaceMiddleware,
@@ -79,6 +80,7 @@ export function createGrowthMysqlPool(
 export interface GrowthAcquisitionIntegrations {
   acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
   temporalBarrier: GrowthTemporalBarrier;
+  temporalTransactions: GrowthTemporalTransactionRunner;
   commissionCatalogProjection: CommissionCatalogProjectionPort;
   probabilityAssessments: ProbabilityAssessmentWriter;
   quoteProjectedDocumentAuthority: QuoteProjectedDocumentAuthorityValidator;
@@ -129,9 +131,14 @@ export function createGrowthCommercialComposition(
       const temporalBarrier = services?.temporalBarrier
         ?? foundation.temporalBarrier;
       if (!temporalBarrier) throw new Error("MISSING_GROWTH_FOUNDATION_SERVICES");
+      const temporalTransactions = services?.temporalTransactions;
+      if (!temporalTransactions) {
+        throw new Error("MISSING_GROWTH_FOUNDATION_SERVICES");
+      }
       return Object.freeze({
         acquisitionWorkspace,
         temporalBarrier,
+        temporalTransactions,
         commissionCatalogProjection: catalog.commissionCatalogProjection,
         probabilityAssessments: quoteAcquisition.probabilityAssessments,
         quoteProjectedDocumentAuthority:

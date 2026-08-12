@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import express from "express";
-import type { GrowthTemporalBarrier } from "./growth-temporal-barrier.js";
+import type {
+  GrowthTemporalBarrier,
+  GrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
 import type {
   GrowthAcquisitionWorkspaceResolver
 } from "./growth-workspace-context.js";
@@ -23,6 +26,9 @@ import {
 import {
   GROWTH_ROI_ACQUISITION_INTEGRATIONS
 } from "./growth-roi-module.js";
+import {
+  GROWTH_FOUNDATION_SERVICES
+} from "./growth-foundation-module.js";
 
 function roiIntegration() {
   return Object.freeze({
@@ -45,7 +51,16 @@ function foundationPorts() {
       throw new Error("not used");
     }
   }) as GrowthTemporalBarrier;
-  return { acquisitionWorkspace, temporalBarrier };
+  const temporalTransactions = Object.freeze({
+    run: async () => {
+      throw new Error("not used");
+    }
+  }) as GrowthTemporalTransactionRunner;
+  return {
+    acquisitionWorkspace,
+    temporalBarrier,
+    temporalTransactions
+  };
 }
 
 function catalogProjection(): CommissionCatalogProjectionPort {
@@ -56,9 +71,19 @@ function catalogProjection(): CommissionCatalogProjectionPort {
 }
 
 function registryWithCatalog(
-  commissionCatalogProjection: CommissionCatalogProjectionPort
+  commissionCatalogProjection: CommissionCatalogProjectionPort,
+  foundation: ReturnType<typeof foundationPorts> = foundationPorts()
 ) {
   const registry = createGrowthPrivateServiceRegistry();
+  registry.provide(GROWTH_FOUNDATION_SERVICES, Object.freeze({
+    httpIdempotency: Object.freeze({}) as never,
+    workspaceSettings: Object.freeze({}) as never,
+    workspaceContext: Object.freeze({}) as never,
+    acquisitionWorkspace: foundation.acquisitionWorkspace,
+    temporalTransactions: foundation.temporalTransactions,
+    temporalBarrier: foundation.temporalBarrier,
+    commandContextFactory: Object.freeze({}) as never
+  }) as never);
   registry.provide(GROWTH_CATALOG_SERVICES, Object.freeze({
     catalogItems: {} as GrowthCatalogServices["catalogItems"],
     commissionCatalogProjection
@@ -79,7 +104,7 @@ test("composition projects exact reference-identical Quote acquisition ports", (
   const foundation = foundationPorts();
   const commissionCatalogProjection = catalogProjection();
   const composition = createGrowthCommercialComposition(foundation);
-  const registry = registryWithCatalog(commissionCatalogProjection);
+  const registry = registryWithCatalog(commissionCatalogProjection, foundation);
   const privateIntegration = registry.require(
     GROWTH_QUOTE_ACQUISITION_INTEGRATIONS
   );
@@ -87,6 +112,10 @@ test("composition projects exact reference-identical Quote acquisition ports", (
   assert.deepEqual(composition.modules, []);
   assert.equal(integrations.acquisitionWorkspace, foundation.acquisitionWorkspace);
   assert.equal(integrations.temporalBarrier, foundation.temporalBarrier);
+  assert.equal(
+    integrations.temporalTransactions,
+    foundation.temporalTransactions
+  );
   assert.equal(
     integrations.commissionCatalogProjection,
     commissionCatalogProjection
@@ -147,9 +176,9 @@ test("composition factories preserve isolated Foundation identities", () => {
   const firstCatalog = catalogProjection();
   const secondCatalog = catalogProjection();
   const firstProjection = createGrowthCommercialComposition(first)
-    .projectIntegrations(registryWithCatalog(firstCatalog));
+    .projectIntegrations(registryWithCatalog(firstCatalog, first));
   const secondProjection = createGrowthCommercialComposition(second)
-    .projectIntegrations(registryWithCatalog(secondCatalog));
+    .projectIntegrations(registryWithCatalog(secondCatalog, second));
   assert.notEqual(firstProjection.acquisitionWorkspace, secondProjection.acquisitionWorkspace);
   assert.notEqual(firstProjection.temporalBarrier, secondProjection.temporalBarrier);
   assert.notEqual(

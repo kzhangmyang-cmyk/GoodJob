@@ -209,6 +209,46 @@ test("controlled public-page evidence accepts an existing same-tenant source", a
   );
 });
 
+test("qualification commits one advisor authority event frozen to the concrete workspace", async () => {
+  const { service, repository } = createHarness();
+  const { candidate } = await createOrganizationCandidate(service);
+  const qualified = await service.qualifyCandidate(
+    ownerScope,
+    candidate.id,
+    strongQualification(),
+    healthyFinancialValue(),
+    "qualify:advisor-authority"
+  );
+  const authority = (repository as unknown as {
+    advisorAuthority: {
+      events: Map<string, Array<{
+        candidateId: string;
+        workspaceId: string;
+        workspaceBindingRevision: string;
+        qualificationDecisionId: string;
+        qualificationDecisionVersion: string;
+        ownerId: string;
+        teamId: string;
+        evidence: readonly { evidenceId: string; contentHash: string; fetchedAt: string }[];
+      }>>;
+    };
+  }).advisorAuthority;
+  const rows = [...authority.events.values()].flat();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.candidateId, candidate.id);
+  assert.equal(rows[0]?.workspaceId, ownerScope.teamId);
+  assert.equal(rows[0]?.workspaceBindingRevision, "binding-1");
+  assert.equal(rows[0]?.qualificationDecisionId, qualified.qualification.id);
+  assert.equal(
+    rows[0]?.qualificationDecisionVersion,
+    qualified.qualification.decisionVersion
+  );
+  assert.equal(rows[0]?.ownerId, ownerScope.ownerId);
+  assert.equal(rows[0]?.teamId, ownerScope.teamId);
+  assert.equal(rows[0]?.evidence[0]?.evidenceId.length > 0, true);
+  assert.equal(Object.isFrozen(rows[0]!), true);
+});
+
 test("controlled public-page evidence rejects a missing source atomically", async () => {
   const { repository, service } = createHarness();
 

@@ -252,8 +252,17 @@ import {
 } from "./growth-commercial-application.js";
 import {
   assertGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner,
+  type GrowthTemporalTransactionRunner,
   type GrowthTemporalBarrier
 } from "./growth-temporal-barrier.js";
+import {
+  InMemoryAdvisorCandidateAuthorityRepository
+} from "./growth-advisor-candidate-authority-projection.js";
+import {
+  MysqlAdvisorCandidateAuthorityRepository,
+  ensureAdvisorCandidateAuthorityMysqlSchema
+} from "./growth-advisor-candidate-authority-mysql-repository.js";
 import {
   assertGrowthAcquisitionWorkspaceResolver,
   type GrowthAcquisitionWorkspaceResolver
@@ -340,6 +349,10 @@ export interface CreateAcquisitionApplicationOptions {
   growthToolPorts: GrowthCommercialToolPorts;
   acquisitionWorkspace: GrowthAcquisitionWorkspaceResolver;
   growthTemporalBarrier: GrowthTemporalBarrier;
+  temporalTransactions?: GrowthTemporalTransactionRunner;
+  advisorCandidateAuthority?:
+    | InMemoryAdvisorCandidateAuthorityRepository
+    | MysqlAdvisorCandidateAuthorityRepository;
   probabilityAssessments?: ProbabilityAssessmentWriter;
   quoteProjectedDocumentAuthority?: QuoteProjectedDocumentAuthorityValidator;
   commercialOutcomeAuthority?: AcquisitionCommercialOutcomeAuthority;
@@ -1021,6 +1034,8 @@ export async function createAcquisitionApplication(
   const growthTemporalBarrier = assertGrowthTemporalBarrier(
     options.growthTemporalBarrier
   );
+  const temporalTransactions = options.temporalTransactions
+    ?? new InMemoryGrowthTemporalTransactionRunner();
   assertApplicationStore(options.store);
   const masterSecret = requireMasterSecret(options.masterSecret);
   const providerCredentialSecret = derivedSecret(
@@ -1057,6 +1072,10 @@ export async function createAcquisitionApplication(
     let actionExecutions: AcquisitionActionExecutionPort;
     let toolResults;
     let toolAudit;
+    let advisorCandidateAuthority:
+      | InMemoryAdvisorCandidateAuthorityRepository
+      | MysqlAdvisorCandidateAuthorityRepository
+      | null = null;
 
     if (options.store.mode === "mysql") {
       const databaseUrl = configuredDatabaseUrl(options.databaseUrl);
@@ -1071,8 +1090,19 @@ export async function createAcquisitionApplication(
       await ensureAcquisitionDiscoveryMysqlSchema(pool);
       await ensureAcquisitionCandidateIntelligenceMysqlSchema(pool);
       await ensureAcquisitionDouyinIdentityResolutionMysqlSchema(pool);
+      await ensureAdvisorCandidateAuthorityMysqlSchema(pool);
+      const mysqlAuthority = options.advisorCandidateAuthority
+        instanceof MysqlAdvisorCandidateAuthorityRepository
+        ? options.advisorCandidateAuthority
+        : new MysqlAdvisorCandidateAuthorityRepository(
+            pool, growthTemporalBarrier
+          );
+      advisorCandidateAuthority = mysqlAuthority;
       repositories = {
-        ...createMysqlAcquisitionRepositories(pool),
+        ...createMysqlAcquisitionRepositories(pool, {
+          temporalBarrier: growthTemporalBarrier,
+          advisorAuthority: mysqlAuthority
+        }),
         discovery:
           new MysqlAcquisitionDiscoveryOperationRepository(pool),
         candidateIntelligence:
@@ -1102,8 +1132,20 @@ export async function createAcquisitionApplication(
       toolAudit = new MysqlAcquisitionToolAuditStore(pool);
     } else {
       const planRun = new InMemoryAcquisitionPlanRunRepository();
+      const memoryAuthority = options.advisorCandidateAuthority
+        instanceof InMemoryAdvisorCandidateAuthorityRepository
+        ? options.advisorCandidateAuthority
+        : new InMemoryAdvisorCandidateAuthorityRepository({
+            temporalTransactions,
+            temporalBarrier: growthTemporalBarrier
+          });
+      advisorCandidateAuthority = memoryAuthority;
       repositories = {
-        domain: new InMemoryAcquisitionDomainRepository(planRun),
+        domain: new InMemoryAcquisitionDomainRepository({
+          temporalTransactions,
+          temporalBarrier: growthTemporalBarrier,
+          advisorAuthority: memoryAuthority
+        }, planRun),
         copilot: new InMemoryAcquisitionCopilotRepository(),
         planRun,
         discovery:

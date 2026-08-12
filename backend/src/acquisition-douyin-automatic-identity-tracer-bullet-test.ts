@@ -622,7 +622,15 @@ test("a real Baidu Douyin video result closes identity and AI intelligence witho
     masterSecret: MASTER_SECRET,
     growthToolPorts: createGrowthCommercialToolPorts(),
     acquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
-      resolve: async () => null
+      async resolve(input) {
+        return input.ownerId === OWNER_ID && input.teamId === TEAM_ID
+          ? {
+              workspaceId: input.teamId,
+              kind: "team" as const,
+              bindingRevision: "binding-1"
+            }
+          : null;
+      }
     }),
     growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
       new InMemoryGrowthTemporalTransactionRunner()

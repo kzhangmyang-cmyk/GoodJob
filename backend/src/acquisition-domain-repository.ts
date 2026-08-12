@@ -19,6 +19,20 @@ import type {
 import type {
   AcquisitionPlanRunRepository
 } from "./acquisition-plan-run-repository.js";
+import type {
+  AdvisorCandidateAuthorityEvent,
+  AdvisorCandidateAuthorityProjectionInput
+} from "./growth-advisor-candidate-authority-projection.js";
+import {
+  InMemoryAdvisorCandidateAuthorityRepository
+} from "./growth-advisor-candidate-authority-projection.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner,
+  assertGrowthTemporalBarrier,
+  type GrowthTemporalBarrier,
+  type GrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
 
 export interface AcquisitionDataScope {
   ownerId: string;
@@ -64,6 +78,38 @@ export interface AcquisitionPresentationCandidateSummary {
   }>;
 }
 
+export interface QualificationBundleWorkspace {
+  workspaceId: string;
+  workspaceBindingRevision: string;
+}
+
+export interface QualificationBundleEvidenceReference {
+  evidenceId: string;
+  contentHash: string;
+  fetchedAt: string;
+}
+
+/** One application-owned atomic qualification commit. The repository takes
+ *  the workspace temporal barrier as its first lock, guards the candidate,
+ *  verifies the frozen versions under the guard, then writes Candidate,
+ *  QualificationDecision, FinancialValueDecision, audit events and the
+ *  Advisor candidate authority event all-or-nothing. */
+export interface QualificationBundleCommit {
+  workspace: QualificationBundleWorkspace;
+  candidate: AcquisitionCandidate;
+  qualification: QualificationDecision;
+  financialValue: FinancialValueDecision;
+  auditEvents: readonly AcquisitionAuditEvent[];
+  authority: AdvisorCandidateAuthorityProjectionInput;
+}
+
+export interface QualificationBundleResult {
+  candidate: AcquisitionCandidate;
+  qualification: QualificationDecision;
+  financialValue: FinancialValueDecision;
+  authorityEvent: AdvisorCandidateAuthorityEvent;
+}
+
 export interface AcquisitionDomainRepository {
   transaction<T>(work: () => Promise<T>): Promise<T>;
   findEvidence(
@@ -89,6 +135,9 @@ export interface AcquisitionDomainRepository {
     aliases: AcquisitionCandidateIdentityAlias[]
   ): Promise<void>;
   appendQualificationDecision(decision: QualificationDecision): Promise<void>;
+  commitQualificationBundle(
+    input: QualificationBundleCommit
+  ): Promise<QualificationBundleResult>;
   findQualificationDecision(
     scope: AcquisitionDataScope,
     candidateId: string,
@@ -230,13 +279,43 @@ implements AcquisitionDomainRepository {
   private readonly transactionContext =
     new AsyncLocalStorage<{ active: boolean }>();
   private transactionTail: Promise<void> = Promise.resolve();
+  private readonly temporalTransactions: GrowthTemporalTransactionRunner;
+  private readonly temporalBarrier: GrowthTemporalBarrier;
+  readonly advisorAuthority: InMemoryAdvisorCandidateAuthorityRepository;
 
   constructor(
-    private presentationRuns?: Pick<
+    optionsOrPresentationRuns:
+      | {
+          temporalTransactions?: GrowthTemporalTransactionRunner;
+          temporalBarrier?: GrowthTemporalBarrier;
+          advisorAuthority?: InMemoryAdvisorCandidateAuthorityRepository;
+        }
+      | Pick<AcquisitionPlanRunRepository, "listRunCandidateLinks"> = {},
+    presentationRuns?: Pick<
       AcquisitionPlanRunRepository,
       "listRunCandidateLinks"
     >
-  ) {}
+  ) {
+    const options = "listRunCandidateLinks" in optionsOrPresentationRuns
+      ? { presentationRuns: optionsOrPresentationRuns }
+      : { ...optionsOrPresentationRuns, presentationRuns };
+    this.presentationRuns = options.presentationRuns;
+    this.temporalTransactions = options.temporalTransactions
+      ?? new InMemoryGrowthTemporalTransactionRunner();
+    this.temporalBarrier = options.temporalBarrier
+      ?? new DefaultGrowthTemporalBarrier(this.temporalTransactions);
+    this.advisorAuthority = options.advisorAuthority
+      ?? new InMemoryAdvisorCandidateAuthorityRepository({
+          now: "2026-08-09T00:00:00.000Z",
+          temporalTransactions: this.temporalTransactions,
+          temporalBarrier: this.temporalBarrier
+        });
+  }
+
+  private presentationRuns?: Pick<
+    AcquisitionPlanRunRepository,
+    "listRunCandidateLinks"
+  >;
 
   bindPresentationRunRepository(
     presentationRuns: Pick<
@@ -290,7 +369,12 @@ implements AcquisitionDomainRepository {
       auditEvents: copy(this.auditEvents),
       idempotency: new Map(
         [...this.idempotency.entries()].map(([key, value]) => [key, copy(value)])
-      )
+      ),
+      authorityEvents: new Map(
+        [...this.advisorAuthority.events.entries()]
+          .map(([key, value]) => [key, copy(value)])
+      ),
+      authorityGuards: new Set(this.advisorAuthority.guards)
     };
     const context = { active: true };
     try {
@@ -349,6 +433,14 @@ implements AcquisitionDomainRepository {
       snapshot.idempotency.forEach(
         (value, key) => this.idempotency.set(key, value)
       );
+      this.advisorAuthority.events.clear();
+      snapshot.authorityEvents.forEach(
+        (value, key) => this.advisorAuthority.events.set(key, value)
+      );
+      this.advisorAuthority.guards.clear();
+      for (const guard of snapshot.authorityGuards) {
+        this.advisorAuthority.guards.add(guard);
+      }
       throw error;
     } finally {
       context.active = false;
@@ -460,6 +552,79 @@ implements AcquisitionDomainRepository {
 
   async appendQualificationDecision(decision: QualificationDecision) {
     this.qualificationDecisions.push(copy(decision));
+  }
+
+  async commitQualificationBundle(
+    input: QualificationBundleCommit
+  ): Promise<QualificationBundleResult> {
+    const workspaceId = input.workspace.workspaceId.trim();
+    if (!workspaceId || workspaceId === "all"
+      || input.candidate.teamId === "all"
+      || input.qualification.teamId === "all"
+      || input.financialValue.teamId === "all") {
+      throw new Error("growth_workspace_required");
+    }
+    const scope: AcquisitionDataScope = {
+      ownerId: input.candidate.ownerId,
+      teamId: input.candidate.teamId
+    };
+    const candidate = this.candidates.get(input.candidate.id);
+    if (!candidate || !belongs(candidate, scope)
+      || !belongs(input.qualification, scope)
+      || !belongs(input.financialValue, scope)
+      || input.qualification.candidateId !== input.candidate.id
+      || input.financialValue.candidateId !== input.candidate.id
+      || input.financialValue.qualificationDecisionId
+        !== input.qualification.id) {
+      throw new Error("growth_workspace_mismatch");
+    }
+    return this.temporalTransactions.run(async (tx) => {
+      const stamp = await this.temporalBarrier.allocateAppend(
+        tx, workspaceId
+      );
+      const previous = this.qualificationDecisions.filter((item) =>
+        item.candidateId === input.candidate.id
+        && belongs(item, scope));
+      const expectedSequence = previous.length + 1;
+      if (input.qualification.decisionVersion
+          !== `decision-v${expectedSequence}`
+        || input.financialValue.version
+          !== `financial-value-v${expectedSequence}`) {
+        throw new Error("stale_decision");
+      }
+      for (const reference of input.qualification.evidence) {
+        const evidence = this.evidence.get(reference.evidenceId);
+        if (!evidence || !belongs(evidence, scope)) {
+          throw new Error("growth_workspace_mismatch");
+        }
+      }
+      for (const reference of input.authority.evidence) {
+        const evidence = this.evidence.get(reference.evidenceId);
+        if (!evidence || !belongs(evidence, scope)
+          || evidence.contentHash !== reference.contentHash
+          || evidence.fetchedAt !== reference.fetchedAt) {
+          throw new Error("growth_workspace_mismatch");
+        }
+      }
+      this.qualificationDecisions.push(copy(input.qualification));
+      this.financialValues.push(copy(input.financialValue));
+      this.candidates.set(input.candidate.id, copy(input.candidate));
+      for (const event of input.auditEvents) {
+        if (!belongs(event, scope)) {
+          throw new Error("growth_workspace_mismatch");
+        }
+        this.auditEvents.push(copy(event));
+      }
+      const authorityEvent = this.advisorAuthority.appendFromBundle(
+        input.authority, stamp
+      );
+      return {
+        candidate: copy(input.candidate),
+        qualification: copy(input.qualification),
+        financialValue: copy(input.financialValue),
+        authorityEvent
+      };
+    });
   }
 
   async findQualificationDecision(

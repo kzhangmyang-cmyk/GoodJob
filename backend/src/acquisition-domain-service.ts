@@ -871,6 +871,11 @@ export class AcquisitionDomainService {
     idempotencyKey: string
   ) {
     this.validateScope(scope);
+    const workspace = await this.resolveGrowthAcquisitionWorkspace(scope);
+    if (!workspace || workspace.workspaceId === "all"
+      || scope.teamId === "all") {
+      throw new Error("growth_workspace_required");
+    }
     const request = {
       candidateId: requiredText(candidateId, "候选 ID", 100),
       qualification: rawQualification,
@@ -909,63 +914,92 @@ export class AcquisitionDomainService {
           rawFinancial,
           previous.length + 1
         );
-        await this.repository.appendQualificationDecision(decision);
-        await this.repository.appendFinancialValue(financial);
-
         const before = candidate.status;
-        candidate = this.updateCandidate(candidate, {
+        const qualified = this.updateCandidate(candidate, {
           status: "qualified",
           latestDecisionId: decision.id,
           latestDecisionVersion: decision.decisionVersion,
           approvedDecisionVersion: null,
           hardGateFailures: decision.hardGateFailures
         });
-        await this.repository.saveCandidate(candidate);
-        await this.audit(scope, {
-          candidateId: candidate.id,
-          eventType: "qualification_decision_appended",
-          fromStatus: before,
-          toStatus: "qualified",
-          resourceId: decision.id,
-          idempotencyKey,
-          payload: decision
-        });
-
-        candidate = this.updateCandidate(candidate, {
+        const pendingReview = this.updateCandidate(qualified, {
           status: "pending_review"
         });
-        await this.repository.saveCandidate(candidate);
-        await this.audit(scope, {
-          candidateId: candidate.id,
-          eventType: "candidate_sent_to_human_review",
-          fromStatus: "qualified",
-          toStatus: "pending_review",
-          resourceId: decision.id,
-          idempotencyKey,
-          payload: {
-            decisionVersion: decision.decisionVersion,
-            financialValueId: financial.id
+        const auditEvents = [
+          this.buildAuditEvent(scope, {
+            candidateId: candidate.id,
+            eventType: "qualification_decision_appended",
+            fromStatus: before,
+            toStatus: "qualified",
+            resourceId: decision.id,
+            idempotencyKey,
+            payload: decision
+          }),
+          this.buildAuditEvent(scope, {
+            candidateId: candidate.id,
+            eventType: "candidate_sent_to_human_review",
+            fromStatus: "qualified",
+            toStatus: "pending_review",
+            resourceId: decision.id,
+            idempotencyKey,
+            payload: {
+              decisionVersion: decision.decisionVersion,
+              financialValueId: financial.id
+            }
+          })
+        ];
+        const bundle = await this.repository.commitQualificationBundle({
+          workspace: {
+            workspaceId: workspace.workspaceId,
+            workspaceBindingRevision: workspace.bindingRevision
+          },
+          candidate: pendingReview,
+          qualification: decision,
+          financialValue: financial,
+          auditEvents,
+          authority: {
+            workspaceId: workspace.workspaceId,
+            workspaceBindingRevision: workspace.bindingRevision,
+            candidateId: candidate.id,
+            ownerId: scope.ownerId,
+            teamId: scope.teamId,
+            qualificationDecisionId: decision.id,
+            qualificationDecisionVersion: decision.decisionVersion,
+            qualificationSnapshotHash: decision.snapshotHash,
+            financialValueDecisionId: financial.id,
+            financialValueDecisionVersion: financial.version,
+            financialValueInputSnapshotHash: financial.inputSnapshotHash,
+            grade: decision.grade,
+            score: decision.score,
+            evidence: Object.freeze(evidence.map((item) => Object.freeze({
+              evidenceId: item.id,
+              contentHash: item.contentHash,
+              fetchedAt: item.fetchedAt
+            })))
           }
         });
         return {
-          candidate,
-          qualification: decision,
-          financialValue: financial,
+          candidate: bundle.candidate,
+          qualification: bundle.qualification,
+          financialValue: bundle.financialValue,
           probabilityAssessmentSource: {
             closeProbabilityBps: rawFinancial.closeProbabilityBps,
-            qualificationDecisionId: decision.id,
-            qualificationDecisionVersion: decision.decisionVersion,
+            qualificationDecisionId: bundle.qualification.id,
+            qualificationDecisionVersion:
+              bundle.qualification.decisionVersion,
             qualificationInputHash,
-            evidenceRefs: decision.evidence.map((item) => item.evidenceId),
-            ruleVersion: decision.ruleVersion,
-            modelSnapshotRef: decision.decisionEngine === "model"
+            evidenceRefs: bundle.qualification.evidence.map(
+              (item) => item.evidenceId
+            ),
+            ruleVersion: bundle.qualification.ruleVersion,
+            modelSnapshotRef: bundle.qualification.decisionEngine === "model"
               ? hash({
-                  modelProvider: decision.modelProvider,
-                  model: decision.model,
-                  promptVersion: decision.promptVersion
+                  modelProvider: bundle.qualification.modelProvider,
+                  model: bundle.qualification.model,
+                  promptVersion: bundle.qualification.promptVersion
                 })
               : null,
-            assessedAt: decision.createdAt
+            assessedAt: bundle.qualification.createdAt
           }
         };
       }
@@ -2658,6 +2692,23 @@ export class AcquisitionDomainService {
       payload: unknown;
     }
   ) {
+    const event = this.buildAuditEvent(scope, input);
+    await this.repository.appendAuditEvent(event);
+    return event;
+  }
+
+  private buildAuditEvent(
+    scope: AcquisitionActorScope,
+    input: {
+      candidateId: string | null;
+      eventType: string;
+      fromStatus: CandidateStatus | null;
+      toStatus: CandidateStatus | null;
+      resourceId: string;
+      idempotencyKey: string;
+      payload: unknown;
+    }
+  ): AcquisitionAuditEvent {
     const event: AcquisitionAuditEvent = {
       id: this.idFactory("audit"),
       ownerId: scope.ownerId,
@@ -2672,7 +2723,6 @@ export class AcquisitionDomainService {
       payloadHash: hash(input.payload),
       createdAt: validIso(this.clock(), "审计时间")
     };
-    await this.repository.appendAuditEvent(event);
     return event;
   }
 }

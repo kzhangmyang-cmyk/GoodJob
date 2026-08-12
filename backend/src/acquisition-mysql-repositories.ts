@@ -55,6 +55,22 @@ import type {
 import {
   intentNeedsRecovery
 } from "./acquisition-plan-run-repository.js";
+import type {
+  QualificationBundleCommit,
+  QualificationBundleResult
+} from "./acquisition-domain-repository.js";
+import {
+  MysqlGrowthTemporalBarrier,
+  MysqlGrowthTemporalTransaction,
+  growthMysqlDate
+} from "./growth-temporal-barrier-mysql-repository.js";
+import {
+  assertGrowthTemporalBarrier,
+  type GrowthTemporalBarrier
+} from "./growth-temporal-barrier.js";
+import type {
+  MysqlAdvisorCandidateAuthorityRepository
+} from "./growth-advisor-candidate-authority-mysql-repository.js";
 
 type QuerySource = Pick<mysql.Pool | mysql.PoolConnection, "query">;
 type Scope = Pick<AcquisitionCopilotScope, "ownerId" | "teamId">;
@@ -759,8 +775,28 @@ implements AcquisitionDomainRepository {
       source: mysql.PoolConnection;
       candidateIdentityLocks: string[];
     }>();
+  private readonly temporalBarrier: GrowthTemporalBarrier;
 
-  constructor(private readonly pool: mysql.Pool) {}
+  constructor(
+    private readonly pool: mysql.Pool,
+    options: {
+      temporalBarrier?: GrowthTemporalBarrier;
+      advisorAuthority?: Pick<
+        MysqlAdvisorCandidateAuthorityRepository,
+        "insertWithStamp"
+      >;
+    } = {}
+  ) {
+    this.temporalBarrier = options.temporalBarrier
+      ? assertGrowthTemporalBarrier(options.temporalBarrier)
+      : new MysqlGrowthTemporalBarrier(pool);
+    this.advisorAuthority = options.advisorAuthority ?? null;
+  }
+
+  private readonly advisorAuthority: Pick<
+    MysqlAdvisorCandidateAuthorityRepository,
+    "insertWithStamp"
+  > | null;
 
   private source() {
     return this.transactionContext.getStore()?.source ?? this.pool;
@@ -1107,6 +1143,139 @@ implements AcquisitionDomainRepository {
       ["candidate_id"],
       [record.candidateId]
     );
+  }
+
+  async commitQualificationBundle(
+    input: QualificationBundleCommit
+  ): Promise<QualificationBundleResult> {
+    const workspaceId = input.workspace.workspaceId.trim();
+    if (!workspaceId || workspaceId === "all"
+      || input.candidate.teamId === "all"
+      || input.qualification.teamId === "all"
+      || input.financialValue.teamId === "all") {
+      throw new Error("growth_workspace_required");
+    }
+    const scope = {
+      ownerId: input.candidate.ownerId,
+      teamId: input.candidate.teamId
+    };
+    return this.transaction(async () => {
+      const context = this.transactionContext.getStore();
+      if (!context) throw new Error("GROWTH_BUNDLE_REQUIRES_TRANSACTION");
+      const temporal = new MysqlGrowthTemporalTransaction(context.source);
+      const stamp = await this.temporalBarrier.allocateAppend(
+        temporal, workspaceId
+      );
+      const lockName = `acq-qualify:${hash([
+        workspaceId,
+        input.candidate.id
+      ].join("\u0000")).slice(0, 50)}`;
+      if (!context.candidateIdentityLocks.includes(lockName)) {
+        const lockRows = await rows(
+          context.source,
+          "SELECT GET_LOCK(?, 30) AS lock_acquired",
+          [lockName]
+        );
+        if (Number(lockRows[0]?.lock_acquired) !== 1) {
+          throw new Error("ACQUISITION_QUALIFICATION_LOCK_TIMEOUT");
+        }
+        context.candidateIdentityLocks.push(lockName);
+      }
+      const candidateRows = await rows(
+        context.source,
+        `SELECT * FROM acquisition_candidates
+         WHERE id = ? AND owner_id = ? AND team_id = ?
+         LIMIT 1`,
+        [input.candidate.id, scope.ownerId, scope.teamId]
+      );
+      if (!candidateRows[0]) throw new Error("growth_workspace_mismatch");
+      const previous = await rows(
+        context.source,
+        `SELECT id FROM acquisition_qualification_decisions
+         WHERE candidate_id = ? AND owner_id = ? AND team_id = ?
+         ORDER BY created_at, id`,
+        [input.candidate.id, scope.ownerId, scope.teamId]
+      );
+      const expectedSequence = previous.length + 1;
+      if (input.qualification.decisionVersion
+          !== `decision-v${expectedSequence}`
+        || input.financialValue.version
+          !== `financial-value-v${expectedSequence}`) {
+        throw new Error("stale_decision");
+      }
+      for (const reference of input.qualification.evidence) {
+        const evidence = await rows(
+          context.source,
+          `SELECT id FROM acquisition_discovery_evidence
+           WHERE id = ? AND owner_id = ? AND team_id = ?
+           LIMIT 1`,
+          [reference.evidenceId, scope.ownerId, scope.teamId]
+        );
+        if (!evidence[0]) throw new Error("growth_workspace_mismatch");
+      }
+      for (const reference of input.authority.evidence) {
+        const evidence = await rows(
+          context.source,
+          `SELECT * FROM acquisition_discovery_evidence
+           WHERE id = ? AND owner_id = ? AND team_id = ?
+           LIMIT 1`,
+          [reference.evidenceId, scope.ownerId, scope.teamId]
+        );
+        const row = evidence[0];
+        const payload = row
+          ? parseJson(row.payload_json, "evidence") as DiscoveryEvidence
+          : null;
+        if (!payload
+          || payload.contentHash !== reference.contentHash
+          || payload.fetchedAt !== reference.fetchedAt) {
+          throw new Error("growth_workspace_mismatch");
+        }
+      }
+      await this.saveCandidate(input.candidate);
+      await insertOwned(
+        context.source,
+        "acquisition_qualification_decisions",
+        input.qualification,
+        input.qualification.createdAt,
+        ["candidate_id"],
+        [input.candidate.id]
+      );
+      await insertOwned(
+        context.source,
+        "acquisition_financial_values",
+        input.financialValue,
+        input.financialValue.createdAt,
+        ["candidate_id"],
+        [input.candidate.id]
+      );
+      for (const event of input.auditEvents) {
+        if (event.ownerId !== scope.ownerId
+          || event.teamId !== scope.teamId
+          || event.candidateId !== input.candidate.id) {
+          throw new Error("growth_workspace_mismatch");
+        }
+        await insertOwned(
+          context.source,
+          "acquisition_domain_audit_events",
+          event,
+          event.createdAt,
+          ["candidate_id"],
+          [input.candidate.id]
+        );
+      }
+      if (!this.advisorAuthority) {
+        throw new Error("advisor_candidate_authority_repository_required");
+      }
+      const authorityEvent = await this.advisorAuthority.insertWithStamp(
+        context.source, input.authority, stamp
+      );
+      return {
+        candidate: clone(input.candidate),
+        qualification: clone(input.qualification),
+        financialValue: clone(input.financialValue),
+        authorityEvent
+      };
+    });
   }
 
   async findQualificationDecision(
@@ -3318,9 +3487,18 @@ implements AcquisitionPlanRunRepository {
   }
 }
 
-export function createMysqlAcquisitionRepositories(pool: mysql.Pool) {
+export function createMysqlAcquisitionRepositories(
+  pool: mysql.Pool,
+  options: {
+    temporalBarrier?: GrowthTemporalBarrier;
+    advisorAuthority?: Pick<
+      MysqlAdvisorCandidateAuthorityRepository,
+      "insertWithStamp"
+    >;
+  } = {}
+) {
   return {
-    domain: new MysqlAcquisitionDomainRepository(pool),
+    domain: new MysqlAcquisitionDomainRepository(pool, options),
     copilot: new MysqlAcquisitionCopilotRepository(pool),
     planRun: new MysqlAcquisitionPlanRunRepository(pool)
   };

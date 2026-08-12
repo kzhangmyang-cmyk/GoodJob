@@ -449,7 +449,16 @@ test("runs the durable workflow through the production executor and persists dom
       }
     },
     growthAcquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
-      resolve: async () => null
+      async resolve(input) {
+        return input.ownerId === scope.ownerId
+          && input.teamId === scope.teamId
+          ? {
+              workspaceId: scope.teamId,
+              kind: "team" as const,
+              bindingRevision: "binding-1"
+            }
+          : null;
+      }
     }),
     growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
       new InMemoryGrowthTemporalTransactionRunner()

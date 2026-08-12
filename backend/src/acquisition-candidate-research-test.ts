@@ -250,7 +250,15 @@ async function fixture(candidate: AcquisitionCandidate) {
       }
     },
     growthAcquisitionWorkspace: createGrowthAcquisitionWorkspaceResolver({
-      resolve: async () => null
+      async resolve(input) {
+        return input.ownerId === OWNER && input.teamId === TEAM
+          ? {
+              workspaceId: TEAM,
+              kind: "team" as const,
+              bindingRevision: "binding-1"
+            }
+          : null;
+      }
     }),
     growthTemporalBarrier: new DefaultGrowthTemporalBarrier(
       new InMemoryGrowthTemporalTransactionRunner()
