@@ -28,3 +28,32 @@ npm run build
 ```
 
 该版本不会连接抖音、小红书、快手、微信或微博，也不会执行真实营销任务。
+
+## Growth 真实模式（Real Mode）
+
+仓库钉住了后端 Growth 合同发布（`contracts/pinned/`，当前 1.0.3），
+`src/growth/` 提供独立增长工作区：
+
+- `#growth/advisor` 增长参谋今日视图与受控建议
+- `#growth/catalog` 产品目录 / 套餐 / 定价策略
+- `#growth/quotes` 报价工作台
+- `#growth/finance` 成本、财务事实与 Excel 导入
+- `#growth/roi` 预计与已关账实际 ROI
+
+进入真实模式前，前端会调用 `GET /api/v1/growth/bootstrap` 做合同门禁：
+合同大版本或哈希与钉住 manifest 不一致时显示
+`contract_mismatch` 不可用状态；未选择具体工作区时显示
+`workspace_selection_required`。所有页面能力（feature）与敏感字段
+（`pricing.sensitive.read` 等 capability）均由服务端 bootstrap 投影决定，
+演示模式不会发起任何 Growth API 请求。
+
+## 验证（Growth 门禁）
+
+```bash
+pnpm run contract:check
+pnpm run test:types
+pnpm test
+pnpm run test:e2e
+pnpm build
+git diff --check
+```

@@ -22,6 +22,10 @@ import { renderFinancePage } from "./finance/view";
 import { createGrowthPerformanceApi } from "./roi/api";
 import { createRoiController } from "./roi/controller";
 import { renderRoiPage } from "./roi/view";
+import { createAdvisorApi } from "./advisor/api";
+import { createAdvisorCopilotWorkflow } from "./advisor/copilot-workflow";
+import { createAdvisorController } from "./advisor/controller";
+import { renderAdvisorHome } from "./advisor/view";
 
 export type GrowthModeState = GrowthMode | GrowthUnavailable;
 
@@ -206,6 +210,45 @@ export async function startGrowthRuntime(
         host.innerHTML = renderRoiPage({ kind: "loading" });
         const state = await roiController.loadCohorts();
         host.innerHTML = renderRoiPage(state);
+      },
+      unmount() {
+        const host = growthWorkspaceHost();
+        if (host) host.replaceChildren();
+      }
+    });
+  }
+  if (registry.get("advisor") === null && mode.kind === "real") {
+    const http = createGrowthHttpClient();
+    const advisorController = createAdvisorController({
+      api: createAdvisorApi(http),
+      copilot: createAdvisorCopilotWorkflow({
+        async createSession() {
+          throw new Error("advisor_copilot_session_required");
+        },
+        async postMessage() {
+          throw new Error("advisor_copilot_session_required");
+        },
+        async getTask() {
+          throw new Error("advisor_copilot_session_required");
+        }
+      }),
+      hasFeature: (feature) =>
+        mode.kind === "real"
+        && (mode.bootstrap.features as readonly string[]).includes(feature),
+      hasCapability: (capability) =>
+        mode.kind === "real"
+        && (mode.bootstrap.capabilities as readonly string[]).includes(capability)
+    });
+    registry.register("advisor", {
+      async mount(context) {
+        const host = growthWorkspaceHost();
+        if (!host) return;
+        host.innerHTML = renderAdvisorHome({ kind: "loading" });
+        const state = await advisorController.loadToday({
+          currency: "CNY",
+          asOf: new Date().toISOString()
+        });
+        host.innerHTML = renderAdvisorHome(state);
       },
       unmount() {
         const host = growthWorkspaceHost();
