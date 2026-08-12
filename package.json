@@ -19,6 +19,9 @@
     "test:baota-package": "node --test deploy/baota/build-package.test.mjs",
     "test": "npm run test:contracts && npm run test --workspace backend && npm run test --workspace frontend && npm run test:baota-package",
     "test:e2e": "npm run test:e2e --workspace frontend"
+    ,
+    "test:growth-release-gate": "node --test tools/growth-dual-repo-release-gate.test.mjs",
+    "release:growth": "node tools/growth-dual-repo-release-gate.mjs"
   },
   "workspaces": [
     "backend",
