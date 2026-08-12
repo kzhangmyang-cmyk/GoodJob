@@ -16,6 +16,9 @@ import { renderCatalogPage } from "./catalog/view";
 import { createQuoteApi } from "./quotes/api";
 import { createQuoteController } from "./quotes/controller";
 import { renderQuoteWorkbench } from "./quotes/view";
+import { createFinanceApi } from "./finance/api";
+import { createFinanceController } from "./finance/controller";
+import { renderFinancePage } from "./finance/view";
 
 export type GrowthModeState = GrowthMode | GrowthUnavailable;
 
@@ -150,6 +153,31 @@ export async function startGrowthRuntime(
         host.innerHTML = renderQuoteWorkbench({ kind: "loading_case" });
         const state = await quoteController.loadCase(caseId);
         host.innerHTML = renderQuoteWorkbench(state);
+      },
+      unmount() {
+        const host = growthWorkspaceHost();
+        if (host) host.replaceChildren();
+      }
+    });
+  }
+  if (registry.get("finance") === null && mode.kind === "real") {
+    const http = createGrowthHttpClient();
+    const financeController = createFinanceController({
+      api: createFinanceApi(http),
+      hasFeature: (feature) =>
+        mode.kind === "real"
+        && (mode.bootstrap.features as readonly string[]).includes(feature),
+      hasCapability: (capability) =>
+        mode.kind === "real"
+        && (mode.bootstrap.capabilities as readonly string[]).includes(capability)
+    });
+    registry.register("finance", {
+      async mount() {
+        const host = growthWorkspaceHost();
+        if (!host) return;
+        host.innerHTML = renderFinancePage({ kind: "loading" });
+        const state = await financeController.load();
+        host.innerHTML = renderFinancePage(state);
       },
       unmount() {
         const host = growthWorkspaceHost();

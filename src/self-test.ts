@@ -38,6 +38,10 @@ import "./growth/quotes/api.self-test";
 import "./growth/quotes/entry.self-test";
 import "./growth/quotes/controller.self-test";
 import "./growth/quotes/view.self-test";
+import "./growth/finance/api.self-test";
+import "./growth/finance/import-workflow.self-test";
+import "./growth/finance/controller.self-test";
+import "./growth/finance/view.self-test";
 import "./connections/connection-view.self-test";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");
