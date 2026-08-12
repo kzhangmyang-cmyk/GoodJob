@@ -13,6 +13,9 @@ import {
   type CatalogPageState
 } from "./catalog/controller";
 import { renderCatalogPage } from "./catalog/view";
+import { createQuoteApi } from "./quotes/api";
+import { createQuoteController } from "./quotes/controller";
+import { renderQuoteWorkbench } from "./quotes/view";
 
 export type GrowthModeState = GrowthMode | GrowthUnavailable;
 
@@ -113,6 +116,40 @@ export async function startGrowthRuntime(
         host.innerHTML = renderCatalogPage({ kind: "loading" });
         const state = await catalogController.load();
         host.innerHTML = renderCatalogPage(state);
+      },
+      unmount() {
+        const host = growthWorkspaceHost();
+        if (host) host.replaceChildren();
+      }
+    });
+  }
+  if (registry.get("quote") === null && mode.kind === "real") {
+    const http = createGrowthHttpClient();
+    const quoteController = createQuoteController({
+      api: createQuoteApi(http),
+      hasFeature: (feature) =>
+        mode.kind === "real"
+        && (mode.bootstrap.features as readonly string[]).includes(feature),
+      hasCapability: (capability) =>
+        mode.kind === "real"
+        && (mode.bootstrap.capabilities as readonly string[]).includes(capability)
+    });
+    registry.register("quote", {
+      async mount(context) {
+        const host = growthWorkspaceHost();
+        if (!host) return;
+        const caseId = context.route.name === "quote"
+          ? context.route.quoteCaseId : undefined;
+        if (!caseId) {
+          host.innerHTML = renderQuoteWorkbench({
+            kind: "error",
+            message: "quote_case_required"
+          });
+          return;
+        }
+        host.innerHTML = renderQuoteWorkbench({ kind: "loading_case" });
+        const state = await quoteController.loadCase(caseId);
+        host.innerHTML = renderQuoteWorkbench(state);
       },
       unmount() {
         const host = growthWorkspaceHost();

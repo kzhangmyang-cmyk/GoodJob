@@ -34,6 +34,10 @@ import "./growth/demo/adapter.self-test";
 import "./growth/catalog/api.self-test";
 import "./growth/catalog/controller.self-test";
 import "./growth/catalog/view.self-test";
+import "./growth/quotes/api.self-test";
+import "./growth/quotes/entry.self-test";
+import "./growth/quotes/controller.self-test";
+import "./growth/quotes/view.self-test";
 import "./connections/connection-view.self-test";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");
