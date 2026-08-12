@@ -6,6 +6,13 @@ import {
 } from "./mode";
 import manifest from "../../contracts/pinned/growth-advisor-quote-roi.manifest.json";
 import { loadGrowthBootstrap } from "./bootstrap-api";
+import { createGrowthHttpClient } from "./http";
+import { createCatalogApi } from "./catalog/api";
+import {
+  createCatalogController,
+  type CatalogPageState
+} from "./catalog/controller";
+import { renderCatalogPage } from "./catalog/view";
 
 export type GrowthModeState = GrowthMode | GrowthUnavailable;
 
@@ -87,6 +94,31 @@ export async function startGrowthRuntime(
     } catch {
       mode = { kind: "unavailable", reason: "workspace_selection_required" };
     }
+  }
+  if (registry.get("catalog") === null && mode.kind === "real") {
+    const http = createGrowthHttpClient();
+    const catalogController = createCatalogController({
+      api: createCatalogApi(http),
+      hasFeature: (feature) =>
+        mode.kind === "real"
+        && (mode.bootstrap.features as readonly string[]).includes(feature),
+      hasCapability: (capability) =>
+        mode.kind === "real"
+        && (mode.bootstrap.capabilities as readonly string[]).includes(capability)
+    });
+    registry.register("catalog", {
+      async mount(context) {
+        const host = growthWorkspaceHost();
+        if (!host) return;
+        host.innerHTML = renderCatalogPage({ kind: "loading" });
+        const state = await catalogController.load();
+        host.innerHTML = renderCatalogPage(state);
+      },
+      unmount() {
+        const host = growthWorkspaceHost();
+        if (host) host.replaceChildren();
+      }
+    });
   }
   const route = parseGrowthHash(window.location.hash);
   if (route) {

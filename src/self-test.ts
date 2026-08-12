@@ -31,6 +31,9 @@ import "./growth/http.self-test";
 import "./growth/bootstrap-api.self-test";
 import "./growth/runtime.self-test";
 import "./growth/demo/adapter.self-test";
+import "./growth/catalog/api.self-test";
+import "./growth/catalog/controller.self-test";
+import "./growth/catalog/view.self-test";
 import "./connections/connection-view.self-test";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");
