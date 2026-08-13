@@ -6,8 +6,10 @@ import {
 import { parseAgentsHash } from "./entry";
 import {
   renderAgentDetail,
-  renderAgentsOverview
+  renderAgentsOverview,
+  renderDiagnosisReport
 } from "./view";
+import type { DiagnosisReport } from "./api";
 
 assert.equal(BUSINESS_AGENT_TEAM.length, 6);
 assert.equal(businessAgentById("profit")?.name, "利润分析");
@@ -35,3 +37,29 @@ assert.equal(detail.includes("管理会计 · 贡献毛利"), true);
 assert.equal(detail.includes("<script>"), false);
 
 assert.equal(renderAgentDetail("unknown-agent").includes("未知智能体"), true);
+
+const report: DiagnosisReport = {
+  companyName: "示例贸易公司",
+  period: "2026-08",
+  healthScoreBps: 4_600,
+  summary: "本期经营存在需要关注的问题。",
+  issues: [{
+    title: "存在假利润产品",
+    reason: "产品 A 扣除费用后真实利润率过低",
+    suggestion: "调整定价或收缩产品线",
+    evidence: ["假利润产品：产品 A"]
+  }],
+  actionPlan90Days: [
+    { month: 1, action: "清理低质产品" },
+    { month: 2, action: "调整报价" },
+    { month: 3, action: "建立月度经营分析会" }
+  ],
+  evidence: ["假利润产品：产品 A"]
+};
+const reportHtml = renderDiagnosisReport(report);
+assert.equal(reportHtml.includes("《经营诊断报告》"), true);
+assert.equal(reportHtml.includes("46"), true);
+assert.equal(reportHtml.includes("三大问题"), true);
+assert.equal(reportHtml.includes("未来 90 天行动计划"), true);
+assert.equal(reportHtml.includes("假利润产品：产品 A"), true);
+assert.equal(reportHtml.includes("<script>"), false);

@@ -50,7 +50,13 @@ export function createGrowthHttpClient(
 ): GrowthHttpClient {
   const fetchImpl = options.fetchImpl ?? fetch;
   const csrf = options.csrf
-    ?? (() => csrfFromCookie(document.cookie) ?? "");
+    ?? (() => {
+      try {
+        return csrfFromCookie(document.cookie) ?? "";
+      } catch {
+        return "";
+      }
+    });
   const baseUrl = options.baseUrl ?? "";
   return Object.freeze({
     async request<T>(

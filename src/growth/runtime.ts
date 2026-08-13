@@ -26,11 +26,7 @@ import { createAdvisorApi } from "./advisor/api";
 import { createAdvisorCopilotWorkflow } from "./advisor/copilot-workflow";
 import { createAdvisorController } from "./advisor/controller";
 import { renderAdvisorHome } from "./advisor/view";
-import { parseAgentsHash } from "./agents/entry";
-import {
-  renderAgentDetail,
-  renderAgentsOverview
-} from "./agents/view";
+import { createAgentsController } from "./agents/controller";
 
 export type GrowthModeState = GrowthMode | GrowthUnavailable;
 
@@ -96,16 +92,20 @@ export async function startGrowthRuntime(
   options: StartGrowthRuntimeOptions = {}
 ): Promise<GrowthModeState> {
   const registry = options.registry ?? new GrowthPageRegistry();
+  let agentsController: ReturnType<typeof createAgentsController> | null = null;
   registry.register("agents", {
     async mount() {
       const host = growthWorkspaceHost();
       if (!host) return;
-      const route = parseAgentsHash(window.location.hash);
-      host.innerHTML = route?.view === "detail"
-        ? renderAgentDetail(route.agentId)
-        : renderAgentsOverview();
+      agentsController ??= createAgentsController({
+        http: createGrowthHttpClient(),
+        host
+      });
+      agentsController.render();
     },
     unmount() {
+      agentsController?.dispose();
+      agentsController = null;
       const host = growthWorkspaceHost();
       if (host) host.replaceChildren();
     }

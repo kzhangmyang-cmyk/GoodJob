@@ -3,6 +3,7 @@ import {
   businessAgentById,
   type BusinessAgent
 } from "./agents";
+import type { DiagnosisReport } from "./api";
 
 function escapeHtml(value: string): string {
   return value
@@ -123,4 +124,58 @@ function agentPromptExample(id: string): string {
     default:
       return "今天最该先改什么？";
   }
+}
+
+function minorText(minor: number): string {
+  return `${(minor / 100).toLocaleString("zh-CN", {
+    maximumFractionDigits: 0
+  })} 元`;
+}
+
+export function renderDiagnosisReport(report: DiagnosisReport): string {
+  const score = report.healthScoreBps;
+  const issues = report.issues.map((item) =>
+    `<li class="report-issue">
+      <h4>${escapeHtml(item.title)}</h4>
+      <p>原因：${escapeHtml(item.reason)}</p>
+      <p>建议：${escapeHtml(item.suggestion)}</p>
+      ${item.evidence.length > 0
+        ? `<p class="report-evidence">来源：${item.evidence.map(escapeHtml).join("；")}</p>`
+        : ""}
+    </li>`).join("");
+  const actions = report.actionPlan90Days.map((item) =>
+    `<li>第 ${item.month} 月：${escapeHtml(item.action)}</li>`).join("");
+  return `<section class="growth-panel diagnosis-report">
+    <a href="#growth/agents" class="agents-back">← 返回团队</a>
+    <header>
+      <h2>《经营诊断报告》</h2>
+      <p>${escapeHtml(report.companyName)} · ${escapeHtml(report.period)}</p>
+    </header>
+    <section class="report-score">
+      <strong>${(score / 100).toFixed(0)}</strong>
+      <span>企业健康评分（满分 100）</span>
+    </section>
+    <p class="report-summary">${escapeHtml(report.summary)}</p>
+    <section class="report-block">
+      <h3>三大问题</h3>
+      <ol>${issues || "<li>本期未发现突出问题</li>"}</ol>
+    </section>
+    <section class="report-block">
+      <h3>未来 90 天行动计划</h3>
+      <ol>${actions}</ol>
+    </section>
+    ${report.evidence.length > 0
+      ? `<section class="report-block"><h3>证据链</h3>
+          <ul>${report.evidence.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+        </section>`
+      : ""}
+  </section>`;
+}
+
+export function renderAgentConclusion(html: string): string {
+  return `<div class="agent-conclusion">${html}</div>`;
+}
+
+export function minorTextForConclusion(minor: number): string {
+  return minorText(minor);
 }

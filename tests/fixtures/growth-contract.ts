@@ -548,6 +548,62 @@ function baseResponses(scenario: GrowthContractScenario) {
       status: 200,
       headers: {},
       body: scenario.copilotCompletedTask
+    },
+    "GET /api/v1/business-advisor/agents": {
+      status: 200,
+      headers: {},
+      body: {
+        items: [{
+          id: "profit",
+          name: "利润分析",
+          title: "找出钱到底赚在哪",
+          focus: ["产品利润", "假利润"],
+          knowledgeBase: []
+        }]
+      }
+    },
+    "POST /api/v1/business-advisor/analyze": {
+      status: 200,
+      headers: {},
+      body: {
+        result: {
+          products: [{
+            name: "产品 A",
+            grossMarginBps: 4_500,
+            trueMarginBps: 0,
+            isFakeProfit: true
+          }],
+          customers: [],
+          cashflow: { warning: [] },
+          cost: { anomaly: [] },
+          tax: { level: "green", findings: [] },
+          indicators: {}
+        }
+      }
+    },
+    "POST /api/v1/business-advisor/diagnose": {
+      status: 200,
+      headers: {},
+      body: {
+        report: {
+          companyName: "示例贸易公司",
+          period: "2026-08",
+          healthScoreBps: 4_600,
+          summary: "本期经营存在需要关注的问题。",
+          issues: [{
+            title: "存在假利润产品",
+            reason: "产品 A 扣除费用后真实利润率过低",
+            suggestion: "调整定价或收缩产品线",
+            evidence: ["假利润产品：产品 A"]
+          }],
+          actionPlan90Days: [
+            { month: 1, action: "清理低质产品" },
+            { month: 2, action: "调整报价" },
+            { month: 3, action: "建立月度经营分析会" }
+          ],
+          evidence: ["假利润产品：产品 A"]
+        }
+      }
     }
   };
 }
@@ -665,6 +721,7 @@ const ROUTE_PATTERNS = [
   "**/api/v1/catalog/**",
   "**/api/v1/quotes/**",
   "**/api/v1/finance/**",
+  "**/api/v1/business-advisor/**",
   "**/api/v1/acquisition/cost-entries**",
   "**/api/v1/acquisition/cost-estimates**",
   "**/api/v1/acquisition/cohorts**",

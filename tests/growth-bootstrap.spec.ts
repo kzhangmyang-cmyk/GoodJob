@@ -61,3 +61,17 @@ test("business agent team overview renders inside the product workspace", async 
   await expect(page.getByText("哪个产品是假利润？")).toBeVisible();
   await installed.dispose();
 });
+
+test("business advisor generates a sourced diagnosis report from typed fixtures", async ({ page }) => {
+  const scenario = growthContractScenario("happy_path");
+  const installed = await installGrowthContractScenario(page, scenario);
+  await enterRealGrowth(page, "agents");
+  await page.locator('[data-agents-action="generate-report"]')
+    .evaluate((element) => {
+      (element as HTMLButtonElement).click();
+    });
+  await expect(page.getByRole("heading", { name: "《经营诊断报告》" })).toBeVisible();
+  await expect(page.getByText("存在假利润产品")).toBeVisible();
+  await expect(page.getByText("未来 90 天行动计划")).toBeVisible();
+  await installed.dispose();
+});
