@@ -116,6 +116,7 @@ import {
 } from "./growth-capabilities.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import { loadGrowthContractRelease } from "./growth-openapi.js";
+import { createBusinessAdvisorRouter } from "./business-advisor-router.js";
 import {
   CommissionCatalogProjectionError,
   type CommissionCatalogProjectionPort,
@@ -568,6 +569,12 @@ app.use(
     await getStore().reloadProspectCandidates?.();
     next();
   })
+);
+
+app.use(
+  "/api/v1/business-advisor",
+  requireAuth,
+  createBusinessAdvisorRouter()
 );
 
 function requestCorrelationId(req: Request) {
