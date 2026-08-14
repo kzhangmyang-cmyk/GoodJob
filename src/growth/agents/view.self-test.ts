@@ -14,6 +14,12 @@ import type { DiagnosisReport } from "./api";
 
 assert.equal(BUSINESS_AGENT_TEAM.length, 6);
 assert.equal(businessAgentById("profit")?.name, "利润分析");
+assert.equal(
+  BUSINESS_AGENT_TEAM.every((agent) =>
+    agent.avatarSrc.startsWith("/assets/business-advisor-agents/")
+  ),
+  true
+);
 assert.equal(businessAgentById("missing"), null);
 
 assert.deepEqual(parseAgentsHash("#growth/agents"), { view: "overview" });
@@ -27,6 +33,8 @@ const overview = renderAgentsOverview();
 assert.equal(overview.includes("AI 经营顾问团队"), true);
 assert.equal(overview.includes("利润分析"), true);
 assert.equal(overview.includes("data-agent-id=\"cashflow\""), true);
+assert.equal(overview.match(/class="agent-avatar-image"/gu)?.length, 6);
+assert.equal(overview.includes('alt="AI 经营总管头像"'), true);
 assert.equal(overview.includes("生成经营诊断报告"), true);
 assert.equal(overview.includes("上传真实报表（xls / xlsx）"), true);
 assert.equal(overview.includes("data-statements-file=\"balance\""), true);
@@ -60,6 +68,7 @@ assert.equal(demoOverview.includes("<script>"), false);
 
 const detail = renderAgentDetail("profit");
 assert.equal(detail.includes("找出钱到底赚在哪"), true);
+assert.equal(detail.includes('alt="利润分析头像"'), true);
 assert.equal(detail.includes("哪个产品是假利润？"), true);
 assert.equal(detail.includes("data-agents-form=\"ask\""), true);
 assert.equal(detail.includes('data-agent-question="哪个产品是假利润？"'), true);

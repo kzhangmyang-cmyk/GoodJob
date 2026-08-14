@@ -35,7 +35,7 @@ npm run build
 `src/growth/` 提供独立增长工作区：
 
 - `#growth/advisor` 增长参谋今日视图与受控建议
-- `#growth/agents` 业务顾问团队、经营诊断报告与单 Agent 工作台
+- `#growth/agents` 六位员工肖像业务顾问团队、经营诊断报告与单 Agent 工作台
 - `#growth/catalog` 产品目录 / 套餐 / 定价策略
 - `#growth/quotes` 报价工作台
 - `#growth/finance` 成本、财务事实与 Excel 导入

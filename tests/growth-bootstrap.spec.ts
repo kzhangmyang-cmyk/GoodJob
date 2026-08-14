@@ -60,9 +60,25 @@ test("business agent team overview renders inside the product workspace", async 
   await expect(page.getByText("利润分析")).toBeVisible();
   await expect(page.getByText("现金流分析")).toBeVisible();
   await expect(page.locator(".agents-grid")).toBeVisible();
+  const agentAvatars = page.locator(".agents-grid .agent-avatar-image");
+  await expect(agentAvatars).toHaveCount(6);
+  await expect.poll(() => agentAvatars.evaluateAll((images) =>
+    images.every((image) => {
+      const avatar = image as HTMLImageElement;
+      return avatar.complete && avatar.naturalWidth === 384;
+    })
+  )).toBe(true);
   expect(await page.locator(".agents-grid").evaluate((element) =>
     getComputedStyle(element).display
   )).toBe("grid");
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.locator(".agents-grid").evaluate((element) =>
+    getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/u).length
+  )).toBe(1);
+  expect(await page.evaluate(() =>
+    document.documentElement.scrollWidth === document.documentElement.clientWidth
+  )).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.evaluate(() => {
     window.location.hash = "#growth/agents/profit";
   });

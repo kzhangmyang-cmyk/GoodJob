@@ -17,6 +17,14 @@ function escapeHtml(value: string): string {
     .replace(/'/gu, "&#39;");
 }
 
+function agentAvatar(agent: BusinessAgent, loading: "eager" | "lazy" = "eager"): string {
+  return `<span class="agent-avatar">
+    <img class="agent-avatar-image" src="${escapeHtml(agent.avatarSrc)}"
+      alt="${escapeHtml(`${agent.name}头像`)}" width="384" height="384"
+      loading="${loading}" decoding="async" />
+  </span>`;
+}
+
 function agentCard(agent: BusinessAgent, demo: boolean): string {
   const capabilities = agent.capabilities
     .map((item) => `<span class="agent-capability">${escapeHtml(item)}</span>`)
@@ -31,14 +39,14 @@ function agentCard(agent: BusinessAgent, demo: boolean): string {
   return `<article class="agent-card" data-agent-id="${escapeHtml(agent.id)}"
     style="--agent-accent:${agent.accent}">
     <header>
-      <span class="agent-avatar" aria-hidden="true">${escapeHtml(agent.name.slice(0, 1))}</span>
-      <div>
+      ${agentAvatar(agent)}
+      <div class="agent-card-identity">
         <h3>${escapeHtml(agent.name)}</h3>
         <p>${escapeHtml(agent.title)}</p>
       </div>
-      ${status}
     </header>
     <p class="agent-summary">${escapeHtml(agent.summary)}</p>
+    ${status}
     <div class="agent-capabilities">${capabilities}</div>
     <footer>
       <span>知识库：${escapeHtml(agent.knowledgeBase)}</span>
@@ -186,7 +194,7 @@ export function renderAgentDetail(agentId: string): string {
   return `<section class="growth-panel agent-workbench">
     <a href="#growth/agents" class="agents-back">← 返回团队</a>
     <header style="--agent-accent:${agent.accent}">
-      <span class="agent-avatar" aria-hidden="true">${escapeHtml(agent.name.slice(0, 1))}</span>
+      ${agentAvatar(agent, "eager")}
       <div>
         <span class="agents-overline">SPECIALIST WORKBENCH</span>
         <h2>${escapeHtml(agent.name)}</h2>

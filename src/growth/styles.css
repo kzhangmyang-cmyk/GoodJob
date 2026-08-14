@@ -436,6 +436,14 @@
   background: var(--agent-accent);
   color: #ffffff;
   font-weight: 700;
+  overflow: hidden;
+}
+
+.agent-avatar-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .agent-card h3,
@@ -728,6 +736,7 @@
   --agents-line: var(--replica-line, rgba(229, 238, 233, 0.18));
   --agents-line-soft: var(--replica-line-soft, rgba(229, 238, 233, 0.09));
   --agents-muted: var(--replica-muted, #8c928e);
+  container-type: inline-size;
   background:
     radial-gradient(circle at 12% 0%, rgba(24, 237, 120, 0.08), transparent 29rem),
     var(--replica-bg, #020303);
@@ -936,6 +945,18 @@
   gap: 0.85rem;
 }
 
+@container (max-width: 75rem) {
+  :is(.replica-shell, #growthWorkspace) .agents-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 42rem) {
+  :is(.replica-shell, #growthWorkspace) .agents-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 :is(.replica-shell, #growthWorkspace) .agent-card {
   min-width: 0;
   padding: 1.05rem;
@@ -947,6 +968,14 @@
   transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
+:is(.replica-shell, #growthWorkspace) .agent-card > header {
+  align-items: center;
+}
+
+:is(.replica-shell, #growthWorkspace) .agent-card-identity {
+  min-width: 0;
+}
+
 :is(.replica-shell, #growthWorkspace) .agent-card:hover {
   border-color: color-mix(in srgb, var(--agent-accent) 42%, var(--agents-line));
   background: linear-gradient(155deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.016));
@@ -955,11 +984,21 @@
 
 :is(.replica-shell, #growthWorkspace) .agent-avatar {
   flex: none;
+  width: 5.25rem;
+  height: 5.25rem;
   border: 1px solid color-mix(in srgb, var(--agent-accent) 48%, transparent);
-  border-radius: var(--replica-radius-sm, 12px);
+  border-radius: 1.6rem;
   background: color-mix(in srgb, var(--agent-accent) 14%, #0b0e0c);
   color: color-mix(in srgb, var(--agent-accent) 78%, white);
   box-shadow: inset 0 0 1rem color-mix(in srgb, var(--agent-accent) 8%, transparent);
+}
+
+:is(.replica-shell, #growthWorkspace) .agent-avatar-image {
+  transition: transform 220ms ease;
+}
+
+:is(.replica-shell, #growthWorkspace) .agent-card:hover .agent-avatar-image {
+  transform: scale(1.025);
 }
 
 :is(.replica-shell, #growthWorkspace) .agent-card h3 {
@@ -978,9 +1017,15 @@
 }
 
 :is(.replica-shell, #growthWorkspace) .agent-status {
+  align-self: flex-start;
+  margin-left: 0;
   border: 1px solid var(--agents-line-soft);
   background: rgba(255, 255, 255, 0.035);
   color: var(--agents-muted);
+}
+
+:is(.replica-shell, #growthWorkspace) .agent-workbench > header .agent-status {
+  margin-left: auto;
 }
 
 :is(.replica-shell, #growthWorkspace) .agent-status-ready {
@@ -1686,12 +1731,14 @@
 
 @media (prefers-reduced-motion: reduce) {
   :is(.replica-shell, #growthWorkspace) .agents-primary,
-  :is(.replica-shell, #growthWorkspace) .agent-card {
+  :is(.replica-shell, #growthWorkspace) .agent-card,
+  :is(.replica-shell, #growthWorkspace) .agent-avatar-image {
     transition: none;
   }
 
   :is(.replica-shell, #growthWorkspace) .agents-primary:hover,
-  :is(.replica-shell, #growthWorkspace) .agent-card:hover {
+  :is(.replica-shell, #growthWorkspace) .agent-card:hover,
+  :is(.replica-shell, #growthWorkspace) .agent-card:hover .agent-avatar-image {
     transform: none;
   }
 }
