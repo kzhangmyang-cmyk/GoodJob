@@ -35,6 +35,7 @@ npm run build
 `src/growth/` 提供独立增长工作区：
 
 - `#growth/advisor` 增长参谋今日视图与受控建议
+- `#growth/agents` 业务顾问团队、经营诊断报告与单 Agent 工作台
 - `#growth/catalog` 产品目录 / 套餐 / 定价策略
 - `#growth/quotes` 报价工作台
 - `#growth/finance` 成本、财务事实与 Excel 导入
@@ -46,6 +47,10 @@ npm run build
 `workspace_selection_required`。所有页面能力（feature）与敏感字段
 （`pricing.sensitive.read` 等 capability）均由服务端 bootstrap 投影决定，
 演示模式不会发起任何 Growth API 请求。
+
+业务顾问中心支持在浏览器本地读取 `xls / xlsx` 资产负债表与利润表，
+再将结构化报表数据交给现有 Growth API 生成诊断；文件上传与解析界面不代表
+仓库内包含报表存储或后端服务。
 
 ## 验证（Growth 门禁）
 
