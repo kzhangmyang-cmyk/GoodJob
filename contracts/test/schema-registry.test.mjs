@@ -11,7 +11,7 @@ const expected = [
   "api-error", "paged-result", "async-operation", "model-provider",
   "model-connection", "model-capability", "model-call-record",
   "discovery-provider", "provider-connection", "content-fetch-operation",
-  "import-operation", "candidate-intelligence-operation", "douyin-identity-resolution-operation", "acquisition-plan", "acquisition-run",
+  "import-operation", "candidate-intelligence-operation", "douyin-identity-resolution-operation", "douyin-comment-event", "acquisition-plan", "acquisition-run",
   "acquisition-run-presentation",
   "acquisition-operation-shard", "discovery-evidence", "party-ref",
   "organization-candidate", "individual-demand-signal",
@@ -23,6 +23,115 @@ const expected = [
 ];
 
 const validSha256 = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+const douyinCommentEvent = {
+  eventId: "comment-event-1",
+  platform: "douyin",
+  eventType: "comment",
+  platformEventId: "comment-123",
+  videoId: "video-456",
+  parentCommentId: null,
+  text: "想了解一下你们的企业服务方案",
+  textHash: validSha256,
+  occurredAt: "2026-08-15T01:00:00.000Z",
+  capturedAt: "2026-08-15T01:01:00.000Z",
+  likeCount: 3,
+  replyCount: 1,
+  ipLabel: "上海",
+  actor: {
+    displayName: "公开用户",
+    handle: "public-user",
+    secUid: "sec-user-1"
+  },
+  sourceUrl: "https://www.douyin.com/video/456",
+  coverage: "public_top_level_sample",
+  accessStatus: "public_content",
+  providerVersion: "douyin-public-comment-provider-v1",
+  rawArtifactHash: validSha256
+};
+
+function acquisitionPlanPayload(overrides = {}) {
+  return {
+    targetPlatform: "douyin",
+    name: "Douyin public comment plan",
+    objective: "Discover public demand signals",
+    icp: {
+      industries: ["enterprise services"],
+      regions: ["China"],
+      organizationCriteria: ["public demand"],
+      individualCriteria: ["public demand"],
+      exclusionRules: []
+    },
+    subjectChannels: { organization: false, individual: true },
+    providerConnections: [{
+      connectionId: "public-comment-1",
+      providerId: "experimental_public_sample",
+      kind: "content_fetch",
+      status: "active",
+      credentialVersion: 1
+    }],
+    operations: [{
+      operationId: "read-comments",
+      subjectChannel: "individual",
+      kind: "content_fetch",
+      connectionId: "public-comment-1",
+      sourceRef: "https://www.douyin.com/video/456",
+      allocatedBudget: {
+        requests: 3,
+        results: 30,
+        amountMinor: 0,
+        durationSeconds: 120
+      }
+    }],
+    budgetSnapshot: {
+      billingCurrency: "CNY",
+      maxRequests: 3,
+      maxResults: 30,
+      maxAmountMinor: 0,
+      maxDurationSeconds: 120
+    },
+    modelSnapshotRef: {
+      jobSnapshotId: "snapshot-1",
+      connectionId: "model-1",
+      credentialVersion: 1,
+      provider: "openai",
+      model: "gpt-5",
+      capabilitySnapshotHash: validSha256,
+      promptVersion: "acquisition.v1",
+      schemaVersion: "acquisition-plan.v1",
+      promptHash: validSha256,
+      schemaHash: validSha256
+    },
+    stopConditions: {
+      stopWhenBudgetExhausted: true,
+      stopWhenNoMoreResults: true
+    },
+    ...overrides
+  };
+}
+
+function acquisitionPlan(payload) {
+  return {
+    id: "plan-1",
+    ownerId: "owner-1",
+    teamId: "team-1",
+    status: "draft",
+    version: 1,
+    revision: 1,
+    etag: "etag-1",
+    currentVersionId: "plan-version-1",
+    approvedVersionId: null,
+    approvedSnapshotHash: null,
+    approvedBy: null,
+    approvedAt: null,
+    budgetSnapshot: payload.budgetSnapshot,
+    payload,
+    createdBy: "user-1",
+    createdAt: "2026-08-15T00:00:00.000Z",
+    updatedBy: "user-1",
+    updatedAt: "2026-08-15T00:00:00.000Z"
+  };
+}
 
 const platformContracts = {
   "platform-connection": {
@@ -249,6 +358,7 @@ test("platform and action placeholder components are published without routes", 
     PlatformConnection: "../json-schema/platform-connection.v1.schema.json",
     PlatformCapabilitySnapshot: "../json-schema/platform-capability-snapshot.v1.schema.json",
     PlatformEvent: "../json-schema/platform-event.v1.schema.json",
+    DouyinCommentEvent: "../json-schema/douyin-comment-event.v1.schema.json",
     ActionPolicy: "../json-schema/action-policy.v1.schema.json",
     ActionReceipt: "../json-schema/action-receipt.v1.schema.json"
   };
@@ -259,6 +369,66 @@ test("platform and action placeholder components are published without routes", 
     Object.keys(document.paths).some((route) => /platform|action/i.test(route)),
     false
   );
+});
+
+test("Douyin comment events publish a strict top-level public sample", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("douyin-comment-event");
+
+  assert.equal(validate(douyinCommentEvent), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...douyinCommentEvent, parentCommentId: "reply-1" }), false);
+  assert.equal(validate({
+    ...douyinCommentEvent,
+    coverage: "all_comments"
+  }), false);
+  assert.equal(validate({
+    ...douyinCommentEvent,
+    actor: { ...douyinCommentEvent.actor, avatar: "https://example.com/a.jpg" }
+  }), false);
+  assert.equal(validate({ ...douyinCommentEvent, unexpected: true }), false);
+  for (const field of ["textHash", "rawArtifactHash"]) {
+    for (const invalidDigest of [
+      "sha256:abc",
+      `sha256:${"A".repeat(64)}`,
+      `sha256:${"0".repeat(63)}`
+    ]) {
+      assert.equal(validate({
+        ...douyinCommentEvent,
+        [field]: invalidDigest
+      }), false, `${field}: ${invalidDigest}`);
+    }
+  }
+});
+
+test("acquisition plans version an optional Douyin public comment policy", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("acquisition-plan");
+  const policy = {
+    enabled: true,
+    maxVideosPerRun: 20,
+    maxCommentsPerVideo: 100,
+    maxPagesPerVideo: 5
+  };
+
+  const legacyPayload = acquisitionPlanPayload();
+  assert.equal(validate(acquisitionPlan(legacyPayload)), true, JSON.stringify(validate.errors));
+  assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
+    douyinPublicCommentSample: policy
+  }))), true, JSON.stringify(validate.errors));
+  assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
+    targetPlatform: "web",
+    douyinPublicCommentSample: policy
+  }))), false);
+  assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
+    targetPlatform: "web",
+    douyinPublicCommentSample: { ...policy, enabled: false }
+  }))), true, JSON.stringify(validate.errors));
+  assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
+    douyinPublicCommentSample: { ...policy, maxCommentsPerVideo: 101 }
+  }))), false);
+  assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
+    douyinPublicCommentSample: { ...policy, unexpected: true }
+  }))), false);
 });
 
 test("platform and action contracts accept canonical objects and reject unknown fields", async () => {

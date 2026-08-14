@@ -80,6 +80,97 @@ test("public plan create accepts an explicit acquisition target platform", () =>
   assert.deepEqual(acquisitionPublicPlanCreateSchema.parse(input), input);
 });
 
+test("Douyin plan accepts a bounded public comment sample policy", () => {
+  const input = {
+    ...publicPlanInput(),
+    targetPlatform: "douyin" as const,
+    douyinPublicCommentSample: {
+      enabled: true,
+      maxVideosPerRun: 20,
+      maxCommentsPerVideo: 100,
+      maxPagesPerVideo: 5
+    }
+  };
+
+  assert.deepEqual(acquisitionPublicPlanCreateSchema.parse(input), input);
+});
+
+test("legacy plan remains valid without a public comment sample policy", () => {
+  const input = publicPlanInput();
+
+  assert.deepEqual(acquisitionPublicPlanCreateSchema.parse(input), input);
+});
+
+test("public comment sample policy rejects values outside server bounds", () => {
+  const validPolicy = {
+    enabled: true,
+    maxVideosPerRun: 10,
+    maxCommentsPerVideo: 30,
+    maxPagesPerVideo: 3
+  };
+
+  for (const policy of [
+    { ...validPolicy, maxVideosPerRun: 0 },
+    { ...validPolicy, maxVideosPerRun: 21 },
+    { ...validPolicy, maxCommentsPerVideo: 0 },
+    { ...validPolicy, maxCommentsPerVideo: 101 },
+    { ...validPolicy, maxPagesPerVideo: 0 },
+    { ...validPolicy, maxPagesPerVideo: 6 }
+  ]) {
+    assert.equal(acquisitionPublicPlanCreateSchema.safeParse({
+      ...publicPlanInput(),
+      targetPlatform: "douyin",
+      douyinPublicCommentSample: policy
+    }).success, false, JSON.stringify(policy));
+  }
+});
+
+test("public comment sample policy rejects extra fields", () => {
+  assert.equal(acquisitionPublicPlanCreateSchema.safeParse({
+    ...publicPlanInput(),
+    targetPlatform: "douyin",
+    douyinPublicCommentSample: {
+      enabled: true,
+      maxVideosPerRun: 10,
+      maxCommentsPerVideo: 30,
+      maxPagesPerVideo: 3,
+      includeAvatars: true
+    }
+  }).success, false);
+});
+
+test("only explicit Douyin plans can enable public comment sampling", () => {
+  const policy = {
+    enabled: true,
+    maxVideosPerRun: 10,
+    maxCommentsPerVideo: 30,
+    maxPagesPerVideo: 3
+  };
+
+  for (const targetPlatform of ["web", undefined]) {
+    assert.equal(acquisitionPublicPlanCreateSchema.safeParse({
+      ...publicPlanInput(),
+      ...(targetPlatform ? { targetPlatform } : {}),
+      douyinPublicCommentSample: policy
+    }).success, false, String(targetPlatform));
+  }
+});
+
+test("web plans may persist an explicitly disabled comment sample policy", () => {
+  const input = {
+    ...publicPlanInput(),
+    targetPlatform: "web" as const,
+    douyinPublicCommentSample: {
+      enabled: false,
+      maxVideosPerRun: 10,
+      maxCommentsPerVideo: 30,
+      maxPagesPerVideo: 3
+    }
+  };
+
+  assert.deepEqual(acquisitionPublicPlanCreateSchema.parse(input), input);
+});
+
 test("public plan create rejects unsupported acquisition target platforms", () => {
   assert.throws(
     () => acquisitionPublicPlanCreateSchema.parse({

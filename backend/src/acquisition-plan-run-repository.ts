@@ -63,6 +63,13 @@ export interface AcquisitionModelSnapshotRef {
   schemaHash: string;
 }
 
+export interface DouyinPublicCommentSamplePolicy {
+  enabled: boolean;
+  maxVideosPerRun: number;
+  maxCommentsPerVideo: number;
+  maxPagesPerVideo: number;
+}
+
 export interface AcquisitionProviderConnectionSnapshot {
   connectionId: string;
   providerId: string;
@@ -83,6 +90,7 @@ export interface AcquisitionPlanOperation {
 
 export interface AcquisitionPlanPayload {
   targetPlatform?: AcquisitionTargetPlatform;
+  douyinPublicCommentSample?: DouyinPublicCommentSamplePolicy;
   name: string;
   objective: string;
   icp: {

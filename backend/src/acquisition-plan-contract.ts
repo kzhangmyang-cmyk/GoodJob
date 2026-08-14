@@ -7,6 +7,13 @@ export const idSchema = requiredText(255);
 
 export const acquisitionTargetPlatformSchema = z.enum(["douyin", "web"]);
 
+export const douyinPublicCommentSamplePolicySchema = z.object({
+  enabled: z.boolean(),
+  maxVideosPerRun: z.number().int().min(1).max(20),
+  maxCommentsPerVideo: z.number().int().min(1).max(100),
+  maxPagesPerVideo: z.number().int().min(1).max(5)
+}).strict();
+
 export const acquisitionUsageSchema = z.object({
   requests: z.number().int().nonnegative(),
   results: z.number().int().nonnegative(),
@@ -55,6 +62,8 @@ export const acquisitionModelSnapshotSchema = z.object({
 
 export const acquisitionPlanPayloadSchema = z.object({
   targetPlatform: acquisitionTargetPlatformSchema.optional(),
+  douyinPublicCommentSample:
+    douyinPublicCommentSamplePolicySchema.optional(),
   name: requiredText(200),
   objective: requiredText(2_000),
   icp: z.object({
@@ -83,7 +92,19 @@ export const acquisitionPublicPlanCreateSchema =
   acquisitionPlanPayloadSchema
     .omit({ modelSnapshotRef: true })
     .extend({ modelConnectionId: idSchema.nullable().optional() })
-    .strict();
+    .strict()
+    .superRefine((value, context) => {
+      if (
+        value.douyinPublicCommentSample?.enabled
+        && value.targetPlatform !== "douyin"
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["douyinPublicCommentSample", "enabled"],
+          message: "公开评论样本只能在抖音计划中启用"
+        });
+      }
+    });
 
 export type AcquisitionPublicPlanCreateInput =
   z.infer<typeof acquisitionPublicPlanCreateSchema>;

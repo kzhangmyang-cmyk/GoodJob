@@ -144,6 +144,34 @@
         "allocatedBudget": { "$ref": "#/$defs/budgetUsage" }
       }
     },
+    "douyinPublicCommentSamplePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "maxVideosPerRun",
+        "maxCommentsPerVideo",
+        "maxPagesPerVideo"
+      ],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "maxVideosPerRun": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        },
+        "maxCommentsPerVideo": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "maxPagesPerVideo": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        }
+      }
+    },
     "payload": {
       "type": "object",
       "additionalProperties": false,
@@ -160,6 +188,9 @@
       ],
       "properties": {
         "targetPlatform": { "enum": ["douyin", "web"] },
+        "douyinPublicCommentSample": {
+          "$ref": "#/$defs/douyinPublicCommentSamplePolicy"
+        },
         "name": { "type": "string", "minLength": 1 },
         "objective": { "type": "string", "minLength": 1 },
         "icp": {
@@ -223,7 +254,31 @@
             "stopWhenNoMoreResults": { "type": "boolean" }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "required": ["douyinPublicCommentSample"],
+            "properties": {
+              "douyinPublicCommentSample": {
+                "type": "object",
+                "required": ["enabled"],
+                "properties": {
+                  "enabled": { "const": true }
+                }
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": ["targetPlatform"],
+            "properties": {
+              "targetPlatform": { "const": "douyin" }
+            }
+          }
+        }
+      ]
     }
   }
 }

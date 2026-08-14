@@ -1415,6 +1415,7 @@ export interface components {
         PlatformConnection: components["schemas"]["platform-connection.v1.schema"];
         PlatformCapabilitySnapshot: components["schemas"]["platform-capability-snapshot.v1.schema"];
         PlatformEvent: components["schemas"]["platform-event.v1.schema"];
+        DouyinCommentEvent: components["schemas"]["douyin-comment-event.v1.schema"];
         ActionPolicy: components["schemas"]["action-policy.v1.schema"];
         ActionReceipt: components["schemas"]["action-receipt.v1.schema"];
         DiscoveryEvidencePagedResult: {
@@ -1837,6 +1838,12 @@ export interface components {
             amountMinor: number;
             durationSeconds: number;
         };
+        douyinPublicCommentSamplePolicy: {
+            enabled: boolean;
+            maxVideosPerRun: number;
+            maxCommentsPerVideo: number;
+            maxPagesPerVideo: number;
+        };
         providerConnection: {
             connectionId: string;
             providerId: string;
@@ -1879,6 +1886,7 @@ export interface components {
         payload: {
             /** @enum {unknown} */
             targetPlatform?: "douyin" | "web";
+            douyinPublicCommentSample?: components["schemas"]["douyinPublicCommentSamplePolicy"];
             name: string;
             objective: string;
             icp: {
@@ -1900,7 +1908,7 @@ export interface components {
                 stopWhenBudgetExhausted: boolean;
                 stopWhenNoMoreResults: boolean;
             };
-        };
+        } & unknown;
         /** AcquisitionPlan */
         "acquisition-plan.v1.schema": {
             id: string;
@@ -1971,9 +1979,16 @@ export interface components {
                     sourceRef?: string;
                     allocatedBudget: components["schemas"]["budgetUsage"];
                 };
+                douyinPublicCommentSamplePolicy: {
+                    enabled: boolean;
+                    maxVideosPerRun: number;
+                    maxCommentsPerVideo: number;
+                    maxPagesPerVideo: number;
+                };
                 payload: {
                     /** @enum {unknown} */
                     targetPlatform?: "douyin" | "web";
+                    douyinPublicCommentSample?: components["schemas"]["douyinPublicCommentSamplePolicy"];
                     name: string;
                     objective: string;
                     icp: {
@@ -1995,7 +2010,7 @@ export interface components {
                         stopWhenBudgetExhausted: boolean;
                         stopWhenNoMoreResults: boolean;
                     };
-                };
+                } & unknown;
             };
         };
         /** AcquisitionRun */
@@ -3075,6 +3090,49 @@ export interface components {
                     id: components["schemas"]["boundedString"];
                     hash: components["schemas"]["digest"];
                 };
+            };
+        };
+        "$defs-digest": string;
+        nullableBoundedString: components["schemas"]["boundedString"] | null;
+        /**
+         * DouyinCommentEvent
+         * @description Immutable concrete payload for a publicly accessible top-level Douyin comment sample. Its platformEventId, videoId, and actor identifier populate the generic platform event envelope references.
+         */
+        "douyin-comment-event.v1.schema": {
+            eventId: components["schemas"]["boundedString"];
+            /** @constant */
+            platform: "douyin";
+            /** @constant */
+            eventType: "comment";
+            platformEventId: components["schemas"]["boundedString"];
+            videoId: components["schemas"]["boundedString"];
+            parentCommentId: null;
+            text: string;
+            textHash: components["schemas"]["$defs-digest"];
+            /** Format: date-time */
+            occurredAt: string;
+            /** Format: date-time */
+            capturedAt: string;
+            likeCount: number;
+            replyCount: number;
+            ipLabel: components["schemas"]["nullableBoundedString"];
+            actor: {
+                displayName: components["schemas"]["boundedString"];
+                handle: components["schemas"]["nullableBoundedString"];
+                secUid: components["schemas"]["nullableBoundedString"];
+            };
+            /** Format: uri */
+            sourceUrl: string;
+            /** @constant */
+            coverage: "public_top_level_sample";
+            /** @constant */
+            accessStatus: "public_content";
+            providerVersion: components["schemas"]["boundedString"];
+            rawArtifactHash: components["schemas"]["$defs-digest"];
+            $defs: {
+                boundedString: string;
+                nullableBoundedString: components["schemas"]["boundedString"] | null;
+                digest: string;
             };
         };
         planRef: {

@@ -20,12 +20,22 @@ runtime routes in the same change, and keep the repository gate green. Run
 `npm run check:generated-acquisition-types` to detect stale or absent generated
 output without modifying repository files.
 
-The platform connection, capability, event, action-policy, and action-receipt
-components are schema reservations only. They have no published routes until
-their implementations land in Issues #06, #07, and #10. Runtime response-body
-validation is also outside this migration and remains a future hardening step;
-the current gate validates release schemas, builder parity, generated output,
-the frontend consumer, and the packaged production start path.
+The platform connection, capability, generic event envelope, Douyin comment
+event, action-policy, and action-receipt components are schema reservations
+only. They have no published routes until their implementations land in Issues
+#06, #07, and #10. `DouyinCommentEvent` is the strict concrete payload behind
+the generic envelope references for an `experimental_public_sample` provider;
+its coverage is `public_top_level_sample`, it contains no avatar, and it does
+not represent complete comment coverage. Runtime response-body validation is
+also outside this migration and remains a future hardening step; the current
+gate validates release schemas, builder parity, generated output, the frontend
+consumer, and the packaged production start path.
+
+Acquisition plans may optionally version a `douyinPublicCommentSample` policy.
+Legacy plans without it remain valid and sampling is disabled by absence. An
+enabled policy requires `targetPlatform: douyin` and is bounded to 20 videos,
+100 comments per video, and 5 pages per video; runtime execution must apply the
+stricter of these plan values and its server limits.
 
 Run `npm run check:acquisition-contracts` from the repository root before
 changing any producer or consumer.
