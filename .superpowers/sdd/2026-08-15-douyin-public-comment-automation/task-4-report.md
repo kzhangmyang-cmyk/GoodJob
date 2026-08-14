@@ -570,7 +570,7 @@ advisory-locked MySQL 8 migration, exact legacy pending-index repair, strict
 advisory-lock cleanup, redacted recovery diagnostics, pending/committed
 visibility, and the application lifecycle. The design's
 separately approved BrowserAct/visual-reading sections were preserved unchanged.
-No frontend documentation changed because review round 4 does not alter the
+No frontend documentation changed because review round 5 does not alter the
 Task 5+ presentation contract.
 
 ## Concerns and final state
