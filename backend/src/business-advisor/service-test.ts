@@ -116,12 +116,33 @@ test("the agent team registers six specialist roles with knowledge bases", () =>
   }
 });
 
+test("knowledge bases carry calibrated methodology from real consulting cases", () => {
+  const service = createBusinessAdvisorService();
+  const titles = (agentId: string): string[] =>
+    service.agents.find((agent) => agent.id === agentId)!
+      .knowledgeBase.entries.map((entry) => entry.title);
+  assert.ok(titles("finance").includes("报表勾稽关系检查"));
+  assert.ok(titles("finance").includes("理论现金流勾稽法"));
+  assert.ok(titles("profit").includes("费用对标法"));
+  assert.ok(titles("cost").includes("价差与量差分离"));
+  assert.ok(titles("cashflow").includes("资金全链条复盘"));
+  assert.ok(titles("tax").includes("民企高频税务风险场景"));
+  assert.ok(titles("cfo").includes("业务条线检查框架"));
+});
+
 test("analysis produces indicators, fake-profit flags, customer grades and cashflow warnings", () => {
   const service = createBusinessAdvisorService();
   const result = service.analyze(sampleCompany());
   assert.equal(result.indicators.grossMarginBps, 4_000);
   assert.equal(result.indicators.netMarginBps, 1_780);
   assert.equal(result.indicators.debtRatioBps, 3_714);
+  assert.equal(result.indicators.currentRatioBps, 30_000);
+  assert.equal(result.indicators.quickRatioBps, 21_000);
+  assert.equal(result.indicators.receivableTurnover, 4.2);
+  assert.equal(result.indicators.inventoryTurnover, 3.3);
+  assert.equal(result.indicators.interestCoverage, 20);
+  assert.equal(result.indicators.cashCollectionRatioBps, 9_000);
+  assert.equal(result.indicators.cashProfitRatioBps, 6_742);
 
   const fake = result.products.find((product) => product.name === "产品 A");
   assert.ok(fake);
@@ -155,6 +176,80 @@ test("diagnose produces a sourced report with issues and a 90-day plan", () => {
   assert.equal(report.evidence.length > 0, true);
   for (const item of report.issues) {
     assert.equal(item.reason.length > 0, true);
+    assert.equal(item.risk.length > 0, true);
     assert.equal(item.suggestion.length > 0, true);
+    assert.ok(
+      ["财务", "利润", "成本", "现金流", "税务", "经营"].includes(item.category)
+    );
+    assert.ok(["red", "yellow"].includes(item.level));
   }
+});
+
+function adjustedCompany(overrides: {
+  readonly receivablesMinor?: number;
+  readonly currentLiabilitiesMinor?: number;
+  readonly inventoryMinor?: number;
+  readonly interestExpenseMinor?: number;
+  readonly operatingInflowMinor?: number;
+}): BusinessReportInput {
+  const input = sampleCompany();
+  if (overrides.receivablesMinor !== undefined) {
+    input.balanceSheet.receivablesMinor = overrides.receivablesMinor;
+  }
+  if (overrides.currentLiabilitiesMinor !== undefined) {
+    input.balanceSheet.currentLiabilitiesMinor = overrides.currentLiabilitiesMinor;
+  }
+  if (overrides.inventoryMinor !== undefined) {
+    input.balanceSheet.inventoryMinor = overrides.inventoryMinor;
+  }
+  if (overrides.interestExpenseMinor !== undefined) {
+    input.incomeStatement.interestExpenseMinor = overrides.interestExpenseMinor;
+  }
+  if (overrides.operatingInflowMinor !== undefined) {
+    input.cashFlow.operatingInflowMinor = overrides.operatingInflowMinor;
+  }
+  return input;
+}
+
+test("high leverage above 70% triggers a red liability issue", () => {
+  const service = createBusinessAdvisorService();
+  const input = adjustedCompany({ currentLiabilitiesMinor: moneyYuanToMinor(2_500_000) });
+  const report = service.diagnose(input);
+  assert.ok(
+    report.issues.some(
+      (item) => item.title === "负债水平过高" && item.level === "red"
+    )
+  );
+});
+
+test("receivables beyond 90 days trigger a cash occupation issue", () => {
+  const service = createBusinessAdvisorService();
+  const input = adjustedCompany({ receivablesMinor: moneyYuanToMinor(1_800_000) });
+  const report = service.diagnose(input);
+  const issue = report.issues.find(
+    (item) => item.title === "应收账款占用过高"
+  );
+  assert.ok(issue);
+  assert.ok(issue.reason.includes("90"));
+});
+
+test("low interest coverage below 3 triggers a repayment pressure issue", () => {
+  const service = createBusinessAdvisorService();
+  const input = adjustedCompany({ interestExpenseMinor: moneyYuanToMinor(400_000) });
+  const report = service.diagnose(input);
+  assert.ok(
+    report.issues.some(
+      (item) => item.title === "利息偿付压力" && item.level === "red"
+    )
+  );
+});
+
+test("positive profit with weak operating cash triggers profit-cash divergence", () => {
+  const service = createBusinessAdvisorService();
+  const input = adjustedCompany({ operatingInflowMinor: moneyYuanToMinor(4_200_000) });
+  const report = service.diagnose(input);
+  const issue = report.issues.find((item) => item.title === "利润与现金背离");
+  assert.ok(issue);
+  assert.ok(issue.reason.includes("净现比"));
+  assert.ok(issue.suggestion.includes("理论现金流勾稽法"));
 });

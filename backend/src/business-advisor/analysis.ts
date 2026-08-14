@@ -10,8 +10,14 @@ export interface FinancialIndicators {
   readonly roaBps: number;
   readonly debtRatioBps: number;
   readonly currentRatioBps: number;
+  readonly quickRatioBps: number;
+  readonly receivableTurnover: number;
+  readonly inventoryTurnover: number;
+  readonly interestCoverage: number;
   readonly receivableDays: number;
   readonly cashCoverageMonths: number;
+  readonly cashCollectionRatioBps: number;
+  readonly cashProfitRatioBps: number;
   readonly revenueMinor: number;
   readonly netProfitMinor: number;
 }
@@ -71,12 +77,36 @@ export function analyzeFinancialIndicators(
   const revenue = input.incomeStatement.revenueMinor;
   const bps = (value: number) =>
     Math.round((value * 10_000) / Math.max(1, revenue));
+  const currentLiabilities = input.balanceSheet.currentLiabilitiesMinor;
   const currentAssets =
     input.balanceSheet.cashMinor
     + input.balanceSheet.receivablesMinor
     + input.balanceSheet.inventoryMinor
     + input.balanceSheet.otherCurrentAssetsMinor;
-  const currentLiabilities = input.balanceSheet.currentLiabilitiesMinor;
+  const quickRatioBps = currentLiabilities <= 0
+    ? 0
+    : Math.round(
+        ((currentAssets - input.balanceSheet.inventoryMinor) * 10_000)
+        / currentLiabilities
+      );
+  const receivableTurnover = input.balanceSheet.receivablesMinor <= 0
+    ? 0
+    : Math.round((revenue * 10) / input.balanceSheet.receivablesMinor) / 10;
+  const inventoryTurnover = input.balanceSheet.inventoryMinor <= 0
+    ? 0
+    : Math.round(
+        (input.incomeStatement.costOfGoodsSoldMinor * 10)
+        / input.balanceSheet.inventoryMinor
+      ) / 10;
+  const interestCoverage =
+    input.incomeStatement.interestExpenseMinor <= 0
+      ? 0
+      : Math.round(
+          ((normalized.netProfitMinor
+            + input.incomeStatement.taxExpenseMinor
+            + input.incomeStatement.interestExpenseMinor) * 10)
+          / input.incomeStatement.interestExpenseMinor
+        ) / 10;
   const receivableDays = revenue === 0
     ? 0
     : Math.round(
@@ -87,6 +117,17 @@ export function analyzeFinancialIndicators(
     ? 0
     : Math.round(
         (normalized.closingCashMinor / normalized.grossProfitMinor) * 12
+      );
+  const cashCollectionRatioBps = revenue <= 0
+    ? 0
+    : Math.round(
+        (input.cashFlow.operatingInflowMinor * 10_000) / revenue
+      );
+  const cashProfitRatioBps = normalized.netProfitMinor <= 0
+    ? 0
+    : Math.round(
+        ((input.cashFlow.operatingInflowMinor - input.cashFlow.operatingOutflowMinor)
+          * 10_000) / normalized.netProfitMinor
       );
   return Object.freeze({
     grossMarginBps: bps(normalized.grossProfitMinor),
@@ -110,8 +151,14 @@ export function analyzeFinancialIndicators(
     currentRatioBps: currentLiabilities <= 0
       ? 0
       : Math.round((currentAssets * 10_000) / currentLiabilities),
+    quickRatioBps,
+    receivableTurnover,
+    inventoryTurnover,
+    interestCoverage,
     receivableDays,
     cashCoverageMonths,
+    cashCollectionRatioBps,
+    cashProfitRatioBps,
     revenueMinor: revenue,
     netProfitMinor: normalized.netProfitMinor
   });
