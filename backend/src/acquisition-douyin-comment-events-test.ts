@@ -101,6 +101,7 @@ test("run projections use the latest observation and remain tenant isolated", as
   await repository.linkEvent({
     scope: scopeA,
     eventId: "event-1",
+    observationId: "observation-1",
     runId: "run-1",
     shardId: "shard-1",
     discoveryOperationId: null,
@@ -116,6 +117,16 @@ test("run projections use the latest observation and remain tenant isolated", as
       replyCount: 4
     }
   }));
+  await repository.linkEvent({
+    scope: scopeA,
+    eventId: "event-1",
+    observationId: "observation-2",
+    runId: "run-1",
+    shardId: "shard-1",
+    discoveryOperationId: null,
+    candidateId: null,
+    evidenceId: null
+  });
 
   const signals = await repository.listRunCommentSignals(
     scopeA,
@@ -157,6 +168,7 @@ test("fetch attempts and event links have replay-safe lifecycles", async () => {
   const linkInput = {
     scope: scopeA,
     eventId: "event-1",
+    observationId: "observation-1",
     runId: "run-1",
     shardId: null,
     discoveryOperationId: null,
@@ -197,7 +209,7 @@ test("fetch attempts and event links have replay-safe lifecycles", async () => {
     /FETCH_ATTEMPT_CONFLICT/
   );
   assert.deepEqual(
-    (await repository.listFetchAttempts(scopeA, "run-1"))[0],
+    (await repository.listFetchAttempts(scopeA, "run-1", { limit: 50 }))[0],
     {
       attemptId: "attempt-1",
       runId: "run-1",
@@ -216,6 +228,56 @@ test("fetch attempts and event links have replay-safe lifecycles", async () => {
   assert.equal(summary.returnedCommentCount, 7);
 });
 
+test("later runs cannot change an earlier run comment snapshot", async () => {
+  const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
+  await repository.appendObservation(observation());
+  await repository.linkEvent({
+    scope: scopeA,
+    eventId: "event-1",
+    observationId: "observation-1",
+    runId: "run-1",
+    shardId: null,
+    discoveryOperationId: null,
+    candidateId: null,
+    evidenceId: null
+  });
+  await repository.appendObservation(observation({
+    observationId: "observation-2",
+    event: {
+      ...observation().event,
+      capturedAt: "2026-08-15T05:00:00.000Z",
+      likeCount: 99,
+      replyCount: 42
+    }
+  }));
+  await repository.linkEvent({
+    scope: scopeA,
+    eventId: "event-1",
+    observationId: "observation-2",
+    runId: "run-2",
+    shardId: null,
+    discoveryOperationId: null,
+    candidateId: null,
+    evidenceId: null
+  });
+
+  const run1 = await repository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 50 }
+  );
+  const run2 = await repository.listRunCommentSignals(
+    scopeA,
+    "run-2",
+    { limit: 50 }
+  );
+  assert.equal(run1[0]?.latestObservation.observationId, "observation-1");
+  assert.equal(run1[0]?.latestObservation.likeCount, 2);
+  assert.equal(run2[0]?.latestObservation.observationId, "observation-2");
+  assert.equal((await repository.getRunCommentSummary(scopeA, "run-1"))
+    .observationCount, 1);
+});
+
 test("fetch lifecycle rejects invalid counters before mutating state", async () => {
   const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
   await assert.rejects(
@@ -231,5 +293,100 @@ test("fetch lifecycle rejects invalid counters before mutating state", async () 
       startedAt: "2026-08-15T01:00:00.000Z"
     }),
     /INVALID_FETCH_ATTEMPT/
+  );
+});
+
+test("instants canonicalize to UTC milliseconds before replay comparison", async () => {
+  const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
+  const offset = observation({
+    event: {
+      ...observation().event,
+      occurredAt: "2026-08-15T08:30:00.987654+08:00",
+      capturedAt: "2026-08-15T09:00:00.123456+08:00"
+    }
+  });
+  const first = await repository.appendObservation(offset);
+  assert.equal(first.event.occurredAt, "2026-08-15T00:30:00.987Z");
+  assert.equal(first.observation.capturedAt, "2026-08-15T01:00:00.123Z");
+
+  const replay = await repository.appendObservation({
+    ...offset,
+    event: {
+      ...offset.event,
+      occurredAt: "2026-08-15T00:30:00.987Z",
+      capturedAt: "2026-08-15T01:00:00.123Z"
+    }
+  });
+  assert.equal(replay.eventCreated, false);
+  assert.equal(replay.observation.observationId, "observation-1");
+
+  const started = await repository.startFetchAttempt({
+    scope: scopeA,
+    attemptId: "attempt-offset",
+    runId: "run-offset",
+    shardId: null,
+    discoveryOperationId: null,
+    sourceUrl: "https://www.douyin.com/video/123",
+    videoId: "123",
+    requestedCount: 1,
+    startedAt: "2026-08-15T09:00:00.123999+08:00"
+  });
+  assert.equal(started.attempt.startedAt, "2026-08-15T01:00:00.123Z");
+});
+
+test("observation id conflicts cannot leave a linkable event orphan", async () => {
+  const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
+  await repository.appendObservation(observation());
+  const secondEvent = {
+    ...observation().event,
+    eventId: "event-2",
+    platformEventId: "cid-2",
+    videoId: "video-2"
+  };
+  await assert.rejects(
+    repository.appendObservation(observation({
+      observationId: "observation-1",
+      event: secondEvent
+    })),
+    /OBSERVATION_ID_CONFLICT/
+  );
+
+  const retried = await repository.appendObservation(observation({
+    observationId: "observation-2",
+    event: secondEvent
+  }));
+  assert.equal(retried.eventCreated, true);
+});
+
+test("fetch attempt reads are deterministically bounded", async () => {
+  const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
+  for (const [attemptId, startedAt] of [
+    ["attempt-3", "2026-08-15T03:00:00.000Z"],
+    ["attempt-2", "2026-08-15T02:00:00.000Z"],
+    ["attempt-1", "2026-08-15T01:00:00.000Z"]
+  ]) {
+    await repository.startFetchAttempt({
+      scope: scopeA,
+      attemptId,
+      runId: "run-bounded",
+      shardId: null,
+      discoveryOperationId: null,
+      sourceUrl: "https://www.douyin.com/video/123",
+      videoId: "123",
+      requestedCount: 1,
+      startedAt
+    });
+  }
+  assert.deepEqual(
+    (await repository.listFetchAttempts(
+      scopeA,
+      "run-bounded",
+      { limit: 2 }
+    )).map((attempt) => attempt.attemptId),
+    ["attempt-1", "attempt-2"]
+  );
+  await assert.rejects(
+    repository.listFetchAttempts(scopeA, "run-bounded", { limit: 0 }),
+    /INVALID_LIMIT/
   );
 });

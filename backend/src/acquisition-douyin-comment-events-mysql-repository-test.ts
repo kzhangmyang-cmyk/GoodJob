@@ -62,7 +62,7 @@ function eventRow(values: unknown[]) {
 class ConcurrentPool {
   readonly calls: Array<{ sql: string; values: unknown[] }> = [];
   readonly events = new Map<string, Record<string, unknown>>();
-  readonly observations = new Set<string>();
+  readonly observations = new Map<string, Record<string, unknown>>();
   commits = 0;
   rollbacks = 0;
 
@@ -95,8 +95,20 @@ class ConcurrentPool {
         )) {
           const key = `${values[1]}:${values[2]}:${values[0]}`;
           if (this.observations.has(key)) return [{ affectedRows: 0 }, []];
-          this.observations.add(key);
+          this.observations.set(key, {
+            observation_id: values[0], owner_id: values[1], team_id: values[2],
+            event_id: values[3], captured_at: values[4], like_count: values[5],
+            reply_count: values[6], observed_text_hash: values[7],
+            provider_version: values[8], raw_artifact_hash: values[9]
+          });
           return [{ affectedRows: 1 }, []];
+        }
+        if (normalized.includes(
+          "FROM acquisition_douyin_comment_observations"
+        )) {
+          const key = `${values[0]}:${values[1]}:${values[2]}`;
+          const row = this.observations.get(key);
+          return [row ? [row] : [], []];
         }
         throw new Error(`Unexpected SQL: ${normalized}`);
       },
@@ -114,6 +126,87 @@ class QueuePool {
   async query(sql: string, values: unknown[] = []) {
     this.calls.push({ sql: sql.replace(/\s+/gu, " ").trim(), values });
     return [this.queue.shift() ?? [], []] as [unknown, unknown];
+  }
+}
+
+function storedEventRow() {
+  const value = input("observation-1");
+  const event = value.event;
+  return {
+    event_id: event.eventId,
+    owner_id: value.scope.ownerId,
+    team_id: value.scope.teamId,
+    platform: event.platform,
+    event_type: event.eventType,
+    platform_event_id: event.platformEventId,
+    video_id: event.videoId,
+    parent_comment_id: event.parentCommentId,
+    text: event.text,
+    text_hash: event.textHash,
+    occurred_at: "2026-08-15 01:00:00.000",
+    captured_at: "2026-08-15 02:00:00.000",
+    like_count: event.likeCount,
+    reply_count: event.replyCount,
+    ip_label: event.ipLabel,
+    actor_display_name: event.actor.displayName,
+    actor_handle: event.actor.handle,
+    actor_sec_uid: event.actor.secUid,
+    source_url: event.sourceUrl,
+    coverage: event.coverage,
+    access_status: event.accessStatus,
+    provider_version: event.providerVersion,
+    raw_artifact_hash: event.rawArtifactHash
+  };
+}
+
+function storedObservationRow(
+  observationId: string,
+  capturedAt: string,
+  likeCount: number
+) {
+  return {
+    observation_id: observationId,
+    event_id: "event-1",
+    captured_at: capturedAt,
+    like_count: likeCount,
+    reply_count: 1,
+    observed_text_hash: `sha256:${"a".repeat(64)}`,
+    provider_version: "douyin-public-comment-provider-v1",
+    raw_artifact_hash: `sha256:${"b".repeat(64)}`
+  };
+}
+
+class SnapshotPool {
+  readonly calls: Array<{ sql: string; values: unknown[] }> = [];
+  async query(sql: string, values: unknown[] = []) {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    this.calls.push({ sql: normalized, values });
+    if (normalized.includes("FROM acquisition_douyin_comment_event_links")) {
+      return [[{
+        ...storedEventRow(),
+        link_id: "link-run-1",
+        observation_id: "observation-1",
+        run_id: "run-1",
+        shard_id: null,
+        discovery_operation_id: null,
+        candidate_id: null,
+        evidence_id: null
+      }], []] as [unknown, unknown];
+    }
+    if (normalized.includes("FROM acquisition_douyin_comment_events")) {
+      return [[storedEventRow()], []] as [unknown, unknown];
+    }
+    if (normalized.includes("FROM acquisition_douyin_comment_observations")) {
+      const byObservation = values[2] === "observation-1";
+      return [[byObservation
+        ? storedObservationRow(
+            "observation-1", "2026-08-15 02:00:00.000", 2
+          )
+        : storedObservationRow(
+            "observation-2", "2026-08-15 05:00:00.000", 99
+          )], []] as [unknown, unknown];
+    }
+    throw new Error(`Unexpected SQL: ${normalized}`);
   }
 }
 
@@ -138,6 +231,19 @@ test("schema creates four tenant-scoped comment persistence tables", async () =>
   assert.match(
     schema,
     /UNIQUE KEY uk_douyin_comment_platform_event\s*\(owner_id, team_id, platform, platform_event_id\)/
+  );
+  assert.match(
+    schema,
+    /FOREIGN KEY \(owner_id, team_id, event_id, observation_id\)/
+  );
+  assert.match(
+    ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS[2],
+    /observation_id VARCHAR\(160\) NOT NULL/
+  );
+  assert.equal(
+    ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS[1]
+      .match(/observation_id VARCHAR\(160\) NOT NULL/g)?.length,
+    1
   );
 });
 
@@ -219,9 +325,150 @@ test("fetch attempt reads are tenant scoped and reject corrupt status rows", asy
   await assert.rejects(
     repository.listFetchAttempts(
       { ownerId: "owner-a", teamId: "team-a" },
-      "run-1"
+      "run-1",
+      { limit: 50 }
     ),
     /MYSQL_INTEGRITY:status/
   );
-  assert.deepEqual(pool.calls[0]?.values, ["owner-a", "team-a", "run-1"]);
+  assert.deepEqual(
+    pool.calls[0]?.values,
+    ["owner-a", "team-a", "run-1", 50]
+  );
+});
+
+test("mysql run snapshots load only the observation linked to that run", async () => {
+  const pool = new SnapshotPool();
+  const repository = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(pool)
+  );
+
+  const signals = await repository.listRunCommentSignals(
+    { ownerId: "owner-a", teamId: "team-a" },
+    "run-1",
+    { limit: 50 }
+  );
+  assert.equal(signals[0]?.latestObservation.observationId, "observation-1");
+  assert.equal(signals[0]?.latestObservation.likeCount, 2);
+  assert.equal(signals[0]?.link.observationId, "observation-1");
+});
+
+test("mysql writes canonicalize offset and sub-millisecond instants", async () => {
+  const pool = new ConcurrentPool();
+  const repository = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(pool)
+  );
+  const value = input("observation-offset");
+  value.event = {
+    ...value.event,
+    occurredAt: "2026-08-15T08:30:00.987654+08:00",
+    capturedAt: "2026-08-15T09:00:00.123456+08:00"
+  };
+
+  const appended = await repository.appendObservation(value);
+  assert.equal(appended.event.occurredAt, "2026-08-15T00:30:00.987Z");
+  assert.equal(
+    appended.observation.capturedAt,
+    "2026-08-15T01:00:00.123Z"
+  );
+  const replayed = await repository.appendObservation({
+    ...value,
+    event: {
+      ...value.event,
+      occurredAt: "2026-08-15T00:30:00.987Z",
+      capturedAt: "2026-08-15T01:00:00.123Z"
+    }
+  });
+  assert.equal(replayed.eventCreated, false);
+  assert.equal(replayed.observation.capturedAt, "2026-08-15T01:00:00.123Z");
+});
+
+test("mysql reads canonicalize Date and formatted DATETIME values", async () => {
+  const baseRow = {
+    attempt_id: "attempt-date",
+    run_id: "run-date",
+    shard_id: null,
+    discovery_operation_id: null,
+    source_url: "https://www.douyin.com/video/123",
+    video_id: "123",
+    status: "running",
+    error_code: null,
+    requested_count: 1,
+    returned_count: 0,
+    reported_comment_count: null,
+    pages_fetched: 0,
+    started_at: new Date("2026-08-15T01:00:00.123Z"),
+    completed_at: null
+  };
+  const datePool = new QueuePool();
+  datePool.enqueue([baseRow]);
+  const dateRepository = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(datePool)
+  );
+  assert.equal((await dateRepository.listFetchAttempts(
+    { ownerId: "owner-a", teamId: "team-a" },
+    "run-date",
+    { limit: 1 }
+  ))[0]?.startedAt, "2026-08-15T01:00:00.123Z");
+  assert.match(datePool.calls[0]!.sql, /DATE_FORMAT\(started_at/);
+
+  const stringPool = new QueuePool();
+  stringPool.enqueue([{
+    ...baseRow,
+    status: "succeeded",
+    started_at: "2026-08-15 01:00:00.987654",
+    completed_at: "2026-08-15 01:00:01.999999"
+  }]);
+  const stringRepository = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(stringPool)
+  );
+  const parsed = (await stringRepository.listFetchAttempts(
+    { ownerId: "owner-a", teamId: "team-a" },
+    "run-date",
+    { limit: 1 }
+  ))[0]!;
+  assert.equal(parsed.startedAt, "2026-08-15T01:00:00.987Z");
+  assert.equal(parsed.completedAt, "2026-08-15T01:00:01.999Z");
+});
+
+test("mysql fetch attempt reads validate and enforce their bound", async () => {
+  const pool = new QueuePool();
+  pool.enqueue(["1", "2", "3"].map((suffix) => ({
+    attempt_id: `attempt-${suffix}`,
+    run_id: "run-bounded",
+    shard_id: null,
+    discovery_operation_id: null,
+    source_url: "https://www.douyin.com/video/123",
+    video_id: "123",
+    status: "running",
+    error_code: null,
+    requested_count: 1,
+    returned_count: 0,
+    reported_comment_count: null,
+    pages_fetched: 0,
+    started_at: `2026-08-15 0${suffix}:00:00.000`,
+    completed_at: null
+  })));
+  const repository = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(pool)
+  );
+  const attempts = await repository.listFetchAttempts(
+    { ownerId: "owner-a", teamId: "team-a" },
+    "run-bounded",
+    { limit: 2 }
+  );
+  assert.deepEqual(attempts.map((attempt) => attempt.attemptId), [
+    "attempt-1", "attempt-2"
+  ]);
+  assert.match(pool.calls[0]!.sql, /LIMIT \?/);
+  assert.deepEqual(pool.calls[0]!.values, [
+    "owner-a", "team-a", "run-bounded", 2
+  ]);
+  await assert.rejects(
+    repository.listFetchAttempts(
+      { ownerId: "owner-a", teamId: "team-a" },
+      "run-bounded",
+      { limit: 101 }
+    ),
+    /INVALID_LIMIT/
+  );
 });

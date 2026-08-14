@@ -5,6 +5,7 @@ import {
   assertFinishDouyinCommentFetchAttemptInput,
   assertLinkDouyinCommentEventInput,
   assertStartDouyinCommentFetchAttemptInput,
+  canonicalDouyinCommentInstant,
   type AcquisitionDouyinCommentEventRepository,
   type AcquisitionScope,
   type AppendDouyinCommentObservationInput,
@@ -69,6 +70,8 @@ export const ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS = [
     provider_version VARCHAR(255) NOT NULL,
     raw_artifact_hash CHAR(71) NOT NULL,
     PRIMARY KEY (owner_id, team_id, observation_id),
+    UNIQUE KEY uk_douyin_comment_observation_event
+      (owner_id, team_id, event_id, observation_id),
     KEY idx_douyin_comment_observation_latest
       (owner_id, team_id, event_id, captured_at, observation_id),
     CONSTRAINT fk_douyin_comment_observation_event
@@ -82,6 +85,7 @@ export const ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS = [
     owner_id VARCHAR(100) NOT NULL,
     team_id VARCHAR(100) NOT NULL,
     event_id VARCHAR(160) NOT NULL,
+    observation_id VARCHAR(160) NOT NULL,
     run_id VARCHAR(160) NULL,
     shard_id VARCHAR(160) NULL,
     discovery_operation_id VARCHAR(160) NULL,
@@ -91,11 +95,13 @@ export const ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS = [
     KEY idx_douyin_comment_link_run
       (owner_id, team_id, run_id, link_id),
     KEY idx_douyin_comment_link_event
-      (owner_id, team_id, event_id, link_id),
-    CONSTRAINT fk_douyin_comment_link_event
-      FOREIGN KEY (owner_id, team_id, event_id)
-      REFERENCES acquisition_douyin_comment_events
-        (owner_id, team_id, event_id)
+      (owner_id, team_id, event_id, observation_id, link_id),
+    KEY idx_douyin_comment_link_observation
+      (owner_id, team_id, observation_id, link_id),
+    CONSTRAINT fk_douyin_comment_link_observation
+      FOREIGN KEY (owner_id, team_id, event_id, observation_id)
+      REFERENCES acquisition_douyin_comment_observations
+        (owner_id, team_id, event_id, observation_id)
       ON UPDATE RESTRICT ON DELETE RESTRICT
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS acquisition_douyin_comment_fetch_attempts (
@@ -209,6 +215,35 @@ function affectedRows(value: unknown) {
   return Number((value as { affectedRows?: unknown } | null)?.affectedRows ?? 0);
 }
 
+function boundedLimit(limit: number) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_LIMIT");
+  }
+  return limit;
+}
+
+const EVENT_SELECT_COLUMNS = `event_id, owner_id, team_id, platform,
+  event_type, platform_event_id, video_id, parent_comment_id, text, text_hash,
+  DATE_FORMAT(occurred_at, '%Y-%m-%d %H:%i:%s.%f') AS occurred_at,
+  DATE_FORMAT(captured_at, '%Y-%m-%d %H:%i:%s.%f') AS captured_at,
+  like_count, reply_count, ip_label, actor_display_name, actor_handle,
+  actor_sec_uid, source_url, coverage, access_status, provider_version,
+  raw_artifact_hash`;
+
+const OBSERVATION_SELECT_COLUMNS = `observation_id, owner_id, team_id,
+  event_id,
+  DATE_FORMAT(captured_at, '%Y-%m-%d %H:%i:%s.%f') AS captured_at,
+  like_count, reply_count, observed_text_hash, provider_version,
+  raw_artifact_hash`;
+
+const FETCH_ATTEMPT_SELECT_COLUMNS = `attempt_id, owner_id, team_id, run_id,
+  shard_id, discovery_operation_id, source_url, video_id, status, error_code,
+  requested_count, returned_count, reported_comment_count, pages_fetched,
+  DATE_FORMAT(started_at, '%Y-%m-%d %H:%i:%s.%f') AS started_at,
+  CASE WHEN completed_at IS NULL THEN NULL
+    ELSE DATE_FORMAT(completed_at, '%Y-%m-%d %H:%i:%s.%f')
+  END AS completed_at`;
+
 function parseEvent(row: MysqlRow): DouyinCommentEvent {
   const parentCommentId = row.parent_comment_id;
   if (parentCommentId !== null) integrity("parent_comment_id");
@@ -269,6 +304,7 @@ function parseLink(row: MysqlRow): DouyinCommentEventLink {
   return {
     linkId: string(row, "link_id"),
     eventId: string(row, "event_id"),
+    observationId: string(row, "observation_id"),
     runId: nullableString(row, "run_id"),
     shardId: nullableString(row, "shard_id"),
     discoveryOperationId: nullableString(row, "discovery_operation_id"),
@@ -349,7 +385,8 @@ async function selectEventByBoundary(
   platformEventId: string
 ) {
   const [result] = await connection.query(
-    `SELECT * FROM acquisition_douyin_comment_events
+    `SELECT ${EVENT_SELECT_COLUMNS}
+     FROM acquisition_douyin_comment_events
      WHERE owner_id = ? AND team_id = ?
        AND platform = ? AND platform_event_id = ?
      FOR UPDATE`,
@@ -365,6 +402,14 @@ implements AcquisitionDouyinCommentEventRepository {
 
   async appendObservation(input: AppendDouyinCommentObservationInput) {
     assertAppendDouyinCommentObservationInput(input);
+    const normalizedInput: AppendDouyinCommentObservationInput = {
+      ...input,
+      event: {
+        ...input.event,
+        occurredAt: canonicalDouyinCommentInstant(input.event.occurredAt),
+        capturedAt: canonicalDouyinCommentInstant(input.event.capturedAt)
+      }
+    };
     const connection = await this.pool.getConnection();
     let transactionStarted = false;
     try {
@@ -378,15 +423,15 @@ implements AcquisitionDouyinCommentEventRepository {
           actor_display_name, actor_handle, actor_sec_uid, source_url,
           coverage, access_status, provider_version, raw_artifact_hash
         ) VALUES (${Array(23).fill("?").join(", ")})`,
-        eventValues(input)
+        eventValues(normalizedInput)
       );
       const eventCreated = affectedRows(insertResult) === 1;
       const event = await selectEventByBoundary(
         connection,
-        input.scope,
-        input.event.platformEventId
+        normalizedInput.scope,
+        normalizedInput.event.platformEventId
       );
-      const observation = observationFrom(input, event.eventId);
+      const observation = observationFrom(normalizedInput, event.eventId);
       const [observationInsert] = await connection.query(
         `INSERT IGNORE INTO acquisition_douyin_comment_observations (
           observation_id, owner_id, team_id, event_id, captured_at,
@@ -404,7 +449,8 @@ implements AcquisitionDouyinCommentEventRepository {
       let storedObservation = observation;
       if (affectedRows(observationInsert) === 0) {
         const [existingRows] = await connection.query(
-          `SELECT * FROM acquisition_douyin_comment_observations
+          `SELECT ${OBSERVATION_SELECT_COLUMNS}
+           FROM acquisition_douyin_comment_observations
            WHERE owner_id = ? AND team_id = ? AND observation_id = ?
            FOR UPDATE`,
           [input.scope.ownerId, input.scope.teamId, input.observationId]
@@ -436,11 +482,12 @@ implements AcquisitionDouyinCommentEventRepository {
     assertLinkDouyinCommentEventInput(input);
     const link: DouyinCommentEventLink = {
       linkId: `douyin-comment-link:${createHash("sha256").update(JSON.stringify([
-        input.scope.ownerId, input.scope.teamId, input.eventId, input.runId,
-        input.shardId, input.discoveryOperationId, input.candidateId,
-        input.evidenceId
+        input.scope.ownerId, input.scope.teamId, input.eventId,
+        input.observationId, input.runId, input.shardId, input.discoveryOperationId,
+        input.candidateId, input.evidenceId
       ])).digest("hex")}`,
       eventId: input.eventId,
+      observationId: input.observationId,
       runId: input.runId,
       shardId: input.shardId,
       discoveryOperationId: input.discoveryOperationId,
@@ -449,13 +496,13 @@ implements AcquisitionDouyinCommentEventRepository {
     };
     const [result] = await this.pool.query(
       `INSERT IGNORE INTO acquisition_douyin_comment_event_links (
-        link_id, owner_id, team_id, event_id, run_id, shard_id,
+        link_id, owner_id, team_id, event_id, observation_id, run_id, shard_id,
         discovery_operation_id, candidate_id, evidence_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         link.linkId, input.scope.ownerId, input.scope.teamId, link.eventId,
-        link.runId, link.shardId, link.discoveryOperationId, link.candidateId,
-        link.evidenceId
+        link.observationId, link.runId, link.shardId,
+        link.discoveryOperationId, link.candidateId, link.evidenceId
       ]
     );
     const created = affectedRows(result) === 1;
@@ -486,7 +533,7 @@ implements AcquisitionDouyinCommentEventRepository {
       returnedCount: 0,
       reportedCommentCount: null,
       pagesFetched: 0,
-      startedAt: input.startedAt,
+      startedAt: canonicalDouyinCommentInstant(input.startedAt),
       completedAt: null
     };
     const [result] = await this.pool.query(
@@ -528,13 +575,18 @@ implements AcquisitionDouyinCommentEventRepository {
     terminal: FinishDouyinCommentFetchAttemptInput
   ) {
     assertFinishDouyinCommentFetchAttemptInput(terminal);
+    const normalizedTerminal = {
+      ...terminal,
+      completedAt: canonicalDouyinCommentInstant(terminal.completedAt)
+    };
     const connection = await this.pool.getConnection();
     let transactionStarted = false;
     try {
       await connection.beginTransaction();
       transactionStarted = true;
       const [attemptRows] = await connection.query(
-        `SELECT * FROM acquisition_douyin_comment_fetch_attempts
+        `SELECT ${FETCH_ATTEMPT_SELECT_COLUMNS}
+         FROM acquisition_douyin_comment_fetch_attempts
          WHERE owner_id = ? AND team_id = ? AND attempt_id = ?
          FOR UPDATE`,
         [scope.ownerId, scope.teamId, attemptId]
@@ -542,7 +594,7 @@ implements AcquisitionDouyinCommentEventRepository {
       const row = rows(attemptRows)[0];
       if (!row) integrity("fetch_attempt_not_found");
       const existing = parseAttempt(row);
-      const finished = { ...existing, ...terminal };
+      const finished = { ...existing, ...normalizedTerminal };
       if (existing.status !== "running") {
         if (!same(existing, finished)) integrity("fetch_attempt_conflict");
         await connection.commit();
@@ -556,9 +608,11 @@ implements AcquisitionDouyinCommentEventRepository {
          WHERE owner_id = ? AND team_id = ? AND attempt_id = ?
            AND status = 'running'`,
         [
-          terminal.status, terminal.errorCode, terminal.returnedCount,
-          terminal.reportedCommentCount, terminal.pagesFetched,
-          mysqlDate(terminal.completedAt), scope.ownerId, scope.teamId, attemptId
+          normalizedTerminal.status, normalizedTerminal.errorCode,
+          normalizedTerminal.returnedCount,
+          normalizedTerminal.reportedCommentCount, normalizedTerminal.pagesFetched,
+          mysqlDate(normalizedTerminal.completedAt),
+          scope.ownerId, scope.teamId, attemptId
         ]
       );
       await connection.commit();
@@ -577,30 +631,42 @@ implements AcquisitionDouyinCommentEventRepository {
     runId: string,
     options: { limit: number }
   ) {
-    if (!Number.isSafeInteger(options.limit)
-      || options.limit < 1 || options.limit > 100) {
-      throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_LIMIT");
-    }
+    const limit = boundedLimit(options.limit);
     const [linkRows] = await this.pool.query(
-      `SELECT l.*, e.*
-       FROM acquisition_douyin_comment_event_links l
-       INNER JOIN acquisition_douyin_comment_events e
-         ON e.owner_id = l.owner_id AND e.team_id = l.team_id
-         AND e.event_id = l.event_id
-       WHERE l.owner_id = ? AND l.team_id = ? AND l.run_id = ?
-       ORDER BY l.link_id ASC
+      `WITH ranked_links AS (
+         SELECT l.*, o.captured_at AS observation_captured_at,
+           ROW_NUMBER() OVER (
+             PARTITION BY l.event_id
+             ORDER BY o.captured_at DESC, l.observation_id DESC, l.link_id DESC
+           ) AS snapshot_rank
+         FROM acquisition_douyin_comment_event_links l
+         INNER JOIN acquisition_douyin_comment_observations o
+           ON o.owner_id = l.owner_id AND o.team_id = l.team_id
+           AND o.observation_id = l.observation_id
+         WHERE l.owner_id = ? AND l.team_id = ? AND l.run_id = ?
+       )
+       SELECT * FROM ranked_links
+       WHERE snapshot_rank = 1
+       ORDER BY observation_captured_at DESC, observation_id DESC, link_id DESC
        LIMIT ?`,
-      [scope.ownerId, scope.teamId, runId, options.limit]
+      [scope.ownerId, scope.teamId, runId, limit]
     );
     return Promise.all(rows(linkRows).map(async (row) => {
       const link = parseLink(row);
-      const event = parseEvent(row);
+      const [eventRows] = await this.pool.query(
+        `SELECT ${EVENT_SELECT_COLUMNS}
+         FROM acquisition_douyin_comment_events
+         WHERE owner_id = ? AND team_id = ? AND event_id = ?`,
+        [scope.ownerId, scope.teamId, link.eventId]
+      );
+      const eventRow = rows(eventRows)[0];
+      if (!eventRow) return integrity("linked_event_missing");
+      const event = parseEvent(eventRow);
       const [observationRows] = await this.pool.query(
-        `SELECT * FROM acquisition_douyin_comment_observations
-         WHERE owner_id = ? AND team_id = ? AND event_id = ?
-         ORDER BY captured_at DESC, observation_id DESC
-         LIMIT 1`,
-        [scope.ownerId, scope.teamId, event.eventId]
+        `SELECT ${OBSERVATION_SELECT_COLUMNS}
+         FROM acquisition_douyin_comment_observations
+         WHERE owner_id = ? AND team_id = ? AND observation_id = ?`,
+        [scope.ownerId, scope.teamId, link.observationId]
       );
       const observationRow = rows(observationRows)[0];
       if (!observationRow) return integrity("event_observation_missing");
@@ -612,21 +678,18 @@ implements AcquisitionDouyinCommentEventRepository {
     const [result] = await this.pool.query(
       `WITH requested_scope AS (
          SELECT ? AS owner_id, ? AS team_id, ? AS run_id
-       ), run_events AS (
-         SELECT DISTINCT l.event_id
+       ), run_links AS (
+         SELECT DISTINCT l.event_id, l.observation_id
          FROM acquisition_douyin_comment_event_links l
          INNER JOIN requested_scope s
            ON s.owner_id = l.owner_id AND s.team_id = l.team_id
            AND s.run_id = l.run_id
        )
        SELECT
-         (SELECT COUNT(*) FROM run_events) AS linked_event_count,
-         (SELECT COUNT(*)
-          FROM acquisition_douyin_comment_observations o
-          INNER JOIN requested_scope s
-            ON s.owner_id = o.owner_id AND s.team_id = o.team_id
-          INNER JOIN run_events e ON e.event_id = o.event_id
-         ) AS observation_count,
+         (SELECT COUNT(DISTINCT event_id) FROM run_links)
+           AS linked_event_count,
+         (SELECT COUNT(DISTINCT observation_id) FROM run_links)
+           AS observation_count,
          (SELECT COUNT(*)
           FROM acquisition_douyin_comment_fetch_attempts a
           INNER JOIN requested_scope s
@@ -654,19 +717,27 @@ implements AcquisitionDouyinCommentEventRepository {
     };
   }
 
-  async listFetchAttempts(scope: AcquisitionScope, runId: string) {
+  async listFetchAttempts(
+    scope: AcquisitionScope,
+    runId: string,
+    options: { limit: number }
+  ) {
+    const limit = boundedLimit(options.limit);
     const [result] = await this.pool.query(
-      `SELECT * FROM acquisition_douyin_comment_fetch_attempts
+      `SELECT ${FETCH_ATTEMPT_SELECT_COLUMNS}
+       FROM acquisition_douyin_comment_fetch_attempts
        WHERE owner_id = ? AND team_id = ? AND run_id = ?
-       ORDER BY started_at ASC, attempt_id ASC`,
-      [scope.ownerId, scope.teamId, runId]
+       ORDER BY started_at ASC, attempt_id ASC
+       LIMIT ?`,
+      [scope.ownerId, scope.teamId, runId, limit]
     );
-    return rows(result).map(parseAttempt);
+    return rows(result).slice(0, limit).map(parseAttempt);
   }
 
   private async getFetchAttempt(scope: AcquisitionScope, attemptId: string) {
     const [result] = await this.pool.query(
-      `SELECT * FROM acquisition_douyin_comment_fetch_attempts
+      `SELECT ${FETCH_ATTEMPT_SELECT_COLUMNS}
+       FROM acquisition_douyin_comment_fetch_attempts
        WHERE owner_id = ? AND team_id = ? AND attempt_id = ?`,
       [scope.ownerId, scope.teamId, attemptId]
     );

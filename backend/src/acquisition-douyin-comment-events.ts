@@ -51,6 +51,7 @@ export interface AppendDouyinCommentObservationInput {
 export interface DouyinCommentEventLink {
   linkId: string;
   eventId: string;
+  observationId: string;
   runId: string | null;
   shardId: string | null;
   discoveryOperationId: string | null;
@@ -61,6 +62,7 @@ export interface DouyinCommentEventLink {
 export interface LinkDouyinCommentEventInput {
   scope: AcquisitionScope;
   eventId: string;
+  observationId: string;
   runId: string | null;
   shardId: string | null;
   discoveryOperationId: string | null;
@@ -156,7 +158,8 @@ export interface AcquisitionDouyinCommentEventRepository {
   ): Promise<DouyinRunCommentSummary>;
   listFetchAttempts(
     scope: AcquisitionScope,
-    runId: string
+    runId: string,
+    options: { limit: number }
   ): Promise<DouyinCommentFetchAttempt[]>;
 }
 
@@ -194,6 +197,14 @@ function nonNegativeInteger(value: unknown) {
 
 function validInstant(value: unknown) {
   return typeof value === "string" && Number.isFinite(new Date(value).getTime());
+}
+
+export function canonicalDouyinCommentInstant(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_INSTANT");
+  }
+  return date.toISOString();
 }
 
 function validDigest(value: unknown) {
@@ -291,6 +302,7 @@ export function assertLinkDouyinCommentEventInput(
     || !nonEmpty(input.scope?.ownerId, 100)
     || !nonEmpty(input.scope?.teamId, 100)
     || !nonEmpty(input.eventId, 160)
+    || !nonEmpty(input.observationId, 160)
     || !nullableNonEmpty(input.runId)
     || !nullableNonEmpty(input.shardId)
     || !nullableNonEmpty(input.discoveryOperationId)
@@ -305,6 +317,7 @@ function deterministicLink(input: LinkDouyinCommentEventInput) {
     input.scope.ownerId,
     input.scope.teamId,
     input.eventId,
+    input.observationId,
     input.runId,
     input.shardId,
     input.discoveryOperationId,
@@ -337,21 +350,23 @@ implements AcquisitionDouyinCommentEventRepository {
     assertAppendDouyinCommentObservationInput(input);
     const boundary = eventKey(input.scope, input.event.platformEventId);
     const stored = this.eventsByBoundary.get(boundary);
-    const event = stored?.value ?? cloned(input.event);
+    const normalizedEvent: DouyinCommentEvent = {
+      ...cloned(input.event),
+      occurredAt: canonicalDouyinCommentInstant(input.event.occurredAt),
+      capturedAt: canonicalDouyinCommentInstant(input.event.capturedAt)
+    };
+    const event = stored?.value ?? normalizedEvent;
     const eventCreated = !stored;
+    const eventIdKey = entityKey(input.scope, event.eventId);
     if (eventCreated) {
-      const idKey = entityKey(input.scope, event.eventId);
-      if (this.eventsById.has(idKey)) {
+      if (this.eventsById.has(eventIdKey)) {
         throw new Error("ACQUISITION_DOUYIN_COMMENT_EVENT_ID_CONFLICT");
       }
-      const scoped = { scope: cloned(input.scope), value: event };
-      this.eventsByBoundary.set(boundary, scoped);
-      this.eventsById.set(idKey, scoped);
     }
     const observation: DouyinCommentObservation = {
       observationId: input.observationId,
       eventId: event.eventId,
-      capturedAt: input.event.capturedAt,
+      capturedAt: normalizedEvent.capturedAt,
       likeCount: input.event.likeCount,
       replyCount: input.event.replyCount,
       observedTextHash: input.event.textHash,
@@ -362,6 +377,11 @@ implements AcquisitionDouyinCommentEventRepository {
     const existingObservation = this.observations.get(observationKey)?.value;
     if (existingObservation && !same(existingObservation, observation)) {
       throw new Error("ACQUISITION_DOUYIN_COMMENT_OBSERVATION_ID_CONFLICT");
+    }
+    if (eventCreated) {
+      const scoped = { scope: cloned(input.scope), value: event };
+      this.eventsByBoundary.set(boundary, scoped);
+      this.eventsById.set(eventIdKey, scoped);
     }
     if (!existingObservation) {
       this.observations.set(observationKey, {
@@ -382,9 +402,16 @@ implements AcquisitionDouyinCommentEventRepository {
     if (!this.eventsById.has(entityKey(input.scope, input.eventId))) {
       throw new Error("ACQUISITION_DOUYIN_COMMENT_EVENT_NOT_FOUND");
     }
+    const observation = this.observations.get(
+      entityKey(input.scope, input.observationId)
+    )?.value;
+    if (!observation || observation.eventId !== input.eventId) {
+      throw new Error("ACQUISITION_DOUYIN_COMMENT_OBSERVATION_NOT_FOUND");
+    }
     const link: DouyinCommentEventLink = {
       linkId: deterministicLink(input),
       eventId: input.eventId,
+      observationId: input.observationId,
       runId: input.runId,
       shardId: input.shardId,
       discoveryOperationId: input.discoveryOperationId,
@@ -417,7 +444,7 @@ implements AcquisitionDouyinCommentEventRepository {
       returnedCount: 0,
       reportedCommentCount: null,
       pagesFetched: 0,
-      startedAt: input.startedAt,
+      startedAt: canonicalDouyinCommentInstant(input.startedAt),
       completedAt: null
     };
     const key = entityKey(input.scope, input.attemptId);
@@ -443,12 +470,16 @@ implements AcquisitionDouyinCommentEventRepository {
     terminal: FinishDouyinCommentFetchAttemptInput
   ) {
     assertFinishDouyinCommentFetchAttemptInput(terminal);
+    const normalizedTerminal = {
+      ...terminal,
+      completedAt: canonicalDouyinCommentInstant(terminal.completedAt)
+    };
     const key = entityKey(scope, attemptId);
     const stored = this.attempts.get(key);
     if (!stored) throw new Error("ACQUISITION_DOUYIN_COMMENT_FETCH_ATTEMPT_NOT_FOUND");
     const finished: DouyinCommentFetchAttempt = {
       ...stored.value,
-      ...terminal
+      ...normalizedTerminal
     };
     if (stored.value.status !== "running") {
       if (!same(stored.value, finished)) {
@@ -467,36 +498,49 @@ implements AcquisitionDouyinCommentEventRepository {
   ) {
     const limit = positiveLimit(options.limit);
     const scopedPrefix = `${scopeKey(scope)}\u0000`;
-    const links = [...this.links.entries()]
+    const snapshots = [...this.links.entries()]
       .filter(([key, item]) => key.startsWith(scopedPrefix)
         && item.value.runId === runId)
-      .map(([, item]) => item.value)
-      .sort((left, right) => left.linkId.localeCompare(right.linkId))
-      .slice(0, limit);
-    return links.flatMap((link) => {
-      const event = this.eventsById.get(entityKey(scope, link.eventId))?.value;
-      if (!event) return [];
-      const latestObservation = [...this.observations.values()]
-        .filter((item) => same(item.scope, scope)
-          && item.value.eventId === event.eventId)
-        .map((item) => item.value)
-        .sort((left, right) =>
-          right.capturedAt.localeCompare(left.capturedAt)
-          || right.observationId.localeCompare(left.observationId))[0];
-      return latestObservation
-        ? [cloned({ event, latestObservation, link })]
-        : [];
-    });
+      .flatMap(([, item]) => {
+        const link = item.value;
+        const event = this.eventsById.get(
+          entityKey(scope, link.eventId)
+        )?.value;
+        const latestObservation = this.observations.get(
+          entityKey(scope, link.observationId)
+        )?.value;
+        return event && latestObservation
+          && latestObservation.eventId === event.eventId
+          ? [{ event, latestObservation, link }]
+          : [];
+      })
+      .sort((left, right) =>
+        right.latestObservation.capturedAt.localeCompare(
+          left.latestObservation.capturedAt
+        )
+        || right.latestObservation.observationId.localeCompare(
+          left.latestObservation.observationId
+        )
+        || right.link.linkId.localeCompare(left.link.linkId));
+    const seenEvents = new Set<string>();
+    return snapshots
+      .filter((snapshot) => {
+        if (seenEvents.has(snapshot.event.eventId)) return false;
+        seenEvents.add(snapshot.event.eventId);
+        return true;
+      })
+      .slice(0, limit)
+      .map(cloned);
   }
 
   async getRunCommentSummary(scope: AcquisitionScope, runId: string) {
-    const linkedEventIds = new Set(
-      [...this.links.values()]
-        .filter((item) => same(item.scope, scope) && item.value.runId === runId)
-        .map((item) => item.value.eventId)
-    );
-    const observationCount = [...this.observations.values()].filter((item) =>
-      same(item.scope, scope) && linkedEventIds.has(item.value.eventId)).length;
+    const runLinks = [...this.links.values()]
+      .filter((item) => same(item.scope, scope) && item.value.runId === runId)
+      .map((item) => item.value);
+    const linkedEventIds = new Set(runLinks.map((link) => link.eventId));
+    const observationCount = new Set(
+      runLinks.map((link) => link.observationId)
+    ).size;
     const attempts = [...this.attempts.values()]
       .filter((item) => same(item.scope, scope) && item.value.runId === runId)
       .map((item) => item.value);
@@ -511,11 +555,17 @@ implements AcquisitionDouyinCommentEventRepository {
     };
   }
 
-  async listFetchAttempts(scope: AcquisitionScope, runId: string) {
+  async listFetchAttempts(
+    scope: AcquisitionScope,
+    runId: string,
+    options: { limit: number }
+  ) {
+    const limit = positiveLimit(options.limit);
     return [...this.attempts.values()]
       .filter((item) => same(item.scope, scope) && item.value.runId === runId)
       .map((item) => cloned(item.value))
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt)
-        || left.attemptId.localeCompare(right.attemptId));
+        || left.attemptId.localeCompare(right.attemptId))
+      .slice(0, limit);
   }
 }

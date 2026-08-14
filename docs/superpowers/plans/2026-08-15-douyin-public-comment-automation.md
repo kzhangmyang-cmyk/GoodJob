@@ -151,7 +151,7 @@
 
 **Interfaces:**
 - `AcquisitionDouyinCommentEventRepository.appendObservation(input)` 返回 `{ event, observation, eventCreated, contentChanged }`。
-- `listRunCommentSignals(scope, runId, { limit })`、`getRunCommentSummary(scope, runId)` 和 `listFetchAttempts(scope, runId)` 为 Run Presentation 提供有界读模型。
+- `listRunCommentSignals(scope, runId, { limit })`、`getRunCommentSummary(scope, runId)` 和 `listFetchAttempts(scope, runId, { limit })` 为 Run Presentation 提供有界读模型。每个 event link 固定关联当次 `observationId`，同 Run 同事件多次观测按规范化 `capturedAt` 和确定性 ID 顺序取最新值，后续 Run 不改变历史 Run 快照。
 - `DouyinCommentFetchAttempt` 持久化 `runId | null`、`shardId | null`、`discoveryOperationId | null`、`sourceUrl`、`videoId | null`、`status`、`errorCode | null`、`requestedCount`、`returnedCount`、`reportedCommentCount | null`、`pagesFetched`、`startedAt`、`completedAt`。
 - MySQL 表：`acquisition_douyin_comment_events`、`acquisition_douyin_comment_observations`、`acquisition_douyin_comment_event_links`、`acquisition_douyin_comment_fetch_attempts`；所有查询带 `owner_id + team_id`。
 
