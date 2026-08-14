@@ -1821,6 +1821,15 @@ export interface components {
                 extractorVersion: "douyin-public-profile-v1";
             } | {
                 /** @constant */
+                kind: "platform_public_event";
+                /** Format: uri */
+                sourceUrl: string;
+                platformEventId: string;
+                providerVersion: string;
+                /** @constant */
+                coverage: "public_top_level_sample";
+            } | {
+                /** @constant */
                 kind: "import_artifact_row";
                 importBatchId: string;
                 artifactHash: string;
@@ -1831,7 +1840,7 @@ export interface components {
             };
             /** @enum {unknown} */
             accessStatus: "indexed_summary" | "public_content" | "user_supplied" | "access_restricted";
-        };
+        } & unknown;
         budgetUsage: {
             requests: number;
             results: number;
@@ -4319,6 +4328,12 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     targetPlatform?: "douyin" | "web";
+                    douyinPublicCommentSample?: {
+                        enabled: boolean;
+                        maxVideosPerRun: number;
+                        maxCommentsPerVideo: number;
+                        maxPagesPerVideo: number;
+                    };
                     name: string;
                     objective: string;
                     icp: {
@@ -4370,7 +4385,7 @@ export interface operations {
                         stopWhenBudgetExhausted: boolean;
                         stopWhenNoMoreResults: boolean;
                     };
-                };
+                } & unknown;
             };
         };
         responses: {
@@ -4515,6 +4530,12 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     targetPlatform?: "douyin" | "web";
+                    douyinPublicCommentSample?: {
+                        enabled: boolean;
+                        maxVideosPerRun: number;
+                        maxCommentsPerVideo: number;
+                        maxPagesPerVideo: number;
+                    };
                     name?: string;
                     objective?: string;
                     icp?: {
@@ -4671,6 +4692,12 @@ export interface operations {
                 "application/json": {
                     /** @enum {string} */
                     targetPlatform?: "douyin" | "web";
+                    douyinPublicCommentSample?: {
+                        enabled: boolean;
+                        maxVideosPerRun: number;
+                        maxCommentsPerVideo: number;
+                        maxPagesPerVideo: number;
+                    };
                     name?: string;
                     objective?: string;
                     icp?: {

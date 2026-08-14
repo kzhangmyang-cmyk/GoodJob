@@ -497,6 +497,25 @@ test("acquisition plans version an optional Douyin public comment policy", async
     douyinPublicCommentSample: policy
   }))), true, JSON.stringify(validate.errors));
   const providerBinding = acquisitionPlanPayload().providerConnections[0];
+  assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
+    providerConnections: [
+      { ...providerBinding, providerId: "another-provider" },
+      providerBinding
+    ],
+    douyinPublicCommentSample: policy
+  }))), true, JSON.stringify(validate.errors));
+  assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
+    providerConnections: [],
+    douyinPublicCommentSample: policy
+  }))), false, "enabled sampling must reject an empty provider set");
+  assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
+    providerConnections: [
+      { ...providerBinding, providerId: "another-provider" },
+      { ...providerBinding, kind: "search" },
+      { ...providerBinding, status: "inactive" }
+    ],
+    douyinPublicCommentSample: policy
+  }))), false, "enabled sampling must reject a provider set with no exact match");
   for (const invalidBinding of [
     { ...providerBinding, providerId: "another-provider" },
     { ...providerBinding, kind: "search" },

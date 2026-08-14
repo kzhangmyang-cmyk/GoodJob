@@ -37,7 +37,10 @@ enabled policy requires `targetPlatform: douyin` and is bounded to 20 videos,
 100 comments per video, and 5 pages per video. It must also version at least one
 active `content_fetch` provider connection whose provider ID is exactly
 `experimental_public_sample`; runtime execution must apply the stricter of
-these plan values and its server limits.
+these plan values and its server limits. Plan create, update, and revision
+request contracts expose the same four-field policy; create requests enforce
+the provider binding directly, while mutations are validated after merging
+with the current plan.
 
 Public Douyin comments enter the acquisition domain as immutable comment
 events and `DiscoveryEvidence` with `platform_public_event` provenance. That

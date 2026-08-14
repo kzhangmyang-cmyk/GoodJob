@@ -15,6 +15,7 @@ const unsupportedOpenApi30SchemaKeywords = new Set([
   "$id",
   "$defs",
   "const",
+  "contains",
   "if",
   "then",
   "else",
@@ -496,6 +497,114 @@ test("plan creation binds a server model snapshot behind an idempotent contract"
     false
   );
   assert.equal(create.parameters[0].schema.minLength, 8);
+});
+
+test("plan writes publish the bounded Douyin public comment sample policy", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  const expectedPolicy = {
+    type: "object",
+    required: [
+      "enabled",
+      "maxVideosPerRun",
+      "maxCommentsPerVideo",
+      "maxPagesPerVideo"
+    ],
+    properties: {
+      enabled: { type: "boolean" },
+      maxVideosPerRun: { type: "integer", minimum: 1, maximum: 20 },
+      maxCommentsPerVideo: { type: "integer", minimum: 1, maximum: 100 },
+      maxPagesPerVideo: { type: "integer", minimum: 1, maximum: 5 }
+    },
+    additionalProperties: false
+  };
+
+  for (const [path, method] of [
+    ["/api/v1/acquisition/plans", "post"],
+    ["/api/v1/acquisition/plans/{id}", "patch"],
+    ["/api/v1/acquisition/plans/{id}/revisions", "post"]
+  ] as const) {
+    const operation = paths[path]![method] as Record<string, any>;
+    const schema = operation.requestBody.content["application/json"].schema;
+    assert.deepEqual(
+      schema.properties.douyinPublicCommentSample,
+      expectedPolicy,
+      `${method.toUpperCase()} ${path}`
+    );
+  }
+
+  const createSchema = (paths[
+    "/api/v1/acquisition/plans"
+  ]!.post as Record<string, any>).requestBody
+    .content["application/json"].schema;
+  const validateCreate = new Ajv({
+    allErrors: true,
+    strict: false,
+    validateFormats: false
+  }).compile(createSchema);
+  const providerConnection = {
+    connectionId: "douyin-comments",
+    providerId: "experimental_public_sample",
+    kind: "content_fetch",
+    status: "active",
+    credentialVersion: 1
+  };
+  const createBody = {
+    targetPlatform: "douyin",
+    douyinPublicCommentSample: {
+      enabled: true,
+      maxVideosPerRun: 10,
+      maxCommentsPerVideo: 30,
+      maxPagesPerVideo: 3
+    },
+    name: "公开评论获客",
+    objective: "发现公开需求信号",
+    icp: {
+      industries: ["企业服务"],
+      regions: ["中国"],
+      organizationCriteria: ["公开需求"],
+      individualCriteria: ["公开需求"],
+      exclusionRules: []
+    },
+    subjectChannels: { organization: false, individual: true },
+    providerConnections: [providerConnection],
+    operations: [{
+      operationId: "comments",
+      subjectChannel: "individual",
+      kind: "content_fetch",
+      connectionId: "douyin-comments",
+      sourceRef: "https://www.douyin.com/video/123",
+      allocatedBudget: {
+        requests: 1,
+        results: 30,
+        amountMinor: 0,
+        durationSeconds: 60
+      }
+    }],
+    budgetSnapshot: {
+      billingCurrency: "CNY",
+      maxRequests: 1,
+      maxResults: 30,
+      maxAmountMinor: 0,
+      maxDurationSeconds: 60
+    },
+    stopConditions: {
+      stopWhenBudgetExhausted: true,
+      stopWhenNoMoreResults: true
+    }
+  };
+  assert.equal(validateCreate(createBody), true, JSON.stringify(
+    validateCreate.errors
+  ));
+  for (const invalidProvider of [
+    { ...providerConnection, providerId: "another-provider" },
+    { ...providerConnection, kind: "search" },
+    { ...providerConnection, status: "inactive" }
+  ]) {
+    assert.equal(validateCreate({
+      ...createBody,
+      providerConnections: [invalidProvider]
+    }), false, JSON.stringify(invalidProvider));
+  }
 });
 
 test("human review, conversion, and copilot writes mirror runtime schemas", () => {
@@ -1044,6 +1153,102 @@ test("acquisition schemas are converted to valid OpenAPI 3.0 without weakening c
       .properties.kind.enum,
     ["search_result"]
   );
+
+  const planSchema = (paths[
+    "/api/v1/acquisition/plans/{id}"
+  ]!.get as Record<string, any>).responses["200"]
+    .content["application/json"].schema;
+  const validatePlanPayload = new Ajv({
+    allErrors: true,
+    strict: false,
+    validateFormats: false
+  }).compile(planSchema.properties.payload);
+  const providerConnection = {
+    connectionId: "douyin-public-comments",
+    providerId: "experimental_public_sample",
+    kind: "content_fetch",
+    status: "active",
+    credentialVersion: 1
+  };
+  const enabledPolicy = {
+    enabled: true,
+    maxVideosPerRun: 10,
+    maxCommentsPerVideo: 30,
+    maxPagesPerVideo: 3
+  };
+  const payload = {
+    targetPlatform: "douyin",
+    douyinPublicCommentSample: enabledPolicy,
+    name: "公开评论获客",
+    objective: "发现公开需求信号",
+    icp: {
+      industries: ["企业服务"],
+      regions: ["中国"],
+      organizationCriteria: ["公开需求"],
+      individualCriteria: ["公开需求"],
+      exclusionRules: []
+    },
+    subjectChannels: { organization: false, individual: true },
+    providerConnections: [providerConnection],
+    operations: [],
+    budgetSnapshot: {
+      billingCurrency: "CNY",
+      maxRequests: 1,
+      maxResults: 30,
+      maxAmountMinor: 0,
+      maxDurationSeconds: 60
+    },
+    modelSnapshotRef: {
+      jobSnapshotId: "snapshot-openapi",
+      connectionId: "model-openapi",
+      credentialVersion: 1,
+      provider: "openai",
+      model: "gpt-5",
+      capabilitySnapshotHash: "sha256:capabilities",
+      promptVersion: "acquisition.v1",
+      schemaVersion: "acquisition-plan.v1",
+      promptHash: "sha256:prompt",
+      schemaHash: "sha256:schema"
+    },
+    stopConditions: {
+      stopWhenBudgetExhausted: true,
+      stopWhenNoMoreResults: true
+    }
+  };
+
+  assert.equal(validatePlanPayload(payload), true, JSON.stringify(
+    validatePlanPayload.errors
+  ));
+  for (const providerConnections of [
+    [],
+    [{ ...providerConnection, providerId: "another-provider" }],
+    [{ ...providerConnection, kind: "search" }],
+    [{ ...providerConnection, status: "inactive" }],
+    [
+      { ...providerConnection, providerId: "another-provider" },
+      { ...providerConnection, kind: "search" }
+    ]
+  ]) {
+    assert.equal(validatePlanPayload({
+      ...payload,
+      providerConnections
+    }), false, JSON.stringify(providerConnections));
+  }
+  assert.equal(validatePlanPayload({
+    ...payload,
+    targetPlatform: "web",
+    douyinPublicCommentSample: { ...enabledPolicy, enabled: false },
+    providerConnections: []
+  }), true, JSON.stringify(validatePlanPayload.errors));
+  const {
+    douyinPublicCommentSample: _omittedPolicy,
+    ...legacyPayload
+  } = payload;
+  assert.equal(validatePlanPayload({
+    ...legacyPayload,
+    targetPlatform: "web",
+    providerConnections: []
+  }), true, JSON.stringify(validatePlanPayload.errors));
 
   const battleCardSchema = (paths[
     "/api/v1/acquisition/candidates/{id}/battle-card"

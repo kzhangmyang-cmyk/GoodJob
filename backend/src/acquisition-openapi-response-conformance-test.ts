@@ -60,6 +60,33 @@ function assertResponseConforms(
   );
 }
 
+function assertRequestConforms(
+  path: string,
+  method: "post" | "patch",
+  body: unknown
+) {
+  const operation = openApiPaths[path]?.[method] as
+    | Record<string, any>
+    | undefined;
+  assert.ok(operation, `${method.toUpperCase()} ${path}`);
+  const schema = operation.requestBody?.content?.["application/json"]?.schema;
+  assert.ok(schema, `${method.toUpperCase()} ${path} request schema`);
+  const validate = new Ajv({
+    allErrors: true,
+    strict: false,
+    validateFormats: false
+  }).compile(schema);
+  assert.equal(
+    validate(body),
+    true,
+    `${method.toUpperCase()} ${path}: ${JSON.stringify(
+      validate.errors,
+      null,
+      2
+    )}`
+  );
+}
+
 async function mount(...routers: Router[]) {
   const app = express();
   app.use(express.json());
@@ -321,6 +348,51 @@ test("mounted plan and run responses conform to production OpenAPI", async () =>
     requestIdFactory: () => "request-response-contract"
   }));
   try {
+    const commentPlan = {
+      ...planBody(),
+      targetPlatform: "douyin",
+      douyinPublicCommentSample: {
+        enabled: true,
+        maxVideosPerRun: 10,
+        maxCommentsPerVideo: 30,
+        maxPagesPerVideo: 3
+      },
+      providerConnections: [
+        ...planBody().providerConnections,
+        {
+          connectionId: "douyin-public-comments-response-contract",
+          providerId: "experimental_public_sample",
+          kind: "content_fetch",
+          status: "active",
+          credentialVersion: 1
+        }
+      ]
+    };
+    assertRequestConforms(
+      "/api/v1/acquisition/plans",
+      "post",
+      commentPlan
+    );
+    const commentCreated = await fixture.request(
+      "/api/v1/acquisition/plans",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "response-comment-plan-create" },
+        body: JSON.stringify(commentPlan)
+      }
+    );
+    assert.equal(commentCreated.response.status, 201);
+    assert.deepEqual(
+      commentCreated.body.payload.douyinPublicCommentSample,
+      commentPlan.douyinPublicCommentSample
+    );
+    assertResponseConforms(
+      "/api/v1/acquisition/plans",
+      "post",
+      201,
+      commentCreated.body
+    );
+
     const created = await fixture.request(
       "/api/v1/acquisition/plans",
       {

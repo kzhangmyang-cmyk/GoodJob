@@ -277,18 +277,21 @@
               "targetPlatform": { "const": "douyin" },
               "providerConnections": {
                 "type": "array",
-                "contains": {
-                  "type": "object",
-                  "required": ["providerId", "kind", "status"],
-                  "properties": {
-                    "providerId": {
-                      "const": "experimental_public_sample"
-                    },
-                    "kind": { "const": "content_fetch" },
-                    "status": { "const": "active" }
+                "not": {
+                  "items": {
+                    "not": {
+                      "type": "object",
+                      "required": ["providerId", "kind", "status"],
+                      "properties": {
+                        "providerId": {
+                          "const": "experimental_public_sample"
+                        },
+                        "kind": { "const": "content_fetch" },
+                        "status": { "const": "active" }
+                      }
+                    }
                   }
-                },
-                "minContains": 1
+                }
               }
             }
           }

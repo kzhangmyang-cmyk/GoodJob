@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Ajv } from "ajv";
 import express from "express";
 import {
   createAcquisitionDiscoveryOperationsRouter
@@ -99,6 +100,110 @@ test("published acquisition operations can be normalized", async () => {
     [{ bearerAuth: [] }, { cookieAuth: [] }]
   );
   assert.ok(surface.responses["200"]);
+});
+
+test("published plan writes expose the bounded Douyin comment policy", async () => {
+  const published = await loadPublishedAcquisitionPaths();
+  const expectedPolicy = {
+    type: "object",
+    required: [
+      "enabled",
+      "maxVideosPerRun",
+      "maxCommentsPerVideo",
+      "maxPagesPerVideo"
+    ],
+    properties: {
+      enabled: { type: "boolean" },
+      maxVideosPerRun: { type: "integer", minimum: 1, maximum: 20 },
+      maxCommentsPerVideo: { type: "integer", minimum: 1, maximum: 100 },
+      maxPagesPerVideo: { type: "integer", minimum: 1, maximum: 5 }
+    },
+    additionalProperties: false
+  };
+
+  for (const [path, method] of [
+    ["/api/v1/acquisition/plans", "post"],
+    ["/api/v1/acquisition/plans/{id}", "patch"],
+    ["/api/v1/acquisition/plans/{id}/revisions", "post"]
+  ] as const) {
+    const operation = published[path]![method]!;
+    assert.deepEqual(
+      operation.requestBody.content["application/json"].schema
+        .properties.douyinPublicCommentSample,
+      expectedPolicy,
+      `${method.toUpperCase()} ${path}`
+    );
+  }
+
+  const createSchema = published["/api/v1/acquisition/plans"]!.post!
+    .requestBody.content["application/json"].schema;
+  const validateCreate = new Ajv({
+    allErrors: true,
+    strict: false,
+    validateFormats: false
+  }).compile(createSchema);
+  const providerConnection = {
+    connectionId: "douyin-comments",
+    providerId: "experimental_public_sample",
+    kind: "content_fetch",
+    status: "active",
+    credentialVersion: 1
+  };
+  const plan = {
+    targetPlatform: "douyin",
+    douyinPublicCommentSample: {
+      enabled: true,
+      maxVideosPerRun: 10,
+      maxCommentsPerVideo: 30,
+      maxPagesPerVideo: 3
+    },
+    name: "公开评论获客",
+    objective: "发现公开需求信号",
+    icp: {
+      industries: ["企业服务"],
+      regions: ["中国"],
+      organizationCriteria: ["公开需求"],
+      individualCriteria: ["公开需求"],
+      exclusionRules: []
+    },
+    subjectChannels: { organization: false, individual: true },
+    providerConnections: [providerConnection],
+    operations: [{
+      operationId: "comments",
+      subjectChannel: "individual",
+      kind: "content_fetch",
+      connectionId: "douyin-comments",
+      sourceRef: "https://www.douyin.com/video/123",
+      allocatedBudget: {
+        requests: 1,
+        results: 30,
+        amountMinor: 0,
+        durationSeconds: 60
+      }
+    }],
+    budgetSnapshot: {
+      billingCurrency: "CNY",
+      maxRequests: 1,
+      maxResults: 30,
+      maxAmountMinor: 0,
+      maxDurationSeconds: 60
+    },
+    stopConditions: {
+      stopWhenBudgetExhausted: true,
+      stopWhenNoMoreResults: true
+    }
+  };
+  assert.equal(validateCreate(plan), true, JSON.stringify(validateCreate.errors));
+  for (const invalidProvider of [
+    { ...providerConnection, providerId: "another-provider" },
+    { ...providerConnection, kind: "search" },
+    { ...providerConnection, status: "inactive" }
+  ]) {
+    assert.equal(validateCreate({
+      ...plan,
+      providerConnections: [invalidProvider]
+    }), false, JSON.stringify(invalidProvider));
+  }
 });
 
 test("published plan approval matches the production contract", async () => {

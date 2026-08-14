@@ -1574,6 +1574,60 @@ const acquisitionUsageWriteSchema = {
   additionalProperties: false
 };
 
+const douyinPublicCommentSampleWriteSchema = {
+  type: "object",
+  required: [
+    "enabled",
+    "maxVideosPerRun",
+    "maxCommentsPerVideo",
+    "maxPagesPerVideo"
+  ],
+  properties: {
+    enabled: { type: "boolean" },
+    maxVideosPerRun: { type: "integer", minimum: 1, maximum: 20 },
+    maxCommentsPerVideo: { type: "integer", minimum: 1, maximum: 100 },
+    maxPagesPerVideo: { type: "integer", minimum: 1, maximum: 5 }
+  },
+  additionalProperties: false
+};
+
+const enabledDouyinCommentProviderRequirement = {
+  if: {
+    type: "object",
+    required: ["douyinPublicCommentSample"],
+    properties: {
+      douyinPublicCommentSample: {
+        type: "object",
+        required: ["enabled"],
+        properties: { enabled: { enum: [true] } }
+      }
+    }
+  },
+  then: {
+    type: "object",
+    required: ["targetPlatform", "providerConnections"],
+    properties: {
+      targetPlatform: { enum: ["douyin"] },
+      providerConnections: {
+        type: "array",
+        not: {
+          items: {
+            not: {
+              type: "object",
+              required: ["providerId", "kind", "status"],
+              properties: {
+                providerId: { enum: ["experimental_public_sample"] },
+                kind: { enum: ["content_fetch"] },
+                status: { enum: ["active"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+};
+
 const planCreateWriteSchema = {
   type: "object",
   required: [
@@ -1591,6 +1645,7 @@ const planCreateWriteSchema = {
       type: "string",
       enum: ["douyin", "web"]
     },
+    douyinPublicCommentSample: douyinPublicCommentSampleWriteSchema,
     name: { type: "string", minLength: 1, maxLength: 200 },
     objective: { type: "string", minLength: 1, maxLength: 2_000 },
     icp: {
@@ -1746,6 +1801,7 @@ const planCreateWriteSchema = {
       additionalProperties: false
     }
   },
+  allOf: [enabledDouyinCommentProviderRequirement],
   additionalProperties: false
 };
 
@@ -1982,6 +2038,8 @@ const planMutationWriteSchema = {
   minProperties: 1,
   properties: {
     targetPlatform: planCreateWriteSchema.properties.targetPlatform,
+    douyinPublicCommentSample:
+      douyinPublicCommentSampleWriteSchema,
     name: planCreateWriteSchema.properties.name,
     objective: planCreateWriteSchema.properties.objective,
     icp: planCreateWriteSchema.properties.icp,
