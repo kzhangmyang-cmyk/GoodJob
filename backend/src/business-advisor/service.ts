@@ -375,7 +375,10 @@ export function createBusinessAdvisorService(): BusinessAdvisorService {
       Math.min(
         10_000,
         5_000
-        + Math.max(-3_000, (indicators.netMarginBps - 800) * 20)
+        + Math.max(
+          -3_000,
+          Math.min(1_500, (indicators.netMarginBps - 800) * 20)
+        )
         + (indicators.debtRatioBps > 7_000 ? -800 : 0)
         + (indicators.receivableDays > 90 ? -600 : 0)
         + (

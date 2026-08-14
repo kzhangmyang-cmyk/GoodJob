@@ -253,3 +253,15 @@ test("positive profit with weak operating cash triggers profit-cash divergence",
   assert.ok(issue.reason.includes("净现比"));
   assert.ok(issue.suggestion.includes("理论现金流勾稽法"));
 });
+
+test("red flags pull the health score below full marks even with high net margin", () => {
+  const service = createBusinessAdvisorService();
+  const input = adjustedCompany({
+    receivablesMinor: moneyYuanToMinor(1_800_000),
+    currentLiabilitiesMinor: moneyYuanToMinor(2_500_000),
+    operatingInflowMinor: moneyYuanToMinor(4_200_000)
+  });
+  const report = service.diagnose(input);
+  assert.equal(report.issues.length > 0, true);
+  assert.ok(report.healthScoreBps < 10_000, "red flags must reduce the score");
+});
