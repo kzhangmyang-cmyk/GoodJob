@@ -118,12 +118,12 @@ export function analyzeFinancialIndicators(
     : Math.round(
         (normalized.closingCashMinor / normalized.grossProfitMinor) * 12
       );
-  const cashCollectionRatioBps = revenue <= 0
+  const cashCollectionRatioBps = !input.cashFlow || revenue <= 0
     ? 0
     : Math.round(
         (input.cashFlow.operatingInflowMinor * 10_000) / revenue
       );
-  const cashProfitRatioBps = normalized.netProfitMinor <= 0
+  const cashProfitRatioBps = !input.cashFlow || normalized.netProfitMinor <= 0
     ? 0
     : Math.round(
         ((input.cashFlow.operatingInflowMinor - input.cashFlow.operatingOutflowMinor)
@@ -227,6 +227,15 @@ export function analyzeCashflow(
   input: BusinessReportInput,
   closingCashMinor: number
 ): CashflowForecast {
+  if (!input.cashFlow) {
+    return Object.freeze({
+      next30DaysNetMinor: 0,
+      next90DaysNetMinor: 0,
+      projectedClosingCash30DaysMinor: closingCashMinor,
+      projectedClosingCash90DaysMinor: closingCashMinor,
+      warning: Object.freeze([])
+    });
+  }
   const closing = closingCashMinor;
   const next30 = input.cashFlow.expectedInflowsNext30DaysMinor
     - input.cashFlow.expectedOutflowsNext30DaysMinor;

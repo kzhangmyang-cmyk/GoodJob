@@ -85,7 +85,7 @@ export interface BusinessReportInput {
   readonly period: string;
   readonly balanceSheet: BalanceSheetInput;
   readonly incomeStatement: IncomeStatementInput;
-  readonly cashFlow: CashFlowInput;
+  readonly cashFlow?: CashFlowInput;
   readonly costDetail?: CostDetailInput;
   readonly taxRisk?: TaxRiskInput;
 }
@@ -153,35 +153,31 @@ export function normalizeBusinessReport(
   requireNonNegative(input.incomeStatement.operatingExpensesMinor, "incomeStatement.operatingExpenses");
   requireNonNegative(input.incomeStatement.interestExpenseMinor, "incomeStatement.interestExpense");
   requireNonNegative(input.incomeStatement.taxExpenseMinor, "incomeStatement.taxExpense");
-  requireNonNegative(input.cashFlow.openingCashMinor, "cashFlow.openingCash");
-  requireNonNegative(input.cashFlow.operatingInflowMinor, "cashFlow.operatingInflow");
-  requireNonNegative(input.cashFlow.operatingOutflowMinor, "cashFlow.operatingOutflow");
 
   const totalAssetsMinor = assets.reduce((sum, value) => sum + value, 0);
   const totalLiabilitiesMinor = liabilities.reduce((sum, value) => sum + value, 0);
   const equityMinor = totalAssetsMinor - totalLiabilitiesMinor;
-  if (equityMinor < 0) {
-    throw businessAdvisorError("business_balance_break", "负债大于资产，资产负债表不平");
-  }
   const grossProfitMinor =
     input.incomeStatement.revenueMinor - input.incomeStatement.costOfGoodsSoldMinor;
-  if (grossProfitMinor < 0) {
-    throw businessAdvisorError("business_income_break", "毛利为负，请核对收入与成本");
-  }
   const netProfitMinor =
     grossProfitMinor
     - input.incomeStatement.operatingExpensesMinor
     - input.incomeStatement.interestExpenseMinor
     - input.incomeStatement.taxExpenseMinor;
-  const netOperatingMinor =
-    input.cashFlow.operatingInflowMinor - input.cashFlow.operatingOutflowMinor;
-  const closingCashMinor =
-    input.cashFlow.openingCashMinor
-    + netOperatingMinor
-    + input.cashFlow.investingNetMinor
-    + input.cashFlow.financingNetMinor;
-  if (closingCashMinor < 0) {
-    throw businessAdvisorError("business_cash_break", "期末现金为负，现金流勾稽不平");
+  if (input.cashFlow) {
+    requireNonNegative(input.cashFlow.openingCashMinor, "cashFlow.openingCash");
+    requireNonNegative(input.cashFlow.operatingInflowMinor, "cashFlow.operatingInflow");
+    requireNonNegative(input.cashFlow.operatingOutflowMinor, "cashFlow.operatingOutflow");
+    const netOperatingMinor =
+      input.cashFlow.operatingInflowMinor - input.cashFlow.operatingOutflowMinor;
+    const closingCashMinor =
+      input.cashFlow.openingCashMinor
+      + netOperatingMinor
+      + input.cashFlow.investingNetMinor
+      + input.cashFlow.financingNetMinor;
+    if (closingCashMinor < 0) {
+      throw businessAdvisorError("business_cash_break", "期末现金为负，现金流勾稽不平");
+    }
   }
   if (input.costDetail) {
     requireBps(input.costDetail.materialCostRateBps, "costDetail.materialCostRate");
@@ -202,7 +198,12 @@ export function normalizeBusinessReport(
     equityMinor,
     grossProfitMinor,
     netProfitMinor,
-    closingCashMinor
+    closingCashMinor: input.cashFlow
+      ? input.cashFlow.openingCashMinor
+        + (input.cashFlow.operatingInflowMinor - input.cashFlow.operatingOutflowMinor)
+        + input.cashFlow.investingNetMinor
+        + input.cashFlow.financingNetMinor
+      : input.balanceSheet.cashMinor
   });
 }
 

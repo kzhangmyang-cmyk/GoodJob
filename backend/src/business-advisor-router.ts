@@ -6,6 +6,11 @@ import {
 import {
   createBusinessAdvisorService
 } from "./business-advisor/service.js";
+import {
+  parseStatements,
+  type StatementRow,
+  type StatementTable
+} from "./business-advisor/statement-import.js";
 
 function jsonError(res: Response, status: number, code: string, message: string) {
   res.status(status).json({
@@ -23,6 +28,34 @@ function route(
   return (req: Request, res: Response, next: (error?: unknown) => void) => {
     Promise.resolve(action(req, res)).catch(next);
   };
+}
+
+function coerceTable(raw: unknown): StatementTable {
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as { rows?: unknown }).rows)) {
+    throw Object.assign(new Error("statement_table_invalid"), {
+      code: "statement_table_invalid"
+    });
+  }
+  const rows: StatementRow[] = (raw as { rows: unknown[] }).rows.map((row) => {
+    if (!Array.isArray(row)) {
+      throw Object.assign(new Error("statement_table_invalid"), {
+        code: "statement_table_invalid"
+      });
+    }
+    return Object.freeze(row.map((cell) => {
+      if (
+        typeof cell === "string"
+        || typeof cell === "number"
+        || cell === null
+      ) {
+        return cell;
+      }
+      throw Object.assign(new Error("statement_table_invalid"), {
+        code: "statement_table_invalid"
+      });
+    }));
+  });
+  return Object.freeze({ rows: Object.freeze(rows) });
 }
 
 export function createBusinessAdvisorRouter(): Router {
@@ -66,6 +99,43 @@ export function createBusinessAdvisorRouter(): Router {
   router.post("/diagnose", route((req, res) => {
     const input = parseInput(req);
     res.json({ input, report: service.diagnose(input) });
+  }));
+
+  router.post("/statements/parse", route((req, res) => {
+    const body = req.body as {
+      balanceSheet?: unknown;
+      incomeStatement?: unknown;
+    };
+    const parsed = parseStatements(
+      coerceTable(body.balanceSheet),
+      coerceTable(body.incomeStatement)
+    );
+    normalizeBusinessReport(parsed.input);
+    res.json({
+      companyName: parsed.companyName,
+      period: parsed.period,
+      warnings: parsed.warnings,
+      input: parsed.input
+    });
+  }));
+
+  router.post("/statements/diagnose", route((req, res) => {
+    const body = req.body as {
+      balanceSheet?: unknown;
+      incomeStatement?: unknown;
+    };
+    const parsed = parseStatements(
+      coerceTable(body.balanceSheet),
+      coerceTable(body.incomeStatement)
+    );
+    normalizeBusinessReport(parsed.input);
+    res.json({
+      companyName: parsed.companyName,
+      period: parsed.period,
+      warnings: parsed.warnings,
+      input: parsed.input,
+      report: service.diagnose(parsed.input)
+    });
   }));
 
   router.use((

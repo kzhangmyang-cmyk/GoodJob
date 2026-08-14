@@ -265,3 +265,18 @@ test("red flags pull the health score below full marks even with high net margin
   assert.equal(report.issues.length > 0, true);
   assert.ok(report.healthScoreBps < 10_000, "red flags must reduce the score");
 });
+
+test("loss-making company gets a negative gross margin red flag instead of rejection", () => {
+  const service = createBusinessAdvisorService();
+  const input = adjustedCompany({});
+  input.incomeStatement.revenueMinor = 0;
+  input.incomeStatement.costOfGoodsSoldMinor = moneyYuanToMinor(55_515.87);
+  input.incomeStatement.operatingExpensesMinor = moneyYuanToMinor(94_315.87);
+  input.incomeStatement.interestExpenseMinor = moneyYuanToMinor(16.05);
+  input.incomeStatement.taxExpenseMinor = 0;
+  const report = service.diagnose(input);
+  const issue = report.issues.find((item) => item.title === "毛利为负");
+  assert.ok(issue);
+  assert.equal(issue.level, "red");
+  assert.ok(issue.suggestion.includes("收入确认"));
+});

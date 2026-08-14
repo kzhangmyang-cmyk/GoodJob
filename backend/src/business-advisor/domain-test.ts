@@ -62,14 +62,12 @@ test("balanced statements normalize into derived totals", () => {
   assert.equal(normalized.closingCashMinor, moneyYuanToMinor(1_400_000));
 });
 
-test("negative equity breaks the balance sheet", () => {
+test("negative equity is derived and allowed for distressed companies", () => {
   const input = validInput();
   input.balanceSheet.currentLiabilitiesMinor = moneyYuanToMinor(4_000_000);
-  assert.throws(
-    () => normalizeBusinessReport(input),
-    (error: unknown) =>
-      (error as { code?: string }).code === "business_balance_break"
-  );
+  const normalized = normalizeBusinessReport(input);
+  assert.equal(normalized.totalAssetsMinor, moneyYuanToMinor(3_500_000));
+  assert.equal(normalized.equityMinor, moneyYuanToMinor(-800_000));
 });
 
 test("negative closing cash breaks the cashflow", () => {
@@ -85,4 +83,19 @@ test("negative closing cash breaks the cashflow", () => {
 test("domain errors carry stable codes", () => {
   const error = businessAdvisorError("business_input_invalid");
   assert.equal(error.code, "business_input_invalid");
+});
+
+test("cash flow is optional and falls back to balance-sheet cash", () => {
+  const input = validInput();
+  delete input.cashFlow;
+  const normalized = normalizeBusinessReport(input);
+  assert.equal(normalized.closingCashMinor, moneyYuanToMinor(800_000));
+});
+
+test("negative gross profit normalizes instead of rejecting loss-making companies", () => {
+  const input = validInput();
+  input.incomeStatement.revenueMinor = 0;
+  input.incomeStatement.costOfGoodsSoldMinor = moneyYuanToMinor(55_515.87);
+  const normalized = normalizeBusinessReport(input);
+  assert.equal(normalized.grossProfitMinor, moneyYuanToMinor(-55_515.87));
 });

@@ -160,6 +160,18 @@ export function createBusinessAdvisorService(): BusinessAdvisorService {
     const evidence: string[] = [];
     const indicators = result.indicators;
 
+    if (indicators.grossMarginBps < 0) {
+      issues.push(issue(
+        "财务",
+        "red",
+        "毛利为负",
+        `毛利率 ${(indicators.grossMarginBps / 100).toFixed(1)}%，收入无法覆盖直接成本`,
+        "持续毛利为负会直接消耗现金，需先判断是收入确认口径、成本归集还是业务本身亏损",
+        "核对收入确认与成本归集口径，识别亏损业务线并限期改善",
+        [`毛利率 ${(indicators.grossMarginBps / 100).toFixed(1)}%`]
+      ));
+      evidence.push(`毛利率 ${(indicators.grossMarginBps / 100).toFixed(1)}%`);
+    }
     if (indicators.netMarginBps < 500) {
       issues.push(issue(
         "财务",
@@ -379,6 +391,7 @@ export function createBusinessAdvisorService(): BusinessAdvisorService {
           -3_000,
           Math.min(1_500, (indicators.netMarginBps - 800) * 20)
         )
+        + (indicators.grossMarginBps < 0 ? -1_000 : 0)
         + (indicators.debtRatioBps > 7_000 ? -800 : 0)
         + (indicators.receivableDays > 90 ? -600 : 0)
         + (
