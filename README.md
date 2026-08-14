@@ -48,6 +48,11 @@ npm run build
 （`pricing.sensitive.read` 等 capability）均由服务端 bootstrap 投影决定，
 演示模式不会发起任何 Growth API 请求。
 
+Growth API 与主应用共用同源 Cookie 登录态和 `gj_csrf` CSRF Cookie。
+未登录时可保留 `#growth/...` 目标路由；用户登录或恢复有效会话后，前端会
+自动重新执行 bootstrap，不会跳回 `#acquisition`。Growth 工作区显示时会
+隐藏旧演示壳层，避免两套页面同时出现。
+
 业务顾问中心支持在浏览器本地读取 `xls / xlsx` 资产负债表与利润表，
 再将结构化报表数据交给现有 Growth API 生成诊断；文件上传与解析界面不代表
 仓库内包含报表存储或后端服务。

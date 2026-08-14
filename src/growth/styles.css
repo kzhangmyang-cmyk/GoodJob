@@ -3,6 +3,11 @@
   background: var(--growth-surface, #ffffff);
 }
 
+.replica-shell[hidden],
+.shell[hidden] {
+  display: none !important;
+}
+
 .growth-nav {
   display: flex;
   gap: 0.25rem;

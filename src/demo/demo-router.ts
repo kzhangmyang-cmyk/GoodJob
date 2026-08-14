@@ -80,16 +80,10 @@ function moduleFromHash(fallback: DemoModule): DemoModule {
 }
 
 export function createDemoRouter(initial: DemoModule = "acquisition"): DemoRouter {
-  if (parseGrowthHash(window.location.hash)) {
-    return {
-      current: () => "acquisition",
-      navigate() {},
-      subscribe() {
-        return () => undefined;
-      }
-    };
-  }
-  let active = moduleFromHash(initial);
+  const growthRequested = parseGrowthHash(window.location.hash) !== null;
+  let active = growthRequested
+    ? initial
+    : moduleFromHash(initial);
   const listeners = new Set<(module: DemoModule) => void>();
 
   function renderShell(module: DemoModule): void {
@@ -138,7 +132,7 @@ export function createDemoRouter(initial: DemoModule = "acquisition"): DemoRoute
   });
 
   renderShell(active);
-  if (window.location.hash !== `#${active}`) window.location.hash = active;
+  if (!growthRequested && window.location.hash !== `#${active}`) window.location.hash = active;
 
   return {
     current: () => active,

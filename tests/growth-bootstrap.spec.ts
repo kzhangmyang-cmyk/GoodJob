@@ -35,8 +35,165 @@ test("contract mismatch fails closed with an unavailable state", async ({ page }
 test("workspace selection required shows the unavailable gate", async ({ page }) => {
   const scenario = growthContractScenario("workspace_selection_required");
   const installed = await installGrowthContractScenario(page, scenario);
-  await enterRealGrowth(page, "advisor");
+  await enterRealGrowth(page, "agents");
   await expect(page.getByText("workspace_selection_required")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AI 经营顾问团队" }))
+    .toHaveCount(0);
+  await installed.dispose();
+});
+
+test("login retries growth bootstrap and keeps the growth workspace visible", async ({ page }) => {
+  const scenario = growthContractScenario("happy_path");
+  const installed = await installGrowthContractScenario(page, scenario);
+  let bootstrapRequests = 0;
+  await page.route("**/api/v1/growth/bootstrap", async (route) => {
+    bootstrapRequests += 1;
+    await route.fulfill({
+      status: bootstrapRequests === 1 ? 401 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(bootstrapRequests === 1
+        ? {
+            code: "unauthorized",
+            message: "未登录",
+            details: null,
+            requestId: "growth-login-required",
+            retryable: false
+          }
+        : scenario.bootstrap)
+    });
+  });
+
+  await page.goto("/#growth/agents");
+  await expect.poll(() => bootstrapRequests).toBe(1);
+
+  await page.locator("#loginButton").click();
+
+  await expect(page.getByRole("heading", { name: "AI 经营顾问团队" }))
+    .toBeVisible();
+  await expect(page.locator("#growthWorkspace")).toBeVisible();
+  await expect(page.locator(".replica-shell")).toBeHidden();
+  await expect(page.locator(".shell")).toBeHidden();
+  expect(page.url()).toContain("#growth/agents");
+  expect(bootstrapRequests).toBe(2);
+  await installed.dispose();
+});
+
+test("authentication changes invalidate the cached growth runtime", async ({ page }) => {
+  const scenario = growthContractScenario("happy_path");
+  const installed = await installGrowthContractScenario(page, scenario);
+  await enterRealGrowth(page, "catalog");
+  await expect(page.getByRole("heading", { name: "产品目录" })).toBeVisible();
+  expect(installed.requestsFor("GET", "/api/v1/growth/bootstrap")).toHaveLength(1);
+
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent("goodjob:auth-state-changed", {
+      detail: { authenticated: false }
+    }));
+  });
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent("goodjob:auth-state-changed", {
+      detail: { authenticated: true }
+    }));
+  });
+
+  await expect.poll(() =>
+    installed.requestsFor("GET", "/api/v1/growth/bootstrap").length
+  ).toBe(2);
+  await expect(page.getByRole("heading", { name: "产品目录" })).toBeVisible();
+  await installed.dispose();
+});
+
+test("login restart aborts an in-flight unauthenticated bootstrap", async ({ page }) => {
+  const scenario = growthContractScenario("happy_path");
+  const installed = await installGrowthContractScenario(page, scenario);
+  let bootstrapAttempts = 0;
+  let releaseFirstBootstrap: (() => void) | undefined;
+  let markFirstBootstrapStarted: (() => void) | undefined;
+  const firstBootstrapStarted = new Promise<void>((resolve) => {
+    markFirstBootstrapStarted = resolve;
+  });
+  const firstBootstrapReleased = new Promise<void>((resolve) => {
+    releaseFirstBootstrap = resolve;
+  });
+  await page.route("**/api/v1/growth/bootstrap", async (route) => {
+    bootstrapAttempts += 1;
+    if (bootstrapAttempts === 1) {
+      markFirstBootstrapStarted?.();
+      await firstBootstrapReleased;
+    }
+    try {
+      await route.fallback();
+    } catch {
+      // The first request is expected to be aborted by the auth reset.
+    }
+  });
+
+  await page.goto("/#growth/agents");
+  await firstBootstrapStarted;
+  await page.evaluate(() => {
+    document.dispatchEvent(new CustomEvent("goodjob:auth-state-changed", {
+      detail: { authenticated: false }
+    }));
+    document.dispatchEvent(new CustomEvent("goodjob:auth-state-changed", {
+      detail: { authenticated: true }
+    }));
+  });
+
+  await expect.poll(() => bootstrapAttempts).toBe(2);
+  await expect(page.getByRole("heading", { name: "AI 经营顾问团队" }))
+    .toBeVisible();
+  releaseFirstBootstrap?.();
+  await installed.dispose();
+});
+
+test("growth hash navigation dispatches one catalog load", async ({ page }) => {
+  const scenario = growthContractScenario("happy_path");
+  const installed = await installGrowthContractScenario(page, scenario);
+  await enterRealGrowth(page, "agents");
+
+  await page.evaluate(() => {
+    window.location.hash = "#growth/catalog";
+  });
+
+  await expect(page.getByRole("heading", { name: "产品目录" })).toBeVisible();
+  expect(installed.requestsFor("GET", "/api/v1/catalog/items")).toHaveLength(1);
+  await installed.dispose();
+});
+
+test("a slow page load cannot block a newer growth route", async ({ page }) => {
+  const scenario = growthContractScenario("happy_path");
+  const installed = await installGrowthContractScenario(page, scenario);
+  let releaseCatalog: (() => void) | undefined;
+  let markCatalogStarted: (() => void) | undefined;
+  const catalogStarted = new Promise<void>((resolve) => {
+    markCatalogStarted = resolve;
+  });
+  const catalogReleased = new Promise<void>((resolve) => {
+    releaseCatalog = resolve;
+  });
+  await page.route("**/api/v1/catalog/items**", async (route) => {
+    markCatalogStarted?.();
+    await catalogReleased;
+    try {
+      await route.fallback();
+    } catch {
+      // The superseded catalog request is expected to be aborted.
+    }
+  });
+  await enterRealGrowth(page, "agents");
+  await page.evaluate(() => {
+    window.location.hash = "#growth/catalog";
+  });
+  await catalogStarted;
+
+  await page.evaluate(() => {
+    window.location.hash = "#growth/finance";
+  });
+  await expect(page.getByRole("heading", { name: "财务账本" }))
+    .toBeVisible();
+  await expect(page).toHaveURL(/#growth\/finance$/u);
+  releaseCatalog?.();
+  await expect(page.getByRole("heading", { name: "产品目录" })).toHaveCount(0);
   await installed.dispose();
 });
 
@@ -99,6 +256,7 @@ test("business advisor generates a sourced diagnosis report from typed fixtures"
       (element as HTMLButtonElement).click();
     });
   await expect(page.getByRole("heading", { name: "《经营诊断报告》" })).toBeVisible();
+  await expect(page).toHaveURL(/#growth\/agents\/report$/u);
   await expect(page.getByText("存在假利润产品")).toBeVisible();
   await expect(page.getByText("未来 90 天行动计划")).toBeVisible();
   await expect(page.locator(".report-issue.issue-red")).not.toHaveCount(0);
@@ -122,6 +280,53 @@ test("business advisor generates a sourced diagnosis report from typed fixtures"
   expect(await page.evaluate(() =>
     document.documentElement.scrollWidth === document.documentElement.clientWidth
   )).toBe(true);
+  await page.getByRole("link", { name: "返回团队" }).evaluate((element) => {
+    (element as HTMLAnchorElement).click();
+  });
+  await expect(page.getByRole("heading", { name: "AI 经营顾问团队" }))
+    .toBeVisible();
+  await expect(page).toHaveURL(/#growth\/agents$/u);
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "《经营诊断报告》" }))
+    .toBeVisible();
+  await expect(page).toHaveURL(/#growth\/agents\/report$/u);
+  await installed.dispose();
+});
+
+test("late diagnosis responses cannot replace a page opened during the request", async ({ page }) => {
+  const scenario = growthContractScenario("happy_path");
+  const installed = await installGrowthContractScenario(page, scenario);
+  let releaseDiagnosis: (() => void) | undefined;
+  let markDiagnosisStarted: (() => void) | undefined;
+  const diagnosisStarted = new Promise<void>((resolve) => {
+    markDiagnosisStarted = resolve;
+  });
+  const diagnosisReleased = new Promise<void>((resolve) => {
+    releaseDiagnosis = resolve;
+  });
+  await page.route("**/api/v1/business-advisor/diagnose", async (route) => {
+    markDiagnosisStarted?.();
+    await diagnosisReleased;
+    await route.fallback();
+  });
+  await enterRealGrowth(page, "agents");
+  await page.locator('[data-agents-action="generate-report"]')
+    .evaluate((element) => {
+      (element as HTMLButtonElement).click();
+    });
+  await diagnosisStarted;
+
+  await page.evaluate(() => {
+    window.location.hash = "#growth/catalog";
+  });
+  await expect(page.getByRole("heading", { name: "产品目录" })).toBeVisible();
+  releaseDiagnosis?.();
+  await page.waitForTimeout(100);
+
+  await expect(page).toHaveURL(/#growth\/catalog$/u);
+  await expect(page.getByRole("heading", { name: "产品目录" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "《经营诊断报告》" }))
+    .toHaveCount(0);
   await installed.dispose();
 });
 

@@ -33,10 +33,12 @@ export type GrowthModeState = GrowthMode | GrowthUnavailable;
 export interface GrowthPageContext {
   route: GrowthRoute;
   mode: GrowthModeState;
+  signal: AbortSignal;
   abort(): void;
 }
 
 export interface GrowthPageController {
+  readonly handlesOwnRouteChanges?: boolean;
   mount(context: GrowthPageContext): void | Promise<void>;
   unmount?(): void | Promise<void>;
 }
@@ -59,6 +61,9 @@ export function growthWorkspaceHost(): HTMLElement | null {
 
 let activeAbort: AbortController | null = null;
 let activeController: GrowthPageController | null = null;
+let bootstrapAbort: AbortController | null = null;
+let navigationSequence = 0;
+let runtimeEpoch = 0;
 let sharedRuntime: {
   readonly registry: GrowthPageRegistry;
   readonly mode: GrowthModeState;
@@ -74,14 +79,23 @@ function clearGrowthContent(host: HTMLElement): void {
 async function switchPage(
   registry: GrowthPageRegistry,
   route: GrowthRoute,
-  mode: GrowthModeState
+  mode: GrowthModeState,
+  expectedEpoch: number
 ): Promise<void> {
+  if (expectedEpoch !== runtimeEpoch) return;
+  const controller = registry.get(route.name);
+  if (controller
+    && activeController === controller
+    && controller.handlesOwnRouteChanges) return;
+  const sequence = ++navigationSequence;
   activeAbort?.abort();
-  await activeController?.unmount?.();
+  const previousController = activeController;
   activeController = null;
+  activeAbort = null;
+  await previousController?.unmount?.();
+  if (expectedEpoch !== runtimeEpoch || sequence !== navigationSequence) return;
   const host = growthWorkspaceHost();
   if (host) clearGrowthContent(host);
-  const controller = registry.get(route.name);
   if (!controller || !host) return;
   const abort = new AbortController();
   activeAbort = abort;
@@ -89,8 +103,46 @@ async function switchPage(
   await controller.mount({
     route,
     mode,
+    signal: abort.signal,
     abort: () => abort.abort()
   });
+  if (expectedEpoch !== runtimeEpoch || sequence !== navigationSequence) {
+    abort.abort();
+    if (activeAbort === abort) {
+      activeAbort = null;
+      activeController = null;
+      await controller.unmount?.();
+    }
+  }
+}
+
+function dispatchPage(
+  registry: GrowthPageRegistry,
+  mode: GrowthModeState,
+  epoch: number
+): void {
+  const route = parseGrowthHash(window.location.hash);
+  if (!route) return;
+  void switchPage(registry, route, mode, epoch).catch(() => undefined);
+}
+
+export async function resetGrowthRuntime(): Promise<void> {
+  runtimeEpoch += 1;
+  navigationSequence += 1;
+  sharedRuntime = null;
+  bootstrapAbort?.abort();
+  bootstrapAbort = null;
+  activeAbort?.abort();
+  activeAbort = null;
+  const controller = activeController;
+  activeController = null;
+  try {
+    await controller?.unmount?.();
+  } catch {
+    // Reset remains a usable lifecycle barrier even if cleanup fails.
+  }
+  const host = growthWorkspaceHost();
+  if (host) clearGrowthContent(host);
 }
 
 export interface StartGrowthRuntimeOptions {
@@ -99,26 +151,32 @@ export interface StartGrowthRuntimeOptions {
   bootstrapLoader?: { load(signal?: AbortSignal): Promise<unknown> };
 }
 
+export type GrowthRuntimeStartState = GrowthModeState | { kind: "cancelled" };
+
 export async function startGrowthRuntime(
   options: StartGrowthRuntimeOptions = {}
-): Promise<GrowthModeState> {
+): Promise<GrowthRuntimeStartState> {
+  const startEpoch = runtimeEpoch;
   const singleShot = options.registry !== undefined
     || options.bootstrapLoader !== undefined
     || options.requested !== undefined;
-  if (!singleShot && sharedRuntime) {
-    const route = parseGrowthHash(window.location.hash);
-    if (route) void switchPage(sharedRuntime.registry, route, sharedRuntime.mode);
-    return sharedRuntime.mode;
+  const cachedRuntime = !singleShot ? sharedRuntime : null;
+  if (cachedRuntime) {
+    dispatchPage(cachedRuntime.registry, cachedRuntime.mode, startEpoch);
+    return cachedRuntime.mode;
   }
   const registry = options.registry ?? new GrowthPageRegistry();
+  const agentsSession = {};
   let agentsController: ReturnType<typeof createAgentsController> | null = null;
   registry.register("agents", {
+    handlesOwnRouteChanges: true,
     async mount() {
       const host = growthWorkspaceHost();
       if (!host) return;
       agentsController ??= createAgentsController({
         http: createGrowthHttpClient(),
-        host
+        host,
+        session: agentsSession
       });
       agentsController.render();
     },
@@ -133,18 +191,31 @@ export async function startGrowthRuntime(
   if (options.requested === "demo") {
     mode = { kind: "demo" };
   } else {
+    const abort = new AbortController();
+    if (!singleShot) {
+      bootstrapAbort?.abort();
+      bootstrapAbort = abort;
+    }
     try {
       const bootstrap = await (options.bootstrapLoader
-        ? options.bootstrapLoader.load()
-        : loadGrowthBootstrap()) as never;
+        ? options.bootstrapLoader.load(abort.signal)
+        : loadGrowthBootstrap(undefined, abort.signal)) as never;
       mode = resolveGrowthMode({
         requested: "real",
         pinned: manifest,
         bootstrap
       });
     } catch {
+      if (abort.signal.aborted || startEpoch !== runtimeEpoch) {
+        return { kind: "cancelled" };
+      }
       mode = { kind: "unavailable", reason: "workspace_selection_required" };
+    } finally {
+      if (bootstrapAbort === abort) bootstrapAbort = null;
     }
+  }
+  if (startEpoch !== runtimeEpoch) {
+    return { kind: "cancelled" };
   }
   if (registry.get("catalog") === null && mode.kind === "real") {
     const http = createGrowthHttpClient();
@@ -162,7 +233,8 @@ export async function startGrowthRuntime(
         const host = growthWorkspaceHost();
         if (!host) return;
         host.innerHTML = renderCatalogPage({ kind: "loading" });
-        const state = await catalogController.load();
+        const state = await catalogController.load(context.signal);
+        if (context.signal.aborted) return;
         host.innerHTML = renderCatalogPage(state);
       },
       unmount() {
@@ -196,7 +268,8 @@ export async function startGrowthRuntime(
           return;
         }
         host.innerHTML = renderQuoteWorkbench({ kind: "loading_case" });
-        const state = await quoteController.loadCase(caseId);
+        const state = await quoteController.loadCase(caseId, context.signal);
+        if (context.signal.aborted) return;
         host.innerHTML = renderQuoteWorkbench(state);
       },
       unmount() {
@@ -217,11 +290,12 @@ export async function startGrowthRuntime(
         && (mode.bootstrap.capabilities as readonly string[]).includes(capability)
     });
     registry.register("finance", {
-      async mount() {
+      async mount(context) {
         const host = growthWorkspaceHost();
         if (!host) return;
         host.innerHTML = renderFinancePage({ kind: "loading" });
-        const state = await financeController.load();
+        const state = await financeController.load(context.signal);
+        if (context.signal.aborted) return;
         host.innerHTML = renderFinancePage(state);
       },
       unmount() {
@@ -242,11 +316,12 @@ export async function startGrowthRuntime(
         && (mode.bootstrap.capabilities as readonly string[]).includes(capability)
     });
     registry.register("roi", {
-      async mount() {
+      async mount(context) {
         const host = growthWorkspaceHost();
         if (!host) return;
         host.innerHTML = renderRoiPage({ kind: "loading" });
-        const state = await roiController.loadCohorts();
+        const state = await roiController.loadCohorts(context.signal);
+        if (context.signal.aborted) return;
         host.innerHTML = renderRoiPage(state);
       },
       unmount() {
@@ -285,7 +360,8 @@ export async function startGrowthRuntime(
         const state = await advisorController.loadToday({
           currency: "CNY",
           asOf: new Date().toISOString()
-        });
+        }, context.signal);
+        if (context.signal.aborted) return;
         host.innerHTML = renderAdvisorHome(state);
       },
       unmount() {
@@ -294,15 +370,14 @@ export async function startGrowthRuntime(
       }
     });
   }
-  const route = parseGrowthHash(window.location.hash);
-  if (route) {
-    await switchPage(registry, route, mode);
+  if (mode.kind !== "unavailable"
+    && !singleShot
+    && startEpoch === runtimeEpoch) {
+    sharedRuntime = { registry, mode };
   }
-  window.addEventListener("hashchange", () => {
-    const next = parseGrowthHash(window.location.hash);
-    if (next) void switchPage(registry, next, mode);
-  });
-  if (!singleShot) sharedRuntime = { registry, mode };
+  if (mode.kind !== "unavailable") {
+    dispatchPage(registry, mode, startEpoch);
+  }
   return mode;
 }
 

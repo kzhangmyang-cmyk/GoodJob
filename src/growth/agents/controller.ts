@@ -5,6 +5,7 @@ import {
   createBusinessAdvisorApi,
   type BusinessAdvisorApi,
   type BusinessReportInput,
+  type DiagnosisReport,
   type ParsedCompanyResult,
   type StatementSheet
 } from "./api";
@@ -27,6 +28,14 @@ export interface AgentsControllerOptions {
   readonly host: HTMLElement;
   readonly input?: BusinessReportInput;
   readonly demo?: boolean;
+  readonly session?: AgentsSessionState;
+}
+
+export interface AgentsSessionState {
+  activeInput?: BusinessReportInput;
+  lastReport?: DiagnosisReport;
+  sourceLabel?: string;
+  importWarnings?: readonly string[];
 }
 
 export interface AgentsController {
@@ -229,14 +238,36 @@ export function createAgentsController(
   const api: BusinessAdvisorApi = createBusinessAdvisorApi(
     options.http ?? createGrowthHttpClient()
   );
-  let activeInput = options.input ?? sampleBusinessReport();
-  let lastReport: import("./api").DiagnosisReport | null = null;
-  let sourceLabel = "示例数据";
-  let importWarnings: readonly string[] = [];
+  let activeInput = options.input
+    ?? options.session?.activeInput
+    ?? sampleBusinessReport();
+  let lastReport: DiagnosisReport | null = options.session?.lastReport ?? null;
+  let sourceLabel = options.session?.sourceLabel ?? "示例数据";
+  let importWarnings: readonly string[] = options.session?.importWarnings ?? [];
   let importedCompanies: readonly ParsedCompanyResult[] = [];
   let demoRoute: { view: "overview" } | { view: "report" }
     | { view: "detail"; agentId: string } | null = null;
   let disposed = false;
+  let operationGeneration = 0;
+
+  function persistSession(): void {
+    if (!options.session) return;
+    options.session.activeInput = activeInput;
+    options.session.lastReport = lastReport ?? undefined;
+    options.session.sourceLabel = sourceLabel;
+    options.session.importWarnings = importWarnings;
+  }
+
+  function beginOperation(): number {
+    operationGeneration += 1;
+    return operationGeneration;
+  }
+
+  function canCommitOperation(generation: number): boolean {
+    return !disposed
+      && operationGeneration === generation
+      && (options.demo || parseAgentsHash(window.location.hash) !== null);
+  }
 
   function mountView(html: string): void {
     options.host.innerHTML = html;
@@ -286,6 +317,7 @@ export function createAgentsController(
 
   function onHashChange(): void {
     if (disposed) return;
+    operationGeneration += 1;
     renderView();
   }
 
@@ -370,19 +402,33 @@ export function createAgentsController(
     syncStatementSelection();
   }
 
+  function showDiagnosisReport(report: DiagnosisReport): void {
+    if (disposed
+      || (!options.demo && parseAgentsHash(window.location.hash) === null)) return;
+    lastReport = report;
+    persistSession();
+    if (options.demo) {
+      demoRoute = { view: "report" };
+    } else if (window.location.hash !== "#growth/agents/report") {
+      window.history.pushState(null, "", "#growth/agents/report");
+    }
+    mountView(renderDiagnosisReport(report, {
+      sourceLabel,
+      warnings: importWarnings
+    }));
+  }
+
   async function handleReport(): Promise<void> {
+    const generation = beginOperation();
     options.host.innerHTML = renderAgentConclusion("<p>正在生成经营诊断报告…</p>");
     try {
       const report = options.demo
         ? demoDiagnosisReport()
         : await api.diagnose(activeInput);
-      lastReport = report;
-      if (options.demo) demoRoute = { view: "report" };
-      mountView(renderDiagnosisReport(report, {
-        sourceLabel,
-        warnings: importWarnings
-      }));
+      if (!canCommitOperation(generation)) return;
+      showDiagnosisReport(report);
     } catch (error) {
+      if (!canCommitOperation(generation)) return;
       options.host.innerHTML = renderAgentConclusion(
         `<p class="growth-error">生成失败：${escapeHtml(
           error instanceof Error ? error.message : String(error)
@@ -416,6 +462,7 @@ export function createAgentsController(
       );
       return;
     }
+    const generation = beginOperation();
     const balanceInput = options.host.querySelector<HTMLInputElement>(
       '[data-statements-file="balance"]'
     );
@@ -440,6 +487,7 @@ export function createAgentsController(
         ...balanceSheets,
         ...incomeSheets
       ]);
+      if (!canCommitOperation(generation)) return;
       importedCompanies = result.companies;
       if (result.companies.length === 1 && result.companies[0].input) {
         showCompanyReport(result.companies[0]);
@@ -451,6 +499,7 @@ export function createAgentsController(
         mountView(renderCompanyPicker(result.companies));
       }
     } catch (error) {
+      if (!canCommitOperation(generation)) return;
       options.host.innerHTML = renderAgentConclusion(
         `<p class="growth-error">解析失败：${escapeHtml(
           error instanceof Error ? error.message : String(error)
@@ -469,11 +518,7 @@ export function createAgentsController(
     sourceLabel = `${company.companyName} · ${company.period}`;
     importWarnings = company.warnings;
     activeInput = company.input;
-    lastReport = company.report;
-    mountView(renderDiagnosisReport(company.report, {
-      sourceLabel,
-      warnings: importWarnings
-    }));
+    showDiagnosisReport(company.report);
   }
 
   async function handleAsk(agentId: string, question: string): Promise<void> {
@@ -559,6 +604,7 @@ export function createAgentsController(
       return;
     }
     if (action === "sample-report") {
+      const generation = beginOperation();
       sourceLabel = "示例数据";
       importWarnings = [];
       const sample = sampleBusinessReport();
@@ -568,12 +614,10 @@ export function createAgentsController(
         );
         try {
           const report = await api.diagnose(sample);
-          lastReport = report;
-          mountView(renderDiagnosisReport(report, {
-            sourceLabel,
-            warnings: importWarnings
-          }));
+          if (!canCommitOperation(generation)) return;
+          showDiagnosisReport(report);
         } catch (error) {
+          if (!canCommitOperation(generation)) return;
           options.host.innerHTML = renderAgentConclusion(
             `<p class="growth-error">生成失败：${escapeHtml(
               error instanceof Error ? error.message : String(error)
@@ -630,6 +674,7 @@ export function createAgentsController(
     render: renderView,
     dispose() {
       disposed = true;
+      operationGeneration += 1;
       options.host.removeEventListener("click", onClick);
       options.host.removeEventListener("submit", onSubmit);
       options.host.removeEventListener("change", onChange);

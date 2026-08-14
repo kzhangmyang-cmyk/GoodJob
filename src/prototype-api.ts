@@ -1412,6 +1412,12 @@ function closeModal() {
   qs("#appModal")?.classList.remove("active");
 }
 
+function publishAuthenticationState(authenticated: boolean) {
+  document.dispatchEvent(new CustomEvent("goodjob:auth-state-changed", {
+    detail: { authenticated }
+  }));
+}
+
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method || "GET").toUpperCase();
   const csrfToken = cookieValue("gj_csrf");
@@ -1430,6 +1436,7 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       localStorage.removeItem(storage.user);
       state.user = null;
       document.body.classList.remove("is-authenticated");
+      publishAuthenticationState(false);
     }
     throw new Error(body.message || "请求失败");
   }
@@ -1450,6 +1457,7 @@ async function loginWithPassword(email: string, password: string) {
     state.user = user;
     applyAuthedUser(user);
     document.body.classList.add("is-authenticated");
+    publishAuthenticationState(true);
     toast("已进入前端演示系统");
     return;
   }
@@ -1461,6 +1469,7 @@ async function loginWithPassword(email: string, password: string) {
   state.user = result.user;
   applyAuthedUser(result.user);
   document.body.classList.add("is-authenticated");
+  publishAuthenticationState(true);
   await refreshAll(result.user);
   toast(`已登录：${result.user.name}`);
 }
@@ -11335,6 +11344,7 @@ function installEvents() {
     localStorage.removeItem(storage.user);
     state.user = null;
     document.body.classList.remove("is-authenticated");
+    publishAuthenticationState(false);
     toast("已退出登录");
   });
   qs<HTMLButtonElement>("#profileEntryButton")?.addEventListener("click", () => activateNavView("profile", () => renderProfile()));
@@ -12045,6 +12055,7 @@ async function restoreSession() {
   state.user = user;
   applyAuthedUser(user);
   document.body.classList.add("is-authenticated");
+  publishAuthenticationState(true);
   if (FRONTEND_DEMO_MODE) return;
   try {
     await refreshAll(user);
