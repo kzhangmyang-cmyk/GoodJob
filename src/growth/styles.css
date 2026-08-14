@@ -271,6 +271,79 @@
   cursor: pointer;
 }
 
+.statements-import {
+  margin: 0 0 1.25rem;
+  padding: 1rem 1.1rem;
+  border: 1px dashed #c7d2fe;
+  border-radius: 0.6rem;
+  background: #f9fafb;
+}
+
+.statements-import h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  color: #111827;
+}
+
+.statements-import p {
+  margin: 0.2rem 0 0.75rem;
+  color: #6b7280;
+  font-size: 0.82rem;
+}
+
+.statements-import-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.statements-import-fields label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #374151;
+  font-size: 0.85rem;
+}
+
+.statements-import-fields input[type="file"] {
+  max-width: 16rem;
+  font-size: 0.8rem;
+}
+
+.statements-import-actions {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.statements-import-actions button {
+  padding: 0.45rem 0.9rem;
+  border: 1px solid #c7d2fe;
+  border-radius: 0.4rem;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.statements-import-actions button.statements-sample {
+  border-color: #e5e7eb;
+  background: #ffffff;
+  color: #6b7280;
+}
+
+.statements-source {
+  margin: 0.6rem 0 0;
+  color: #9ca3af;
+  font-size: 0.78rem;
+}
+
+.report-source {
+  color: #6b7280;
+  font-size: 0.8rem;
+}
+
 .agents-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));

@@ -607,6 +607,60 @@ function baseResponses(scenario: GrowthContractScenario) {
           evidence: ["假利润产品：产品 A"]
         }
       }
+    },
+    "POST /api/v1/business-advisor/statements/diagnose": {
+      status: 200,
+      headers: {},
+      body: {
+        companyName: "河南元能信息科技有限公司",
+        period: "2026-06",
+        warnings: ["未提供现金流量表，现金流预测与资金预警暂不可用"],
+        input: {
+          currency: "CNY",
+          companyName: "河南元能信息科技有限公司",
+          period: "2026-06",
+          balanceSheet: {
+            period: "2026-06",
+            cashMinor: 11_035_683,
+            receivablesMinor: 38_744_930,
+            inventoryMinor: 0,
+            otherCurrentAssetsMinor: 40_764_124,
+            nonCurrentAssetsMinor: 5_045_745,
+            currentLiabilitiesMinor: 198_622_389,
+            nonCurrentLiabilitiesMinor: 0,
+            accountsPayableMinor: 285_990
+          },
+          incomeStatement: {
+            period: "2026-06",
+            revenueMinor: 0,
+            costOfGoodsSoldMinor: 5_551_587,
+            operatingExpensesMinor: 9_431_587,
+            interestExpenseMinor: 1_605,
+            taxExpenseMinor: 0
+          }
+        },
+        report: {
+          companyName: "河南元能信息科技有限公司",
+          period: "2026-06",
+          healthScoreBps: 0,
+          summary: "本期经营存在 6 个需要关注的问题。",
+          issues: [{
+            category: "财务",
+            level: "red",
+            title: "毛利为负",
+            reason: "毛利率 -100.0%，收入无法覆盖直接成本",
+            risk: "持续毛利为负会直接消耗现金",
+            suggestion: "核对收入确认与成本归集口径，识别亏损业务线并限期改善",
+            evidence: ["毛利率 -100.0%"]
+          }],
+          actionPlan90Days: [
+            { month: 1, action: "收紧应收与库存，做一次现金流压力测试" },
+            { month: 2, action: "调整报价与价格体系" },
+            { month: 3, action: "建立月度经营分析会机制" }
+          ],
+          evidence: ["毛利率 -100.0%"]
+        }
+      }
     }
   };
 }

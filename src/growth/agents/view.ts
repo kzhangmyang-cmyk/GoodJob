@@ -40,7 +40,13 @@ function agentCard(agent: BusinessAgent): string {
   </article>`;
 }
 
-export function renderAgentsOverview(): string {
+export interface AgentsOverviewOptions {
+  readonly sourceLabel?: string;
+}
+
+export function renderAgentsOverview(
+  options: AgentsOverviewOptions = {}
+): string {
   const cards = BUSINESS_AGENT_TEAM.map(agentCard).join("");
   return `<section class="growth-panel agents-home">
     <header class="agents-hero">
@@ -51,6 +57,29 @@ export function renderAgentsOverview(): string {
       <button type="button" class="agents-primary"
         data-agents-action="generate-report">生成经营诊断报告</button>
     </header>
+    <section class="statements-import">
+      <h3>上传真实报表（xls / xlsx）</h3>
+      <p>选择资产负债表与利润表各一份，系统解析后直接生成经营诊断报告。</p>
+      <div class="statements-import-fields">
+        <label>资产负债表
+          <input type="file" accept=".xls,.xlsx" data-statements-file="balance" />
+        </label>
+        <label>利润表
+          <input type="file" accept=".xls,.xlsx" data-statements-file="income" />
+        </label>
+      </div>
+      <div class="statements-import-actions">
+        <button type="button" data-agents-action="statements-diagnose">
+          解析并生成诊断报告
+        </button>
+        <button type="button" class="statements-sample" data-agents-action="sample-report">
+          改用示例数据
+        </button>
+      </div>
+      <p class="statements-source">
+        当前数据源：${escapeHtml(options.sourceLabel ?? "示例数据")}
+      </p>
+    </section>
     <div class="agents-grid">${cards}</div>
   </section>`;
 }
@@ -132,7 +161,15 @@ function minorText(minor: number): string {
   })} 元`;
 }
 
-export function renderDiagnosisReport(report: DiagnosisReport): string {
+export interface DiagnosisReportOptions {
+  readonly sourceLabel?: string;
+  readonly warnings?: readonly string[];
+}
+
+export function renderDiagnosisReport(
+  report: DiagnosisReport,
+  options: DiagnosisReportOptions = {}
+): string {
   const score = report.healthScoreBps;
   const issues = report.issues.map((item) =>
     `<li class="report-issue">
@@ -159,7 +196,15 @@ export function renderDiagnosisReport(report: DiagnosisReport): string {
     <header>
       <h2>《经营诊断报告》</h2>
       <p>${escapeHtml(report.companyName)} · ${escapeHtml(report.period)}</p>
+      ${options.sourceLabel
+        ? `<p class="report-source">数据源：${escapeHtml(options.sourceLabel)}</p>`
+        : ""}
     </header>
+    ${options.warnings && options.warnings.length > 0
+      ? `<section class="report-block"><h3>数据说明</h3>
+          <ul>${options.warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+        </section>`
+      : ""}
     <section class="report-score">
       <strong>${(score / 100).toFixed(0)}</strong>
       <span>企业健康评分（满分 100）</span>

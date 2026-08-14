@@ -106,10 +106,29 @@ export interface DiagnosisReport {
   readonly evidence: readonly string[];
 }
 
+export interface StatementTable {
+  readonly rows: readonly (readonly (string | number | null)[])[];
+}
+
+export interface ParsedStatementsResult {
+  readonly companyName: string;
+  readonly period: string;
+  readonly warnings: readonly string[];
+  readonly input: BusinessReportInput;
+}
+
 export interface BusinessAdvisorApi {
   getAgents(): Promise<BusinessAdvisorAgentInfo[]>;
   analyze(input: BusinessReportInput): Promise<unknown>;
   diagnose(input: BusinessReportInput): Promise<DiagnosisReport>;
+  parseStatements(
+    balanceSheet: StatementTable,
+    incomeStatement: StatementTable
+  ): Promise<ParsedStatementsResult>;
+  diagnoseStatements(
+    balanceSheet: StatementTable,
+    incomeStatement: StatementTable
+  ): Promise<ParsedStatementsResult & { readonly report: DiagnosisReport }>;
 }
 
 export function createBusinessAdvisorApi(
@@ -135,6 +154,28 @@ export function createBusinessAdvisorApi(
         { method: "POST", body: input }
       );
       return response.body.report;
+    },
+    async parseStatements(balanceSheet, incomeStatement) {
+      const response = await http.request<ParsedStatementsResult>(
+        "/api/v1/business-advisor/statements/parse",
+        {
+          method: "POST",
+          body: { balanceSheet, incomeStatement }
+        }
+      );
+      return response.body;
+    },
+    async diagnoseStatements(balanceSheet, incomeStatement) {
+      const response = await http.request<
+        ParsedStatementsResult & { readonly report: DiagnosisReport }
+      >(
+        "/api/v1/business-advisor/statements/diagnose",
+        {
+          method: "POST",
+          body: { balanceSheet, incomeStatement }
+        }
+      );
+      return response.body;
     }
   };
   return Object.freeze(api);

@@ -27,6 +27,9 @@ assert.equal(overview.includes("AI 经营顾问团队"), true);
 assert.equal(overview.includes("利润分析"), true);
 assert.equal(overview.includes("data-agent-id=\"cashflow\""), true);
 assert.equal(overview.includes("生成经营诊断报告"), true);
+assert.equal(overview.includes("上传真实报表（xls / xlsx）"), true);
+assert.equal(overview.includes("data-statements-file=\"balance\""), true);
+assert.equal(overview.includes("当前数据源：示例数据"), true);
 assert.equal(overview.includes("<script>"), false);
 
 const detail = renderAgentDetail("profit");
@@ -69,3 +72,10 @@ assert.equal(reportHtml.includes("风险：假利润产品会虚增收入规模�
 assert.equal(reportHtml.includes("未来 90 天行动计划"), true);
 assert.equal(reportHtml.includes("假利润产品：产品 A"), true);
 assert.equal(reportHtml.includes("<script>"), false);
+
+const reportWithSource = renderDiagnosisReport(report, {
+  sourceLabel: "河南元能信息科技有限公司 · 2026-06",
+  warnings: ["未提供现金流量表"]
+});
+assert.equal(reportWithSource.includes("数据源：河南元能信息科技有限公司 · 2026-06"), true);
+assert.equal(reportWithSource.includes("未提供现金流量表"), true);

@@ -1,8 +1,10 @@
 import type { GrowthHttpClient } from "../http";
+import * as XLSX from "xlsx";
 import {
   createBusinessAdvisorApi,
   type BusinessAdvisorApi,
-  type BusinessReportInput
+  type BusinessReportInput,
+  type StatementTable
 } from "./api";
 import { sampleBusinessReport } from "./sample";
 import {
@@ -137,8 +139,10 @@ export function createAgentsController(
   options: AgentsControllerOptions
 ): AgentsController {
   const api: BusinessAdvisorApi = createBusinessAdvisorApi(options.http);
-  const input = options.input ?? sampleBusinessReport();
+  let activeInput = options.input ?? sampleBusinessReport();
   let lastReport: import("./api").DiagnosisReport | null = null;
+  let sourceLabel = "示例数据";
+  let importWarnings: readonly string[] = [];
   let disposed = false;
 
   function renderView(): void {
@@ -146,9 +150,12 @@ export function createAgentsController(
     if (route?.view === "detail") {
       options.host.innerHTML = renderAgentDetail(route.agentId);
     } else if (route?.view === "report" && lastReport) {
-      options.host.innerHTML = renderDiagnosisReport(lastReport);
+      options.host.innerHTML = renderDiagnosisReport(lastReport, {
+        sourceLabel,
+        warnings: importWarnings
+      });
     } else {
-      options.host.innerHTML = renderAgentsOverview();
+      options.host.innerHTML = renderAgentsOverview({ sourceLabel });
     }
   }
 
@@ -160,12 +167,69 @@ export function createAgentsController(
   async function handleReport(): Promise<void> {
     options.host.innerHTML = renderAgentConclusion("<p>正在生成经营诊断报告…</p>");
     try {
-      const report = await api.diagnose(input);
+      const report = await api.diagnose(activeInput);
       lastReport = report;
-      options.host.innerHTML = renderDiagnosisReport(report);
+      options.host.innerHTML = renderDiagnosisReport(report, {
+        sourceLabel,
+        warnings: importWarnings
+      });
     } catch (error) {
       options.host.innerHTML = renderAgentConclusion(
         `<p class="growth-error">生成失败：${escapeHtml(
+          error instanceof Error ? error.message : String(error)
+        )}</p>`
+      );
+    }
+  }
+
+  async function fileToTable(file: File): Promise<StatementTable> {
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    if (!sheet) {
+      throw new Error(`无法读取文件：${file.name}`);
+    }
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as (
+      readonly (string | number | null)[]
+    )[];
+    return Object.freeze({ rows: Object.freeze(rows) });
+  }
+
+  async function handleStatementsDiagnose(): Promise<void> {
+    const balanceInput = options.host.querySelector<HTMLInputElement>(
+      '[data-statements-file="balance"]'
+    );
+    const incomeInput = options.host.querySelector<HTMLInputElement>(
+      '[data-statements-file="income"]'
+    );
+    const balanceFile = balanceInput?.files?.[0];
+    const incomeFile = incomeInput?.files?.[0];
+    if (!balanceFile || !incomeFile) {
+      options.host.innerHTML = renderAgentConclusion(
+        '<p class="growth-error">请先选择资产负债表和利润表各一份</p>'
+      );
+      return;
+    }
+    options.host.innerHTML = renderAgentConclusion(
+      "<p>正在解析报表并生成诊断报告…</p>"
+    );
+    try {
+      const [balanceSheet, incomeStatement] = await Promise.all([
+        fileToTable(balanceFile),
+        fileToTable(incomeFile)
+      ]);
+      const result = await api.diagnoseStatements(balanceSheet, incomeStatement);
+      sourceLabel = `${result.companyName} · ${result.period}`;
+      importWarnings = result.warnings;
+      activeInput = result.input;
+      lastReport = result.report;
+      options.host.innerHTML = renderDiagnosisReport(result.report, {
+        sourceLabel,
+        warnings: importWarnings
+      });
+    } catch (error) {
+      options.host.innerHTML = renderAgentConclusion(
+        `<p class="growth-error">解析失败：${escapeHtml(
           error instanceof Error ? error.message : String(error)
         )}</p>`
       );
@@ -178,14 +242,14 @@ export function createAgentsController(
     output.innerHTML = renderAgentConclusion("<p>正在分析…</p>");
     try {
       if (agentId === "cfo") {
-        const report = await api.diagnose(input);
+        const report = await api.diagnose(activeInput);
         output.innerHTML = renderAgentConclusion(
           `<p>${escapeHtml(report.summary)}</p>`
           + `<a href="#growth/agents/report" class="agents-back">查看完整报告</a>`
         );
         return;
       }
-      const result = await api.analyze(input) as AnalysisResult;
+      const result = await api.analyze(activeInput) as AnalysisResult;
       output.innerHTML = renderAgentConclusion(
         `<p><strong>Q：${escapeHtml(question)}</strong></p>`
         + summarizeAnalysis(agentId, result)
@@ -207,6 +271,35 @@ export function createAgentsController(
     const action = target.dataset.agentsAction;
     if (action === "generate-report" || action === "open-report") {
       void handleReport();
+      return;
+    }
+    if (action === "statements-diagnose") {
+      void handleStatementsDiagnose();
+      return;
+    }
+    if (action === "sample-report") {
+      sourceLabel = "示例数据";
+      importWarnings = [];
+      const sample = sampleBusinessReport();
+      void (async () => {
+        options.host.innerHTML = renderAgentConclusion(
+          "<p>正在用示例数据生成诊断报告…</p>"
+        );
+        try {
+          const report = await api.diagnose(sample);
+          lastReport = report;
+          options.host.innerHTML = renderDiagnosisReport(report, {
+            sourceLabel,
+            warnings: importWarnings
+          });
+        } catch (error) {
+          options.host.innerHTML = renderAgentConclusion(
+            `<p class="growth-error">生成失败：${escapeHtml(
+              error instanceof Error ? error.message : String(error)
+            )}</p>`
+          );
+        }
+      })();
       return;
     }
     if (action === "create-todo") {

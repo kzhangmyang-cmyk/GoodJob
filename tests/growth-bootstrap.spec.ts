@@ -4,6 +4,14 @@ import {
   growthContractScenario,
   installGrowthContractScenario
 } from "./fixtures/growth-contract";
+import * as XLSX from "xlsx";
+
+function fixtureWorkbook(rows: (string | number)[][]): Buffer {
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, "报表");
+  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
+}
 
 test("happy path enters real growth and renders the catalog workspace from typed fixtures", async ({ page }) => {
   const scenario = growthContractScenario("happy_path");
@@ -73,5 +81,51 @@ test("business advisor generates a sourced diagnosis report from typed fixtures"
   await expect(page.getByRole("heading", { name: "《经营诊断报告》" })).toBeVisible();
   await expect(page.getByText("存在假利润产品")).toBeVisible();
   await expect(page.getByText("未来 90 天行动计划")).toBeVisible();
+  await installed.dispose();
+});
+
+test("business advisor diagnoses uploaded balance sheet and income statement files", async ({ page }) => {
+  const scenario = growthContractScenario("happy_path");
+  const installed = await installGrowthContractScenario(page, scenario);
+  await enterRealGrowth(page, "agents");
+
+  const balanceSheet = fixtureWorkbook([
+    ["资产负债表"],
+    ["编制单位：河南元能信息科技有限公司", "", "", "2026-06-30"],
+    ["资产", "行次", "期末余额", "年初余额", "负债和所有者权益", "行次", "期末余额", "年初余额"],
+    ["货币资金", "1", "110356.83", "113371.74", "应付账款", "33", "2859.9", "2859.9"],
+    ["应收账款", "4", "387449.3", "387449.3", "应付职工薪酬", "35", "377386.77", "385859.03"],
+    ["存货", "9", "0", "0", "其他应付款", "39", "1605977.22", "1447977.22"],
+    ["流动资产合计", "15", "905447.37", "905751.46", "流动负债合计", "41", "1986223.89", "1836696.15"],
+    ["固定资产账面价值", "20", "50457.45", "50457.45", "负债合计", "47", "1986223.89", "1836696.15"],
+    ["非流动资产合计", "29", "50457.45", "50457.45", "所有者权益（或股东权益）合计", "52", "-1030319.07", "-880487.24"],
+    ["资产合计", "30", "955904.82", "956208.91", "负债和所有者权益（或股东权益）", "53", "955904.82", "956208.91"]
+  ]);
+  const incomeStatement = fixtureWorkbook([
+    ["利润表季报"],
+    ["编制单位：河南元能信息科技有限公司", "2026年第2季度"],
+    ["项目", "行次", "本年累计金额", "本季金额"],
+    ["一、营业收入", "1", "0", "0"],
+    ["减：营业成本", "2", "55515.87", "27757.17"],
+    ["管理费用", "14", "94315.87", "49257.17"],
+    ["财务费用", "18", "16.05", "10.31"],
+    ["减：所得税费用", "31", "0", "0"],
+    ["四、净利润（净亏损以“-”号填列）", "32", "-149831.83", "-77024.65"]
+  ]);
+
+  await page.locator('[data-statements-file="balance"]')
+    .setInputFiles({ name: "资产负债表.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: balanceSheet });
+  await page.locator('[data-statements-file="income"]')
+    .setInputFiles({ name: "利润表.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: incomeStatement });
+
+  await page.locator('[data-agents-action="statements-diagnose"]')
+    .evaluate((element) => {
+      (element as HTMLButtonElement).click();
+    });
+
+  await expect(page.getByRole("heading", { name: "《经营诊断报告》" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /毛利为负/ })).toBeVisible();
+  await expect(page.getByText("数据源：河南元能信息科技有限公司 · 2026-06")).toBeVisible();
+  await expect(page.getByText("未提供现金流量表，现金流预测与资金预警暂不可用")).toBeVisible();
   await installed.dispose();
 });
