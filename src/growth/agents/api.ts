@@ -91,8 +91,11 @@ export interface DiagnosisReport {
   readonly healthScoreBps: number;
   readonly summary: string;
   readonly issues: readonly {
+    readonly category: string;
+    readonly level: "red" | "yellow";
     readonly title: string;
     readonly reason: string;
+    readonly risk: string;
     readonly suggestion: string;
     readonly evidence: readonly string[];
   }[];

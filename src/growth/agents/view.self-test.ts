@@ -44,8 +44,11 @@ const report: DiagnosisReport = {
   healthScoreBps: 4_600,
   summary: "本期经营存在需要关注的问题。",
   issues: [{
+    category: "利润",
+    level: "red",
     title: "存在假利润产品",
     reason: "产品 A 扣除费用后真实利润率过低",
+    risk: "假利润产品会虚增收入规模、掩盖真实盈利结构",
     suggestion: "调整定价或收缩产品线",
     evidence: ["假利润产品：产品 A"]
   }],
@@ -59,7 +62,10 @@ const report: DiagnosisReport = {
 const reportHtml = renderDiagnosisReport(report);
 assert.equal(reportHtml.includes("《经营诊断报告》"), true);
 assert.equal(reportHtml.includes("46"), true);
-assert.equal(reportHtml.includes("三大问题"), true);
+assert.equal(reportHtml.includes("问题清单（按优先级）"), true);
+assert.equal(reportHtml.includes("高风险"), true);
+assert.equal(reportHtml.includes("利润"), true);
+assert.equal(reportHtml.includes("风险：假利润产品会虚增收入规模、掩盖真实盈利结构"), true);
 assert.equal(reportHtml.includes("未来 90 天行动计划"), true);
 assert.equal(reportHtml.includes("假利润产品：产品 A"), true);
 assert.equal(reportHtml.includes("<script>"), false);

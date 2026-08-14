@@ -591,8 +591,11 @@ function baseResponses(scenario: GrowthContractScenario) {
           healthScoreBps: 4_600,
           summary: "本期经营存在需要关注的问题。",
           issues: [{
+            category: "利润",
+            level: "red",
             title: "存在假利润产品",
             reason: "产品 A 扣除费用后真实利润率过低",
+            risk: "假利润产品会虚增收入规模、掩盖真实盈利结构",
             suggestion: "调整定价或收缩产品线",
             evidence: ["假利润产品：产品 A"]
           }],

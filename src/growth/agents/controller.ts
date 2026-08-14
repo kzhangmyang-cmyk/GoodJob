@@ -28,9 +28,15 @@ interface AnalysisResult {
   readonly indicators?: {
     readonly grossMarginBps?: number;
     readonly netMarginBps?: number;
+    readonly quickRatioBps?: number;
+    readonly receivableTurnover?: number;
+    readonly inventoryTurnover?: number;
+    readonly interestCoverage?: number;
     readonly receivableDays?: number;
     readonly cashCoverageMonths?: number;
     readonly debtRatioBps?: number;
+    readonly cashCollectionRatioBps?: number;
+    readonly cashProfitRatioBps?: number;
   };
   readonly products?: readonly {
     readonly name: string;
@@ -109,9 +115,17 @@ function summarizeAnalysis(agentId: string, result: AnalysisResult): string {
       return `<ul>
         <li>毛利率 ${bpsText(indicators.grossMarginBps ?? 0)}</li>
         <li>净利率 ${bpsText(indicators.netMarginBps ?? 0)}</li>
+        <li>速动比率 ${indicators.quickRatioBps !== undefined
+          ? (indicators.quickRatioBps / 100).toFixed(1)
+          : "0"}</li>
         <li>应收周转天数 ${indicators.receivableDays ?? 0} 天</li>
+        <li>应收账款周转率 ${indicators.receivableTurnover ?? 0} 次</li>
+        <li>存货周转率 ${indicators.inventoryTurnover ?? 0} 次</li>
+        <li>利息保障倍数 ${indicators.interestCoverage ?? 0} 倍</li>
         <li>现金保障月数 ${indicators.cashCoverageMonths ?? 0} 个月</li>
         <li>资产负债率 ${bpsText(indicators.debtRatioBps ?? 0)}</li>
+        <li>收现比 ${bpsText(indicators.cashCollectionRatioBps ?? 0)}</li>
+        <li>净现比 ${bpsText(indicators.cashProfitRatioBps ?? 0)}</li>
       </ul>`;
     }
     default:

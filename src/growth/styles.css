@@ -447,6 +447,103 @@
   font-size: 0.82rem;
 }
 
+.diagnosis-report .report-score {
+  margin: 0.75rem 0;
+  padding: 1rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.6rem;
+  background: linear-gradient(135deg, #eef2ff, #f9fafb);
+  text-align: center;
+}
+
+.diagnosis-report .report-score strong {
+  display: block;
+  font-size: 2rem;
+  color: #4338ca;
+}
+
+.diagnosis-report .report-score span {
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+
+.diagnosis-report .report-summary {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.9rem;
+  border-left: 3px solid #4338ca;
+  background: #f5f7ff;
+  font-size: 0.9rem;
+}
+
+.diagnosis-report .report-block {
+  margin-top: 1.1rem;
+}
+
+.diagnosis-report .report-block ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.report-issue {
+  padding: 0.85rem 0.95rem;
+  border: 1px solid #e5e7eb;
+  border-left: 3px solid #d1d5db;
+  border-radius: 0.5rem;
+  margin-bottom: 0.6rem;
+  background: #ffffff;
+  font-size: 0.875rem;
+}
+
+.report-issue h4 {
+  margin: 0 0 0.45rem;
+  font-size: 0.95rem;
+  color: #111827;
+}
+
+.report-issue p {
+  margin: 0.25rem 0;
+  color: #4b5563;
+}
+
+.report-issue .issue-level {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 0.3rem;
+  margin-right: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  vertical-align: 0.05rem;
+}
+
+.issue-red {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.issue-yellow {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.report-issue .issue-category {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 0.3rem;
+  margin-right: 0.4rem;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 0.72rem;
+  font-weight: 600;
+  vertical-align: 0.05rem;
+}
+
+.report-evidence {
+  margin-top: 0.45rem;
+  color: #9ca3af;
+  font-size: 0.78rem;
+}
+
 .agent-actions {
   display: flex;
   flex-direction: column;

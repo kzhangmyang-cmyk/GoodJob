@@ -136,8 +136,17 @@ export function renderDiagnosisReport(report: DiagnosisReport): string {
   const score = report.healthScoreBps;
   const issues = report.issues.map((item) =>
     `<li class="report-issue">
-      <h4>${escapeHtml(item.title)}</h4>
+      <h4>
+        <span class="issue-level issue-${escapeHtml(item.level)}">
+          ${item.level === "red" ? "高风险" : "关注"}
+        </span>
+        ${item.category
+          ? `<span class="issue-category">${escapeHtml(item.category)}</span>`
+          : ""}
+        ${escapeHtml(item.title)}
+      </h4>
       <p>原因：${escapeHtml(item.reason)}</p>
+      ${item.risk ? `<p>风险：${escapeHtml(item.risk)}</p>` : ""}
       <p>建议：${escapeHtml(item.suggestion)}</p>
       ${item.evidence.length > 0
         ? `<p class="report-evidence">来源：${item.evidence.map(escapeHtml).join("；")}</p>`
@@ -157,7 +166,7 @@ export function renderDiagnosisReport(report: DiagnosisReport): string {
     </section>
     <p class="report-summary">${escapeHtml(report.summary)}</p>
     <section class="report-block">
-      <h3>三大问题</h3>
+      <h3>问题清单（按优先级）</h3>
       <ol>${issues || "<li>本期未发现突出问题</li>"}</ol>
     </section>
     <section class="report-block">
