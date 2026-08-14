@@ -4,6 +4,7 @@ import {
   randomUUID,
   timingSafeEqual
 } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type mysql from "mysql2/promise";
 import type {
   AcquisitionCandidate,
@@ -311,10 +312,30 @@ implements AcquisitionCandidateDirectoryPort {
   readonly #now: () => string;
   readonly #identityAliases:
     AcquisitionCandidateDirectoryOptions["identityAliases"];
+  readonly #transactionContext = new AsyncLocalStorage<boolean>();
+  #transactionTail: Promise<void> = Promise.resolve();
 
   constructor(options: AcquisitionCandidateDirectoryOptions = {}) {
     this.#now = options.now ?? (() => new Date().toISOString());
     this.#identityAliases = options.identityAliases;
+  }
+
+  async transaction<T>(work: () => Promise<T>): Promise<T> {
+    if (this.#transactionContext.getStore()) return work();
+    let release!: () => void;
+    const previous = this.#transactionTail;
+    this.#transactionTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    const entries = clone([...this.#entries.entries()]);
+    try {
+      return await this.#transactionContext.run(true, work);
+    } catch (error) {
+      this.#entries.clear();
+      for (const [key, value] of entries) this.#entries.set(key, value);
+      throw error;
+    } finally {
+      release();
+    }
   }
 
   async upsertCandidate(input: {
@@ -398,6 +419,10 @@ implements AcquisitionCandidateDirectoryPort {
   readonly #lockTimeoutSeconds: number;
   readonly #identityAliases:
     AcquisitionCandidateDirectoryOptions["identityAliases"];
+  readonly #transactionContext = new AsyncLocalStorage<{
+    connection: mysql.PoolConnection;
+    lockNames: Set<string>;
+  }>();
 
   constructor(
     private readonly pool: mysql.Pool,
@@ -410,6 +435,24 @@ implements AcquisitionCandidateDirectoryPort {
       || this.#lockTimeoutSeconds < 0
       || this.#lockTimeoutSeconds > 300) {
       throw new TypeError("lockTimeoutSeconds must be from 0 to 300");
+    }
+  }
+
+  async withTransactionConnection<T>(
+    connection: mysql.PoolConnection,
+    work: () => Promise<T>
+  ) {
+    if (this.#transactionContext.getStore()) return work();
+    const context = { connection, lockNames: new Set<string>() };
+    try {
+      return await this.#transactionContext.run(context, work);
+    } finally {
+      for (const lockName of context.lockNames) {
+        await connection.query(
+          "SELECT RELEASE_LOCK(?) AS lock_released",
+          [lockName]
+        ).catch(() => undefined);
+      }
     }
   }
 
@@ -429,7 +472,8 @@ implements AcquisitionCandidateDirectoryPort {
       input.teamId,
       dedupeKeyHash
     ].join("\u0000")).slice(0, 50)}`;
-    const connection = await this.pool.getConnection();
+    const externalContext = this.#transactionContext.getStore();
+    const connection = externalContext?.connection ?? await this.pool.getConnection();
     let locked = false;
     try {
       const lockRows = await rows(
@@ -441,6 +485,7 @@ implements AcquisitionCandidateDirectoryPort {
         throw new Error("ACQUISITION_CANDIDATE_DIRECTORY_LOCK_TIMEOUT");
       }
       locked = true;
+      externalContext?.lockNames.add(lockName);
       const aliasRows = this.#identityAliases
         ? await rows(
             connection,
@@ -545,14 +590,14 @@ implements AcquisitionCandidateDirectoryPort {
       };
     } finally {
       try {
-        if (locked) {
+        if (locked && !externalContext) {
           await connection.query(
             "SELECT RELEASE_LOCK(?) AS lock_released",
             [lockName]
           );
         }
       } finally {
-        connection.release();
+        if (!externalContext) connection.release();
       }
     }
   }

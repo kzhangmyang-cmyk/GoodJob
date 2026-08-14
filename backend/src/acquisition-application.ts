@@ -54,6 +54,18 @@ import {
   MysqlAcquisitionDouyinCommentEventRepository
 } from "./acquisition-douyin-comment-events-mysql-repository.js";
 import {
+  AcquisitionDouyinCommentIngestionService
+} from "./acquisition-douyin-comment-ingestion.js";
+import {
+  AcquisitionDouyinCommentIngestionRecoverySweeper,
+  type AcquisitionDouyinCommentIngestionRecoveryPort
+} from "./acquisition-douyin-comment-ingestion-recovery-sweeper.js";
+import {
+  InMemoryAcquisitionDouyinCommentIngestionUnitOfWork,
+  MysqlAcquisitionDouyinCommentIngestionUnitOfWork,
+  type AcquisitionDouyinCommentIngestionUnitOfWork
+} from "./acquisition-douyin-comment-ingestion-unit-of-work.js";
+import {
   ensureAcquisitionCandidateIntelligenceMysqlSchema,
   MysqlAcquisitionCandidateIntelligenceOperationRepository
 } from "./acquisition-candidate-intelligence-mysql-repository.js";
@@ -146,7 +158,8 @@ import {
 } from "./canonical-json.js";
 import {
   createMysqlAcquisitionRepositories,
-  ensureAcquisitionMysqlSchema
+  ensureAcquisitionMysqlSchema,
+  MysqlAcquisitionDomainRepository
 } from "./acquisition-mysql-repositories.js";
 import {
   AcquisitionPlanExecutionWorker,
@@ -390,6 +403,9 @@ export interface CreateAcquisitionApplicationOptions {
   douyinIdentityResolutionRecoveryIntervalMs?: number;
   douyinIdentityResolutionRecoveryBatchSize?: number;
   douyinIdentityResolutionLeaseDurationMs?: number;
+  douyinCommentIngestionRecoveryIntervalMs?: number;
+  douyinCommentIngestionRecoveryBatchSize?: number;
+  douyinCommentIngestionRecoveryLeaseDurationMs?: number;
   discoveryLeaseDurationMs?: number;
   domainRepository?: AcquisitionDomainRepository;
   domainServiceFactory?: (
@@ -404,6 +420,11 @@ export interface CreateAcquisitionApplicationOptions {
   douyinIdentityResolutionRepository?:
     AcquisitionDouyinIdentityResolutionOperationRepository;
   douyinCommentEventRepository?: AcquisitionDouyinCommentEventRepository;
+  douyinCommentIngestionUnitOfWork?:
+    AcquisitionDouyinCommentIngestionUnitOfWork;
+  douyinCommentIngestionRecoverySweeperFactory?: (
+    service: AcquisitionDouyinCommentIngestionRecoveryPort
+  ) => Pick<AcquisitionDouyinCommentIngestionRecoverySweeper, "start" | "close">;
   douyinPublicProfileDiscovery?:
     AcquisitionDouyinPublicProfileDiscoveryPort;
   planRunRepository?: AcquisitionPlanRunRepository;
@@ -1078,6 +1099,9 @@ export async function createAcquisitionApplication(
     AcquisitionCandidateIntelligenceRecoverySweeper | null = null;
   let douyinIdentityResolutionRecoverySweeper:
     AcquisitionDouyinIdentityResolutionRecoverySweeper | null = null;
+  let douyinCommentIngestionRecoverySweeper:
+    Pick<AcquisitionDouyinCommentIngestionRecoverySweeper, "start" | "close">
+    | null = null;
 
   try {
     let repositories: AcquisitionRepositorySet;
@@ -1303,6 +1327,61 @@ export async function createAcquisitionApplication(
         domain: domainService,
         candidateDirectory
       });
+    let douyinCommentIngestionUnitOfWork =
+      options.douyinCommentIngestionUnitOfWork;
+    if (!douyinCommentIngestionUnitOfWork
+      && repositories.domain instanceof InMemoryAcquisitionDomainRepository
+      && repositories.douyinCommentEvents
+        instanceof InMemoryAcquisitionDouyinCommentEventRepository
+      && candidateDirectory instanceof InMemoryAcquisitionCandidateDirectory) {
+      douyinCommentIngestionUnitOfWork =
+        new InMemoryAcquisitionDouyinCommentIngestionUnitOfWork(
+          repositories.domain,
+          repositories.douyinCommentEvents,
+          candidateDirectory
+        );
+    }
+    if (!douyinCommentIngestionUnitOfWork
+      && pool
+      && repositories.domain instanceof MysqlAcquisitionDomainRepository
+      && repositories.douyinCommentEvents
+        instanceof MysqlAcquisitionDouyinCommentEventRepository
+      && candidateDirectory instanceof MysqlAcquisitionCandidateDirectory) {
+      douyinCommentIngestionUnitOfWork =
+        new MysqlAcquisitionDouyinCommentIngestionUnitOfWork(
+          pool,
+          repositories.domain,
+          repositories.douyinCommentEvents,
+          candidateDirectory
+        );
+    }
+    if (!douyinCommentIngestionUnitOfWork) {
+      throw new Error(
+        "ACQUISITION_DOUYIN_COMMENT_INGESTION_UNIT_OF_WORK_REQUIRED"
+      );
+    }
+    const douyinCommentIngestion =
+      new AcquisitionDouyinCommentIngestionService({
+        events: repositories.douyinCommentEvents,
+        domain: domainService,
+        individualSignals,
+        unitOfWork: douyinCommentIngestionUnitOfWork,
+        recoveryWorkerId: idFactory("douyin-comment-recovery-worker"),
+        recoveryLeaseDurationMs:
+          options.douyinCommentIngestionRecoveryLeaseDurationMs,
+        now
+      });
+    douyinCommentIngestionRecoverySweeper =
+      options.douyinCommentIngestionRecoverySweeperFactory
+        ? options.douyinCommentIngestionRecoverySweeperFactory(
+            douyinCommentIngestion
+          )
+        : new AcquisitionDouyinCommentIngestionRecoverySweeper({
+            service: douyinCommentIngestion,
+            intervalMs: options.douyinCommentIngestionRecoveryIntervalMs,
+            batchSize: options.douyinCommentIngestionRecoveryBatchSize
+          });
+    await douyinCommentIngestionRecoverySweeper.start();
     const discoveryOperations = new AcquisitionDiscoveryOperationService({
       repository: repositories.discovery,
       evidence: domainService,
@@ -2068,6 +2147,8 @@ export async function createAcquisitionApplication(
           try {
             settlements = await waitWithTimeout(
               Promise.allSettled([
+                douyinCommentIngestionRecoverySweeper?.close()
+                  ?? Promise.resolve(),
                 copilotRecoverySweeper?.close() ?? Promise.resolve(),
                 discoveryRecoverySweeper?.close()
                   ?? Promise.resolve(),
@@ -2120,6 +2201,10 @@ export async function createAcquisitionApplication(
       }
     };
   } catch (error) {
+    if (douyinCommentIngestionRecoverySweeper) {
+      await douyinCommentIngestionRecoverySweeper.close()
+        .catch(() => undefined);
+    }
     if (douyinIdentityResolutionRecoverySweeper) {
       await douyinIdentityResolutionRecoverySweeper.stop()
         .catch(() => undefined);

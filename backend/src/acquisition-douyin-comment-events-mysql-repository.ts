@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type mysql from "mysql2/promise";
 import {
   assertAppendDouyinCommentObservationInput,
@@ -129,9 +130,14 @@ export const ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS = [
     created_at DATETIME(3) NOT NULL,
     updated_at DATETIME(3) NOT NULL,
     committed_at DATETIME(3) NULL,
+    attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME(3) NOT NULL,
+    lease_owner VARCHAR(100) NULL,
+    lease_expires_at DATETIME(3) NULL,
+    last_error_code VARCHAR(64) NULL,
     PRIMARY KEY (owner_id, team_id, saga_id),
     KEY idx_douyin_comment_ingestion_saga_pending
-      (status, created_at, saga_id),
+      (status, next_attempt_at, lease_expires_at, created_at, saga_id),
     CONSTRAINT fk_douyin_comment_ingestion_saga_observation
       FOREIGN KEY (owner_id, team_id, event_id, observation_id)
       REFERENCES acquisition_douyin_comment_observations
@@ -199,7 +205,21 @@ export const ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS = [
       (status = 'running' AND completed_at IS NULL)
       OR (status <> 'running' AND completed_at IS NOT NULL)
     )
-  ) ENGINE=InnoDB`
+  ) ENGINE=InnoDB`,
+  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
+    ADD COLUMN IF NOT EXISTS attempt_count INT UNSIGNED NOT NULL DEFAULT 0`,
+  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
+    ADD COLUMN IF NOT EXISTS next_attempt_at DATETIME(3) NULL`,
+  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
+    ADD COLUMN IF NOT EXISTS lease_owner VARCHAR(100) NULL`,
+  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
+    ADD COLUMN IF NOT EXISTS lease_expires_at DATETIME(3) NULL`,
+  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
+    ADD COLUMN IF NOT EXISTS last_error_code VARCHAR(64) NULL`,
+  `UPDATE acquisition_douyin_comment_ingestion_sagas
+    SET next_attempt_at = updated_at WHERE next_attempt_at IS NULL`,
+  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
+    MODIFY COLUMN next_attempt_at DATETIME(3) NOT NULL`
 ] as const;
 
 export async function ensureAcquisitionDouyinCommentEventsMysqlSchema(
@@ -315,7 +335,12 @@ const INGESTION_SAGA_SELECT_COLUMNS = `saga_id, owner_id, team_id, actor_id,
   DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s.%f') AS updated_at,
   CASE WHEN committed_at IS NULL THEN NULL
     ELSE DATE_FORMAT(committed_at, '%Y-%m-%d %H:%i:%s.%f')
-  END AS committed_at`;
+  END AS committed_at, attempt_count,
+  DATE_FORMAT(next_attempt_at, '%Y-%m-%d %H:%i:%s.%f') AS next_attempt_at,
+  lease_owner,
+  CASE WHEN lease_expires_at IS NULL THEN NULL
+    ELSE DATE_FORMAT(lease_expires_at, '%Y-%m-%d %H:%i:%s.%f')
+  END AS lease_expires_at, last_error_code`;
 
 const FETCH_ATTEMPT_SELECT_COLUMNS = `attempt_id, owner_id, team_id, run_id,
   shard_id, discovery_operation_id, source_url, video_id, status, error_code,
@@ -436,7 +461,18 @@ function parseIngestionSaga(row: MysqlRow): DouyinCommentIngestionSaga {
     evidenceId,
     createdAt: instant(row.created_at, "created_at"),
     updatedAt: instant(row.updated_at, "updated_at"),
-    committedAt
+    committedAt,
+    attemptCount: integer(row.attempt_count, "attempt_count"),
+    nextAttemptAt: instant(row.next_attempt_at, "next_attempt_at"),
+    leaseOwner: nullableString(row, "lease_owner"),
+    leaseExpiresAt: nullableInstant(row.lease_expires_at, "lease_expires_at"),
+    lastErrorCode: row.last_error_code === null
+      ? null
+      : literal(
+          row.last_error_code,
+          ["RECOVERY_FAILED"] as const,
+          "last_error_code"
+        )
   };
 }
 
@@ -588,7 +624,12 @@ function ingestionSagaFrom(
     evidenceId: null,
     createdAt: input.event.capturedAt,
     updatedAt: input.event.capturedAt,
-    committedAt: null
+    committedAt: null,
+    attemptCount: 0,
+    nextAttemptAt: input.event.capturedAt,
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    lastErrorCode: null
   };
 }
 
@@ -705,7 +746,38 @@ async function selectSagaWorkItem(
 
 export class MysqlAcquisitionDouyinCommentEventRepository
 implements AcquisitionDouyinCommentEventRepository {
+  private readonly transactionContext =
+    new AsyncLocalStorage<mysql.PoolConnection>();
+
   constructor(private readonly pool: mysql.Pool) {}
+
+  private source() {
+    return this.transactionContext.getStore() ?? this.pool;
+  }
+
+  async withTransactionConnection<T>(
+    connection: mysql.PoolConnection,
+    work: () => Promise<T>
+  ) {
+    if (this.transactionContext.getStore()) return work();
+    return this.transactionContext.run(connection, work);
+  }
+
+  async transaction<T>(work: () => Promise<T>): Promise<T> {
+    if (this.transactionContext.getStore()) return work();
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const result = await this.transactionContext.run(connection, work);
+      await connection.commit();
+      return result;
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
 
   async appendObservation(input: AppendDouyinCommentObservationInput) {
     assertAppendDouyinCommentObservationInput(input);
@@ -717,11 +789,15 @@ implements AcquisitionDouyinCommentEventRepository {
         capturedAt: canonicalDouyinCommentInstant(input.event.capturedAt)
       }
     };
-    const connection = await this.pool.getConnection();
+    const externalConnection = this.transactionContext.getStore();
+    const connection = externalConnection ?? await this.pool.getConnection();
+    const ownsTransaction = !externalConnection;
     let transactionStarted = false;
     try {
-      await connection.beginTransaction();
-      transactionStarted = true;
+      if (ownsTransaction) {
+        await connection.beginTransaction();
+        transactionStarted = true;
+      }
       const [insertResult] = await connection.query(
         `INSERT IGNORE INTO acquisition_douyin_comment_events (
           event_id, owner_id, team_id, platform, event_type,
@@ -817,8 +893,10 @@ implements AcquisitionDouyinCommentEventRepository {
           `INSERT IGNORE INTO acquisition_douyin_comment_ingestion_sagas (
             saga_id, owner_id, team_id, actor_id, event_id, observation_id,
             text_hash, run_id, shard_id, discovery_operation_id, status,
-            candidate_id, evidence_id, created_at, updated_at, committed_at
-          ) VALUES (${Array(16).fill("?").join(", ")})`,
+            candidate_id, evidence_id, created_at, updated_at, committed_at,
+            attempt_count, next_attempt_at, lease_owner, lease_expires_at,
+            last_error_code
+          ) VALUES (${Array(21).fill("?").join(", ")})`,
           [
             requestedSaga.sagaId, requestedSaga.ownerId, requestedSaga.teamId,
             requestedSaga.actorId, requestedSaga.eventId,
@@ -827,7 +905,10 @@ implements AcquisitionDouyinCommentEventRepository {
             requestedSaga.discoveryOperationId, requestedSaga.status,
             requestedSaga.candidateId, requestedSaga.evidenceId,
             mysqlDate(requestedSaga.createdAt),
-            mysqlDate(requestedSaga.updatedAt), requestedSaga.committedAt
+            mysqlDate(requestedSaga.updatedAt), requestedSaga.committedAt,
+            requestedSaga.attemptCount, mysqlDate(requestedSaga.nextAttemptAt),
+            requestedSaga.leaseOwner, requestedSaga.leaseExpiresAt,
+            requestedSaga.lastErrorCode
           ]
         );
         ingestionSaga = await selectIngestionSaga(
@@ -844,8 +925,10 @@ implements AcquisitionDouyinCommentEventRepository {
           integrity("ingestion_saga_conflict");
         }
       }
-      await connection.commit();
-      transactionStarted = false;
+      if (ownsTransaction) {
+        await connection.commit();
+        transactionStarted = false;
+      }
       return {
         event,
         observation: storedObservation,
@@ -858,7 +941,7 @@ implements AcquisitionDouyinCommentEventRepository {
       if (transactionStarted) await connection.rollback().catch(() => undefined);
       throw error;
     } finally {
-      connection.release();
+      if (ownsTransaction) connection.release();
     }
   }
 
@@ -871,13 +954,15 @@ implements AcquisitionDouyinCommentEventRepository {
       || sagaId.length > 160) {
       throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_INGESTION_SAGA");
     }
-    const saga = await selectIngestionSaga(this.pool, scope, sagaId);
-    return saga ? selectSagaWorkItem(this.pool, saga) : null;
+    const source = this.source();
+    const saga = await selectIngestionSaga(source, scope, sagaId);
+    return saga ? selectSagaWorkItem(source, saga) : null;
   }
 
   async listPendingIngestionSagas(options: { limit: number }) {
     const limit = boundedLimit(options.limit);
-    const [result] = await this.pool.query(
+    const source = this.source();
+    const [result] = await source.query(
       `SELECT ${INGESTION_SAGA_SELECT_COLUMNS}
        FROM acquisition_douyin_comment_ingestion_sagas
        WHERE status = 'pending'
@@ -886,7 +971,111 @@ implements AcquisitionDouyinCommentEventRepository {
       [limit]
     );
     return Promise.all(rows(result).slice(0, limit).map((row) =>
-      selectSagaWorkItem(this.pool, parseIngestionSaga(row))));
+      selectSagaWorkItem(source, parseIngestionSaga(row))));
+  }
+
+  async claimPendingIngestionSagas(options: {
+    workerId: string;
+    now: string;
+    leaseDurationMs: number;
+    limit: number;
+  }) {
+    const limit = boundedLimit(options.limit);
+    const now = canonicalDouyinCommentInstant(options.now);
+    if (typeof options.workerId !== "string" || options.workerId.length < 1
+      || options.workerId.length > 100
+      || !Number.isSafeInteger(options.leaseDurationMs)
+      || options.leaseDurationMs < 1_000
+      || options.leaseDurationMs > 10 * 60_000) {
+      throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_LEASE");
+    }
+    const leaseExpiresAt = new Date(
+      new Date(now).getTime() + options.leaseDurationMs
+    ).toISOString();
+    return this.transaction(async () => {
+      const source = this.source();
+      const [result] = await source.query(
+        `SELECT ${INGESTION_SAGA_SELECT_COLUMNS}
+         FROM acquisition_douyin_comment_ingestion_sagas
+         WHERE status = 'pending' AND next_attempt_at <= ?
+           AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+         ORDER BY next_attempt_at ASC, created_at ASC, saga_id ASC
+         LIMIT ? FOR UPDATE SKIP LOCKED`,
+        [mysqlDate(now), mysqlDate(now), limit]
+      );
+      const sagas = rows(result).map(parseIngestionSaga);
+      for (const saga of sagas) {
+        await source.query(
+          `UPDATE acquisition_douyin_comment_ingestion_sagas
+           SET attempt_count = attempt_count + 1, lease_owner = ?,
+             lease_expires_at = ?, updated_at = ?
+           WHERE owner_id = ? AND team_id = ? AND saga_id = ?
+             AND status = 'pending'`,
+          [
+            options.workerId, mysqlDate(leaseExpiresAt), mysqlDate(now),
+            saga.ownerId, saga.teamId, saga.sagaId
+          ]
+        );
+      }
+      const claimed = await Promise.all(sagas.map((saga) =>
+        selectIngestionSaga(source, {
+          ownerId: saga.ownerId,
+          teamId: saga.teamId
+        }, saga.sagaId)));
+      return Promise.all(claimed.map(async (saga) => {
+        if (!saga) return integrity("claimed_ingestion_saga_missing");
+        return selectSagaWorkItem(source, saga);
+      }));
+    });
+  }
+
+  async failIngestionSaga(
+    scope: AcquisitionScope,
+    sagaId: string,
+    failure: {
+      workerId: string;
+      failedAt: string;
+      nextAttemptAt: string;
+      errorCode: "RECOVERY_FAILED";
+    }
+  ) {
+    const failedAt = canonicalDouyinCommentInstant(failure.failedAt);
+    const nextAttemptAt = canonicalDouyinCommentInstant(failure.nextAttemptAt);
+    if (typeof failure.workerId !== "string" || failure.workerId.length < 1
+      || failure.workerId.length > 100
+      || failure.errorCode !== "RECOVERY_FAILED"
+      || nextAttemptAt <= failedAt) {
+      throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_RECOVERY_FAILURE");
+    }
+    return this.transaction(async () => {
+      const source = this.source();
+      const saga = await selectIngestionSaga(source, scope, sagaId, true);
+      if (!saga || saga.status !== "pending") {
+        return integrity("ingestion_saga_not_found");
+      }
+      if (saga.leaseOwner !== failure.workerId) {
+        return integrity("ingestion_saga_lease_conflict");
+      }
+      await source.query(
+        `UPDATE acquisition_douyin_comment_ingestion_sagas
+         SET next_attempt_at = ?, lease_owner = NULL, lease_expires_at = NULL,
+           last_error_code = ?, updated_at = ?
+         WHERE owner_id = ? AND team_id = ? AND saga_id = ?
+           AND status = 'pending' AND lease_owner = ?`,
+        [
+          mysqlDate(nextAttemptAt), failure.errorCode, mysqlDate(failedAt),
+          scope.ownerId, scope.teamId, sagaId, failure.workerId
+        ]
+      );
+      return {
+        ...saga,
+        nextAttemptAt,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        lastErrorCode: failure.errorCode,
+        updatedAt: failedAt
+      };
+    });
   }
 
   async commitIngestionSaga(
@@ -908,11 +1097,15 @@ implements AcquisitionDouyinCommentEventRepository {
       candidateId: result.candidateId,
       evidenceId: result.evidenceId
     });
-    const connection = await this.pool.getConnection();
+    const externalConnection = this.transactionContext.getStore();
+    const connection = externalConnection ?? await this.pool.getConnection();
+    const ownsTransaction = !externalConnection;
     let transactionStarted = false;
     try {
-      await connection.beginTransaction();
-      transactionStarted = true;
+      if (ownsTransaction) {
+        await connection.beginTransaction();
+        transactionStarted = true;
+      }
       const saga = await selectIngestionSaga(connection, scope, sagaId, true);
       if (!saga) integrity("ingestion_saga_not_found");
       if (saga.status === "committed"
@@ -974,7 +1167,7 @@ implements AcquisitionDouyinCommentEventRepository {
         await connection.query(
           `UPDATE acquisition_douyin_comment_ingestion_sagas
            SET status = 'committed', candidate_id = ?, evidence_id = ?,
-             committed_at = ?
+             committed_at = ?, lease_owner = NULL, lease_expires_at = NULL
            WHERE owner_id = ? AND team_id = ? AND saga_id = ?
              AND status = 'pending'`,
           [
@@ -987,17 +1180,21 @@ implements AcquisitionDouyinCommentEventRepository {
           status: "committed",
           candidateId: result.candidateId,
           evidenceId: result.evidenceId,
-          committedAt: saga.updatedAt
+          committedAt: saga.updatedAt,
+          leaseOwner: null,
+          leaseExpiresAt: null
         };
       }
-      await connection.commit();
-      transactionStarted = false;
+      if (ownsTransaction) {
+        await connection.commit();
+        transactionStarted = false;
+      }
       return { saga: committed, link, created };
     } catch (error) {
       if (transactionStarted) await connection.rollback().catch(() => undefined);
       throw error;
     } finally {
-      connection.release();
+      if (ownsTransaction) connection.release();
     }
   }
 

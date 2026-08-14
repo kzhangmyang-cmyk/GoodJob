@@ -178,6 +178,92 @@ test("pending ingestion sagas stay out of Run projections until atomic link comm
   )).length, 1);
 });
 
+test("concurrent conflicting saga commits choose exactly one immutable result", async () => {
+  const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
+  await repository.appendObservation({
+    ...observation(),
+    ingestionSaga: ingestionSaga("saga-race")
+  });
+
+  const settled = await Promise.allSettled([
+    repository.commitIngestionSaga(scopeA, "saga-race", {
+      candidateId: "candidate-a",
+      evidenceId: "evidence-a"
+    }),
+    repository.commitIngestionSaga(scopeA, "saga-race", {
+      candidateId: "candidate-b",
+      evidenceId: "evidence-b"
+    })
+  ]);
+
+  assert.equal(settled.filter((item) => item.status === "fulfilled").length, 1);
+  assert.equal(settled.filter((item) => item.status === "rejected").length, 1);
+  const committed = await repository.getIngestionSaga(scopeA, "saga-race");
+  assert.equal(committed?.saga.status, "committed");
+  const [signal] = await repository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 10 }
+  );
+  assert.equal(signal?.link.candidateId, committed?.saga.candidateId);
+  assert.equal(signal?.link.evidenceId, committed?.saga.evidenceId);
+});
+
+test("leased recovery skips poison fairly and concurrent claimers never overlap", async () => {
+  const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
+  for (const [index, sagaId] of ["saga-poison", "saga-healthy"].entries()) {
+    await repository.appendObservation({
+      ...observation({ observationId: `observation-lease-${index}` }),
+      event: {
+        ...observation().event,
+        eventId: `event-lease-${index}`,
+        platformEventId: `cid-lease-${index}`,
+        capturedAt: `2026-08-15T02:00:0${index}.000Z`
+      },
+      ingestionSaga: ingestionSaga(sagaId)
+    });
+  }
+
+  const [poison] = await repository.claimPendingIngestionSagas({
+    workerId: "worker-a",
+    now: "2026-08-15T02:01:00.000Z",
+    leaseDurationMs: 30_000,
+    limit: 1
+  });
+  assert.equal(poison?.saga.sagaId, "saga-poison");
+  await repository.failIngestionSaga(scopeA, "saga-poison", {
+    workerId: "worker-a",
+    failedAt: "2026-08-15T02:01:00.000Z",
+    nextAttemptAt: "2026-08-15T02:02:00.000Z",
+    errorCode: "RECOVERY_FAILED"
+  });
+  const [healthy] = await repository.claimPendingIngestionSagas({
+    workerId: "worker-b",
+    now: "2026-08-15T02:01:00.000Z",
+    leaseDurationMs: 30_000,
+    limit: 1
+  });
+  assert.equal(healthy?.saga.sagaId, "saga-healthy");
+  assert.equal(poison?.saga.lastErrorCode, null);
+
+  const concurrent = await Promise.all([
+    repository.claimPendingIngestionSagas({
+      workerId: "worker-c",
+      now: "2026-08-15T02:03:00.000Z",
+      leaseDurationMs: 30_000,
+      limit: 1
+    }),
+    repository.claimPendingIngestionSagas({
+      workerId: "worker-d",
+      now: "2026-08-15T02:03:00.000Z",
+      leaseDurationMs: 30_000,
+      limit: 1
+    })
+  ]);
+  const ids = concurrent.flat().map((item) => item.saga.sagaId);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
 test("run projections use the latest observation and remain tenant isolated", async () => {
   const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
   await repository.appendObservation(observation());

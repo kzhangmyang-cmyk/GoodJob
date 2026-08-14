@@ -2,7 +2,7 @@
 
 ## Status and commit
 
-- Status: complete, including review rounds 1 and 2
+- Status: complete, including review rounds 1, 2, and 3
 - Base: `0ca58cdd4d2dd18040ccfb2a617cc2df47579240`
 - Commit: the task commit containing this report, message
   `feat: aggregate douyin comment demand signals`
@@ -10,6 +10,8 @@
   `fix: harden douyin comment signal ingestion`
 - Review round 2 commit: the follow-up commit containing this report, message
   `fix: persist and recover douyin comment ingestion`
+- Review round 3 commit: the follow-up commit containing this report, message
+  `fix: atomically recover douyin comment ingestion`
 - Scope: backend and acquisition contracts only; no frontend or Task 5+
   orchestration changes
 
@@ -96,9 +98,34 @@
 - Aligned prevalidation with persistence bounds: nullable Run/shard/discovery
   IDs are rejected above 160 characters before mutation, and the exact Task 1
   Provider/version/coverage/reply-body literals remain fail closed.
-- This remains a restartable cross-repository saga, not a claim of a distributed
-  atomic transaction. The atomic boundaries are explicitly the event-repository
-  local transactions and the candidate Domain transaction described above.
+- Review round 3 replaced the separate completion transactions described above
+  with the shared unit-of-work boundary below. The durable pending saga remains
+  the restart record; completion is no longer best-effort cross-repository work.
+
+## Review round 3 fixes
+
+- Added a concrete ingestion unit of work. Memory coordinates serialized
+  snapshots across Domain, the event repository, and the candidate directory;
+  MySQL binds all three repositories to one connection and one database
+  transaction. Evidence, idempotency, candidate/audit state, directory entry,
+  event link, and committed saga therefore succeed or roll back together.
+- Added a real commit-side failure regression whose event repository performs
+  the link/saga mutation and then throws. The failed call leaves an approved
+  candidate, audit stream, Run projection, and pending saga at their exact
+  prior snapshots. Restart recovery completes without caller replay.
+- Made memory saga commit serialization match MySQL row locking. Concurrent
+  different candidate/evidence results now select one immutable winner; the
+  other call returns a deterministic conflict, and the link matches the saga.
+- Added durable recovery attempts, `nextAttemptAt`, leases, and the bounded
+  non-PII `RECOVERY_FAILED` code. Recovery catches each work item separately,
+  applies bounded exponential backoff, and lets later tenants progress even
+  when `limit=1`. MySQL claims use `FOR UPDATE SKIP LOCKED`; memory claims use
+  the same exactly-once lease semantics. Existing MySQL saga tables are upgraded
+  in place before reads start.
+- Wired the real ingestion service and recovery sweeper into both application
+  compositions. Startup performs the first sweep, later sweeps are scheduled,
+  sweep errors are isolated, and close cancels/drains recovery exactly once.
+  Custom repository compositions must provide an explicit atomic unit of work.
 
 ## TDD evidence
 
@@ -164,6 +191,20 @@
   `ACQUISITION_DOUYIN_COMMENT_MYSQL_INTEGRITY:ingestion_saga_work_item`, proving
   the persisted first content observation must differ safely from a later saga
   observation for the same text hash.
+- Review round 3 started with the memory repository race and recovery-lease
+  regressions:
+
+  ```text
+  npm exec --workspace backend -- tsx --test \
+    src/acquisition-douyin-comment-events-test.ts
+  ```
+
+  Result: 12/14 passed and 2 failed. Concurrent different saga results both
+  fulfilled instead of selecting one winner, and recovery had no
+  `claimPendingIngestionSagas` operation. The later vertical REDs also proved
+  that a real commit-side throw needed a shared completion transaction and that
+  a poison item at `limit=1` needed durable backoff before later tenant work
+  could progress.
 
 ### GREEN
 
@@ -194,6 +235,38 @@ npm exec --workspace backend -- tsx --test \
 
 Result: 70/70 passed. The ingestion file passed 10/10, memory event repository
 12/12, and MySQL event repository 9/9.
+
+Review round 3 expanded focused command:
+
+```text
+npm exec --workspace backend -- tsx --test \
+  src/acquisition-douyin-comment-ingestion-test.ts \
+  src/acquisition-domain-test.ts \
+  src/acquisition-public-identity-resolver-test.ts \
+  src/acquisition-candidate-research-test.ts \
+  src/acquisition-douyin-comment-events-test.ts \
+  src/acquisition-douyin-comment-events-mysql-repository-test.ts \
+  src/acquisition-douyin-comment-ingestion-recovery-sweeper-test.ts \
+  src/acquisition-douyin-comment-ingestion-unit-of-work-test.ts \
+  src/acquisition-individual-signal-ingestion-test.ts \
+  src/acquisition-mysql-repositories-test.ts
+```
+
+Result: 79/79 passed. The ingestion file passed 12/12, memory events 14/14,
+MySQL events 10/10, and the new unit-of-work/recovery-sweeper tests 3/3.
+
+Application lifecycle focused command:
+
+```text
+npm exec --workspace backend -- tsx --test \
+  --test-name-pattern="application owns the comment ingestion recovery lifecycle|mysql acquisition application owns schema setup" \
+  src/acquisition-application-test.ts
+```
+
+Result: 2/2 passed and exited naturally. The full application test file reaches
+24/24 but retains the pre-existing deliberately unresolved gateway from
+`application shutdown is bounded when a model call never returns`; full-suite
+counting therefore uses Node's explicit `--test-force-exit`.
 
 The existing MySQL Domain repository regression also passed:
 
@@ -245,11 +318,41 @@ hidden or expanded into this task:
 Task 4's new classifier, ingestion, domain, resolver, candidate-research, and
 contract tests all pass inside their required focused gates.
 
+After independent commit `0e6269f` fixed Task 2's OpenAPI conversion, review
+round 3 reran the complete command with `--test-force-exit` placed before the
+file list:
+
+```text
+NODE_ENV=test TZ=UTC \
+JWT_SECRET=goodjob-acquisition-test-secret-at-least-32-characters \
+ACQUISITION_MASTER_SECRET=goodjob-acquisition-master-test-secret-at-least-32-bytes \
+node --import tsx --test --test-force-exit --test-concurrency=1 \
+  src/model-config-migration-test.ts \
+  src/model-provider-endpoint-registry-test.ts \
+  src/model-official-connection-profile-test.ts \
+  src/model-connection-idempotency-test.ts \
+  src/model-connection-service-test.ts \
+  src/model-pending-appends-test.ts \
+  src/model-gateway-test.ts \
+  src/model-runtime-integration-test.ts \
+  src/provider-connection-version-test.ts \
+  src/acquisition-*-test.ts
+```
+
+Result: 727 passed / 2 failed. The only failures are the two pre-existing,
+separate file-level `MODEL_TOOL_DEFINITION_INVALID` failures in
+`acquisition-pi-gateway-runtime-test.ts` and
+`acquisition-pi-runtime-factory-test.ts`. The former `contains`/OpenAPI failure
+is absent.
+
 ## Files
 
 - `backend/src/acquisition-douyin-comment-ingestion.ts`
 - `backend/src/acquisition-douyin-comment-ingestion-test.ts`
 - `backend/src/acquisition-douyin-comment-ingestion-recovery-sweeper.ts`
+- `backend/src/acquisition-douyin-comment-ingestion-recovery-sweeper-test.ts`
+- `backend/src/acquisition-douyin-comment-ingestion-unit-of-work.ts`
+- `backend/src/acquisition-douyin-comment-ingestion-unit-of-work-test.ts`
 - `backend/src/acquisition-douyin-comment-events.ts`
 - `backend/src/acquisition-douyin-comment-events-test.ts`
 - `backend/src/acquisition-douyin-comment-events-mysql-repository.ts`
@@ -261,6 +364,10 @@ contract tests all pass inside their required focused gates.
 - `backend/src/acquisition-public-identity-resolver.ts`
 - `backend/src/acquisition-public-identity-resolver-test.ts`
 - `backend/src/acquisition-candidate-research-test.ts`
+- `backend/src/acquisition-application.ts`
+- `backend/src/acquisition-application-test.ts`
+- `backend/src/acquisition-mysql-repositories.ts`
+- `backend/src/acquisition-tool-support-repositories.ts`
 - `contracts/json-schema/discovery-evidence.v1.schema.json`
 - `contracts/json-schema/individual-demand-signal.v1.schema.json`
 - `contracts/test/schema-registry.test.mjs`
@@ -272,17 +379,15 @@ contract tests all pass inside their required focused gates.
 
 `contracts/README.md`, the current Douyin automation design, and the execution
 plan now describe persisted first content versions, exact original snippets,
-real provider artifacts, local transaction boundaries, pending/committed saga
-visibility, candidate rollback, and automatic restart recovery. The design's
+real provider artifacts, the shared completion unit of work, durable
+lease/backoff recovery, pending/committed visibility, and the application
+lifecycle. The design's
 separately approved BrowserAct/visual-reading sections were preserved unchanged.
 No frontend documentation changed because review round 2 does not alter the
 Task 5+ presentation contract.
 
 ## Concerns and final state
 
-- The historical full-suite observation above was produced before independent
-  commit `0e6269f` addressed Task 2's OpenAPI 3.0 `contains` incompatibility.
-  Its owner will rerun the full acquisition suite after this Task 4 commit.
 - The two Pi runtime `MODEL_TOOL_DEFINITION_INVALID` failures remain separate
   pre-existing regressions.
 - Expected final Task 4 paths after the enclosing commit: clean.

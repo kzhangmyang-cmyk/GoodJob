@@ -2888,6 +2888,35 @@ test("application validates the plan execution recovery interval", async () => {
   );
 });
 
+test("application owns the comment ingestion recovery lifecycle", async () => {
+  const fixture = isolatedMemoryStore();
+  let factoryCalls = 0;
+  let startCalls = 0;
+  let closeCalls = 0;
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    douyinCommentIngestionRecoverySweeperFactory(service) {
+      factoryCalls += 1;
+      assert.equal(
+        typeof service.recoverPendingIngestionSagas,
+        "function",
+        "production composition must supply the real recovery service"
+      );
+      return {
+        async start() { startCalls += 1; },
+        async close() { closeCalls += 1; }
+      };
+    }
+  });
+
+  assert.equal(factoryCalls, 1);
+  assert.equal(startCalls, 1, "application startup must start recovery");
+  await runtime.close();
+  await runtime.close();
+  assert.equal(closeCalls, 1, "application close must stop recovery once");
+});
+
 test("application stops plan recovery before draining the execution worker", async () => {
   const fixture = isolatedMemoryStore();
   const repository = new DelayedPeriodicPlanRunRepository();
@@ -3021,6 +3050,8 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
   const statements: string[] = [];
   const databaseUrls: string[] = [];
   let closeCount = 0;
+  let commentRecoveryStartCount = 0;
+  let commentRecoveryCloseCount = 0;
   const pool = {
     async query(statement: unknown) {
       statements.push(String(statement));
@@ -3038,6 +3069,13 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
     mysqlPoolFactory(databaseUrl) {
       databaseUrls.push(databaseUrl);
       return pool;
+    },
+    douyinCommentIngestionRecoverySweeperFactory(service) {
+      assert.equal(typeof service.recoverPendingIngestionSagas, "function");
+      return {
+        async start() { commentRecoveryStartCount += 1; },
+        async close() { commentRecoveryCloseCount += 1; }
+      };
     }
   });
 
@@ -3056,6 +3094,8 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
   );
   await runtime.close();
   await runtime.close();
+  assert.equal(commentRecoveryStartCount, 1);
+  assert.equal(commentRecoveryCloseCount, 1);
   assert.equal(closeCount, 1, "the owned pool must close exactly once");
 });
 

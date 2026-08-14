@@ -149,13 +149,30 @@ class ConcurrentPool {
         text_hash: values[6], run_id: values[7], shard_id: values[8],
         discovery_operation_id: values[9], status: values[10],
         candidate_id: values[11], evidence_id: values[12],
-        created_at: values[13], updated_at: values[14], committed_at: values[15]
+        created_at: values[13], updated_at: values[14], committed_at: values[15],
+        attempt_count: values[16], next_attempt_at: values[17],
+        lease_owner: values[18], lease_expires_at: values[19],
+        last_error_code: values[20]
       });
       return [{ affectedRows: 1 }, []];
     }
     if (normalized.includes(
       "FROM acquisition_douyin_comment_ingestion_sagas"
     )) {
+      if (normalized.includes("FOR UPDATE SKIP LOCKED")) {
+        const eligible = [...this.sagas.values()].filter((row) =>
+          row.status === "pending"
+          && row._selected !== true
+          && String(row.next_attempt_at) <= String(values[0])
+          && (row.lease_expires_at === null
+            || String(row.lease_expires_at) <= String(values[1])))
+          .sort((left, right) =>
+            String(left.next_attempt_at).localeCompare(String(right.next_attempt_at))
+            || String(left.created_at).localeCompare(String(right.created_at)))
+          .slice(0, Number(values[2]));
+        for (const row of eligible) row._selected = true;
+        return [eligible, []];
+      }
       if (normalized.includes("status = 'pending'")) {
         return [[...this.sagas.values()].filter((row) =>
           row.status === "pending"), []];
@@ -167,6 +184,30 @@ class ConcurrentPool {
     if (normalized.startsWith(
       "UPDATE acquisition_douyin_comment_ingestion_sagas"
     )) {
+      if (normalized.includes("SET attempt_count = attempt_count + 1")) {
+        const key = `${values[3]}:${values[4]}:${values[5]}`;
+        const row = this.sagas.get(key);
+        if (!row) return [{ affectedRows: 0 }, []];
+        row.attempt_count = Number(row.attempt_count) + 1;
+        row.lease_owner = values[0];
+        row.lease_expires_at = values[1];
+        row.updated_at = values[2];
+        delete row._selected;
+        return [{ affectedRows: 1 }, []];
+      }
+      if (normalized.includes("SET next_attempt_at = ?")) {
+        const key = `${values[3]}:${values[4]}:${values[5]}`;
+        const row = this.sagas.get(key);
+        if (!row || row.lease_owner !== values[6]) {
+          return [{ affectedRows: 0 }, []];
+        }
+        row.next_attempt_at = values[0];
+        row.lease_owner = null;
+        row.lease_expires_at = null;
+        row.last_error_code = values[1];
+        row.updated_at = values[2];
+        return [{ affectedRows: 1 }, []];
+      }
       const key = `${values[3]}:${values[4]}:${values[5]}`;
       const row = this.sagas.get(key);
       if (!row || row.status !== "pending") return [{ affectedRows: 0 }, []];
@@ -327,6 +368,21 @@ test("schema creates tenant-scoped events, content versions, and recovery sagas"
     schema,
     /FOREIGN KEY \(owner_id, team_id, event_id, observation_id\)/
   );
+  for (const recoveryColumn of [
+    "attempt_count",
+    "next_attempt_at",
+    "lease_owner",
+    "lease_expires_at",
+    "last_error_code"
+  ]) assert.match(schema, new RegExp(recoveryColumn));
+  assert.match(
+    schema,
+    /SET next_attempt_at = updated_at WHERE next_attempt_at IS NULL/u
+  );
+  assert.match(
+    schema,
+    /\(status, next_attempt_at, lease_expires_at, created_at, saga_id\)/u
+  );
   assert.match(
     ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS[2],
     /observation_id VARCHAR\(160\) NOT NULL/
@@ -405,6 +461,90 @@ test("mysql recovery reads a durable pending saga after repository restart", asy
     { candidateId: "candidate-restart", evidenceId: "evidence-restart" }
   );
   assert.equal((await restarted.listPendingIngestionSagas({ limit: 10 })).length, 0);
+});
+
+test("mysql recovery claims are leased, fair across tenants, and restart safe", async () => {
+  const pool = new ConcurrentPool();
+  const repository = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(pool)
+  );
+  await repository.appendObservation({
+    ...input("observation-poison"),
+    ingestionSaga: {
+      sagaId: "saga-poison",
+      actorId: "worker-seed",
+      runId: "run-poison",
+      shardId: null,
+      discoveryOperationId: null
+    }
+  });
+  await repository.appendObservation({
+    ...input("observation-healthy"),
+    scope: { ownerId: "owner-b", teamId: "team-b" },
+    event: {
+      ...input("observation-healthy").event,
+      eventId: "event-healthy",
+      platformEventId: "cid-healthy",
+      capturedAt: "2026-08-15T02:00:01.000Z"
+    },
+    ingestionSaga: {
+      sagaId: "saga-healthy",
+      actorId: "worker-seed",
+      runId: "run-healthy",
+      shardId: null,
+      discoveryOperationId: null
+    }
+  });
+
+  const [poison] = await repository.claimPendingIngestionSagas({
+    workerId: "worker-a",
+    now: "2026-08-15T02:01:00.000Z",
+    leaseDurationMs: 30_000,
+    limit: 1
+  });
+  assert.equal(poison?.saga.sagaId, "saga-poison");
+  await repository.failIngestionSaga(
+    { ownerId: "owner-a", teamId: "team-a" },
+    "saga-poison",
+    {
+      workerId: "worker-a",
+      failedAt: "2026-08-15T02:01:00.000Z",
+      nextAttemptAt: "2026-08-15T02:02:00.000Z",
+      errorCode: "RECOVERY_FAILED"
+    }
+  );
+
+  const restarted = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(pool)
+  );
+  const [healthy] = await restarted.claimPendingIngestionSagas({
+    workerId: "worker-b",
+    now: "2026-08-15T02:01:00.000Z",
+    leaseDurationMs: 30_000,
+    limit: 1
+  });
+  assert.equal(healthy?.saga.sagaId, "saga-healthy");
+
+  const concurrent = await Promise.all([
+    restarted.claimPendingIngestionSagas({
+      workerId: "worker-c",
+      now: "2026-08-15T02:03:00.000Z",
+      leaseDurationMs: 30_000,
+      limit: 1
+    }),
+    restarted.claimPendingIngestionSagas({
+      workerId: "worker-d",
+      now: "2026-08-15T02:03:00.000Z",
+      leaseDurationMs: 30_000,
+      limit: 1
+    })
+  ]);
+  const ids = concurrent.flat().map((item) => item.saga.sagaId);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.match(
+    pool.calls.map((call) => call.sql).join("\n"),
+    /FOR UPDATE SKIP LOCKED/u
+  );
 });
 
 test("run summary is aggregated inside owner and team scope", async () => {

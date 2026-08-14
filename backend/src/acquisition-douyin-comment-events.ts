@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 export interface AcquisitionScope {
   ownerId: string;
@@ -82,6 +83,11 @@ export interface DouyinCommentIngestionSaga {
   createdAt: string;
   updatedAt: string;
   committedAt: string | null;
+  attemptCount: number;
+  nextAttemptAt: string;
+  leaseOwner: string | null;
+  leaseExpiresAt: string | null;
+  lastErrorCode: "RECOVERY_FAILED" | null;
 }
 
 export interface DouyinCommentIngestionSagaWorkItem {
@@ -178,6 +184,7 @@ export interface DouyinRunCommentSummary {
 }
 
 export interface AcquisitionDouyinCommentEventRepository {
+  transaction<T>(work: () => Promise<T>): Promise<T>;
   appendObservation(input: AppendDouyinCommentObservationInput): Promise<{
     event: DouyinCommentEvent;
     observation: DouyinCommentObservation;
@@ -193,6 +200,22 @@ export interface AcquisitionDouyinCommentEventRepository {
   listPendingIngestionSagas(
     options: { limit: number }
   ): Promise<DouyinCommentIngestionSagaWorkItem[]>;
+  claimPendingIngestionSagas(options: {
+    workerId: string;
+    now: string;
+    leaseDurationMs: number;
+    limit: number;
+  }): Promise<DouyinCommentIngestionSagaWorkItem[]>;
+  failIngestionSaga(
+    scope: AcquisitionScope,
+    sagaId: string,
+    failure: {
+      workerId: string;
+      failedAt: string;
+      nextAttemptAt: string;
+      errorCode: "RECOVERY_FAILED";
+    }
+  ): Promise<DouyinCommentIngestionSaga>;
   commitIngestionSaga(
     scope: AcquisitionScope,
     sagaId: string,
@@ -446,6 +469,46 @@ implements AcquisitionDouyinCommentEventRepository {
     new Map<string, Scoped<DouyinCommentIngestionSaga>>();
   private readonly links = new Map<string, Scoped<DouyinCommentEventLink>>();
   private readonly attempts = new Map<string, Scoped<DouyinCommentFetchAttempt>>();
+  private readonly transactionContext = new AsyncLocalStorage<boolean>();
+  private transactionTail: Promise<void> = Promise.resolve();
+
+  async transaction<T>(work: () => Promise<T>): Promise<T> {
+    if (this.transactionContext.getStore()) return work();
+    let release!: () => void;
+    const previous = this.transactionTail;
+    this.transactionTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    const snapshots = {
+      eventsByBoundary: cloned([...this.eventsByBoundary.entries()]),
+      eventsById: cloned([...this.eventsById.entries()]),
+      observations: cloned([...this.observations.entries()]),
+      contentVersions: cloned([...this.contentVersions.entries()]),
+      ingestionSagas: cloned([...this.ingestionSagas.entries()]),
+      links: cloned([...this.links.entries()]),
+      attempts: cloned([...this.attempts.entries()])
+    };
+    try {
+      return await this.transactionContext.run(true, work);
+    } catch (error) {
+      const restore = <TValue>(
+        target: Map<string, TValue>,
+        entries: Array<[string, TValue]>
+      ) => {
+        target.clear();
+        for (const [key, value] of entries) target.set(key, value);
+      };
+      restore(this.eventsByBoundary, snapshots.eventsByBoundary);
+      restore(this.eventsById, snapshots.eventsById);
+      restore(this.observations, snapshots.observations);
+      restore(this.contentVersions, snapshots.contentVersions);
+      restore(this.ingestionSagas, snapshots.ingestionSagas);
+      restore(this.links, snapshots.links);
+      restore(this.attempts, snapshots.attempts);
+      throw error;
+    } finally {
+      release();
+    }
+  }
 
   async appendObservation(input: AppendDouyinCommentObservationInput) {
     assertAppendDouyinCommentObservationInput(input);
@@ -523,7 +586,12 @@ implements AcquisitionDouyinCommentEventRepository {
           evidenceId: null,
           createdAt: observation.capturedAt,
           updatedAt: observation.capturedAt,
-          committedAt: null
+          committedAt: null,
+          attemptCount: 0,
+          nextAttemptAt: observation.capturedAt,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          lastErrorCode: null
         }
       : null;
     if (existingSaga && requestedSaga && !same({
@@ -532,7 +600,12 @@ implements AcquisitionDouyinCommentEventRepository {
       candidateId: null,
       evidenceId: null,
       updatedAt: requestedSaga.updatedAt,
-      committedAt: null
+      committedAt: null,
+      attemptCount: requestedSaga.attemptCount,
+      nextAttemptAt: requestedSaga.nextAttemptAt,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      lastErrorCode: null
     }, requestedSaga)) {
       throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_CONFLICT");
     }
@@ -608,28 +681,129 @@ implements AcquisitionDouyinCommentEventRepository {
       item !== null);
   }
 
+  async claimPendingIngestionSagas(options: {
+    workerId: string;
+    now: string;
+    leaseDurationMs: number;
+    limit: number;
+  }) {
+    return this.transaction(async () => {
+      const limit = positiveLimit(options.limit);
+      if (!nonEmpty(options.workerId, 100)
+        || !validInstant(options.now)
+        || !Number.isSafeInteger(options.leaseDurationMs)
+        || options.leaseDurationMs < 1_000
+        || options.leaseDurationMs > 10 * 60_000) {
+        throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_LEASE");
+      }
+      const now = canonicalDouyinCommentInstant(options.now);
+      const leaseExpiresAt = new Date(
+        new Date(now).getTime() + options.leaseDurationMs
+      ).toISOString();
+      const claimed = [...this.ingestionSagas.values()]
+        .map((item) => item.value)
+        .filter((saga) => saga.status === "pending"
+          && saga.nextAttemptAt <= now
+          && (saga.leaseExpiresAt === null || saga.leaseExpiresAt <= now))
+        .sort((left, right) => left.nextAttemptAt.localeCompare(right.nextAttemptAt)
+          || left.createdAt.localeCompare(right.createdAt)
+          || left.sagaId.localeCompare(right.sagaId))
+        .slice(0, limit);
+      for (const saga of claimed) {
+        const stored = this.ingestionSagas.get(entityKey({
+          ownerId: saga.ownerId,
+          teamId: saga.teamId
+        }, saga.sagaId))!;
+        stored.value = {
+          ...stored.value,
+          attemptCount: stored.value.attemptCount + 1,
+          leaseOwner: options.workerId,
+          leaseExpiresAt,
+          updatedAt: now
+        };
+      }
+      const work = await Promise.all(claimed.map((saga) =>
+        this.getIngestionSaga(
+          { ownerId: saga.ownerId, teamId: saga.teamId },
+          saga.sagaId
+        )));
+      return work.filter((item): item is DouyinCommentIngestionSagaWorkItem =>
+        item !== null);
+    });
+  }
+
+  async failIngestionSaga(
+    scope: AcquisitionScope,
+    sagaId: string,
+    failure: {
+      workerId: string;
+      failedAt: string;
+      nextAttemptAt: string;
+      errorCode: "RECOVERY_FAILED";
+    }
+  ) {
+    return this.transaction(async () => {
+      const failedAt = canonicalDouyinCommentInstant(failure.failedAt);
+      const nextAttemptAt = canonicalDouyinCommentInstant(failure.nextAttemptAt);
+      if (!nonEmpty(failure.workerId, 100)
+        || failure.errorCode !== "RECOVERY_FAILED"
+        || nextAttemptAt <= failedAt) {
+        throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_RECOVERY_FAILURE");
+      }
+      const stored = this.ingestionSagas.get(entityKey(scope, sagaId));
+      if (!stored || stored.value.status !== "pending") {
+        throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_NOT_FOUND");
+      }
+      if (stored.value.leaseOwner !== failure.workerId) {
+        throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_LEASE_CONFLICT");
+      }
+      stored.value = {
+        ...stored.value,
+        nextAttemptAt,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        lastErrorCode: failure.errorCode,
+        updatedAt: failedAt
+      };
+      return cloned(stored.value);
+    });
+  }
+
   async commitIngestionSaga(
     scope: AcquisitionScope,
     sagaId: string,
     result: { candidateId: string | null; evidenceId: string }
   ) {
-    if (!nonEmpty(scope?.ownerId, 100)
-      || !nonEmpty(scope?.teamId, 100)
-      || !nonEmpty(sagaId, 160)
-      || !nullableNonEmpty(result.candidateId, 160)
-      || !nonEmpty(result.evidenceId, 160)) {
-      throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_INGESTION_RESULT");
-    }
-    const key = entityKey(scope, sagaId);
-    const stored = this.ingestionSagas.get(key);
-    if (!stored) {
-      throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_NOT_FOUND");
-    }
-    const saga = stored.value;
-    if (saga.status === "committed") {
-      if (saga.candidateId !== result.candidateId
-        || saga.evidenceId !== result.evidenceId) {
-        throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_CONFLICT");
+    return this.transaction(async () => {
+      if (!nonEmpty(scope?.ownerId, 100)
+        || !nonEmpty(scope?.teamId, 100)
+        || !nonEmpty(sagaId, 160)
+        || !nullableNonEmpty(result.candidateId, 160)
+        || !nonEmpty(result.evidenceId, 160)) {
+        throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_INGESTION_RESULT");
+      }
+      const key = entityKey(scope, sagaId);
+      const stored = this.ingestionSagas.get(key);
+      if (!stored) {
+        throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_NOT_FOUND");
+      }
+      const saga = stored.value;
+      if (saga.status === "committed") {
+        if (saga.candidateId !== result.candidateId
+          || saga.evidenceId !== result.evidenceId) {
+          throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_CONFLICT");
+        }
+        const linked = await this.linkEvent({
+          scope,
+          eventId: saga.eventId,
+          observationId: saga.observationId,
+          runId: saga.runId,
+          shardId: saga.shardId,
+          discoveryOperationId: saga.discoveryOperationId,
+          candidateId: saga.candidateId,
+          evidenceId: saga.evidenceId
+        });
+        return cloned({ saga, link: linked.link, created: false });
       }
       const linked = await this.linkEvent({
         scope,
@@ -638,31 +812,26 @@ implements AcquisitionDouyinCommentEventRepository {
         runId: saga.runId,
         shardId: saga.shardId,
         discoveryOperationId: saga.discoveryOperationId,
-        candidateId: saga.candidateId,
-        evidenceId: saga.evidenceId
+        candidateId: result.candidateId,
+        evidenceId: result.evidenceId
       });
-      return cloned({ saga, link: linked.link, created: false });
-    }
-    const linked = await this.linkEvent({
-      scope,
-      eventId: saga.eventId,
-      observationId: saga.observationId,
-      runId: saga.runId,
-      shardId: saga.shardId,
-      discoveryOperationId: saga.discoveryOperationId,
-      candidateId: result.candidateId,
-      evidenceId: result.evidenceId
+      const committed: DouyinCommentIngestionSaga = {
+        ...saga,
+        status: "committed",
+        candidateId: result.candidateId,
+        evidenceId: result.evidenceId,
+        updatedAt: saga.updatedAt,
+        committedAt: saga.updatedAt,
+        leaseOwner: null,
+        leaseExpiresAt: null
+      };
+      stored.value = cloned(committed);
+      return cloned({
+        saga: committed,
+        link: linked.link,
+        created: linked.created
+      });
     });
-    const committed: DouyinCommentIngestionSaga = {
-      ...saga,
-      status: "committed",
-      candidateId: result.candidateId,
-      evidenceId: result.evidenceId,
-      updatedAt: saga.updatedAt,
-      committedAt: saga.updatedAt
-    };
-    stored.value = cloned(committed);
-    return cloned({ saga: committed, link: linked.link, created: linked.created });
   }
 
   async linkEvent(input: LinkDouyinCommentEventInput) {

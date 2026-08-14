@@ -802,6 +802,27 @@ implements AcquisitionDomainRepository {
     return this.transactionContext.getStore()?.source ?? this.pool;
   }
 
+  async withTransactionConnection<T>(
+    connection: mysql.PoolConnection,
+    work: () => Promise<T>
+  ) {
+    if (this.transactionContext.getStore()) return work();
+    const context = {
+      source: connection,
+      candidateIdentityLocks: [] as string[]
+    };
+    try {
+      return await this.transactionContext.run(context, work);
+    } finally {
+      for (const lockName of context.candidateIdentityLocks.reverse()) {
+        await connection.query(
+          "SELECT RELEASE_LOCK(?) AS lock_released",
+          [lockName]
+        ).catch(() => undefined);
+      }
+    }
+  }
+
   async transaction<T>(work: () => Promise<T>): Promise<T> {
     if (this.transactionContext.getStore()) return work();
     const connection = await this.pool.getConnection();

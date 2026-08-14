@@ -8,6 +8,9 @@ import {
   AcquisitionDouyinCommentIngestionRecoverySweeper
 } from "./acquisition-douyin-comment-ingestion-recovery-sweeper.js";
 import {
+  InMemoryAcquisitionDouyinCommentIngestionUnitOfWork
+} from "./acquisition-douyin-comment-ingestion-unit-of-work.js";
+import {
   InMemoryAcquisitionDouyinCommentEventRepository,
   type AcquisitionDouyinCommentEventRepository
 } from "./acquisition-douyin-comment-events.js";
@@ -86,7 +89,10 @@ function page(
 
 type FailureStage = "after_event" | "after_evidence" | "after_candidate";
 
-function createHarness(options: { failOnceAt?: FailureStage } = {}) {
+function createHarness(options: {
+  failOnceAt?: FailureStage;
+  failCommitOnce?: boolean;
+} = {}) {
   let sequence = 0;
   const domainRepository = new InMemoryAcquisitionDomainRepository();
   const domain = new AcquisitionDomainService({
@@ -121,6 +127,12 @@ function createHarness(options: { failOnceAt?: FailureStage } = {}) {
       domain,
       candidateDirectory
     });
+  const unitOfWork =
+    new InMemoryAcquisitionDouyinCommentIngestionUnitOfWork(
+      domainRepository,
+      eventRepository,
+      candidateDirectory
+    );
   const mutationCounts = {
     eventAppends: 0,
     evidenceAppends: 0,
@@ -144,7 +156,12 @@ function createHarness(options: { failOnceAt?: FailureStage } = {}) {
       if (property === "commitIngestionSaga") {
         return async (...args: Parameters<typeof target.commitIngestionSaga>) => {
           mutationCounts.links += 1;
-          return target.commitIngestionSaga(...args);
+          const result = await target.commitIngestionSaga(...args);
+          if (options.failCommitOnce && !failureConsumed) {
+            failureConsumed = true;
+            throw new Error("FAIL_COMMIT_INGESTION_SAGA");
+          }
+          return result;
         };
       }
       const value = Reflect.get(target, property, receiver);
@@ -173,6 +190,7 @@ function createHarness(options: { failOnceAt?: FailureStage } = {}) {
     events: eventPort,
     domain: domainPort,
     individualSignals: individualSignalPort,
+    unitOfWork,
     failureInjector: async (stage) => {
       if (shouldFail(stage)) {
         throw new Error(`FAIL_${stage.toLocaleUpperCase("en-US")}`);
@@ -182,7 +200,9 @@ function createHarness(options: { failOnceAt?: FailureStage } = {}) {
   const restartService = () => new AcquisitionDouyinCommentIngestionService({
     events: eventRepository,
     domain,
-    individualSignals: individualSignalIngestion
+    individualSignals: individualSignalIngestion,
+    unitOfWork,
+    now: () => "2026-08-15T02:01:00.000Z"
   });
   return {
     service,
@@ -190,6 +210,7 @@ function createHarness(options: { failOnceAt?: FailureStage } = {}) {
     domainRepository,
     eventRepository,
     candidateDirectory,
+    unitOfWork,
     mutationCounts,
     restartService
   };
@@ -629,6 +650,7 @@ test("after-candidate failure rolls an approved candidate back before recovery",
       domain: harness.domain,
       candidateDirectory: harness.candidateDirectory
     }),
+    unitOfWork: harness.unitOfWork,
     failureInjector: async (stage) => {
       if (stage === "after_candidate") throw new Error("FAIL_AFTER_CANDIDATE");
     }
@@ -657,6 +679,187 @@ test("after-candidate failure rolls an approved candidate back before recovery",
   const recovered = await harness.domain.getCandidate(scopeA, approved.id);
   assert.equal(recovered.status, "pending_review");
   assert.equal(recovered.evidenceIds.length, 2);
+});
+
+test("commit-side failure rolls every domain and directory write back before restart recovery", async () => {
+  const harness = createHarness();
+  const initial = await harness.service.ingestSample(input(page([
+    comment("cid-commit-base", "想咨询解决方案", {
+      secUid: "MS4wLjABAAAA_commit-actor"
+    })
+  ])));
+  const candidate = await harness.domain.getCandidate(
+    scopeA,
+    initial.candidateIds[0]!
+  );
+  const approved = {
+    ...candidate,
+    status: "approved" as const,
+    latestDecisionId: "decision-commit-approved",
+    latestDecisionVersion: "decision-version-commit-approved",
+    approvedDecisionVersion: "decision-version-commit-approved",
+    version: candidate.version + 1
+  };
+  await harness.domainRepository.saveCandidate(approved);
+  const auditsBefore = await harness.domainRepository.listAuditEvents(
+    scopeA,
+    approved.id
+  );
+  const signalsBefore = await harness.eventRepository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 50 }
+  );
+  let failed = false;
+  const commitFailingEvents = new Proxy(harness.eventRepository, {
+    get(target, property, receiver) {
+      if (property === "commitIngestionSaga") {
+        return async (...args: Parameters<typeof target.commitIngestionSaga>) => {
+          const result = await target.commitIngestionSaga(...args);
+          if (!failed) {
+            failed = true;
+            throw new Error("FAIL_REAL_COMMIT_SIDE");
+          }
+          return result;
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  }) as AcquisitionDouyinCommentEventRepository;
+  const service = new AcquisitionDouyinCommentIngestionService({
+    events: commitFailingEvents,
+    domain: harness.domain,
+    individualSignals: new AcquisitionIndividualSignalIngestionService({
+      domain: harness.domain,
+      candidateDirectory: harness.candidateDirectory
+    }),
+    unitOfWork: harness.unitOfWork
+  });
+
+  await assert.rejects(service.ingestSample(input(page([
+    comment("cid-commit-new", "预算 10 万，采购 20 套，请报价", {
+      secUid: "MS4wLjABAAAA_commit-actor"
+    })
+  ], { rawArtifactHash: `sha256:${"e".repeat(64)}` }))), /FAIL_REAL_COMMIT_SIDE/u);
+
+  assert.deepEqual(await harness.domain.getCandidate(scopeA, approved.id), approved);
+  assert.deepEqual(
+    await harness.domainRepository.listAuditEvents(scopeA, approved.id),
+    auditsBefore
+  );
+  assert.deepEqual(await harness.eventRepository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 50 }
+  ), signalsBefore);
+  assert.equal((await harness.eventRepository.listPendingIngestionSagas({
+    limit: 100
+  })).length, 1);
+
+  const sweeper = new AcquisitionDouyinCommentIngestionRecoverySweeper({
+    service: harness.restartService(),
+    intervalMs: 60_000,
+    setTimer() { return { unref() {} }; },
+    clearTimer() {}
+  });
+  await sweeper.start();
+  await sweeper.close();
+  const recovered = await harness.domain.getCandidate(scopeA, approved.id);
+  assert.equal(recovered.status, "pending_review");
+  assert.equal(recovered.evidenceIds.length, 2);
+});
+
+test("recovery isolates poison and failure-recording errors from later tenant work", async () => {
+  const harness = createHarness();
+  const seeder = new AcquisitionDouyinCommentIngestionService({
+    events: harness.eventRepository,
+    domain: harness.domain,
+    individualSignals: new AcquisitionIndividualSignalIngestionService({
+      domain: harness.domain,
+      candidateDirectory: harness.candidateDirectory
+    }),
+    unitOfWork: harness.unitOfWork,
+    failureInjector: async (stage) => {
+      if (stage === "after_event") throw new Error("SEED_PENDING");
+    }
+  });
+  await assert.rejects(seeder.ingestSample(input(page([
+    comment("cid-poison", "预算 10 万，采购 20 套，请报价", {
+      secUid: "MS4wLjABAAAA_poison"
+    })
+  ]))), /SEED_PENDING/u);
+  await assert.rejects(seeder.ingestSample(input(page([
+    comment("cid-healthy-tenant", "想咨询解决方案", {
+      secUid: "MS4wLjABAAAA_healthy"
+    })
+  ], { capturedAt: "2026-08-15T02:00:01.000Z" }), {
+    scope: scopeB,
+    runId: "run-b"
+  })), /SEED_PENDING/u);
+
+  const realSignals = new AcquisitionIndividualSignalIngestionService({
+    domain: harness.domain,
+    candidateDirectory: harness.candidateDirectory
+  });
+  let first = true;
+  const errors: unknown[] = [];
+  let failRecordThrows = true;
+  const recoveryEvents = new Proxy(harness.eventRepository, {
+    get(target, property, receiver) {
+      if (property === "failIngestionSaga") {
+        return async (...args: Parameters<typeof target.failIngestionSaga>) => {
+          const result = await target.failIngestionSaga(...args);
+          if (failRecordThrows) {
+            failRecordThrows = false;
+            throw new Error("failure ledger temporarily unavailable");
+          }
+          return result;
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  }) as AcquisitionDouyinCommentEventRepository;
+  const recovery = new AcquisitionDouyinCommentIngestionService({
+    events: recoveryEvents,
+    domain: harness.domain,
+    individualSignals: {
+      async ingest(signalInput) {
+        if (first) {
+          first = false;
+          throw new Error("comment text must not enter persisted error state");
+        }
+        return realSignals.ingest(signalInput);
+      }
+    },
+    unitOfWork: harness.unitOfWork,
+    recoveryWorkerId: "fair-worker",
+    now: () => "2026-08-15T02:01:00.000Z",
+    onRecoveryError: (error) => {
+      errors.push(error);
+      if (errors.length === 1) throw new Error("diagnostics unavailable");
+    }
+  });
+
+  await recovery.recoverPendingIngestionSagas({ limit: 2 });
+  assert.equal(errors.length, 2);
+  assert.equal((await harness.eventRepository.listRunCommentSignals(
+    scopeB,
+    "run-b",
+    { limit: 10 }
+  )).length, 1);
+  assert.equal((await harness.eventRepository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 10 }
+  )).length, 0);
+  const pending = await harness.eventRepository.listPendingIngestionSagas({
+    limit: 10
+  });
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]?.saga.lastErrorCode, "RECOVERY_FAILED");
+  assert.equal(JSON.stringify(pending).includes("comment text"), false);
 });
 
 test("invalid sample literals and overlong context fail before mutation", async () => {

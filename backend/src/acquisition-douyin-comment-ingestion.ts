@@ -12,6 +12,9 @@ import type {
 import type {
   AcquisitionIndividualSignalIngestionPort
 } from "./acquisition-individual-signal-ingestion.js";
+import type {
+  AcquisitionDouyinCommentIngestionUnitOfWork
+} from "./acquisition-douyin-comment-ingestion-unit-of-work.js";
 import {
   isSafeAcquisitionPublicActorKey
 } from "./acquisition-public-identity-resolver.js";
@@ -62,6 +65,11 @@ export interface AcquisitionDouyinCommentIngestionServiceOptions {
   events: AcquisitionDouyinCommentEventRepository;
   domain: AcquisitionDomainService;
   individualSignals: AcquisitionIndividualSignalIngestionPort;
+  unitOfWork: AcquisitionDouyinCommentIngestionUnitOfWork;
+  recoveryWorkerId?: string;
+  recoveryLeaseDurationMs?: number;
+  now?: () => string;
+  onRecoveryError?: (error: unknown) => void;
   failureInjector?: (
     stage: "after_event" | "after_evidence" | "after_candidate"
   ) => Promise<void>;
@@ -385,14 +393,25 @@ export class AcquisitionDouyinCommentIngestionService {
   private readonly events: AcquisitionDouyinCommentEventRepository;
   private readonly domain: AcquisitionDomainService;
   private readonly individualSignals: AcquisitionIndividualSignalIngestionPort;
+  private readonly unitOfWork: AcquisitionDouyinCommentIngestionUnitOfWork;
   private readonly failureInjector?:
     AcquisitionDouyinCommentIngestionServiceOptions["failureInjector"];
+  private readonly recoveryWorkerId: string;
+  private readonly recoveryLeaseDurationMs: number;
+  private readonly now: () => string;
+  private readonly onRecoveryError: (error: unknown) => void;
 
   constructor(options: AcquisitionDouyinCommentIngestionServiceOptions) {
     this.events = options.events;
     this.domain = options.domain;
     this.individualSignals = options.individualSignals;
+    this.unitOfWork = options.unitOfWork;
     this.failureInjector = options.failureInjector;
+    this.recoveryWorkerId = options.recoveryWorkerId
+      ?? "douyin-comment-recovery-worker";
+    this.recoveryLeaseDurationMs = options.recoveryLeaseDurationMs ?? 30_000;
+    this.now = options.now ?? (() => new Date().toISOString());
+    this.onRecoveryError = options.onRecoveryError ?? (() => undefined);
   }
 
   async ingestSample(
@@ -503,14 +522,59 @@ export class AcquisitionDouyinCommentIngestionService {
 
   /** Called by the recovery worker after a process restart. */
   async recoverPendingIngestionSagas(options: { limit: number }) {
-    const workItems = await this.events.listPendingIngestionSagas(options);
+    const now = canonicalInstant(this.now());
+    const workItems = await this.events.claimPendingIngestionSagas({
+      workerId: this.recoveryWorkerId,
+      now,
+      leaseDurationMs: this.recoveryLeaseDurationMs,
+      limit: options.limit
+    });
     for (const workItem of workItems) {
-      await this.resumeSaga(workItem, false);
+      try {
+        await this.resumeSaga(workItem, false);
+      } catch (error) {
+        const failedAt = canonicalInstant(this.now());
+        const exponent = Math.min(8, Math.max(0,
+          workItem.saga.attemptCount - 1));
+        const delayMs = Math.min(5 * 60_000, 1_000 * (2 ** exponent));
+        this.reportRecoveryError(error);
+        try {
+          await this.events.failIngestionSaga({
+            ownerId: workItem.saga.ownerId,
+            teamId: workItem.saga.teamId
+          }, workItem.saga.sagaId, {
+            workerId: this.recoveryWorkerId,
+            failedAt,
+            nextAttemptAt: new Date(
+              new Date(failedAt).getTime() + delayMs
+            ).toISOString(),
+            errorCode: "RECOVERY_FAILED"
+          });
+        } catch (failurePersistenceError) {
+          this.reportRecoveryError(failurePersistenceError);
+        }
+      }
     }
     return workItems.length;
   }
 
+  private reportRecoveryError(error: unknown) {
+    try {
+      this.onRecoveryError(error);
+    } catch {
+      // Diagnostics must never stop recovery or alter durable saga state.
+    }
+  }
+
   private async resumeSaga(
+    work: DouyinCommentIngestionSagaWorkItem,
+    injectFailures: boolean
+  ) {
+    return this.unitOfWork.transaction(() =>
+      this.resumeSagaWithinUnitOfWork(work, injectFailures));
+  }
+
+  private async resumeSagaWithinUnitOfWork(
     work: DouyinCommentIngestionSagaWorkItem,
     injectFailures: boolean
   ) {
