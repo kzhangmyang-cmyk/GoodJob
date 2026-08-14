@@ -42,10 +42,60 @@ export interface DouyinCommentObservation {
   rawArtifactHash: string;
 }
 
+export interface DouyinCommentContentVersion {
+  contentVersionId: string;
+  eventId: string;
+  textHash: string;
+  observationId: string;
+  text: string;
+  occurredAt: string;
+  actor: DouyinCommentEvent["actor"];
+  sourceUrl: string;
+  platformEventId: string;
+  providerVersion: string;
+  coverage: "public_top_level_sample";
+  rawArtifactHash: string;
+}
+
+export interface DouyinCommentIngestionSagaStart {
+  sagaId: string;
+  actorId: string;
+  runId: string | null;
+  shardId: string | null;
+  discoveryOperationId: string | null;
+}
+
+export interface DouyinCommentIngestionSaga {
+  sagaId: string;
+  ownerId: string;
+  teamId: string;
+  actorId: string;
+  eventId: string;
+  observationId: string;
+  textHash: string;
+  runId: string | null;
+  shardId: string | null;
+  discoveryOperationId: string | null;
+  status: "pending" | "committed";
+  candidateId: string | null;
+  evidenceId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  committedAt: string | null;
+}
+
+export interface DouyinCommentIngestionSagaWorkItem {
+  saga: DouyinCommentIngestionSaga;
+  event: DouyinCommentEvent;
+  observation: DouyinCommentObservation;
+  contentVersion: DouyinCommentContentVersion;
+}
+
 export interface AppendDouyinCommentObservationInput {
   scope: AcquisitionScope;
   observationId: string;
   event: DouyinCommentEvent;
+  ingestionSaga?: DouyinCommentIngestionSagaStart;
 }
 
 export interface DouyinCommentEventLink {
@@ -133,6 +183,24 @@ export interface AcquisitionDouyinCommentEventRepository {
     observation: DouyinCommentObservation;
     eventCreated: boolean;
     contentChanged: boolean;
+    contentVersion: DouyinCommentContentVersion;
+    ingestionSaga: DouyinCommentIngestionSaga | null;
+  }>;
+  getIngestionSaga(
+    scope: AcquisitionScope,
+    sagaId: string
+  ): Promise<DouyinCommentIngestionSagaWorkItem | null>;
+  listPendingIngestionSagas(
+    options: { limit: number }
+  ): Promise<DouyinCommentIngestionSagaWorkItem[]>;
+  commitIngestionSaga(
+    scope: AcquisitionScope,
+    sagaId: string,
+    result: { candidateId: string | null; evidenceId: string }
+  ): Promise<{
+    saga: DouyinCommentIngestionSaga;
+    link: DouyinCommentEventLink;
+    created: boolean;
   }>;
   linkEvent(input: LinkDouyinCommentEventInput): Promise<{
     link: DouyinCommentEventLink;
@@ -179,6 +247,14 @@ function entityKey(scope: AcquisitionScope, id: string) {
   return `${scopeKey(scope)}\u0000${id}`;
 }
 
+function contentVersionKey(
+  scope: AcquisitionScope,
+  eventId: string,
+  textHash: string
+) {
+  return `${scopeKey(scope)}\u0000${eventId}\u0000${textHash}`;
+}
+
 function same(left: unknown, right: unknown) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -187,8 +263,8 @@ function nonEmpty(value: unknown, maximum = 255) {
   return typeof value === "string" && value.length > 0 && value.length <= maximum;
 }
 
-function nullableNonEmpty(value: unknown) {
-  return value === null || nonEmpty(value);
+function nullableNonEmpty(value: unknown, maximum = 255) {
+  return value === null || nonEmpty(value, maximum);
 }
 
 function nonNegativeInteger(value: unknown) {
@@ -221,6 +297,7 @@ export function assertAppendDouyinCommentObservationInput(
   } catch {
     validUrl = false;
   }
+  const saga = input?.ingestionSaga;
   if (!input
     || !nonEmpty(input.scope?.ownerId, 100)
     || !nonEmpty(input.scope?.teamId, 100)
@@ -247,7 +324,14 @@ export function assertAppendDouyinCommentObservationInput(
     || event.coverage !== "public_top_level_sample"
     || event.accessStatus !== "public_content"
     || !nonEmpty(event.providerVersion)
-    || !validDigest(event.rawArtifactHash)) {
+    || !validDigest(event.rawArtifactHash)
+    || (saga !== undefined && (
+      !nonEmpty(saga.sagaId, 160)
+      || !nonEmpty(saga.actorId, 100)
+      || !nullableNonEmpty(saga.runId, 160)
+      || !nullableNonEmpty(saga.shardId, 160)
+      || !nullableNonEmpty(saga.discoveryOperationId, 160)
+    ))) {
     throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_EVENT");
   }
 }
@@ -265,9 +349,9 @@ export function assertStartDouyinCommentFetchAttemptInput(
     || !nonEmpty(input.scope?.ownerId, 100)
     || !nonEmpty(input.scope?.teamId, 100)
     || !nonEmpty(input.attemptId, 160)
-    || !nullableNonEmpty(input.runId)
-    || !nullableNonEmpty(input.shardId)
-    || !nullableNonEmpty(input.discoveryOperationId)
+    || !nullableNonEmpty(input.runId, 160)
+    || !nullableNonEmpty(input.shardId, 160)
+    || !nullableNonEmpty(input.discoveryOperationId, 160)
     || !validUrl
     || input.sourceUrl.length > 4_000
     || !nullableNonEmpty(input.videoId)
@@ -303,11 +387,11 @@ export function assertLinkDouyinCommentEventInput(
     || !nonEmpty(input.scope?.teamId, 100)
     || !nonEmpty(input.eventId, 160)
     || !nonEmpty(input.observationId, 160)
-    || !nullableNonEmpty(input.runId)
-    || !nullableNonEmpty(input.shardId)
-    || !nullableNonEmpty(input.discoveryOperationId)
-    || !nullableNonEmpty(input.candidateId)
-    || !nullableNonEmpty(input.evidenceId)) {
+    || !nullableNonEmpty(input.runId, 160)
+    || !nullableNonEmpty(input.shardId, 160)
+    || !nullableNonEmpty(input.discoveryOperationId, 160)
+    || !nullableNonEmpty(input.candidateId, 160)
+    || !nullableNonEmpty(input.evidenceId, 160)) {
     throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_LINK");
   }
 }
@@ -329,6 +413,19 @@ function deterministicLink(input: LinkDouyinCommentEventInput) {
     .digest("hex")}`;
 }
 
+function deterministicContentVersionId(
+  scope: AcquisitionScope,
+  eventId: string,
+  textHash: string
+) {
+  return `douyin-comment-content:${createHash("sha256").update(JSON.stringify([
+    scope.ownerId,
+    scope.teamId,
+    eventId,
+    textHash
+  ])).digest("hex")}`;
+}
+
 function positiveLimit(limit: number) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_LIMIT");
@@ -343,6 +440,10 @@ implements AcquisitionDouyinCommentEventRepository {
   private readonly eventsByBoundary = new Map<string, Scoped<DouyinCommentEvent>>();
   private readonly eventsById = new Map<string, Scoped<DouyinCommentEvent>>();
   private readonly observations = new Map<string, Scoped<DouyinCommentObservation>>();
+  private readonly contentVersions =
+    new Map<string, Scoped<DouyinCommentContentVersion>>();
+  private readonly ingestionSagas =
+    new Map<string, Scoped<DouyinCommentIngestionSaga>>();
   private readonly links = new Map<string, Scoped<DouyinCommentEventLink>>();
   private readonly attempts = new Map<string, Scoped<DouyinCommentFetchAttempt>>();
 
@@ -378,6 +479,63 @@ implements AcquisitionDouyinCommentEventRepository {
     if (existingObservation && !same(existingObservation, observation)) {
       throw new Error("ACQUISITION_DOUYIN_COMMENT_OBSERVATION_ID_CONFLICT");
     }
+    const contentKey = contentVersionKey(
+      input.scope,
+      event.eventId,
+      observation.observedTextHash
+    );
+    const existingContentVersion = this.contentVersions.get(contentKey)?.value;
+    const contentVersion: DouyinCommentContentVersion =
+      existingContentVersion ?? {
+        contentVersionId: deterministicContentVersionId(
+          input.scope,
+          event.eventId,
+          observation.observedTextHash
+        ),
+        eventId: event.eventId,
+        textHash: observation.observedTextHash,
+        observationId: observation.observationId,
+        text: normalizedEvent.text,
+        occurredAt: normalizedEvent.occurredAt,
+        actor: cloned(normalizedEvent.actor),
+        sourceUrl: normalizedEvent.sourceUrl,
+        platformEventId: normalizedEvent.platformEventId,
+        providerVersion: normalizedEvent.providerVersion,
+        coverage: normalizedEvent.coverage,
+        rawArtifactHash: normalizedEvent.rawArtifactHash
+      };
+    const sagaKey = input.ingestionSaga
+      ? entityKey(input.scope, input.ingestionSaga.sagaId)
+      : null;
+    const existingSaga = sagaKey
+      ? this.ingestionSagas.get(sagaKey)?.value
+      : null;
+    const requestedSaga: DouyinCommentIngestionSaga | null = input.ingestionSaga
+      ? {
+          ...cloned(input.ingestionSaga),
+          ownerId: input.scope.ownerId,
+          teamId: input.scope.teamId,
+          eventId: event.eventId,
+          observationId: observation.observationId,
+          textHash: observation.observedTextHash,
+          status: "pending",
+          candidateId: null,
+          evidenceId: null,
+          createdAt: observation.capturedAt,
+          updatedAt: observation.capturedAt,
+          committedAt: null
+        }
+      : null;
+    if (existingSaga && requestedSaga && !same({
+      ...existingSaga,
+      status: "pending",
+      candidateId: null,
+      evidenceId: null,
+      updatedAt: requestedSaga.updatedAt,
+      committedAt: null
+    }, requestedSaga)) {
+      throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_CONFLICT");
+    }
     if (eventCreated) {
       const scoped = { scope: cloned(input.scope), value: event };
       this.eventsByBoundary.set(boundary, scoped);
@@ -389,12 +547,122 @@ implements AcquisitionDouyinCommentEventRepository {
         value: cloned(observation)
       });
     }
+    if (!existingContentVersion) {
+      this.contentVersions.set(contentKey, {
+        scope: cloned(input.scope),
+        value: cloned(contentVersion)
+      });
+    }
+    if (sagaKey && requestedSaga && !existingSaga) {
+      this.ingestionSagas.set(sagaKey, {
+        scope: cloned(input.scope),
+        value: cloned(requestedSaga)
+      });
+    }
     return cloned({
       event,
       observation: existingObservation ?? observation,
       eventCreated,
-      contentChanged: event.textHash !== observation.observedTextHash
+      contentChanged: event.textHash !== observation.observedTextHash,
+      contentVersion,
+      ingestionSaga: existingSaga ?? requestedSaga
     });
+  }
+
+  async getIngestionSaga(scope: AcquisitionScope, sagaId: string) {
+    if (!nonEmpty(scope?.ownerId, 100)
+      || !nonEmpty(scope?.teamId, 100)
+      || !nonEmpty(sagaId, 160)) {
+      throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_INGESTION_SAGA");
+    }
+    const saga = this.ingestionSagas.get(entityKey(scope, sagaId))?.value;
+    if (!saga) return null;
+    const event = this.eventsById.get(entityKey(scope, saga.eventId))?.value;
+    const observation = this.observations.get(
+      entityKey(scope, saga.observationId)
+    )?.value;
+    const contentVersion = this.contentVersions.get(contentVersionKey(
+      scope,
+      saga.eventId,
+      saga.textHash
+    ))?.value;
+    if (!event || !observation || !contentVersion) {
+      throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_INTEGRITY");
+    }
+    return cloned({ saga, event, observation, contentVersion });
+  }
+
+  async listPendingIngestionSagas(options: { limit: number }) {
+    const limit = positiveLimit(options.limit);
+    const pending = [...this.ingestionSagas.values()]
+      .map((item) => item.value)
+      .filter((saga) => saga.status === "pending")
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt)
+        || left.sagaId.localeCompare(right.sagaId))
+      .slice(0, limit);
+    const work = await Promise.all(pending.map((saga) => this.getIngestionSaga(
+      { ownerId: saga.ownerId, teamId: saga.teamId },
+      saga.sagaId
+    )));
+    return work.filter((item): item is DouyinCommentIngestionSagaWorkItem =>
+      item !== null);
+  }
+
+  async commitIngestionSaga(
+    scope: AcquisitionScope,
+    sagaId: string,
+    result: { candidateId: string | null; evidenceId: string }
+  ) {
+    if (!nonEmpty(scope?.ownerId, 100)
+      || !nonEmpty(scope?.teamId, 100)
+      || !nonEmpty(sagaId, 160)
+      || !nullableNonEmpty(result.candidateId, 160)
+      || !nonEmpty(result.evidenceId, 160)) {
+      throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_INGESTION_RESULT");
+    }
+    const key = entityKey(scope, sagaId);
+    const stored = this.ingestionSagas.get(key);
+    if (!stored) {
+      throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_NOT_FOUND");
+    }
+    const saga = stored.value;
+    if (saga.status === "committed") {
+      if (saga.candidateId !== result.candidateId
+        || saga.evidenceId !== result.evidenceId) {
+        throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_CONFLICT");
+      }
+      const linked = await this.linkEvent({
+        scope,
+        eventId: saga.eventId,
+        observationId: saga.observationId,
+        runId: saga.runId,
+        shardId: saga.shardId,
+        discoveryOperationId: saga.discoveryOperationId,
+        candidateId: saga.candidateId,
+        evidenceId: saga.evidenceId
+      });
+      return cloned({ saga, link: linked.link, created: false });
+    }
+    const linked = await this.linkEvent({
+      scope,
+      eventId: saga.eventId,
+      observationId: saga.observationId,
+      runId: saga.runId,
+      shardId: saga.shardId,
+      discoveryOperationId: saga.discoveryOperationId,
+      candidateId: result.candidateId,
+      evidenceId: result.evidenceId
+    });
+    const committed: DouyinCommentIngestionSaga = {
+      ...saga,
+      status: "committed",
+      candidateId: result.candidateId,
+      evidenceId: result.evidenceId,
+      updatedAt: saga.updatedAt,
+      committedAt: saga.updatedAt
+    };
+    stored.value = cloned(committed);
+    return cloned({ saga: committed, link: linked.link, created: linked.created });
   }
 
   async linkEvent(input: LinkDouyinCommentEventInput) {

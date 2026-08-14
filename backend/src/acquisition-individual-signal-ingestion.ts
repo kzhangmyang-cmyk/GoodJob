@@ -40,6 +40,8 @@ export interface AcquisitionIndividualSignalIngestionInput {
   subject: AcquisitionIndividualSignalSubject;
   evidence: DiscoveryEvidence;
   idempotencyKey: string;
+  /** Internal saga barrier. Throwing here rolls back the candidate transaction. */
+  beforeCandidateCommit?: () => Promise<void>;
 }
 
 export interface AcquisitionIndividualSignalIngestionResult {
@@ -204,7 +206,8 @@ implements AcquisitionIndividualSignalIngestionPort {
         childIdempotencyKey(input.idempotencyKey, "candidate", {
           dedupeKey,
           partyType: "individual"
-        })
+        }),
+        input.beforeCandidateCommit
       )
     });
     let candidate = await this.domain.getCandidate(
@@ -224,7 +227,8 @@ implements AcquisitionIndividualSignalIngestionPort {
         childIdempotencyKey(input.idempotencyKey, "merge-signal", {
           candidateId: candidate.id,
           evidenceId: input.evidence.id
-        })
+        }),
+        input.beforeCandidateCommit
       );
     }
     return {

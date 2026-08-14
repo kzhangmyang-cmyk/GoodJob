@@ -5,6 +5,9 @@ import {
   classifyDouyinCommentIntent
 } from "./acquisition-douyin-comment-ingestion.js";
 import {
+  AcquisitionDouyinCommentIngestionRecoverySweeper
+} from "./acquisition-douyin-comment-ingestion-recovery-sweeper.js";
+import {
   InMemoryAcquisitionDouyinCommentEventRepository,
   type AcquisitionDouyinCommentEventRepository
 } from "./acquisition-douyin-comment-events.js";
@@ -138,11 +141,10 @@ function createHarness(options: { failOnceAt?: FailureStage } = {}) {
           return target.appendObservation(...args);
         };
       }
-      if (property === "linkEvent") {
-        return async (...args: Parameters<typeof target.linkEvent>) => {
+      if (property === "commitIngestionSaga") {
+        return async (...args: Parameters<typeof target.commitIngestionSaga>) => {
           mutationCounts.links += 1;
-          if (shouldFail("after_candidate")) throw new Error("FAIL_AFTER_CANDIDATE");
-          return target.linkEvent(...args);
+          return target.commitIngestionSaga(...args);
         };
       }
       const value = Reflect.get(target, property, receiver);
@@ -154,7 +156,6 @@ function createHarness(options: { failOnceAt?: FailureStage } = {}) {
       if (property === "appendEvidence") {
         return async (...args: Parameters<typeof target.appendEvidence>) => {
           mutationCounts.evidenceAppends += 1;
-          if (shouldFail("after_event")) throw new Error("FAIL_AFTER_EVENT");
           return target.appendEvidence(...args);
         };
       }
@@ -165,21 +166,32 @@ function createHarness(options: { failOnceAt?: FailureStage } = {}) {
   const individualSignalPort: AcquisitionIndividualSignalIngestionPort = {
     async ingest(signalInput) {
       mutationCounts.signalIngestions += 1;
-      if (shouldFail("after_evidence")) throw new Error("FAIL_AFTER_EVIDENCE");
       return individualSignalIngestion.ingest(signalInput);
     }
   };
   const service = new AcquisitionDouyinCommentIngestionService({
     events: eventPort,
     domain: domainPort,
-    individualSignals: individualSignalPort
+    individualSignals: individualSignalPort,
+    failureInjector: async (stage) => {
+      if (shouldFail(stage)) {
+        throw new Error(`FAIL_${stage.toLocaleUpperCase("en-US")}`);
+      }
+    }
+  });
+  const restartService = () => new AcquisitionDouyinCommentIngestionService({
+    events: eventRepository,
+    domain,
+    individualSignals: individualSignalIngestion
   });
   return {
     service,
     domain,
     domainRepository,
     eventRepository,
-    mutationCounts
+    candidateDirectory,
+    mutationCounts,
+    restartService
   };
 }
 
@@ -415,7 +427,7 @@ test("event, observation, evidence, and link preserve exact public provenance", 
 
   assert.ok(signal);
   assert.equal(signal.event.platformEventId, "cid-provenance");
-  assert.equal(signal.event.text, "预算 10 万，采购 20 套\n请报价");
+  assert.equal(signal.event.text, "  预算 10 万，采购 20 套\n请报价  ");
   assert.equal(signal.event.actor.secUid, "MS4wLjABAAAA_buyer-1");
   assert.equal(signal.latestObservation.observationId, signal.link.observationId);
   assert.equal(signal.link.candidateId, result.candidateIds[0]);
@@ -430,10 +442,9 @@ test("event, observation, evidence, and link preserve exact public provenance", 
   });
   assert.equal(evidence.accessStatus, "public_content");
   assert.equal(evidence.contentHash, signal.event.textHash);
-  assert.notEqual(evidence.rawArtifactHash, sample.rawArtifactHash);
-  assert.match(evidence.rawArtifactHash, /^sha256:[a-f0-9]{64}$/u);
+  assert.equal(evidence.rawArtifactHash, sample.rawArtifactHash);
   assert.equal(signal.latestObservation.rawArtifactHash, sample.rawArtifactHash);
-  assert.equal(evidence.sourceSnippet, "预算 10 万,采购 20 套 请报价");
+  assert.equal(evidence.sourceSnippet, "  预算 10 万，采购 20 套\n请报价  ");
 });
 
 test("changed comment content forms one replay-safe version with the immutable actor", async () => {
@@ -467,7 +478,7 @@ test("changed comment content forms one replay-safe version with the immutable a
     { limit: 50 }
   ))[0]!;
   const replay = await harness.service.ingestSample(input(page([
-    comment("cid-versioned", "预算 10 万,采购 20 套,请报价", {
+    comment("cid-versioned", "预算 10 万，采购 20 套，请报价", {
       displayName: "第三次返回的昵称",
       handle: "third_user",
       secUid: "MS4wLjABAAAA_third-actor"
@@ -500,8 +511,8 @@ test("changed comment content forms one replay-safe version with the immutable a
     scopeA,
     changedProjection.link.evidenceId!
   );
-  assert.equal(changedEvidence.sourceSnippet, "预算 10 万,采购 20 套,请报价");
-  assert.notEqual(changedEvidence.rawArtifactHash, `sha256:${"b".repeat(64)}`);
+  assert.equal(changedEvidence.sourceSnippet, "预算 10 万，采购 20 套，请报价");
+  assert.equal(changedEvidence.rawArtifactHash, `sha256:${"b".repeat(64)}`);
   assert.notEqual(changedEvidence.rawArtifactHash, `sha256:${"c".repeat(64)}`);
   const candidate = await harness.domain.getCandidate(
     scopeA,
@@ -515,7 +526,7 @@ test("changed comment content forms one replay-safe version with the immutable a
   assert.equal(candidate.evidenceIds.length, 2);
 });
 
-test("ingestion resumes idempotently after each cross-repository failure boundary", async () => {
+test("recovery completes every pending failure boundary without caller replay", async () => {
   for (const failOnceAt of [
     "after_event", "after_evidence", "after_candidate"
   ] as const) {
@@ -530,7 +541,30 @@ test("ingestion resumes idempotently after each cross-repository failure boundar
       harness.service.ingestSample(sampleInput),
       new RegExp(`FAIL_${failOnceAt.toLocaleUpperCase("en-US")}`)
     );
-    const completed = await harness.service.ingestSample(sampleInput);
+    assert.deepEqual(await harness.eventRepository.listRunCommentSignals(
+      scopeA,
+      "run-1",
+      { limit: 50 }
+    ), [], failOnceAt);
+    assert.equal((await harness.domainRepository.listCandidates(
+      scopeA,
+      { limit: 100 }
+    )).items.length, 0, failOnceAt);
+    assert.equal((await harness.eventRepository.listPendingIngestionSagas({
+      limit: 100
+    })).length, 1, failOnceAt);
+
+    const recoveredService = harness.restartService();
+    const sweeper = new AcquisitionDouyinCommentIngestionRecoverySweeper({
+      service: recoveredService,
+      intervalMs: 60_000,
+      setTimer() {
+        return { unref() {} };
+      },
+      clearTimer() {}
+    });
+    await sweeper.start();
+    await sweeper.close();
     const signals = await harness.eventRepository.listRunCommentSignals(
       scopeA,
       "run-1",
@@ -541,9 +575,6 @@ test("ingestion resumes idempotently after each cross-repository failure boundar
       { limit: 100 }
     );
 
-    assert.equal(completed.eventCount, 1, failOnceAt);
-    assert.equal(completed.evidenceCount, 1, failOnceAt);
-    assert.equal(completed.candidateIds.length, 1, failOnceAt);
     assert.equal(signals.length, 1, failOnceAt);
     assert.equal(candidates.items.length, 1, failOnceAt);
     assert.deepEqual(candidates.items[0]?.evidenceIds, [
@@ -558,7 +589,74 @@ test("ingestion resumes idempotently after each cross-repository failure boundar
       fetchAttemptCount: 0,
       returnedCommentCount: 0
     }, failOnceAt);
+    assert.equal((await harness.eventRepository.listPendingIngestionSagas({
+      limit: 100
+    })).length, 0, failOnceAt);
   }
+});
+
+test("after-candidate failure rolls an approved candidate back before recovery", async () => {
+  const harness = createHarness();
+  const initial = await harness.service.ingestSample(input(page([
+    comment("cid-approved-base", "想咨询解决方案", {
+      secUid: "MS4wLjABAAAA_approved-actor"
+    })
+  ])));
+  const candidate = await harness.domain.getCandidate(
+    scopeA,
+    initial.candidateIds[0]!
+  );
+  const approved = {
+    ...candidate,
+    status: "approved" as const,
+    latestDecisionId: "decision-approved",
+    latestDecisionVersion: "decision-version-approved",
+    approvedDecisionVersion: "decision-version-approved",
+    version: candidate.version + 1
+  };
+  await harness.domainRepository.saveCandidate(approved);
+  const beforeSignals = await harness.eventRepository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 50 }
+  );
+
+  // Reuse the real stores to model a later process handling the same actor.
+  const failingService = new AcquisitionDouyinCommentIngestionService({
+    events: harness.eventRepository,
+    domain: harness.domain,
+    individualSignals: new AcquisitionIndividualSignalIngestionService({
+      domain: harness.domain,
+      candidateDirectory: harness.candidateDirectory
+    }),
+    failureInjector: async (stage) => {
+      if (stage === "after_candidate") throw new Error("FAIL_AFTER_CANDIDATE");
+    }
+  });
+  await assert.rejects(failingService.ingestSample(input(page([
+    comment("cid-approved-new", "预算 10 万，采购 20 套，请报价", {
+      secUid: "MS4wLjABAAAA_approved-actor"
+    })
+  ], { rawArtifactHash: `sha256:${"d".repeat(64)}` }))), /FAIL_AFTER_CANDIDATE/u);
+
+  assert.deepEqual(await harness.domain.getCandidate(scopeA, approved.id), approved);
+  assert.deepEqual(await harness.eventRepository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 50 }
+  ), beforeSignals);
+
+  const sweeper = new AcquisitionDouyinCommentIngestionRecoverySweeper({
+    service: harness.restartService(),
+    intervalMs: 60_000,
+    setTimer() { return { unref() {} }; },
+    clearTimer() {}
+  });
+  await sweeper.start();
+  await sweeper.close();
+  const recovered = await harness.domain.getCandidate(scopeA, approved.id);
+  assert.equal(recovered.status, "pending_review");
+  assert.equal(recovered.evidenceIds.length, 2);
 });
 
 test("invalid sample literals and overlong context fail before mutation", async () => {
@@ -576,7 +674,13 @@ test("invalid sample literals and overlong context fail before mutation", async 
       coverage: "all_comments" as never
     })),
     input(page([comment("cid-invalid-context", "想咨询")]), {
-      runId: "r".repeat(256)
+      runId: "r".repeat(161)
+    }),
+    input(page([comment("cid-invalid-shard", "想咨询")]), {
+      shardId: "s".repeat(161)
+    }),
+    input(page([comment("cid-invalid-operation", "想咨询")]), {
+      discoveryOperationId: "o".repeat(161)
     }),
     input(page([comment("cid-invalid-video", "想咨询")]), {
       videoId: "not-a-video"

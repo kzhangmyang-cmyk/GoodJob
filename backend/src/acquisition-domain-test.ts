@@ -214,7 +214,7 @@ function platformPublicEventEvidence(overrides: Record<string, unknown> = {}) {
     targetType: "individual_signal",
     sourcePlatform: "douyin",
     sourceTitle: "抖音公开评论",
-    sourceSnippet: "我们正在采购 20 套，请报价。",
+    sourceSnippet: "  我们正在采购 20 套\n请报价。  ",
     publishedAt: "2026-08-15T01:00:00.000Z",
     locale: "zh-CN",
     rawArtifactHash: `sha256:${"a".repeat(64)}`,
@@ -246,6 +246,7 @@ test("platform public-event evidence is individual and public-content only", asy
     providerVersion: "douyin-public-comment-provider-v1",
     coverage: "public_top_level_sample"
   });
+  assert.equal(evidence.sourceSnippet, "  我们正在采购 20 套\n请报价。  ");
   await assert.rejects(
     service.appendEvidence(
       ownerScope,

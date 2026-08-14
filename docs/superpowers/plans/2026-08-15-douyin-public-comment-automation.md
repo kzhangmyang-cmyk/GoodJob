@@ -240,7 +240,7 @@
 
 - [ ] **Step 3: 实现证据与主体聚合**
 
-  每条有效评论先调用 Task 3 repository，再以 `comment:<eventId>:evidence:<textHash>` 追加 Discovery Evidence，最后通过现有 `AcquisitionIndividualSignalIngestionPort` upsert 候选。Provider 页面制品哈希保留在观测；证据引用由事件 ID、标准化文本哈希和标准化文本生成的确定性内容版本制品，同一 `eventId + textHash` 不受后续页面制品变化影响。跨 repository 顺序是可重启幂等 saga，不是跨库原子事务。已有个人候选合并后续需求摘要、只升不降的购买阶段和负向信号并集，不覆盖主体身份字段。`demandSummary` 保留有界公开原文和可审计信号理由，不将规则推断写成客户身份事实。
+  每条有效评论先在事件仓储的同一本地事务中持久事件、当次观测、`eventId + textHash` 首次内容版本和 `pending` ingestion saga。内容版本保留精确有界原文、首次观测 ID 和真实 Provider 页面制品哈希。再以 `comment:<eventId>:evidence:<textHash>` 追加 Discovery Evidence，并通过现有 `AcquisitionIndividualSignalIngestionPort` upsert 候选。同一内容版本的后续页面制品只新增观测，不改变证据原文、制品哈希或已持久主体。候选提交前故障回滚 Domain 事务；成功后事件链接与 saga `committed` 在事件仓储本地事务中一起提交。未完成 saga 没有 Run 链接，由重启后的 recovery sweeper 自动扫描并恢复；该跨 repository 顺序仍是可重启幂等 saga，不是跨库原子事务。已有个人候选合并后续需求摘要、只升不降的购买阶段和负向信号并集，不覆盖主体身份字段。`demandSummary` 保留有界公开原文和可审计信号理由，不将规则推断写成客户身份事实。
 
 - [ ] **Step 4: 运行 GREEN 与合同测试**
 

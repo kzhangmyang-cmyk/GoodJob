@@ -225,16 +225,22 @@ rawArtifactHash             原始响应制品哈希
 事件。相同评论重新读取时只新增采集观测，并把 Run 事件关联固定到当次观测；同 Run 的公开计数投影取该 Run 关联的最新观测，后续 Run 不改变历史 Run 快照，且不修改历史原文；原文变化时
 以新证据版本关联旧事件，不能静默覆盖。
 
-采集观测的 `rawArtifactHash` 指向当次 Provider 原始页面制品。Discovery
-Evidence 的 `rawArtifactHash` 指向确定性
-`douyin-comment-content-version-v1` 制品，该制品只由事件 ID、标准化文本
-哈希与标准化文本生成。因此同一 `eventId + textHash` 即使来自不同原始
-页面制品，其证据请求仍完全一致；候选主体只取已持久化不可变事件的公开
-主体与来源字段。
+采集观测的 `rawArtifactHash` 指向当次 Provider 原始页面制品。事件仓储同时
+持久化以 `ownerId + teamId + eventId + textHash` 为唯一边界的内容版本，保留该
+文本哈希第一次观测的精确公开原文、观测 ID、页面 `rawArtifactHash`、
+发布时间、公开主体和 Provider/来源上下文。Discovery Evidence 从该持久
+内容版本构造：`sourceSnippet` 保留有界精确原文，`rawArtifactHash` 引用
+真实首次页面制品。因此同一 `eventId + textHash` 在后续不同页面制品中
+仍产生字节等价证据；当次观测仍可独立追溯至它自己的页面制品。候选
+主体只取已持久化的不可变事件，不使用未持久化的后续观测主体。
 
-写入顺序是事件/观测、证据、候选、链接的可重启幂等 saga，不声称跨库原子
-事务。每步使用确定性标识，精确重试可从任意已持久边界继续，不重复或永久
-隐藏 Run 事实。
+事件、观测、内容版本和 `pending` ingestion saga 在事件仓储的同一本地事务
+中写入。证据与候选使用确定性幂等键；候选故障注入点位于 Domain 事务
+提交前，抛错会回滚新候选或恢复已有候选快照。候选处理成功后，事件
+链接与 saga `committed` 状态在事件仓储的同一本地事务中提交。只有
+`committed` saga 具有 Run 链接，因而未完成工作不进入 Run 成功投影。重启后的
+recovery sweeper 扫描持久 `pending` saga 并自动恢复，无需调用方重放原请求。
+这是可重启幂等 saga，不声称证据、候选和事件仓储之间存在跨库原子事务。
 
 `ipLabel` 只用于证据展示和用户配置的地区匹配，不得推断民族、健康、政治、宗教、
 收入等敏感属性。第一阶段不保存或展示评论者头像，不下载人脸资产，也不做人脸识别。

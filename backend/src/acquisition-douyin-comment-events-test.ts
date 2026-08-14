@@ -43,6 +43,16 @@ function observation(
   };
 }
 
+function ingestionSaga(sagaId = "saga-1") {
+  return {
+    sagaId,
+    actorId: "worker-1",
+    runId: "run-1",
+    shardId: "shard-1",
+    discoveryOperationId: "operation-1"
+  };
+}
+
 test("comment events are tenant-idempotent while every capture is observed", async () => {
   const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
 
@@ -93,6 +103,79 @@ test("changed public text is flagged without overwriting the immutable event", a
   assert.equal(changed.event.text, "原始公开评论");
   assert.equal(changed.event.textHash, `sha256:${"a".repeat(64)}`);
   assert.equal(changed.observation.observedTextHash, `sha256:${"c".repeat(64)}`);
+});
+
+test("content versions persist the first exact text and provider artifact for an event hash", async () => {
+  const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
+  const first = await repository.appendObservation({
+    ...observation(),
+    ingestionSaga: ingestionSaga(),
+    event: {
+      ...observation().event,
+      text: "  预算 10 万，采购 20 套\n请报价  ",
+      textHash: `sha256:${"c".repeat(64)}`
+    }
+  });
+  const replay = await repository.appendObservation({
+    ...observation({ observationId: "observation-2" }),
+    ingestionSaga: ingestionSaga("saga-2"),
+    event: {
+      ...observation().event,
+      text: "  预算 10 万，采购 20 套\n请报价  ",
+      textHash: `sha256:${"c".repeat(64)}`,
+      capturedAt: "2026-08-15T03:00:00.000Z",
+      rawArtifactHash: `sha256:${"d".repeat(64)}`
+    }
+  });
+
+  assert.deepEqual(first.contentVersion, {
+    contentVersionId: first.contentVersion.contentVersionId,
+    eventId: "event-1",
+    textHash: `sha256:${"c".repeat(64)}`,
+    observationId: "observation-1",
+    text: "  预算 10 万，采购 20 套\n请报价  ",
+    occurredAt: "2026-08-15T01:00:00.000Z",
+    actor: {
+      displayName: "公开用户",
+      handle: "public-user",
+      secUid: "sec-1"
+    },
+    sourceUrl: "https://www.douyin.com/video/123",
+    platformEventId: "cid-1",
+    providerVersion: "douyin-public-comment-provider-v1",
+    coverage: "public_top_level_sample",
+    rawArtifactHash: `sha256:${"b".repeat(64)}`
+  });
+  assert.deepEqual(replay.contentVersion, first.contentVersion);
+  assert.equal(replay.observation.rawArtifactHash, `sha256:${"d".repeat(64)}`);
+});
+
+test("pending ingestion sagas stay out of Run projections until atomic link commit", async () => {
+  const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
+  const appended = await repository.appendObservation({
+    ...observation(),
+    ingestionSaga: ingestionSaga()
+  });
+
+  assert.equal(appended.ingestionSaga?.status, "pending");
+  assert.equal((await repository.listPendingIngestionSagas({ limit: 10 })).length, 1);
+  assert.deepEqual(
+    await repository.listRunCommentSignals(scopeA, "run-1", { limit: 50 }),
+    []
+  );
+  assert.equal((await repository.getRunCommentSummary(scopeA, "run-1"))
+    .linkedEventCount, 0);
+
+  await repository.commitIngestionSaga(scopeA, "saga-1", {
+    candidateId: "candidate-1",
+    evidenceId: "evidence-1"
+  });
+  assert.equal((await repository.listPendingIngestionSagas({ limit: 10 })).length, 0);
+  assert.equal((await repository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 50 }
+  )).length, 1);
 });
 
 test("run projections use the latest observation and remain tenant isolated", async () => {

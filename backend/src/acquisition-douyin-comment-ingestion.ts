@@ -6,7 +6,8 @@ import type {
 } from "./acquisition-domain-service.js";
 import type {
   AcquisitionDouyinCommentEventRepository,
-  DouyinCommentEvent
+  DouyinCommentEvent,
+  DouyinCommentIngestionSagaWorkItem
 } from "./acquisition-douyin-comment-events.js";
 import type {
   AcquisitionIndividualSignalIngestionPort
@@ -61,6 +62,9 @@ export interface AcquisitionDouyinCommentIngestionServiceOptions {
   events: AcquisitionDouyinCommentEventRepository;
   domain: AcquisitionDomainService;
   individualSignals: AcquisitionIndividualSignalIngestionPort;
+  failureInjector?: (
+    stage: "after_event" | "after_evidence" | "after_candidate"
+  ) => Promise<void>;
 }
 
 const MAX_DECISION_CODES = 12;
@@ -263,9 +267,7 @@ function validComment(value: unknown, capturedAt: string): ValidComment | null {
   const commentId = typeof comment.commentId === "string"
     ? comment.commentId.normalize("NFKC").trim()
     : "";
-  const text = typeof comment.text === "string"
-    ? comment.text.trim()
-    : "";
+  const text = typeof comment.text === "string" ? comment.text : "";
   if (!/^[A-Za-z0-9._~-]{1,128}$/u.test(commentId)
     || !normalizedText(text)
     || text.length > 4_000
@@ -341,9 +343,9 @@ function prepareSample(input: AcquisitionDouyinCommentIngestionInput) {
   if (!boundedNonEmpty(input?.scope?.ownerId, 100)
     || !boundedNonEmpty(input?.scope?.teamId, 100)
     || !boundedNonEmpty(input?.scope?.actorId, 100)
-    || !nullableBoundedNonEmpty(input?.runId, 255)
-    || !nullableBoundedNonEmpty(input?.shardId, 255)
-    || !nullableBoundedNonEmpty(input?.discoveryOperationId, 255)
+    || !nullableBoundedNonEmpty(input?.runId, 160)
+    || !nullableBoundedNonEmpty(input?.shardId, 160)
+    || !nullableBoundedNonEmpty(input?.discoveryOperationId, 160)
     || !validSource
     || !/^[0-9]{1,32}$/u.test(input?.videoId || "")
     || page?.providerId !== DOUYIN_PUBLIC_COMMENT_PROVIDER_ID
@@ -379,30 +381,18 @@ function prepareSample(input: AcquisitionDouyinCommentIngestionInput) {
   };
 }
 
-const DOUYIN_COMMENT_CONTENT_VERSION = "douyin-comment-content-version-v1";
-
-function contentVersionArtifactHash(input: {
-  eventId: string;
-  textHash: string;
-  normalizedContent: string;
-}) {
-  return sha256(JSON.stringify({
-    schemaVersion: DOUYIN_COMMENT_CONTENT_VERSION,
-    eventId: input.eventId,
-    textHash: input.textHash,
-    normalizedContent: input.normalizedContent
-  }));
-}
-
 export class AcquisitionDouyinCommentIngestionService {
   private readonly events: AcquisitionDouyinCommentEventRepository;
   private readonly domain: AcquisitionDomainService;
   private readonly individualSignals: AcquisitionIndividualSignalIngestionPort;
+  private readonly failureInjector?:
+    AcquisitionDouyinCommentIngestionServiceOptions["failureInjector"];
 
   constructor(options: AcquisitionDouyinCommentIngestionServiceOptions) {
     this.events = options.events;
     this.domain = options.domain;
     this.individualSignals = options.individualSignals;
+    this.failureInjector = options.failureInjector;
   }
 
   async ingestSample(
@@ -418,9 +408,6 @@ export class AcquisitionDouyinCommentIngestionService {
     let strongSignalCount = 0;
     const invalidCommentCount = prepared.invalidCommentCount;
 
-    // This is a restartable cross-repository saga, not an atomic transaction.
-    // Each step has deterministic identity, so exact retry resumes safely
-    // after event, evidence, candidate, or link without duplicating facts.
     for (const comment of prepared.comments) {
       if (!comment) continue;
       const normalizedContent = normalizedText(comment.text);
@@ -461,101 +448,47 @@ export class AcquisitionDouyinCommentIngestionService {
         input.page.providerVersion,
         input.page.rawArtifactHash
       ]);
+      const sagaId = deterministicId("douyin-comment-ingestion", [
+        input.scope.ownerId,
+        input.scope.teamId,
+        observationId,
+        input.runId,
+        input.shardId,
+        input.discoveryOperationId
+      ]);
       const appended = await this.events.appendObservation({
         scope: input.scope,
         observationId,
-        event
+        event,
+        ingestionSaga: {
+          sagaId,
+          actorId: input.scope.actorId,
+          runId: input.runId,
+          shardId: input.shardId,
+          discoveryOperationId: input.discoveryOperationId
+        }
       });
       eventCount += 1;
-
-      const authoritativeEvent = appended.event;
-      const evidenceKey = `comment:${eventId}:evidence:${textHash}`;
-      const evidence = await this.domain.appendEvidence(input.scope, {
-        targetType: "individual_signal",
-        sourcePlatform: "douyin",
-        sourceTitle:
-          `${authoritativeEvent.actor.displayName} 的抖音公开评论`.slice(0, 500),
-        sourceSnippet: normalizedContent,
-        publishedAt: authoritativeEvent.occurredAt,
-        locale: "zh-CN",
-        rawArtifactHash: contentVersionArtifactHash({
-          eventId,
-          textHash,
-          normalizedContent
-        }),
-        contentHash: textHash,
-        provenance: {
-          kind: "platform_public_event",
-          sourceUrl: authoritativeEvent.sourceUrl,
-          platformEventId: authoritativeEvent.platformEventId,
-          providerVersion: authoritativeEvent.providerVersion,
-          coverage: "public_top_level_sample"
-        },
-        accessStatus: "public_content"
-      }, evidenceKey);
-      evidenceCount += 1;
-
-      const decision = classifyDouyinCommentIntent(normalizedContent);
-      if (decision.band === "strong_signal") strongSignalCount += 1;
-      let candidateId: string | null = null;
-      if (decision.band !== "noise") {
-        const authoritativeComment: ValidComment = {
-          commentId: authoritativeEvent.platformEventId,
-          text: authoritativeEvent.text,
-          occurredAt: authoritativeEvent.occurredAt,
-          publishedAt: authoritativeEvent.occurredAt,
-          likeCount: authoritativeEvent.likeCount,
-          replyCount: authoritativeEvent.replyCount,
-          ipLabel: authoritativeEvent.ipLabel,
-          actor: authoritativeEvent.actor
-        };
-        const publicActorKey = actorKey(authoritativeComment);
-        const demandSummary = [
-          `抖音公开评论需求信号（非已核实客户事实）：${normalizedContent}`,
-          `可审计规则：${decision.reasons.join("、")}`
-        ].join("\n").slice(0, 2_000);
-        const ingested = await this.individualSignals.ingest({
-          scope: input.scope,
-          provider: DOUYIN_PUBLIC_COMMENT_PROVIDER_ID,
-          sourceUrl: authoritativeEvent.sourceUrl,
-          sourceType: "video",
-          subject: {
-            publicActorKey,
-            publicDisplayName: authoritativeEvent.actor.displayName,
-            publicProfileUrl: authoritativeEvent.sourceUrl,
-            sourcePlatform: "douyin",
-            demandCategory: "抖音公开评论需求信号",
-            demandSummary,
-            locationHint: authoritativeEvent.ipLabel ?? "",
-            buyingStage: decision.buyingStage,
-            negativeSignals: decision.negativeSignals
-          },
-          evidence,
-          idempotencyKey: deterministicId(
-            "douyin-comment-signal",
-            evidenceKey
-          )
-        });
-        candidateId = ingested.candidate.id;
-        if (!seenCandidateIds.has(candidateId)) {
-          seenCandidateIds.add(candidateId);
-          candidateIds.push(candidateId);
-        }
-        if (ingested.identityResolution.status === "needs_research") {
-          unresolvedActors.add(ingested.identityResolution.dedupeKey);
-        }
+      await this.failureInjector?.("after_event");
+      if (!appended.ingestionSaga) {
+        throw new Error("ACQUISITION_DOUYIN_COMMENT_INGESTION_SAGA_MISSING");
       }
-
-      await this.events.linkEvent({
-        scope: input.scope,
-        eventId: appended.event.eventId,
-        observationId: appended.observation.observationId,
-        runId: input.runId,
-        shardId: input.shardId,
-        discoveryOperationId: input.discoveryOperationId,
-        candidateId,
-        evidenceId: evidence.id
-      });
+      const resumed = await this.resumeSaga({
+        saga: appended.ingestionSaga,
+        event: appended.event,
+        observation: appended.observation,
+        contentVersion: appended.contentVersion
+      }, true);
+      evidenceCount += 1;
+      if (resumed.band === "strong_signal") strongSignalCount += 1;
+      if (resumed.candidateId
+        && !seenCandidateIds.has(resumed.candidateId)) {
+        seenCandidateIds.add(resumed.candidateId);
+        candidateIds.push(resumed.candidateId);
+      }
+      if (resumed.unresolvedDedupeKey) {
+        unresolvedActors.add(resumed.unresolvedDedupeKey);
+      }
     }
 
     return {
@@ -565,6 +498,107 @@ export class AcquisitionDouyinCommentIngestionService {
       unresolvedActorCount: unresolvedActors.size,
       strongSignalCount,
       invalidCommentCount
+    };
+  }
+
+  /** Called by the recovery worker after a process restart. */
+  async recoverPendingIngestionSagas(options: { limit: number }) {
+    const workItems = await this.events.listPendingIngestionSagas(options);
+    for (const workItem of workItems) {
+      await this.resumeSaga(workItem, false);
+    }
+    return workItems.length;
+  }
+
+  private async resumeSaga(
+    work: DouyinCommentIngestionSagaWorkItem,
+    injectFailures: boolean
+  ) {
+    const scope: AcquisitionActorScope = {
+      ownerId: work.saga.ownerId,
+      teamId: work.saga.teamId,
+      actorId: work.saga.actorId
+    };
+    const authoritativeEvent = work.event;
+    const content = work.contentVersion;
+    const normalizedContent = normalizedText(content.text);
+    const evidenceKey = `comment:${content.eventId}:evidence:${content.textHash}`;
+    const evidence = await this.domain.appendEvidence(scope, {
+      targetType: "individual_signal",
+      sourcePlatform: "douyin",
+      sourceTitle:
+        `${authoritativeEvent.actor.displayName} 的抖音公开评论`.slice(0, 500),
+      sourceSnippet: content.text,
+      publishedAt: content.occurredAt,
+      locale: "zh-CN",
+      rawArtifactHash: content.rawArtifactHash,
+      contentHash: content.textHash,
+      provenance: {
+        kind: "platform_public_event",
+        sourceUrl: content.sourceUrl,
+        platformEventId: content.platformEventId,
+        providerVersion: content.providerVersion,
+        coverage: content.coverage
+      },
+      accessStatus: "public_content"
+    }, evidenceKey);
+    if (injectFailures) await this.failureInjector?.("after_evidence");
+
+    const decision = classifyDouyinCommentIntent(normalizedContent);
+    let candidateId: string | null = null;
+    let unresolvedDedupeKey: string | null = null;
+    if (decision.band !== "noise") {
+      const authoritativeComment: ValidComment = {
+        commentId: authoritativeEvent.platformEventId,
+        text: authoritativeEvent.text,
+        occurredAt: authoritativeEvent.occurredAt,
+        publishedAt: authoritativeEvent.occurredAt,
+        likeCount: authoritativeEvent.likeCount,
+        replyCount: authoritativeEvent.replyCount,
+        ipLabel: authoritativeEvent.ipLabel,
+        actor: authoritativeEvent.actor
+      };
+      const publicActorKey = actorKey(authoritativeComment);
+      const demandSummary = [
+        `抖音公开评论需求信号（非已核实客户事实）：${normalizedContent}`,
+        `可审计规则：${decision.reasons.join("、")}`
+      ].join("\n").slice(0, 2_000);
+      const ingested = await this.individualSignals.ingest({
+        scope,
+        provider: DOUYIN_PUBLIC_COMMENT_PROVIDER_ID,
+        sourceUrl: authoritativeEvent.sourceUrl,
+        sourceType: "video",
+        subject: {
+          publicActorKey,
+          publicDisplayName: authoritativeEvent.actor.displayName,
+          publicProfileUrl: authoritativeEvent.sourceUrl,
+          sourcePlatform: "douyin",
+          demandCategory: "抖音公开评论需求信号",
+          demandSummary,
+          locationHint: authoritativeEvent.ipLabel ?? "",
+          buyingStage: decision.buyingStage,
+          negativeSignals: decision.negativeSignals
+        },
+        evidence,
+        idempotencyKey: deterministicId("douyin-comment-signal", evidenceKey),
+        beforeCandidateCommit: injectFailures && this.failureInjector
+          ? () => this.failureInjector!("after_candidate")
+          : undefined
+      });
+      candidateId = ingested.candidate.id;
+      if (ingested.identityResolution.status === "needs_research") {
+        unresolvedDedupeKey = ingested.identityResolution.dedupeKey;
+      }
+    }
+
+    await this.events.commitIngestionSaga(scope, work.saga.sagaId, {
+      candidateId,
+      evidenceId: evidence.id
+    });
+    return {
+      band: decision.band,
+      candidateId,
+      unresolvedDedupeKey
     };
   }
 }

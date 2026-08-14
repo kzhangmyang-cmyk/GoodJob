@@ -63,55 +63,144 @@ class ConcurrentPool {
   readonly calls: Array<{ sql: string; values: unknown[] }> = [];
   readonly events = new Map<string, Record<string, unknown>>();
   readonly observations = new Map<string, Record<string, unknown>>();
+  readonly contentVersions = new Map<string, Record<string, unknown>>();
+  readonly sagas = new Map<string, Record<string, unknown>>();
+  readonly links = new Map<string, Record<string, unknown>>();
   commits = 0;
   rollbacks = 0;
 
-  async query() {
-    return [[], []] as [unknown, unknown];
+  async query(sql: string, values: unknown[] = []) {
+    return this.handle(sql, values);
+  }
+
+  private async handle(sql: string, values: unknown[] = []) {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    this.calls.push({ sql: normalized, values });
+    if (normalized.startsWith(
+      "INSERT IGNORE INTO acquisition_douyin_comment_events"
+    )) {
+      const key = `${values[1]}:${values[2]}:${values[3]}:${values[5]}`;
+      if (this.events.has(key)) return [{ affectedRows: 0 }, []];
+      this.events.set(key, eventRow(values));
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.includes("FROM acquisition_douyin_comment_events")
+      && normalized.includes("platform_event_id = ?")) {
+      const key = `${values[0]}:${values[1]}:${values[2]}:${values[3]}`;
+      const row = this.events.get(key);
+      return [row ? [row] : [], []];
+    }
+    if (normalized.includes("FROM acquisition_douyin_comment_events")
+      && normalized.includes("event_id = ?")) {
+      const row = [...this.events.values()].find((candidate) =>
+        candidate.owner_id === values[0]
+        && candidate.team_id === values[1]
+        && candidate.event_id === values[2]);
+      return [row ? [row] : [], []];
+    }
+    if (normalized.startsWith(
+      "INSERT IGNORE INTO acquisition_douyin_comment_observations"
+    )) {
+      const key = `${values[1]}:${values[2]}:${values[0]}`;
+      if (this.observations.has(key)) return [{ affectedRows: 0 }, []];
+      this.observations.set(key, {
+        observation_id: values[0], owner_id: values[1], team_id: values[2],
+        event_id: values[3], captured_at: values[4], like_count: values[5],
+        reply_count: values[6], observed_text_hash: values[7],
+        provider_version: values[8], raw_artifact_hash: values[9]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.includes("FROM acquisition_douyin_comment_observations")) {
+      const key = `${values[0]}:${values[1]}:${values[2]}`;
+      const row = this.observations.get(key);
+      return [row ? [row] : [], []];
+    }
+    if (normalized.startsWith(
+      "INSERT IGNORE INTO acquisition_douyin_comment_content_versions"
+    )) {
+      const key = `${values[1]}:${values[2]}:${values[3]}:${values[4]}`;
+      if (this.contentVersions.has(key)) return [{ affectedRows: 0 }, []];
+      this.contentVersions.set(key, {
+        content_version_id: values[0], owner_id: values[1], team_id: values[2],
+        event_id: values[3], text_hash: values[4], observation_id: values[5],
+        text: values[6], occurred_at: values[7], actor_display_name: values[8],
+        actor_handle: values[9], actor_sec_uid: values[10], source_url: values[11],
+        platform_event_id: values[12], provider_version: values[13],
+        coverage: values[14], raw_artifact_hash: values[15]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.includes(
+      "FROM acquisition_douyin_comment_content_versions"
+    )) {
+      const key = `${values[0]}:${values[1]}:${values[2]}:${values[3]}`;
+      const row = this.contentVersions.get(key);
+      return [row ? [row] : [], []];
+    }
+    if (normalized.startsWith(
+      "INSERT IGNORE INTO acquisition_douyin_comment_ingestion_sagas"
+    )) {
+      const key = `${values[1]}:${values[2]}:${values[0]}`;
+      if (this.sagas.has(key)) return [{ affectedRows: 0 }, []];
+      this.sagas.set(key, {
+        saga_id: values[0], owner_id: values[1], team_id: values[2],
+        actor_id: values[3], event_id: values[4], observation_id: values[5],
+        text_hash: values[6], run_id: values[7], shard_id: values[8],
+        discovery_operation_id: values[9], status: values[10],
+        candidate_id: values[11], evidence_id: values[12],
+        created_at: values[13], updated_at: values[14], committed_at: values[15]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.includes(
+      "FROM acquisition_douyin_comment_ingestion_sagas"
+    )) {
+      if (normalized.includes("status = 'pending'")) {
+        return [[...this.sagas.values()].filter((row) =>
+          row.status === "pending"), []];
+      }
+      const key = `${values[0]}:${values[1]}:${values[2]}`;
+      const row = this.sagas.get(key);
+      return [row ? [row] : [], []];
+    }
+    if (normalized.startsWith(
+      "UPDATE acquisition_douyin_comment_ingestion_sagas"
+    )) {
+      const key = `${values[3]}:${values[4]}:${values[5]}`;
+      const row = this.sagas.get(key);
+      if (!row || row.status !== "pending") return [{ affectedRows: 0 }, []];
+      Object.assign(row, {
+        status: "committed", candidate_id: values[0], evidence_id: values[1],
+        committed_at: values[2]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "INSERT IGNORE INTO acquisition_douyin_comment_event_links"
+    )) {
+      const key = `${values[1]}:${values[2]}:${values[0]}`;
+      if (this.links.has(key)) return [{ affectedRows: 0 }, []];
+      this.links.set(key, {
+        link_id: values[0], owner_id: values[1], team_id: values[2],
+        event_id: values[3], observation_id: values[4], run_id: values[5],
+        shard_id: values[6], discovery_operation_id: values[7],
+        candidate_id: values[8], evidence_id: values[9]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.includes("FROM acquisition_douyin_comment_event_links")) {
+      const key = `${values[0]}:${values[1]}:${values[2]}`;
+      const row = this.links.get(key);
+      return [row ? [row] : [], []];
+    }
+    throw new Error(`Unexpected SQL: ${normalized}`);
   }
 
   async getConnection() {
     return {
       beginTransaction: async () => {},
-      query: async (sql: string, values: unknown[] = []) => {
-        const normalized = sql.replace(/\s+/gu, " ").trim();
-        this.calls.push({ sql: normalized, values });
-        if (normalized.startsWith(
-          "INSERT IGNORE INTO acquisition_douyin_comment_events"
-        )) {
-          const key = `${values[1]}:${values[2]}:${values[3]}:${values[5]}`;
-          if (this.events.has(key)) return [{ affectedRows: 0 }, []];
-          this.events.set(key, eventRow(values));
-          return [{ affectedRows: 1 }, []];
-        }
-        if (normalized.includes("FROM acquisition_douyin_comment_events")
-          && normalized.includes("platform_event_id = ?")) {
-          const key = `${values[0]}:${values[1]}:${values[2]}:${values[3]}`;
-          const row = this.events.get(key);
-          return [row ? [row] : [], []];
-        }
-        if (normalized.startsWith(
-          "INSERT IGNORE INTO acquisition_douyin_comment_observations"
-        )) {
-          const key = `${values[1]}:${values[2]}:${values[0]}`;
-          if (this.observations.has(key)) return [{ affectedRows: 0 }, []];
-          this.observations.set(key, {
-            observation_id: values[0], owner_id: values[1], team_id: values[2],
-            event_id: values[3], captured_at: values[4], like_count: values[5],
-            reply_count: values[6], observed_text_hash: values[7],
-            provider_version: values[8], raw_artifact_hash: values[9]
-          });
-          return [{ affectedRows: 1 }, []];
-        }
-        if (normalized.includes(
-          "FROM acquisition_douyin_comment_observations"
-        )) {
-          const key = `${values[0]}:${values[1]}:${values[2]}`;
-          const row = this.observations.get(key);
-          return [row ? [row] : [], []];
-        }
-        throw new Error(`Unexpected SQL: ${normalized}`);
-      },
+      query: (sql: string, values: unknown[] = []) => this.handle(sql, values),
       commit: async () => { this.commits += 1; },
       rollback: async () => { this.rollbacks += 1; },
       release: () => {}
@@ -214,7 +303,7 @@ function asPool(value: unknown) {
   return value as mysql.Pool;
 }
 
-test("schema creates four tenant-scoped comment persistence tables", async () => {
+test("schema creates tenant-scoped events, content versions, and recovery sagas", async () => {
   const pool = new SchemaPool();
   await ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool));
   assert.equal(
@@ -225,6 +314,8 @@ test("schema creates four tenant-scoped comment persistence tables", async () =>
   for (const table of [
     "acquisition_douyin_comment_events",
     "acquisition_douyin_comment_observations",
+    "acquisition_douyin_comment_content_versions",
+    "acquisition_douyin_comment_ingestion_sagas",
     "acquisition_douyin_comment_event_links",
     "acquisition_douyin_comment_fetch_attempts"
   ]) assert.match(schema, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`));
@@ -265,8 +356,55 @@ test("concurrent append is transactionally idempotent per tenant boundary", asyn
   assert.equal(first.event.eventId, second.event.eventId);
   assert.equal(pool.events.size, 1);
   assert.equal(pool.observations.size, 2);
+  assert.deepEqual(first.contentVersion, second.contentVersion);
+  assert.equal(first.contentVersion.rawArtifactHash, `sha256:${"b".repeat(64)}`);
   assert.equal(pool.commits, 2);
   assert.equal(pool.rollbacks, 0);
+});
+
+test("mysql recovery reads a durable pending saga after repository restart", async () => {
+  const pool = new ConcurrentPool();
+  const firstProcess = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(pool)
+  );
+  await firstProcess.appendObservation(input("observation-first-content"));
+  await firstProcess.appendObservation({
+    ...input("observation-restart"),
+    event: {
+      ...input("observation-restart").event,
+      capturedAt: "2026-08-15T03:00:00.000Z",
+      rawArtifactHash: `sha256:${"c".repeat(64)}`
+    },
+    ingestionSaga: {
+      sagaId: "saga-restart",
+      actorId: "worker-restart",
+      runId: "run-restart",
+      shardId: "shard-restart",
+      discoveryOperationId: "operation-restart"
+    }
+  });
+
+  const restarted = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(pool)
+  );
+  const pending = await restarted.listPendingIngestionSagas({ limit: 10 });
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]?.saga.sagaId, "saga-restart");
+  assert.equal(
+    pending[0]?.contentVersion.observationId,
+    "observation-first-content"
+  );
+  assert.equal(
+    pending[0]?.contentVersion.rawArtifactHash,
+    `sha256:${"b".repeat(64)}`
+  );
+  assert.equal(pending[0]?.observation.observationId, "observation-restart");
+  await restarted.commitIngestionSaga(
+    { ownerId: "owner-a", teamId: "team-a" },
+    "saga-restart",
+    { candidateId: "candidate-restart", evidenceId: "evidence-restart" }
+  );
+  assert.equal((await restarted.listPendingIngestionSagas({ limit: 10 })).length, 0);
 });
 
 test("run summary is aggregated inside owner and team scope", async () => {

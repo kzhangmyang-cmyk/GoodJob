@@ -532,7 +532,8 @@ export class AcquisitionDomainService {
   async createIndividualCandidate(
     scope: AcquisitionActorScope,
     raw: IndividualCandidateInput,
-    idempotencyKey: string
+    idempotencyKey: string,
+    beforeCommit?: (candidate: AcquisitionCandidate) => Promise<void>
   ) {
     this.validateScope(scope);
     const profileUrl = validUrl(
@@ -624,6 +625,7 @@ export class AcquisitionDomainService {
           idempotencyKey,
           payload: candidate
         });
+        await beforeCommit?.(clone(candidate));
         return candidate;
       }
     );
@@ -890,7 +892,8 @@ export class AcquisitionDomainService {
     scope: AcquisitionActorScope,
     candidateId: string,
     raw: IndividualDemandSignalMergeInput,
-    idempotencyKey: string
+    idempotencyKey: string,
+    beforeCommit?: (candidate: AcquisitionCandidate) => Promise<void>
   ) {
     this.validateScope(scope);
     const buyingStage = raw.buyingStage;
@@ -1001,6 +1004,7 @@ export class AcquisitionDomainService {
               !previousProfile.negativeSignals.includes(signal))
           }
         });
+        await beforeCommit?.(clone(candidate));
         return candidate;
       }
     );
@@ -2617,7 +2621,9 @@ export class AcquisitionDomainService {
       targetType: raw.targetType,
       sourcePlatform: requiredText(raw.sourcePlatform, "来源平台", 100),
       sourceTitle: String(raw.sourceTitle ?? "").trim().slice(0, 500),
-      sourceSnippet: String(raw.sourceSnippet ?? "").trim().slice(0, 4_000),
+      sourceSnippet: provenance.kind === "platform_public_event"
+        ? String(raw.sourceSnippet ?? "").slice(0, 4_000)
+        : String(raw.sourceSnippet ?? "").trim().slice(0, 4_000),
       publishedAt: raw.publishedAt
         ? validIso(raw.publishedAt, "证据发布时间")
         : null,

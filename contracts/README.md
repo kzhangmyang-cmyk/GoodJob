@@ -52,17 +52,25 @@ uses normalized `douyin:handle:*` only as a temporary key, and isolates
 identity-less comments with `unmergeable:douyin:comment:*`. None of these keys
 asserts a verified customer identity.
 
-Each provider capture keeps the provider response `rawArtifactHash` on its
-immutable observation. Discovery evidence instead identifies a deterministic
-`douyin-comment-content-version-v1` artifact derived from event ID, normalized
-text hash, and normalized text. Therefore the same event/text version produces
-byte-equivalent evidence even when a later provider page has another raw
-artifact, while the observation remains traceable to that exact provider page.
-Changed text creates another evidence version but always keeps the actor and
-source identity from the stored immutable event.
+Each provider capture keeps the real provider-page `rawArtifactHash` on its
+immutable observation. The event repository also persists the first exact,
+bounded public text, observation ID, page artifact hash, publication context,
+and public actor/source context for every `eventId + textHash` content version.
+Discovery evidence is built from that persisted first version: its
+`sourceSnippet` preserves the exact bounded public text and its
+`rawArtifactHash` references the real first provider-page artifact. Later page
+artifacts for the same event/text hash therefore produce byte-equivalent
+evidence while each observation remains traceable to its own provider page.
+Candidate identity facts always come from the stored immutable event.
 
 Comment ingestion is a restartable idempotent saga across the event, evidence,
-candidate, and link repositories; it is not described as an atomic transaction.
+candidate, and link repositories, not a cross-repository atomic transaction.
+The event repository atomically stores event/observation/content-version facts
+with a durable pending saga. A candidate pre-commit failure rolls its Domain
+transaction back. The Run link and committed saga state are then written in one
+event-repository transaction, so pending work is excluded from successful Run
+projections. A restart-safe recovery sweeper completes durable pending work
+without requiring the caller to replay the ingestion request.
 An exact retry resumes from deterministic step identities. Later signals for an
 existing individual candidate append evidence, merge bounded deduplicated
 demand summaries, advance buying stage only by its explicit order, and retain a

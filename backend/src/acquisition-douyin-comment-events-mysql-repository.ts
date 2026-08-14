@@ -11,7 +11,10 @@ import {
   type AppendDouyinCommentObservationInput,
   type DouyinCommentEvent,
   type DouyinCommentEventLink,
+  type DouyinCommentContentVersion,
   type DouyinCommentFetchAttempt,
+  type DouyinCommentIngestionSaga,
+  type DouyinCommentIngestionSagaWorkItem,
   type DouyinCommentObservation,
   type FinishDouyinCommentFetchAttemptInput,
   type LinkDouyinCommentEventInput,
@@ -79,6 +82,69 @@ export const ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS = [
       REFERENCES acquisition_douyin_comment_events
         (owner_id, team_id, event_id)
       ON UPDATE RESTRICT ON DELETE RESTRICT
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS acquisition_douyin_comment_content_versions (
+    content_version_id VARCHAR(160) NOT NULL,
+    owner_id VARCHAR(100) NOT NULL,
+    team_id VARCHAR(100) NOT NULL,
+    event_id VARCHAR(160) NOT NULL,
+    text_hash CHAR(71) NOT NULL,
+    observation_id VARCHAR(160) NOT NULL,
+    text TEXT NOT NULL,
+    occurred_at DATETIME(3) NOT NULL,
+    actor_display_name VARCHAR(255) NOT NULL,
+    actor_handle VARCHAR(255) NULL,
+    actor_sec_uid VARCHAR(255) NULL,
+    source_url VARCHAR(4000) NOT NULL,
+    platform_event_id VARCHAR(255) NOT NULL,
+    provider_version VARCHAR(255) NOT NULL,
+    coverage VARCHAR(64) NOT NULL,
+    raw_artifact_hash CHAR(71) NOT NULL,
+    PRIMARY KEY (owner_id, team_id, content_version_id),
+    UNIQUE KEY uk_douyin_comment_content_version
+      (owner_id, team_id, event_id, text_hash),
+    CONSTRAINT fk_douyin_comment_content_observation
+      FOREIGN KEY (owner_id, team_id, event_id, observation_id)
+      REFERENCES acquisition_douyin_comment_observations
+        (owner_id, team_id, event_id, observation_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_douyin_comment_content_coverage CHECK (
+      coverage = 'public_top_level_sample'
+    )
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS acquisition_douyin_comment_ingestion_sagas (
+    saga_id VARCHAR(160) NOT NULL,
+    owner_id VARCHAR(100) NOT NULL,
+    team_id VARCHAR(100) NOT NULL,
+    actor_id VARCHAR(100) NOT NULL,
+    event_id VARCHAR(160) NOT NULL,
+    observation_id VARCHAR(160) NOT NULL,
+    text_hash CHAR(71) NOT NULL,
+    run_id VARCHAR(160) NULL,
+    shard_id VARCHAR(160) NULL,
+    discovery_operation_id VARCHAR(160) NULL,
+    status VARCHAR(32) NOT NULL,
+    candidate_id VARCHAR(160) NULL,
+    evidence_id VARCHAR(160) NULL,
+    created_at DATETIME(3) NOT NULL,
+    updated_at DATETIME(3) NOT NULL,
+    committed_at DATETIME(3) NULL,
+    PRIMARY KEY (owner_id, team_id, saga_id),
+    KEY idx_douyin_comment_ingestion_saga_pending
+      (status, created_at, saga_id),
+    CONSTRAINT fk_douyin_comment_ingestion_saga_observation
+      FOREIGN KEY (owner_id, team_id, event_id, observation_id)
+      REFERENCES acquisition_douyin_comment_observations
+        (owner_id, team_id, event_id, observation_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_douyin_comment_ingestion_saga_status CHECK (
+      status IN ('pending', 'committed')
+      AND (
+        (status = 'pending' AND evidence_id IS NULL AND committed_at IS NULL)
+        OR (status = 'committed' AND evidence_id IS NOT NULL
+          AND committed_at IS NOT NULL)
+      )
+    )
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS acquisition_douyin_comment_event_links (
     link_id VARCHAR(160) NOT NULL,
@@ -236,6 +302,21 @@ const OBSERVATION_SELECT_COLUMNS = `observation_id, owner_id, team_id,
   like_count, reply_count, observed_text_hash, provider_version,
   raw_artifact_hash`;
 
+const CONTENT_VERSION_SELECT_COLUMNS = `content_version_id, owner_id, team_id,
+  event_id, text_hash, observation_id, text,
+  DATE_FORMAT(occurred_at, '%Y-%m-%d %H:%i:%s.%f') AS occurred_at,
+  actor_display_name, actor_handle, actor_sec_uid, source_url,
+  platform_event_id, provider_version, coverage, raw_artifact_hash`;
+
+const INGESTION_SAGA_SELECT_COLUMNS = `saga_id, owner_id, team_id, actor_id,
+  event_id, observation_id, text_hash, run_id, shard_id,
+  discovery_operation_id, status, candidate_id, evidence_id,
+  DATE_FORMAT(created_at, '%Y-%m-%d %H:%i:%s.%f') AS created_at,
+  DATE_FORMAT(updated_at, '%Y-%m-%d %H:%i:%s.%f') AS updated_at,
+  CASE WHEN committed_at IS NULL THEN NULL
+    ELSE DATE_FORMAT(committed_at, '%Y-%m-%d %H:%i:%s.%f')
+  END AS committed_at`;
+
 const FETCH_ATTEMPT_SELECT_COLUMNS = `attempt_id, owner_id, team_id, run_id,
   shard_id, discovery_operation_id, source_url, video_id, status, error_code,
   requested_count, returned_count, reported_comment_count, pages_fetched,
@@ -300,6 +381,65 @@ function parseObservation(row: MysqlRow): DouyinCommentObservation {
   };
 }
 
+function parseContentVersion(row: MysqlRow): DouyinCommentContentVersion {
+  return {
+    contentVersionId: string(row, "content_version_id"),
+    eventId: string(row, "event_id"),
+    textHash: digest(string(row, "text_hash"), "text_hash"),
+    observationId: string(row, "observation_id"),
+    text: string(row, "text"),
+    occurredAt: instant(row.occurred_at, "occurred_at"),
+    actor: {
+      displayName: string(row, "actor_display_name"),
+      handle: nullableString(row, "actor_handle"),
+      secUid: nullableString(row, "actor_sec_uid")
+    },
+    sourceUrl: string(row, "source_url"),
+    platformEventId: string(row, "platform_event_id"),
+    providerVersion: string(row, "provider_version"),
+    coverage: literal(
+      row.coverage,
+      ["public_top_level_sample"],
+      "coverage"
+    ),
+    rawArtifactHash: digest(
+      string(row, "raw_artifact_hash"),
+      "raw_artifact_hash"
+    )
+  };
+}
+
+function parseIngestionSaga(row: MysqlRow): DouyinCommentIngestionSaga {
+  const status = literal(row.status, ["pending", "committed"], "status");
+  const candidateId = nullableString(row, "candidate_id");
+  const evidenceId = nullableString(row, "evidence_id");
+  const committedAt = nullableInstant(row.committed_at, "committed_at");
+  if (status === "pending" && (evidenceId !== null || committedAt !== null)) {
+    integrity("pending_ingestion_saga_result");
+  }
+  if (status === "committed" && (evidenceId === null || committedAt === null)) {
+    integrity("committed_ingestion_saga_result");
+  }
+  return {
+    sagaId: string(row, "saga_id"),
+    ownerId: string(row, "owner_id"),
+    teamId: string(row, "team_id"),
+    actorId: string(row, "actor_id"),
+    eventId: string(row, "event_id"),
+    observationId: string(row, "observation_id"),
+    textHash: digest(string(row, "text_hash"), "text_hash"),
+    runId: nullableString(row, "run_id"),
+    shardId: nullableString(row, "shard_id"),
+    discoveryOperationId: nullableString(row, "discovery_operation_id"),
+    status,
+    candidateId,
+    evidenceId,
+    createdAt: instant(row.created_at, "created_at"),
+    updatedAt: instant(row.updated_at, "updated_at"),
+    committedAt
+  };
+}
+
 function parseLink(row: MysqlRow): DouyinCommentEventLink {
   return {
     linkId: string(row, "link_id"),
@@ -350,6 +490,32 @@ function same(left: unknown, right: unknown) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function ingestionSagaBoundary(saga: DouyinCommentIngestionSaga) {
+  return [
+    saga.sagaId, saga.ownerId, saga.teamId, saga.actorId, saga.eventId,
+    saga.observationId, saga.textHash, saga.runId, saga.shardId,
+    saga.discoveryOperationId, saga.createdAt
+  ];
+}
+
+function deterministicContentVersionId(
+  scope: AcquisitionScope,
+  eventId: string,
+  textHash: string
+) {
+  return `douyin-comment-content:${createHash("sha256")
+    .update(JSON.stringify([scope.ownerId, scope.teamId, eventId, textHash]))
+    .digest("hex")}`;
+}
+
+function deterministicLink(input: LinkDouyinCommentEventInput) {
+  return `douyin-comment-link:${createHash("sha256").update(JSON.stringify([
+    input.scope.ownerId, input.scope.teamId, input.eventId,
+    input.observationId, input.runId, input.shardId,
+    input.discoveryOperationId, input.candidateId, input.evidenceId
+  ])).digest("hex")}`;
+}
+
 function eventValues(input: AppendDouyinCommentObservationInput) {
   const { event } = input;
   return [
@@ -379,6 +545,53 @@ function observationFrom(
   };
 }
 
+function contentVersionFrom(
+  input: AppendDouyinCommentObservationInput,
+  eventId: string,
+  observationId: string
+): DouyinCommentContentVersion {
+  return {
+    contentVersionId: deterministicContentVersionId(
+      input.scope,
+      eventId,
+      input.event.textHash
+    ),
+    eventId,
+    textHash: input.event.textHash,
+    observationId,
+    text: input.event.text,
+    occurredAt: input.event.occurredAt,
+    actor: structuredClone(input.event.actor),
+    sourceUrl: input.event.sourceUrl,
+    platformEventId: input.event.platformEventId,
+    providerVersion: input.event.providerVersion,
+    coverage: input.event.coverage,
+    rawArtifactHash: input.event.rawArtifactHash
+  };
+}
+
+function ingestionSagaFrom(
+  input: AppendDouyinCommentObservationInput,
+  eventId: string,
+  observationId: string
+): DouyinCommentIngestionSaga | null {
+  if (!input.ingestionSaga) return null;
+  return {
+    ...structuredClone(input.ingestionSaga),
+    ownerId: input.scope.ownerId,
+    teamId: input.scope.teamId,
+    eventId,
+    observationId,
+    textHash: input.event.textHash,
+    status: "pending",
+    candidateId: null,
+    evidenceId: null,
+    createdAt: input.event.capturedAt,
+    updatedAt: input.event.capturedAt,
+    committedAt: null
+  };
+}
+
 async function selectEventByBoundary(
   connection: mysql.PoolConnection,
   scope: AcquisitionScope,
@@ -394,6 +607,100 @@ async function selectEventByBoundary(
   );
   const row = rows(result)[0];
   return row ? parseEvent(row) : integrity("event_missing_after_insert");
+}
+
+
+async function selectEventById(
+  queryable: Pick<mysql.PoolConnection, "query">,
+  scope: AcquisitionScope,
+  eventId: string,
+  forUpdate = false
+) {
+  const [result] = await queryable.query(
+    `SELECT ${EVENT_SELECT_COLUMNS}
+     FROM acquisition_douyin_comment_events
+     WHERE owner_id = ? AND team_id = ? AND event_id = ?${
+       forUpdate ? " FOR UPDATE" : ""
+     }`,
+    [scope.ownerId, scope.teamId, eventId]
+  );
+  const row = rows(result)[0];
+  return row ? parseEvent(row) : null;
+}
+
+async function selectObservationById(
+  queryable: Pick<mysql.PoolConnection, "query">,
+  scope: AcquisitionScope,
+  observationId: string,
+  forUpdate = false
+) {
+  const [result] = await queryable.query(
+    `SELECT ${OBSERVATION_SELECT_COLUMNS}
+     FROM acquisition_douyin_comment_observations
+     WHERE owner_id = ? AND team_id = ? AND observation_id = ?${
+       forUpdate ? " FOR UPDATE" : ""
+     }`,
+    [scope.ownerId, scope.teamId, observationId]
+  );
+  const row = rows(result)[0];
+  return row ? parseObservation(row) : null;
+}
+
+async function selectContentVersion(
+  queryable: Pick<mysql.PoolConnection, "query">,
+  scope: AcquisitionScope,
+  eventId: string,
+  textHash: string,
+  forUpdate = false
+) {
+  const [result] = await queryable.query(
+    `SELECT ${CONTENT_VERSION_SELECT_COLUMNS}
+     FROM acquisition_douyin_comment_content_versions
+     WHERE owner_id = ? AND team_id = ? AND event_id = ? AND text_hash = ?${
+       forUpdate ? " FOR UPDATE" : ""
+     }`,
+    [scope.ownerId, scope.teamId, eventId, textHash]
+  );
+  const row = rows(result)[0];
+  return row ? parseContentVersion(row) : null;
+}
+
+async function selectIngestionSaga(
+  queryable: Pick<mysql.PoolConnection, "query">,
+  scope: AcquisitionScope,
+  sagaId: string,
+  forUpdate = false
+) {
+  const [result] = await queryable.query(
+    `SELECT ${INGESTION_SAGA_SELECT_COLUMNS}
+     FROM acquisition_douyin_comment_ingestion_sagas
+     WHERE owner_id = ? AND team_id = ? AND saga_id = ?${
+       forUpdate ? " FOR UPDATE" : ""
+     }`,
+    [scope.ownerId, scope.teamId, sagaId]
+  );
+  const row = rows(result)[0];
+  return row ? parseIngestionSaga(row) : null;
+}
+
+async function selectSagaWorkItem(
+  queryable: Pick<mysql.PoolConnection, "query">,
+  saga: DouyinCommentIngestionSaga
+): Promise<DouyinCommentIngestionSagaWorkItem> {
+  const scope = { ownerId: saga.ownerId, teamId: saga.teamId };
+  const [event, observation, contentVersion] = await Promise.all([
+    selectEventById(queryable, scope, saga.eventId),
+    selectObservationById(queryable, scope, saga.observationId),
+    selectContentVersion(queryable, scope, saga.eventId, saga.textHash)
+  ]);
+  if (!event || !observation || !contentVersion
+    || observation.eventId !== event.eventId
+    || contentVersion.eventId !== event.eventId
+    || observation.observedTextHash !== saga.textHash
+    || contentVersion.textHash !== saga.textHash) {
+    return integrity("ingestion_saga_work_item");
+  }
+  return { saga, event, observation, contentVersion };
 }
 
 export class MysqlAcquisitionDouyinCommentEventRepository
@@ -462,14 +769,230 @@ implements AcquisitionDouyinCommentEventRepository {
           integrity("observation_id_conflict");
         }
       }
+      const requestedContentVersion = contentVersionFrom(
+        normalizedInput,
+        event.eventId,
+        storedObservation.observationId
+      );
+      await connection.query(
+        `INSERT IGNORE INTO acquisition_douyin_comment_content_versions (
+          content_version_id, owner_id, team_id, event_id, text_hash,
+          observation_id, text, occurred_at, actor_display_name, actor_handle,
+          actor_sec_uid, source_url, platform_event_id, provider_version,
+          coverage, raw_artifact_hash
+        ) VALUES (${Array(16).fill("?").join(", ")})`,
+        [
+          requestedContentVersion.contentVersionId,
+          input.scope.ownerId, input.scope.teamId,
+          requestedContentVersion.eventId, requestedContentVersion.textHash,
+          requestedContentVersion.observationId, requestedContentVersion.text,
+          mysqlDate(requestedContentVersion.occurredAt),
+          requestedContentVersion.actor.displayName,
+          requestedContentVersion.actor.handle,
+          requestedContentVersion.actor.secUid,
+          requestedContentVersion.sourceUrl,
+          requestedContentVersion.platformEventId,
+          requestedContentVersion.providerVersion,
+          requestedContentVersion.coverage,
+          requestedContentVersion.rawArtifactHash
+        ]
+      );
+      const contentVersion = await selectContentVersion(
+        connection,
+        input.scope,
+        event.eventId,
+        storedObservation.observedTextHash,
+        true
+      );
+      if (!contentVersion) integrity("content_version_missing_after_insert");
+
+      const requestedSaga = ingestionSagaFrom(
+        normalizedInput,
+        event.eventId,
+        storedObservation.observationId
+      );
+      let ingestionSaga: DouyinCommentIngestionSaga | null = null;
+      if (requestedSaga) {
+        await connection.query(
+          `INSERT IGNORE INTO acquisition_douyin_comment_ingestion_sagas (
+            saga_id, owner_id, team_id, actor_id, event_id, observation_id,
+            text_hash, run_id, shard_id, discovery_operation_id, status,
+            candidate_id, evidence_id, created_at, updated_at, committed_at
+          ) VALUES (${Array(16).fill("?").join(", ")})`,
+          [
+            requestedSaga.sagaId, requestedSaga.ownerId, requestedSaga.teamId,
+            requestedSaga.actorId, requestedSaga.eventId,
+            requestedSaga.observationId, requestedSaga.textHash,
+            requestedSaga.runId, requestedSaga.shardId,
+            requestedSaga.discoveryOperationId, requestedSaga.status,
+            requestedSaga.candidateId, requestedSaga.evidenceId,
+            mysqlDate(requestedSaga.createdAt),
+            mysqlDate(requestedSaga.updatedAt), requestedSaga.committedAt
+          ]
+        );
+        ingestionSaga = await selectIngestionSaga(
+          connection,
+          input.scope,
+          requestedSaga.sagaId,
+          true
+        );
+        if (!ingestionSaga) integrity("ingestion_saga_missing_after_insert");
+        if (!same(
+          ingestionSagaBoundary(ingestionSaga),
+          ingestionSagaBoundary(requestedSaga)
+        )) {
+          integrity("ingestion_saga_conflict");
+        }
+      }
       await connection.commit();
       transactionStarted = false;
       return {
         event,
         observation: storedObservation,
         eventCreated,
-        contentChanged: event.textHash !== storedObservation.observedTextHash
+        contentChanged: event.textHash !== storedObservation.observedTextHash,
+        contentVersion,
+        ingestionSaga
       };
+    } catch (error) {
+      if (transactionStarted) await connection.rollback().catch(() => undefined);
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+
+  async getIngestionSaga(scope: AcquisitionScope, sagaId: string) {
+    if (typeof scope?.ownerId !== "string" || scope.ownerId.length < 1
+      || scope.ownerId.length > 100
+      || typeof scope?.teamId !== "string" || scope.teamId.length < 1
+      || scope.teamId.length > 100
+      || typeof sagaId !== "string" || sagaId.length < 1
+      || sagaId.length > 160) {
+      throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_INGESTION_SAGA");
+    }
+    const saga = await selectIngestionSaga(this.pool, scope, sagaId);
+    return saga ? selectSagaWorkItem(this.pool, saga) : null;
+  }
+
+  async listPendingIngestionSagas(options: { limit: number }) {
+    const limit = boundedLimit(options.limit);
+    const [result] = await this.pool.query(
+      `SELECT ${INGESTION_SAGA_SELECT_COLUMNS}
+       FROM acquisition_douyin_comment_ingestion_sagas
+       WHERE status = 'pending'
+       ORDER BY created_at ASC, saga_id ASC
+       LIMIT ?`,
+      [limit]
+    );
+    return Promise.all(rows(result).slice(0, limit).map((row) =>
+      selectSagaWorkItem(this.pool, parseIngestionSaga(row))));
+  }
+
+  async commitIngestionSaga(
+    scope: AcquisitionScope,
+    sagaId: string,
+    result: { candidateId: string | null; evidenceId: string }
+  ) {
+    if (typeof sagaId !== "string" || sagaId.length < 1
+      || sagaId.length > 160) {
+      throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_INGESTION_SAGA");
+    }
+    assertLinkDouyinCommentEventInput({
+      scope,
+      eventId: "validated-later",
+      observationId: "validated-later",
+      runId: null,
+      shardId: null,
+      discoveryOperationId: null,
+      candidateId: result.candidateId,
+      evidenceId: result.evidenceId
+    });
+    const connection = await this.pool.getConnection();
+    let transactionStarted = false;
+    try {
+      await connection.beginTransaction();
+      transactionStarted = true;
+      const saga = await selectIngestionSaga(connection, scope, sagaId, true);
+      if (!saga) integrity("ingestion_saga_not_found");
+      if (saga.status === "committed"
+        && (saga.candidateId !== result.candidateId
+          || saga.evidenceId !== result.evidenceId)) {
+        integrity("ingestion_saga_conflict");
+      }
+      const linkedResult = {
+        candidateId: saga.status === "committed"
+          ? saga.candidateId : result.candidateId,
+        evidenceId: saga.status === "committed"
+          ? saga.evidenceId : result.evidenceId
+      };
+      const linkInput: LinkDouyinCommentEventInput = {
+        scope,
+        eventId: saga.eventId,
+        observationId: saga.observationId,
+        runId: saga.runId,
+        shardId: saga.shardId,
+        discoveryOperationId: saga.discoveryOperationId,
+        candidateId: linkedResult.candidateId,
+        evidenceId: linkedResult.evidenceId
+      };
+      const link: DouyinCommentEventLink = {
+        linkId: deterministicLink(linkInput),
+        eventId: linkInput.eventId,
+        observationId: linkInput.observationId,
+        runId: linkInput.runId,
+        shardId: linkInput.shardId,
+        discoveryOperationId: linkInput.discoveryOperationId,
+        candidateId: linkInput.candidateId,
+        evidenceId: linkInput.evidenceId
+      };
+      const [linkInsert] = await connection.query(
+        `INSERT IGNORE INTO acquisition_douyin_comment_event_links (
+          link_id, owner_id, team_id, event_id, observation_id, run_id,
+          shard_id, discovery_operation_id, candidate_id, evidence_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          link.linkId, scope.ownerId, scope.teamId, link.eventId,
+          link.observationId, link.runId, link.shardId,
+          link.discoveryOperationId, link.candidateId, link.evidenceId
+        ]
+      );
+      const created = affectedRows(linkInsert) === 1;
+      if (!created) {
+        const [existingRows] = await connection.query(
+          `SELECT * FROM acquisition_douyin_comment_event_links
+           WHERE owner_id = ? AND team_id = ? AND link_id = ? FOR UPDATE`,
+          [scope.ownerId, scope.teamId, link.linkId]
+        );
+        const existing = rows(existingRows)[0];
+        if (!existing || !same(parseLink(existing), link)) {
+          integrity("link_id_conflict");
+        }
+      }
+      let committed = saga;
+      if (saga.status === "pending") {
+        await connection.query(
+          `UPDATE acquisition_douyin_comment_ingestion_sagas
+           SET status = 'committed', candidate_id = ?, evidence_id = ?,
+             committed_at = ?
+           WHERE owner_id = ? AND team_id = ? AND saga_id = ?
+             AND status = 'pending'`,
+          [
+            result.candidateId, result.evidenceId,
+            mysqlDate(saga.updatedAt), scope.ownerId, scope.teamId, sagaId
+          ]
+        );
+        committed = {
+          ...saga,
+          status: "committed",
+          candidateId: result.candidateId,
+          evidenceId: result.evidenceId,
+          committedAt: saga.updatedAt
+        };
+      }
+      await connection.commit();
+      transactionStarted = false;
+      return { saga: committed, link, created };
     } catch (error) {
       if (transactionStarted) await connection.rollback().catch(() => undefined);
       throw error;
@@ -481,11 +1004,7 @@ implements AcquisitionDouyinCommentEventRepository {
   async linkEvent(input: LinkDouyinCommentEventInput) {
     assertLinkDouyinCommentEventInput(input);
     const link: DouyinCommentEventLink = {
-      linkId: `douyin-comment-link:${createHash("sha256").update(JSON.stringify([
-        input.scope.ownerId, input.scope.teamId, input.eventId,
-        input.observationId, input.runId, input.shardId, input.discoveryOperationId,
-        input.candidateId, input.evidenceId
-      ])).digest("hex")}`,
+      linkId: deterministicLink(input),
       eventId: input.eventId,
       observationId: input.observationId,
       runId: input.runId,

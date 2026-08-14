@@ -2,12 +2,14 @@
 
 ## Status and commit
 
-- Status: complete, including review round 1 fixes
+- Status: complete, including review rounds 1 and 2
 - Base: `0ca58cdd4d2dd18040ccfb2a617cc2df47579240`
 - Commit: the task commit containing this report, message
   `feat: aggregate douyin comment demand signals`
 - Review round 1 commit: the follow-up commit containing this report, message
   `fix: harden douyin comment signal ingestion`
+- Review round 2 commit: the follow-up commit containing this report, message
+  `fix: persist and recover douyin comment ingestion`
 - Scope: backend and acquisition contracts only; no frontend or Task 5+
   orchestration changes
 
@@ -49,15 +51,13 @@
   Exact replay does not increment the candidate version or duplicate audit
   events. New evidence retains the existing approval/rejection invalidation
   semantics.
-- Made `douyin-comment-content-version-v1` the deterministic evidence artifact.
-  The provider page hash remains on the exact observation; evidence for one
-  `eventId + textHash` is byte-equivalent across later page artifacts. Changed
-  content creates another evidence version, while actor/source fields always
-  come from the stored immutable event.
-- Documented and tested the event → evidence → candidate → link sequence as a
-  restartable idempotent saga rather than a cross-repository atomic transaction.
-  Failure injection after event, evidence, and candidate proves exact retry
-  leaves one event/content evidence/candidate/link and one visible Run fact.
+- Established `eventId + textHash` evidence-version stability and kept actor
+  facts on the stored immutable event. Review round 2 replaced round 1's
+  synthetic representation with the persisted real-artifact model below.
+- Added the first restartable event → evidence → candidate → link sequence
+  and deterministic step identities. Review round 2 replaced caller-driven
+  retry as the recovery guarantee with durable pending state and an automatic
+  restart sweeper.
 - Prevalidates all scope, nullable Run context, source/video, page metadata,
   provider literals, reply-body literal, digests, bounds, and all comment
   records before the first mutation. Malformed comment records remain isolated
@@ -65,6 +65,40 @@
 - Restored v1 compatibility for `negativeSignals`: the schema no longer narrows
   legacy arrays by count, uniqueness, or item length. The deterministic comment
   classifier keeps its own internal code bounds.
+
+## Review round 2 fixes
+
+- Replaced the synthetic content-version artifact with a genuinely persisted,
+  tenant-scoped `eventId + textHash` content version in both memory and MySQL.
+  First-writer-wins state retains the exact bounded public text, first
+  observation ID, real first provider-page `rawArtifactHash`, publication time,
+  actor, source URL, platform event ID, Provider version, and coverage.
+- Discovery Evidence now comes only from that persisted content version.
+  `sourceSnippet` keeps exact whitespace and punctuation, and
+  `rawArtifactHash` references a real provider-page artifact. A three-capture
+  test proves original text, changed text, and the same changed text from a
+  later page artifact retain two stable evidence versions, stable actor/link
+  semantics, and observation-level traceability to each page.
+- Added a durable pending/committed ingestion saga to the event repositories.
+  Event, observation, content version, and pending saga are written in one
+  event-repository transaction. Run projections see only links, and link plus
+  committed saga state are written in one event-repository transaction.
+- Added a Domain pre-commit barrier for individual candidate create/merge.
+  Failure at `after_candidate` throws inside the Domain repository transaction,
+  so a new candidate is absent and an existing approved candidate is restored
+  byte-for-byte, including approval decision fields and version.
+- Added an immediate, restart-safe recovery sweeper. It scans durable pending
+  sagas and resumes deterministic evidence/candidate work without caller
+  replay. Boundary tests cover `after_event`, `after_evidence`, and
+  `after_candidate`; each failure instant has no Run success fact and no partial
+  candidate, and recovery leaves one event/content version/evidence/candidate/
+  link with no pending saga.
+- Aligned prevalidation with persistence bounds: nullable Run/shard/discovery
+  IDs are rejected above 160 characters before mutation, and the exact Task 1
+  Provider/version/coverage/reply-body literals remain fail closed.
+- This remains a restartable cross-repository saga, not a claim of a distributed
+  atomic transaction. The atomic boundaries are explicitly the event-repository
+  local transactions and the candidate Domain transaction described above.
 
 ## TDD evidence
 
@@ -106,6 +140,30 @@
 
   Result: 0/1 passed. AJV reported all three intended incompatibilities:
   `maxItems`, item `maxLength`, and `uniqueItems`.
+- Review round 2 first introduced the durable provenance/recovery tests, then
+  ran:
+
+  ```text
+  npm exec --workspace backend -- tsx --test \
+    src/acquisition-douyin-comment-events-mysql-repository-test.ts
+  ```
+
+  Result: 6/9 passed, 3 failed. The expected failures proved that the MySQL
+  schema lacked content-version/saga tables, append did not return a persisted
+  content version, and a restarted repository could not list pending sagas.
+- The ingestion RED command was:
+
+  ```text
+  npm exec --workspace backend -- tsx --test \
+    src/acquisition-douyin-comment-ingestion-test.ts
+  ```
+
+  Result: file-level `ERR_MODULE_NOT_FOUND` for the new recovery sweeper before
+  implementation. After the first MySQL pass, the later-observation restart
+  regression independently failed 8/9 with
+  `ACQUISITION_DOUYIN_COMMENT_MYSQL_INTEGRITY:ingestion_saga_work_item`, proving
+  the persisted first content observation must differ safely from a later saga
+  observation for the same text hash.
 
 ### GREEN
 
@@ -119,7 +177,32 @@ npm exec --workspace backend -- tsx --test \
   src/acquisition-candidate-research-test.ts
 ```
 
-Result: 48/48 passed.
+Result for the required four files: 49/49 passed. The final expanded focused
+command also included memory/MySQL event repositories and individual-signal
+ingestion:
+
+```text
+npm exec --workspace backend -- tsx --test \
+  src/acquisition-douyin-comment-ingestion-test.ts \
+  src/acquisition-domain-test.ts \
+  src/acquisition-public-identity-resolver-test.ts \
+  src/acquisition-candidate-research-test.ts \
+  src/acquisition-douyin-comment-events-test.ts \
+  src/acquisition-douyin-comment-events-mysql-repository-test.ts \
+  src/acquisition-individual-signal-ingestion-test.ts
+```
+
+Result: 70/70 passed. The ingestion file passed 10/10, memory event repository
+12/12, and MySQL event repository 9/9.
+
+The existing MySQL Domain repository regression also passed:
+
+```text
+npm exec --workspace backend -- tsx --test \
+  src/acquisition-mysql-repositories-test.ts
+```
+
+Result: 1/1 file suite passed.
 
 Contracts:
 
@@ -166,6 +249,11 @@ contract tests all pass inside their required focused gates.
 
 - `backend/src/acquisition-douyin-comment-ingestion.ts`
 - `backend/src/acquisition-douyin-comment-ingestion-test.ts`
+- `backend/src/acquisition-douyin-comment-ingestion-recovery-sweeper.ts`
+- `backend/src/acquisition-douyin-comment-events.ts`
+- `backend/src/acquisition-douyin-comment-events-test.ts`
+- `backend/src/acquisition-douyin-comment-events-mysql-repository.ts`
+- `backend/src/acquisition-douyin-comment-events-mysql-repository-test.ts`
 - `backend/src/acquisition-domain.ts`
 - `backend/src/acquisition-domain-service.ts`
 - `backend/src/acquisition-domain-test.ts`
@@ -178,26 +266,23 @@ contract tests all pass inside their required focused gates.
 - `contracts/test/schema-registry.test.mjs`
 - `contracts/README.md`
 - `docs/superpowers/plans/2026-08-15-douyin-public-comment-automation.md`
+- `docs/superpowers/specs/2026-08-15-douyin-public-comment-automation-design.md`
 
 ## Documentation audit
 
-`contracts/README.md` now documents the exact public-event provenance, three
-unresolved actor-key classes, deterministic content-version artifact, signal
-merge rules, and restartable saga. The current Douyin automation design and
-implementation plan text was synchronized with those content-version,
-actor-source, merge, and retry guarantees. The design file also contains
-parent-owned, concurrently written BrowserAct/authorized-browser discovery
-design. Per coordination, the whole design file remains unstaged for the
-separate design commit, with the Task 4 paragraphs preserved in that working
-copy. No frontend documentation was changed because review round 1 does not
-change the Task 5+ presentation contract.
+`contracts/README.md`, the current Douyin automation design, and the execution
+plan now describe persisted first content versions, exact original snippets,
+real provider artifacts, local transaction boundaries, pending/committed saga
+visibility, candidate rollback, and automatic restart recovery. The design's
+separately approved BrowserAct/visual-reading sections were preserved unchanged.
+No frontend documentation changed because review round 2 does not alter the
+Task 5+ presentation contract.
 
 ## Concerns and final state
 
-- The Task 2 JSON Schema/OpenAPI 3.0 `contains` incompatibility must be resolved
-  before treating the full acquisition suite as green.
+- The historical full-suite observation above was produced before independent
+  commit `0e6269f` addressed Task 2's OpenAPI 3.0 `contains` incompatibility.
+  Its owner will rerun the full acquisition suite after this Task 4 commit.
 - The two Pi runtime `MODEL_TOOL_DEFINITION_INVALID` failures remain separate
   pre-existing regressions.
-- Expected final Task 4 paths after the enclosing commit: clean. The worktree
-  intentionally retains only the coordinated, unstaged design-file changes for
-  the separate parent-owned BrowserAct/design commit.
+- Expected final Task 4 paths after the enclosing commit: clean.
