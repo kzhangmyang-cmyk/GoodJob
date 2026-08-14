@@ -33,6 +33,16 @@ assert.equal(overview.includes("data-statements-file=\"balance\""), true);
 assert.equal(overview.includes("当前数据源：示例数据"), true);
 assert.equal(overview.includes("<script>"), false);
 
+const scoredOverview = renderAgentsOverview({
+  sourceLabel: "示例企业经营数据",
+  healthScoreBps: 4_600,
+  sources: ["资产负债表", "利润表", "现金流量表"]
+});
+assert.equal(scoredOverview.includes('aria-label="企业健康评分 46 分"'), true);
+assert.equal(scoredOverview.includes('class="health-score-ring"'), true);
+assert.equal(scoredOverview.includes('class="data-source-badge"'), true);
+assert.equal(scoredOverview.includes("资产负债表"), true);
+
 const demoOverview = renderAgentsOverview({
   demo: true,
   showImport: false,

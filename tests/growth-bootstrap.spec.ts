@@ -59,6 +59,10 @@ test("business agent team overview renders inside the product workspace", async 
   await expect(page.getByRole("heading", { name: "AI 经营顾问团队" })).toBeVisible();
   await expect(page.getByText("利润分析")).toBeVisible();
   await expect(page.getByText("现金流分析")).toBeVisible();
+  await expect(page.locator(".agents-grid")).toBeVisible();
+  expect(await page.locator(".agents-grid").evaluate((element) =>
+    getComputedStyle(element).display
+  )).toBe("grid");
   await page.evaluate(() => {
     window.location.hash = "#growth/agents/profit";
   });

@@ -51,6 +51,33 @@ export interface AgentsOverviewOptions {
   readonly sourceLabel?: string;
   readonly showImport?: boolean;
   readonly demo?: boolean;
+  readonly healthScoreBps?: number;
+  readonly sources?: readonly string[];
+}
+
+function healthScoreMarkup(healthScoreBps?: number): string {
+  if (healthScoreBps === undefined) {
+    return `<div class="health-score-ring is-pending"
+      aria-label="企业健康评分待生成" role="img">
+      <strong>待生成</strong>
+      <span>健康评分</span>
+    </div>`;
+  }
+  const score = Math.max(0, Math.min(100, Math.round(healthScoreBps / 100)));
+  return `<div class="health-score-ring" style="--health-score:${score}%"
+    aria-label="企业健康评分 ${score} 分" role="img">
+    <strong>${score}</strong>
+    <span>/ 100</span>
+  </div>`;
+}
+
+function dataSourceBadges(sources: readonly string[] = []): string {
+  if (sources.length === 0) {
+    return '<span class="data-source-empty">尚未连接经营数据</span>';
+  }
+  return sources.map((source) =>
+    `<span class="data-source-badge">${escapeHtml(source)}</span>`
+  ).join("");
 }
 
 export function renderAgentsOverview(
@@ -61,15 +88,31 @@ export function renderAgentsOverview(
     .join("");
   return `<section class="growth-panel agents-home">
     <header class="agents-hero">
-      <div>
+      <div class="agents-hero-copy">
+        <span class="agents-eyebrow">BUSINESS ADVISOR CENTER</span>
         <h2>AI 经营顾问团队</h2>
         <p>没有请 CFO 的老板，也能拥有一支虚拟经营管理团队。
           ${options.demo ? '<span class="demo-badge">演示数据</span>' : ""}
         </p>
       </div>
-      <button type="button" class="agents-primary"
-        data-agents-action="generate-report">生成经营诊断报告</button>
+      <div class="agents-hero-actions">
+        <button type="button" class="agents-primary"
+          data-agents-action="generate-report">生成经营诊断报告</button>
+      </div>
     </header>
+    <section class="agents-overview-strip" aria-label="经营数据概览">
+      ${healthScoreMarkup(options.healthScoreBps)}
+      <div class="agents-source-overview">
+        <div class="agents-source-heading">
+          <div>
+            <span class="agents-overline">当前数据源</span>
+            <strong>${escapeHtml(options.sourceLabel ?? "示例数据")}</strong>
+          </div>
+          <span class="agents-source-count">${options.sources?.length ?? 0} 项已连接</span>
+        </div>
+        <div class="data-source-badges">${dataSourceBadges(options.sources)}</div>
+      </div>
+    </section>
     ${options.showImport !== false ? `<section class="statements-import">
       <h3>上传真实报表（xls / xlsx）</h3>
       <p>选择资产负债表与利润表各一份，系统解析后直接生成经营诊断报告。</p>

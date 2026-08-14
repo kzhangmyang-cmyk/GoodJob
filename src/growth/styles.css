@@ -702,3 +702,340 @@
   color: #b45309;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+/* GoodJob command-center presentation inside the product shell. */
+.replica-shell .growth-panel {
+  min-height: 100%;
+  padding: clamp(1rem, 2.2vw, 2rem);
+  color: var(--replica-text, #f1f3f0);
+}
+
+.replica-shell .growth-panel h2,
+.replica-shell .growth-panel h3 {
+  color: var(--replica-text, #f1f3f0);
+}
+
+.replica-shell .agents-home {
+  --agents-green: var(--replica-accent, #18ed78);
+  --agents-panel: var(--replica-surface, rgba(14, 16, 17, 0.82));
+  --agents-panel-strong: var(--replica-surface-strong, rgba(18, 20, 21, 0.94));
+  --agents-line: var(--replica-line, rgba(229, 238, 233, 0.18));
+  --agents-line-soft: var(--replica-line-soft, rgba(229, 238, 233, 0.09));
+  --agents-muted: var(--replica-muted, #8c928e);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(24, 237, 120, 0.08), transparent 29rem),
+    var(--replica-bg, #020303);
+}
+
+.replica-shell .agents-hero {
+  align-items: flex-end;
+  margin-bottom: 1.1rem;
+  padding: clamp(1.1rem, 2.6vw, 1.65rem);
+  border: 1px solid var(--agents-line);
+  border-radius: var(--replica-radius-lg, 26px);
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.replica-shell .agents-eyebrow,
+.replica-shell .agents-overline {
+  display: block;
+  margin-bottom: 0.45rem;
+  color: var(--agents-green);
+  font-size: 0.67rem;
+  font-weight: 760;
+  letter-spacing: 0.13em;
+}
+
+.replica-shell .agents-hero h2 {
+  font-size: clamp(1.45rem, 3vw, 2.15rem);
+  letter-spacing: -0.035em;
+}
+
+.replica-shell .agents-hero p {
+  max-width: 43rem;
+  color: var(--agents-muted);
+  line-height: 1.65;
+}
+
+.replica-shell .demo-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.45rem;
+  padding: 0.16rem 0.48rem;
+  border: 1px solid rgba(24, 237, 120, 0.25);
+  border-radius: 999px;
+  background: rgba(24, 237, 120, 0.08);
+  color: var(--agents-green);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.replica-shell .agents-primary {
+  min-height: 2.65rem;
+  padding: 0.65rem 1.05rem;
+  border: 1px solid rgba(24, 237, 120, 0.56);
+  border-radius: var(--replica-radius-sm, 12px);
+  background: var(--agents-green);
+  color: #041008;
+  font-weight: 780;
+  box-shadow: 0 0 1.5rem rgba(24, 237, 120, 0.12);
+  transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+}
+
+.replica-shell .agents-primary:hover {
+  filter: brightness(1.05);
+  box-shadow: 0 0.65rem 2rem rgba(24, 237, 120, 0.16);
+  transform: translateY(-1px);
+}
+
+.replica-shell .agents-primary:focus-visible,
+.replica-shell .agent-card a:focus-visible {
+  outline: 2px solid var(--agents-green);
+  outline-offset: 3px;
+}
+
+.replica-shell .agents-overview-strip {
+  display: grid;
+  grid-template-columns: minmax(9.5rem, 0.24fr) 1fr;
+  gap: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.replica-shell .health-score-ring,
+.replica-shell .agents-source-overview {
+  border: 1px solid var(--agents-line);
+  background: var(--agents-panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.replica-shell .health-score-ring {
+  --health-score: 0%;
+  position: relative;
+  display: grid;
+  place-content: center;
+  min-height: 9.5rem;
+  border-radius: var(--replica-radius-md, 18px);
+  isolation: isolate;
+  text-align: center;
+}
+
+.replica-shell .health-score-ring::before,
+.replica-shell .health-score-ring::after {
+  position: absolute;
+  border-radius: 50%;
+  content: "";
+}
+
+.replica-shell .health-score-ring::before {
+  z-index: -2;
+  inset: 1.05rem;
+  background: conic-gradient(var(--agents-green) var(--health-score), rgba(255, 255, 255, 0.075) 0);
+  box-shadow: 0 0 1.4rem rgba(24, 237, 120, 0.09);
+}
+
+.replica-shell .health-score-ring::after {
+  z-index: -1;
+  inset: 1.42rem;
+  background: var(--agents-panel-strong);
+}
+
+.replica-shell .health-score-ring.is-pending::before {
+  background: conic-gradient(rgba(255, 255, 255, 0.12) 22%, rgba(255, 255, 255, 0.05) 0);
+  box-shadow: none;
+}
+
+.replica-shell .health-score-ring strong {
+  color: var(--replica-text, #f1f3f0);
+  font-size: 1.55rem;
+  letter-spacing: -0.04em;
+}
+
+.replica-shell .health-score-ring.is-pending strong {
+  font-size: 0.9rem;
+}
+
+.replica-shell .health-score-ring span {
+  margin-top: 0.1rem;
+  color: var(--agents-muted);
+  font-size: 0.68rem;
+}
+
+.replica-shell .agents-source-overview {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 1.2rem 1.35rem;
+  border-radius: var(--replica-radius-md, 18px);
+}
+
+.replica-shell .agents-source-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.replica-shell .agents-source-heading strong {
+  display: block;
+  color: var(--replica-text, #f1f3f0);
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.replica-shell .agents-source-count {
+  flex: none;
+  color: var(--agents-muted);
+  font-size: 0.74rem;
+}
+
+.replica-shell .data-source-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.replica-shell .data-source-badge,
+.replica-shell .data-source-empty {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.75rem;
+  padding: 0.25rem 0.62rem;
+  border: 1px solid var(--agents-line-soft);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.025);
+  color: #bdc2bf;
+  font-size: 0.73rem;
+}
+
+.replica-shell .data-source-badge::before {
+  width: 0.35rem;
+  height: 0.35rem;
+  margin-right: 0.4rem;
+  border-radius: 50%;
+  background: var(--agents-green);
+  box-shadow: 0 0 0.5rem rgba(24, 237, 120, 0.48);
+  content: "";
+}
+
+.replica-shell .agents-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.replica-shell .agent-card {
+  min-width: 0;
+  padding: 1.05rem;
+  border: 1px solid var(--agents-line-soft);
+  border-top: 1px solid var(--agents-line);
+  border-radius: var(--replica-radius-md, 18px);
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.038), rgba(255, 255, 255, 0.012));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.replica-shell .agent-card:hover {
+  border-color: color-mix(in srgb, var(--agent-accent) 42%, var(--agents-line));
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.016));
+  transform: translateY(-2px);
+}
+
+.replica-shell .agent-avatar {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--agent-accent) 48%, transparent);
+  border-radius: var(--replica-radius-sm, 12px);
+  background: color-mix(in srgb, var(--agent-accent) 14%, #0b0e0c);
+  color: color-mix(in srgb, var(--agent-accent) 78%, white);
+  box-shadow: inset 0 0 1rem color-mix(in srgb, var(--agent-accent) 8%, transparent);
+}
+
+.replica-shell .agent-card h3 {
+  color: var(--replica-text, #f1f3f0);
+}
+
+.replica-shell .agent-card header p,
+.replica-shell .agent-summary,
+.replica-shell .agent-card footer {
+  color: var(--agents-muted);
+}
+
+.replica-shell .agent-summary {
+  min-height: 2.6rem;
+  line-height: 1.6;
+}
+
+.replica-shell .agent-status {
+  border: 1px solid var(--agents-line-soft);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--agents-muted);
+}
+
+.replica-shell .agent-status-ready {
+  border-color: rgba(24, 237, 120, 0.19);
+  background: rgba(24, 237, 120, 0.075);
+  color: var(--agents-green);
+}
+
+.replica-shell .agent-capability {
+  border: 1px solid var(--agents-line-soft);
+  background: rgba(255, 255, 255, 0.027);
+  color: #afb5b1;
+}
+
+.replica-shell .agent-card footer {
+  gap: 0.75rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--agents-line-soft);
+}
+
+.replica-shell .agent-card footer span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replica-shell .agent-card footer a {
+  flex: none;
+  color: var(--agents-green);
+}
+
+@media (max-width: 1080px) {
+  .replica-shell .agents-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .replica-shell .agents-hero {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .replica-shell .agents-primary {
+    width: 100%;
+  }
+
+  .replica-shell .agents-overview-strip,
+  .replica-shell .agents-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .replica-shell .health-score-ring {
+    min-height: 8.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .replica-shell .agents-primary,
+  .replica-shell .agent-card {
+    transition: none;
+  }
+
+  .replica-shell .agents-primary:hover,
+  .replica-shell .agent-card:hover {
+    transform: none;
+  }
+}

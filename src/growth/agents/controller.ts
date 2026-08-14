@@ -84,6 +84,16 @@ function bpsText(bps: number): string {
   return `${(bps / 100).toFixed(1)}%`;
 }
 
+function sourceBadgesForInput(input: BusinessReportInput): readonly string[] {
+  return Object.freeze([
+    "资产负债表",
+    "利润表",
+    "现金流量表",
+    ...(input.costDetail ? ["成本明细"] : []),
+    ...(input.taxRisk ? ["税务风险"] : [])
+  ]);
+}
+
 function summarizeAnalysis(agentId: string, result: AnalysisResult): string {
   switch (agentId) {
     case "profit": {
@@ -174,7 +184,10 @@ export function createAgentsController(
         options.host.innerHTML = renderAgentsOverview({
           sourceLabel,
           showImport: false,
-          demo: true
+          demo: true,
+          healthScoreBps: lastReport?.healthScoreBps
+            ?? demoDiagnosisReport().healthScoreBps,
+          sources: sourceBadgesForInput(activeInput)
         });
       }
       return;
@@ -187,7 +200,11 @@ export function createAgentsController(
         warnings: importWarnings
       });
     } else {
-      options.host.innerHTML = renderAgentsOverview({ sourceLabel });
+      options.host.innerHTML = renderAgentsOverview({
+        sourceLabel,
+        healthScoreBps: lastReport?.healthScoreBps,
+        sources: sourceBadgesForInput(activeInput)
+      });
     }
   }
 
