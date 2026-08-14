@@ -50,6 +50,7 @@
 - `POST /api/v1/business-advisor/diagnose`：完整经营诊断报告
 - `POST /api/v1/business-advisor/statements/parse`：解析标准报表（资产负债表 + 利润表）为引擎输入
 - `POST /api/v1/business-advisor/statements/diagnose`：解析报表并直接生成诊断报告
+- `POST /api/v1/business-advisor/statements/import`：多 sheet / 集团报表导入，按公司分组返回全部诊断结果
 
 ## 报表导入（statement-import.ts）
 
@@ -61,6 +62,7 @@
 解析规则：
 
 - 关键科目从表内行标签匹配（货币资金、应收账款、存货、应付账款、负债合计等），金额统一转整数 minor。
+- 多 sheet 导入（`statements/import`）自动识别每个 sheet 是资产负债表还是利润表，按「编制单位」或 sheet 名分组配对；单家公司解析失败不影响其他公司，失败项带错误码返回。
 - `其他流动资产`、`非流动资产`、`非流动负债` 优先取报表自带合计行，并做三重勾稽校验：资产合计=流动资产+非流动资产、负债合计=流动+非流动负债、资产=负债+权益（容差 1 元），不平即报 `statement_unbalanced`。
 - 期间费用由报表自身勾稽倒推（营业收入-营业成本-净利润-财务费用-所得税费用），保证引擎净利润与报表一致。
 - 未提供现金流量表时 `cashFlow` 缺省：现金流预测/收现比/净现比不参与判定，报告用「数据说明」提示；期末现金取资产负债表货币资金。

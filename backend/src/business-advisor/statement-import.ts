@@ -7,6 +7,7 @@ export type StatementCell = string | number | null | undefined;
 export type StatementRow = readonly StatementCell[];
 
 export interface StatementTable {
+  readonly name?: string;
   readonly rows: readonly StatementRow[];
 }
 
@@ -15,6 +16,16 @@ export interface ParsedStatements {
   readonly companyName: string;
   readonly period: string;
   readonly warnings: readonly string[];
+}
+
+export interface ParsedCompanyResult {
+  readonly companyName: string;
+  readonly period: string;
+  readonly warnings: readonly string[];
+  readonly input?: BusinessReportInput;
+  readonly report?: unknown;
+  readonly error?: string;
+  readonly errorCode?: string;
 }
 
 export function statementImportError(
@@ -204,6 +215,97 @@ function findPeriod(
     if (match) return `${match[1]}-Q${match[2]}`;
   }
   return "unknown-period";
+}
+
+function classifySheet(
+  table: StatementTable
+): "balanceSheet" | "incomeStatement" | "unknown" {
+  const joined = table.rows.map((row) => row.map(cellText).join("|")).join("\n");
+  if (joined.includes("流动资产合计") && joined.includes("期末余额")) {
+    return "balanceSheet";
+  }
+  if (joined.includes("营业收入") && joined.includes("行次")) {
+    return "incomeStatement";
+  }
+  return "unknown";
+}
+
+export function companyNameFromSheetName(raw: string): string {
+  return raw
+    .replace(/^[\d\s_]*/u, "")
+    .replace(
+      /(资产负债表|利润表季报|利润表|现金流量表|_[0-9]+|[0-9]{4}年(第[一二三四1-4]季度)?|[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}年[0-9]{1,2}月)/gu,
+      ""
+    )
+    .replace(/[_\-\s]+$/u, "")
+    .trim();
+}
+
+export function parseStatementSheets(
+  sheets: readonly StatementTable[]
+): readonly ParsedCompanyResult[] {
+  interface CompanyAccumulator {
+    readonly companyName: string;
+    readonly balanceSheets: StatementTable[];
+    readonly incomeStatements: StatementTable[];
+  }
+  const groups = new Map<string, CompanyAccumulator>();
+  for (const sheet of sheets) {
+    const kind = classifySheet(sheet);
+    if (kind === "unknown") continue;
+    const companyName = findCompanyName(sheet.rows)
+      || (sheet.name ? companyNameFromSheetName(sheet.name) : "")
+      || "未命名企业";
+    const group = groups.get(companyName) ?? {
+      companyName,
+      balanceSheets: [],
+      incomeStatements: []
+    };
+    if (kind === "balanceSheet") group.balanceSheets.push(sheet);
+    else group.incomeStatements.push(sheet);
+    groups.set(companyName, group);
+  }
+
+  const results: ParsedCompanyResult[] = [];
+  for (const group of [...groups.values()].sort(
+    (a, b) => a.companyName.localeCompare(b.companyName, "zh-CN")
+  )) {
+    const balanceSheet = group.balanceSheets[0];
+    const incomeStatement = group.incomeStatements[0];
+    if (!balanceSheet || !incomeStatement) {
+      results.push(Object.freeze({
+        companyName: group.companyName,
+        period: "unknown-period",
+        warnings: Object.freeze([]),
+        error: `缺少${balanceSheet ? "利润表" : "资产负债表"}，无法生成诊断`,
+        errorCode: "statement_pair_missing"
+      }));
+      continue;
+    }
+    try {
+      const parsed = parseStatements(
+        balanceSheet,
+        incomeStatement,
+        group.companyName
+      );
+      results.push(Object.freeze({
+        companyName: parsed.companyName,
+        period: parsed.period,
+        warnings: parsed.warnings,
+        input: parsed.input
+      }));
+    } catch (error) {
+      const e = error as { code?: string; message?: string };
+      results.push(Object.freeze({
+        companyName: group.companyName,
+        period: "unknown-period",
+        warnings: Object.freeze([]),
+        error: e.message ?? String(error),
+        errorCode: e.code ?? "statement_parse_failed"
+      }));
+    }
+  }
+  return Object.freeze(results);
 }
 
 export function extractBalanceSheet(
@@ -400,7 +502,8 @@ export function extractIncomeStatement(
 
 export function parseStatements(
   balanceSheetTable: StatementTable,
-  incomeStatementTable: StatementTable
+  incomeStatementTable: StatementTable,
+  companyNameHint?: string
 ): ParsedStatements {
   const bsRows = balanceSheetTable.rows;
   const isRows = incomeStatementTable.rows;
@@ -409,7 +512,9 @@ export function parseStatements(
 
   const balanceSheet = extractBalanceSheet(bsRows);
   const incomeStatement = extractIncomeStatement(isRows);
-  const companyName = findCompanyName(bsRows) || findCompanyName(isRows);
+  const companyName = companyNameHint
+    || findCompanyName(bsRows)
+    || findCompanyName(isRows);
   const period = findPeriod(bsRows, isRows);
 
   const input: BusinessReportInput = Object.freeze({

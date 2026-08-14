@@ -7,6 +7,7 @@ import {
   createBusinessAdvisorService
 } from "./business-advisor/service.js";
 import {
+  parseStatementSheets,
   parseStatements,
   type StatementRow,
   type StatementTable
@@ -135,6 +136,47 @@ export function createBusinessAdvisorRouter(): Router {
       warnings: parsed.warnings,
       input: parsed.input,
       report: service.diagnose(parsed.input)
+    });
+  }));
+
+  router.post("/statements/import", route((req, res) => {
+    const body = req.body as { sheets?: unknown };
+    if (!body.sheets || !Array.isArray(body.sheets)) {
+      throw Object.assign(new Error("statement_table_invalid"), {
+        code: "statement_table_invalid"
+      });
+    }
+    const sheets = body.sheets.map((sheet) => {
+      const raw = sheet as { name?: unknown; rows?: unknown };
+      const table = coerceTable(raw);
+      return typeof raw.name === "string" && raw.name.trim()
+        ? Object.freeze({ name: raw.name.trim(), rows: table.rows })
+        : table;
+    });
+    const companies = parseStatementSheets(sheets).map((company) => {
+      const input = company.input;
+      if (!input) return company;
+      try {
+        normalizeBusinessReport(input);
+        return Object.freeze({
+          ...company,
+          report: service.diagnose(input)
+        });
+      } catch (error) {
+        return Object.freeze({
+          companyName: company.companyName,
+          period: company.period,
+          warnings: company.warnings,
+          error: error instanceof Error ? error.message : String(error),
+          errorCode: (error as { code?: string }).code
+            ?? "statement_parse_failed"
+        });
+      }
+    });
+    res.json({
+      companies,
+      imported: companies.filter((company) => "input" in company).length,
+      failed: companies.filter((company) => company.error).length
     });
   }));
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  parseStatementSheets,
   parseStatements,
   type StatementRow
 } from "./statement-import.js";
@@ -203,4 +204,85 @@ test("parsed input without cash flow produces a diagnosis with cash warnings abs
   assert.equal(analysis.indicators.cashCollectionRatioBps, 0);
   const report = service.diagnose(input);
   assert.ok(!report.issues.some((item) => item.title === "利润与现金背离"));
+});
+
+test("multiple companies in one workbook are grouped and parsed independently", () => {
+  const firstBs = smallEnterpriseBalanceSheet("甲公司", "2026-06-30");
+  const firstIs = smallEnterpriseIncomeStatement("甲公司", "2026年第2季度");
+  const secondBs = smallEnterpriseBalanceSheet("乙公司", "2026-06-30");
+  const secondIs = smallEnterpriseIncomeStatement("乙公司", "2026年第2季度");
+  const companies = parseStatementSheets([
+    { name: "甲公司资产负债表", rows: firstBs },
+    { name: "甲公司利润表", rows: firstIs },
+    { name: "乙公司资产负债表", rows: secondBs },
+    { name: "乙公司利润表", rows: secondIs }
+  ]);
+  assert.equal(companies.length, 2);
+  assert.deepEqual(
+    companies.map((company) => company.companyName),
+    ["甲公司", "乙公司"]
+  );
+  for (const company of companies) {
+    assert.ok(company.input);
+    assert.equal(company.error, undefined);
+    assert.equal(company.input!.incomeStatement.revenueMinor, 58_000_000);
+  }
+});
+
+test("a broken company does not block the rest of the group import", () => {
+  const goodBs = smallEnterpriseBalanceSheet("好公司", "2026-06-30");
+  const goodIs = smallEnterpriseIncomeStatement("好公司", "2026年第2季度");
+  const badBs = smallEnterpriseBalanceSheet("坏公司", "2026-06-30").map((row) => {
+    if (String(row[0]).includes("流动资产合计")) {
+      const copy = [...row];
+      copy[2] = "2000000";
+      return Object.freeze(copy);
+    }
+    return row;
+  });
+  const badIs = smallEnterpriseIncomeStatement("坏公司", "2026年第2季度");
+  const companies = parseStatementSheets([
+    { name: "好公司资产负债表", rows: goodBs },
+    { name: "好公司利润表", rows: goodIs },
+    { name: "坏公司资产负债表", rows: badBs },
+    { name: "坏公司利润表", rows: badIs }
+  ]);
+  const good = companies.find((company) => company.companyName === "好公司");
+  const bad = companies.find((company) => company.companyName === "坏公司");
+  assert.ok(good?.input);
+  assert.equal(good?.error, undefined);
+  assert.equal(bad?.input, undefined);
+  assert.equal(bad?.errorCode, "statement_unbalanced");
+});
+
+test("sheet name is used as the company fallback when 编制单位 is missing", () => {
+  const bs = smallEnterpriseBalanceSheet("中原影视孵化器有限公司", "2026-06-30")
+    .map((row) => Object.freeze(
+      row.map((cell) =>
+        String(cell).startsWith("编制单位：") ? "" : cell)
+    ));
+  const is = smallEnterpriseIncomeStatement("中原影视孵化器有限公司", "2026年第2季度")
+    .map((row) => Object.freeze(
+      row.map((cell) =>
+        String(cell).startsWith("编制单位：") ? "" : cell)
+    ));
+  const companies = parseStatementSheets([
+    { name: "中原影视孵化器有限公司资产负债表", rows: bs },
+    { name: "中原影视孵化器有限公司利润表", rows: is }
+  ]);
+  assert.equal(companies.length, 1);
+  assert.equal(companies[0].companyName, "中原影视孵化器有限公司");
+  assert.ok(companies[0].input);
+});
+
+test("a company missing one statement is reported instead of silently dropped", () => {
+  const companies = parseStatementSheets([
+    {
+      name: "缺利润表公司",
+      rows: smallEnterpriseBalanceSheet("缺利润表公司", "2026-06-30")
+    }
+  ]);
+  assert.equal(companies.length, 1);
+  assert.equal(companies[0].errorCode, "statement_pair_missing");
+  assert.ok(companies[0].error?.includes("利润表"));
 });
