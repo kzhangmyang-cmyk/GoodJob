@@ -661,6 +661,113 @@ function baseResponses(scenario: GrowthContractScenario) {
           evidence: ["毛利率 -100.0%"]
         }
       }
+    },
+    "POST /api/v1/business-advisor/statements/import": {
+      status: 200,
+      headers: {},
+      body: {
+        imported: 2,
+        failed: 0,
+        companies: [{
+          companyName: "河南元能信息科技有限公司",
+          period: "2026-06",
+          warnings: ["未提供现金流量表，现金流预测与资金预警暂不可用"],
+          input: {
+            currency: "CNY",
+            companyName: "河南元能信息科技有限公司",
+            period: "2026-06",
+            balanceSheet: {
+              period: "2026-06",
+              cashMinor: 11_035_683,
+              receivablesMinor: 38_744_930,
+              inventoryMinor: 0,
+              otherCurrentAssetsMinor: 40_764_124,
+              nonCurrentAssetsMinor: 5_045_745,
+              currentLiabilitiesMinor: 198_622_389,
+              nonCurrentLiabilitiesMinor: 0,
+              accountsPayableMinor: 285_990
+            },
+            incomeStatement: {
+              period: "2026-06",
+              revenueMinor: 0,
+              costOfGoodsSoldMinor: 5_551_587,
+              operatingExpensesMinor: 9_431_587,
+              interestExpenseMinor: 1_605,
+              taxExpenseMinor: 0
+            }
+          },
+          report: {
+            companyName: "河南元能信息科技有限公司",
+            period: "2026-06",
+            healthScoreBps: 0,
+            summary: "本期经营存在 6 个需要关注的问题。",
+            issues: [{
+              category: "财务",
+              level: "red",
+              title: "毛利为负",
+              reason: "毛利率 -100.0%，收入无法覆盖直接成本",
+              risk: "持续毛利为负会直接消耗现金",
+              suggestion: "核对收入确认与成本归集口径，识别亏损业务线并限期改善",
+              evidence: ["毛利率 -100.0%"]
+            }],
+            actionPlan90Days: [
+              { month: 1, action: "收紧应收与库存，做一次现金流压力测试" },
+              { month: 2, action: "调整报价与价格体系" },
+              { month: 3, action: "建立月度经营分析会机制" }
+            ],
+            evidence: ["毛利率 -100.0%"]
+          }
+        }, {
+          companyName: "中原影视孵化器有限公司",
+          period: "2026-06",
+          warnings: ["未提供现金流量表，现金流预测与资金预警暂不可用"],
+          input: {
+            currency: "CNY",
+            companyName: "中原影视孵化器有限公司",
+            period: "2026-06",
+            balanceSheet: {
+              period: "2026-06",
+              cashMinor: 5_077_311,
+              receivablesMinor: 143_534_091,
+              inventoryMinor: 0,
+              otherCurrentAssetsMinor: 101_041_864,
+              nonCurrentAssetsMinor: 55_950_300,
+              currentLiabilitiesMinor: 193_460_225,
+              nonCurrentLiabilitiesMinor: 100_000_000,
+              accountsPayableMinor: 10_800_000
+            },
+            incomeStatement: {
+              period: "2026-06",
+              revenueMinor: 58_000_000,
+              costOfGoodsSoldMinor: 30_000_000,
+              operatingExpensesMinor: 14_600_000,
+              interestExpenseMinor: 1_000_000,
+              taxExpenseMinor: 3_100_000
+            }
+          },
+          report: {
+            companyName: "中原影视孵化器有限公司",
+            period: "2026-06",
+            healthScoreBps: 2_000,
+            summary: "本期经营存在 4 个需要关注的问题。",
+            issues: [{
+              category: "财务",
+              level: "red",
+              title: "净利率过低",
+              reason: "净利率 9.6%，低于 5% 警戒线",
+              risk: "持续低净利率会侵蚀现金流与偿债能力",
+              suggestion: "按 毛利率-期间费用率 拆解改善",
+              evidence: ["净利率 9.6%"]
+            }],
+            actionPlan90Days: [
+              { month: 1, action: "收紧应收与库存" },
+              { month: 2, action: "调整报价" },
+              { month: 3, action: "建立月度经营分析会机制" }
+            ],
+            evidence: ["净利率 9.6%"]
+          }
+        }]
+      }
     }
   };
 }

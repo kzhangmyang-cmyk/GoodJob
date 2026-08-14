@@ -7,6 +7,7 @@ import { parseAgentsHash } from "./entry";
 import {
   renderAgentDetail,
   renderAgentsOverview,
+  renderCompanyPicker,
   renderDiagnosisReport
 } from "./view";
 import type { DiagnosisReport } from "./api";
@@ -79,3 +80,25 @@ const reportWithSource = renderDiagnosisReport(report, {
 });
 assert.equal(reportWithSource.includes("数据源：河南元能信息科技有限公司 · 2026-06"), true);
 assert.equal(reportWithSource.includes("未提供现金流量表"), true);
+
+const picker = renderCompanyPicker([
+  {
+    companyName: "河南元能信息科技有限公司",
+    period: "2026-06",
+    warnings: [],
+    report
+  },
+  {
+    companyName: "坏公司",
+    period: "unknown-period",
+    warnings: [],
+    error: "资产负债表勾稽不平",
+    errorCode: "statement_unbalanced"
+  }
+]);
+assert.equal(picker.includes("报表解析完成"), true);
+assert.equal(picker.includes("河南元能信息科技有限公司"), true);
+assert.equal(picker.includes("查看诊断报告"), true);
+assert.equal(picker.includes("解析失败"), true);
+assert.equal(picker.includes("资产负债表勾稽不平"), true);
+assert.equal(picker.includes("<script>"), false);

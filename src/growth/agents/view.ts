@@ -3,7 +3,10 @@ import {
   businessAgentById,
   type BusinessAgent
 } from "./agents";
-import type { DiagnosisReport } from "./api";
+import type {
+  DiagnosisReport,
+  ParsedCompanyResult
+} from "./api";
 
 function escapeHtml(value: string): string {
   return value
@@ -164,6 +167,35 @@ function minorText(minor: number): string {
 export interface DiagnosisReportOptions {
   readonly sourceLabel?: string;
   readonly warnings?: readonly string[];
+}
+
+export function renderCompanyPicker(
+  companies: readonly ParsedCompanyResult[]
+): string {
+  const items = companies.map((company, index) => {
+    if (company.error) {
+      return `<li class="company-picker-item company-picker-error">
+        <span class="company-picker-name">${escapeHtml(company.companyName)}</span>
+        <span class="company-picker-status">解析失败</span>
+        <p class="company-picker-error-text">${escapeHtml(company.error)}</p>
+      </li>`;
+    }
+    return `<li class="company-picker-item">
+      <span class="company-picker-name">${escapeHtml(company.companyName)}</span>
+      <span class="company-picker-period">${escapeHtml(company.period)}</span>
+      <span class="company-picker-status company-picker-ready">已就绪</span>
+      <button type="button" data-agents-action="pick-company"
+        data-company-index="${index}">查看诊断报告</button>
+    </li>`;
+  }).join("");
+  return `<section class="growth-panel company-picker">
+    <a href="#growth/agents" class="agents-back">← 返回团队</a>
+    <header>
+      <h2>报表解析完成</h2>
+      <p>共识别 ${companies.length} 家公司，选择一家查看经营诊断报告。</p>
+    </header>
+    <ol>${items}</ol>
+  </section>`;
 }
 
 export function renderDiagnosisReport(

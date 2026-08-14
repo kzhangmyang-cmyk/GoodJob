@@ -84,7 +84,7 @@ test("business advisor generates a sourced diagnosis report from typed fixtures"
   await installed.dispose();
 });
 
-test("business advisor diagnoses uploaded balance sheet and income statement files", async ({ page }) => {
+test("business advisor imports group statements and picks a company report", async ({ page }) => {
   const scenario = growthContractScenario("happy_path");
   const installed = await installGrowthContractScenario(page, scenario);
   await enterRealGrowth(page, "agents");
@@ -119,6 +119,15 @@ test("business advisor diagnoses uploaded balance sheet and income statement fil
     .setInputFiles({ name: "利润表.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: incomeStatement });
 
   await page.locator('[data-agents-action="statements-diagnose"]')
+    .evaluate((element) => {
+      (element as HTMLButtonElement).click();
+    });
+
+  await expect(page.getByRole("heading", { name: "报表解析完成" })).toBeVisible();
+  await expect(page.getByText("河南元能信息科技有限公司")).toBeVisible();
+  await expect(page.getByText("中原影视孵化器有限公司")).toBeVisible();
+
+  await page.locator('[data-agents-action="pick-company"]').first()
     .evaluate((element) => {
       (element as HTMLButtonElement).click();
     });

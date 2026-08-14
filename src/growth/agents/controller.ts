@@ -4,10 +4,12 @@ import {
   createBusinessAdvisorApi,
   type BusinessAdvisorApi,
   type BusinessReportInput,
-  type StatementTable
+  type ParsedCompanyResult,
+  type StatementSheet
 } from "./api";
 import { sampleBusinessReport } from "./sample";
 import {
+  renderCompanyPicker,
   renderAgentConclusion,
   renderAgentDetail,
   renderAgentsOverview,
@@ -143,6 +145,7 @@ export function createAgentsController(
   let lastReport: import("./api").DiagnosisReport | null = null;
   let sourceLabel = "示例数据";
   let importWarnings: readonly string[] = [];
+  let importedCompanies: readonly ParsedCompanyResult[] = [];
   let disposed = false;
 
   function renderView(): void {
@@ -182,17 +185,22 @@ export function createAgentsController(
     }
   }
 
-  async function fileToTable(file: File): Promise<StatementTable> {
+  async function fileToSheets(file: File): Promise<readonly StatementSheet[]> {
     const buffer = await file.arrayBuffer();
     const workbook = XLSX.read(buffer, { type: "array" });
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    if (!sheet) {
+    if (workbook.SheetNames.length === 0) {
       throw new Error(`无法读取文件：${file.name}`);
     }
-    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as (
-      readonly (string | number | null)[]
-    )[];
-    return Object.freeze({ rows: Object.freeze(rows) });
+    return Object.freeze(workbook.SheetNames.map((name) => {
+      const sheet = workbook.Sheets[name];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as (
+        readonly (string | number | null)[]
+      )[];
+      return Object.freeze({
+        name,
+        rows: Object.freeze(rows)
+      });
+    }));
   }
 
   async function handleStatementsDiagnose(): Promise<void> {
@@ -214,19 +222,24 @@ export function createAgentsController(
       "<p>正在解析报表并生成诊断报告…</p>"
     );
     try {
-      const [balanceSheet, incomeStatement] = await Promise.all([
-        fileToTable(balanceFile),
-        fileToTable(incomeFile)
+      const [balanceSheets, incomeSheets] = await Promise.all([
+        fileToSheets(balanceFile),
+        fileToSheets(incomeFile)
       ]);
-      const result = await api.diagnoseStatements(balanceSheet, incomeStatement);
-      sourceLabel = `${result.companyName} · ${result.period}`;
-      importWarnings = result.warnings;
-      activeInput = result.input;
-      lastReport = result.report;
-      options.host.innerHTML = renderDiagnosisReport(result.report, {
-        sourceLabel,
-        warnings: importWarnings
-      });
+      const result = await api.importStatements([
+        ...balanceSheets,
+        ...incomeSheets
+      ]);
+      importedCompanies = result.companies;
+      if (result.companies.length === 1 && result.companies[0].input) {
+        showCompanyReport(result.companies[0]);
+      } else if (result.companies.length === 0) {
+        options.host.innerHTML = renderAgentConclusion(
+          '<p class="growth-error">未识别到有效报表，请确认上传的是标准资产负债表与利润表</p>'
+        );
+      } else {
+        options.host.innerHTML = renderCompanyPicker(result.companies);
+      }
     } catch (error) {
       options.host.innerHTML = renderAgentConclusion(
         `<p class="growth-error">解析失败：${escapeHtml(
@@ -234,6 +247,23 @@ export function createAgentsController(
         )}</p>`
       );
     }
+  }
+
+  function showCompanyReport(company: ParsedCompanyResult): void {
+    if (!company.input || !company.report) {
+      options.host.innerHTML = renderAgentConclusion(
+        `<p class="growth-error">${escapeHtml(company.error ?? "该公司无法生成诊断")}</p>`
+      );
+      return;
+    }
+    sourceLabel = `${company.companyName} · ${company.period}`;
+    importWarnings = company.warnings;
+    activeInput = company.input;
+    lastReport = company.report;
+    options.host.innerHTML = renderDiagnosisReport(company.report, {
+      sourceLabel,
+      warnings: importWarnings
+    });
   }
 
   async function handleAsk(agentId: string, question: string): Promise<void> {
@@ -300,6 +330,12 @@ export function createAgentsController(
           );
         }
       })();
+      return;
+    }
+    if (action === "pick-company") {
+      const index = Number(target.dataset.companyIndex);
+      const company = importedCompanies[index];
+      if (company) showCompanyReport(company);
       return;
     }
     if (action === "create-todo") {

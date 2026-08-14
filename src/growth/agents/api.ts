@@ -110,11 +110,31 @@ export interface StatementTable {
   readonly rows: readonly (readonly (string | number | null)[])[];
 }
 
+export interface StatementSheet extends StatementTable {
+  readonly name?: string;
+}
+
 export interface ParsedStatementsResult {
   readonly companyName: string;
   readonly period: string;
   readonly warnings: readonly string[];
   readonly input: BusinessReportInput;
+}
+
+export interface ParsedCompanyResult {
+  readonly companyName: string;
+  readonly period: string;
+  readonly warnings: readonly string[];
+  readonly input?: BusinessReportInput;
+  readonly report?: DiagnosisReport;
+  readonly error?: string;
+  readonly errorCode?: string;
+}
+
+export interface StatementImportResult {
+  readonly companies: readonly ParsedCompanyResult[];
+  readonly imported: number;
+  readonly failed: number;
 }
 
 export interface BusinessAdvisorApi {
@@ -129,6 +149,9 @@ export interface BusinessAdvisorApi {
     balanceSheet: StatementTable,
     incomeStatement: StatementTable
   ): Promise<ParsedStatementsResult & { readonly report: DiagnosisReport }>;
+  importStatements(
+    sheets: readonly StatementSheet[]
+  ): Promise<StatementImportResult>;
 }
 
 export function createBusinessAdvisorApi(
@@ -173,6 +196,16 @@ export function createBusinessAdvisorApi(
         {
           method: "POST",
           body: { balanceSheet, incomeStatement }
+        }
+      );
+      return response.body;
+    },
+    async importStatements(sheets) {
+      const response = await http.request<StatementImportResult>(
+        "/api/v1/business-advisor/statements/import",
+        {
+          method: "POST",
+          body: { sheets }
         }
       );
       return response.body;
