@@ -34,8 +34,10 @@ consumer, and the packaged production start path.
 Acquisition plans may optionally version a `douyinPublicCommentSample` policy.
 Legacy plans without it remain valid and sampling is disabled by absence. An
 enabled policy requires `targetPlatform: douyin` and is bounded to 20 videos,
-100 comments per video, and 5 pages per video; runtime execution must apply the
-stricter of these plan values and its server limits.
+100 comments per video, and 5 pages per video. It must also version at least one
+active `content_fetch` provider connection whose provider ID is exactly
+`experimental_public_sample`; runtime execution must apply the stricter of
+these plan values and its server limits.
 
 Run `npm run check:acquisition-contracts` from the repository root before
 changing any producer or consumer.

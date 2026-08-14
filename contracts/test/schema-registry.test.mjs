@@ -415,6 +415,17 @@ test("acquisition plans version an optional Douyin public comment policy", async
   assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
     douyinPublicCommentSample: policy
   }))), true, JSON.stringify(validate.errors));
+  const providerBinding = acquisitionPlanPayload().providerConnections[0];
+  for (const invalidBinding of [
+    { ...providerBinding, providerId: "another-provider" },
+    { ...providerBinding, kind: "search" },
+    { ...providerBinding, status: "inactive" }
+  ]) {
+    assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
+      providerConnections: [invalidBinding],
+      douyinPublicCommentSample: policy
+    }))), false, JSON.stringify(invalidBinding));
+  }
   assert.equal(validate(acquisitionPlan(acquisitionPlanPayload({
     targetPlatform: "web",
     douyinPublicCommentSample: policy

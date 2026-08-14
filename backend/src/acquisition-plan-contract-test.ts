@@ -65,6 +65,19 @@ function publicPlanInput(): AcquisitionPublicPlanCreateInput {
   };
 }
 
+function publicCommentProviderConnection(
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    connectionId: "douyin-public-comments",
+    providerId: "experimental_public_sample",
+    kind: "content_fetch" as const,
+    status: "active" as const,
+    credentialVersion: 1,
+    ...overrides
+  };
+}
+
 test("public plan create accepts model connection, ICP, operations, and budget", () => {
   const input = publicPlanInput();
 
@@ -84,6 +97,7 @@ test("Douyin plan accepts a bounded public comment sample policy", () => {
   const input = {
     ...publicPlanInput(),
     targetPlatform: "douyin" as const,
+    providerConnections: [publicCommentProviderConnection()],
     douyinPublicCommentSample: {
       enabled: true,
       maxVideosPerRun: 20,
@@ -93,6 +107,28 @@ test("Douyin plan accepts a bounded public comment sample policy", () => {
   };
 
   assert.deepEqual(acquisitionPublicPlanCreateSchema.parse(input), input);
+});
+
+test("enabled comment sampling requires its exact active content provider", () => {
+  const policy = {
+    enabled: true,
+    maxVideosPerRun: 10,
+    maxCommentsPerVideo: 30,
+    maxPagesPerVideo: 3
+  };
+
+  for (const connection of [
+    publicCommentProviderConnection({ providerId: "another-provider" }),
+    publicCommentProviderConnection({ kind: "search" }),
+    publicCommentProviderConnection({ status: "inactive" })
+  ]) {
+    assert.equal(acquisitionPublicPlanCreateSchema.safeParse({
+      ...publicPlanInput(),
+      targetPlatform: "douyin",
+      providerConnections: [connection],
+      douyinPublicCommentSample: policy
+    }).success, false, JSON.stringify(connection));
+  }
 });
 
 test("legacy plan remains valid without a public comment sample policy", () => {
@@ -120,6 +156,7 @@ test("public comment sample policy rejects values outside server bounds", () => 
     assert.equal(acquisitionPublicPlanCreateSchema.safeParse({
       ...publicPlanInput(),
       targetPlatform: "douyin",
+      providerConnections: [publicCommentProviderConnection()],
       douyinPublicCommentSample: policy
     }).success, false, JSON.stringify(policy));
   }
@@ -129,6 +166,7 @@ test("public comment sample policy rejects extra fields", () => {
   assert.equal(acquisitionPublicPlanCreateSchema.safeParse({
     ...publicPlanInput(),
     targetPlatform: "douyin",
+    providerConnections: [publicCommentProviderConnection()],
     douyinPublicCommentSample: {
       enabled: true,
       maxVideosPerRun: 10,
@@ -151,6 +189,7 @@ test("only explicit Douyin plans can enable public comment sampling", () => {
     assert.equal(acquisitionPublicPlanCreateSchema.safeParse({
       ...publicPlanInput(),
       ...(targetPlatform ? { targetPlatform } : {}),
+      providerConnections: [publicCommentProviderConnection()],
       douyinPublicCommentSample: policy
     }).success, false, String(targetPlatform));
   }

@@ -272,9 +272,24 @@
           },
           "then": {
             "type": "object",
-            "required": ["targetPlatform"],
+            "required": ["targetPlatform", "providerConnections"],
             "properties": {
-              "targetPlatform": { "const": "douyin" }
+              "targetPlatform": { "const": "douyin" },
+              "providerConnections": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "required": ["providerId", "kind", "status"],
+                  "properties": {
+                    "providerId": {
+                      "const": "experimental_public_sample"
+                    },
+                    "kind": { "const": "content_fetch" },
+                    "status": { "const": "active" }
+                  }
+                },
+                "minContains": 1
+              }
             }
           }
         }
