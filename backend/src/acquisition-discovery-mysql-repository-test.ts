@@ -25,6 +25,12 @@ class FakePool {
       sql: sql.replace(/\s+/gu, " ").trim(),
       values
     });
+    if (sql.includes("CHECK_CONSTRAINTS")) {
+      return [[{
+        check_clause:
+          "status in ('queued','running','succeeded','partial_success','failed','access_restricted')"
+      }], []];
+    }
     return this.queue.shift() ?? [{ affectedRows: 1 }, []];
   }
 }
@@ -52,6 +58,7 @@ const fetchOperation: AcquisitionContentFetchOperationRecord = {
   evidenceIds: [],
   candidateCount: 0,
   candidateIds: [],
+  commentSampleSummary: null,
   errorCode: null,
   idempotencyKeyHash: "a".repeat(64),
   requestHash: `sha256:${"b".repeat(64)}`,
@@ -95,13 +102,53 @@ test("discovery operation schema creates durable tenant and idempotency indexes"
   await ensureAcquisitionDiscoveryMysqlSchema(asPool(pool));
   assert.equal(
     pool.calls.length,
-    ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS.length
+    ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS.length + 1
   );
   const schema = pool.calls.map((call) => call.sql).join("\n");
   assert.match(schema, /acquisition_content_fetch_operations/);
   assert.match(schema, /acquisition_import_operations/);
   assert.match(schema, /UNIQUE KEY uk_acquisition_fetch_idempotency/);
   assert.match(schema, /UNIQUE KEY uk_acquisition_import_idempotency/);
+});
+
+test("discovery schema upgrades the legacy content-fetch status check for partial success", async () => {
+  for (const checkClause of [
+    null,
+    "status in ('queued','running','succeeded','failed','access_restricted')",
+    "status in ('queued','running','succeeded','partial_success','failed','access_restricted')"
+  ]) {
+    const pool = new FakePool();
+    pool.query = async function query(
+      sql: string,
+      values: unknown[] = []
+    ) {
+      this.calls.push({
+        sql: sql.replace(/\s+/gu, " ").trim(),
+        values
+      });
+      if (sql.includes("CHECK_CONSTRAINTS")) {
+        return [checkClause === null ? [] : [{ check_clause: checkClause }], []];
+      }
+      return [{ affectedRows: 1 }, []];
+    };
+
+    await ensureAcquisitionDiscoveryMysqlSchema(asPool(pool));
+
+    const migration = pool.calls.filter((call) =>
+      call.sql.includes("chk_acquisition_fetch_status")
+      && call.sql.startsWith("ALTER TABLE")
+    );
+    if (checkClause === null) {
+      assert.equal(migration.length, 1);
+      assert.match(migration[0]!.sql, /ADD CONSTRAINT/u);
+    } else if (!checkClause.includes("partial_success")) {
+      assert.equal(migration.length, 1);
+      assert.match(migration[0]!.sql, /DROP CHECK/u);
+      assert.match(migration[0]!.sql, /ADD CONSTRAINT/u);
+    } else {
+      assert.deepEqual(migration, []);
+    }
+  }
 });
 
 test("mysql repository persists encrypted import artifacts and tenant-scoped fetch records", async () => {
@@ -143,6 +190,61 @@ test("mysql repository persists encrypted import artifacts and tenant-scoped fet
   const serialized = JSON.stringify(importInsert.values);
   assert.match(serialized, /artifact-v1\.iv\.tag\.ciphertext/);
   assert.doesNotMatch(serialized, /contentBase64/);
+});
+
+test("mysql repository round-trips partial comment enrichment and its candidate associations", async () => {
+  const pool = new FakePool();
+  const repository =
+    new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool));
+  const operation: AcquisitionContentFetchOperationRecord = {
+    ...fetchOperation,
+    status: "partial_success",
+    finalUrl: "https://www.douyin.com/video/7536012345678904333",
+    accessStatus: "public_content",
+    httpStatus: 200,
+    contentType: "text/html",
+    title: "公开视频",
+    rawArtifactHash: `sha256:${"1".repeat(64)}`,
+    contentHash: `sha256:${"2".repeat(64)}`,
+    evidenceCount: 1,
+    evidenceIds: ["original-evidence"],
+    candidateCount: 2,
+    candidateIds: ["original-candidate", "comment-candidate"],
+    commentSampleSummary: {
+      status: "partial_success",
+      videoCount: 1,
+      pagesFetched: 1,
+      commentsSampled: 1,
+      eventCount: 1,
+      evidenceCount: 1,
+      candidateIds: ["comment-candidate"],
+      unresolvedActorCount: 1,
+      strongSignalCount: 1,
+      invalidCommentCount: 0,
+      errors: [{
+        sourceUrl: "https://www.douyin.com/video/7536012345678904333",
+        videoId: "7536012345678904333",
+        code: "rate_limited"
+      }],
+      usage: {
+        requests: 2,
+        results: 1,
+        amountMinor: 0,
+        durationSeconds: 1
+      }
+    },
+    errorCode: "rate_limited",
+    startedAt: "2026-07-24T08:00:01.000Z",
+    completedAt: "2026-07-24T08:00:02.000Z"
+  };
+  pool.enqueue([{ payload_json: JSON.stringify(operation) }]);
+
+  const loaded = await repository.getContentFetchOperation(
+    { ownerId: "owner-a", teamId: "team-a" },
+    operation.id
+  );
+
+  assert.deepEqual(loaded, operation);
 });
 
 test("mysql repository defaults evidence ids for legacy content-fetch payloads", async () => {

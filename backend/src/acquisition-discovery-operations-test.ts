@@ -9,6 +9,9 @@ import {
   InMemoryAcquisitionDiscoveryOperationRepository
 } from "./acquisition-discovery-operations.js";
 import { setProviderHttpTestTransport } from "./provider-http-client.js";
+import type {
+  AcquisitionDouyinCommentEnrichmentPort
+} from "./acquisition-douyin-comment-enrichment.js";
 
 process.env.NODE_ENV = "test";
 
@@ -65,6 +68,7 @@ function serviceFixture(input: {
     contentHash: string;
   }>;
   onEvidenceAppend?: (count: number) => void;
+  commentEnrichment?: AcquisitionDouyinCommentEnrichmentPort;
 } = {}) {
   const sink = evidenceSink(input.onEvidenceAppend);
   const repository =
@@ -85,6 +89,7 @@ function serviceFixture(input: {
         contentHash: `sha256:${"b".repeat(64)}`
       }))
     },
+    commentEnrichment: input.commentEnrichment,
     masterSecret:
       "goodjob-discovery-operation-test-secret-at-least-32-bytes",
     idFactory: (prefix) => `${prefix}-${repository.size(prefix) + 1}`,
@@ -277,6 +282,116 @@ test("content fetch operation is idempotent, tenant scoped, and appends public e
       error instanceof AcquisitionDiscoveryOperationError
       && error.code === "RESOURCE_NOT_FOUND"
   );
+});
+
+test("an explicit standalone Douyin link persists bounded comment enrichment without a Run", async () => {
+  const enrichmentCalls: Parameters<
+    AcquisitionDouyinCommentEnrichmentPort["enrich"]
+  >[0][] = [];
+  const fixture = serviceFixture({
+    fetch: async (sourceUrl) => ({
+      finalUrl: sourceUrl,
+      status: "succeeded",
+      accessStatus: "public_content",
+      httpStatus: 200,
+      contentType: "text/html",
+      title: "抖音公开视频",
+      text: "公开视频原页证据",
+      rawArtifactHash: `sha256:${"e".repeat(64)}`,
+      contentHash: `sha256:${"f".repeat(64)}`
+    }),
+    commentEnrichment: {
+      async enrich(input) {
+        enrichmentCalls.push(input);
+        return {
+          status: "succeeded",
+          videoCount: 1,
+          pagesFetched: 1,
+          commentsSampled: 2,
+          eventCount: 2,
+          evidenceCount: 2,
+          candidateIds: ["candidate-comment-a", "candidate-comment-b"],
+          unresolvedActorCount: 1,
+          strongSignalCount: 1,
+          invalidCommentCount: 0,
+          errors: [],
+          usage: {
+            requests: 1,
+            results: 2,
+            amountMinor: 0,
+            durationSeconds: 1
+          }
+        };
+      }
+    }
+  });
+  const created = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl:
+        "https://www.douyin.com/video/7536012345678900001",
+      subjectChannel: "individual"
+    },
+    "standalone-douyin-comment-enrichment"
+  );
+
+  const completed = await fixture.service.executeContentFetchOperation(
+    scope,
+    created.id
+  );
+
+  assert.equal(enrichmentCalls.length, 1);
+  assert.equal(enrichmentCalls[0]!.signal.aborted, false);
+  assert.deepEqual({ ...enrichmentCalls[0], signal: undefined }, {
+    scope,
+    runId: null,
+    shardId: null,
+    discoveryOperationId: created.id,
+    sourceUrls: [
+      "https://www.douyin.com/video/7536012345678900001"
+    ],
+    candidateIds: [],
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 30,
+      maxPagesPerVideo: 3
+    },
+    remainingBudget: { requests: 3, results: 30 },
+    signal: undefined
+  });
+  assert.equal(completed.status, "succeeded");
+  assert.equal(completed.evidenceCount, 1);
+  assert.deepEqual(completed.candidateIds, [
+    "candidate-comment-a",
+    "candidate-comment-b"
+  ]);
+  assert.equal(completed.candidateCount, 2);
+  assert.deepEqual(completed.commentSampleSummary, {
+    status: "succeeded",
+    videoCount: 1,
+    pagesFetched: 1,
+    commentsSampled: 2,
+    eventCount: 2,
+    evidenceCount: 2,
+    candidateIds: ["candidate-comment-a", "candidate-comment-b"],
+    unresolvedActorCount: 1,
+    strongSignalCount: 1,
+    invalidCommentCount: 0,
+    errors: [],
+    usage: {
+      requests: 1,
+      results: 2,
+      amountMinor: 0,
+      durationSeconds: 1
+    }
+  });
+  const replay = await fixture.service.executeContentFetchOperation(
+    scope,
+    created.id
+  );
+  assert.deepEqual(replay.commentSampleSummary, completed.commentSampleSummary);
+  assert.equal(enrichmentCalls.length, 1);
 });
 
 test("content fetch operation listing is tenant scoped, limited, and newest first", async () => {

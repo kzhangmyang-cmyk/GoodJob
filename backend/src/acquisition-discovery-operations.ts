@@ -19,6 +19,13 @@ import {
   individualSignalSubjectFromDouyinSource,
   type AcquisitionIndividualSignalIngestionPort
 } from "./acquisition-individual-signal-ingestion.js";
+import type {
+  AcquisitionDouyinCommentEnrichmentPort,
+  AcquisitionDouyinCommentEnrichmentResult
+} from "./acquisition-douyin-comment-enrichment.js";
+import type {
+  DouyinPublicCommentSamplePolicy
+} from "./acquisition-plan-run-repository.js";
 import {
   parseSecureSpreadsheetArtifact,
   SecureSpreadsheetError
@@ -32,6 +39,7 @@ export type AcquisitionContentFetchStatus =
   | "queued"
   | "running"
   | "succeeded"
+  | "partial_success"
   | "failed"
   | "access_restricted";
 
@@ -70,6 +78,7 @@ export interface AcquisitionContentFetchOperation {
   evidenceIds: string[];
   candidateCount: number;
   candidateIds: string[];
+  commentSampleSummary: AcquisitionDouyinCommentEnrichmentResult | null;
   errorCode: string | null;
   createdAt: string;
   startedAt: string | null;
@@ -352,7 +361,7 @@ function publicImport(
 
 function isTerminalFetch(status: AcquisitionContentFetchStatus) {
   return [
-    "succeeded",
+    "succeeded", "partial_success",
     "failed",
     "access_restricted"
   ].includes(status);
@@ -1147,6 +1156,7 @@ export interface AcquisitionDiscoveryOperationServiceOptions {
   repository: AcquisitionDiscoveryOperationRepository;
   evidence: AcquisitionDiscoveryEvidencePort;
   individualSignals?: AcquisitionIndividualSignalIngestionPort;
+  commentEnrichment?: AcquisitionDouyinCommentEnrichmentPort;
   fetcher?: AcquisitionContentFetcherPort;
   masterSecret: string;
   workerId?: string;
@@ -1155,6 +1165,23 @@ export interface AcquisitionDiscoveryOperationServiceOptions {
   idFactory?: (prefix: string) => string;
   now?: () => string;
 }
+
+export interface AcquisitionContentFetchEnrichmentContext {
+  runId: string;
+  shardId: string;
+  policy: DouyinPublicCommentSamplePolicy | null | undefined;
+  remainingBudget: {
+    requests: number;
+    results: number;
+  };
+}
+
+const STANDALONE_DOUYIN_COMMENT_POLICY = Object.freeze({
+  enabled: true,
+  maxVideosPerRun: 1,
+  maxCommentsPerVideo: 30,
+  maxPagesPerVideo: 3
+});
 
 export type AcquisitionImportOperationInput = {
   fileName: string;
@@ -1172,6 +1199,8 @@ export class AcquisitionDiscoveryOperationService {
   private readonly individualSignals:
     AcquisitionIndividualSignalIngestionPort | null;
   private readonly fetcher: AcquisitionContentFetcherPort;
+  private readonly commentEnrichment:
+    AcquisitionDouyinCommentEnrichmentPort | null;
   private readonly artifactKey: Buffer;
   private readonly idFactory: (prefix: string) => string;
   private readonly now: () => string;
@@ -1191,6 +1220,7 @@ export class AcquisitionDiscoveryOperationService {
     this.repository = options.repository;
     this.evidence = options.evidence;
     this.individualSignals = options.individualSignals ?? null;
+    this.commentEnrichment = options.commentEnrichment ?? null;
     this.fetcher = options.fetcher ?? new ControlledPublicContentFetcher();
     this.artifactKey = artifactCipherKey(options.masterSecret);
     this.idFactory = options.idFactory
@@ -1291,6 +1321,7 @@ export class AcquisitionDiscoveryOperationService {
       evidenceIds: [],
       candidateCount: 0,
       candidateIds: [],
+      commentSampleSummary: null,
       errorCode: null,
       idempotencyKeyHash: keyHash(key),
       requestHash,
@@ -1338,7 +1369,8 @@ export class AcquisitionDiscoveryOperationService {
   executeContentFetchOperation(
     rawScope: AcquisitionDiscoveryScope,
     id: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    enrichmentContext?: AcquisitionContentFetchEnrichmentContext
   ) {
     const scope = validatedScope(rawScope);
     const operationId = nonEmptyText(id, "抓取操作 ID", 160);
@@ -1349,7 +1381,12 @@ export class AcquisitionDiscoveryOperationService {
     ].join("\u001f");
     const current = this.runningFetch.get(key);
     if (current) return current;
-    const running = this.executeFetch(scope, operationId, signal);
+    const running = this.executeFetch(
+      scope,
+      operationId,
+      signal,
+      enrichmentContext
+    );
     this.runningFetch.set(key, running);
     void running.then(
       () => this.runningFetch.delete(key),
@@ -1361,7 +1398,8 @@ export class AcquisitionDiscoveryOperationService {
   private async executeFetch(
     scope: AcquisitionDiscoveryScope,
     id: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    enrichmentContext?: AcquisitionContentFetchEnrichmentContext
   ) {
     abortIfRequested(signal);
     const claimed = await this.repository.claimContentFetchOperation(
@@ -1437,15 +1475,61 @@ export class AcquisitionDiscoveryOperationService {
           operation.candidateIds = [candidateId];
         }
       }
+      if (this.commentEnrichment) {
+        const policy = enrichmentContext
+          ? enrichmentContext.policy
+          : STANDALONE_DOUYIN_COMMENT_POLICY;
+        const remainingBudget = enrichmentContext
+          ? {
+              requests: Math.max(
+                0,
+                enrichmentContext.remainingBudget.requests - 1
+              ),
+              results: Math.max(
+                0,
+                enrichmentContext.remainingBudget.results - 1
+              )
+            }
+          : {
+              requests: STANDALONE_DOUYIN_COMMENT_POLICY.maxPagesPerVideo,
+              results: STANDALONE_DOUYIN_COMMENT_POLICY.maxCommentsPerVideo
+            };
+        const commentSampleSummary = await this.commentEnrichment.enrich({
+          scope,
+          runId: enrichmentContext?.runId ?? null,
+          shardId: enrichmentContext?.shardId ?? null,
+          discoveryOperationId: operation.id,
+          sourceUrls: [result.finalUrl],
+          candidateIds: operation.candidateIds,
+          policy,
+          remainingBudget,
+          signal: signal ?? new AbortController().signal
+        });
+        operation.commentSampleSummary = commentSampleSummary;
+        operation.candidateIds = [...new Set([
+          ...operation.candidateIds,
+          ...commentSampleSummary.candidateIds
+        ])];
+        operation.candidateCount = operation.candidateIds.length;
+      }
       operation.finalUrl = result.finalUrl;
-      operation.status = restricted ? "access_restricted" : "succeeded";
+      const commentPartial = operation.commentSampleSummary
+        && ["partial_success", "failed"].includes(
+          operation.commentSampleSummary.status
+        );
+      operation.status = commentPartial
+        ? "partial_success"
+        : restricted ? "access_restricted" : "succeeded";
       operation.accessStatus = result.accessStatus;
       operation.httpStatus = result.httpStatus;
       operation.contentType = result.contentType;
       operation.title = result.title || null;
       operation.rawArtifactHash = result.rawArtifactHash;
       operation.contentHash = result.contentHash;
-      operation.errorCode = null;
+      operation.errorCode = commentPartial
+        ? operation.commentSampleSummary?.errors[0]?.code
+          ?? "public_sample_unavailable"
+        : null;
       operation.completedAt = this.now();
       await this.repository.putContentFetchOperation(
         operation,

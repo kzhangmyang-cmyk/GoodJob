@@ -6,8 +6,12 @@ import {
 } from "./acquisition-search-shard-processor.js";
 import type {
   AcquisitionOperationShard,
+  AcquisitionPlanRunRepository,
   AcquisitionRun
 } from "./acquisition-plan-run-repository.js";
+import type {
+  AcquisitionDouyinCommentEnrichmentInput
+} from "./acquisition-douyin-comment-enrichment.js";
 import type {
   AcquisitionShardProcessingInput
 } from "./acquisition-plan-execution-worker.js";
@@ -610,4 +614,155 @@ test("returns partial success for a candidate failure even when search accepted 
     stage: "research",
     errorCode: "EVIDENCE_REQUIRED"
   }]);
+});
+
+test("search enriches validated Douyin evidence before processing deduped candidates", async () => {
+  const order: string[] = [];
+  const enrichmentInputs: AcquisitionDouyinCommentEnrichmentInput[] = [];
+  const policy = {
+    enabled: true,
+    maxVideosPerRun: 2,
+    maxCommentsPerVideo: 3,
+    maxPagesPerVideo: 2
+  };
+  const executor: AcquisitionAgentToolExecutor = {
+    async execute() {
+      order.push("search");
+      return {
+        status: "succeeded",
+        providers: [{
+          providerConnectionId: "official-search-connection",
+          provider: "official-search"
+        }],
+        providerFailures: [],
+        evidence: [{
+          id: "evidence-douyin",
+          provenance: {
+            kind: "search_result",
+            sourceUrl:
+              "https://www.douyin.com/video/7536012345678900001"
+          }
+        }, {
+          id: "evidence-web",
+          provenance: {
+            kind: "search_result",
+            sourceUrl: "https://example.com/opportunity"
+          }
+        }],
+        rawResultCount: 2,
+        acceptedResultCount: 2,
+        duplicateResultCount: 0,
+        failedResultCount: 0,
+        candidateIds: ["candidate-search"],
+        usage: {
+          requests: 1,
+          results: 2,
+          amountMinor: 7,
+          durationSeconds: 1
+        },
+        outreachExecuted: false
+      };
+    }
+  };
+  const planRunRepository = {
+    async getPlanVersion(id: string) {
+      assert.equal(id, "plan-version-search");
+      return {
+        id,
+        ownerId: "owner-search",
+        teamId: "team-search",
+        payload: { douyinPublicCommentSample: policy }
+      };
+    }
+  } as unknown as Pick<AcquisitionPlanRunRepository, "getPlanVersion">;
+  const processor = new AcquisitionSearchShardProcessor({
+    executor,
+    planRunRepository,
+    commentEnrichment: {
+      async enrich(enrichmentInput) {
+        order.push("comments");
+        enrichmentInputs.push(enrichmentInput);
+        return {
+          status: "partial_success",
+          videoCount: 1,
+          pagesFetched: 1,
+          commentsSampled: 2,
+          eventCount: 2,
+          evidenceCount: 2,
+          candidateIds: ["candidate-search", "candidate-comment"],
+          unresolvedActorCount: 1,
+          strongSignalCount: 1,
+          invalidCommentCount: 0,
+          errors: [{
+            sourceUrl:
+              "https://www.douyin.com/video/7536012345678900002",
+            videoId: "7536012345678900002",
+            code: "rate_limited" as const
+          }],
+          usage: {
+            requests: 2,
+            results: 2,
+            amountMinor: 0,
+            durationSeconds: 2
+          }
+        };
+      }
+    },
+    candidatePipeline: {
+      async process(pipelineInput) {
+        order.push("pipeline");
+        assert.deepEqual(pipelineInput.candidateIds, [
+          "candidate-search",
+          "candidate-comment"
+        ]);
+        return {
+          processedCandidateIds: [...pipelineInput.candidateIds],
+          battleCardCandidateIds: [],
+          failures: []
+        };
+      }
+    },
+    nowMs: () => 10_000
+  });
+
+  const actualInput = processingInput();
+  const result = await processor.process(actualInput);
+
+  assert.deepEqual(order, ["search", "comments", "pipeline"]);
+  assert.equal(enrichmentInputs.length, 1);
+  assert.deepEqual(enrichmentInputs[0], {
+    scope: actualInput.scope,
+    runId: "run-search",
+    shardId: "shard-search",
+    discoveryOperationId: null,
+    sourceUrls: [
+      "https://www.douyin.com/video/7536012345678900001"
+    ],
+    candidateIds: ["candidate-search"],
+    policy,
+    remainingBudget: {
+      requests: 1,
+      results: 8
+    },
+    signal: actualInput.signal
+  });
+  assert.equal(result.status, "partial_success");
+  assert.equal(result.evidenceCount, 4);
+  assert.deepEqual(result.usage, {
+    requests: 3,
+    results: 4,
+    amountMinor: 7,
+    durationSeconds: 3
+  });
+  assert.deepEqual(result.presentation?.candidateIds, [
+    "candidate-search",
+    "candidate-comment"
+  ]);
+  assert.deepEqual(result.presentation?.processedCandidateIds, [
+    "candidate-search",
+    "candidate-comment"
+  ]);
+  assert.equal(result.presentation?.acceptedResultCount, 4);
+  assert.equal(result.presentation?.rawResultCount, 4);
+  assert.equal(result.presentation?.failedResultCount, 1);
 });

@@ -235,6 +235,7 @@ const contentFetchOperation: ContentFetchOperationDto = {
   evidenceIds: ["evidence-profile-1"],
   candidateCount: 0,
   candidateIds: [],
+  commentSampleSummary: null,
   errorCode: null,
   createdAt: "2026-08-06T00:00:00.000Z",
   startedAt: "2026-08-06T00:00:01.000Z",

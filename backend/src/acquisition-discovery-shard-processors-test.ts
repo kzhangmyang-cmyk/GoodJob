@@ -15,6 +15,7 @@ import {
 } from "./acquisition-discovery-providers.js";
 import type {
   AcquisitionOperationShard,
+  AcquisitionPlanRunRepository,
   AcquisitionRun
 } from "./acquisition-plan-run-repository.js";
 
@@ -139,6 +140,7 @@ function fetchOperation(
     evidenceIds: ["evidence-1"],
     candidateCount: 0,
     candidateIds: [],
+    commentSampleSummary: null,
     errorCode: null,
     createdAt: "2026-07-24T08:00:00.000Z",
     startedAt: "2026-07-24T08:00:00.000Z",
@@ -409,4 +411,142 @@ test("discovery processors reject mismatched connection kinds and unsafe import 
       error instanceof AcquisitionDiscoveryShardProcessorError
       && error.code === "INVALID_IMPORT_SHARD"
   );
+});
+
+test("content fetch enriches before processing deduped candidates with persisted usage", async () => {
+  const order: string[] = [];
+  const policy = {
+    enabled: true,
+    maxVideosPerRun: 1,
+    maxCommentsPerVideo: 5,
+    maxPagesPerVideo: 2
+  };
+  const service = {
+    async createContentFetchOperation() {
+      return fetchOperation({
+        id: "fetch-comment-run",
+        status: "queued",
+        accessStatus: null,
+        evidenceCount: 0,
+        evidenceIds: []
+      });
+    },
+    async executeContentFetchOperation(
+      _scope: typeof scope,
+      id: string,
+      signal: AbortSignal,
+      context: unknown
+    ) {
+      order.push("comments");
+      assert.equal(signal.aborted, false);
+      assert.deepEqual(context, {
+        runId: "run-1",
+        shardId: "shard-1",
+        policy,
+        remainingBudget: { requests: 4, results: 10 }
+      });
+      return fetchOperation({
+        id,
+        status: "partial_success",
+        candidateCount: 2,
+        candidateIds: ["candidate-original", "candidate-comment"],
+        errorCode: "rate_limited",
+        commentSampleSummary: {
+          status: "partial_success",
+          videoCount: 1,
+          pagesFetched: 2,
+          commentsSampled: 2,
+          eventCount: 2,
+          evidenceCount: 2,
+          candidateIds: ["candidate-comment"],
+          unresolvedActorCount: 1,
+          strongSignalCount: 1,
+          invalidCommentCount: 0,
+          errors: [{
+            sourceUrl:
+              "https://www.douyin.com/video/7536012345678900001",
+            videoId: "7536012345678900001",
+            code: "rate_limited"
+          }],
+          usage: {
+            requests: 2,
+            results: 2,
+            amountMinor: 0,
+            durationSeconds: 1
+          }
+        }
+      });
+    }
+  } as unknown as AcquisitionDiscoveryOperationService;
+  const planRunRepository = {
+    async getPlanVersion(id: string) {
+      assert.equal(id, run.planVersionId);
+      return {
+        id,
+        ownerId: scope.ownerId,
+        teamId: scope.teamId,
+        payload: { douyinPublicCommentSample: policy }
+      };
+    }
+  } as unknown as Pick<AcquisitionPlanRunRepository, "getPlanVersion">;
+  let clock = 0;
+  const processor = new AcquisitionContentFetchShardProcessor({
+    operations: service,
+    planRunRepository,
+    candidatePipeline: {
+      async process(input) {
+        order.push("pipeline");
+        assert.deepEqual(input.candidateIds, [
+          "candidate-original",
+          "candidate-comment"
+        ]);
+        return {
+          processedCandidateIds: [...input.candidateIds],
+          battleCardCandidateIds: [],
+          failures: []
+        };
+      }
+    },
+    nowMs: () => {
+      clock += 1_000;
+      return clock;
+    }
+  });
+
+  const result = await processor.process({
+    scope,
+    run,
+    shard: shard({
+      sourceRef:
+        "https://www.douyin.com/video/7536012345678900001",
+      allocatedBudget: {
+        requests: 4,
+        results: 10,
+        amountMinor: 0,
+        durationSeconds: 60
+      }
+    }),
+    dispatchKey: "dispatch-comments",
+    signal: new AbortController().signal
+  });
+
+  assert.deepEqual(order, ["comments", "pipeline"]);
+  assert.equal(result.status, "partial_success");
+  assert.equal(result.evidenceCount, 3);
+  assert.deepEqual(result.usage, {
+    requests: 3,
+    results: 3,
+    amountMinor: 0,
+    durationSeconds: 1
+  });
+  assert.deepEqual(result.presentation?.candidateIds, [
+    "candidate-original",
+    "candidate-comment"
+  ]);
+  assert.deepEqual(result.presentation?.processedCandidateIds, [
+    "candidate-original",
+    "candidate-comment"
+  ]);
+  assert.equal(result.presentation?.acceptedResultCount, 3);
+  assert.equal(result.presentation?.failedResultCount, 1);
 });

@@ -218,6 +218,7 @@ test("content fetch HTTP create dispatches and returns a sanitized tenant operat
       "discovery-request-1"
     );
     assert.equal(created.json?.status, "queued");
+    assert.equal(created.json?.commentSampleSummary, null);
     assert.equal(created.json?.ownerId, OWNER);
     assert.equal("idempotencyKeyHash" in (created.json ?? {}), false);
     assert.equal("requestHash" in (created.json ?? {}), false);

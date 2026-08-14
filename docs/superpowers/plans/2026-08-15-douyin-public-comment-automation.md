@@ -278,7 +278,7 @@
 **Interfaces:**
 - `AcquisitionDouyinCommentEnrichmentPort.enrich(input)` 输入 scope、run/shard 可空上下文、来源 URL/candidate IDs、计划策略、剩余预算和 AbortSignal；输出新候选 IDs、usage、计数和部分错误。
 - 搜索分片次序：`search_public_sources` → 筛出抖音视频 URL → 评论富化 → 合并/去重 candidate IDs → 现有 `AcquisitionCandidateProcessingPipeline.process`。
-- content-fetch 次序：受控短链/公开页解析 → 原页证据 → 评论富化 → 现有 candidate pipeline；单独导入没有 Run 时仍保存评论事件、证据和待核验候选。
+- content-fetch 次序：受控短链/公开页解析 → 原页证据 → 评论富化 → 现有 candidate pipeline；用户显式提交的单独抖音链接没有 Run 时，仍以固定有界策略保存评论事件、证据和待核验候选；其他无 Run 后台工作不会自动扩展评论采集。
 - 计划未启用评论策略或来源不是抖音视频时为安全 no-op，不影响旧计划。
 
   ```ts
@@ -289,25 +289,25 @@
   }
   ```
 
-- [ ] **Step 1: 写编排失败测试**
+- [x] **Step 1: 写编排失败测试**
 
   断言评论富化发生在资格研判前；新候选与搜索候选去重；评论请求/结果计入分片 usage；达到 max videos/comments/pages 或 Run 剩余预算时立即停止；单视频 429/受限保留其他视频成果；AbortSignal 不再开新请求。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-douyin-comment-enrichment-test.ts src/acquisition-search-shard-processor-test.ts src/acquisition-discovery-operations-test.ts src/acquisition-discovery-operations-router-test.ts src/acquisition-discovery-shard-processors-test.ts`
 
   Expected: FAIL。
 
-- [ ] **Step 3: 实现搜索分片的纵向链路**
+- [x] **Step 3: 实现搜索分片的纵向链路**
 
   `AcquisitionSearchShardProcessor` 增加可选 comment enrichment port，并在严格结果验证之后、candidate pipeline 之前执行。分片最终 status 为搜索和评论富化的组合结果；有已接受证据且有局部失败时为 `partial_success`。
 
-- [ ] **Step 4: 实现 content-fetch/单独用户链接链路并注入 application**
+- [x] **Step 4: 实现 content-fetch/单独用户链接链路并注入 application**
 
   Discovery operation 返回增加 `commentSampleSummary`；content-fetch shard processor 把其产生的 candidate IDs 送入现有 pipeline。Application 在 memory/MySQL 两种模式下注入同一 Provider、event repository 和 enrichment service。
 
-- [ ] **Step 5: 运行 GREEN、应用测试并提交**
+- [x] **Step 5: 运行 GREEN、应用测试并提交**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-douyin-comment-enrichment-test.ts src/acquisition-search-shard-processor-test.ts src/acquisition-discovery-operations-test.ts src/acquisition-discovery-operations-router-test.ts src/acquisition-discovery-shard-processors-test.ts src/acquisition-application-test.ts src/acquisition-openapi-test.ts src/acquisition-openapi-response-conformance-test.ts && npm run build --workspace backend`
 

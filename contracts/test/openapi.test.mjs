@@ -396,7 +396,8 @@ test("every named API resource component accepts a canonical valid instance", as
     evidenceCount: 0,
     evidenceIds: [],
     candidateCount: 0,
-    candidateIds: []
+    candidateIds: [],
+    commentSampleSummary: null
   };
   examples.ImportOperation = {
     ...examples.ImportOperation,

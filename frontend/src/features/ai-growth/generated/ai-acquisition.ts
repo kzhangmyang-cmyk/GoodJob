@@ -1677,7 +1677,7 @@ export interface components {
             /** @enum {unknown} */
             subjectChannel: "organization" | "individual";
             /** @enum {unknown} */
-            status: "queued" | "running" | "succeeded" | "failed" | "access_restricted";
+            status: "queued" | "running" | "succeeded" | "partial_success" | "failed" | "access_restricted";
             /** @enum {string|null} */
             accessStatus: "public_content" | "access_restricted" | null;
             httpStatus: number | null;
@@ -1689,6 +1689,32 @@ export interface components {
             evidenceIds: string[];
             candidateCount: number;
             candidateIds: string[];
+            commentSampleSummary: null | {
+                /** @enum {unknown} */
+                status: "skipped" | "succeeded" | "succeeded_empty" | "partial_success" | "failed";
+                videoCount: number;
+                pagesFetched: number;
+                commentsSampled: number;
+                eventCount: number;
+                evidenceCount: number;
+                candidateIds: string[];
+                unresolvedActorCount: number;
+                strongSignalCount: number;
+                invalidCommentCount: number;
+                errors: {
+                    /** Format: uri */
+                    sourceUrl: string;
+                    videoId: string;
+                    /** @enum {unknown} */
+                    code: "public_sample_unavailable" | "access_restricted" | "rate_limited" | "video_id_unresolved" | "source_payload_invalid" | "no_public_comments";
+                }[];
+                usage: {
+                    requests: number;
+                    results: number;
+                    amountMinor: number;
+                    durationSeconds: number;
+                };
+            };
             errorCode: string | null;
             /** Format: date-time */
             createdAt: string;
@@ -1696,17 +1722,9 @@ export interface components {
             startedAt: string | null;
             /** Format: date-time */
             completedAt: string | null;
-        } & (unknown & unknown & ({
-            /** @constant */
-            candidateCount: 0;
-            candidateIds: unknown[];
-        } | {
-            /** @constant */
-            candidateCount: 1;
-            candidateIds: unknown[];
-        } | unknown))) & ({
+        } & (unknown & unknown & unknown & unknown & unknown)) & ({
             /** @enum {unknown} */
-            status?: "succeeded" | "access_restricted";
+            status?: "succeeded" | "partial_success" | "access_restricted";
             /** @constant */
             evidenceCount?: 1;
             evidenceIds?: unknown[];

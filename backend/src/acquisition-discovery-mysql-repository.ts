@@ -40,7 +40,8 @@ export const ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS = [
       (status, lease_expires_at, updated_at, created_at, id),
     CONSTRAINT chk_acquisition_fetch_status CHECK (
       status IN (
-        'queued','running','succeeded','failed','access_restricted'
+        'queued','running','succeeded','partial_success','failed',
+        'access_restricted'
       )
     )
   ) ENGINE=InnoDB`,
@@ -106,6 +107,34 @@ export async function ensureAcquisitionDiscoveryMysqlSchema(
       }
     }
   }
+  const [rows] = await pool.query<mysql.RowDataPacket[]>(
+    `SELECT cc.CHECK_CLAUSE AS check_clause
+       FROM information_schema.TABLE_CONSTRAINTS tc
+       JOIN information_schema.CHECK_CONSTRAINTS cc
+         ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
+        AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+      WHERE tc.CONSTRAINT_SCHEMA = DATABASE()
+        AND tc.TABLE_NAME = 'acquisition_content_fetch_operations'
+        AND tc.CONSTRAINT_NAME = 'chk_acquisition_fetch_status'
+        AND tc.CONSTRAINT_TYPE = 'CHECK'`
+  );
+  const checkClause = rows[0]?.check_clause;
+  const statusCheck = `CHECK (status IN (
+    'queued','running','succeeded','partial_success','failed',
+    'access_restricted'
+  ))`;
+  if (typeof checkClause !== "string") {
+    await pool.query(
+      `ALTER TABLE acquisition_content_fetch_operations
+         ADD CONSTRAINT chk_acquisition_fetch_status ${statusCheck}`
+    );
+  } else if (!checkClause.includes("partial_success")) {
+    await pool.query(
+      `ALTER TABLE acquisition_content_fetch_operations
+         DROP CHECK chk_acquisition_fetch_status,
+         ADD CONSTRAINT chk_acquisition_fetch_status ${statusCheck}`
+    );
+  }
 }
 
 function clone<T>(value: T): T {
@@ -151,6 +180,86 @@ function requiredString(
   return value;
 }
 
+const COMMENT_ENRICHMENT_STATUSES = new Set([
+  "skipped",
+  "succeeded",
+  "succeeded_empty",
+  "partial_success",
+  "failed"
+]);
+const COMMENT_ENRICHMENT_ERROR_CODES = new Set([
+  "public_sample_unavailable",
+  "access_restricted",
+  "rate_limited",
+  "video_id_unresolved",
+  "source_payload_invalid",
+  "no_public_comments"
+]);
+
+function safeCount(value: unknown, maximum = 2_000) {
+  return Number.isSafeInteger(value)
+    && Number(value) >= 0
+    && Number(value) <= maximum;
+}
+
+function parsedCommentSampleSummary(value: unknown) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:comment_sample_summary"
+    );
+  }
+  const summary = value as Record<string, unknown>;
+  const countKeys = [
+    "videoCount",
+    "pagesFetched",
+    "commentsSampled",
+    "eventCount",
+    "evidenceCount",
+    "unresolvedActorCount",
+    "strongSignalCount",
+    "invalidCommentCount"
+  ];
+  if (!COMMENT_ENRICHMENT_STATUSES.has(String(summary.status))
+    || countKeys.some((key) => !safeCount(summary[key]))
+    || !Array.isArray(summary.candidateIds)
+    || summary.candidateIds.length > 2_000
+    || summary.candidateIds.some(
+      (id) => typeof id !== "string" || !id
+    )
+    || new Set(summary.candidateIds).size !== summary.candidateIds.length
+    || !Array.isArray(summary.errors)
+    || summary.errors.length > 20
+    || summary.errors.some((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return true;
+      }
+      const error = entry as Record<string, unknown>;
+      return typeof error.sourceUrl !== "string"
+        || !error.sourceUrl
+        || typeof error.videoId !== "string"
+        || !/^\d+$/u.test(error.videoId)
+        || !COMMENT_ENRICHMENT_ERROR_CODES.has(String(error.code));
+    })
+    || !summary.usage
+    || typeof summary.usage !== "object"
+    || Array.isArray(summary.usage)) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:comment_sample_summary"
+    );
+  }
+  const usage = summary.usage as Record<string, unknown>;
+  if (!safeCount(usage.requests)
+    || !safeCount(usage.results)
+    || !safeCount(usage.amountMinor, Number.MAX_SAFE_INTEGER)
+    || !safeCount(usage.durationSeconds, Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:comment_sample_usage"
+    );
+  }
+  return summary;
+}
+
 function parsedFetch(row: MysqlRow) {
   const payload = parsePayload(
     row.payload_json,
@@ -165,6 +274,7 @@ function parsedFetch(row: MysqlRow) {
     "queued",
     "running",
     "succeeded",
+    "partial_success",
     "failed",
     "access_restricted"
   ].includes(String(payload.status))) {
@@ -211,24 +321,41 @@ function parsedFetch(row: MysqlRow) {
   }
   if (payload.candidateIds === undefined) payload.candidateIds = [];
   if (payload.candidateCount === undefined) payload.candidateCount = 0;
+  payload.commentSampleSummary = parsedCommentSampleSummary(
+    payload.commentSampleSummary
+  );
   if (!Array.isArray(payload.candidateIds)
     || payload.candidateIds.some((id) => typeof id !== "string" || !id)
     || new Set(payload.candidateIds).size !== payload.candidateIds.length
     || !Number.isSafeInteger(payload.candidateCount)
     || Number(payload.candidateCount) !== payload.candidateIds.length
-    || Number(payload.candidateCount) > evidenceIds.length) {
+    || Number(payload.candidateCount) > 2_001) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:candidate_association"
+    );
+  }
+  const commentCandidateIds = new Set(
+    (payload.commentSampleSummary as null | { candidateIds: string[] })
+      ?.candidateIds ?? []
+  );
+  const candidateIds = payload.candidateIds as string[];
+  if ([...commentCandidateIds].some((id) => !candidateIds.includes(id))
+    || candidateIds.filter((id) => !commentCandidateIds.has(id)).length
+      > evidenceIds.length) {
     throw new Error(
       "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:candidate_association"
     );
   }
   const successful = [
     "succeeded",
+    "partial_success",
     "access_restricted"
   ].includes(String(payload.status));
   const pending = ["queued", "running"].includes(String(payload.status));
   if ((successful && evidenceIds.length !== 1)
     || (pending && (evidenceIds.length !== 0
-      || Number(payload.candidateCount) !== 0))) {
+      || Number(payload.candidateCount) !== 0
+      || payload.commentSampleSummary !== null))) {
     throw new Error(
       "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:evidence_status_mismatch"
     );

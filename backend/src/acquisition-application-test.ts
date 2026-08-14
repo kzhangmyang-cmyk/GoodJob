@@ -25,6 +25,7 @@ import {
   createProbabilityAssessmentQualificationService,
   createAcquisitionActiveSearchConnectionDirectory,
   createAcquisitionApplication as createAcquisitionApplicationRuntime,
+  isTrustedAcquisitionDouyinPublicCommentConnection,
   type CreateAcquisitionApplicationOptions,
   trackAcquisitionBackgroundTask
 } from "./acquisition-application.js";
@@ -52,6 +53,9 @@ import {
 import {
   InMemoryAcquisitionCandidateIntelligenceOperationRepository
 } from "./acquisition-candidate-intelligence-operations.js";
+import type {
+  DouyinPublicCommentProviderPort
+} from "./douyin-public-comment-provider.js";
 import {
   ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS
 } from "./acquisition-discovery-providers.js";
@@ -143,6 +147,33 @@ function createAcquisitionApplication(
     ...options
   } as CreateAcquisitionApplicationOptions);
 }
+
+test("application trusts only the exact built-in public comment provider snapshot", () => {
+  const valid = {
+    connectionId: "douyin-public-comments",
+    providerId: "experimental_public_sample",
+    kind: "content_fetch" as const,
+    status: "active" as const,
+    credentialVersion: 1
+  };
+  assert.equal(
+    isTrustedAcquisitionDouyinPublicCommentConnection(valid),
+    true
+  );
+  for (const candidate of [
+    { ...valid, connectionId: "" },
+    { ...valid, providerId: "controlled_public_content" },
+    { ...valid, kind: "search" as const },
+    { ...valid, status: "inactive" as const },
+    { ...valid, credentialVersion: 2 }
+  ]) {
+    assert.equal(
+      isTrustedAcquisitionDouyinPublicCommentConnection(candidate),
+      false,
+      JSON.stringify(candidate)
+    );
+  }
+});
 
 test("application qualification wrapper records fresh and replayed domain results", async () => {
   const writes: Parameters<ProbabilityAssessmentWriter["recordFromQualification"]>[0][] = [];
@@ -387,6 +418,33 @@ function fakeSearchPort() {
     }
   };
   return { port, calls };
+}
+
+function emptyDouyinCommentProvider(): DouyinPublicCommentProviderPort {
+  return {
+    providerId: "experimental_public_sample",
+    async fetchTopLevelSample(input) {
+      return {
+        comments: [],
+        nextCursor: null,
+        hasMore: false,
+        reportedCommentCount: 0,
+        capturedAt: "2026-07-24T00:00:00.000Z",
+        rawArtifactHash: `sha256:${"0".repeat(64)}`,
+        providerId: "experimental_public_sample",
+        providerVersion: "douyin-public-comment-provider-v1",
+        coverage: "public_top_level_sample",
+        metadata: {
+          requestedCommentCount: input.count,
+          returnedCommentCount: 0,
+          duplicateCommentCount: 0,
+          partial: false,
+          cursorProgressed: true
+        },
+        replyBodiesIncluded: false
+      };
+    }
+  };
 }
 
 function fakeGateway(
@@ -1777,9 +1835,24 @@ test("memory acquisition application composes search, plans, Pi and safe outcome
 
 test("application approves and executes a controlled content fetch shard", async () => {
   const fixture = isolatedMemoryStore();
-  const search = fakeSearchPort();
+  const baseSearch = fakeSearchPort();
+  const searchVideoUrl =
+    "https://www.douyin.com/video/7536012345678904344";
+  const contentVideoUrl =
+    "https://www.douyin.com/video/7536012345678904355";
+  const search: ReturnType<typeof fakeSearchPort> = {
+    calls: baseSearch.calls,
+    port: {
+      async search(input) {
+        const result = await baseSearch.port.search(input);
+        result.results[0]!.sourceUrl = searchVideoUrl;
+        return result;
+      }
+    }
+  };
   const model = fakeGateway();
   const fetchCalls: string[] = [];
+  const commentProviderCalls: string[] = [];
   const contentFetcher: AcquisitionContentFetcherPort = {
     async fetch(sourceUrl) {
       fetchCalls.push(sourceUrl);
@@ -1803,6 +1876,31 @@ test("application approves and executes a controlled content fetch shard", async
     masterSecret: MASTER_SECRET,
     searchPort: search.port,
     contentFetcher,
+    douyinPublicCommentProvider: {
+      providerId: "experimental_public_sample",
+      async fetchTopLevelSample(input) {
+        commentProviderCalls.push(input.sourceUrl);
+        return {
+          comments: [],
+          nextCursor: null,
+          hasMore: false,
+          reportedCommentCount: 0,
+          capturedAt: "2026-07-24T02:00:00.000Z",
+          rawArtifactHash: `sha256:${"d".repeat(64)}`,
+          providerId: "experimental_public_sample",
+          providerVersion: "douyin-public-comment-provider-v1",
+          coverage: "public_top_level_sample",
+          metadata: {
+            requestedCommentCount: input.count,
+            returnedCommentCount: 0,
+            duplicateCommentCount: 0,
+            partial: false,
+            cursorProgressed: true
+          },
+          replyBodiesIncluded: false
+        };
+      }
+    },
     modelGatewayFactory: () => model.gateway,
     idFactory: (prefix) => `${prefix}-${++sequence}`,
     now: () => new Date(timestamp++).toISOString(),
@@ -1821,6 +1919,27 @@ test("application approves and executes a controlled content fetch shard", async
     );
     assert.equal(session.response.status, 202);
     const payload = planPayload();
+    payload.targetPlatform = "douyin";
+    payload.douyinPublicCommentSample = {
+      enabled: true,
+      maxVideosPerRun: 2,
+      maxCommentsPerVideo: 3,
+      maxPagesPerVideo: 1
+    };
+    payload.providerConnections.push({
+      connectionId: "douyin-public-comments",
+      providerId: "experimental_public_sample",
+      kind: "content_fetch",
+      status: "active",
+      credentialVersion: 1
+    });
+    for (const operation of payload.operations) {
+      operation.allocatedBudget.requests = 2;
+      operation.allocatedBudget.results = 11;
+      operation.query = operation.subjectChannel === "organization"
+        ? "site:douyin.com 正在寻找 AI 获客供应商"
+        : "site:iesdouyin.com 门店主理人 获客难";
+    }
     payload.providerConnections.push(
       ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS.contentFetch
     );
@@ -1830,16 +1949,16 @@ test("application approves and executes a controlled content fetch shard", async
       kind: "content_fetch",
       connectionId:
         ACQUISITION_SYSTEM_PROVIDER_CONNECTIONS.contentFetch.connectionId,
-      sourceRef: "https://example.cn/public-procurement",
+      sourceRef: contentVideoUrl,
       allocatedBudget: {
-        requests: 1,
-        results: 1,
+        requests: 2,
+        results: 2,
         amountMinor: 0,
         durationSeconds: 30
       }
     });
-    payload.budgetSnapshot.maxRequests = 3;
-    payload.budgetSnapshot.maxResults = 21;
+    payload.budgetSnapshot.maxRequests = 6;
+    payload.budgetSnapshot.maxResults = 24;
     payload.budgetSnapshot.maxDurationSeconds = 150;
 
     const created = await server.request(
@@ -1893,8 +2012,13 @@ test("application approves and executes a controlled content fetch shard", async
     );
     assert.equal(terminal.json.status, "succeeded");
     assert.deepEqual(fetchCalls, [
-      "https://example.cn/public-procurement"
+      contentVideoUrl
     ]);
+    assert.deepEqual(commentProviderCalls.sort(), [
+      contentVideoUrl,
+      searchVideoUrl,
+      searchVideoUrl
+    ].sort());
 
     const shards = await server.request(
       `/api/v1/acquisition/runs/${run.json.id}/shards`
@@ -1994,6 +2118,114 @@ test("application exposes acquisition providers and executes direct discovery op
   }
 });
 
+test("application enriches an explicit Douyin content fetch through the shared ingestion", async () => {
+  const fixture = isolatedMemoryStore();
+  const sourceUrl =
+    "https://www.douyin.com/video/7536012345678904322";
+  const providerCalls: string[] = [];
+  const provider: DouyinPublicCommentProviderPort = {
+    providerId: "experimental_public_sample",
+    async fetchTopLevelSample(input) {
+      providerCalls.push(input.videoId);
+      return {
+        comments: [{
+          commentId: "application-comment-noise",
+          text: "预算 10 万，采购 20 套，请报价",
+          occurredAt: "2026-08-15T03:00:00.000Z",
+          likeCount: 1,
+          replyCount: 0,
+          ipLabel: "广东",
+          actor: {
+            displayName: "公开用户",
+            handle: null,
+            secUid: "application-comment-sec-uid"
+          }
+        }],
+        nextCursor: null,
+        hasMore: false,
+        reportedCommentCount: 1,
+        capturedAt: "2026-08-15T03:01:00.000Z",
+        rawArtifactHash: `sha256:${"8".repeat(64)}`,
+        providerId: "experimental_public_sample",
+        providerVersion: "douyin-public-comment-provider-v1",
+        coverage: "public_top_level_sample",
+        metadata: {
+          requestedCommentCount: input.count,
+          returnedCommentCount: 1,
+          duplicateCommentCount: 0,
+          partial: false,
+          cursorProgressed: true
+        },
+        replyBodiesIncluded: false
+      };
+    }
+  };
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    contentFetcher: {
+      async fetch(requestedUrl) {
+        return {
+          finalUrl: requestedUrl,
+          status: "succeeded",
+          accessStatus: "public_content",
+          httpStatus: 200,
+          contentType: "text/html; charset=utf-8",
+          title: "公开视频",
+          text: "公开视频详情。",
+          rawArtifactHash: `sha256:${"9".repeat(64)}`,
+          contentHash: `sha256:${"a".repeat(64)}`
+        };
+      }
+    },
+    douyinPublicCommentProvider: provider,
+    douyinPublicProfileDiscovery: {
+      async discover() {
+        return {
+          status: "access_restricted",
+          redirectChain: [sourceUrl],
+          publicProfileUrls: []
+        };
+      }
+    }
+  });
+  const server = await serve(runtime.handler);
+
+  try {
+    const created = await server.request(
+      "/api/v1/acquisition/content-fetch-operations",
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": "application-comment-enrichment" },
+        body: JSON.stringify({
+          sourceUrl,
+          subjectChannel: "individual"
+        })
+      }
+    );
+    assert.equal(created.response.status, 202, JSON.stringify(created.json));
+    const completed = await waitFor(
+      () => server.request(
+        `/api/v1/acquisition/content-fetch-operations/${created.json.id}`
+      ),
+      (value) => value.json.status === "succeeded"
+    );
+
+    assert.deepEqual(providerCalls, ["7536012345678904322"]);
+    assert.equal(completed.json.commentSampleSummary.status, "succeeded");
+    assert.equal(completed.json.commentSampleSummary.eventCount, 1);
+    assert.equal(completed.json.commentSampleSummary.evidenceCount, 1);
+    assert.equal(completed.json.commentSampleSummary.commentsSampled, 1);
+    assert.equal(completed.json.commentSampleSummary.candidateIds.length, 1);
+    assert.ok(completed.json.candidateIds.includes(
+      completed.json.commentSampleSummary.candidateIds[0]
+    ));
+  } finally {
+    await server.close();
+    await runtime.close();
+  }
+});
+
 test("application automatically resolves a direct Douyin signal and runs one intelligence chain", async () => {
   const fixture = isolatedMemoryStore();
   const domainRepository = new InMemoryAcquisitionDomainRepository();
@@ -2015,6 +2247,7 @@ test("application automatically resolves a direct Douyin signal and runs one int
     domainRepository,
     douyinIdentityResolutionRepository: identityRepository,
     candidateIntelligenceRepository: intelligenceRepository,
+    douyinPublicCommentProvider: emptyDouyinCommentProvider(),
     contentFetcher: {
       async fetch(requestedUrl) {
         return {
@@ -2475,6 +2708,7 @@ test("application startup recovery continues a queued Douyin fetch into automati
     evidenceIds: [],
     candidateCount: 0,
     candidateIds: [],
+    commentSampleSummary: null,
     errorCode: null,
     idempotencyKeyHash: "f".repeat(64),
     requestHash: `sha256:${"e".repeat(64)}`,
@@ -2493,6 +2727,7 @@ test("application startup recovery continues a queued Douyin fetch into automati
     discoveryRepository,
     douyinIdentityResolutionRepository: identityRepository,
     candidateIntelligenceRepository: intelligenceRepository,
+    douyinPublicCommentProvider: emptyDouyinCommentProvider(),
     douyinPublicProfileDiscovery: {
       async discover(input) {
         return {

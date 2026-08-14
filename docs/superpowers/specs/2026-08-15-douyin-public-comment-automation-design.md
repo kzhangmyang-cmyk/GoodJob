@@ -331,6 +331,17 @@ discover_video_urls
 预算至少限制：发现 URL 数、视频数、每视频评论样本上限、HTTP 请求数、模型调用数、
 总时长和费用。系统不得通过切换账号、代理或模拟真人来绕过来源限制。
 
+搜索分片只在搜索响应完成严格验证后，从 Evidence provenance 中选取
+可确定作品 ID 的抖音直链；评论候选与搜索候选去重后，再进入现有
+candidate pipeline。Content-fetch Run 先保存原页证据，再执行评论富化和
+候选研判；其持久化 `commentSampleSummary` 记录真实 usage、计数、新候选和
+稳定来源错误。单个作品限流或受限时，已有评论结果保留且分片为
+`partial_success`。计划未启用评论策略或来源不是抖音作品时安全跳过。
+
+用户显式创建的单独抖音 content-fetch 不需要 Run，但仍通过同一 Provider、
+事件仓储和 ingestion service 保存事件、证据与待核验候选；该显式入口固定限制为
+1 个视频、每视频 30 条、最多 3 页。无 Run 的其他后台工作不会自动扩展评论读取。
+
 授权浏览器视觉读取必须是显式连接、显式运行或客户侧计划触发，不能由 GoodJob 后端
 静默接管本地 Chrome。首次连接、会话变化和每次批量运行都留下租户隔离审计；撤销
 授权后立即停止新读取，不影响已持久化的公开 URL、评论事件和证据历史。
@@ -364,7 +375,8 @@ discover_video_urls
 
 - Run presentation 增加评论读取步骤、覆盖信息和计数；
 - Candidate/Evidence 读取投影增加平台事件和意愿证据；
-- 公开链接导入响应返回创建的来源、事件数量和部分失败摘要；
+- 公开链接导入响应固定返回持久化 `commentSampleSummary`，包含实际事件、证据、
+  候选、usage 和部分失败错误；排队中或旧数据为 `null`；
 - 候选列表支持按 `sourcePlatform=douyin`、意愿等级、身份状态和 Run 筛选；
 - 所有写请求继续遵守现有鉴权、CSRF、幂等和并发契约。
 

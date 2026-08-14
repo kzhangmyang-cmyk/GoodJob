@@ -42,6 +42,19 @@ request contracts expose the same four-field policy; create requests enforce
 the provider binding directly, while mutations are validated after merging
 with the current plan.
 
+Run execution resolves that policy from the immutable plan version. Search
+shards enrich only validated evidence whose provenance contains a direct
+Douyin video URL, then merge and deduplicate comment candidates before the
+existing candidate pipeline. Content-fetch operations persist a bounded
+`commentSampleSummary` containing status, usage, counts, new candidate IDs and
+stable per-video errors; `partial_success` preserves the original page evidence
+and all successful comment results. An explicit user-created Douyin
+content-fetch without a Run uses the fixed one-video, 30-comment, three-page
+standalone bound. Other non-Run background work does not start comment
+sampling. Current public responses always include `commentSampleSummary`
+(`null` before execution or for legacy storage), and MySQL startup upgrades the
+legacy content-fetch status check before workers can persist partial success.
+
 Public Douyin comments enter the acquisition domain as immutable comment
 events and `DiscoveryEvidence` with `platform_public_event` provenance. That
 provenance is closed to the public source URL, platform comment ID, provider

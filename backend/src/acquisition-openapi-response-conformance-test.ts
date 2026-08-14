@@ -209,6 +209,63 @@ function planBody() {
   };
 }
 
+test("content-fetch comment enrichment response conforms to production OpenAPI", () => {
+  const operation = {
+    id: "fetch-comment-response-contract",
+    ownerId: OWNER,
+    teamId: TEAM,
+    actorId: OWNER,
+    sourceUrl: "https://www.douyin.com/video/7536012345678904333",
+    finalUrl: "https://www.douyin.com/video/7536012345678904333",
+    subjectChannel: "individual",
+    status: "partial_success",
+    accessStatus: "public_content",
+    httpStatus: 200,
+    contentType: "text/html",
+    title: "公开视频",
+    rawArtifactHash: `sha256:${"1".repeat(64)}`,
+    contentHash: `sha256:${"2".repeat(64)}`,
+    evidenceCount: 1,
+    evidenceIds: ["original-evidence"],
+    candidateCount: 2,
+    candidateIds: ["original-candidate", "comment-candidate"],
+    commentSampleSummary: {
+      status: "partial_success",
+      videoCount: 1,
+      pagesFetched: 1,
+      commentsSampled: 1,
+      eventCount: 1,
+      evidenceCount: 1,
+      candidateIds: ["comment-candidate"],
+      unresolvedActorCount: 1,
+      strongSignalCount: 1,
+      invalidCommentCount: 0,
+      errors: [{
+        sourceUrl: "https://www.douyin.com/video/7536012345678904333",
+        videoId: "7536012345678904333",
+        code: "rate_limited"
+      }],
+      usage: {
+        requests: 2,
+        results: 1,
+        amountMinor: 0,
+        durationSeconds: 1
+      }
+    },
+    errorCode: "rate_limited",
+    createdAt: NOW,
+    startedAt: NOW,
+    completedAt: NOW
+  };
+
+  assertResponseConforms(
+    "/api/v1/acquisition/content-fetch-operations/{id}",
+    "get",
+    200,
+    operation
+  );
+});
+
 test("candidate intelligence public DTO conforms without internal operation state", () => {
   const operation = {
     id: "candidate-intelligence-response-1",

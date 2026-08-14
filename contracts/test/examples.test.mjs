@@ -76,6 +76,7 @@ test("identity workbench contracts accept versioned identity state and exact evi
     evidenceIds: ["evidence-profile-1"],
     candidateCount: 0,
     candidateIds: [],
+    commentSampleSummary: null,
     errorCode: null,
     createdAt: "2026-08-06T00:00:00.000Z",
     startedAt: "2026-08-06T00:00:01.000Z",
@@ -144,6 +145,7 @@ test("content fetch operations keep status, evidence count, and evidence ids con
     evidenceIds: [],
     candidateCount: 0,
     candidateIds: [],
+    commentSampleSummary: null,
     errorCode: null,
     createdAt: "2026-08-06T00:00:00.000Z",
     startedAt: null,
@@ -225,6 +227,62 @@ test("content fetch operations keep status, evidence count, and evidence ids con
     ).valid,
     false,
     "public fetch responses must always expose candidate associations"
+  );
+});
+
+test("content fetch operations expose persisted public comment enrichment summaries", async () => {
+  const { validateCase } = await loadContractHarness();
+  const operation = {
+    id: "fetch-comment-summary-1",
+    ownerId: "owner-a",
+    teamId: "team-a",
+    actorId: "user-a",
+    sourceUrl: "https://www.douyin.com/video/7536012345678904333",
+    finalUrl: "https://www.douyin.com/video/7536012345678904333",
+    subjectChannel: "individual",
+    status: "partial_success",
+    accessStatus: "public_content",
+    httpStatus: 200,
+    contentType: "text/html",
+    title: "公开视频",
+    rawArtifactHash: `sha256:${"1".repeat(64)}`,
+    contentHash: `sha256:${"2".repeat(64)}`,
+    evidenceCount: 1,
+    evidenceIds: ["original-evidence"],
+    candidateCount: 2,
+    candidateIds: ["original-candidate", "comment-candidate"],
+    commentSampleSummary: {
+      status: "partial_success",
+      videoCount: 1,
+      pagesFetched: 1,
+      commentsSampled: 1,
+      eventCount: 1,
+      evidenceCount: 1,
+      candidateIds: ["comment-candidate"],
+      unresolvedActorCount: 1,
+      strongSignalCount: 1,
+      invalidCommentCount: 0,
+      errors: [{
+        sourceUrl: "https://www.douyin.com/video/7536012345678904333",
+        videoId: "7536012345678904333",
+        code: "rate_limited"
+      }],
+      usage: {
+        requests: 2,
+        results: 1,
+        amountMinor: 0,
+        durationSeconds: 1
+      }
+    },
+    errorCode: "rate_limited",
+    createdAt: "2026-08-15T00:00:00.000Z",
+    startedAt: "2026-08-15T00:00:01.000Z",
+    completedAt: "2026-08-15T00:00:02.000Z"
+  };
+
+  assert.equal(
+    validateCase("content-fetch-operation", operation).valid,
+    true
   );
 });
 

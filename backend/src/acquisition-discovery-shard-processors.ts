@@ -1,9 +1,16 @@
 import type {
+  AcquisitionContentFetchEnrichmentContext,
   AcquisitionContentFetchOperation,
   AcquisitionDiscoveryOperationService,
   AcquisitionDiscoveryScope,
   AcquisitionImportOperation
 } from "./acquisition-discovery-operations.js";
+import type {
+  AcquisitionCandidateProcessingPipeline
+} from "./acquisition-candidate-processing-pipeline.js";
+import type {
+  AcquisitionPlanRunRepository
+} from "./acquisition-plan-run-repository.js";
 import type {
   AcquisitionShardProcessingInput,
   AcquisitionShardProcessingResult,
@@ -44,7 +51,8 @@ export interface AcquisitionDiscoveryOperationExecutionPort {
   executeContentFetchOperation(
     scope: AcquisitionDiscoveryScope,
     id: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    enrichmentContext?: AcquisitionContentFetchEnrichmentContext
   ): Promise<AcquisitionContentFetchOperation>;
   getImportOperation(
     scope: AcquisitionDiscoveryScope,
@@ -63,6 +71,8 @@ interface DiscoveryProcessorOptions {
     | AcquisitionDiscoveryOperationExecutionPort
     | AcquisitionDiscoveryOperationService;
   nowMs?: () => number;
+  candidatePipeline?: Pick<AcquisitionCandidateProcessingPipeline, "process">;
+  planRunRepository?: Pick<AcquisitionPlanRunRepository, "getPlanVersion">;
 }
 
 function assertNotAborted(signal: AbortSignal) {
@@ -120,10 +130,16 @@ export class AcquisitionContentFetchShardProcessor
 implements AcquisitionShardProcessorPort {
   private readonly operations: AcquisitionDiscoveryOperationExecutionPort;
   private readonly nowMs: () => number;
+  private readonly candidatePipeline:
+    Pick<AcquisitionCandidateProcessingPipeline, "process"> | null;
+  private readonly planRunRepository:
+    Pick<AcquisitionPlanRunRepository, "getPlanVersion"> | null;
 
   constructor(options: DiscoveryProcessorOptions) {
     this.operations = options.operations;
     this.nowMs = options.nowMs ?? (() => Date.now());
+    this.candidatePipeline = options.candidatePipeline ?? null;
+    this.planRunRepository = options.planRunRepository ?? null;
   }
 
   async process(
@@ -189,26 +205,83 @@ implements AcquisitionShardProcessorPort {
         "INVALID_DISCOVERY_OPERATION_RESULT"
       );
     }
+    let enrichmentContext:
+      AcquisitionContentFetchEnrichmentContext | undefined;
+    if (this.planRunRepository) {
+      const version = await this.planRunRepository.getPlanVersion(
+        input.run.planVersionId
+      );
+      enrichmentContext = {
+        runId: input.run.id,
+        shardId: input.shard.id,
+        policy: version
+          && version.ownerId === input.scope.ownerId
+          && version.teamId === input.scope.teamId
+          ? version.payload.douyinPublicCommentSample ?? null
+          : null,
+        remainingBudget: {
+          requests: remainingRequests,
+          results: remainingResults
+        }
+      };
+    }
     operation = await this.operations.executeContentFetchOperation(
       input.scope,
       operation.id,
-      input.signal
+      input.signal,
+      enrichmentContext
     );
     assertNotAborted(input.signal);
     if (!validOperationScope(operation, input)
       || operation.evidenceCount < 0
       || operation.evidenceCount > 1
-      || operation.evidenceCount > remainingResults) {
+      || !Array.isArray(operation.candidateIds)
+      || new Set(operation.candidateIds).size !== operation.candidateIds.length
+      || operation.candidateCount !== operation.candidateIds.length) {
       throw new AcquisitionDiscoveryShardProcessorError(
         "INVALID_DISCOVERY_OPERATION_RESULT"
       );
     }
+    const commentSummary = operation.commentSampleSummary;
+    const commentEvidenceCount = commentSummary?.evidenceCount ?? 0;
+    const totalEvidenceCount = operation.evidenceCount + commentEvidenceCount;
+    const totalRequests = 1 + (commentSummary?.usage.requests ?? 0);
+    if (operation.evidenceCount
+        + (commentSummary?.usage.results ?? 0) > remainingResults
+      || totalRequests > remainingRequests
+      || (commentSummary
+        && (commentSummary.usage.results !== commentSummary.commentsSampled
+          || commentSummary.eventCount > commentSummary.commentsSampled
+          || commentSummary.evidenceCount > commentSummary.eventCount))) {
+      throw new AcquisitionDiscoveryShardProcessorError(
+        "INVALID_DISCOVERY_OPERATION_RESULT"
+      );
+    }
+    const candidateProcessing = this.candidatePipeline
+      ? await this.candidatePipeline.process({
+          scope: input.scope,
+          run: input.run,
+          shard: input.shard,
+          candidateIds: operation.candidateIds,
+          signal: input.signal
+        })
+      : {
+          processedCandidateIds: [] as string[],
+          battleCardCandidateIds: [] as string[],
+          failures: [] as Array<{
+            candidateId: string;
+            stage: "research" | "qualification" | "battle_card";
+            errorCode: string;
+          }>
+        };
     const status = operation.status === "succeeded"
-      ? operation.evidenceCount > 0
+      ? totalEvidenceCount > 0
         ? "succeeded"
         : "succeeded_empty"
+      : operation.status === "partial_success"
+        ? totalEvidenceCount > 0 ? "partial_success" : "failed"
       : operation.status === "access_restricted"
-        ? operation.evidenceCount > 0
+        ? totalEvidenceCount > 0
           ? "partial_success"
           : "failed"
         : operation.status === "failed"
@@ -219,14 +292,40 @@ implements AcquisitionShardProcessorPort {
         "INVALID_DISCOVERY_OPERATION_RESULT"
       );
     }
+    const finalStatus = candidateProcessing.failures.length > 0
+      ? "partial_success" as const
+      : status;
+    const completedAt = this.nowMs();
     return {
-      status,
-      evidenceCount: operation.evidenceCount,
-      usage: measuredUsage(
-        startedAt,
-        this.nowMs(),
-        operation.evidenceCount
-      )
+      status: finalStatus,
+      evidenceCount: totalEvidenceCount,
+      presentation: {
+        rawResultCount: totalEvidenceCount,
+        acceptedResultCount: totalEvidenceCount,
+        duplicateResultCount: 0,
+        failedResultCount: commentSummary?.errors.length ?? 0,
+        providers: totalEvidenceCount > 0 ? [{
+          providerConnectionId: input.shard.connection.connectionId,
+          provider: input.shard.connection.providerId,
+          status: "succeeded" as const
+        }] : [],
+        providerFailures: [],
+        candidateIds: operation.candidateIds,
+        processedCandidateIds: candidateProcessing.processedCandidateIds,
+        battleCardCandidateIds:
+          candidateProcessing.battleCardCandidateIds,
+        candidateFailures: candidateProcessing.failures
+      },
+      usage: {
+        requests: totalRequests,
+        results: operation.evidenceCount
+          + (commentSummary?.usage.results ?? 0),
+        amountMinor: commentSummary?.usage.amountMinor ?? 0,
+        durationSeconds: Math.max(
+          0,
+          Math.ceil((completedAt - startedAt) / 1_000)
+        )
+      }
     };
   }
 }

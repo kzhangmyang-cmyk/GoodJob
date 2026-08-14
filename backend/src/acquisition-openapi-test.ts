@@ -1087,6 +1087,20 @@ test("provider and discovery inputs mirror runtime validation", () => {
   assert.equal(sourceUrl.maxLength, 4_096);
   assert.equal(sourceUrl.format, "uri");
   assert.equal(sourceUrl.pattern, "^[Hh][Tt][Tt][Pp][Ss]://");
+  const fetchResponseSchema = fetch.responses["202"]
+    .content["application/json"].schema;
+  assert.ok(fetchResponseSchema.required.includes("commentSampleSummary"));
+  assert.ok(fetchResponseSchema.properties.status.enum.includes(
+    "partial_success"
+  ));
+  assert.equal(
+    fetchResponseSchema.properties.commentSampleSummary.oneOf.some(
+      (variant: Record<string, any>) => variant.nullable === true
+        && variant.enum?.length === 1
+        && variant.enum[0] === null
+    ),
+    true
+  );
 
   const importOperation = paths[
     "/api/v1/acquisition/import-operations"

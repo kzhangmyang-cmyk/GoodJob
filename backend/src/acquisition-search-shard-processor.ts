@@ -10,6 +10,16 @@ import type {
   AcquisitionShardProcessingResult,
   AcquisitionShardProcessorPort
 } from "./acquisition-plan-execution-worker.js";
+import type {
+  AcquisitionDouyinCommentEnrichmentPort,
+  AcquisitionDouyinCommentEnrichmentResult
+} from "./acquisition-douyin-comment-enrichment.js";
+import type {
+  AcquisitionPlanRunRepository
+} from "./acquisition-plan-run-repository.js";
+import {
+  resolveDouyinVideoId
+} from "./douyin-public-comment-provider.js";
 
 export interface AcquisitionSearchShardProcessorOptions {
   executor: AcquisitionAgentToolExecutor;
@@ -17,6 +27,8 @@ export interface AcquisitionSearchShardProcessorOptions {
     AcquisitionCandidateProcessingPipeline,
     "process"
   >;
+  commentEnrichment?: AcquisitionDouyinCommentEnrichmentPort;
+  planRunRepository?: Pick<AcquisitionPlanRunRepository, "getPlanVersion">;
   nowMs?: () => number;
 }
 
@@ -33,6 +45,48 @@ export class AcquisitionSearchShardProcessorError extends Error {
   }
 }
 
+function emptyCommentEnrichment(): AcquisitionDouyinCommentEnrichmentResult {
+  return {
+    status: "skipped",
+    videoCount: 0,
+    pagesFetched: 0,
+    commentsSampled: 0,
+    eventCount: 0,
+    evidenceCount: 0,
+    candidateIds: [],
+    unresolvedActorCount: 0,
+    strongSignalCount: 0,
+    invalidCommentCount: 0,
+    errors: [],
+    usage: {
+      requests: 0,
+      results: 0,
+      amountMinor: 0,
+      durationSeconds: 0
+    }
+  };
+}
+
+function douyinEvidenceSourceUrls(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const provenance = (item as Record<string, unknown>).provenance;
+    if (!provenance
+      || typeof provenance !== "object"
+      || Array.isArray(provenance)) continue;
+    const sourceUrl = (provenance as Record<string, unknown>).sourceUrl;
+    if (typeof sourceUrl !== "string"
+      || !resolveDouyinVideoId(sourceUrl)
+      || seen.has(sourceUrl)) continue;
+    seen.add(sourceUrl);
+    urls.push(sourceUrl);
+  }
+  return urls;
+}
+
 export class AcquisitionSearchShardProcessor
 implements AcquisitionShardProcessorPort {
   private readonly executor: AcquisitionAgentToolExecutor;
@@ -40,6 +94,10 @@ implements AcquisitionShardProcessorPort {
     AcquisitionCandidateProcessingPipeline,
     "process"
   >;
+  private readonly commentEnrichment:
+    AcquisitionDouyinCommentEnrichmentPort | null;
+  private readonly planRunRepository:
+    Pick<AcquisitionPlanRunRepository, "getPlanVersion"> | null;
   private readonly nowMs: () => number;
 
   constructor(options: AcquisitionSearchShardProcessorOptions) {
@@ -48,6 +106,8 @@ implements AcquisitionShardProcessorPort {
       ?? new AcquisitionCandidateProcessingPipeline({
         executor: options.executor
       });
+    this.commentEnrichment = options.commentEnrichment ?? null;
+    this.planRunRepository = options.planRunRepository ?? null;
     this.nowMs = options.nowMs ?? (() => Date.now());
   }
 
@@ -65,6 +125,8 @@ implements AcquisitionShardProcessorPort {
       && input.shard.teamId === input.scope.teamId;
     const remainingResults = input.shard.allocatedBudget.results
       - input.shard.consumedBudget.results;
+    const remainingRequests = input.shard.allocatedBudget.requests
+      - input.shard.consumedBudget.requests;
     if (!sameScope
       || input.shard.runId !== input.run.id
       || input.shard.status !== "running"
@@ -75,6 +137,8 @@ implements AcquisitionShardProcessorPort {
       || input.shard.query.trim().length < 2
       || !Number.isSafeInteger(remainingResults)
       || remainingResults < 1
+      || !Number.isSafeInteger(remainingRequests)
+      || remainingRequests < 1
       || !input.dispatchKey.trim()) {
       throw new AcquisitionSearchShardProcessorError(
         "INVALID_SEARCH_SHARD"
@@ -166,33 +230,13 @@ implements AcquisitionShardProcessorPort {
         "INVALID_SEARCH_RESULT"
       );
     }
-    const candidateProcessing = await this.candidatePipeline.process({
-      scope: input.scope,
-      run: input.run,
-      shard: input.shard,
-      candidateIds: candidateIds.map(String),
-      signal: input.signal
-    });
-    const completedAt = this.nowMs();
-    const status = candidateProcessing.failures.length > 0
-      ? "partial_success"
-      : record.status === "partial"
-      ? Number(evidenceCount) > 0
-        ? "partial_success"
-        : "failed"
-      : Number(evidenceCount) > 0
-        ? "succeeded"
-        : "succeeded_empty";
-    const measuredUsage = {
+    const baseUsage = {
       requests: attempts.length,
       results: Number(evidenceCount),
       amountMinor: 0,
-      durationSeconds: Math.max(
-        0,
-        Math.ceil((completedAt - startedAt) / 1_000)
-      )
+      durationSeconds: 0
     };
-    let usage = measuredUsage;
+    let searchUsage = baseUsage;
     if (record.usage !== undefined) {
       if (!record.usage
         || typeof record.usage !== "object"
@@ -214,21 +258,104 @@ implements AcquisitionShardProcessorPort {
           "INVALID_SEARCH_RESULT"
         );
       }
-      usage = {
+      searchUsage = {
         requests: Number(supplied.requests),
         results: Number(supplied.results),
         amountMinor: Number(supplied.amountMinor),
         durationSeconds: Number(supplied.durationSeconds)
       };
     }
+    if (searchUsage.requests > remainingRequests
+      || searchUsage.results > remainingResults) {
+      throw new AcquisitionSearchShardProcessorError(
+        "INVALID_SEARCH_RESULT"
+      );
+    }
+    let commentEnrichment = emptyCommentEnrichment();
+    if (this.commentEnrichment && this.planRunRepository) {
+      const version = await this.planRunRepository.getPlanVersion(
+        input.run.planVersionId
+      );
+      const policy = version
+        && version.ownerId === input.scope.ownerId
+        && version.teamId === input.scope.teamId
+        ? version.payload.douyinPublicCommentSample ?? null
+        : null;
+      if (policy?.enabled) {
+        commentEnrichment = await this.commentEnrichment.enrich({
+          scope: input.scope,
+          runId: input.run.id,
+          shardId: input.shard.id,
+          discoveryOperationId: null,
+          sourceUrls: douyinEvidenceSourceUrls(record.evidence),
+          candidateIds: candidateIds.map(String),
+          policy,
+          remainingBudget: {
+            requests: Math.max(
+              0,
+              input.shard.allocatedBudget.requests
+                - input.shard.consumedBudget.requests
+                - searchUsage.requests
+            ),
+            results: Math.max(
+              0,
+              remainingResults - searchUsage.results
+            )
+          },
+          signal: input.signal
+        });
+      }
+    }
+    const mergedCandidateIds = [...new Set([
+      ...candidateIds.map(String),
+      ...commentEnrichment.candidateIds
+    ])];
+    const candidateProcessing = await this.candidatePipeline.process({
+      scope: input.scope,
+      run: input.run,
+      shard: input.shard,
+      candidateIds: mergedCandidateIds,
+      signal: input.signal
+    });
+    const completedAt = this.nowMs();
+    if (record.usage === undefined) {
+      searchUsage = {
+        ...searchUsage,
+        durationSeconds: Math.max(
+          0,
+          Math.ceil((completedAt - startedAt) / 1_000)
+        )
+      };
+    }
+    const combinedEvidenceCount = Number(evidenceCount)
+      + commentEnrichment.evidenceCount;
+    const commentFailed = ["partial_success", "failed"].includes(
+      commentEnrichment.status
+    );
+    const status = candidateProcessing.failures.length > 0
+      ? "partial_success"
+      : commentFailed || record.status === "partial"
+        ? combinedEvidenceCount > 0 ? "partial_success" : "failed"
+        : combinedEvidenceCount > 0 ? "succeeded" : "succeeded_empty";
+    const usage = {
+      requests: searchUsage.requests + commentEnrichment.usage.requests,
+      results: searchUsage.results + commentEnrichment.usage.results,
+      amountMinor:
+        searchUsage.amountMinor + commentEnrichment.usage.amountMinor,
+      durationSeconds:
+        searchUsage.durationSeconds
+          + commentEnrichment.usage.durationSeconds
+    };
     return {
       status,
-      evidenceCount: Number(evidenceCount),
+      evidenceCount: combinedEvidenceCount,
       presentation: {
-        rawResultCount: Number(rawResultCount),
-        acceptedResultCount: Number(evidenceCount),
+        rawResultCount:
+          Number(rawResultCount) + commentEnrichment.commentsSampled,
+        acceptedResultCount: combinedEvidenceCount,
         duplicateResultCount: Number(duplicateResultCount),
-        failedResultCount: Number(failedResultCount),
+        failedResultCount:
+          Number(failedResultCount) + commentEnrichment.errors.length,
         providers: providers.map((provider) => ({
           providerConnectionId: String(
             (provider as Record<string, unknown>).providerConnectionId
@@ -248,7 +375,7 @@ implements AcquisitionShardProcessorPort {
             ? null
             : String((failure as Record<string, unknown>).retryAfterAt)
         })),
-        candidateIds: candidateIds.map(String),
+        candidateIds: mergedCandidateIds,
         processedCandidateIds: candidateProcessing.processedCandidateIds,
         battleCardCandidateIds:
           candidateProcessing.battleCardCandidateIds,

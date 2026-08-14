@@ -57,6 +57,9 @@ import {
   AcquisitionDouyinCommentIngestionService
 } from "./acquisition-douyin-comment-ingestion.js";
 import {
+  AcquisitionDouyinCommentEnrichmentService
+} from "./acquisition-douyin-comment-enrichment.js";
+import {
   AcquisitionDouyinCommentIngestionRecoverySweeper,
   type AcquisitionDouyinCommentIngestionRecoveryPort
 } from "./acquisition-douyin-comment-ingestion-recovery-sweeper.js";
@@ -65,6 +68,10 @@ import {
   MysqlAcquisitionDouyinCommentIngestionUnitOfWork,
   type AcquisitionDouyinCommentIngestionUnitOfWork
 } from "./acquisition-douyin-comment-ingestion-unit-of-work.js";
+import {
+  createDouyinPublicCommentProvider,
+  type DouyinPublicCommentProviderPort
+} from "./douyin-public-comment-provider.js";
 import {
   ensureAcquisitionCandidateIntelligenceMysqlSchema,
   MysqlAcquisitionCandidateIntelligenceOperationRepository
@@ -425,6 +432,7 @@ export interface CreateAcquisitionApplicationOptions {
   douyinCommentIngestionRecoverySweeperFactory?: (
     service: AcquisitionDouyinCommentIngestionRecoveryPort
   ) => Pick<AcquisitionDouyinCommentIngestionRecoverySweeper, "start" | "close">;
+  douyinPublicCommentProvider?: DouyinPublicCommentProviderPort;
   douyinPublicProfileDiscovery?:
     AcquisitionDouyinPublicProfileDiscoveryPort;
   planRunRepository?: AcquisitionPlanRunRepository;
@@ -730,10 +738,24 @@ function assertTrustedPlanConnectionSnapshots(
       assertTrustedSearchConnectionSnapshots(store, scope, [snapshot]);
       continue;
     }
+    if (isTrustedAcquisitionDouyinPublicCommentConnection(snapshot)) {
+      continue;
+    }
     if (!isTrustedAcquisitionSystemConnection(snapshot)) {
       throw new Error("ACQUISITION_PROVIDER_SNAPSHOT_MISMATCH");
     }
   }
+}
+
+export function isTrustedAcquisitionDouyinPublicCommentConnection(
+  snapshot: AcquisitionProviderConnectionSnapshot
+) {
+  return typeof snapshot.connectionId === "string"
+    && snapshot.connectionId.trim().length > 0
+    && snapshot.providerId === "experimental_public_sample"
+    && snapshot.kind === "content_fetch"
+    && snapshot.status === "active"
+    && snapshot.credentialVersion === 1;
 }
 
 function defaultMysqlPool(databaseUrl: string) {
@@ -1382,10 +1404,20 @@ export async function createAcquisitionApplication(
             batchSize: options.douyinCommentIngestionRecoveryBatchSize
           });
     await douyinCommentIngestionRecoverySweeper.start();
+    const douyinCommentEnrichment =
+      new AcquisitionDouyinCommentEnrichmentService({
+        provider: options.douyinPublicCommentProvider
+          ?? createDouyinPublicCommentProvider(),
+        events: repositories.douyinCommentEvents,
+        ingestion: douyinCommentIngestion,
+        now,
+        nowMs
+      });
     const discoveryOperations = new AcquisitionDiscoveryOperationService({
       repository: repositories.discovery,
       evidence: domainService,
       individualSignals,
+      commentEnrichment: douyinCommentEnrichment,
       fetcher: options.contentFetcher
         ?? new ControlledPublicContentFetcher(),
       masterSecret: derivedSecret(masterSecret, "discovery-artifacts"),
@@ -1721,6 +1753,8 @@ export async function createAcquisitionApplication(
     const searchProcessor = new AcquisitionSearchShardProcessor({
       executor: toolExecutor,
       candidatePipeline,
+      commentEnrichment: douyinCommentEnrichment,
+      planRunRepository: repositories.planRun,
       nowMs
     });
     const trustedSearchProcessor = {
@@ -1739,6 +1773,8 @@ export async function createAcquisitionApplication(
     const contentFetchProcessor =
       new AcquisitionContentFetchShardProcessor({
         operations: discoveryOperations,
+        candidatePipeline,
+        planRunRepository: repositories.planRun,
         nowMs
       });
     const importRowsProcessor = new AcquisitionImportRowsShardProcessor({
