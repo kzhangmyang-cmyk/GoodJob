@@ -212,11 +212,16 @@ implements AcquisitionIndividualSignalIngestionPort {
       upsert.entry.candidateId
     );
     if (!upsert.created) {
-      candidate = await this.domain.attachEvidenceToCandidate(
+      candidate = await this.domain.mergeIndividualDemandSignal(
         input.scope,
         candidate.id,
-        input.evidence.id,
-        childIdempotencyKey(input.idempotencyKey, "attach-evidence", {
+        {
+          evidenceId: input.evidence.id,
+          demandSummary: input.subject.demandSummary,
+          buyingStage: input.subject.buyingStage,
+          negativeSignals: input.subject.negativeSignals
+        },
+        childIdempotencyKey(input.idempotencyKey, "merge-signal", {
           candidateId: candidate.id,
           evidenceId: input.evidence.id
         })

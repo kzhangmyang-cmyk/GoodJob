@@ -19,6 +19,7 @@ import type {
   HardGateFailure,
   IdempotencyRecord,
   IndividualCandidateInput,
+  IndividualDemandSignalMergeInput,
   LeadConversionIntent,
   LeadConversionRecord,
   LiveOutcomeFeedbackEvent,
@@ -147,6 +148,28 @@ const TERMINAL_RESEARCH_RESULTS = new Set([
   "access_restricted",
   "failed"
 ]);
+
+const BUYING_STAGE_RANK = Object.freeze({
+  awareness: 0,
+  problem_defined: 1,
+  solution_research: 2,
+  comparison: 3,
+  purchase_ready: 4
+} satisfies Record<IndividualDemandSignalMergeInput["buyingStage"], number>);
+
+const DEMAND_SUMMARY_SEPARATOR = "\n\n---\n\n";
+
+function mergeDemandSummaries(existing: string, incoming: string) {
+  const summaries = [...new Set([
+    ...existing.split(DEMAND_SUMMARY_SEPARATOR),
+    incoming
+  ].map((item) => item.trim()).filter(Boolean))];
+  while (summaries.length > 1
+    && summaries.join(DEMAND_SUMMARY_SEPARATOR).length > 2_000) {
+    summaries.shift();
+  }
+  return summaries.join(DEMAND_SUMMARY_SEPARATOR).slice(0, 2_000);
+}
 
 function fail(
   code: AcquisitionDomainErrorCode,
@@ -856,6 +879,126 @@ export class AcquisitionDomainService {
           payload: {
             evidenceId: evidence.id,
             previousDecisionVersion
+          }
+        });
+        return candidate;
+      }
+    );
+  }
+
+  async mergeIndividualDemandSignal(
+    scope: AcquisitionActorScope,
+    candidateId: string,
+    raw: IndividualDemandSignalMergeInput,
+    idempotencyKey: string
+  ) {
+    this.validateScope(scope);
+    const buyingStage = raw.buyingStage;
+    if (!Object.hasOwn(BUYING_STAGE_RANK, buyingStage)) {
+      fail("invalid_request", "个人购买阶段无效", 400);
+    }
+    if (!Array.isArray(raw.negativeSignals)) {
+      fail("invalid_request", "负向信号必须是数组", 400);
+    }
+    const input: IndividualDemandSignalMergeInput = {
+      evidenceId: requiredText(raw.evidenceId, "证据 ID", 100),
+      demandSummary: requiredText(raw.demandSummary, "需求摘要", 2_000),
+      buyingStage,
+      negativeSignals: [...new Set(raw.negativeSignals
+        .map((item) => String(item).trim())
+        .filter(Boolean))]
+    };
+    const normalizedCandidateId = requiredText(candidateId, "候选 ID", 100);
+    return this.idempotent(
+      scope,
+      "merge_individual_demand_signal",
+      idempotencyKey,
+      { candidateId: normalizedCandidateId, ...input },
+      async () => {
+        let candidate = await this.requireCandidate(scope, normalizedCandidateId);
+        if (candidate.partyType !== "individual"
+          || candidate.profile.kind !== "individual") {
+          fail("invalid_request", "只能合并个人需求信号", 400);
+        }
+        if (["unresolvable", "do_not_contact", "converted_to_lead"]
+          .includes(candidate.status)) {
+          fail("invalid_state", `状态 ${candidate.status} 不能原地合并需求信号`);
+        }
+        if (candidate.status === "needs_research") {
+          fail(
+            "invalid_state",
+            "补充研究中的需求信号必须通过研究任务完成命令追加"
+          );
+        }
+        const evidence = await this.requireEvidence(scope, input.evidenceId);
+        if (evidence.targetType !== "individual_signal") {
+          fail("evidence_required", "新增证据与个人需求信号不匹配", 422);
+        }
+
+        const previousProfile = candidate.profile;
+        const demandSummary = mergeDemandSummaries(
+          previousProfile.demandSummary,
+          input.demandSummary
+        );
+        const negativeSignals = [...new Set([
+          ...previousProfile.negativeSignals,
+          ...input.negativeSignals
+        ])];
+        const nextBuyingStage = BUYING_STAGE_RANK[input.buyingStage]
+          > BUYING_STAGE_RANK[previousProfile.buyingStage]
+          ? input.buyingStage
+          : previousProfile.buyingStage;
+        const evidenceIds = candidate.evidenceIds.includes(evidence.id)
+          ? candidate.evidenceIds
+          : [...candidate.evidenceIds, evidence.id];
+        const unchanged = demandSummary === previousProfile.demandSummary
+          && nextBuyingStage === previousProfile.buyingStage
+          && negativeSignals.length === previousProfile.negativeSignals.length
+          && negativeSignals.every((value, index) =>
+            value === previousProfile.negativeSignals[index])
+          && evidenceIds.length === candidate.evidenceIds.length;
+        if (unchanged) return candidate;
+
+        const fromStatus = candidate.status;
+        const previousDecisionVersion = candidate.latestDecisionVersion;
+        const keepRejectedState = candidate.status === "rejected";
+        candidate = this.updateCandidate(candidate, {
+          profile: {
+            ...previousProfile,
+            demandSummary,
+            buyingStage: nextBuyingStage,
+            negativeSignals
+          },
+          evidenceIds,
+          status: keepRejectedState ? "rejected" : (
+            candidate.status === "approved" ? "pending_review" : "normalized"
+          ),
+          latestDecisionId: keepRejectedState
+            ? candidate.latestDecisionId
+            : null,
+          latestDecisionVersion: keepRejectedState
+            ? candidate.latestDecisionVersion
+            : null,
+          approvedDecisionVersion: null,
+          hardGateFailures: []
+        });
+        await this.repository.saveCandidate(candidate);
+        await this.audit(scope, {
+          candidateId: candidate.id,
+          eventType: fromStatus === "approved"
+            ? "approval_invalidated_by_new_evidence"
+            : "individual_demand_signal_merged",
+          fromStatus,
+          toStatus: candidate.status,
+          resourceId: evidence.id,
+          idempotencyKey,
+          payload: {
+            evidenceId: evidence.id,
+            previousDecisionVersion,
+            previousBuyingStage: previousProfile.buyingStage,
+            buyingStage: nextBuyingStage,
+            addedNegativeSignals: input.negativeSignals.filter((signal) =>
+              !previousProfile.negativeSignals.includes(signal))
           }
         });
         return candidate;

@@ -522,6 +522,135 @@ test("organization and individual candidates keep separate party identities and 
   );
 });
 
+test("individual demand merges preserve identity, advance stage, union negatives, and replay exactly", async () => {
+  const { repository, service } = createHarness();
+  const { candidate } = await createIndividualCandidate(service, "merge-signal");
+  const identityBefore = candidate.profile;
+  const strongEvidence = await service.appendEvidence(
+    ownerScope,
+    searchEvidence("individual_signal", "merge-strong"),
+    "evidence:merge-strong"
+  );
+  const strong = await service.mergeIndividualDemandSignal(
+    ownerScope,
+    candidate.id,
+    {
+      evidenceId: strongEvidence.id,
+      demandSummary: "预算已确定，近期采购 20 套。",
+      buyingStage: "purchase_ready",
+      negativeSignals: []
+    },
+    "merge-signal:strong"
+  );
+  const negativeEvidence = await service.appendEvidence(
+    ownerScope,
+    searchEvidence("individual_signal", "merge-negative"),
+    "evidence:merge-negative"
+  );
+  const negative = await service.mergeIndividualDemandSignal(
+    ownerScope,
+    candidate.id,
+    {
+      evidenceId: negativeEvidence.id,
+      demandSummary: "后续公开评论明确请勿联系。",
+      buyingStage: "awareness",
+      negativeSignals: ["explicit_rejection", "no_contact", "no_contact"]
+    },
+    "merge-signal:negative"
+  );
+  const replay = await service.mergeIndividualDemandSignal(
+    ownerScope,
+    candidate.id,
+    {
+      evidenceId: negativeEvidence.id,
+      demandSummary: "后续公开评论明确请勿联系。",
+      buyingStage: "awareness",
+      negativeSignals: ["explicit_rejection", "no_contact", "no_contact"]
+    },
+    "merge-signal:negative"
+  );
+
+  assert.equal(strong.profile.kind, "individual");
+  assert.equal(negative.profile.kind, "individual");
+  if (negative.profile.kind === "individual"
+    && identityBefore.kind === "individual") {
+    assert.deepEqual({
+      publicActorKey: negative.profile.publicActorKey,
+      publicDisplayName: negative.profile.publicDisplayName,
+      publicProfileUrl: negative.profile.publicProfileUrl,
+      sourcePlatform: negative.profile.sourcePlatform,
+      demandCategory: negative.profile.demandCategory,
+      locationHint: negative.profile.locationHint
+    }, {
+      publicActorKey: identityBefore.publicActorKey,
+      publicDisplayName: identityBefore.publicDisplayName,
+      publicProfileUrl: identityBefore.publicProfileUrl,
+      sourcePlatform: identityBefore.sourcePlatform,
+      demandCategory: identityBefore.demandCategory,
+      locationHint: identityBefore.locationHint
+    });
+    assert.equal(negative.profile.buyingStage, "purchase_ready");
+    assert.deepEqual(negative.profile.negativeSignals, [
+      "explicit_rejection", "no_contact"
+    ]);
+    assert.match(negative.profile.demandSummary, /正在比较/u);
+    assert.match(negative.profile.demandSummary, /预算已确定/u);
+    assert.match(negative.profile.demandSummary, /请勿联系/u);
+    assert.equal(negative.profile.demandSummary.length <= 2_000, true);
+  }
+  assert.deepEqual(replay, negative);
+  assert.equal(replay.version, negative.version);
+  assert.deepEqual(negative.evidenceIds, [
+    candidate.evidenceIds[0], strongEvidence.id, negativeEvidence.id
+  ]);
+  const audit = await repository.listAuditEvents(ownerScope, candidate.id);
+  assert.equal(audit.filter((event) =>
+    event.eventType === "individual_demand_signal_merged").length, 2);
+});
+
+test("individual demand merge invalidates an existing approval", async () => {
+  const { service } = createHarness();
+  const { candidate } = await createIndividualCandidate(
+    service,
+    "merge-invalidate"
+  );
+  const qualified = await service.qualifyCandidate(
+    ownerScope,
+    candidate.id,
+    strongQualification(),
+    healthyFinancialValue(),
+    "qualify:merge-invalidate"
+  );
+  await service.reviewCandidate(ownerScope, candidate.id, {
+    action: "approved",
+    decisionVersion: qualified.qualification.decisionVersion,
+    reason: "首轮已核验",
+    idempotencyKey: "review:merge-invalidate"
+  });
+  const evidence = await service.appendEvidence(
+    ownerScope,
+    searchEvidence("individual_signal", "merge-invalidate-new"),
+    "evidence:merge-invalidate-new"
+  );
+  const merged = await service.mergeIndividualDemandSignal(
+    ownerScope,
+    candidate.id,
+    {
+      evidenceId: evidence.id,
+      demandSummary: "新的公开需求信号",
+      buyingStage: "purchase_ready",
+      negativeSignals: []
+    },
+    "merge:invalidate-new"
+  );
+
+  assert.equal(merged.status, "pending_review");
+  assert.equal(merged.latestDecisionId, null);
+  assert.equal(merged.latestDecisionVersion, null);
+  assert.equal(merged.approvedDecisionVersion, null);
+  assert.deepEqual(merged.hardGateFailures, []);
+});
+
 test("rules qualification creates append-only decisions and a separate financial value score", async () => {
   const { service } = createHarness();
   const { candidate, evidence } = await createOrganizationCandidate(service);

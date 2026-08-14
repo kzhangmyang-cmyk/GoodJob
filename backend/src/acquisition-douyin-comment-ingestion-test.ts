@@ -5,14 +5,16 @@ import {
   classifyDouyinCommentIntent
 } from "./acquisition-douyin-comment-ingestion.js";
 import {
-  InMemoryAcquisitionDouyinCommentEventRepository
+  InMemoryAcquisitionDouyinCommentEventRepository,
+  type AcquisitionDouyinCommentEventRepository
 } from "./acquisition-douyin-comment-events.js";
 import {
   InMemoryAcquisitionDomainRepository
 } from "./acquisition-domain-repository.js";
 import { AcquisitionDomainService } from "./acquisition-domain-service.js";
 import {
-  AcquisitionIndividualSignalIngestionService
+  AcquisitionIndividualSignalIngestionService,
+  type AcquisitionIndividualSignalIngestionPort
 } from "./acquisition-individual-signal-ingestion.js";
 import {
   InMemoryAcquisitionCandidateDirectory
@@ -79,7 +81,9 @@ function page(
   };
 }
 
-function createHarness() {
+type FailureStage = "after_event" | "after_evidence" | "after_candidate";
+
+function createHarness(options: { failOnceAt?: FailureStage } = {}) {
   let sequence = 0;
   const domainRepository = new InMemoryAcquisitionDomainRepository();
   const domain = new AcquisitionDomainService({
@@ -114,12 +118,69 @@ function createHarness() {
       domain,
       candidateDirectory
     });
+  const mutationCounts = {
+    eventAppends: 0,
+    evidenceAppends: 0,
+    signalIngestions: 0,
+    links: 0
+  };
+  let failureConsumed = false;
+  const shouldFail = (stage: FailureStage) => {
+    if (failureConsumed || options.failOnceAt !== stage) return false;
+    failureConsumed = true;
+    return true;
+  };
+  const eventPort = new Proxy(eventRepository, {
+    get(target, property, receiver) {
+      if (property === "appendObservation") {
+        return async (...args: Parameters<typeof target.appendObservation>) => {
+          mutationCounts.eventAppends += 1;
+          return target.appendObservation(...args);
+        };
+      }
+      if (property === "linkEvent") {
+        return async (...args: Parameters<typeof target.linkEvent>) => {
+          mutationCounts.links += 1;
+          if (shouldFail("after_candidate")) throw new Error("FAIL_AFTER_CANDIDATE");
+          return target.linkEvent(...args);
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  }) as AcquisitionDouyinCommentEventRepository;
+  const domainPort = new Proxy(domain, {
+    get(target, property, receiver) {
+      if (property === "appendEvidence") {
+        return async (...args: Parameters<typeof target.appendEvidence>) => {
+          mutationCounts.evidenceAppends += 1;
+          if (shouldFail("after_event")) throw new Error("FAIL_AFTER_EVENT");
+          return target.appendEvidence(...args);
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  }) as AcquisitionDomainService;
+  const individualSignalPort: AcquisitionIndividualSignalIngestionPort = {
+    async ingest(signalInput) {
+      mutationCounts.signalIngestions += 1;
+      if (shouldFail("after_evidence")) throw new Error("FAIL_AFTER_EVIDENCE");
+      return individualSignalIngestion.ingest(signalInput);
+    }
+  };
   const service = new AcquisitionDouyinCommentIngestionService({
-    events: eventRepository,
-    domain,
-    individualSignals: individualSignalIngestion
+    events: eventPort,
+    domain: domainPort,
+    individualSignals: individualSignalPort
   });
-  return { service, domain, domainRepository, eventRepository };
+  return {
+    service,
+    domain,
+    domainRepository,
+    eventRepository,
+    mutationCounts
+  };
 }
 
 function input(
@@ -203,6 +264,56 @@ test("secUid aggregation crosses videos, separates actors, and stays tenant isol
   assert.notDeepEqual(otherTenant.candidateIds, first.candidateIds);
   assert.equal(first.unresolvedActorCount, 1);
   assert.equal(replayActor.unresolvedActorCount, 1);
+});
+
+test("same secUid merges later strong and rejection signals without downgrading stage", async () => {
+  const harness = createHarness();
+  const potential = await harness.service.ingestSample(input(page([
+    comment("cid-merge-1", "想咨询一下解决方案", {
+      secUid: "MS4wLjABAAAA_merge-actor"
+    })
+  ])));
+  const strong = await harness.service.ingestSample(input(page([
+    comment("cid-merge-2", "预算 10 万，采购 20 套，请报价", {
+      secUid: "MS4wLjABAAAA_merge-actor"
+    })
+  ], { rawArtifactHash: `sha256:${"b".repeat(64)}` }), {
+    sourceUrl: "https://www.douyin.com/video/7536012345678909999",
+    videoId: "7536012345678909999"
+  }));
+  const negativePage = page([
+    comment("cid-merge-3", "不需要，请勿联系", {
+      secUid: "MS4wLjABAAAA_merge-actor"
+    })
+  ], { rawArtifactHash: `sha256:${"c".repeat(64)}` });
+  const negative = await harness.service.ingestSample(input(negativePage));
+  const beforeReplay = await harness.domain.getCandidate(
+    scopeA,
+    potential.candidateIds[0]!
+  );
+  const replay = await harness.service.ingestSample(input(negativePage));
+  const afterReplay = await harness.domain.getCandidate(
+    scopeA,
+    potential.candidateIds[0]!
+  );
+
+  assert.deepEqual(strong.candidateIds, potential.candidateIds);
+  assert.deepEqual(negative.candidateIds, potential.candidateIds);
+  assert.deepEqual(replay.candidateIds, potential.candidateIds);
+  assert.equal(beforeReplay.profile.kind, "individual");
+  assert.equal(afterReplay.profile.kind, "individual");
+  if (beforeReplay.profile.kind !== "individual"
+    || afterReplay.profile.kind !== "individual") return;
+  assert.equal(beforeReplay.profile.buyingStage, "purchase_ready");
+  assert.deepEqual(beforeReplay.profile.negativeSignals, [
+    "explicit_rejection", "no_contact"
+  ]);
+  assert.match(beforeReplay.profile.demandSummary, /想咨询一下解决方案/u);
+  assert.match(beforeReplay.profile.demandSummary, /预算 10 万/u);
+  assert.match(beforeReplay.profile.demandSummary, /请勿联系/u);
+  assert.equal(beforeReplay.evidenceIds.length, 3);
+  assert.equal(afterReplay.version, beforeReplay.version);
+  assert.deepEqual(afterReplay, beforeReplay);
 });
 
 test("handle is temporary, never aliases secUid, and identity-less cid replay is safe", async () => {
@@ -319,6 +430,174 @@ test("event, observation, evidence, and link preserve exact public provenance", 
   });
   assert.equal(evidence.accessStatus, "public_content");
   assert.equal(evidence.contentHash, signal.event.textHash);
-  assert.equal(evidence.rawArtifactHash, sample.rawArtifactHash);
-  assert.equal(evidence.sourceSnippet, signal.event.text);
+  assert.notEqual(evidence.rawArtifactHash, sample.rawArtifactHash);
+  assert.match(evidence.rawArtifactHash, /^sha256:[a-f0-9]{64}$/u);
+  assert.equal(signal.latestObservation.rawArtifactHash, sample.rawArtifactHash);
+  assert.equal(evidence.sourceSnippet, "预算 10 万,采购 20 套 请报价");
+});
+
+test("changed comment content forms one replay-safe version with the immutable actor", async () => {
+  const harness = createHarness();
+  const actorA = {
+    displayName: "原始用户",
+    handle: "original_user",
+    secUid: "MS4wLjABAAAA_original-actor"
+  };
+  const original = await harness.service.ingestSample(input(page([
+    comment("cid-versioned", "想咨询解决方案", actorA)
+  ])));
+  const firstProjection = (await harness.eventRepository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 50 }
+  ))[0]!;
+  const changed = await harness.service.ingestSample(input(page([
+    comment("cid-versioned", "预算 10 万，采购 20 套，请报价", {
+      displayName: "来源后来返回的其他昵称",
+      handle: "other_user",
+      secUid: "MS4wLjABAAAA_other-actor"
+    })
+  ], {
+    capturedAt: "2026-08-15T03:00:00.000Z",
+    rawArtifactHash: `sha256:${"b".repeat(64)}`
+  })));
+  const changedProjection = (await harness.eventRepository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 50 }
+  ))[0]!;
+  const replay = await harness.service.ingestSample(input(page([
+    comment("cid-versioned", "预算 10 万,采购 20 套,请报价", {
+      displayName: "第三次返回的昵称",
+      handle: "third_user",
+      secUid: "MS4wLjABAAAA_third-actor"
+    })
+  ], {
+    capturedAt: "2026-08-15T04:00:00.000Z",
+    rawArtifactHash: `sha256:${"c".repeat(64)}`
+  })));
+  const replayProjection = (await harness.eventRepository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 50 }
+  ))[0]!;
+
+  assert.deepEqual(changed.candidateIds, original.candidateIds);
+  assert.deepEqual(replay.candidateIds, original.candidateIds);
+  assert.equal(replayProjection.event.text, "想咨询解决方案");
+  assert.deepEqual(replayProjection.event.actor, actorA);
+  assert.notEqual(firstProjection.link.evidenceId, changedProjection.link.evidenceId);
+  assert.equal(replayProjection.link.evidenceId, changedProjection.link.evidenceId);
+  assert.equal(
+    replayProjection.latestObservation.rawArtifactHash,
+    `sha256:${"c".repeat(64)}`
+  );
+  assert.equal(
+    replayProjection.latestObservation.observedTextHash,
+    changedProjection.latestObservation.observedTextHash
+  );
+  const changedEvidence = await harness.domain.getEvidence(
+    scopeA,
+    changedProjection.link.evidenceId!
+  );
+  assert.equal(changedEvidence.sourceSnippet, "预算 10 万,采购 20 套,请报价");
+  assert.notEqual(changedEvidence.rawArtifactHash, `sha256:${"b".repeat(64)}`);
+  assert.notEqual(changedEvidence.rawArtifactHash, `sha256:${"c".repeat(64)}`);
+  const candidate = await harness.domain.getCandidate(
+    scopeA,
+    original.candidateIds[0]!
+  );
+  assert.equal(candidate.profile.kind, "individual");
+  if (candidate.profile.kind === "individual") {
+    assert.equal(candidate.profile.publicActorKey,
+      "douyin:sec_uid:MS4wLjABAAAA_original-actor");
+  }
+  assert.equal(candidate.evidenceIds.length, 2);
+});
+
+test("ingestion resumes idempotently after each cross-repository failure boundary", async () => {
+  for (const failOnceAt of [
+    "after_event", "after_evidence", "after_candidate"
+  ] as const) {
+    const harness = createHarness({ failOnceAt });
+    const sampleInput = input(page([
+      comment(`cid-saga-${failOnceAt}`, "预算 10 万，采购 20 套，请报价", {
+        secUid: `MS4wLjABAAAA_${failOnceAt}`
+      })
+    ]));
+
+    await assert.rejects(
+      harness.service.ingestSample(sampleInput),
+      new RegExp(`FAIL_${failOnceAt.toLocaleUpperCase("en-US")}`)
+    );
+    const completed = await harness.service.ingestSample(sampleInput);
+    const signals = await harness.eventRepository.listRunCommentSignals(
+      scopeA,
+      "run-1",
+      { limit: 50 }
+    );
+    const candidates = await harness.domainRepository.listCandidates(
+      scopeA,
+      { limit: 100 }
+    );
+
+    assert.equal(completed.eventCount, 1, failOnceAt);
+    assert.equal(completed.evidenceCount, 1, failOnceAt);
+    assert.equal(completed.candidateIds.length, 1, failOnceAt);
+    assert.equal(signals.length, 1, failOnceAt);
+    assert.equal(candidates.items.length, 1, failOnceAt);
+    assert.deepEqual(candidates.items[0]?.evidenceIds, [
+      signals[0]?.link.evidenceId
+    ], failOnceAt);
+    assert.deepEqual(await harness.eventRepository.getRunCommentSummary(
+      scopeA,
+      "run-1"
+    ), {
+      linkedEventCount: 1,
+      observationCount: 1,
+      fetchAttemptCount: 0,
+      returnedCommentCount: 0
+    }, failOnceAt);
+  }
+});
+
+test("invalid sample literals and overlong context fail before mutation", async () => {
+  const invalidInputs = [
+    input(page([comment("cid-invalid-version", "想咨询")], {
+      providerVersion: "another-version" as never
+    })),
+    input(page([comment("cid-invalid-replies", "想咨询")], {
+      replyBodiesIncluded: true as never
+    })),
+    input(page([comment("cid-invalid-provider", "想咨询")], {
+      providerId: "another-provider" as never
+    })),
+    input(page([comment("cid-invalid-coverage", "想咨询")], {
+      coverage: "all_comments" as never
+    })),
+    input(page([comment("cid-invalid-context", "想咨询")]), {
+      runId: "r".repeat(256)
+    }),
+    input(page([comment("cid-invalid-video", "想咨询")]), {
+      videoId: "not-a-video"
+    })
+  ];
+
+  for (const invalidInput of invalidInputs) {
+    const harness = createHarness();
+    await assert.rejects(
+      harness.service.ingestSample(invalidInput),
+      /ACQUISITION_DOUYIN_COMMENT_INVALID_SAMPLE/u
+    );
+    assert.deepEqual(harness.mutationCounts, {
+      eventAppends: 0,
+      evidenceAppends: 0,
+      signalIngestions: 0,
+      links: 0
+    });
+    assert.equal((await harness.domainRepository.listCandidates(
+      scopeA,
+      { limit: 100 }
+    )).items.length, 0);
+  }
 });

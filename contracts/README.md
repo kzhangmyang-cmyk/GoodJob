@@ -49,6 +49,22 @@ uses normalized `douyin:handle:*` only as a temporary key, and isolates
 identity-less comments with `unmergeable:douyin:comment:*`. None of these keys
 asserts a verified customer identity.
 
+Each provider capture keeps the provider response `rawArtifactHash` on its
+immutable observation. Discovery evidence instead identifies a deterministic
+`douyin-comment-content-version-v1` artifact derived from event ID, normalized
+text hash, and normalized text. Therefore the same event/text version produces
+byte-equivalent evidence even when a later provider page has another raw
+artifact, while the observation remains traceable to that exact provider page.
+Changed text creates another evidence version but always keeps the actor and
+source identity from the stored immutable event.
+
+Comment ingestion is a restartable idempotent saga across the event, evidence,
+candidate, and link repositories; it is not described as an atomic transaction.
+An exact retry resumes from deterministic step identities. Later signals for an
+existing individual candidate append evidence, merge bounded deduplicated
+demand summaries, advance buying stage only by its explicit order, and retain a
+stable union of negative signal codes without overwriting identity facts.
+
 Run `npm run check:acquisition-contracts` from the repository root before
 changing any producer or consumer.
 

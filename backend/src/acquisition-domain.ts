@@ -247,6 +247,18 @@ export interface IndividualCandidateInput {
   evidenceIds: string[];
 }
 
+/**
+ * Internal command used when another public demand signal belongs to an
+ * existing individual candidate. Identity-bearing profile fields are
+ * deliberately absent so ingestion cannot overwrite resolved identity facts.
+ */
+export interface IndividualDemandSignalMergeInput {
+  evidenceId: string;
+  demandSummary: string;
+  buyingStage: BuyingStage;
+  negativeSignals: string[];
+}
+
 export interface QualificationDimensions {
   demandStrength: number;
   fit: number;

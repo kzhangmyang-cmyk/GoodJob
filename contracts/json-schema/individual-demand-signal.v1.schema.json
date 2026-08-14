@@ -51,9 +51,7 @@
     },
     "negativeSignals": {
       "type": "array",
-      "maxItems": 12,
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+      "items": { "type": "string" }
     },
     "subjectKind": { "const": "individual" },
     "version": { "type": "integer", "minimum": 1 },

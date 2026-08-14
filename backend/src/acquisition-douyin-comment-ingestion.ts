@@ -17,6 +17,7 @@ import {
 import {
   DOUYIN_PUBLIC_COMMENT_COVERAGE,
   DOUYIN_PUBLIC_COMMENT_PROVIDER_ID,
+  DOUYIN_PUBLIC_COMMENT_PROVIDER_VERSION,
   type DouyinPublicComment,
   type DouyinPublicCommentSamplePage,
   resolveDouyinVideoId
@@ -238,7 +239,7 @@ function normalizedOptional(value: unknown, maximum: number) {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") return null;
   const normalized = normalizedText(value);
-  return normalized ? normalized.slice(0, maximum) : null;
+  return normalized && normalized.length <= maximum ? normalized : null;
 }
 
 type ValidComment = {
@@ -263,20 +264,31 @@ function validComment(value: unknown, capturedAt: string): ValidComment | null {
     ? comment.commentId.normalize("NFKC").trim()
     : "";
   const text = typeof comment.text === "string"
-    ? comment.text.trim().slice(0, 4_000)
+    ? comment.text.trim()
     : "";
   if (!/^[A-Za-z0-9._~-]{1,128}$/u.test(commentId)
     || !normalizedText(text)
+    || text.length > 4_000
     || !nonNegativeInteger(comment.likeCount)
     || !nonNegativeInteger(comment.replyCount)
     || !nullableString(comment.ipLabel)
-    || (comment.occurredAt !== null && !validInstant(comment.occurredAt))
+    || (comment.occurredAt !== null
+      && (!boundedNonEmpty(comment.occurredAt, 100)
+        || !validInstant(comment.occurredAt)))
     || !comment.actor
     || typeof comment.actor !== "object"
     || Array.isArray(comment.actor)
     || !nullableString(comment.actor.displayName)
     || !nullableString(comment.actor.handle)
-    || !nullableString(comment.actor.secUid)) {
+    || !nullableString(comment.actor.secUid)
+    || (comment.ipLabel !== null
+      && normalizedText(comment.ipLabel!).length > 200)
+    || (comment.actor.displayName !== null
+      && normalizedText(comment.actor.displayName!).length > 200)
+    || (comment.actor.handle !== null
+      && normalizedText(comment.actor.handle!).length > 64)
+    || (comment.actor.secUid !== null
+      && normalizedText(comment.actor.secUid!).length > 128)) {
     return null;
   }
   const publishedAt = comment.occurredAt === null
@@ -311,20 +323,75 @@ function actorKey(comment: ValidComment) {
   return `unmergeable:douyin:comment:${comment.commentId}`;
 }
 
-function assertPage(input: AcquisitionDouyinCommentIngestionInput) {
-  if (!input.scope?.ownerId
-    || !input.scope?.teamId
-    || !input.scope?.actorId
-    || input.page?.providerId !== DOUYIN_PUBLIC_COMMENT_PROVIDER_ID
-    || input.page?.coverage !== DOUYIN_PUBLIC_COMMENT_COVERAGE
-    || !validInstant(input.page?.capturedAt)
-    || !/^sha256:[a-f0-9]{64}$/u.test(input.page?.rawArtifactHash || "")
-    || typeof input.page?.providerVersion !== "string"
-    || !input.page.providerVersion
-    || !Array.isArray(input.page.comments)
-    || resolveDouyinVideoId(input.sourceUrl) !== input.videoId) {
+function boundedNonEmpty(value: unknown, maximum: number) {
+  return typeof value === "string"
+    && value.trim().length > 0
+    && value.length <= maximum;
+}
+
+function nullableBoundedNonEmpty(value: unknown, maximum: number) {
+  return value === null || boundedNonEmpty(value, maximum);
+}
+
+function prepareSample(input: AcquisitionDouyinCommentIngestionInput) {
+  const page = input?.page;
+  const metadata = page?.metadata;
+  const validSource = boundedNonEmpty(input?.sourceUrl, 4_000)
+    && resolveDouyinVideoId(input.sourceUrl) === input.videoId;
+  if (!boundedNonEmpty(input?.scope?.ownerId, 100)
+    || !boundedNonEmpty(input?.scope?.teamId, 100)
+    || !boundedNonEmpty(input?.scope?.actorId, 100)
+    || !nullableBoundedNonEmpty(input?.runId, 255)
+    || !nullableBoundedNonEmpty(input?.shardId, 255)
+    || !nullableBoundedNonEmpty(input?.discoveryOperationId, 255)
+    || !validSource
+    || !/^[0-9]{1,32}$/u.test(input?.videoId || "")
+    || page?.providerId !== DOUYIN_PUBLIC_COMMENT_PROVIDER_ID
+    || page?.providerVersion !== DOUYIN_PUBLIC_COMMENT_PROVIDER_VERSION
+    || page?.coverage !== DOUYIN_PUBLIC_COMMENT_COVERAGE
+    || page?.replyBodiesIncluded !== false
+    || !boundedNonEmpty(page?.capturedAt, 100)
+    || !validInstant(page?.capturedAt)
+    || !/^sha256:[a-f0-9]{64}$/u.test(page?.rawArtifactHash || "")
+    || !Array.isArray(page?.comments)
+    || page.comments.length > 100
+    || (page.nextCursor !== null && !nonNegativeInteger(page.nextCursor))
+    || typeof page.hasMore !== "boolean"
+    || (page.reportedCommentCount !== null
+      && !nonNegativeInteger(page.reportedCommentCount))
+    || !metadata
+    || !Number.isSafeInteger(metadata.requestedCommentCount)
+    || metadata.requestedCommentCount < 1
+    || metadata.requestedCommentCount > 100
+    || metadata.returnedCommentCount !== page.comments.length
+    || !nonNegativeInteger(metadata.duplicateCommentCount)
+    || typeof metadata.partial !== "boolean"
+    || typeof metadata.cursorProgressed !== "boolean") {
     throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_SAMPLE");
   }
+  const capturedAt = canonicalInstant(page.capturedAt);
+  const comments = (page.comments as unknown[]).map((rawComment) =>
+    validComment(rawComment, capturedAt));
+  return {
+    capturedAt,
+    comments,
+    invalidCommentCount: comments.filter((comment) => comment === null).length
+  };
+}
+
+const DOUYIN_COMMENT_CONTENT_VERSION = "douyin-comment-content-version-v1";
+
+function contentVersionArtifactHash(input: {
+  eventId: string;
+  textHash: string;
+  normalizedContent: string;
+}) {
+  return sha256(JSON.stringify({
+    schemaVersion: DOUYIN_COMMENT_CONTENT_VERSION,
+    eventId: input.eventId,
+    textHash: input.textHash,
+    normalizedContent: input.normalizedContent
+  }));
 }
 
 export class AcquisitionDouyinCommentIngestionService {
@@ -341,23 +408,23 @@ export class AcquisitionDouyinCommentIngestionService {
   async ingestSample(
     input: AcquisitionDouyinCommentIngestionInput
   ): Promise<AcquisitionDouyinCommentIngestionResult> {
-    assertPage(input);
-    const capturedAt = canonicalInstant(input.page.capturedAt);
+    const prepared = prepareSample(input);
+    const capturedAt = prepared.capturedAt;
     const candidateIds: string[] = [];
     const seenCandidateIds = new Set<string>();
     const unresolvedActors = new Set<string>();
     let eventCount = 0;
     let evidenceCount = 0;
     let strongSignalCount = 0;
-    let invalidCommentCount = 0;
+    const invalidCommentCount = prepared.invalidCommentCount;
 
-    for (const rawComment of input.page.comments as unknown[]) {
-      const comment = validComment(rawComment, capturedAt);
-      if (!comment) {
-        invalidCommentCount += 1;
-        continue;
-      }
-      const textHash = sha256(normalizedText(comment.text));
+    // This is a restartable cross-repository saga, not an atomic transaction.
+    // Each step has deterministic identity, so exact retry resumes safely
+    // after event, evidence, candidate, or link without duplicating facts.
+    for (const comment of prepared.comments) {
+      if (!comment) continue;
+      const normalizedContent = normalizedText(comment.text);
+      const textHash = sha256(normalizedContent);
       const eventId = deterministicId("douyin-comment-event", [
         input.scope.ownerId,
         input.scope.teamId,
@@ -401,52 +468,65 @@ export class AcquisitionDouyinCommentIngestionService {
       });
       eventCount += 1;
 
-      const evidenceEvent = appended.contentChanged ? event : appended.event;
-      const evidenceKey =
-        `comment:${eventId}:evidence:${evidenceEvent.textHash}`;
+      const authoritativeEvent = appended.event;
+      const evidenceKey = `comment:${eventId}:evidence:${textHash}`;
       const evidence = await this.domain.appendEvidence(input.scope, {
         targetType: "individual_signal",
         sourcePlatform: "douyin",
         sourceTitle:
-          `${evidenceEvent.actor.displayName} 的抖音公开评论`.slice(0, 500),
-        sourceSnippet: evidenceEvent.text,
-        publishedAt: evidenceEvent.occurredAt,
+          `${authoritativeEvent.actor.displayName} 的抖音公开评论`.slice(0, 500),
+        sourceSnippet: normalizedContent,
+        publishedAt: authoritativeEvent.occurredAt,
         locale: "zh-CN",
-        rawArtifactHash: evidenceEvent.rawArtifactHash,
-        contentHash: evidenceEvent.textHash,
+        rawArtifactHash: contentVersionArtifactHash({
+          eventId,
+          textHash,
+          normalizedContent
+        }),
+        contentHash: textHash,
         provenance: {
           kind: "platform_public_event",
-          sourceUrl: evidenceEvent.sourceUrl,
-          platformEventId: comment.commentId,
-          providerVersion: evidenceEvent.providerVersion,
+          sourceUrl: authoritativeEvent.sourceUrl,
+          platformEventId: authoritativeEvent.platformEventId,
+          providerVersion: authoritativeEvent.providerVersion,
           coverage: "public_top_level_sample"
         },
         accessStatus: "public_content"
       }, evidenceKey);
       evidenceCount += 1;
 
-      const decision = classifyDouyinCommentIntent(comment.text);
+      const decision = classifyDouyinCommentIntent(normalizedContent);
       if (decision.band === "strong_signal") strongSignalCount += 1;
       let candidateId: string | null = null;
       if (decision.band !== "noise") {
-        const publicActorKey = actorKey(comment);
+        const authoritativeComment: ValidComment = {
+          commentId: authoritativeEvent.platformEventId,
+          text: authoritativeEvent.text,
+          occurredAt: authoritativeEvent.occurredAt,
+          publishedAt: authoritativeEvent.occurredAt,
+          likeCount: authoritativeEvent.likeCount,
+          replyCount: authoritativeEvent.replyCount,
+          ipLabel: authoritativeEvent.ipLabel,
+          actor: authoritativeEvent.actor
+        };
+        const publicActorKey = actorKey(authoritativeComment);
         const demandSummary = [
-          `抖音公开评论需求信号（非已核实客户事实）：${comment.text}`,
+          `抖音公开评论需求信号（非已核实客户事实）：${normalizedContent}`,
           `可审计规则：${decision.reasons.join("、")}`
         ].join("\n").slice(0, 2_000);
         const ingested = await this.individualSignals.ingest({
           scope: input.scope,
           provider: DOUYIN_PUBLIC_COMMENT_PROVIDER_ID,
-          sourceUrl: input.sourceUrl,
+          sourceUrl: authoritativeEvent.sourceUrl,
           sourceType: "video",
           subject: {
             publicActorKey,
-            publicDisplayName: comment.actor.displayName,
-            publicProfileUrl: input.sourceUrl,
+            publicDisplayName: authoritativeEvent.actor.displayName,
+            publicProfileUrl: authoritativeEvent.sourceUrl,
             sourcePlatform: "douyin",
             demandCategory: "抖音公开评论需求信号",
             demandSummary,
-            locationHint: comment.ipLabel ?? "",
+            locationHint: authoritativeEvent.ipLabel ?? "",
             buyingStage: decision.buyingStage,
             negativeSignals: decision.negativeSignals
           },

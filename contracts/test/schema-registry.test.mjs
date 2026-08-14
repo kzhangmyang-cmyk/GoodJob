@@ -441,7 +441,7 @@ test("discovery evidence accepts only exact public platform-event provenance", a
   }), false);
 });
 
-test("individual demand signals bound public comment aggregation material", async () => {
+test("individual demand signals bound profile fields without narrowing v1 negative signals", async () => {
   const registry = await loadSchemaRegistry();
   const validate = registry.validators.get("individual-demand-signal");
   const signal = {
@@ -470,10 +470,15 @@ test("individual demand signals bound public comment aggregation material", asyn
   assert.equal(validate(signal), true, JSON.stringify(validate.errors));
   assert.equal(validate({ ...signal, publicActorKey: "a".repeat(301) }), false);
   assert.equal(validate({ ...signal, demandSummary: "a".repeat(2_001) }), false);
+  const legacyNegativeSignals = [
+    ...Array.from({ length: 13 }, (_, index) => `reason-${index}`),
+    "reason-1",
+    "x".repeat(150)
+  ];
   assert.equal(validate({
     ...signal,
-    negativeSignals: Array.from({ length: 13 }, (_, index) => `reason-${index}`)
-  }), false);
+    negativeSignals: legacyNegativeSignals
+  }), true, JSON.stringify(validate.errors));
 });
 
 test("acquisition plans version an optional Douyin public comment policy", async () => {

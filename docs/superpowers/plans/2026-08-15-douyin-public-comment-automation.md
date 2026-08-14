@@ -240,7 +240,7 @@
 
 - [ ] **Step 3: 实现证据与主体聚合**
 
-  每条有效评论先调用 Task 3 repository，再以 `comment:<eventId>:evidence:<textHash>` 追加 Discovery Evidence，最后通过现有 `AcquisitionIndividualSignalIngestionPort` upsert 候选。`demandSummary` 保留有界原文和可审计信号理由，不将规则推断写成客户身份事实。
+  每条有效评论先调用 Task 3 repository，再以 `comment:<eventId>:evidence:<textHash>` 追加 Discovery Evidence，最后通过现有 `AcquisitionIndividualSignalIngestionPort` upsert 候选。Provider 页面制品哈希保留在观测；证据引用由事件 ID、标准化文本哈希和标准化文本生成的确定性内容版本制品，同一 `eventId + textHash` 不受后续页面制品变化影响。跨 repository 顺序是可重启幂等 saga，不是跨库原子事务。已有个人候选合并后续需求摘要、只升不降的购买阶段和负向信号并集，不覆盖主体身份字段。`demandSummary` 保留有界公开原文和可审计信号理由，不将规则推断写成客户身份事实。
 
 - [ ] **Step 4: 运行 GREEN 与合同测试**
 
