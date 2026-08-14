@@ -148,7 +148,7 @@ providerVersion             Provider 与实现版本
 rawArtifactHash             原始响应制品哈希
 ```
 
-幂等键固定为 `teamId + platform + platformEventId`。缺少评论 ID 的记录不创建平台
+幂等键固定为 `ownerId + teamId + platform + platformEventId`。缺少评论 ID 的记录不创建平台
 事件。相同评论重新读取时只更新采集观测和公开计数投影，不修改历史原文；原文变化时
 以新证据版本关联旧事件，不能静默覆盖。
 

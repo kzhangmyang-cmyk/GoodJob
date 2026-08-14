@@ -46,6 +46,14 @@ import {
   type AcquisitionDouyinPublicProfileDiscoveryPort
 } from "./acquisition-douyin-public-profile-discovery.js";
 import {
+  InMemoryAcquisitionDouyinCommentEventRepository,
+  type AcquisitionDouyinCommentEventRepository
+} from "./acquisition-douyin-comment-events.js";
+import {
+  ensureAcquisitionDouyinCommentEventsMysqlSchema,
+  MysqlAcquisitionDouyinCommentEventRepository
+} from "./acquisition-douyin-comment-events-mysql-repository.js";
+import {
   ensureAcquisitionCandidateIntelligenceMysqlSchema,
   MysqlAcquisitionCandidateIntelligenceOperationRepository
 } from "./acquisition-candidate-intelligence-mysql-repository.js";
@@ -395,6 +403,7 @@ export interface CreateAcquisitionApplicationOptions {
     AcquisitionCandidateIntelligenceOperationRepository;
   douyinIdentityResolutionRepository?:
     AcquisitionDouyinIdentityResolutionOperationRepository;
+  douyinCommentEventRepository?: AcquisitionDouyinCommentEventRepository;
   douyinPublicProfileDiscovery?:
     AcquisitionDouyinPublicProfileDiscoveryPort;
   planRunRepository?: AcquisitionPlanRunRepository;
@@ -464,6 +473,7 @@ interface AcquisitionRepositorySet {
     AcquisitionCandidateIntelligenceOperationRepository;
   douyinIdentityResolution:
     AcquisitionDouyinIdentityResolutionOperationRepository;
+  douyinCommentEvents: AcquisitionDouyinCommentEventRepository;
 }
 
 const GRADE_RANK = Object.freeze({
@@ -1095,6 +1105,7 @@ export async function createAcquisitionApplication(
       await ensureAcquisitionDiscoveryMysqlSchema(pool);
       await ensureAcquisitionCandidateIntelligenceMysqlSchema(pool);
       await ensureAcquisitionDouyinIdentityResolutionMysqlSchema(pool);
+      await ensureAcquisitionDouyinCommentEventsMysqlSchema(pool);
       await ensureAdvisorCandidateAuthorityMysqlSchema(pool);
       const mysqlAuthority = options.advisorCandidateAuthority
         instanceof MysqlAdvisorCandidateAuthorityRepository
@@ -1115,7 +1126,9 @@ export async function createAcquisitionApplication(
         douyinIdentityResolution:
           new MysqlAcquisitionDouyinIdentityResolutionOperationRepository(
             pool
-          )
+          ),
+        douyinCommentEvents:
+          new MysqlAcquisitionDouyinCommentEventRepository(pool)
       };
       candidateDirectory = new MysqlAcquisitionCandidateDirectory(pool, {
         now,
@@ -1158,7 +1171,9 @@ export async function createAcquisitionApplication(
         candidateIntelligence:
           new InMemoryAcquisitionCandidateIntelligenceOperationRepository(),
         douyinIdentityResolution:
-          new InMemoryAcquisitionDouyinIdentityResolutionOperationRepository()
+          new InMemoryAcquisitionDouyinIdentityResolutionOperationRepository(),
+        douyinCommentEvents:
+          new InMemoryAcquisitionDouyinCommentEventRepository()
       };
       candidateDirectory = new InMemoryAcquisitionCandidateDirectory({
         now,
@@ -1184,6 +1199,9 @@ export async function createAcquisitionApplication(
     if (options.douyinIdentityResolutionRepository) {
       repositories.douyinIdentityResolution =
         options.douyinIdentityResolutionRepository;
+    }
+    if (options.douyinCommentEventRepository) {
+      repositories.douyinCommentEvents = options.douyinCommentEventRepository;
     }
     if (options.planRunRepository) {
       repositories.planRun = options.planRunRepository;
