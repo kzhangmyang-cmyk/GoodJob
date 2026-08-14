@@ -85,6 +85,15 @@ test("business advisor generates a sourced diagnosis report from typed fixtures"
   await expect(page.getByRole("heading", { name: "《经营诊断报告》" })).toBeVisible();
   await expect(page.getByText("存在假利润产品")).toBeVisible();
   await expect(page.getByText("未来 90 天行动计划")).toBeVisible();
+  await expect(page.locator(".report-issue.issue-red")).not.toHaveCount(0);
+  await expect(page.locator(".report-timeline")).toBeVisible();
+  const evidence = page.locator("details.report-evidence").first();
+  await expect(evidence).toBeVisible();
+  await expect(evidence.locator(".report-evidence-body")).toBeHidden();
+  await evidence.locator("summary").evaluate((element) => {
+    (element as HTMLElement).click();
+  });
+  await expect(evidence.locator(".report-evidence-body")).toBeVisible();
   await installed.dispose();
 });
 

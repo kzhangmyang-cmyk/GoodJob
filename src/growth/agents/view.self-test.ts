@@ -94,9 +94,13 @@ assert.equal(reportHtml.includes("46"), true);
 assert.equal(reportHtml.includes("问题清单（按优先级）"), true);
 assert.equal(reportHtml.includes("高风险"), true);
 assert.equal(reportHtml.includes("利润"), true);
-assert.equal(reportHtml.includes("风险：假利润产品会虚增收入规模、掩盖真实盈利结构"), true);
+assert.equal(reportHtml.includes("假利润产品会虚增收入规模、掩盖真实盈利结构"), true);
 assert.equal(reportHtml.includes("未来 90 天行动计划"), true);
 assert.equal(reportHtml.includes("假利润产品：产品 A"), true);
+assert.equal(reportHtml.includes('aria-label="企业健康评分 46 分"'), true);
+assert.equal(reportHtml.includes('class="report-issue issue-red"'), true);
+assert.equal(reportHtml.includes('<details class="report-evidence"'), true);
+assert.equal(reportHtml.includes('class="report-timeline"'), true);
 assert.equal(reportHtml.includes("<script>"), false);
 
 const reportWithSource = renderDiagnosisReport(report, {

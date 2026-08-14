@@ -705,6 +705,12 @@
 
 /* GoodJob command-center presentation inside the product shell. */
 .replica-shell .growth-panel {
+  --agents-green: var(--replica-accent, #18ed78);
+  --agents-panel: var(--replica-surface, rgba(14, 16, 17, 0.82));
+  --agents-panel-strong: var(--replica-surface-strong, rgba(18, 20, 21, 0.94));
+  --agents-line: var(--replica-line, rgba(229, 238, 233, 0.18));
+  --agents-line-soft: var(--replica-line-soft, rgba(229, 238, 233, 0.09));
+  --agents-muted: var(--replica-muted, #8c928e);
   min-height: 100%;
   padding: clamp(1rem, 2.2vw, 2rem);
   color: var(--replica-text, #f1f3f0);
@@ -1025,6 +1031,369 @@
 
   .replica-shell .health-score-ring {
     min-height: 8.75rem;
+  }
+}
+
+.replica-shell .diagnosis-report {
+  background:
+    radial-gradient(circle at 85% 0%, rgba(24, 237, 120, 0.055), transparent 26rem),
+    var(--replica-bg, #020303);
+}
+
+.replica-shell .agents-back {
+  color: var(--agents-green);
+}
+
+.replica-shell .report-heading,
+.replica-shell .report-overview,
+.replica-shell .diagnosis-report .report-block,
+.replica-shell .report-evidence-chain {
+  border: 1px solid var(--agents-line);
+  border-radius: var(--replica-radius-md, 18px);
+  background: var(--agents-panel);
+}
+
+.replica-shell .report-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+  padding: clamp(1.1rem, 2.6vw, 1.5rem);
+}
+
+.replica-shell .report-heading h2 {
+  margin-bottom: 0.35rem;
+  font-size: clamp(1.35rem, 2.8vw, 1.9rem);
+  letter-spacing: -0.03em;
+}
+
+.replica-shell .report-heading p {
+  margin: 0.2rem 0 0;
+  color: var(--agents-muted);
+}
+
+.replica-shell .report-period {
+  flex: none;
+  padding: 0.26rem 0.55rem;
+  border: 1px solid rgba(24, 237, 120, 0.22);
+  border-radius: 999px;
+  background: rgba(24, 237, 120, 0.07);
+  color: var(--agents-green);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.replica-shell .diagnosis-report > .report-block:first-of-type {
+  border-color: rgba(240, 164, 75, 0.22);
+  background: rgba(240, 164, 75, 0.045);
+}
+
+.replica-shell .report-overview {
+  display: grid;
+  grid-template-columns: minmax(9.5rem, 0.24fr) 1fr;
+  gap: 0.85rem;
+  margin-bottom: 0.85rem;
+  padding: 0.85rem;
+}
+
+.replica-shell .report-summary-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--agents-line-soft);
+  border-radius: var(--replica-radius-sm, 12px);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.replica-shell .report-summary-card h3 {
+  margin-bottom: 0.45rem;
+}
+
+.replica-shell .diagnosis-report .report-summary {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #c5cac7;
+  font-size: 0.9rem;
+  line-height: 1.75;
+}
+
+.replica-shell .diagnosis-report .report-block {
+  margin-top: 0.85rem;
+  padding: clamp(1rem, 2.4vw, 1.35rem);
+}
+
+.replica-shell .report-block-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.replica-shell .report-block-heading > span {
+  color: var(--agents-muted);
+  font-size: 0.72rem;
+}
+
+.replica-shell .report-issues {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.replica-shell .report-issue {
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--agents-line-soft);
+  border-left-width: 3px;
+  border-radius: var(--replica-radius-sm, 12px);
+  background: rgba(255, 255, 255, 0.016);
+}
+
+.replica-shell .report-issue.issue-red {
+  border-color: rgba(255, 93, 86, 0.22);
+  border-left-color: var(--replica-danger, #ff5d56);
+  background: linear-gradient(90deg, rgba(255, 93, 86, 0.065), rgba(255, 93, 86, 0.018));
+  color: inherit;
+}
+
+.replica-shell .report-issue.issue-yellow {
+  border-color: rgba(240, 164, 75, 0.22);
+  border-left-color: var(--replica-amber, #f0a44b);
+  background: linear-gradient(90deg, rgba(240, 164, 75, 0.065), rgba(240, 164, 75, 0.018));
+  color: inherit;
+}
+
+.replica-shell .report-issue h4 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--replica-text, #f1f3f0);
+}
+
+.replica-shell .report-issue .issue-level,
+.replica-shell .report-issue .issue-category {
+  margin: 0;
+  border: 1px solid var(--agents-line-soft);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.replica-shell .report-issue .issue-level.issue-red {
+  border-color: rgba(255, 93, 86, 0.25);
+  background: rgba(255, 93, 86, 0.1);
+  color: #ff8b86;
+}
+
+.replica-shell .report-issue .issue-level.issue-yellow {
+  border-color: rgba(240, 164, 75, 0.25);
+  background: rgba(240, 164, 75, 0.1);
+  color: #f4bd79;
+}
+
+.replica-shell .report-issue .issue-category {
+  color: #b8bebb;
+}
+
+.replica-shell .report-issue-fields {
+  display: grid;
+  gap: 0.38rem;
+}
+
+.replica-shell .report-issue-fields p {
+  display: grid;
+  grid-template-columns: 2.8rem minmax(0, 1fr);
+  gap: 0.55rem;
+  margin: 0;
+  color: #afb5b1;
+  line-height: 1.65;
+}
+
+.replica-shell .report-issue-fields strong {
+  color: var(--agents-muted);
+  font-size: 0.74rem;
+}
+
+.replica-shell .report-evidence,
+.replica-shell .report-evidence-chain {
+  margin-top: 0.75rem;
+  color: var(--agents-muted);
+}
+
+.replica-shell .report-evidence {
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--agents-line-soft);
+}
+
+.replica-shell .report-evidence summary,
+.replica-shell .report-evidence-chain summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: #b8bebb;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+
+.replica-shell .report-evidence summary::-webkit-details-marker,
+.replica-shell .report-evidence-chain summary::-webkit-details-marker {
+  display: none;
+}
+
+.replica-shell .report-evidence summary::after,
+.replica-shell .report-evidence-chain summary::after {
+  color: var(--agents-green);
+  content: "+";
+  font-size: 1rem;
+}
+
+.replica-shell .report-evidence[open] summary::after,
+.replica-shell .report-evidence-chain[open] summary::after {
+  content: "−";
+}
+
+.replica-shell .report-evidence summary:focus-visible,
+.replica-shell .report-evidence-chain summary:focus-visible {
+  border-radius: 0.25rem;
+  outline: 2px solid var(--agents-green);
+  outline-offset: 4px;
+}
+
+.replica-shell .report-evidence summary span,
+.replica-shell .report-evidence-chain summary span {
+  margin-left: auto;
+  color: var(--agents-muted);
+  font-weight: 500;
+}
+
+.replica-shell .report-evidence-body,
+.replica-shell .report-evidence-chain > div {
+  padding: 0.65rem 0 0;
+}
+
+.replica-shell .report-evidence-body ul,
+.replica-shell .report-evidence-chain ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.replica-shell .report-evidence-body li,
+.replica-shell .report-evidence-chain li {
+  padding: 0.35rem 0.5rem;
+  border-left: 2px solid var(--agents-line);
+  color: #9da39f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.replica-shell .report-timeline {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0.3rem 0 0;
+  list-style: none;
+}
+
+.replica-shell .report-timeline::before {
+  position: absolute;
+  top: 1.48rem;
+  right: 12%;
+  left: 12%;
+  height: 1px;
+  background: var(--agents-line);
+  content: "";
+}
+
+.replica-shell .report-timeline li {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: start;
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--agents-line-soft);
+  border-radius: var(--replica-radius-sm, 12px);
+  background: var(--agents-panel-strong);
+}
+
+.replica-shell .report-timeline-marker {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  border: 1px solid rgba(24, 237, 120, 0.3);
+  border-radius: 50%;
+  background: #0c140f;
+  color: var(--agents-green);
+  font-size: 0.65rem;
+  font-weight: 800;
+}
+
+.replica-shell .report-timeline li div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.32rem;
+}
+
+.replica-shell .report-timeline li div span {
+  color: var(--agents-green);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.replica-shell .report-timeline li div strong {
+  color: #cbd0cd;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.replica-shell .report-evidence-chain {
+  padding: 1rem 1.2rem;
+}
+
+@media (max-width: 768px) {
+  .replica-shell .report-heading,
+  .replica-shell .report-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .replica-shell .report-heading {
+    flex-direction: column;
+  }
+
+  .replica-shell .report-timeline {
+    grid-template-columns: 1fr;
+  }
+
+  .replica-shell .report-timeline::before {
+    top: 1rem;
+    bottom: 1rem;
+    left: 1.5rem;
+    width: 1px;
+    height: auto;
+  }
+
+  .replica-shell .report-issue-fields p {
+    grid-template-columns: 1fr;
+    gap: 0.1rem;
   }
 }
 

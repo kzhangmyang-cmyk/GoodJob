@@ -293,9 +293,8 @@ export function renderDiagnosisReport(
   report: DiagnosisReport,
   options: DiagnosisReportOptions = {}
 ): string {
-  const score = report.healthScoreBps;
   const issues = report.issues.map((item) =>
-    `<li class="report-issue">
+    `<li class="report-issue issue-${escapeHtml(item.level)}">
       <h4>
         <span class="issue-level issue-${escapeHtml(item.level)}">
           ${item.level === "red" ? "高风险" : "关注"}
@@ -305,46 +304,74 @@ export function renderDiagnosisReport(
           : ""}
         ${escapeHtml(item.title)}
       </h4>
-      <p>原因：${escapeHtml(item.reason)}</p>
-      ${item.risk ? `<p>风险：${escapeHtml(item.risk)}</p>` : ""}
-      <p>建议：${escapeHtml(item.suggestion)}</p>
+      <div class="report-issue-fields">
+        <p><strong>原因</strong><span>${escapeHtml(item.reason)}</span></p>
+        ${item.risk
+          ? `<p><strong>风险</strong><span>${escapeHtml(item.risk)}</span></p>`
+          : ""}
+        <p><strong>建议</strong><span>${escapeHtml(item.suggestion)}</span></p>
+      </div>
       ${item.evidence.length > 0
-        ? `<p class="report-evidence">来源：${item.evidence.map(escapeHtml).join("；")}</p>`
+        ? `<details class="report-evidence">
+            <summary>查看证据 <span>${item.evidence.length} 条</span></summary>
+            <div class="report-evidence-body">
+              <ul>${item.evidence.map((evidence) =>
+                `<li>${escapeHtml(evidence)}</li>`).join("")}</ul>
+            </div>
+          </details>`
         : ""}
     </li>`).join("");
   const actions = report.actionPlan90Days.map((item) =>
-    `<li>第 ${item.month} 月：${escapeHtml(item.action)}</li>`).join("");
+    `<li data-timeline-month="${item.month}">
+      <span class="report-timeline-marker" aria-hidden="true">0${item.month}</span>
+      <div>
+        <span>第 ${item.month} 月</span>
+        <strong>${escapeHtml(item.action)}</strong>
+      </div>
+    </li>`).join("");
   return `<section class="growth-panel diagnosis-report">
     <a href="#growth/agents" class="agents-back">← 返回团队</a>
-    <header>
-      <h2>《经营诊断报告》</h2>
-      <p>${escapeHtml(report.companyName)} · ${escapeHtml(report.period)}</p>
-      ${options.sourceLabel
-        ? `<p class="report-source">数据源：${escapeHtml(options.sourceLabel)}</p>`
-        : ""}
+    <header class="report-heading">
+      <div>
+        <span class="agents-overline">BUSINESS DIAGNOSIS</span>
+        <h2>《经营诊断报告》</h2>
+        <p>${escapeHtml(report.companyName)} · ${escapeHtml(report.period)}</p>
+        ${options.sourceLabel
+          ? `<p class="report-source">数据源：${escapeHtml(options.sourceLabel)}</p>`
+          : ""}
+      </div>
+      <span class="report-period">90 天行动版</span>
     </header>
     ${options.warnings && options.warnings.length > 0
       ? `<section class="report-block"><h3>数据说明</h3>
           <ul>${options.warnings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
         </section>`
       : ""}
-    <section class="report-score">
-      <strong>${(score / 100).toFixed(0)}</strong>
-      <span>企业健康评分（满分 100）</span>
+    <section class="report-overview">
+      ${healthScoreMarkup(report.healthScoreBps)}
+      <div class="report-summary-card">
+        <span class="agents-overline">EXECUTIVE SUMMARY</span>
+        <h3>经营结论</h3>
+        <p class="report-summary">${escapeHtml(report.summary)}</p>
+      </div>
     </section>
-    <p class="report-summary">${escapeHtml(report.summary)}</p>
     <section class="report-block">
-      <h3>问题清单（按优先级）</h3>
-      <ol>${issues || "<li>本期未发现突出问题</li>"}</ol>
+      <div class="report-block-heading">
+        <h3>问题清单（按优先级）</h3>
+        <span>${report.issues.length} 项问题</span>
+      </div>
+      <ol class="report-issues">${issues || "<li>本期未发现突出问题</li>"}</ol>
     </section>
     <section class="report-block">
       <h3>未来 90 天行动计划</h3>
-      <ol>${actions}</ol>
+      <ol class="report-timeline">${actions}</ol>
     </section>
     ${report.evidence.length > 0
-      ? `<section class="report-block"><h3>证据链</h3>
-          <ul>${report.evidence.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
-        </section>`
+      ? `<details class="report-evidence-chain">
+          <summary>查看完整证据链 <span>${report.evidence.length} 条</span></summary>
+          <div><ul>${report.evidence.map((item) =>
+            `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>
+        </details>`
       : ""}
   </section>`;
 }
