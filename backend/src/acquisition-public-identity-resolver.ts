@@ -255,8 +255,35 @@ function normalizedProvider(value: string) {
   return normalizedText(value).toLocaleLowerCase("en-US");
 }
 
+type DouyinCommentActorKey = {
+  kind: "sec_uid" | "handle" | "comment";
+  normalized: string;
+};
+
+function strictDouyinCommentActorKey(value: string): DouyinCommentActorKey | null {
+  const actorKey = value.normalize("NFKC").trim();
+  const secUid = /^douyin:sec_uid:([A-Za-z0-9._~-]{1,128})$/u.exec(actorKey);
+  if (secUid
+    && !/^\+?\d(?:[\s().-]*\d){6,14}$/u.test(secUid[1]!)) {
+    return { kind: "sec_uid", normalized: actorKey };
+  }
+  const handle = /^douyin:handle:([A-Za-z0-9._-]{1,64})$/u.exec(actorKey);
+  if (handle
+    && !/^\+?\d(?:[\s().-]*\d){6,14}$/u.test(handle[1]!)) {
+    return {
+      kind: "handle",
+      normalized: `douyin:handle:${handle[1]!.toLocaleLowerCase("en-US")}`
+    };
+  }
+  const comment =
+    /^unmergeable:douyin:comment:([A-Za-z0-9._~-]{1,128})$/u.exec(actorKey);
+  return comment ? { kind: "comment", normalized: actorKey } : null;
+}
+
 function safePublicActorKey(value: string) {
   const actorKey = normalizedText(value);
+  const douyinCommentActorKey = strictDouyinCommentActorKey(value);
+  if (douyinCommentActorKey) return douyinCommentActorKey.normalized;
   const opaqueHashKey =
     /^public:[a-z0-9._:-]+:sha256:[a-f0-9]{64}$/iu.test(actorKey);
   const unresolvedOpaqueHashKey =
@@ -406,6 +433,9 @@ export function resolveAcquisitionPublicIdentity(
     sourceUrl: input.sourceUrl
   });
   const actorKey = safePublicActorKey(identityMaterial.actorKey);
+  const douyinCommentActorKey = actorKey
+    ? strictDouyinCommentActorKey(actorKey)
+    : null;
   const resolvedActorKey = actorKey?.startsWith("public:")
     ? actorKey
     : null;
@@ -415,6 +445,12 @@ export function resolveAcquisitionPublicIdentity(
     : null;
   const isDouyinSource = sourcePlatform === "douyin"
     || douyinClassification !== null;
+  const isDouyinCommentActorContext = Boolean(
+    douyinCommentActorKey
+    && sourcePlatform === "douyin"
+    && (provider === "douyin" || provider === "experimental_public_sample")
+    && douyinClassification !== null
+  );
   const isStableDouyinProfile = !isDouyinSource || (
     douyinClassification?.sourceType === "profile"
     && (input.sourceType === undefined || input.sourceType === "profile")
@@ -422,7 +458,9 @@ export function resolveAcquisitionPublicIdentity(
   );
   if (provider
     && sourcePlatform
-    && resolvedActorKey
+    && (resolvedActorKey
+      || (isDouyinCommentActorContext
+        && douyinCommentActorKey?.kind === "sec_uid"))
     && normalizedProfileUrl
     && isStableDouyinProfile) {
     const digest = scopedDigest(
@@ -431,7 +469,7 @@ export function resolveAcquisitionPublicIdentity(
       [
         provider,
         identitySourcePlatform,
-        resolvedActorKey,
+        resolvedActorKey || douyinCommentActorKey!.normalized,
         normalizedProfileUrl
       ].join("\u0000"),
       "owner_team"
@@ -443,6 +481,26 @@ export function resolveAcquisitionPublicIdentity(
       resolverVersion: ACQUISITION_PUBLIC_IDENTITY_RESOLVER_VERSION,
       partyId: `public-individual-${digest.slice(0, 24)}`,
       dedupeKey: `individual:provider_public_actor:sha256:${digest}`,
+      normalizedDomain: null,
+      normalizedCreditCode: null,
+      normalizedProfileUrl
+    };
+  }
+
+  if (isDouyinCommentActorContext) {
+    const digest = scopedDigest(
+      input,
+      `douyin_comment_${douyinCommentActorKey!.kind}`,
+      douyinCommentActorKey!.normalized,
+      "owner_team"
+    );
+    return {
+      status: "needs_research",
+      basis: null,
+      reasonCode: "insufficient_provider_public_actor_identity",
+      resolverVersion: ACQUISITION_PUBLIC_IDENTITY_RESOLVER_VERSION,
+      partyId: `unresolved-individual-${digest.slice(0, 24)}`,
+      dedupeKey: `individual:needs_research:sha256:${digest}`,
       normalizedDomain: null,
       normalizedCreditCode: null,
       normalizedProfileUrl

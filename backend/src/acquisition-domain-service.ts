@@ -2408,6 +2408,36 @@ export class AcquisitionDomainService {
         }
         return normalized;
       });
+    } else if (provenance.kind === "platform_public_event") {
+      if (raw.targetType !== "individual_signal"
+        || raw.accessStatus !== "public_content") {
+        fail(
+          "invalid_request",
+          "平台公开事件证据只允许个人需求信号与公开内容",
+          400
+        );
+      }
+      const exactKeys = [
+        "coverage", "kind", "platformEventId", "providerVersion", "sourceUrl"
+      ];
+      if (Object.keys(provenance).sort().join("\u0000")
+        !== exactKeys.join("\u0000")) {
+        fail("invalid_request", "平台公开事件 provenance 字段无效", 400);
+      }
+      provenance.sourceUrl = validUrl(provenance.sourceUrl, "平台事件来源 URL");
+      provenance.platformEventId = requiredText(
+        provenance.platformEventId,
+        "平台事件 ID",
+        255
+      );
+      provenance.providerVersion = requiredText(
+        provenance.providerVersion,
+        "平台 Provider 版本",
+        255
+      );
+      if (provenance.coverage !== "public_top_level_sample") {
+        fail("invalid_request", "平台公开事件覆盖范围无效", 400);
+      }
     } else if (provenance.kind === "import_artifact_row") {
       provenance.importBatchId = requiredText(
         provenance.importBatchId,

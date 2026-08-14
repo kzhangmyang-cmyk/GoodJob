@@ -117,6 +117,24 @@
           "additionalProperties": false,
           "required": [
             "kind",
+            "sourceUrl",
+            "platformEventId",
+            "providerVersion",
+            "coverage"
+          ],
+          "properties": {
+            "kind": { "const": "platform_public_event" },
+            "sourceUrl": { "type": "string", "format": "uri" },
+            "platformEventId": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "providerVersion": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "coverage": { "const": "public_top_level_sample" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
             "importBatchId",
             "artifactHash",
             "sheetName",
@@ -141,5 +159,27 @@
         "access_restricted"
       ]
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "provenance": {
+            "type": "object",
+            "properties": { "kind": { "const": "platform_public_event" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["provenance"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "targetType": { "const": "individual_signal" },
+          "accessStatus": { "const": "public_content" }
+        }
+      }
+    }
+  ]
 }

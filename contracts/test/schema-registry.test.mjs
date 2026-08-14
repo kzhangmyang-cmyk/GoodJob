@@ -400,6 +400,82 @@ test("Douyin comment events publish a strict top-level public sample", async () 
   }
 });
 
+test("discovery evidence accepts only exact public platform-event provenance", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("discovery-evidence");
+  const evidence = {
+    id: "evidence-comment-1",
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: "抖音公开评论",
+    sourceSnippet: "我们正在采购 20 套，请报价。",
+    publishedAt: "2026-08-15T01:00:00.000Z",
+    fetchedAt: "2026-08-15T01:01:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: validSha256,
+    contentHash: validSha256,
+    provenance: {
+      kind: "platform_public_event",
+      sourceUrl: "https://www.douyin.com/video/7536012345678909876",
+      platformEventId: "comment-1",
+      providerVersion: "douyin-public-comment-provider-v1",
+      coverage: "public_top_level_sample"
+    },
+    accessStatus: "public_content"
+  };
+
+  assert.equal(validate(evidence), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...evidence, targetType: "organization" }), false);
+  assert.equal(validate({ ...evidence, accessStatus: "indexed_summary" }), false);
+  assert.equal(validate({
+    ...evidence,
+    provenance: { ...evidence.provenance, coverage: "all_comments" }
+  }), false);
+  assert.equal(validate({
+    ...evidence,
+    provenance: { ...evidence.provenance, providerVersion: undefined }
+  }), false);
+  assert.equal(validate({
+    ...evidence,
+    provenance: { ...evidence.provenance, unexpected: true }
+  }), false);
+});
+
+test("individual demand signals bound public comment aggregation material", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("individual-demand-signal");
+  const signal = {
+    id: "signal-1",
+    publicActorKey: "douyin:sec_uid:MS4wLjABAAAA_actor-1",
+    publicDisplayName: "公开用户",
+    publicProfileUrl: "https://www.douyin.com/video/7536012345678909876",
+    sourcePlatform: "douyin",
+    evidenceIds: ["evidence-1"],
+    demandCategory: "抖音公开评论需求信号",
+    demandSummary: "公开评论信号，非已核实客户事实。",
+    locationHint: "上海",
+    buyingStage: "purchase_ready",
+    negativeSignals: [],
+    subjectKind: "individual",
+    status: "needs_research",
+    version: 1,
+    identityResolved: false,
+    latestDecisionVersion: null,
+    approvedDecisionVersion: null,
+    updatedAt: "2026-08-15T01:00:00.000Z",
+    firstSeenAt: "2026-08-15T01:00:00.000Z",
+    lastSeenAt: "2026-08-15T01:00:00.000Z"
+  };
+
+  assert.equal(validate(signal), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...signal, publicActorKey: "a".repeat(301) }), false);
+  assert.equal(validate({ ...signal, demandSummary: "a".repeat(2_001) }), false);
+  assert.equal(validate({
+    ...signal,
+    negativeSignals: Array.from({ length: 13 }, (_, index) => `reason-${index}`)
+  }), false);
+});
+
 test("acquisition plans version an optional Douyin public comment policy", async () => {
   const registry = await loadSchemaRegistry();
   const validate = registry.validators.get("acquisition-plan");

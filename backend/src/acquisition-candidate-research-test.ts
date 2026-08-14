@@ -303,8 +303,7 @@ function organizationCandidate(): AcquisitionCandidate {
 function individualCandidate(): AcquisitionCandidate {
   const publicProfileUrl =
     "https://www.linkedin.com/in/alice?a=1&b=2";
-  const publicActorKey =
-    `public:linkedin-search:sha256:${"1".repeat(64)}`;
+  const publicActorKey = "public:linkedin:alice";
   const resolution = resolveAcquisitionPublicIdentity({
     ownerId: OWNER,
     teamId: TEAM,

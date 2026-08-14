@@ -39,6 +39,16 @@ active `content_fetch` provider connection whose provider ID is exactly
 `experimental_public_sample`; runtime execution must apply the stricter of
 these plan values and its server limits.
 
+Public Douyin comments enter the acquisition domain as immutable comment
+events and `DiscoveryEvidence` with `platform_public_event` provenance. That
+provenance is closed to the public source URL, platform comment ID, provider
+version, and `public_top_level_sample` coverage; it is valid only for an
+`individual_signal` with `public_content` access. Candidate aggregation treats
+`douyin:sec_uid:*` as a stable public key that still needs identity research,
+uses normalized `douyin:handle:*` only as a temporary key, and isolates
+identity-less comments with `unmergeable:douyin:comment:*`. None of these keys
+asserts a verified customer identity.
+
 Run `npm run check:acquisition-contracts` from the repository root before
 changing any producer or consumer.
 

@@ -28,18 +28,18 @@
   ],
   "properties": {
     "id": { "type": "string", "minLength": 1 },
-    "publicActorKey": { "type": "string", "minLength": 1 },
-    "publicDisplayName": { "type": "string", "minLength": 1 },
+    "publicActorKey": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "publicDisplayName": { "type": "string", "minLength": 1, "maxLength": 200 },
     "publicProfileUrl": { "type": "string", "format": "uri" },
-    "sourcePlatform": { "type": "string", "minLength": 1 },
+    "sourcePlatform": { "type": "string", "minLength": 1, "maxLength": 100 },
     "evidenceIds": {
       "type": "array",
       "minItems": 1,
       "items": { "type": "string", "minLength": 1 }
     },
-    "demandCategory": { "type": "string", "minLength": 1 },
-    "demandSummary": { "type": "string", "minLength": 1 },
-    "locationHint": { "type": "string" },
+    "demandCategory": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "demandSummary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "locationHint": { "type": "string", "maxLength": 200 },
     "buyingStage": {
       "enum": [
         "awareness",
@@ -51,7 +51,9 @@
     },
     "negativeSignals": {
       "type": "array",
-      "items": { "type": "string" }
+      "maxItems": 12,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 100 }
     },
     "subjectKind": { "const": "individual" },
     "version": { "type": "integer", "minimum": 1 },

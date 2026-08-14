@@ -209,6 +209,61 @@ test("controlled public-page evidence accepts an existing same-tenant source", a
   );
 });
 
+function platformPublicEventEvidence(overrides: Record<string, unknown> = {}) {
+  return {
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: "抖音公开评论",
+    sourceSnippet: "我们正在采购 20 套，请报价。",
+    publishedAt: "2026-08-15T01:00:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: `sha256:${"a".repeat(64)}`,
+    contentHash: `sha256:${"b".repeat(64)}`,
+    provenance: {
+      kind: "platform_public_event",
+      sourceUrl: "https://www.douyin.com/video/7536012345678909876",
+      platformEventId: "comment-1",
+      providerVersion: "douyin-public-comment-provider-v1",
+      coverage: "public_top_level_sample"
+    },
+    accessStatus: "public_content",
+    ...overrides
+  } as unknown as DiscoveryEvidenceInput;
+}
+
+test("platform public-event evidence is individual and public-content only", async () => {
+  const { service } = createHarness();
+  const evidence = await service.appendEvidence(
+    ownerScope,
+    platformPublicEventEvidence(),
+    "platform-public-event"
+  );
+
+  assert.deepEqual(evidence.provenance, {
+    kind: "platform_public_event",
+    sourceUrl: "https://www.douyin.com/video/7536012345678909876",
+    platformEventId: "comment-1",
+    providerVersion: "douyin-public-comment-provider-v1",
+    coverage: "public_top_level_sample"
+  });
+  await assert.rejects(
+    service.appendEvidence(
+      ownerScope,
+      platformPublicEventEvidence({ targetType: "organization" }),
+      "platform-public-event-wrong-target"
+    ),
+    /platform public event|platform_public_event|平台公开事件/iu
+  );
+  await assert.rejects(
+    service.appendEvidence(
+      ownerScope,
+      platformPublicEventEvidence({ accessStatus: "indexed_summary" }),
+      "platform-public-event-wrong-access"
+    ),
+    /platform public event|platform_public_event|平台公开事件/iu
+  );
+});
+
 test("qualification commits one advisor authority event frozen to the concrete workspace", async () => {
   const { service, repository } = createHarness();
   const { candidate } = await createOrganizationCandidate(service);

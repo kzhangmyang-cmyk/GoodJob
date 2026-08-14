@@ -61,6 +61,13 @@ export type EvidenceProvenance =
       extractorVersion: "douyin-public-profile-v1";
     }
   | {
+      kind: "platform_public_event";
+      sourceUrl: string;
+      platformEventId: string;
+      providerVersion: string;
+      coverage: "public_top_level_sample";
+    }
+  | {
       kind: "import_artifact_row";
       importBatchId: string;
       artifactHash: string;
