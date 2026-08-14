@@ -121,6 +121,12 @@ test("business advisor imports group statements and picks a company report", asy
     .setInputFiles({ name: "资产负债表.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: balanceSheet });
   await page.locator('[data-statements-file="income"]')
     .setInputFiles({ name: "利润表.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", buffer: incomeStatement });
+  await expect(page.locator('[data-statements-file-name="balance"]'))
+    .toContainText("资产负债表.xlsx");
+  await expect(page.locator('[data-statements-file-name="income"]'))
+    .toContainText("利润表.xlsx");
+  await expect(page.locator("[data-statements-selection]"))
+    .toContainText("已选择 2 / 2");
 
   await page.locator('[data-agents-action="statements-diagnose"]')
     .evaluate((element) => {
@@ -140,6 +146,41 @@ test("business advisor imports group statements and picks a company report", asy
   await expect(page.getByRole("heading", { name: /毛利为负/ })).toBeVisible();
   await expect(page.getByText("数据源：河南元能信息科技有限公司 · 2026-06")).toBeVisible();
   await expect(page.getByText("未提供现金流量表，现金流预测与资金预警暂不可用")).toBeVisible();
+  await installed.dispose();
+});
+
+test("business advisor statement dropzone accepts a dropped workbook", async ({ page }) => {
+  const scenario = growthContractScenario("happy_path");
+  const installed = await installGrowthContractScenario(page, scenario);
+  await enterRealGrowth(page, "agents");
+
+  const dropzone = page.locator('[data-statements-drop="balance"]');
+  await dropzone.evaluate((element) => {
+    element.dispatchEvent(new DragEvent("dragover", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: new DataTransfer()
+    }));
+  });
+  await expect(dropzone).toHaveClass(/is-dragging/);
+
+  await dropzone.evaluate((element) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["balance"], "拖放资产负债表.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    }));
+    element.dispatchEvent(new DragEvent("drop", {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer
+    }));
+  });
+
+  await expect(dropzone).not.toHaveClass(/is-dragging/);
+  await expect(page.locator('[data-statements-file-name="balance"]'))
+    .toContainText("拖放资产负债表.xlsx");
+  await expect(page.locator("[data-statements-selection]"))
+    .toContainText("已选择 1 / 2");
   await installed.dispose();
 });
 

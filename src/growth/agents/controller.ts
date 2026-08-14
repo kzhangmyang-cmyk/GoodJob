@@ -213,6 +213,87 @@ export function createAgentsController(
     renderView();
   }
 
+  function setStatementFeedback(message: string, isError = false): void {
+    const feedback = options.host.querySelector<HTMLElement>(
+      "[data-statements-feedback]"
+    );
+    if (!feedback) return;
+    feedback.textContent = message;
+    feedback.classList.toggle("is-error", isError);
+  }
+
+  function syncStatementSelection(): void {
+    const inputs = Array.from(options.host.querySelectorAll<HTMLInputElement>(
+      "[data-statements-file]"
+    ));
+    let selected = 0;
+    for (const input of inputs) {
+      const kind = input.dataset.statementsFile;
+      if (!kind) continue;
+      const file = input.files?.[0];
+      if (file) selected += 1;
+      const fileName = options.host.querySelector<HTMLElement>(
+        `[data-statements-file-name="${kind}"]`
+      );
+      if (fileName) {
+        fileName.textContent = file?.name ?? "未选择文件";
+        fileName.classList.toggle("has-file", file !== undefined);
+      }
+    }
+    const selection = options.host.querySelector<HTMLElement>(
+      "[data-statements-selection]"
+    );
+    if (selection) {
+      selection.textContent = `已选择 ${selected} / 2 份必需报表`;
+    }
+    setStatementFeedback(selected === 2 ? "报表已齐，可以开始解析" : "");
+  }
+
+  function statementDropzone(event: DragEvent): HTMLElement | null {
+    const target = (event.target as HTMLElement | null)
+      ?.closest<HTMLElement>("[data-statements-drop]");
+    return target && options.host.contains(target) ? target : null;
+  }
+
+  function onStatementDragOver(event: DragEvent): void {
+    const dropzone = statementDropzone(event);
+    if (!dropzone) return;
+    event.preventDefault();
+    dropzone.classList.add("is-dragging");
+  }
+
+  function onStatementDragLeave(event: DragEvent): void {
+    const dropzone = statementDropzone(event);
+    if (!dropzone || dropzone.contains(event.relatedTarget as Node | null)) return;
+    dropzone.classList.remove("is-dragging");
+  }
+
+  function onStatementDrop(event: DragEvent): void {
+    const dropzone = statementDropzone(event);
+    if (!dropzone) return;
+    event.preventDefault();
+    dropzone.classList.remove("is-dragging");
+    const file = event.dataTransfer?.files?.[0];
+    const kind = dropzone.dataset.statementsDrop;
+    const input = kind
+      ? dropzone.querySelector<HTMLInputElement>(
+        `[data-statements-file="${kind}"]`
+      )
+      : null;
+    if (!file || !input) return;
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function onChange(event: Event): void {
+    const input = (event.target as HTMLElement | null)
+      ?.closest<HTMLInputElement>("[data-statements-file]");
+    if (!input || !options.host.contains(input)) return;
+    syncStatementSelection();
+  }
+
   async function handleReport(): Promise<void> {
     options.host.innerHTML = renderAgentConclusion("<p>正在生成经营诊断报告…</p>");
     try {
@@ -268,9 +349,7 @@ export function createAgentsController(
     const balanceFile = balanceInput?.files?.[0];
     const incomeFile = incomeInput?.files?.[0];
     if (!balanceFile || !incomeFile) {
-      options.host.innerHTML = renderAgentConclusion(
-        '<p class="growth-error">请先选择资产负债表和利润表各一份</p>'
-      );
+      setStatementFeedback("请先选择资产负债表和利润表各一份", true);
       return;
     }
     options.host.innerHTML = renderAgentConclusion(
@@ -447,6 +526,10 @@ export function createAgentsController(
   renderView();
   options.host.addEventListener("click", onClick);
   options.host.addEventListener("submit", onSubmit);
+  options.host.addEventListener("change", onChange);
+  options.host.addEventListener("dragover", onStatementDragOver);
+  options.host.addEventListener("dragleave", onStatementDragLeave);
+  options.host.addEventListener("drop", onStatementDrop);
   window.addEventListener("hashchange", onHashChange);
 
   return Object.freeze({
@@ -455,6 +538,10 @@ export function createAgentsController(
       disposed = true;
       options.host.removeEventListener("click", onClick);
       options.host.removeEventListener("submit", onSubmit);
+      options.host.removeEventListener("change", onChange);
+      options.host.removeEventListener("dragover", onStatementDragOver);
+      options.host.removeEventListener("dragleave", onStatementDragLeave);
+      options.host.removeEventListener("drop", onStatementDrop);
       window.removeEventListener("hashchange", onHashChange);
     }
   });

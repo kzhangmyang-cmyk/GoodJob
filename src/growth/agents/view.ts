@@ -114,15 +114,44 @@ export function renderAgentsOverview(
       </div>
     </section>
     ${options.showImport !== false ? `<section class="statements-import">
-      <h3>上传真实报表（xls / xlsx）</h3>
-      <p>选择资产负债表与利润表各一份，系统解析后直接生成经营诊断报告。</p>
+      <header class="statements-import-heading">
+        <div>
+          <span class="agents-overline">STATEMENT IMPORT</span>
+          <h3>上传真实报表（xls / xlsx）</h3>
+          <p>选择资产负债表与利润表各一份，系统解析后直接生成经营诊断报告。</p>
+        </div>
+        <span class="statements-security">文件仅用于本次经营分析</span>
+      </header>
       <div class="statements-import-fields">
-        <label>资产负债表
-          <input type="file" accept=".xls,.xlsx" data-statements-file="balance" />
+        <label class="statement-dropzone" data-statements-drop="balance">
+          <input class="statements-file-input" type="file" accept=".xls,.xlsx"
+            data-statements-file="balance" />
+          <span class="statement-file-type" aria-hidden="true">XLS</span>
+          <span class="statement-file-copy">
+            <strong>资产负债表</strong>
+            <span>点击选择，或拖入 xls / xlsx 文件</span>
+          </span>
+          <span class="statement-file-name" data-statements-file-name="balance">
+            未选择文件
+          </span>
         </label>
-        <label>利润表
-          <input type="file" accept=".xls,.xlsx" data-statements-file="income" />
+        <label class="statement-dropzone" data-statements-drop="income">
+          <input class="statements-file-input" type="file" accept=".xls,.xlsx"
+            data-statements-file="income" />
+          <span class="statement-file-type" aria-hidden="true">XLS</span>
+          <span class="statement-file-copy">
+            <strong>利润表</strong>
+            <span>点击选择，或拖入 xls / xlsx 文件</span>
+          </span>
+          <span class="statement-file-name" data-statements-file-name="income">
+            未选择文件
+          </span>
         </label>
+      </div>
+      <div class="statements-import-status">
+        <p data-statements-selection>已选择 0 / 2 份必需报表</p>
+        <p class="statements-feedback" data-statements-feedback
+          aria-live="polite" role="status"></p>
       </div>
       <div class="statements-import-actions">
         <button type="button" data-agents-action="statements-diagnose">
@@ -227,15 +256,20 @@ export function renderCompanyPicker(
 ): string {
   const items = companies.map((company, index) => {
     if (company.error) {
-      return `<li class="company-picker-item company-picker-error">
-        <span class="company-picker-name">${escapeHtml(company.companyName)}</span>
+      return `<li class="company-picker-item company-picker-row company-picker-error has-error">
+        <div class="company-picker-row-main">
+          <span class="company-picker-name">${escapeHtml(company.companyName)}</span>
+          <span class="company-picker-period">${escapeHtml(company.period)}</span>
+        </div>
         <span class="company-picker-status">解析失败</span>
         <p class="company-picker-error-text">${escapeHtml(company.error)}</p>
       </li>`;
     }
-    return `<li class="company-picker-item">
-      <span class="company-picker-name">${escapeHtml(company.companyName)}</span>
-      <span class="company-picker-period">${escapeHtml(company.period)}</span>
+    return `<li class="company-picker-item company-picker-row">
+      <div class="company-picker-row-main">
+        <span class="company-picker-name">${escapeHtml(company.companyName)}</span>
+        <span class="company-picker-period">${escapeHtml(company.period)}</span>
+      </div>
       <span class="company-picker-status company-picker-ready">已就绪</span>
       <button type="button" data-agents-action="pick-company"
         data-company-index="${index}">查看诊断报告</button>
@@ -243,11 +277,15 @@ export function renderCompanyPicker(
   }).join("");
   return `<section class="growth-panel company-picker">
     <a href="#growth/agents" class="agents-back">← 返回团队</a>
-    <header>
-      <h2>报表解析完成</h2>
-      <p>共识别 ${companies.length} 家公司，选择一家查看经营诊断报告。</p>
+    <header class="company-picker-heading">
+      <div>
+        <span class="agents-overline">COMPANY MATCHING</span>
+        <h2>报表解析完成</h2>
+        <p>选择一家已就绪公司查看经营诊断报告。</p>
+      </div>
+      <strong>${companies.length} 家公司</strong>
     </header>
-    <ol>${items}</ol>
+    <ol class="company-picker-list">${items}</ol>
   </section>`;
 }
 
