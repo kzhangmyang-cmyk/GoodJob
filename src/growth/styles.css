@@ -1397,6 +1397,288 @@
   }
 }
 
+.replica-shell .agent-workbench {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(24, 237, 120, 0.05), transparent 29rem),
+    var(--replica-bg, #020303);
+}
+
+.replica-shell .agent-workbench > header {
+  padding: 1.05rem 1.2rem;
+  border: 1px solid var(--agents-line);
+  border-radius: var(--replica-radius-md, 18px);
+  background: var(--agents-panel);
+}
+
+.replica-shell .agent-workbench > header h2 {
+  color: var(--replica-text, #f1f3f0);
+  font-size: 1.15rem;
+}
+
+.replica-shell .agent-workbench > header p {
+  color: var(--agents-muted);
+}
+
+.replica-shell .agent-workbench-grid {
+  grid-template-columns: minmax(12.5rem, 0.24fr) minmax(24rem, 1fr) minmax(11.5rem, 0.2fr);
+  gap: 0.8rem;
+}
+
+.replica-shell .agent-info,
+.replica-shell .agent-chat,
+.replica-shell .agent-actions {
+  border: 1px solid var(--agents-line-soft);
+  border-radius: var(--replica-radius-md, 18px);
+  background: var(--agents-panel);
+  color: var(--replica-text, #f1f3f0);
+}
+
+.replica-shell .agent-info,
+.replica-shell .agent-actions {
+  align-self: start;
+}
+
+.replica-shell .agent-info h3,
+.replica-shell .agent-chat h3,
+.replica-shell .agent-actions h3 {
+  color: var(--replica-text, #f1f3f0);
+}
+
+.replica-shell .agent-info p,
+.replica-shell .agent-info ul,
+.replica-shell .agent-chat-heading p {
+  color: var(--agents-muted);
+  line-height: 1.65;
+}
+
+.replica-shell .agent-info li {
+  margin-bottom: 0.28rem;
+}
+
+.replica-shell .agent-chat {
+  min-width: 0;
+  padding: 1.1rem;
+}
+
+.replica-shell .agent-chat-heading {
+  margin-bottom: 1rem;
+}
+
+.replica-shell .agent-chat-heading h3,
+.replica-shell .agent-chat-heading p {
+  margin-bottom: 0.3rem;
+}
+
+.replica-shell .agent-chat-heading p {
+  margin-top: 0;
+  font-size: 0.8rem;
+}
+
+.replica-shell .agent-question-examples > span,
+.replica-shell .agent-question-label {
+  display: block;
+  margin-bottom: 0.45rem;
+  color: var(--agents-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.replica-shell .agent-question-examples > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.9rem;
+}
+
+.replica-shell .agent-question-examples button {
+  min-height: 2rem;
+  padding: 0.38rem 0.65rem;
+  border: 1px solid var(--agents-line-soft);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.026);
+  color: #b9bfbb;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.replica-shell .agent-question-examples button:hover {
+  border-color: rgba(24, 237, 120, 0.3);
+  color: var(--agents-green);
+}
+
+.replica-shell .agent-question-examples button:focus-visible,
+.replica-shell .agents-ask-row input:focus-visible,
+.replica-shell .agents-ask-row button:focus-visible,
+.replica-shell .agent-actions button:focus-visible {
+  outline: 2px solid var(--agents-green);
+  outline-offset: 2px;
+}
+
+.replica-shell .agents-ask-row {
+  align-items: stretch;
+  margin-top: 0;
+}
+
+.replica-shell .agents-ask-row input {
+  min-width: 0;
+  min-height: 2.7rem;
+  border: 1px solid var(--agents-line);
+  border-radius: var(--replica-radius-sm, 12px);
+  background: rgba(0, 0, 0, 0.24);
+  color: var(--replica-text, #f1f3f0);
+}
+
+.replica-shell .agents-ask-row input::placeholder {
+  color: #656b67;
+}
+
+.replica-shell .agents-ask-row input:focus {
+  border-color: rgba(24, 237, 120, 0.46);
+}
+
+.replica-shell .agents-ask-row button,
+.replica-shell .agent-actions button {
+  min-height: 2.7rem;
+  border: 1px solid rgba(24, 237, 120, 0.28);
+  border-radius: var(--replica-radius-sm, 12px);
+  background: rgba(24, 237, 120, 0.1);
+  color: var(--agents-green);
+  font-weight: 700;
+}
+
+.replica-shell .agent-conclusion {
+  margin-top: 0.85rem;
+  padding: 0;
+  border: 1px solid var(--agents-line-soft);
+  border-radius: var(--replica-radius-sm, 12px);
+  background: rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+}
+
+.replica-shell .agent-answer-empty,
+.replica-shell .agent-answer-loading {
+  display: grid;
+  min-height: 11rem;
+  place-content: center;
+  padding: 1rem;
+  color: var(--agents-muted);
+  text-align: center;
+}
+
+.replica-shell .agent-answer-empty strong {
+  color: #c2c7c4;
+  font-size: 0.88rem;
+}
+
+.replica-shell .agent-answer-empty p {
+  max-width: 25rem;
+  margin: 0.35rem 0 0;
+  font-size: 0.76rem;
+  line-height: 1.55;
+}
+
+.replica-shell .agent-answer-card {
+  display: grid;
+  gap: 0;
+}
+
+.replica-shell .agent-answer-question {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--agents-line-soft);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.replica-shell .agent-answer-question span,
+.replica-shell .agent-answer-section > span {
+  color: var(--agents-green);
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.replica-shell .agent-answer-question strong {
+  color: #d3d7d4;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.replica-shell .agent-answer-section {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border: 0;
+  border-bottom: 1px solid var(--agents-line-soft);
+  background: transparent;
+  color: #b6bcb8;
+}
+
+.replica-shell .agent-answer-section:last-child {
+  border-bottom: 0;
+}
+
+.replica-shell .agent-answer-section p,
+.replica-shell .agent-answer-section ul,
+.replica-shell .agent-answer-section ol {
+  margin: 0.48rem 0 0;
+  padding-left: 1.05rem;
+  color: #b6bcb8;
+  font-size: 0.78rem;
+  line-height: 1.65;
+}
+
+.replica-shell .agent-answer-section p {
+  padding-left: 0;
+}
+
+.replica-shell .agent-answer-evidence {
+  background: rgba(255, 255, 255, 0.012);
+}
+
+.replica-shell .agent-actions {
+  padding: 0.9rem;
+}
+
+.replica-shell .agent-actions button {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.025);
+  color: #b8bebb;
+  text-align: left;
+}
+
+.replica-shell .agent-actions button:first-of-type {
+  border-color: rgba(24, 237, 120, 0.26);
+  background: rgba(24, 237, 120, 0.08);
+  color: var(--agents-green);
+}
+
+@media (max-width: 1050px) {
+  .replica-shell .agent-workbench-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .replica-shell .agent-info,
+  .replica-shell .agent-actions {
+    align-self: stretch;
+  }
+}
+
+@media (max-width: 600px) {
+  .replica-shell .agent-workbench > header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .replica-shell .agent-workbench > header .agent-status {
+    margin-left: 0;
+  }
+
+  .replica-shell .agents-ask-row {
+    flex-direction: column;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .replica-shell .agents-primary,
   .replica-shell .agent-card {

@@ -62,6 +62,9 @@ const detail = renderAgentDetail("profit");
 assert.equal(detail.includes("找出钱到底赚在哪"), true);
 assert.equal(detail.includes("哪个产品是假利润？"), true);
 assert.equal(detail.includes("data-agents-form=\"ask\""), true);
+assert.equal(detail.includes('data-agent-question="哪个产品是假利润？"'), true);
+assert.equal(detail.includes('class="agent-question-examples"'), true);
+assert.equal(detail.includes('class="agent-answer-empty"'), true);
 assert.equal(detail.includes("管理会计 · 贡献毛利"), true);
 assert.equal(detail.includes("<script>"), false);
 

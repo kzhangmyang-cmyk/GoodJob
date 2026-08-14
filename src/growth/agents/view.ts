@@ -178,11 +178,17 @@ export function renderAgentDetail(agentId: string): string {
   const capabilities = agent.capabilities
     .map((item) => `<li>${escapeHtml(item)}</li>`)
     .join("");
+  const promptExamples = agentPromptExamples(agent.id).map((question) =>
+    `<button type="button" data-agent-question="${escapeHtml(question)}">
+      ${escapeHtml(question)}
+    </button>`
+  ).join("");
   return `<section class="growth-panel agent-workbench">
     <a href="#growth/agents" class="agents-back">← 返回团队</a>
     <header style="--agent-accent:${agent.accent}">
       <span class="agent-avatar" aria-hidden="true">${escapeHtml(agent.name.slice(0, 1))}</span>
       <div>
+        <span class="agents-overline">SPECIALIST WORKBENCH</span>
         <h2>${escapeHtml(agent.name)}</h2>
         <p>${escapeHtml(agent.title)}</p>
       </div>
@@ -200,17 +206,28 @@ export function renderAgentDetail(agentId: string): string {
         <p>${escapeHtml(agent.knowledgeBase)}</p>
       </aside>
       <section class="agent-chat">
-        <h3>向 ${escapeHtml(agent.name)} 提问</h3>
+        <div class="agent-chat-heading">
+          <span class="agents-overline">ASK &amp; ANALYZE</span>
+          <h3>向 ${escapeHtml(agent.name)} 提问</h3>
+          <p>从示例开始，或直接描述你正在做的经营决策。</p>
+        </div>
         <form data-agents-form="ask">
-          <label for="agents-ask-input">例如：${escapeHtml(agentPromptExample(agent.id))}</label>
+          <div class="agent-question-examples">
+            <span>示例问题</span>
+            <div>${promptExamples}</div>
+          </div>
+          <label class="agent-question-label" for="agents-ask-input">经营问题</label>
           <div class="agents-ask-row">
             <input id="agents-ask-input" name="question"
-              placeholder="输入你的经营问题…" />
+              data-agent-question-input placeholder="输入你的经营问题…" />
             <button type="submit">分析</button>
           </div>
         </form>
         <div class="agent-conclusion" data-agents-output>
-          <p class="agent-conclusion-empty">输入问题后，这里会给出带来源引用的分析结论。</p>
+          <div class="agent-answer-empty">
+            <strong>等待你的问题</strong>
+            <p>选择示例问题或输入问题后提交，这里会给出带来源引用的分析结论。</p>
+          </div>
         </div>
       </section>
       <aside class="agent-actions">
@@ -223,20 +240,20 @@ export function renderAgentDetail(agentId: string): string {
   </section>`;
 }
 
-function agentPromptExample(id: string): string {
+function agentPromptExamples(id: string): readonly string[] {
   switch (id) {
     case "profit":
-      return "哪个产品是假利润？";
+      return ["哪个产品是假利润？", "哪些产品值得加码？", "利润被哪些费用吃掉了？"];
     case "cashflow":
-      return "未来 30 天现金够不够？";
+      return ["未来 30 天现金够不够？", "哪些应收最该先催？", "未来 90 天有资金缺口吗？"];
     case "cost":
-      return "本月材料成本率为什么从 35% 涨到 42%？";
+      return ["本月材料成本率为什么从 35% 涨到 42%？", "成本异常发生在哪里？", "哪些费用可以优先压缩？"];
     case "tax":
-      return "有哪些税务健康风险？";
+      return ["有哪些税务健康风险？", "哪些发票问题最紧急？", "收入确认是否存在风险？"];
     case "finance":
-      return "公司财务健康吗？哪里在恶化？";
+      return ["公司财务健康吗？哪里在恶化？", "哪些指标需要优先关注？", "利润和现金是否背离？"];
     default:
-      return "今天最该先改什么？";
+      return ["今天最该先改什么？", "未来 90 天先做哪三件事？", "当前最大经营风险是什么？"];
   }
 }
 

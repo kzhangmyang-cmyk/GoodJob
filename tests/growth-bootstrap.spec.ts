@@ -221,8 +221,14 @@ test("demo agent center shows the business advisor team offline with sample data
   await expect(page.getByRole("heading", { name: "利润分析", exact: true })).toBeVisible();
   await expect(page.getByText("哪个产品是假利润？")).toBeVisible();
 
-  await page.locator('input[name="question"]').fill("哪个产品是假利润？");
+  await page.getByRole("button", { name: "哪个产品是假利润？" }).click();
+  await expect(page.locator("[data-agent-question-input]"))
+    .toHaveValue("哪个产品是假利润？");
+  await expect(page.locator(".agent-answer-empty")).toBeVisible();
   await page.locator('[data-agents-form="ask"] button[type="submit"]').click();
   await expect(page.getByText(/产品 A：毛利率/)).toBeVisible();
+  await expect(page.locator(".agent-answer-conclusion")).toBeVisible();
+  await expect(page.locator(".agent-answer-evidence")).toBeVisible();
+  await expect(page.locator(".agent-answer-actions")).toBeVisible();
   await expect(page.locator(".report-evidence").getByText(/假利润产品：产品 A/)).toBeVisible();
 });

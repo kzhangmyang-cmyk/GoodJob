@@ -84,6 +84,12 @@ function bpsText(bps: number): string {
   return `${(bps / 100).toFixed(1)}%`;
 }
 
+interface AnalysisSummary {
+  readonly conclusionHtml: string;
+  readonly evidenceHtml: string;
+  readonly actionsHtml: string;
+}
+
 function sourceBadgesForInput(input: BusinessReportInput): readonly string[] {
   return Object.freeze([
     "资产负债表",
@@ -94,7 +100,7 @@ function sourceBadgesForInput(input: BusinessReportInput): readonly string[] {
   ]);
 }
 
-function summarizeAnalysis(agentId: string, result: AnalysisResult): string {
+function summarizeAnalysis(agentId: string, result: AnalysisResult): AnalysisSummary {
   switch (agentId) {
     case "profit": {
       const fake = (result.products ?? []).filter((item) => item.isFakeProfit);
@@ -102,55 +108,119 @@ function summarizeAnalysis(agentId: string, result: AnalysisResult): string {
         `<li>${escapeHtml(product.name)}：毛利率 ${bpsText(product.grossMarginBps)}，
           真实利润率 ${bpsText(product.trueMarginBps)}
           ${product.isFakeProfit ? "（假利润 ⚠）" : ""}</li>`).join("");
-      return `<p>按“扣除售后/运费/销售费用后的真实利润”排序：</p>
-        <ul>${lines || "<li>无产品明细</li>"}</ul>
-        ${fake.length > 0
-          ? `<p class="report-evidence">⚠ 假利润产品：${fake.map((item) => escapeHtml(item.name)).join("、")}。建议调整定价或压缩履约成本。</p>`
-          : ""}`;
+      return {
+        conclusionHtml: fake.length > 0
+          ? `<p>识别到 ${fake.length} 个假利润产品，收入规模没有转化为真实利润。</p>`
+          : "<p>当前产品明细中未识别到假利润产品。</p>",
+        evidenceHtml: `<p>按扣除售后、运费和销售费用后的真实利润排序：</p>
+          <ul>${lines || "<li>无产品明细</li>"}</ul>
+          ${fake.length > 0
+            ? `<p>⚠ 假利润产品：${fake.map((item) => escapeHtml(item.name)).join("、")}</p>`
+            : ""}`,
+        actionsHtml: fake.length > 0
+          ? "<ul><li>重新核算履约成本与销售费用</li><li>调整定价，或收缩无法改善的产品线</li></ul>"
+          : "<p>继续按月复核产品真实利润率。</p>"
+      };
     }
     case "cashflow": {
       const warnings = (result.cashflow?.warning ?? []);
-      return warnings.length > 0
-        ? `<p class="growth-conflict">${warnings.map(escapeHtml).join("<br/>")}</p>`
-        : "<p>未来 90 天现金预测健康。</p>";
+      return {
+        conclusionHtml: warnings.length > 0
+          ? `<p class="growth-conflict">发现 ${warnings.length} 项现金流预警。</p>`
+          : "<p>未来 90 天现金预测健康。</p>",
+        evidenceHtml: warnings.length > 0
+          ? `<ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
+          : "<p>现有预测未触发现金流预警。</p>",
+        actionsHtml: warnings.length > 0
+          ? "<ul><li>优先催收超期应收</li><li>滚动更新未来 30 天收支计划</li></ul>"
+          : "<p>保持每周更新收支预测。</p>"
+      };
     }
     case "cost": {
       const anomalies = (result.cost?.anomaly ?? []);
-      return anomalies.length > 0
-        ? `<p class="growth-conflict">${anomalies.map(escapeHtml).join("<br/>")}</p>`
-        : "<p>未发现明显成本异常。</p>";
+      return {
+        conclusionHtml: anomalies.length > 0
+          ? `<p class="growth-conflict">发现 ${anomalies.length} 项成本异常。</p>`
+          : "<p>未发现明显成本异常。</p>",
+        evidenceHtml: anomalies.length > 0
+          ? `<ul>${anomalies.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+          : "<p>当前成本指标处于既定区间。</p>",
+        actionsHtml: anomalies.length > 0
+          ? "<ul><li>核查采购价格、用量和产品结构变化</li><li>给异常成本项指定负责人</li></ul>"
+          : "<p>继续监控材料与人工成本率。</p>"
+      };
     }
     case "tax": {
       const tax = result.tax;
       if (!tax || tax.level === "green") {
-        return "<p>未发现税务风险点。</p>";
+        return {
+          conclusionHtml: "<p>未发现税务风险点。</p>",
+          evidenceHtml: "<p>当前税务检查结果为绿色。</p>",
+          actionsHtml: "<p>按期复核发票、收入确认与成本真实性。</p>"
+        };
       }
       const findings = (tax.findings ?? []).map((item) =>
         `<li>[${escapeHtml(item.level)}] ${escapeHtml(item.category)}：${escapeHtml(item.issue)}</li>`)
         .join("");
-      return `<p class="growth-conflict">税务风险等级：${escapeHtml(tax.level)}</p><ul>${findings}</ul>`;
+      return {
+        conclusionHtml: `<p class="growth-conflict">税务风险等级：${escapeHtml(tax.level)}</p>`,
+        evidenceHtml: `<ul>${findings}</ul>`,
+        actionsHtml: "<ul><li>按风险等级建立整改清单</li><li>保留合同、发票和业务真实性证据</li></ul>"
+      };
     }
     case "finance": {
       const indicators = result.indicators ?? {};
-      return `<ul>
-        <li>毛利率 ${bpsText(indicators.grossMarginBps ?? 0)}</li>
-        <li>净利率 ${bpsText(indicators.netMarginBps ?? 0)}</li>
-        <li>速动比率 ${indicators.quickRatioBps !== undefined
-          ? (indicators.quickRatioBps / 100).toFixed(1)
-          : "0"}</li>
-        <li>应收周转天数 ${indicators.receivableDays ?? 0} 天</li>
-        <li>应收账款周转率 ${indicators.receivableTurnover ?? 0} 次</li>
-        <li>存货周转率 ${indicators.inventoryTurnover ?? 0} 次</li>
-        <li>利息保障倍数 ${indicators.interestCoverage ?? 0} 倍</li>
-        <li>现金保障月数 ${indicators.cashCoverageMonths ?? 0} 个月</li>
-        <li>资产负债率 ${bpsText(indicators.debtRatioBps ?? 0)}</li>
-        <li>收现比 ${bpsText(indicators.cashCollectionRatioBps ?? 0)}</li>
-        <li>净现比 ${bpsText(indicators.cashProfitRatioBps ?? 0)}</li>
-      </ul>`;
+      return {
+        conclusionHtml: "<p>已完成本期核心财务健康指标复核。</p>",
+        evidenceHtml: `<ul>
+          <li>毛利率 ${bpsText(indicators.grossMarginBps ?? 0)}</li>
+          <li>净利率 ${bpsText(indicators.netMarginBps ?? 0)}</li>
+          <li>速动比率 ${indicators.quickRatioBps !== undefined
+            ? (indicators.quickRatioBps / 100).toFixed(1)
+            : "0"}</li>
+          <li>应收周转天数 ${indicators.receivableDays ?? 0} 天</li>
+          <li>应收账款周转率 ${indicators.receivableTurnover ?? 0} 次</li>
+          <li>存货周转率 ${indicators.inventoryTurnover ?? 0} 次</li>
+          <li>利息保障倍数 ${indicators.interestCoverage ?? 0} 倍</li>
+          <li>现金保障月数 ${indicators.cashCoverageMonths ?? 0} 个月</li>
+          <li>资产负债率 ${bpsText(indicators.debtRatioBps ?? 0)}</li>
+          <li>收现比 ${bpsText(indicators.cashCollectionRatioBps ?? 0)}</li>
+          <li>净现比 ${bpsText(indicators.cashProfitRatioBps ?? 0)}</li>
+        </ul>`,
+        actionsHtml: "<p>优先处理恶化指标，并纳入未来 90 天行动计划。</p>"
+      };
     }
     default:
-      return "<p>请先生成经营诊断报告。</p>";
+      return {
+        conclusionHtml: "<p>请先生成经营诊断报告。</p>",
+        evidenceHtml: "<p>当前没有可引用的经营分析结果。</p>",
+        actionsHtml: "<p>补充经营数据后重新分析。</p>"
+      };
   }
+}
+
+function renderAnalysisAnswer(
+  question: string,
+  summary: AnalysisSummary
+): string {
+  return `<article class="agent-answer-card">
+    <header class="agent-answer-question">
+      <span>你的问题</span>
+      <strong>${escapeHtml(question)}</strong>
+    </header>
+    <section class="agent-answer-section agent-answer-conclusion">
+      <span>结论</span>
+      ${summary.conclusionHtml}
+    </section>
+    <section class="agent-answer-section agent-answer-evidence report-evidence">
+      <span>判断依据</span>
+      ${summary.evidenceHtml}
+    </section>
+    <section class="agent-answer-section agent-answer-actions">
+      <span>建议动作</span>
+      ${summary.actionsHtml}
+    </section>
+  </article>`;
 }
 
 export function createAgentsController(
@@ -403,31 +473,34 @@ export function createAgentsController(
   async function handleAsk(agentId: string, question: string): Promise<void> {
     const output = options.host.querySelector<HTMLElement>("[data-agents-output]");
     if (!output) return;
-    output.innerHTML = renderAgentConclusion("<p>正在分析…</p>");
+    output.innerHTML = '<div class="agent-answer-loading">正在分析…</div>';
     try {
       if (agentId === "cfo") {
         const report = options.demo
           ? demoDiagnosisReport()
           : await api.diagnose(activeInput);
-        output.innerHTML = renderAgentConclusion(
-          `<p>${escapeHtml(report.summary)}</p>`
-          + `<a href="#growth/agents/report" class="agents-back">查看完整报告</a>`
-        );
+        output.innerHTML = renderAnalysisAnswer(question, {
+          conclusionHtml: `<p>${escapeHtml(report.summary)}</p>`,
+          evidenceHtml: `<ul>${report.issues.map((issue) =>
+            `<li>${escapeHtml(issue.title)}</li>`).join("")}</ul>`,
+          actionsHtml: `<ol>${report.actionPlan90Days.map((item) =>
+            `<li>第 ${item.month} 月：${escapeHtml(item.action)}</li>`).join("")}</ol>
+            <a href="#growth/agents/report" class="agents-back">查看完整报告</a>`
+        });
         return;
       }
       const result = options.demo
         ? demoAnalysisResult() as AnalysisResult
         : await api.analyze(activeInput) as AnalysisResult;
-      output.innerHTML = renderAgentConclusion(
-        `<p><strong>Q：${escapeHtml(question)}</strong></p>`
-        + summarizeAnalysis(agentId, result)
+      output.innerHTML = renderAnalysisAnswer(
+        question,
+        summarizeAnalysis(agentId, result)
       );
     } catch (error) {
-      output.innerHTML = renderAgentConclusion(
+      output.innerHTML =
         `<p class="growth-error">分析失败：${escapeHtml(
           error instanceof Error ? error.message : String(error)
-        )}</p>`
-      );
+        )}</p>`;
     }
   }
 
@@ -449,6 +522,21 @@ export function createAgentsController(
           ? { view: "report" }
           : { view: "overview" };
         renderView();
+        return;
+      }
+    }
+    if (rawTarget) {
+      const questionExample = rawTarget.closest<HTMLElement>(
+        "[data-agent-question]"
+      );
+      if (questionExample && options.host.contains(questionExample)) {
+        const input = options.host.querySelector<HTMLInputElement>(
+          "[data-agent-question-input]"
+        );
+        if (input) {
+          input.value = questionExample.dataset.agentQuestion ?? "";
+          input.focus();
+        }
         return;
       }
     }
