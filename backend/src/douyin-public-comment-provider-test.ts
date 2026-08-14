@@ -110,7 +110,16 @@ test("normalizes an allowed top-level comment shape without avatar or login fiel
     }
   }]);
   assert.equal(page.replyBodiesIncluded, false);
+  assert.equal(page.providerId, "experimental_public_sample");
   assert.equal(page.providerVersion, "douyin-public-comment-provider-v1");
+  assert.equal(page.coverage, "public_top_level_sample");
+  assert.deepEqual(page.metadata, {
+    requestedCommentCount: 20,
+    returnedCommentCount: 1,
+    duplicateCommentCount: 0,
+    partial: false,
+    cursorProgressed: true
+  });
   assert.match(page.rawArtifactHash, /^sha256:[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(page).includes("avatar"), false);
   assert.equal(JSON.stringify(page).toLocaleLowerCase().includes("cookie"), false);
@@ -123,7 +132,7 @@ test("deduplicates repeated cid values within one page", async () => {
   });
   const page = await provider.fetchTopLevelSample({ videoId, sourceUrl, cursor: 0, count: 20 });
   assert.deepEqual(page.comments.map((item) => item.commentId), ["cid-1"]);
-  assert.equal(page.coverage.duplicateCommentCount, 1);
+  assert.equal(page.metadata.duplicateCommentCount, 1);
 });
 
 test("deduplicates a cid already returned for the same video on an earlier page", async () => {
@@ -136,7 +145,7 @@ test("deduplicates a cid already returned for the same video on an earlier page"
   await provider.fetchTopLevelSample({ videoId, sourceUrl, cursor: 0, count: 20 });
   const page = await provider.fetchTopLevelSample({ videoId, sourceUrl, cursor: 10, count: 20 });
   assert.deepEqual(page.comments.map((item) => item.commentId), ["cid-2"]);
-  assert.equal(page.coverage.duplicateCommentCount, 1);
+  assert.equal(page.metadata.duplicateCommentCount, 1);
 });
 
 test("stops pagination as a partial sample when the next cursor does not progress", async () => {
@@ -148,8 +157,8 @@ test("stops pagination as a partial sample when the next cursor does not progres
   const page = await provider.fetchTopLevelSample({ videoId, sourceUrl, cursor: 0, count: 20 });
   assert.equal(page.nextCursor, null);
   assert.equal(page.hasMore, false);
-  assert.equal(page.coverage.partial, true);
-  assert.equal(page.coverage.cursorProgressed, false);
+  assert.equal(page.metadata.partial, true);
+  assert.equal(page.metadata.cursorProgressed, false);
 });
 
 test("retries a 429 twice while honoring Retry-After before returning the page", async () => {
@@ -185,4 +194,39 @@ test("maps restricted, malformed, empty, and cid-less payloads to stable errors"
       (error: unknown) => error instanceof DouyinPublicCommentProviderError && error.code === item.code
     );
   }
+});
+
+test("does not retain a valid cid when another comment makes the page invalid", async () => {
+  const provider = createDouyinPublicCommentProvider({
+    transport: scriptedTransport([
+      response(payload([comment("cid-1"), comment("", { cid: undefined })])),
+      response(payload([comment("cid-1")]))
+    ]).transport
+  });
+  await assert.rejects(
+    () => provider.fetchTopLevelSample({ videoId, sourceUrl, cursor: 0, count: 20 }),
+    (error: unknown) => error instanceof DouyinPublicCommentProviderError
+      && error.code === "source_payload_invalid"
+  );
+  const correctedPage = await provider.fetchTopLevelSample({
+    videoId, sourceUrl, cursor: 0, count: 20
+  });
+  assert.deepEqual(correctedPage.comments.map((item) => item.commentId), ["cid-1"]);
+});
+
+test("does not retry a non-retryable transport or programming exception", async () => {
+  const programmingError = new Error("programming transport failure");
+  let calls = 0;
+  const provider = createDouyinPublicCommentProvider({
+    transport: async () => {
+      calls += 1;
+      throw programmingError;
+    },
+    sleep: async () => { throw new Error("sleep must not be called"); }
+  });
+  await assert.rejects(
+    () => provider.fetchTopLevelSample({ videoId, sourceUrl, cursor: 0, count: 20 }),
+    (error: unknown) => error === programmingError
+  );
+  assert.equal(calls, 1);
 });

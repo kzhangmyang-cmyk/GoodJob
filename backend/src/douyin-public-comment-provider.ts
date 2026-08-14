@@ -4,6 +4,8 @@ export const DOUYIN_PUBLIC_COMMENT_ENDPOINT =
   "https://www.iesdouyin.com/web/api/v2/comment/list/";
 export const DOUYIN_PUBLIC_COMMENT_PROVIDER_VERSION =
   "douyin-public-comment-provider-v1";
+export const DOUYIN_PUBLIC_COMMENT_PROVIDER_ID = "experimental_public_sample";
+export const DOUYIN_PUBLIC_COMMENT_COVERAGE = "public_top_level_sample";
 
 export type DouyinPublicCommentProviderErrorCode =
   | "public_sample_unavailable"
@@ -17,6 +19,14 @@ export class DouyinPublicCommentProviderError extends Error {
   constructor(public readonly code: DouyinPublicCommentProviderErrorCode) {
     super(code);
     this.name = "DouyinPublicCommentProviderError";
+  }
+}
+
+/** Transport implementations must use this for failures safe to retry. */
+export class DouyinPublicCommentRetryableTransportError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "DouyinPublicCommentRetryableTransportError";
   }
 }
 
@@ -41,8 +51,12 @@ export interface DouyinPublicCommentSamplePage {
   reportedCommentCount: number | null;
   capturedAt: string;
   rawArtifactHash: string;
+  providerId: typeof DOUYIN_PUBLIC_COMMENT_PROVIDER_ID;
   providerVersion: typeof DOUYIN_PUBLIC_COMMENT_PROVIDER_VERSION;
-  coverage: {
+  coverage: typeof DOUYIN_PUBLIC_COMMENT_COVERAGE;
+  metadata: {
+    requestedCommentCount: number;
+    returnedCommentCount: number;
     duplicateCommentCount: number;
     partial: boolean;
     cursorProgressed: boolean;
@@ -51,6 +65,7 @@ export interface DouyinPublicCommentSamplePage {
 }
 
 export interface DouyinPublicCommentProviderPort {
+  readonly providerId: typeof DOUYIN_PUBLIC_COMMENT_PROVIDER_ID;
   fetchTopLevelSample(input: {
     videoId: string;
     sourceUrl: string;
@@ -189,31 +204,37 @@ async function requestWithRetry(
   sleep: DouyinPublicCommentProviderOptions["sleep"]
 ) {
   for (let attempt = 0; attempt <= 2; attempt += 1) {
+    let response: Response;
     try {
-      const response = await transport(url, {
+      response = await transport(url, {
         method: "GET",
         headers: { accept: "application/json" },
         signal
       });
-      if (response.status !== 429 && response.status < 500) return response;
-      if (attempt === 2) {
-        throw new DouyinPublicCommentProviderError(
-          response.status === 429 ? "rate_limited" : "public_sample_unavailable"
-        );
-      }
-      await (sleep || defaultSleep)(
-        response.status === 429
-          ? retryAfterMs(response.headers.get("retry-after"), 250 * (attempt + 1))
-          : 250 * (attempt + 1),
-        signal
-      );
     } catch (error) {
       if (error instanceof DouyinPublicCommentProviderError) throw error;
-      if (signal?.aborted || attempt === 2) {
+      if (signal?.aborted) {
+        throw new DouyinPublicCommentProviderError("public_sample_unavailable");
+      }
+      if (!(error instanceof DouyinPublicCommentRetryableTransportError)) throw error;
+      if (attempt === 2) {
         throw new DouyinPublicCommentProviderError("public_sample_unavailable");
       }
       await (sleep || defaultSleep)(250 * (attempt + 1), signal);
+      continue;
     }
+    if (response.status !== 429 && response.status < 500) return response;
+    if (attempt === 2) {
+      throw new DouyinPublicCommentProviderError(
+        response.status === 429 ? "rate_limited" : "public_sample_unavailable"
+      );
+    }
+    await (sleep || defaultSleep)(
+      response.status === 429
+        ? retryAfterMs(response.headers.get("retry-after"), 250 * (attempt + 1))
+        : 250 * (attempt + 1),
+      signal
+    );
   }
   throw new DouyinPublicCommentProviderError("public_sample_unavailable");
 }
@@ -227,11 +248,22 @@ function responseError(status: number) {
 export function createDouyinPublicCommentProvider(
   options: DouyinPublicCommentProviderOptions = {}
 ): DouyinPublicCommentProviderPort {
-  const transport = options.transport || ((url, init) => fetch(url, init));
+  const transport = options.transport || (async (url, init) => {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      if (init.signal?.aborted) throw error;
+      throw new DouyinPublicCommentRetryableTransportError(
+        "Douyin public comment transport failed",
+        { cause: error }
+      );
+    }
+  });
   const seenCommentIds = new Map<string, Set<string>>();
   const visitedCursors = new Map<string, Set<number>>();
 
   return {
+    providerId: DOUYIN_PUBLIC_COMMENT_PROVIDER_ID,
     async fetchTopLevelSample(input) {
       const resolvedVideoId = resolveDouyinVideoId(input.sourceUrl);
       if (!resolvedVideoId || resolvedVideoId !== input.videoId) {
@@ -266,12 +298,11 @@ export function createDouyinPublicCommentProvider(
       if (!payload.comments.length) {
         throw new DouyinPublicCommentProviderError("no_public_comments");
       }
+      const normalizedComments = payload.comments.map(normalizeComment);
       const commentIds = seenCommentIds.get(input.videoId) || new Set<string>();
-      seenCommentIds.set(input.videoId, commentIds);
       const comments: DouyinPublicComment[] = [];
       let duplicateCommentCount = 0;
-      for (const raw of payload.comments) {
-        const comment = normalizeComment(raw);
+      for (const comment of normalizedComments) {
         if (commentIds.has(comment.commentId)) {
           duplicateCommentCount += 1;
           continue;
@@ -279,6 +310,7 @@ export function createDouyinPublicCommentProvider(
         commentIds.add(comment.commentId);
         comments.push(comment);
       }
+      seenCommentIds.set(input.videoId, commentIds);
       const cursorSet = visitedCursors.get(input.videoId) || new Set<number>();
       visitedCursors.set(input.videoId, cursorSet);
       cursorSet.add(input.cursor);
@@ -296,8 +328,16 @@ export function createDouyinPublicCommentProvider(
           : null,
         capturedAt: (options.now || (() => new Date()))().toISOString(),
         rawArtifactHash: sha256(JSON.stringify(payload)),
+        providerId: DOUYIN_PUBLIC_COMMENT_PROVIDER_ID,
         providerVersion: DOUYIN_PUBLIC_COMMENT_PROVIDER_VERSION,
-        coverage: { duplicateCommentCount, partial, cursorProgressed },
+        coverage: DOUYIN_PUBLIC_COMMENT_COVERAGE,
+        metadata: {
+          requestedCommentCount: input.count,
+          returnedCommentCount: comments.length,
+          duplicateCommentCount,
+          partial,
+          cursorProgressed
+        },
         replyBodiesIncluded: false
       };
     }
