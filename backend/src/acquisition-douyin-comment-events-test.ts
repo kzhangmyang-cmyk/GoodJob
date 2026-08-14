@@ -53,6 +53,12 @@ function ingestionSaga(sagaId = "saga-1") {
   };
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 test("comment events are tenant-idempotent while every capture is observed", async () => {
   const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
 
@@ -262,6 +268,159 @@ test("leased recovery skips poison fairly and concurrent claimers never overlap"
   ]);
   const ids = concurrent.flat().map((item) => item.saga.sagaId);
   assert.equal(new Set(ids).size, ids.length);
+});
+
+test("standalone event mutations wait for a failing snapshot transaction", async () => {
+  const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
+  await repository.appendObservation(observation());
+  await repository.startFetchAttempt({
+    scope: scopeA,
+    attemptId: "attempt-existing",
+    runId: "run-existing",
+    shardId: null,
+    discoveryOperationId: null,
+    sourceUrl: "https://www.douyin.com/video/123",
+    videoId: "123",
+    requestedCount: 10,
+    startedAt: "2026-08-15T02:00:00.000Z"
+  });
+  const entered = deferred();
+  const release = deferred();
+  const failing = repository.transaction(async () => {
+    await repository.appendObservation({
+      ...observation({ observationId: "observation-doomed" }),
+      event: {
+        ...observation().event,
+        eventId: "event-doomed",
+        platformEventId: "cid-doomed"
+      },
+      ingestionSaga: ingestionSaga("saga-doomed")
+    });
+    entered.resolve();
+    await release.promise;
+    throw new Error("ROLLBACK_SNAPSHOT");
+  });
+  await entered.promise;
+
+  const settled: string[] = [];
+  const concurrent = [
+    repository.appendObservation({
+      ...observation({ observationId: "observation-concurrent" }),
+      event: {
+        ...observation().event,
+        eventId: "event-concurrent",
+        platformEventId: "cid-concurrent"
+      },
+      ingestionSaga: {
+        ...ingestionSaga("saga-concurrent"),
+        runId: "run-concurrent"
+      }
+    }).then(() => { settled.push("append"); }),
+    repository.linkEvent({
+      scope: scopeA,
+      eventId: "event-1",
+      observationId: "observation-1",
+      runId: "run-concurrent",
+      shardId: null,
+      discoveryOperationId: null,
+      candidateId: null,
+      evidenceId: null
+    }).then(() => { settled.push("link"); }),
+    repository.startFetchAttempt({
+      scope: scopeA,
+      attemptId: "attempt-concurrent",
+      runId: "run-concurrent",
+      shardId: null,
+      discoveryOperationId: null,
+      sourceUrl: "https://www.douyin.com/video/123",
+      videoId: "123",
+      requestedCount: 5,
+      startedAt: "2026-08-15T02:01:00.000Z"
+    }).then(() => { settled.push("start"); }),
+    repository.finishFetchAttempt(scopeA, "attempt-existing", {
+      status: "succeeded",
+      errorCode: null,
+      returnedCount: 4,
+      reportedCommentCount: 4,
+      pagesFetched: 1,
+      completedAt: "2026-08-15T02:01:00.000Z"
+    }).then(() => { settled.push("finish"); })
+  ];
+  await Promise.resolve();
+  await Promise.resolve();
+  const settledBeforeRollback = [...settled].sort();
+  release.resolve();
+  await assert.rejects(failing, /ROLLBACK_SNAPSHOT/u);
+  await Promise.all(concurrent);
+
+  assert.deepEqual(
+    settledBeforeRollback,
+    [],
+    "standalone mutations must queue behind the active snapshot"
+  );
+  assert.equal(await repository.getIngestionSaga(scopeA, "saga-doomed"), null);
+  assert.equal(
+    (await repository.getIngestionSaga(scopeA, "saga-concurrent"))
+      ?.saga.status,
+    "pending"
+  );
+  assert.equal((await repository.listRunCommentSignals(
+    scopeA,
+    "run-concurrent",
+    { limit: 10 }
+  )).length, 1);
+  const attempts = await repository.listFetchAttempts(
+    scopeA,
+    "run-concurrent",
+    { limit: 10 }
+  );
+  assert.equal(attempts[0]?.attemptId, "attempt-concurrent");
+  assert.equal((await repository.listFetchAttempts(
+    scopeA,
+    "run-existing",
+    { limit: 10 }
+  ))[0]?.status, "succeeded");
+});
+
+test("a failing event snapshot waits for a standalone mutation already in flight", async () => {
+  const repository = new InMemoryAcquisitionDouyinCommentEventRepository();
+  const survivor = repository.appendObservation({
+    ...observation({ observationId: "observation-first" }),
+    event: {
+      ...observation().event,
+      eventId: "event-first",
+      platformEventId: "cid-first"
+    },
+    ingestionSaga: ingestionSaga("saga-first")
+  });
+  const failing = repository.transaction(async () => {
+    assert.equal(
+      (await repository.getIngestionSaga(scopeA, "saga-first"))?.saga.status,
+      "pending",
+      "the later snapshot must start after the standalone append commits"
+    );
+    await repository.appendObservation({
+      ...observation({ observationId: "observation-later-doomed" }),
+      event: {
+        ...observation().event,
+        eventId: "event-later-doomed",
+        platformEventId: "cid-later-doomed"
+      },
+      ingestionSaga: ingestionSaga("saga-later-doomed")
+    });
+    throw new Error("ROLLBACK_LATER_SNAPSHOT");
+  });
+
+  await survivor;
+  await assert.rejects(failing, /ROLLBACK_LATER_SNAPSHOT/u);
+  assert.equal(
+    (await repository.getIngestionSaga(scopeA, "saga-first"))?.saga.status,
+    "pending"
+  );
+  assert.equal(
+    await repository.getIngestionSaga(scopeA, "saga-later-doomed"),
+    null
+  );
 });
 
 test("run projections use the latest observation and remain tenant isolated", async () => {

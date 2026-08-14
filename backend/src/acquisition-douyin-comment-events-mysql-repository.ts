@@ -205,22 +205,21 @@ export const ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS = [
       (status = 'running' AND completed_at IS NULL)
       OR (status <> 'running' AND completed_at IS NOT NULL)
     )
-  ) ENGINE=InnoDB`,
-  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
-    ADD COLUMN IF NOT EXISTS attempt_count INT UNSIGNED NOT NULL DEFAULT 0`,
-  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
-    ADD COLUMN IF NOT EXISTS next_attempt_at DATETIME(3) NULL`,
-  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
-    ADD COLUMN IF NOT EXISTS lease_owner VARCHAR(100) NULL`,
-  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
-    ADD COLUMN IF NOT EXISTS lease_expires_at DATETIME(3) NULL`,
-  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
-    ADD COLUMN IF NOT EXISTS last_error_code VARCHAR(64) NULL`,
-  `UPDATE acquisition_douyin_comment_ingestion_sagas
-    SET next_attempt_at = updated_at WHERE next_attempt_at IS NULL`,
-  `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
-    MODIFY COLUMN next_attempt_at DATETIME(3) NOT NULL`
+  ) ENGINE=InnoDB`
 ] as const;
+
+const DOUYIN_COMMENT_INGESTION_SAGA_RECOVERY_COLUMNS = {
+  attempt_count:
+    "ADD COLUMN attempt_count INT UNSIGNED NOT NULL DEFAULT 0",
+  next_attempt_at:
+    "ADD COLUMN next_attempt_at DATETIME(3) NULL",
+  lease_owner:
+    "ADD COLUMN lease_owner VARCHAR(100) NULL",
+  lease_expires_at:
+    "ADD COLUMN lease_expires_at DATETIME(3) NULL",
+  last_error_code:
+    "ADD COLUMN last_error_code VARCHAR(64) NULL"
+} as const;
 
 export async function ensureAcquisitionDouyinCommentEventsMysqlSchema(
   pool: mysql.Pool
@@ -228,6 +227,42 @@ export async function ensureAcquisitionDouyinCommentEventsMysqlSchema(
   for (const statement of
     ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS) {
     await pool.query(statement);
+  }
+  const [columnResult] = await pool.query(
+    `SELECT column_name, is_nullable
+     FROM information_schema.columns
+     WHERE table_schema = DATABASE()
+       AND table_name = 'acquisition_douyin_comment_ingestion_sagas'
+       AND column_name IN (
+         'attempt_count', 'next_attempt_at', 'lease_owner',
+         'lease_expires_at', 'last_error_code'
+       )`
+  );
+  const present = new Map<string, string>();
+  for (const row of columnResult as Array<Record<string, unknown>>) {
+    if (typeof row.column_name === "string"
+      && typeof row.is_nullable === "string") {
+      present.set(row.column_name, row.is_nullable);
+    }
+  }
+  for (const [column, alteration] of Object.entries(
+    DOUYIN_COMMENT_INGESTION_SAGA_RECOVERY_COLUMNS
+  )) {
+    if (present.has(column)) continue;
+    await pool.query(
+      `ALTER TABLE acquisition_douyin_comment_ingestion_sagas ${alteration}`
+    );
+    present.set(column, column === "next_attempt_at" ? "YES" : "NO");
+  }
+  if (present.get("next_attempt_at") === "YES") {
+    await pool.query(
+      `UPDATE acquisition_douyin_comment_ingestion_sagas
+       SET next_attempt_at = updated_at WHERE next_attempt_at IS NULL`
+    );
+    await pool.query(
+      `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
+       MODIFY COLUMN next_attempt_at DATETIME(3) NOT NULL`
+    );
   }
 }
 

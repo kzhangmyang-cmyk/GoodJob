@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
   AcquisitionDouyinCommentIngestionService,
@@ -802,8 +803,13 @@ test("recovery isolates poison and failure-recording errors from later tenant wo
     domain: harness.domain,
     candidateDirectory: harness.candidateDirectory
   });
+  const sensitiveFailure = [
+    "预算 10 万，采购 20 套，请报价",
+    "MS4wLjABAAAA_poison",
+    "https://www.douyin.com/video/1234567890123456789"
+  ].join(" | ");
   let first = true;
-  const errors: unknown[] = [];
+  const diagnostics: unknown[] = [];
   let failRecordThrows = true;
   const recoveryEvents = new Proxy(harness.eventRepository, {
     get(target, property, receiver) {
@@ -812,7 +818,7 @@ test("recovery isolates poison and failure-recording errors from later tenant wo
           const result = await target.failIngestionSaga(...args);
           if (failRecordThrows) {
             failRecordThrows = false;
-            throw new Error("failure ledger temporarily unavailable");
+            throw new Error(sensitiveFailure);
           }
           return result;
         };
@@ -828,7 +834,7 @@ test("recovery isolates poison and failure-recording errors from later tenant wo
       async ingest(signalInput) {
         if (first) {
           first = false;
-          throw new Error("comment text must not enter persisted error state");
+          throw new Error(sensitiveFailure);
         }
         return realSignals.ingest(signalInput);
       }
@@ -836,14 +842,42 @@ test("recovery isolates poison and failure-recording errors from later tenant wo
     unitOfWork: harness.unitOfWork,
     recoveryWorkerId: "fair-worker",
     now: () => "2026-08-15T02:01:00.000Z",
-    onRecoveryError: (error) => {
-      errors.push(error);
-      if (errors.length === 1) throw new Error("diagnostics unavailable");
+    onRecoveryError: (diagnostic) => {
+      diagnostics.push(diagnostic);
+      if (diagnostics.length === 1) throw new Error(sensitiveFailure);
     }
   });
 
   await recovery.recoverPendingIngestionSagas({ limit: 2 });
-  assert.equal(errors.length, 2);
+  assert.equal(diagnostics.length, 2);
+  const poisonSaga = (await harness.eventRepository
+    .listPendingIngestionSagas({ limit: 10 }))[0]!.saga;
+  const expectedSagaHash = `sha256:${createHash("sha256")
+    .update(poisonSaga.sagaId)
+    .digest("hex")}`;
+  assert.deepEqual(diagnostics, [
+    {
+      code: "RECOVERY_FAILED",
+      stage: "resume_saga",
+      sagaHash: expectedSagaHash,
+      attempt: 1
+    },
+    {
+      code: "RECOVERY_FAILED",
+      stage: "persist_failure",
+      sagaHash: expectedSagaHash,
+      attempt: 1
+    }
+  ]);
+  const diagnosticJson = JSON.stringify(diagnostics);
+  for (const secret of [
+    sensitiveFailure,
+    "预算 10 万，采购 20 套，请报价",
+    "MS4wLjABAAAA_poison",
+    "https://www.douyin.com/video/1234567890123456789",
+    "stack",
+    "message"
+  ]) assert.equal(diagnosticJson.includes(secret), false);
   assert.equal((await harness.eventRepository.listRunCommentSignals(
     scopeB,
     "run-b",
@@ -859,7 +893,7 @@ test("recovery isolates poison and failure-recording errors from later tenant wo
   });
   assert.equal(pending.length, 1);
   assert.equal(pending[0]?.saga.lastErrorCode, "RECOVERY_FAILED");
-  assert.equal(JSON.stringify(pending).includes("comment text"), false);
+  assert.equal(JSON.stringify(pending).includes(sensitiveFailure), false);
 });
 
 test("invalid sample literals and overlong context fail before mutation", async () => {

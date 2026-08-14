@@ -14,13 +14,16 @@ import type {
   MysqlAcquisitionCandidateDirectory
 } from "./acquisition-tool-support-repositories.js";
 
-function mysqlUnitOfWorkHarness() {
+function mysqlUnitOfWorkHarness(options: {
+  domainCleanupError?: boolean;
+} = {}) {
   const lifecycle: string[] = [];
   const connection = {
     async beginTransaction() { lifecycle.push("begin"); },
     async commit() { lifecycle.push("commit"); },
     async rollback() { lifecycle.push("rollback"); },
-    release() { lifecycle.push("release"); }
+    release() { lifecycle.push("release"); },
+    destroy() { lifecycle.push("destroy"); }
   } as unknown as mysql.PoolConnection;
   const pool = {
     async getConnection() {
@@ -35,7 +38,11 @@ function mysqlUnitOfWorkHarness() {
     ) {
       assert.equal(selected, connection);
       lifecycle.push("domain");
-      return work();
+      const result = await work();
+      if (options.domainCleanupError) {
+        throw new Error("ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED");
+      }
+      return result;
     }
   } as MysqlAcquisitionDomainRepository;
   const events = {
@@ -106,4 +113,30 @@ test("mysql comment ingestion rolls the shared connection back on either side", 
     "rollback",
     "release"
   ]);
+});
+
+test("mysql comment ingestion destroys a shared session when lock cleanup fails after commit", async () => {
+  const { lifecycle, unitOfWork } = mysqlUnitOfWorkHarness({
+    domainCleanupError: true
+  });
+  await assert.rejects(
+    unitOfWork.transaction(async () => {
+      lifecycle.push("work");
+      return "committed";
+    }),
+    /ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED/u
+  );
+  assert.deepEqual(lifecycle, [
+    "acquire",
+    "directory",
+    "domain",
+    "begin",
+    "events",
+    "work",
+    "commit",
+    "destroy"
+  ]);
+  assert.equal(lifecycle.filter((entry) => entry === "commit").length, 1);
+  assert.equal(lifecycle.includes("rollback"), false);
+  assert.equal(lifecycle.includes("release"), false);
 });

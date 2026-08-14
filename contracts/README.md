@@ -63,18 +63,30 @@ artifacts for the same event/text hash therefore produce byte-equivalent
 evidence while each observation remains traceable to its own provider page.
 Candidate identity facts always come from the stored immutable event.
 
-Comment ingestion is a restartable idempotent saga across the event, evidence,
-candidate, and link repositories, not a cross-repository atomic transaction.
-The event repository atomically stores event/observation/content-version facts
-with a durable pending saga. A candidate pre-commit failure rolls its Domain
-transaction back. The Run link and committed saga state are then written in one
-event-repository transaction, so pending work is excluded from successful Run
-projections. A restart-safe recovery sweeper completes durable pending work
-without requiring the caller to replay the ingestion request.
+Comment ingestion combines a durable restartable saga with a shared completion
+unit of work. The event repository first atomically stores the event,
+observation, content version, and pending saga. Evidence, Domain idempotency,
+candidate/audit state, candidate-directory entry, Run link, and committed saga
+then complete together: memory compositions use coordinated serialized
+snapshots and MySQL compositions use one connection and one database
+transaction across Domain, event, and directory repositories. A completion
+failure restores every successful projection to its prior state while retaining
+the pending saga for a restart-safe recovery sweeper; callers do not need to
+replay the ingestion request. Pending work is excluded from successful Run
+projections.
 An exact retry resumes from deterministic step identities. Later signals for an
 existing individual candidate append evidence, merge bounded deduplicated
 demand summaries, advance buying stage only by its explicit order, and retain a
 stable union of negative signal codes without overwriting identity facts.
+
+Recovery persists only stable non-PII error codes. Diagnostic callbacks receive
+a bounded envelope containing the recovery stage, attempt, and irreversible
+saga hash, never the source error, comment, actor identifier, source URL,
+message, or stack. MySQL startup applies schema before the first sweep; legacy
+saga columns are discovered through `information_schema.columns` and migrated
+with fixed allowlisted `ALTER TABLE` statements. Advisory-lock cleanup requires
+`RELEASE_LOCK` to return exactly `1`; any cleanup error poisons and destroys the
+session instead of returning it to the pool.
 
 Run `npm run check:acquisition-contracts` from the repository root before
 changing any producer or consumer.

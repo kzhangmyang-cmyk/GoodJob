@@ -45,6 +45,32 @@ class SchemaPool {
   }
 }
 
+class MigrationSchemaPool {
+  readonly statements: string[] = [];
+  readonly columns = new Map<string, "YES" | "NO">();
+
+  constructor(columns: Array<[string, "YES" | "NO"]>) {
+    for (const [name, nullable] of columns) this.columns.set(name, nullable);
+  }
+
+  async query(sql: string) {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    this.statements.push(normalized);
+    if (normalized.includes("FROM information_schema.columns")) {
+      return [[...this.columns].map(([column_name, is_nullable]) => ({
+        column_name,
+        is_nullable
+      })), []] as [unknown, unknown];
+    }
+    const added = normalized.match(/ADD COLUMN ([a-z_]+)/u)?.[1];
+    if (added) this.columns.set(added, added === "next_attempt_at" ? "YES" : "NO");
+    if (normalized.includes("MODIFY COLUMN next_attempt_at")) {
+      this.columns.set("next_attempt_at", "NO");
+    }
+    return [[], []] as [unknown, unknown];
+  }
+}
+
 function eventRow(values: unknown[]) {
   return {
     event_id: values[0], owner_id: values[1], team_id: values[2],
@@ -347,11 +373,12 @@ function asPool(value: unknown) {
 test("schema creates tenant-scoped events, content versions, and recovery sagas", async () => {
   const pool = new SchemaPool();
   await ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool));
-  assert.equal(
-    pool.statements.length,
-    ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS.length
-  );
   const schema = pool.statements.join("\n");
+  assert.doesNotMatch(
+    schema,
+    /ADD COLUMN IF NOT EXISTS/u,
+    "MySQL 8 does not accept this migration grammar"
+  );
   for (const table of [
     "acquisition_douyin_comment_events",
     "acquisition_douyin_comment_observations",
@@ -392,6 +419,52 @@ test("schema creates tenant-scoped events, content versions, and recovery sagas"
       .match(/observation_id VARCHAR\(160\) NOT NULL/g)?.length,
     1
   );
+});
+
+test("schema migration adds only missing recovery columns and is retry idempotent", async () => {
+  const pool = new MigrationSchemaPool([]);
+  await ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool));
+  const firstStatements = pool.statements.join("\n");
+  for (const column of [
+    "attempt_count",
+    "next_attempt_at",
+    "lease_owner",
+    "lease_expires_at",
+    "last_error_code"
+  ]) {
+    assert.match(
+      firstStatements,
+      new RegExp(`ALTER TABLE acquisition_douyin_comment_ingestion_sagas ADD COLUMN ${column}`)
+    );
+  }
+  assert.doesNotMatch(firstStatements, /ADD COLUMN IF NOT EXISTS/u);
+  const altersAfterFirst = pool.statements.filter((statement) =>
+    statement.startsWith("ALTER TABLE")).length;
+
+  await ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool));
+  assert.equal(
+    pool.statements.filter((statement) => statement.startsWith("ALTER TABLE"))
+      .length,
+    altersAfterFirst,
+    "an exact retry must not reapply a completed ALTER"
+  );
+});
+
+test("schema migration resumes a nullable next-attempt column and skips present columns", async () => {
+  const pool = new MigrationSchemaPool([
+    ["attempt_count", "NO"],
+    ["next_attempt_at", "YES"],
+    ["lease_owner", "YES"],
+    ["lease_expires_at", "YES"],
+    ["last_error_code", "YES"]
+  ]);
+  await ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool));
+  const migrations = pool.statements.filter((statement) =>
+    statement.startsWith("ALTER TABLE") || statement.startsWith("UPDATE "));
+  assert.deepEqual(migrations, [
+    "UPDATE acquisition_douyin_comment_ingestion_sagas SET next_attempt_at = updated_at WHERE next_attempt_at IS NULL",
+    "ALTER TABLE acquisition_douyin_comment_ingestion_sagas MODIFY COLUMN next_attempt_at DATETIME(3) NOT NULL"
+  ]);
 });
 
 test("concurrent append is transactionally idempotent per tenant boundary", async () => {

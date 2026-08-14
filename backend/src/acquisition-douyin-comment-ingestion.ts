@@ -61,6 +61,13 @@ export interface AcquisitionDouyinCommentIngestionResult {
   invalidCommentCount: number;
 }
 
+export interface AcquisitionDouyinCommentRecoveryDiagnostic {
+  code: "RECOVERY_FAILED";
+  stage: "resume_saga" | "persist_failure";
+  sagaHash: string;
+  attempt: number;
+}
+
 export interface AcquisitionDouyinCommentIngestionServiceOptions {
   events: AcquisitionDouyinCommentEventRepository;
   domain: AcquisitionDomainService;
@@ -69,7 +76,9 @@ export interface AcquisitionDouyinCommentIngestionServiceOptions {
   recoveryWorkerId?: string;
   recoveryLeaseDurationMs?: number;
   now?: () => string;
-  onRecoveryError?: (error: unknown) => void;
+  onRecoveryError?: (
+    diagnostic: AcquisitionDouyinCommentRecoveryDiagnostic
+  ) => void;
   failureInjector?: (
     stage: "after_event" | "after_evidence" | "after_candidate"
   ) => Promise<void>;
@@ -399,7 +408,9 @@ export class AcquisitionDouyinCommentIngestionService {
   private readonly recoveryWorkerId: string;
   private readonly recoveryLeaseDurationMs: number;
   private readonly now: () => string;
-  private readonly onRecoveryError: (error: unknown) => void;
+  private readonly onRecoveryError: (
+    diagnostic: AcquisitionDouyinCommentRecoveryDiagnostic
+  ) => void;
 
   constructor(options: AcquisitionDouyinCommentIngestionServiceOptions) {
     this.events = options.events;
@@ -537,7 +548,7 @@ export class AcquisitionDouyinCommentIngestionService {
         const exponent = Math.min(8, Math.max(0,
           workItem.saga.attemptCount - 1));
         const delayMs = Math.min(5 * 60_000, 1_000 * (2 ** exponent));
-        this.reportRecoveryError(error);
+        this.reportRecoveryError("resume_saga", workItem);
         try {
           await this.events.failIngestionSaga({
             ownerId: workItem.saga.ownerId,
@@ -550,17 +561,28 @@ export class AcquisitionDouyinCommentIngestionService {
             ).toISOString(),
             errorCode: "RECOVERY_FAILED"
           });
-        } catch (failurePersistenceError) {
-          this.reportRecoveryError(failurePersistenceError);
+        } catch {
+          this.reportRecoveryError("persist_failure", workItem);
         }
       }
     }
     return workItems.length;
   }
 
-  private reportRecoveryError(error: unknown) {
+  private reportRecoveryError(
+    stage: AcquisitionDouyinCommentRecoveryDiagnostic["stage"],
+    workItem: DouyinCommentIngestionSagaWorkItem
+  ) {
+    const diagnostic = Object.freeze({
+      code: "RECOVERY_FAILED" as const,
+      stage,
+      sagaHash: `sha256:${createHash("sha256")
+        .update(workItem.saga.sagaId)
+        .digest("hex")}`,
+      attempt: workItem.saga.attemptCount
+    });
     try {
-      this.onRecoveryError(error);
+      this.onRecoveryError(diagnostic);
     } catch {
       // Diagnostics must never stop recovery or alter durable saga state.
     }

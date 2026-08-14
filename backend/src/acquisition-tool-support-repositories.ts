@@ -26,6 +26,10 @@ import {
   AcquisitionToolIdempotencyConflictError
 } from "./acquisition-tool-executor.js";
 import {
+  releaseAcquisitionMysqlConnection,
+  releaseAcquisitionMysqlNamedLocks
+} from "./acquisition-mysql-named-lock.js";
+import {
   ACQUISITION_AGENT_TOOL_NAMES,
   type AcquisitionToolAuditLedger,
   type AcquisitionToolAuditRecord,
@@ -345,8 +349,11 @@ implements AcquisitionCandidateDirectoryPort {
     partyType: "organization" | "individual";
     idempotencyKey: string;
     createCandidate: () => Promise<AcquisitionCandidate>;
-  }) {
+  }): ReturnType<AcquisitionCandidateDirectoryPort["upsertCandidate"]> {
     validateDirectoryInput(input);
+    if (!this.#transactionContext.getStore()) {
+      return this.transaction(() => this.upsertCandidate(input));
+    }
     const alias = await this.#identityAliases?.findCandidateIdentityAlias(
       input,
       input.dedupeKey
@@ -447,12 +454,7 @@ implements AcquisitionCandidateDirectoryPort {
     try {
       return await this.#transactionContext.run(context, work);
     } finally {
-      for (const lockName of context.lockNames) {
-        await connection.query(
-          "SELECT RELEASE_LOCK(?) AS lock_released",
-          [lockName]
-        ).catch(() => undefined);
-      }
+      await releaseAcquisitionMysqlNamedLocks(connection, context.lockNames);
     }
   }
 
@@ -476,16 +478,20 @@ implements AcquisitionCandidateDirectoryPort {
     const connection = externalContext?.connection ?? await this.pool.getConnection();
     let locked = false;
     try {
-      const lockRows = await rows(
-        connection,
-        "SELECT GET_LOCK(?, ?) AS lock_acquired",
-        [lockName, this.#lockTimeoutSeconds]
-      );
-      if (Number(lockRows[0]?.lock_acquired) !== 1) {
-        throw new Error("ACQUISITION_CANDIDATE_DIRECTORY_LOCK_TIMEOUT");
+      if (externalContext?.lockNames.has(lockName)) {
+        locked = true;
+      } else {
+        const lockRows = await rows(
+          connection,
+          "SELECT GET_LOCK(?, ?) AS lock_acquired",
+          [lockName, this.#lockTimeoutSeconds]
+        );
+        if (Number(lockRows[0]?.lock_acquired) !== 1) {
+          throw new Error("ACQUISITION_CANDIDATE_DIRECTORY_LOCK_TIMEOUT");
+        }
+        locked = true;
+        externalContext?.lockNames.add(lockName);
       }
-      locked = true;
-      externalContext?.lockNames.add(lockName);
       const aliasRows = this.#identityAliases
         ? await rows(
             connection,
@@ -591,13 +597,10 @@ implements AcquisitionCandidateDirectoryPort {
     } finally {
       try {
         if (locked && !externalContext) {
-          await connection.query(
-            "SELECT RELEASE_LOCK(?) AS lock_released",
-            [lockName]
-          );
+          await releaseAcquisitionMysqlNamedLocks(connection, [lockName]);
         }
       } finally {
-        if (!externalContext) connection.release();
+        if (!externalContext) releaseAcquisitionMysqlConnection(connection);
       }
     }
   }

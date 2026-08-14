@@ -32,7 +32,9 @@ class ScriptedConnection {
   commitCount = 0;
   rollbackCount = 0;
   releaseCount = 0;
+  destroyCount = 0;
   failSqlPattern: RegExp | null = null;
+  releaseLockResult: number | null = 1;
 
   enqueue(result: unknown) {
     this.queue.push([result, []]);
@@ -42,6 +44,9 @@ class ScriptedConnection {
     this.calls.push({ sql: sql.replace(/\s+/g, " ").trim(), values });
     if (this.failSqlPattern?.test(sql)) {
       throw new Error("scripted-query-failure");
+    }
+    if (/RELEASE_LOCK/i.test(sql)) {
+      return [[{ lock_released: this.releaseLockResult }], []];
     }
     return this.queue.shift() ?? [{ affectedRows: 1 }, []];
   }
@@ -61,6 +66,10 @@ class ScriptedConnection {
   release() {
     this.releaseCount += 1;
   }
+
+  destroy() {
+    this.destroyCount += 1;
+  }
 }
 
 class ScriptedPool extends ScriptedConnection {
@@ -71,7 +80,21 @@ class ScriptedPool extends ScriptedConnection {
   }
 }
 
-function asPool(value: ScriptedPool) {
+class PoisonAwarePool extends ScriptedConnection {
+  readonly poisonedConnection = new ScriptedConnection();
+  readonly replacementConnection = new ScriptedConnection();
+  readonly acquired: ScriptedConnection[] = [];
+
+  async getConnection() {
+    const connection = this.poisonedConnection.destroyCount > 0
+      ? this.replacementConnection
+      : this.poisonedConnection;
+    this.acquired.push(connection);
+    return connection;
+  }
+}
+
+function asPool(value: unknown) {
   return value as unknown as mysql.Pool;
 }
 
@@ -110,6 +133,12 @@ function candidate(
     updatedAt: NOW,
     version: 1
   };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 assert.ok(
@@ -209,6 +238,151 @@ assert.equal(
 }
 
 {
+  const directory = new InMemoryAcquisitionCandidateDirectory({
+    now: () => NOW
+  });
+  await directory.upsertCandidate({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    dedupeKey: "organization:preexisting.example",
+    partyType: "organization",
+    idempotencyKey: "preexisting-key",
+    createCandidate: async () => candidate("candidate-preexisting")
+  });
+  const entered = deferred();
+  const release = deferred();
+  const failing = directory.transaction(async () => {
+    await directory.upsertCandidate({
+      ownerId: "owner-a",
+      teamId: "team-a",
+      dedupeKey: "organization:doomed.example",
+      partyType: "organization",
+      idempotencyKey: "doomed-key",
+      createCandidate: async () => candidate("candidate-doomed")
+    });
+    entered.resolve();
+    await release.promise;
+    throw new Error("ROLLBACK_DIRECTORY_SNAPSHOT");
+  });
+  await entered.promise;
+
+  let survivorSettled = false;
+  const survivor = directory.upsertCandidate({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    dedupeKey: "organization:survivor.example",
+    partyType: "organization",
+    idempotencyKey: "survivor-key",
+    createCandidate: async () => candidate("candidate-survivor")
+  }).then((result) => {
+    survivorSettled = true;
+    return result;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  const settledBeforeRollback = survivorSettled;
+  release.resolve();
+  await assert.rejects(failing, /ROLLBACK_DIRECTORY_SNAPSHOT/u);
+  assert.equal((await survivor).created, true);
+
+  assert.equal(
+    settledBeforeRollback,
+    false,
+    "standalone directory upserts must queue behind the active snapshot"
+  );
+  assert.equal((await directory.upsertCandidate({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    dedupeKey: "organization:survivor.example",
+    partyType: "organization",
+    idempotencyKey: "survivor-key",
+    createCandidate: async () => {
+      throw new Error("survivor must already be indexed");
+    }
+  })).created, false);
+  assert.equal((await directory.upsertCandidate({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    dedupeKey: "organization:preexisting.example",
+    partyType: "organization",
+    idempotencyKey: "preexisting-key",
+    createCandidate: async () => {
+      throw new Error("preexisting entry must survive rollback");
+    }
+  })).created, false);
+  assert.equal((await directory.upsertCandidate({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    dedupeKey: "organization:doomed.example",
+    partyType: "organization",
+    idempotencyKey: "doomed-key",
+    createCandidate: async () => candidate("candidate-doomed-retry")
+  })).created, true);
+}
+
+{
+  const directory = new InMemoryAcquisitionCandidateDirectory({
+    now: () => NOW
+  });
+  const createEntered = deferred();
+  const releaseCreate = deferred();
+  const survivor = directory.upsertCandidate({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    dedupeKey: "organization:first-in-flight.example",
+    partyType: "organization",
+    idempotencyKey: "first-in-flight-key",
+    createCandidate: async () => {
+      createEntered.resolve();
+      await releaseCreate.promise;
+      return candidate("candidate-first-in-flight");
+    }
+  });
+  await createEntered.promise;
+  let laterSnapshotEntered = false;
+  const failing = directory.transaction(async () => {
+    laterSnapshotEntered = true;
+    await directory.upsertCandidate({
+      ownerId: "owner-a",
+      teamId: "team-a",
+      dedupeKey: "organization:later-doomed.example",
+      partyType: "organization",
+      idempotencyKey: "later-doomed-key",
+      createCandidate: async () => candidate("candidate-later-doomed")
+    });
+    throw new Error("ROLLBACK_LATER_DIRECTORY_SNAPSHOT");
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(
+    laterSnapshotEntered,
+    false,
+    "a later snapshot must wait for the standalone upsert"
+  );
+  releaseCreate.resolve();
+  assert.equal((await survivor).created, true);
+  await assert.rejects(failing, /ROLLBACK_LATER_DIRECTORY_SNAPSHOT/u);
+  assert.equal((await directory.upsertCandidate({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    dedupeKey: "organization:first-in-flight.example",
+    partyType: "organization",
+    idempotencyKey: "first-in-flight-key",
+    createCandidate: async () => {
+      throw new Error("first standalone write must survive later rollback");
+    }
+  })).created, false);
+  assert.equal((await directory.upsertCandidate({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    dedupeKey: "organization:later-doomed.example",
+    partyType: "organization",
+    idempotencyKey: "later-doomed-key",
+    createCandidate: async () => candidate("candidate-later-doomed-retry")
+  })).created, true);
+}
+
+{
   const pool = new ScriptedPool();
   pool.connection.enqueue([{ lock_acquired: 1 }]);
   pool.connection.enqueue([]);
@@ -257,13 +431,114 @@ assert.equal(
       idempotencyKey: "release-key",
       createCandidate: async () => candidate("candidate-release")
     }),
-    /scripted-query-failure/
+    /ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED/u
+  );
+  assert.equal(pool.connection.releaseCount, 0);
+  assert.equal(pool.connection.destroyCount, 1);
+}
+
+for (const invalidReleaseResult of [0, null] as const) {
+  const pool = new ScriptedPool();
+  pool.connection.enqueue([{ lock_acquired: 1 }]);
+  pool.connection.enqueue([]);
+  pool.connection.releaseLockResult = invalidReleaseResult;
+  const directory = new MysqlAcquisitionCandidateDirectory(asPool(pool), {
+    now: () => NOW
+  });
+  await assert.rejects(
+    directory.upsertCandidate({
+      ownerId: "owner-a",
+      teamId: "team-a",
+      dedupeKey: `organization:release-${String(invalidReleaseResult)}.example`,
+      partyType: "organization",
+      idempotencyKey: `release-${String(invalidReleaseResult)}-key`,
+      createCandidate: async () => candidate(
+        `candidate-release-${String(invalidReleaseResult)}`
+      )
+    }),
+    /ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED/u
+  );
+  assert.equal(pool.connection.releaseCount, 0);
+  assert.equal(pool.connection.destroyCount, 1);
+}
+
+{
+  const pool = new PoisonAwarePool();
+  pool.poisonedConnection.enqueue([{ lock_acquired: 1 }]);
+  pool.poisonedConnection.enqueue([]);
+  pool.poisonedConnection.failSqlPattern = /RELEASE_LOCK/i;
+  pool.replacementConnection.enqueue([{ lock_acquired: 1 }]);
+  pool.replacementConnection.enqueue([]);
+  const directory = new MysqlAcquisitionCandidateDirectory(asPool(pool), {
+    now: () => NOW
+  });
+  await assert.rejects(
+    directory.upsertCandidate({
+      ownerId: "owner-a",
+      teamId: "team-a",
+      dedupeKey: "organization:poisoned.example",
+      partyType: "organization",
+      idempotencyKey: "poisoned-key",
+      createCandidate: async () => candidate("candidate-poisoned")
+    }),
+    /ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED/u
+  );
+  await directory.upsertCandidate({
+    ownerId: "owner-a",
+    teamId: "team-a",
+    dedupeKey: "organization:replacement.example",
+    partyType: "organization",
+    idempotencyKey: "replacement-key",
+    createCandidate: async () => candidate("candidate-replacement")
+  });
+  assert.deepEqual(pool.acquired, [
+    pool.poisonedConnection,
+    pool.replacementConnection
+  ]);
+  assert.equal(pool.poisonedConnection.releaseCount, 0);
+  assert.equal(pool.poisonedConnection.destroyCount, 1);
+  assert.equal(pool.replacementConnection.releaseCount, 1);
+  assert.equal(pool.replacementConnection.destroyCount, 0);
+}
+
+{
+  const pool = new ScriptedPool();
+  pool.connection.enqueue([{ lock_acquired: 1 }]);
+  pool.connection.enqueue([]);
+  pool.connection.enqueue({ affectedRows: 1 });
+  pool.connection.enqueue([{
+    candidate_id: "candidate-shared-lock",
+    party_type: "organization",
+    indexed_at: new Date(NOW)
+  }]);
+  const directory = new MysqlAcquisitionCandidateDirectory(asPool(pool), {
+    now: () => NOW
+  });
+  const input = {
+    ownerId: "owner-a",
+    teamId: "team-a",
+    dedupeKey: "organization:shared-lock.example",
+    partyType: "organization" as const,
+    idempotencyKey: "shared-lock-key",
+    createCandidate: async () => candidate("candidate-shared-lock")
+  };
+  await directory.withTransactionConnection(
+    pool.connection as unknown as mysql.PoolConnection,
+    async () => {
+      assert.equal((await directory.upsertCandidate(input)).created, true);
+      assert.equal((await directory.upsertCandidate(input)).created, false);
+    }
   );
   assert.equal(
-    pool.connection.releaseCount,
+    pool.connection.calls.filter((call) => /GET_LOCK/i.test(call.sql)).length,
     1,
-    "connection must be released even when RELEASE_LOCK itself fails"
+    "a shared session must not re-enter a named lock it already owns"
   );
+  assert.equal(
+    pool.connection.calls.filter((call) => /RELEASE_LOCK/i.test(call.sql)).length,
+    1
+  );
+  assert.equal(pool.connection.destroyCount, 0);
 }
 
 {

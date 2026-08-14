@@ -26,6 +26,10 @@ import type {
   AcquisitionPresentationCandidateSummary,
   AcquisitionPresentationEventCursor
 } from "./acquisition-domain-repository.js";
+import {
+  releaseAcquisitionMysqlConnection,
+  releaseAcquisitionMysqlNamedLocks
+} from "./acquisition-mysql-named-lock.js";
 import type {
   AcquisitionCopilotIdempotencyRecord,
   AcquisitionCopilotMessage,
@@ -814,12 +818,10 @@ implements AcquisitionDomainRepository {
     try {
       return await this.transactionContext.run(context, work);
     } finally {
-      for (const lockName of context.candidateIdentityLocks.reverse()) {
-        await connection.query(
-          "SELECT RELEASE_LOCK(?) AS lock_released",
-          [lockName]
-        ).catch(() => undefined);
-      }
+      await releaseAcquisitionMysqlNamedLocks(
+        connection,
+        context.candidateIdentityLocks
+      );
     }
   }
 
@@ -839,18 +841,14 @@ implements AcquisitionDomainRepository {
       await connection.rollback();
       throw error;
     } finally {
-      for (const lockName of context.candidateIdentityLocks.reverse()) {
-        try {
-          await connection.query(
-            "SELECT RELEASE_LOCK(?) AS lock_released",
-            [lockName]
-          );
-        } catch {
-          // Connection release also drops advisory locks. Never mask the
-          // transaction result with a best-effort lock release failure.
-        }
+      try {
+        await releaseAcquisitionMysqlNamedLocks(
+          connection,
+          context.candidateIdentityLocks
+        );
+      } finally {
+        releaseAcquisitionMysqlConnection(connection);
       }
-      connection.release();
     }
   }
 

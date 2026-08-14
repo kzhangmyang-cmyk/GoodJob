@@ -3073,7 +3073,23 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
     douyinCommentIngestionRecoverySweeperFactory(service) {
       assert.equal(typeof service.recoverPendingIngestionSagas, "function");
       return {
-        async start() { commentRecoveryStartCount += 1; },
+        async start() {
+          assert.equal(
+            statements.some((statement) => statement.includes(
+              "CREATE TABLE IF NOT EXISTS acquisition_douyin_comment_ingestion_sagas"
+            )),
+            true,
+            "comment saga schema must exist before the first recovery sweep"
+          );
+          assert.equal(
+            statements.some((statement) => statement.includes(
+              "FROM information_schema.columns"
+            )),
+            true,
+            "legacy comment saga columns must be checked before recovery"
+          );
+          commentRecoveryStartCount += 1;
+        },
         async close() { commentRecoveryCloseCount += 1; }
       };
     }

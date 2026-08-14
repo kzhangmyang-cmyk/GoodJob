@@ -242,10 +242,20 @@ rawArtifactHash             原始响应制品哈希
 侧任一失败都回滚整个完成边界：已批准候选、证据、审计、幂等记录和目录
 恢复为失败前快照，且不产生 Run 成功事实。
 
+内存 Domain、事件仓储和候选目录的独立写方法也进入各自事务的同一串行队列，
+避免共享快照回滚覆盖并发成功写。MySQL 完成边界使用的命名锁必须验证
+`RELEASE_LOCK` 返回值严格为 `1`；查询失败、`0` 或 `NULL` 都将该连接标记为
+不可复用并销毁，不能放回连接池。旧 saga 表通过
+`information_schema.columns + DATABASE()` 检查缺列，再执行代码内固定白名单
+`ALTER TABLE`；schema 完成后才能启动首次 recovery sweep。
+
 重启恢复通过持久的 `attemptCount`/`nextAttemptAt` 和有时租约领取 `pending` saga。
 单个工作项失败只保存非 PII 错误码并指数退避，不阻塞后续租户；MySQL
 使用 `FOR UPDATE SKIP LOCKED`，内存实现保持相同的单次领取语义。应用启动时
 立即执行一次 sweep，之后定时扫描，关闭时停止计时器并等待活动 sweep。
+Recovery 诊断回调只接收稳定 code、stage、attempt 和不可逆 saga hash，
+不接收原始 `Error`/message/stack、评论正文、公开主体标识或来源 URL；
+诊断回调自身失败不影响工作项隔离和持久退避。
 
 `ipLabel` 只用于证据展示和用户配置的地区匹配，不得推断民族、健康、政治、宗教、
 收入等敏感属性。第一阶段不保存或展示评论者头像，不下载人脸资产，也不做人脸识别。

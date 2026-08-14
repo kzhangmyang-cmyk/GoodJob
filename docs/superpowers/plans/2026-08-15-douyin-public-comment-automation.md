@@ -150,10 +150,10 @@
 - Modify: `backend/src/acquisition-application.ts`
 
 **Interfaces:**
-- `AcquisitionDouyinCommentEventRepository.appendObservation(input)` 返回 `{ event, observation, eventCreated, contentChanged }`。
+- `AcquisitionDouyinCommentEventRepository.appendObservation(input)` 返回 `{ event, observation, eventCreated, contentChanged, contentVersion, ingestionSaga }`。
 - `listRunCommentSignals(scope, runId, { limit })`、`getRunCommentSummary(scope, runId)` 和 `listFetchAttempts(scope, runId, { limit })` 为 Run Presentation 提供有界读模型。每个 event link 固定关联当次 `observationId`，同 Run 同事件多次观测按规范化 `capturedAt` 和确定性 ID 顺序取最新值，后续 Run 不改变历史 Run 快照。
 - `DouyinCommentFetchAttempt` 持久化 `runId | null`、`shardId | null`、`discoveryOperationId | null`、`sourceUrl`、`videoId | null`、`status`、`errorCode | null`、`requestedCount`、`returnedCount`、`reportedCommentCount | null`、`pagesFetched`、`startedAt`、`completedAt`。
-- MySQL 表：`acquisition_douyin_comment_events`、`acquisition_douyin_comment_observations`、`acquisition_douyin_comment_event_links`、`acquisition_douyin_comment_fetch_attempts`；所有查询带 `owner_id + team_id`。
+- MySQL 表：`acquisition_douyin_comment_events`、`acquisition_douyin_comment_observations`、`acquisition_douyin_comment_content_versions`、`acquisition_douyin_comment_ingestion_sagas`、`acquisition_douyin_comment_event_links`、`acquisition_douyin_comment_fetch_attempts`；所有查询带 `owner_id + team_id`。
 
   ```ts
   export interface AcquisitionDouyinCommentEventRepository {
@@ -164,6 +164,8 @@
       observation: DouyinCommentObservation;
       eventCreated: boolean;
       contentChanged: boolean;
+      contentVersion: DouyinCommentContentVersion;
+      ingestionSaga: DouyinCommentIngestionSaga | null;
     }>;
     getRunCommentSummary(
       scope: AcquisitionScope,
@@ -188,7 +190,7 @@
 
 - [ ] **Step 4: 实现 MySQL repository 并挂载 schema**
 
-  不向已经超大的 `acquisition-mysql-repositories.ts` 继续堆表；使用独立 `ensureAcquisitionDouyinCommentEventsMysqlSchema(pool)` 和 repository，在 application factory 中与其他聚焦仓储同级注入。
+  不向已经超大的 `acquisition-mysql-repositories.ts` 继续堆表；使用独立 `ensureAcquisitionDouyinCommentEventsMysqlSchema(pool)` 和 repository，在 application factory 中与其他聚焦仓储同级注入。旧 saga 表的恢复列通过 `information_schema.columns` 精确检查，仅使用固定白名单 `ALTER TABLE`，并在首次 recovery sweep 前完成 schema。
 
 - [ ] **Step 5: 运行 GREEN 并提交**
 
@@ -240,7 +242,7 @@
 
 - [ ] **Step 3: 实现证据与主体聚合**
 
-  每条有效评论先在事件仓储的同一本地事务中持久事件、当次观测、`eventId + textHash` 首次内容版本和 `pending` ingestion saga。内容版本保留精确有界原文、首次观测 ID 和真实 Provider 页面制品哈希。随后以 `comment:<eventId>:evidence:<textHash>` 追加 Discovery Evidence，并通过现有 `AcquisitionIndividualSignalIngestionPort` upsert 候选。同一内容版本的后续页面制品只新增观测，不改变证据原文、制品哈希或已持久主体。证据、Domain 幂等记录、候选与目录索引、事件链接及 saga `committed` 在共享 ingestion unit of work 中原子提交；内存实现使用串行化快照事务，MySQL 实现使用同一连接与数据库事务。任一侧失败都恢复失败前候选/证据/审计/幂等/目录快照并不生成 Run 成功事实。Recovery sweeper 持久租约、尝试次数、下次时间和非 PII 错误码，逐条隔离故障并退避；应用启动首次 sweep，定时恢复，关闭时排空。已有个人候选合并后续需求摘要、只升不降的购买阶段和负向信号并集，不覆盖主体身份字段。`demandSummary` 保留有界公开原文和可审计信号理由，不将规则推断写成客户身份事实。
+  每条有效评论先在事件仓储的同一本地事务中持久事件、当次观测、`eventId + textHash` 首次内容版本和 `pending` ingestion saga。内容版本保留精确有界原文、首次观测 ID 和真实 Provider 页面制品哈希。随后以 `comment:<eventId>:evidence:<textHash>` 追加 Discovery Evidence，并通过现有 `AcquisitionIndividualSignalIngestionPort` upsert 候选。同一内容版本的后续页面制品只新增观测，不改变证据原文、制品哈希或已持久主体。证据、Domain 幂等记录、候选与目录索引、事件链接及 saga `committed` 在共享 ingestion unit of work 中原子提交；内存实现使用串行化快照事务，MySQL 实现使用同一连接与数据库事务。内存仓储的所有独立写方法也排入同一事务串行队列，防止回滚快照覆盖并发成功写。任一侧失败都恢复失败前候选/证据/审计/幂等/目录快照并不生成 Run 成功事实。MySQL 命名锁释放必须返回 `1`，查询失败、`0` 或 `NULL` 都销毁连接而不放回池。Recovery sweeper 持久租约、尝试次数、下次时间和非 PII 错误码，逐条隔离故障并退避；诊断回调只接收 code/stage/attempt/不可逆 saga hash，不接收原始异常、评论、主体标识或 URL；应用在 schema 完成后执行首次 sweep，定时恢复，关闭时排空。已有个人候选合并后续需求摘要、只升不降的购买阶段和负向信号并集，不覆盖主体身份字段。`demandSummary` 保留有界公开原文和可审计信号理由，不将规则推断写成客户身份事实。
 
 - [ ] **Step 4: 运行 GREEN 与合同测试**
 

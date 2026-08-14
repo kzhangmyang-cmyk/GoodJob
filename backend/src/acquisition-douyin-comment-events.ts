@@ -510,7 +510,12 @@ implements AcquisitionDouyinCommentEventRepository {
     }
   }
 
-  async appendObservation(input: AppendDouyinCommentObservationInput) {
+  async appendObservation(
+    input: AppendDouyinCommentObservationInput
+  ): ReturnType<AcquisitionDouyinCommentEventRepository["appendObservation"]> {
+    if (!this.transactionContext.getStore()) {
+      return this.transaction(() => this.appendObservation(input));
+    }
     assertAppendDouyinCommentObservationInput(input);
     const boundary = eventKey(input.scope, input.event.platformEventId);
     const stored = this.eventsByBoundary.get(boundary);
@@ -834,7 +839,12 @@ implements AcquisitionDouyinCommentEventRepository {
     });
   }
 
-  async linkEvent(input: LinkDouyinCommentEventInput) {
+  async linkEvent(
+    input: LinkDouyinCommentEventInput
+  ): ReturnType<AcquisitionDouyinCommentEventRepository["linkEvent"]> {
+    if (!this.transactionContext.getStore()) {
+      return this.transaction(() => this.linkEvent(input));
+    }
     assertLinkDouyinCommentEventInput(input);
     if (!this.eventsById.has(entityKey(input.scope, input.eventId))) {
       throw new Error("ACQUISITION_DOUYIN_COMMENT_EVENT_NOT_FOUND");
@@ -866,7 +876,12 @@ implements AcquisitionDouyinCommentEventRepository {
     return cloned({ link: existing ?? link, created: !existing });
   }
 
-  async startFetchAttempt(input: StartDouyinCommentFetchAttemptInput) {
+  async startFetchAttempt(
+    input: StartDouyinCommentFetchAttemptInput
+  ): ReturnType<AcquisitionDouyinCommentEventRepository["startFetchAttempt"]> {
+    if (!this.transactionContext.getStore()) {
+      return this.transaction(() => this.startFetchAttempt(input));
+    }
     assertStartDouyinCommentFetchAttemptInput(input);
     const attempt: DouyinCommentFetchAttempt = {
       attemptId: input.attemptId,
@@ -905,7 +920,14 @@ implements AcquisitionDouyinCommentEventRepository {
     scope: AcquisitionScope,
     attemptId: string,
     terminal: FinishDouyinCommentFetchAttemptInput
-  ) {
+  ): ReturnType<AcquisitionDouyinCommentEventRepository["finishFetchAttempt"]> {
+    if (!this.transactionContext.getStore()) {
+      return this.transaction(() => this.finishFetchAttempt(
+        scope,
+        attemptId,
+        terminal
+      ));
+    }
     assertFinishDouyinCommentFetchAttemptInput(terminal);
     const normalizedTerminal = {
       ...terminal,

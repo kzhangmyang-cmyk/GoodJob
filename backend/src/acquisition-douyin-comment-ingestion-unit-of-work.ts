@@ -12,6 +12,11 @@ import {
   MysqlAcquisitionDomainRepository
 } from "./acquisition-mysql-repositories.js";
 import {
+  isAcquisitionMysqlNamedLockReleaseError,
+  poisonAcquisitionMysqlConnection,
+  releaseAcquisitionMysqlConnection
+} from "./acquisition-mysql-named-lock.js";
+import {
   InMemoryAcquisitionCandidateDirectory,
   MysqlAcquisitionCandidateDirectory
 } from "./acquisition-tool-support-repositories.js";
@@ -63,8 +68,13 @@ implements AcquisitionDouyinCommentIngestionUnitOfWork {
           }
         })
       );
+    } catch (error) {
+      if (isAcquisitionMysqlNamedLockReleaseError(error)) {
+        poisonAcquisitionMysqlConnection(connection);
+      }
+      throw error;
     } finally {
-      connection.release();
+      releaseAcquisitionMysqlConnection(connection);
     }
   }
 }

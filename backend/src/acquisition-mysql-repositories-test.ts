@@ -36,6 +36,9 @@ class FakeConnection {
   commitCount = 0;
   rollbackCount = 0;
   releaseCount = 0;
+  destroyCount = 0;
+  failSqlPattern: RegExp | null = null;
+  releaseLockResult: number | null = 1;
 
   enqueue(result: unknown) {
     this.queue.push([result, []]);
@@ -43,6 +46,12 @@ class FakeConnection {
 
   async query(sql: string, values: unknown[] = []) {
     this.calls.push({ sql: sql.replace(/\s+/g, " ").trim(), values });
+    if (this.failSqlPattern?.test(sql)) {
+      throw new Error("scripted-query-failure-with-sensitive-comment");
+    }
+    if (/RELEASE_LOCK/i.test(sql)) {
+      return [[{ lock_released: this.releaseLockResult }], []];
+    }
     return this.queue.shift() ?? [{ affectedRows: 1 }, []];
   }
 
@@ -60,6 +69,10 @@ class FakeConnection {
 
   release() {
     this.releaseCount += 1;
+  }
+
+  destroy() {
+    this.destroyCount += 1;
   }
 }
 
@@ -595,6 +608,39 @@ async function testIdentityAliasesAreScopedHashedAndSerialized() {
     "team-a",
     createHash("sha256").update(dedupeKey).digest("hex")
   ]);
+}
+
+async function testIdentityAliasReleaseFailureDestroysSession() {
+  for (const releaseFailure of ["query", "invalid_result"] as const) {
+    const pool = new FakePool();
+    const connection = pool.connection;
+    const repository = new MysqlAcquisitionDomainRepository(asPool(pool));
+    connection.enqueue([{ lock_acquired: 1 }]);
+    connection.enqueue([]);
+    connection.enqueue([]);
+    if (releaseFailure === "query") {
+      connection.failSqlPattern = /RELEASE_LOCK/i;
+    } else {
+      connection.releaseLockResult = 0;
+    }
+
+    await assert.rejects(
+      repository.transaction(() => repository.bindCandidateIdentityAliases([{
+        ownerId: "owner-a",
+        teamId: "team-a",
+        candidateId: "candidate-1",
+        partyType: "organization",
+        basis: "organization_domain",
+        dedupeKey: `organization:${releaseFailure}.example`,
+        createdAt: NOW
+      }])),
+      /ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED/u
+    );
+    assert.equal(connection.commitCount, 1);
+    assert.equal(connection.rollbackCount, 0);
+    assert.equal(connection.releaseCount, 0);
+    assert.equal(connection.destroyCount, 1);
+  }
 }
 
 async function testAppendEvidenceUsesInsertOnly() {
@@ -1433,6 +1479,7 @@ async function run() {
   await testCandidateRejectsJsonVersionThatDiffersFromLockColumn();
   await testCandidateSaveUsesOptimisticVersionAndScope();
   await testIdentityAliasesAreScopedHashedAndSerialized();
+  await testIdentityAliasReleaseFailureDestroysSession();
   await testAppendEvidenceUsesInsertOnly();
   await testDomainTransactionUsesOneConnectionAndRollsBackAtomically();
   await testRawIdempotencyKeysAreNotPersisted();

@@ -2,7 +2,7 @@
 
 ## Status and commit
 
-- Status: complete, including review rounds 1, 2, and 3
+- Status: complete, including review rounds 1, 2, 3, and 4
 - Base: `0ca58cdd4d2dd18040ccfb2a617cc2df47579240`
 - Commit: the task commit containing this report, message
   `feat: aggregate douyin comment demand signals`
@@ -12,6 +12,8 @@
   `fix: persist and recover douyin comment ingestion`
 - Review round 3 commit: the follow-up commit containing this report, message
   `fix: atomically recover douyin comment ingestion`
+- Review round 4 commit: the follow-up commit containing this report, message
+  `fix: harden douyin comment recovery storage`
 - Scope: backend and acquisition contracts only; no frontend or Task 5+
   orchestration changes
 
@@ -127,6 +129,32 @@
   sweep errors are isolated, and close cancels/drains recovery exactly once.
   Custom repository compositions must provide an explicit atomic unit of work.
 
+## Review round 4 fixes
+
+- Replaced unsupported MySQL 8 `ADD COLUMN IF NOT EXISTS` statements with an
+  `information_schema.columns`/`DATABASE()` guard and fixed allowlisted ALTERs.
+  Missing, present, nullable-mid-migration, and exact retry states are covered;
+  `next_attempt_at` backfill remains restartable. Application startup completes
+  schema creation/migration before starting the first recovery sweep.
+- Serialized every standalone in-memory event-repository mutator and candidate
+  directory upsert through the same transaction tail used by snapshot
+  transactions. Barrier regressions cover both orderings: writes queued behind
+  a failing snapshot survive its rollback, and a later failing snapshot waits
+  for and preserves an already-started standalone write.
+- Centralized MySQL named-lock cleanup. Both Domain and candidate-directory
+  paths require `RELEASE_LOCK` to return exactly `1`; query errors, `0`, and
+  `NULL` raise the stable
+  `ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED` error and poison/destroy the
+  session. Direct and shared-UoW paths never return a poisoned session to the
+  pool, shared sessions do not re-enter a lock already held by that UoW,
+  successful sessions release normally, and post-commit cleanup failure does
+  not double commit or report a rollback.
+- Replaced raw recovery errors with a frozen diagnostic envelope containing
+  only `RECOVERY_FAILED`, `resume_saga | persist_failure`, an irreversible saga
+  hash, and the attempt count. Tests inject an Error containing exact comment
+  text, secUid, and source URL and prove none reaches the callback or durable
+  `lastErrorCode`; callback failure remains isolated.
+
 ## TDD evidence
 
 ### RED
@@ -205,6 +233,45 @@
   that a real commit-side throw needed a shared completion transaction and that
   a poison item at `limit=1` needed durable backoff before later tenant work
   could progress.
+- Review round 4 migration RED:
+
+  ```text
+  npm exec --workspace backend -- tsx --test \
+    src/acquisition-douyin-comment-events-mysql-repository-test.ts
+  ```
+
+  Result: 9/12 passed and 3 failed. The schema still contained unsupported
+  `ADD COLUMN IF NOT EXISTS`; the fake information-schema missing/present/retry
+  branches proved there was no guarded fixed-ALTER migration.
+- Review round 4 memory REDs:
+
+  ```text
+  npm exec --workspace backend -- tsx --test \
+    src/acquisition-douyin-comment-events-test.ts
+  npm exec --workspace backend -- tsx \
+    src/acquisition-tool-support-repositories-test.ts
+  ```
+
+  The event suite passed 14/15; all four concurrent standalone event mutators
+  settled while a failing snapshot still held its rollback copy. The directory
+  script failed because a concurrent successful upsert was erased by rollback.
+- Review round 4 lock REDs used the tool-support repository script, MySQL Domain
+  repository script, and shared-UoW node:test file. The directory leaked the raw
+  `scripted-query-failure` and released the session; Domain silently succeeded;
+  the shared UoW passed 2/3 and released instead of destroying the committed but
+  cleanup-poisoned session. A shared-session regression then independently
+  failed with `ACQUISITION_CANDIDATE_DIRECTORY_LOCK_TIMEOUT` because the
+  directory re-entered the same named lock but scheduled only one release.
+- Review round 4 diagnostic RED:
+
+  ```text
+  npm exec --workspace backend -- tsx --test \
+    --test-name-pattern "recovery isolates poison" \
+    src/acquisition-douyin-comment-ingestion-test.ts
+  ```
+
+  Result: 0/1 passed. Both callback arguments were raw Error objects containing
+  the exact comment, secUid, source URL, message, and stack.
 
 ### GREEN
 
@@ -255,6 +322,22 @@ npm exec --workspace backend -- tsx --test \
 Result: 79/79 passed. The ingestion file passed 12/12, memory events 14/14,
 MySQL events 10/10, and the new unit-of-work/recovery-sweeper tests 3/3.
 
+Review round 4 storage/recovery focused command:
+
+```text
+npm exec --workspace backend -- tsx --test \
+  src/acquisition-douyin-comment-events-test.ts \
+  src/acquisition-douyin-comment-events-mysql-repository-test.ts \
+  src/acquisition-douyin-comment-ingestion-test.ts \
+  src/acquisition-douyin-comment-ingestion-unit-of-work-test.ts \
+  src/acquisition-douyin-comment-ingestion-recovery-sweeper-test.ts
+```
+
+Result: 44/44 passed. The named-lock Domain and candidate-directory scripts
+also passed independently. The final expanded command added Domain, resolver,
+candidate research, individual signal, MySQL Domain, and tool-support
+repositories; result: 85/85 passed.
+
 Application lifecycle focused command:
 
 ```text
@@ -284,6 +367,16 @@ npm run test:contracts
 ```
 
 Result: 65/65 passed.
+
+OpenAPI, contract drift, and generated types:
+
+```text
+npm run test:acquisition-openapi --workspace backend
+npm run test:contract-drift --workspace backend
+npm run check:generated-acquisition-types
+```
+
+Results: 27/27 passed, 17/17 passed, and generated output was current.
 
 Build:
 
@@ -345,6 +438,12 @@ separate file-level `MODEL_TOOL_DEFINITION_INVALID` failures in
 `acquisition-pi-runtime-factory-test.ts`. The former `contains`/OpenAPI failure
 is absent.
 
+Review round 4 final full count used the same command after every code/test
+change. Result: 734 tests, 732 passed / 2 failed. The only failures remain the
+same two file-level `MODEL_TOOL_DEFINITION_INVALID` baselines above; the new
+migration, memory barriers, named-lock poisoning, diagnostic redaction, and
+application startup-order regressions are all green in the full run.
+
 ## Files
 
 - `backend/src/acquisition-douyin-comment-ingestion.ts`
@@ -367,7 +466,10 @@ is absent.
 - `backend/src/acquisition-application.ts`
 - `backend/src/acquisition-application-test.ts`
 - `backend/src/acquisition-mysql-repositories.ts`
+- `backend/src/acquisition-mysql-repositories-test.ts`
+- `backend/src/acquisition-mysql-named-lock.ts`
 - `backend/src/acquisition-tool-support-repositories.ts`
+- `backend/src/acquisition-tool-support-repositories-test.ts`
 - `contracts/json-schema/discovery-evidence.v1.schema.json`
 - `contracts/json-schema/individual-demand-signal.v1.schema.json`
 - `contracts/test/schema-registry.test.mjs`
@@ -379,11 +481,12 @@ is absent.
 
 `contracts/README.md`, the current Douyin automation design, and the execution
 plan now describe persisted first content versions, exact original snippets,
-real provider artifacts, the shared completion unit of work, durable
-lease/backoff recovery, pending/committed visibility, and the application
-lifecycle. The design's
+real provider artifacts, the shared Domain/events/directory completion unit of
+work, serialized memory mutators, guarded MySQL 8 migration, strict advisory
+lock cleanup, redacted recovery diagnostics, pending/committed visibility, and
+the application lifecycle. The design's
 separately approved BrowserAct/visual-reading sections were preserved unchanged.
-No frontend documentation changed because review round 2 does not alter the
+No frontend documentation changed because review round 4 does not alter the
 Task 5+ presentation contract.
 
 ## Concerns and final state
