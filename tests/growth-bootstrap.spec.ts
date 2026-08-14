@@ -138,3 +138,37 @@ test("business advisor imports group statements and picks a company report", asy
   await expect(page.getByText("未提供现金流量表，现金流预测与资金预警暂不可用")).toBeVisible();
   await installed.dispose();
 });
+
+test("demo agent center shows the business advisor team offline with sample data", async ({ page }) => {
+  await page.goto("/#agents");
+  await page.evaluate(() => {
+    document.body.classList.add("is-authenticated");
+  });
+
+  await expect(page.getByRole("heading", { name: "AI 经营顾问团队" })).toBeVisible();
+  await expect(page.locator("#demoModuleMain").getByText("演示数据")).toBeVisible();
+  await expect(page.getByText("利润分析")).toBeVisible();
+
+  await page.locator('[data-agents-action="generate-report"]')
+    .evaluate((element) => {
+      (element as HTMLButtonElement).click();
+    });
+  await expect(page.getByRole("heading", { name: "《经营诊断报告》" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /存在假利润产品/ })).toBeVisible();
+
+  await page.locator("#demoModuleMain a.agents-back")
+    .evaluate((element) => {
+      (element as HTMLAnchorElement).click();
+    });
+  await page.locator('[data-agents-demo-link="profit"]')
+    .evaluate((element) => {
+      (element as HTMLAnchorElement).click();
+    });
+  await expect(page.getByRole("heading", { name: "利润分析", exact: true })).toBeVisible();
+  await expect(page.getByText("哪个产品是假利润？")).toBeVisible();
+
+  await page.locator('input[name="question"]').fill("哪个产品是假利润？");
+  await page.locator('[data-agents-form="ask"] button[type="submit"]').click();
+  await expect(page.getByText(/产品 A：毛利率/)).toBeVisible();
+  await expect(page.locator(".report-evidence").getByText(/假利润产品：产品 A/)).toBeVisible();
+});

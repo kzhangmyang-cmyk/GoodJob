@@ -1,4 +1,5 @@
 import type { GrowthHttpClient } from "../http";
+import { createGrowthHttpClient } from "../http";
 import * as XLSX from "xlsx";
 import {
   createBusinessAdvisorApi,
@@ -7,7 +8,11 @@ import {
   type ParsedCompanyResult,
   type StatementSheet
 } from "./api";
-import { sampleBusinessReport } from "./sample";
+import {
+  demoAnalysisResult,
+  demoDiagnosisReport,
+  sampleBusinessReport
+} from "./sample";
 import {
   renderCompanyPicker,
   renderAgentConclusion,
@@ -18,9 +23,10 @@ import {
 import { parseAgentsHash } from "./entry";
 
 export interface AgentsControllerOptions {
-  readonly http: GrowthHttpClient;
+  readonly http?: GrowthHttpClient;
   readonly host: HTMLElement;
   readonly input?: BusinessReportInput;
+  readonly demo?: boolean;
 }
 
 export interface AgentsController {
@@ -140,16 +146,39 @@ function summarizeAnalysis(agentId: string, result: AnalysisResult): string {
 export function createAgentsController(
   options: AgentsControllerOptions
 ): AgentsController {
-  const api: BusinessAdvisorApi = createBusinessAdvisorApi(options.http);
+  const api: BusinessAdvisorApi = createBusinessAdvisorApi(
+    options.http ?? createGrowthHttpClient()
+  );
   let activeInput = options.input ?? sampleBusinessReport();
   let lastReport: import("./api").DiagnosisReport | null = null;
   let sourceLabel = "示例数据";
   let importWarnings: readonly string[] = [];
   let importedCompanies: readonly ParsedCompanyResult[] = [];
+  let demoRoute: { view: "overview" } | { view: "report" }
+    | { view: "detail"; agentId: string } | null = null;
   let disposed = false;
 
   function renderView(): void {
-    const route = parseAgentsHash(window.location.hash);
+    const route = options.demo
+      ? demoRoute
+      : parseAgentsHash(window.location.hash);
+    if (options.demo) {
+      if (route?.view === "detail") {
+        options.host.innerHTML = renderAgentDetail(route.agentId);
+      } else if (route?.view === "report" && lastReport) {
+        options.host.innerHTML = renderDiagnosisReport(lastReport, {
+          sourceLabel,
+          warnings: importWarnings
+        });
+      } else {
+        options.host.innerHTML = renderAgentsOverview({
+          sourceLabel,
+          showImport: false,
+          demo: true
+        });
+      }
+      return;
+    }
     if (route?.view === "detail") {
       options.host.innerHTML = renderAgentDetail(route.agentId);
     } else if (route?.view === "report" && lastReport) {
@@ -170,8 +199,11 @@ export function createAgentsController(
   async function handleReport(): Promise<void> {
     options.host.innerHTML = renderAgentConclusion("<p>正在生成经营诊断报告…</p>");
     try {
-      const report = await api.diagnose(activeInput);
+      const report = options.demo
+        ? demoDiagnosisReport()
+        : await api.diagnose(activeInput);
       lastReport = report;
+      if (options.demo) demoRoute = { view: "report" };
       options.host.innerHTML = renderDiagnosisReport(report, {
         sourceLabel,
         warnings: importWarnings
@@ -204,6 +236,12 @@ export function createAgentsController(
   }
 
   async function handleStatementsDiagnose(): Promise<void> {
+    if (options.demo) {
+      options.host.innerHTML = renderAgentConclusion(
+        '<p class="growth-conflict">演示环境使用内置示例数据；登录真实环境后即可上传报表生成诊断。</p>'
+      );
+      return;
+    }
     const balanceInput = options.host.querySelector<HTMLInputElement>(
       '[data-statements-file="balance"]'
     );
@@ -272,14 +310,18 @@ export function createAgentsController(
     output.innerHTML = renderAgentConclusion("<p>正在分析…</p>");
     try {
       if (agentId === "cfo") {
-        const report = await api.diagnose(activeInput);
+        const report = options.demo
+          ? demoDiagnosisReport()
+          : await api.diagnose(activeInput);
         output.innerHTML = renderAgentConclusion(
           `<p>${escapeHtml(report.summary)}</p>`
           + `<a href="#growth/agents/report" class="agents-back">查看完整报告</a>`
         );
         return;
       }
-      const result = await api.analyze(activeInput) as AnalysisResult;
+      const result = options.demo
+        ? demoAnalysisResult() as AnalysisResult
+        : await api.analyze(activeInput) as AnalysisResult;
       output.innerHTML = renderAgentConclusion(
         `<p><strong>Q：${escapeHtml(question)}</strong></p>`
         + summarizeAnalysis(agentId, result)
@@ -295,6 +337,25 @@ export function createAgentsController(
 
   function onClick(event: MouseEvent): void {
     if (disposed) return;
+    const rawTarget = event.target as HTMLElement | null;
+    if (options.demo && rawTarget) {
+      const demoLink = rawTarget.closest<HTMLElement>("[data-agents-demo-link]");
+      if (demoLink?.dataset.agentsDemoLink) {
+        event.preventDefault();
+        demoRoute = { view: "detail", agentId: demoLink.dataset.agentsDemoLink };
+        renderView();
+        return;
+      }
+      const backLink = rawTarget.closest<HTMLElement>("a.agents-back");
+      if (backLink) {
+        event.preventDefault();
+        demoRoute = backLink.getAttribute("href")?.includes("agents/report")
+          ? { view: "report" }
+          : { view: "overview" };
+        renderView();
+        return;
+      }
+    }
     const target = (event.target as HTMLElement | null)
       ?.closest<HTMLElement>("[data-agents-action], [data-agents-form]");
     if (!target || !options.host.contains(target)) return;
@@ -355,7 +416,9 @@ export function createAgentsController(
     const form = event.target as HTMLFormElement | null;
     if (form?.dataset?.agentsForm !== "ask") return;
     event.preventDefault();
-    const route = parseAgentsHash(window.location.hash);
+    const route = options.demo
+      ? demoRoute
+      : parseAgentsHash(window.location.hash);
     if (!route || route.view !== "detail") return;
     const questionInput = form.querySelector<HTMLInputElement>(
       'input[name="question"]'

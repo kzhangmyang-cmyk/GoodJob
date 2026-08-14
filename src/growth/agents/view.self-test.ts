@@ -33,6 +33,16 @@ assert.equal(overview.includes("data-statements-file=\"balance\""), true);
 assert.equal(overview.includes("当前数据源：示例数据"), true);
 assert.equal(overview.includes("<script>"), false);
 
+const demoOverview = renderAgentsOverview({
+  demo: true,
+  showImport: false,
+  sourceLabel: "演示数据"
+});
+assert.equal(demoOverview.includes("演示数据"), true);
+assert.equal(demoOverview.includes("data-agents-demo-link=\"profit\""), true);
+assert.equal(demoOverview.includes("上传真实报表（xls / xlsx）"), false);
+assert.equal(demoOverview.includes("<script>"), false);
+
 const detail = renderAgentDetail("profit");
 assert.equal(detail.includes("找出钱到底赚在哪"), true);
 assert.equal(detail.includes("哪个产品是假利润？"), true);

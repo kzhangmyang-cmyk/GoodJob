@@ -59,6 +59,17 @@ export function growthWorkspaceHost(): HTMLElement | null {
 
 let activeAbort: AbortController | null = null;
 let activeController: GrowthPageController | null = null;
+let sharedRuntime: {
+  readonly registry: GrowthPageRegistry;
+  readonly mode: GrowthModeState;
+} | null = null;
+
+function clearGrowthContent(host: HTMLElement): void {
+  for (const child of [...host.children]) {
+    if (child.matches("nav.growth-nav")) continue;
+    child.remove();
+  }
+}
 
 async function switchPage(
   registry: GrowthPageRegistry,
@@ -69,7 +80,7 @@ async function switchPage(
   await activeController?.unmount?.();
   activeController = null;
   const host = growthWorkspaceHost();
-  if (host) host.replaceChildren();
+  if (host) clearGrowthContent(host);
   const controller = registry.get(route.name);
   if (!controller || !host) return;
   const abort = new AbortController();
@@ -91,6 +102,14 @@ export interface StartGrowthRuntimeOptions {
 export async function startGrowthRuntime(
   options: StartGrowthRuntimeOptions = {}
 ): Promise<GrowthModeState> {
+  const singleShot = options.registry !== undefined
+    || options.bootstrapLoader !== undefined
+    || options.requested !== undefined;
+  if (!singleShot && sharedRuntime) {
+    const route = parseGrowthHash(window.location.hash);
+    if (route) void switchPage(sharedRuntime.registry, route, sharedRuntime.mode);
+    return sharedRuntime.mode;
+  }
   const registry = options.registry ?? new GrowthPageRegistry();
   let agentsController: ReturnType<typeof createAgentsController> | null = null;
   registry.register("agents", {
@@ -107,7 +126,7 @@ export async function startGrowthRuntime(
       agentsController?.dispose();
       agentsController = null;
       const host = growthWorkspaceHost();
-      if (host) host.replaceChildren();
+      if (host) clearGrowthContent(host);
     }
   });
   let mode: GrowthModeState;
@@ -148,7 +167,7 @@ export async function startGrowthRuntime(
       },
       unmount() {
         const host = growthWorkspaceHost();
-        if (host) host.replaceChildren();
+        if (host) clearGrowthContent(host);
       }
     });
   }
@@ -182,7 +201,7 @@ export async function startGrowthRuntime(
       },
       unmount() {
         const host = growthWorkspaceHost();
-        if (host) host.replaceChildren();
+        if (host) clearGrowthContent(host);
       }
     });
   }
@@ -207,7 +226,7 @@ export async function startGrowthRuntime(
       },
       unmount() {
         const host = growthWorkspaceHost();
-        if (host) host.replaceChildren();
+        if (host) clearGrowthContent(host);
       }
     });
   }
@@ -232,7 +251,7 @@ export async function startGrowthRuntime(
       },
       unmount() {
         const host = growthWorkspaceHost();
-        if (host) host.replaceChildren();
+        if (host) clearGrowthContent(host);
       }
     });
   }
@@ -271,7 +290,7 @@ export async function startGrowthRuntime(
       },
       unmount() {
         const host = growthWorkspaceHost();
-        if (host) host.replaceChildren();
+        if (host) clearGrowthContent(host);
       }
     });
   }
@@ -283,6 +302,7 @@ export async function startGrowthRuntime(
     const next = parseGrowthHash(window.location.hash);
     if (next) void switchPage(registry, next, mode);
   });
+  if (!singleShot) sharedRuntime = { registry, mode };
   return mode;
 }
 

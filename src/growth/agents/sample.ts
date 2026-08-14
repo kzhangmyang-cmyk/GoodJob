@@ -1,7 +1,115 @@
 import {
   yuanToMinor,
-  type BusinessReportInput
+  type BusinessReportInput,
+  type DiagnosisReport
 } from "./api";
+
+export function demoDiagnosisReport(): DiagnosisReport {
+  return Object.freeze({
+    companyName: "示例贸易公司",
+    period: "2026-08",
+    healthScoreBps: 4_600,
+    summary: "本期经营存在 3 个需要关注的问题，其中 3 项为最高优先级。",
+    issues: Object.freeze([
+      Object.freeze({
+        category: "利润",
+        level: "red",
+        title: "存在假利润产品",
+        reason: "产品 A 毛利尚可，但扣除售后/运费/销售费用后真实利润率过低",
+        risk: "假利润产品会虚增收入规模、掩盖真实盈利结构，误导资源配置",
+        suggestion: "调整定价、压缩履约成本，或逐步收缩该产品线",
+        evidence: Object.freeze(["假利润产品：产品 A"])
+      }),
+      Object.freeze({
+        category: "现金流",
+        level: "red",
+        title: "利润与现金背离",
+        reason: "净现比 0.7，账面有利润但经营现金未同步流入",
+        risk: "利润增长现金断裂风险：利润停留在应收与库存上",
+        suggestion: "用理论现金流勾稽法核对资金缺口，压缩应收与库存",
+        evidence: Object.freeze(["净现比 0.7"])
+      }),
+      Object.freeze({
+        category: "现金流",
+        level: "red",
+        title: "存在低质客户",
+        reason: "大客户甲真实利润率低且回款超过 90 天",
+        risk: "低质客户占用资金与服务资源，大客户不等于好客户",
+        suggestion: "评估淘汰或重新议价，收紧账期",
+        evidence: Object.freeze(["C 类客户：大客户甲"])
+      })
+    ]),
+    actionPlan90Days: Object.freeze([
+      { month: 1 as const, action: "清理低质客户：重新议价或收缩账期" },
+      { month: 2 as const, action: "调整报价与价格体系，按 A/B/C 客户差异化定价" },
+      { month: 3 as const, action: "建立月度经营分析会机制，滚动跟踪健康评分与行动项" }
+    ]),
+    evidence: Object.freeze([
+      "净利率 17.8%",
+      "假利润产品：产品 A",
+      "C 类客户：大客户甲",
+      "净现比 0.7"
+    ])
+  });
+}
+
+export function demoAnalysisResult(): unknown {
+  return Object.freeze({
+    indicators: Object.freeze({
+      grossMarginBps: 4_000,
+      netMarginBps: 1_780,
+      quickRatioBps: 21_000,
+      receivableDays: 88,
+      receivableTurnover: 4.2,
+      inventoryTurnover: 3.3,
+      interestCoverage: 20,
+      cashCoverageMonths: 8,
+      debtRatioBps: 3_714,
+      cashCollectionRatioBps: 9_000,
+      cashProfitRatioBps: 6_742
+    }),
+    products: Object.freeze([
+      Object.freeze({
+        name: "产品 A",
+        grossMarginBps: 4_500,
+        trueMarginBps: 0,
+        isFakeProfit: true
+      }),
+      Object.freeze({
+        name: "产品 B",
+        grossMarginBps: 3_667,
+        trueMarginBps: 1_900,
+        isFakeProfit: false
+      })
+    ]),
+    customers: Object.freeze([
+      Object.freeze({
+        name: "大客户甲",
+        grade: "C",
+        paymentDays: 120
+      }),
+      Object.freeze({
+        name: "客户乙",
+        grade: "A",
+        paymentDays: 30
+      })
+    ]),
+    cashflow: Object.freeze({
+      warning: Object.freeze([
+        "存在 1 笔超过 90 天的应收，合计 1000000.00 元"
+      ])
+    }),
+    cost: Object.freeze({
+      anomaly: Object.freeze(["材料成本率上升 7.0 个百分点，需核查原材料涨价、采购异常或产品结构变化"])
+    }),
+    tax: Object.freeze({
+      level: "red",
+      findings: Object.freeze([
+        { category: "发票风险", issue: "部分采购发票抬头与合同主体不一致", level: "red" }
+      ])
+    })
+  });
+}
 
 export function sampleBusinessReport(): BusinessReportInput {
   const money = yuanToMinor;

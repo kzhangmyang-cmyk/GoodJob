@@ -17,10 +17,14 @@ function escapeHtml(value: string): string {
     .replace(/'/gu, "&#39;");
 }
 
-function agentCard(agent: BusinessAgent): string {
+function agentCard(agent: BusinessAgent, demo: boolean): string {
   const capabilities = agent.capabilities
     .map((item) => `<span class="agent-capability">${escapeHtml(item)}</span>`)
     .join("");
+  const workbenchLink = demo
+    ? `<a href="#growth/agents/${escapeHtml(agent.id)}"
+         data-agents-demo-link="${escapeHtml(agent.id)}">进入工作台</a>`
+    : `<a href="#growth/agents/${escapeHtml(agent.id)}">进入工作台</a>`;
   const status = agent.dataReady
     ? '<span class="agent-status agent-status-ready">数据就绪</span>'
     : '<span class="agent-status">待配置</span>';
@@ -38,29 +42,35 @@ function agentCard(agent: BusinessAgent): string {
     <div class="agent-capabilities">${capabilities}</div>
     <footer>
       <span>知识库：${escapeHtml(agent.knowledgeBase)}</span>
-      <a href="#growth/agents/${escapeHtml(agent.id)}">进入工作台</a>
+      ${workbenchLink}
     </footer>
   </article>`;
 }
 
 export interface AgentsOverviewOptions {
   readonly sourceLabel?: string;
+  readonly showImport?: boolean;
+  readonly demo?: boolean;
 }
 
 export function renderAgentsOverview(
   options: AgentsOverviewOptions = {}
 ): string {
-  const cards = BUSINESS_AGENT_TEAM.map(agentCard).join("");
+  const cards = BUSINESS_AGENT_TEAM
+    .map((agent) => agentCard(agent, options.demo === true))
+    .join("");
   return `<section class="growth-panel agents-home">
     <header class="agents-hero">
       <div>
         <h2>AI 经营顾问团队</h2>
-        <p>没有请 CFO 的老板，也能拥有一支虚拟经营管理团队。</p>
+        <p>没有请 CFO 的老板，也能拥有一支虚拟经营管理团队。
+          ${options.demo ? '<span class="demo-badge">演示数据</span>' : ""}
+        </p>
       </div>
       <button type="button" class="agents-primary"
         data-agents-action="generate-report">生成经营诊断报告</button>
     </header>
-    <section class="statements-import">
+    ${options.showImport !== false ? `<section class="statements-import">
       <h3>上传真实报表（xls / xlsx）</h3>
       <p>选择资产负债表与利润表各一份，系统解析后直接生成经营诊断报告。</p>
       <div class="statements-import-fields">
@@ -82,7 +92,7 @@ export function renderAgentsOverview(
       <p class="statements-source">
         当前数据源：${escapeHtml(options.sourceLabel ?? "示例数据")}
       </p>
-    </section>
+    </section>` : ""}
     <div class="agents-grid">${cards}</div>
   </section>`;
 }

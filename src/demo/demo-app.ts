@@ -18,8 +18,19 @@ import type { DemoModule, DemoState } from "./demo-types";
 import { showDemoToast } from "./demo-ui";
 import { createPrivateDomainController } from "../private-domain/controller";
 import { startGrowthWhenRequested } from "../growth/entry";
+import { createAgentsController } from "../growth/agents/controller";
+
+let agentsDemoController: ReturnType<typeof createAgentsController> | null = null;
 
 function renderModule(module: DemoModule, state: DemoState, host: HTMLElement, inspector: HTMLElement): void {
+  if (module === "agents") {
+    agentsDemoController ??= createAgentsController({
+      host,
+      demo: true
+    });
+    agentsDemoController.render();
+    return;
+  }
   if (module === "dashboard") {
     renderDashboardView(state, host, inspector);
     return;
@@ -36,7 +47,7 @@ function renderModule(module: DemoModule, state: DemoState, host: HTMLElement, i
     renderConversionView(state, host, inspector);
     return;
   }
-  if (module === "agents" || module === "scripts" || module === "trade-marketing" || module === "settings") {
+  if (module === "scripts" || module === "trade-marketing" || module === "settings") {
     renderCapabilityDemoView(module, state, host, inspector);
     return;
   }
@@ -76,6 +87,8 @@ export function startDemoApp(): void {
     }
     if (realPrivateDomainActive) privateDomainController.deactivate();
     realPrivateDomainActive = false;
+    agentsDemoController?.dispose();
+    agentsDemoController = null;
     renderModule(router.current(), store.getState(), host, inspector);
   };
   let draggedOpportunityId = "";
