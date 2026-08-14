@@ -104,6 +104,7 @@ assert.equal(reportHtml.includes('aria-label="企业健康评分 46 分"'), true
 assert.equal(reportHtml.includes('class="report-issue issue-red"'), true);
 assert.equal(reportHtml.includes('<details class="report-evidence"'), true);
 assert.equal(reportHtml.includes('class="report-timeline"'), true);
+assert.equal(reportHtml.includes('class="diagnosis-summary"'), true);
 assert.equal(reportHtml.includes("<script>"), false);
 
 const reportWithSource = renderDiagnosisReport(report, {

@@ -238,43 +238,49 @@ export function createAgentsController(
     | { view: "detail"; agentId: string } | null = null;
   let disposed = false;
 
+  function mountView(html: string): void {
+    options.host.innerHTML = html;
+    options.host.scrollTop = 0;
+    window.scrollTo(0, 0);
+  }
+
   function renderView(): void {
     const route = options.demo
       ? demoRoute
       : parseAgentsHash(window.location.hash);
     if (options.demo) {
       if (route?.view === "detail") {
-        options.host.innerHTML = renderAgentDetail(route.agentId);
+        mountView(renderAgentDetail(route.agentId));
       } else if (route?.view === "report" && lastReport) {
-        options.host.innerHTML = renderDiagnosisReport(lastReport, {
+        mountView(renderDiagnosisReport(lastReport, {
           sourceLabel,
           warnings: importWarnings
-        });
+        }));
       } else {
-        options.host.innerHTML = renderAgentsOverview({
+        mountView(renderAgentsOverview({
           sourceLabel,
           showImport: false,
           demo: true,
           healthScoreBps: lastReport?.healthScoreBps
             ?? demoDiagnosisReport().healthScoreBps,
           sources: sourceBadgesForInput(activeInput)
-        });
+        }));
       }
       return;
     }
     if (route?.view === "detail") {
-      options.host.innerHTML = renderAgentDetail(route.agentId);
+      mountView(renderAgentDetail(route.agentId));
     } else if (route?.view === "report" && lastReport) {
-      options.host.innerHTML = renderDiagnosisReport(lastReport, {
+      mountView(renderDiagnosisReport(lastReport, {
         sourceLabel,
         warnings: importWarnings
-      });
+      }));
     } else {
-      options.host.innerHTML = renderAgentsOverview({
+      mountView(renderAgentsOverview({
         sourceLabel,
         healthScoreBps: lastReport?.healthScoreBps,
         sources: sourceBadgesForInput(activeInput)
-      });
+      }));
     }
   }
 
@@ -372,10 +378,10 @@ export function createAgentsController(
         : await api.diagnose(activeInput);
       lastReport = report;
       if (options.demo) demoRoute = { view: "report" };
-      options.host.innerHTML = renderDiagnosisReport(report, {
+      mountView(renderDiagnosisReport(report, {
         sourceLabel,
         warnings: importWarnings
-      });
+      }));
     } catch (error) {
       options.host.innerHTML = renderAgentConclusion(
         `<p class="growth-error">生成失败：${escapeHtml(
@@ -442,7 +448,7 @@ export function createAgentsController(
           '<p class="growth-error">未识别到有效报表，请确认上传的是标准资产负债表与利润表</p>'
         );
       } else {
-        options.host.innerHTML = renderCompanyPicker(result.companies);
+        mountView(renderCompanyPicker(result.companies));
       }
     } catch (error) {
       options.host.innerHTML = renderAgentConclusion(
@@ -464,10 +470,10 @@ export function createAgentsController(
     importWarnings = company.warnings;
     activeInput = company.input;
     lastReport = company.report;
-    options.host.innerHTML = renderDiagnosisReport(company.report, {
+    mountView(renderDiagnosisReport(company.report, {
       sourceLabel,
       warnings: importWarnings
-    });
+    }));
   }
 
   async function handleAsk(agentId: string, question: string): Promise<void> {
@@ -563,10 +569,10 @@ export function createAgentsController(
         try {
           const report = await api.diagnose(sample);
           lastReport = report;
-          options.host.innerHTML = renderDiagnosisReport(report, {
+          mountView(renderDiagnosisReport(report, {
             sourceLabel,
             warnings: importWarnings
-          });
+          }));
         } catch (error) {
           options.host.innerHTML = renderAgentConclusion(
             `<p class="growth-error">生成失败：${escapeHtml(

@@ -704,7 +704,7 @@
 }
 
 /* GoodJob command-center presentation inside the product shell. */
-.replica-shell .growth-panel {
+:is(.replica-shell, #growthWorkspace) .growth-panel {
   --agents-green: var(--replica-accent, #18ed78);
   --agents-panel: var(--replica-surface, rgba(14, 16, 17, 0.82));
   --agents-panel-strong: var(--replica-surface-strong, rgba(18, 20, 21, 0.94));
@@ -716,12 +716,12 @@
   color: var(--replica-text, #f1f3f0);
 }
 
-.replica-shell .growth-panel h2,
-.replica-shell .growth-panel h3 {
+:is(.replica-shell, #growthWorkspace) .growth-panel h2,
+:is(.replica-shell, #growthWorkspace) .growth-panel h3 {
   color: var(--replica-text, #f1f3f0);
 }
 
-.replica-shell .agents-home {
+:is(.replica-shell, #growthWorkspace) .agents-home {
   --agents-green: var(--replica-accent, #18ed78);
   --agents-panel: var(--replica-surface, rgba(14, 16, 17, 0.82));
   --agents-panel-strong: var(--replica-surface-strong, rgba(18, 20, 21, 0.94));
@@ -733,7 +733,7 @@
     var(--replica-bg, #020303);
 }
 
-.replica-shell .agents-hero {
+:is(.replica-shell, #growthWorkspace) .agents-hero {
   align-items: flex-end;
   margin-bottom: 1.1rem;
   padding: clamp(1.1rem, 2.6vw, 1.65rem);
@@ -743,8 +743,8 @@
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-.replica-shell .agents-eyebrow,
-.replica-shell .agents-overline {
+:is(.replica-shell, #growthWorkspace) .agents-eyebrow,
+:is(.replica-shell, #growthWorkspace) .agents-overline {
   display: block;
   margin-bottom: 0.45rem;
   color: var(--agents-green);
@@ -753,18 +753,18 @@
   letter-spacing: 0.13em;
 }
 
-.replica-shell .agents-hero h2 {
+:is(.replica-shell, #growthWorkspace) .agents-hero h2 {
   font-size: clamp(1.45rem, 3vw, 2.15rem);
   letter-spacing: -0.035em;
 }
 
-.replica-shell .agents-hero p {
+:is(.replica-shell, #growthWorkspace) .agents-hero p {
   max-width: 43rem;
   color: var(--agents-muted);
   line-height: 1.65;
 }
 
-.replica-shell .demo-badge {
+:is(.replica-shell, #growthWorkspace) .demo-badge {
   display: inline-flex;
   align-items: center;
   margin-left: 0.45rem;
@@ -777,7 +777,7 @@
   font-weight: 700;
 }
 
-.replica-shell .agents-primary {
+:is(.replica-shell, #growthWorkspace) .agents-primary {
   min-height: 2.65rem;
   padding: 0.65rem 1.05rem;
   border: 1px solid rgba(24, 237, 120, 0.56);
@@ -789,33 +789,33 @@
   transition: transform 160ms ease, box-shadow 160ms ease, filter 160ms ease;
 }
 
-.replica-shell .agents-primary:hover {
+:is(.replica-shell, #growthWorkspace) .agents-primary:hover {
   filter: brightness(1.05);
   box-shadow: 0 0.65rem 2rem rgba(24, 237, 120, 0.16);
   transform: translateY(-1px);
 }
 
-.replica-shell .agents-primary:focus-visible,
-.replica-shell .agent-card a:focus-visible {
+:is(.replica-shell, #growthWorkspace) .agents-primary:focus-visible,
+:is(.replica-shell, #growthWorkspace) .agent-card a:focus-visible {
   outline: 2px solid var(--agents-green);
   outline-offset: 3px;
 }
 
-.replica-shell .agents-overview-strip {
+:is(.replica-shell, #growthWorkspace) .agents-overview-strip {
   display: grid;
   grid-template-columns: minmax(9.5rem, 0.24fr) 1fr;
   gap: 0.85rem;
   margin-bottom: 1rem;
 }
 
-.replica-shell .health-score-ring,
-.replica-shell .agents-source-overview {
+:is(.replica-shell, #growthWorkspace) .health-score-ring,
+:is(.replica-shell, #growthWorkspace) .agents-source-overview {
   border: 1px solid var(--agents-line);
   background: var(--agents-panel);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
-.replica-shell .health-score-ring {
+:is(.replica-shell, #growthWorkspace) .health-score-ring {
   --health-score: 0%;
   position: relative;
   display: grid;
@@ -826,48 +826,53 @@
   text-align: center;
 }
 
-.replica-shell .health-score-ring::before,
-.replica-shell .health-score-ring::after {
+:is(.replica-shell, #growthWorkspace) .health-score-ring::before,
+:is(.replica-shell, #growthWorkspace) .health-score-ring::after {
   position: absolute;
+  top: 50%;
+  left: 50%;
   border-radius: 50%;
   content: "";
+  transform: translate(-50%, -50%);
 }
 
-.replica-shell .health-score-ring::before {
+:is(.replica-shell, #growthWorkspace) .health-score-ring::before {
   z-index: -2;
-  inset: 1.05rem;
+  width: 7.4rem;
+  height: 7.4rem;
   background: conic-gradient(var(--agents-green) var(--health-score), rgba(255, 255, 255, 0.075) 0);
   box-shadow: 0 0 1.4rem rgba(24, 237, 120, 0.09);
 }
 
-.replica-shell .health-score-ring::after {
+:is(.replica-shell, #growthWorkspace) .health-score-ring::after {
   z-index: -1;
-  inset: 1.42rem;
+  width: 6.7rem;
+  height: 6.7rem;
   background: var(--agents-panel-strong);
 }
 
-.replica-shell .health-score-ring.is-pending::before {
+:is(.replica-shell, #growthWorkspace) .health-score-ring.is-pending::before {
   background: conic-gradient(rgba(255, 255, 255, 0.12) 22%, rgba(255, 255, 255, 0.05) 0);
   box-shadow: none;
 }
 
-.replica-shell .health-score-ring strong {
+:is(.replica-shell, #growthWorkspace) .health-score-ring strong {
   color: var(--replica-text, #f1f3f0);
   font-size: 1.55rem;
   letter-spacing: -0.04em;
 }
 
-.replica-shell .health-score-ring.is-pending strong {
+:is(.replica-shell, #growthWorkspace) .health-score-ring.is-pending strong {
   font-size: 0.9rem;
 }
 
-.replica-shell .health-score-ring span {
+:is(.replica-shell, #growthWorkspace) .health-score-ring span {
   margin-top: 0.1rem;
   color: var(--agents-muted);
   font-size: 0.68rem;
 }
 
-.replica-shell .agents-source-overview {
+:is(.replica-shell, #growthWorkspace) .agents-source-overview {
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -876,7 +881,7 @@
   border-radius: var(--replica-radius-md, 18px);
 }
 
-.replica-shell .agents-source-heading {
+:is(.replica-shell, #growthWorkspace) .agents-source-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -884,27 +889,27 @@
   margin-bottom: 1rem;
 }
 
-.replica-shell .agents-source-heading strong {
+:is(.replica-shell, #growthWorkspace) .agents-source-heading strong {
   display: block;
   color: var(--replica-text, #f1f3f0);
   font-size: 1rem;
   overflow-wrap: anywhere;
 }
 
-.replica-shell .agents-source-count {
+:is(.replica-shell, #growthWorkspace) .agents-source-count {
   flex: none;
   color: var(--agents-muted);
   font-size: 0.74rem;
 }
 
-.replica-shell .data-source-badges {
+:is(.replica-shell, #growthWorkspace) .data-source-badges {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
 }
 
-.replica-shell .data-source-badge,
-.replica-shell .data-source-empty {
+:is(.replica-shell, #growthWorkspace) .data-source-badge,
+:is(.replica-shell, #growthWorkspace) .data-source-empty {
   display: inline-flex;
   align-items: center;
   min-height: 1.75rem;
@@ -916,7 +921,7 @@
   font-size: 0.73rem;
 }
 
-.replica-shell .data-source-badge::before {
+:is(.replica-shell, #growthWorkspace) .data-source-badge::before {
   width: 0.35rem;
   height: 0.35rem;
   margin-right: 0.4rem;
@@ -926,12 +931,12 @@
   content: "";
 }
 
-.replica-shell .agents-grid {
+:is(.replica-shell, #growthWorkspace) .agents-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.85rem;
 }
 
-.replica-shell .agent-card {
+:is(.replica-shell, #growthWorkspace) .agent-card {
   min-width: 0;
   padding: 1.05rem;
   border: 1px solid var(--agents-line-soft);
@@ -942,13 +947,13 @@
   transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
-.replica-shell .agent-card:hover {
+:is(.replica-shell, #growthWorkspace) .agent-card:hover {
   border-color: color-mix(in srgb, var(--agent-accent) 42%, var(--agents-line));
   background: linear-gradient(155deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.016));
   transform: translateY(-2px);
 }
 
-.replica-shell .agent-avatar {
+:is(.replica-shell, #growthWorkspace) .agent-avatar {
   flex: none;
   border: 1px solid color-mix(in srgb, var(--agent-accent) 48%, transparent);
   border-radius: var(--replica-radius-sm, 12px);
@@ -957,103 +962,103 @@
   box-shadow: inset 0 0 1rem color-mix(in srgb, var(--agent-accent) 8%, transparent);
 }
 
-.replica-shell .agent-card h3 {
+:is(.replica-shell, #growthWorkspace) .agent-card h3 {
   color: var(--replica-text, #f1f3f0);
 }
 
-.replica-shell .agent-card header p,
-.replica-shell .agent-summary,
-.replica-shell .agent-card footer {
+:is(.replica-shell, #growthWorkspace) .agent-card header p,
+:is(.replica-shell, #growthWorkspace) .agent-summary,
+:is(.replica-shell, #growthWorkspace) .agent-card footer {
   color: var(--agents-muted);
 }
 
-.replica-shell .agent-summary {
+:is(.replica-shell, #growthWorkspace) .agent-summary {
   min-height: 2.6rem;
   line-height: 1.6;
 }
 
-.replica-shell .agent-status {
+:is(.replica-shell, #growthWorkspace) .agent-status {
   border: 1px solid var(--agents-line-soft);
   background: rgba(255, 255, 255, 0.035);
   color: var(--agents-muted);
 }
 
-.replica-shell .agent-status-ready {
+:is(.replica-shell, #growthWorkspace) .agent-status-ready {
   border-color: rgba(24, 237, 120, 0.19);
   background: rgba(24, 237, 120, 0.075);
   color: var(--agents-green);
 }
 
-.replica-shell .agent-capability {
+:is(.replica-shell, #growthWorkspace) .agent-capability {
   border: 1px solid var(--agents-line-soft);
   background: rgba(255, 255, 255, 0.027);
   color: #afb5b1;
 }
 
-.replica-shell .agent-card footer {
+:is(.replica-shell, #growthWorkspace) .agent-card footer {
   gap: 0.75rem;
   padding-top: 0.35rem;
   border-top: 1px solid var(--agents-line-soft);
 }
 
-.replica-shell .agent-card footer span {
+:is(.replica-shell, #growthWorkspace) .agent-card footer span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.replica-shell .agent-card footer a {
+:is(.replica-shell, #growthWorkspace) .agent-card footer a {
   flex: none;
   color: var(--agents-green);
 }
 
 @media (max-width: 1080px) {
-  .replica-shell .agents-grid {
+  :is(.replica-shell, #growthWorkspace) .agents-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 700px) {
-  .replica-shell .agents-hero {
+  :is(.replica-shell, #growthWorkspace) .agents-hero {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .replica-shell .agents-primary {
+  :is(.replica-shell, #growthWorkspace) .agents-primary {
     width: 100%;
   }
 
-  .replica-shell .agents-overview-strip,
-  .replica-shell .agents-grid {
+  :is(.replica-shell, #growthWorkspace) .agents-overview-strip,
+  :is(.replica-shell, #growthWorkspace) .agents-grid {
     grid-template-columns: 1fr;
   }
 
-  .replica-shell .health-score-ring {
+  :is(.replica-shell, #growthWorkspace) .health-score-ring {
     min-height: 8.75rem;
   }
 }
 
-.replica-shell .diagnosis-report {
+:is(.replica-shell, #growthWorkspace) .diagnosis-report {
   background:
     radial-gradient(circle at 85% 0%, rgba(24, 237, 120, 0.055), transparent 26rem),
     var(--replica-bg, #020303);
 }
 
-.replica-shell .agents-back {
+:is(.replica-shell, #growthWorkspace) .agents-back {
   color: var(--agents-green);
 }
 
-.replica-shell .report-heading,
-.replica-shell .report-overview,
-.replica-shell .diagnosis-report .report-block,
-.replica-shell .report-evidence-chain {
+:is(.replica-shell, #growthWorkspace) .report-heading,
+:is(.replica-shell, #growthWorkspace) .report-overview,
+:is(.replica-shell, #growthWorkspace) .diagnosis-report .report-block,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain {
   border: 1px solid var(--agents-line);
   border-radius: var(--replica-radius-md, 18px);
   background: var(--agents-panel);
 }
 
-.replica-shell .report-heading {
+:is(.replica-shell, #growthWorkspace) .report-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -1062,18 +1067,18 @@
   padding: clamp(1.1rem, 2.6vw, 1.5rem);
 }
 
-.replica-shell .report-heading h2 {
+:is(.replica-shell, #growthWorkspace) .report-heading h2 {
   margin-bottom: 0.35rem;
   font-size: clamp(1.35rem, 2.8vw, 1.9rem);
   letter-spacing: -0.03em;
 }
 
-.replica-shell .report-heading p {
+:is(.replica-shell, #growthWorkspace) .report-heading p {
   margin: 0.2rem 0 0;
   color: var(--agents-muted);
 }
 
-.replica-shell .report-period {
+:is(.replica-shell, #growthWorkspace) .report-period {
   flex: none;
   padding: 0.26rem 0.55rem;
   border: 1px solid rgba(24, 237, 120, 0.22);
@@ -1084,12 +1089,12 @@
   font-weight: 700;
 }
 
-.replica-shell .diagnosis-report > .report-block:first-of-type {
+:is(.replica-shell, #growthWorkspace) .diagnosis-report > .report-block:first-of-type {
   border-color: rgba(240, 164, 75, 0.22);
   background: rgba(240, 164, 75, 0.045);
 }
 
-.replica-shell .report-overview {
+:is(.replica-shell, #growthWorkspace) .report-overview {
   display: grid;
   grid-template-columns: minmax(9.5rem, 0.24fr) 1fr;
   gap: 0.85rem;
@@ -1097,7 +1102,7 @@
   padding: 0.85rem;
 }
 
-.replica-shell .report-summary-card {
+:is(.replica-shell, #growthWorkspace) .report-summary-card {
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -1108,11 +1113,11 @@
   background: rgba(255, 255, 255, 0.018);
 }
 
-.replica-shell .report-summary-card h3 {
+:is(.replica-shell, #growthWorkspace) .report-summary-card h3 {
   margin-bottom: 0.45rem;
 }
 
-.replica-shell .diagnosis-report .report-summary {
+:is(.replica-shell, #growthWorkspace) .diagnosis-report .diagnosis-summary {
   margin: 0;
   padding: 0;
   border: 0;
@@ -1122,29 +1127,29 @@
   line-height: 1.75;
 }
 
-.replica-shell .diagnosis-report .report-block {
+:is(.replica-shell, #growthWorkspace) .diagnosis-report .report-block {
   margin-top: 0.85rem;
   padding: clamp(1rem, 2.4vw, 1.35rem);
 }
 
-.replica-shell .report-block-heading {
+:is(.replica-shell, #growthWorkspace) .report-block-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
 }
 
-.replica-shell .report-block-heading > span {
+:is(.replica-shell, #growthWorkspace) .report-block-heading > span {
   color: var(--agents-muted);
   font-size: 0.72rem;
 }
 
-.replica-shell .report-issues {
+:is(.replica-shell, #growthWorkspace) .report-issues {
   display: grid;
   gap: 0.65rem;
 }
 
-.replica-shell .report-issue {
+:is(.replica-shell, #growthWorkspace) .report-issue {
   margin: 0;
   padding: 1rem;
   border: 1px solid var(--agents-line-soft);
@@ -1153,21 +1158,21 @@
   background: rgba(255, 255, 255, 0.016);
 }
 
-.replica-shell .report-issue.issue-red {
+:is(.replica-shell, #growthWorkspace) .report-issue.issue-red {
   border-color: rgba(255, 93, 86, 0.22);
   border-left-color: var(--replica-danger, #ff5d56);
   background: linear-gradient(90deg, rgba(255, 93, 86, 0.065), rgba(255, 93, 86, 0.018));
   color: inherit;
 }
 
-.replica-shell .report-issue.issue-yellow {
+:is(.replica-shell, #growthWorkspace) .report-issue.issue-yellow {
   border-color: rgba(240, 164, 75, 0.22);
   border-left-color: var(--replica-amber, #f0a44b);
   background: linear-gradient(90deg, rgba(240, 164, 75, 0.065), rgba(240, 164, 75, 0.018));
   color: inherit;
 }
 
-.replica-shell .report-issue h4 {
+:is(.replica-shell, #growthWorkspace) .report-issue h4 {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1175,36 +1180,36 @@
   color: var(--replica-text, #f1f3f0);
 }
 
-.replica-shell .report-issue .issue-level,
-.replica-shell .report-issue .issue-category {
+:is(.replica-shell, #growthWorkspace) .report-issue .issue-level,
+:is(.replica-shell, #growthWorkspace) .report-issue .issue-category {
   margin: 0;
   border: 1px solid var(--agents-line-soft);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.03);
 }
 
-.replica-shell .report-issue .issue-level.issue-red {
+:is(.replica-shell, #growthWorkspace) .report-issue .issue-level.issue-red {
   border-color: rgba(255, 93, 86, 0.25);
   background: rgba(255, 93, 86, 0.1);
   color: #ff8b86;
 }
 
-.replica-shell .report-issue .issue-level.issue-yellow {
+:is(.replica-shell, #growthWorkspace) .report-issue .issue-level.issue-yellow {
   border-color: rgba(240, 164, 75, 0.25);
   background: rgba(240, 164, 75, 0.1);
   color: #f4bd79;
 }
 
-.replica-shell .report-issue .issue-category {
+:is(.replica-shell, #growthWorkspace) .report-issue .issue-category {
   color: #b8bebb;
 }
 
-.replica-shell .report-issue-fields {
+:is(.replica-shell, #growthWorkspace) .report-issue-fields {
   display: grid;
   gap: 0.38rem;
 }
 
-.replica-shell .report-issue-fields p {
+:is(.replica-shell, #growthWorkspace) .report-issue-fields p {
   display: grid;
   grid-template-columns: 2.8rem minmax(0, 1fr);
   gap: 0.55rem;
@@ -1213,24 +1218,24 @@
   line-height: 1.65;
 }
 
-.replica-shell .report-issue-fields strong {
+:is(.replica-shell, #growthWorkspace) .report-issue-fields strong {
   color: var(--agents-muted);
   font-size: 0.74rem;
 }
 
-.replica-shell .report-evidence,
-.replica-shell .report-evidence-chain {
+:is(.replica-shell, #growthWorkspace) .report-evidence,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain {
   margin-top: 0.75rem;
   color: var(--agents-muted);
 }
 
-.replica-shell .report-evidence {
+:is(.replica-shell, #growthWorkspace) .report-evidence {
   padding-top: 0.65rem;
   border-top: 1px solid var(--agents-line-soft);
 }
 
-.replica-shell .report-evidence summary,
-.replica-shell .report-evidence-chain summary {
+:is(.replica-shell, #growthWorkspace) .report-evidence summary,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1242,51 +1247,51 @@
   list-style: none;
 }
 
-.replica-shell .report-evidence summary::-webkit-details-marker,
-.replica-shell .report-evidence-chain summary::-webkit-details-marker {
+:is(.replica-shell, #growthWorkspace) .report-evidence summary::-webkit-details-marker,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain summary::-webkit-details-marker {
   display: none;
 }
 
-.replica-shell .report-evidence summary::after,
-.replica-shell .report-evidence-chain summary::after {
+:is(.replica-shell, #growthWorkspace) .report-evidence summary::after,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain summary::after {
   color: var(--agents-green);
   content: "+";
   font-size: 1rem;
 }
 
-.replica-shell .report-evidence[open] summary::after,
-.replica-shell .report-evidence-chain[open] summary::after {
+:is(.replica-shell, #growthWorkspace) .report-evidence[open] summary::after,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain[open] summary::after {
   content: "−";
 }
 
-.replica-shell .report-evidence summary:focus-visible,
-.replica-shell .report-evidence-chain summary:focus-visible {
+:is(.replica-shell, #growthWorkspace) .report-evidence summary:focus-visible,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain summary:focus-visible {
   border-radius: 0.25rem;
   outline: 2px solid var(--agents-green);
   outline-offset: 4px;
 }
 
-.replica-shell .report-evidence summary span,
-.replica-shell .report-evidence-chain summary span {
+:is(.replica-shell, #growthWorkspace) .report-evidence summary span,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain summary span {
   margin-left: auto;
   color: var(--agents-muted);
   font-weight: 500;
 }
 
-.replica-shell .report-evidence-body,
-.replica-shell .report-evidence-chain > div {
+:is(.replica-shell, #growthWorkspace) .report-evidence-body,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain > div {
   padding: 0.65rem 0 0;
 }
 
-.replica-shell .report-evidence-body ul,
-.replica-shell .report-evidence-chain ul {
+:is(.replica-shell, #growthWorkspace) .report-evidence-body ul,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain ul {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.replica-shell .report-evidence-body li,
-.replica-shell .report-evidence-chain li {
+:is(.replica-shell, #growthWorkspace) .report-evidence-body li,
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain li {
   padding: 0.35rem 0.5rem;
   border-left: 2px solid var(--agents-line);
   color: #9da39f;
@@ -1296,7 +1301,7 @@
   overflow-wrap: anywhere;
 }
 
-.replica-shell .report-timeline {
+:is(.replica-shell, #growthWorkspace) .report-timeline {
   position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1306,7 +1311,7 @@
   list-style: none;
 }
 
-.replica-shell .report-timeline::before {
+:is(.replica-shell, #growthWorkspace) .report-timeline::before {
   position: absolute;
   top: 1.48rem;
   right: 12%;
@@ -1316,7 +1321,7 @@
   content: "";
 }
 
-.replica-shell .report-timeline li {
+:is(.replica-shell, #growthWorkspace) .report-timeline li {
   position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1329,7 +1334,7 @@
   background: var(--agents-panel-strong);
 }
 
-.replica-shell .report-timeline-marker {
+:is(.replica-shell, #growthWorkspace) .report-timeline-marker {
   position: relative;
   z-index: 1;
   display: grid;
@@ -1344,20 +1349,20 @@
   font-weight: 800;
 }
 
-.replica-shell .report-timeline li div {
+:is(.replica-shell, #growthWorkspace) .report-timeline li div {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 0.32rem;
 }
 
-.replica-shell .report-timeline li div span {
+:is(.replica-shell, #growthWorkspace) .report-timeline li div span {
   color: var(--agents-green);
   font-size: 0.68rem;
   font-weight: 700;
 }
 
-.replica-shell .report-timeline li div strong {
+:is(.replica-shell, #growthWorkspace) .report-timeline li div strong {
   color: #cbd0cd;
   font-size: 0.78rem;
   font-weight: 600;
@@ -1365,25 +1370,25 @@
   overflow-wrap: anywhere;
 }
 
-.replica-shell .report-evidence-chain {
+:is(.replica-shell, #growthWorkspace) .report-evidence-chain {
   padding: 1rem 1.2rem;
 }
 
 @media (max-width: 768px) {
-  .replica-shell .report-heading,
-  .replica-shell .report-overview {
+  :is(.replica-shell, #growthWorkspace) .report-heading,
+  :is(.replica-shell, #growthWorkspace) .report-overview {
     grid-template-columns: 1fr;
   }
 
-  .replica-shell .report-heading {
+  :is(.replica-shell, #growthWorkspace) .report-heading {
     flex-direction: column;
   }
 
-  .replica-shell .report-timeline {
+  :is(.replica-shell, #growthWorkspace) .report-timeline {
     grid-template-columns: 1fr;
   }
 
-  .replica-shell .report-timeline::before {
+  :is(.replica-shell, #growthWorkspace) .report-timeline::before {
     top: 1rem;
     bottom: 1rem;
     left: 1.5rem;
@@ -1391,91 +1396,91 @@
     height: auto;
   }
 
-  .replica-shell .report-issue-fields p {
+  :is(.replica-shell, #growthWorkspace) .report-issue-fields p {
     grid-template-columns: 1fr;
     gap: 0.1rem;
   }
 }
 
-.replica-shell .agent-workbench {
+:is(.replica-shell, #growthWorkspace) .agent-workbench {
   background:
     radial-gradient(circle at 50% 0%, rgba(24, 237, 120, 0.05), transparent 29rem),
     var(--replica-bg, #020303);
 }
 
-.replica-shell .agent-workbench > header {
+:is(.replica-shell, #growthWorkspace) .agent-workbench > header {
   padding: 1.05rem 1.2rem;
   border: 1px solid var(--agents-line);
   border-radius: var(--replica-radius-md, 18px);
   background: var(--agents-panel);
 }
 
-.replica-shell .agent-workbench > header h2 {
+:is(.replica-shell, #growthWorkspace) .agent-workbench > header h2 {
   color: var(--replica-text, #f1f3f0);
   font-size: 1.15rem;
 }
 
-.replica-shell .agent-workbench > header p {
+:is(.replica-shell, #growthWorkspace) .agent-workbench > header p {
   color: var(--agents-muted);
 }
 
-.replica-shell .agent-workbench-grid {
-  grid-template-columns: minmax(12.5rem, 0.24fr) minmax(24rem, 1fr) minmax(11.5rem, 0.2fr);
+:is(.replica-shell, #growthWorkspace) .agent-workbench-grid {
+  grid-template-columns: minmax(10rem, 0.24fr) minmax(0, 1fr) minmax(9.5rem, 0.2fr);
   gap: 0.8rem;
 }
 
-.replica-shell .agent-info,
-.replica-shell .agent-chat,
-.replica-shell .agent-actions {
+:is(.replica-shell, #growthWorkspace) .agent-info,
+:is(.replica-shell, #growthWorkspace) .agent-chat,
+:is(.replica-shell, #growthWorkspace) .agent-actions {
   border: 1px solid var(--agents-line-soft);
   border-radius: var(--replica-radius-md, 18px);
   background: var(--agents-panel);
   color: var(--replica-text, #f1f3f0);
 }
 
-.replica-shell .agent-info,
-.replica-shell .agent-actions {
+:is(.replica-shell, #growthWorkspace) .agent-info,
+:is(.replica-shell, #growthWorkspace) .agent-actions {
   align-self: start;
 }
 
-.replica-shell .agent-info h3,
-.replica-shell .agent-chat h3,
-.replica-shell .agent-actions h3 {
+:is(.replica-shell, #growthWorkspace) .agent-info h3,
+:is(.replica-shell, #growthWorkspace) .agent-chat h3,
+:is(.replica-shell, #growthWorkspace) .agent-actions h3 {
   color: var(--replica-text, #f1f3f0);
 }
 
-.replica-shell .agent-info p,
-.replica-shell .agent-info ul,
-.replica-shell .agent-chat-heading p {
+:is(.replica-shell, #growthWorkspace) .agent-info p,
+:is(.replica-shell, #growthWorkspace) .agent-info ul,
+:is(.replica-shell, #growthWorkspace) .agent-chat-heading p {
   color: var(--agents-muted);
   line-height: 1.65;
 }
 
-.replica-shell .agent-info li {
+:is(.replica-shell, #growthWorkspace) .agent-info li {
   margin-bottom: 0.28rem;
 }
 
-.replica-shell .agent-chat {
+:is(.replica-shell, #growthWorkspace) .agent-chat {
   min-width: 0;
   padding: 1.1rem;
 }
 
-.replica-shell .agent-chat-heading {
+:is(.replica-shell, #growthWorkspace) .agent-chat-heading {
   margin-bottom: 1rem;
 }
 
-.replica-shell .agent-chat-heading h3,
-.replica-shell .agent-chat-heading p {
+:is(.replica-shell, #growthWorkspace) .agent-chat-heading h3,
+:is(.replica-shell, #growthWorkspace) .agent-chat-heading p {
   margin-bottom: 0.3rem;
 }
 
-.replica-shell .agent-chat-heading p {
+:is(.replica-shell, #growthWorkspace) .agent-chat-heading p {
   margin-top: 0;
   font-size: 0.8rem;
 }
 
-.replica-shell .agent-question-examples > span,
-.replica-shell .agent-question-label {
+:is(.replica-shell, #growthWorkspace) .agent-question-examples > span,
+:is(.replica-shell, #growthWorkspace) .agent-question-label {
   display: block;
   margin-bottom: 0.45rem;
   color: var(--agents-muted);
@@ -1483,14 +1488,14 @@
   font-weight: 700;
 }
 
-.replica-shell .agent-question-examples > div {
+:is(.replica-shell, #growthWorkspace) .agent-question-examples > div {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
   margin-bottom: 0.9rem;
 }
 
-.replica-shell .agent-question-examples button {
+:is(.replica-shell, #growthWorkspace) .agent-question-examples button {
   min-height: 2rem;
   padding: 0.38rem 0.65rem;
   border: 1px solid var(--agents-line-soft);
@@ -1501,25 +1506,25 @@
   cursor: pointer;
 }
 
-.replica-shell .agent-question-examples button:hover {
+:is(.replica-shell, #growthWorkspace) .agent-question-examples button:hover {
   border-color: rgba(24, 237, 120, 0.3);
   color: var(--agents-green);
 }
 
-.replica-shell .agent-question-examples button:focus-visible,
-.replica-shell .agents-ask-row input:focus-visible,
-.replica-shell .agents-ask-row button:focus-visible,
-.replica-shell .agent-actions button:focus-visible {
+:is(.replica-shell, #growthWorkspace) .agent-question-examples button:focus-visible,
+:is(.replica-shell, #growthWorkspace) .agents-ask-row input:focus-visible,
+:is(.replica-shell, #growthWorkspace) .agents-ask-row button:focus-visible,
+:is(.replica-shell, #growthWorkspace) .agent-actions button:focus-visible {
   outline: 2px solid var(--agents-green);
   outline-offset: 2px;
 }
 
-.replica-shell .agents-ask-row {
+:is(.replica-shell, #growthWorkspace) .agents-ask-row {
   align-items: stretch;
   margin-top: 0;
 }
 
-.replica-shell .agents-ask-row input {
+:is(.replica-shell, #growthWorkspace) .agents-ask-row input {
   min-width: 0;
   min-height: 2.7rem;
   border: 1px solid var(--agents-line);
@@ -1528,16 +1533,16 @@
   color: var(--replica-text, #f1f3f0);
 }
 
-.replica-shell .agents-ask-row input::placeholder {
+:is(.replica-shell, #growthWorkspace) .agents-ask-row input::placeholder {
   color: #656b67;
 }
 
-.replica-shell .agents-ask-row input:focus {
+:is(.replica-shell, #growthWorkspace) .agents-ask-row input:focus {
   border-color: rgba(24, 237, 120, 0.46);
 }
 
-.replica-shell .agents-ask-row button,
-.replica-shell .agent-actions button {
+:is(.replica-shell, #growthWorkspace) .agents-ask-row button,
+:is(.replica-shell, #growthWorkspace) .agent-actions button {
   min-height: 2.7rem;
   border: 1px solid rgba(24, 237, 120, 0.28);
   border-radius: var(--replica-radius-sm, 12px);
@@ -1546,7 +1551,7 @@
   font-weight: 700;
 }
 
-.replica-shell .agent-conclusion {
+:is(.replica-shell, #growthWorkspace) .agent-conclusion {
   margin-top: 0.85rem;
   padding: 0;
   border: 1px solid var(--agents-line-soft);
@@ -1555,8 +1560,8 @@
   overflow: hidden;
 }
 
-.replica-shell .agent-answer-empty,
-.replica-shell .agent-answer-loading {
+:is(.replica-shell, #growthWorkspace) .agent-answer-empty,
+:is(.replica-shell, #growthWorkspace) .agent-answer-loading {
   display: grid;
   min-height: 11rem;
   place-content: center;
@@ -1565,24 +1570,24 @@
   text-align: center;
 }
 
-.replica-shell .agent-answer-empty strong {
+:is(.replica-shell, #growthWorkspace) .agent-answer-empty strong {
   color: #c2c7c4;
   font-size: 0.88rem;
 }
 
-.replica-shell .agent-answer-empty p {
+:is(.replica-shell, #growthWorkspace) .agent-answer-empty p {
   max-width: 25rem;
   margin: 0.35rem 0 0;
   font-size: 0.76rem;
   line-height: 1.55;
 }
 
-.replica-shell .agent-answer-card {
+:is(.replica-shell, #growthWorkspace) .agent-answer-card {
   display: grid;
   gap: 0;
 }
 
-.replica-shell .agent-answer-question {
+:is(.replica-shell, #growthWorkspace) .agent-answer-question {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
@@ -1591,21 +1596,21 @@
   background: rgba(255, 255, 255, 0.02);
 }
 
-.replica-shell .agent-answer-question span,
-.replica-shell .agent-answer-section > span {
+:is(.replica-shell, #growthWorkspace) .agent-answer-question span,
+:is(.replica-shell, #growthWorkspace) .agent-answer-section > span {
   color: var(--agents-green);
   font-size: 0.65rem;
   font-weight: 800;
   letter-spacing: 0.08em;
 }
 
-.replica-shell .agent-answer-question strong {
+:is(.replica-shell, #growthWorkspace) .agent-answer-question strong {
   color: #d3d7d4;
   font-size: 0.8rem;
   line-height: 1.5;
 }
 
-.replica-shell .agent-answer-section {
+:is(.replica-shell, #growthWorkspace) .agent-answer-section {
   margin: 0;
   padding: 0.85rem 1rem;
   border: 0;
@@ -1614,13 +1619,13 @@
   color: #b6bcb8;
 }
 
-.replica-shell .agent-answer-section:last-child {
+:is(.replica-shell, #growthWorkspace) .agent-answer-section:last-child {
   border-bottom: 0;
 }
 
-.replica-shell .agent-answer-section p,
-.replica-shell .agent-answer-section ul,
-.replica-shell .agent-answer-section ol {
+:is(.replica-shell, #growthWorkspace) .agent-answer-section p,
+:is(.replica-shell, #growthWorkspace) .agent-answer-section ul,
+:is(.replica-shell, #growthWorkspace) .agent-answer-section ol {
   margin: 0.48rem 0 0;
   padding-left: 1.05rem;
   color: #b6bcb8;
@@ -1628,70 +1633,70 @@
   line-height: 1.65;
 }
 
-.replica-shell .agent-answer-section p {
+:is(.replica-shell, #growthWorkspace) .agent-answer-section p {
   padding-left: 0;
 }
 
-.replica-shell .agent-answer-evidence {
+:is(.replica-shell, #growthWorkspace) .agent-answer-evidence {
   background: rgba(255, 255, 255, 0.012);
 }
 
-.replica-shell .agent-actions {
+:is(.replica-shell, #growthWorkspace) .agent-actions {
   padding: 0.9rem;
 }
 
-.replica-shell .agent-actions button {
+:is(.replica-shell, #growthWorkspace) .agent-actions button {
   width: 100%;
   background: rgba(255, 255, 255, 0.025);
   color: #b8bebb;
   text-align: left;
 }
 
-.replica-shell .agent-actions button:first-of-type {
+:is(.replica-shell, #growthWorkspace) .agent-actions button:first-of-type {
   border-color: rgba(24, 237, 120, 0.26);
   background: rgba(24, 237, 120, 0.08);
   color: var(--agents-green);
 }
 
 @media (max-width: 1050px) {
-  .replica-shell .agent-workbench-grid {
+  :is(.replica-shell, #growthWorkspace) .agent-workbench-grid {
     grid-template-columns: 1fr;
   }
 
-  .replica-shell .agent-info,
-  .replica-shell .agent-actions {
+  :is(.replica-shell, #growthWorkspace) .agent-info,
+  :is(.replica-shell, #growthWorkspace) .agent-actions {
     align-self: stretch;
   }
 }
 
 @media (max-width: 600px) {
-  .replica-shell .agent-workbench > header {
+  :is(.replica-shell, #growthWorkspace) .agent-workbench > header {
     align-items: flex-start;
     flex-wrap: wrap;
   }
 
-  .replica-shell .agent-workbench > header .agent-status {
+  :is(.replica-shell, #growthWorkspace) .agent-workbench > header .agent-status {
     margin-left: 0;
   }
 
-  .replica-shell .agents-ask-row {
+  :is(.replica-shell, #growthWorkspace) .agents-ask-row {
     flex-direction: column;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .replica-shell .agents-primary,
-  .replica-shell .agent-card {
+  :is(.replica-shell, #growthWorkspace) .agents-primary,
+  :is(.replica-shell, #growthWorkspace) .agent-card {
     transition: none;
   }
 
-  .replica-shell .agents-primary:hover,
-  .replica-shell .agent-card:hover {
+  :is(.replica-shell, #growthWorkspace) .agents-primary:hover,
+  :is(.replica-shell, #growthWorkspace) .agent-card:hover {
     transform: none;
   }
 }
 
-.replica-shell .statements-import {
+:is(.replica-shell, #growthWorkspace) .statements-import {
   margin: 0 0 1rem;
   padding: clamp(1rem, 2.4vw, 1.4rem);
   border: 1px solid var(--replica-line, rgba(229, 238, 233, 0.18));
@@ -1699,25 +1704,25 @@
   background: var(--replica-surface, rgba(14, 16, 17, 0.82));
 }
 
-.replica-shell .statements-import-heading,
-.replica-shell .company-picker-heading {
+:is(.replica-shell, #growthWorkspace) .statements-import-heading,
+:is(.replica-shell, #growthWorkspace) .company-picker-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 1rem;
 }
 
-.replica-shell .statements-import h3 {
+:is(.replica-shell, #growthWorkspace) .statements-import h3 {
   color: var(--replica-text, #f1f3f0);
   font-size: 1.05rem;
 }
 
-.replica-shell .statements-import p,
-.replica-shell .statements-security {
+:is(.replica-shell, #growthWorkspace) .statements-import p,
+:is(.replica-shell, #growthWorkspace) .statements-security {
   color: var(--replica-muted, #8c928e);
 }
 
-.replica-shell .statements-security {
+:is(.replica-shell, #growthWorkspace) .statements-security {
   flex: none;
   padding: 0.28rem 0.55rem;
   border: 1px solid var(--replica-line-soft, rgba(229, 238, 233, 0.09));
@@ -1725,14 +1730,14 @@
   font-size: 0.68rem;
 }
 
-.replica-shell .statements-import-fields {
+:is(.replica-shell, #growthWorkspace) .statements-import-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.7rem;
   margin: 1rem 0 0.65rem;
 }
 
-.replica-shell .statements-import-fields .statement-dropzone {
+:is(.replica-shell, #growthWorkspace) .statements-import-fields .statement-dropzone {
   position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1748,15 +1753,15 @@
   transition: border-color 160ms ease, background 160ms ease;
 }
 
-.replica-shell .statement-dropzone:hover,
-.replica-shell .statement-dropzone.is-dragging,
-.replica-shell .statement-dropzone:focus-within {
+:is(.replica-shell, #growthWorkspace) .statement-dropzone:hover,
+:is(.replica-shell, #growthWorkspace) .statement-dropzone.is-dragging,
+:is(.replica-shell, #growthWorkspace) .statement-dropzone:focus-within {
   border-color: rgba(24, 237, 120, 0.58);
   background: rgba(24, 237, 120, 0.055);
   outline: none;
 }
 
-.replica-shell .statements-file-input {
+:is(.replica-shell, #growthWorkspace) .statements-file-input {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -1765,7 +1770,7 @@
   white-space: nowrap;
 }
 
-.replica-shell .statement-file-type {
+:is(.replica-shell, #growthWorkspace) .statement-file-type {
   display: grid;
   grid-row: 1 / span 2;
   place-items: center;
@@ -1780,36 +1785,36 @@
   letter-spacing: 0.06em;
 }
 
-.replica-shell .statement-file-copy {
+:is(.replica-shell, #growthWorkspace) .statement-file-copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 0.2rem;
 }
 
-.replica-shell .statement-file-copy strong {
+:is(.replica-shell, #growthWorkspace) .statement-file-copy strong {
   color: var(--replica-text, #f1f3f0);
   font-size: 0.86rem;
 }
 
-.replica-shell .statement-file-copy span,
-.replica-shell .statement-file-name {
+:is(.replica-shell, #growthWorkspace) .statement-file-copy span,
+:is(.replica-shell, #growthWorkspace) .statement-file-name {
   color: var(--replica-muted, #8c928e);
   font-size: 0.72rem;
 }
 
-.replica-shell .statement-file-name {
+:is(.replica-shell, #growthWorkspace) .statement-file-name {
   grid-column: 2;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.replica-shell .statement-file-name.has-file {
+:is(.replica-shell, #growthWorkspace) .statement-file-name.has-file {
   color: var(--replica-accent, #18ed78);
 }
 
-.replica-shell .statements-import-status {
+:is(.replica-shell, #growthWorkspace) .statements-import-status {
   display: flex;
   min-height: 1.6rem;
   align-items: center;
@@ -1817,26 +1822,26 @@
   gap: 1rem;
 }
 
-.replica-shell .statements-import-status p {
+:is(.replica-shell, #growthWorkspace) .statements-import-status p {
   margin: 0;
   font-size: 0.72rem;
 }
 
-.replica-shell .statements-feedback {
+:is(.replica-shell, #growthWorkspace) .statements-feedback {
   color: var(--replica-accent, #18ed78) !important;
   text-align: right;
 }
 
-.replica-shell .statements-feedback.is-error {
+:is(.replica-shell, #growthWorkspace) .statements-feedback.is-error {
   color: var(--replica-danger, #ff5d56) !important;
 }
 
-.replica-shell .statements-import-actions {
+:is(.replica-shell, #growthWorkspace) .statements-import-actions {
   margin-top: 0.7rem;
 }
 
-.replica-shell .statements-import-actions button,
-.replica-shell .company-picker-item button {
+:is(.replica-shell, #growthWorkspace) .statements-import-actions button,
+:is(.replica-shell, #growthWorkspace) .company-picker-item button {
   min-height: 2.35rem;
   padding: 0.48rem 0.85rem;
   border: 1px solid rgba(24, 237, 120, 0.35);
@@ -1846,21 +1851,21 @@
   font-weight: 700;
 }
 
-.replica-shell .statements-import-actions button.statements-sample {
+:is(.replica-shell, #growthWorkspace) .statements-import-actions button.statements-sample {
   border-color: var(--replica-line-soft, rgba(229, 238, 233, 0.09));
   background: rgba(255, 255, 255, 0.025);
   color: var(--replica-muted, #8c928e);
 }
 
-.replica-shell .statements-source {
+:is(.replica-shell, #growthWorkspace) .statements-source {
   margin-bottom: 0;
 }
 
-.replica-shell .company-picker {
+:is(.replica-shell, #growthWorkspace) .company-picker {
   background: var(--replica-bg, #020303);
 }
 
-.replica-shell .company-picker-heading {
+:is(.replica-shell, #growthWorkspace) .company-picker-heading {
   margin-bottom: 1rem;
   padding: 1.2rem 1.35rem;
   border: 1px solid var(--replica-line, rgba(229, 238, 233, 0.18));
@@ -1868,12 +1873,12 @@
   background: var(--replica-surface, rgba(14, 16, 17, 0.82));
 }
 
-.replica-shell .company-picker-heading p {
+:is(.replica-shell, #growthWorkspace) .company-picker-heading p {
   margin: 0;
   color: var(--replica-muted, #8c928e);
 }
 
-.replica-shell .company-picker-heading > strong {
+:is(.replica-shell, #growthWorkspace) .company-picker-heading > strong {
   flex: none;
   padding: 0.3rem 0.6rem;
   border: 1px solid rgba(24, 237, 120, 0.23);
@@ -1883,7 +1888,7 @@
   font-size: 0.75rem;
 }
 
-.replica-shell .company-picker-item {
+:is(.replica-shell, #growthWorkspace) .company-picker-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 0.75rem;
@@ -1894,72 +1899,72 @@
   background: var(--replica-surface, rgba(14, 16, 17, 0.82));
 }
 
-.replica-shell .company-picker-row-main {
+:is(.replica-shell, #growthWorkspace) .company-picker-row-main {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 0.22rem;
 }
 
-.replica-shell .company-picker-name {
+:is(.replica-shell, #growthWorkspace) .company-picker-name {
   color: var(--replica-text, #f1f3f0);
 }
 
-.replica-shell .company-picker-period {
+:is(.replica-shell, #growthWorkspace) .company-picker-period {
   color: var(--replica-muted, #8c928e);
   font-size: 0.74rem;
 }
 
-.replica-shell .company-picker-status {
+:is(.replica-shell, #growthWorkspace) .company-picker-status {
   margin: 0;
   color: var(--replica-amber, #f0a44b);
 }
 
-.replica-shell .company-picker-status.company-picker-ready {
+:is(.replica-shell, #growthWorkspace) .company-picker-status.company-picker-ready {
   color: var(--replica-accent, #18ed78);
 }
 
-.replica-shell .company-picker-item.has-error {
+:is(.replica-shell, #growthWorkspace) .company-picker-item.has-error {
   grid-template-columns: minmax(0, 1fr) auto;
   border-color: rgba(255, 93, 86, 0.25);
   border-left: 3px solid var(--replica-danger, #ff5d56);
   background: rgba(255, 93, 86, 0.045);
 }
 
-.replica-shell .company-picker-error-text {
+:is(.replica-shell, #growthWorkspace) .company-picker-error-text {
   grid-column: 1 / -1;
   color: #ff8b86;
 }
 
 @media (max-width: 700px) {
-  .replica-shell .statements-import-heading,
-  .replica-shell .company-picker-heading {
+  :is(.replica-shell, #growthWorkspace) .statements-import-heading,
+  :is(.replica-shell, #growthWorkspace) .company-picker-heading {
     flex-direction: column;
   }
 
-  .replica-shell .statements-import-fields {
+  :is(.replica-shell, #growthWorkspace) .statements-import-fields {
     grid-template-columns: 1fr;
   }
 
-  .replica-shell .statements-import-status,
-  .replica-shell .statements-import-actions {
+  :is(.replica-shell, #growthWorkspace) .statements-import-status,
+  :is(.replica-shell, #growthWorkspace) .statements-import-actions {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .replica-shell .statements-feedback {
+  :is(.replica-shell, #growthWorkspace) .statements-feedback {
     text-align: left;
   }
 
-  .replica-shell .company-picker-item {
+  :is(.replica-shell, #growthWorkspace) .company-picker-item {
     grid-template-columns: 1fr;
   }
 
-  .replica-shell .company-picker-status {
+  :is(.replica-shell, #growthWorkspace) .company-picker-status {
     justify-self: start;
   }
 
-  .replica-shell .company-picker-item button {
+  :is(.replica-shell, #growthWorkspace) .company-picker-item button {
     width: 100%;
   }
 }

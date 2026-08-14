@@ -369,7 +369,7 @@ export function renderDiagnosisReport(
       <div class="report-summary-card">
         <span class="agents-overline">EXECUTIVE SUMMARY</span>
         <h3>经营结论</h3>
-        <p class="report-summary">${escapeHtml(report.summary)}</p>
+        <p class="diagnosis-summary">${escapeHtml(report.summary)}</p>
       </div>
     </section>
     <section class="report-block">

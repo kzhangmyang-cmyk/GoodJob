@@ -94,6 +94,18 @@ test("business advisor generates a sourced diagnosis report from typed fixtures"
     (element as HTMLElement).click();
   });
   await expect(evidence.locator(".report-evidence-body")).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const scoreRingSize = await page.locator(".health-score-ring").evaluate((element) => {
+    const ring = getComputedStyle(element, "::before");
+    return {
+      width: Number.parseFloat(ring.width),
+      height: Number.parseFloat(ring.height)
+    };
+  });
+  expect(Math.abs(scoreRingSize.width - scoreRingSize.height)).toBeLessThan(1);
+  expect(await page.evaluate(() =>
+    document.documentElement.scrollWidth === document.documentElement.clientWidth
+  )).toBe(true);
   await installed.dispose();
 });
 
@@ -210,16 +222,28 @@ test("demo agent center shows the business advisor team offline with sample data
   await expect(page.getByRole("heading", { name: "《经营诊断报告》" })).toBeVisible();
   await expect(page.getByRole("heading", { name: /存在假利润产品/ })).toBeVisible();
 
+  await page.evaluate(() => {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  });
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
   await page.locator("#demoModuleMain a.agents-back")
     .evaluate((element) => {
       (element as HTMLAnchorElement).click();
     });
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   await page.locator('[data-agents-demo-link="profit"]')
     .evaluate((element) => {
       (element as HTMLAnchorElement).click();
     });
   await expect(page.getByRole("heading", { name: "利润分析", exact: true })).toBeVisible();
   await expect(page.getByText("哪个产品是假利润？")).toBeVisible();
+  const workbenchBounds = await page.evaluate(() => ({
+    gridRight: document.querySelector(".agent-workbench-grid")
+      ?.getBoundingClientRect().right ?? Number.POSITIVE_INFINITY,
+    mainRight: document.querySelector("#demoModuleMain")
+      ?.getBoundingClientRect().right ?? 0
+  }));
+  expect(workbenchBounds.gridRight).toBeLessThanOrEqual(workbenchBounds.mainRight + 0.5);
 
   await page.getByRole("button", { name: "哪个产品是假利润？" }).click();
   await expect(page.locator("[data-agent-question-input]"))
