@@ -23,6 +23,9 @@ import type {
 import {
   intentNeedsRecovery
 } from "./acquisition-plan-run-repository.js";
+import {
+  acquisitionPlanPayloadContractSchema
+} from "./acquisition-plan-contract.js";
 import type {
   AcquisitionShardPresentationResult
 } from "./acquisition-plan-execution-worker.js";
@@ -343,10 +346,25 @@ function mergePayload(
   current: AcquisitionPlanPayload,
   patch: Partial<AcquisitionPlanDraftInput>
 ) {
-  return clone({
+  const result = acquisitionPlanPayloadContractSchema.safeParse({
     ...current,
     ...patch
   });
+  if (!result.success) {
+    throw new AcquisitionPlanRunError(
+      400,
+      "invalid_plan_payload",
+      "合并后的计划不符合完整计划约束",
+      {
+        issues: result.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          code: issue.code,
+          message: issue.message
+        }))
+      }
+    );
+  }
+  return clone(result.data);
 }
 
 function providerForOperation(

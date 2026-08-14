@@ -88,37 +88,52 @@ export const acquisitionPlanPayloadSchema = z.object({
   }).strict()
 }).strict();
 
+type DouyinPublicCommentSampleBinding = Pick<
+  z.infer<typeof acquisitionPlanPayloadSchema>,
+  "targetPlatform" | "douyinPublicCommentSample" | "providerConnections"
+>;
+
+function refineDouyinPublicCommentSampleBinding(
+  value: DouyinPublicCommentSampleBinding,
+  context: z.RefinementCtx
+) {
+  if (
+    value.douyinPublicCommentSample?.enabled
+    && value.targetPlatform !== "douyin"
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["douyinPublicCommentSample", "enabled"],
+      message: "公开评论样本只能在抖音计划中启用"
+    });
+  }
+  if (
+    value.douyinPublicCommentSample?.enabled
+    && !value.providerConnections.some((connection) =>
+      connection.providerId === "experimental_public_sample"
+      && connection.kind === "content_fetch"
+      && connection.status === "active"
+    )
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["providerConnections"],
+      message: "启用公开评论样本需要绑定有效的实验性公开样本 Provider"
+    });
+  }
+}
+
+export const acquisitionPlanPayloadContractSchema =
+  acquisitionPlanPayloadSchema.superRefine(
+    refineDouyinPublicCommentSampleBinding
+  );
+
 export const acquisitionPublicPlanCreateSchema =
   acquisitionPlanPayloadSchema
     .omit({ modelSnapshotRef: true })
     .extend({ modelConnectionId: idSchema.nullable().optional() })
     .strict()
-    .superRefine((value, context) => {
-      if (
-        value.douyinPublicCommentSample?.enabled
-        && value.targetPlatform !== "douyin"
-      ) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["douyinPublicCommentSample", "enabled"],
-          message: "公开评论样本只能在抖音计划中启用"
-        });
-      }
-      if (
-        value.douyinPublicCommentSample?.enabled
-        && !value.providerConnections.some((connection) =>
-          connection.providerId === "experimental_public_sample"
-          && connection.kind === "content_fetch"
-          && connection.status === "active"
-        )
-      ) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["providerConnections"],
-          message: "启用公开评论样本需要绑定有效的实验性公开样本 Provider"
-        });
-      }
-    });
+    .superRefine(refineDouyinPublicCommentSampleBinding);
 
 export type AcquisitionPublicPlanCreateInput =
   z.infer<typeof acquisitionPublicPlanCreateSchema>;

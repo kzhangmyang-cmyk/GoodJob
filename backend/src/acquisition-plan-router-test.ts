@@ -123,6 +123,25 @@ function planBody(): PublicPlanBody {
   };
 }
 
+function publicCommentPolicy() {
+  return {
+    enabled: true,
+    maxVideosPerRun: 10,
+    maxCommentsPerVideo: 30,
+    maxPagesPerVideo: 3
+  };
+}
+
+function publicCommentProvider() {
+  return {
+    connectionId: "douyin-public-comments",
+    providerId: "experimental_public_sample",
+    kind: "content_fetch" as const,
+    status: "active" as const,
+    credentialVersion: 1
+  };
+}
+
 async function fixture() {
   const repository = new InMemoryAcquisitionPlanRunRepository();
   const executionPort = new ExecutionPort();
@@ -425,6 +444,180 @@ test("plan creation requires idempotency and binds a trusted model snapshot", as
     );
     assert.equal(otherTeam.response.status, 201);
     assert.notEqual(otherTeam.json.id, created.json.id);
+  } finally {
+    await app.close();
+  }
+});
+
+test("plan mutations validate the merged Douyin comment contract atomically", async () => {
+  const app = await fixture();
+  const createPlan = (key: string, body: PublicPlanBody) => app.request(
+    "/api/v1/acquisition/plans",
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify(body)
+    }
+  );
+  const getPlan = (id: string) => app.request(
+    `/api/v1/acquisition/plans/${id}`
+  );
+  const assertUnchanged = async (before: {
+    id: string;
+    etag: string;
+    version: number;
+    revision: number;
+    payload: unknown;
+  }) => {
+    const current = await getPlan(before.id);
+    assert.equal(current.response.status, 200);
+    assert.equal(current.json.etag, before.etag);
+    assert.equal(current.json.version, before.version);
+    assert.equal(current.json.revision, before.revision);
+    assert.deepEqual(current.json.payload, before.payload);
+  };
+
+  try {
+    const updateSeed = await createPlan("plan-merge-update-seed", {
+      ...planBody(),
+      targetPlatform: "web"
+    });
+    assert.equal(updateSeed.response.status, 201);
+
+    for (const patch of [
+      {
+        douyinPublicCommentSample: publicCommentPolicy(),
+        providerConnections: [
+          ...updateSeed.json.payload.providerConnections,
+          publicCommentProvider()
+        ]
+      },
+      {
+        targetPlatform: "douyin",
+        douyinPublicCommentSample: publicCommentPolicy()
+      }
+    ]) {
+      const invalid = await app.request(
+        `/api/v1/acquisition/plans/${updateSeed.json.id}`,
+        {
+          method: "PATCH",
+          headers: { "If-Match": updateSeed.json.etag },
+          body: JSON.stringify(patch)
+        }
+      );
+      assert.equal(invalid.response.status, 400, JSON.stringify(patch));
+      assert.equal(invalid.json.error.code, "invalid_plan_payload");
+      await assertUnchanged(updateSeed.json);
+    }
+
+    const updated = await app.request(
+      `/api/v1/acquisition/plans/${updateSeed.json.id}`,
+      {
+        method: "PATCH",
+        headers: { "If-Match": updateSeed.json.etag },
+        body: JSON.stringify({
+          targetPlatform: "douyin",
+          douyinPublicCommentSample: publicCommentPolicy(),
+          providerConnections: [
+            ...updateSeed.json.payload.providerConnections,
+            publicCommentProvider()
+          ]
+        })
+      }
+    );
+    assert.equal(updated.response.status, 200);
+    assert.equal(updated.json.version, updateSeed.json.version + 1);
+    assert.deepEqual(
+      updated.json.payload.douyinPublicCommentSample,
+      publicCommentPolicy()
+    );
+
+    const existingBindingSeed = await createPlan(
+      "plan-merge-existing-binding",
+      {
+        ...planBody(),
+        targetPlatform: "douyin",
+        providerConnections: [
+          ...planBody().providerConnections,
+          publicCommentProvider()
+        ]
+      }
+    );
+    assert.equal(existingBindingSeed.response.status, 201);
+    const existingBindingUpdate = await app.request(
+      `/api/v1/acquisition/plans/${existingBindingSeed.json.id}`,
+      {
+        method: "PATCH",
+        headers: { "If-Match": existingBindingSeed.json.etag },
+        body: JSON.stringify({
+          douyinPublicCommentSample: publicCommentPolicy()
+        })
+      }
+    );
+    assert.equal(existingBindingUpdate.response.status, 200);
+
+    const revisionSeed = await createPlan("plan-merge-revision-seed", {
+      ...planBody(),
+      targetPlatform: "web"
+    });
+    assert.equal(revisionSeed.response.status, 201);
+    const approved = await app.request(
+      `/api/v1/acquisition/plans/${revisionSeed.json.id}/approval`,
+      {
+        method: "POST",
+        headers: { "If-Match": revisionSeed.json.etag },
+        body: JSON.stringify({
+          decision: "approve",
+          reason: "人工核验现有 Web 计划"
+        })
+      }
+    );
+    assert.equal(approved.response.status, 200);
+
+    for (const patch of [
+      {
+        douyinPublicCommentSample: publicCommentPolicy(),
+        providerConnections: [
+          ...approved.json.payload.providerConnections,
+          publicCommentProvider()
+        ]
+      },
+      {
+        targetPlatform: "douyin",
+        douyinPublicCommentSample: publicCommentPolicy()
+      }
+    ]) {
+      const invalid = await app.request(
+        `/api/v1/acquisition/plans/${approved.json.id}/revisions`,
+        {
+          method: "POST",
+          headers: { "If-Match": approved.json.etag },
+          body: JSON.stringify(patch)
+        }
+      );
+      assert.equal(invalid.response.status, 400, JSON.stringify(patch));
+      assert.equal(invalid.json.error.code, "invalid_plan_payload");
+      await assertUnchanged(approved.json);
+    }
+
+    const revision = await app.request(
+      `/api/v1/acquisition/plans/${approved.json.id}/revisions`,
+      {
+        method: "POST",
+        headers: { "If-Match": approved.json.etag },
+        body: JSON.stringify({
+          targetPlatform: "douyin",
+          douyinPublicCommentSample: publicCommentPolicy(),
+          providerConnections: [
+            ...approved.json.payload.providerConnections,
+            publicCommentProvider()
+          ]
+        })
+      }
+    );
+    assert.equal(revision.response.status, 201);
+    assert.equal(revision.json.status, "draft");
+    assert.equal(revision.json.version, approved.json.version + 1);
   } finally {
     await app.close();
   }
