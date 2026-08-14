@@ -41,6 +41,62 @@ import {
 const scopeA = { ownerId: "owner-a", teamId: "team-a", actorId: "worker-a" };
 const scopeB = { ownerId: "owner-b", teamId: "team-a", actorId: "worker-b" };
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+class FirstDirectoryTransactionBarrier
+extends InMemoryAcquisitionCandidateDirectory {
+  readonly entered = deferred();
+  readonly releaseFirst = deferred();
+  private first = true;
+
+  override transaction<T>(work: () => Promise<T>): Promise<T> {
+    return super.transaction(async () => {
+      if (this.first) {
+        this.first = false;
+        this.entered.resolve();
+        await this.releaseFirst.promise;
+      }
+      return work();
+    });
+  }
+}
+
+class ArmableDomainTransactionTracker
+extends InMemoryAcquisitionDomainRepository {
+  readonly entered = deferred();
+  private armed = false;
+
+  arm() {
+    this.armed = true;
+  }
+
+  override transaction<T>(work: () => Promise<T>): Promise<T> {
+    return super.transaction(async () => {
+      if (this.armed) this.entered.resolve();
+      return work();
+    });
+  }
+}
+
+async function within<T>(promise: Promise<T>, milliseconds: number) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("LOCK_ORDER_TIMEOUT")),
+          milliseconds);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function comment(
   commentId: string,
   text: string,
@@ -93,9 +149,12 @@ type FailureStage = "after_event" | "after_evidence" | "after_candidate";
 function createHarness(options: {
   failOnceAt?: FailureStage;
   failCommitOnce?: boolean;
+  candidateDirectory?: InMemoryAcquisitionCandidateDirectory;
+  domainRepository?: InMemoryAcquisitionDomainRepository;
 } = {}) {
   let sequence = 0;
-  const domainRepository = new InMemoryAcquisitionDomainRepository();
+  const domainRepository = options.domainRepository
+    ?? new InMemoryAcquisitionDomainRepository();
   const domain = new AcquisitionDomainService({
     repository: domainRepository,
     leadConversionPort: {
@@ -120,9 +179,10 @@ function createHarness(options: {
   });
   const eventRepository =
     new InMemoryAcquisitionDouyinCommentEventRepository();
-  const candidateDirectory = new InMemoryAcquisitionCandidateDirectory({
-    now: () => "2026-08-15T02:01:00.000Z"
-  });
+  const candidateDirectory = options.candidateDirectory
+    ?? new InMemoryAcquisitionCandidateDirectory({
+      now: () => "2026-08-15T02:01:00.000Z"
+    });
   const individualSignalIngestion =
     new AcquisitionIndividualSignalIngestionService({
       domain,
@@ -211,6 +271,7 @@ function createHarness(options: {
     domainRepository,
     eventRepository,
     candidateDirectory,
+    individualSignalIngestion,
     unitOfWork,
     mutationCounts,
     restartService
@@ -769,6 +830,130 @@ test("commit-side failure rolls every domain and directory write back before res
   const recovered = await harness.domain.getCandidate(scopeA, approved.id);
   assert.equal(recovered.status, "pending_review");
   assert.equal(recovered.evidenceIds.length, 2);
+});
+
+test("standalone individual ingestion and comment UoW share one finite memory lock order", async () => {
+  const candidateDirectory = new FirstDirectoryTransactionBarrier({
+    now: () => "2026-08-15T02:01:00.000Z"
+  });
+  const domainRepository = new ArmableDomainTransactionTracker();
+  const harness = createHarness({
+    candidateDirectory,
+    domainRepository,
+    failOnceAt: "after_candidate"
+  });
+  const sourceUrl = "https://www.douyin.com/video/7536012345678909876";
+  const standaloneEvidence = await harness.domain.appendEvidence(scopeA, {
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: "独立公开需求信号",
+    sourceSnippet: "正在采购独立的一批设备",
+    publishedAt: "2026-08-15T01:00:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: `sha256:${"d".repeat(64)}`,
+    contentHash: `sha256:${"e".repeat(64)}`,
+    provenance: {
+      kind: "platform_public_event",
+      sourceUrl,
+      platformEventId: "standalone-lock-order",
+      providerVersion: "douyin-public-comment-provider-v1",
+      coverage: "public_top_level_sample"
+    },
+    accessStatus: "public_content"
+  }, "standalone-lock-order-evidence");
+  const standalone = harness.individualSignalIngestion.ingest({
+    scope: scopeA,
+    provider: "experimental_public_sample",
+    sourceUrl,
+    sourceType: "video",
+    subject: {
+      publicActorKey:
+        "douyin:sec_uid:MS4wLjABAAAA_lock-order-standalone",
+      publicDisplayName: "独立公开用户",
+      publicProfileUrl: sourceUrl,
+      sourcePlatform: "douyin",
+      demandCategory: "独立需求",
+      demandSummary: "正在采购独立的一批设备",
+      locationHint: "上海",
+      buyingStage: "purchase_ready",
+      negativeSignals: []
+    },
+    evidence: standaloneEvidence,
+    idempotencyKey: "standalone-lock-order"
+  });
+  await candidateDirectory.entered.promise;
+  domainRepository.arm();
+
+  const commentIngestion = harness.service.ingestSample(input(page([
+    comment("cid-lock-order-comment", "预算 10 万，采购 20 套，请报价", {
+      secUid: "MS4wLjABAAAA_lock-order-comment"
+    })
+  ])));
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if ((await harness.eventRepository.listPendingIngestionSagas({ limit: 10 }))
+      .length > 0) break;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const domainEnteredBeforeDirectoryRelease = await Promise.race([
+    domainRepository.entered.promise.then(() => true),
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), 25))
+  ]);
+  candidateDirectory.releaseFirst.resolve();
+  assert.equal(
+    domainEnteredBeforeDirectoryRelease,
+    false,
+    "comment UoW must not hold Domain while waiting for CandidateDirectory"
+  );
+
+  const results = await within(Promise.allSettled([
+    standalone,
+    commentIngestion
+  ]), 500);
+  assert.deepEqual(results.map((result) => result.status), [
+    "fulfilled",
+    "rejected"
+  ]);
+  assert.match(
+    String(results[1]?.status === "rejected" ? results[1].reason : ""),
+    /FAIL_AFTER_CANDIDATE/u
+  );
+  const standaloneResult = results[0]?.status === "fulfilled"
+    ? results[0].value
+    : null;
+  assert.ok(standaloneResult);
+
+  const candidates = await harness.domainRepository.listCandidates(scopeA, {
+    limit: 100,
+    subjectKind: "individual"
+  });
+  assert.deepEqual(
+    candidates.items.map((candidate) => candidate.id),
+    [standaloneResult.candidate.id]
+  );
+  const directoryReplay = await candidateDirectory.upsertCandidate({
+    ownerId: scopeA.ownerId,
+    teamId: scopeA.teamId,
+    dedupeKey: standaloneResult.identityResolution.dedupeKey,
+    partyType: "individual",
+    idempotencyKey: "standalone-lock-order-directory-replay",
+    createCandidate: async () => {
+      throw new Error("standalone directory entry must survive comment rollback");
+    }
+  });
+  assert.equal(directoryReplay.created, false);
+  assert.equal(directoryReplay.entry.candidateId, standaloneResult.candidate.id);
+
+  const pending = await harness.eventRepository.listPendingIngestionSagas({
+    limit: 10
+  });
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]?.saga.status, "pending");
+  assert.equal(pending[0]?.event.platformEventId, "cid-lock-order-comment");
+  assert.deepEqual(await harness.eventRepository.listRunCommentSignals(
+    scopeA,
+    "run-1",
+    { limit: 10 }
+  ), []);
 });
 
 test("recovery isolates poison and failure-recording errors from later tenant work", async () => {

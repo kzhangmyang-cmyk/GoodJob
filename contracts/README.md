@@ -84,9 +84,14 @@ a bounded envelope containing the recovery stage, attempt, and irreversible
 saga hash, never the source error, comment, actor identifier, source URL,
 message, or stack. MySQL startup applies schema before the first sweep; legacy
 saga columns are discovered through `information_schema.columns` and migrated
-with fixed allowlisted `ALTER TABLE` statements. Advisory-lock cleanup requires
+with fixed allowlisted `ALTER TABLE` statements. A dedicated connection holds a
+fixed migration advisory lock across table creation, column backfill, and exact
+pending-index inspection/rebuild, so concurrent application startup re-reads
+completed state instead of racing DDL. Advisory-lock cleanup requires
 `RELEASE_LOCK` to return exactly `1`; any cleanup error poisons and destroys the
-session instead of returning it to the pool.
+session instead of returning it to the pool. Memory completion and standalone
+individual ingestion use the same `CandidateDirectory -> Domain -> Events`
+lock order; nested repository transactions reuse their active context.
 
 Run `npm run check:acquisition-contracts` from the repository root before
 changing any producer or consumer.

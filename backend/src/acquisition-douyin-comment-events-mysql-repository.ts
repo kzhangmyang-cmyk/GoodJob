@@ -21,6 +21,11 @@ import {
   type LinkDouyinCommentEventInput,
   type StartDouyinCommentFetchAttemptInput
 } from "./acquisition-douyin-comment-events.js";
+import {
+  poisonAcquisitionMysqlConnection,
+  releaseAcquisitionMysqlConnection,
+  releaseAcquisitionMysqlNamedLocks
+} from "./acquisition-mysql-named-lock.js";
 
 type MysqlRow = Record<string, unknown>;
 
@@ -221,48 +226,134 @@ const DOUYIN_COMMENT_INGESTION_SAGA_RECOVERY_COLUMNS = {
     "ADD COLUMN last_error_code VARCHAR(64) NULL"
 } as const;
 
+const DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK =
+  "acquisition:douyin-comment-schema:v1";
+const DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK_TIMEOUT_SECONDS = 30;
+const DOUYIN_COMMENT_PENDING_INDEX =
+  "idx_douyin_comment_ingestion_saga_pending";
+const DOUYIN_COMMENT_PENDING_INDEX_COLUMNS = [
+  "status",
+  "next_attempt_at",
+  "lease_expires_at",
+  "created_at",
+  "saga_id"
+] as const;
+
+export const ACQUISITION_DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK_FAILED =
+  "ACQUISITION_DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK_FAILED";
+
+async function acquireDouyinCommentSchemaMigrationLock(
+  connection: mysql.PoolConnection
+) {
+  try {
+    const [result] = await connection.query(
+      "SELECT GET_LOCK(?, ?) AS lock_acquired",
+      [
+        DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK,
+        DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK_TIMEOUT_SECONDS
+      ]
+    );
+    const row = Array.isArray(result)
+      ? result[0] as Record<string, unknown> | undefined
+      : undefined;
+    if (Number(row?.lock_acquired) !== 1) {
+      throw new Error(ACQUISITION_DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK_FAILED);
+    }
+  } catch {
+    poisonAcquisitionMysqlConnection(connection);
+    throw new Error(ACQUISITION_DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK_FAILED);
+  }
+}
+
+async function ensureDouyinCommentPendingSagaIndex(
+  connection: mysql.PoolConnection
+) {
+  const [indexResult] = await connection.query(
+    `SELECT index_name, column_name, seq_in_index
+     FROM information_schema.statistics
+     WHERE table_schema = DATABASE()
+       AND table_name = 'acquisition_douyin_comment_ingestion_sagas'
+       AND index_name = 'idx_douyin_comment_ingestion_saga_pending'
+     ORDER BY seq_in_index`
+  );
+  const columns = Array.isArray(indexResult)
+    ? (indexResult as Array<Record<string, unknown>>)
+        .sort((left, right) =>
+          Number(left.seq_in_index) - Number(right.seq_in_index))
+        .map((row) => row.column_name)
+    : [];
+  if (columns.length === DOUYIN_COMMENT_PENDING_INDEX_COLUMNS.length
+    && columns.every((column, index) =>
+      column === DOUYIN_COMMENT_PENDING_INDEX_COLUMNS[index])) {
+    return;
+  }
+  const addIndex = `ADD INDEX ${DOUYIN_COMMENT_PENDING_INDEX}
+    (status, next_attempt_at, lease_expires_at, created_at, saga_id)`;
+  await connection.query(columns.length === 0
+    ? `ALTER TABLE acquisition_douyin_comment_ingestion_sagas ${addIndex}`
+    : `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
+       DROP INDEX ${DOUYIN_COMMENT_PENDING_INDEX}, ${addIndex}`);
+}
+
 export async function ensureAcquisitionDouyinCommentEventsMysqlSchema(
   pool: mysql.Pool
 ) {
-  for (const statement of
-    ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS) {
-    await pool.query(statement);
-  }
-  const [columnResult] = await pool.query(
-    `SELECT column_name, is_nullable
-     FROM information_schema.columns
-     WHERE table_schema = DATABASE()
-       AND table_name = 'acquisition_douyin_comment_ingestion_sagas'
-       AND column_name IN (
-         'attempt_count', 'next_attempt_at', 'lease_owner',
-         'lease_expires_at', 'last_error_code'
-       )`
-  );
-  const present = new Map<string, string>();
-  for (const row of columnResult as Array<Record<string, unknown>>) {
-    if (typeof row.column_name === "string"
-      && typeof row.is_nullable === "string") {
-      present.set(row.column_name, row.is_nullable);
+  const connection = await pool.getConnection();
+  let lockAcquired = false;
+  try {
+    await acquireDouyinCommentSchemaMigrationLock(connection);
+    lockAcquired = true;
+    for (const statement of
+      ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS) {
+      await connection.query(statement);
     }
-  }
-  for (const [column, alteration] of Object.entries(
-    DOUYIN_COMMENT_INGESTION_SAGA_RECOVERY_COLUMNS
-  )) {
-    if (present.has(column)) continue;
-    await pool.query(
-      `ALTER TABLE acquisition_douyin_comment_ingestion_sagas ${alteration}`
+    const [columnResult] = await connection.query(
+      `SELECT column_name, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = DATABASE()
+         AND table_name = 'acquisition_douyin_comment_ingestion_sagas'
+         AND column_name IN (
+           'attempt_count', 'next_attempt_at', 'lease_owner',
+           'lease_expires_at', 'last_error_code'
+         )`
     );
-    present.set(column, column === "next_attempt_at" ? "YES" : "NO");
-  }
-  if (present.get("next_attempt_at") === "YES") {
-    await pool.query(
-      `UPDATE acquisition_douyin_comment_ingestion_sagas
-       SET next_attempt_at = updated_at WHERE next_attempt_at IS NULL`
-    );
-    await pool.query(
-      `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
-       MODIFY COLUMN next_attempt_at DATETIME(3) NOT NULL`
-    );
+    const present = new Map<string, string>();
+    for (const row of columnResult as Array<Record<string, unknown>>) {
+      if (typeof row.column_name === "string"
+        && typeof row.is_nullable === "string") {
+        present.set(row.column_name, row.is_nullable);
+      }
+    }
+    for (const [column, alteration] of Object.entries(
+      DOUYIN_COMMENT_INGESTION_SAGA_RECOVERY_COLUMNS
+    )) {
+      if (present.has(column)) continue;
+      await connection.query(
+        `ALTER TABLE acquisition_douyin_comment_ingestion_sagas ${alteration}`
+      );
+      present.set(column, column === "next_attempt_at" ? "YES" : "NO");
+    }
+    if (present.get("next_attempt_at") === "YES") {
+      await connection.query(
+        `UPDATE acquisition_douyin_comment_ingestion_sagas
+         SET next_attempt_at = updated_at WHERE next_attempt_at IS NULL`
+      );
+      await connection.query(
+        `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
+         MODIFY COLUMN next_attempt_at DATETIME(3) NOT NULL`
+      );
+    }
+    await ensureDouyinCommentPendingSagaIndex(connection);
+  } finally {
+    try {
+      if (lockAcquired) {
+        await releaseAcquisitionMysqlNamedLocks(connection, [
+          DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK
+        ]);
+      }
+    } finally {
+      releaseAcquisitionMysqlConnection(connection);
+    }
   }
 }
 

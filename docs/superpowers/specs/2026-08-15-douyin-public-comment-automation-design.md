@@ -242,12 +242,19 @@ rawArtifactHash             原始响应制品哈希
 侧任一失败都回滚整个完成边界：已批准候选、证据、审计、幂等记录和目录
 恢复为失败前快照，且不产生 Run 成功事实。
 
-内存 Domain、事件仓储和候选目录的独立写方法也进入各自事务的同一串行队列，
+内存完成边界和独立个人信号入库统一按
+`CandidateDirectory → Domain → Events` 取锁，嵌套事务复用已激活上下文。
+Domain、事件仓储和候选目录的独立写方法也进入各自事务的同一串行队列，
 避免共享快照回滚覆盖并发成功写。MySQL 完成边界使用的命名锁必须验证
 `RELEASE_LOCK` 返回值严格为 `1`；查询失败、`0` 或 `NULL` 都将该连接标记为
 不可复用并销毁，不能放回连接池。旧 saga 表通过
-`information_schema.columns + DATABASE()` 检查缺列，再执行代码内固定白名单
-`ALTER TABLE`；schema 完成后才能启动首次 recovery sweep。
+专用连接上的固定 migration advisory lock 串行表创建、
+`information_schema.columns + DATABASE()` 缺列检查/回填，以及
+`information_schema.statistics` 中按 `seq_in_index` 校验的 pending 索引。
+无索引或旧 `(status, created_at, saga_id)` 索引仅通过代码内固定
+白名单 SQL 重建为
+`(status, next_attempt_at, lease_expires_at, created_at, saga_id)`；并发启动的
+后续者取锁后重读状态。schema 完成后才能启动首次 recovery sweep。
 
 重启恢复通过持久的 `attemptCount`/`nextAttemptAt` 和有时租约领取 `pending` saga。
 单个工作项失败只保存非 PII 错误码并指数退避，不阻塞后续租户；MySQL

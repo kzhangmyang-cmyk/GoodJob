@@ -34,8 +34,8 @@ implements AcquisitionDouyinCommentIngestionUnitOfWork {
   ) {}
 
   transaction<T>(work: () => Promise<T>) {
-    return this.domain.transaction(() =>
-      this.events.transaction(() => this.directory.transaction(work)));
+    return this.directory.transaction(() =>
+      this.domain.transaction(() => this.events.transaction(work)));
   }
 }
 

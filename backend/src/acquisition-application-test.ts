@@ -3052,10 +3052,33 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
   let closeCount = 0;
   let commentRecoveryStartCount = 0;
   let commentRecoveryCloseCount = 0;
+  let commentSchemaConnectionReleaseCount = 0;
+  let commentSchemaConnectionDestroyCount = 0;
+  const query = async (statement: unknown) => {
+    const sql = String(statement);
+    statements.push(sql);
+    if (/SELECT GET_LOCK/u.test(sql)) return [[{ lock_acquired: 1 }], []];
+    if (/SELECT RELEASE_LOCK/u.test(sql)) return [[{ lock_released: 1 }], []];
+    if (sql.includes("FROM information_schema.statistics")) {
+      return [[
+        "status", "next_attempt_at", "lease_expires_at", "created_at",
+        "saga_id"
+      ].map((column_name, index) => ({
+        index_name: "idx_douyin_comment_ingestion_saga_pending",
+        column_name,
+        seq_in_index: index + 1
+      })), []];
+    }
+    return [[], []];
+  };
   const pool = {
-    async query(statement: unknown) {
-      statements.push(String(statement));
-      return [[], []];
+    query,
+    async getConnection() {
+      return {
+        query,
+        release() { commentSchemaConnectionReleaseCount += 1; },
+        destroy() { commentSchemaConnectionDestroyCount += 1; }
+      };
     },
     async end() {
       closeCount += 1;
@@ -3112,6 +3135,8 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
   await runtime.close();
   assert.equal(commentRecoveryStartCount, 1);
   assert.equal(commentRecoveryCloseCount, 1);
+  assert.equal(commentSchemaConnectionReleaseCount, 1);
+  assert.equal(commentSchemaConnectionDestroyCount, 0);
   assert.equal(closeCount, 1, "the owned pool must close exactly once");
 });
 

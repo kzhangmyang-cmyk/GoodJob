@@ -39,15 +39,44 @@ function input(observationId: string): AppendDouyinCommentObservationInput {
 
 class SchemaPool {
   readonly statements: string[] = [];
+  releaseCount = 0;
+  destroyCount = 0;
   async query(sql: string) {
-    this.statements.push(sql.replace(/\s+/gu, " ").trim());
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    this.statements.push(normalized);
+    if (/SELECT GET_LOCK/u.test(normalized)) {
+      return [[{ lock_acquired: 1 }], []] as [unknown, unknown];
+    }
+    if (/SELECT RELEASE_LOCK/u.test(normalized)) {
+      return [[{ lock_released: 1 }], []] as [unknown, unknown];
+    }
+    if (normalized.includes("FROM information_schema.statistics")) {
+      return [[
+        "status", "next_attempt_at", "lease_expires_at", "created_at",
+        "saga_id"
+      ].map((column_name, index) => ({
+        index_name: "idx_douyin_comment_ingestion_saga_pending",
+        column_name,
+        seq_in_index: index + 1
+      })), []] as [unknown, unknown];
+    }
     return [[], []] as [unknown, unknown];
+  }
+
+  async getConnection() {
+    return {
+      query: (sql: string) => this.query(sql),
+      release: () => { this.releaseCount += 1; },
+      destroy: () => { this.destroyCount += 1; }
+    };
   }
 }
 
 class MigrationSchemaPool {
   readonly statements: string[] = [];
   readonly columns = new Map<string, "YES" | "NO">();
+  releaseCount = 0;
+  destroyCount = 0;
 
   constructor(columns: Array<[string, "YES" | "NO"]>) {
     for (const [name, nullable] of columns) this.columns.set(name, nullable);
@@ -56,10 +85,26 @@ class MigrationSchemaPool {
   async query(sql: string) {
     const normalized = sql.replace(/\s+/gu, " ").trim();
     this.statements.push(normalized);
+    if (/SELECT GET_LOCK/u.test(normalized)) {
+      return [[{ lock_acquired: 1 }], []] as [unknown, unknown];
+    }
+    if (/SELECT RELEASE_LOCK/u.test(normalized)) {
+      return [[{ lock_released: 1 }], []] as [unknown, unknown];
+    }
     if (normalized.includes("FROM information_schema.columns")) {
       return [[...this.columns].map(([column_name, is_nullable]) => ({
         column_name,
         is_nullable
+      })), []] as [unknown, unknown];
+    }
+    if (normalized.includes("FROM information_schema.statistics")) {
+      return [[
+        "status", "next_attempt_at", "lease_expires_at", "created_at",
+        "saga_id"
+      ].map((column_name, index) => ({
+        index_name: "idx_douyin_comment_ingestion_saga_pending",
+        column_name,
+        seq_in_index: index + 1
       })), []] as [unknown, unknown];
     }
     const added = normalized.match(/ADD COLUMN ([a-z_]+)/u)?.[1];
@@ -68,6 +113,154 @@ class MigrationSchemaPool {
       this.columns.set("next_attempt_at", "NO");
     }
     return [[], []] as [unknown, unknown];
+  }
+
+  async getConnection() {
+    return {
+      query: (sql: string) => this.query(sql),
+      release: () => { this.releaseCount += 1; },
+      destroy: () => { this.destroyCount += 1; }
+    };
+  }
+}
+
+type PendingIndexState = "missing" | "legacy" | "current";
+
+class GuardedSchemaPool {
+  readonly statements: Array<{ connectionId: number; sql: string }> = [];
+  readonly connections: Array<{
+    id: number;
+    releaseCount: number;
+    destroyCount: number;
+  }> = [];
+  readonly columns = new Map<string, "YES" | "NO">();
+  indexColumns: string[];
+  tableExists: boolean;
+  failGetLock = false;
+  getLockResult: number | null = 1;
+  failReleaseLock = false;
+  releaseLockResult: number | null = 1;
+  poolQueryCount = 0;
+  private lockOwner: number | null = null;
+  private readonly lockWaiters: Array<() => void> = [];
+
+  constructor(options: {
+    tableExists?: boolean;
+    columns?: Array<[string, "YES" | "NO"]>;
+    indexState?: PendingIndexState;
+  } = {}) {
+    this.tableExists = options.tableExists ?? true;
+    for (const [name, nullable] of options.columns ?? []) {
+      this.columns.set(name, nullable);
+    }
+    this.indexColumns = options.indexState === "current"
+      ? [
+          "status", "next_attempt_at", "lease_expires_at", "created_at",
+          "saga_id"
+        ]
+      : options.indexState === "legacy"
+        ? ["status", "created_at", "saga_id"]
+        : [];
+  }
+
+  async query() {
+    this.poolQueryCount += 1;
+    throw new Error("SCHEMA_MIGRATION_MUST_USE_DEDICATED_CONNECTION");
+  }
+
+  async getConnection() {
+    const state = {
+      id: this.connections.length + 1,
+      releaseCount: 0,
+      destroyCount: 0
+    };
+    this.connections.push(state);
+    return {
+      query: (sql: string, values: unknown[] = []) =>
+        this.connectionQuery(state.id, sql, values),
+      release: () => { state.releaseCount += 1; },
+      destroy: () => {
+        state.destroyCount += 1;
+        this.dropLock(state.id);
+      }
+    };
+  }
+
+  private dropLock(connectionId: number) {
+    if (this.lockOwner !== connectionId) return;
+    this.lockOwner = null;
+    this.lockWaiters.shift()?.();
+  }
+
+  private async connectionQuery(
+    connectionId: number,
+    sql: string,
+    _values: unknown[]
+  ): Promise<[unknown, unknown]> {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    this.statements.push({ connectionId, sql: normalized });
+    if (/SELECT GET_LOCK/u.test(normalized)) {
+      if (this.failGetLock) throw new Error("sensitive-lock-query-error");
+      if (this.getLockResult !== 1) {
+        return [[{ lock_acquired: this.getLockResult }], []];
+      }
+      if (this.lockOwner !== null) {
+        await new Promise<void>((resolve) => this.lockWaiters.push(resolve));
+      }
+      this.lockOwner = connectionId;
+      return [[{ lock_acquired: 1 }], []];
+    }
+    if (/SELECT RELEASE_LOCK/u.test(normalized)) {
+      if (this.failReleaseLock) throw new Error("sensitive-release-error");
+      const result = this.releaseLockResult;
+      if (result === 1) this.dropLock(connectionId);
+      return [[{ lock_released: result }], []];
+    }
+    if (normalized.startsWith(
+      "CREATE TABLE IF NOT EXISTS acquisition_douyin_comment_ingestion_sagas"
+    ) && !this.tableExists) {
+      this.tableExists = true;
+      this.columns.set("attempt_count", "NO");
+      this.columns.set("next_attempt_at", "NO");
+      this.columns.set("lease_owner", "YES");
+      this.columns.set("lease_expires_at", "YES");
+      this.columns.set("last_error_code", "YES");
+      this.indexColumns = [
+        "status", "next_attempt_at", "lease_expires_at", "created_at",
+        "saga_id"
+      ];
+      return [[], []];
+    }
+    if (normalized.includes("FROM information_schema.columns")) {
+      return [[...this.columns].map(([column_name, is_nullable]) => ({
+        column_name,
+        is_nullable
+      })), []];
+    }
+    if (normalized.includes("FROM information_schema.statistics")) {
+      return [this.indexColumns.map((column_name, index) => ({
+        index_name: "idx_douyin_comment_ingestion_saga_pending",
+        column_name,
+        seq_in_index: index + 1
+      })), []];
+    }
+    const added = normalized.match(/ADD COLUMN ([a-z_]+)/u)?.[1];
+    if (added) {
+      if (this.columns.has(added)) throw new Error("ER_DUP_FIELDNAME");
+      this.columns.set(added, added === "next_attempt_at" ? "YES" : "NO");
+    }
+    if (normalized.includes("MODIFY COLUMN next_attempt_at")) {
+      this.columns.set("next_attempt_at", "NO");
+    }
+    if (normalized.includes(
+      "ADD INDEX idx_douyin_comment_ingestion_saga_pending"
+    )) {
+      this.indexColumns = [
+        "status", "next_attempt_at", "lease_expires_at", "created_at",
+        "saga_id"
+      ];
+    }
+    return [[], []];
   }
 }
 
@@ -465,6 +658,110 @@ test("schema migration resumes a nullable next-attempt column and skips present 
     "UPDATE acquisition_douyin_comment_ingestion_sagas SET next_attempt_at = updated_at WHERE next_attempt_at IS NULL",
     "ALTER TABLE acquisition_douyin_comment_ingestion_sagas MODIFY COLUMN next_attempt_at DATETIME(3) NOT NULL"
   ]);
+});
+
+const CURRENT_RECOVERY_COLUMNS: Array<[string, "YES" | "NO"]> = [
+  ["attempt_count", "NO"],
+  ["next_attempt_at", "NO"],
+  ["lease_owner", "YES"],
+  ["lease_expires_at", "YES"],
+  ["last_error_code", "YES"]
+];
+
+test("concurrent schema startup serializes migration and makes the follower re-read", async () => {
+  const pool = new GuardedSchemaPool({
+    columns: CURRENT_RECOVERY_COLUMNS.slice(0, -1),
+    indexState: "legacy"
+  });
+  const results = await Promise.allSettled([
+    ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool)),
+    ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool))
+  ]);
+  assert.deepEqual(results.map((result) => result.status), [
+    "fulfilled",
+    "fulfilled"
+  ]);
+  assert.equal(pool.poolQueryCount, 0);
+  assert.equal(pool.connections.length, 2);
+  assert.equal(pool.connections.every((connection) =>
+    connection.releaseCount === 1 && connection.destroyCount === 0), true);
+  assert.equal(pool.statements.filter(({ sql }) =>
+    sql.includes("ADD COLUMN last_error_code")).length, 1);
+  assert.equal(pool.statements.filter(({ sql }) =>
+    sql.includes("DROP INDEX idx_douyin_comment_ingestion_saga_pending"))
+    .length, 1);
+  assert.equal(pool.statements.filter(({ sql }) =>
+    sql.includes("FROM information_schema.columns")).length, 2);
+  assert.equal(pool.statements.filter(({ sql }) =>
+    sql.includes("FROM information_schema.statistics")).length, 2);
+});
+
+for (const indexState of ["missing", "legacy", "current"] as const) {
+  test(`schema migration repairs only the ${indexState} pending index state`, async () => {
+    const pool = new GuardedSchemaPool({
+      columns: CURRENT_RECOVERY_COLUMNS,
+      indexState
+    });
+    await ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool));
+    await ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool));
+    const indexAlters = pool.statements.filter(({ sql }) =>
+      sql.startsWith("ALTER TABLE acquisition_douyin_comment_ingestion_sagas")
+      && sql.includes("INDEX idx_douyin_comment_ingestion_saga_pending"));
+    assert.equal(indexAlters.length, indexState === "current" ? 0 : 1);
+    if (indexState === "missing") {
+      assert.doesNotMatch(indexAlters[0]!.sql, /DROP INDEX/u);
+    }
+    if (indexState === "legacy") {
+      assert.match(indexAlters[0]!.sql, /DROP INDEX/u);
+    }
+    assert.deepEqual(pool.indexColumns, [
+      "status", "next_attempt_at", "lease_expires_at", "created_at",
+      "saga_id"
+    ]);
+  });
+}
+
+test("a newly created saga table needs no follow-up column or index ALTER", async () => {
+  const pool = new GuardedSchemaPool({
+    tableExists: false,
+    indexState: "missing"
+  });
+  await ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool));
+  assert.equal(pool.statements.some(({ sql }) =>
+    sql.includes("ADD COLUMN")
+    || sql.includes("ADD INDEX idx_douyin_comment_ingestion_saga_pending")),
+  false);
+});
+
+for (const acquisitionFailure of ["timeout", "query_error"] as const) {
+  test(`schema migration ${acquisitionFailure} poisons its dedicated session`, async () => {
+    const pool = new GuardedSchemaPool({
+      columns: CURRENT_RECOVERY_COLUMNS,
+      indexState: "current"
+    });
+    if (acquisitionFailure === "timeout") pool.getLockResult = 0;
+    else pool.failGetLock = true;
+    await assert.rejects(
+      ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool)),
+      /ACQUISITION_DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK_FAILED/u
+    );
+    assert.equal(pool.connections[0]?.destroyCount, 1);
+    assert.equal(pool.connections[0]?.releaseCount, 0);
+  });
+}
+
+test("schema migration release failure destroys rather than pools its session", async () => {
+  const pool = new GuardedSchemaPool({
+    columns: CURRENT_RECOVERY_COLUMNS,
+    indexState: "current"
+  });
+  pool.failReleaseLock = true;
+  await assert.rejects(
+    ensureAcquisitionDouyinCommentEventsMysqlSchema(asPool(pool)),
+    /ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED/u
+  );
+  assert.equal(pool.connections[0]?.destroyCount, 1);
+  assert.equal(pool.connections[0]?.releaseCount, 0);
 });
 
 test("concurrent append is transactionally idempotent per tenant boundary", async () => {

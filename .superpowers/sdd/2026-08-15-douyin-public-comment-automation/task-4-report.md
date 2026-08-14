@@ -2,7 +2,7 @@
 
 ## Status and commit
 
-- Status: complete, including review rounds 1, 2, 3, and 4
+- Status: complete, including review rounds 1 through 5
 - Base: `0ca58cdd4d2dd18040ccfb2a617cc2df47579240`
 - Commit: the task commit containing this report, message
   `feat: aggregate douyin comment demand signals`
@@ -14,6 +14,8 @@
   `fix: atomically recover douyin comment ingestion`
 - Review round 4 commit: the follow-up commit containing this report, message
   `fix: harden douyin comment recovery storage`
+- Review round 5 commit: the follow-up commit containing this report, message
+  `fix: serialize douyin comment schema migration`
 - Scope: backend and acquisition contracts only; no frontend or Task 5+
   orchestration changes
 
@@ -146,14 +148,43 @@
   `NULL` raise the stable
   `ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED` error and poison/destroy the
   session. Direct and shared-UoW paths never return a poisoned session to the
-  pool, shared sessions do not re-enter a lock already held by that UoW,
-  successful sessions release normally, and post-commit cleanup failure does
-  not double commit or report a rollback.
+  pool. Domain and CandidateDirectory track acquisitions independently, so any
+  reentrant acquisition on their shared session is matched by one reviewed
+  release in each repository cleanup. Successful sessions release normally,
+  and post-commit cleanup failure does not double commit or report a rollback.
 - Replaced raw recovery errors with a frozen diagnostic envelope containing
   only `RECOVERY_FAILED`, `resume_saga | persist_failure`, an irreversible saga
   hash, and the attempt count. Tests inject an Error containing exact comment
   text, secUid, and source URL and prove none reaches the callback or durable
   `lastErrorCode`; callback failure remains isolated.
+
+## Review round 5 fixes
+
+- Serialized the entire Douyin comment MySQL schema ensure/migration on one
+  dedicated connection under the fixed
+  `acquisition:douyin-comment-schema:v1` advisory lock. Acquisition requires
+  `GET_LOCK` to return exactly `1`; release uses the reviewed named-lock helper,
+  and timeout, query error, invalid release result, or release query error
+  poisons/destroys the session instead of returning it to the pool.
+- Added exact legacy pending-index repair under the same migration lock. Startup
+  reads `information_schema.statistics` in `seq_in_index` order and accepts only
+  `(status, next_attempt_at, lease_expires_at, created_at, saga_id)`. A missing
+  or legacy `(status, created_at, saga_id)` index is rebuilt with fixed
+  allowlisted SQL; current and newly created schemas perform no follow-up index
+  ALTER. Concurrent starters serialize and the follower re-reads completed
+  state, so DDL runs once.
+- Unified memory composite completion lock order with standalone individual
+  signal ingestion as `CandidateDirectory -> Domain -> Events`. A production
+  barrier interleaves the real two entry points and proves finite completion,
+  rollback preservation, durable pending saga visibility, and no lost
+  directory/candidate/event state. Existing concurrent standalone event writes
+  remain protected from snapshot rollback.
+- Documented the actual MySQL completion cleanup: Domain and
+  CandidateDirectory each keep their own named-lock acquisition list. A
+  reentrant acquisition on their shared connection is matched by one reviewed
+  release from each repository cleanup; duplicate acquisition is suppressed
+  only within the owning repository context. Any unmatched/failed cleanup
+  poisons the shared session.
 
 ## TDD evidence
 
@@ -272,6 +303,29 @@
 
   Result: 0/1 passed. Both callback arguments were raw Error objects containing
   the exact comment, secUid, source URL, message, and stack.
+- Review round 5 schema/index RED:
+
+  ```text
+  npm exec --workspace backend -- tsx --test \
+    src/acquisition-douyin-comment-events-mysql-repository-test.ts
+  ```
+
+  Result: 12/20 passed and 8 failed. Concurrent startup rejected both callers;
+  missing, legacy, current, and new index states did not use a dedicated locked
+  connection; migration lock timeout/query-error/release-error paths lacked
+  stable poison-session behavior.
+- Review round 5 memory lock-order RED:
+
+  ```text
+  npm exec --workspace backend -- tsx --test \
+    --test-name-pattern "standalone individual ingestion and comment UoW" \
+    src/acquisition-douyin-comment-ingestion-test.ts
+  ```
+
+  Result: 0/1 passed. The comment completion boundary entered Domain while
+  waiting for CandidateDirectory, proving its `Domain -> Events -> Directory`
+  order was inverted relative to the real standalone individual-signal entry
+  point.
 
 ### GREEN
 
@@ -337,6 +391,28 @@ Result: 44/44 passed. The named-lock Domain and candidate-directory scripts
 also passed independently. The final expanded command added Domain, resolver,
 candidate research, individual signal, MySQL Domain, and tool-support
 repositories; result: 85/85 passed.
+
+Review round 5 MySQL focused command passed 20/20. The memory cross-entry
+lock-order regression then passed 1/1. The final expanded command was:
+
+```text
+npm exec --workspace backend -- tsx --test \
+  src/acquisition-douyin-comment-ingestion-test.ts \
+  src/acquisition-domain-test.ts \
+  src/acquisition-public-identity-resolver-test.ts \
+  src/acquisition-candidate-research-test.ts \
+  src/acquisition-douyin-comment-events-test.ts \
+  src/acquisition-douyin-comment-events-mysql-repository-test.ts \
+  src/acquisition-douyin-comment-ingestion-recovery-sweeper-test.ts \
+  src/acquisition-douyin-comment-ingestion-unit-of-work-test.ts \
+  src/acquisition-mysql-repositories-test.ts \
+  src/acquisition-tool-support-repositories-test.ts
+```
+
+Result: 94/94 passed. This includes concurrent schema startup, all missing/
+legacy/current/new pending-index states, migration-lock failure cleanup, the
+real standalone/comment cross-entry barrier, and the round 4 concurrent event
+append/rollback regressions.
 
 Application lifecycle focused command:
 
@@ -444,6 +520,13 @@ same two file-level `MODEL_TOOL_DEFINITION_INVALID` baselines above; the new
 migration, memory barriers, named-lock poisoning, diagnostic redaction, and
 application startup-order regressions are all green in the full run.
 
+Review round 5 final full count used that same explicit command with
+`--test-force-exit`: 743 tests, 741 passed / 2 failed. The only failures remain
+`acquisition-pi-gateway-runtime-test.ts` and
+`acquisition-pi-runtime-factory-test.ts`, both with the pre-existing
+`MODEL_TOOL_DEFINITION_INVALID` condition. No Task 4 or schema-migration test
+failed.
+
 ## Files
 
 - `backend/src/acquisition-douyin-comment-ingestion.ts`
@@ -482,9 +565,10 @@ application startup-order regressions are all green in the full run.
 `contracts/README.md`, the current Douyin automation design, and the execution
 plan now describe persisted first content versions, exact original snippets,
 real provider artifacts, the shared Domain/events/directory completion unit of
-work, serialized memory mutators, guarded MySQL 8 migration, strict advisory
-lock cleanup, redacted recovery diagnostics, pending/committed visibility, and
-the application lifecycle. The design's
+work, the exact memory lock order, serialized memory mutators, a dedicated
+advisory-locked MySQL 8 migration, exact legacy pending-index repair, strict
+advisory-lock cleanup, redacted recovery diagnostics, pending/committed
+visibility, and the application lifecycle. The design's
 separately approved BrowserAct/visual-reading sections were preserved unchanged.
 No frontend documentation changed because review round 4 does not alter the
 Task 5+ presentation contract.
@@ -493,4 +577,7 @@ Task 5+ presentation contract.
 
 - The two Pi runtime `MODEL_TOOL_DEFINITION_INVALID` failures remain separate
   pre-existing regressions.
+- No `MYSQL_TEST_ADMIN_URL` fixture was configured for this run; migration
+  behavior is covered by the dedicated-connection, information-schema,
+  concurrency-barrier, and poison-session repository tests.
 - Expected final Task 4 paths after the enclosing commit: clean.
