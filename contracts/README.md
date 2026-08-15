@@ -31,6 +31,41 @@ also outside this migration and remains a future hardening step; the current
 gate validates release schemas, builder parity, generated output, the frontend
 consumer, and the packaged production start path.
 
+## Authorized visual reader contracts
+
+The release contract reserves an authenticated, explicitly authorized visual
+reader API under `/api/v1/acquisition/visual-reader-*`. This task defines the
+transport boundary only; the backend service and browser reader are not yet
+implemented. A session can read only currently visible top-level comment cards
+from an exact `https://www.douyin.com/video/<digits>` page. DOM and accessibility
+facts are preferred, OCR is a bounded fallback, and `vision` is reserved in the
+enum but remains disabled until a separate connector and data-transfer review.
+
+Session creation accepts only `runId` and `artifactUploadEnabled`. The server
+derives the Plan, PlanVersion, platform, authorization clock, expiry, coverage,
+and final limits. Limits are closed at 10 videos, 30 observations per video, 5
+scrolls, 10 OCR calls, and 120,000 ms. A batch contains at most 20 observations
+and at most 5 optional redacted WebP crops; visible text is bounded to 2,000
+characters and each decoded crop to 256 KiB. Client submissions cannot provide
+server-owned observation or hash fields and reject unknown fields such as
+Cookie, headers, network responses, HTML, browser configuration, fingerprints,
+avatar URLs, or full-page screenshots.
+
+JSON Schema validates Douyin source URLs, video IDs, public profile links,
+`secUid` values, and session IDs independently. Because Draft 2020-12 cannot
+compare sibling values, the service must verify that the URL video segment
+equals `videoId`, a public profile agrees with `secUid`, and route, session, and
+normalized observation session IDs agree before persistence. No `$data` or
+custom schema keyword is used.
+
+The artifact read returns only `image/webp` binary with `private, no-store`,
+`nosniff`, and restrictive CSP headers. Raw page screenshots, image bytes in
+JSON, authentication material, private messages, comments, likes, follows,
+publishing, and CRM write actions are outside the contract. Run Presentation
+keeps its existing seven public-comment automation steps and may add one
+server-derived `authorizedVisualReader` summary with exactly five visual steps;
+absence remains valid for older Runs and Runs without a visual session.
+
 Acquisition plans may optionally version a `douyinPublicCommentSample` policy.
 Legacy plans without it remain valid and sampling is disabled by absence. An
 enabled policy requires `targetPlatform: douyin` and is bounded to 20 videos,

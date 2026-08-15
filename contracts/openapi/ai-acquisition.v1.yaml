@@ -182,6 +182,18 @@ components:
     DouyinCommentEvent: { $ref: ../json-schema/douyin-comment-event.v1.schema.json }
     ActionPolicy: { $ref: ../json-schema/action-policy.v1.schema.json }
     ActionReceipt: { $ref: ../json-schema/action-receipt.v1.schema.json }
+    DouyinVisualCommentObservation: { $ref: ../json-schema/douyin-visual-comment-observation.v1.schema.json }
+    OpaqueRectRedactionProof: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/opaqueRectRedactionProof' }
+    VisualObservationSubmission: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationSubmission' }
+    VisualReaderLimits: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/limits' }
+    VisualReaderUsage: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/usage' }
+    VisualReaderOutcome: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/outcome' }
+    VisualReaderSession: { $ref: ../json-schema/acquisition-visual-reader-session.v1.schema.json }
+    VisualReaderCreateRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/createRequest' }
+    VisualObservationBatchRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationBatchRequest' }
+    VisualObservationBatchResponse: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationBatchResponse' }
+    VisualReaderCompleteRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/completeRequest' }
+    VisualReaderAbortRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/abortRequest' }
     DiscoveryEvidencePagedResult:
       type: object
       additionalProperties: false
@@ -835,6 +847,105 @@ paths:
     parameters:
       - { name: id, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 255 } }
     post: { <<: *runControl, operationId: cancelAcquisitionRun, summary: Cancel acquisition run }
+  /api/v1/acquisition/visual-reader-sessions:
+    post:
+      operationId: createAcquisitionVisualReaderSession
+      summary: Create an explicitly authorized visual reader session
+      description: The server derives the Plan, PlanVersion, Douyin platform, authorized visible top-level sample coverage, authorization clock, expiry, and final hard-capped limits from the referenced Run.
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VisualReaderCreateRequest' }
+      responses:
+        <<: *acquisitionStandardResponses
+        '201': { description: Visual reader session created, content: { application/json: { schema: { $ref: '#/components/schemas/VisualReaderSession' } } } }
+        '200':
+          description: Idempotent replay of an existing visual reader session
+          headers:
+            Idempotency-Replayed: { required: true, schema: { type: string, enum: ['true'] } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VisualReaderSession' }
+  /api/v1/acquisition/visual-reader-sessions/{sessionId}:
+    parameters:
+      - { name: sessionId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }
+    get:
+      operationId: getAcquisitionVisualReaderSession
+      summary: Get an authorized visual reader session
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Visual reader session, content: { application/json: { schema: { $ref: '#/components/schemas/VisualReaderSession' } } } }
+  /api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch:
+    parameters:
+      - { name: sessionId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }
+    post:
+      operationId: appendAcquisitionVisualReaderObservationBatch
+      summary: Persist a bounded batch of visible comment observations
+      description: Standard schemas validate each identifier independently; the Task 3 service must require every sourceUrl video segment to equal its videoId and the route, response session, and normalized observation sessionId values to agree before persistence or response.
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VisualObservationBatchRequest' }
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Accepted and duplicate visual observations, content: { application/json: { schema: { $ref: '#/components/schemas/VisualObservationBatchResponse' } } } }
+  /api/v1/acquisition/visual-reader-sessions/{sessionId}:complete:
+    parameters:
+      - { name: sessionId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }
+    post:
+      operationId: completeAcquisitionVisualReaderSession
+      summary: Complete an authorized visual reader session
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VisualReaderCompleteRequest' }
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Completed visual reader session, content: { application/json: { schema: { $ref: '#/components/schemas/VisualReaderSession' } } } }
+  /api/v1/acquisition/visual-reader-sessions/{sessionId}:abort:
+    parameters:
+      - { name: sessionId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }
+    post:
+      operationId: abortAcquisitionVisualReaderSession
+      summary: Abort an authorized visual reader session
+      security: [{ bearerAuth: [] }, { cookieAuth: [], csrfToken: [] }]
+      parameters: [{ $ref: '#/components/parameters/idempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VisualReaderAbortRequest' }
+      responses:
+        <<: *acquisitionStandardResponses
+        '200': { description: Aborted visual reader session, content: { application/json: { schema: { $ref: '#/components/schemas/VisualReaderSession' } } } }
+  /api/v1/acquisition/visual-reader-artifacts/{artifactId}:
+    parameters:
+      - { name: artifactId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }
+    get:
+      operationId: getAcquisitionVisualReaderArtifact
+      summary: Read an authorized redacted comment-card crop
+      security: [{ bearerAuth: [] }, { cookieAuth: [] }]
+      responses:
+        <<: *acquisitionStandardResponses
+        '200':
+          description: Redacted WebP comment-card crop
+          headers:
+            Cache-Control: { required: true, schema: { type: string, enum: ['private, no-store'] } }
+            X-Content-Type-Options: { required: true, schema: { type: string, enum: [nosniff] } }
+            Content-Security-Policy: { required: true, schema: { type: string, enum: ["default-src 'none'; frame-ancestors 'none'; sandbox"] } }
+          content:
+            image/webp:
+              schema: { type: string, format: binary }
   /api/v1/acquisition/candidates:
     get:
       operationId: listAcquisitionCandidates

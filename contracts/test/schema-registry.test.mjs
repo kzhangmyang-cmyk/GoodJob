@@ -12,7 +12,8 @@ const expected = [
   "model-connection", "model-capability", "model-call-record",
   "discovery-provider", "provider-connection", "content-fetch-operation",
   "import-operation", "candidate-intelligence-operation", "douyin-identity-resolution-operation", "douyin-comment-event", "acquisition-plan", "acquisition-run",
-  "acquisition-run-presentation",
+  "acquisition-run-presentation", "douyin-visual-comment-observation",
+  "acquisition-visual-reader-session",
   "acquisition-operation-shard", "discovery-evidence", "party-ref",
   "organization-candidate", "individual-demand-signal",
   "qualification-decision", "battle-card", "review-event",
@@ -49,6 +50,112 @@ const douyinCommentEvent = {
   providerVersion: "douyin-public-comment-provider-v1",
   rawArtifactHash: validSha256
 };
+
+const visualFieldConfidences = {
+  visibleText: 0.99,
+  displayName: 0.96,
+  visibleTimeText: 0.92,
+  likeCount: 0.9,
+  replyCount: 0.9,
+  platformCommentId: 1,
+  publicProfileUrl: 1,
+  secUid: 1
+};
+
+const visualObservation = {
+  observationId: "visual-observation-1",
+  sessionId: "visual-session-1",
+  sourceUrl: "https://www.douyin.com/video/7536012345678909876",
+  videoId: "7536012345678909876",
+  visibleText: "评论卡当前可见的企业采购需求",
+  textHash: validSha256,
+  displayName: "公开用户",
+  visibleTimeText: "2小时前",
+  likeCount: 3,
+  replyCount: 1,
+  platformCommentId: "1234567890123456789",
+  publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA_public-actor",
+  secUid: "MS4wLjABAAAA_public-actor",
+  extractionMethod: "dom",
+  fieldConfidences: visualFieldConfidences,
+  viewportHash: validSha256,
+  cardBounds: { x: 24, y: 32, width: 640, height: 180 },
+  redactedCropHash: null,
+  readerVersion: "goodjob-douyin-visual-reader@1.0.0",
+  capturedAt: "2026-08-15T03:00:00.000Z"
+};
+
+const visualSubmission = {
+  clientObservationKey: "client-observation-1",
+  sourceUrl: visualObservation.sourceUrl,
+  videoId: visualObservation.videoId,
+  visibleText: visualObservation.visibleText,
+  displayName: visualObservation.displayName,
+  visibleTimeText: visualObservation.visibleTimeText,
+  likeCount: visualObservation.likeCount,
+  replyCount: visualObservation.replyCount,
+  platformCommentId: visualObservation.platformCommentId,
+  publicProfileUrl: visualObservation.publicProfileUrl,
+  secUid: visualObservation.secUid,
+  extractionMethod: visualObservation.extractionMethod,
+  fieldConfidences: visualFieldConfidences,
+  viewport: { width: 1440, height: 900, deviceScaleFactor: 2 },
+  cardBounds: visualObservation.cardBounds,
+  readerVersion: visualObservation.readerVersion,
+  capturedAt: visualObservation.capturedAt,
+  redactedCrop: null
+};
+
+const visualUsage = {
+  videoCount: 1,
+  observationCount: 1,
+  scrollCount: 0,
+  ocrCallCount: 0,
+  domObservationCount: 1,
+  accessibilityObservationCount: 0,
+  ocrObservationCount: 0,
+  lowConfidenceObservationCount: 0,
+  artifactCount: 0
+};
+
+const visualSession = {
+  sessionId: "visual-session-1",
+  runId: "run-1",
+  planId: "plan-1",
+  planVersionId: "plan-version-1",
+  platform: "douyin",
+  coverage: "authorized_visible_top_level_sample",
+  status: "created",
+  artifactUploadEnabled: true,
+  limits: {
+    maxVideos: 10,
+    maxCommentsPerVideo: 30,
+    maxScrolls: 5,
+    maxOcrCalls: 10,
+    maxDurationMs: 120000
+  },
+  usage: visualUsage,
+  outcome: null,
+  lastErrorCode: null,
+  createdAt: "2026-08-15T03:00:00.000Z",
+  authorizedAt: "2026-08-15T03:00:00.000Z",
+  updatedAt: "2026-08-15T03:00:00.000Z",
+  expiresAt: "2026-08-15T03:02:00.000Z",
+  completedAt: null
+};
+
+function compileVisualReaderDefinition(registry, definitionName) {
+  const sessionSchema = registry.schemaDocuments.get(
+    "acquisition-visual-reader-session"
+  );
+  assert.ok(sessionSchema, "visual reader session schema must be registered");
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  addFormats(ajv);
+  for (const schema of registry.schemaDocuments.values()) ajv.addSchema(schema);
+  return ajv.compile({
+    $ref: `${sessionSchema.$id}#/$defs/${definitionName}`
+  });
+}
 
 function acquisitionPlanPayload(overrides = {}) {
   return {
@@ -398,6 +505,340 @@ test("Douyin comment events publish a strict top-level public sample", async () 
       }), false, `${field}: ${invalidDigest}`);
     }
   }
+});
+
+test("visual observations accept only strict visible Douyin comment facts", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("douyin-visual-comment-observation");
+  assert.equal(typeof validate, "function", "visual observation schema is missing");
+
+  for (const extractionMethod of ["dom", "accessibility", "ocr", "vision"]) {
+    assert.equal(
+      validate({ ...visualObservation, extractionMethod }),
+      true,
+      `${extractionMethod}: ${JSON.stringify(validate.errors)}`
+    );
+  }
+  for (const invalid of [
+    { ...visualObservation, extractionMethod: "network" },
+    { ...visualObservation, sourceUrl: "http://www.douyin.com/video/7536012345678909876" },
+    { ...visualObservation, sourceUrl: "https://douyin.com.evil.example/video/7536012345678909876" },
+    { ...visualObservation, sourceUrl: "https://www.douyin.com/video/7536012345678909876?from=share" },
+    { ...visualObservation, sourceUrl: "https://www.douyin.com/video/7536012345678909876#comments" },
+    { ...visualObservation, sourceUrl: "https://www.douyin.com/video/0" },
+    { ...visualObservation, videoId: "0" },
+    { ...visualObservation, videoId: "07536012345678909876" },
+    { ...visualObservation, videoId: "video-7536012345678909876" },
+    { ...visualObservation, platformCommentId: "comment-1" },
+    { ...visualObservation, publicProfileUrl: "https://example.test/user/public" },
+    { ...visualObservation, publicProfileUrl: "https://www.douyin.com/user/public?token=secret" },
+    { ...visualObservation, secUid: "contains whitespace" },
+    { ...visualObservation, visibleText: "x".repeat(2_001) },
+    { ...visualObservation, fieldConfidences: { visibleText: 1.01 } },
+    { ...visualObservation, fieldConfidences: { visibleText: -0.01 } },
+    { ...visualObservation, fieldConfidences: { visibleText: 1, inferredIntent: 1 } },
+    { ...visualObservation, fieldConfidences: { displayName: 1 } },
+    { ...visualObservation, avatarUrl: "https://example.test/avatar.webp" },
+    { ...visualObservation, Cookie: "session=secret" },
+    { ...visualObservation, html: "<main>whole page</main>" }
+  ]) {
+    assert.equal(validate(invalid), false, JSON.stringify(invalid));
+  }
+});
+
+test("visual observation schema records dynamic identity checks for the service boundary", async () => {
+  const registry = await loadSchemaRegistry();
+  const schema = registry.schemaDocuments.get("douyin-visual-comment-observation");
+  const validate = registry.validators.get("douyin-visual-comment-observation");
+  assert.ok(schema);
+  assert.equal(typeof validate, "function");
+
+  assert.equal(validate({
+    ...visualObservation,
+    videoId: "9999999999999999999"
+  }), true, JSON.stringify(validate.errors));
+  assert.equal(validate({
+    ...visualObservation,
+    publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA_other-public-actor"
+  }), true, JSON.stringify(validate.errors));
+  assert.match(schema.description, /Task 3 service.*sourceUrl.*videoId/u);
+  assert.match(
+    schema.properties.publicProfileUrl.description,
+    /Task 3 service.*secUid/u
+  );
+});
+
+test("visual submissions reject server fields, exfiltration, invalid crops, and batch overflow", async () => {
+  const registry = await loadSchemaRegistry();
+  const validateSubmission = compileVisualReaderDefinition(
+    registry,
+    "visualObservationSubmission"
+  );
+  const validateBatch = compileVisualReaderDefinition(
+    registry,
+    "visualObservationBatchRequest"
+  );
+  const proof = {
+    version: "opaque-rect-v1",
+    maskColorRgba: [17, 61, 51, 255],
+    avatarBounds: { x: 8, y: 8, width: 48, height: 48 },
+    visibleRegions: [{ x: 72, y: 8, width: 400, height: 120 }],
+    maskedRegions: [{ x: 0, y: 0, width: 64, height: 180 }]
+  };
+  const crop = {
+    mediaType: "image/webp",
+    contentBase64: Buffer.alloc(64).toString("base64"),
+    redactionProof: proof
+  };
+
+  assert.equal(validateSubmission(visualSubmission), true, JSON.stringify(validateSubmission.errors));
+  assert.equal(validateSubmission({
+    ...visualSubmission,
+    extractionMethod: "accessibility"
+  }), true, JSON.stringify(validateSubmission.errors));
+  assert.equal(validateSubmission({
+    ...visualSubmission,
+    extractionMethod: "ocr",
+    redactedCrop: crop
+  }), true, JSON.stringify(validateSubmission.errors));
+  assert.equal(validateSubmission({
+    ...visualSubmission,
+    extractionMethod: "vision"
+  }), true, JSON.stringify(validateSubmission.errors));
+
+  for (const serverField of [
+    "observationId",
+    "textHash",
+    "viewportHash",
+    "redactedCropHash"
+  ]) {
+    assert.equal(validateSubmission({
+      ...visualSubmission,
+      [serverField]: validSha256
+    }), false, serverField);
+  }
+  for (const exfiltrationField of [
+    "Cookie",
+    "header",
+    "networkResponse",
+    "html",
+    "browserConfig",
+    "fingerprint",
+    "avatarUrl",
+    "fullPageScreenshot"
+  ]) {
+    assert.equal(validateSubmission({
+      ...visualSubmission,
+      [exfiltrationField]: "forbidden"
+    }), false, exfiltrationField);
+  }
+  for (const invalidCrop of [
+    { ...crop, mediaType: "image/png" },
+    { ...crop, contentBase64: "not base64" },
+    { ...crop, contentBase64: Buffer.alloc(256 * 1024 + 1).toString("base64") },
+    { ...crop, redactionProof: { ...proof, version: "transparent-v1" } },
+    { ...crop, redactionProof: { ...proof, maskColorRgba: [17, 61, 51, 254] } },
+    { ...crop, redactionProof: { ...proof, maskedRegions: [] } },
+    { ...crop, redactionProof: { ...proof, avatarUrl: "https://example.test/avatar.webp" } },
+    { ...crop, redactionProof: { ...proof, visibleRegions: [{ x: -1, y: 0, width: 1, height: 1 }] } }
+  ]) {
+    assert.equal(validateSubmission({
+      ...visualSubmission,
+      redactedCrop: invalidCrop
+    }), false, JSON.stringify(validateSubmission.errors));
+  }
+  assert.equal(validateSubmission({
+    ...visualSubmission,
+    redactedCrop: {
+      ...crop,
+      contentBase64: Buffer.alloc(256 * 1024).toString("base64")
+    }
+  }), true, JSON.stringify(validateSubmission.errors));
+
+  assert.equal(validateBatch({ observations: [visualSubmission] }), true);
+  assert.equal(validateBatch({ observations: [] }), false);
+  assert.equal(validateBatch({
+    observations: Array.from({ length: 21 }, (_, index) => ({
+      ...visualSubmission,
+      clientObservationKey: `client-${index}`
+    }))
+  }), false);
+  assert.equal(validateBatch({
+    observations: Array.from({ length: 6 }, (_, index) => ({
+      ...visualSubmission,
+      clientObservationKey: `client-crop-${index}`,
+      redactedCrop: crop
+    }))
+  }), false);
+  assert.equal(validateBatch({
+    observations: Array.from({ length: 5 }, (_, index) => ({
+      ...visualSubmission,
+      clientObservationKey: `client-crop-${index}`,
+      redactedCrop: crop
+    }))
+  }), true, JSON.stringify(validateBatch.errors));
+});
+
+test("visual reader session and command DTOs are closed and server bounded", async () => {
+  const registry = await loadSchemaRegistry();
+  const validateSession = registry.validators.get("acquisition-visual-reader-session");
+  assert.equal(typeof validateSession, "function", "visual reader session schema is missing");
+  assert.equal(validateSession(visualSession), true, JSON.stringify(validateSession.errors));
+
+  for (const [limit, maximum] of Object.entries({
+    maxVideos: 10,
+    maxCommentsPerVideo: 30,
+    maxScrolls: 5,
+    maxOcrCalls: 10,
+    maxDurationMs: 120000
+  })) {
+    assert.equal(validateSession({
+      ...visualSession,
+      limits: { ...visualSession.limits, [limit]: maximum + 1 }
+    }), false, limit);
+  }
+  assert.equal(validateSession({ ...visualSession, ownerId: "owner-1" }), false);
+  assert.equal(validateSession({
+    ...visualSession,
+    status: "completed",
+    outcome: null,
+    completedAt: "2026-08-15T03:01:00.000Z"
+  }), false, "terminal sessions require a persisted outcome");
+
+  const completedOutcome = {
+    status: "completed",
+    videoCount: 1,
+    observationCount: 1,
+    domObservationCount: 1,
+    accessibilityObservationCount: 0,
+    ocrObservationCount: 0,
+    lowConfidenceObservationCount: 0,
+    artifactCount: 0,
+    errorCodes: []
+  };
+  const completed = {
+    ...visualSession,
+    status: "completed",
+    outcome: completedOutcome,
+    completedAt: "2026-08-15T03:01:00.000Z"
+  };
+  assert.equal(validateSession(completed), true, JSON.stringify(validateSession.errors));
+  assert.equal(validateSession({
+    ...completed,
+    outcome: { ...completedOutcome, status: "aborted" }
+  }), false, "session and outcome terminal states must agree");
+  assert.equal(validateSession({
+    ...completed,
+    outcome: {
+      ...completedOutcome,
+      errorCodes: ["visual_reader_user_takeover", "visual_reader_user_takeover"]
+    }
+  }), false, "stable errors are unique");
+  assert.equal(validateSession({
+    ...completed,
+    outcome: { ...completedOutcome, errorCodes: ["cookie_export_failed"] }
+  }), false, "outcomes expose only stable visual reader errors");
+
+  const validateCreate = compileVisualReaderDefinition(registry, "createRequest");
+  assert.equal(validateCreate({ runId: "run-1", artifactUploadEnabled: true }), true);
+  for (const forbidden of ["planId", "planVersionId", "platform", "authorizedAt", "limits", "Cookie"]) {
+    assert.equal(validateCreate({
+      runId: "run-1",
+      artifactUploadEnabled: true,
+      [forbidden]: "forged"
+    }), false, forbidden);
+  }
+
+  const validateComplete = compileVisualReaderDefinition(registry, "completeRequest");
+  assert.equal(validateComplete({ status: "completed", errorCodes: [] }), true);
+  assert.equal(validateComplete({
+    status: "partial_success",
+    errorCodes: ["visual_extraction_low_confidence"]
+  }), true);
+  assert.equal(validateComplete({ status: "aborted", errorCodes: [] }), false);
+  assert.equal(validateComplete({
+    status: "completed",
+    errorCodes: [],
+    message: "client-authored outcome"
+  }), false);
+
+  const validateAbort = compileVisualReaderDefinition(registry, "abortRequest");
+  assert.equal(validateAbort({ reasonCode: "user_requested" }), true);
+  assert.equal(validateAbort({ reasonCode: "visual_reader_user_takeover" }), true);
+  assert.equal(validateAbort({ reasonCode: "access_restricted" }), false);
+  assert.equal(validateAbort({
+    reasonCode: "user_requested",
+    message: "extra client text"
+  }), false);
+});
+
+test("visual batch responses expose accepted normalized facts without claiming sibling equality", async () => {
+  const registry = await loadSchemaRegistry();
+  const validateResponse = compileVisualReaderDefinition(
+    registry,
+    "visualObservationBatchResponse"
+  );
+  const response = {
+    session: { ...visualSession, status: "collecting" },
+    accepted: [{
+      clientObservationKey: visualSubmission.clientObservationKey,
+      observation: visualObservation
+    }],
+    duplicates: []
+  };
+  assert.equal(validateResponse(response), true, JSON.stringify(validateResponse.errors));
+  assert.equal(validateResponse({
+    ...response,
+    accepted: [{
+      ...response.accepted[0],
+      observation: { ...visualObservation, sessionId: "visual-session-2" }
+    }]
+  }), true, JSON.stringify(validateResponse.errors));
+  assert.equal(validateResponse({
+    ...response,
+    duplicates: ["client-duplicate", "client-duplicate"]
+  }), false);
+  assert.equal(validateResponse({ ...response, artifactBytes: "forbidden" }), false);
+
+  const sessionSchema = registry.schemaDocuments.get(
+    "acquisition-visual-reader-session"
+  );
+  assert.match(
+    sessionSchema.$defs.visualObservationBatchResponse.description,
+    /Task 3 service.*sessionId/u
+  );
+});
+
+test("run presentation keeps seven public-comment steps and adds an optional five-step visual summary", async () => {
+  const registry = await loadSchemaRegistry();
+  const schema = registry.schemaDocuments.get("acquisition-run-presentation");
+  assert.equal(schema.required.includes("authorizedVisualReader"), false);
+  assert.equal(schema.properties.automationSteps.minItems, 7);
+  assert.equal(schema.properties.automationSteps.maxItems, 7);
+
+  const summary = schema.properties.authorizedVisualReader;
+  assert.ok(summary, "authorized visual reader summary is missing");
+  assert.equal(summary.additionalProperties, false);
+  assert.deepEqual(summary.required, [
+    "sessionId",
+    "coverage",
+    "status",
+    "usage",
+    "lastErrorCode",
+    "visualSteps"
+  ]);
+  assert.equal(summary.properties.visualSteps.minItems, 5);
+  assert.equal(summary.properties.visualSteps.maxItems, 5);
+  assert.deepEqual(
+    summary.properties.visualSteps.items.properties.id.enum,
+    [
+      "authorize_visual_reader",
+      "read_visible_comment_cards",
+      "extract_visible_text",
+      "persist_visual_observations",
+      "review_visual_signal_confidence"
+    ]
+  );
 });
 
 test("discovery evidence accepts only exact public platform-event provenance", async () => {

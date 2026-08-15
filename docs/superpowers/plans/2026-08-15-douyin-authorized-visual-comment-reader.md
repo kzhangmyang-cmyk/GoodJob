@@ -49,7 +49,9 @@
 - Modify: `contracts/json-schema/acquisition-run-presentation.v1.schema.json`
 - Modify: `contracts/openapi/ai-acquisition.v1.yaml`
 - Modify: `contracts/test/schema-registry.test.mjs`
+- Modify: `contracts/test/openapi.test.mjs`
 - Modify: `contracts/README.md`
+- Modify: `backend/src/acquisition-openapi.ts`（仅同步可选 Run Presentation 视觉投影；六条运行时路由在 Task 3 挂载）
 - Modify (generated): `frontend/src/features/ai-growth/generated/ai-acquisition.ts`
 
 **Interfaces:**
@@ -114,11 +116,20 @@ export interface VisualObservationSubmission {
 }
 ```
 
+- 创建请求固定为 `{ runId, artifactUploadEnabled }`；Plan、PlanVersion、平台、覆盖语义、授权时间和最终限额由服务端从 Run 推导，客户端不能上送。
+- `VisualReaderSession` 公开投影固定包含 `sessionId/runId/planId/planVersionId/platform/coverage/status/artifactUploadEnabled/limits/usage/outcome/lastErrorCode/createdAt/authorizedAt/updatedAt/expiresAt/completedAt`。`outcome` 在终态前为 `null`，终态计数由服务端持久事实派生。
+- `VisualReaderLimits` 固定包含 `maxVideos/maxCommentsPerVideo/maxScrolls/maxOcrCalls/maxDurationMs`；`VisualReaderUsage` 固定包含视频、观察、滚动、OCR、DOM、accessibility、低置信度和制品计数。
+- 批量请求只包含 `observations`；响应固定为 `{ session, accepted, duplicates }`，其中 `accepted` 项为 `{ clientObservationKey, observation }`，`duplicates` 只返回已持久化的 client key。完成请求只接受 `status = completed | partial_success` 和稳定 `errorCodes`；中止请求只接受 `reasonCode = user_requested | visual_reader_user_takeover`。
+- Run Presentation 的兼容字段为可选 `authorizedVisualReader` 对象，包含 session/coverage/status、服务端计数、稳定错误和固定五步视觉时间线；字段缺失表示旧 Run 或未创建视觉会话，不能由前端本地推导。
+- 制品 GET 只返回 `image/webp` 二进制与私有 no-store/nosniff/CSP 响应头，不把密文字节、明文图片或内部存储字段包装进 JSON。
+
 - 会话状态固定为 `created | collecting | completed | partial_success | aborted | expired`。
 - 会话限制包含 `maxVideos/maxCommentsPerVideo/maxScrolls/maxOcrCalls/maxDurationMs`；所有字段有硬上限且 `additionalProperties: false`。
 - 批量观察每次最多 20 条、其中带图片的观察最多 5 条；单条 `visibleText` 最多 2,000 字符，裁剪 WebP 最多 256 KiB，字段置信度为 0..1。输入不接受服务端 `observationId/textHash/viewportHash/redactedCropHash`，这些字段由服务端规范化后生成。
 - 裁剪制品使用 `opaque-rect-v1` 遮挡证明：固定 RGBA `[17, 61, 51, 255]`、avatar bounds、允许保留的文字/元数据矩形和客户端实际遮挡矩形；矩形全部以裁剪像素坐标表示。
 - Run Presentation 增加 `authorizedVisualReader` 摘要和视觉时间线步骤，但旧 Run 缺少新字段时保持兼容。
+- 视觉时间线 schema 使用 `minItems = maxItems = 5` 与五个 step ID 的闭集，保持与现有 OpenAPI 3.0 runtime builder 可转换；固定顺序、无重复且每个 ID 恰好一次由 Task 7 服务端投影强制并测试，不使用转换器不支持的 `prefixItems`。
+- 标准 Draft 2020-12 schema 分别严格校验 Douyin URL、videoId 和 session 结构；URL 路径 videoId 必须等于兄弟字段、path sessionId 必须等于目标会话这两项动态一致性由 Task 3 service 在写 repository 前强制。合同 description 和测试必须保留该运行时不变量，不引入 Ajv `$data` 或非标准 keyword。
 
 - [ ] **Step 1: 写严格 schema 和 OpenAPI 失败测试**
 
@@ -135,12 +146,12 @@ export interface VisualObservationSubmission {
   API 路径固定为：
 
   ```text
-  POST /api/acquisition/visual-reader-sessions
-  GET  /api/acquisition/visual-reader-sessions/{sessionId}
-  POST /api/acquisition/visual-reader-sessions/{sessionId}/observations:batch
-  POST /api/acquisition/visual-reader-sessions/{sessionId}:complete
-  POST /api/acquisition/visual-reader-sessions/{sessionId}:abort
-  GET  /api/acquisition/visual-reader-artifacts/{artifactId}
+  POST /api/v1/acquisition/visual-reader-sessions
+  GET  /api/v1/acquisition/visual-reader-sessions/{sessionId}
+  POST /api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch
+  POST /api/v1/acquisition/visual-reader-sessions/{sessionId}:complete
+  POST /api/v1/acquisition/visual-reader-sessions/{sessionId}:abort
+  GET  /api/v1/acquisition/visual-reader-artifacts/{artifactId}
   ```
 
 - [ ] **Step 4: 运行 GREEN 和漂移检查**

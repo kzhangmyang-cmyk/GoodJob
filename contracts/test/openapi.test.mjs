@@ -34,6 +34,12 @@ const section16 = {
   "/api/v1/acquisition/runs/{id}/pause": ["post"],
   "/api/v1/acquisition/runs/{id}/resume": ["post"],
   "/api/v1/acquisition/runs/{id}/cancel": ["post"],
+  "/api/v1/acquisition/visual-reader-sessions": ["post"],
+  "/api/v1/acquisition/visual-reader-sessions/{sessionId}": ["get"],
+  "/api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch": ["post"],
+  "/api/v1/acquisition/visual-reader-sessions/{sessionId}:complete": ["post"],
+  "/api/v1/acquisition/visual-reader-sessions/{sessionId}:abort": ["post"],
+  "/api/v1/acquisition/visual-reader-artifacts/{artifactId}": ["get"],
   "/api/v1/acquisition/candidates": ["get"],
   "/api/v1/acquisition/candidates/{id}": ["get"],
   "/api/v1/acquisition/candidates/{id}/evidence": ["get"],
@@ -85,6 +91,7 @@ const reads = {
   "/api/v1/acquisition/plans/{id}": "AcquisitionPlan",
   "/api/v1/acquisition/runs/{id}": "AcquisitionRun",
   "/api/v1/acquisition/runs/{id}/presentation": "AcquisitionRunPresentation",
+  "/api/v1/acquisition/visual-reader-sessions/{sessionId}": "VisualReaderSession",
   "/api/v1/acquisition/candidates/{id}": "Candidate",
   "/api/v1/acquisition/candidate-intelligence-operations/{operationId}": "CandidateIntelligenceOperation",
   "/api/v1/acquisition/candidates/{candidateId}/intelligence-operation": "CandidateIntelligenceOperation",
@@ -243,6 +250,8 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(importOperation.requestBody.content["application/json"], undefined);
   assert.ok(importOperation.responses["415"]);
   assert.equal(document.components.schemas.AcquisitionRunPresentation.$ref, "../json-schema/acquisition-run-presentation.v1.schema.json");
+  assert.equal(document.components.schemas.DouyinVisualCommentObservation.$ref, "../json-schema/douyin-visual-comment-observation.v1.schema.json");
+  assert.equal(document.components.schemas.VisualReaderSession.$ref, "../json-schema/acquisition-visual-reader-session.v1.schema.json");
   assert.equal(
     document.paths["/api/v1/acquisition/content-fetch-operations"]
       .get.responses["200"].content["application/json"].schema.$ref,
@@ -353,6 +362,131 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(presentation.properties.summary.properties.expectedRevenueByCurrency.type, "array");
 });
 
+test("authorized visual reader routes reuse the acquisition API style and binary artifact boundary", async () => {
+  const document = await loadOpenApiSource();
+  const componentRefs = {
+    DouyinVisualCommentObservation: "../json-schema/douyin-visual-comment-observation.v1.schema.json",
+    OpaqueRectRedactionProof: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/opaqueRectRedactionProof",
+    VisualObservationSubmission: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationSubmission",
+    VisualReaderLimits: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/limits",
+    VisualReaderUsage: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/usage",
+    VisualReaderOutcome: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/outcome",
+    VisualReaderSession: "../json-schema/acquisition-visual-reader-session.v1.schema.json",
+    VisualReaderCreateRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/createRequest",
+    VisualObservationBatchRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationBatchRequest",
+    VisualObservationBatchResponse: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationBatchResponse",
+    VisualReaderCompleteRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/completeRequest",
+    VisualReaderAbortRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/abortRequest"
+  };
+  for (const [name, ref] of Object.entries(componentRefs)) {
+    assert.equal(document.components.schemas[name]?.$ref, ref, name);
+  }
+
+  const create = document.paths[
+    "/api/v1/acquisition/visual-reader-sessions"
+  ].post;
+  const read = document.paths[
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}"
+  ].get;
+  const batch = document.paths[
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch"
+  ].post;
+  const complete = document.paths[
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}:complete"
+  ].post;
+  const abort = document.paths[
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}:abort"
+  ].post;
+
+  assert.equal(
+    create.requestBody.content["application/json"].schema.$ref,
+    "#/components/schemas/VisualReaderCreateRequest"
+  );
+  assert.equal(
+    create.responses["201"].content["application/json"].schema.$ref,
+    "#/components/schemas/VisualReaderSession"
+  );
+  assert.equal(
+    create.responses["200"].content["application/json"].schema.$ref,
+    "#/components/schemas/VisualReaderSession"
+  );
+  assert.deepEqual(
+    create.responses["200"].headers["Idempotency-Replayed"].schema.enum,
+    ["true"]
+  );
+  assert.equal(
+    read.responses["200"].content["application/json"].schema.$ref,
+    "#/components/schemas/VisualReaderSession"
+  );
+  assert.equal(
+    batch.requestBody.content["application/json"].schema.$ref,
+    "#/components/schemas/VisualObservationBatchRequest"
+  );
+  assert.equal(
+    batch.responses["200"].content["application/json"].schema.$ref,
+    "#/components/schemas/VisualObservationBatchResponse"
+  );
+  assert.equal(
+    complete.requestBody.content["application/json"].schema.$ref,
+    "#/components/schemas/VisualReaderCompleteRequest"
+  );
+  assert.equal(
+    abort.requestBody.content["application/json"].schema.$ref,
+    "#/components/schemas/VisualReaderAbortRequest"
+  );
+  for (const operation of [complete, abort]) {
+    assert.equal(
+      operation.responses["200"].content["application/json"].schema.$ref,
+      "#/components/schemas/VisualReaderSession"
+    );
+  }
+  for (const operation of [create, batch, complete, abort]) {
+    assert.equal(
+      operation.parameters.some((parameter) =>
+        parameter.$ref === "#/components/parameters/idempotencyKey"),
+      true
+    );
+    assert.deepEqual(operation.security, [
+      { bearerAuth: [] },
+      { cookieAuth: [], csrfToken: [] }
+    ]);
+  }
+  assert.match(batch.description, /Task 3 service.*sourceUrl.*videoId/u);
+  assert.match(batch.description, /Task 3 service.*sessionId/u);
+
+  const artifact = document.paths[
+    "/api/v1/acquisition/visual-reader-artifacts/{artifactId}"
+  ].get;
+  assert.deepEqual(artifact.security, [
+    { bearerAuth: [] },
+    { cookieAuth: [] }
+  ]);
+  assert.deepEqual(
+    Object.keys(artifact.responses["200"].content),
+    ["image/webp"]
+  );
+  assert.deepEqual(
+    artifact.responses["200"].content["image/webp"].schema,
+    { type: "string", format: "binary" }
+  );
+  assert.deepEqual(
+    artifact.responses["200"].headers["Cache-Control"].schema.enum,
+    ["private, no-store"]
+  );
+  assert.deepEqual(
+    artifact.responses["200"].headers["X-Content-Type-Options"].schema.enum,
+    ["nosniff"]
+  );
+  assert.deepEqual(
+    artifact.responses["200"].headers["Content-Security-Policy"].schema.enum,
+    ["default-src 'none'; frame-ancestors 'none'; sandbox"]
+  );
+  assert.equal(
+    artifact.responses["200"].content["application/json"],
+    undefined
+  );
+});
+
 test("Douyin identity resolution exposes a closed retry contract", async () => {
   const document = await loadOpenApiSource();
   const latest = document.paths[
@@ -435,6 +569,8 @@ test("every named API resource component accepts a canonical valid instance", as
   ];
   examples.AsyncOperation = { id: "op", kind: "run", status: "running", resourceId: null, error: null, createdAt: "2026-07-23T00:00:00.000Z", completedAt: null };
   const ajv = new Ajv({ strict: false }); addFormats(ajv);
+  ajv.addSchema(registry.schemaDocuments.get("douyin-visual-comment-observation"));
+  ajv.addSchema(registry.schemaDocuments.get("acquisition-visual-reader-session"));
   for (const [name, value] of Object.entries(examples)) {
     if (name === "Candidate") {
       assert.deepEqual(document.components.schemas.Candidate.oneOf.map((branch) => branch.$ref), ["../json-schema/organization-candidate.v1.schema.json", "../json-schema/individual-demand-signal.v1.schema.json"]);

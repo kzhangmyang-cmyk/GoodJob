@@ -2100,6 +2100,102 @@ const planControlWriteSchema = {
   additionalProperties: false
 };
 
+const visualReaderStableErrorCodeSchema = {
+  type: "string",
+  enum: [
+    "visual_reader_not_enabled",
+    "visual_reader_session_expired",
+    "visual_reader_budget_exhausted",
+    "visual_source_invalid",
+    "visual_observation_invalid",
+    "visual_artifact_invalid",
+    "visual_extraction_method_disabled",
+    "visual_extraction_low_confidence",
+    "visual_reader_user_takeover"
+  ]
+};
+
+const visualReaderUsageSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "videoCount",
+    "observationCount",
+    "scrollCount",
+    "ocrCallCount",
+    "domObservationCount",
+    "accessibilityObservationCount",
+    "ocrObservationCount",
+    "lowConfidenceObservationCount",
+    "artifactCount"
+  ],
+  properties: {
+    videoCount: { type: "integer", minimum: 0, maximum: 10 },
+    observationCount: { type: "integer", minimum: 0, maximum: 300 },
+    scrollCount: { type: "integer", minimum: 0, maximum: 5 },
+    ocrCallCount: { type: "integer", minimum: 0, maximum: 10 },
+    domObservationCount: { type: "integer", minimum: 0, maximum: 300 },
+    accessibilityObservationCount: {
+      type: "integer",
+      minimum: 0,
+      maximum: 300
+    },
+    ocrObservationCount: { type: "integer", minimum: 0, maximum: 300 },
+    lowConfidenceObservationCount: {
+      type: "integer",
+      minimum: 0,
+      maximum: 300
+    },
+    artifactCount: { type: "integer", minimum: 0, maximum: 300 }
+  }
+};
+
+const visualReaderStepSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id",
+    "status",
+    "startedAt",
+    "completedAt",
+    "durationMs",
+    "processedCount",
+    "errorCode",
+    "message"
+  ],
+  properties: {
+    id: {
+      type: "string",
+      enum: [
+        "authorize_visual_reader",
+        "read_visible_comment_cards",
+        "extract_visible_text",
+        "persist_visual_observations",
+        "review_visual_signal_confidence"
+      ]
+    },
+    status: {
+      type: "string",
+      enum: [
+        "pending",
+        "running",
+        "succeeded",
+        "partial_success",
+        "failed",
+        "skipped"
+      ]
+    },
+    startedAt: { type: ["null", "string"], format: "date-time" },
+    completedAt: { type: ["null", "string"], format: "date-time" },
+    durationMs: { type: ["null", "integer"], minimum: 0 },
+    processedCount: { type: "integer", minimum: 0 },
+    errorCode: {
+      oneOf: [visualReaderStableErrorCodeSchema, { type: "null" }]
+    },
+    message: { type: "string", minLength: 1, maxLength: 500 }
+  }
+};
+
 const runPresentationSchema = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   $id: "https://goodjob.example/contracts/json-schema/acquisition-run-presentation.v1.schema.json",
@@ -2301,6 +2397,43 @@ const runPresentationSchema = {
           message: { type: "string", minLength: 1, maxLength: 500 }
         },
         additionalProperties: false
+      }
+    },
+    authorizedVisualReader: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "sessionId",
+        "coverage",
+        "status",
+        "usage",
+        "lastErrorCode",
+        "visualSteps"
+      ],
+      properties: {
+        sessionId: { type: "string", minLength: 1, maxLength: 160 },
+        coverage: { const: "authorized_visible_top_level_sample" },
+        status: {
+          type: "string",
+          enum: [
+            "created",
+            "collecting",
+            "completed",
+            "partial_success",
+            "aborted",
+            "expired"
+          ]
+        },
+        usage: visualReaderUsageSchema,
+        lastErrorCode: {
+          oneOf: [visualReaderStableErrorCodeSchema, { type: "null" }]
+        },
+        visualSteps: {
+          type: "array",
+          minItems: 5,
+          maxItems: 5,
+          items: visualReaderStepSchema
+        }
       }
     },
     commentSignals: {
