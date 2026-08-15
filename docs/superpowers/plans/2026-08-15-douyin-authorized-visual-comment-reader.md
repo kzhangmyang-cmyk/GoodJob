@@ -491,7 +491,7 @@ type VisualReaderExtensionEvent =
   git commit -m "feat: add bounded douyin visual reader extension"
   ```
 
-  Implemented in frontend commits `fc378c3` and `1732163`. Fresh verification passed all nine extension self-test groups, the 125-check frontend self-test, strict type checks, the real extension-build/main-build/read-only-audit sequence, and `git diff --check`. The frontend worktree retained only the user's untracked `package-lock.json`, which was not read, edited, staged, deleted, or committed. No real Douyin request was made and Task 6 screenshot/OCR work was not started.
+  Implemented in frontend commits `fc378c3`, `1732163`, `cdbb176`, and `c52a2d9`. The current audit rejects any complete-manifest drift from the template and rendered build origins; target `loading` lifecycle/replacement events abort even for a same canonical URL; restart expiry is a `partial_success` completion rather than user takeover; and terminal retries stop at the reader's absolute session deadline. Fresh verification passed all nine extension self-test groups, the 125-check frontend self-test, strict type checks, the real extension-build/main-build/read-only-audit sequence, and `git diff --check`. The frontend worktree retained only the user's untracked `package-lock.json`, which was not read, edited, staged, deleted, or committed. No real Douyin request was made and Task 6 screenshot/OCR work was not started.
 
 ### Task 6: 本地裁剪、头像遮挡和 OCR 兜底
 

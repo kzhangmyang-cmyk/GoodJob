@@ -8,23 +8,25 @@ Frontend commits:
 
 - `fc378c3` — `feat: add bounded douyin visual reader extension`
 - `1732163` — `fix: harden douyin visual reader lifecycle`
+- `cdbb176` — `fix: stabilize visual reader comment digests`
+- `c52a2d9` — `fix: close visual reader lifecycle gaps`
 
 The frontend worktree remains clean except for the user's pre-existing untracked `package-lock.json`, which was not read, modified, staged, deleted, or committed.
 
 ## Implemented safety boundary
 
 - Exact permissions: `activeTab`, `scripting`, `storage`, and `offscreen`; exact host permission: `https://www.douyin.com/*`.
-- Development GoodJob match defaults only to `http://127.0.0.1:5191/*`; release builds require explicit HTTPS `GOODJOB_APP_ORIGINS` and reject wildcard or broad origins.
+- Development GoodJob match defaults only to `http://127.0.0.1:5191/*`; release builds require explicit HTTPS `GOODJOB_APP_ORIGINS` and reject wildcard or broad origins. The read-only audit deep-compares the full manifest to the template plus build origin, including CSP, optional permissions, content-script attributes, background/action, and web-accessible resources.
 - Popup candidates are never auto-selected. Confirmation binds tab ID, window ID, and canonical video URL, focuses and activates the target, then revalidates it before script injection.
-- Closing the popup does not abort. Explicit stop, user input, bound-tab close/navigation, same-window tab replacement, or real focus departure causes safe takeover; background activation in another window does not.
+- Closing the popup does not abort. Explicit stop, user input, bound-tab close/navigation, same-window tab replacement, same-canonical-URL reload, URL-less target `loading` update, or real focus departure causes safe takeover; background activation in another window does not.
 - Extraction reads only owned visible `innerText`, exact ARIA labels, public time/count text, explicit public comment IDs, and literal card-owned public profile links. It does not read images, styles, scripts, framework internals, cache/storage, nested reply bodies, cookies, or network responses.
 - Login, captcha, security verification, selector drift, advertising cards, ambiguous exact-name buttons, and non-canonical source URLs fail closed.
-- Missing public comment IDs use a full SHA-256 of canonical visible facts. Card index and geometry are excluded, so movement stays stable while replacement text changes the key.
+- Missing public comment IDs use a full SHA-256 of canonical visible facts. Card index, geometry, relative time, and public counters are excluded, so movement or counter updates stay stable while replacement text changes the key.
 - The extension protocol matches the Task 4 2000-character visible-text limit and its identity, count, viewport, bounds, confidence, timestamp, and reader-version constraints. Task 5 emits only DOM/ARIA observations with `redactedCrop: null`.
-- One absolute session deadline bounds extract, DOM stability, batch send, ACK wait, retry delay, and programmatic scroll. ACK loss and transport rejection replay the exact retained batch and batch ID; the service worker clears pending state only after content confirms the matching ACK.
-- Terminal delivery has bounded per-attempt timeouts and exact-event retries. User takeover stops new page actions immediately and does not deadlock terminal delivery behind a pending batch.
+- One absolute session deadline bounds extract, DOM stability, batch send, ACK wait, retry delay, programmatic scroll, and terminal retries. ACK loss and transport rejection replay the exact retained batch and batch ID; the service worker clears pending state only after content confirms the matching ACK.
+- Terminal delivery has bounded per-attempt timeouts and exact-event retries before the shared deadline. User takeover stops new page actions immediately and does not deadlock terminal delivery behind a pending batch.
 - `chrome.storage.session` stores only the closed session/tab/window/source/budget/usage/artifact-mode/nonce-hash/status state. Raw nonce, body text, profile data, batch payloads, images, cookies, and authentication material are absent from storage and logs.
-- A service-worker restart clears residual authority before notifying surviving GoodJob and Douyin content scripts. GoodJob can report `visual_reader_session_expired` only with its existing in-memory nonce; Douyin stops any retained reader or pending batch. There is no silent orphan continuation.
+- A service-worker restart clears residual authority before notifying surviving GoodJob and Douyin content scripts. GoodJob reports `partial_success` with `visual_reader_session_expired` using only its existing in-memory nonce, so the server completion path preserves the non-user failure instead of writing a user-takeover abort. Douyin stops any retained reader or pending batch. There is no silent orphan continuation.
 - Manifest generation and bundle audit are separate commands. The audit is read-only and rejects a tampered manifest without repairing it. Extension output lives in `dist-visual-reader/douyin-visual-reader`, so the main Vite build cannot erase it.
 
 ## TDD and verification evidence
