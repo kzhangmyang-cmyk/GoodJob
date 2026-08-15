@@ -750,8 +750,7 @@ function assertTrustedPlanConnectionSnapshots(
 export function isTrustedAcquisitionDouyinPublicCommentConnection(
   snapshot: AcquisitionProviderConnectionSnapshot
 ) {
-  return typeof snapshot.connectionId === "string"
-    && snapshot.connectionId.trim().length > 0
+  return snapshot.connectionId === "douyin-public-comments"
     && snapshot.providerId === "experimental_public_sample"
     && snapshot.kind === "content_fetch"
     && snapshot.status === "active"
@@ -2114,12 +2113,17 @@ export async function createAcquisitionApplication(
     discoveryRecoverySweeper =
       new AcquisitionDiscoveryRecoverySweeper({
         service: discoveryOperations,
-        dispatchContentFetchOperation: (scope, operationId) =>
+        dispatchContentFetchOperation: (scope, operationId, executionId) =>
           dispatchDiscoveryTask(() =>
-            executeContentFetchAndSubmitIdentity(
+            discoveryOperations.recoverContentFetchOperation(
               scope,
-              operationId
-            )
+              operationId,
+              executionId
+            ).then((completed) => submitDirectDouyinCandidates(
+              scope,
+              `content-fetch:${operationId}`,
+              completed.candidateIds
+            ))
           ),
         dispatchImportOperation: (scope, operationId) =>
           dispatchDiscoveryTask(() =>

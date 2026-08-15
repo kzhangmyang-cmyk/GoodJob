@@ -6,7 +6,8 @@ import {
   AcquisitionDiscoveryOperationError,
   AcquisitionDiscoveryOperationService,
   ControlledPublicContentFetcher,
-  InMemoryAcquisitionDiscoveryOperationRepository
+  InMemoryAcquisitionDiscoveryOperationRepository,
+  type AcquisitionContentFetchCommentExecution
 } from "./acquisition-discovery-operations.js";
 import { setProviderHttpTestTransport } from "./provider-http-client.js";
 import type {
@@ -284,6 +285,41 @@ test("content fetch operation is idempotent, tenant scoped, and appends public e
   );
 });
 
+test("explicit direct content fetch persists its bounded enrichment intent with creation", async () => {
+  const fixture = serviceFixture({
+    commentEnrichment: {
+      async enrich() {
+        throw new Error("not dispatched during create");
+      }
+    }
+  });
+  const created = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900001",
+      subjectChannel: "individual"
+    },
+    "direct-intent-is-durable",
+    { queueStandaloneCommentEnrichment: true }
+  );
+  const stored = await fixture.repository.getContentFetchOperation(
+    scope,
+    created.id
+  );
+
+  assert.equal(created.commentSampleSummary, null);
+  assert.equal("commentEnrichmentExecutions" in created, false);
+  assert.equal(stored?.commentEnrichmentExecutions?.length, 1);
+  assert.deepEqual(
+    stored?.commentEnrichmentExecutions?.[0]?.remainingBudget,
+    { requests: 3, results: 30 }
+  );
+  assert.equal(
+    stored?.commentEnrichmentExecutions?.[0]?.contextKey,
+    "direct"
+  );
+});
+
 test("an explicit standalone Douyin link persists bounded comment enrichment without a Run", async () => {
   const enrichmentCalls: Parameters<
     AcquisitionDouyinCommentEnrichmentPort["enrich"]
@@ -392,6 +428,308 @@ test("an explicit standalone Douyin link persists bounded comment enrichment wit
   );
   assert.deepEqual(replay.commentSampleSummary, completed.commentSampleSummary);
   assert.equal(enrichmentCalls.length, 1);
+});
+
+test("terminal and concurrent content fetch callers keep direct and Run enrichment contexts separate", async () => {
+  const enrichmentCalls: Array<{
+    runId: string | null;
+    shardId: string | null;
+    policy: unknown;
+    remainingBudget: unknown;
+  }> = [];
+  const fixture = serviceFixture({
+    fetch: async (sourceUrl) => ({
+      finalUrl: sourceUrl,
+      status: "succeeded",
+      accessStatus: "public_content",
+      httpStatus: 200,
+      contentType: "text/html",
+      title: "抖音公开视频",
+      text: "公开视频原页证据",
+      rawArtifactHash: `sha256:${"7".repeat(64)}`,
+      contentHash: `sha256:${"6".repeat(64)}`
+    }),
+    commentEnrichment: {
+      async enrich(enrichmentInput) {
+        enrichmentCalls.push({
+          runId: enrichmentInput.runId,
+          shardId: enrichmentInput.shardId,
+          policy: enrichmentInput.policy,
+          remainingBudget: enrichmentInput.remainingBudget
+        });
+        const suffix = enrichmentInput.runId ?? "direct";
+        return {
+          status: "succeeded",
+          videoCount: 1,
+          pagesFetched: 1,
+          commentsSampled: 1,
+          eventCount: 1,
+          evidenceCount: 1,
+          candidateIds: [`candidate-${suffix}`],
+          unresolvedActorCount: 1,
+          strongSignalCount: 1,
+          invalidCommentCount: 0,
+          errors: [],
+          usage: {
+            requests: 1,
+            results: 1,
+            amountMinor: 0,
+            durationSeconds: 0
+          }
+        };
+      }
+    }
+  });
+  const created = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900001",
+      subjectChannel: "individual"
+    },
+    "caller-context-isolation"
+  );
+  const runContext = {
+    runId: "run-isolated",
+    shardId: "shard-isolated",
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 4,
+      maxPagesPerVideo: 2
+    },
+    remainingBudget: { requests: 3, results: 5 }
+  };
+
+  const [direct, run] = await Promise.all([
+    fixture.service.executeContentFetchOperation(scope, created.id),
+    fixture.service.executeContentFetchOperation(
+      scope,
+      created.id,
+      new AbortController().signal,
+      runContext
+    )
+  ]);
+
+  assert.deepEqual(enrichmentCalls, [{
+    runId: null,
+    shardId: null,
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 30,
+      maxPagesPerVideo: 3
+    },
+    remainingBudget: { requests: 3, results: 30 }
+  }, {
+    runId: "run-isolated",
+    shardId: "shard-isolated",
+    policy: runContext.policy,
+    remainingBudget: { requests: 2, results: 4 }
+  }]);
+  assert.deepEqual(direct.commentSampleSummary?.candidateIds, [
+    "candidate-direct"
+  ]);
+  assert.deepEqual(run.commentSampleSummary?.candidateIds, [
+    "candidate-run-isolated"
+  ]);
+
+  const reverseCreated = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900002",
+      subjectChannel: "individual"
+    },
+    "caller-context-isolation-run-first"
+  );
+  const reverseContext = {
+    ...runContext,
+    runId: "run-first",
+    shardId: "shard-first"
+  };
+  const [runFirst, directSecond] = await Promise.all([
+    fixture.service.executeContentFetchOperation(
+      scope,
+      reverseCreated.id,
+      new AbortController().signal,
+      reverseContext
+    ),
+    fixture.service.executeContentFetchOperation(scope, reverseCreated.id)
+  ]);
+  assert.deepEqual(runFirst.commentSampleSummary?.candidateIds, [
+    "candidate-run-first"
+  ]);
+  assert.deepEqual(directSecond.commentSampleSummary?.candidateIds, [
+    "candidate-direct"
+  ]);
+
+  const terminalCreated = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900003",
+      subjectChannel: "individual"
+    },
+    "caller-context-isolation-terminal-direct"
+  );
+  await fixture.service.executeContentFetchOperation(
+    scope,
+    terminalCreated.id
+  );
+  const terminalRun = await fixture.service.executeContentFetchOperation(
+    scope,
+    terminalCreated.id,
+    new AbortController().signal,
+    {
+      ...runContext,
+      runId: "run-after-terminal-direct",
+      shardId: "shard-after-terminal-direct"
+    }
+  );
+  assert.deepEqual(terminalRun.commentSampleSummary?.candidateIds, [
+    "candidate-run-after-terminal-direct"
+  ]);
+  assert.equal(enrichmentCalls.length, 6);
+});
+
+test("a persisted Run enrichment survives base completion and restart without caller replay", async () => {
+  const repository = new InMemoryAcquisitionDiscoveryOperationRepository();
+  const sink = evidenceSink();
+  const runContext = {
+    runId: "run-restart",
+    shardId: "shard-restart",
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 4,
+      maxPagesPerVideo: 2
+    },
+    remainingBudget: { requests: 3, results: 5 }
+  };
+  const common = {
+    repository,
+    evidence: sink.port,
+    fetcher: {
+      async fetch(sourceUrl: string) {
+        return {
+          finalUrl: sourceUrl,
+          status: "succeeded" as const,
+          accessStatus: "public_content" as const,
+          httpStatus: 200,
+          contentType: "text/html",
+          title: "抖音公开视频",
+          text: "公开原页证据",
+          rawArtifactHash: `sha256:${"2".repeat(64)}`,
+          contentHash: `sha256:${"1".repeat(64)}`
+        };
+      }
+    },
+    masterSecret:
+      "goodjob-discovery-restart-test-secret-at-least-32-bytes",
+    idFactory: (prefix: string) => `${prefix}-${repository.size(prefix) + 1}`,
+    now: () => "2026-08-15T04:00:00.000Z"
+  };
+  const crashing = new AcquisitionDiscoveryOperationService({
+    ...common,
+    commentEnrichment: {
+      async enrich() {
+        throw new Error("CRASH_AFTER_BASE_BEFORE_COMMENT_RESULT");
+      }
+    }
+  });
+  const created = await crashing.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900001",
+      subjectChannel: "individual"
+    },
+    "run-enrichment-restart"
+  );
+  await assert.rejects(
+    crashing.executeContentFetchOperation(
+      scope,
+      created.id,
+      new AbortController().signal,
+      runContext
+    ),
+    /CRASH_AFTER_BASE_BEFORE_COMMENT_RESULT/
+  );
+  const afterCrash = await crashing.getContentFetchOperation(
+    scope,
+    created.id
+  );
+  assert.equal(afterCrash.status, "succeeded");
+  assert.equal(afterCrash.commentSampleSummary, null);
+
+  const recoveredInputs: Parameters<
+    AcquisitionDouyinCommentEnrichmentPort["enrich"]
+  >[0][] = [];
+  const restarted = new AcquisitionDiscoveryOperationService({
+    ...common,
+    now: () => "2026-08-15T04:10:00.000Z",
+    commentEnrichment: {
+      async enrich(enrichmentInput) {
+        recoveredInputs.push(enrichmentInput);
+        return {
+          status: "succeeded",
+          videoCount: 1,
+          pagesFetched: 1,
+          commentsSampled: 1,
+          eventCount: 1,
+          evidenceCount: 1,
+          candidateIds: ["candidate-recovered-run"],
+          unresolvedActorCount: 1,
+          strongSignalCount: 1,
+          invalidCommentCount: 0,
+          errors: [],
+          usage: {
+            requests: 1,
+            results: 1,
+            amountMinor: 0,
+            durationSeconds: 0
+          }
+        };
+      }
+    }
+  });
+  const recovery = restarted as AcquisitionDiscoveryOperationService & {
+    recoverContentFetchOperation(
+      actualScope: typeof scope,
+      operationId: string
+    ): Promise<unknown>;
+  };
+  await recovery.recoverContentFetchOperation(scope, created.id);
+  assert.equal(recoveredInputs.length, 1);
+  assert.deepEqual({ ...recoveredInputs[0], signal: undefined }, {
+    scope,
+    runId: "run-restart",
+    shardId: "shard-restart",
+    discoveryOperationId: created.id,
+    sourceUrls: [
+      "https://www.douyin.com/video/7536012345678900001"
+    ],
+    candidateIds: [],
+    policy: runContext.policy,
+    remainingBudget: { requests: 2, results: 4 },
+    signal: undefined
+  });
+  const publicOperation = await restarted.getContentFetchOperation(
+    scope,
+    created.id
+  );
+  assert.equal(publicOperation.commentSampleSummary, null);
+  assert.doesNotMatch(
+    JSON.stringify(publicOperation),
+    /lease|policy|remainingBudget|commentEnrichmentExecutions/u
+  );
+  const replay = await restarted.executeContentFetchOperation(
+    scope,
+    created.id,
+    new AbortController().signal,
+    runContext
+  );
+  assert.deepEqual(replay.commentSampleSummary?.candidateIds, [
+    "candidate-recovered-run"
+  ]);
+  assert.equal(recoveredInputs.length, 1);
 });
 
 test("content fetch operation listing is tenant scoped, limited, and newest first", async () => {
@@ -573,6 +911,124 @@ test("recovery listing spans tenants, is bounded and excludes live or terminal w
   assert.equal(
     recoverable.some((operation) => operation.id === live.id),
     false
+  );
+});
+
+test("comment execution recovery is tenant scoped, leased once, and backs off poison work", async () => {
+  const fixture = serviceFixture();
+  const poison = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900101",
+      subjectChannel: "individual"
+    },
+    "comment-recovery-poison"
+  );
+  const healthy = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900102",
+      subjectChannel: "individual"
+    },
+    "comment-recovery-healthy"
+  );
+  await Promise.all([
+    fixture.service.executeContentFetchOperation(scope, poison.id),
+    fixture.service.executeContentFetchOperation(scope, healthy.id)
+  ]);
+  const execution = (
+    operationId: string
+  ): AcquisitionContentFetchCommentExecution => ({
+    executionId: `comment-execution:${operationId}`,
+    contextKey: `run:run-${operationId}:shard-${operationId}`,
+    runId: `run-${operationId}`,
+    shardId: `shard-${operationId}`,
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 3,
+      maxPagesPerVideo: 1
+    },
+    remainingBudget: { requests: 1, results: 3 },
+    status: "queued",
+    summary: null,
+    attemptCount: 0,
+    nextAttemptAt: NOW,
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    lastErrorCode: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    completedAt: null
+  });
+  const poisonExecution = execution(poison.id);
+  const healthyExecution = execution(healthy.id);
+  await fixture.repository.putContentFetchCommentExecution(
+    scope,
+    poison.id,
+    poisonExecution
+  );
+  await fixture.repository.putContentFetchCommentExecution(
+    scope,
+    healthy.id,
+    healthyExecution
+  );
+  await assert.rejects(
+    fixture.repository.putContentFetchCommentExecution(
+      { ownerId: "foreign", teamId: scope.teamId },
+      poison.id,
+      poisonExecution
+    ),
+    (error: unknown) =>
+      error instanceof AcquisitionDiscoveryOperationError
+      && error.code === "RESOURCE_NOT_FOUND"
+  );
+
+  const claim = (worker: string) =>
+    fixture.repository.claimContentFetchCommentExecution(
+      scope,
+      poison.id,
+      poisonExecution.executionId,
+      {
+        leaseOwner: worker,
+        leaseToken: `lease-${worker}`,
+        claimedAt: NOW,
+        leaseExpiresAt: "2026-07-24T08:10:00.000Z",
+        staleRunningBefore: "2026-07-24T07:50:00.000Z"
+      }
+    );
+  const claims = await Promise.all([claim("a"), claim("b")]);
+  assert.equal(claims.filter((result) => result.claimed).length, 1);
+  const winner = claims.find((result) => result.claimed)!;
+  await fixture.repository.failContentFetchCommentExecution(
+    scope,
+    poison.id,
+    poisonExecution.executionId,
+    winner.execution!.leaseToken!,
+    NOW
+  );
+
+  const next = await fixture.repository.listRecoverableOperations({
+    now: NOW,
+    staleRunningBefore: "2026-07-24T07:50:00.000Z",
+    limit: 1
+  });
+  assert.deepEqual(next.map((item) => [item.kind, item.id]), [[
+    "content_fetch_comment_enrichment",
+    healthy.id
+  ]]);
+  const storedPoison = await fixture.repository.getContentFetchOperation(
+    scope,
+    poison.id
+  );
+  assert.equal(
+    storedPoison?.commentEnrichmentExecutions?.[0]?.lastErrorCode,
+    "COMMENT_ENRICHMENT_FAILED"
+  );
+  assert.equal(
+    storedPoison?.commentEnrichmentExecutions?.[0]?.nextAttemptAt,
+    "2026-07-24T08:00:02.000Z"
   );
 });
 

@@ -1407,7 +1407,10 @@ implements AcquisitionDouyinCommentEventRepository {
       pagesFetched: 0,
       completedAt: null
     } as DouyinCommentFetchAttempt;
-    if (!same(immutableStart, attempt)) integrity("fetch_attempt_conflict");
+    if (!same(immutableStart, {
+      ...attempt,
+      startedAt: immutableStart.startedAt
+    })) integrity("fetch_attempt_conflict");
     return { attempt: existing, created };
   }
 
@@ -1438,7 +1441,10 @@ implements AcquisitionDouyinCommentEventRepository {
       const existing = parseAttempt(row);
       const finished = { ...existing, ...normalizedTerminal };
       if (existing.status !== "running") {
-        if (!same(existing, finished)) integrity("fetch_attempt_conflict");
+        if (!same(existing, {
+          ...finished,
+          completedAt: existing.completedAt
+        })) integrity("fetch_attempt_conflict");
         await connection.commit();
         transactionStarted = false;
         return existing;

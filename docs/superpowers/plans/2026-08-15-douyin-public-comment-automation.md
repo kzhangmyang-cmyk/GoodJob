@@ -266,6 +266,10 @@
 - Modify: `backend/src/acquisition-search-shard-processor-test.ts`
 - Modify: `backend/src/acquisition-discovery-operations.ts`
 - Modify: `backend/src/acquisition-discovery-operations-test.ts`
+- Modify: `backend/src/acquisition-discovery-mysql-repository.ts`
+- Modify: `backend/src/acquisition-discovery-mysql-repository-test.ts`
+- Modify: `backend/src/acquisition-discovery-recovery-sweeper.ts`
+- Modify: `backend/src/acquisition-discovery-recovery-sweeper-test.ts`
 - Modify: `backend/src/acquisition-discovery-shard-processors.ts`
 - Modify: `backend/src/acquisition-discovery-shard-processors-test.ts`
 - Modify: `backend/src/acquisition-application.ts`
@@ -277,9 +281,12 @@
 
 **Interfaces:**
 - `AcquisitionDouyinCommentEnrichmentPort.enrich(input)` 输入 scope、run/shard 可空上下文、来源 URL/candidate IDs、计划策略、剩余预算和 AbortSignal；输出新候选 IDs、usage、计数和部分错误。
-- 搜索分片次序：`search_public_sources` → 筛出抖音视频 URL → 评论富化 → 合并/去重 candidate IDs → 现有 `AcquisitionCandidateProcessingPipeline.process`。
-- content-fetch 次序：受控短链/公开页解析 → 原页证据 → 评论富化 → 现有 candidate pipeline；用户显式提交的单独抖音链接没有 Run 时，仍以固定有界策略保存评论事件、证据和待核验候选；其他无 Run 后台工作不会自动扩展评论采集。
+- 搜索分片次序：`search_public_sources` → 验证完整且与当前连接/查询匹配的 `search_result` Evidence → 筛出抖音视频 URL → 评论富化 → 验证真实 usage 未越过传入预算 → 合并/去重 candidate IDs → 现有 `AcquisitionCandidateProcessingPipeline.process`。跨页评论/游标状态只在当次 enrichment 内存在，HTTP 重试按真实 transport 请求数计费。
+- content-fetch 原页执行与评论富化分离。每个 direct 或 `runId + shardId` 调用方持久独立 execution context、策略、剩余预算、租约、退避和终态 summary；不能复用另一调用方的 running/terminal 结果。用户显式提交单独链接时在 operation create 同一写入中持久 `1/30/3` intent；Run 使用自身计划和剩余预算。Recovery sweeper 无需调用方 replay 即可恢复，逐项隔离 poison work，公开 DTO 不暴露内部 execution 状态。
 - 计划未启用评论策略或来源不是抖音视频时为安全 no-op，不影响旧计划。
+- `no_public_comments` 是可解释空覆盖而不是 failed result；混合成功仍为 succeeded，全部为空为 `succeeded_empty`。
+- 内置评论连接只信任 canonical `douyin-public-comments + experimental_public_sample + content_fetch + active + credentialVersion=1`。Discovery MySQL schema 在 recovery 前使用专用连接和 advisory lock 串行升级，锁失败会销毁会话。
+- Content-fetch 公共 schema 要求 `candidateCount === candidateIds.length`，合法上限为 101。
 
   ```ts
   export interface AcquisitionDouyinCommentEnrichmentPort {
@@ -291,7 +298,7 @@
 
 - [x] **Step 1: 写编排失败测试**
 
-  断言评论富化发生在资格研判前；新候选与搜索候选去重；评论请求/结果计入分片 usage；达到 max videos/comments/pages 或 Run 剩余预算时立即停止；单视频 429/受限保留其他视频成果；AbortSignal 不再开新请求。
+  断言评论富化发生在资格研判前；新候选与搜索候选去重；评论请求/结果计入分片 usage；达到 max videos/comments/pages 或 Run 剩余预算时立即停止；单视频 429/受限保留其他视频成果；AbortSignal 不再开新请求。补充 direct-first/Run-first 并发、terminal 后另一 context、crash replay、transport retry 记账、严格 Evidence、canonical connection、schema migration lock、candidateCount 关系和空覆盖组合状态。
 
 - [x] **Step 2: 运行 RED**
 
@@ -305,7 +312,7 @@
 
 - [x] **Step 4: 实现 content-fetch/单独用户链接链路并注入 application**
 
-  Discovery operation 返回增加 `commentSampleSummary`；content-fetch shard processor 把其产生的 candidate IDs 送入现有 pipeline。Application 在 memory/MySQL 两种模式下注入同一 Provider、event repository 和 enrichment service。
+  Discovery operation 返回增加 `commentSampleSummary`；content-fetch shard processor 把当前 Run execution 产生的 candidate IDs 送入现有 pipeline。内部持久 execution saga 支持 tenant-scoped lease、bounded backoff、restart recovery 和 caller-specific projection。Application 在 memory/MySQL 两种模式下注入同一 Provider、event repository 和 enrichment service，并在 schema 完成后启动 recovery lifecycle。
 
 - [x] **Step 5: 运行 GREEN、应用测试并提交**
 

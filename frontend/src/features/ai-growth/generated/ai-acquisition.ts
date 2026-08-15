@@ -1722,7 +1722,415 @@ export interface components {
             startedAt: string | null;
             /** Format: date-time */
             completedAt: string | null;
-        } & (unknown & unknown & unknown & unknown & unknown)) & ({
+        } & (unknown & unknown & ({
+            /** @constant */
+            candidateCount?: 0;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 1;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 2;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 3;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 4;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 5;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 6;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 7;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 8;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 9;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 10;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 11;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 12;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 13;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 14;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 15;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 16;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 17;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 18;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 19;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 20;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 21;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 22;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 23;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 24;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 25;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 26;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 27;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 28;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 29;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 30;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 31;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 32;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 33;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 34;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 35;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 36;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 37;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 38;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 39;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 40;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 41;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 42;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 43;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 44;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 45;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 46;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 47;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 48;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 49;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 50;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 51;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 52;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 53;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 54;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 55;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 56;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 57;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 58;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 59;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 60;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 61;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 62;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 63;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 64;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 65;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 66;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 67;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 68;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 69;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 70;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 71;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 72;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 73;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 74;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 75;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 76;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 77;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 78;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 79;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 80;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 81;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 82;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 83;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 84;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 85;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 86;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 87;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 88;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 89;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 90;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 91;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 92;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 93;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 94;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 95;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 96;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 97;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 98;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 99;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 100;
+            candidateIds?: unknown[];
+        } | {
+            /** @constant */
+            candidateCount?: 101;
+            candidateIds?: unknown[];
+        }))) & ({
             /** @enum {unknown} */
             status?: "succeeded" | "partial_success" | "access_restricted";
             /** @constant */

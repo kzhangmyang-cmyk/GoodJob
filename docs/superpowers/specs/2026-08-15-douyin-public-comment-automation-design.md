@@ -332,15 +332,29 @@ discover_video_urls
 总时长和费用。系统不得通过切换账号、代理或模拟真人来绕过来源限制。
 
 搜索分片只在搜索响应完成严格验证后，从 Evidence provenance 中选取
-可确定作品 ID 的抖音直链；评论候选与搜索候选去重后，再进入现有
-candidate pipeline。Content-fetch Run 先保存原页证据，再执行评论富化和
-候选研判；其持久化 `commentSampleSummary` 记录真实 usage、计数、新候选和
-稳定来源错误。单个作品限流或受限时，已有评论结果保留且分片为
-`partial_success`。计划未启用评论策略或来源不是抖音作品时安全跳过。
+可确定作品 ID 的抖音直链。Evidence 必须完整包含当前连接、当前查询、Provider、
+结果序号、来源 URL 和公开访问语义；只有 `sourceUrl` 的伪造对象不会触发评论读取。
+HTTP 重试按真实 transport 次数计入 requests，剩余预算同时传给 Provider；跨页评论
+去重和游标循环检测只存在于当次 enrichment。评论候选与搜索候选去重后，再进入现有
+candidate pipeline。单个作品限流或受限时，已有评论结果保留且分片为
+`partial_success`；`no_public_comments` 是可解释空覆盖，不计失败结果，全部为空时为
+`succeeded_empty`。计划未启用评论策略或来源不是抖音作品时安全跳过。
 
 用户显式创建的单独抖音 content-fetch 不需要 Run，但仍通过同一 Provider、
 事件仓储和 ingestion service 保存事件、证据与待核验候选；该显式入口固定限制为
-1 个视频、每视频 30 条、最多 3 页。无 Run 的其他后台工作不会自动扩展评论读取。
+1 个视频、每视频 30 条、最多 3 页。显式创建在 content-fetch operation 首次写入时
+同时持久 standalone intent。原页抓取与评论富化是两个独立事实；每个 direct 或
+`runId + shardId` 上下文分别持久策略、剩余预算、租约、尝试次数、退避时间和终态
+summary，不能复用另一调用方的 summary。恢复 worker 在启动和定时 sweep 中按租户
+隔离领取 pending execution，失败项退避且不饿死后续租户；无需调用者重放。公开响应
+只投影对应调用方结果，不暴露内部 execution、policy、budget 或 lease。无 Run 的其他
+后台工作不会自动扩展评论读取。
+
+计划连接只接受规范 ID `douyin-public-comments`，并同时要求
+`experimental_public_sample + content_fetch + active + credentialVersion=1`；执行仍只使用
+application 固定注入 Provider。Content-fetch MySQL schema 在 recovery 启动前通过专用
+连接和固定 advisory lock 串行升级，锁获取或释放失败销毁会话而不放回连接池。
+公开 `candidateCount` 必须与去重后的 `candidateIds` 长度精确一致。
 
 授权浏览器视觉读取必须是显式连接、显式运行或客户侧计划触发，不能由 GoodJob 后端
 静默接管本地 Chrome。首次连接、会话变化和每次批量运行都留下租户隔离审计；撤销

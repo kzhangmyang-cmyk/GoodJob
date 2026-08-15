@@ -637,11 +637,25 @@ test("search enriches validated Douyin evidence before processing deduped candid
         providerFailures: [],
         evidence: [{
           id: "evidence-douyin",
+          targetType: "individual_signal",
+          sourcePlatform: "douyin",
+          sourceTitle: "抖音公开视频",
+          sourceSnippet: "公开索引摘要",
+          publishedAt: null,
+          fetchedAt: "2026-08-15T02:00:00.000Z",
+          locale: "zh-CN",
+          rawArtifactHash: `sha256:${"a".repeat(64)}`,
+          contentHash: `sha256:${"b".repeat(64)}`,
           provenance: {
             kind: "search_result",
+            provider: "official-search",
+            providerConnectionId: "official-search-connection",
+            queryText: "厦门 企业 公开采购需求",
             sourceUrl:
-              "https://www.douyin.com/video/7536012345678900001"
-          }
+              "https://www.douyin.com/video/7536012345678900001",
+            resultRank: 1
+          },
+          accessStatus: "indexed_summary"
         }, {
           id: "evidence-web",
           provenance: {
@@ -726,6 +740,8 @@ test("search enriches validated Douyin evidence before processing deduped candid
   });
 
   const actualInput = processingInput();
+  actualInput.run.budgetSnapshot.maxRequests = 3;
+  actualInput.shard.allocatedBudget.requests = 3;
   const result = await processor.process(actualInput);
 
   assert.deepEqual(order, ["search", "comments", "pipeline"]);
@@ -741,7 +757,7 @@ test("search enriches validated Douyin evidence before processing deduped candid
     candidateIds: ["candidate-search"],
     policy,
     remainingBudget: {
-      requests: 1,
+      requests: 2,
       results: 8
     },
     signal: actualInput.signal
@@ -765,4 +781,271 @@ test("search enriches validated Douyin evidence before processing deduped candid
   assert.equal(result.presentation?.acceptedResultCount, 4);
   assert.equal(result.presentation?.rawResultCount, 4);
   assert.equal(result.presentation?.failedResultCount, 1);
+});
+
+test("search rejects over-budget comment usage before candidate pipeline side effects", async () => {
+  let pipelineCalls = 0;
+  const actualInput = processingInput();
+  const processor = new AcquisitionSearchShardProcessor({
+    executor: {
+      async execute() {
+        return {
+          status: "succeeded",
+          providers: [{
+            providerConnectionId: "official-search-connection",
+            provider: "official-search"
+          }],
+          providerFailures: [],
+          evidence: [],
+          rawResultCount: 0,
+          acceptedResultCount: 0,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          candidateIds: [],
+          usage: {
+            requests: 1,
+            results: 0,
+            amountMinor: 0,
+            durationSeconds: 0
+          },
+          outreachExecuted: false
+        };
+      }
+    },
+    planRunRepository: {
+      async getPlanVersion() {
+        return {
+          id: actualInput.run.planVersionId,
+          ownerId: actualInput.scope.ownerId,
+          teamId: actualInput.scope.teamId,
+          payload: {
+            douyinPublicCommentSample: {
+              enabled: true,
+              maxVideosPerRun: 1,
+              maxCommentsPerVideo: 3,
+              maxPagesPerVideo: 1
+            }
+          }
+        } as never;
+      }
+    },
+    commentEnrichment: {
+      async enrich() {
+        return {
+          status: "succeeded",
+          videoCount: 1,
+          pagesFetched: 1,
+          commentsSampled: 1,
+          eventCount: 1,
+          evidenceCount: 1,
+          candidateIds: ["candidate-over-budget"],
+          unresolvedActorCount: 1,
+          strongSignalCount: 1,
+          invalidCommentCount: 0,
+          errors: [],
+          usage: {
+            requests: 2,
+            results: 1,
+            amountMinor: 0,
+            durationSeconds: 0
+          }
+        };
+      }
+    },
+    candidatePipeline: {
+      async process() {
+        pipelineCalls += 1;
+        return {
+          processedCandidateIds: [],
+          battleCardCandidateIds: [],
+          failures: []
+        };
+      }
+    }
+  });
+
+  await assert.rejects(
+    processor.process(actualInput),
+    (error: unknown) => error instanceof AcquisitionSearchShardProcessorError
+      && error.code === "INVALID_SEARCH_RESULT"
+  );
+  assert.equal(pipelineCalls, 0);
+});
+
+test("search comment enrichment accepts only complete current-connection Evidence", async () => {
+  const sourceInputs: string[][] = [];
+  const actualInput = processingInput();
+  const processor = new AcquisitionSearchShardProcessor({
+    executor: {
+      async execute() {
+        return {
+          status: "succeeded",
+          providers: [{
+            providerConnectionId: "official-search-connection",
+            provider: "official-search"
+          }],
+          providerFailures: [],
+          evidence: [{
+            provenance: {
+              sourceUrl:
+                "https://www.douyin.com/video/7536012345678900011"
+            }
+          }, {
+            id: "evidence-wrong-connection",
+            targetType: "individual_signal",
+            sourcePlatform: "douyin",
+            sourceTitle: "抖音视频",
+            sourceSnippet: "公开摘要",
+            publishedAt: null,
+            fetchedAt: "2026-08-15T02:00:00.000Z",
+            locale: "zh-CN",
+            rawArtifactHash: `sha256:${"c".repeat(64)}`,
+            contentHash: `sha256:${"d".repeat(64)}`,
+            provenance: {
+              kind: "search_result",
+              provider: "official-search",
+              providerConnectionId: "foreign-connection",
+              queryText: actualInput.shard.query,
+              sourceUrl:
+                "https://www.douyin.com/video/7536012345678900022",
+              resultRank: 1
+            },
+            accessStatus: "indexed_summary"
+          }],
+          rawResultCount: 2,
+          acceptedResultCount: 2,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          candidateIds: [],
+          usage: {
+            requests: 1,
+            results: 2,
+            amountMinor: 0,
+            durationSeconds: 0
+          },
+          outreachExecuted: false
+        };
+      }
+    },
+    planRunRepository: {
+      async getPlanVersion() {
+        return {
+          id: actualInput.run.planVersionId,
+          ownerId: actualInput.scope.ownerId,
+          teamId: actualInput.scope.teamId,
+          payload: {
+            douyinPublicCommentSample: {
+              enabled: true,
+              maxVideosPerRun: 2,
+              maxCommentsPerVideo: 3,
+              maxPagesPerVideo: 1
+            }
+          }
+        } as never;
+      }
+    },
+    commentEnrichment: {
+      async enrich(enrichmentInput) {
+        sourceInputs.push(enrichmentInput.sourceUrls);
+        return {
+          status: "skipped",
+          videoCount: 0,
+          pagesFetched: 0,
+          commentsSampled: 0,
+          eventCount: 0,
+          evidenceCount: 0,
+          candidateIds: [],
+          unresolvedActorCount: 0,
+          strongSignalCount: 0,
+          invalidCommentCount: 0,
+          errors: [],
+          usage: {
+            requests: 0,
+            results: 0,
+            amountMinor: 0,
+            durationSeconds: 0
+          }
+        };
+      }
+    },
+    candidatePipeline: noOpCandidatePipeline
+  });
+
+  await processor.process(actualInput);
+  assert.deepEqual(sourceInputs, [[]]);
+});
+
+test("no-public-comments explanations do not increment failed search results", async () => {
+  const actualInput = processingInput();
+  const processor = new AcquisitionSearchShardProcessor({
+    executor: {
+      async execute() {
+        return {
+          status: "succeeded",
+          providers: [{
+            providerConnectionId: "official-search-connection",
+            provider: "official-search"
+          }],
+          providerFailures: [],
+          evidence: [],
+          rawResultCount: 0,
+          acceptedResultCount: 0,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          candidateIds: [],
+          outreachExecuted: false
+        };
+      }
+    },
+    planRunRepository: {
+      async getPlanVersion() {
+        return {
+          id: actualInput.run.planVersionId,
+          ownerId: actualInput.scope.ownerId,
+          teamId: actualInput.scope.teamId,
+          payload: {
+            douyinPublicCommentSample: {
+              enabled: true,
+              maxVideosPerRun: 1,
+              maxCommentsPerVideo: 1,
+              maxPagesPerVideo: 1
+            }
+          }
+        } as never;
+      }
+    },
+    commentEnrichment: {
+      async enrich() {
+        return {
+          status: "succeeded_empty",
+          videoCount: 1,
+          pagesFetched: 0,
+          commentsSampled: 0,
+          eventCount: 0,
+          evidenceCount: 0,
+          candidateIds: [],
+          unresolvedActorCount: 0,
+          strongSignalCount: 0,
+          invalidCommentCount: 0,
+          errors: [{
+            sourceUrl:
+              "https://www.douyin.com/video/7536012345678900033",
+            videoId: "7536012345678900033",
+            code: "no_public_comments"
+          }],
+          usage: {
+            requests: 1,
+            results: 0,
+            amountMinor: 0,
+            durationSeconds: 0
+          }
+        };
+      }
+    },
+    candidatePipeline: noOpCandidatePipeline
+  });
+
+  const result = await processor.process(actualInput);
+  assert.equal(result.status, "succeeded_empty");
+  assert.equal(result.presentation?.failedResultCount, 0);
 });

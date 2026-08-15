@@ -319,7 +319,8 @@ export function createAcquisitionDiscoveryOperationsRouter(
         await options.service.createContentFetchOperation(
           scope,
           contentFetchInputSchema.parse(req.body),
-          idempotencyKey(req)
+          idempotencyKey(req),
+          { queueStandaloneCommentEnrichment: true }
         );
       await options.dispatchContentFetchOperation(scope, operation.id);
       res.status(202).json(operation);

@@ -2,35 +2,38 @@
 
 ## 结果
 
-- 搜索分片在严格验证搜索结果后，先从证据 provenance 提取可解析的抖音视频 URL，运行有界公开顶层评论富化，再合并去重 candidate IDs 并进入原有资格 pipeline。
-- content-fetch Run 依次保存原页证据、评论事件/需求证据/待核验候选，再进入原有候选 pipeline。用户显式提交的单独抖音链接即使没有 Run，也使用固定上限 `1 视频 / 30 评论 / 3 页`执行；其他无 Run 后台工作不会自动扩展采集。
-- memory/MySQL composition 共用同一个固定注入的 public provider、comment event repository 和 Task 4 ingestion service。计划信任边界只接受 `experimental_public_sample + content_fetch + active + credentialVersion=1` 的无凭证快照，且 connectionId 必须非空。
-- 处理遵守 max videos/comments/pages、Run 剩余 requests/results 预算和 `AbortSignal`。单视频 429、受限或无公开评论不会丢失其他视频的已接受成果，局部失败映射为 `partial_success`。策略关闭、非抖音视频或预算为零时安全 no-op。
-- content-fetch schema/OpenAPI/响应一致性/MySQL JSON 恢复/生成前端类型已同步 `commentSampleSummary` 和 `partial_success`。旧记录缺少 summary 时恢复为 `null`；MySQL 旧 status CHECK 在 schema ensure 时升级。
+- 搜索分片只从完整、与当前 Provider 连接及查询精确匹配的 `search_result` Evidence 中提取抖音作品 URL。伪造的单字段 `sourceUrl` 不会触发评论读取。富化在 candidate pipeline 前完成，并合并去重候选 ID。
+- content-fetch 原页执行与调用方评论富化分离。direct 和每个 `runId + shardId` 都有独立持久 execution，保留策略、剩余预算、租约、尝试次数、退避和终态 summary，running/terminal 结果不会跨 context 复用。
+- 用户显式创建单链接任务时，standalone `1 视频 / 30 评论 / 3 页` intent 与 operation 同次写入。其他无 Run 后台工作不自动扩大采集。公开响应不暴露 execution/policy/budget/lease，只投影调用方对应的 `commentSampleSummary`。
+- memory/MySQL 都支持持久 recovery：启动首次 sweep、定时 sweep、租户隔离领取、bounded lease/backoff 和 poison isolation。不需要调用者重放；并发 claimer 只有一个成功。MySQL base terminal write 在 `SELECT ... FOR UPDATE` 后按 lease fence 合并最新 executions，不覆盖 claim 之后新增或完成的 context。
+- Provider 实际 HTTP 重试次数计入 usage，剩余 transport budget 传入 Provider，单次请求不会因返回后校验错误重复记账。跨页 comment/cursor 去重状态只存在当次 enrichment，没有跨租户或 Run 的全局 Map。
+- 混合「有评论 + `no_public_comments`」仍为 `succeeded`，不增加 failed result；全部为空时为 `succeeded_empty`，并保留可解释错误。单视频 429/受限时保留其他成果。
+- 只信任 canonical `douyin-public-comments + experimental_public_sample + content_fetch + active + credentialVersion=1`，执行端仍只使用 application 固定注入 Provider。Discovery MySQL schema 在 recovery 前使用专用连接和 advisory lock 串行升级；获取或释放失败销毁会话，不放回池。
+- content-fetch schema 强制 `candidateCount === candidateIds.length`，最大 101；MySQL 解析、OpenAPI、样例、生成前端类型和公开响应一致。旧 row 中 null/缺失 executions 按空数组恢复。
 
 ## TDD 证据
 
-- 搜索纵向链路 RED：`0/1`，失败于 enrichment 未在 candidate pipeline 前执行；实现后 enrichment/search focused 为 `16/16`。
-- 单独 content-fetch RED：`0/1`，失败于无 Run 链接未持久评论事件/证据/候选；GREEN 后通过。
-- Run content-fetch shard RED：`0/1`，失败于评论候选未进入原有 pipeline；GREEN 后 discovery 组合套件 `26/26`。
-- Application tracer RED：`0/1`，provider calls 为空；GREEN 后 memory runtime 的 search/content-fetch 双路径均触达同一 enrichment 组合，并保存 `1 event / 1 evidence / 1 strong candidate`。
-- 计划 public-provider 快照 RED：`0/1`，合法无凭证快照被 503 拒绝；GREEN 后正向和 provider/kind/status/version/connectionId 负向矩阵通过。
-- MySQL JSON/status CHECK RED：分别 `0/1`；GREEN 后 `13/13`。
-- sampled 计数与 ingestion 内部错误边界 RED：`0/2`；GREEN 后 `2/2`。
-- contract summary RED：`0/1`；生成类型 stale gate RED；同步 schema/样例/OpenAPI/生成物后 GREEN。
+- Review batch A RED：`53 tests / 48 pass / 5 fail`：direct/Run context 复用、exact replay `FETCH_ATTEMPT_CONFLICT`、缺 transport budget/记账、search 超预算后仍进 candidate pipeline。
+- Review batch B RED：5 个定向用例全部失败：Provider 全局状态、cursor loop、不完整 Evidence、非 canonical connectionId、`no_public_comments` 组合状态；application canonical 负例 `0/1`。
+- Review batch C RED：MySQL discovery/status execution 3 个定向用例 `0/3`；contract `candidateCount=3/candidateIds=2` 反例当时被错误接受，`0/1`。
+- Durable execution RED：create 未同步持久 direct intent，`0/1`；direct/Run 真实 `Promise.all` 交错触发 `RESOURCE_NOT_FOUND`，`0/1`。
+- Recovery/MySQL RED：原实现无 caller-independent durable recovery；新测试覆盖 restart、tenant scope、exactly-one claim、backoff/fairness、legacy null、migration acquire/release poison。MySQL terminal stale payload 测试精确得到 `[]` 而不是后加 execution，`0/1`；行锁合并后 GREEN。
+- 真实 request usage 审计 RED：单次 HTTP 在 page validation 后显示 `2 !== 1`，`0/1`；按 provider-call baseline 修正后 GREEN。
+- Application focused 曾因严格 Provider provenance 和新增专用 migration connection 报 2 个 fixture 错误；修正 fixture 后 `4/4`。
 
 ## 验证
 
-- Task 5 focused：`55/55`。
-- `acquisition-application-test.ts`：`26/26`；新增双路 tracer 用 focused pattern 自然退出，`2/2`。
-- MySQL discovery repository：`13/13`。
-- contracts schema/examples：`66/66`；drift：`17/17`；backend OpenAPI/响应一致性：`28/28`；generated check 通过。
-- `npm run check:acquisition-contracts`：通过，其中 frontend `184/184`，Baota `75/75`。
-- backend build 和 frontend build：通过；frontend 仅保留已有 Vite chunk-size warning。
-- Full acquisition：`757 tests / 755 pass / 2 fail`。命令使用 `NODE_ENV=test TZ=UTC ... node --import tsx --test --test-concurrency=1 --test-force-exit backend/src/model-config... backend/src/acquisition-*-test.ts`；唯一失败为已知 Pi 基线 `acquisition-pi-gateway-runtime-test.ts` 和 `acquisition-pi-runtime-factory-test.ts`，两者均为 `MODEL_TOOL_DEFINITION_INVALID`。
+- Discovery operation/router/recovery/MySQL focused：`57/57`。
+- Provider/enrichment/search/events/discovery focused：`83/83`。
+- Application tracer/lifecycle/MySQL schema focused：`4/4`，自然退出。
+- Contracts：`66/66`；drift：`17/17`；OpenAPI/响应一致性：`28/28`；generated type check 通过。
+- `npm run check:acquisition-contracts`：通过；其中 frontend `184/184`，Baota package `2/2`。
+- `npm run build`：backend/frontend 通过；仅有已知 Vite chunk-size warning。
 - `git diff --check`：通过。
+- Full acquisition：`775 tests / 773 pass / 2 fail`。精确命令为 `NODE_ENV=test TZ=UTC JWT_SECRET=goodjob-acquisition-test-secret-at-least-32-characters ACQUISITION_MASTER_SECRET=goodjob-acquisition-master-test-secret-at-least-32-bytes node --import tsx --test --test-concurrency=1 --test-force-exit src/model-config-migration-test.ts src/model-provider-endpoint-registry-test.ts src/model-official-connection-profile-test.ts src/model-connection-idempotency-test.ts src/model-connection-service-test.ts src/model-pending-appends-test.ts src/model-gateway-test.ts src/model-runtime-integration-test.ts src/provider-connection-version-test.ts src/acquisition-*-test.ts`。
+- 两项失败仅为已确认 Pi 基线：`acquisition-pi-gateway-runtime-test.ts` 和 `acquisition-pi-runtime-factory-test.ts`，都是 `MODEL_TOOL_DEFINITION_INVALID`。
 
 ## 安全与文档
 
-- 未复制或接入 cv-cat/DouYin_Spider 的 Cookie、逆向签名、指纹伪装、私信或互动代码；执行端只使用固定注入的无凭证公开样本 provider。
-- `contracts/README.md`、当前 design 与执行 plan 已改为真实搜索/content-fetch/单链接语义；BrowserAct/视觉读取段落保持不变。
+- 未复制或接入 cv-cat/DouYin_Spider 的 Cookie、逆向签名、指纹伪装、私信或互动代码；只使用固定注入的无凭证公开样本 Provider。
+- `contracts/README.md`、当前 design 和执行 plan 已按持久 context/recovery、严格 Evidence、真实 usage、canonical connection 和空覆盖语义同步。BrowserAct/OCR 章节保持不变。

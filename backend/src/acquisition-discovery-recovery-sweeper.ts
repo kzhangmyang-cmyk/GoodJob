@@ -18,7 +18,8 @@ export interface AcquisitionDiscoveryRecoverySweeperOptions {
   service: AcquisitionDiscoveryRecoveryPort;
   dispatchContentFetchOperation(
     scope: AcquisitionDiscoveryScope,
-    operationId: string
+    operationId: string,
+    executionId?: string
   ): Promise<unknown>;
   dispatchImportOperation(
     scope: AcquisitionDiscoveryScope,
@@ -170,8 +171,13 @@ export class AcquisitionDiscoveryRecoverySweeper {
         actorId: operation.actorId
       };
       try {
-        if (operation.kind === "content_fetch") {
-          await this.dispatchContentFetchOperation(scope, operation.id);
+        if (operation.kind === "content_fetch"
+          || operation.kind === "content_fetch_comment_enrichment") {
+          await this.dispatchContentFetchOperation(
+            scope,
+            operation.id,
+            operation.executionId
+          );
         } else {
           await this.dispatchImportOperation(scope, operation.id);
         }

@@ -284,6 +284,15 @@ test("content fetch operations expose persisted public comment enrichment summar
     validateCase("content-fetch-operation", operation).valid,
     true
   );
+  assert.equal(
+    validateCase("content-fetch-operation", {
+      ...operation,
+      candidateCount: 3,
+      candidateIds: ["original-candidate", "comment-candidate"]
+    }).valid,
+    false,
+    "candidateCount must equal candidateIds.length exactly"
+  );
 });
 
 test("import operations expose row outcomes and downstream evidence and candidate links", async () => {

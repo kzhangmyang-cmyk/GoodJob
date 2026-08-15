@@ -1,7 +1,16 @@
 import type mysql from "mysql2/promise";
+import type {
+  AcquisitionDouyinCommentEnrichmentResult
+} from "./acquisition-douyin-comment-enrichment.js";
+import {
+  poisonAcquisitionMysqlConnection,
+  releaseAcquisitionMysqlConnection,
+  releaseAcquisitionMysqlNamedLocks
+} from "./acquisition-mysql-named-lock.js";
 import {
   AcquisitionDiscoveryOperationError,
   type AcquisitionDiscoveryClaim,
+  type AcquisitionContentFetchCommentExecution,
   type AcquisitionContentFetchOperationRecord,
   type AcquisitionDiscoveryOperationRepository,
   type AcquisitionDiscoveryRecoveryQuery,
@@ -16,6 +25,33 @@ type OperationScope = Pick<
   AcquisitionDiscoveryScope,
   "ownerId" | "teamId"
 >;
+
+const ACQUISITION_DISCOVERY_SCHEMA_MIGRATION_LOCK =
+  "acquisition:discovery-schema:v1";
+const ACQUISITION_DISCOVERY_SCHEMA_MIGRATION_LOCK_TIMEOUT_SECONDS = 30;
+export const ACQUISITION_DISCOVERY_SCHEMA_MIGRATION_LOCK_FAILED =
+  "ACQUISITION_DISCOVERY_SCHEMA_MIGRATION_LOCK_FAILED";
+
+async function acquireDiscoverySchemaMigrationLock(
+  connection: mysql.PoolConnection
+) {
+  try {
+    const [result] = await connection.query(
+      "SELECT GET_LOCK(?, ?) AS lock_acquired",
+      [
+        ACQUISITION_DISCOVERY_SCHEMA_MIGRATION_LOCK,
+        ACQUISITION_DISCOVERY_SCHEMA_MIGRATION_LOCK_TIMEOUT_SECONDS
+      ]
+    );
+    const row = Array.isArray(result)
+      ? result[0] as Record<string, unknown> | undefined
+      : undefined;
+    if (Number(row?.lock_acquired) !== 1) throw new Error();
+  } catch {
+    poisonAcquisitionMysqlConnection(connection);
+    throw new Error(ACQUISITION_DISCOVERY_SCHEMA_MIGRATION_LOCK_FAILED);
+  }
+}
 
 export const ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS acquisition_content_fetch_operations (
@@ -94,21 +130,26 @@ export const ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS = [
 export async function ensureAcquisitionDiscoveryMysqlSchema(
   pool: mysql.Pool
 ) {
-  for (const statement of ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS) {
-    try {
-      await pool.query(statement);
-    } catch (error) {
-      const code = (error as { code?: unknown } | null)?.code;
-      if (
-        code !== "ER_DUP_FIELDNAME"
-        && code !== "ER_DUP_KEYNAME"
-      ) {
-        throw error;
+  const connection = await pool.getConnection();
+  let lockAcquired = false;
+  try {
+    await acquireDiscoverySchemaMigrationLock(connection);
+    lockAcquired = true;
+    for (const statement of ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS) {
+      try {
+        await connection.query(statement);
+      } catch (error) {
+        const code = (error as { code?: unknown } | null)?.code;
+        if (
+          code !== "ER_DUP_FIELDNAME"
+          && code !== "ER_DUP_KEYNAME"
+        ) {
+          throw error;
+        }
       }
     }
-  }
-  const [rows] = await pool.query<mysql.RowDataPacket[]>(
-    `SELECT cc.CHECK_CLAUSE AS check_clause
+    const [rows] = await connection.query(
+      `SELECT cc.CHECK_CLAUSE AS check_clause
        FROM information_schema.TABLE_CONSTRAINTS tc
        JOIN information_schema.CHECK_CONSTRAINTS cc
          ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA
@@ -117,23 +158,36 @@ export async function ensureAcquisitionDiscoveryMysqlSchema(
         AND tc.TABLE_NAME = 'acquisition_content_fetch_operations'
         AND tc.CONSTRAINT_NAME = 'chk_acquisition_fetch_status'
         AND tc.CONSTRAINT_TYPE = 'CHECK'`
-  );
-  const checkClause = rows[0]?.check_clause;
-  const statusCheck = `CHECK (status IN (
+    );
+    const checkClause = Array.isArray(rows)
+      ? (rows[0] as Record<string, unknown> | undefined)?.check_clause
+      : undefined;
+    const statusCheck = `CHECK (status IN (
     'queued','running','succeeded','partial_success','failed',
     'access_restricted'
   ))`;
-  if (typeof checkClause !== "string") {
-    await pool.query(
-      `ALTER TABLE acquisition_content_fetch_operations
+    if (typeof checkClause !== "string") {
+      await connection.query(
+        `ALTER TABLE acquisition_content_fetch_operations
          ADD CONSTRAINT chk_acquisition_fetch_status ${statusCheck}`
-    );
-  } else if (!checkClause.includes("partial_success")) {
-    await pool.query(
-      `ALTER TABLE acquisition_content_fetch_operations
+      );
+    } else if (!checkClause.includes("partial_success")) {
+      await connection.query(
+        `ALTER TABLE acquisition_content_fetch_operations
          DROP CHECK chk_acquisition_fetch_status,
          ADD CONSTRAINT chk_acquisition_fetch_status ${statusCheck}`
-    );
+      );
+    }
+  } finally {
+    try {
+      if (lockAcquired) {
+        await releaseAcquisitionMysqlNamedLocks(connection, [
+          ACQUISITION_DISCOVERY_SCHEMA_MIGRATION_LOCK
+        ]);
+      }
+    } finally {
+      releaseAcquisitionMysqlConnection(connection);
+    }
   }
 }
 
@@ -223,7 +277,7 @@ function parsedCommentSampleSummary(value: unknown) {
   if (!COMMENT_ENRICHMENT_STATUSES.has(String(summary.status))
     || countKeys.some((key) => !safeCount(summary[key]))
     || !Array.isArray(summary.candidateIds)
-    || summary.candidateIds.length > 2_000
+    || summary.candidateIds.length > 100
     || summary.candidateIds.some(
       (id) => typeof id !== "string" || !id
     )
@@ -258,6 +312,63 @@ function parsedCommentSampleSummary(value: unknown) {
     );
   }
   return summary;
+}
+
+function parsedCommentExecutions(value: unknown) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 1_000) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:comment_executions"
+    );
+  }
+  const ids = new Set<string>();
+  return value.map((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(
+        "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:comment_execution"
+      );
+    }
+    const execution = raw as Record<string, unknown>;
+    const policy = execution.policy as Record<string, unknown> | undefined;
+    const budget = execution.remainingBudget as
+      Record<string, unknown> | undefined;
+    const status = String(execution.status);
+    const executionId = String(execution.executionId ?? "");
+    if (!executionId || ids.has(executionId)
+      || typeof execution.contextKey !== "string"
+      || !execution.contextKey
+      || !["queued", "running", "succeeded"].includes(status)
+      || !policy
+      || typeof policy.enabled !== "boolean"
+      || !safeCount(policy.maxVideosPerRun, 20)
+      || Number(policy.maxVideosPerRun) < 1
+      || !safeCount(policy.maxCommentsPerVideo, 100)
+      || Number(policy.maxCommentsPerVideo) < 1
+      || !safeCount(policy.maxPagesPerVideo, 5)
+      || Number(policy.maxPagesPerVideo) < 1
+      || !budget
+      || !safeCount(budget.requests)
+      || !safeCount(budget.results)
+      || !safeCount(execution.attemptCount)
+      || typeof execution.nextAttemptAt !== "string"
+      || !Number.isFinite(Date.parse(execution.nextAttemptAt))
+      || typeof execution.createdAt !== "string"
+      || !Number.isFinite(Date.parse(execution.createdAt))
+      || typeof execution.updatedAt !== "string"
+      || !Number.isFinite(Date.parse(execution.updatedAt))) {
+      throw new Error(
+        "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:comment_execution"
+      );
+    }
+    ids.add(executionId);
+    execution.summary = parsedCommentSampleSummary(execution.summary);
+    if ((status === "succeeded") !== (execution.summary !== null)) {
+      throw new Error(
+        "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:comment_execution_summary"
+      );
+    }
+    return execution as unknown as AcquisitionContentFetchCommentExecution;
+  });
 }
 
 function parsedFetch(row: MysqlRow) {
@@ -324,12 +435,15 @@ function parsedFetch(row: MysqlRow) {
   payload.commentSampleSummary = parsedCommentSampleSummary(
     payload.commentSampleSummary
   );
+  payload.commentEnrichmentExecutions = parsedCommentExecutions(
+    payload.commentEnrichmentExecutions
+  );
   if (!Array.isArray(payload.candidateIds)
     || payload.candidateIds.some((id) => typeof id !== "string" || !id)
     || new Set(payload.candidateIds).size !== payload.candidateIds.length
     || !Number.isSafeInteger(payload.candidateCount)
     || Number(payload.candidateCount) !== payload.candidateIds.length
-    || Number(payload.candidateCount) > 2_001) {
+    || Number(payload.candidateCount) > 101) {
     throw new Error(
       "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:candidate_association"
     );
@@ -434,12 +548,15 @@ function recoverableRow(
   row: MysqlRow
 ): AcquisitionRecoverableDiscoveryOperation {
   const payload = parsePayload(row.payload_json, "recovery_operation");
-  const kind = "artifactCiphertext" in payload
-    ? "import"
-    : "content_fetch";
+  const kind = row.recovery_kind === "content_fetch_comment_enrichment"
+    ? "content_fetch_comment_enrichment"
+    : "artifactCiphertext" in payload ? "import" : "content_fetch";
   return {
     kind,
     id: requiredString(payload, "id"),
+    ...(typeof row.execution_id === "string"
+      ? { executionId: row.execution_id }
+      : {}),
     ownerId: requiredString(payload, "ownerId"),
     teamId: requiredString(payload, "teamId"),
     actorId: requiredString(payload, "actorId"),
@@ -463,6 +580,57 @@ async function selectedRows(
 export class MysqlAcquisitionDiscoveryOperationRepository
 implements AcquisitionDiscoveryOperationRepository {
   constructor(private readonly pool: mysql.Pool) {}
+
+  private async mutateFetch<T>(
+    scope: OperationScope,
+    id: string,
+    mutate: (operation: AcquisitionContentFetchOperationRecord) => T
+  ) {
+    const connection = await this.pool.getConnection();
+    let transactionStarted = false;
+    try {
+      await connection.beginTransaction();
+      transactionStarted = true;
+      const rows = await selectedRows(
+        connection,
+        `SELECT payload_json
+         FROM acquisition_content_fetch_operations
+         WHERE id = ? AND owner_id = ? AND team_id = ?
+         FOR UPDATE`,
+        [id, scope.ownerId, scope.teamId]
+      );
+      if (!rows[0]) {
+        throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
+      }
+      const operation = parsedFetch(rows[0]);
+      const result = mutate(operation);
+      await connection.query(
+        `UPDATE acquisition_content_fetch_operations
+         SET payload_json = ?, updated_at = ?
+         WHERE id = ? AND owner_id = ? AND team_id = ?`,
+        [
+          json(operation),
+          mysqlDate(operation.commentEnrichmentExecutions
+            ?.reduce((latest, execution) =>
+              execution.updatedAt > latest ? execution.updatedAt : latest,
+            operation.createdAt) ?? operation.createdAt),
+          id,
+          scope.ownerId,
+          scope.teamId
+        ]
+      );
+      await connection.commit();
+      transactionStarted = false;
+      return clone(result);
+    } catch (error) {
+      if (transactionStarted) {
+        await connection.rollback().catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
 
   async createContentFetchOperation(
     operation: AcquisitionContentFetchOperationRecord
@@ -592,39 +760,195 @@ implements AcquisitionDiscoveryOperationRepository {
     operation: AcquisitionContentFetchOperationRecord,
     leaseToken: string
   ) {
-    const stored = {
-      ...operation,
-      leaseOwner: null,
-      leaseToken: null,
-      leaseExpiresAt: null
-    };
-    const [result] = await this.pool.query(
-      `UPDATE acquisition_content_fetch_operations
-       SET status = ?,
-           lease_owner = NULL,
-           lease_token = NULL,
-           lease_expires_at = NULL,
-           payload_json = ?,
-           updated_at = ?
-       WHERE id = ? AND owner_id = ? AND team_id = ?
-         AND status = 'running' AND lease_token = ?`,
-      [
-        stored.status,
-        json(stored),
-        mysqlDate(operation.completedAt ?? operation.startedAt
-          ?? operation.createdAt),
-        operation.id,
-        operation.ownerId,
-        operation.teamId,
-        leaseToken
-      ]
-    );
-    if (affectedRows(result) !== 1) {
-      throw new AcquisitionDiscoveryOperationError(
-        "OPERATION_ALREADY_RUNNING",
-        "OPERATION_LEASE_LOST"
+    const connection = await this.pool.getConnection();
+    let transactionStarted = false;
+    try {
+      await connection.beginTransaction();
+      transactionStarted = true;
+      const rows = await selectedRows(
+        connection,
+        `SELECT payload_json
+         FROM acquisition_content_fetch_operations
+         WHERE id = ? AND owner_id = ? AND team_id = ?
+         FOR UPDATE`,
+        [operation.id, operation.ownerId, operation.teamId]
       );
+      if (!rows[0]) {
+        throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
+      }
+      const current = parsedFetch(rows[0]);
+      if (current.status !== "running"
+        || current.leaseToken !== leaseToken) {
+        throw new AcquisitionDiscoveryOperationError(
+          "OPERATION_ALREADY_RUNNING",
+          "OPERATION_LEASE_LOST"
+        );
+      }
+      const stored = {
+        ...operation,
+        commentEnrichmentExecutions:
+          current.commentEnrichmentExecutions ?? [],
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null
+      };
+      await connection.query(
+        `UPDATE acquisition_content_fetch_operations
+         SET status = ?,
+             lease_owner = NULL,
+             lease_token = NULL,
+             lease_expires_at = NULL,
+             payload_json = ?,
+             updated_at = ?
+         WHERE id = ? AND owner_id = ? AND team_id = ?`,
+        [
+          stored.status,
+          json(stored),
+          mysqlDate(operation.completedAt ?? operation.startedAt
+            ?? operation.createdAt),
+          operation.id,
+          operation.ownerId,
+          operation.teamId
+        ]
+      );
+      await connection.commit();
+      transactionStarted = false;
+    } catch (error) {
+      if (transactionStarted) {
+        await connection.rollback().catch(() => undefined);
+      }
+      throw error;
+    } finally {
+      connection.release();
     }
+  }
+
+  async putContentFetchCommentExecution(
+    scope: OperationScope,
+    operationId: string,
+    execution: AcquisitionContentFetchCommentExecution
+  ) {
+    return this.mutateFetch(scope, operationId, (operation) => {
+      const executions = operation.commentEnrichmentExecutions ?? [];
+      const existing = executions.find((candidate) =>
+        candidate.executionId === execution.executionId);
+      if (existing) {
+        const immutable = ({
+          contextKey, runId, shardId, policy, remainingBudget
+        }: AcquisitionContentFetchCommentExecution) => ({
+          contextKey, runId, shardId, policy, remainingBudget
+        });
+        if (json(immutable(existing)) !== json(immutable(execution))) {
+          throw new AcquisitionDiscoveryOperationError(
+            "IDEMPOTENCY_CONFLICT"
+          );
+        }
+        return existing;
+      }
+      executions.push(clone(execution));
+      operation.commentEnrichmentExecutions = executions;
+      return execution;
+    });
+  }
+
+  async claimContentFetchCommentExecution(
+    scope: OperationScope,
+    operationId: string,
+    executionId: string,
+    claim: AcquisitionDiscoveryClaim
+  ) {
+    return this.mutateFetch(scope, operationId, (operation) => {
+      const execution = operation.commentEnrichmentExecutions?.find(
+        (candidate) => candidate.executionId === executionId
+      );
+      if (!execution) return { execution: null, claimed: false };
+      if (execution.status === "succeeded") {
+        return { execution, claimed: false };
+      }
+      const eligible = execution.status === "queued"
+        ? execution.nextAttemptAt <= claim.claimedAt
+        : Boolean(execution.leaseExpiresAt
+          && execution.leaseExpiresAt <= claim.claimedAt);
+      if (!eligible) return { execution, claimed: false };
+      execution.status = "running";
+      execution.attemptCount += 1;
+      execution.leaseOwner = claim.leaseOwner;
+      execution.leaseToken = claim.leaseToken;
+      execution.leaseExpiresAt = claim.leaseExpiresAt;
+      execution.updatedAt = claim.claimedAt;
+      return { execution, claimed: true };
+    });
+  }
+
+  async completeContentFetchCommentExecution(
+    scope: OperationScope,
+    operationId: string,
+    executionId: string,
+    leaseToken: string,
+    summary: AcquisitionDouyinCommentEnrichmentResult,
+    completedAt: string
+  ) {
+    return this.mutateFetch(scope, operationId, (operation) => {
+      const execution = operation.commentEnrichmentExecutions?.find(
+        (candidate) => candidate.executionId === executionId
+      );
+      if (!execution) {
+        throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
+      }
+      if (execution.status === "succeeded") return execution;
+      if (execution.status !== "running"
+        || execution.leaseToken !== leaseToken) {
+        throw new AcquisitionDiscoveryOperationError(
+          "OPERATION_ALREADY_RUNNING",
+          "OPERATION_LEASE_LOST"
+        );
+      }
+      Object.assign(execution, {
+        status: "succeeded",
+        summary: clone(summary),
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        lastErrorCode: null,
+        updatedAt: completedAt,
+        completedAt
+      });
+      return execution;
+    });
+  }
+
+  async failContentFetchCommentExecution(
+    scope: OperationScope,
+    operationId: string,
+    executionId: string,
+    leaseToken: string,
+    failedAt: string
+  ) {
+    await this.mutateFetch(scope, operationId, (operation) => {
+      const execution = operation.commentEnrichmentExecutions?.find(
+        (candidate) => candidate.executionId === executionId
+      );
+      if (!execution) {
+        throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
+      }
+      if (execution.status !== "running"
+        || execution.leaseToken !== leaseToken) {
+        throw new AcquisitionDiscoveryOperationError(
+          "OPERATION_ALREADY_RUNNING",
+          "OPERATION_LEASE_LOST"
+        );
+      }
+      execution.status = "queued";
+      execution.nextAttemptAt = new Date(
+        Date.parse(failedAt)
+          + Math.min(60_000, 2 ** execution.attemptCount * 1_000)
+      ).toISOString();
+      execution.leaseOwner = null;
+      execution.leaseToken = null;
+      execution.leaseExpiresAt = null;
+      execution.lastErrorCode = "COMMENT_ENRICHMENT_FAILED";
+      execution.updatedAt = failedAt;
+    });
   }
 
   async createImportOperation(
@@ -789,9 +1113,10 @@ implements AcquisitionDiscoveryOperationRepository {
   ) {
     const rows = await selectedRows(
       this.pool,
-      `SELECT payload_json, created_at, id
+      `SELECT payload_json, created_at, id, execution_id, recovery_kind
        FROM (
-         SELECT payload_json, created_at, id
+         SELECT payload_json, created_at, id, NULL AS execution_id,
+           'content_fetch' AS recovery_kind
          FROM acquisition_content_fetch_operations
          WHERE status = 'queued'
            OR (
@@ -802,10 +1127,35 @@ implements AcquisitionDiscoveryOperationRepository {
                  lease_expires_at IS NULL
                  AND updated_at <= ?
                )
-             )
            )
+         )
          UNION ALL
-         SELECT payload_json, created_at, id
+         SELECT operations.payload_json,
+           enrichments.next_attempt_at AS created_at,
+           operations.id,
+           enrichments.execution_id,
+           'content_fetch_comment_enrichment' AS recovery_kind
+         FROM acquisition_content_fetch_operations operations
+         JOIN JSON_TABLE(
+           operations.payload_json,
+           '$.commentEnrichmentExecutions[*]' COLUMNS (
+             execution_id VARCHAR(160) PATH '$.executionId',
+             execution_status VARCHAR(32) PATH '$.status',
+             next_attempt_at VARCHAR(40) PATH '$.nextAttemptAt',
+             execution_lease_expires_at VARCHAR(40)
+               PATH '$.leaseExpiresAt' NULL ON EMPTY
+           )
+         ) enrichments
+         WHERE (
+           enrichments.execution_status = 'queued'
+           AND enrichments.next_attempt_at <= ?
+         ) OR (
+           enrichments.execution_status = 'running'
+           AND enrichments.execution_lease_expires_at <= ?
+         )
+         UNION ALL
+         SELECT payload_json, created_at, id, NULL AS execution_id,
+           'import' AS recovery_kind
          FROM acquisition_import_operations
          WHERE status = 'queued'
            OR (
@@ -824,6 +1174,8 @@ implements AcquisitionDiscoveryOperationRepository {
       [
         mysqlDate(input.now),
         mysqlDate(input.staleRunningBefore),
+        input.now,
+        input.now,
         mysqlDate(input.now),
         mysqlDate(input.staleRunningBefore),
         input.limit

@@ -237,7 +237,7 @@ implements AcquisitionDouyinCommentEnrichmentPort {
         discoveryOperationId: input.discoveryOperationId,
         videoId: source.videoId
       });
-      await this.events.startFetchAttempt({
+      const startedAttempt = await this.events.startFetchAttempt({
         scope: input.scope,
         attemptId: fetchAttemptId,
         runId: input.runId,
@@ -253,6 +253,9 @@ implements AcquisitionDouyinCommentEnrichmentPort {
       let videoComments = 0;
       let reportedCommentCount: number | null = null;
       let videoError: DouyinPublicCommentProviderErrorCode | null = null;
+      let providerCallRequestBaseline = requests;
+      const seenCommentIds = new Set<string>();
+      const visitedCursors = new Set<number>([0]);
       try {
         while (videoPages < input.policy.maxPagesPerVideo
           && videoComments < input.policy.maxCommentsPerVideo
@@ -264,20 +267,52 @@ implements AcquisitionDouyinCommentEnrichmentPort {
             input.remainingBudget.results - commentsSampled,
             100
           );
-          requests += 1;
+          providerCallRequestBaseline = requests;
           const page = await this.provider.fetchTopLevelSample({
             videoId: source.videoId,
             sourceUrl: source.sourceUrl,
             cursor,
             count,
+            transportRequestBudget:
+              input.remainingBudget.requests - requests,
             signal: input.signal
           });
+          const transportRequestCount =
+            page.metadata.transportRequestCount ?? 1;
+          if (!Number.isSafeInteger(transportRequestCount)
+            || transportRequestCount < 1
+            || transportRequestCount
+              > input.remainingBudget.requests - requests) {
+            throw new DouyinPublicCommentProviderError(
+              "source_payload_invalid",
+              Math.max(0, Number(transportRequestCount) || 0)
+            );
+          }
+          requests += transportRequestCount;
           assertNotAborted(input.signal);
           if (page.comments.length > count) {
             throw new DouyinPublicCommentProviderError(
               "source_payload_invalid"
             );
           }
+          const deduplicatedComments = page.comments.filter((comment) => {
+            if (seenCommentIds.has(comment.commentId)) return false;
+            seenCommentIds.add(comment.commentId);
+            return true;
+          });
+          const duplicateCommentCount = page.comments.length
+            - deduplicatedComments.length;
+          const authoritativePage = {
+            ...page,
+            comments: deduplicatedComments,
+            capturedAt: startedAttempt.attempt.startedAt,
+            metadata: {
+              ...page.metadata,
+              returnedCommentCount: deduplicatedComments.length,
+              duplicateCommentCount:
+                page.metadata.duplicateCommentCount + duplicateCommentCount
+            }
+          };
           const ingested = await this.ingestion.ingestSample({
             scope: input.scope,
             runId: input.runId,
@@ -285,9 +320,9 @@ implements AcquisitionDouyinCommentEnrichmentPort {
             discoveryOperationId: input.discoveryOperationId,
             sourceUrl: source.sourceUrl,
             videoId: source.videoId,
-            page
+            page: authoritativePage
           });
-          const sampledCount = page.comments.length;
+          const sampledCount = deduplicatedComments.length;
           videoPages += 1;
           pagesFetched += 1;
           videoComments += sampledCount;
@@ -303,7 +338,9 @@ implements AcquisitionDouyinCommentEnrichmentPort {
               newCandidateIds.add(candidateId);
             }
           }
-          if (!page.hasMore || page.nextCursor === null) break;
+          if (!page.hasMore || page.nextCursor === null
+            || visitedCursors.has(page.nextCursor)) break;
+          visitedCursors.add(page.nextCursor);
           cursor = page.nextCursor;
         }
       } catch (error) {
@@ -337,6 +374,13 @@ implements AcquisitionDouyinCommentEnrichmentPort {
           );
           throw error;
         }
+        const consumedRequests = error.transportRequestCount > 0
+          ? error.transportRequestCount
+          : requests === providerCallRequestBaseline ? 1 : 0;
+        requests += Math.min(
+          consumedRequests,
+          input.remainingBudget.requests - requests
+        );
         videoError = providerErrorCode(error);
         errors.push({ ...source, code: videoError });
       }
@@ -355,12 +399,11 @@ implements AcquisitionDouyinCommentEnrichmentPort {
       });
     }
 
-    const onlyEmpty = errors.length > 0
-      && errors.every((error) => error.code === "no_public_comments");
+    const hardErrors = errors.filter((error) =>
+      error.code !== "no_public_comments");
     const status: AcquisitionDouyinCommentEnrichmentStatus =
-      errors.length > 0
-        ? commentsSampled > 0 ? "partial_success"
-          : onlyEmpty ? "succeeded_empty" : "failed"
+      hardErrors.length > 0
+        ? commentsSampled > 0 ? "partial_success" : "failed"
         : commentsSampled > 0 ? "succeeded" : "succeeded_empty";
     return {
       status,

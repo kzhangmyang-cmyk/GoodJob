@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type mysql from "mysql2/promise";
 import {
   AcquisitionDiscoveryOperationError,
+  type AcquisitionContentFetchCommentExecution,
   type AcquisitionContentFetchOperationRecord,
   type AcquisitionImportOperationRecord
 } from "./acquisition-discovery-operations.js";
@@ -33,6 +34,114 @@ class FakePool {
     }
     return this.queue.shift() ?? [{ affectedRows: 1 }, []];
   }
+
+  async getConnection() {
+    return {
+      query: (sql: string, values: unknown[] = []) => {
+        if (sql.includes("GET_LOCK")) {
+          this.calls.push({
+            sql: sql.replace(/\s+/gu, " ").trim(),
+            values
+          });
+          return Promise.resolve([[{ lock_acquired: 1 }], []]);
+        }
+        if (sql.includes("RELEASE_LOCK")) {
+          this.calls.push({
+            sql: sql.replace(/\s+/gu, " ").trim(),
+            values
+          });
+          return Promise.resolve([[{ lock_released: 1 }], []]);
+        }
+        return this.query(sql, values);
+      },
+      async beginTransaction() {},
+      async commit() {},
+      async rollback() {},
+      release() {},
+      destroy() {}
+    };
+  }
+}
+
+class StatefulFetchPool {
+  readonly calls: string[] = [];
+  operation: AcquisitionContentFetchOperationRecord;
+  private transactionTail: Promise<void> = Promise.resolve();
+
+  constructor(operation: AcquisitionContentFetchOperationRecord) {
+    this.operation = structuredClone(operation);
+  }
+
+  async query(sql: string, values: unknown[] = []) {
+    this.calls.push(sql.replace(/\s+/gu, " ").trim());
+    if (sql.includes("UPDATE acquisition_content_fetch_operations")
+      && sql.includes("SET status = ?")) {
+      this.operation = JSON.parse(String(values[1])) as
+        AcquisitionContentFetchOperationRecord;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (sql.includes("FROM acquisition_content_fetch_operations")) {
+      const [id, ownerId, teamId] = values;
+      return [[
+        id === this.operation.id
+          && ownerId === this.operation.ownerId
+          && teamId === this.operation.teamId
+          ? { payload_json: JSON.stringify(this.operation) }
+          : undefined
+      ].filter(Boolean), []];
+    }
+    return [{ affectedRows: 1 }, []];
+  }
+
+  async getConnection() {
+    let unlock: (() => void) | null = null;
+    return {
+      beginTransaction: async () => {
+        const previous = this.transactionTail;
+        let release!: () => void;
+        const current = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        this.transactionTail = previous.then(() => current);
+        await previous;
+        unlock = release;
+      },
+      query: async (sql: string, values: unknown[] = []) => {
+        this.calls.push(sql.replace(/\s+/gu, " ").trim());
+        if (sql.includes("SELECT payload_json")
+          && sql.includes("FOR UPDATE")) {
+          const [id, ownerId, teamId] = values;
+          const matches = id === this.operation.id
+            && ownerId === this.operation.ownerId
+            && teamId === this.operation.teamId;
+          return [matches ? [{
+            payload_json: JSON.stringify(this.operation)
+          }] : [], []];
+        }
+        if (sql.includes("SET status = ?")) {
+          this.operation = JSON.parse(String(values[1])) as
+            AcquisitionContentFetchOperationRecord;
+          return [{ affectedRows: 1 }, []];
+        }
+        if (sql.includes("SET payload_json = ?")) {
+          this.operation = JSON.parse(String(values[0])) as
+            AcquisitionContentFetchOperationRecord;
+          return [{ affectedRows: 1 }, []];
+        }
+        throw new Error(`unexpected SQL: ${sql}`);
+      },
+      commit: async () => {
+        unlock?.();
+        unlock = null;
+      },
+      rollback: async () => {
+        unlock?.();
+        unlock = null;
+      },
+      release() {},
+      destroy() {}
+    };
+  }
 }
 
 function asPool(pool: FakePool) {
@@ -59,6 +168,7 @@ const fetchOperation: AcquisitionContentFetchOperationRecord = {
   candidateCount: 0,
   candidateIds: [],
   commentSampleSummary: null,
+  commentEnrichmentExecutions: [],
   errorCode: null,
   idempotencyKeyHash: "a".repeat(64),
   requestHash: `sha256:${"b".repeat(64)}`,
@@ -102,7 +212,7 @@ test("discovery operation schema creates durable tenant and idempotency indexes"
   await ensureAcquisitionDiscoveryMysqlSchema(asPool(pool));
   assert.equal(
     pool.calls.length,
-    ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS.length + 1
+    ACQUISITION_DISCOVERY_MYSQL_SCHEMA_STATEMENTS.length + 3
   );
   const schema = pool.calls.map((call) => call.sql).join("\n");
   assert.match(schema, /acquisition_content_fetch_operations/);
@@ -149,6 +259,161 @@ test("discovery schema upgrades the legacy content-fetch status check for partia
       assert.deepEqual(migration, []);
     }
   }
+});
+
+class ConcurrentDiscoveryMigrationPool {
+  readonly calls: Array<{
+    sql: string;
+    dedicated: boolean;
+  }> = [];
+  getConnectionCalls = 0;
+  releases = 0;
+  destroys = 0;
+  statusClause =
+    "status in ('queued','running','succeeded','failed','access_restricted')";
+  statusAlterations = 0;
+  private lockHeld = false;
+  private readonly lockWaiters: Array<() => void> = [];
+  private unlockedPoolChecks = 0;
+  private releasePoolChecks: (() => void) | null = null;
+
+  private async handle(sql: string, dedicated: boolean) {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    this.calls.push({ sql: normalized, dedicated });
+    if (normalized.includes("GET_LOCK")) {
+      if (this.lockHeld) {
+        await new Promise<void>((resolve) => {
+          this.lockWaiters.push(resolve);
+        });
+      }
+      this.lockHeld = true;
+      return [[{ lock_acquired: 1 }], []];
+    }
+    if (normalized.includes("RELEASE_LOCK")) {
+      this.lockHeld = false;
+      this.lockWaiters.shift()?.();
+      return [[{ lock_released: 1 }], []];
+    }
+    if (normalized.includes("CHECK_CONSTRAINTS")) {
+      if (!dedicated) {
+        this.unlockedPoolChecks += 1;
+        if (this.unlockedPoolChecks === 1) {
+          await new Promise<void>((resolve) => {
+            this.releasePoolChecks = resolve;
+          });
+        } else {
+          this.releasePoolChecks?.();
+        }
+      }
+      return [[{ check_clause: this.statusClause }], []];
+    }
+    if (normalized.startsWith(
+      "ALTER TABLE acquisition_content_fetch_operations DROP CHECK"
+    ) || normalized.startsWith(
+      "ALTER TABLE acquisition_content_fetch_operations ADD CONSTRAINT"
+    )) {
+      this.statusAlterations += 1;
+      this.statusClause =
+        "status in ('queued','running','succeeded','partial_success','failed','access_restricted')";
+    }
+    return [{ affectedRows: 1 }, []];
+  }
+
+  query(sql: string) {
+    return this.handle(sql, false);
+  }
+
+  async getConnection() {
+    this.getConnectionCalls += 1;
+    return {
+      query: (sql: string) => this.handle(sql, true),
+      release: () => { this.releases += 1; },
+      destroy: () => { this.destroys += 1; }
+    };
+  }
+}
+
+test("concurrent discovery schema startup serializes status migration on a dedicated session", async () => {
+  const pool = new ConcurrentDiscoveryMigrationPool();
+  await Promise.all([
+    ensureAcquisitionDiscoveryMysqlSchema(pool as unknown as mysql.Pool),
+    ensureAcquisitionDiscoveryMysqlSchema(pool as unknown as mysql.Pool)
+  ]);
+
+  assert.equal(pool.getConnectionCalls, 2);
+  assert.equal(pool.statusAlterations, 1);
+  assert.equal(pool.releases, 2);
+  assert.equal(pool.destroys, 0);
+  assert.equal(pool.calls.filter((call) =>
+    call.sql.includes("GET_LOCK")).length, 2);
+  assert.equal(pool.calls.filter((call) =>
+    call.sql.includes("RELEASE_LOCK")).length, 2);
+  assert.equal(pool.calls.every((call) => call.dedicated), true);
+});
+
+test("discovery schema lock failure poisons its dedicated connection", async () => {
+  let releases = 0;
+  let destroys = 0;
+  const connection = {
+    async query(sql: string) {
+      if (sql.includes("GET_LOCK")) {
+        return [[{ lock_acquired: 0 }], []];
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    },
+    release() { releases += 1; },
+    destroy() { destroys += 1; }
+  };
+  const pool = {
+    async query() {
+      return [[{
+        check_clause:
+          "status in ('queued','running','succeeded','partial_success','failed','access_restricted')"
+      }], []];
+    },
+    async getConnection() { return connection; }
+  } as unknown as mysql.Pool;
+
+  await assert.rejects(
+    ensureAcquisitionDiscoveryMysqlSchema(pool),
+    /ACQUISITION_DISCOVERY_SCHEMA_MIGRATION_LOCK_FAILED/
+  );
+  assert.equal(destroys, 1);
+  assert.equal(releases, 0);
+});
+
+test("discovery schema release failure poisons and never returns its session", async () => {
+  let releases = 0;
+  let destroys = 0;
+  const connection = {
+    async query(sql: string) {
+      if (sql.includes("GET_LOCK")) {
+        return [[{ lock_acquired: 1 }], []];
+      }
+      if (sql.includes("RELEASE_LOCK")) {
+        throw new Error("mysql connection lost while releasing lock");
+      }
+      if (sql.includes("CHECK_CONSTRAINTS")) {
+        return [[{
+          check_clause:
+            "status in ('queued','running','succeeded','partial_success','failed','access_restricted')"
+        }], []];
+      }
+      return [{ affectedRows: 1 }, []];
+    },
+    release() { releases += 1; },
+    destroy() { destroys += 1; }
+  };
+  const pool = {
+    async getConnection() { return connection; }
+  } as unknown as mysql.Pool;
+
+  await assert.rejects(
+    ensureAcquisitionDiscoveryMysqlSchema(pool),
+    /ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED/
+  );
+  assert.equal(destroys, 1);
+  assert.equal(releases, 0);
 });
 
 test("mysql repository persists encrypted import artifacts and tenant-scoped fetch records", async () => {
@@ -247,6 +512,187 @@ test("mysql repository round-trips partial comment enrichment and its candidate 
   assert.deepEqual(loaded, operation);
 });
 
+test("mysql comment execution saga survives restart and concurrent claims", async () => {
+  const base: AcquisitionContentFetchOperationRecord = {
+    ...fetchOperation,
+    status: "succeeded",
+    finalUrl: "https://www.douyin.com/video/7536012345678904333",
+    accessStatus: "public_content",
+    httpStatus: 200,
+    contentType: "text/html",
+    title: "公开视频",
+    rawArtifactHash: `sha256:${"1".repeat(64)}`,
+    contentHash: `sha256:${"2".repeat(64)}`,
+    evidenceCount: 1,
+    evidenceIds: ["base-evidence"],
+    startedAt: "2026-07-24T08:00:00.000Z",
+    completedAt: "2026-07-24T08:00:01.000Z"
+  };
+  const pool = new StatefulFetchPool(base);
+  const firstRepository = new MysqlAcquisitionDiscoveryOperationRepository(
+    pool as unknown as mysql.Pool
+  );
+  const execution: AcquisitionContentFetchCommentExecution = {
+    executionId: "comment-execution:mysql-restart",
+    contextKey: "run:run-mysql:shard-mysql",
+    runId: "run-mysql",
+    shardId: "shard-mysql",
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 3,
+      maxPagesPerVideo: 1
+    },
+    remainingBudget: { requests: 1, results: 3 },
+    status: "queued",
+    summary: null,
+    attemptCount: 0,
+    nextAttemptAt: "2026-07-24T08:00:02.000Z",
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    lastErrorCode: null,
+    createdAt: "2026-07-24T08:00:02.000Z",
+    updatedAt: "2026-07-24T08:00:02.000Z",
+    completedAt: null
+  };
+  await firstRepository.putContentFetchCommentExecution(
+    { ownerId: base.ownerId, teamId: base.teamId },
+    base.id,
+    execution
+  );
+  const claim = (worker: string) =>
+    firstRepository.claimContentFetchCommentExecution(
+      { ownerId: base.ownerId, teamId: base.teamId },
+      base.id,
+      execution.executionId,
+      {
+        leaseOwner: worker,
+        leaseToken: `lease-${worker}`,
+        claimedAt: "2026-07-24T08:00:02.000Z",
+        leaseExpiresAt: "2026-07-24T08:10:02.000Z",
+        staleRunningBefore: "2026-07-24T07:50:02.000Z"
+      }
+    );
+  const claims = await Promise.all([claim("a"), claim("b")]);
+  assert.equal(claims.filter((result) => result.claimed).length, 1);
+  const winner = claims.find((result) => result.claimed)!;
+  const summary = {
+    status: "succeeded" as const,
+    videoCount: 1,
+    pagesFetched: 1,
+    commentsSampled: 1,
+    eventCount: 1,
+    evidenceCount: 1,
+    candidateIds: ["candidate-from-comment"],
+    unresolvedActorCount: 0,
+    strongSignalCount: 1,
+    invalidCommentCount: 0,
+    errors: [],
+    usage: {
+      requests: 1,
+      results: 1,
+      amountMinor: 0,
+      durationSeconds: 0
+    }
+  };
+  await firstRepository.completeContentFetchCommentExecution(
+    { ownerId: base.ownerId, teamId: base.teamId },
+    base.id,
+    execution.executionId,
+    winner.execution!.leaseToken!,
+    summary,
+    "2026-07-24T08:00:03.000Z"
+  );
+
+  const restartedRepository =
+    new MysqlAcquisitionDiscoveryOperationRepository(
+      pool as unknown as mysql.Pool
+    );
+  const loaded = await restartedRepository.getContentFetchOperation(
+    { ownerId: base.ownerId, teamId: base.teamId },
+    base.id
+  );
+  assert.deepEqual(
+    loaded?.commentEnrichmentExecutions?.[0]?.summary,
+    summary
+  );
+  const replayClaim = await restartedRepository
+    .claimContentFetchCommentExecution(
+      { ownerId: base.ownerId, teamId: base.teamId },
+      base.id,
+      execution.executionId,
+      {
+        leaseOwner: "restart-worker",
+        leaseToken: "restart-lease",
+        claimedAt: "2026-07-24T08:20:00.000Z",
+        leaseExpiresAt: "2026-07-24T08:30:00.000Z",
+        staleRunningBefore: "2026-07-24T08:10:00.000Z"
+      }
+    );
+  assert.equal(replayClaim.claimed, false);
+  assert.deepEqual(replayClaim.execution?.summary, summary);
+  assert.equal(pool.calls.some((sql) => /FOR UPDATE/u.test(sql)), true);
+});
+
+test("mysql terminal base write preserves an execution added after its claim snapshot", async () => {
+  const running: AcquisitionContentFetchOperationRecord = {
+    ...fetchOperation,
+    status: "running",
+    leaseOwner: "base-worker",
+    leaseToken: "base-lease",
+    leaseExpiresAt: "2026-07-24T08:10:00.000Z",
+    startedAt: "2026-07-24T08:00:00.000Z"
+  };
+  const staleClaimSnapshot = structuredClone(running);
+  const pool = new StatefulFetchPool(running);
+  const repository = new MysqlAcquisitionDiscoveryOperationRepository(
+    pool as unknown as mysql.Pool
+  );
+  const laterExecution: AcquisitionContentFetchCommentExecution = {
+    executionId: "comment-execution:later-run",
+    contextKey: "run:later-run:later-shard",
+    runId: "later-run",
+    shardId: "later-shard",
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 3,
+      maxPagesPerVideo: 1
+    },
+    remainingBudget: { requests: 1, results: 3 },
+    status: "queued",
+    summary: null,
+    attemptCount: 0,
+    nextAttemptAt: "2026-07-24T08:00:01.000Z",
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    lastErrorCode: null,
+    createdAt: "2026-07-24T08:00:01.000Z",
+    updatedAt: "2026-07-24T08:00:01.000Z",
+    completedAt: null
+  };
+  await repository.putContentFetchCommentExecution(
+    { ownerId: running.ownerId, teamId: running.teamId },
+    running.id,
+    laterExecution
+  );
+
+  await repository.putContentFetchOperation({
+    ...staleClaimSnapshot,
+    status: "succeeded",
+    completedAt: "2026-07-24T08:00:02.000Z"
+  }, "base-lease");
+
+  assert.equal(pool.operation.status, "succeeded");
+  assert.deepEqual(
+    pool.operation.commentEnrichmentExecutions?.map((item) =>
+      item.executionId),
+    [laterExecution.executionId]
+  );
+});
+
 test("mysql repository defaults evidence ids for legacy content-fetch payloads", async () => {
   const pool = new FakePool();
   const repository =
@@ -255,6 +701,7 @@ test("mysql repository defaults evidence ids for legacy content-fetch payloads",
     AcquisitionContentFetchOperationRecord
   >;
   delete legacyPayload.evidenceIds;
+  legacyPayload.commentEnrichmentExecutions = null as never;
   pool.enqueue([{ payload_json: JSON.stringify(legacyPayload) }]);
 
   const loaded = await repository.getContentFetchOperation(
@@ -263,6 +710,7 @@ test("mysql repository defaults evidence ids for legacy content-fetch payloads",
   );
 
   assert.deepEqual(loaded?.evidenceIds, []);
+  assert.deepEqual(loaded?.commentEnrichmentExecutions, []);
 });
 
 test("mysql repository marks legacy terminal fetches without evidence ids as refetch-required failures", async () => {
@@ -456,6 +904,8 @@ test("mysql recovery listing is cross-tenant, bounded, and oldest first", async 
   assert.deepEqual(query.values, [
     "2026-07-24 08:10:00.000",
     "2026-07-24 08:00:00.000",
+    "2026-07-24T08:10:00.000Z",
+    "2026-07-24T08:10:00.000Z",
     "2026-07-24 08:10:00.000",
     "2026-07-24 08:00:00.000",
     20
@@ -466,7 +916,16 @@ test("mysql terminal writes are fenced by the active lease token", async () => {
   const pool = new FakePool();
   const repository =
     new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool));
-  pool.enqueue({ affectedRows: 0 });
+  pool.enqueue([{
+    payload_json: JSON.stringify({
+      ...fetchOperation,
+      status: "running",
+      leaseOwner: "active-worker",
+      leaseToken: "active-lease",
+      leaseExpiresAt: "2026-07-24T08:10:00.000Z",
+      startedAt: "2026-07-24T08:00:00.000Z"
+    })
+  }]);
 
   await assert.rejects(
     repository.putContentFetchOperation({
@@ -481,8 +940,7 @@ test("mysql terminal writes are fenced by the active lease token", async () => {
       && error.message === "OPERATION_LEASE_LOST"
   );
   const query = pool.calls.at(-1)!;
-  assert.match(query.sql, /lease_token = \?/);
-  assert.equal(query.values.at(-1), "stale-lease");
+  assert.match(query.sql, /FOR UPDATE/);
 });
 
 test("duplicate idempotency compares request hashes instead of silently reusing another request", async () => {

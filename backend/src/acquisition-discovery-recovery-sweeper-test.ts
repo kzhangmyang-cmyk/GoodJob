@@ -4,6 +4,9 @@ import {
   AcquisitionDiscoveryOperationService,
   InMemoryAcquisitionDiscoveryOperationRepository
 } from "./acquisition-discovery-operations.js";
+import type {
+  AcquisitionDouyinCommentEnrichmentPort
+} from "./acquisition-douyin-comment-enrichment.js";
 import {
   AcquisitionDiscoveryRecoverySweeper
 } from "./acquisition-discovery-recovery-sweeper.js";
@@ -16,7 +19,10 @@ const SCOPE = {
   actorId: "actor-recovery"
 };
 
-function fixture() {
+function fixture(options: {
+  commentEnrichment?: AcquisitionDouyinCommentEnrichmentPort;
+  publicFetch?: boolean;
+} = {}) {
   let now = Date.parse("2026-07-24T08:00:00.000Z");
   const repository =
     new InMemoryAcquisitionDiscoveryOperationRepository();
@@ -38,9 +44,11 @@ function fixture() {
       async fetch(sourceUrl) {
         return {
           finalUrl: sourceUrl,
-          status: "access_restricted",
-          accessStatus: "access_restricted",
-          httpStatus: 403,
+          status: options.publicFetch ? "succeeded" : "access_restricted",
+          accessStatus: options.publicFetch
+            ? "public_content"
+            : "access_restricted",
+          httpStatus: options.publicFetch ? 200 : 403,
           contentType: "text/html",
           title: "",
           text: "",
@@ -49,8 +57,10 @@ function fixture() {
         };
       }
     },
+    commentEnrichment: options.commentEnrichment,
     masterSecret: MASTER_SECRET,
     workerId: "recovery-worker",
+    idFactory: (prefix) => `${prefix}-${repository.size(prefix) + 1}`,
     leaseTokenFactory: () => "recovery-lease",
     now: () => new Date(now).toISOString()
   });
@@ -170,5 +180,109 @@ test("periodic recovery ignores terminal operations and dispatches newly queued 
     [queued.id],
     "terminal operations must not be dispatched again"
   );
+  await sweeper.close();
+});
+
+test("a backed-off poison comment execution cannot starve later tenant work", async () => {
+  const attempts: string[] = [];
+  const state = fixture({
+    publicFetch: true,
+    commentEnrichment: {
+      async enrich(input) {
+        const sourceUrl = input.sourceUrls[0]!;
+        attempts.push(sourceUrl);
+        if (sourceUrl.endsWith("0101")) {
+          throw new Error("private comment secUid must never be persisted");
+        }
+        return {
+          status: "succeeded",
+          videoCount: 1,
+          pagesFetched: 1,
+          commentsSampled: 1,
+          eventCount: 1,
+          evidenceCount: 1,
+          candidateIds: ["candidate-healthy"],
+          unresolvedActorCount: 0,
+          strongSignalCount: 1,
+          invalidCommentCount: 0,
+          errors: [],
+          usage: {
+            requests: 1,
+            results: 1,
+            amountMinor: 0,
+            durationSeconds: 0
+          }
+        };
+      }
+    }
+  });
+  const poison = await state.service.createContentFetchOperation(
+    SCOPE,
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900101",
+      subjectChannel: "individual"
+    },
+    "sweeper-poison",
+    { queueStandaloneCommentEnrichment: true }
+  );
+  const healthy = await state.service.createContentFetchOperation(
+    {
+      ownerId: "owner-healthy",
+      teamId: "team-healthy",
+      actorId: "actor-healthy"
+    },
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900102",
+      subjectChannel: "individual"
+    },
+    "sweeper-healthy",
+    { queueStandaloneCommentEnrichment: true }
+  );
+  const callbacks: Array<() => void> = [];
+  const sweeper = new AcquisitionDiscoveryRecoverySweeper({
+    service: state.service,
+    dispatchContentFetchOperation: (scope, operationId, executionId) =>
+      state.service.recoverContentFetchOperation(
+        scope,
+        operationId,
+        executionId
+      ),
+    async dispatchImportOperation() {
+      throw new Error("unexpected import");
+    },
+    batchSize: 1,
+    intervalMs: 60_000,
+    nowMs: state.now,
+    setTimer(callback) {
+      callbacks.push(callback);
+      return { unref() {} };
+    },
+    clearTimer() {}
+  });
+
+  await sweeper.start();
+  const poisonPublic = await state.service.getContentFetchOperation(
+    SCOPE,
+    poison.id
+  );
+  assert.equal(poisonPublic.status, "succeeded");
+  assert.equal(poisonPublic.commentSampleSummary, null);
+  assert.equal("commentEnrichmentExecutions" in poisonPublic, false);
+
+  callbacks.shift()!();
+  await sweeper.whenIdle();
+  const healthyPublic = await state.service.getContentFetchOperation(
+    {
+      ownerId: "owner-healthy",
+      teamId: "team-healthy",
+      actorId: "actor-healthy"
+    },
+    healthy.id
+  );
+  assert.deepEqual(healthyPublic.candidateIds, ["candidate-healthy"]);
+  assert.deepEqual(attempts, [
+    "https://www.douyin.com/video/7536012345678900101",
+    "https://www.douyin.com/video/7536012345678900102"
+  ]);
   await sweeper.close();
 });

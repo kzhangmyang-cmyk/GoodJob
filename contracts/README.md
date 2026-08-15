@@ -43,16 +43,30 @@ the provider binding directly, while mutations are validated after merging
 with the current plan.
 
 Run execution resolves that policy from the immutable plan version. Search
-shards enrich only validated evidence whose provenance contains a direct
-Douyin video URL, then merge and deduplicate comment candidates before the
-existing candidate pipeline. Content-fetch operations persist a bounded
-`commentSampleSummary` containing status, usage, counts, new candidate IDs and
-stable per-video errors; `partial_success` preserves the original page evidence
-and all successful comment results. An explicit user-created Douyin
-content-fetch without a Run uses the fixed one-video, 30-comment, three-page
-standalone bound. Other non-Run background work does not start comment
-sampling. Current public responses always include `commentSampleSummary`
-(`null` before execution or for legacy storage), and MySQL startup upgrades the
+shards enrich only complete `search_result` evidence bound to the current
+provider connection and exact query whose provenance contains a direct Douyin
+video URL. Provider HTTP retries consume the real request budget; cross-page
+comment and cursor state is local to one enrichment call. Comment candidates
+are merged and deduplicated before the existing candidate pipeline.
+
+Content-fetch page execution and caller-scoped comment enrichment are separate
+durable facts. Each direct or Run/shard caller has a persisted policy, remaining
+budget, lease, retry/backoff state and terminal summary. An explicit user create
+persists the fixed one-video, 30-comment, three-page standalone intent in the
+same operation write; Run callers retain their own immutable Run/shard context.
+Startup and periodic recovery resume pending executions without caller replay,
+isolate poison work, and never expose these internal execution records or
+leases in public responses. Other non-Run background work does not start
+comment sampling. The built-in connection is accepted only with canonical ID
+`douyin-public-comments`, provider `experimental_public_sample`, active
+`content_fetch` kind and credential version 1.
+
+Public operations expose only the caller-appropriate bounded
+`commentSampleSummary`. `candidateCount` exactly equals the unique
+`candidateIds` length; `partial_success` preserves original page evidence and
+successful comment results. `no_public_comments` remains an explanatory empty
+coverage result and does not increment failed-result counts. MySQL startup uses
+a dedicated advisory-locked migration session before recovery and upgrades the
 legacy content-fetch status check before workers can persist partial success.
 
 Public Douyin comments enter the acquisition domain as immutable comment

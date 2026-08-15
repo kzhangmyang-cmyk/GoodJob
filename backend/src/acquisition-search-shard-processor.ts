@@ -67,17 +67,51 @@ function emptyCommentEnrichment(): AcquisitionDouyinCommentEnrichmentResult {
   };
 }
 
-function douyinEvidenceSourceUrls(value: unknown) {
+function nonEmpty(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function validInstant(value: unknown) {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function douyinEvidenceSourceUrls(
+  value: unknown,
+  input: AcquisitionShardProcessingInput
+) {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   const urls: string[] = [];
   for (const item of value) {
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const provenance = (item as Record<string, unknown>).provenance;
+    const evidence = item as Record<string, unknown>;
+    const provenance = evidence.provenance;
     if (!provenance
       || typeof provenance !== "object"
       || Array.isArray(provenance)) continue;
-    const sourceUrl = (provenance as Record<string, unknown>).sourceUrl;
+    const source = provenance as Record<string, unknown>;
+    const sourceUrl = source.sourceUrl;
+    if (!nonEmpty(evidence.id)
+      || !["organization", "individual_signal"].includes(
+        String(evidence.targetType)
+      )
+      || !nonEmpty(evidence.sourcePlatform)
+      || typeof evidence.sourceTitle !== "string"
+      || typeof evidence.sourceSnippet !== "string"
+      || !validInstant(evidence.fetchedAt)
+      || !nonEmpty(evidence.locale)
+      || !nonEmpty(evidence.rawArtifactHash)
+      || !nonEmpty(evidence.contentHash)
+      || !["public_content", "indexed_summary"].includes(
+        String(evidence.accessStatus)
+      )
+      || source.kind !== "search_result"
+      || source.provider !== input.shard.connection.providerId
+      || source.providerConnectionId
+        !== input.shard.connection.connectionId
+      || source.queryText !== input.shard.query
+      || !Number.isSafeInteger(source.resultRank)
+      || Number(source.resultRank) < 1) continue;
     if (typeof sourceUrl !== "string"
       || !resolveDouyinVideoId(sourceUrl)
       || seen.has(sourceUrl)) continue;
@@ -85,6 +119,35 @@ function douyinEvidenceSourceUrls(value: unknown) {
     urls.push(sourceUrl);
   }
   return urls;
+}
+
+function validCommentEnrichment(
+  value: AcquisitionDouyinCommentEnrichmentResult,
+  remainingBudget: { requests: number; results: number }
+) {
+  const counts = [
+    value.videoCount,
+    value.pagesFetched,
+    value.commentsSampled,
+    value.eventCount,
+    value.evidenceCount,
+    value.unresolvedActorCount,
+    value.strongSignalCount,
+    value.invalidCommentCount,
+    value.usage.requests,
+    value.usage.results,
+    value.usage.amountMinor,
+    value.usage.durationSeconds
+  ];
+  return counts.every((count) => Number.isSafeInteger(count) && count >= 0)
+    && value.usage.requests <= remainingBudget.requests
+    && value.usage.results <= remainingBudget.results
+    && value.usage.results === value.commentsSampled
+    && value.eventCount <= value.commentsSampled
+    && value.evidenceCount <= value.eventCount
+    && Array.isArray(value.candidateIds)
+    && new Set(value.candidateIds).size === value.candidateIds.length
+    && Array.isArray(value.errors);
 }
 
 export class AcquisitionSearchShardProcessor
@@ -282,28 +345,34 @@ implements AcquisitionShardProcessorPort {
         ? version.payload.douyinPublicCommentSample ?? null
         : null;
       if (policy?.enabled) {
+        const commentBudget = {
+          requests: Math.max(
+            0,
+            input.shard.allocatedBudget.requests
+              - input.shard.consumedBudget.requests
+              - searchUsage.requests
+          ),
+          results: Math.max(
+            0,
+            remainingResults - searchUsage.results
+          )
+        };
         commentEnrichment = await this.commentEnrichment.enrich({
           scope: input.scope,
           runId: input.run.id,
           shardId: input.shard.id,
           discoveryOperationId: null,
-          sourceUrls: douyinEvidenceSourceUrls(record.evidence),
+          sourceUrls: douyinEvidenceSourceUrls(record.evidence, input),
           candidateIds: candidateIds.map(String),
           policy,
-          remainingBudget: {
-            requests: Math.max(
-              0,
-              input.shard.allocatedBudget.requests
-                - input.shard.consumedBudget.requests
-                - searchUsage.requests
-            ),
-            results: Math.max(
-              0,
-              remainingResults - searchUsage.results
-            )
-          },
+          remainingBudget: commentBudget,
           signal: input.signal
         });
+        if (!validCommentEnrichment(commentEnrichment, commentBudget)) {
+          throw new AcquisitionSearchShardProcessorError(
+            "INVALID_SEARCH_RESULT"
+          );
+        }
       }
     }
     const mergedCandidateIds = [...new Set([
@@ -355,7 +424,9 @@ implements AcquisitionShardProcessorPort {
         acceptedResultCount: combinedEvidenceCount,
         duplicateResultCount: Number(duplicateResultCount),
         failedResultCount:
-          Number(failedResultCount) + commentEnrichment.errors.length,
+          Number(failedResultCount) + commentEnrichment.errors.filter(
+            (error) => error.code !== "no_public_comments"
+          ).length,
         providers: providers.map((provider) => ({
           providerConnectionId: String(
             (provider as Record<string, unknown>).providerConnectionId

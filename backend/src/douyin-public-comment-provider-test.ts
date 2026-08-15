@@ -118,7 +118,8 @@ test("normalizes an allowed top-level comment shape without avatar or login fiel
     returnedCommentCount: 1,
     duplicateCommentCount: 0,
     partial: false,
-    cursorProgressed: true
+    cursorProgressed: true,
+    transportRequestCount: 1
   });
   assert.match(page.rawArtifactHash, /^sha256:[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(page).includes("avatar"), false);
@@ -135,7 +136,7 @@ test("deduplicates repeated cid values within one page", async () => {
   assert.equal(page.metadata.duplicateCommentCount, 1);
 });
 
-test("deduplicates a cid already returned for the same video on an earlier page", async () => {
+test("leaves cross-page cid deduplication to the caller-local enrichment", async () => {
   const provider = createDouyinPublicCommentProvider({
     transport: scriptedTransport([
       response(payload([comment("cid-1")], { cursor: 10, has_more: true })),
@@ -144,8 +145,47 @@ test("deduplicates a cid already returned for the same video on an earlier page"
   });
   await provider.fetchTopLevelSample({ videoId, sourceUrl, cursor: 0, count: 20 });
   const page = await provider.fetchTopLevelSample({ videoId, sourceUrl, cursor: 10, count: 20 });
-  assert.deepEqual(page.comments.map((item) => item.commentId), ["cid-2"]);
-  assert.equal(page.metadata.duplicateCommentCount, 1);
+  assert.deepEqual(page.comments.map((item) => item.commentId), [
+    "cid-1",
+    "cid-2"
+  ]);
+  assert.equal(page.metadata.duplicateCommentCount, 0);
+});
+
+test("provider instances retain no cross-call comment or cursor state", async () => {
+  const provider = createDouyinPublicCommentProvider({
+    transport: scriptedTransport([
+      response(payload([comment("cid-stateless")], {
+        cursor: 10,
+        has_more: true
+      })),
+      response(payload([comment("cid-stateless")], {
+        cursor: 10,
+        has_more: true
+      }))
+    ]).transport
+  });
+  const first = await provider.fetchTopLevelSample({
+    videoId,
+    sourceUrl,
+    cursor: 0,
+    count: 20
+  });
+  const independentReplay = await provider.fetchTopLevelSample({
+    videoId,
+    sourceUrl,
+    cursor: 0,
+    count: 20
+  });
+
+  assert.deepEqual(first.comments.map((item) => item.commentId), [
+    "cid-stateless"
+  ]);
+  assert.deepEqual(
+    independentReplay.comments.map((item) => item.commentId),
+    ["cid-stateless"]
+  );
+  assert.equal(independentReplay.nextCursor, 10);
 });
 
 test("stops pagination as a partial sample when the next cursor does not progress", async () => {
@@ -176,6 +216,59 @@ test("retries a 429 twice while honoring Retry-After before returning the page",
   assert.equal(page.comments.length, 1);
   assert.equal(script.calls(), 3);
   assert.deepEqual(delays, [1_000, 1_000]);
+});
+
+test("reports every HTTP retry and never exceeds the supplied transport budget", async () => {
+  const successful = scriptedTransport([
+    response({ status_code: 0 }, 500),
+    response({ status_code: 0 }, 500),
+    response(payload([comment("cid-budget-success")]))
+  ]);
+  const provider = createDouyinPublicCommentProvider({
+    transport: successful.transport,
+    sleep: async () => undefined
+  });
+  const fetchWithBudget = provider.fetchTopLevelSample.bind(provider) as (
+    input: Parameters<typeof provider.fetchTopLevelSample>[0] & {
+      transportRequestBudget: number;
+    }
+  ) => ReturnType<typeof provider.fetchTopLevelSample>;
+  const page = await fetchWithBudget({
+    videoId,
+    sourceUrl,
+    cursor: 0,
+    count: 20,
+    transportRequestBudget: 3
+  });
+  assert.equal(successful.calls(), 3);
+  assert.equal((page.metadata as typeof page.metadata & {
+    transportRequestCount: number;
+  }).transportRequestCount, 3);
+
+  const bounded = scriptedTransport([
+    response({ status_code: 0 }, 500),
+    response({ status_code: 0 }, 500),
+    response(payload([comment("cid-must-not-fetch")]))
+  ]);
+  const oneRequestProvider = createDouyinPublicCommentProvider({
+    transport: bounded.transport,
+    sleep: async () => undefined
+  });
+  const fetchOne = oneRequestProvider.fetchTopLevelSample.bind(
+    oneRequestProvider
+  ) as typeof fetchWithBudget;
+  await assert.rejects(fetchOne({
+    videoId,
+    sourceUrl,
+    cursor: 0,
+    count: 20,
+    transportRequestBudget: 1
+  }), (error: unknown) => error instanceof DouyinPublicCommentProviderError
+    && error.code === "public_sample_unavailable"
+    && (error as DouyinPublicCommentProviderError & {
+      transportRequestCount: number;
+    }).transportRequestCount === 1);
+  assert.equal(bounded.calls(), 1);
 });
 
 test("maps restricted, malformed, empty, and cid-less payloads to stable errors", async () => {

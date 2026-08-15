@@ -907,7 +907,10 @@ implements AcquisitionDouyinCommentEventRepository {
         : { ...existing, status: "running", errorCode: null,
             returnedCount: 0, reportedCommentCount: null, pagesFetched: 0,
             completedAt: null } as DouyinCommentFetchAttempt;
-      if (!same(immutableReplay, attempt)) {
+      if (!same(immutableReplay, {
+        ...attempt,
+        startedAt: immutableReplay.startedAt
+      })) {
         throw new Error("ACQUISITION_DOUYIN_COMMENT_FETCH_ATTEMPT_CONFLICT");
       }
       return cloned({ attempt: existing, created: false });
@@ -941,7 +944,10 @@ implements AcquisitionDouyinCommentEventRepository {
       ...normalizedTerminal
     };
     if (stored.value.status !== "running") {
-      if (!same(stored.value, finished)) {
+      if (!same(stored.value, {
+        ...finished,
+        completedAt: stored.value.completedAt
+      })) {
         throw new Error("ACQUISITION_DOUYIN_COMMENT_FETCH_ATTEMPT_CONFLICT");
       }
       return cloned(stored.value);

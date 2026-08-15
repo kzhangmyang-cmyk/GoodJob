@@ -303,7 +303,9 @@ implements AcquisitionShardProcessorPort {
         rawResultCount: totalEvidenceCount,
         acceptedResultCount: totalEvidenceCount,
         duplicateResultCount: 0,
-        failedResultCount: commentSummary?.errors.length ?? 0,
+        failedResultCount: commentSummary?.errors.filter(
+          (error) => error.code !== "no_public_comments"
+        ).length ?? 0,
         providers: totalEvidenceCount > 0 ? [{
           providerConnectionId: input.shard.connection.connectionId,
           provider: input.shard.connection.providerId,

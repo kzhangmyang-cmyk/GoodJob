@@ -16,7 +16,10 @@ export type DouyinPublicCommentProviderErrorCode =
   | "no_public_comments";
 
 export class DouyinPublicCommentProviderError extends Error {
-  constructor(public readonly code: DouyinPublicCommentProviderErrorCode) {
+  constructor(
+    public readonly code: DouyinPublicCommentProviderErrorCode,
+    public readonly transportRequestCount = 0
+  ) {
     super(code);
     this.name = "DouyinPublicCommentProviderError";
   }
@@ -60,6 +63,7 @@ export interface DouyinPublicCommentSamplePage {
     duplicateCommentCount: number;
     partial: boolean;
     cursorProgressed: boolean;
+    transportRequestCount?: number;
   };
   replyBodiesIncluded: false;
 }
@@ -71,6 +75,7 @@ export interface DouyinPublicCommentProviderPort {
     sourceUrl: string;
     cursor: number;
     count: number;
+    transportRequestBudget?: number;
     signal?: AbortSignal;
   }): Promise<DouyinPublicCommentSamplePage>;
 }
@@ -201,9 +206,12 @@ async function requestWithRetry(
   transport: DouyinPublicCommentTransport,
   url: string,
   signal: AbortSignal | undefined,
-  sleep: DouyinPublicCommentProviderOptions["sleep"]
+  sleep: DouyinPublicCommentProviderOptions["sleep"],
+  transportRequestBudget: number
 ) {
-  for (let attempt = 0; attempt <= 2; attempt += 1) {
+  const maximumAttempts = Math.min(3, transportRequestBudget);
+  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+    const requestCount = attempt + 1;
     let response: Response;
     try {
       response = await transport(url, {
@@ -214,19 +222,28 @@ async function requestWithRetry(
     } catch (error) {
       if (error instanceof DouyinPublicCommentProviderError) throw error;
       if (signal?.aborted) {
-        throw new DouyinPublicCommentProviderError("public_sample_unavailable");
+        throw new DouyinPublicCommentProviderError(
+          "public_sample_unavailable",
+          requestCount
+        );
       }
       if (!(error instanceof DouyinPublicCommentRetryableTransportError)) throw error;
-      if (attempt === 2) {
-        throw new DouyinPublicCommentProviderError("public_sample_unavailable");
+      if (requestCount === maximumAttempts) {
+        throw new DouyinPublicCommentProviderError(
+          "public_sample_unavailable",
+          requestCount
+        );
       }
       await (sleep || defaultSleep)(250 * (attempt + 1), signal);
       continue;
     }
-    if (response.status !== 429 && response.status < 500) return response;
-    if (attempt === 2) {
+    if (response.status !== 429 && response.status < 500) {
+      return { response, transportRequestCount: requestCount };
+    }
+    if (requestCount === maximumAttempts) {
       throw new DouyinPublicCommentProviderError(
-        response.status === 429 ? "rate_limited" : "public_sample_unavailable"
+        response.status === 429 ? "rate_limited" : "public_sample_unavailable",
+        requestCount
       );
     }
     await (sleep || defaultSleep)(
@@ -259,9 +276,6 @@ export function createDouyinPublicCommentProvider(
       );
     }
   });
-  const seenCommentIds = new Map<string, Set<string>>();
-  const visitedCursors = new Map<string, Set<number>>();
-
   return {
     providerId: DOUYIN_PUBLIC_COMMENT_PROVIDER_ID,
     async fetchTopLevelSample(input) {
@@ -270,21 +284,29 @@ export function createDouyinPublicCommentProvider(
         throw new DouyinPublicCommentProviderError("video_id_unresolved");
       }
       if (!Number.isInteger(input.cursor) || input.cursor < 0
-        || !Number.isInteger(input.count) || input.count < 1) {
+        || !Number.isInteger(input.count) || input.count < 1
+        || (input.transportRequestBudget !== undefined
+          && (!Number.isSafeInteger(input.transportRequestBudget)
+            || input.transportRequestBudget < 1))) {
         throw new DouyinPublicCommentProviderError("source_payload_invalid");
       }
       const requestUrl = new URL(DOUYIN_PUBLIC_COMMENT_ENDPOINT);
       requestUrl.searchParams.set("aweme_id", input.videoId);
       requestUrl.searchParams.set("cursor", String(input.cursor));
       requestUrl.searchParams.set("count", String(input.count));
-      const response = await requestWithRetry(
+      const requested = await requestWithRetry(
         transport,
         requestUrl.toString(),
         input.signal,
-        options.sleep
+        options.sleep,
+        input.transportRequestBudget ?? 3
       );
+      const { response, transportRequestCount } = requested;
       if (!response.ok) {
-        throw new DouyinPublicCommentProviderError(responseError(response.status));
+        throw new DouyinPublicCommentProviderError(
+          responseError(response.status),
+          transportRequestCount
+        );
       }
       let payload: Record<string, unknown> | null;
       try {
@@ -299,7 +321,7 @@ export function createDouyinPublicCommentProvider(
         throw new DouyinPublicCommentProviderError("no_public_comments");
       }
       const normalizedComments = payload.comments.map(normalizeComment);
-      const commentIds = seenCommentIds.get(input.videoId) || new Set<string>();
+      const commentIds = new Set<string>();
       const comments: DouyinPublicComment[] = [];
       let duplicateCommentCount = 0;
       for (const comment of normalizedComments) {
@@ -310,15 +332,10 @@ export function createDouyinPublicCommentProvider(
         commentIds.add(comment.commentId);
         comments.push(comment);
       }
-      seenCommentIds.set(input.videoId, commentIds);
-      const cursorSet = visitedCursors.get(input.videoId) || new Set<number>();
-      visitedCursors.set(input.videoId, cursorSet);
-      cursorSet.add(input.cursor);
       const hasMore = payload.has_more === true;
       const candidateCursor = nonNegativeInteger(payload.cursor, input.cursor);
-      const cursorProgressed = !hasMore || !cursorSet.has(candidateCursor);
+      const cursorProgressed = !hasMore || candidateCursor !== input.cursor;
       const partial = hasMore && !cursorProgressed;
-      if (hasMore && cursorProgressed) cursorSet.add(candidateCursor);
       return {
         comments,
         nextCursor: hasMore && cursorProgressed ? candidateCursor : null,
@@ -336,7 +353,8 @@ export function createDouyinPublicCommentProvider(
           returnedCommentCount: comments.length,
           duplicateCommentCount,
           partial,
-          cursorProgressed
+          cursorProgressed,
+          transportRequestCount
         },
         replyBodiesIncluded: false
       };

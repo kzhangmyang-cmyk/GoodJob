@@ -162,6 +162,7 @@ test("application trusts only the exact built-in public comment provider snapsho
   );
   for (const candidate of [
     { ...valid, connectionId: "" },
+    { ...valid, connectionId: "tenant-selected-comment-provider" },
     { ...valid, providerId: "controlled_public_content" },
     { ...valid, kind: "search" as const },
     { ...valid, status: "inactive" as const },
@@ -370,7 +371,7 @@ function fakeSearchPort() {
         providerConnectionId: input.providerConnectionId,
         providerCredentialVersion:
           input.expectedConnection?.credentialVersion ?? 1,
-        provider: "fake-official-search",
+        provider: input.expectedConnection?.providerId ?? "brave",
         requestId: "search-request-application",
         results: [{
           providerRecordId: individual
@@ -3370,7 +3371,11 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
   await runtime.close();
   assert.equal(commentRecoveryStartCount, 1);
   assert.equal(commentRecoveryCloseCount, 1);
-  assert.equal(commentSchemaConnectionReleaseCount, 1);
+  assert.equal(
+    commentSchemaConnectionReleaseCount,
+    2,
+    "comment-event and discovery-operation schemas each release their dedicated migration session"
+  );
   assert.equal(commentSchemaConnectionDestroyCount, 0);
   assert.equal(closeCount, 1, "the owned pool must close exactly once");
 });
