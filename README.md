@@ -55,16 +55,22 @@ Cookie、完整页面截图或浏览器配置，也不执行私信、点赞、�
 ```bash
 npm run test:visual-reader
 npm run build:visual-reader
+npm run verify:visual-reader-build-order
 ```
 
 在 Chrome 的扩展程序页面开启开发者模式，选择“加载已解压的扩展程序”，目录为
-`dist/douyin-visual-reader`。开发构建只允许连接
+`dist-visual-reader/douyin-visual-reader`。该目录与主站 `dist` 分离，运行主站构建不会
+删除扩展制品；`npm run check:visual-reader-bundle` 只审计已有制品，不会重写 manifest。
+开发构建只允许连接
 `http://127.0.0.1:5191/*`；发布构建必须显式设置以逗号分隔的 HTTPS
 `GOODJOB_APP_ORIGINS`，并设置 `VISUAL_READER_RELEASE=1`，否则构建会失败。
 
 使用时先在 GoodJob 运行详情中创建短时授权会话，再打开扩展弹窗，明确选择一个
-`https://www.douyin.com/video/<id>` 标签页并点击“开始只读读取”。弹窗关闭、标签页
-切换或用户在抖音页面滚动、点击、按键时会安全停止。当前扩展只读取页面已显示的
+`https://www.douyin.com/video/<id>` 标签页并点击“开始只读读取”。关闭弹窗不会停止；
+点击“停止”、离开已绑定的可见抖音标签页，或用户在抖音页面滚动、点击、按键时会
+安全停止。扩展后台进程若在读取中重启，会清除残留授权并通知仍存活的网页和抖音
+内容脚本以失败关闭，不会静默续读，也不会把原始 nonce 写入存储。当前扩展只读取
+页面已显示的
 一级评论文字、公开时间、公开计数和卡内公开主页链接，最多程序滚动 5 次；不读取
 Cookie、脚本数据、头像地址、二级回复正文或页面内部状态，不执行任何写入或互动。
 

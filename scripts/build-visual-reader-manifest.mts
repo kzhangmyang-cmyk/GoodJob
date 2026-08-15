@@ -120,14 +120,16 @@ export async function auditVisualReaderBundle(distDir: string): Promise<{
 async function main(): Promise<void> {
   const projectRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
   const templateUrl = new URL("../browser-extension/douyin-visual-reader/manifest.template.json", import.meta.url);
-  const distDir = resolve(projectRoot, process.env.VISUAL_READER_DIST_DIR ?? "dist/douyin-visual-reader");
+  const distDir = resolve(
+    projectRoot,
+    process.env.VISUAL_READER_DIST_DIR ?? "dist-visual-reader/douyin-visual-reader"
+  );
   const manifest = await renderVisualReaderManifest({
     templateUrl,
     originsLiteral: process.env.GOODJOB_APP_ORIGINS,
     release: process.env.VISUAL_READER_RELEASE === "1"
   });
   await writeFile(join(distDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  await auditVisualReaderBundle(distDir);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

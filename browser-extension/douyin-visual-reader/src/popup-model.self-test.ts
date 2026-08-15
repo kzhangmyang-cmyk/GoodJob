@@ -2,8 +2,8 @@ import { strict as assert } from "node:assert";
 import { createPopupSelectionModel } from "./popup-model";
 
 const tabs = [
-  { id: 21, title: "视频 A", url: "https://www.douyin.com/video/123" },
-  { id: 22, title: "视频 B", url: "https://www.douyin.com/video/456" }
+  { id: 21, windowId: 7, title: "视频 A", url: "https://www.douyin.com/video/123" },
+  { id: 22, windowId: 7, title: "视频 B", url: "https://www.douyin.com/video/456" }
 ];
 
 {
@@ -29,6 +29,11 @@ const tabs = [
   const model = createPopupSelectionModel([]);
   assert.equal(model.canStart(), false);
   assert.equal(model.confirm(), null);
+}
+
+{
+  const model = createPopupSelectionModel([{ ...tabs[0], windowId: -1 }]);
+  assert.deepEqual(model.tabs(), [], "an invalid or missing window binding is never selectable");
 }
 
 console.log("douyin visual reader popup model self-test passed");

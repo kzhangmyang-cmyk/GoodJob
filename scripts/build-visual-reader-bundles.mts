@@ -9,7 +9,10 @@ import {
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const extensionRoot = resolve(projectRoot, "browser-extension/douyin-visual-reader");
-const distDir = resolve(projectRoot, "dist/douyin-visual-reader");
+const distDir = resolve(
+  projectRoot,
+  process.env.VISUAL_READER_DIST_DIR ?? "dist-visual-reader/douyin-visual-reader"
+);
 const entries: VisualReaderEntry[] = [
   "service-worker", "goodjob-bridge-content", "douyin-content", "popup"
 ];

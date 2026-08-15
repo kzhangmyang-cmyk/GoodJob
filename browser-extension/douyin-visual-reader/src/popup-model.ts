@@ -2,13 +2,15 @@ import { canonicalDouyinVideoUrl } from "./protocol";
 
 export interface SelectableDouyinTab {
   id: number;
+  windowId: number;
   title: string;
   url: string;
 }
 
 export function createPopupSelectionModel(candidates: SelectableDouyinTab[]) {
   const tabs = candidates.filter((tab) => Number.isSafeInteger(tab.id)
-    && tab.id > 0 && canonicalDouyinVideoUrl(tab.url));
+    && tab.id > 0 && Number.isSafeInteger(tab.windowId) && tab.windowId >= 0
+    && canonicalDouyinVideoUrl(tab.url)?.sourceUrl === tab.url);
   let selected: number | null = null;
   return {
     tabs: () => tabs.map((tab) => ({ ...tab })),

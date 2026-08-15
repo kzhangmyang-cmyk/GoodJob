@@ -6,6 +6,10 @@ export type VisualReaderEntry = "service-worker" | "goodjob-bridge-content" | "d
 
 const extensionRoot = fileURLToPath(new URL(".", import.meta.url));
 const projectRoot = fileURLToPath(new URL("../..", import.meta.url));
+const visualReaderDistDir = resolve(
+  projectRoot,
+  process.env.VISUAL_READER_DIST_DIR ?? "dist-visual-reader/douyin-visual-reader"
+);
 
 export function createVisualReaderViteConfig(entry: VisualReaderEntry): UserConfig {
   const moduleEntry = entry === "service-worker";
@@ -13,7 +17,7 @@ export function createVisualReaderViteConfig(entry: VisualReaderEntry): UserConf
     root: extensionRoot,
     publicDir: false,
     build: {
-      outDir: resolve(projectRoot, "dist/douyin-visual-reader"),
+      outDir: visualReaderDistDir,
       emptyOutDir: false,
       sourcemap: false,
       minify: false,

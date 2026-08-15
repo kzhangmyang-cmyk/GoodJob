@@ -35,7 +35,8 @@ function validSnapshot(value: unknown): value is { session: PopupSession | null;
 function validTab(value: unknown): value is SelectableDouyinTab {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const tab = value as Record<string, unknown>;
-  return Object.keys(tab).length === 3 && Number.isSafeInteger(tab.id)
+  return Object.keys(tab).length === 4 && Number.isSafeInteger(tab.id)
+    && Number.isSafeInteger(tab.windowId)
     && typeof tab.title === "string" && typeof tab.url === "string"
     && /^https:\/\/www\.douyin\.com\/video\/[1-9][0-9]{0,31}$/u.test(tab.url);
 }
@@ -44,7 +45,6 @@ const status = element<HTMLParagraphElement>("status");
 const startButton = element<HTMLButtonElement>("start");
 const stopButton = element<HTMLButtonElement>("stop");
 const tabList = element<HTMLDivElement>("tab-list");
-const port = chrome.runtime.connect({ name: "visual-reader-popup" });
 let model = createPopupSelectionModel([]);
 
 function setStatus(message: string, error = false): void {
@@ -104,7 +104,7 @@ async function refresh(): Promise<void> {
   const active = session.status === "reading";
   startButton.disabled = true;
   stopButton.disabled = !["authorized", "reading"].includes(session.status);
-  if (active) setStatus("只读读取进行中。关闭弹窗会停止");
+  if (active) setStatus("只读读取进行中。关闭弹窗后仍会继续，可随时点击停止");
   else setStatus("请选择一个视频标签页，再点击开始只读读取");
 }
 
@@ -113,11 +113,14 @@ startButton.addEventListener("click", async () => {
   if (!tab) return;
   startButton.disabled = true;
   setStatus("正在启动只读读取");
-  const response = await chrome.runtime.sendMessage({ kind: "popup_confirm", tabId: tab.id });
+  const response = await chrome.runtime.sendMessage({
+    kind: "popup_confirm",
+    tab: { id: tab.id, windowId: tab.windowId, url: tab.url }
+  });
   const accepted = response !== null && typeof response === "object"
     && !Array.isArray(response) && (response as { accepted?: unknown }).accepted === true;
   stopButton.disabled = !accepted;
-  setStatus(accepted ? "只读读取进行中。关闭弹窗会停止" : "无法启动，请重新授权", !accepted);
+  setStatus(accepted ? "只读读取进行中。关闭弹窗后仍会继续" : "无法启动，请重新授权", !accepted);
 });
 
 stopButton.addEventListener("click", async () => {
@@ -127,5 +130,4 @@ stopButton.addEventListener("click", async () => {
   setStatus("读取已停止");
 });
 
-globalThis.addEventListener("unload", () => port.disconnect(), { once: true });
 void refresh().catch(() => setStatus("扩展连接失败，请重新打开", true));

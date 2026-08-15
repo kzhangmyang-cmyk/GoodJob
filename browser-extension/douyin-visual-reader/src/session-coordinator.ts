@@ -10,6 +10,8 @@ export interface VisualReaderPersistedState {
   sessionId: string;
   goodJobTabId: number;
   douyinTabId: number | null;
+  douyinWindowId: number | null;
+  douyinSourceUrl: string | null;
   limits: VisualReaderLimits;
   usage: VisualReaderUsageState;
   artifactUploadEnabled: boolean;
@@ -29,8 +31,11 @@ export interface SessionCoordinator {
     limits: VisualReaderLimits;
     artifactUploadEnabled: boolean;
   }): Promise<void>;
-  confirmDouyinTab(tabId: number, url: string): boolean;
+  confirmDouyinTab(tabId: number, windowId: number, url: string): Promise<boolean>;
+  receiveBatch(batchId: string): "new" | "replay" | "blocked";
   beginBatch(batchId: string): boolean;
+  canAcknowledgeBatch(sessionId: string, batchId: string): boolean;
+  commitAcknowledgedBatch(sessionId: string, batchId: string): boolean;
   acknowledgeBatch(sessionId: string, batchId: string): boolean;
   updateUsage(usage: Partial<VisualReaderUsageState>): Promise<void>;
   finish(status: "completed" | "partial_success"): Promise<void>;
@@ -72,6 +77,8 @@ export function createSessionCoordinator(dependencies: {
         sessionId: input.sessionId,
         goodJobTabId: input.goodJobTabId,
         douyinTabId: null,
+        douyinWindowId: null,
+        douyinSourceUrl: null,
         limits: { ...input.limits },
         usage: { observationCount: 0, scrollCount: 0, ocrCallCount: 0 },
         artifactUploadEnabled: input.artifactUploadEnabled,
@@ -83,29 +90,47 @@ export function createSessionCoordinator(dependencies: {
       await dependencies.persist(copy());
       dependencies.log({ event: "visual_reader_authorized", sessionId: input.sessionId });
     },
-    confirmDouyinTab(tabId, url) {
+    async confirmDouyinTab(tabId, windowId, url) {
       const current = requireState();
       if (current.status !== "authorized" || current.douyinTabId !== null
-        || !Number.isSafeInteger(tabId) || tabId <= 0 || !canonicalDouyinVideoUrl(url)) return false;
+        || current.douyinWindowId !== null
+        || !Number.isSafeInteger(tabId) || tabId <= 0
+        || !Number.isSafeInteger(windowId) || windowId < 0) return false;
+      const source = canonicalDouyinVideoUrl(url);
+      if (!source || source.sourceUrl !== url) return false;
       current.douyinTabId = tabId;
+      current.douyinWindowId = windowId;
+      current.douyinSourceUrl = source.sourceUrl;
       current.status = "reading";
-      void dependencies.persist(copy());
+      await dependencies.persist(copy());
       dependencies.log({ event: "visual_reader_tab_confirmed", sessionId: current.sessionId });
       return true;
     },
-    beginBatch(batchId) {
+    receiveBatch(batchId) {
       const current = requireState();
-      if (current.status !== "reading" || pendingBatchId !== null || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(batchId)) {
-        return false;
+      if (current.status !== "reading" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(batchId)) {
+        return "blocked";
       }
+      if (pendingBatchId === batchId) return "replay";
+      if (pendingBatchId !== null) return "blocked";
       pendingBatchId = batchId;
+      return "new";
+    },
+    beginBatch(batchId) {
+      return this.receiveBatch(batchId) !== "blocked";
+    },
+    canAcknowledgeBatch(sessionId, batchId) {
+      const current = requireState();
+      return current.status === "reading" && sessionId === current.sessionId
+        && batchId === pendingBatchId;
+    },
+    commitAcknowledgedBatch(sessionId, batchId) {
+      if (!this.canAcknowledgeBatch(sessionId, batchId)) return false;
+      pendingBatchId = null;
       return true;
     },
     acknowledgeBatch(sessionId, batchId) {
-      const current = requireState();
-      if (current.status !== "reading" || sessionId !== current.sessionId || batchId !== pendingBatchId) return false;
-      pendingBatchId = null;
-      return true;
+      return this.commitAcknowledgedBatch(sessionId, batchId);
     },
     async updateUsage(next) {
       const current = requireState();

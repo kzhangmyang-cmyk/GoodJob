@@ -15,8 +15,9 @@
     "test:e2e:growth": "playwright test growth-bootstrap.spec.ts",
     "test:types": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit && tsc -p browser-extension/douyin-visual-reader/tsconfig.json --noEmit",
     "test:visual-reader": "tsx browser-extension/douyin-visual-reader/src/self-test.ts",
-    "build:visual-reader": "tsx scripts/build-visual-reader-bundles.mts && tsx scripts/build-visual-reader-manifest.mts",
-    "check:visual-reader-bundle": "tsx scripts/build-visual-reader-manifest.mts"
+    "build:visual-reader": "tsx scripts/build-visual-reader-bundles.mts && tsx scripts/build-visual-reader-manifest.mts && npm run check:visual-reader-bundle",
+    "check:visual-reader-bundle": "tsx scripts/check-visual-reader-bundle.mts",
+    "verify:visual-reader-build-order": "npm run build:visual-reader && npm run build && npm run check:visual-reader-bundle"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

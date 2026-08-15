@@ -29,8 +29,8 @@ const limits = {
     artifactUploadEnabled: false
   });
   assert.equal(coordinator.snapshot().douyinTabId, null);
-  assert.equal(coordinator.confirmDouyinTab(21, "https://www.douyin.com/video/123"), true);
-  assert.equal(coordinator.confirmDouyinTab(22, "https://www.douyin.com/video/456"), false, "one confirmed tab only");
+  assert.equal(await coordinator.confirmDouyinTab(21, 7, "https://www.douyin.com/video/123"), true);
+  assert.equal(await coordinator.confirmDouyinTab(22, 7, "https://www.douyin.com/video/456"), false, "one confirmed tab only");
   assert.equal(coordinator.beginBatch("batch-1"), true);
   assert.equal(coordinator.beginBatch("batch-2"), false, "wait for webpage ACK");
   assert.equal(coordinator.acknowledgeBatch("visual-session-1", "batch-1"), true);
@@ -43,7 +43,7 @@ const limits = {
   assert.match(serialized, /sha256:/u);
   for (const state of writes) {
     assert.deepEqual(Object.keys(state).sort(), [
-      "artifactUploadEnabled", "channelNonceHash", "douyinTabId", "goodJobTabId",
+      "artifactUploadEnabled", "channelNonceHash", "douyinSourceUrl", "douyinTabId", "douyinWindowId", "goodJobTabId",
       "limits", "sessionId", "status", "usage"
     ]);
   }
@@ -63,7 +63,7 @@ const limits = {
     limits,
     artifactUploadEnabled: false
   });
-  assert.equal(coordinator.confirmDouyinTab(23, "https://www.douyin.com/video/789"), true);
+  assert.equal(await coordinator.confirmDouyinTab(23, 8, "https://www.douyin.com/video/789"), true);
   await coordinator.finish("completed");
   assert.equal(coordinator.snapshot().status, "completed");
   await coordinator.abort("visual_reader_user_takeover");
@@ -153,7 +153,7 @@ const limits = {
     artifactUploadEnabled: false,
     extract: async () => [{ clientObservationKey: `dom:${attempts++}`, redactedCrop: null }],
     programmaticScroll: async () => undefined,
-    sendBatch: async (batch) => reader.acknowledge(batch.batchId),
+    sendBatch: async (batch) => { await reader.acknowledge(batch.batchId); },
     sendTerminal: async () => undefined
   });
   await reader.start();

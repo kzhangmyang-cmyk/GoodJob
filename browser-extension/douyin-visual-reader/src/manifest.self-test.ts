@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   auditVisualReaderBundle,
   renderVisualReaderManifest
@@ -73,6 +74,15 @@ for (const originsLiteral of [
     parsed.permissions.push("cookies");
     await writeFile(join(root, "manifest.json"), JSON.stringify(parsed));
     await assert.rejects(() => auditVisualReaderBundle(root), /禁止权限/u);
+    await writeFile(join(root, "service-worker.js"), "globalThis.chrome.runtime.onMessage.addListener(() => undefined);\n");
+    const checked = spawnSync("npm", ["run", "check:visual-reader-bundle"], {
+      cwd: process.cwd(),
+      env: { ...process.env, VISUAL_READER_DIST_DIR: root },
+      encoding: "utf8"
+    });
+    assert.notEqual(checked.status, 0, "the check command rejects an already-tampered manifest");
+    const afterCheck = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
+    assert.ok(afterCheck.permissions.includes("cookies"), "check is read-only and cannot repair evidence");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

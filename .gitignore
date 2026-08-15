@@ -6,6 +6,7 @@
 node_modules/
 
 dist/
+dist-visual-reader/
 coverage/
 test-results/
 playwright-report/

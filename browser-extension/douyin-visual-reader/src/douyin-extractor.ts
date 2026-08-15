@@ -78,11 +78,11 @@ function clampBounds(bounds: PixelRect, viewport: { width: number; height: numbe
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
-async function digest128(value: string): Promise<string> {
+async function digestHex(value: string, byteLength: 16 | 32): Promise<string> {
   if (!globalThis.crypto?.subtle) throw new Error("浏览器缺少安全摘要支持");
   const bytes = new TextEncoder().encode(value);
   const hash = new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", bytes));
-  return Array.from(hash.slice(0, 16), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Array.from(hash.slice(0, byteLength), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function profileFromLiteral(value: string | null): { url: string; secUid: string } | null {
@@ -146,7 +146,7 @@ export async function extractVisibleTopLevelComments(input: {
     const body = firstOwned(card, '[aria-label="评论内容"]', adapter);
     if (!body || !adapter.visible(body)) continue;
     const visibleText = adapter.innerText(body).trim();
-    if (!visibleText || visibleText.length > 4_000) continue;
+    if (!visibleText || visibleText.length > 2_000) continue;
     const author = firstOwned(card, 'a[aria-label="评论作者"]', adapter);
     const displayName = author && adapter.visible(author) ? adapter.innerText(author).trim() || null : null;
     const profile = profileFromLiteral(author ? adapter.attribute(author, "href") : null);
@@ -163,7 +163,17 @@ export async function extractVisibleTopLevelComments(input: {
     const bounds = clampBounds(adapter.bounds(card), viewport);
     const fingerprintMaterial = platformCommentId
       ? `${source.videoId}|${platformCommentId}`
-      : `${source.videoId}|${index}|${bounds.x},${bounds.y},${bounds.width},${bounds.height}|${visibleTimeText ?? ""}|${likeCount ?? ""}|${replyCount ?? ""}`;
+      : JSON.stringify({
+          version: 1,
+          videoId: source.videoId,
+          visibleText: visibleText.normalize("NFC"),
+          displayName: displayName?.normalize("NFC") ?? null,
+          visibleTimeText: visibleTimeText?.normalize("NFC") ?? null,
+          likeCount,
+          replyCount,
+          publicProfileUrl: profile?.url ?? null,
+          secUid: profile?.secUid ?? null
+        });
     const fieldConfidences: Record<string, number> = { visibleText: 0.99 };
     if (displayName) fieldConfidences.displayName = 0.96;
     if (visibleTimeText) fieldConfidences.visibleTimeText = 0.95;
@@ -175,7 +185,7 @@ export async function extractVisibleTopLevelComments(input: {
       fieldConfidences.secUid = 0.98;
     }
     observations.push({
-      clientObservationKey: `dom:${await digest128(fingerprintMaterial)}`,
+      clientObservationKey: `dom:${await digestHex(fingerprintMaterial, platformCommentId ? 16 : 32)}`,
       sourceUrl: source.sourceUrl,
       videoId: source.videoId,
       visibleText,

@@ -91,9 +91,11 @@ export type ExtensionEvent =
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
 const NONCE = /^[0-9a-f]{64}$/u;
-const VERSION = /^[^\u0000-\u001f\u007f]{1,100}$/u;
+const VERSION = /^(?=.{1,100}$)(?=.*\S)[^\u0000-\u001f\u007f]+$/u;
 const SOURCE = /^https:\/\/www\.douyin\.com\/video\/([1-9][0-9]{0,31})\/?$/u;
-const PROFILE = /^https:\/\/www\.douyin\.com\/user\/[A-Za-z0-9][A-Za-z0-9._~-]{0,127}\/?$/u;
+const VIDEO_ID = /^[1-9][0-9]{0,31}$/u;
+const SEC_UID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u;
+const PROFILE = /^https:\/\/www\.douyin\.com\/user\/([A-Za-z0-9][A-Za-z0-9._~-]{0,127})\/?$/u;
 const ERROR_CODES = new Set<StableErrorCode>([
   "visual_reader_not_enabled", "visual_reader_session_expired",
   "visual_reader_budget_exhausted", "visual_source_invalid",
@@ -140,8 +142,9 @@ function limits(value: unknown): value is VisualReaderLimits {
 
 function rect(value: unknown): value is { x: number; y: number; width: number; height: number } {
   return exact(value, ["x", "y", "width", "height"])
-    && finite(value.x, 0, 20_000) && finite(value.y, 0, 20_000)
-    && finite(value.width, 1, 20_000) && finite(value.height, 1, 20_000);
+    && finite(value.x, 0, 8192) && finite(value.y, 0, 8192)
+    && finite(value.width, Number.MIN_VALUE, 8192)
+    && finite(value.height, Number.MIN_VALUE, 8192);
 }
 
 function nullableText(value: unknown, maximum = 255): value is string | null {
@@ -159,26 +162,31 @@ export function isObservation(value: unknown): value is VisualObservationSubmiss
   const source = typeof value.sourceUrl === "string" ? SOURCE.exec(value.sourceUrl) : null;
   const confidences = record(value.fieldConfidences) ? value.fieldConfidences : null;
   if (!source || source[1] !== value.videoId || typeof value.visibleText !== "string"
-    || value.visibleText.length < 1 || value.visibleText.length > 4_000
+    || value.visibleText.length < 1 || value.visibleText.length > 2_000 || !/\S/u.test(value.visibleText)
     || typeof value.clientObservationKey !== "string" || !IDENTIFIER.test(value.clientObservationKey)
     || !nullableText(value.displayName) || !nullableText(value.visibleTimeText)
-    || !(value.likeCount === null || integer(value.likeCount, 0, 1_000_000_000))
-    || !(value.replyCount === null || integer(value.replyCount, 0, 1_000_000_000))
-    || !nullableText(value.platformCommentId)
+    || !(value.likeCount === null || integer(value.likeCount, 0, 2_147_483_647))
+    || !(value.replyCount === null || integer(value.replyCount, 0, 2_147_483_647))
+    || !(value.platformCommentId === null
+      || (typeof value.platformCommentId === "string" && VIDEO_ID.test(value.platformCommentId)))
     || !(value.publicProfileUrl === null || (typeof value.publicProfileUrl === "string" && PROFILE.test(value.publicProfileUrl)))
-    || !nullableText(value.secUid)
+    || !(value.secUid === null || (typeof value.secUid === "string" && SEC_UID.test(value.secUid)))
     || !["dom", "accessibility"].includes(String(value.extractionMethod))
     || confidences === null
     || Object.keys(confidences).some((key) => !CONFIDENCE_KEYS.has(key)
       || !finite(confidences[key], 0, 1))
     || !exact(value.viewport, ["width", "height", "deviceScaleFactor"])
-    || !integer(value.viewport.width, 1, 20_000)
-    || !integer(value.viewport.height, 1, 20_000)
+    || !integer(value.viewport.width, 1, 8192)
+    || !integer(value.viewport.height, 1, 8192)
     || !finite(value.viewport.deviceScaleFactor, 0.5, 8)
     || !rect(value.cardBounds)
     || typeof value.readerVersion !== "string" || !VERSION.test(value.readerVersion)
-    || typeof value.capturedAt !== "string" || !Number.isFinite(Date.parse(value.capturedAt))
+    || typeof value.capturedAt !== "string" || value.capturedAt.length > 64
+    || !Number.isFinite(Date.parse(value.capturedAt))
     || value.redactedCrop !== null) return false;
+  if (!Object.prototype.hasOwnProperty.call(confidences, "visibleText")) return false;
+  if (value.publicProfileUrl !== null && value.secUid !== null
+    && PROFILE.exec(value.publicProfileUrl)?.[1] !== value.secUid) return false;
   return true;
 }
 

@@ -11,6 +11,8 @@ import {
   type DouyinDomAdapter
 } from "./douyin-extractor";
 import { BoundedReaderError, createBoundedReader, type BoundedReader } from "./douyin-reader";
+import { createReliableEventTransport, type ReliableEventTransport } from "./runtime-transport";
+import { matchesUnavailableSession } from "./restart-recovery";
 
 declare const chrome: any;
 
@@ -52,18 +54,24 @@ function exact(value: unknown, keys: readonly string[]): value is Record<string,
     && actual.every((key) => allowed.has(key));
 }
 
-function waitForDomStability(): Promise<void> {
+function waitForDomStability(signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
+    let handle: ReturnType<typeof setTimeout> | null = null;
     let previous = document.querySelectorAll('[role="article"]').length;
     let stable = 0;
     const check = () => {
+      if (signal?.aborted) return;
       const next = document.querySelectorAll('[role="article"]').length;
       stable = next === previous ? stable + 1 : 0;
       previous = next;
       if (stable >= 2) resolve();
-      else globalThis.setTimeout(check, 160);
+      else handle = globalThis.setTimeout(check, 160);
     };
-    globalThis.setTimeout(check, 160);
+    signal?.addEventListener("abort", () => {
+      if (handle !== null) globalThis.clearTimeout(handle);
+      handle = null;
+    }, { once: true });
+    handle = globalThis.setTimeout(check, 160);
   });
 }
 
@@ -71,21 +79,23 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
   (globalThis as any)[INSTALL_KEY] = true;
   let reader: BoundedReader | null = null;
   let activeSessionId: string | null = null;
+  let transport: ReliableEventTransport | null = null;
   let internalScrollUntil = 0;
   let internalClick = false;
 
-  const takeover = () => reader?.userTakeover();
-  globalThis.addEventListener("wheel", takeover, { capture: true, passive: true });
-  globalThis.addEventListener("pointerdown", takeover, { capture: true, passive: true });
-  globalThis.addEventListener("touchstart", takeover, { capture: true, passive: true });
-  globalThis.addEventListener("keydown", takeover, { capture: true });
-  globalThis.addEventListener("click", () => { if (!internalClick) takeover(); }, { capture: true });
-  globalThis.addEventListener("scroll", () => {
-    if (Date.now() > internalScrollUntil) takeover();
-  }, { capture: true, passive: true });
-
-  async function sendEvent(event: ExtensionEvent): Promise<void> {
-    await chrome.runtime.sendMessage({ kind: "douyin_reader_event", event });
+  function installTakeoverListeners(sessionReader: BoundedReader): () => void {
+    const listeners = new AbortController();
+    const options = { capture: true, signal: listeners.signal };
+    const takeover = () => sessionReader.userTakeover();
+    globalThis.addEventListener("wheel", takeover, { ...options, passive: true });
+    globalThis.addEventListener("pointerdown", takeover, { ...options, passive: true });
+    globalThis.addEventListener("touchstart", takeover, { ...options, passive: true });
+    globalThis.addEventListener("keydown", takeover, options);
+    globalThis.addEventListener("click", () => { if (!internalClick) takeover(); }, options);
+    globalThis.addEventListener("scroll", () => {
+      if (Date.now() > internalScrollUntil) takeover();
+    }, { ...options, passive: true });
+    return () => listeners.abort();
   }
 
   async function start(input: {
@@ -94,25 +104,36 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
     artifactUploadEnabled: boolean;
     channelNonce: string;
   }): Promise<void> {
-    if (reader) reader.stop();
+    reader?.stop();
     activeSessionId = input.sessionId;
     const adapter = browserAdapter();
     const source = canonicalDouyinVideoUrl(globalThis.location.href);
-    if (!source) return;
+    if (!source) throw new BoundedReaderError("visual_source_invalid");
     let attemptedAction = false;
-    reader = createBoundedReader({
+    const sessionTransport = createReliableEventTransport({
+      send: async (event) => {
+        const response = await chrome.runtime.sendMessage({ kind: "douyin_reader_event", event });
+        return {
+          accepted: response !== null && typeof response === "object" && !Array.isArray(response)
+            && (response as { accepted?: unknown }).accepted === true
+        };
+      }
+    });
+    transport = sessionTransport;
+    const sessionReader = createBoundedReader({
       sessionId: input.sessionId,
       limits: input.limits,
       artifactUploadEnabled: input.artifactUploadEnabled,
-      extract: async () => {
+      extract: async (signal) => {
         if (!attemptedAction) {
           attemptedAction = true;
           const action = findExactReadOnlyAction(document, adapter);
           if (action.status === "ambiguous") throw new BoundedReaderError("visual_source_invalid");
           if (action.status === "one") {
+            if (signal?.aborted) return [];
             internalClick = true;
             try { (action.element as HTMLElement).click(); } finally { internalClick = false; }
-            await waitForDomStability();
+            await waitForDomStability(signal);
           }
         }
         const result = await extractVisibleTopLevelComments({
@@ -123,7 +144,8 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
         if (result.status === "blocked") throw new BoundedReaderError("visual_source_invalid");
         return result.observations;
       },
-      programmaticScroll: async () => {
+      programmaticScroll: async (_index, signal) => {
+        if (signal?.aborted) return;
         const videos = Array.from(document.querySelectorAll('[role="region"][aria-label="当前视频"]'));
         if (videos.length !== 1) throw new BoundedReaderError("visual_source_invalid");
         const feeds = Array.from(videos[0].querySelectorAll('[role="feed"]'))
@@ -132,25 +154,24 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
         internalScrollUntil = Date.now() + 800;
         const feed = feeds[0] as HTMLElement;
         feed.scrollBy({ top: Math.max(240, Math.min(480, feed.clientHeight * 0.8)), behavior: "auto" });
-        await waitForDomStability();
+        await waitForDomStability(signal);
+        if (signal?.aborted) return;
         await chrome.runtime.sendMessage({
           kind: "douyin_reader_usage",
           sessionId: input.sessionId,
-          scrollCount: reader?.usage().scrollCount ?? 0
+          scrollCount: sessionReader.usage().scrollCount
         });
       },
-      sendBatch: async (batch) => {
-        await sendEvent({
-          version: BRIDGE_VERSION,
-          type: "observation_batch",
-          channelNonce: input.channelNonce,
-          sessionId: input.sessionId,
-          batchId: batch.batchId,
-          observations: batch.observations as any
-        });
-      },
-      sendTerminal: async (terminal) => {
-        await sendEvent({
+      sendBatch: async (batch) => sessionTransport.sendBatch({
+        version: BRIDGE_VERSION,
+        type: "observation_batch",
+        channelNonce: input.channelNonce,
+        sessionId: input.sessionId,
+        batchId: batch.batchId,
+        observations: batch.observations as any
+      }),
+      sendTerminal: (terminal) => {
+        sessionTransport.queueTerminal({
           version: BRIDGE_VERSION,
           type: "terminal",
           channelNonce: input.channelNonce,
@@ -158,11 +179,23 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
           status: terminal.status,
           errorCodes: terminal.errorCodes
         });
+      }
+    });
+    reader = sessionReader;
+    const cleanupTakeover = installTakeoverListeners(sessionReader);
+    try {
+      await sessionReader.start();
+    } finally {
+      cleanupTakeover();
+      if (reader === sessionReader) {
         reader = null;
         activeSessionId = null;
       }
-    });
-    await reader.start();
+      void sessionTransport.whenIdle().then(() => {
+        sessionTransport.close();
+        if (transport === sessionTransport) transport = null;
+      });
+    }
   }
 
   chrome.runtime.onMessage.addListener((message: unknown, _sender: unknown, sendResponse: (value: unknown) => void) => {
@@ -179,14 +212,21 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
       if (!command || command.type !== "start") return;
       sendResponse({ accepted: true });
       void start(command).catch(async () => {
-        await sendEvent({
+        const fallback = createReliableEventTransport({
+          send: async (event) => {
+            const response = await chrome.runtime.sendMessage({ kind: "douyin_reader_event", event });
+            return { accepted: response?.accepted === true };
+          }
+        });
+        fallback.queueTerminal({
           version: BRIDGE_VERSION,
           type: "terminal",
           channelNonce: command.channelNonce,
           sessionId: command.sessionId,
           status: "partial_success",
           errorCodes: ["visual_source_invalid"]
-        }).catch(() => undefined);
+        });
+        void fallback.whenIdle().then(() => fallback.close());
         reader = null;
         activeSessionId = null;
       });
@@ -195,13 +235,21 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
     if (exact(message, ["kind", "sessionId", "batchId"])
       && message.kind === "visual_reader_ack"
       && message.sessionId === activeSessionId && typeof message.batchId === "string") {
-      void reader?.acknowledge(message.batchId);
-      sendResponse({ accepted: true });
-      return;
+      void reader?.acknowledge(message.batchId).then((accepted) => sendResponse({ accepted }));
+      return true;
     }
     if (exact(message, ["kind", "sessionId"]) && message.kind === "visual_reader_abort"
       && message.sessionId === activeSessionId) {
       reader?.stop();
+      sendResponse({ accepted: true });
+      return;
+    }
+    if (matchesUnavailableSession(message, "visual_reader_unavailable", activeSessionId)) {
+      reader?.stop();
+      transport?.close();
+      reader = null;
+      transport = null;
+      activeSessionId = null;
       sendResponse({ accepted: true });
     }
   });

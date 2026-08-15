@@ -12,6 +12,15 @@ import {
   type SessionCoordinator,
   type VisualReaderPersistedState
 } from "./session-coordinator";
+import {
+  boundTabNavigationIsTakeover,
+  focusLeavesBoundWindow,
+  prepareFreshDouyinTab,
+  sameWindowActivationIsTakeover,
+  type BoundDouyinTab,
+  type ConfirmedDouyinTab
+} from "./tab-guard";
+import { recoverOrphanedVisualReaderSession } from "./restart-recovery";
 
 declare const chrome: any;
 
@@ -33,6 +42,15 @@ function exact(value: unknown, keys: readonly string[]): value is Record<string,
 
 async function persist(state: VisualReaderPersistedState): Promise<void> {
   await chrome.storage.session.set({ visualReaderSession: state });
+}
+
+async function recoverAfterServiceWorkerRestart(): Promise<void> {
+  await recoverOrphanedVisualReaderSession({
+    load: async () => (await chrome.storage.session.get("visualReaderSession"))?.visualReaderSession ?? null,
+    clear: async () => { await chrome.storage.session.remove("visualReaderSession"); },
+    notifyGoodJob: async (tabId, message) => { await chrome.tabs.sendMessage(tabId, message); },
+    notifyDouyin: async (tabId, message) => { await chrome.tabs.sendMessage(tabId, message); }
+  });
 }
 
 function safeLog(entry: { event: string; reason?: string; sessionId?: string }): void {
@@ -103,19 +121,19 @@ async function handleGoodJobCommand(
   const snapshot = coordinator.snapshot();
   if (command.sessionId !== snapshot.sessionId || sender.tab.id !== snapshot.goodJobTabId) return {};
   if (command.type === "acknowledge_batch") {
-    if (!coordinator.acknowledgeBatch(command.sessionId, command.batchId)
-      || snapshot.douyinTabId === null) return {};
+    if (!coordinator.canAcknowledgeBatch(command.sessionId, command.batchId)
+      || snapshot.douyinTabId === null) return { accepted: false };
     try {
-      await chrome.tabs.sendMessage(snapshot.douyinTabId, {
+      const response = await chrome.tabs.sendMessage(snapshot.douyinTabId, {
         kind: "visual_reader_ack",
         sessionId: command.sessionId,
         batchId: command.batchId
       });
-    } catch (error) {
-      coordinator.beginBatch(command.batchId);
-      throw error;
+      if (!record(response) || response.accepted !== true) return { accepted: false };
+    } catch {
+      return { accepted: false };
     }
-    return { accepted: true };
+    return { accepted: coordinator.commitAcknowledgedBatch(command.sessionId, command.batchId) };
   }
   await safeAbort("user_requested");
   return { accepted: true };
@@ -123,7 +141,12 @@ async function handleGoodJobCommand(
 
 async function popupSnapshot(): Promise<unknown> {
   const snapshot = coordinator?.snapshot() ?? null;
-  const tabs = await chrome.tabs.query({ currentWindow: true, url: "https://www.douyin.com/*" });
+  const focusedWindow = await chrome.windows.getLastFocused({ populate: false });
+  const windowId = Number.isSafeInteger(focusedWindow?.id) ? focusedWindow.id as number : null;
+  const tabs = windowId === null ? [] : await chrome.tabs.query({
+    windowId,
+    url: "https://www.douyin.com/*"
+  });
   return {
     session: snapshot ? {
       sessionId: snapshot.sessionId,
@@ -134,8 +157,9 @@ async function popupSnapshot(): Promise<unknown> {
     } : null,
     tabs: tabs.flatMap((tab: any) => {
       const canonical = typeof tab.url === "string" ? canonicalDouyinVideoUrl(tab.url) : null;
-      return canonical && Number.isSafeInteger(tab.id) ? [{
+      return canonical && Number.isSafeInteger(tab.id) && Number.isSafeInteger(tab.windowId) ? [{
         id: tab.id,
+        windowId: tab.windowId,
         title: typeof tab.title === "string" ? tab.title.slice(0, 160) : "抖音视频",
         url: canonical.sourceUrl
       }] : [];
@@ -143,22 +167,56 @@ async function popupSnapshot(): Promise<unknown> {
   };
 }
 
-async function confirmPopup(tabId: number): Promise<{ accepted: boolean }> {
-  if (!coordinator || !Number.isSafeInteger(tabId)) return { accepted: false };
+async function confirmPopup(selected: ConfirmedDouyinTab): Promise<{ accepted: boolean }> {
+  if (!coordinator) return { accepted: false };
   const snapshot = coordinator.snapshot();
   if (snapshot.status !== "authorized") return { accepted: false };
-  const tab = await chrome.tabs.get(tabId);
-  const url = typeof tab?.url === "string" ? tab.url : "";
-  if (!coordinator.confirmDouyinTab(tabId, url)) return { accepted: false };
-  await chrome.scripting.executeScript({ target: { tabId }, files: ["douyin-content.js"] });
-  await chrome.tabs.sendMessage(tabId, {
-    kind: "visual_reader_start",
-    sessionId: snapshot.sessionId,
-    limits: snapshot.limits,
-    artifactUploadEnabled: snapshot.artifactUploadEnabled,
-    channelNonce: coordinator.rawChannelNonce()
+  const prepared = await prepareFreshDouyinTab(selected, {
+    getTab: async (tabId) => {
+      const tab = await chrome.tabs.get(tabId);
+      return {
+        id: tab.id,
+        windowId: tab.windowId,
+        url: typeof tab.url === "string" ? tab.url : "",
+        active: tab.active === true
+      };
+    },
+    focusWindow: async (windowId) => { await chrome.windows.update(windowId, { focused: true }); },
+    activateTab: async (tabId) => { await chrome.tabs.update(tabId, { active: true }); }
   });
-  return { accepted: true };
+  if (!prepared) return { accepted: false };
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: prepared.id }, files: ["douyin-content.js"] });
+    if (!await coordinator.confirmDouyinTab(prepared.id, prepared.windowId, prepared.url)) {
+      return { accepted: false };
+    }
+    const response = await chrome.tabs.sendMessage(prepared.id, {
+      kind: "visual_reader_start",
+      sessionId: snapshot.sessionId,
+      limits: snapshot.limits,
+      artifactUploadEnabled: snapshot.artifactUploadEnabled,
+      channelNonce: coordinator.rawChannelNonce()
+    });
+    if (!record(response) || response.accepted !== true) {
+      await safeAbort("user_requested");
+      return { accepted: false };
+    }
+    return { accepted: true };
+  } catch {
+    await safeAbort("user_requested");
+    return { accepted: false };
+  }
+}
+
+function activeBinding(): BoundDouyinTab | null {
+  const snapshot = coordinator?.snapshot();
+  if (!snapshot || snapshot.status !== "reading" || snapshot.douyinTabId === null
+    || snapshot.douyinWindowId === null || snapshot.douyinSourceUrl === null) return null;
+  return {
+    tabId: snapshot.douyinTabId,
+    windowId: snapshot.douyinWindowId,
+    url: snapshot.douyinSourceUrl
+  };
 }
 
 async function handleReaderEvent(raw: unknown, sender: any): Promise<{ accepted: boolean }> {
@@ -171,14 +229,16 @@ async function handleReaderEvent(raw: unknown, sender: any): Promise<{ accepted:
   if (sender.tab?.id !== snapshot.douyinTabId || event.sessionId !== snapshot.sessionId
     || event.channelNonce !== coordinator.rawChannelNonce()) return { accepted: false };
   if (event.type === "observation_batch") {
-    if (!coordinator.beginBatch(event.batchId)) return { accepted: false };
+    const receipt = coordinator.receiveBatch(event.batchId);
+    if (receipt === "blocked") return { accepted: false };
     await sendToGoodJob(snapshot.goodJobTabId, event);
-    await coordinator.updateUsage({ observationCount:
-      Math.min(snapshot.limits.maxCommentsPerVideo,
-        snapshot.usage.observationCount + event.observations.length) });
+    if (receipt === "new") {
+      await coordinator.updateUsage({ observationCount:
+        Math.min(snapshot.limits.maxCommentsPerVideo,
+          snapshot.usage.observationCount + event.observations.length) });
+    }
     return { accepted: true };
   }
-  if (snapshot.pendingBatchId !== null) return { accepted: false };
   await sendToGoodJob(snapshot.goodJobTabId, event);
   if (event.status === "aborted") {
     await coordinator.abort(event.errorCodes.includes("visual_reader_user_takeover")
@@ -203,14 +263,20 @@ async function handleReaderUsage(raw: unknown, sender: any): Promise<{ accepted:
 }
 
 if (typeof chrome !== "undefined") {
+  const startupRecovery = recoverAfterServiceWorkerRestart();
   chrome.runtime.onMessage.addListener((message: unknown, sender: any, sendResponse: (value: unknown) => void) => {
     void (async () => {
+      await startupRecovery;
       if (record(message) && message.kind === "goodjob_page_command") {
         return handleGoodJobCommand(message, sender);
       }
       if (exact(message, ["kind"]) && message.kind === "popup_snapshot") return popupSnapshot();
-      if (exact(message, ["kind", "tabId"]) && message.kind === "popup_confirm"
-        && Number.isSafeInteger(message.tabId)) return confirmPopup(message.tabId as number);
+      if (exact(message, ["kind", "tab"]) && message.kind === "popup_confirm"
+        && exact(message.tab, ["id", "windowId", "url"])
+        && Number.isSafeInteger(message.tab.id) && Number.isSafeInteger(message.tab.windowId)
+        && typeof message.tab.url === "string") {
+        return confirmPopup(message.tab as unknown as ConfirmedDouyinTab);
+      }
       if (exact(message, ["kind"]) && message.kind === "popup_abort") {
         await safeAbort("user_requested");
         return { accepted: true };
@@ -222,13 +288,21 @@ if (typeof chrome !== "undefined") {
     return true;
   });
 
-  chrome.runtime.onConnect.addListener((port: any) => {
-    if (port.name !== "visual-reader-popup") return;
-    port.onDisconnect.addListener(() => { void safeAbort("visual_reader_user_takeover"); });
+  chrome.tabs.onActivated.addListener((activation: { tabId: number; windowId: number }) => {
+    const binding = activeBinding();
+    if (binding && sameWindowActivationIsTakeover(binding, activation)) {
+      void safeAbort("visual_reader_user_takeover");
+    }
   });
-  chrome.tabs.onActivated.addListener(({ tabId }: { tabId: number }) => {
-    const snapshot = coordinator?.snapshot();
-    if (snapshot?.status === "reading" && tabId !== snapshot.douyinTabId) {
+  chrome.windows.onFocusChanged.addListener((windowId: number) => {
+    const binding = activeBinding();
+    if (binding && focusLeavesBoundWindow(binding, windowId, chrome.windows.WINDOW_ID_NONE)) {
+      void safeAbort("visual_reader_user_takeover");
+    }
+  });
+  chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: { url?: string }) => {
+    const binding = activeBinding();
+    if (binding && boundTabNavigationIsTakeover(binding, tabId, changeInfo.url)) {
       void safeAbort("visual_reader_user_takeover");
     }
   });

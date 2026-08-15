@@ -4,6 +4,7 @@ import {
   parsePageCommand,
   type ExtensionEvent
 } from "./protocol";
+import { goodJobRecoveryTerminalFromMemory } from "./restart-recovery";
 
 declare const chrome: any;
 
@@ -56,6 +57,13 @@ if (typeof chrome !== "undefined" && isAllowedOrigin(globalThis.location.origin)
   chrome.runtime.onMessage.addListener((message: unknown) => {
     if (message === null || typeof message !== "object" || Array.isArray(message)) return;
     const keys = Object.keys(message as Record<string, unknown>);
+    const restartTerminal = goodJobRecoveryTerminalFromMemory(message, { channelNonce, sessionId });
+    if (restartTerminal) {
+      emit(restartTerminal);
+      channelNonce = null;
+      sessionId = null;
+      return;
+    }
     if (keys.length !== 2 || !keys.includes("kind") || !keys.includes("event")
       || (message as { kind?: unknown }).kind !== "goodjob_extension_event") return;
     const event = parseExtensionEvent((message as { event?: unknown }).event);

@@ -101,7 +101,45 @@ async function extract(name: string, sourceUrl = "https://www.douyin.com/video/1
   assert.equal(missingName.observations[0]?.secUid, null);
   const missingId = await extract("missing-id.html");
   assert.equal(missingId.observations[0]?.platformCommentId, null);
-  assert.match(missingId.observations[0]?.clientObservationKey ?? "", /^dom:[0-9a-f]{32}$/u);
+  assert.match(missingId.observations[0]?.clientObservationKey ?? "", /^dom:[0-9a-f]{64}$/u);
+}
+
+{
+  const document = await fixture("missing-id.html");
+  const base = adapter(document);
+  const first = await extractVisibleTopLevelComments({
+    document,
+    adapter: base,
+    sourceUrl: "https://www.douyin.com/video/123456789"
+  });
+  const moved = await extractVisibleTopLevelComments({
+    document,
+    adapter: {
+      ...base,
+      bounds: (element) => element.getAttribute("role") === "article"
+        ? { x: 120, y: 420, width: 640, height: 180 }
+        : base.bounds(element)
+    },
+    sourceUrl: "https://www.douyin.com/video/123456789"
+  });
+  assert.equal(
+    moved.observations[0]?.clientObservationKey,
+    first.observations[0]?.clientObservationKey,
+    "a comment without a platform ID keeps its digest when the virtual card moves"
+  );
+  const body = document.querySelector('[aria-label="评论内容"]');
+  assert.ok(body);
+  body.textContent = "同一个位置换成一条新评论";
+  const replaced = await extractVisibleTopLevelComments({
+    document,
+    adapter: base,
+    sourceUrl: "https://www.douyin.com/video/123456789"
+  });
+  assert.notEqual(
+    replaced.observations[0]?.clientObservationKey,
+    first.observations[0]?.clientObservationKey,
+    "a new visible comment at the same position gets a different digest"
+  );
 }
 
 {
