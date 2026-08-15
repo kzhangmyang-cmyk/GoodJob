@@ -151,7 +151,7 @@
 
 **Interfaces:**
 - `AcquisitionDouyinCommentEventRepository.appendObservation(input)` 返回 `{ event, observation, eventCreated, contentChanged, contentVersion, ingestionSaga }`。
-- `listRunCommentSignals(scope, runId, { limit })`、`getRunCommentSummary(scope, runId)` 和 `listFetchAttempts(scope, runId, { limit })` 为 Run Presentation 提供有界读模型。每个 event link 固定关联当次 `observationId`，同 Run 同事件多次观测按规范化 `capturedAt` 和确定性 ID 顺序取最新值，后续 Run 不改变历史 Run 快照。
+- `getRunCommentPresentationProjection(scope, runId)` 在仓储内聚合整个 Run 的 fetch attempt、终态候选、错误和 saga/link 完整度；`listRunCommentSignalsForPresentation` 使用 10001 条探针执行 10000 条硬保护，公开 `commentSignals` 仍只取最近 50 条。每个 event link 固定关联当次 `observationId`，同 Run 同事件多次观测按规范化 `capturedAt` 和确定性 ID 顺序取最新值，后续 Run 不改变历史 Run 快照。
 - `DouyinCommentFetchAttempt` 持久化 `runId | null`、`shardId | null`、`discoveryOperationId | null`、`sourceUrl`、`videoId | null`、`status`、`errorCode | null`、`requestedCount`、`returnedCount`、`reportedCommentCount | null`、`pagesFetched`、`startedAt`、`completedAt`。
 - MySQL 表：`acquisition_douyin_comment_events`、`acquisition_douyin_comment_observations`、`acquisition_douyin_comment_content_versions`、`acquisition_douyin_comment_ingestion_sagas`、`acquisition_douyin_comment_event_links`、`acquisition_douyin_comment_fetch_attempts`；所有查询带 `owner_id + team_id`。
 
@@ -349,6 +349,10 @@
 - 每步包含 `status: pending | running | succeeded | partial_success | failed | skipped`、`startedAt`、`completedAt`、`durationMs`、`processedCount`、`errorCode`、`message`；全部由持久化事实派生。
 - `summary` 增加 `discoveredVideos`、`commentsSampled`、`validDemandSignals`、`unresolvedActors`、`highPotentialSignals`。
 - `commentSignals[]` 最多返回 50 条，包含 `eventId`、`candidateId`、`displayName`、`handle`、`text`、`occurredAt`、`likeCount`、`replyCount`、`ipLabel`、`sourceUrl`、`intentBand`、`reasons`、`confidence`、`identityStatus`、`evidenceId`；不包含头像。
+- 评论自动化是否适用只由 Run 引用的不可变计划版本决定：目标必须为 douyin 且公开评论策略明确启用；否则固定七步全部 skipped，普通网页搜索 shard 不计为视频发现。
+- fetch attempt 在 repository 内全量聚合，第 101 条及以后同样参与状态、错误、时间和资格完整度；候选与信号事实设 10000 条硬保护。有效需求排除 negative 与 `do_not_contact`，未核验主体按稳定公开主体在整个 Run 去重。
+- 发现步骤只使用 `shard.started` 与终态 shard 事件时间；标准化、主体聚合、资格研判和刷新没有独立时间事实时返回 null。event 已存但 saga/link 未提交时，主体聚合不得显示 succeeded。
+- 高潜评论必须同时通过真实 scoped candidate、真实 Evidence、candidate 对 evidenceId 的归属和精确 `platform_public_event` provenance 校验；悬空或交叉链接 fail closed。
 - 取数失败不伪造 0：对应步骤为 failed/partial_success 并带错误码。
 - 时间线可见错误码至少覆盖 `public_sample_unavailable`、`access_restricted`、`rate_limited`、`video_id_unresolved`、`source_payload_invalid`、`no_public_comments`、`model_output_invalid`；多步骤有成有败时使用 `partial_success` 状态而不是另造错误。
 

@@ -13,6 +13,7 @@ import type {
 import {
   InMemoryAcquisitionPlanRunRepository,
   type AcquisitionOperationShard,
+  type AcquisitionPlanVersion,
   type AcquisitionRun
 } from "./acquisition-plan-run-repository.js";
 import {
@@ -161,6 +162,99 @@ function evidence(
   };
 }
 
+function commentEvidence(
+  id: string,
+  index: number,
+  text: string,
+  ownerId = OWNER,
+  teamId = TEAM,
+  videoId = "7312345678901234567"
+): DiscoveryEvidence {
+  const suffix = String(index).padStart(2, "0");
+  const minute = String(Math.floor(index / 60)).padStart(2, "0");
+  const second = String(index % 60).padStart(2, "0");
+  return {
+    id,
+    ownerId,
+    teamId,
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: `抖音公开评论 ${suffix}`,
+    sourceSnippet: text,
+    publishedAt: `2026-07-26T09:${minute}:${second}.000Z`,
+    fetchedAt: `2026-07-26T09:${minute}:${second}.500Z`,
+    locale: "zh-CN",
+    rawArtifactHash: `sha256:${"b".repeat(62)}${suffix}`,
+    contentHash: `sha256:${String(index).padStart(64, "0")}`,
+    provenance: {
+      kind: "platform_public_event",
+      sourceUrl: `https://www.douyin.com/video/${videoId}`,
+      platformEventId: `comment-${suffix}`,
+      providerVersion: "douyin-public-comment-provider-v1",
+      coverage: "public_top_level_sample"
+    },
+    accessStatus: "public_content",
+    supersedesEvidenceId: null
+  };
+}
+
+function planVersion(options: {
+  id?: string;
+  targetPlatform?: "douyin" | "web";
+  enabled?: boolean;
+} = {}): AcquisitionPlanVersion {
+  const id = options.id ?? "plan-version-1";
+  const targetPlatform = options.targetPlatform ?? "douyin";
+  const enabled = options.enabled ?? true;
+  return {
+    id,
+    planId: id === "plan-version-1" ? "plan-1" : `plan-${id}`,
+    ownerId: OWNER,
+    teamId: TEAM,
+    version: 1,
+    payload: {
+      targetPlatform,
+      ...(targetPlatform === "douyin"
+        ? {
+            douyinPublicCommentSample: {
+              enabled,
+              maxVideosPerRun: 20,
+              maxCommentsPerVideo: 100,
+              maxPagesPerVideo: 5
+            }
+          }
+        : {}),
+      name: "公开评论自动化计划",
+      objective: "发现公开需求信号",
+      icp: {
+        industries: ["软件"],
+        regions: ["中国"],
+        organizationCriteria: ["公开需求"],
+        individualCriteria: ["公开需求"],
+        exclusionRules: []
+      },
+      subjectChannels: { organization: true, individual: true },
+      providerConnections: [],
+      operations: [],
+      budgetSnapshot: {
+        billingCurrency: "CNY",
+        maxRequests: 100,
+        maxResults: 2_000,
+        maxAmountMinor: 0,
+        maxDurationSeconds: 600
+      },
+      modelSnapshotRef,
+      stopConditions: {
+        stopWhenBudgetExhausted: true,
+        stopWhenNoMoreResults: true
+      }
+    },
+    payloadHash: id === "plan-version-1" ? "sha256:plan" : `sha256:${id}`,
+    createdBy: ACTOR,
+    createdAt: "2026-07-26T08:59:00.000Z"
+  };
+}
+
 function candidate(
   id: string,
   grade: QualificationDecision["grade"],
@@ -293,6 +387,7 @@ async function fixture() {
   const domain = new InMemoryAcquisitionDomainRepository(planRuns);
   const commentEvents = new InMemoryAcquisitionDouyinCommentEventRepository();
   await planRuns.transaction((transaction) => {
+    transaction.appendPlanVersion(planVersion());
     transaction.putRun(run("run-1"));
     transaction.putRun({ ...run("run-2"), status: "running" });
     transaction.putShard(shard(
@@ -481,6 +576,7 @@ async function fixture() {
 
 async function appendCommentSignal(
   repository: InMemoryAcquisitionDouyinCommentEventRepository,
+  domain: InMemoryAcquisitionDomainRepository,
   options: {
     index: number;
     candidateId: string | null;
@@ -489,11 +585,16 @@ async function appendCommentSignal(
     actorSecUid?: string | null;
     ownerId?: string;
     teamId?: string;
+    videoId?: string;
+    commit?: boolean;
+    persistEvidence?: boolean;
+    attachEvidenceToCandidate?: boolean;
   }
 ) {
   const ownerId = options.ownerId ?? OWNER;
   const teamId = options.teamId ?? TEAM;
   const suffix = String(options.index).padStart(2, "0");
+  const videoId = options.videoId ?? "7312345678901234567";
   const minute = String(Math.floor(options.index / 60)).padStart(2, "0");
   const second = String(options.index % 60).padStart(2, "0");
   await repository.appendObservation({
@@ -504,7 +605,7 @@ async function appendCommentSignal(
       platform: "douyin",
       eventType: "comment",
       platformEventId: `comment-${suffix}`,
-      videoId: "7312345678901234567",
+      videoId,
       parentCommentId: null,
       text: options.text,
       textHash: `sha256:${String(options.index).padStart(64, "0")}`,
@@ -520,8 +621,7 @@ async function appendCommentSignal(
           ? `sec-${suffix}`
           : options.actorSecUid
       },
-      sourceUrl:
-        "https://www.douyin.com/video/7312345678901234567",
+      sourceUrl: `https://www.douyin.com/video/${videoId}`,
       coverage: "public_top_level_sample",
       accessStatus: "public_content",
       providerVersion: "douyin-public-comment-provider-v1",
@@ -535,6 +635,7 @@ async function appendCommentSignal(
       discoveryOperationId: "operation-shard-1"
     }
   });
+  if (options.commit === false) return;
   await repository.commitIngestionSaga(
     { ownerId, teamId, actorId: ACTOR },
     `comment-saga-${suffix}`,
@@ -543,6 +644,33 @@ async function appendCommentSignal(
       evidenceId: options.evidenceId
     }
   );
+  if (options.candidateId && ownerId === OWNER && teamId === TEAM) {
+    const current = await domain.findCandidate(
+      { ownerId, teamId },
+      options.candidateId
+    );
+    if (current) {
+      if (options.persistEvidence !== false) {
+        await domain.appendEvidence(commentEvidence(
+          options.evidenceId,
+          options.index,
+          options.text,
+          ownerId,
+          teamId,
+          videoId
+        ));
+      }
+      if (options.attachEvidenceToCandidate !== false) {
+        await domain.saveCandidate({
+          ...current,
+          evidenceIds: [...new Set([
+            ...current.evidenceIds,
+            options.evidenceId
+          ])]
+        });
+      }
+    }
+  }
 }
 
 async function appendFetchAttempt(
@@ -559,6 +687,7 @@ async function appendFetchAttempt(
     strongSignalCount?: number;
     returnedCount?: number;
     videoId?: string | null;
+    candidateIds?: string[];
   }
 ) {
   const startedAt = options.startedAt ?? "2026-07-26T09:00:10.000Z";
@@ -589,7 +718,7 @@ async function appendFetchAttempt(
       durationSeconds: 5,
       eventCount: options.eventCount ?? 0,
       evidenceCount: options.evidenceCount ?? 0,
-      candidateIds: [],
+      candidateIds: options.candidateIds ?? [],
       unresolvedActorCount: options.unresolvedActorCount ?? 0,
       strongSignalCount: options.strongSignalCount ?? 0,
       invalidCommentCount: 0
@@ -598,20 +727,20 @@ async function appendFetchAttempt(
 }
 
 test("presentation derives the fixed automation timeline and comment signals from durable facts", async () => {
-  const { service, commentEvents } = await fixture();
-  await appendCommentSignal(commentEvents, {
+  const { service, domain, commentEvents } = await fixture();
+  await appendCommentSignal(commentEvents, domain, {
     index: 1,
     candidateId: "candidate-2",
     evidenceId: "comment-evidence-1",
     text: "采购100套，预算五万元，希望本月交付"
   });
-  await appendCommentSignal(commentEvents, {
+  await appendCommentSignal(commentEvents, domain, {
     index: 2,
     candidateId: "candidate-3",
     evidenceId: "comment-evidence-2",
     text: "正在找供应商，采购200套，预算十万元"
   });
-  await appendCommentSignal(commentEvents, {
+  await appendCommentSignal(commentEvents, domain, {
     index: 3,
     candidateId: "candidate-cross-tenant",
     evidenceId: "comment-evidence-cross-tenant",
@@ -867,7 +996,7 @@ test("persisted events remain visible while qualification is unfinished", async 
     status: "pending_review" as const
   };
   await domain.insertCandidate(pending);
-  await appendCommentSignal(commentEvents, {
+  await appendCommentSignal(commentEvents, domain, {
     index: 8,
     candidateId: pending.id,
     evidenceId: "comment-evidence-pending",
@@ -893,9 +1022,9 @@ test("persisted events remain visible while qualification is unfinished", async 
 });
 
 test("comment signal projection is capped at 50 without truncating durable totals", async () => {
-  const { service, commentEvents } = await fixture();
+  const { service, domain, commentEvents } = await fixture();
   for (let index = 10; index < 61; index += 1) {
-    await appendCommentSignal(commentEvents, {
+    await appendCommentSignal(commentEvents, domain, {
       index,
       candidateId: "candidate-3",
       evidenceId: `comment-evidence-${index}`,
@@ -908,6 +1037,314 @@ test("comment signal projection is capped at 50 without truncating durable total
   assert.equal(value.summary.validDemandSignals, 51);
   assert.equal(value.commentSignals[0]?.eventId, "comment-event-60");
   assert.equal(value.commentSignals.at(-1)?.eventId, "comment-event-11");
+});
+
+test("valid demand and unresolved actor totals use authoritative candidate facts across every page", async () => {
+  const { service, domain, commentEvents } = await fixture();
+  const rejectedBase = candidate("candidate-negative", "D", {
+    individual: true,
+    identityResolved: false,
+    status: "normalized"
+  });
+  assert.equal(rejectedBase.profile.kind, "individual");
+  const rejected = {
+    ...rejectedBase,
+    profile: {
+      ...rejectedBase.profile,
+      negativeSignals: ["explicit_rejection", "no_contact"]
+    }
+  };
+  await domain.insertCandidate(rejected);
+  const doNotContact = candidate("candidate-do-not-contact", "D", {
+    individual: true,
+    identityResolved: false,
+    status: "do_not_contact"
+  });
+  await domain.insertCandidate(doNotContact);
+  await appendCommentSignal(commentEvents, domain, {
+    index: 61,
+    candidateId: rejected.id,
+    evidenceId: "comment-evidence-rejected",
+    text: "不需要，请勿联系"
+  });
+  await appendCommentSignal(commentEvents, domain, {
+    index: 64,
+    candidateId: doNotContact.id,
+    evidenceId: "comment-evidence-do-not-contact",
+    text: "正在找供应商，采购500套，预算二十万元"
+  });
+  await appendCommentSignal(commentEvents, domain, {
+    index: 62,
+    candidateId: "candidate-3",
+    evidenceId: "comment-evidence-unresolved-page-1",
+    text: "正在找供应商，采购20套",
+    actorSecUid: "same-public-sec-uid"
+  });
+  await appendCommentSignal(commentEvents, domain, {
+    index: 63,
+    candidateId: "candidate-3",
+    evidenceId: "comment-evidence-unresolved-page-2",
+    text: "预算五万元，希望本月交付",
+    actorSecUid: "same-public-sec-uid",
+    videoId: "7312345678901234568"
+  });
+  await appendFetchAttempt(commentEvents, {
+    id: "comment-attempt-page-1",
+    status: "succeeded",
+    eventCount: 3,
+    evidenceCount: 3,
+    unresolvedActorCount: 1,
+    strongSignalCount: 1,
+    returnedCount: 3
+  });
+  await appendFetchAttempt(commentEvents, {
+    id: "comment-attempt-page-2",
+    status: "succeeded",
+    startedAt: "2026-07-26T09:01:10.000Z",
+    completedAt: "2026-07-26T09:01:15.000Z",
+    eventCount: 1,
+    evidenceCount: 1,
+    unresolvedActorCount: 1,
+    strongSignalCount: 1,
+    returnedCount: 1
+  });
+
+  const value = await service.get(scope, "run-1", { limit: 1 });
+  assert.equal(value.summary.validDemandSignals, 2);
+  assert.equal(value.summary.unresolvedActors, 1);
+  assert.equal(
+    value.commentSignals.some((signal) =>
+      signal.candidateId === rejected.id
+      || signal.candidateId === doNotContact.id
+    ),
+    false,
+    "negative/do-not-contact comments must not appear as high-potential signals"
+  );
+});
+
+test("presentation includes attempt 101 and later in terminal status, time and qualification facts", async () => {
+  const { service, commentEvents } = await fixture();
+  for (let index = 0; index < 101; index += 1) {
+    const minute = String(Math.floor(index / 60)).padStart(2, "0");
+    const second = String(index % 60).padStart(2, "0");
+    await appendFetchAttempt(commentEvents, {
+      id: `comment-attempt-${String(index).padStart(3, "0")}`,
+      status: index === 100 ? "failed" : "succeeded",
+      errorCode: index === 100 ? "rate_limited" : null,
+      startedAt: `2026-07-26T10:${minute}:${second}.000Z`,
+      completedAt: `2026-07-26T10:${minute}:${second}.500Z`,
+      candidateIds: index === 100 ? ["candidate-1"] : []
+    });
+  }
+
+  const value = await service.get(scope, "run-1", { limit: 1 });
+  assert.equal(value.automationSteps[2]?.status, "partial_success");
+  assert.equal(value.automationSteps[2]?.errorCode, "rate_limited");
+  assert.equal(
+    value.automationSteps[2]?.completedAt,
+    "2026-07-26T10:01:40.500Z"
+  );
+  assert.equal(value.automationSteps[5]?.status, "succeeded");
+  assert.equal(value.automationSteps[5]?.processedCount, 1);
+});
+
+test("step timestamps come only from the matching durable lifecycle facts", async () => {
+  const { service, domain, commentEvents } = await fixture();
+  await appendCommentSignal(commentEvents, domain, {
+    index: 64,
+    candidateId: "candidate-2",
+    evidenceId: "comment-evidence-timeline",
+    text: "采购100套，预算五万元"
+  });
+  await appendFetchAttempt(commentEvents, {
+    id: "comment-attempt-timeline",
+    status: "succeeded",
+    startedAt: "2026-07-26T09:10:10.000Z",
+    completedAt: "2026-07-26T09:10:15.000Z",
+    eventCount: 1,
+    evidenceCount: 1,
+    returnedCount: 1,
+    candidateIds: ["candidate-2"]
+  });
+
+  const value = await service.get(scope, "run-1", { limit: 1 });
+  assert.deepEqual(
+    value.automationSteps[0] && {
+      startedAt: value.automationSteps[0].startedAt,
+      completedAt: value.automationSteps[0].completedAt,
+      durationMs: value.automationSteps[0].durationMs
+    },
+    {
+      startedAt: "2026-07-26T09:00:01.000Z",
+      completedAt: "2026-07-26T09:00:06.000Z",
+      durationMs: 5_000
+    }
+  );
+  for (const index of [3, 4, 5, 6]) {
+    assert.deepEqual(
+      value.automationSteps[index] && {
+        startedAt: value.automationSteps[index].startedAt,
+        completedAt: value.automationSteps[index].completedAt,
+        durationMs: value.automationSteps[index].durationMs
+      },
+      { startedAt: null, completedAt: null, durationMs: null }
+    );
+  }
+});
+
+test("actor aggregation remains incomplete while a normalized event saga is pending", async () => {
+  const { service, domain, commentEvents } = await fixture();
+  await appendCommentSignal(commentEvents, domain, {
+    index: 65,
+    candidateId: "candidate-2",
+    evidenceId: "comment-evidence-committed",
+    text: "采购100套，预算五万元"
+  });
+  await appendCommentSignal(commentEvents, domain, {
+    index: 66,
+    candidateId: "candidate-3",
+    evidenceId: "comment-evidence-pending-saga",
+    text: "寻找供应商采购200套",
+    commit: false
+  });
+  await appendFetchAttempt(commentEvents, {
+    id: "comment-attempt-pending-saga",
+    status: "succeeded",
+    eventCount: 2,
+    evidenceCount: 2,
+    returnedCount: 2
+  });
+
+  const value = await service.get(scope, "run-1", { limit: 1 });
+  assert.notEqual(value.automationSteps[4]?.status, "succeeded");
+  assert.equal(value.automationSteps[4]?.status, "partial_success");
+});
+
+test("comment cards fail closed for dangling candidates, evidence and cross-linked evidence", async () => {
+  const { service, domain, commentEvents } = await fixture();
+  await appendCommentSignal(commentEvents, domain, {
+    index: 70,
+    candidateId: "candidate-2",
+    evidenceId: "comment-evidence-legitimate",
+    text: "采购100套，预算五万元"
+  });
+  await appendCommentSignal(commentEvents, domain, {
+    index: 71,
+    candidateId: "candidate-does-not-exist",
+    evidenceId: "comment-evidence-dangling-candidate",
+    text: "采购200套，预算十万元"
+  });
+  await appendCommentSignal(commentEvents, domain, {
+    index: 72,
+    candidateId: "candidate-2",
+    evidenceId: "comment-evidence-does-not-exist",
+    text: "采购300套，预算十五万元",
+    persistEvidence: false
+  });
+  await appendCommentSignal(commentEvents, domain, {
+    index: 73,
+    candidateId: "candidate-3",
+    evidenceId: "comment-evidence-legitimate",
+    text: "采购400套，预算二十万元",
+    persistEvidence: false,
+    attachEvidenceToCandidate: false
+  });
+  const candidateTwo = await domain.findCandidate(
+    { ownerId: OWNER, teamId: TEAM },
+    "candidate-2"
+  );
+  assert.ok(candidateTwo);
+  await domain.appendEvidence(commentEvidence(
+    "comment-evidence-cross-tenant",
+    74,
+    "采购500套，预算二十五万元",
+    "owner-b",
+    "team-b"
+  ));
+  await domain.saveCandidate({
+    ...candidateTwo,
+    evidenceIds: [...candidateTwo.evidenceIds, "comment-evidence-cross-tenant"]
+  });
+  await appendCommentSignal(commentEvents, domain, {
+    index: 74,
+    candidateId: "candidate-2",
+    evidenceId: "comment-evidence-cross-tenant",
+    text: "采购500套，预算二十五万元",
+    persistEvidence: false,
+    attachEvidenceToCandidate: false
+  });
+
+  const value = await service.get(scope, "run-1", { limit: 1 });
+  assert.deepEqual(value.commentSignals.map((signal) => signal.eventId), [
+    "comment-event-70"
+  ]);
+});
+
+test("non-douyin and disabled immutable plans skip comment automation despite succeeded search shards", async () => {
+  const { service, planRuns } = await fixture();
+  for (const options of [
+    { id: "plan-version-web", targetPlatform: "web" as const, enabled: false },
+    { id: "plan-version-disabled", targetPlatform: "douyin" as const, enabled: false }
+  ]) {
+    const version = planVersion(options);
+    const runId = `run-${options.id}`;
+    const shardId = `shard-${options.id}`;
+    await planRuns.transaction((transaction) => {
+      transaction.appendPlanVersion(version);
+      transaction.putRun({
+        ...run(runId),
+        planId: version.planId,
+        planVersionId: version.id,
+        planSnapshotHash: version.payloadHash
+      });
+      transaction.putShard({
+        ...shard(
+          shardId,
+          `connection-${options.id}`,
+          "public-web-search",
+          "succeeded",
+          1
+        ),
+        runId
+      });
+      transaction.appendRunEvent({
+        id: `event-${shardId}-started`,
+        runId,
+        shardId,
+        ownerId: OWNER,
+        teamId: TEAM,
+        type: "shard.started",
+        actorId: ACTOR,
+        revision: 1,
+        at: "2026-07-26T11:00:01.000Z",
+        data: {}
+      });
+      transaction.appendRunEvent({
+        id: `event-${shardId}-succeeded`,
+        runId,
+        shardId,
+        ownerId: OWNER,
+        teamId: TEAM,
+        type: "shard.succeeded",
+        actorId: ACTOR,
+        revision: 2,
+        at: "2026-07-26T11:00:02.000Z",
+        data: {
+          rawResultCount: 1,
+          acceptedResultCount: 1,
+          duplicateResultCount: 0,
+          failedResultCount: 0
+        }
+      });
+    });
+
+    const value = await service.get(scope, runId, { limit: 1 });
+    assert.deepEqual(
+      value.automationSteps.map((step) => step.status),
+      Array.from({ length: 7 }, () => "skipped")
+    );
+    assert.equal(value.automationSteps[0]?.processedCount, 0);
+  }
 });
 
 test("presentation pages authoritative candidate upserts and computes current metrics", async () => {
@@ -1015,6 +1452,7 @@ test("presentation uses bounded event pages and batch candidate snapshots", asyn
   const domainCalls = {
     auditPages: [] as Array<{ limit: number }>,
     snapshotBatches: [] as string[][],
+    evidenceBatches: [] as string[][],
     summaryRuns: [] as string[]
   };
   const runCalls: Array<{ limit: number }> = [];
@@ -1058,6 +1496,15 @@ test("presentation uses bounded event pages and batch candidate snapshots", asyn
           return (target as any).getPresentationCandidateSummary(
             readScope,
             runId
+          );
+        };
+      }
+      if (property === "getPresentationEvidenceSnapshots") {
+        return async (readScope: typeof scope, evidenceIds: string[]) => {
+          domainCalls.evidenceBatches.push([...evidenceIds]);
+          return (target as any).getPresentationEvidenceSnapshots(
+            readScope,
+            evidenceIds
           );
         };
       }
@@ -1105,6 +1552,7 @@ test("presentation uses bounded event pages and batch candidate snapshots", asyn
   assert.deepEqual(domainCalls.auditPages, [{ limit: 2 }]);
   assert.equal(domainCalls.snapshotBatches.length, 1);
   assert.deepEqual(domainCalls.snapshotBatches[0], ["candidate-1"]);
+  assert.deepEqual(domainCalls.evidenceBatches, [[]]);
   assert.deepEqual(domainCalls.summaryRuns, ["run-1"]);
 });
 

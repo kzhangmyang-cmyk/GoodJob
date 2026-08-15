@@ -2,10 +2,10 @@
 
 ## 结果
 
-- `AcquisitionRunPresentation` 固定返回七个自动化步骤：发现视频链接、解析作品 ID、读取公开评论、标准化平台事件、聚合主体信号、资格研判和刷新展示。状态、起止时间、耗时、处理数量与错误均从 Run shard、comment fetch attempt、committed event link 和当前资格决定派生；没有使用本地时钟模拟进度。
-- Run summary 增加已发现视频、已采样评论、有效需求信号、未核验主体和高潜强信号五项。计数由 memory/MySQL repository 的租户级 Run 聚合得到，不受最新评论 50 条展示窗口截断。
-- `commentSignals` 独立返回最多 50 条最新评论事实，保留平台事件、原文、互动计数、IP 标签、来源 URL、规则意向、置信度、身份研判和 Evidence ID，不返回头像，也不改变候选事件的签名 cursor。
-- comment intent 仅对已持久 immutable event text 使用 Task 4 的确定性规则分类器；身份状态与资格使用当前 Domain snapshot。未核验强信号标记为 `needs_research`，不冒充已核验客户。
+- `AcquisitionRunPresentation` 固定返回七个自动化步骤。不可变计划版本不是抖音或未启用公开评论策略时七步均 skipped；普通网页搜索 shard 不冒充视频发现。发现时间只取 shard 事件，fetch 时间只取 attempt，其他没有独立生命周期的步骤返回 null 时间。
+- Run summary 增加已发现视频、已采样评论、有效需求信号、未核验主体和高潜强信号五项。memory/MySQL repository 聚合整个租户 Run 的 attempt，第 101 条及以后不被截断；candidate/signal 事实以 10000 条硬上限保护。
+- `commentSignals` 独立返回最多 50 条最新评论事实。只有真实 scoped candidate 与 Evidence、candidate evidenceId 归属及精确 platform event provenance 全部成立时才公开；悬空或交叉链接 fail closed，不返回头像，也不改变候选事件的签名 cursor。
+- comment intent 仅对已持久 immutable event text 使用 Task 4 的确定性规则分类器；negative 和 `do_not_contact` 不计有效需求。未核验主体按已聚合稳定公开主体跨视频、跨页去重，未核验强信号标记为 `needs_research`。
 - 高意向统计统一为 S/A 且 qualification 无 hard gate、候选非 `do_not_contact`。memory 与 MySQL 聚合规则一致；资格尚未完成的已持久事件仍可见，研判步骤在终态 Run 中显示 `partial_success + model_output_invalid`。
 - 时间线覆盖 `public_sample_unavailable`、`access_restricted`、`rate_limited`、`video_id_unresolved`、`source_payload_invalid`、`no_public_comments` 和 `model_output_invalid`。有成功评论与空视频时仍为 succeeded；部分 429 保留成功结果并显示 partial_success；全部受限显示 failed。
 - application 的 memory/MySQL composition 把 Task 5 已有同一 `douyinCommentEvents` repository 注入 presentation。公开 JSON Schema、runtime OpenAPI、响应一致性、生成前端类型均已同步；仅更新旧测试/demo fixture 以满足新必填 DTO，未实现 Task 7 组件或交互。
@@ -25,7 +25,7 @@
 - `npm run check:acquisition-contracts`：最终通过；frontend `184/184`，Baota package `2/2`。
 - Backend TypeScript build、frontend build 通过；仅有既有 Vite chunk-size warning。
 - `git diff --check`：通过。
-- Full acquisition：`799 tests / 797 pass / 2 fail`。精确命令：
+- Full acquisition：`807 tests / 805 pass / 2 fail`。精确命令：
 
   ```bash
   NODE_ENV=test TZ=UTC JWT_SECRET=goodjob-acquisition-test-secret-at-least-32-characters ACQUISITION_MASTER_SECRET=goodjob-acquisition-master-test-secret-at-least-32-bytes node --import tsx --test --test-concurrency=1 --test-force-exit src/model-config-migration-test.ts src/model-provider-endpoint-registry-test.ts src/model-official-connection-profile-test.ts src/model-connection-idempotency-test.ts src/model-connection-service-test.ts src/model-pending-appends-test.ts src/model-gateway-test.ts src/model-runtime-integration-test.ts src/provider-connection-version-test.ts src/acquisition-*-test.ts
@@ -37,3 +37,12 @@
 
 - 未复制或接入 cv-cat/DouYin_Spider 的 Cookie、逆向签名、指纹伪装、私信或互动代码；数据仍来自固定注入、无凭证的公开评论样本 Provider。
 - `contracts/README.md`、当前 design 和执行 plan 已同步真实七步投影、独立评论窗口、全量 summary、高意向硬门禁与错误规则；BrowserAct/OCR 视觉读取章节保持不变。
+
+## Fix round 1
+
+- RED：`npm exec --workspace backend -- tsx --test src/acquisition-run-presentation-test.ts` 为 `23 tests / 17 pass / 6 fail`。六个失败分别证实 negative/do-not-contact 被误计、attempt 101 被截断、步骤借用了错误时间、pending saga 下主体聚合误成功、悬空/交叉 Evidence 仍公开，以及非抖音/未启用计划把网页搜索显示成视频发现。
+- GREEN：同一 presentation focused 为 `23/23`。affected repository、ingestion、enrichment、MySQL、OpenAPI、drift 与 performance 组合为 `144/144`。
+- MySQL parity 使用 repository 聚合所有 attempt，并以 `JSON_TABLE ... LIMIT 10001` 检测 terminal candidate 硬上限；signal event/observation 使用三次批量租户查询，不做逐 signal 查询。Domain candidate 与 Evidence 均使用批量 scoped projection。
+- 一个已提交 link 与另一个 pending saga 并存时，标准化事件仍按已持久事实显示，但主体聚合使用独立 upstream/processed 数量并保持 `partial_success`。资格完整度同时使用全部 attempt terminal candidate 和已验证 link candidate。
+- Application memory/MySQL focused 自然退出 `2/2`；`check:acquisition-contracts` 通过（contracts `66/66`、drift `17/17`、security、OpenAPI、frontend `184/184`、Baota 均 GREEN），generated type check、backend build 与 `git diff --check` 通过。
+- 最终 full acquisition 为 `807/805/2`；两项仍仅是 `acquisition-pi-gateway-runtime-test.ts` 与 `acquisition-pi-runtime-factory-test.ts` 的既有 `MODEL_TOOL_DEFINITION_INVALID`。

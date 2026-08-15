@@ -397,12 +397,17 @@ application 固定注入 Provider。Content-fetch MySQL schema 在 recovery 启�
 
 优先扩展现有版本化 Acquisition API，不创建平行 REST 体系：
 
-- Run presentation 固定返回七个自动化步骤，步骤状态、时间、计数和错误只从持久化
-  Run shard、评论 fetch attempt、已提交 event link 与当前资格决定派生；候选分页继续使用
-  原有签名游标，最新评论信号独立限制为 50 条，不挤占候选游标；
-- Run summary 的视频、评论、有效信号、未核验主体和强信号计数使用 repository 全量聚合，
-  不用 50 条展示窗口反推；只有 S/A 且无 hard gate、非勿扰的候选计入高意向，未核验
-  强信号保留为待身份研究的高潜需求信号；评论投影不返回头像；
+- Run presentation 固定返回七个自动化步骤。只有不可变计划版本为抖音且明确启用公开
+  评论样本时步骤才适用；其他 Run 七步均返回 skipped，普通网页搜索分片不冒充视频发现。
+  发现步骤时间只取 `shard.started` 与终态 shard 事件，评论读取时间只取 fetch attempt；
+  标准化、主体聚合、资格研判和刷新没有独立生命周期事实时起止时间与耗时均为 null；
+- Run summary 聚合整个 Run 的 fetch attempt（含第 101 条及以后），candidate ID 与信号事实
+  使用 10000 条硬保护，不用 50 条展示窗口反推。有效需求重新读取不可变事件分类并排除
+  negative 与 `do_not_contact`；未核验主体按已聚合的稳定公开主体跨视频、跨页去重。event
+  已持久化但 saga/link 未提交时，主体聚合保持 pending/partial_success；
+- 高潜评论仅在租户范围内 candidate、Evidence 均真实存在、candidate 拥有该 evidenceId，且
+  `platform_public_event` provenance 精确指向当前评论时公开；悬空 candidate、悬空 Evidence
+  与交叉链接全部 fail closed。最新评论独立限制 50 条，不挤占候选签名游标，也不返回头像；
 - Candidate/Evidence 读取投影增加平台事件和意愿证据；
 - 公开链接导入响应固定返回持久化 `commentSampleSummary`，包含实际事件、证据、
   候选、usage 和部分失败错误；排队中或旧数据为 `null`；

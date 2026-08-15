@@ -90,10 +90,20 @@ legacy content-fetch status check before workers can persist partial success.
 
 Run presentation exposes a fixed seven-step automation projection plus at most
 50 latest public comment signals. Candidate pagination keeps its signed cursor;
-the comment window is independent and cannot move that cursor. Step timestamps,
-statuses, counts and stable error codes come only from persisted Run shards,
-comment fetch attempts, committed event links and current candidate decisions.
-The summary uses repository aggregates rather than the 50-item display window.
+the comment window is independent and cannot move that cursor. The immutable
+plan version must be a Douyin plan with public comment sampling enabled;
+otherwise all seven comment-automation steps are explicitly skipped. Discovery
+times come from persisted `shard.started` and terminal shard events, fetch times
+come from fetch attempts, and steps without their own lifecycle facts return
+null timestamps rather than borrowing another step's clock.
+
+Run totals aggregate every attempt, including attempt 101 and later, while
+candidate and signal fact reads use a 10,000-item hard guard. Valid demand is
+reclassified from the immutable comment event and excludes negative or
+do-not-contact candidates. Unresolved actors are deduplicated by the aggregated
+public actor candidate across the whole Run. A comment card is published only
+when its scoped candidate and evidence both exist, the candidate owns the
+evidence ID, and the evidence provenance identifies that exact platform event.
 Only S/A decisions without hard-gate failures or do-not-contact state count as
 high intent; an unresolved strong public signal remains explicitly marked as
 needing identity research. Comment projections never expose an avatar.

@@ -577,6 +577,16 @@ function mysqlIso(value: unknown, resource: string) {
   return date.toISOString();
 }
 
+function mysqlUtcIso(value: unknown, resource: string) {
+  return mysqlIso(
+    typeof value === "string"
+      && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/u.test(value)
+      ? `${value.replace(" ", "T")}Z`
+      : value,
+    resource
+  );
+}
+
 function hash(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -1807,6 +1817,31 @@ implements AcquisitionDomainRepository {
         ].sort()
       };
     });
+  }
+
+  async getPresentationEvidenceSnapshots(
+    scope: AcquisitionDataScope,
+    evidenceIds: string[]
+  ): Promise<DiscoveryEvidence[]> {
+    const ids = [...new Set(evidenceIds)];
+    if (ids.length === 0) return [];
+    return (await rows(
+      this.source(),
+      `SELECT e.*
+       FROM acquisition_discovery_evidence e
+       INNER JOIN JSON_TABLE(
+         ?,
+         '$[*]' COLUMNS(
+           evidence_id VARCHAR(120) PATH '$.evidenceId'
+         )
+       ) ids ON ids.evidence_id = e.id
+       WHERE e.owner_id = ? AND e.team_id = ?`,
+      [
+        json(ids.map((evidenceId) => ({ evidenceId }))),
+        scope.ownerId,
+        scope.teamId
+      ]
+    )).map((row) => ownedPayload<DiscoveryEvidence>(row, "evidence"));
   }
 
   async getPresentationCandidateSummary(
@@ -3343,12 +3378,13 @@ implements AcquisitionPlanRunRepository {
   ): Promise<AcquisitionRunPresentationExecution> {
     const result = await rows(
       this.pool,
-      `WITH terminal_events AS (
-         SELECT shard_id, payload_json
+       `WITH terminal_events AS (
+         SELECT shard_id, payload_json, occurred_at
          FROM (
            SELECT
              e.shard_id,
              e.payload_json,
+             e.occurred_at,
              ROW_NUMBER() OVER (
                PARTITION BY e.shard_id
                ORDER BY e.occurred_at DESC, e.id DESC
@@ -3368,16 +3404,32 @@ implements AcquisitionPlanRunRepository {
          WHERE terminal_row = 1
        ),
        started_shards AS (
-         SELECT DISTINCT e.shard_id
-         FROM acquisition_run_events e
-         WHERE e.run_id = ?
-           AND JSON_UNQUOTE(
-             JSON_EXTRACT(e.payload_json, '$.type')
-           ) = 'shard.started'
+         SELECT shard_id, occurred_at
+         FROM (
+           SELECT e.shard_id, e.occurred_at,
+             ROW_NUMBER() OVER (
+               PARTITION BY e.shard_id
+               ORDER BY e.occurred_at, e.id
+             ) AS started_row
+           FROM acquisition_run_events e
+           WHERE e.run_id = ?
+             AND JSON_UNQUOTE(
+               JSON_EXTRACT(e.payload_json, '$.type')
+             ) = 'shard.started'
+         ) ranked
+         WHERE started_row = 1
        )
        SELECT
          s.*,
          terminal_events.payload_json AS terminal_payload_json,
+         DATE_FORMAT(
+           terminal_events.occurred_at,
+           '%Y-%m-%d %H:%i:%s.%f'
+         ) AS terminal_occurred_at,
+         DATE_FORMAT(
+           started_shards.occurred_at,
+           '%Y-%m-%d %H:%i:%s.%f'
+         ) AS started_occurred_at,
          CASE
            WHEN started_shards.shard_id IS NULL THEN 0
            ELSE 1
@@ -3447,7 +3499,15 @@ implements AcquisitionPlanRunRepository {
         duplicateResultCount: count("duplicateResultCount"),
         failedResultCount: count("failedResultCount"),
         errorCode: text("errorCode"),
-        retryAfterAt: text("retryAfterAt")
+        retryAfterAt: text("retryAfterAt"),
+        startedAt: row.started_occurred_at === null
+          || row.started_occurred_at === undefined
+          ? null
+          : mysqlUtcIso(row.started_occurred_at, "started_occurred_at"),
+        completedAt: row.terminal_occurred_at === null
+          || row.terminal_occurred_at === undefined
+          ? null
+          : mysqlUtcIso(row.terminal_occurred_at, "terminal_occurred_at")
       };
     });
     return {

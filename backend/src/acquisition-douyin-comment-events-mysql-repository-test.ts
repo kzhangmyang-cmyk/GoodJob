@@ -982,6 +982,69 @@ test("run summary is aggregated inside owner and team scope", async () => {
   assert.deepEqual(call.values, ["owner-a", "team-a", "run-1"]);
 });
 
+test("run presentation projection aggregates every attempt and bounds terminal candidates", async () => {
+  const pool = new QueuePool();
+  pool.enqueue([{
+    fetch_attempt_count: 101,
+    discovered_video_count: 101,
+    returned_comment_count: 100,
+    resolved_video_count: 101,
+    unresolved_video_count: 0,
+    running_attempt_count: 0,
+    succeeded_attempt_count: 100,
+    partial_success_attempt_count: 0,
+    failed_attempt_count: 1,
+    no_public_comments_attempt_count: 0,
+    attempt_started_at: "2026-08-15 01:00:00.000",
+    attempt_completed_at: "2026-08-15 02:00:00.000",
+    terminal_event_count: 101,
+    terminal_evidence_count: 100,
+    linked_event_count: 100,
+    ingestion_event_count: 101,
+    pending_ingestion_count: 1
+  }]);
+  pool.enqueue([{ candidate_id: "candidate-from-attempt-101" }]);
+  pool.enqueue([{ error_code: "rate_limited" }]);
+  const repository = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(pool)
+  );
+
+  assert.deepEqual(
+    await repository.getRunCommentPresentationProjection(
+      { ownerId: "owner-a", teamId: "team-a" },
+      "run-1"
+    ),
+    {
+      fetchAttemptCount: 101,
+      discoveredVideoCount: 101,
+      returnedCommentCount: 100,
+      resolvedVideoCount: 101,
+      unresolvedVideoCount: 0,
+      runningAttemptCount: 0,
+      succeededAttemptCount: 100,
+      partialSuccessAttemptCount: 0,
+      failedAttemptCount: 1,
+      noPublicCommentsAttemptCount: 0,
+      attemptStartedAt: "2026-08-15T01:00:00.000Z",
+      attemptCompletedAt: "2026-08-15T02:00:00.000Z",
+      terminalEventCount: 101,
+      terminalEvidenceCount: 100,
+      linkedEventCount: 100,
+      ingestionEventCount: 101,
+      pendingIngestionCount: 1,
+      errorCodes: ["rate_limited"],
+      candidateIds: ["candidate-from-attempt-101"]
+    }
+  );
+  assert.match(pool.calls[0]!.sql, /COUNT\(\*\) AS fetch_attempt_count/u);
+  assert.match(pool.calls[0]!.sql, /g\.status <> 'committed'/u);
+  assert.deepEqual(pool.calls[0]!.values, ["owner-a", "team-a", "run-1"]);
+  assert.match(pool.calls[1]!.sql, /JSON_TABLE/u);
+  assert.match(pool.calls[1]!.sql, /LIMIT 10001/u);
+  assert.deepEqual(pool.calls[1]!.values, ["owner-a", "team-a", "run-1"]);
+  assert.deepEqual(pool.calls[2]!.values, ["owner-a", "team-a", "run-1"]);
+});
+
 test("fetch attempt reads are tenant scoped and reject corrupt status rows", async () => {
   const pool = new QueuePool();
   pool.enqueue([{
@@ -1032,6 +1095,47 @@ test("mysql run snapshots load only the observation linked to that run", async (
   assert.equal(signals[0]?.latestObservation.observationId, "observation-1");
   assert.equal(signals[0]?.latestObservation.likeCount, 2);
   assert.equal(signals[0]?.link.observationId, "observation-1");
+});
+
+test("mysql presentation signal facts batch events and observations inside tenant scope", async () => {
+  const pool = new QueuePool();
+  pool.enqueue([{
+    link_id: "link-run-1",
+    event_id: "event-1",
+    observation_id: "observation-1",
+    run_id: "run-1",
+    shard_id: "shard-1",
+    discovery_operation_id: "operation-1",
+    candidate_id: "candidate-1",
+    evidence_id: "evidence-1",
+    observation_captured_at: "2026-08-15 02:00:00.000",
+    snapshot_rank: 1
+  }]);
+  pool.enqueue([storedEventRow()]);
+  pool.enqueue([
+    storedObservationRow("observation-1", "2026-08-15 02:00:00.000", 2)
+  ]);
+  const repository = new MysqlAcquisitionDouyinCommentEventRepository(
+    asPool(pool)
+  );
+
+  const signals = await repository.listRunCommentSignalsForPresentation(
+    { ownerId: "owner-a", teamId: "team-a" },
+    "run-1",
+    { limit: 10_001 }
+  );
+  assert.equal(signals.length, 1);
+  assert.equal(signals[0]?.event.eventId, "event-1");
+  assert.equal(signals[0]?.latestObservation.observationId, "observation-1");
+  assert.equal(signals[0]?.link.evidenceId, "evidence-1");
+  assert.match(pool.calls[0]!.sql, /LIMIT \?/u);
+  assert.deepEqual(pool.calls[0]!.values, [
+    "owner-a", "team-a", "run-1", 10_001
+  ]);
+  assert.match(pool.calls[1]!.sql, /JSON_TABLE/u);
+  assert.match(pool.calls[2]!.sql, /JSON_TABLE/u);
+  assert.deepEqual(pool.calls[1]!.values.slice(1), ["owner-a", "team-a"]);
+  assert.deepEqual(pool.calls[2]!.values.slice(1), ["owner-a", "team-a"]);
 });
 
 test("mysql writes canonicalize offset and sub-millisecond instants", async () => {

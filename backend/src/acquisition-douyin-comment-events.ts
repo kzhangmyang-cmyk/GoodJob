@@ -200,6 +200,28 @@ export interface DouyinRunCommentSummary {
   strongSignalCount: number;
 }
 
+export interface DouyinRunCommentPresentationProjection {
+  fetchAttemptCount: number;
+  discoveredVideoCount: number;
+  returnedCommentCount: number;
+  resolvedVideoCount: number;
+  unresolvedVideoCount: number;
+  runningAttemptCount: number;
+  succeededAttemptCount: number;
+  partialSuccessAttemptCount: number;
+  failedAttemptCount: number;
+  noPublicCommentsAttemptCount: number;
+  attemptStartedAt: string | null;
+  attemptCompletedAt: string | null;
+  terminalEventCount: number;
+  terminalEvidenceCount: number;
+  linkedEventCount: number;
+  ingestionEventCount: number;
+  pendingIngestionCount: number;
+  errorCodes: string[];
+  candidateIds: string[];
+}
+
 export interface AcquisitionDouyinCommentEventRepository {
   transaction<T>(work: () => Promise<T>): Promise<T>;
   appendObservation(input: AppendDouyinCommentObservationInput): Promise<{
@@ -269,6 +291,19 @@ export interface AcquisitionDouyinCommentEventRepository {
     runId: string,
     options: { limit: number }
   ): Promise<DouyinCommentFetchAttempt[]>;
+  /** Internal Run Presentation projection. All attempt rows are aggregated;
+   * candidate IDs remain bounded by the repository hard limit. */
+  getRunCommentPresentationProjection(
+    scope: AcquisitionScope,
+    runId: string
+  ): Promise<DouyinRunCommentPresentationProjection>;
+  /** Internal bounded signal fact read. Callers request one extra row to
+   * detect and fail closed on the hard projection limit. */
+  listRunCommentSignalsForPresentation(
+    scope: AcquisitionScope,
+    runId: string,
+    options: { limit: number }
+  ): Promise<DouyinRunCommentSignal[]>;
 }
 
 function cloned<T>(value: T): T {
@@ -487,6 +522,13 @@ function deterministicContentVersionId(
 function positiveLimit(limit: number) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_LIMIT");
+  }
+  return limit;
+}
+
+function presentationLimit(limit: number) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_001) {
+    throw new Error("ACQUISITION_DOUYIN_COMMENT_PRESENTATION_LIMIT_INVALID");
   }
   return limit;
 }
@@ -998,6 +1040,26 @@ implements AcquisitionDouyinCommentEventRepository {
     options: { limit: number }
   ) {
     const limit = positiveLimit(options.limit);
+    return this.runCommentSignals(scope, runId, limit);
+  }
+
+  async listRunCommentSignalsForPresentation(
+    scope: AcquisitionScope,
+    runId: string,
+    options: { limit: number }
+  ) {
+    return this.runCommentSignals(
+      scope,
+      runId,
+      presentationLimit(options.limit)
+    );
+  }
+
+  private runCommentSignals(
+    scope: AcquisitionScope,
+    runId: string,
+    limit: number
+  ) {
     const scopedPrefix = `${scopeKey(scope)}\u0000`;
     const snapshots = [...this.links.entries()]
       .filter(([key, item]) => key.startsWith(scopedPrefix)
@@ -1084,5 +1146,88 @@ implements AcquisitionDouyinCommentEventRepository {
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt)
         || left.attemptId.localeCompare(right.attemptId))
       .slice(0, limit);
+  }
+
+  async getRunCommentPresentationProjection(
+    scope: AcquisitionScope,
+    runId: string
+  ): Promise<DouyinRunCommentPresentationProjection> {
+    const attempts = [...this.attempts.values()]
+      .filter((item) => same(item.scope, scope) && item.value.runId === runId)
+      .map((item) => item.value)
+      .sort((left, right) => left.startedAt.localeCompare(right.startedAt)
+        || left.attemptId.localeCompare(right.attemptId));
+    const candidateIds = [...new Set(attempts.flatMap((attempt) =>
+      attempt.terminalProjection?.candidateIds ?? []
+    ))].sort();
+    if (candidateIds.length > 10_000) {
+      throw new Error(
+        "ACQUISITION_DOUYIN_COMMENT_PRESENTATION_FACT_LIMIT_EXCEEDED"
+      );
+    }
+    const completed = attempts.flatMap((attempt) =>
+      attempt.completedAt ? [attempt.completedAt] : []
+    );
+    const sagas = [...this.ingestionSagas.values()]
+      .filter((item) => same(item.scope, scope) && item.value.runId === runId)
+      .map((item) => item.value);
+    const links = [...this.links.values()]
+      .filter((item) => same(item.scope, scope) && item.value.runId === runId)
+      .map((item) => item.value);
+    return cloned({
+      fetchAttemptCount: attempts.length,
+      discoveredVideoCount: new Set(attempts.map((attempt) =>
+        attempt.videoId ?? attempt.sourceUrl
+      )).size,
+      returnedCommentCount: attempts.reduce(
+        (total, attempt) => total + attempt.returnedCount,
+        0
+      ),
+      resolvedVideoCount: new Set(attempts.flatMap((attempt) =>
+        attempt.videoId ? [attempt.videoId] : []
+      )).size,
+      unresolvedVideoCount: attempts.filter((attempt) =>
+        attempt.videoId === null
+      ).length,
+      runningAttemptCount: attempts.filter((attempt) =>
+        attempt.status === "running"
+      ).length,
+      succeededAttemptCount: attempts.filter((attempt) =>
+        attempt.status === "succeeded"
+      ).length,
+      partialSuccessAttemptCount: attempts.filter((attempt) =>
+        attempt.status === "partial_success"
+      ).length,
+      failedAttemptCount: attempts.filter((attempt) =>
+        attempt.status === "failed"
+      ).length,
+      noPublicCommentsAttemptCount: attempts.filter((attempt) =>
+        attempt.status === "no_public_comments"
+      ).length,
+      attemptStartedAt: attempts.at(0)?.startedAt ?? null,
+      attemptCompletedAt: attempts.length > 0
+        && completed.length === attempts.length
+        ? completed.sort().at(-1)!
+        : null,
+      terminalEventCount: attempts.reduce(
+        (total, attempt) =>
+          total + (attempt.terminalProjection?.eventCount ?? 0),
+        0
+      ),
+      terminalEvidenceCount: attempts.reduce(
+        (total, attempt) =>
+          total + (attempt.terminalProjection?.evidenceCount ?? 0),
+        0
+      ),
+      linkedEventCount: new Set(links.map((link) => link.eventId)).size,
+      ingestionEventCount: new Set(sagas.map((saga) => saga.eventId)).size,
+      pendingIngestionCount: sagas.filter((saga) =>
+        saga.status !== "committed"
+      ).length,
+      errorCodes: [...new Set(attempts.flatMap((attempt) =>
+        attempt.errorCode ? [attempt.errorCode] : []
+      ))],
+      candidateIds
+    });
   }
 }

@@ -18,6 +18,7 @@ import {
   type DouyinCommentIngestionSaga,
   type DouyinCommentIngestionSagaWorkItem,
   type DouyinCommentObservation,
+  type DouyinRunCommentPresentationProjection,
   type FinishDouyinCommentFetchAttemptInput,
   type LinkDouyinCommentEventInput,
   type StartDouyinCommentFetchAttemptInput
@@ -449,6 +450,13 @@ function affectedRows(value: unknown) {
 function boundedLimit(limit: number) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_LIMIT");
+  }
+  return limit;
+}
+
+function presentationLimit(limit: number) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_001) {
+    throw new Error("ACQUISITION_DOUYIN_COMMENT_PRESENTATION_LIMIT_INVALID");
   }
   return limit;
 }
@@ -1591,6 +1599,84 @@ implements AcquisitionDouyinCommentEventRepository {
     }));
   }
 
+  async listRunCommentSignalsForPresentation(
+    scope: AcquisitionScope,
+    runId: string,
+    options: { limit: number }
+  ) {
+    const limit = presentationLimit(options.limit);
+    const [linkResult] = await this.pool.query(
+      `WITH ranked_links AS (
+         SELECT l.*, o.captured_at AS observation_captured_at,
+           ROW_NUMBER() OVER (
+             PARTITION BY l.event_id
+             ORDER BY o.captured_at DESC, l.observation_id DESC, l.link_id DESC
+           ) AS snapshot_rank
+         FROM acquisition_douyin_comment_event_links l
+         INNER JOIN acquisition_douyin_comment_observations o
+           ON o.owner_id = l.owner_id AND o.team_id = l.team_id
+           AND o.observation_id = l.observation_id
+         WHERE l.owner_id = ? AND l.team_id = ? AND l.run_id = ?
+       )
+       SELECT * FROM ranked_links
+       WHERE snapshot_rank = 1
+       ORDER BY observation_captured_at DESC, observation_id DESC, link_id DESC
+       LIMIT ?`,
+      [scope.ownerId, scope.teamId, runId, limit]
+    );
+    const links = rows(linkResult).map(parseLink);
+    if (links.length === 0) return [];
+    const [eventResult] = await this.pool.query(
+      `SELECT ${EVENT_SELECT_COLUMNS}
+      FROM acquisition_douyin_comment_events e
+       INNER JOIN JSON_TABLE(
+         ?, '$[*]' COLUMNS(
+           requested_event_id VARCHAR(160) PATH '$.eventId'
+         )
+       ) ids ON ids.requested_event_id = e.event_id
+       WHERE e.owner_id = ? AND e.team_id = ?`,
+      [
+        JSON.stringify(links.map((link) => ({ eventId: link.eventId }))),
+        scope.ownerId,
+        scope.teamId
+      ]
+    );
+    const [observationResult] = await this.pool.query(
+      `SELECT ${OBSERVATION_SELECT_COLUMNS}
+       FROM acquisition_douyin_comment_observations o
+       INNER JOIN JSON_TABLE(
+         ?, '$[*]' COLUMNS(
+           requested_observation_id VARCHAR(160) PATH '$.observationId'
+         )
+       ) ids ON ids.requested_observation_id = o.observation_id
+       WHERE o.owner_id = ? AND o.team_id = ?`,
+      [
+        JSON.stringify(links.map((link) => ({
+          observationId: link.observationId
+        }))),
+        scope.ownerId,
+        scope.teamId
+      ]
+    );
+    const events = new Map(rows(eventResult).map((row) => {
+      const event = parseEvent(row);
+      return [event.eventId, event] as const;
+    }));
+    const observations = new Map(rows(observationResult).map((row) => {
+      const observation = parseObservation(row);
+      return [observation.observationId, observation] as const;
+    }));
+    return links.map((link) => {
+      const event = events.get(link.eventId);
+      const latestObservation = observations.get(link.observationId);
+      if (!event) return integrity("linked_event_missing");
+      if (!latestObservation || latestObservation.eventId !== event.eventId) {
+        return integrity("event_observation_missing");
+      }
+      return { event, latestObservation, link };
+    });
+  }
+
   async getRunCommentSummary(scope: AcquisitionScope, runId: string) {
     const [result] = await this.pool.query(
       `WITH requested_scope AS (
@@ -1690,6 +1776,162 @@ implements AcquisitionDouyinCommentEventRepository {
       [scope.ownerId, scope.teamId, runId, limit]
     );
     return rows(result).slice(0, limit).map(parseAttempt);
+  }
+
+  async getRunCommentPresentationProjection(
+    scope: AcquisitionScope,
+    runId: string
+  ): Promise<DouyinRunCommentPresentationProjection> {
+    const [aggregateResult] = await this.pool.query(
+      `WITH requested_scope AS (
+         SELECT ? AS owner_id, ? AS team_id, ? AS run_id
+       )
+       SELECT
+         COUNT(*) AS fetch_attempt_count,
+         COUNT(DISTINCT COALESCE(a.video_id, a.source_url))
+           AS discovered_video_count,
+         COALESCE(SUM(a.returned_count), 0) AS returned_comment_count,
+         COUNT(DISTINCT a.video_id) AS resolved_video_count,
+         COALESCE(SUM(a.video_id IS NULL), 0) AS unresolved_video_count,
+         COALESCE(SUM(a.status = 'running'), 0) AS running_attempt_count,
+         COALESCE(SUM(a.status = 'succeeded'), 0) AS succeeded_attempt_count,
+         COALESCE(SUM(a.status = 'partial_success'), 0)
+           AS partial_success_attempt_count,
+         COALESCE(SUM(a.status = 'failed'), 0) AS failed_attempt_count,
+         COALESCE(SUM(a.status = 'no_public_comments'), 0)
+           AS no_public_comments_attempt_count,
+         DATE_FORMAT(MIN(a.started_at), '%Y-%m-%d %H:%i:%s.%f')
+           AS attempt_started_at,
+         CASE WHEN SUM(a.completed_at IS NULL) = 0
+           THEN DATE_FORMAT(MAX(a.completed_at), '%Y-%m-%d %H:%i:%s.%f')
+           ELSE NULL
+         END AS attempt_completed_at,
+         COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(
+           a.terminal_projection_json, '$.eventCount'
+         )) AS UNSIGNED)), 0) AS terminal_event_count,
+         COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(
+           a.terminal_projection_json, '$.evidenceCount'
+         )) AS UNSIGNED)), 0) AS terminal_evidence_count,
+         (SELECT COUNT(DISTINCT l.event_id)
+          FROM acquisition_douyin_comment_event_links l
+          INNER JOIN requested_scope s
+            ON s.owner_id = l.owner_id AND s.team_id = l.team_id
+            AND s.run_id = l.run_id
+         ) AS linked_event_count,
+         (SELECT COUNT(DISTINCT g.event_id)
+          FROM acquisition_douyin_comment_ingestion_sagas g
+          INNER JOIN requested_scope s
+            ON s.owner_id = g.owner_id AND s.team_id = g.team_id
+            AND s.run_id = g.run_id
+         ) AS ingestion_event_count,
+         (SELECT COUNT(*)
+          FROM acquisition_douyin_comment_ingestion_sagas g
+          INNER JOIN requested_scope s
+            ON s.owner_id = g.owner_id AND s.team_id = g.team_id
+            AND s.run_id = g.run_id
+          WHERE g.status <> 'committed'
+         ) AS pending_ingestion_count
+       FROM acquisition_douyin_comment_fetch_attempts a
+       INNER JOIN requested_scope s
+         ON s.owner_id = a.owner_id AND s.team_id = a.team_id
+         AND s.run_id = a.run_id`,
+      [scope.ownerId, scope.teamId, runId]
+    );
+    const row = rows(aggregateResult)[0];
+    if (!row) return integrity("presentation_projection_missing");
+    const [candidateResult] = await this.pool.query(
+      `SELECT DISTINCT ids.candidate_id
+       FROM acquisition_douyin_comment_fetch_attempts a
+       INNER JOIN JSON_TABLE(
+         COALESCE(
+           a.terminal_projection_json,
+           JSON_OBJECT('candidateIds', JSON_ARRAY())
+         ),
+         '$.candidateIds[*]' COLUMNS(
+           candidate_id VARCHAR(160) PATH '$'
+         )
+       ) ids
+       WHERE a.owner_id = ? AND a.team_id = ? AND a.run_id = ?
+       ORDER BY ids.candidate_id
+       LIMIT 10001`,
+      [scope.ownerId, scope.teamId, runId]
+    );
+    const candidateIds = rows(candidateResult).map((item) =>
+      string(item, "candidate_id")
+    );
+    if (candidateIds.length > 10_000) {
+      throw new Error(
+        "ACQUISITION_DOUYIN_COMMENT_PRESENTATION_FACT_LIMIT_EXCEEDED"
+      );
+    }
+    const [errorResult] = await this.pool.query(
+      `SELECT error_code
+       FROM (
+         SELECT error_code, MIN(started_at) AS first_started_at,
+           MIN(attempt_id) AS first_attempt_id
+         FROM acquisition_douyin_comment_fetch_attempts
+         WHERE owner_id = ? AND team_id = ? AND run_id = ?
+           AND error_code IS NOT NULL
+         GROUP BY error_code
+       ) distinct_errors
+       ORDER BY first_started_at, first_attempt_id
+       LIMIT 100`,
+      [scope.ownerId, scope.teamId, runId]
+    );
+    return {
+      fetchAttemptCount: integer(row.fetch_attempt_count, "fetch_attempt_count"),
+      discoveredVideoCount: integer(
+        row.discovered_video_count,
+        "discovered_video_count"
+      ),
+      returnedCommentCount: integer(
+        row.returned_comment_count,
+        "returned_comment_count"
+      ),
+      resolvedVideoCount: integer(row.resolved_video_count, "resolved_video_count"),
+      unresolvedVideoCount: integer(
+        row.unresolved_video_count,
+        "unresolved_video_count"
+      ),
+      runningAttemptCount: integer(row.running_attempt_count, "running_attempt_count"),
+      succeededAttemptCount: integer(
+        row.succeeded_attempt_count,
+        "succeeded_attempt_count"
+      ),
+      partialSuccessAttemptCount: integer(
+        row.partial_success_attempt_count,
+        "partial_success_attempt_count"
+      ),
+      failedAttemptCount: integer(row.failed_attempt_count, "failed_attempt_count"),
+      noPublicCommentsAttemptCount: integer(
+        row.no_public_comments_attempt_count,
+        "no_public_comments_attempt_count"
+      ),
+      attemptStartedAt: nullableInstant(
+        row.attempt_started_at ?? null,
+        "attempt_started_at"
+      ),
+      attemptCompletedAt: nullableInstant(
+        row.attempt_completed_at ?? null,
+        "attempt_completed_at"
+      ),
+      terminalEventCount: integer(row.terminal_event_count, "terminal_event_count"),
+      terminalEvidenceCount: integer(
+        row.terminal_evidence_count,
+        "terminal_evidence_count"
+      ),
+      linkedEventCount: integer(row.linked_event_count, "linked_event_count"),
+      ingestionEventCount: integer(
+        row.ingestion_event_count,
+        "ingestion_event_count"
+      ),
+      pendingIngestionCount: integer(
+        row.pending_ingestion_count,
+        "pending_ingestion_count"
+      ),
+      errorCodes: rows(errorResult).map((item) => string(item, "error_code")),
+      candidateIds
+    };
   }
 
   private async getFetchAttempt(scope: AcquisitionScope, attemptId: string) {

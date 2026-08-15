@@ -17,7 +17,7 @@ import {
 } from "./acquisition-douyin-comment-ingestion.js";
 import type {
   AcquisitionDouyinCommentEventRepository,
-  DouyinCommentFetchAttempt
+  DouyinRunCommentPresentationProjection
 } from "./acquisition-douyin-comment-events.js";
 import {
   AcquisitionPlanRunError,
@@ -28,7 +28,8 @@ import type {
   AcquisitionRunEvent,
   AcquisitionRunStatus,
   AcquisitionShardStatus,
-  AcquisitionOperationShard
+  AcquisitionOperationShard,
+  AcquisitionRunPresentationExecution
 } from "./acquisition-plan-run-repository.js";
 
 export type AcquisitionAutomationStepId =
@@ -343,41 +344,43 @@ function firstError(values: Array<string | null | undefined>) {
     ?? null;
 }
 
-function timeBounds(values: Array<{
-  startedAt: string;
+function persistedLifecycleBounds(values: Array<{
+  startedAt: string | null;
   completedAt: string | null;
 }>) {
-  if (values.length === 0) {
-    return { startedAt: null, completedAt: null, durationMs: null };
-  }
-  const startedAt = values.map((value) => value.startedAt).sort().at(0)!;
-  const completedValues = values.flatMap((value) =>
+  const started = values.flatMap((value) =>
+    value.startedAt ? [value.startedAt] : []
+  ).sort();
+  const completed = values.flatMap((value) =>
     value.completedAt ? [value.completedAt] : []
   ).sort();
-  const completedAt = completedValues.length === values.length
-    ? completedValues.at(-1)!
+  const startedAt = started.at(0) ?? null;
+  const completedAt = values.length > 0
+    && completed.length === values.length
+    ? completed.at(-1)!
     : null;
   return {
     startedAt,
     completedAt,
-    durationMs: completedAt
-      ? Math.max(0, new Date(completedAt).getTime() - new Date(startedAt).getTime())
+    durationMs: startedAt && completedAt
+      ? Math.max(
+          0,
+          new Date(completedAt).getTime() - new Date(startedAt).getTime()
+        )
       : null
   };
 }
 
-function shardBounds(shards: AcquisitionOperationShard[]) {
-  return timeBounds(shards.map((shard) => ({
-    startedAt: shard.createdAt,
-    completedAt: shard.completedAt
-  })));
-}
-
 function discoveryStep(
   shards: AcquisitionOperationShard[],
-  providers: AcquisitionRunPresentation["providers"]
+  providers: AcquisitionRunPresentationExecution["providers"]
 ): AcquisitionAutomationStep {
-  if (shards.length === 0) {
+  const searchShards = shards.filter((shard) => shard.kind === "search");
+  const searchShardIds = new Set(searchShards.map((shard) => shard.id));
+  const searchProviders = providers.filter((provider) =>
+    searchShardIds.has(provider.shardId)
+  );
+  if (searchShards.length === 0) {
     return {
       id: "discover_video_urls",
       status: "skipped",
@@ -389,29 +392,29 @@ function discoveryStep(
       message: "该运行没有持久化的视频发现分片"
     };
   }
-  const hasActive = shards.some((shard) =>
+  const hasActive = searchShards.some((shard) =>
     !TERMINAL_SHARD_STATUSES.has(shard.status)
   );
-  const succeeded = providers.filter((provider) =>
+  const succeeded = searchProviders.filter((provider) =>
     provider.status === "succeeded"
     || provider.status === "succeeded_empty"
     || provider.status === "partial_success"
   );
-  const failed = providers.filter((provider) =>
+  const failed = searchProviders.filter((provider) =>
     provider.status === "failed" || provider.status === "cancelled"
   );
   const status = hasActive
     ? "running"
     : succeeded.length > 0 && failed.length > 0
       ? "partial_success"
-      : failed.length === providers.length
+      : failed.length === searchProviders.length
         ? "failed"
         : "succeeded";
   return {
     id: "discover_video_urls",
     status,
-    ...shardBounds(shards),
-    processedCount: providers.reduce(
+    ...persistedLifecycleBounds(searchProviders),
+    processedCount: searchProviders.reduce(
       (total, provider) => total + provider.acceptedResultCount,
       0
     ),
@@ -426,27 +429,24 @@ function discoveryStep(
   };
 }
 
-function attemptStatus(attempts: DouyinCommentFetchAttempt[]) {
-  const running = attempts.some((attempt) => attempt.status === "running");
-  const hardFailures = attempts.filter((attempt) =>
-    attempt.status === "failed"
-    || attempt.status === "partial_success"
-  );
-  const successes = attempts.filter((attempt) =>
-    attempt.status === "succeeded"
-    || attempt.status === "no_public_comments"
-    || (attempt.status === "partial_success" && attempt.returnedCount > 0)
-  );
-  if (running) return "running" as const;
-  if (hardFailures.length > 0 && successes.length > 0) {
+function attemptStatus(projection: DouyinRunCommentPresentationProjection) {
+  if (projection.runningAttemptCount > 0) return "running" as const;
+  const hardFailureCount = projection.failedAttemptCount
+    + projection.partialSuccessAttemptCount;
+  const successfulCount = projection.succeededAttemptCount
+    + projection.noPublicCommentsAttemptCount;
+  if (hardFailureCount > 0
+    && (successfulCount > 0 || projection.returnedCommentCount > 0)) {
     return "partial_success" as const;
   }
-  if (hardFailures.length > 0) return "failed" as const;
+  if (hardFailureCount > 0) return "failed" as const;
   return "succeeded" as const;
 }
 
-function resolveStep(attempts: DouyinCommentFetchAttempt[]): AcquisitionAutomationStep {
-  if (attempts.length === 0) {
+function resolveStep(
+  projection: DouyinRunCommentPresentationProjection
+): AcquisitionAutomationStep {
+  if (projection.fetchAttemptCount === 0) {
     return {
       id: "resolve_video_ids",
       status: "skipped",
@@ -458,17 +458,19 @@ function resolveStep(attempts: DouyinCommentFetchAttempt[]): AcquisitionAutomati
       message: "该运行没有持久化的抖音评论读取事实"
     };
   }
-  const resolved = attempts.filter((attempt) => attempt.videoId !== null);
-  const unresolved = attempts.filter((attempt) => attempt.videoId === null);
-  const status = unresolved.length === 0
+  const status = projection.unresolvedVideoCount === 0
     ? "succeeded"
-    : resolved.length > 0 ? "partial_success" : "failed";
+    : projection.resolvedVideoCount > 0 ? "partial_success" : "failed";
   return {
     id: "resolve_video_ids",
     status,
-    ...timeBounds(attempts),
-    processedCount: new Set(resolved.map((attempt) => attempt.videoId)).size,
-    errorCode: unresolved.length > 0 ? "video_id_unresolved" : null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+    processedCount: projection.resolvedVideoCount,
+    errorCode: projection.unresolvedVideoCount > 0
+      ? "video_id_unresolved"
+      : null,
     message: status === "succeeded"
       ? "已从公开链接解析作品 ID"
       : status === "partial_success"
@@ -477,8 +479,10 @@ function resolveStep(attempts: DouyinCommentFetchAttempt[]): AcquisitionAutomati
   };
 }
 
-function fetchStep(attempts: DouyinCommentFetchAttempt[]): AcquisitionAutomationStep {
-  if (attempts.length === 0) {
+function fetchStep(
+  projection: DouyinRunCommentPresentationProjection
+): AcquisitionAutomationStep {
+  if (projection.fetchAttemptCount === 0) {
     return {
       id: "fetch_public_comment_samples",
       status: "skipped",
@@ -490,22 +494,26 @@ function fetchStep(attempts: DouyinCommentFetchAttempt[]): AcquisitionAutomation
       message: "该运行没有执行公开评论样本读取"
     };
   }
-  const status = attemptStatus(attempts);
-  const errors = attempts.filter((attempt) =>
-    attempt.status === "failed" || attempt.status === "partial_success"
-  ).map((attempt) => attempt.errorCode);
-  const allEmpty = attempts.every((attempt) =>
-    attempt.status === "no_public_comments"
-  );
+  const status = attemptStatus(projection);
+  const allEmpty = projection.noPublicCommentsAttemptCount
+    === projection.fetchAttemptCount;
   return {
     id: "fetch_public_comment_samples",
     status,
-    ...timeBounds(attempts),
-    processedCount: attempts.reduce(
-      (total, attempt) => total + attempt.returnedCount,
-      0
-    ),
-    errorCode: firstError(errors) ?? (allEmpty ? "no_public_comments" : null),
+    startedAt: projection.attemptStartedAt,
+    completedAt: projection.attemptCompletedAt,
+    durationMs: projection.attemptStartedAt && projection.attemptCompletedAt
+      ? Math.max(
+          0,
+          new Date(projection.attemptCompletedAt).getTime()
+            - new Date(projection.attemptStartedAt).getTime()
+        )
+      : null,
+    processedCount: projection.returnedCommentCount,
+    errorCode: firstError(projection.errorCodes.filter((code) =>
+      presentationErrorCode(code) !== "no_public_comments"
+    ))
+      ?? (allEmpty ? "no_public_comments" : null),
     message: status === "running"
       ? "正在读取公开视频的公开顶层评论样本"
       : status === "partial_success"
@@ -520,11 +528,11 @@ function fetchStep(attempts: DouyinCommentFetchAttempt[]): AcquisitionAutomation
 
 function processingStep(
   id: "normalize_platform_events" | "aggregate_actor_signals",
-  attempts: DouyinCommentFetchAttempt[],
+  projection: DouyinRunCommentPresentationProjection,
   processedCount: number,
   upstreamEventCount: number
 ): AcquisitionAutomationStep {
-  if (attempts.length === 0) {
+  if (projection.fetchAttemptCount === 0 && upstreamEventCount === 0) {
     return {
       id,
       status: "skipped",
@@ -538,10 +546,10 @@ function processingStep(
         : "没有平台事件需要聚合同主体信号"
     };
   }
-  const running = attempts.some((attempt) => attempt.status === "running");
-  const allEmptyOrFailed = attempts.every((attempt) =>
-    attempt.status === "failed" || attempt.status === "no_public_comments"
-  );
+  const running = projection.runningAttemptCount > 0;
+  const allEmptyOrFailed = projection.fetchAttemptCount > 0
+    && projection.fetchAttemptCount === projection.failedAttemptCount
+      + projection.noPublicCommentsAttemptCount;
   const incomplete = upstreamEventCount > processedCount;
   const status = running
     ? processedCount > 0 ? "running" : "pending"
@@ -553,7 +561,9 @@ function processingStep(
   return {
     id,
     status,
-    ...timeBounds(attempts),
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
     processedCount,
     errorCode: incomplete || status === "failed" ? "model_output_invalid" : null,
     message: id === "normalize_platform_events"
@@ -572,14 +582,13 @@ function processingStep(
 
 function qualificationStep(
   runStatus: AcquisitionRunStatus,
-  attempts: DouyinCommentFetchAttempt[],
   candidateCount: number,
   qualificationCount: number
 ): AcquisitionAutomationStep {
   if (candidateCount === 0) {
     return {
       id: "qualify_candidates",
-      status: attempts.length === 0 ? "skipped" : "skipped",
+      status: "skipped",
       startedAt: null,
       completedAt: null,
       durationMs: null,
@@ -595,13 +604,58 @@ function qualificationStep(
     status: incomplete
       ? terminal ? "partial_success" : "running"
       : "succeeded",
-    ...timeBounds(attempts),
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
     processedCount: qualificationCount,
     errorCode: incomplete && terminal ? "model_output_invalid" : null,
     message: incomplete
       ? "部分公开需求信号仍待资格研判"
       : "已完成公开需求信号资格研判"
   };
+}
+
+const EMPTY_COMMENT_PROJECTION: DouyinRunCommentPresentationProjection = {
+  fetchAttemptCount: 0,
+  discoveredVideoCount: 0,
+  returnedCommentCount: 0,
+  resolvedVideoCount: 0,
+  unresolvedVideoCount: 0,
+  runningAttemptCount: 0,
+  succeededAttemptCount: 0,
+  partialSuccessAttemptCount: 0,
+  failedAttemptCount: 0,
+  noPublicCommentsAttemptCount: 0,
+  attemptStartedAt: null,
+  attemptCompletedAt: null,
+  terminalEventCount: 0,
+  terminalEvidenceCount: 0,
+  linkedEventCount: 0,
+  ingestionEventCount: 0,
+  pendingIngestionCount: 0,
+  errorCodes: [],
+  candidateIds: []
+};
+
+function skippedAutomationSteps(): AcquisitionAutomationStep[] {
+  return [
+    "discover_video_urls",
+    "resolve_video_ids",
+    "fetch_public_comment_samples",
+    "normalize_platform_events",
+    "aggregate_actor_signals",
+    "qualify_candidates",
+    "refresh_run_presentation"
+  ].map((id) => ({
+    id: id as AcquisitionAutomationStepId,
+    status: "skipped",
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+    processedCount: 0,
+    errorCode: null,
+    message: "该运行的不可变计划未启用抖音公开评论自动化"
+  }));
 }
 
 function refreshStep(run: {
@@ -613,14 +667,9 @@ function refreshStep(run: {
   return {
     id: "refresh_run_presentation",
     status: terminal ? "succeeded" : "pending",
-    startedAt: terminal ? run.updatedAt : null,
-    completedAt: terminal ? run.completedAt : null,
-    durationMs: terminal && run.completedAt
-      ? Math.max(
-          0,
-          new Date(run.completedAt).getTime() - new Date(run.updatedAt).getTime()
-        )
-      : null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
     processedCount: terminal ? 1 : 0,
     errorCode: null,
     message: terminal
@@ -690,6 +739,20 @@ export class AcquisitionRunPresentationService {
         "运行不存在或不在当前租户范围"
       );
     }
+    const planVersion = await this.planRuns.getPlanVersion(
+      run.planVersionId
+    );
+    const commentAutomationApplies = Boolean(
+      planVersion
+      && planVersion.id === run.planVersionId
+      && planVersion.planId === run.planId
+      && planVersion.ownerId === scope.ownerId
+      && planVersion.teamId === scope.teamId
+      && planVersion.version === run.planVersion
+      && planVersion.payloadHash === run.planSnapshotHash
+      && planVersion.payload.targetPlatform === "douyin"
+      && planVersion.payload.douyinPublicCommentSample?.enabled === true
+    );
 
     const after = cursor
       ? {
@@ -703,9 +766,8 @@ export class AcquisitionRunPresentationService {
       discoveredPage,
       auditPage,
       shards,
-      commentSummary,
-      durableCommentSignals,
-      fetchAttempts
+      commentProjection,
+      durableCommentSignals
     ] = await Promise.all([
       this.planRuns.getRunPresentationExecution(runId),
       this.planRuns.listRunCandidateEventsPage(runId, {
@@ -718,10 +780,22 @@ export class AcquisitionRunPresentationService {
         limit: pageLimit
       }),
       this.planRuns.listRunShards(runId),
-      this.commentEvents.getRunCommentSummary(scope, runId),
-      this.commentEvents.listRunCommentSignals(scope, runId, { limit: 50 }),
-      this.commentEvents.listFetchAttempts(scope, runId, { limit: 100 })
+      commentAutomationApplies
+        ? this.commentEvents.getRunCommentPresentationProjection(scope, runId)
+        : Promise.resolve(structuredClone(EMPTY_COMMENT_PROJECTION)),
+      commentAutomationApplies
+        ? this.commentEvents.listRunCommentSignalsForPresentation(
+            scope,
+            runId,
+            { limit: 10_001 }
+          )
+        : Promise.resolve([])
     ]);
+    if (durableCommentSignals.length > 10_000) {
+      throw new Error(
+        "ACQUISITION_DOUYIN_COMMENT_PRESENTATION_FACT_LIMIT_EXCEEDED"
+      );
+    }
     const presentationEvents: PresentationEventRef[] = discoveredPage
       .map((event) => ({
         event,
@@ -755,11 +829,12 @@ export class AcquisitionRunPresentationService {
       ...durableCommentSignals.flatMap((signal) =>
         signal.link.candidateId ? [signal.link.candidateId] : []
       ),
-      ...fetchAttempts.flatMap((attempt) =>
-        attempt.terminalProjection?.candidateIds ?? []
-      )
+      ...commentProjection.candidateIds
     ])];
-    const [candidateSummary, snapshots] = await Promise.all([
+    const commentEvidenceIds = [...new Set(durableCommentSignals.flatMap(
+      (signal) => signal.link.evidenceId ? [signal.link.evidenceId] : []
+    ))];
+    const [candidateSummary, snapshots, evidenceSnapshots] = await Promise.all([
       this.domain.getPresentationCandidateSummary(
         scope,
         runId
@@ -770,10 +845,14 @@ export class AcquisitionRunPresentationService {
           ...page.map((event) => event.candidateId),
           ...commentCandidateIds
         ])]
-      )
+      ),
+      this.domain.getPresentationEvidenceSnapshots(scope, commentEvidenceIds)
     ]);
     const candidateSnapshots = new Map(
       snapshots.map((snapshot) => [snapshot.candidate.id, snapshot])
+    );
+    const evidenceById = new Map(
+      evidenceSnapshots.map((item) => [item.id, item])
     );
     const candidateEvents = page.flatMap((
       event
@@ -791,15 +870,37 @@ export class AcquisitionRunPresentationService {
         evidenceCount: snapshot.candidate.evidenceIds.length
       }];
     });
-    const commentSignals = durableCommentSignals.flatMap((signal) => {
+    const validatedCommentSignals = durableCommentSignals.flatMap((signal) => {
       const candidateId = signal.link.candidateId;
       const evidenceId = signal.link.evidenceId;
       if (!candidateId || !evidenceId) return [];
       const decision = classifyDouyinCommentIntent(signal.event.text);
       const candidate = candidateSnapshots.get(candidateId)?.candidate;
-      return [{
+      const evidence = evidenceById.get(evidenceId);
+      if (!candidate
+        || !evidence
+        || !candidate.evidenceIds.includes(evidenceId)
+        || evidence.targetType !== "individual_signal"
+        || evidence.provenance.kind !== "platform_public_event"
+        || evidence.provenance.platformEventId
+          !== signal.event.platformEventId
+        || evidence.provenance.sourceUrl !== signal.event.sourceUrl) {
+        return [];
+      }
+      return [{ signal, decision, candidate, evidenceId }];
+    });
+    const eligibleCommentSignals = validatedCommentSignals.filter((item) =>
+      item.candidate.status !== "do_not_contact"
+      && !(item.candidate.profile.kind === "individual"
+        && item.candidate.profile.negativeSignals.length > 0)
+      && (item.decision.band === "strong_signal"
+        || item.decision.band === "potential_signal")
+    );
+    const commentSignals = eligibleCommentSignals.slice(0, 50).map((item) => {
+      const { signal, decision, candidate, evidenceId } = item;
+      return {
         eventId: signal.event.eventId,
-        candidateId,
+        candidateId: candidate.id,
         displayName: signal.event.actor.displayName,
         handle: signal.event.actor.handle,
         text: signal.event.text,
@@ -811,45 +912,75 @@ export class AcquisitionRunPresentationService {
         intentBand: decision.band,
         reasons: [...decision.reasons],
         confidence: decision.confidence,
-        identityStatus: candidate
-          && acquisitionCandidateIdentityResolved(candidate)
+        identityStatus: acquisitionCandidateIdentityResolved(candidate)
           ? "resolved" as const
           : "needs_research" as const,
         evidenceId
-      }];
+      };
     });
-    const terminalProjections = fetchAttempts.flatMap((attempt) =>
-      attempt.terminalProjection ? [attempt.terminalProjection] : []
+    const qualificationCandidateIds = [...new Set([
+      ...commentProjection.candidateIds,
+      ...validatedCommentSignals.map((item) => item.candidate.id)
+    ])];
+    const normalizedEventCount = Math.max(
+      commentProjection.ingestionEventCount,
+      commentProjection.linkedEventCount
     );
-    const automationSteps: AcquisitionAutomationStep[] = [
-      discoveryStep(shards, execution.providers),
-      resolveStep(fetchAttempts),
-      fetchStep(fetchAttempts),
-      processingStep(
-        "normalize_platform_events",
-        fetchAttempts,
-        commentSummary.linkedEventCount,
-        terminalProjections.reduce(
-          (total, projection) => total + projection.eventCount,
-          0
-        )
-      ),
-      processingStep(
-        "aggregate_actor_signals",
-        fetchAttempts,
-        commentSummary.validDemandSignalCount,
-        commentSummary.validDemandSignalCount
-      ),
-      qualificationStep(
-        run.status,
-        fetchAttempts,
-        new Set(commentCandidateIds).size,
-        new Set(commentCandidateIds.filter((candidateId) =>
-          Boolean(candidateSnapshots.get(candidateId)?.qualification)
-        )).size
-      ),
-      refreshStep(run)
-    ];
+    const upstreamEventCount = Math.max(
+      commentProjection.terminalEventCount,
+      commentProjection.ingestionEventCount,
+      commentProjection.linkedEventCount
+        + commentProjection.pendingIngestionCount
+    );
+    const automationSteps: AcquisitionAutomationStep[] =
+      commentAutomationApplies
+        ? [
+            discoveryStep(shards, execution.providers),
+            resolveStep(commentProjection),
+            fetchStep(commentProjection),
+            processingStep(
+              "normalize_platform_events",
+              commentProjection,
+              normalizedEventCount,
+              upstreamEventCount
+            ),
+            processingStep(
+              "aggregate_actor_signals",
+              commentProjection,
+              commentProjection.linkedEventCount,
+              upstreamEventCount
+            ),
+            qualificationStep(
+              run.status,
+              qualificationCandidateIds.length,
+              qualificationCandidateIds.filter((candidateId) =>
+                Boolean(candidateSnapshots.get(candidateId)?.qualification)
+              ).length
+            ),
+            refreshStep(run)
+          ]
+        : skippedAutomationSteps();
+
+    const unresolvedActorKeys = new Set(eligibleCommentSignals.flatMap(
+      ({ candidate }) => {
+        if (acquisitionCandidateIdentityResolved(candidate)) return [];
+        return candidate.profile.kind === "individual"
+          ? [candidate.profile.publicActorKey]
+          : [candidate.id];
+      }
+    ));
+    const publicProviders = execution.providers.map((provider) => ({
+      shardId: provider.shardId,
+      connectionId: provider.connectionId,
+      providerId: provider.providerId,
+      status: provider.status,
+      rawResultCount: provider.rawResultCount,
+      acceptedResultCount: provider.acceptedResultCount,
+      duplicateResultCount: provider.duplicateResultCount,
+      failedResultCount: provider.failedResultCount,
+      errorCode: provider.errorCode,
+      retryAfterAt: provider.retryAfterAt
+    }));
 
     const last = page.at(-1);
 
@@ -861,16 +992,18 @@ export class AcquisitionRunPresentationService {
         updatedAt: run.updatedAt,
         completedAt: run.completedAt
       },
-      providers: execution.providers,
+      providers: publicProviders,
       summary: {
         sourcesSearched: execution.sourcesSearched,
         pagesAnalyzed: execution.pagesAnalyzed,
         ...candidateSummary,
-        discoveredVideos: commentSummary.discoveredVideoCount,
-        commentsSampled: commentSummary.returnedCommentCount,
-        validDemandSignals: commentSummary.validDemandSignalCount,
-        unresolvedActors: commentSummary.unresolvedActorCount,
-        highPotentialSignals: commentSummary.strongSignalCount
+        discoveredVideos: commentProjection.discoveredVideoCount,
+        commentsSampled: commentProjection.returnedCommentCount,
+        validDemandSignals: eligibleCommentSignals.length,
+        unresolvedActors: unresolvedActorKeys.size,
+        highPotentialSignals: eligibleCommentSignals.filter((item) =>
+          item.decision.band === "strong_signal"
+        ).length
       },
       automationSteps,
       commentSignals,

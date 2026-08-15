@@ -259,6 +259,10 @@ export interface AcquisitionRunPresentationExecution {
     failedResultCount: number;
     errorCode: string | null;
     retryAfterAt: string | null;
+    /** Internal lifecycle facts from persisted shard events. Public response
+     * mapping intentionally omits these fields. */
+    startedAt: string | null;
+    completedAt: string | null;
   }>;
   sourcesSearched: number;
   pagesAnalyzed: number;
@@ -706,6 +710,16 @@ implements AcquisitionPlanRunRepository {
       return typeof result === "string" && result ? result : null;
     };
     const providers = shards.map((shard) => {
+      const started = state.runEvents
+        .filter((event) =>
+          event.runId === runId
+          && event.shardId === shard.id
+          && event.type === "shard.started"
+        )
+        .sort((left, right) =>
+          left.at.localeCompare(right.at) || left.id.localeCompare(right.id)
+        )
+        .at(0);
       const terminal = state.runEvents
         .filter((event) =>
           event.runId === runId
@@ -726,7 +740,9 @@ implements AcquisitionPlanRunRepository {
         duplicateResultCount: count(terminal, "duplicateResultCount"),
         failedResultCount: count(terminal, "failedResultCount"),
         errorCode: text(terminal, "errorCode"),
-        retryAfterAt: text(terminal, "retryAfterAt")
+        retryAfterAt: text(terminal, "retryAfterAt"),
+        startedAt: started?.at ?? null,
+        completedAt: terminal?.at ?? null
       };
     });
     const sources = new Set(shards.flatMap((shard) =>

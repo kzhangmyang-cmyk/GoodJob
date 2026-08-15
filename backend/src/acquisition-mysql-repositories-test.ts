@@ -22,6 +22,7 @@ import type {
   AcquisitionCopilotTask
 } from "./acquisition-copilot-service.js";
 import type {
+  AcquisitionOperationShard,
   AcquisitionPlan,
   AcquisitionPlanVersion,
   AcquisitionRun
@@ -1266,9 +1267,82 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
   const execution = planPool.calls.at(-1)!;
   assert.match(execution.sql, /WITH terminal_events AS/u);
   assert.match(execution.sql, /ROW_NUMBER\(\) OVER/u);
+  assert.match(execution.sql, /started_shards\.occurred_at/u);
+  assert.match(execution.sql, /terminal_events\.occurred_at/u);
   assert.match(execution.sql, /FROM acquisition_operation_shards s/u);
   assert.doesNotMatch(execution.sql, /SELECT e\.\*/u);
   assert.deepEqual(execution.values, ["run-1", "run-1", "run-1"]);
+
+  const runValue = acquisitionRun();
+  const presentationShard: AcquisitionOperationShard = {
+    id: "shard-1",
+    runId: runValue.id,
+    ownerId: runValue.ownerId,
+    teamId: runValue.teamId,
+    operationId: "operation-1",
+    parentShardId: null,
+    subjectChannel: "individual",
+    kind: "search",
+    connection: {
+      connectionId: "connection-1",
+      providerId: "search-provider",
+      kind: "search",
+      status: "active",
+      credentialVersion: 1
+    },
+    query: "抖音公开视频",
+    sourceRef: "",
+    status: "succeeded",
+    budgetSnapshotId: runValue.budgetSnapshotId,
+    allocatedBudget: {
+      requests: 1,
+      results: 10,
+      amountMinor: 0,
+      durationSeconds: 30
+    },
+    consumedBudget: {
+      requests: 1,
+      results: 2,
+      amountMinor: 0,
+      durationSeconds: 3
+    },
+    modelSnapshotRef: runValue.modelSnapshotRef,
+    evidenceCount: 1,
+    revision: 2,
+    createdAt: "2026-07-24T08:00:00.000Z",
+    updatedAt: "2026-07-24T08:00:05.000Z",
+    completedAt: "2026-07-24T08:00:05.000Z"
+  };
+  const terminalEvent = {
+    id: "event-shard-1-succeeded",
+    runId: runValue.id,
+    shardId: presentationShard.id,
+    ownerId: runValue.ownerId,
+    teamId: runValue.teamId,
+    type: "shard.succeeded",
+    actorId: "user-1",
+    revision: 2,
+    at: "2026-07-24T08:00:05.000Z",
+    data: {
+      rawResultCount: 2,
+      acceptedResultCount: 1,
+      duplicateResultCount: 1,
+      failedResultCount: 0
+    }
+  };
+  planPool.enqueue([{
+    id: presentationShard.id,
+    owner_id: presentationShard.ownerId,
+    team_id: presentationShard.teamId,
+    payload_json: JSON.stringify(presentationShard),
+    terminal_payload_json: JSON.stringify(terminalEvent),
+    terminal_occurred_at: "2026-07-24 08:00:05.000",
+    started_occurred_at: "2026-07-24 08:00:01.000",
+    has_started: 1
+  }]);
+  const lifecycle = await planRepository.getRunPresentationExecution("run-1");
+  assert.equal(lifecycle.providers[0]?.startedAt, "2026-07-24T08:00:01.000Z");
+  assert.equal(lifecycle.providers[0]?.completedAt, "2026-07-24T08:00:05.000Z");
 
   planPool.enqueue([]);
   await planRepository.listRunCandidateEventsPage("run-1", {
@@ -1378,6 +1452,24 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
   assert.ok(batchCalls.every((call) =>
     /owner_id = \? AND .*team_id = \?/u.test(call.sql)
   ));
+
+  domainPool.enqueue([{
+    id: "evidence-1",
+    owner_id: "owner-a",
+    team_id: "team-a",
+    payload_json: JSON.stringify(evidence())
+  }]);
+  assert.deepEqual(
+    await domainRepository.getPresentationEvidenceSnapshots(
+      { ownerId: "owner-a", teamId: "team-a" },
+      ["evidence-1", "evidence-1"]
+    ),
+    [evidence()]
+  );
+  const evidenceBatch = domainPool.calls.at(-1)!;
+  assert.match(evidenceBatch.sql, /JSON_TABLE/u);
+  assert.match(evidenceBatch.sql, /e\.owner_id = \? AND e\.team_id = \?/u);
+  assert.deepEqual(evidenceBatch.values.slice(1), ["owner-a", "team-a"]);
 
   domainPool.enqueue([{
     revenue_currency: null,

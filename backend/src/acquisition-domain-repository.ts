@@ -205,6 +205,10 @@ export interface AcquisitionDomainRepository {
     scope: AcquisitionDataScope,
     candidateIds: string[]
   ): Promise<AcquisitionPresentationCandidateSnapshot[]>;
+  getPresentationEvidenceSnapshots(
+    scope: AcquisitionDataScope,
+    evidenceIds: string[]
+  ): Promise<DiscoveryEvidence[]>;
   getPresentationCandidateSummary(
     scope: AcquisitionDataScope,
     runId: string
@@ -886,6 +890,16 @@ implements AcquisitionDomainRepository {
         financial: financial ? copy(financial) : null,
         sourcePlatforms
       }];
+    });
+  }
+
+  async getPresentationEvidenceSnapshots(
+    scope: AcquisitionDataScope,
+    evidenceIds: string[]
+  ): Promise<DiscoveryEvidence[]> {
+    return [...new Set(evidenceIds)].flatMap((evidenceId) => {
+      const item = this.evidence.get(evidenceId);
+      return item && belongs(item, scope) ? [copy(item)] : [];
     });
   }
 
