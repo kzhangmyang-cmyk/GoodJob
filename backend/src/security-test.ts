@@ -279,6 +279,36 @@ try {
     throw new Error("acquisition 403 must preserve the correlation ID");
   }
 
+  const visualReaderNoCsrf = await request(
+    "/api/v1/acquisition/visual-reader-sessions",
+    {
+      method: "POST",
+      headers: {
+        cookie: shirley.cookies,
+        "Idempotency-Key": "security-visual-reader-no-csrf",
+        "X-Request-Id": "security-visual-reader-csrf"
+      },
+      body: JSON.stringify({
+        runId: "security-visual-reader-run",
+        artifactUploadEnabled: false
+      })
+    }
+  );
+  await expectStatus(
+    "visual reader cookie write without CSRF",
+    visualReaderNoCsrf.response.status,
+    403
+  );
+  expectApiError(
+    "visual reader cookie write without CSRF",
+    visualReaderNoCsrf.json,
+    "csrf_validation_failed"
+  );
+  if (visualReaderNoCsrf.json.requestId !== "security-visual-reader-csrf") {
+    throw new Error("visual reader 403 must preserve the correlation ID");
+  }
+  results.visualReaderCsrfBlocked = true;
+
   const csrfWrite = await request("/api/todos", {
     method: "POST",
     headers: { cookie: shirley.cookies, "x-csrf-token": csrf },

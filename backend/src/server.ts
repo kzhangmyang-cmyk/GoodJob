@@ -9,7 +9,8 @@ import { AUTH_COOKIE_NAME, CSRF_COOKIE_NAME, canManageAccount, canManageAccounts
 import { assertAiBaseUrlAllowed } from "./ai-http-security.js";
 import {
   acquisitionApiErrorMiddleware,
-  acquisitionApiRateLimitHandler
+  acquisitionApiRateLimitHandler,
+  sendStandardApiError
 } from "./acquisition-api-error-response.js";
 import {
   resolveTrustedAcquisitionDealBinding
@@ -518,6 +519,23 @@ app.use(cors({
     callback(null, originAllowed(origin));
   }
 }));
+function isAcquisitionVisualReaderWriteRequest(req: Request) {
+  return req.method === "POST" && (
+    req.path === "/api/v1/acquisition/visual-reader-sessions"
+    || /^\/api\/v1\/acquisition\/visual-reader-sessions\/[^/]+\/observations:batch$/u
+      .test(req.path)
+    || /^\/api\/v1\/acquisition\/visual-reader-sessions\/[^/]+:(?:complete|abort)$/u
+      .test(req.path)
+  );
+}
+const acquisitionVisualReaderJsonParser = express.json({ limit: "2mb" });
+app.use((req, res, next) => {
+  if (!isAcquisitionVisualReaderWriteRequest(req)) {
+    next();
+    return;
+  }
+  acquisitionVisualReaderJsonParser(req, res, next);
+});
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "2mb" }));
 app.use(express.urlencoded({ extended: false, limit: "256kb" }));
 
@@ -12161,7 +12179,17 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     return;
   }
   if (typeof error === "object" && error && "type" in error && error.type === "entity.too.large") {
-    res.status(413).json({ message: "请求内容过大" });
+    if (isAcquisitionVisualReaderWriteRequest(_req)) {
+      sendStandardApiError(_req, res, 413, {
+        code: "payload_too_large",
+        message: "请求内容过大",
+        retryable: false
+      });
+      return;
+    }
+    res.status(413).json({
+      message: "请求内容过大"
+    });
     return;
   }
   if (error instanceof SyntaxError && "body" in error) {

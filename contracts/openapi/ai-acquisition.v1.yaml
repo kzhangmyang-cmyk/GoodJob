@@ -861,6 +861,8 @@ paths:
             schema: { $ref: '#/components/schemas/VisualReaderCreateRequest' }
       responses:
         <<: *acquisitionStandardResponses
+        '403': *apiError
+        '413': *apiError
         '201': { description: Visual reader session created, content: { application/json: { schema: { $ref: '#/components/schemas/VisualReaderSession' } } } }
         '200':
           description: Idempotent replay of an existing visual reader session
@@ -895,7 +897,13 @@ paths:
             schema: { $ref: '#/components/schemas/VisualObservationBatchRequest' }
       responses:
         <<: *acquisitionStandardResponses
-        '200': { description: Accepted and duplicate visual observations, content: { application/json: { schema: { $ref: '#/components/schemas/VisualObservationBatchResponse' } } } }
+        '403': *apiError
+        '413': *apiError
+        '200':
+          description: Accepted and duplicate visual observations
+          headers:
+            Idempotency-Replayed: { schema: { type: string, enum: ['true'] } }
+          content: { application/json: { schema: { $ref: '#/components/schemas/VisualObservationBatchResponse' } } }
   /api/v1/acquisition/visual-reader-sessions/{sessionId}:complete:
     parameters:
       - { name: sessionId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }
@@ -911,7 +919,11 @@ paths:
             schema: { $ref: '#/components/schemas/VisualReaderCompleteRequest' }
       responses:
         <<: *acquisitionStandardResponses
-        '200': { description: Completed visual reader session, content: { application/json: { schema: { $ref: '#/components/schemas/VisualReaderSession' } } } }
+        '403': *apiError
+        '413': *apiError
+        '200':
+          description: Completed visual reader session
+          content: { application/json: { schema: { $ref: '#/components/schemas/VisualReaderSession' } } }
   /api/v1/acquisition/visual-reader-sessions/{sessionId}:abort:
     parameters:
       - { name: sessionId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }
@@ -927,7 +939,11 @@ paths:
             schema: { $ref: '#/components/schemas/VisualReaderAbortRequest' }
       responses:
         <<: *acquisitionStandardResponses
-        '200': { description: Aborted visual reader session, content: { application/json: { schema: { $ref: '#/components/schemas/VisualReaderSession' } } } }
+        '403': *apiError
+        '413': *apiError
+        '200':
+          description: Aborted visual reader session
+          content: { application/json: { schema: { $ref: '#/components/schemas/VisualReaderSession' } } }
   /api/v1/acquisition/visual-reader-artifacts/{artifactId}:
     parameters:
       - { name: artifactId, in: path, required: true, schema: { type: string, minLength: 1, maxLength: 160 } }

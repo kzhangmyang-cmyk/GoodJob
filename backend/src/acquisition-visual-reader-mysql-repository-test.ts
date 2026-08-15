@@ -894,6 +894,175 @@ test("visual MySQL bounds raw and driver-object bindings before use", async () =
   }
 });
 
+test("visual MySQL binding parser rejects mixed, unknown, versioned, and duplicate namespaces", async () => {
+  const invalidBindings: unknown[] = [
+    JSON.stringify({
+      version: "visual-bindings-v2",
+      observations: {},
+      requests: {},
+      unknown: {}
+    }),
+    JSON.stringify({
+      version: "visual-bindings-v999",
+      observations: {},
+      requests: {}
+    }),
+    JSON.stringify({
+      version: "visual-bindings-v2",
+      observations: {},
+      requests: {},
+      legacyClient: { inputHash: "a".repeat(64), observationId: "legacy" }
+    }),
+    '{"version":"visual-bindings-v2","observations":{},"requests":{},"requests":{}}'
+  ];
+  for (const storedBindings of invalidBindings) {
+    const pool = new StatefulVisualMysqlPool();
+    const repo = new MysqlAcquisitionVisualReaderRepository(
+      pool as unknown as mysql.Pool,
+      { masterSecret: SECRET, now: () => START }
+    );
+    await repo.createSession(createInput());
+    const row = [...pool.state.sessions.values()][0];
+    assert.ok(row);
+    row.client_bindings_json = storedBindings;
+    await assert.rejects(
+      repo.getSession(SCOPE, "mysql-visual-session"),
+      /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+    );
+  }
+});
+
+test("visual MySQL preserves legacy client keys named like v2 namespaces", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  await repo.createSession(createInput());
+  const row = [...pool.state.sessions.values()][0];
+  assert.ok(row);
+  row.client_bindings_json = JSON.stringify(Object.fromEntries([
+    "version", "observations", "requests"
+  ].map((key) => [key, {
+    inputHash: "a".repeat(64),
+    observationId: `legacy-${key}`
+  }])));
+
+  await repo.appendObservationBatch({
+    scope: SCOPE,
+    sessionId: "mysql-visual-session",
+    observations: [{
+      clientObservationKey: "new-client-key",
+      observation: observation("new-observation")
+    }]
+  });
+
+  const upgradedRow = [...pool.state.sessions.values()][0];
+  assert.ok(upgradedRow);
+  const upgraded = JSON.parse(String(upgradedRow.client_bindings_json));
+  assert.equal(upgraded.version, "visual-bindings-v2");
+  for (const key of ["version", "observations", "requests"]) {
+    assert.equal(upgraded.observations[key].observationId, `legacy-${key}`);
+  }
+  assert.equal(upgraded.observations["new-client-key"].observationId,
+    "new-observation");
+  assert.deepEqual(upgraded.requests, {});
+});
+
+test("visual MySQL binding parser rejects duplicate nested observation keys", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  await repo.createSession(createInput());
+  const row = [...pool.state.sessions.values()][0];
+  assert.ok(row);
+  row.client_bindings_json = [
+    '{"version":"visual-bindings-v2","observations":{',
+    `"nested-client":{"inputHash":"${"a".repeat(64)}","observationId":"nested-observation-a"},`,
+    `"nested-client":{"inputHash":"${"b".repeat(64)}","observationId":"nested-observation-b"}`,
+    '},"requests":{}}'
+  ].join("");
+  await assert.rejects(
+    repo.getSession(SCOPE, "mysql-visual-session"),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+});
+
+test("visual MySQL binding parser rejects duplicate nested request hashes", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  await repo.createSession(createInput());
+  const row = [...pool.state.sessions.values()][0];
+  assert.ok(row);
+  const session = String(row.session_json);
+  const key = digest("duplicate-request-key");
+  const record = (requestHash: string) => [
+    `{"requestHash":"${requestHash}","session":${session},`,
+    '"accepted":[],"duplicates":[]}'
+  ].join("");
+  row.client_bindings_json = [
+    '{"version":"visual-bindings-v2","observations":{},"requests":{',
+    `"${key}":${record(digest("request-a"))},`,
+    `"${key}":${record(digest("request-b"))}`,
+    '}}'
+  ].join("");
+  await assert.rejects(
+    repo.getSession(SCOPE, "mysql-visual-session"),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+});
+
+test("visual MySQL upgrades legacy bindings only with a successful mutation", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  await repo.createSession(createInput());
+  const row = [...pool.state.sessions.values()][0];
+  assert.ok(row);
+  row.client_bindings_json = "{}";
+
+  pool.failNextArtifactInsert = true;
+  const failedArtifact = artifact("legacy-failed");
+  await assert.rejects(repo.appendObservationBatch({
+    scope: SCOPE,
+    sessionId: "mysql-visual-session",
+    observations: [{
+      clientObservationKey: "legacy-failed",
+      observation: observation("legacy-failed", {
+        redactedCropHash: failedArtifact.plaintextHash
+      }),
+      artifact: failedArtifact
+    }]
+  }), /injected artifact persistence failure/u);
+  assert.equal(row.client_bindings_json, "{}");
+
+  await repo.appendObservationBatch({
+    scope: SCOPE,
+    sessionId: "mysql-visual-session",
+    observations: [{
+      clientObservationKey: "legacy-success",
+      observation: observation("legacy-success")
+    }]
+  });
+  const upgradedRow = [...pool.state.sessions.values()][0];
+  assert.ok(upgradedRow);
+  const upgraded = JSON.parse(String(upgradedRow.client_bindings_json));
+  assert.deepEqual(Object.keys(upgraded), [
+    "observations", "requests", "version"
+  ]);
+  assert.equal(upgraded.version, "visual-bindings-v2");
+  assert.equal(upgraded.observations["legacy-success"].observationId,
+    "legacy-success");
+  assert.deepEqual(upgraded.requests, {});
+});
+
 test("visual MySQL schema is isolated, repeatable, and fully tenant scoped", async () => {
   assert.equal(ACQUISITION_VISUAL_READER_MYSQL_SCHEMA_STATEMENTS.length, 3);
   const schema = ACQUISITION_VISUAL_READER_MYSQL_SCHEMA_STATEMENTS.join("\n");
@@ -1037,6 +1206,162 @@ test("visual MySQL repository atomically stores ciphertext and converges duplica
     (await repo.getArtifact(SCOPE, inputArtifact.artifactId))?.plaintext,
     inputArtifact.plaintext
   );
+});
+
+test("visual MySQL create-with-result has one concurrent winner", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  const [left, right] = await Promise.all([
+    repo.createSessionWithResult(createInput()),
+    repo.createSessionWithResult(createInput())
+  ]);
+  assert.equal([left, right].filter((item) => item.created).length, 1);
+  assert.deepEqual(left.session, right.session);
+});
+
+async function mysqlRequestReplayFixture() {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  await repo.createSession(createInput());
+  const item = observation("mysql-replay-integrity");
+  const requestBinding = {
+    keyHash: digest("mysql-replay-integrity-key"),
+    requestHash: digest("mysql-replay-integrity-body")
+  };
+  await repo.appendObservationBatchWithResult({
+    scope: SCOPE,
+    sessionId: "mysql-visual-session",
+    observations: [{
+      clientObservationKey: "mysql-replay-integrity",
+      observation: item
+    }],
+    requestBinding
+  });
+  const row = [...pool.state.sessions.values()][0];
+  assert.ok(row);
+  return { repo, row, requestBinding };
+}
+
+test("visual MySQL request replay rejects a mismatched snapshot session id", async () => {
+  const { repo, row, requestBinding } = await mysqlRequestReplayFixture();
+  const envelope = JSON.parse(String(row.client_bindings_json));
+  envelope.requests[requestBinding.keyHash].session.sessionId =
+    "other-visual-session";
+  row.client_bindings_json = JSON.stringify(envelope);
+  await assert.rejects(repo.findObservationBatchReplay({
+    scope: SCOPE,
+    sessionId: "mysql-visual-session",
+    requestBinding
+  }), /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u);
+});
+
+test("visual MySQL request replay cross-checks immutable run and plan bindings", async () => {
+  for (const [field, value] of [
+    ["planId", "other-plan"],
+    ["planVersionId", "other-plan-version"],
+    ["runId", "other-run"],
+    ["platform", "other-platform"],
+    ["coverage", "other-coverage"]
+  ] as const) {
+    const { repo, row, requestBinding } = await mysqlRequestReplayFixture();
+    const envelope = JSON.parse(String(row.client_bindings_json));
+    envelope.requests[requestBinding.keyHash].session[field] = value;
+    row.client_bindings_json = JSON.stringify(envelope);
+    await assert.rejects(repo.findObservationBatchReplay({
+      scope: SCOPE,
+      sessionId: "mysql-visual-session",
+      requestBinding
+    }), /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u, field);
+  }
+});
+
+test("visual MySQL request binding is transactional and persists no raw header", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  await repo.createSession(createInput());
+  const rawHeader = "RAW-IDEMPOTENCY-HEADER-MUST-NOT-PERSIST";
+  const first = observation("mysql-header-binding");
+  const input: AppendVisualObservationBatchInput = {
+    scope: SCOPE,
+    sessionId: "mysql-visual-session",
+    observations: [{
+      clientObservationKey: "mysql-header-binding",
+      observation: first
+    }],
+    requestBinding: {
+      keyHash: digest(rawHeader),
+      requestHash: digest("canonical-batch")
+    }
+  };
+  assert.equal((await repo.appendObservationBatchWithResult(input)).replayed, false);
+  assert.deepEqual(await repo.findObservationBatchReplay({
+    scope: SCOPE,
+    sessionId: "mysql-visual-session",
+    requestBinding: input.requestBinding
+  }), {
+    session: await repo.getSession(SCOPE, "mysql-visual-session"),
+    accepted: [{
+      clientObservationKey: "mysql-header-binding",
+      observation: first
+    }],
+    duplicates: []
+  });
+  assert.equal((await repo.appendObservationBatchWithResult({
+    ...input,
+    observations: structuredClone(input.observations)
+  })).replayed, true);
+  await assert.rejects(repo.appendObservationBatchWithResult({
+    ...input,
+    observations: [{
+      clientObservationKey: "mysql-header-conflict",
+      observation: observation("mysql-header-conflict")
+    }],
+    requestBinding: {
+      ...input.requestBinding,
+      requestHash: digest("different-batch")
+    }
+  }), hasRepositoryCode("VISUAL_READER_CLIENT_KEY_CONFLICT"));
+  assert.equal(JSON.stringify([...pool.state.sessions.values()])
+    .includes(rawHeader), false);
+  assert.equal(pool.statements.some(({ values }) => values.some((value) =>
+    typeof value === "string" && value.includes(rawHeader))), false);
+  assert.equal(pool.state.observations.size, 1);
+});
+
+test("visual MySQL request/client namespaces cannot collide", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  await repo.createSession(createInput());
+  const keyHash = digest("mysql-namespace-header");
+  const collisionKey = `request-${keyHash.slice("sha256:".length)}`;
+  const item = observation("mysql-namespace-collision");
+  await repo.appendObservationBatchWithResult({
+    scope: SCOPE,
+    sessionId: "mysql-visual-session",
+    observations: [{ clientObservationKey: collisionKey, observation: item }],
+    requestBinding: { keyHash, requestHash: digest("mysql-namespace-body") }
+  });
+  assert.deepEqual(await repo.findObservationBatchReplay({
+    scope: SCOPE,
+    sessionId: "mysql-visual-session",
+    requestBinding: { keyHash, requestHash: digest("mysql-namespace-body") }
+  }), {
+    session: await repo.getSession(SCOPE, "mysql-visual-session"),
+    accepted: [{ clientObservationKey: collisionKey, observation: item }],
+    duplicates: []
+  });
 });
 
 test("visual MySQL append rollback leaves no observation, BLOB, usage, or key binding", async () => {

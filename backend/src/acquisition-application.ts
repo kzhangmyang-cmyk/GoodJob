@@ -276,6 +276,12 @@ import {
   AcquisitionVisualArtifactExpirySweeper
 } from "./acquisition-visual-artifact-expiry-sweeper.js";
 import {
+  AcquisitionVisualReaderService
+} from "./acquisition-visual-reader-service.js";
+import {
+  createAcquisitionVisualReaderRouter
+} from "./acquisition-visual-reader-router.js";
+import {
   MODEL_PROVIDER_IDS,
   type StoredAiJobModelSnapshot
 } from "./model-providers/types.js";
@@ -1995,6 +2001,15 @@ export async function createAcquisitionApplication(
       return completed;
     };
     const router = Router();
+    const visualReaderService = new AcquisitionVisualReaderService({
+      repository: repositories.visualReader,
+      planRunRepository: repositories.planRun,
+      purposeSecret: derivedSecret(masterSecret, "visual-reader-service"),
+      now
+    });
+    router.use(createAcquisitionVisualReaderRouter({
+      service: visualReaderService
+    }));
     router.use(createAcquisitionProviderConnectionsRouter({
       store: options.store,
       credentialSecret: providerCredentialSecret,

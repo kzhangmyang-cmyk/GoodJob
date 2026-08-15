@@ -3430,6 +3430,21 @@ test("memory acquisition application preserves injected visual repository identi
   });
   assert.equal(runtime.visualReaderRepository, injected);
   assert.equal(startCount, 1);
+  const server = await serve(runtime.handler);
+  const mounted = await server.request(
+    "/api/v1/acquisition/visual-reader-sessions",
+    {
+      method: "POST",
+      headers: { "Idempotency-Key": "application-visual-reader" },
+      body: JSON.stringify({
+        runId: "missing-visual-run",
+        artifactUploadEnabled: false
+      })
+    }
+  );
+  assert.equal(mounted.response.status, 404);
+  assert.equal(mounted.json.code, "resource_not_found");
+  await server.close();
   await runtime.close();
   await runtime.close();
   assert.equal(closeCount, 1);

@@ -68,6 +68,15 @@ const candidateCopilotOperations = {
   "/api/v1/acquisition/copilot/tasks/{id}": ["get"]
 } as const;
 
+const visualReaderOperations = {
+  "/api/v1/acquisition/visual-reader-sessions": ["post"],
+  "/api/v1/acquisition/visual-reader-sessions/{sessionId}": ["get"],
+  "/api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch": ["post"],
+  "/api/v1/acquisition/visual-reader-sessions/{sessionId}:complete": ["post"],
+  "/api/v1/acquisition/visual-reader-sessions/{sessionId}:abort": ["post"],
+  "/api/v1/acquisition/visual-reader-artifacts/{artifactId}": ["get"]
+} as const;
+
 const blockedDirectWrites = [
   "/api/v1/acquisition/evidence",
   "/api/v1/acquisition/candidates",
@@ -274,6 +283,31 @@ test("published candidate and copilot operations exactly match production", asyn
     assert.ok(productionPath, `production ${path}`);
     assert.deepEqual(Object.keys(publishedPath).sort(), [...methods].sort(), path);
     assert.deepEqual(Object.keys(productionPath).sort(), [...methods].sort(), `production ${path}`);
+    for (const method of methods) {
+      assert.deepEqual(
+        operationSurface(publishedPath[method]!),
+        operationSurface(productionPath[method]!),
+        `${method.toUpperCase()} ${path}`
+      );
+    }
+  }
+});
+
+test("published visual reader operations exactly match production", async () => {
+  const published = await loadPublishedAcquisitionPaths();
+  const production = await loadValidatedProductionAcquisitionPaths();
+
+  for (const [path, methods] of Object.entries(visualReaderOperations)) {
+    const publishedPath = published[path];
+    const productionPath = production[path];
+    assert.ok(publishedPath, path);
+    assert.ok(productionPath, `production ${path}`);
+    assert.deepEqual(Object.keys(publishedPath).sort(), [...methods].sort(), path);
+    assert.deepEqual(
+      Object.keys(productionPath).sort(),
+      [...methods].sort(),
+      `production ${path}`
+    );
     for (const method of methods) {
       assert.deepEqual(
         operationSurface(publishedPath[method]!),

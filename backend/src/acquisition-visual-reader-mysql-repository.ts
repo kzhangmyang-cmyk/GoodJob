@@ -18,6 +18,7 @@ import {
 import {
   ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS,
   ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES,
+  ACQUISITION_VISUAL_READER_BINDINGS_VERSION,
   AcquisitionVisualReaderRepositoryError,
   assertAcquisitionVisualReaderClientBindingsBudget,
   assertAppendVisualObservationBatchInput,
@@ -28,6 +29,8 @@ import {
   assertVisualReaderIdentifier,
   assertVisualReaderOutcome,
   assertVisualReaderOutcomeShape,
+  assertVisualObservationBatchRequestBinding,
+  assertVisualReaderRequestReplayRecord,
   assertVisualReaderSession,
   assertVisualReaderScope,
   deriveVisualReaderOutcome,
@@ -37,18 +40,21 @@ import {
   visualObservationIsLowConfidence,
   visualReaderExpiredProjection,
   visualReaderSessionIsActiveAt,
-  serializeAcquisitionVisualReaderClientBindings,
+  serializeAcquisitionVisualReaderBindingsEnvelope,
   type AcquisitionScope,
   type AcquisitionVisualReaderClientBinding,
+  type AcquisitionVisualReaderRequestReplayRecord,
   type AcquisitionVisualReaderRepository,
   type AppendVisualObservationBatchInput,
   type CreateVisualReaderSessionInput,
   type DouyinVisualCommentObservationV1,
+  type FindVisualObservationBatchReplayInput,
   type VisualReaderArtifact,
   type VisualReaderArtifactInput,
   type VisualReaderOutcome,
   type VisualReaderSession,
   type VisualReaderStableErrorCode,
+  type VisualObservationBatchReplay,
   type VisualReaderUsage
 } from "./acquisition-visual-reader-sessions.js";
 import { canonicalJsonStringify } from "./canonical-json.js";
@@ -240,6 +246,57 @@ function jsonObject(value: unknown) {
   }
 }
 
+function assertNoDuplicateJsonObjectKeys(value: unknown) {
+  if (typeof value !== "string" && !Buffer.isBuffer(value)) return;
+  const raw = Buffer.isBuffer(value) ? value.toString("utf8") : value;
+  const stack: Array<
+    | { type: "object"; keys: Set<string>; expectsKey: boolean }
+    | { type: "array" }
+  > = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index]!;
+    if (character === '"') {
+      const start = index;
+      let escaped = false;
+      for (index += 1; index < raw.length; index += 1) {
+        const stringCharacter = raw[index]!;
+        if (escaped) {
+          escaped = false;
+        } else if (stringCharacter === "\\") {
+          escaped = true;
+        } else if (stringCharacter === '"') {
+          break;
+        }
+      }
+      if (index >= raw.length) integrity();
+      const frame = stack.at(-1);
+      if (frame?.type === "object" && frame.expectsKey) {
+        const key = JSON.parse(raw.slice(start, index + 1)) as unknown;
+        if (typeof key !== "string" || frame.keys.has(key)) integrity();
+        frame.keys.add(key);
+        let colon = index + 1;
+        while (/\s/u.test(raw[colon] ?? "")) colon += 1;
+        if (raw[colon] !== ":") integrity();
+        frame.expectsKey = false;
+      }
+      continue;
+    }
+    if (character === "{") {
+      stack.push({ type: "object", keys: new Set(), expectsKey: true });
+    } else if (character === "[") {
+      stack.push({ type: "array" });
+    } else if (character === "}") {
+      if (stack.pop()?.type !== "object") integrity();
+    } else if (character === "]") {
+      if (stack.pop()?.type !== "array") integrity();
+    } else if (character === ",") {
+      const frame = stack.at(-1);
+      if (frame?.type === "object") frame.expectsKey = true;
+    }
+  }
+  if (stack.length !== 0) integrity();
+}
+
 function rowString(row: MysqlRow, key: string) {
   const value = row[key];
   if (typeof value !== "string" || !value) {
@@ -273,7 +330,63 @@ function parseSession(
   }
 }
 
-function parseBindings(row: MysqlRow) {
+interface ParsedBindings {
+  observations: Map<string, AcquisitionVisualReaderClientBinding>;
+  requests: Map<string, AcquisitionVisualReaderRequestReplayRecord>;
+  legacy: boolean;
+}
+
+function parseObservationBindings(value: Record<string, unknown>) {
+  const bindings = new Map<string, AcquisitionVisualReaderClientBinding>();
+  for (const [key, candidate] of Object.entries(value)) {
+    assertVisualReaderIdentifier(key);
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
+      || Object.keys(candidate).length !== 2
+      || !Object.hasOwn(candidate, "inputHash")
+      || !Object.hasOwn(candidate, "observationId")
+      || typeof (candidate as AcquisitionVisualReaderClientBinding)
+        .inputHash !== "string"
+      || !/^[0-9a-f]{64}$/u.test(
+        (candidate as AcquisitionVisualReaderClientBinding).inputHash)
+      || typeof (candidate as AcquisitionVisualReaderClientBinding)
+        .observationId !== "string") {
+      integrity();
+    }
+    assertVisualReaderIdentifier(
+      (candidate as AcquisitionVisualReaderClientBinding).observationId);
+    bindings.set(key, structuredClone(
+      candidate as AcquisitionVisualReaderClientBinding));
+  }
+  return bindings;
+}
+
+function parseRequestBindings(value: Record<string, unknown>) {
+  const bindings = new Map<string, AcquisitionVisualReaderRequestReplayRecord>();
+  for (const [key, candidate] of Object.entries(value)) {
+    if (!/^sha256:[0-9a-f]{64}$/u.test(key)) integrity();
+    assertVisualReaderRequestReplayRecord(candidate);
+    bindings.set(key, structuredClone(candidate));
+  }
+  return bindings;
+}
+
+function assertReplaySessionIdentity(
+  snapshot: VisualReaderSession,
+  current: VisualReaderSession
+) {
+  if (snapshot.sessionId !== current.sessionId
+    || snapshot.runId !== current.runId
+    || snapshot.planId !== current.planId
+    || snapshot.planVersionId !== current.planVersionId
+    || snapshot.platform !== current.platform
+    || snapshot.coverage !== current.coverage
+    || snapshot.artifactUploadEnabled !== current.artifactUploadEnabled
+    || canonical(snapshot.limits) !== canonical(current.limits)) {
+    integrity();
+  }
+}
+
+function parseBindings(row: MysqlRow): ParsedBindings {
   try {
     const raw = row.client_bindings_json;
     if ((typeof raw === "string"
@@ -284,36 +397,29 @@ function parseBindings(row: MysqlRow) {
           > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES)) {
       integrity();
     }
+    assertNoDuplicateJsonObjectKeys(raw);
     const value = jsonObject(raw);
-    const entries = Object.entries(value);
-    if (entries.length > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS) {
-      integrity();
-    }
-    const bindings = new Map<string, AcquisitionVisualReaderClientBinding>();
-    for (const [key, candidate] of entries) {
-      assertVisualReaderIdentifier(key);
-      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
-        || Object.keys(candidate).length !== 2
-        || !Object.hasOwn(candidate, "inputHash")
-        || !Object.hasOwn(candidate, "observationId")
-        || typeof (candidate as AcquisitionVisualReaderClientBinding)
-          .inputHash !== "string"
-        || !/^[0-9a-f]{64}$/u.test(
-          (candidate as AcquisitionVisualReaderClientBinding).inputHash)
-        || typeof (candidate as AcquisitionVisualReaderClientBinding)
-          .observationId !== "string") {
+    const keys = Object.keys(value);
+    if (typeof value.version !== "string") {
+      const observations = parseObservationBindings(value);
+      if (observations.size > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS
+        || Buffer.byteLength(canonical(value), "utf8")
+          > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES) {
         integrity();
       }
-      assertVisualReaderIdentifier(
-        (candidate as AcquisitionVisualReaderClientBinding).observationId);
-      bindings.set(key, structuredClone(
-        candidate as AcquisitionVisualReaderClientBinding));
+      return { observations, requests: new Map(), legacy: true };
     }
-    if (Buffer.byteLength(
-      serializeAcquisitionVisualReaderClientBindings(bindings),
-      "utf8"
-    ) > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES) integrity();
-    return bindings;
+    if (keys.length !== 3
+      || !Object.hasOwn(value, "version")
+      || !Object.hasOwn(value, "observations")
+      || !Object.hasOwn(value, "requests")
+      || value.version !== ACQUISITION_VISUAL_READER_BINDINGS_VERSION) {
+      integrity();
+    }
+    const observations = parseObservationBindings(jsonObject(value.observations));
+    const requests = parseRequestBindings(jsonObject(value.requests));
+    assertAcquisitionVisualReaderClientBindingsBudget(observations, requests);
+    return { observations, requests, legacy: false };
   } catch {
     integrity();
   }
@@ -494,6 +600,10 @@ implements AcquisitionVisualReaderRepository {
   }
 
   async createSession(input: CreateVisualReaderSessionInput) {
+    return (await this.createSessionWithResult(input)).session;
+  }
+
+  async createSessionWithResult(input: CreateVisualReaderSessionInput) {
     assertCreateVisualReaderSessionInput(input);
     const session = initialSession(input);
     const hash = createInputHash(input);
@@ -512,11 +622,14 @@ implements AcquisitionVisualReaderRepository {
           sqlDate(input.expiresAt),
           hash,
           JSON.stringify(session),
-          JSON.stringify({}),
+          serializeAcquisitionVisualReaderBindingsEnvelope(
+            new Map(),
+            new Map()
+          ),
           sqlDate(session.updatedAt)
         ]
       );
-      return structuredClone(session);
+      return { session: structuredClone(session), created: true };
     } catch (error) {
       if (!duplicateEntry(error)) throw error;
       const existing = await selectSession(
@@ -527,11 +640,28 @@ implements AcquisitionVisualReaderRepository {
       if (!existing || rowString(existing, "create_input_hash") !== hash) {
         fail("VISUAL_READER_SESSION_CONFLICT");
       }
-      return parseSession(existing, input.scope);
+      return { session: parseSession(existing, input.scope), created: false };
     }
   }
 
   async appendObservationBatch(input: AppendVisualObservationBatchInput) {
+    const { accepted, duplicates } = await this.appendObservationBatchInternal(
+      input
+    );
+    return { accepted, duplicates };
+  }
+
+  appendObservationBatchWithResult(
+    input: AppendVisualObservationBatchInput & {
+      requestBinding: { keyHash: string; requestHash: string };
+    }
+  ) {
+    return this.appendObservationBatchInternal(input);
+  }
+
+  private async appendObservationBatchInternal(
+    input: AppendVisualObservationBatchInput
+  ) {
     const usageDelta = assertAppendVisualObservationBatchInput(input);
     const connection = await this.pool.getConnection();
     let transactionStarted = false;
@@ -582,7 +712,9 @@ implements AcquisitionVisualReaderRepository {
       const existingRows = Array.isArray(observationResult)
         ? observationResult as MysqlRow[]
         : [];
-      const bindings = parseBindings(row);
+      const bindingState = parseBindings(row);
+      const bindings = bindingState.observations;
+      const requestBindings = bindingState.requests;
       const existingObservations = existingRows.map((existingRow) =>
         parseObservation(existingRow, {
           scope: input.scope,
@@ -590,6 +722,43 @@ implements AcquisitionVisualReaderRepository {
           runId: session.runId,
           bindings
         }));
+      if (input.requestBinding) {
+        const storedRequestBinding = requestBindings.get(
+          input.requestBinding.keyHash
+        );
+        if (storedRequestBinding) {
+          if (storedRequestBinding.requestHash
+            !== input.requestBinding.requestHash) {
+            fail("VISUAL_READER_CLIENT_KEY_CONFLICT");
+          }
+          assertVisualReaderRequestReplayRecord(storedRequestBinding);
+          assertReplaySessionIdentity(storedRequestBinding.session, session);
+          const observationsById = new Map(existingObservations.map(
+            (observation) => [observation.observationId, observation]
+          ));
+          const rowsById = new Map(existingRows.map((existingRow) => [
+            rowString(existingRow, "observation_id"),
+            existingRow
+          ]));
+          const accepted = storedRequestBinding.accepted.map((entry) => {
+            const observation = observationsById.get(entry.observationId);
+            const observationRow = rowsById.get(entry.observationId);
+            if (!observation || !observationRow
+              || rowString(observationRow, "client_observation_key")
+                !== entry.clientObservationKey) {
+              integrity();
+            }
+            return structuredClone(observation);
+          });
+          await connection.commit();
+          transactionStarted = false;
+          return {
+            accepted,
+            duplicates: [...storedRequestBinding.duplicates],
+            replayed: true
+          };
+        }
+      }
       const byId = new Map(existingObservations.map((observation) => [
         observation.observationId,
         observation
@@ -675,8 +844,6 @@ implements AcquisitionVisualReaderRepository {
         });
       }
 
-      assertAcquisitionVisualReaderClientBindingsBudget(bindings);
-
       let nextSession = session;
       if (accepted.length > 0) {
         const acceptedOcrCount = accepted.filter(({ observation }) =>
@@ -715,6 +882,22 @@ implements AcquisitionVisualReaderRepository {
           updatedAt: now
         };
       }
+
+      if (input.requestBinding) {
+        requestBindings.set(input.requestBinding.keyHash, {
+          requestHash: input.requestBinding.requestHash,
+          session: structuredClone(nextSession),
+          accepted: accepted.map(({ clientObservationKey, observation }) => ({
+            clientObservationKey,
+            observationId: observation.observationId
+          })),
+          duplicates: [...duplicates]
+        });
+      }
+      assertAcquisitionVisualReaderClientBindingsBudget(
+        bindings,
+        requestBindings
+      );
 
       for (const planned of accepted) {
         const observation = planned.observation;
@@ -780,12 +963,14 @@ implements AcquisitionVisualReaderRepository {
         }
       }
       await this.updateSession(connection as unknown as Queryable, input.scope,
-        nextSession, bindings);
+        nextSession, { observations: bindings, requests: requestBindings,
+          legacy: false });
       await connection.commit();
       transactionStarted = false;
       return {
         accepted: accepted.map(({ observation }) => structuredClone(observation)),
-        duplicates
+        duplicates,
+        replayed: false
       };
     } catch (error) {
       if (transactionStarted) {
@@ -800,6 +985,66 @@ implements AcquisitionVisualReaderRepository {
     } finally {
       releaseAcquisitionMysqlConnection(connection);
     }
+  }
+
+  async findObservationBatchReplay(
+    input: FindVisualObservationBatchReplayInput
+  ): Promise<VisualObservationBatchReplay | null> {
+    assertVisualReaderScope(input.scope);
+    assertVisualReaderIdentifier(input.sessionId);
+    assertVisualObservationBatchRequestBinding(input.requestBinding);
+    const row = await selectSession(
+      this.pool as unknown as Queryable,
+      input.scope,
+      input.sessionId
+    );
+    if (!row) return null;
+    const currentSession = parseSession(row, input.scope);
+    const bindings = parseBindings(row);
+    const record = bindings.requests.get(input.requestBinding.keyHash);
+    if (!record) return null;
+    if (record.requestHash !== input.requestBinding.requestHash) {
+      fail("VISUAL_READER_CLIENT_KEY_CONFLICT");
+    }
+    assertVisualReaderRequestReplayRecord(record);
+    assertReplaySessionIdentity(record.session, currentSession);
+    const [result] = await this.pool.query(
+      `SELECT * FROM acquisition_visual_comment_observations
+       WHERE owner_id = ? AND team_id = ? AND session_id = ?
+       ORDER BY captured_at, observation_id`,
+      [input.scope.ownerId, input.scope.teamId, input.sessionId]
+    );
+    const rows = Array.isArray(result) ? result as MysqlRow[] : [];
+    const parsed = new Map(rows.map((observationRow) => {
+      const observation = parseObservation(observationRow, {
+        scope: input.scope,
+        sessionId: input.sessionId,
+        runId: record.session.runId,
+        bindings: bindings.observations
+      });
+      return [observation.observationId, {
+        observation,
+        clientObservationKey: rowString(
+          observationRow,
+          "client_observation_key"
+        )
+      }] as const;
+    }));
+    const accepted = record.accepted.map((entry) => {
+      const match = parsed.get(entry.observationId);
+      if (!match || match.clientObservationKey !== entry.clientObservationKey) {
+        integrity();
+      }
+      return {
+        clientObservationKey: entry.clientObservationKey,
+        observation: structuredClone(match.observation)
+      };
+    });
+    return {
+      session: structuredClone(record.session),
+      accepted,
+      duplicates: [...record.duplicates]
+    };
   }
 
   async completeSession(
@@ -1007,7 +1252,7 @@ implements AcquisitionVisualReaderRepository {
     queryable: Queryable,
     scope: AcquisitionScope,
     session: VisualReaderSession,
-    bindings: Map<string, AcquisitionVisualReaderClientBinding>
+    bindings: ParsedBindings
   ) {
     const [result] = await queryable.query(
       `UPDATE acquisition_visual_reader_sessions SET
@@ -1018,7 +1263,10 @@ implements AcquisitionVisualReaderRepository {
         session.status,
         sqlDate(session.expiresAt),
         JSON.stringify(session),
-        serializeAcquisitionVisualReaderClientBindings(bindings),
+        serializeAcquisitionVisualReaderBindingsEnvelope(
+          bindings.observations,
+          bindings.requests
+        ),
         sqlDate(session.updatedAt),
         scope.ownerId,
         scope.teamId,

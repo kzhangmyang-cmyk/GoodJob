@@ -171,12 +171,31 @@ export interface AppendVisualObservationBatchInput {
     artifact?: VisualReaderArtifactInput;
   }>;
   usageDelta?: { scrollCount: number; ocrCallCount: number };
+  requestBinding?: {
+    keyHash: string;
+    requestHash: string;
+  };
 }
 
 export interface AcquisitionVisualReaderRepository {
+  createSessionWithResult(
+    input: CreateVisualReaderSessionInput
+  ): Promise<{ session: VisualReaderSession; created: boolean }>;
   createSession(
     input: CreateVisualReaderSessionInput
   ): Promise<VisualReaderSession>;
+  appendObservationBatchWithResult(
+    input: AppendVisualObservationBatchInput & {
+      requestBinding: { keyHash: string; requestHash: string };
+    }
+  ): Promise<{
+    accepted: VisualCommentObservation[];
+    duplicates: string[];
+    replayed: boolean;
+  }>;
+  findObservationBatchReplay(
+    input: FindVisualObservationBatchReplayInput
+  ): Promise<VisualObservationBatchReplay | null>;
   appendObservationBatch(input: AppendVisualObservationBatchInput): Promise<{
     accepted: VisualCommentObservation[];
     duplicates: string[];
@@ -245,8 +264,10 @@ interface MemoryState {
   sessionInputs: Map<string, string>;
   observations: Map<string, DouyinVisualCommentObservationV1>;
   observationScopes: Map<string, AcquisitionScope & { runId: string }>;
+  observationClientKeys: Map<string, string>;
   dedupe: Map<string, string>;
   clientKeys: Map<string, { inputHash: string; observationId: string }>;
+  requestBindings: Map<string, AcquisitionVisualReaderRequestReplayRecord>;
   artifacts: Map<string, StoredArtifact>;
 }
 
@@ -333,6 +354,31 @@ export interface AcquisitionVisualReaderClientBinding {
   observationId: string;
 }
 
+export interface AcquisitionVisualReaderRequestReplayRecord {
+  requestHash: string;
+  session: VisualReaderSession;
+  accepted: Array<{
+    clientObservationKey: string;
+    observationId: string;
+  }>;
+  duplicates: string[];
+}
+
+export interface FindVisualObservationBatchReplayInput {
+  scope: AcquisitionScope;
+  sessionId: string;
+  requestBinding: { keyHash: string; requestHash: string };
+}
+
+export interface VisualObservationBatchReplay {
+  session: VisualReaderSession;
+  accepted: Array<{
+    clientObservationKey: string;
+    observation: DouyinVisualCommentObservationV1;
+  }>;
+  duplicates: string[];
+}
+
 function fail(code: AcquisitionVisualReaderRepositoryErrorCode): never {
   throw new AcquisitionVisualReaderRepositoryError(code);
 }
@@ -365,6 +411,14 @@ function clientKey(
   return `${scopeKey(scope)}\u0000${sessionId}\u0000${key}`;
 }
 
+function requestKey(
+  scope: AcquisitionScope,
+  sessionId: string,
+  keyHash: string
+) {
+  return `${scopeKey(scope)}\u0000${sessionId}\u0000${keyHash}`;
+}
+
 function sessionClientBindings(
   clientKeys: MemoryState["clientKeys"],
   scope: AcquisitionScope,
@@ -373,6 +427,19 @@ function sessionClientBindings(
   const prefix = clientKey(scope, sessionId, "");
   const bindings = new Map<string, AcquisitionVisualReaderClientBinding>();
   for (const [key, binding] of clientKeys) {
+    if (key.startsWith(prefix)) bindings.set(key.slice(prefix.length), binding);
+  }
+  return bindings;
+}
+
+function sessionRequestBindings(
+  requestBindings: MemoryState["requestBindings"],
+  scope: AcquisitionScope,
+  sessionId: string
+) {
+  const prefix = requestKey(scope, sessionId, "");
+  const bindings = new Map<string, AcquisitionVisualReaderRequestReplayRecord>();
+  for (const [key, binding] of requestBindings) {
     if (key.startsWith(prefix)) bindings.set(key.slice(prefix.length), binding);
   }
   return bindings;
@@ -390,16 +457,87 @@ export function serializeAcquisitionVisualReaderClientBindings(
   return canonical(Object.fromEntries(bindings));
 }
 
-export function assertAcquisitionVisualReaderClientBindingsBudget(
-  bindings: Map<string, AcquisitionVisualReaderClientBinding>
+export const ACQUISITION_VISUAL_READER_BINDINGS_VERSION =
+  "visual-bindings-v2" as const;
+
+export function serializeAcquisitionVisualReaderBindingsEnvelope(
+  observations: Map<string, AcquisitionVisualReaderClientBinding>,
+  requests: Map<string, AcquisitionVisualReaderRequestReplayRecord>
 ) {
-  const serialized = serializeAcquisitionVisualReaderClientBindings(bindings);
-  if (bindings.size > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS
+  return canonical({
+    version: ACQUISITION_VISUAL_READER_BINDINGS_VERSION,
+    observations: Object.fromEntries(observations),
+    requests: Object.fromEntries(requests)
+  });
+}
+
+export function assertAcquisitionVisualReaderClientBindingsBudget(
+  bindings: Map<string, AcquisitionVisualReaderClientBinding>,
+  requests = new Map<string, AcquisitionVisualReaderRequestReplayRecord>()
+) {
+  const serialized = serializeAcquisitionVisualReaderBindingsEnvelope(
+    bindings,
+    requests
+  );
+  if (bindings.size + requests.size
+      > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS
     || Buffer.byteLength(serialized, "utf8")
       > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES) {
     fail("VISUAL_READER_BUDGET_EXHAUSTED");
   }
   return serialized;
+}
+
+export function assertVisualObservationBatchRequestBinding(
+  binding: unknown
+): asserts binding is { keyHash: string; requestHash: string } {
+  if (!recordWithKeys(binding, ["keyHash", "requestHash"])
+    || typeof binding.keyHash !== "string"
+    || !DIGEST.test(binding.keyHash)
+    || typeof binding.requestHash !== "string"
+    || !DIGEST.test(binding.requestHash)) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+}
+
+export function assertVisualReaderRequestReplayRecord(
+  record: unknown
+): asserts record is AcquisitionVisualReaderRequestReplayRecord {
+  if (!recordWithKeys(
+    record,
+    ["requestHash", "session", "accepted", "duplicates"]
+  )
+    || typeof record.requestHash !== "string"
+    || !DIGEST.test(record.requestHash)
+    || !Array.isArray(record.accepted)
+    || record.accepted.length > 20
+    || !Array.isArray(record.duplicates)
+    || record.duplicates.length > 20) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+  assertVisualReaderSession(record.session);
+  const keys = new Set<string>();
+  for (const accepted of record.accepted) {
+    if (!recordWithKeys(
+      accepted,
+      ["clientObservationKey", "observationId"]
+    )) fail("VISUAL_READER_INVALID_INPUT");
+    assertVisualReaderIdentifier(accepted.clientObservationKey);
+    assertVisualReaderIdentifier(accepted.observationId);
+    if (keys.has(accepted.clientObservationKey)) {
+      fail("VISUAL_READER_INVALID_INPUT");
+    }
+    keys.add(accepted.clientObservationKey);
+  }
+  for (const duplicate of record.duplicates) {
+    assertVisualReaderIdentifier(duplicate);
+    if (keys.has(duplicate)) fail("VISUAL_READER_INVALID_INPUT");
+    keys.add(duplicate);
+  }
+  if (keys.size > 20
+    || new Set(record.duplicates).size !== record.duplicates.length) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
 }
 
 function hashCanonical(value: unknown) {
@@ -543,7 +681,7 @@ export function assertAppendVisualObservationBatchInput(
   if (!recordWithKeys(
     input,
     ["scope", "sessionId", "observations"],
-    ["usageDelta"]
+    ["usageDelta", "requestBinding"]
   )) fail("VISUAL_READER_INVALID_INPUT");
   assertVisualReaderScope(input.scope);
   assertVisualReaderIdentifier(input.sessionId);
@@ -575,6 +713,8 @@ export function assertAppendVisualObservationBatchInput(
     || usageDelta.ocrCallCount < 0) {
     fail("VISUAL_READER_INVALID_INPUT");
   }
+  if (input.requestBinding !== undefined
+  ) assertVisualObservationBatchRequestBinding(input.requestBinding);
   return usageDelta;
 }
 
@@ -952,8 +1092,10 @@ implements AcquisitionVisualReaderRepository {
     sessionInputs: new Map(),
     observations: new Map(),
     observationScopes: new Map(),
+    observationClientKeys: new Map(),
     dedupe: new Map(),
     clientKeys: new Map(),
+    requestBindings: new Map(),
     artifacts: new Map()
   };
   private mutationTail: Promise<void> = Promise.resolve();
@@ -978,6 +1120,10 @@ implements AcquisitionVisualReaderRepository {
   }
 
   createSession(input: CreateVisualReaderSessionInput) {
+    return this.createSessionWithResult(input).then(({ session }) => session);
+  }
+
+  createSessionWithResult(input: CreateVisualReaderSessionInput) {
     return this.mutate(() => {
       validateCreateInput(input);
       const key = sessionKey(input.scope, input.sessionId);
@@ -987,7 +1133,7 @@ implements AcquisitionVisualReaderRepository {
         if (this.state.sessionInputs.get(key) !== inputHash) {
           fail("VISUAL_READER_SESSION_CONFLICT");
         }
-        return clone(existing);
+        return { session: clone(existing), created: false };
       }
       const session: VisualReaderSession = {
         sessionId: input.sessionId,
@@ -1013,11 +1159,25 @@ implements AcquisitionVisualReaderRepository {
         sessions: new Map(this.state.sessions).set(key, session),
         sessionInputs: new Map(this.state.sessionInputs).set(key, inputHash)
       };
-      return clone(session);
+      return { session: clone(session), created: true };
     });
   }
 
   appendObservationBatch(input: AppendVisualObservationBatchInput) {
+    return this.appendObservationBatchInternal(input).then(
+      ({ accepted, duplicates }) => ({ accepted, duplicates })
+    );
+  }
+
+  appendObservationBatchWithResult(
+    input: AppendVisualObservationBatchInput & {
+      requestBinding: { keyHash: string; requestHash: string };
+    }
+  ) {
+    return this.appendObservationBatchInternal(input);
+  }
+
+  private appendObservationBatchInternal(input: AppendVisualObservationBatchInput) {
     return this.mutate(() => {
       const usageDelta = assertAppendVisualObservationBatchInput(input);
       const key = sessionKey(input.scope, input.sessionId);
@@ -1040,6 +1200,36 @@ implements AcquisitionVisualReaderRepository {
         fail("VISUAL_READER_SESSION_TERMINAL");
       }
 
+      const requestBindingKey = input.requestBinding
+        ? requestKey(
+            input.scope,
+            input.sessionId,
+            input.requestBinding.keyHash
+          )
+        : null;
+      const storedRequestBinding = requestBindingKey
+        ? this.state.requestBindings.get(requestBindingKey)
+        : undefined;
+      if (storedRequestBinding) {
+        if (storedRequestBinding.requestHash
+          !== input.requestBinding!.requestHash) {
+          fail("VISUAL_READER_CLIENT_KEY_CONFLICT");
+        }
+        assertVisualReaderRequestReplayRecord(storedRequestBinding);
+        return {
+          accepted: storedRequestBinding.accepted.map((entry) => {
+            const observation = this.state.observations.get(observationKey(
+              input.scope,
+              entry.observationId
+            ));
+            if (!observation) fail("VISUAL_READER_OBSERVATION_CONFLICT");
+            return clone(observation);
+          }),
+          duplicates: [...storedRequestBinding.duplicates],
+          replayed: true
+        };
+      }
+
       for (const item of input.observations) {
         validateObservation(item.observation, input.sessionId);
         if (item.artifact) {
@@ -1049,10 +1239,15 @@ implements AcquisitionVisualReaderRepository {
 
       const observations = new Map(this.state.observations);
       const observationScopes = new Map(this.state.observationScopes);
+      const observationClientKeys = new Map(
+        this.state.observationClientKeys
+      );
       const dedupe = new Map(this.state.dedupe);
       const clientKeys = new Map(this.state.clientKeys);
+      const requestBindings = new Map(this.state.requestBindings);
       const artifacts = new Map(this.state.artifacts);
       const accepted: DouyinVisualCommentObservationV1[] = [];
+      const acceptedClientKeys: string[] = [];
       const duplicates: string[] = [];
       const duplicateSet = new Set<string>();
       const acceptedVideoCounts = new Map<string, number>();
@@ -1131,6 +1326,10 @@ implements AcquisitionVisualReaderRepository {
           ...input.scope,
           runId: session.runId
         });
+        observationClientKeys.set(
+          scopedObservationKey,
+          item.clientObservationKey
+        );
         dedupe.set(immutableDedupeKey, item.observation.observationId);
         clientKeys.set(scopedClientKey, {
           inputHash,
@@ -1168,62 +1367,126 @@ implements AcquisitionVisualReaderRepository {
           });
         }
         accepted.push(clone(item.observation));
+        acceptedClientKeys.push(item.clientObservationKey);
       }
-
+      let nextSession = session;
+      if (accepted.length > 0) {
+        const artifactCount = input.observations.filter((item) =>
+          accepted.some((acceptedObservation) =>
+            acceptedObservation.observationId
+              === item.observation.observationId)
+          && item.artifact).length;
+        const acceptedOcrCount = accepted.filter((item) =>
+          item.extractionMethod === "ocr").length;
+        const usage: VisualReaderUsage = {
+          videoCount: acceptedVideoCounts.size,
+          observationCount: session.usage.observationCount + accepted.length,
+          scrollCount: session.usage.scrollCount + usageDelta.scrollCount,
+          ocrCallCount: session.usage.ocrCallCount
+            + Math.max(usageDelta.ocrCallCount, acceptedOcrCount),
+          domObservationCount: session.usage.domObservationCount
+            + accepted.filter((item) =>
+              item.extractionMethod === "dom").length,
+          accessibilityObservationCount:
+            session.usage.accessibilityObservationCount
+            + accepted.filter((item) =>
+              item.extractionMethod === "accessibility").length,
+          ocrObservationCount: session.usage.ocrObservationCount
+            + accepted.filter((item) =>
+              item.extractionMethod === "ocr").length,
+          lowConfidenceObservationCount:
+            session.usage.lowConfidenceObservationCount
+            + accepted.filter(lowConfidence).length,
+          artifactCount: session.usage.artifactCount + artifactCount
+        };
+        if (usage.scrollCount > session.limits.maxScrolls
+          || usage.ocrCallCount > session.limits.maxOcrCalls) {
+          fail("VISUAL_READER_BUDGET_EXHAUSTED");
+        }
+        nextSession = {
+          ...session,
+          status: "collecting",
+          usage,
+          updatedAt: now
+        };
+      }
+      if (requestBindingKey && input.requestBinding) {
+        requestBindings.set(requestBindingKey, {
+          requestHash: input.requestBinding.requestHash,
+          session: clone(nextSession),
+          accepted: accepted.map((item, index) => ({
+            clientObservationKey: acceptedClientKeys[index]!,
+            observationId: item.observationId
+          })),
+          duplicates: [...duplicates]
+        });
+      }
       assertAcquisitionVisualReaderClientBindingsBudget(
-        sessionClientBindings(clientKeys, input.scope, input.sessionId)
+        sessionClientBindings(clientKeys, input.scope, input.sessionId),
+        sessionRequestBindings(
+          requestBindings,
+          input.scope,
+          input.sessionId
+        )
       );
-
-      if (accepted.length === 0) {
-        this.state = { ...this.state, clientKeys };
-        return { accepted: [], duplicates };
-      }
-      const artifactCount = input.observations.filter((item) =>
-        accepted.some((acceptedObservation) =>
-          acceptedObservation.observationId === item.observation.observationId)
-        && item.artifact).length;
-      const acceptedOcrCount = accepted.filter((item) =>
-        item.extractionMethod === "ocr").length;
-      const usage: VisualReaderUsage = {
-        videoCount: acceptedVideoCounts.size,
-        observationCount: session.usage.observationCount + accepted.length,
-        scrollCount: session.usage.scrollCount + usageDelta.scrollCount,
-        ocrCallCount: session.usage.ocrCallCount
-          + Math.max(usageDelta.ocrCallCount, acceptedOcrCount),
-        domObservationCount: session.usage.domObservationCount
-          + accepted.filter((item) => item.extractionMethod === "dom").length,
-        accessibilityObservationCount:
-          session.usage.accessibilityObservationCount
-          + accepted.filter((item) =>
-            item.extractionMethod === "accessibility").length,
-        ocrObservationCount: session.usage.ocrObservationCount
-          + accepted.filter((item) => item.extractionMethod === "ocr").length,
-        lowConfidenceObservationCount:
-          session.usage.lowConfidenceObservationCount
-          + accepted.filter(lowConfidence).length,
-        artifactCount: session.usage.artifactCount + artifactCount
-      };
-      if (usage.scrollCount > session.limits.maxScrolls
-        || usage.ocrCallCount > session.limits.maxOcrCalls) {
-        fail("VISUAL_READER_BUDGET_EXHAUSTED");
-      }
-      const nextSession: VisualReaderSession = {
-        ...session,
-        status: "collecting",
-        usage,
-        updatedAt: now
-      };
       this.state = {
         ...this.state,
         sessions: new Map(this.state.sessions).set(key, nextSession),
         observations,
         observationScopes,
+        observationClientKeys,
         dedupe,
         clientKeys,
+        requestBindings,
         artifacts
       };
-      return { accepted: clone(accepted), duplicates };
+      return {
+        accepted: clone(accepted),
+        duplicates,
+        replayed: false
+      };
     });
+  }
+
+  async findObservationBatchReplay(
+    input: FindVisualObservationBatchReplayInput
+  ): Promise<VisualObservationBatchReplay | null> {
+    if (!recordWithKeys(input, ["scope", "sessionId", "requestBinding"])) {
+      fail("VISUAL_READER_INVALID_INPUT");
+    }
+    assertVisualReaderScope(input.scope);
+    assertVisualReaderIdentifier(input.sessionId);
+    assertVisualObservationBatchRequestBinding(input.requestBinding);
+    const state = await this.settledState();
+    const record = state.requestBindings.get(requestKey(
+      input.scope,
+      input.sessionId,
+      input.requestBinding.keyHash
+    ));
+    if (!record) return null;
+    if (record.requestHash !== input.requestBinding.requestHash) {
+      fail("VISUAL_READER_CLIENT_KEY_CONFLICT");
+    }
+    assertVisualReaderRequestReplayRecord(record);
+    const accepted = record.accepted.map((entry) => {
+      const key = observationKey(input.scope, entry.observationId);
+      const observation = state.observations.get(key);
+      if (!observation
+        || observation.sessionId !== input.sessionId
+        || state.observationClientKeys.get(key)
+          !== entry.clientObservationKey) {
+        fail("VISUAL_READER_OBSERVATION_CONFLICT");
+      }
+      return {
+        clientObservationKey: entry.clientObservationKey,
+        observation: clone(observation)
+      };
+    });
+    return {
+      session: clone(record.session),
+      accepted,
+      duplicates: [...record.duplicates]
+    };
   }
 
   completeSession(

@@ -31,6 +31,31 @@ const TEAM = "response-contract-team";
 const NOW = "2026-08-05T00:00:00.000Z";
 const openApiPaths = createAcquisitionOpenApiPaths();
 
+function openApi30SchemaForAjv(value: any): any {
+  if (Array.isArray(value)) return value.map(openApi30SchemaForAjv);
+  if (!value || typeof value !== "object") return value;
+  const normalized = Object.fromEntries(Object.entries(value).map(
+    ([key, item]) => [key, openApi30SchemaForAjv(item)]
+  )) as Record<string, any>;
+  if (typeof normalized.exclusiveMinimum === "boolean") {
+    if (normalized.exclusiveMinimum) {
+      normalized.exclusiveMinimum = normalized.minimum;
+      delete normalized.minimum;
+    } else {
+      delete normalized.exclusiveMinimum;
+    }
+  }
+  if (typeof normalized.exclusiveMaximum === "boolean") {
+    if (normalized.exclusiveMaximum) {
+      normalized.exclusiveMaximum = normalized.maximum;
+      delete normalized.maximum;
+    } else {
+      delete normalized.exclusiveMaximum;
+    }
+  }
+  return normalized;
+}
+
 function assertResponseConforms(
   path: string,
   method: "get" | "post" | "patch" | "delete",
@@ -48,7 +73,7 @@ function assertResponseConforms(
     allErrors: true,
     strict: false,
     validateFormats: false
-  }).compile(schema);
+  }).compile(openApi30SchemaForAjv(schema));
   assert.equal(
     validate(body),
     true,
@@ -86,6 +111,90 @@ function assertRequestConforms(
     )}`
   );
 }
+
+function visualReaderSessionFixture() {
+  return {
+    sessionId: "visual-session-response-contract",
+    runId: "run-response-contract",
+    planId: "plan-response-contract",
+    planVersionId: "plan-version-response-contract",
+    platform: "douyin",
+    coverage: "authorized_visible_top_level_sample",
+    status: "collecting",
+    artifactUploadEnabled: false,
+    limits: {
+      maxVideos: 10,
+      maxCommentsPerVideo: 30,
+      maxScrolls: 5,
+      maxOcrCalls: 10,
+      maxDurationMs: 120_000
+    },
+    usage: {
+      videoCount: 1,
+      observationCount: 1,
+      scrollCount: 0,
+      ocrCallCount: 0,
+      domObservationCount: 1,
+      accessibilityObservationCount: 0,
+      ocrObservationCount: 0,
+      lowConfidenceObservationCount: 0,
+      artifactCount: 0
+    },
+    outcome: null,
+    lastErrorCode: null,
+    createdAt: NOW,
+    authorizedAt: NOW,
+    updatedAt: NOW,
+    expiresAt: "2026-08-05T00:02:00.000Z",
+    completedAt: null
+  };
+}
+
+test("visual reader session and normalized batch responses conform to runtime OpenAPI", () => {
+  const session = visualReaderSessionFixture();
+  const observation = {
+    observationId: "visual-observation-response-contract",
+    sessionId: session.sessionId,
+    sourceUrl: "https://www.douyin.com/video/7536012345678904333",
+    videoId: "7536012345678904333",
+    visibleText: "公开可见的采购需求",
+    textHash: `sha256:${"1".repeat(64)}`,
+    displayName: "公开用户",
+    visibleTimeText: "1小时前",
+    likeCount: 2,
+    replyCount: 0,
+    platformCommentId: null,
+    publicProfileUrl: null,
+    secUid: null,
+    extractionMethod: "dom",
+    fieldConfidences: { visibleText: 1, displayName: 0.9 },
+    viewportHash: `sha256:${"2".repeat(64)}`,
+    cardBounds: { x: 0, y: 0, width: 320, height: 120 },
+    redactedCropHash: null,
+    readerVersion: "visual-reader-response-contract",
+    capturedAt: NOW
+  };
+
+  assertResponseConforms(
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}",
+    "get",
+    200,
+    session
+  );
+  assertResponseConforms(
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch",
+    "post",
+    200,
+    {
+      session,
+      accepted: [{
+        clientObservationKey: "client-observation-response-contract",
+        observation
+      }],
+      duplicates: []
+    }
+  );
+});
 
 async function mount(...routers: Router[]) {
   const app = express();

@@ -257,49 +257,65 @@ export interface AcquisitionVisualReaderRepository {
 - Create: `backend/src/acquisition-visual-reader-service-test.ts`
 - Create: `backend/src/acquisition-visual-artifact-validator.ts`
 - Create: `backend/src/acquisition-visual-artifact-validator-test.ts`
+- Modify: `backend/src/acquisition-visual-reader-sessions.ts`
+- Modify: `backend/src/acquisition-visual-reader-sessions-test.ts`
+- Modify: `backend/src/acquisition-visual-reader-mysql-repository.ts`
+- Modify: `backend/src/acquisition-visual-reader-mysql-repository-test.ts`
 - Modify: `backend/src/acquisition-application.ts`
+- Modify: `backend/src/acquisition-application-test.ts`
 - Modify: `backend/src/acquisition-openapi.ts`
 - Modify: `backend/src/acquisition-openapi-test.ts`
 - Modify: `backend/src/acquisition-openapi-response-conformance-test.ts`
+- Modify: `backend/src/acquisition-openapi-contract-drift-test.ts`
 - Modify: `backend/src/security-test.ts`
+- Modify: `backend/src/server.ts`
 - Modify: `backend/package.json`
 - Modify: `package-lock.json`
 - Modify: `THIRD_PARTY_NOTICES.md`
+- Modify: `contracts/openapi/ai-acquisition.v1.yaml`
+- Modify: `contracts/test/openapi.test.mjs`
+- Modify (generated): `frontend/src/features/ai-growth/generated/ai-acquisition.ts`
 
 **Behavior:**
 
 - 创建会话必须绑定现有 Plan/Run、平台 `douyin`、服务端预算和用户授权时间；Run 不存在、跨租户、计划未启用或已结束时拒绝。
+- 本期“计划已启用”固定指 approved Run 的不可变 PlanVersion 同时满足 `targetPlatform = douyin` 与 `douyinPublicCommentSample.enabled = true`；只允许 `queued | running` Run 创建视觉会话。最终视觉限额取视觉硬上限与该不可变评论策略的更严值。
+- create session 的 `sessionId` 只由服务端以租户、Run 和 `Idempotency-Key` 的加密摘要确定；repository 原子返回 created/replayed。观察批次也把哈希后的 header key 与整批 canonical request hash 在同一 session transaction 内绑定；同 key 同请求安全重放，同 key 不同请求冲突，原始 key 不落库。
 - 服务端重新解析 `sourceUrl/videoId`，重新计算 `textHash/cropHash/cardBoundsHash`；不信任扩展提供的哈希。
 - `AcquisitionVisualArtifactValidator` 只把请求内存 Buffer 交给 `sharp@0.35.3`，设置 1 megapixel 输入上限并输出有界 raw RGBA；检查 WebP、真实宽高、字节数和裁剪宽高比，拒绝 EXIF/额外页面、动画和超限图。
 - 服务端要求 `redactionProof.version = "opaque-rect-v1"`。avatar bounds 和所有允许矩形之外的每个像素都必须是固定不透明遮挡色 `[17,61,51,255]`，允许矩形总面积不得超过裁剪面积 80%；没有图片时允许纯 DOM 观察。
 - 批量请求使用 `Idempotency-Key`，现有 auth + CSRF；扩展无直连 API 能力。
-- 观察批次路由使用独立 2 MiB JSON body 上限；图片数超过 5、base64 解码后总字节超限或正文批次超过 20 时，在进入 repository 前拒绝。
+- 每个至少接受一条新观察的批次记作一次有界 capture cycle，并消耗一个 `scrollCount`；
+  同 header 的精确重放和只含重复观察的批次不重复计数，第六个产生新观察的 capture
+  cycle 在整个批次写入前以预算冲突拒绝。该计数是服务端有界读取周期，不宣称客户端
+  真实发生了一次 DOM 滚动。
+- 观察批次路由使用独立 2 MiB JSON body 上限，即使通用 `JSON_BODY_LIMIT` 被配置得更大也不能放宽；图片数超过 5、解码后制品总字节超过 `5 * 256 KiB` 或正文批次超过 20 时，在进入 repository 前拒绝。
 - 稳定错误码：`visual_reader_not_enabled | visual_reader_session_expired | visual_reader_budget_exhausted | visual_source_invalid | visual_observation_invalid | visual_artifact_invalid | visual_extraction_method_disabled | visual_extraction_low_confidence | visual_reader_user_takeover`。默认会话只允许 `dom | accessibility | ocr`，保留的 `vision` 输入返回 `visual_extraction_method_disabled`。
 
-- [ ] **Step 1: 写 service/router RED 测试**
+- [x] **Step 1: 写 service/router RED 测试**
 
   覆盖未登录、缺 CSRF、跨租户、Run 不匹配、非抖音 URL、客户端哈希欺骗、图片炸弹、动画 WebP、伪造宽高、未遮挡头像、卡外残留像素、允许区面积过大、重复幂等键、完成后追加、预算竞争和响应字段最小化。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-visual-reader-service-test.ts src/acquisition-visual-reader-router-test.ts src/acquisition-visual-artifact-validator-test.ts src/security-test.ts`
 
   Expected: FAIL。
 
-- [ ] **Step 3: 实现 service/router 并挂载 application**
+- [x] **Step 3: 实现 service/router 并挂载 application**
 
   `POST observations:batch` 先完成整批验证，再在同一 repository 事务内写入；任一观察/制品非法时整批不落库。合法低置信度记录可落库但标记 `manual_review_only`。
 
-- [ ] **Step 4: 运行 GREEN、OpenAPI 与构建**
+- [x] **Step 4: 运行 GREEN、OpenAPI 与构建**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-visual-reader-service-test.ts src/acquisition-visual-reader-router-test.ts src/acquisition-visual-artifact-validator-test.ts src/security-test.ts src/acquisition-openapi-test.ts src/acquisition-openapi-response-conformance-test.ts && npm run build --workspace backend`
 
   Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
   ```bash
-  git add backend/src/acquisition-visual-reader-router.ts backend/src/acquisition-visual-reader-router-test.ts backend/src/acquisition-visual-reader-service.ts backend/src/acquisition-visual-reader-service-test.ts backend/src/acquisition-visual-artifact-validator.ts backend/src/acquisition-visual-artifact-validator-test.ts backend/src/acquisition-application.ts backend/src/acquisition-openapi.ts backend/src/acquisition-openapi-test.ts backend/src/acquisition-openapi-response-conformance-test.ts backend/src/security-test.ts backend/package.json package-lock.json THIRD_PARTY_NOTICES.md
+  git add backend/src/acquisition-visual-reader-router.ts backend/src/acquisition-visual-reader-router-test.ts backend/src/acquisition-visual-reader-service.ts backend/src/acquisition-visual-reader-service-test.ts backend/src/acquisition-visual-artifact-validator.ts backend/src/acquisition-visual-artifact-validator-test.ts backend/src/acquisition-application.ts backend/src/acquisition-openapi.ts backend/src/acquisition-openapi-test.ts backend/src/acquisition-openapi-response-conformance-test.ts backend/src/security-test.ts backend/package.json package-lock.json THIRD_PARTY_NOTICES.md frontend/src/features/ai-growth/generated/ai-acquisition.ts
   git commit -m "feat: expose authorized visual reader sessions"
   ```
 

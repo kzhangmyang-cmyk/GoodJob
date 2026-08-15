@@ -6423,6 +6423,15 @@ export interface operations {
                 };
             };
             /** @description Unified API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6433,6 +6442,15 @@ export interface operations {
             };
             /** @description Unified API error */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6538,6 +6556,7 @@ export interface operations {
             /** @description Accepted and duplicate visual observations */
             200: {
                 headers: {
+                    "Idempotency-Replayed"?: "true";
                     [name: string]: unknown;
                 };
                 content: {
@@ -6563,6 +6582,15 @@ export interface operations {
                 };
             };
             /** @description Unified API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6573,6 +6601,15 @@ export interface operations {
             };
             /** @description Unified API error */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6636,6 +6673,15 @@ export interface operations {
                 };
             };
             /** @description Unified API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6646,6 +6692,15 @@ export interface operations {
             };
             /** @description Unified API error */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6709,6 +6764,15 @@ export interface operations {
                 };
             };
             /** @description Unified API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -6719,6 +6783,15 @@ export interface operations {
             };
             /** @description Unified API error */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Unified API error */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };

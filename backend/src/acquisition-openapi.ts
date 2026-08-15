@@ -60,6 +60,17 @@ export function convertJsonSchema202012ToOpenApi30(value: any): any {
       `JSON Schema $defs reference must be dereferenced before OpenAPI 3.0 conversion: ${value.$ref}`
     );
   }
+  for (const [exclusiveKeyword, inclusiveKeyword] of [
+    ["exclusiveMinimum", "minimum"],
+    ["exclusiveMaximum", "maximum"]
+  ] as const) {
+    if (typeof value[exclusiveKeyword] === "number"
+      && Object.hasOwn(value, inclusiveKeyword)) {
+      throw new TypeError(
+        `Cannot safely combine JSON Schema ${exclusiveKeyword} and ${inclusiveKeyword} in OpenAPI 3.0`
+      );
+    }
+  }
 
   const converted: Record<string, any> = {};
   for (const [key, item] of Object.entries(value)) {
@@ -101,6 +112,12 @@ export function convertJsonSchema202012ToOpenApi30(value: any): any {
       converted[key] = typeof item === "boolean"
         ? item
         : convertJsonSchema202012ToOpenApi30(item);
+    } else if (key === "exclusiveMinimum" && typeof item === "number") {
+      converted.minimum = item;
+      converted.exclusiveMinimum = true;
+    } else if (key === "exclusiveMaximum" && typeof item === "number") {
+      converted.maximum = item;
+      converted.exclusiveMaximum = true;
     } else {
       converted[key] = structuredClone(item);
     }
@@ -275,10 +292,23 @@ function dereferenceContractSchema(
       return dereferenceContractSchema(target, root, baseUrl);
     }
     const targetUrl = new URL(reference, baseUrl);
+    const pointer = targetUrl.hash;
+    targetUrl.hash = "";
     const targetRoot = JSON.parse(
       readFileSync(targetUrl, "utf8")
     ) as Record<string, any>;
-    return dereferenceContractSchema(targetRoot, targetRoot, targetUrl);
+    const target = pointer.startsWith("#/")
+      ? pointer.slice(2).split("/").reduce(
+          (current: any, part) => current[
+            part.replace(/~1/gu, "/").replace(/~0/gu, "~")
+          ],
+          targetRoot
+        )
+      : targetRoot;
+    if (!target || typeof target !== "object") {
+      throw new Error(`Missing contract schema reference: ${reference}`);
+    }
+    return dereferenceContractSchema(target, targetRoot, targetUrl);
   }
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [
     key,
@@ -298,6 +328,60 @@ function loadContractSchema(name: string): Record<string, any> {
     readFileSync(schemaUrl, "utf8")
   ) as Record<string, any>;
   return dereferenceContractSchema(root, root, schemaUrl);
+}
+
+export function loadContractSchemaDefinition(
+  name: string,
+  definition: string
+): Record<string, any> {
+  const schemaUrl = new URL(
+    `../../contracts/json-schema/${name}.v1.schema.json`,
+    import.meta.url
+  );
+  const root = JSON.parse(
+    readFileSync(schemaUrl, "utf8")
+  ) as Record<string, any>;
+  const target = root.$defs?.[definition] as unknown;
+  if (!target || typeof target !== "object" || Array.isArray(target)) {
+    throw new Error(`Missing contract schema definition: ${name}#${definition}`);
+  }
+  return dereferenceContractSchema(target, root, schemaUrl);
+}
+
+/**
+ * OpenAPI 3.0 cannot represent Draft 2020-12 `contains` cardinality. The
+ * visual-reader service enforces the five-crop limit before decoding or any
+ * repository call, so its runtime documentation publishes the remaining
+ * closed DTO shape. Keep this exception exact and fail closed if the source
+ * contract changes instead of silently dropping a new constraint.
+ */
+export function projectVisualReaderBatchRequestToOpenApi30(
+  value: Record<string, any>
+): Record<string, any> {
+  const observations = value.properties?.observations;
+  if (!observations || !Object.hasOwn(observations, "contains")) return value;
+  const expectedContains = {
+    type: "object",
+    required: ["redactedCrop"],
+    properties: { redactedCrop: { type: "object" } }
+  };
+  if (value.type !== "object"
+    || value.additionalProperties !== false
+    || observations.type !== "array"
+    || observations.minItems !== 1
+    || observations.maxItems !== 20
+    || observations.minContains !== 0
+    || observations.maxContains !== 5
+    || JSON.stringify(observations.contains) !== JSON.stringify(expectedContains)) {
+    throw new TypeError(
+      "Unexpected visual reader crop cardinality contract for OpenAPI 3.0"
+    );
+  }
+  const projected = structuredClone(value);
+  delete projected.properties.observations.contains;
+  delete projected.properties.observations.minContains;
+  delete projected.properties.observations.maxContains;
+  return projected;
 }
 
 const asyncOperationResponseSchema = loadContractSchema("async-operation");
@@ -339,6 +423,30 @@ const candidateIntelligenceOperationResponseSchema = loadContractSchema(
 );
 const douyinIdentityResolutionOperationResponseSchema = loadContractSchema(
   "douyin-identity-resolution-operation"
+);
+const visualReaderSessionResponseSchema = loadContractSchema(
+  "acquisition-visual-reader-session"
+);
+const visualReaderCreateRequestSchema = loadContractSchemaDefinition(
+  "acquisition-visual-reader-session",
+  "visualReaderCreateRequest"
+);
+const visualReaderBatchRequestSchema =
+  projectVisualReaderBatchRequestToOpenApi30(loadContractSchemaDefinition(
+    "acquisition-visual-reader-session",
+    "visualReaderObservationBatchRequest"
+  ));
+const visualReaderBatchResponseSchema = loadContractSchemaDefinition(
+  "acquisition-visual-reader-session",
+  "visualReaderObservationBatchResponse"
+);
+const visualReaderCompleteRequestSchema = loadContractSchemaDefinition(
+  "acquisition-visual-reader-session",
+  "visualReaderCompleteRequest"
+);
+const visualReaderAbortRequestSchema = loadContractSchemaDefinition(
+  "acquisition-visual-reader-session",
+  "visualReaderAbortRequest"
 );
 
 function typedPagedResponseSchema(itemSchema: Record<string, unknown>) {
@@ -1092,7 +1200,19 @@ const acquisitionOperationIds: Record<string, string> = {
     "getAcquisitionRunPresentation",
   "post /api/v1/acquisition/runs/{id}/pause": "pauseAcquisitionRun",
   "post /api/v1/acquisition/runs/{id}/resume": "resumeAcquisitionRun",
-  "post /api/v1/acquisition/runs/{id}/cancel": "cancelAcquisitionRun"
+  "post /api/v1/acquisition/runs/{id}/cancel": "cancelAcquisitionRun",
+  "post /api/v1/acquisition/visual-reader-sessions":
+    "createAcquisitionVisualReaderSession",
+  "get /api/v1/acquisition/visual-reader-sessions/{sessionId}":
+    "getAcquisitionVisualReaderSession",
+  "post /api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch":
+    "appendAcquisitionVisualReaderObservationBatch",
+  "post /api/v1/acquisition/visual-reader-sessions/{sessionId}:complete":
+    "completeAcquisitionVisualReaderSession",
+  "post /api/v1/acquisition/visual-reader-sessions/{sessionId}:abort":
+    "abortAcquisitionVisualReaderSession",
+  "get /api/v1/acquisition/visual-reader-artifacts/{artifactId}":
+    "getAcquisitionVisualReaderArtifact"
 };
 
 function addAcquisitionOperationIds(paths: AcquisitionOpenApiPaths) {
@@ -1468,6 +1588,145 @@ function addDiscoveryOperationPaths(paths: AcquisitionOpenApiPaths) {
         "文件导入任务",
         importOperationResponseSchema
       )
+    })
+  );
+}
+
+function visualReaderErrorResponses(
+  includePayloadTooLarge: boolean,
+  includeForbidden = true
+) {
+  return {
+    "400": response("视觉读取请求无效", errorSchema),
+    "401": response("需要登录", errorSchema),
+    ...(includeForbidden
+      ? { "403": response("CSRF 安全校验失败", errorSchema) } : {}),
+    "404": response("视觉读取资源不存在", errorSchema),
+    "409": response("视觉读取状态、预算或幂等键冲突", errorSchema),
+    ...(includePayloadTooLarge
+      ? { "413": response("视觉读取请求体过大", errorSchema) } : {}),
+    "500": response("视觉读取服务无法完成请求", errorSchema)
+  };
+}
+
+function visualReaderReplayHeader(required: boolean) {
+  return {
+    "Idempotency-Replayed": {
+      ...(required ? { required: true } : {}),
+      description: "值为 true 表示返回首个相同幂等请求的完整公共响应。",
+      schema: { type: "string", enum: ["true"] }
+    }
+  };
+}
+
+function addVisualReaderPaths(paths: AcquisitionOpenApiPaths) {
+  add(paths, "/api/v1/acquisition/visual-reader-sessions", "post", operation(
+    "post",
+    "创建显式授权的视觉评论读取会话",
+    {
+      parameters: [idempotencyParameter(1)],
+      requestBody: jsonBody(visualReaderCreateRequestSchema),
+      responses: {
+        "201": response("视觉读取会话已创建", visualReaderSessionResponseSchema),
+        "200": {
+          ...response("既有视觉读取会话的幂等重放",
+            visualReaderSessionResponseSchema),
+          headers: visualReaderReplayHeader(true)
+        },
+        ...visualReaderErrorResponses(true)
+      }
+    }
+  ));
+  add(paths,
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}",
+    "get",
+    operation("get", "读取授权视觉评论会话", {
+      parameters: [idParameter(160, "sessionId")],
+      responses: {
+        "200": response("视觉读取会话", visualReaderSessionResponseSchema),
+        ...visualReaderErrorResponses(false, false)
+      }
+    })
+  );
+  add(paths,
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch",
+    "post",
+    operation("post", "写入有界可见评论观察批次", {
+      parameters: [
+        idParameter(160, "sessionId"),
+        idempotencyParameter(1)
+      ],
+      requestBody: jsonBody(visualReaderBatchRequestSchema),
+      responses: {
+        "200": {
+          ...response("已接受及重复的视觉评论观察",
+            visualReaderBatchResponseSchema),
+          headers: visualReaderReplayHeader(false)
+        },
+        ...visualReaderErrorResponses(true)
+      }
+    })
+  );
+  for (const terminal of [
+    {
+      suffix: "complete",
+      summary: "完成授权视觉评论读取会话",
+      body: visualReaderCompleteRequestSchema
+    },
+    {
+      suffix: "abort",
+      summary: "中止授权视觉评论读取会话",
+      body: visualReaderAbortRequestSchema
+    }
+  ]) {
+    add(paths,
+      `/api/v1/acquisition/visual-reader-sessions/{sessionId}:${terminal.suffix}`,
+      "post",
+      operation("post", terminal.summary, {
+        parameters: [
+          idParameter(160, "sessionId"),
+          idempotencyParameter(1)
+        ],
+        requestBody: jsonBody(terminal.body),
+        responses: {
+          "200": response("终态视觉读取会话",
+            visualReaderSessionResponseSchema),
+          ...visualReaderErrorResponses(true)
+        }
+      })
+    );
+  }
+  add(paths,
+    "/api/v1/acquisition/visual-reader-artifacts/{artifactId}",
+    "get",
+    operation("get", "读取授权且已遮挡的评论卡片 WebP", {
+      parameters: [idParameter(160, "artifactId")],
+      responses: {
+        "200": {
+          description: "已遮挡 WebP 评论卡片",
+          headers: {
+            "Cache-Control": {
+              required: true,
+              schema: { type: "string", enum: ["private, no-store"] }
+            },
+            "X-Content-Type-Options": {
+              required: true,
+              schema: { type: "string", enum: ["nosniff"] }
+            },
+            "Content-Security-Policy": {
+              required: true,
+              schema: {
+                type: "string",
+                enum: ["default-src 'none'; frame-ancestors 'none'; sandbox"]
+              }
+            }
+          },
+          content: {
+            "image/webp": { schema: { type: "string", format: "binary" } }
+          }
+        },
+        ...visualReaderErrorResponses(false, false)
+      }
     })
   );
 }
@@ -3190,6 +3449,7 @@ AcquisitionOpenApiPaths {
   const paths: AcquisitionOpenApiPaths = {};
   addProviderPaths(paths);
   addDiscoveryOperationPaths(paths);
+  addVisualReaderPaths(paths);
   addCoreAgentPaths(paths);
   addAcquisitionOperationIds(paths);
   return convertEmbeddedSchemasToOpenApi30(paths);

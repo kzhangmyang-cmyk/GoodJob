@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { parse } from "yaml";
 import {
-  convertJsonSchema202012ToOpenApi30
+  convertJsonSchema202012ToOpenApi30,
+  loadContractSchemaDefinition,
+  projectVisualReaderBatchRequestToOpenApi30
 } from "./acquisition-openapi.js";
 import { createOpenApiDocument } from "./swagger.js";
 
@@ -67,9 +69,9 @@ function canonicalizeOpenApi30Schema(value: any): any {
 }
 
 function canonicalizeSchema(value: any): any {
-  let openApi30 = value;
+  let openApi30 = projectVisualReaderBatchRequestToOpenApi30(value);
   try {
-    openApi30 = convertJsonSchema202012ToOpenApi30(value);
+    openApi30 = convertJsonSchema202012ToOpenApi30(openApi30);
   } catch (error) {
     if (!(error instanceof TypeError)
       || !error.message.startsWith(
@@ -186,6 +188,77 @@ export async function loadPublishedAcquisitionPaths(): Promise<
       }
     }
   } as any) as any;
+  // SwaggerParser collapses multiple external fragments from the visual
+  // contract's single Draft 2020-12 file onto its root `$ref`. Restore the
+  // exact named definitions with the production fragment dereferencer before
+  // comparing the published and runtime operation surfaces.
+  const visualDefinitions = {
+    session: loadContractSchemaDefinition(
+      "acquisition-visual-reader-session",
+      "visualReaderSession"
+    ),
+    create: loadContractSchemaDefinition(
+      "acquisition-visual-reader-session",
+      "visualReaderCreateRequest"
+    ),
+    batchRequest: loadContractSchemaDefinition(
+      "acquisition-visual-reader-session",
+      "visualReaderObservationBatchRequest"
+    ),
+    batchResponse: loadContractSchemaDefinition(
+      "acquisition-visual-reader-session",
+      "visualReaderObservationBatchResponse"
+    ),
+    complete: loadContractSchemaDefinition(
+      "acquisition-visual-reader-session",
+      "visualReaderCompleteRequest"
+    ),
+    abort: loadContractSchemaDefinition(
+      "acquisition-visual-reader-session",
+      "visualReaderAbortRequest"
+    )
+  };
+  const visualPaths = document.paths as Record<string, any>;
+  const createVisual = visualPaths[
+    "/api/v1/acquisition/visual-reader-sessions"
+  ]?.post;
+  if (createVisual) {
+    createVisual.requestBody.content["application/json"].schema =
+      visualDefinitions.create;
+    createVisual.responses["200"].content["application/json"].schema =
+      visualDefinitions.session;
+    createVisual.responses["201"].content["application/json"].schema =
+      visualDefinitions.session;
+  }
+  const detailVisual = visualPaths[
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}"
+  ]?.get;
+  if (detailVisual) {
+    detailVisual.responses["200"].content["application/json"].schema =
+      visualDefinitions.session;
+  }
+  const batchVisual = visualPaths[
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch"
+  ]?.post;
+  if (batchVisual) {
+    batchVisual.requestBody.content["application/json"].schema =
+      visualDefinitions.batchRequest;
+    batchVisual.responses["200"].content["application/json"].schema =
+      visualDefinitions.batchResponse;
+  }
+  for (const [suffix, body] of [
+    ["complete", visualDefinitions.complete],
+    ["abort", visualDefinitions.abort]
+  ] as const) {
+    const terminal = visualPaths[
+      `/api/v1/acquisition/visual-reader-sessions/{sessionId}:${suffix}`
+    ]?.post;
+    if (terminal) {
+      terminal.requestBody.content["application/json"].schema = body;
+      terminal.responses["200"].content["application/json"].schema =
+        visualDefinitions.session;
+    }
+  }
   const paths: Record<string, ContractPathItem> = {};
 
   for (const [path, pathItem] of Object.entries(

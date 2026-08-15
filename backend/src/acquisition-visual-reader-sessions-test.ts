@@ -345,6 +345,105 @@ test("memory repository creates an exact scoped replay and isolates tenants", as
   assert.deepEqual(await repo.getSession(OTHER_SCOPE, other.sessionId), other);
 });
 
+test("memory create-with-result has one concurrent winner and exact replays", async () => {
+  const repo = repository();
+  const [left, right] = await Promise.all([
+    repo.createSessionWithResult(createInput()),
+    repo.createSessionWithResult(createInput())
+  ]);
+  assert.equal([left, right].filter((item) => item.created).length, 1);
+  assert.deepEqual(left.session, right.session);
+});
+
+test("memory batch request binding replays exactly and conflicts before mutation", async () => {
+  const repo = repository();
+  await repo.createSession(createInput());
+  const first = observation("header-binding-1");
+  const accepted = await repo.appendObservationBatchWithResult(appendInput([{
+    clientObservationKey: "header-binding-client",
+    observation: first
+  }], {
+    requestBinding: {
+      keyHash: digest("header-key"),
+      requestHash: digest("request-one")
+    }
+  }));
+  assert.equal(accepted.replayed, false);
+
+  const durableReplay = await repo.findObservationBatchReplay({
+    scope: OWNER_SCOPE,
+    sessionId: "visual-session-1",
+    requestBinding: {
+      keyHash: digest("header-key"),
+      requestHash: digest("request-one")
+    }
+  });
+  assert.deepEqual(durableReplay, {
+    session: await repo.getSession(OWNER_SCOPE, "visual-session-1"),
+    accepted: [{
+      clientObservationKey: "header-binding-client",
+      observation: first
+    }],
+    duplicates: []
+  });
+
+  const replay = await repo.appendObservationBatchWithResult(appendInput([{
+    clientObservationKey: "header-binding-client",
+    observation: structuredClone(first)
+  }], {
+    requestBinding: {
+      keyHash: digest("header-key"),
+      requestHash: digest("request-one")
+    }
+  }));
+  assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.accepted, [first]);
+  assert.deepEqual(replay.duplicates, []);
+
+  const before = await repo.getSession(OWNER_SCOPE, "visual-session-1");
+  await assert.rejects(repo.appendObservationBatchWithResult(appendInput([{
+    clientObservationKey: "header-binding-conflict",
+    observation: observation("header-binding-2")
+  }], {
+    requestBinding: {
+      keyHash: digest("header-key"),
+      requestHash: digest("request-two")
+    }
+  })), hasCode("VISUAL_READER_CLIENT_KEY_CONFLICT"));
+  assert.deepEqual(
+    await repo.getSession(OWNER_SCOPE, "visual-session-1"),
+    before
+  );
+  assert.deepEqual((await repo.listRunObservations(
+    OWNER_SCOPE,
+    "run-visual-1",
+    { limit: 10 }
+  )).map((item) => item.observationId), ["header-binding-1"]);
+});
+
+test("memory keeps request and client binding namespaces disjoint", async () => {
+  const repo = repository();
+  await repo.createSession(createInput());
+  const keyHash = digest("namespace-header");
+  const collisionKey = `request-${keyHash.slice("sha256:".length)}`;
+  const item = observation("namespace-collision");
+  await repo.appendObservationBatchWithResult(appendInput([{
+    clientObservationKey: collisionKey,
+    observation: item
+  }], {
+    requestBinding: { keyHash, requestHash: digest("namespace-body") }
+  }));
+  assert.deepEqual(await repo.findObservationBatchReplay({
+    scope: OWNER_SCOPE,
+    sessionId: "visual-session-1",
+    requestBinding: { keyHash, requestHash: digest("namespace-body") }
+  }), {
+    session: await repo.getSession(OWNER_SCOPE, "visual-session-1"),
+    accepted: [{ clientObservationKey: collisionKey, observation: item }],
+    duplicates: []
+  });
+});
+
 test("memory repository derives budgets from only the selected tenant", async () => {
   const repo = repository();
   await repo.createSession(createInput());

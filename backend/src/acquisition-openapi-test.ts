@@ -101,7 +101,13 @@ test("acquisition OpenAPI publishes the complete agent control surface", () => {
     "/api/v1/acquisition/runs/{id}/presentation",
     "/api/v1/acquisition/runs/{id}/pause",
     "/api/v1/acquisition/runs/{id}/resume",
-    "/api/v1/acquisition/runs/{id}/cancel"
+    "/api/v1/acquisition/runs/{id}/cancel",
+    "/api/v1/acquisition/visual-reader-sessions",
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}",
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch",
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}:complete",
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}:abort",
+    "/api/v1/acquisition/visual-reader-artifacts/{artifactId}"
   ];
   for (const path of required) {
     assert.ok(paths[path], `missing acquisition OpenAPI path: ${path}`);
@@ -154,11 +160,94 @@ test("every published acquisition operation has a unique stable camelCase id", (
     }
   }
 
-  assert.equal(ids.length, 52);
+  assert.equal(ids.length, 58);
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(
     paths["/api/v1/acquisition/plans/{id}/approval"]?.post?.operationId,
     "approveAcquisitionPlan"
+  );
+});
+
+test("visual reader OpenAPI publishes six secure routes and actual replay semantics", () => {
+  const paths = createAcquisitionOpenApiPaths();
+  const create = paths[
+    "/api/v1/acquisition/visual-reader-sessions"
+  ]!.post as Record<string, any>;
+  const detail = paths[
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}"
+  ]!.get as Record<string, any>;
+  const batch = paths[
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch"
+  ]!.post as Record<string, any>;
+  const complete = paths[
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}:complete"
+  ]!.post as Record<string, any>;
+  const abort = paths[
+    "/api/v1/acquisition/visual-reader-sessions/{sessionId}:abort"
+  ]!.post as Record<string, any>;
+  const artifact = paths[
+    "/api/v1/acquisition/visual-reader-artifacts/{artifactId}"
+  ]!.get as Record<string, any>;
+
+  for (const write of [create, batch, complete, abort]) {
+    assert.deepEqual(write.security, [
+      { bearerAuth: [] },
+      { cookieAuth: [], csrfToken: [] }
+    ]);
+    assert.equal(write.parameters.some((parameter: Record<string, any>) =>
+      parameter.name === "Idempotency-Key"
+      && parameter.in === "header"
+      && parameter.required === true), true);
+    assert.ok(write.responses["403"]);
+    assert.ok(write.responses["413"]);
+  }
+  for (const read of [detail, artifact]) {
+    assert.deepEqual(read.security, [
+      { bearerAuth: [] },
+      { cookieAuth: [] }
+    ]);
+    assert.equal(read.responses["403"], undefined);
+    assert.equal(read.responses["413"], undefined);
+  }
+
+  assert.ok(create.responses["200"].headers["Idempotency-Replayed"]);
+  assert.ok(batch.responses["200"].headers["Idempotency-Replayed"]);
+  assert.equal(
+    complete.responses["200"].headers?.["Idempotency-Replayed"],
+    undefined
+  );
+  assert.equal(
+    abort.responses["200"].headers?.["Idempotency-Replayed"],
+    undefined
+  );
+
+  const batchSchema = batch.requestBody.content["application/json"].schema;
+  assert.equal(batchSchema.additionalProperties, false);
+  assert.equal(batchSchema.properties.observations.maxItems, 20);
+  assert.equal(batchSchema.properties.observations.contains, undefined);
+  const cardBounds = batchSchema.properties.observations.items
+    .properties.cardBounds;
+  assert.equal(cardBounds.properties.width.minimum, 0);
+  assert.equal(cardBounds.properties.width.exclusiveMinimum, true);
+  assert.equal(cardBounds.properties.height.minimum, 0);
+  assert.equal(cardBounds.properties.height.exclusiveMinimum, true);
+  const binary = artifact.responses["200"];
+  assert.equal(binary.content["application/json"], undefined);
+  assert.deepEqual(
+    binary.content["image/webp"].schema,
+    { type: "string", format: "binary" }
+  );
+  assert.equal(
+    binary.headers["Cache-Control"].schema.enum[0],
+    "private, no-store"
+  );
+  assert.equal(
+    binary.headers["X-Content-Type-Options"].schema.enum[0],
+    "nosniff"
+  );
+  assert.equal(
+    binary.headers["Content-Security-Policy"].schema.enum[0],
+    "default-src 'none'; frame-ancestors 'none'; sandbox"
   );
 });
 

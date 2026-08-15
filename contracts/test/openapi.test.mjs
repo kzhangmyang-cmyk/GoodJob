@@ -426,6 +426,10 @@ test("authorized visual reader routes reuse the acquisition API style and binary
     batch.responses["200"].content["application/json"].schema.$ref,
     "#/components/schemas/VisualObservationBatchResponse"
   );
+  assert.deepEqual(
+    batch.responses["200"].headers["Idempotency-Replayed"].schema.enum,
+    ["true"]
+  );
   assert.equal(
     complete.requestBody.content["application/json"].schema.$ref,
     "#/components/schemas/VisualReaderCompleteRequest"
@@ -439,6 +443,10 @@ test("authorized visual reader routes reuse the acquisition API style and binary
       operation.responses["200"].content["application/json"].schema.$ref,
       "#/components/schemas/VisualReaderSession"
     );
+    assert.equal(
+      operation.responses["200"].headers?.["Idempotency-Replayed"],
+      undefined
+    );
   }
   for (const operation of [create, batch, complete, abort]) {
     assert.equal(
@@ -450,7 +458,11 @@ test("authorized visual reader routes reuse the acquisition API style and binary
       { bearerAuth: [] },
       { cookieAuth: [], csrfToken: [] }
     ]);
+    assert.ok(operation.responses["403"]);
+    assert.ok(operation.responses["413"]);
   }
+  assert.equal(read.responses["403"], undefined);
+  assert.equal(read.responses["413"], undefined);
   assert.match(batch.description, /Task 3 service.*sourceUrl.*videoId/u);
   assert.match(batch.description, /Task 3 service.*sessionId/u);
 
@@ -461,6 +473,8 @@ test("authorized visual reader routes reuse the acquisition API style and binary
     { bearerAuth: [] },
     { cookieAuth: [] }
   ]);
+  assert.equal(artifact.responses["403"], undefined);
+  assert.equal(artifact.responses["413"], undefined);
   assert.deepEqual(
     Object.keys(artifact.responses["200"].content),
     ["image/webp"]
