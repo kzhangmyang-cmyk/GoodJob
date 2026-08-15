@@ -364,7 +364,7 @@ function parsedCommentExecutions(
       && leaseToken === null
       && leaseExpiresAt === null;
     const activeLease = typeof leaseOwner === "string"
-      && leaseOwner.length > 0 && leaseOwner.length <= 100
+      && leaseOwner.length > 0 && leaseOwner.length <= 160
       && typeof leaseToken === "string"
       && leaseToken.length > 0 && leaseToken.length <= 200
       && typeof leaseExpiresAt === "string"

@@ -26,11 +26,13 @@
 - Application focused 曾因严格 Provider provenance 和新增专用 migration connection 报 2 个 fixture 错误；修正 fixture 后 `4/4`。
 - Review round 2 七组 RED 定向命令为 `7 tests / 0 pass / 7 fail`：原页失败 execution 仍 queued；矛盾的 MySQL 状态/identity 被接受；standalone intent 可静默切换；第 1001 execution 被写入；精确搜索重放第二次请求 Provider；cross-tenant Evidence 触发富化；两次 500 后 invalid 200 丢失 3 次 transport usage。
 - Review round 2 GREEN：parser 完整状态矩阵 `1/1`，MySQL projection/restart/schema parity `4/4`，application 真实双路径及 lifecycle focused 自然退出 `5/5`。
+- 最终 lease-owner 边界 RED 为 `2 tests / 1 pass / 1 fail`：service 和 MySQL `VARCHAR(160)` 允许的 101/160 字符 worker ID 在 running round-trip 被 parser 的旧 100 字符上限拒绝。将 parser 与 service/schema 统一为 160 后，claim → running read → expired recovery claim → complete → restart read 两个边界均通过，161 字符仍 fail-closed，定向 `2/2`。
 
 ## 验证
 
 - Discovery operation/router/recovery/MySQL focused：`57/57`。
 - Provider/enrichment/search/events/discovery/tool-executor affected expanded：`151/151`。
+- 最终 discovery expanded：`76/76`；backend TypeScript build 通过。
 - Application tracer/lifecycle/MySQL schema focused：`5/5`，自然退出。
 - Contracts：`66/66`；drift：`17/17`；OpenAPI/响应一致性：`28/28`；generated type check 通过。
 - `npm run check:acquisition-contracts`：通过；其中 frontend `184/184`，Baota package `2/2`。

@@ -697,6 +697,126 @@ test("mysql comment execution saga survives restart and concurrent claims", asyn
   assert.equal(pool.calls.some((sql) => /FOR UPDATE/u.test(sql)), true);
 });
 
+test("mysql comment executions accept service-sized lease owners through recovery and completion", async () => {
+  for (const leaseOwnerLength of [101, 160]) {
+    const base: AcquisitionContentFetchOperationRecord = {
+      ...fetchOperation,
+      status: "succeeded",
+      finalUrl: "https://www.douyin.com/video/7536012345678904333",
+      accessStatus: "public_content",
+      httpStatus: 200,
+      contentType: "text/html",
+      title: "公开视频",
+      rawArtifactHash: `sha256:${"1".repeat(64)}`,
+      contentHash: `sha256:${"2".repeat(64)}`,
+      evidenceCount: 1,
+      evidenceIds: ["base-evidence"],
+      startedAt: "2026-07-24T08:00:00.000Z",
+      completedAt: "2026-07-24T08:00:01.000Z"
+    };
+    const pool = new StatefulFetchPool(base);
+    const repository = new MysqlAcquisitionDiscoveryOperationRepository(
+      pool as unknown as mysql.Pool
+    );
+    const execution = validDirectExecution();
+    await repository.putContentFetchCommentExecution(
+      { ownerId: base.ownerId, teamId: base.teamId },
+      base.id,
+      execution
+    );
+
+    const firstLeaseOwner = "w".repeat(leaseOwnerLength);
+    const firstClaim = await repository.claimContentFetchCommentExecution(
+      { ownerId: base.ownerId, teamId: base.teamId },
+      base.id,
+      execution.executionId,
+      {
+        leaseOwner: firstLeaseOwner,
+        leaseToken: "first-lease",
+        claimedAt: "2026-07-24T08:00:01.000Z",
+        leaseExpiresAt: "2026-07-24T08:00:02.000Z",
+        staleRunningBefore: "2026-07-24T07:50:01.000Z"
+      }
+    );
+    assert.equal(firstClaim.claimed, true);
+    assert.equal(firstClaim.execution?.leaseOwner, firstLeaseOwner);
+
+    const running = await repository.getContentFetchOperation(
+      { ownerId: base.ownerId, teamId: base.teamId },
+      base.id
+    );
+    assert.equal(
+      running?.commentEnrichmentExecutions?.[0]?.leaseOwner,
+      firstLeaseOwner
+    );
+
+    const recoveryLeaseOwner = "r".repeat(leaseOwnerLength);
+    const recovered = await repository.claimContentFetchCommentExecution(
+      { ownerId: base.ownerId, teamId: base.teamId },
+      base.id,
+      execution.executionId,
+      {
+        leaseOwner: recoveryLeaseOwner,
+        leaseToken: "recovery-lease",
+        claimedAt: "2026-07-24T08:00:03.000Z",
+        leaseExpiresAt: "2026-07-24T08:10:03.000Z",
+        staleRunningBefore: "2026-07-24T07:50:03.000Z"
+      }
+    );
+    assert.equal(recovered.claimed, true);
+    assert.equal(recovered.execution?.leaseOwner, recoveryLeaseOwner);
+
+    await repository.completeContentFetchCommentExecution(
+      { ownerId: base.ownerId, teamId: base.teamId },
+      base.id,
+      execution.executionId,
+      "recovery-lease",
+      validCommentSummary,
+      "2026-07-24T08:00:04.000Z"
+    );
+    const restartedRepository =
+      new MysqlAcquisitionDiscoveryOperationRepository(
+        pool as unknown as mysql.Pool
+      );
+    const completed = await restartedRepository.getContentFetchOperation(
+      { ownerId: base.ownerId, teamId: base.teamId },
+      base.id
+    );
+    assert.equal(
+      completed?.commentEnrichmentExecutions?.[0]?.status,
+      "succeeded"
+    );
+    assert.deepEqual(
+      completed?.commentEnrichmentExecutions?.[0]?.summary,
+      validCommentSummary
+    );
+  }
+});
+
+test("mysql comment execution parser rejects lease owners above the service limit", async () => {
+  const pool = new FakePool();
+  pool.enqueue([{ payload_json: JSON.stringify({
+    ...fetchOperation,
+    commentEnrichmentExecutions: [validDirectExecution({
+      status: "running",
+      attemptCount: 1,
+      leaseOwner: "w".repeat(161),
+      leaseToken: "lease-a",
+      leaseExpiresAt: "2026-07-24T08:10:00.000Z",
+      updatedAt: "2026-07-24T08:00:01.000Z"
+    })]
+  }) }]);
+
+  await assert.rejects(
+    new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool))
+      .getContentFetchOperation(
+        { ownerId: fetchOperation.ownerId, teamId: fetchOperation.teamId },
+        fetchOperation.id
+      ),
+    /MYSQL_INTEGRITY:comment_execution/u
+  );
+});
+
 test("mysql terminal base write preserves an execution added after its claim snapshot", async () => {
   const running: AcquisitionContentFetchOperationRecord = {
     ...fetchOperation,
