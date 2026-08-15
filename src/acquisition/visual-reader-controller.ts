@@ -146,6 +146,7 @@ export function createVisualReaderController(
   let generation = 0;
   let disposed = false;
   let startedSessionId: string | null = null;
+  let stoppingSessionId: string | null = null;
   let idlePromise: Promise<void> = Promise.resolve();
   let mutationEpoch = 0;
   let mutationBlocked = false;
@@ -201,6 +202,15 @@ export function createVisualReaderController(
     mutationBlocked = false;
     resolveMutationCycle();
     mutationIdlePromise = Promise.resolve();
+  }
+
+  function discardSessionMutations(sessionId: string): void {
+    batchKeys.clear();
+    processingBatches.clear();
+    for (const scope of semanticKeys.keys()) {
+      if (scope.startsWith(`terminal:${sessionId}:`)) semanticKeys.delete(scope);
+    }
+    resetMutationQueue();
   }
 
   function drainMutationQueue(epoch: number): void {
@@ -444,6 +454,7 @@ export function createVisualReaderController(
       tryStartSession();
       return;
     }
+    if (event.sessionId === stoppingSessionId) return;
     const currentGeneration = generation;
     const currentMutationEpoch = mutationEpoch;
     if (event.type === "observation_batch") {
@@ -492,6 +503,7 @@ export function createVisualReaderController(
         runId: nextContext.runId,
         projection: nextContext.projection
       };
+      stoppingSessionId = null;
       batchKeys.clear();
       semanticKeys.clear();
       processingBatches.clear();
@@ -519,6 +531,7 @@ export function createVisualReaderController(
       state.projection = normalizedProjection;
       context.projection = normalizedProjection ?? undefined;
       if (switchedSession) {
+        stoppingSessionId = null;
         batchKeys.clear();
         semanticKeys.clear();
         processingBatches.clear();
@@ -597,12 +610,14 @@ export function createVisualReaderController(
         return Promise.reject(new Error("当前没有正在读取的会话"));
       }
       const currentGeneration = generation;
+      stoppingSessionId = currentSession.sessionId;
+      bridge?.abortSession(currentSession.sessionId);
+      discardSessionMutations(currentSession.sessionId);
       const currentMutationEpoch = mutationEpoch;
       state.busy = true;
       state.message = "正在安全停止视觉读取";
       state.error = null;
       notify();
-      bridge?.abortSession(currentSession.sessionId);
       const keyScope = `stop:${currentSession.sessionId}:user_requested`;
       return enqueueMutation({
         id: keyScope,
@@ -657,6 +672,7 @@ export function createVisualReaderController(
       bridge = null;
       context = null;
       startedSessionId = null;
+      stoppingSessionId = null;
       batchKeys.clear();
       semanticKeys.clear();
       processingBatches.clear();

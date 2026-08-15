@@ -851,40 +851,112 @@ function batchEvent(
 }
 
 {
-  const order: string[] = [];
-  const bridge = new OrderedBridge(order);
+  const bridge = new FakeBridge();
   const append = deferred<VisualObservationBatchResponse>();
+  let abortCalls = 0;
   const api = {
     async getSession() {
       return session();
     },
     appendObservationBatch() {
-      order.push("append-start");
-      return append.promise.then((value) => {
-        order.push("append-resolve");
-        return value;
-      });
+      return append.promise;
     },
     async abortSession() {
-      order.push("abort-start");
+      abortCalls += 1;
       return terminalSession("aborted");
     }
   } as unknown as VisualReaderApi;
   const controller = createVisualReaderController({
     api,
     bridgeFactory: () => bridge,
-    keyFactory: () => "stop-order-key"
+    keyFactory: () => "failed-batch-stop-key"
   });
   await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
   bridge.ready();
   bridge.emit(batchEvent([observation()]));
+  append.reject(new TypeError("batch offline"));
+  await assert.rejects(() => controller.whenIdle(), /batch offline/u);
+
+  let stopError: unknown = null;
+  await controller.stop().catch((error: unknown) => { stopError = error; });
+  assert.equal(stopError, null, "stop discards a failed batch instead of returning its error");
+  assert.equal(abortCalls, 1, "stop starts a fresh server abort after a failed batch");
+  assert.equal(controller.getState().busy, false);
+  assert.equal(controller.getState().session?.status, "aborted");
+  assert.equal(bridge.acknowledgements.length, 0, "a discarded failed batch is never acknowledged");
+  controller.destroy();
+}
+
+{
+  const bridge = new FakeBridge();
+  const append = deferred<VisualObservationBatchResponse>();
+  let abortCalls = 0;
+  const api = {
+    async getSession() {
+      return session();
+    },
+    appendObservationBatch() {
+      return append.promise;
+    },
+    async abortSession() {
+      abortCalls += 1;
+      return terminalSession("aborted");
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => bridge,
+    keyFactory: () => "pending-batch-stop-key"
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
+  bridge.ready();
+  bridge.emit(batchEvent([observation()]));
+
   const stopping = controller.stop();
-  assert.deepEqual(bridge.aborts, ["visual-session-1"],
-    "stop tells the extension to stop immediately");
-  assert.deepEqual(order, ["append-start"],
-    "the server abort waits for the prior batch");
-  append.resolve({ session: session(), accepted: [], duplicates: [] });
+  assert.equal(abortCalls, 1, "stop does not wait for a pending batch before server abort");
   await stopping;
-  assert.deepEqual(order, ["append-start", "append-resolve", "ACK", "abort-start"]);
+  append.resolve({ session: session(), accepted: [], duplicates: [] });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(bridge.acknowledgements.length, 0, "a late discarded batch response is never acknowledged");
+  assert.equal(controller.getState().session?.status, "aborted");
+  assert.doesNotMatch(controller.getState().message ?? "", /已保存/u);
+  controller.destroy();
+}
+
+{
+  const bridge = new FakeBridge();
+  const firstAbort = deferred<VisualReaderSession>();
+  const secondAbort = deferred<VisualReaderSession>();
+  const abortKeys: string[] = [];
+  let keySequence = 0;
+  const api = {
+    async getSession() {
+      return session();
+    },
+    abortSession(_sessionId: string, _input: unknown, key: string) {
+      abortKeys.push(key);
+      return abortKeys.length === 1 ? firstAbort.promise : secondAbort.promise;
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => bridge,
+    keyFactory: () => `deferred-stop-key-${++keySequence}`
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
+  bridge.ready();
+
+  const firstStopping = controller.stop();
+  firstAbort.reject(new TypeError("abort offline"));
+  await assert.rejects(() => firstStopping, /abort offline/u);
+  assert.equal(controller.getState().busy, false, "a failed server abort restores the stop control");
+
+  const secondStopping = controller.stop();
+  secondAbort.resolve(terminalSession("aborted"));
+  await secondStopping;
+  assert.deepEqual(abortKeys, ["deferred-stop-key-1", "deferred-stop-key-1"],
+    "a server abort retry keeps the same stop semantic key");
+  assert.equal(controller.getState().busy, false);
+  assert.equal(controller.getState().session?.status, "aborted");
   controller.destroy();
 }
