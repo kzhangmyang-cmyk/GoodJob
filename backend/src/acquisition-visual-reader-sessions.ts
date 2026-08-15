@@ -263,6 +263,56 @@ const EMPTY_USAGE: VisualReaderUsage = Object.freeze({
 });
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
+const SCOPE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/u;
+const DOUYIN_VIDEO_URL =
+  /^https:\/\/www\.douyin\.com\/video\/[1-9][0-9]{0,31}\/?$/u;
+const DOUYIN_VIDEO_ID = /^[1-9][0-9]{0,31}$/u;
+const DOUYIN_PROFILE_URL =
+  /^https:\/\/www\.douyin\.com\/user\/[A-Za-z0-9][A-Za-z0-9._~-]{0,127}\/?$/u;
+const DOUYIN_PUBLIC_KEY = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u;
+const OBSERVATION_KEYS = [
+  "observationId", "sessionId", "sourceUrl", "videoId", "visibleText",
+  "textHash", "displayName", "visibleTimeText", "likeCount", "replyCount",
+  "platformCommentId", "publicProfileUrl", "secUid", "extractionMethod",
+  "fieldConfidences", "viewportHash", "cardBounds", "redactedCropHash",
+  "readerVersion", "capturedAt"
+] as const;
+const CONFIDENCE_KEYS = [
+  "visibleText", "displayName", "visibleTimeText", "likeCount", "replyCount",
+  "platformCommentId", "publicProfileUrl", "secUid"
+] as const;
+const CARD_BOUNDS_KEYS = ["x", "y", "width", "height"] as const;
+const LIMIT_KEYS = [
+  "maxVideos", "maxCommentsPerVideo", "maxScrolls", "maxOcrCalls",
+  "maxDurationMs"
+] as const;
+const OUTCOME_KEYS = [
+  "status", "videoCount", "observationCount", "domObservationCount",
+  "accessibilityObservationCount", "ocrObservationCount",
+  "lowConfidenceObservationCount", "artifactCount", "errorCodes"
+] as const;
+const USAGE_KEYS = [
+  "videoCount", "observationCount", "scrollCount", "ocrCallCount",
+  "domObservationCount", "accessibilityObservationCount",
+  "ocrObservationCount", "lowConfidenceObservationCount", "artifactCount"
+] as const;
+const SESSION_KEYS = [
+  "sessionId", "runId", "planId", "planVersionId", "platform", "coverage",
+  "status", "artifactUploadEnabled", "limits", "usage", "outcome",
+  "lastErrorCode", "createdAt", "authorizedAt", "updatedAt", "expiresAt",
+  "completedAt"
+] as const;
+const STABLE_ERROR_CODES = new Set<VisualReaderStableErrorCode>([
+  "visual_reader_not_enabled",
+  "visual_reader_session_expired",
+  "visual_reader_budget_exhausted",
+  "visual_source_invalid",
+  "visual_observation_invalid",
+  "visual_artifact_invalid",
+  "visual_extraction_method_disabled",
+  "visual_extraction_low_confidence",
+  "visual_reader_user_takeover"
+]);
 const TERMINAL_STATUSES = new Set<VisualReaderSession["status"]>([
   "completed",
   "partial_success",
@@ -334,12 +384,14 @@ function isoInstant(value: string) {
   return time;
 }
 
-function validScope(scope: AcquisitionScope) {
-  if (!scope
+export function assertVisualReaderScope(
+  scope: unknown
+): asserts scope is AcquisitionScope {
+  if (!recordWithKeys(scope, ["ownerId", "teamId"])
     || typeof scope.ownerId !== "string"
-    || !scope.ownerId
+    || !SCOPE_IDENTIFIER.test(scope.ownerId)
     || typeof scope.teamId !== "string"
-    || !scope.teamId) {
+    || !SCOPE_IDENTIFIER.test(scope.teamId)) {
     fail("VISUAL_READER_INVALID_INPUT");
   }
 }
@@ -348,7 +400,45 @@ function validIdentifier(value: string) {
   return typeof value === "string" && IDENTIFIER.test(value);
 }
 
+export function assertVisualReaderIdentifier(
+  value: unknown
+): asserts value is string {
+  if (typeof value !== "string" || !validIdentifier(value)) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+}
+
+function recordWithKeys(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = []
+): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actual = Object.keys(value);
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => Object.hasOwn(value, key))
+    && actual.every((key) => allowed.has(key));
+}
+
+function nullableVisibleString(value: unknown) {
+  return value === null
+    || (typeof value === "string"
+      && value.length >= 1
+      && value.length <= 255
+      && /\S/u.test(value));
+}
+
+function nullableCount(value: unknown) {
+  return value === null
+    || (Number.isSafeInteger(value)
+      && Number(value) >= 0
+      && Number(value) <= 2_147_483_647);
+}
+
 function validateLimits(limits: VisualReaderLimits) {
+  if (!recordWithKeys(limits, LIMIT_KEYS)) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
   const bounds = {
     maxVideos: [1, 10],
     maxCommentsPerVideo: [1, 30],
@@ -365,7 +455,12 @@ function validateLimits(limits: VisualReaderLimits) {
 }
 
 function validateCreateInput(input: CreateVisualReaderSessionInput) {
-  validScope(input.scope);
+  if (!recordWithKeys(input, [
+    "scope", "sessionId", "runId", "planId", "planVersionId",
+    "artifactUploadEnabled", "limits", "createdAt", "authorizedAt",
+    "expiresAt"
+  ])) fail("VISUAL_READER_INVALID_INPUT");
+  assertVisualReaderScope(input.scope);
   for (const value of [
     input.sessionId,
     input.runId,
@@ -394,6 +489,43 @@ export function assertCreateVisualReaderSessionInput(
   validateCreateInput(input);
 }
 
+export function assertAppendVisualObservationBatchInput(
+  input: AppendVisualObservationBatchInput
+) {
+  if (!recordWithKeys(
+    input,
+    ["scope", "sessionId", "observations"],
+    ["usageDelta"]
+  )) fail("VISUAL_READER_INVALID_INPUT");
+  assertVisualReaderScope(input.scope);
+  assertVisualReaderIdentifier(input.sessionId);
+  if (!Array.isArray(input.observations)
+    || input.observations.length < 1
+    || input.observations.length > 20
+    || input.observations.filter((item) =>
+      item && typeof item === "object" && "artifact" in item
+      && item.artifact !== undefined).length > 5) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+  for (const item of input.observations) {
+    if (!recordWithKeys(
+      item,
+      ["clientObservationKey", "observation"],
+      ["artifact"]
+    )) fail("VISUAL_READER_INVALID_INPUT");
+    assertVisualReaderIdentifier(item.clientObservationKey);
+  }
+  const usageDelta = input.usageDelta ?? { scrollCount: 0, ocrCallCount: 0 };
+  if (!recordWithKeys(usageDelta, ["scrollCount", "ocrCallCount"])
+    || !Number.isSafeInteger(usageDelta.scrollCount)
+    || usageDelta.scrollCount < 0
+    || !Number.isSafeInteger(usageDelta.ocrCallCount)
+    || usageDelta.ocrCallCount < 0) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+  return usageDelta;
+}
+
 export function visualCardBoundsHash(
   bounds: DouyinVisualCommentObservationV1["cardBounds"]
 ) {
@@ -409,25 +541,55 @@ function validateObservation(
   observation: DouyinVisualCommentObservationV1,
   sessionId: string
 ) {
-  if (!observation || observation.sessionId !== sessionId
+  if (!recordWithKeys(observation, OBSERVATION_KEYS)
+    || !validIdentifier(sessionId)
+    || observation.sessionId !== sessionId
     || !validIdentifier(observation.observationId)
     || !validIdentifier(observation.sessionId)
+    || typeof observation.sourceUrl !== "string"
+    || observation.sourceUrl.length > 80
+    || !DOUYIN_VIDEO_URL.test(observation.sourceUrl)
+    || typeof observation.videoId !== "string"
+    || !DOUYIN_VIDEO_ID.test(observation.videoId)
     || typeof observation.visibleText !== "string"
     || observation.visibleText.length < 1
     || observation.visibleText.length > 2_000
+    || !/\S/u.test(observation.visibleText)
     || !DIGEST.test(observation.textHash)
+    || !nullableVisibleString(observation.displayName)
+    || !nullableVisibleString(observation.visibleTimeText)
+    || !nullableCount(observation.likeCount)
+    || !nullableCount(observation.replyCount)
+    || (observation.platformCommentId !== null
+      && (typeof observation.platformCommentId !== "string"
+        || !DOUYIN_VIDEO_ID.test(observation.platformCommentId)))
+    || (observation.publicProfileUrl !== null
+      && (typeof observation.publicProfileUrl !== "string"
+        || observation.publicProfileUrl.length > 170
+        || !DOUYIN_PROFILE_URL.test(observation.publicProfileUrl)))
+    || (observation.secUid !== null
+      && (typeof observation.secUid !== "string"
+        || !DOUYIN_PUBLIC_KEY.test(observation.secUid)))
     || !DIGEST.test(observation.viewportHash)
     || (observation.redactedCropHash !== null
       && !DIGEST.test(observation.redactedCropHash))
     || !["dom", "accessibility", "ocr", "vision"].includes(
       observation.extractionMethod
     )
-    || !observation.fieldConfidences
+    || !recordWithKeys(
+      observation.fieldConfidences,
+      ["visibleText"],
+      CONFIDENCE_KEYS.slice(1)
+    )
     || typeof observation.fieldConfidences.visibleText !== "number"
+    || !Number.isFinite(observation.fieldConfidences.visibleText)
     || observation.fieldConfidences.visibleText < 0
     || observation.fieldConfidences.visibleText > 1
     || typeof observation.readerVersion !== "string"
-    || !observation.readerVersion.trim()) {
+    || observation.readerVersion.length < 1
+    || observation.readerVersion.length > 100
+    || !/\S/u.test(observation.readerVersion)
+    || !recordWithKeys(observation.cardBounds, CARD_BOUNDS_KEYS)) {
     fail("VISUAL_READER_INVALID_INPUT");
   }
   for (const confidence of Object.values(observation.fieldConfidences)) {
@@ -550,7 +712,128 @@ function outcomeFromUsage(
 
 export const deriveVisualReaderOutcome = outcomeFromUsage;
 
-function expiredProjection(session: VisualReaderSession, now: string) {
+export function assertVisualReaderOutcomeShape(
+  outcome: unknown
+): asserts outcome is VisualReaderOutcome {
+  if (!recordWithKeys(outcome, OUTCOME_KEYS)
+    || !["completed", "partial_success", "aborted", "expired"].includes(
+      String(outcome.status)
+    )
+    || !Array.isArray(outcome.errorCodes)
+    || outcome.errorCodes.length > 9
+    || new Set(outcome.errorCodes).size !== outcome.errorCodes.length
+    || outcome.errorCodes.some((code) =>
+      typeof code !== "string"
+      || !STABLE_ERROR_CODES.has(code as VisualReaderStableErrorCode))) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+  for (const key of OUTCOME_KEYS.slice(1, -1)) {
+    const value = outcome[key];
+    if (!Number.isSafeInteger(value)
+      || Number(value) < 0
+      || Number(value) > (key === "videoCount" ? 10 : 300)) {
+      fail("VISUAL_READER_INVALID_INPUT");
+    }
+  }
+}
+
+export function assertVisualReaderOutcome(
+  outcome: unknown,
+  usage: VisualReaderUsage
+): asserts outcome is VisualReaderOutcome {
+  assertVisualReaderOutcomeShape(outcome);
+  const derived = outcomeFromUsage(outcome.status, usage, outcome.errorCodes);
+  if (canonical(derived) !== canonical(outcome)) {
+    fail("VISUAL_READER_SESSION_CONFLICT");
+  }
+}
+
+export function assertVisualReaderUsage(
+  usage: unknown,
+  limits: VisualReaderLimits
+): asserts usage is VisualReaderUsage {
+  if (!recordWithKeys(usage, USAGE_KEYS)) fail("VISUAL_READER_INVALID_INPUT");
+  const normalized = usage as unknown as VisualReaderUsage;
+  for (const key of USAGE_KEYS) {
+    const value = normalized[key];
+    const maximum = key === "videoCount" ? 10
+      : key === "scrollCount" ? 5
+        : key === "ocrCallCount" ? 10
+          : 300;
+    if (!Number.isSafeInteger(value)
+      || Number(value) < 0
+      || Number(value) > maximum) {
+      fail("VISUAL_READER_INVALID_INPUT");
+    }
+  }
+  if (normalized.videoCount > limits.maxVideos
+    || normalized.observationCount
+      > limits.maxVideos * limits.maxCommentsPerVideo
+    || normalized.scrollCount > limits.maxScrolls
+    || normalized.ocrCallCount > limits.maxOcrCalls
+    || normalized.domObservationCount
+      + normalized.accessibilityObservationCount
+      + normalized.ocrObservationCount > normalized.observationCount
+    || normalized.ocrCallCount < normalized.ocrObservationCount
+    || normalized.lowConfidenceObservationCount > normalized.observationCount
+    || normalized.artifactCount > normalized.observationCount) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+}
+
+export function assertVisualReaderSession(
+  session: unknown
+): asserts session is VisualReaderSession {
+  if (!recordWithKeys(session, SESSION_KEYS)) fail("VISUAL_READER_INVALID_INPUT");
+  for (const identifier of [
+    session.sessionId, session.runId, session.planId, session.planVersionId
+  ]) assertVisualReaderIdentifier(identifier);
+  if (session.platform !== "douyin"
+    || session.coverage !== "authorized_visible_top_level_sample"
+    || !["created", "collecting", "completed", "partial_success", "aborted",
+      "expired"].includes(String(session.status))
+    || typeof session.artifactUploadEnabled !== "boolean") {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+  validateLimits(session.limits as VisualReaderLimits);
+  assertVisualReaderUsage(session.usage, session.limits as VisualReaderLimits);
+  const createdAt = isoInstant(session.createdAt as string);
+  const authorizedAt = isoInstant(session.authorizedAt as string);
+  const updatedAt = isoInstant(session.updatedAt as string);
+  const expiresAt = isoInstant(session.expiresAt as string);
+  if (authorizedAt < createdAt
+    || expiresAt <= authorizedAt
+    || expiresAt - authorizedAt
+      > (session.limits as VisualReaderLimits).maxDurationMs
+    || updatedAt < createdAt) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+  if (session.lastErrorCode !== null
+    && (typeof session.lastErrorCode !== "string"
+      || !STABLE_ERROR_CODES.has(
+        session.lastErrorCode as VisualReaderStableErrorCode
+      ))) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+  const terminal = TERMINAL_STATUSES.has(
+    session.status as VisualReaderSession["status"]
+  );
+  if (!terminal) {
+    if (session.outcome !== null || session.completedAt !== null) {
+      fail("VISUAL_READER_INVALID_INPUT");
+    }
+    return;
+  }
+  assertVisualReaderOutcome(session.outcome, session.usage);
+  if (session.outcome.status !== session.status
+    || typeof session.completedAt !== "string"
+    || isoInstant(session.completedAt) !== updatedAt
+    || session.lastErrorCode !== (session.outcome.errorCodes[0] ?? null)) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+}
+
+function expiredProjection(session: VisualReaderSession, _now?: string) {
   const outcome = outcomeFromUsage(
     "expired",
     session.usage,
@@ -561,8 +844,8 @@ function expiredProjection(session: VisualReaderSession, now: string) {
     status: "expired" as const,
     outcome,
     lastErrorCode: "visual_reader_session_expired" as const,
-    updatedAt: now,
-    completedAt: now
+    updatedAt: session.expiresAt,
+    completedAt: session.expiresAt
   };
 }
 
@@ -668,24 +951,7 @@ implements AcquisitionVisualReaderRepository {
 
   appendObservationBatch(input: AppendVisualObservationBatchInput) {
     return this.mutate(() => {
-      validScope(input.scope);
-      if (!validIdentifier(input.sessionId)
-        || !Array.isArray(input.observations)
-        || input.observations.length < 1
-        || input.observations.length > 20
-        || input.observations.filter((item) => item.artifact).length > 5) {
-        fail("VISUAL_READER_INVALID_INPUT");
-      }
-      const usageDelta = input.usageDelta ?? {
-        scrollCount: 0,
-        ocrCallCount: 0
-      };
-      if (!Number.isSafeInteger(usageDelta.scrollCount)
-        || usageDelta.scrollCount < 0
-        || !Number.isSafeInteger(usageDelta.ocrCallCount)
-        || usageDelta.ocrCallCount < 0) {
-        fail("VISUAL_READER_INVALID_INPUT");
-      }
+      const usageDelta = assertAppendVisualObservationBatchInput(input);
       const key = sessionKey(input.scope, input.sessionId);
       const session = this.state.sessions.get(key);
       if (!session) fail("VISUAL_READER_SESSION_NOT_FOUND");
@@ -693,6 +959,13 @@ implements AcquisitionVisualReaderRepository {
       isoInstant(now);
       if (Date.parse(now) >= Date.parse(session.expiresAt)
         && !TERMINAL_STATUSES.has(session.status)) {
+        this.state = {
+          ...this.state,
+          sessions: new Map(this.state.sessions).set(
+            key,
+            expiredProjection(session, session.expiresAt)
+          )
+        };
         fail("VISUAL_READER_SESSION_EXPIRED");
       }
       if (TERMINAL_STATUSES.has(session.status)) {
@@ -700,10 +973,6 @@ implements AcquisitionVisualReaderRepository {
       }
 
       for (const item of input.observations) {
-        if (!item
-          || !validIdentifier(item.clientObservationKey)) {
-          fail("VISUAL_READER_INVALID_INPUT");
-        }
         validateObservation(item.observation, input.sessionId);
         if (item.artifact) {
           validateArtifact(item.artifact, item.observation, session);
@@ -841,11 +1110,14 @@ implements AcquisitionVisualReaderRepository {
         accepted.some((acceptedObservation) =>
           acceptedObservation.observationId === item.observation.observationId)
         && item.artifact).length;
+      const acceptedOcrCount = accepted.filter((item) =>
+        item.extractionMethod === "ocr").length;
       const usage: VisualReaderUsage = {
         videoCount: acceptedVideoCounts.size,
         observationCount: session.usage.observationCount + accepted.length,
         scrollCount: session.usage.scrollCount + usageDelta.scrollCount,
-        ocrCallCount: session.usage.ocrCallCount + usageDelta.ocrCallCount,
+        ocrCallCount: session.usage.ocrCallCount
+          + Math.max(usageDelta.ocrCallCount, acceptedOcrCount),
         domObservationCount: session.usage.domObservationCount
           + accepted.filter((item) => item.extractionMethod === "dom").length,
         accessibilityObservationCount:
@@ -888,7 +1160,9 @@ implements AcquisitionVisualReaderRepository {
     outcome: VisualReaderOutcome
   ) {
     return this.mutate(() => {
-      validScope(scope);
+      assertVisualReaderScope(scope);
+      assertVisualReaderIdentifier(sessionId);
+      assertVisualReaderOutcomeShape(outcome);
       const key = sessionKey(scope, sessionId);
       const session = this.state.sessions.get(key);
       if (!session) fail("VISUAL_READER_SESSION_NOT_FOUND");
@@ -902,25 +1176,20 @@ implements AcquisitionVisualReaderRepository {
         }
         fail("VISUAL_READER_SESSION_CONFLICT");
       }
-      if (expiredNow && outcome?.status !== "expired") {
+      if (expiredNow) {
+        const expired = expiredProjection(session, session.expiresAt);
+        this.state = {
+          ...this.state,
+          sessions: new Map(this.state.sessions).set(key, expired)
+        };
+        if (canonical(expired.outcome) === canonical(outcome)) {
+          return clone(expired);
+        }
         fail("VISUAL_READER_SESSION_EXPIRED");
       }
-      if (!outcome
-        || !["completed", "partial_success", "aborted", "expired"].includes(
-          outcome.status
-        )
-        || !Array.isArray(outcome.errorCodes)
-        || new Set(outcome.errorCodes).size !== outcome.errorCodes.length) {
-        fail("VISUAL_READER_INVALID_INPUT");
-      }
-      const derived = outcomeFromUsage(
-        outcome.status,
-        session.usage,
-        outcome.errorCodes
-      );
-      if (canonical(derived) !== canonical(outcome)) {
-        fail("VISUAL_READER_SESSION_CONFLICT");
-      }
+      assertVisualReaderOutcome(outcome, session.usage);
+      const derived = outcomeFromUsage(outcome.status, session.usage,
+        outcome.errorCodes);
       const completed: VisualReaderSession = {
         ...session,
         status: outcome.status,
@@ -937,17 +1206,25 @@ implements AcquisitionVisualReaderRepository {
     });
   }
 
-  async getSession(scope: AcquisitionScope, sessionId: string) {
-    validScope(scope);
-    const state = await this.settledState();
-    const session = state.sessions.get(sessionKey(scope, sessionId));
-    if (!session) return null;
-    const now = this.now();
-    isoInstant(now);
-    return clone(activeAt(session, now)
-      || TERMINAL_STATUSES.has(session.status)
-      ? session
-      : expiredProjection(session, now));
+  getSession(scope: AcquisitionScope, sessionId: string) {
+    return this.mutate(() => {
+      assertVisualReaderScope(scope);
+      assertVisualReaderIdentifier(sessionId);
+      const key = sessionKey(scope, sessionId);
+      const session = this.state.sessions.get(key);
+      if (!session) return null;
+      const now = this.now();
+      isoInstant(now);
+      if (activeAt(session, now) || TERMINAL_STATUSES.has(session.status)) {
+        return clone(session);
+      }
+      const expired = expiredProjection(session, session.expiresAt);
+      this.state = {
+        ...this.state,
+        sessions: new Map(this.state.sessions).set(key, expired)
+      };
+      return clone(expired);
+    });
   }
 
   async listRunObservations(
@@ -955,8 +1232,9 @@ implements AcquisitionVisualReaderRepository {
     runId: string,
     options: { limit: number }
   ) {
-    validScope(scope);
-    if (!validIdentifier(runId)
+    assertVisualReaderScope(scope);
+    assertVisualReaderIdentifier(runId);
+    if (!recordWithKeys(options, ["limit"])
       || !Number.isSafeInteger(options.limit)
       || options.limit < 1
       || options.limit > 1_000) {
@@ -979,7 +1257,8 @@ implements AcquisitionVisualReaderRepository {
   }
 
   async getArtifact(scope: AcquisitionScope, artifactId: string) {
-    validScope(scope);
+    assertVisualReaderScope(scope);
+    assertVisualReaderIdentifier(artifactId);
     const state = await this.settledState();
     const stored = state.artifacts.get(artifactKey(scope, artifactId));
     if (!stored || Date.parse(stored.expiresAt) <= Date.parse(this.now())) {

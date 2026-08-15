@@ -136,14 +136,19 @@ export class AcquisitionVisualArtifactExpirySweeper {
   private runSweep() {
     if (this.closed) return Promise.resolve();
     if (this.activeSweep) return this.activeSweep;
-    const sweep = this.repository.deleteExpiredArtifacts({
-      before: this.now(),
-      limit: this.batchSize
-    }).then(() => undefined).catch(() => {
-      this.onError({
-        code: "ACQUISITION_VISUAL_ARTIFACT_EXPIRY_SWEEP_FAILED",
-        attemptedLimit: this.batchSize
-      });
+    const sweep = Promise.resolve().then(() =>
+      this.repository.deleteExpiredArtifacts({
+        before: this.now(),
+        limit: this.batchSize
+      })).then(() => undefined).catch(() => {
+      try {
+        this.onError({
+          code: "ACQUISITION_VISUAL_ARTIFACT_EXPIRY_SWEEP_FAILED",
+          attemptedLimit: this.batchSize
+        });
+      } catch {
+        // Reporting is best effort and must not reject the periodic void path.
+      }
     }).finally(() => {
       if (this.activeSweep === sweep) this.activeSweep = null;
       this.schedule();

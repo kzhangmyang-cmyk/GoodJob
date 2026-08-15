@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   AcquisitionVisualReaderRepositoryError,
   InMemoryAcquisitionVisualReaderRepository,
+  assertVisualCommentObservation,
   type AcquisitionScope,
   type AppendVisualObservationBatchInput,
   type CreateVisualReaderSessionInput,
@@ -146,6 +147,126 @@ function hasCode(code: string) {
     error instanceof AcquisitionVisualReaderRepositoryError
     && error.code === code;
 }
+
+test("normalized visual observations enforce every closed Task 1 field constraint", () => {
+  const base = observation("validation-observation");
+  const withText = (visibleText: string) => ({
+    ...base,
+    visibleText,
+    textHash: digest(visibleText)
+  });
+  const cases: Array<{ name: string; value: unknown }> = [
+    { name: "top-level additional property", value: { ...base, extra: true } },
+    {
+      name: "confidence additional property",
+      value: { ...base, fieldConfidences: {
+        ...base.fieldConfidences, extra: 0.5
+      } }
+    },
+    {
+      name: "card additional property",
+      value: { ...base, cardBounds: { ...base.cardBounds, extra: 1 } }
+    },
+    { name: "source URL scheme", value: {
+      ...base, sourceUrl: "http://www.douyin.com/video/123456789"
+    } },
+    { name: "source URL host", value: {
+      ...base, sourceUrl: "https://m.douyin.com/video/123456789"
+    } },
+    { name: "source URL video segment", value: {
+      ...base, sourceUrl: "https://www.douyin.com/video/not-numeric"
+    } },
+    { name: "video id leading zero", value: { ...base, videoId: "0123" } },
+    { name: "video id length", value: { ...base, videoId: "1".repeat(33) } },
+    { name: "visible text whitespace", value: withText("   ") },
+    { name: "visible text length", value: withText("x".repeat(2_001)) },
+    { name: "display name whitespace", value: { ...base, displayName: "  " } },
+    { name: "display name length", value: {
+      ...base, displayName: "x".repeat(256)
+    } },
+    { name: "visible time whitespace", value: {
+      ...base, visibleTimeText: "\t"
+    } },
+    { name: "visible time length", value: {
+      ...base, visibleTimeText: "x".repeat(256)
+    } },
+    { name: "like count negative", value: { ...base, likeCount: -1 } },
+    { name: "like count fractional", value: { ...base, likeCount: 1.5 } },
+    { name: "reply count maximum", value: {
+      ...base, replyCount: 2_147_483_648
+    } },
+    { name: "platform comment id zero", value: {
+      ...base, platformCommentId: "0"
+    } },
+    { name: "platform comment id length", value: {
+      ...base, platformCommentId: "1".repeat(33)
+    } },
+    { name: "profile URL scheme", value: {
+      ...base, publicProfileUrl: "http://www.douyin.com/user/public-user"
+    } },
+    { name: "profile URL key", value: {
+      ...base, publicProfileUrl: "https://www.douyin.com/user/not/one-key"
+    } },
+    { name: "secUid alphabet", value: { ...base, secUid: "not allowed" } },
+    { name: "secUid length", value: { ...base, secUid: "x".repeat(129) } },
+    { name: "visible confidence missing", value: {
+      ...base, fieldConfidences: {}
+    } },
+    { name: "visible confidence NaN", value: {
+      ...base, fieldConfidences: { visibleText: Number.NaN }
+    } },
+    { name: "optional confidence range", value: {
+      ...base, fieldConfidences: { visibleText: 1, likeCount: 1.01 }
+    } },
+    { name: "card x minimum", value: {
+      ...base, cardBounds: { ...base.cardBounds, x: -1 }
+    } },
+    { name: "card y maximum", value: {
+      ...base, cardBounds: { ...base.cardBounds, y: 8_193 }
+    } },
+    { name: "card width exclusive minimum", value: {
+      ...base, cardBounds: { ...base.cardBounds, width: 0 }
+    } },
+    { name: "card height finite", value: {
+      ...base, cardBounds: { ...base.cardBounds, height: Number.POSITIVE_INFINITY }
+    } },
+    { name: "text digest format", value: {
+      ...base, textHash: `sha256:${"A".repeat(64)}`
+    } },
+    { name: "viewport digest format", value: { ...base, viewportHash: "bad" } },
+    { name: "crop digest format", value: { ...base, redactedCropHash: "bad" } },
+    { name: "reader version whitespace", value: { ...base, readerVersion: " " } },
+    { name: "reader version length", value: {
+      ...base, readerVersion: "v".repeat(101)
+    } },
+    { name: "captured date canonical", value: {
+      ...base, capturedAt: "2026-08-15T01:00:01+00:00"
+    } },
+    { name: "extraction method membership", value: {
+      ...base, extractionMethod: "canvas"
+    } },
+    { name: "observation identifier", value: { ...base, observationId: " bad" } }
+  ];
+
+  for (const { name, value } of cases) {
+    assert.throws(
+      () => assertVisualCommentObservation(
+        value as DouyinVisualCommentObservationV1,
+        "visual-session-1"
+      ),
+      hasCode("VISUAL_READER_INVALID_INPUT"),
+      name
+    );
+  }
+
+  assert.doesNotThrow(() => assertVisualCommentObservation({
+    ...base,
+    sourceUrl: "https://www.douyin.com/video/999999999",
+    videoId: "123456789",
+    publicProfileUrl: "https://www.douyin.com/user/public-key",
+    secUid: "different-public-key"
+  }, "visual-session-1"));
+});
 
 test("memory repository creates an exact scoped replay and isolates tenants", async () => {
   const repo = repository();
@@ -464,6 +585,54 @@ test("memory repository persists the derived expired terminal outcome", async ()
     outcome
   ), expired);
 });
+
+for (const firstTouch of ["get", "append", "complete"] as const) {
+  test(`memory ${firstTouch} first touch durably expires a session at expiresAt`, async () => {
+    const clock = { now: START };
+    const repo = repository(clock);
+    await repo.createSession(createInput());
+    clock.now = "2026-08-15T01:03:00.000Z";
+
+    if (firstTouch === "get") {
+      assert.equal((await repo.getSession(
+        OWNER_SCOPE,
+        "visual-session-1"
+      ))?.status, "expired");
+    } else if (firstTouch === "append") {
+      await assert.rejects(repo.appendObservationBatch(appendInput([{
+        clientObservationKey: "expired-first-touch",
+        observation: observation("expired-first-touch")
+      }])), hasCode("VISUAL_READER_SESSION_EXPIRED"));
+    } else {
+      await assert.rejects(repo.completeSession(
+        OWNER_SCOPE,
+        "visual-session-1",
+        terminalOutcome("completed", {
+          videoCount: 0,
+          observationCount: 0,
+          domObservationCount: 0
+        })
+      ), hasCode("VISUAL_READER_SESSION_EXPIRED"));
+    }
+
+    clock.now = START;
+    const stored = await repo.getSession(OWNER_SCOPE, "visual-session-1");
+    assert.equal(stored?.status, "expired");
+    assert.equal(stored?.updatedAt, EXPIRES);
+    assert.equal(stored?.completedAt, EXPIRES);
+    assert.deepEqual(stored?.outcome, {
+      status: "expired",
+      videoCount: 0,
+      observationCount: 0,
+      domObservationCount: 0,
+      accessibilityObservationCount: 0,
+      ocrObservationCount: 0,
+      lowConfidenceObservationCount: 0,
+      artifactCount: 0,
+      errorCodes: ["visual_reader_session_expired"]
+    });
+  });
+}
 
 test("memory repository encrypts validated artifacts and makes expiry immediately unreadable", async () => {
   const clock = { now: START };

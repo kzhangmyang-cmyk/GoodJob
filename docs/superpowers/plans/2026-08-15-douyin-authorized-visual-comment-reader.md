@@ -208,8 +208,13 @@ export interface AcquisitionVisualReaderRepository {
 
 - MySQL 表固定为 `acquisition_visual_reader_sessions`、`acquisition_visual_comment_observations`、`acquisition_visual_reader_artifacts`。
 - 所有主键/唯一键含 `owner_id + team_id`；观察幂等键为 `ownerId + teamId + sessionId + sourceUrl + viewportHash + cardBoundsHash + textHash`。
+- schema migration 使用共享 acquisition MySQL named-lock 生命周期；lock acquisition 或 release 失败的连接必须 destroy，不能回池。append/complete/get 的 transaction rollback 失败也必须 destroy，只有确定可复用的连接才 release。
+- 所有 repository public 方法共用 closed scope/identifier/batch/outcome/session validators。规范观察按 Task 1 normalized schema 逐字段 fail-closed 校验顶层、`fieldConfidences` 和 `cardBounds`；`sourceUrl-videoId` 与 `publicProfileUrl-secUid` 的动态 sibling 相等仍由 Task 3 service 负责。
 - 内部制品输入同时携带明文 `Buffer`、`sha256` 和精确 `byteLength`，repository 在加密前独立重算并校验三者一致。
 - 为保持固定三表，scoped `clientObservationKey` 的首次不可变绑定保存在加锁 session 行的 `client_bindings_json`；观察表只保存规范不可变观察，绑定、观察和用量在同一事务提交。
+- MySQL JSON 行从 `unknown` 解析，并交叉校验 scope、session/status/run/client key、所有 denormalized hash/date 列、envelope 版本和 binary view；矛盾行只返回稳定 integrity error。
+- 任一 `getSession`、append 或 complete 首次触达到期都原子持久化 `expired`，`updatedAt/completedAt` 固定为 `expiresAt`；错误响应不能回滚该 transition，后续时钟回退也不能复活会话。
+- 新接受的每条 OCR observation 至少派生一次 OCR call 消耗；调用方报告更高消耗时取较高值，duplicate replay 不重复计费，`maxOcrCalls = 0` 拒绝 OCR observation。
 - 制品只保存 `image/webp` 的遮挡裁剪，记录 `sha256`、字节数、宽高、遮挡矩形数量、创建/到期时间；默认 30 天到期。
 - 制品字节用现有 `ACQUISITION_MASTER_SECRET` 经固定版本 salt/info 的 HKDF-SHA256 派生独立子密钥，执行 AES-256-GCM envelope encryption；AAD 固定绑定 envelope/key/algorithm 版本、owner/team/session/observation/artifact、media type、明文 hash 和字节数，MySQL 不保存明文图片。
 - 图片字节不写审计日志、错误消息或 JSON 响应；下载响应设置 `private, no-store`、`nosniff` 和严格 CSP。
@@ -226,11 +231,11 @@ export interface AcquisitionVisualReaderRepository {
 
 - [x] **Step 3: 实现内存 repository，再写 MySQL RED 测试**
 
-  MySQL 测试覆盖唯一索引竞争、事务内批量观察+加密制品一致提交、数据库不含明文 WebP、滚回不留孤立 BLOB、租户条件、过期清理和 memory/MySQL 合同行为一致。
+  MySQL 测试覆盖唯一索引竞争、事务内批量观察+加密制品一致提交、所有 `ArrayBufferView` SQL value 都不含明文 WebP、滚回不留孤立 BLOB、named-lock/transaction poisoned connection、矛盾行 fail-closed、持久到期、OCR 计费、租户条件和 memory/MySQL 合同行为一致。存在 `MYSQL_TEST_ADMIN_URL` 时创建并清理随机隔离数据库，运行真实 memory/MySQL 合同矩阵；缺少变量时明确 conditional skip。
 
 - [x] **Step 4: 实现 MySQL repository 和 application 注入**
 
-  使用独立 `ensureAcquisitionVisualReaderMysqlSchema(pool)`，不继续扩大通用 `acquisition-mysql-repositories.ts`。在应用启动时注入 memory/MySQL 同一 port；artifact expiry sweeper 每次最多删除 100 条到期密文，失败只记录数量和错误码，不记录图片或正文。
+  使用独立 `ensureAcquisitionVisualReaderMysqlSchema(pool)`，不继续扩大通用 `acquisition-mysql-repositories.ts`。在应用启动时注入 memory/MySQL 同一 port；artifact expiry sweeper 每次最多删除 100 条到期密文，失败只记录数量和错误码，不记录图片或正文。sweeper 把同步 `now`/repository 异常纳入 Promise 路径，并隔离 `onError` 自身异常，周期 `void` callback 不得产生 unhandled rejection。
 
 - [x] **Step 5: 运行 GREEN 并提交**
 

@@ -124,3 +124,62 @@ test("artifact expiry sweeper validates bounds and has bounded close", async () 
   release();
   await start;
 });
+
+for (const synchronousFailure of ["now", "repository"] as const) {
+  test(`artifact expiry sweeper contains synchronous ${synchronousFailure} failure`, async () => {
+    const reports: unknown[] = [];
+    const sweeper = new AcquisitionVisualArtifactExpirySweeper({
+      now: () => {
+        if (synchronousFailure === "now") throw new Error("sync now failure");
+        return "2026-08-15T01:00:00.000Z";
+      },
+      repository: {
+        deleteExpiredArtifacts() {
+          if (synchronousFailure === "repository") {
+            throw new Error("sync repository failure");
+          }
+          return Promise.resolve(0);
+        }
+      },
+      intervalMs: 1_000,
+      setTimer: () => ({ unref() {} }),
+      clearTimer() {},
+      onError(report) { reports.push(report); }
+    });
+
+    await sweeper.start();
+    await sweeper.whenIdle();
+    assert.deepEqual(reports, [{
+      code: "ACQUISITION_VISUAL_ARTIFACT_EXPIRY_SWEEP_FAILED",
+      attemptedLimit: 100
+    }]);
+    await sweeper.close();
+  });
+}
+
+test("artifact expiry sweeper contains onError failures on periodic void runs", async () => {
+  let callback: (() => void) | undefined;
+  let attempts = 0;
+  const sweeper = new AcquisitionVisualArtifactExpirySweeper({
+    repository: {
+      deleteExpiredArtifacts() {
+        attempts += 1;
+        return Promise.reject(new Error("expiry failure"));
+      }
+    },
+    intervalMs: 1_000,
+    setTimer(next) {
+      callback = next;
+      return { unref() {} };
+    },
+    clearTimer() {},
+    onError() { throw new Error("reporter failure"); }
+  });
+
+  await sweeper.start();
+  assert.ok(callback);
+  assert.doesNotThrow(() => callback?.());
+  await sweeper.whenIdle();
+  assert.equal(attempts, 2);
+  await sweeper.close();
+});
