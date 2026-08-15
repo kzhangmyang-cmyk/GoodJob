@@ -92,6 +92,8 @@ function douyinEvidenceSourceUrls(
     const source = provenance as Record<string, unknown>;
     const sourceUrl = source.sourceUrl;
     if (!nonEmpty(evidence.id)
+      || evidence.ownerId !== input.scope.ownerId
+      || evidence.teamId !== input.scope.teamId
       || !["organization", "individual_signal"].includes(
         String(evidence.targetType)
       )
@@ -240,6 +242,7 @@ implements AcquisitionShardProcessorPort {
         subjectKinds: [input.shard.subjectChannel],
         maxResults
       },
+      resultProjection: "internal_run",
       signal: input.signal
     });
     if (!result || typeof result !== "object" || Array.isArray(result)) {

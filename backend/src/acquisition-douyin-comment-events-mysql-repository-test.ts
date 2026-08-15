@@ -136,6 +136,7 @@ class GuardedSchemaPool {
   readonly columns = new Map<string, "YES" | "NO">();
   indexColumns: string[];
   tableExists: boolean;
+  fetchAttemptProjectionPresent: boolean;
   failGetLock = false;
   getLockResult: number | null = 1;
   failReleaseLock = false;
@@ -150,6 +151,7 @@ class GuardedSchemaPool {
     indexState?: PendingIndexState;
   } = {}) {
     this.tableExists = options.tableExists ?? true;
+    this.fetchAttemptProjectionPresent = options.tableExists === false;
     for (const [name, nullable] of options.columns ?? []) {
       this.columns.set(name, nullable);
     }
@@ -232,6 +234,13 @@ class GuardedSchemaPool {
       return [[], []];
     }
     if (normalized.includes("FROM information_schema.columns")) {
+      if (normalized.includes(
+        "acquisition_douyin_comment_fetch_attempts"
+      )) {
+        return [this.fetchAttemptProjectionPresent
+          ? [{ column_name: "terminal_projection_json", is_nullable: "YES" }]
+          : [], []];
+      }
       return [[...this.columns].map(([column_name, is_nullable]) => ({
         column_name,
         is_nullable
@@ -246,6 +255,13 @@ class GuardedSchemaPool {
     }
     const added = normalized.match(/ADD COLUMN ([a-z_]+)/u)?.[1];
     if (added) {
+      if (added === "terminal_projection_json") {
+        if (this.fetchAttemptProjectionPresent) {
+          throw new Error("ER_DUP_FIELDNAME");
+        }
+        this.fetchAttemptProjectionPresent = true;
+        return [[], []];
+      }
       if (this.columns.has(added)) throw new Error("ER_DUP_FIELDNAME");
       this.columns.set(added, added === "next_attempt_at" ? "YES" : "NO");
     }
@@ -595,6 +611,7 @@ test("schema creates tenant-scoped events, content versions, and recovery sagas"
     "lease_expires_at",
     "last_error_code"
   ]) assert.match(schema, new RegExp(recoveryColumn));
+  assert.match(schema, /terminal_projection_json JSON NULL/u);
   assert.match(
     schema,
     /SET next_attempt_at = updated_at WHERE next_attempt_at IS NULL/u
@@ -691,7 +708,16 @@ test("concurrent schema startup serializes migration and makes the follower re-r
     sql.includes("DROP INDEX idx_douyin_comment_ingestion_saga_pending"))
     .length, 1);
   assert.equal(pool.statements.filter(({ sql }) =>
-    sql.includes("FROM information_schema.columns")).length, 2);
+    sql.includes("FROM information_schema.columns")
+    && sql.includes("acquisition_douyin_comment_ingestion_sagas"))
+    .length, 2);
+  assert.equal(pool.statements.filter(({ sql }) =>
+    sql.includes("FROM information_schema.columns")
+    && sql.includes("acquisition_douyin_comment_fetch_attempts"))
+    .length, 2);
+  assert.equal(pool.statements.filter(({ sql }) =>
+    sql.includes("ADD COLUMN terminal_projection_json"))
+    .length, 1);
   assert.equal(pool.statements.filter(({ sql }) =>
     sql.includes("FROM information_schema.statistics")).length, 2);
 });

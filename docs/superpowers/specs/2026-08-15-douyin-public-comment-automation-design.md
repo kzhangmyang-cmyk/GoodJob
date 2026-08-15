@@ -333,8 +333,10 @@ discover_video_urls
 
 搜索分片只在搜索响应完成严格验证后，从 Evidence provenance 中选取
 可确定作品 ID 的抖音直链。Evidence 必须完整包含当前连接、当前查询、Provider、
-结果序号、来源 URL 和公开访问语义；只有 `sourceUrl` 的伪造对象不会触发评论读取。
-HTTP 重试按真实 transport 次数计入 requests，剩余预算同时传给 Provider；跨页评论
+结果序号、来源 URL、owner/team 作用域和公开访问语义；只有 `sourceUrl` 的伪造对象
+不会触发评论读取。Run worker 使用仅内部可见的 tenant-scoped Evidence projection，
+普通工具返回仍移除 owner/team。HTTP 重试按真实 transport 次数计入 requests，
+包括成功 HTTP 后 JSON、payload、normalize 或 source 验证失败；剩余预算同时传给 Provider。跨页评论
 去重和游标循环检测只存在于当次 enrichment。评论候选与搜索候选去重后，再进入现有
 candidate pipeline。单个作品限流或受限时，已有评论结果保留且分片为
 `partial_success`；`no_public_comments` 是可解释空覆盖，不计失败结果，全部为空时为
@@ -348,7 +350,15 @@ candidate pipeline。单个作品限流或受限时，已有评论结果保留�
 summary，不能复用另一调用方的 summary。恢复 worker 在启动和定时 sweep 中按租户
 隔离领取 pending execution，失败项退避且不饿死后续租户；无需调用者重放。公开响应
 只投影对应调用方结果，不暴露内部 execution、policy、budget 或 lease。无 Run 的其他
-后台工作不会自动扩展评论读取。
+后台工作不会自动扩展评论读取。standalone intent 纳入版本化不可变 request hash；
+同一幂等键切换 intent 会冲突。原页抓取失败或无 final URL 时，已领取的评论 execution
+以 `BASE_CONTENT_FETCH_FAILED` 终止，不再进入恢复。单 operation 最多保留 1000 个调用方
+execution；MySQL 读取对确定性 ID、direct/Run context 及全部状态/租约组合严格 fail-closed。
+
+每个视频的首次终态 fetch attempt 持久真实 transport 用量、耗时、event/evidence/candidate
+标识和聚合计数。相同 Run context 精确重放直接聚合该终态投影，MySQL 进程重启或公开评论
+发生变化都不会再次请求 Provider 或 ingestion。旧 attempt 没有可选投影时，仅保守使用
+已持久的终态计数，不静默重抓。
 
 计划连接只接受规范 ID `douyin-public-comments`，并同时要求
 `experimental_public_sample + content_fetch + active + credentialVersion=1`；执行仍只使用

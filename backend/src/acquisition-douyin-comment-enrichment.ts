@@ -4,7 +4,9 @@ import type {
   DouyinPublicCommentSamplePolicy
 } from "./acquisition-plan-run-repository.js";
 import type {
-  AcquisitionDouyinCommentEventRepository
+  AcquisitionDouyinCommentEventRepository,
+  DouyinCommentFetchAttempt,
+  DouyinCommentFetchAttemptTerminalProjection
 } from "./acquisition-douyin-comment-events.js";
 import type {
   AcquisitionDouyinCommentIngestionInput,
@@ -149,6 +151,30 @@ function providerErrorCode(error: unknown): DouyinPublicCommentProviderErrorCode
     : "public_sample_unavailable";
 }
 
+const PROVIDER_ERROR_CODES = new Set<DouyinPublicCommentProviderErrorCode>([
+  "public_sample_unavailable",
+  "access_restricted",
+  "rate_limited",
+  "video_id_unresolved",
+  "source_payload_invalid",
+  "no_public_comments"
+]);
+
+function replayProjection(
+  attempt: DouyinCommentFetchAttempt
+): DouyinCommentFetchAttemptTerminalProjection {
+  return attempt.terminalProjection ?? {
+    transportRequestCount: attempt.pagesFetched,
+    durationSeconds: 0,
+    eventCount: 0,
+    evidenceCount: 0,
+    candidateIds: [],
+    unresolvedActorCount: 0,
+    strongSignalCount: 0,
+    invalidCommentCount: 0
+  };
+}
+
 function uniqueVideoSources(sourceUrls: string[], limit: number) {
   const seen = new Set<string>();
   const sources: Array<{ sourceUrl: string; videoId: string }> = [];
@@ -206,7 +232,6 @@ implements AcquisitionDouyinCommentEnrichmentPort {
       return emptyResult();
     }
 
-    const startedAtMs = this.nowMs();
     const existingCandidateIds = new Set(input.candidateIds);
     const newCandidateIds = new Set<string>();
     const errors: AcquisitionDouyinCommentEnrichmentError[] = [];
@@ -219,6 +244,7 @@ implements AcquisitionDouyinCommentEnrichmentPort {
     let unresolvedActorCount = 0;
     let strongSignalCount = 0;
     let invalidCommentCount = 0;
+    let durationSeconds = 0;
 
     for (const source of sources) {
       assertNotAborted(input.signal);
@@ -248,12 +274,73 @@ implements AcquisitionDouyinCommentEnrichmentPort {
         requestedCount,
         startedAt: this.now()
       });
+      if (startedAttempt.attempt.status !== "running") {
+        const terminal = startedAttempt.attempt;
+        const projection = replayProjection(terminal);
+        if (requests + projection.transportRequestCount
+          > input.remainingBudget.requests
+          || commentsSampled + terminal.returnedCount
+          > input.remainingBudget.results) {
+          throw new Error(
+            "ACQUISITION_DOUYIN_COMMENT_ENRICHMENT_REPLAY_BUDGET_CONFLICT"
+          );
+        }
+        requests += projection.transportRequestCount;
+        durationSeconds += projection.durationSeconds;
+        pagesFetched += terminal.pagesFetched;
+        commentsSampled += terminal.returnedCount;
+        eventCount += projection.eventCount;
+        evidenceCount += projection.evidenceCount;
+        unresolvedActorCount += projection.unresolvedActorCount;
+        strongSignalCount += projection.strongSignalCount;
+        invalidCommentCount += projection.invalidCommentCount;
+        for (const candidateId of projection.candidateIds) {
+          if (!existingCandidateIds.has(candidateId)) {
+            newCandidateIds.add(candidateId);
+          }
+        }
+        if (terminal.errorCode) {
+          if (!PROVIDER_ERROR_CODES.has(
+            terminal.errorCode as DouyinPublicCommentProviderErrorCode
+          )) {
+            throw new Error(
+              "ACQUISITION_DOUYIN_COMMENT_ENRICHMENT_TERMINAL_FAILURE"
+            );
+          }
+          errors.push({
+            ...source,
+            code: terminal.errorCode as DouyinPublicCommentProviderErrorCode
+          });
+        }
+        continue;
+      }
+      const videoStartedAtMs = this.nowMs();
+      const videoRequestStart = requests;
       let cursor = 0;
       let videoPages = 0;
       let videoComments = 0;
       let reportedCommentCount: number | null = null;
       let videoError: DouyinPublicCommentProviderErrorCode | null = null;
       let providerCallRequestBaseline = requests;
+      let videoEventCount = 0;
+      let videoEvidenceCount = 0;
+      let videoUnresolvedActorCount = 0;
+      let videoStrongSignalCount = 0;
+      let videoInvalidCommentCount = 0;
+      const videoCandidateIds = new Set<string>();
+      const terminalProjection = () => ({
+        transportRequestCount: requests - videoRequestStart,
+        durationSeconds: Math.max(
+          0,
+          Math.ceil((this.nowMs() - videoStartedAtMs) / 1_000)
+        ),
+        eventCount: videoEventCount,
+        evidenceCount: videoEvidenceCount,
+        candidateIds: [...videoCandidateIds],
+        unresolvedActorCount: videoUnresolvedActorCount,
+        strongSignalCount: videoStrongSignalCount,
+        invalidCommentCount: videoInvalidCommentCount
+      });
       const seenCommentIds = new Set<string>();
       const visitedCursors = new Set<number>([0]);
       try {
@@ -332,10 +419,16 @@ implements AcquisitionDouyinCommentEnrichmentPort {
           unresolvedActorCount += ingested.unresolvedActorCount;
           strongSignalCount += ingested.strongSignalCount;
           invalidCommentCount += ingested.invalidCommentCount;
+          videoEventCount += ingested.eventCount;
+          videoEvidenceCount += ingested.evidenceCount;
+          videoUnresolvedActorCount += ingested.unresolvedActorCount;
+          videoStrongSignalCount += ingested.strongSignalCount;
+          videoInvalidCommentCount += ingested.invalidCommentCount;
           reportedCommentCount = page.reportedCommentCount;
           for (const candidateId of ingested.candidateIds) {
             if (!existingCandidateIds.has(candidateId)) {
               newCandidateIds.add(candidateId);
+              videoCandidateIds.add(candidateId);
             }
           }
           if (!page.hasMore || page.nextCursor === null
@@ -354,6 +447,7 @@ implements AcquisitionDouyinCommentEnrichmentPort {
               returnedCount: videoComments,
               reportedCommentCount,
               pagesFetched: videoPages,
+              terminalProjection: terminalProjection(),
               completedAt: this.now()
             }
           );
@@ -369,6 +463,7 @@ implements AcquisitionDouyinCommentEnrichmentPort {
               returnedCount: videoComments,
               reportedCommentCount,
               pagesFetched: videoPages,
+              terminalProjection: terminalProjection(),
               completedAt: this.now()
             }
           );
@@ -385,6 +480,7 @@ implements AcquisitionDouyinCommentEnrichmentPort {
         errors.push({ ...source, code: videoError });
       }
       const noPublicComments = videoError === "no_public_comments";
+      const projection = terminalProjection();
       await this.events.finishFetchAttempt(input.scope, fetchAttemptId, {
         status: videoError
           ? noPublicComments
@@ -395,8 +491,10 @@ implements AcquisitionDouyinCommentEnrichmentPort {
         returnedCount: videoComments,
         reportedCommentCount,
         pagesFetched: videoPages,
+        terminalProjection: projection,
         completedAt: this.now()
       });
+      durationSeconds += projection.durationSeconds;
     }
 
     const hardErrors = errors.filter((error) =>
@@ -421,10 +519,7 @@ implements AcquisitionDouyinCommentEnrichmentPort {
         requests,
         results: commentsSampled,
         amountMinor: 0,
-        durationSeconds: Math.max(
-          0,
-          Math.ceil((this.nowMs() - startedAtMs) / 1_000)
-        )
+        durationSeconds
       }
     };
   }

@@ -309,6 +309,7 @@ test("explicit direct content fetch persists its bounded enrichment intent with 
 
   assert.equal(created.commentSampleSummary, null);
   assert.equal("commentEnrichmentExecutions" in created, false);
+  assert.equal("requestSemanticsVersion" in created, false);
   assert.equal(stored?.commentEnrichmentExecutions?.length, 1);
   assert.deepEqual(
     stored?.commentEnrichmentExecutions?.[0]?.remainingBudget,
@@ -318,6 +319,160 @@ test("explicit direct content fetch persists its bounded enrichment intent with 
     stored?.commentEnrichmentExecutions?.[0]?.contextKey,
     "direct"
   );
+});
+
+test("failed base fetch terminally settles its caller comment execution", async () => {
+  let enrichmentCalls = 0;
+  const fixture = serviceFixture({
+    fetch: async () => {
+      throw new Error("base transport failed");
+    },
+    commentEnrichment: {
+      async enrich() {
+        enrichmentCalls += 1;
+        throw new Error("comment enrichment must not run");
+      }
+    }
+  });
+  const created = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900991",
+      subjectChannel: "individual"
+    },
+    "failed-base-settles-comment",
+    { queueStandaloneCommentEnrichment: true }
+  );
+
+  await assert.rejects(
+    fixture.service.executeContentFetchOperation(scope, created.id),
+    /base transport failed/u
+  );
+  const stored = await fixture.repository.getContentFetchOperation(
+    scope,
+    created.id
+  );
+  const execution = stored?.commentEnrichmentExecutions?.[0] as
+    | (AcquisitionContentFetchCommentExecution & { status: string })
+    | undefined;
+  assert.equal(execution?.status, "failed");
+  assert.equal(execution?.summary, null);
+  assert.equal(execution?.lastErrorCode, "BASE_CONTENT_FETCH_FAILED");
+  assert.equal(execution?.completedAt, NOW);
+  assert.equal(execution?.leaseToken, null);
+  assert.equal(enrichmentCalls, 0);
+  assert.equal((await fixture.repository.listRecoverableOperations({
+    now: "2026-07-24T09:00:00.000Z",
+    staleRunningBefore: "2026-07-24T08:30:00.000Z",
+    limit: 10
+  })).some((item) => item.executionId === execution?.executionId), false);
+});
+
+test("standalone comment intent is immutable idempotency input in both directions", async () => {
+  for (const [first, replay] of [[true, false], [false, true]] as const) {
+    const fixture = serviceFixture();
+    await fixture.service.createContentFetchOperation(
+      scope,
+      {
+        sourceUrl: "https://www.douyin.com/video/7536012345678900992",
+        subjectChannel: "individual"
+      },
+      `standalone-intent-${String(first)}`,
+      { queueStandaloneCommentEnrichment: first }
+    );
+    await assert.rejects(
+      fixture.service.createContentFetchOperation(
+        scope,
+        {
+          sourceUrl: "https://www.douyin.com/video/7536012345678900992",
+          subjectChannel: "individual"
+        },
+        `standalone-intent-${String(first)}`,
+        { queueStandaloneCommentEnrichment: replay }
+      ),
+      (error: unknown) =>
+        error instanceof AcquisitionDiscoveryOperationError
+        && error.code === "IDEMPOTENCY_CONFLICT"
+    );
+  }
+});
+
+test("memory repository rejects a 1001st comment execution without changing the operation", async () => {
+  const fixture = serviceFixture();
+  const created = await fixture.service.createContentFetchOperation(
+    scope,
+    {
+      sourceUrl: "https://www.douyin.com/video/7536012345678900993",
+      subjectChannel: "individual"
+    },
+    "execution-limit-seed"
+  );
+  const seed = await fixture.repository.getContentFetchOperation(
+    scope,
+    created.id
+  );
+  assert.ok(seed);
+  const template: AcquisitionContentFetchCommentExecution = {
+    executionId: "comment-enrichment:seed",
+    contextKey: "run:seed:seed",
+    runId: "seed",
+    shardId: "seed",
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 1,
+      maxPagesPerVideo: 1
+    },
+    remainingBudget: { requests: 1, results: 1 },
+    status: "queued",
+    summary: null,
+    attemptCount: 0,
+    nextAttemptAt: NOW,
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    lastErrorCode: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    completedAt: null
+  };
+  const fullRepository =
+    new InMemoryAcquisitionDiscoveryOperationRepository();
+  await fullRepository.createContentFetchOperation({
+    ...seed,
+    id: "fetch-execution-limit",
+    idempotencyKeyHash: "execution-limit-hash",
+    commentEnrichmentExecutions: Array.from(
+      { length: 1_000 },
+      (_unused, index) => ({
+        ...template,
+        executionId: `comment-enrichment:seed-${index}`,
+        contextKey: `run:seed-${index}:seed-${index}`,
+        runId: `seed-${index}`,
+        shardId: `seed-${index}`
+      })
+    )
+  });
+  await assert.rejects(
+    fullRepository.putContentFetchCommentExecution(
+      scope,
+      "fetch-execution-limit",
+      {
+        ...template,
+        executionId: "comment-enrichment:overflow",
+        contextKey: "run:overflow:overflow",
+        runId: "overflow",
+        shardId: "overflow"
+      }
+    ),
+    (error: unknown) =>
+      error instanceof AcquisitionDiscoveryOperationError
+      && error.code === "INVALID_REQUEST"
+  );
+  assert.equal((await fullRepository.getContentFetchOperation(
+    scope,
+    "fetch-execution-limit"
+  ))?.commentEnrichmentExecutions?.length, 1_000);
 });
 
 test("an explicit standalone Douyin link persists bounded comment enrichment without a Run", async () => {

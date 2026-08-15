@@ -268,6 +268,13 @@
 - Modify: `backend/src/acquisition-discovery-operations-test.ts`
 - Modify: `backend/src/acquisition-discovery-mysql-repository.ts`
 - Modify: `backend/src/acquisition-discovery-mysql-repository-test.ts`
+- Modify: `backend/src/acquisition-douyin-comment-events.ts`
+- Modify: `backend/src/acquisition-douyin-comment-events-mysql-repository.ts`
+- Modify: `backend/src/acquisition-douyin-comment-events-mysql-repository-test.ts`
+- Modify: `backend/src/douyin-public-comment-provider.ts`
+- Modify: `backend/src/douyin-public-comment-provider-test.ts`
+- Modify: `backend/src/acquisition-pi-tools.ts`
+- Modify: `backend/src/acquisition-tool-executor.ts`
 - Modify: `backend/src/acquisition-discovery-recovery-sweeper.ts`
 - Modify: `backend/src/acquisition-discovery-recovery-sweeper-test.ts`
 - Modify: `backend/src/acquisition-discovery-shard-processors.ts`
@@ -281,8 +288,10 @@
 
 **Interfaces:**
 - `AcquisitionDouyinCommentEnrichmentPort.enrich(input)` 输入 scope、run/shard 可空上下文、来源 URL/candidate IDs、计划策略、剩余预算和 AbortSignal；输出新候选 IDs、usage、计数和部分错误。
-- 搜索分片次序：`search_public_sources` → 验证完整且与当前连接/查询匹配的 `search_result` Evidence → 筛出抖音视频 URL → 评论富化 → 验证真实 usage 未越过传入预算 → 合并/去重 candidate IDs → 现有 `AcquisitionCandidateProcessingPipeline.process`。跨页评论/游标状态只在当次 enrichment 内存在，HTTP 重试按真实 transport 请求数计费。
+- 搜索分片次序：`search_public_sources` → 验证完整且与当前 owner/team、连接及查询匹配的 `search_result` Evidence → 筛出抖音视频 URL → 评论富化 → 验证真实 usage 未越过传入预算 → 合并/去重 candidate IDs → 现有 `AcquisitionCandidateProcessingPipeline.process`。Run worker 使用内部 tenant-scoped projection，普通工具返回不包含 owner/team。跨页评论/游标状态只在当次 enrichment 内存在，HTTP 重试及响应后解析/归一化失败都按真实 transport 请求数计费。
 - content-fetch 原页执行与评论富化分离。每个 direct 或 `runId + shardId` 调用方持久独立 execution context、策略、剩余预算、租约、退避和终态 summary；不能复用另一调用方的 running/terminal 结果。用户显式提交单独链接时在 operation create 同一写入中持久 `1/30/3` intent；Run 使用自身计划和剩余预算。Recovery sweeper 无需调用方 replay 即可恢复，逐项隔离 poison work，公开 DTO 不暴露内部 execution 状态。
+- standalone intent 纳入版本化 request hash，同键切换值稳定冲突；原页失败或无 final URL 时评论 execution 以 `BASE_CONTENT_FETCH_FAILED` 终止。单 operation 最多 1000 个 execution，MySQL 对 ID、context 与状态/租约组合严格验证。
+- 每个视频的首次终态 attempt 持久 transport/耗时、event/evidence/candidate 和聚合计数；精确重放只聚合该投影，MySQL 重启或评论变化均不再请求 Provider/ingestion。旧 attempt 无投影时仅保守使用已有终态计数。
 - 计划未启用评论策略或来源不是抖音视频时为安全 no-op，不影响旧计划。
 - `no_public_comments` 是可解释空覆盖而不是 failed result；混合成功仍为 succeeded，全部为空为 `succeeded_empty`。
 - 内置评论连接只信任 canonical `douyin-public-comments + experimental_public_sample + content_fetch + active + credentialVersion=1`。Discovery MySQL schema 在 recovery 前使用专用连接和 advisory lock 串行升级，锁失败会销毁会话。
@@ -319,7 +328,7 @@
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-douyin-comment-enrichment-test.ts src/acquisition-search-shard-processor-test.ts src/acquisition-discovery-operations-test.ts src/acquisition-discovery-operations-router-test.ts src/acquisition-discovery-shard-processors-test.ts src/acquisition-application-test.ts src/acquisition-openapi-test.ts src/acquisition-openapi-response-conformance-test.ts && npm run build --workspace backend`
 
   ```bash
-  git add backend/src/acquisition-douyin-comment-enrichment.ts backend/src/acquisition-douyin-comment-enrichment-test.ts backend/src/acquisition-search-shard-processor.ts backend/src/acquisition-search-shard-processor-test.ts backend/src/acquisition-discovery-operations.ts backend/src/acquisition-discovery-operations-test.ts backend/src/acquisition-discovery-operations-router-test.ts backend/src/acquisition-discovery-shard-processors.ts backend/src/acquisition-discovery-shard-processors-test.ts backend/src/acquisition-application.ts backend/src/acquisition-openapi.ts backend/src/acquisition-openapi-test.ts backend/src/acquisition-openapi-response-conformance-test.ts contracts/json-schema/content-fetch-operation.v1.schema.json
+  git add backend/src/acquisition-discovery-mysql-repository-test.ts backend/src/acquisition-discovery-mysql-repository.ts backend/src/acquisition-discovery-operations-test.ts backend/src/acquisition-discovery-operations.ts backend/src/acquisition-douyin-comment-enrichment-test.ts backend/src/acquisition-douyin-comment-enrichment.ts backend/src/acquisition-douyin-comment-events-mysql-repository-test.ts backend/src/acquisition-douyin-comment-events-mysql-repository.ts backend/src/acquisition-douyin-comment-events.ts backend/src/acquisition-pi-tools.ts backend/src/acquisition-search-shard-processor-test.ts backend/src/acquisition-search-shard-processor.ts backend/src/acquisition-tool-executor.ts backend/src/douyin-public-comment-provider-test.ts backend/src/douyin-public-comment-provider.ts contracts/README.md docs/superpowers/specs/2026-08-15-douyin-public-comment-automation-design.md docs/superpowers/plans/2026-08-15-douyin-public-comment-automation.md .superpowers/sdd/2026-08-15-douyin-public-comment-automation/task-5-report.md
   git commit -m "feat: automate douyin comment enrichment"
   ```
 

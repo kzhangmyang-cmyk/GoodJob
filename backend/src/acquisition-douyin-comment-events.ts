@@ -132,6 +132,17 @@ export type DouyinCommentFetchAttemptTerminalStatus =
   | "failed"
   | "no_public_comments";
 
+export interface DouyinCommentFetchAttemptTerminalProjection {
+  transportRequestCount: number;
+  durationSeconds: number;
+  eventCount: number;
+  evidenceCount: number;
+  candidateIds: string[];
+  unresolvedActorCount: number;
+  strongSignalCount: number;
+  invalidCommentCount: number;
+}
+
 export interface DouyinCommentFetchAttempt {
   attemptId: string;
   runId: string | null;
@@ -147,6 +158,7 @@ export interface DouyinCommentFetchAttempt {
   pagesFetched: number;
   startedAt: string;
   completedAt: string | null;
+  terminalProjection?: DouyinCommentFetchAttemptTerminalProjection;
 }
 
 export interface StartDouyinCommentFetchAttemptInput {
@@ -168,6 +180,7 @@ export interface FinishDouyinCommentFetchAttemptInput {
   reportedCommentCount: number | null;
   pagesFetched: number;
   completedAt: string;
+  terminalProjection?: DouyinCommentFetchAttemptTerminalProjection;
 }
 
 export interface DouyinRunCommentSignal {
@@ -390,6 +403,16 @@ export function assertFinishDouyinCommentFetchAttemptInput(
   const statuses = new Set([
     "succeeded", "partial_success", "failed", "no_public_comments"
   ]);
+  const projection = input?.terminalProjection;
+  const projectionCounts = projection && [
+    projection.transportRequestCount,
+    projection.durationSeconds,
+    projection.eventCount,
+    projection.evidenceCount,
+    projection.unresolvedActorCount,
+    projection.strongSignalCount,
+    projection.invalidCommentCount
+  ];
   if (!input
     || !statuses.has(input.status)
     || !nullableNonEmpty(input.errorCode)
@@ -397,7 +420,15 @@ export function assertFinishDouyinCommentFetchAttemptInput(
     || (input.reportedCommentCount !== null
       && !nonNegativeInteger(input.reportedCommentCount))
     || !nonNegativeInteger(input.pagesFetched)
-    || !validInstant(input.completedAt)) {
+    || !validInstant(input.completedAt)
+    || (projection !== undefined && (
+      !projectionCounts?.every(nonNegativeInteger)
+      || !Array.isArray(projection.candidateIds)
+      || projection.candidateIds.length > 100
+      || projection.candidateIds.some((id) => !nonEmpty(id, 160))
+      || new Set(projection.candidateIds).size
+        !== projection.candidateIds.length
+    ))) {
     throw new Error("ACQUISITION_DOUYIN_COMMENT_INVALID_FETCH_ATTEMPT");
   }
 }
@@ -906,7 +937,8 @@ implements AcquisitionDouyinCommentEventRepository {
         ? existing
         : { ...existing, status: "running", errorCode: null,
             returnedCount: 0, reportedCommentCount: null, pagesFetched: 0,
-            completedAt: null } as DouyinCommentFetchAttempt;
+            completedAt: null,
+            terminalProjection: undefined } as DouyinCommentFetchAttempt;
       if (!same(immutableReplay, {
         ...attempt,
         startedAt: immutableReplay.startedAt

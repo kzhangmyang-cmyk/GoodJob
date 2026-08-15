@@ -9,9 +9,13 @@ import type {
   AcquisitionPlanRunRepository,
   AcquisitionRun
 } from "./acquisition-plan-run-repository.js";
-import type {
-  AcquisitionDouyinCommentEnrichmentInput
+import {
+  AcquisitionDouyinCommentEnrichmentService,
+  type AcquisitionDouyinCommentEnrichmentInput
 } from "./acquisition-douyin-comment-enrichment.js";
+import {
+  InMemoryAcquisitionDouyinCommentEventRepository
+} from "./acquisition-douyin-comment-events.js";
 import type {
   AcquisitionShardProcessingInput
 } from "./acquisition-plan-execution-worker.js";
@@ -637,6 +641,8 @@ test("search enriches validated Douyin evidence before processing deduped candid
         providerFailures: [],
         evidence: [{
           id: "evidence-douyin",
+          ownerId: "owner-search",
+          teamId: "team-search",
           targetType: "individual_signal",
           sourcePlatform: "douyin",
           sourceTitle: "抖音公开视频",
@@ -973,6 +979,246 @@ test("search comment enrichment accepts only complete current-connection Evidenc
 
   await processor.process(actualInput);
   assert.deepEqual(sourceInputs, [[]]);
+});
+
+test("search comment enrichment rejects otherwise valid cross-tenant Evidence", async () => {
+  const sourceInputs: string[][] = [];
+  const actualInput = processingInput();
+  const processor = new AcquisitionSearchShardProcessor({
+    executor: {
+      async execute() {
+        return {
+          status: "succeeded",
+          providers: [{
+            providerConnectionId: actualInput.shard.connection.connectionId,
+            provider: actualInput.shard.connection.providerId
+          }],
+          providerFailures: [],
+          evidence: [{
+            id: "cross-tenant-douyin-evidence",
+            ownerId: "owner-foreign",
+            teamId: actualInput.scope.teamId,
+            targetType: "individual_signal",
+            sourcePlatform: "douyin",
+            sourceTitle: "抖音视频",
+            sourceSnippet: "公开摘要",
+            publishedAt: null,
+            fetchedAt: "2026-08-15T02:00:00.000Z",
+            locale: "zh-CN",
+            rawArtifactHash: `sha256:${"e".repeat(64)}`,
+            contentHash: `sha256:${"f".repeat(64)}`,
+            provenance: {
+              kind: "search_result",
+              provider: actualInput.shard.connection.providerId,
+              providerConnectionId:
+                actualInput.shard.connection.connectionId,
+              queryText: actualInput.shard.query,
+              sourceUrl:
+                "https://www.douyin.com/video/7536012345678900066",
+              resultRank: 1
+            },
+            accessStatus: "indexed_summary"
+          }],
+          rawResultCount: 1,
+          acceptedResultCount: 1,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          candidateIds: [],
+          usage: {
+            requests: 1,
+            results: 1,
+            amountMinor: 0,
+            durationSeconds: 0
+          },
+          outreachExecuted: false
+        };
+      }
+    },
+    planRunRepository: {
+      async getPlanVersion() {
+        return {
+          id: actualInput.run.planVersionId,
+          ownerId: actualInput.scope.ownerId,
+          teamId: actualInput.scope.teamId,
+          payload: {
+            douyinPublicCommentSample: {
+              enabled: true,
+              maxVideosPerRun: 1,
+              maxCommentsPerVideo: 3,
+              maxPagesPerVideo: 1
+            }
+          }
+        } as never;
+      }
+    },
+    commentEnrichment: {
+      async enrich(enrichmentInput) {
+        sourceInputs.push(enrichmentInput.sourceUrls);
+        return {
+          status: "skipped",
+          videoCount: 0,
+          pagesFetched: 0,
+          commentsSampled: 0,
+          eventCount: 0,
+          evidenceCount: 0,
+          candidateIds: [],
+          unresolvedActorCount: 0,
+          strongSignalCount: 0,
+          invalidCommentCount: 0,
+          errors: [],
+          usage: {
+            requests: 0,
+            results: 0,
+            amountMinor: 0,
+            durationSeconds: 0
+          }
+        };
+      }
+    },
+    candidatePipeline: noOpCandidatePipeline
+  });
+
+  await processor.process(actualInput);
+  assert.deepEqual(sourceInputs, [[]]);
+});
+
+test("exact search replay reuses its first terminal comment facts without provider or ingestion", async () => {
+  const actualInput = processingInput();
+  let providerCalls = 0;
+  let ingestionCalls = 0;
+  const commentEnrichment = new AcquisitionDouyinCommentEnrichmentService({
+    events: new InMemoryAcquisitionDouyinCommentEventRepository(),
+    provider: {
+      providerId: "experimental_public_sample",
+      async fetchTopLevelSample(request) {
+        providerCalls += 1;
+        return {
+          comments: [{
+            commentId: `first-comment-${providerCalls}`,
+            text: "公开采购需求，请报价",
+            occurredAt: "2026-08-15T01:00:00.000Z",
+            likeCount: 1,
+            replyCount: 0,
+            ipLabel: null,
+            actor: {
+              displayName: "公开用户",
+              handle: null,
+              secUid: "sec-replay"
+            }
+          }],
+          nextCursor: null,
+          hasMore: false,
+          reportedCommentCount: 1,
+          capturedAt: "2026-08-15T02:00:00.000Z",
+          rawArtifactHash: `sha256:${"7".repeat(64)}`,
+          providerId: "experimental_public_sample",
+          providerVersion: "douyin-public-comment-provider-v1",
+          coverage: "public_top_level_sample",
+          metadata: {
+            requestedCommentCount: request.count,
+            returnedCommentCount: 1,
+            duplicateCommentCount: 0,
+            partial: false,
+            cursorProgressed: true,
+            transportRequestCount: 1
+          },
+          replyBodiesIncluded: false
+        };
+      }
+    },
+    ingestion: {
+      async ingestSample(request) {
+        ingestionCalls += 1;
+        return {
+          eventCount: 1,
+          evidenceCount: 1,
+          candidateIds: [`candidate-${request.page.comments[0]?.commentId}`],
+          unresolvedActorCount: 0,
+          strongSignalCount: 1,
+          invalidCommentCount: 0
+        };
+      }
+    },
+    now: () => "2026-08-15T02:00:00.000Z",
+    nowMs: () => 1_000
+  });
+  const processor = new AcquisitionSearchShardProcessor({
+    executor: {
+      async execute() {
+        return {
+          status: "succeeded",
+          providers: [{
+            providerConnectionId: actualInput.shard.connection.connectionId,
+            provider: actualInput.shard.connection.providerId
+          }],
+          providerFailures: [],
+          evidence: [{
+            id: "search-replay-evidence",
+            ownerId: actualInput.scope.ownerId,
+            teamId: actualInput.scope.teamId,
+            targetType: "individual_signal",
+            sourcePlatform: "douyin",
+            sourceTitle: "抖音视频",
+            sourceSnippet: "公开摘要",
+            publishedAt: null,
+            fetchedAt: "2026-08-15T02:00:00.000Z",
+            locale: "zh-CN",
+            rawArtifactHash: `sha256:${"5".repeat(64)}`,
+            contentHash: `sha256:${"6".repeat(64)}`,
+            provenance: {
+              kind: "search_result",
+              provider: actualInput.shard.connection.providerId,
+              providerConnectionId:
+                actualInput.shard.connection.connectionId,
+              queryText: actualInput.shard.query,
+              sourceUrl:
+                "https://www.douyin.com/video/7536012345678900077",
+              resultRank: 1
+            },
+            accessStatus: "indexed_summary"
+          }],
+          rawResultCount: 1,
+          acceptedResultCount: 1,
+          duplicateResultCount: 0,
+          failedResultCount: 0,
+          candidateIds: [],
+          usage: {
+            requests: 1,
+            results: 1,
+            amountMinor: 0,
+            durationSeconds: 0
+          },
+          outreachExecuted: false
+        };
+      }
+    },
+    planRunRepository: {
+      async getPlanVersion() {
+        return {
+          id: actualInput.run.planVersionId,
+          ownerId: actualInput.scope.ownerId,
+          teamId: actualInput.scope.teamId,
+          payload: {
+            douyinPublicCommentSample: {
+              enabled: true,
+              maxVideosPerRun: 1,
+              maxCommentsPerVideo: 1,
+              maxPagesPerVideo: 1
+            }
+          }
+        } as never;
+      }
+    },
+    commentEnrichment,
+    candidatePipeline: noOpCandidatePipeline,
+    nowMs: () => 1_000
+  });
+
+  const first = await processor.process(actualInput);
+  const replay = await processor.process(actualInput);
+  assert.deepEqual(replay, first);
+  assert.equal(providerCalls, 1);
+  assert.equal(ingestionCalls, 1);
 });
 
 test("no-public-comments explanations do not increment failed search results", async () => {

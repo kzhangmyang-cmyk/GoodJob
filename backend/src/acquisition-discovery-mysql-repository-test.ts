@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type mysql from "mysql2/promise";
 import {
   AcquisitionDiscoveryOperationError,
+  acquisitionContentFetchCommentExecutionId,
   type AcquisitionContentFetchCommentExecution,
   type AcquisitionContentFetchOperationRecord,
   type AcquisitionImportOperationRecord
@@ -176,6 +177,62 @@ const fetchOperation: AcquisitionContentFetchOperationRecord = {
   startedAt: null,
   completedAt: null
 };
+
+const validCommentSummary = {
+  status: "succeeded" as const,
+  videoCount: 1,
+  pagesFetched: 1,
+  commentsSampled: 1,
+  eventCount: 1,
+  evidenceCount: 1,
+  candidateIds: ["candidate-comment"],
+  unresolvedActorCount: 0,
+  strongSignalCount: 1,
+  invalidCommentCount: 0,
+  errors: [],
+  usage: {
+    requests: 1,
+    results: 1,
+    amountMinor: 0,
+    durationSeconds: 0
+  }
+};
+
+function validDirectExecution(
+  overrides: Partial<AcquisitionContentFetchCommentExecution> = {}
+): AcquisitionContentFetchCommentExecution {
+  const contextKey = overrides.contextKey ?? "direct";
+  return {
+    executionId: acquisitionContentFetchCommentExecutionId({
+      ownerId: fetchOperation.ownerId,
+      teamId: fetchOperation.teamId,
+      operationId: fetchOperation.id,
+      contextKey
+    }),
+    contextKey,
+    runId: null,
+    shardId: null,
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 1,
+      maxPagesPerVideo: 1
+    },
+    remainingBudget: { requests: 1, results: 1 },
+    status: "queued",
+    summary: null,
+    attemptCount: 0,
+    nextAttemptAt: "2026-07-24T08:00:00.000Z",
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    lastErrorCode: null,
+    createdAt: "2026-07-24T08:00:00.000Z",
+    updatedAt: "2026-07-24T08:00:00.000Z",
+    completedAt: null,
+    ...overrides
+  };
+}
 
 const importOperation: AcquisitionImportOperationRecord = {
   id: "import-1",
@@ -533,7 +590,12 @@ test("mysql comment execution saga survives restart and concurrent claims", asyn
     pool as unknown as mysql.Pool
   );
   const execution: AcquisitionContentFetchCommentExecution = {
-    executionId: "comment-execution:mysql-restart",
+    executionId: acquisitionContentFetchCommentExecutionId({
+      ownerId: base.ownerId,
+      teamId: base.teamId,
+      operationId: base.id,
+      contextKey: "run:run-mysql:shard-mysql"
+    }),
     contextKey: "run:run-mysql:shard-mysql",
     runId: "run-mysql",
     shardId: "shard-mysql",
@@ -650,7 +712,12 @@ test("mysql terminal base write preserves an execution added after its claim sna
     pool as unknown as mysql.Pool
   );
   const laterExecution: AcquisitionContentFetchCommentExecution = {
-    executionId: "comment-execution:later-run",
+    executionId: acquisitionContentFetchCommentExecutionId({
+      ownerId: running.ownerId,
+      teamId: running.teamId,
+      operationId: running.id,
+      contextKey: "run:later-run:later-shard"
+    }),
     contextKey: "run:later-run:later-shard",
     runId: "later-run",
     shardId: "later-shard",
@@ -693,6 +760,127 @@ test("mysql terminal base write preserves an execution added after its claim sna
   );
 });
 
+test("mysql repository rejects a 1001st comment execution and keeps the first 1000 readable", async () => {
+  const executions = Array.from({ length: 1_000 }, (_unused, index) => {
+    const contextKey = `run:run-${index}:shard-${index}`;
+    return validDirectExecution({
+      executionId: acquisitionContentFetchCommentExecutionId({
+        ownerId: fetchOperation.ownerId,
+        teamId: fetchOperation.teamId,
+        operationId: fetchOperation.id,
+        contextKey
+      }),
+      contextKey,
+      runId: `run-${index}`,
+      shardId: `shard-${index}`
+    });
+  });
+  const pool = new StatefulFetchPool({
+    ...fetchOperation,
+    commentEnrichmentExecutions: executions
+  });
+  const repository = new MysqlAcquisitionDiscoveryOperationRepository(
+    pool as unknown as mysql.Pool
+  );
+  const overflowContext = "run:overflow:overflow";
+  await assert.rejects(
+    repository.putContentFetchCommentExecution(
+      { ownerId: fetchOperation.ownerId, teamId: fetchOperation.teamId },
+      fetchOperation.id,
+      validDirectExecution({
+        executionId: acquisitionContentFetchCommentExecutionId({
+          ownerId: fetchOperation.ownerId,
+          teamId: fetchOperation.teamId,
+          operationId: fetchOperation.id,
+          contextKey: overflowContext
+        }),
+        contextKey: overflowContext,
+        runId: "overflow",
+        shardId: "overflow"
+      })
+    ),
+    (error: unknown) =>
+      error instanceof AcquisitionDiscoveryOperationError
+      && error.code === "INVALID_REQUEST"
+      && error.message === "COMMENT_ENRICHMENT_EXECUTION_LIMIT"
+  );
+  assert.equal(pool.operation.commentEnrichmentExecutions?.length, 1_000);
+  assert.equal((await repository.getContentFetchOperation(
+    { ownerId: fetchOperation.ownerId, teamId: fetchOperation.teamId },
+    fetchOperation.id
+  ))?.commentEnrichmentExecutions?.length, 1_000);
+
+  const createPool = new FakePool();
+  await assert.rejects(
+    new MysqlAcquisitionDiscoveryOperationRepository(asPool(createPool))
+      .createContentFetchOperation({
+        ...fetchOperation,
+        commentEnrichmentExecutions: [
+          ...executions,
+          validDirectExecution({
+            executionId: acquisitionContentFetchCommentExecutionId({
+              ownerId: fetchOperation.ownerId,
+              teamId: fetchOperation.teamId,
+              operationId: fetchOperation.id,
+              contextKey: overflowContext
+            }),
+            contextKey: overflowContext,
+            runId: "overflow",
+            shardId: "overflow"
+          })
+        ]
+      }),
+    (error: unknown) =>
+      error instanceof AcquisitionDiscoveryOperationError
+      && error.code === "INVALID_REQUEST"
+  );
+  assert.equal(createPool.calls.length, 0);
+});
+
+test("mysql base failure terminally fences a claimed comment execution", async () => {
+  const execution = validDirectExecution();
+  const pool = new StatefulFetchPool({
+    ...fetchOperation,
+    status: "failed",
+    errorCode: "CONTENT_FETCH_FAILED",
+    startedAt: "2026-07-24T08:00:00.000Z",
+    completedAt: "2026-07-24T08:00:01.000Z",
+    commentEnrichmentExecutions: [execution]
+  });
+  const repository = new MysqlAcquisitionDiscoveryOperationRepository(
+    pool as unknown as mysql.Pool
+  );
+  const claimed = await repository.claimContentFetchCommentExecution(
+    { ownerId: fetchOperation.ownerId, teamId: fetchOperation.teamId },
+    fetchOperation.id,
+    execution.executionId,
+    {
+      leaseOwner: "worker-base-failed",
+      leaseToken: "lease-base-failed",
+      claimedAt: "2026-07-24T08:00:02.000Z",
+      leaseExpiresAt: "2026-07-24T08:10:02.000Z",
+      staleRunningBefore: "2026-07-24T07:50:02.000Z"
+    }
+  );
+  assert.equal(claimed.claimed, true);
+  await repository.terminallyFailContentFetchCommentExecution(
+    { ownerId: fetchOperation.ownerId, teamId: fetchOperation.teamId },
+    fetchOperation.id,
+    execution.executionId,
+    "lease-base-failed",
+    "2026-07-24T08:00:03.000Z",
+    "BASE_CONTENT_FETCH_FAILED"
+  );
+  const stored = (await repository.getContentFetchOperation(
+    { ownerId: fetchOperation.ownerId, teamId: fetchOperation.teamId },
+    fetchOperation.id
+  ))?.commentEnrichmentExecutions?.[0];
+  assert.equal(stored?.status, "failed");
+  assert.equal(stored?.lastErrorCode, "BASE_CONTENT_FETCH_FAILED");
+  assert.equal(stored?.completedAt, "2026-07-24T08:00:03.000Z");
+  assert.equal(stored?.leaseToken, null);
+});
+
 test("mysql repository defaults evidence ids for legacy content-fetch payloads", async () => {
   const pool = new FakePool();
   const repository =
@@ -711,6 +899,160 @@ test("mysql repository defaults evidence ids for legacy content-fetch payloads",
 
   assert.deepEqual(loaded?.evidenceIds, []);
   assert.deepEqual(loaded?.commentEnrichmentExecutions, []);
+});
+
+test("mysql comment execution parser rejects contradictory direct and Run identity", async () => {
+  const pool = new FakePool();
+  const repository =
+    new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool));
+  const contradictory: AcquisitionContentFetchCommentExecution = {
+    executionId: "comment-enrichment:contradictory",
+    contextKey: "direct",
+    runId: "run-must-be-null",
+    shardId: null,
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 1,
+      maxPagesPerVideo: 1
+    },
+    remainingBudget: { requests: 1, results: 1 },
+    status: "queued",
+    summary: null,
+    attemptCount: 0,
+    nextAttemptAt: "2026-07-24T08:00:00.000Z",
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    lastErrorCode: null,
+    createdAt: "2026-07-24T08:00:00.000Z",
+    updatedAt: "2026-07-24T08:00:00.000Z",
+    completedAt: null
+  };
+  pool.enqueue([{ payload_json: JSON.stringify({
+    ...fetchOperation,
+    commentEnrichmentExecutions: [contradictory]
+  }) }]);
+
+  await assert.rejects(
+    repository.getContentFetchOperation(
+      { ownerId: fetchOperation.ownerId, teamId: fetchOperation.teamId },
+      fetchOperation.id
+    ),
+    /MYSQL_INTEGRITY:comment_execution/u
+  );
+});
+
+test("mysql comment execution parser enforces every terminal and lease state combination", async () => {
+  const validStates: AcquisitionContentFetchCommentExecution[] = [
+    validDirectExecution(),
+    validDirectExecution({
+      attemptCount: 1,
+      lastErrorCode: "COMMENT_ENRICHMENT_FAILED",
+      nextAttemptAt: "2026-07-24T08:00:02.000Z",
+      updatedAt: "2026-07-24T08:00:01.000Z"
+    }),
+    validDirectExecution({
+      status: "running",
+      attemptCount: 1,
+      leaseOwner: "worker-a",
+      leaseToken: "lease-a",
+      leaseExpiresAt: "2026-07-24T08:10:00.000Z",
+      updatedAt: "2026-07-24T08:00:01.000Z"
+    }),
+    validDirectExecution({
+      status: "succeeded",
+      attemptCount: 1,
+      summary: validCommentSummary,
+      updatedAt: "2026-07-24T08:00:02.000Z",
+      completedAt: "2026-07-24T08:00:02.000Z"
+    }),
+    validDirectExecution({
+      status: "failed",
+      attemptCount: 1,
+      lastErrorCode: "BASE_CONTENT_FETCH_FAILED",
+      updatedAt: "2026-07-24T08:00:02.000Z",
+      completedAt: "2026-07-24T08:00:02.000Z"
+    })
+  ];
+  for (const execution of validStates) {
+    const pool = new FakePool();
+    pool.enqueue([{ payload_json: JSON.stringify({
+      ...fetchOperation,
+      commentEnrichmentExecutions: [execution]
+    }) }]);
+    const loaded = await new MysqlAcquisitionDiscoveryOperationRepository(
+      asPool(pool)
+    ).getContentFetchOperation(
+      { ownerId: fetchOperation.ownerId, teamId: fetchOperation.teamId },
+      fetchOperation.id
+    );
+    assert.equal(
+      loaded?.commentEnrichmentExecutions?.[0]?.status,
+      execution.status
+    );
+  }
+
+  const invalidStates: AcquisitionContentFetchCommentExecution[] = [
+    validDirectExecution({
+      attemptCount: 0,
+      lastErrorCode: "COMMENT_ENRICHMENT_FAILED"
+    }),
+    validDirectExecution({
+      status: "running",
+      attemptCount: 0,
+      leaseOwner: "worker-a",
+      leaseToken: "lease-a",
+      leaseExpiresAt: "2026-07-24T08:10:00.000Z"
+    }),
+    validDirectExecution({
+      status: "running",
+      attemptCount: 1
+    }),
+    validDirectExecution({
+      status: "succeeded",
+      attemptCount: 1,
+      completedAt: "2026-07-24T08:00:02.000Z"
+    }),
+    validDirectExecution({
+      status: "failed",
+      attemptCount: 1,
+      lastErrorCode: "COMMENT_ENRICHMENT_FAILED",
+      completedAt: "2026-07-24T08:00:02.000Z"
+    }),
+    validDirectExecution({
+      updatedAt: "2026-07-24T07:59:59.000Z"
+    }),
+    validDirectExecution({
+      remainingBudget: { requests: -1, results: 1 }
+    }),
+    validDirectExecution({
+      policy: {
+        enabled: true,
+        maxVideosPerRun: 21,
+        maxCommentsPerVideo: 1,
+        maxPagesPerVideo: 1
+      }
+    }),
+    validDirectExecution({
+      lastErrorCode: "https://example.com/raw-comment" as never
+    })
+  ];
+  for (const execution of invalidStates) {
+    const pool = new FakePool();
+    pool.enqueue([{ payload_json: JSON.stringify({
+      ...fetchOperation,
+      commentEnrichmentExecutions: [execution]
+    }) }]);
+    await assert.rejects(
+      new MysqlAcquisitionDiscoveryOperationRepository(asPool(pool))
+        .getContentFetchOperation(
+          { ownerId: fetchOperation.ownerId, teamId: fetchOperation.teamId },
+          fetchOperation.id
+        ),
+      /MYSQL_INTEGRITY:comment_execution/u
+    );
+  }
 });
 
 test("mysql repository marks legacy terminal fetches without evidence ids as refetch-required failures", async () => {
@@ -968,7 +1310,10 @@ test("duplicate idempotency compares request hashes instead of silently reusing 
     }], []];
   };
   await assert.rejects(
-    repository.createContentFetchOperation(fetchOperation),
+    repository.createContentFetchOperation({
+      ...fetchOperation,
+      requestSemanticsVersion: 1
+    }),
     (error: unknown) =>
       error instanceof AcquisitionDiscoveryOperationError
       && error.code === "IDEMPOTENCY_CONFLICT"

@@ -7,6 +7,9 @@ import {
   InMemoryAcquisitionDouyinCommentEventRepository
 } from "./acquisition-douyin-comment-events.js";
 import {
+  MysqlAcquisitionDouyinCommentEventRepository
+} from "./acquisition-douyin-comment-events-mysql-repository.js";
+import {
   DouyinPublicCommentProviderError,
   type DouyinPublicComment,
   type DouyinPublicCommentSamplePage
@@ -90,6 +93,84 @@ function input(overrides: Record<string, unknown> = {}) {
     signal: new AbortController().signal,
     ...overrides
   };
+}
+
+class FetchAttemptPool {
+  readonly attempts = new Map<string, Record<string, unknown>>();
+
+  private key(ownerId: unknown, teamId: unknown, attemptId: unknown) {
+    return `${String(ownerId)}\u001f${String(teamId)}\u001f${String(attemptId)}`;
+  }
+
+  private async handle(sql: string, values: unknown[] = []) {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    if (normalized.startsWith(
+      "INSERT IGNORE INTO acquisition_douyin_comment_fetch_attempts"
+    )) {
+      const key = this.key(values[1], values[2], values[0]);
+      if (this.attempts.has(key)) return [{ affectedRows: 0 }, []];
+      this.attempts.set(key, {
+        attempt_id: values[0],
+        owner_id: values[1],
+        team_id: values[2],
+        run_id: values[3],
+        shard_id: values[4],
+        discovery_operation_id: values[5],
+        source_url: values[6],
+        video_id: values[7],
+        status: values[8],
+        error_code: values[9],
+        requested_count: values[10],
+        returned_count: values[11],
+        reported_comment_count: values[12],
+        pages_fetched: values[13],
+        started_at: values[14],
+        completed_at: values[15],
+        terminal_projection_json: null
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.includes(
+      "FROM acquisition_douyin_comment_fetch_attempts"
+    )) {
+      const key = this.key(values[0], values[1], values[2]);
+      const row = this.attempts.get(key);
+      return [row ? [structuredClone(row)] : [], []];
+    }
+    if (normalized.startsWith(
+      "UPDATE acquisition_douyin_comment_fetch_attempts"
+    )) {
+      const key = this.key(values[7], values[8], values[9]);
+      const row = this.attempts.get(key);
+      if (!row) return [{ affectedRows: 0 }, []];
+      Object.assign(row, {
+        status: values[0],
+        error_code: values[1],
+        returned_count: values[2],
+        reported_comment_count: values[3],
+        pages_fetched: values[4],
+        terminal_projection_json: values[5],
+        completed_at: values[6]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    throw new Error(`unexpected SQL: ${normalized}`);
+  }
+
+  query(sql: string, values: unknown[] = []) {
+    return this.handle(sql, values);
+  }
+
+  async getConnection() {
+    return {
+      beginTransaction: async () => undefined,
+      query: (sql: string, values: unknown[] = []) =>
+        this.handle(sql, values),
+      commit: async () => undefined,
+      rollback: async () => undefined,
+      release: () => undefined
+    };
+  }
 }
 
 test("enrichment enforces video, page, comment, and remaining Run budgets", async () => {
@@ -511,13 +592,78 @@ test("exact Run replay reuses the first fetch-attempt clock and remains idempote
   }));
 
   assert.deepEqual(replay, first);
-  assert.equal(providerCalls, 2);
-  assert.equal(ingestionCalls, 2);
+  assert.equal(providerCalls, 1);
+  assert.equal(ingestionCalls, 1);
   assert.equal((await events.listFetchAttempts(
     scope,
     "run-enrichment",
     { limit: 10 }
   )).length, 1);
+});
+
+test("mysql restart replays the first terminal projection without provider or ingestion", async () => {
+  const pool = new FetchAttemptPool();
+  let providerCalls = 0;
+  let ingestionCalls = 0;
+  const createService = () => new AcquisitionDouyinCommentEnrichmentService({
+    events: new MysqlAcquisitionDouyinCommentEventRepository(pool as never),
+    provider: {
+      providerId: "experimental_public_sample",
+      async fetchTopLevelSample(request) {
+        providerCalls += 1;
+        return page({
+          comments: [comment(`mysql-first-${providerCalls}`)],
+          cursor: null,
+          hasMore: false,
+          requestedCount: request.count,
+          artifact: "8",
+          transportRequestCount: 1
+        });
+      }
+    },
+    ingestion: {
+      async ingestSample(request) {
+        ingestionCalls += 1;
+        return {
+          eventCount: 1,
+          evidenceCount: 1,
+          candidateIds: [`candidate-${request.page.comments[0]?.commentId}`],
+          unresolvedActorCount: 0,
+          strongSignalCount: 1,
+          invalidCommentCount: 0
+        };
+      }
+    },
+    now: () => "2026-08-15T02:00:00.000Z",
+    nowMs: () => 1_000
+  });
+  const replayInput = input({
+    sourceUrls: ["https://www.douyin.com/video/7536012345678900001"],
+    policy: {
+      enabled: true,
+      maxVideosPerRun: 1,
+      maxCommentsPerVideo: 1,
+      maxPagesPerVideo: 1
+    },
+    remainingBudget: { requests: 1, results: 1 }
+  });
+
+  const first = await createService().enrich(replayInput);
+  const replay = await createService().enrich(replayInput);
+
+  assert.deepEqual(replay, first);
+  assert.equal(providerCalls, 1);
+  assert.equal(ingestionCalls, 1);
+  assert.equal(pool.attempts.size, 1);
+
+  const foreign = await createService().enrich({
+    ...replayInput,
+    scope: { ...scope, ownerId: "owner-enrichment-foreign" }
+  });
+  assert.equal(providerCalls, 2);
+  assert.equal(ingestionCalls, 2);
+  assert.equal(pool.attempts.size, 2);
+  assert.notDeepEqual(foreign.candidateIds, first.candidateIds);
 });
 
 test("transport retries consume the real request budget reported by the provider", async () => {

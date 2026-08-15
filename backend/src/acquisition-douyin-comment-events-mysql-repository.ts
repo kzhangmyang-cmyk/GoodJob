@@ -14,6 +14,7 @@ import {
   type DouyinCommentEventLink,
   type DouyinCommentContentVersion,
   type DouyinCommentFetchAttempt,
+  type DouyinCommentFetchAttemptTerminalProjection,
   type DouyinCommentIngestionSaga,
   type DouyinCommentIngestionSagaWorkItem,
   type DouyinCommentObservation,
@@ -196,6 +197,7 @@ export const ACQUISITION_DOUYIN_COMMENT_EVENTS_MYSQL_SCHEMA_STATEMENTS = [
     returned_count INT UNSIGNED NOT NULL,
     reported_comment_count BIGINT UNSIGNED NULL,
     pages_fetched INT UNSIGNED NOT NULL,
+    terminal_projection_json JSON NULL,
     started_at DATETIME(3) NOT NULL,
     completed_at DATETIME(3) NULL,
     PRIMARY KEY (owner_id, team_id, attempt_id),
@@ -225,6 +227,9 @@ const DOUYIN_COMMENT_INGESTION_SAGA_RECOVERY_COLUMNS = {
   last_error_code:
     "ADD COLUMN last_error_code VARCHAR(64) NULL"
 } as const;
+
+const DOUYIN_COMMENT_FETCH_ATTEMPT_PROJECTION_ALTER =
+  "ADD COLUMN terminal_projection_json JSON NULL";
 
 const DOUYIN_COMMENT_SCHEMA_MIGRATION_LOCK =
   "acquisition:douyin-comment-schema:v1";
@@ -341,6 +346,20 @@ export async function ensureAcquisitionDouyinCommentEventsMysqlSchema(
       await connection.query(
         `ALTER TABLE acquisition_douyin_comment_ingestion_sagas
          MODIFY COLUMN next_attempt_at DATETIME(3) NOT NULL`
+      );
+    }
+    const [fetchAttemptColumnResult] = await connection.query(
+      `SELECT column_name
+       FROM information_schema.columns
+       WHERE table_schema = DATABASE()
+         AND table_name = 'acquisition_douyin_comment_fetch_attempts'
+         AND column_name = 'terminal_projection_json'`
+    );
+    if (!Array.isArray(fetchAttemptColumnResult)
+      || fetchAttemptColumnResult.length === 0) {
+      await connection.query(
+        `ALTER TABLE acquisition_douyin_comment_fetch_attempts
+         ${DOUYIN_COMMENT_FETCH_ATTEMPT_PROJECTION_ALTER}`
       );
     }
     await ensureDouyinCommentPendingSagaIndex(connection);
@@ -471,6 +490,7 @@ const INGESTION_SAGA_SELECT_COLUMNS = `saga_id, owner_id, team_id, actor_id,
 const FETCH_ATTEMPT_SELECT_COLUMNS = `attempt_id, owner_id, team_id, run_id,
   shard_id, discovery_operation_id, source_url, video_id, status, error_code,
   requested_count, returned_count, reported_comment_count, pages_fetched,
+  terminal_projection_json,
   DATE_FORMAT(started_at, '%Y-%m-%d %H:%i:%s.%f') AS started_at,
   CASE WHEN completed_at IS NULL THEN NULL
     ELSE DATE_FORMAT(completed_at, '%Y-%m-%d %H:%i:%s.%f')
@@ -623,12 +643,55 @@ const FETCH_STATUSES = [
   "no_public_comments"
 ] as const;
 
+function parseTerminalProjection(
+  value: unknown
+): DouyinCommentFetchAttemptTerminalProjection | undefined {
+  if (value === null || value === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = typeof value === "string"
+      ? JSON.parse(value)
+      : Buffer.isBuffer(value)
+        ? JSON.parse(value.toString("utf8"))
+        : value;
+  } catch {
+    return integrity("terminal_projection_json");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return integrity("terminal_projection_json");
+  }
+  const projection = parsed as Record<string, unknown>;
+  const counts = [
+    projection.transportRequestCount,
+    projection.durationSeconds,
+    projection.eventCount,
+    projection.evidenceCount,
+    projection.unresolvedActorCount,
+    projection.strongSignalCount,
+    projection.invalidCommentCount
+  ];
+  if (counts.some((count) =>
+    !Number.isSafeInteger(count) || Number(count) < 0)
+    || !Array.isArray(projection.candidateIds)
+    || projection.candidateIds.length > 100
+    || projection.candidateIds.some((id) =>
+      typeof id !== "string" || id.length < 1 || id.length > 160)
+    || new Set(projection.candidateIds).size
+      !== projection.candidateIds.length) {
+    return integrity("terminal_projection_json");
+  }
+  return projection as unknown as DouyinCommentFetchAttemptTerminalProjection;
+}
+
 function parseAttempt(row: MysqlRow): DouyinCommentFetchAttempt {
   const status = literal(row.status, FETCH_STATUSES, "status");
   const completedAt = nullableInstant(row.completed_at, "completed_at");
   if ((status === "running") !== (completedAt === null)) {
     integrity("status_completed_at");
   }
+  const terminalProjection = parseTerminalProjection(
+    row.terminal_projection_json
+  );
   return {
     attemptId: string(row, "attempt_id"),
     runId: nullableString(row, "run_id"),
@@ -644,7 +707,8 @@ function parseAttempt(row: MysqlRow): DouyinCommentFetchAttempt {
       ? null : integer(row.reported_comment_count, "reported_comment_count"),
     pagesFetched: integer(row.pages_fetched, "pages_fetched"),
     startedAt: instant(row.started_at, "started_at"),
-    completedAt
+    completedAt,
+    ...(terminalProjection ? { terminalProjection } : {})
   };
 }
 
@@ -1405,7 +1469,8 @@ implements AcquisitionDouyinCommentEventRepository {
       returnedCount: 0,
       reportedCommentCount: null,
       pagesFetched: 0,
-      completedAt: null
+      completedAt: null,
+      terminalProjection: undefined
     } as DouyinCommentFetchAttempt;
     if (!same(immutableStart, {
       ...attempt,
@@ -1452,13 +1517,17 @@ implements AcquisitionDouyinCommentEventRepository {
       await connection.query(
         `UPDATE acquisition_douyin_comment_fetch_attempts
          SET status = ?, error_code = ?, returned_count = ?,
-           reported_comment_count = ?, pages_fetched = ?, completed_at = ?
+           reported_comment_count = ?, pages_fetched = ?,
+           terminal_projection_json = ?, completed_at = ?
          WHERE owner_id = ? AND team_id = ? AND attempt_id = ?
            AND status = 'running'`,
         [
           normalizedTerminal.status, normalizedTerminal.errorCode,
           normalizedTerminal.returnedCount,
           normalizedTerminal.reportedCommentCount, normalizedTerminal.pagesFetched,
+          normalizedTerminal.terminalProjection === undefined
+            ? null
+            : JSON.stringify(normalizedTerminal.terminalProjection),
           mysqlDate(normalizedTerminal.completedAt),
           scope.ownerId, scope.teamId, attemptId
         ]

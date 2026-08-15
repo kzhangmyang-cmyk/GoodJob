@@ -9,6 +9,7 @@ import {
 } from "./acquisition-mysql-named-lock.js";
 import {
   AcquisitionDiscoveryOperationError,
+  acquisitionContentFetchCommentExecutionId,
   type AcquisitionDiscoveryClaim,
   type AcquisitionContentFetchCommentExecution,
   type AcquisitionContentFetchOperationRecord,
@@ -314,7 +315,10 @@ function parsedCommentSampleSummary(value: unknown) {
   return summary;
 }
 
-function parsedCommentExecutions(value: unknown) {
+function parsedCommentExecutions(
+  value: unknown,
+  identity: { ownerId: string; teamId: string; operationId: string }
+) {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.length > 1_000) {
     throw new Error(
@@ -334,10 +338,80 @@ function parsedCommentExecutions(value: unknown) {
       Record<string, unknown> | undefined;
     const status = String(execution.status);
     const executionId = String(execution.executionId ?? "");
+    const runId = execution.runId;
+    const shardId = execution.shardId;
+    const direct = execution.contextKey === "direct";
+    const validContext = direct
+      ? runId === null && shardId === null
+      : typeof runId === "string" && runId.length > 0 && runId.length <= 160
+        && typeof shardId === "string" && shardId.length > 0
+        && shardId.length <= 160
+        && execution.contextKey === `run:${runId}:${shardId}`;
+    const expectedExecutionId = typeof execution.contextKey === "string"
+      ? acquisitionContentFetchCommentExecutionId({
+          ...identity,
+          contextKey: execution.contextKey
+        })
+      : "";
+    const summary = parsedCommentSampleSummary(execution.summary);
+    const completedAt = execution.completedAt;
+    const leaseOwner = execution.leaseOwner;
+    const leaseToken = execution.leaseToken;
+    const leaseExpiresAt = execution.leaseExpiresAt;
+    const lastErrorCode = execution.lastErrorCode;
+    const attemptCount = Number(execution.attemptCount);
+    const noLease = leaseOwner === null
+      && leaseToken === null
+      && leaseExpiresAt === null;
+    const activeLease = typeof leaseOwner === "string"
+      && leaseOwner.length > 0 && leaseOwner.length <= 100
+      && typeof leaseToken === "string"
+      && leaseToken.length > 0 && leaseToken.length <= 200
+      && typeof leaseExpiresAt === "string"
+      && Number.isFinite(Date.parse(leaseExpiresAt));
+    const validState = status === "queued"
+      ? summary === null && completedAt === null && noLease
+        && ((attemptCount === 0 && lastErrorCode === null)
+          || (attemptCount > 0
+            && lastErrorCode === "COMMENT_ENRICHMENT_FAILED"))
+      : status === "running"
+        ? attemptCount > 0
+          && summary === null && completedAt === null && activeLease
+          && lastErrorCode === null
+        : status === "succeeded"
+          ? attemptCount > 0 && summary !== null
+            && typeof completedAt === "string"
+            && Number.isFinite(Date.parse(completedAt))
+            && noLease && lastErrorCode === null
+          : status === "failed"
+            ? attemptCount > 0 && summary === null
+              && typeof completedAt === "string"
+              && Number.isFinite(Date.parse(completedAt))
+              && noLease && lastErrorCode === "BASE_CONTENT_FETCH_FAILED"
+            : false;
+    const createdAtMs = typeof execution.createdAt === "string"
+      ? Date.parse(execution.createdAt)
+      : Number.NaN;
+    const updatedAtMs = typeof execution.updatedAt === "string"
+      ? Date.parse(execution.updatedAt)
+      : Number.NaN;
+    const completedAtMs = typeof completedAt === "string"
+      ? Date.parse(completedAt)
+      : null;
+    const validTimeline = Number.isFinite(createdAtMs)
+      && Number.isFinite(updatedAtMs)
+      && updatedAtMs >= createdAtMs
+      && (completedAtMs === null
+        || (Number.isFinite(completedAtMs) && completedAtMs >= updatedAtMs))
+      && (status !== "running"
+        || Date.parse(String(leaseExpiresAt)) >= updatedAtMs);
     if (!executionId || ids.has(executionId)
+      || executionId !== expectedExecutionId
       || typeof execution.contextKey !== "string"
       || !execution.contextKey
-      || !["queued", "running", "succeeded"].includes(status)
+      || !validContext
+      || !validState
+      || !validTimeline
       || !policy
       || typeof policy.enabled !== "boolean"
       || !safeCount(policy.maxVideosPerRun, 20)
@@ -347,9 +421,9 @@ function parsedCommentExecutions(value: unknown) {
       || !safeCount(policy.maxPagesPerVideo, 5)
       || Number(policy.maxPagesPerVideo) < 1
       || !budget
-      || !safeCount(budget.requests)
-      || !safeCount(budget.results)
-      || !safeCount(execution.attemptCount)
+      || !safeCount(budget.requests, Number.MAX_SAFE_INTEGER)
+      || !safeCount(budget.results, Number.MAX_SAFE_INTEGER)
+      || !safeCount(execution.attemptCount, Number.MAX_SAFE_INTEGER)
       || typeof execution.nextAttemptAt !== "string"
       || !Number.isFinite(Date.parse(execution.nextAttemptAt))
       || typeof execution.createdAt !== "string"
@@ -361,12 +435,7 @@ function parsedCommentExecutions(value: unknown) {
       );
     }
     ids.add(executionId);
-    execution.summary = parsedCommentSampleSummary(execution.summary);
-    if ((status === "succeeded") !== (execution.summary !== null)) {
-      throw new Error(
-        "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:comment_execution_summary"
-      );
-    }
+    execution.summary = summary;
     return execution as unknown as AcquisitionContentFetchCommentExecution;
   });
 }
@@ -435,8 +504,19 @@ function parsedFetch(row: MysqlRow) {
   payload.commentSampleSummary = parsedCommentSampleSummary(
     payload.commentSampleSummary
   );
+  if (payload.requestSemanticsVersion !== undefined
+    && payload.requestSemanticsVersion !== 1) {
+    throw new Error(
+      "ACQUISITION_DISCOVERY_MYSQL_INTEGRITY:request_semantics_version"
+    );
+  }
   payload.commentEnrichmentExecutions = parsedCommentExecutions(
-    payload.commentEnrichmentExecutions
+    payload.commentEnrichmentExecutions,
+    {
+      ownerId: String(payload.ownerId),
+      teamId: String(payload.teamId),
+      operationId: String(payload.id)
+    }
   );
   if (!Array.isArray(payload.candidateIds)
     || payload.candidateIds.some((id) => typeof id !== "string" || !id)
@@ -635,6 +715,12 @@ implements AcquisitionDiscoveryOperationRepository {
   async createContentFetchOperation(
     operation: AcquisitionContentFetchOperationRecord
   ) {
+    if ((operation.commentEnrichmentExecutions?.length ?? 0) > 1_000) {
+      throw new AcquisitionDiscoveryOperationError(
+        "INVALID_REQUEST",
+        "COMMENT_ENRICHMENT_EXECUTION_LIMIT"
+      );
+    }
     try {
       await this.pool.query(
         `INSERT INTO acquisition_content_fetch_operations (
@@ -845,6 +931,12 @@ implements AcquisitionDiscoveryOperationRepository {
         }
         return existing;
       }
+      if (executions.length >= 1_000) {
+        throw new AcquisitionDiscoveryOperationError(
+          "INVALID_REQUEST",
+          "COMMENT_ENRICHMENT_EXECUTION_LIMIT"
+        );
+      }
       executions.push(clone(execution));
       operation.commentEnrichmentExecutions = executions;
       return execution;
@@ -865,6 +957,9 @@ implements AcquisitionDiscoveryOperationRepository {
       if (execution.status === "succeeded") {
         return { execution, claimed: false };
       }
+      if (execution.status === "failed") {
+        return { execution, claimed: false };
+      }
       const eligible = execution.status === "queued"
         ? execution.nextAttemptAt <= claim.claimedAt
         : Boolean(execution.leaseExpiresAt
@@ -875,6 +970,7 @@ implements AcquisitionDiscoveryOperationRepository {
       execution.leaseOwner = claim.leaseOwner;
       execution.leaseToken = claim.leaseToken;
       execution.leaseExpiresAt = claim.leaseExpiresAt;
+      execution.lastErrorCode = null;
       execution.updatedAt = claim.claimedAt;
       return { execution, claimed: true };
     });
@@ -948,6 +1044,43 @@ implements AcquisitionDiscoveryOperationRepository {
       execution.leaseExpiresAt = null;
       execution.lastErrorCode = "COMMENT_ENRICHMENT_FAILED";
       execution.updatedAt = failedAt;
+    });
+  }
+
+  async terminallyFailContentFetchCommentExecution(
+    scope: OperationScope,
+    operationId: string,
+    executionId: string,
+    leaseToken: string,
+    failedAt: string,
+    errorCode: "BASE_CONTENT_FETCH_FAILED"
+  ) {
+    return this.mutateFetch(scope, operationId, (operation) => {
+      const execution = operation.commentEnrichmentExecutions?.find(
+        (candidate) => candidate.executionId === executionId
+      );
+      if (!execution) {
+        throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
+      }
+      if (execution.status === "failed") return execution;
+      if (execution.status !== "running"
+        || execution.leaseToken !== leaseToken) {
+        throw new AcquisitionDiscoveryOperationError(
+          "OPERATION_ALREADY_RUNNING",
+          "OPERATION_LEASE_LOST"
+        );
+      }
+      Object.assign(execution, {
+        status: "failed",
+        summary: null,
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        lastErrorCode: errorCode,
+        updatedAt: failedAt,
+        completedAt: failedAt
+      });
+      return execution;
     });
   }
 

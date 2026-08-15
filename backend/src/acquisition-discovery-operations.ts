@@ -130,6 +130,7 @@ export interface AcquisitionContentFetchOperationRecord
 extends AcquisitionContentFetchOperation {
   idempotencyKeyHash: string;
   requestHash: string;
+  requestSemanticsVersion?: 1;
   leaseOwner?: string | null;
   leaseToken?: string | null;
   leaseExpiresAt?: string | null;
@@ -143,14 +144,17 @@ export interface AcquisitionContentFetchCommentExecution {
   shardId: string | null;
   policy: DouyinPublicCommentSamplePolicy;
   remainingBudget: { requests: number; results: number };
-  status: "queued" | "running" | "succeeded";
+  status: "queued" | "running" | "succeeded" | "failed";
   summary: AcquisitionDouyinCommentEnrichmentResult | null;
   attemptCount: number;
   nextAttemptAt: string;
   leaseOwner: string | null;
   leaseToken: string | null;
   leaseExpiresAt: string | null;
-  lastErrorCode: "COMMENT_ENRICHMENT_FAILED" | null;
+  lastErrorCode:
+    | "COMMENT_ENRICHMENT_FAILED"
+    | "BASE_CONTENT_FETCH_FAILED"
+    | null;
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
@@ -302,6 +306,14 @@ export interface AcquisitionDiscoveryOperationRepository {
     leaseToken: string,
     failedAt: string
   ): Promise<void>;
+  terminallyFailContentFetchCommentExecution(
+    scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
+    operationId: string,
+    executionId: string,
+    leaseToken: string,
+    failedAt: string,
+    errorCode: "BASE_CONTENT_FETCH_FAILED"
+  ): Promise<AcquisitionContentFetchCommentExecution>;
   createImportOperation(
     operation: AcquisitionImportOperationRecord
   ): Promise<{
@@ -332,6 +344,28 @@ export interface AcquisitionDiscoveryOperationRepository {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+const MAX_CONTENT_FETCH_COMMENT_EXECUTIONS = 1_000;
+
+function assertCommentExecutionCapacity(count: number) {
+  if (count >= MAX_CONTENT_FETCH_COMMENT_EXECUTIONS) {
+    throw new AcquisitionDiscoveryOperationError(
+      "INVALID_REQUEST",
+      "COMMENT_ENRICHMENT_EXECUTION_LIMIT"
+    );
+  }
+}
+
+export function acquisitionContentFetchCommentExecutionId(input: {
+  ownerId: string;
+  teamId: string;
+  operationId: string;
+  contextKey: string;
+}) {
+  return `comment-enrichment:${createHash("sha256")
+    .update(canonicalJsonStringify(input))
+    .digest("hex")}`;
 }
 
 function hash(value: string | Buffer) {
@@ -387,6 +421,7 @@ function publicFetch(
   const {
     idempotencyKeyHash: _idempotencyKeyHash,
     requestHash: _requestHash,
+    requestSemanticsVersion: _requestSemanticsVersion,
     leaseOwner: _leaseOwner,
     leaseToken: _leaseToken,
     leaseExpiresAt: _leaseExpiresAt,
@@ -536,6 +571,13 @@ implements AcquisitionDiscoveryOperationRepository {
     operation: AcquisitionContentFetchOperationRecord
   ) {
     return this.withFetchMutation(() => {
+      if ((operation.commentEnrichmentExecutions?.length ?? 0)
+        > MAX_CONTENT_FETCH_COMMENT_EXECUTIONS) {
+        throw new AcquisitionDiscoveryOperationError(
+          "INVALID_REQUEST",
+          "COMMENT_ENRICHMENT_EXECUTION_LIMIT"
+        );
+      }
       const key = [
         operation.ownerId,
         operation.teamId,
@@ -676,6 +718,7 @@ implements AcquisitionDiscoveryOperationRepository {
         }
         return clone(existing);
       }
+      assertCommentExecutionCapacity(executions.length);
       executions.push(clone(execution));
       operation.commentEnrichmentExecutions = executions;
       return clone(execution);
@@ -698,6 +741,9 @@ implements AcquisitionDiscoveryOperationRepository {
       if (execution.status === "succeeded") {
         return { execution: clone(execution), claimed: false };
       }
+      if (execution.status === "failed") {
+        return { execution: clone(execution), claimed: false };
+      }
       const eligible = execution.status === "queued"
         ? execution.nextAttemptAt <= claim.claimedAt
         : Boolean(execution.leaseExpiresAt
@@ -708,6 +754,7 @@ implements AcquisitionDiscoveryOperationRepository {
       execution.leaseOwner = claim.leaseOwner;
       execution.leaseToken = claim.leaseToken;
       execution.leaseExpiresAt = claim.leaseExpiresAt;
+      execution.lastErrorCode = null;
       execution.updatedAt = claim.claimedAt;
       return { execution: clone(execution), claimed: true };
     });
@@ -783,6 +830,44 @@ implements AcquisitionDiscoveryOperationRepository {
       execution.leaseExpiresAt = null;
       execution.lastErrorCode = "COMMENT_ENRICHMENT_FAILED";
       execution.updatedAt = failedAt;
+    });
+  }
+
+  async terminallyFailContentFetchCommentExecution(
+    scope: Pick<AcquisitionDiscoveryScope, "ownerId" | "teamId">,
+    operationId: string,
+    executionId: string,
+    leaseToken: string,
+    failedAt: string,
+    errorCode: "BASE_CONTENT_FETCH_FAILED"
+  ) {
+    return this.withFetchMutation(() => {
+      const operation = this.scopedFetch(scope, operationId);
+      const execution = operation?.commentEnrichmentExecutions?.find(
+        (candidate) => candidate.executionId === executionId
+      );
+      if (!operation || !execution) {
+        throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
+      }
+      if (execution.status === "failed") return clone(execution);
+      if (execution.status !== "running"
+        || execution.leaseToken !== leaseToken) {
+        throw new AcquisitionDiscoveryOperationError(
+          "OPERATION_ALREADY_RUNNING",
+          "OPERATION_LEASE_LOST"
+        );
+      }
+      Object.assign(execution, {
+        status: "failed",
+        summary: null,
+        leaseOwner: null,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        lastErrorCode: errorCode,
+        updatedAt: failedAt,
+        completedAt: failedAt
+      });
+      return clone(execution);
     });
   }
 
@@ -1581,7 +1666,9 @@ export class AcquisitionDiscoveryOperationService {
     );
     const requestHash = stableHash({
       sourceUrl,
-      subjectChannel: input.subjectChannel
+      subjectChannel: input.subjectChannel,
+      queueStandaloneCommentEnrichment:
+        options.queueStandaloneCommentEnrichment === true
     });
     const operationId = this.idFactory("fetch");
     const createdAt = this.now();
@@ -1610,6 +1697,7 @@ export class AcquisitionDiscoveryOperationService {
       errorCode: null,
       idempotencyKeyHash: keyHash(key),
       requestHash,
+      requestSemanticsVersion: 1,
       leaseOwner: null,
       leaseToken: null,
       leaseExpiresAt: null,
@@ -1671,7 +1759,17 @@ export class AcquisitionDiscoveryOperationService {
       scope,
       operationId,
       signal
-    );
+    ).catch(async (error) => {
+      if (execution) {
+        await this.executeCommentExecution(
+          scope,
+          operationId,
+          execution.executionId,
+          signal
+        ).catch(() => undefined);
+      }
+      throw error;
+    });
     if (!execution) return base;
     const summary = await this.executeCommentExecution(
       scope,
@@ -1759,14 +1857,12 @@ export class AcquisitionDiscoveryOperationService {
     const contextKey = direct
       ? "direct"
       : `run:${context.runId}:${context.shardId}`;
-    const executionId = `comment-enrichment:${createHash("sha256")
-      .update(canonicalJsonStringify({
-        ownerId: scope.ownerId,
-        teamId: scope.teamId,
-        operationId,
-        contextKey
-      }))
-      .digest("hex")}`;
+    const executionId = acquisitionContentFetchCommentExecutionId({
+      ownerId: scope.ownerId,
+      teamId: scope.teamId,
+      operationId,
+      contextKey
+    });
     return {
         executionId,
         contextKey,
@@ -1838,6 +1934,11 @@ export class AcquisitionDiscoveryOperationService {
     if (!claimed.claimed) {
       if (claimed.execution.status === "succeeded"
         && claimed.execution.summary) return claimed.execution.summary;
+      if (claimed.execution.status === "failed") {
+        throw new AcquisitionDiscoveryOperationError(
+          "CONTENT_FETCH_FAILED"
+        );
+      }
       throw new AcquisitionDiscoveryOperationError(
         "OPERATION_ALREADY_RUNNING"
       );
@@ -1846,8 +1947,19 @@ export class AcquisitionDiscoveryOperationService {
       scope,
       operationId
     );
-    if (!operation || !operation.finalUrl) {
+    if (!operation) {
       throw new AcquisitionDiscoveryOperationError("RESOURCE_NOT_FOUND");
+    }
+    if (!operation.finalUrl || operation.status === "failed") {
+      await this.repository.terminallyFailContentFetchCommentExecution(
+        scope,
+        operationId,
+        executionId,
+        claim.leaseToken,
+        this.now(),
+        "BASE_CONTENT_FETCH_FAILED"
+      );
+      throw new AcquisitionDiscoveryOperationError("CONTENT_FETCH_FAILED");
     }
     const execution = claimed.execution;
     const executionSignal = signal ?? new AbortController().signal;
@@ -1903,7 +2015,7 @@ export class AcquisitionDiscoveryOperationService {
       .filter((execution) => !executionId
         || execution.executionId === executionId);
     for (const execution of executions) {
-      if (execution.status === "succeeded") continue;
+      if (["succeeded", "failed"].includes(execution.status)) continue;
       try {
         await this.executeCommentExecution(
           scope,

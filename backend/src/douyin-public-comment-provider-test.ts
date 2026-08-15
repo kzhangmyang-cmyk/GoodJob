@@ -271,6 +271,37 @@ test("reports every HTTP retry and never exceeds the supplied transport budget",
   assert.equal(bounded.calls(), 1);
 });
 
+test("attaches every consumed retry to malformed successful HTTP responses", async () => {
+  for (const budget of [3, 1]) {
+    const responses = budget === 3
+      ? [
+          response({ status_code: 0 }, 500),
+          response({ status_code: 0 }, 500),
+          response({ status_code: 0, comments: "invalid" })
+        ]
+      : [response({ status_code: 0, comments: "invalid" })];
+    const script = scriptedTransport(responses);
+    const provider = createDouyinPublicCommentProvider({
+      transport: script.transport,
+      sleep: async () => undefined
+    });
+    await assert.rejects(
+      provider.fetchTopLevelSample({
+        videoId,
+        sourceUrl,
+        cursor: 0,
+        count: 20,
+        transportRequestBudget: budget
+      }),
+      (error: unknown) =>
+        error instanceof DouyinPublicCommentProviderError
+        && error.code === "source_payload_invalid"
+        && error.transportRequestCount === budget
+    );
+    assert.equal(script.calls(), budget);
+  }
+});
+
 test("maps restricted, malformed, empty, and cid-less payloads to stable errors", async () => {
   const cases: Array<{ body: Response; code: DouyinPublicCommentProviderError["code"] }> = [
     { body: response({ status_code: 0 }, 403), code: "access_restricted" },

@@ -44,10 +44,13 @@ with the current plan.
 
 Run execution resolves that policy from the immutable plan version. Search
 shards enrich only complete `search_result` evidence bound to the current
-provider connection and exact query whose provenance contains a direct Douyin
-video URL. Provider HTTP retries consume the real request budget; cross-page
-comment and cursor state is local to one enrichment call. Comment candidates
-are merged and deduplicated before the existing candidate pipeline.
+provider connection, exact query, owner and team whose provenance contains a
+direct Douyin video URL. The Run worker asks the tool executor for this internal
+tenant-scoped projection; ordinary tool responses continue to omit owner and
+team fields. Provider HTTP retries consume the real request budget, including
+responses that fail JSON, payload, normalization or source validation;
+cross-page comment and cursor state is local to one enrichment call. Comment
+candidates are merged and deduplicated before the existing candidate pipeline.
 
 Content-fetch page execution and caller-scoped comment enrichment are separate
 durable facts. Each direct or Run/shard caller has a persisted policy, remaining
@@ -60,6 +63,22 @@ leases in public responses. Other non-Run background work does not start
 comment sampling. The built-in connection is accepted only with canonical ID
 `douyin-public-comments`, provider `experimental_public_sample`, active
 `content_fetch` kind and credential version 1.
+
+The standalone sampling intent is part of the immutable versioned request hash,
+so replaying one idempotency key with a different intent fails closed. A base
+page fetch that fails or has no final URL terminally fails its claimed comment
+execution with `BASE_CONTENT_FETCH_FAILED`; recovery never reclaims that
+context. Repositories admit at most 1000 caller executions per operation, and
+MySQL reads validate deterministic execution identity plus every queued,
+running, succeeded and failed state/lease combination before returning a row.
+
+Every terminal per-video fetch attempt persists its bounded first-result
+projection: transport requests, duration, event/evidence/candidate identifiers
+and aggregate counts. Exact replay aggregates that projection without another
+Provider or ingestion call, including after a MySQL restart or when the visible
+comments later change. Legacy terminal attempts without the optional projection remain
+readable and use their already-persisted terminal counters conservatively;
+they are never silently refetched.
 
 Public operations expose only the caller-appropriate bounded
 `commentSampleSummary`. `candidateCount` exactly equals the unique

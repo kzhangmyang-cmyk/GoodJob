@@ -51,6 +51,8 @@ export interface AcquisitionToolExecutionInput {
   toolCallId: string;
   idempotencyKey: string;
   payload: Record<string, unknown>;
+  /** Internal run workers may request tenant-scoped facts for validation. */
+  resultProjection?: "internal_run";
   signal?: AbortSignal;
 }
 

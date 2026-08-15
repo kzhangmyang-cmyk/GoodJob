@@ -1267,7 +1267,8 @@ implements AcquisitionAgentToolExecutor {
         idempotencyKey: input.idempotencyKey,
         requestHash: `sha256:${hashJson({
           toolName: input.toolName,
-          payload
+          payload,
+          resultProjection: input.resultProjection ?? "public"
         })}`
       }, () => this.dispatch(input, payload));
     } catch (error) {
@@ -1709,7 +1710,11 @@ implements AcquisitionAgentToolExecutor {
       })),
       providerFailures,
       ingestFailures,
-      evidence: evidence.map(projectEvidence),
+      evidence: evidence.map((item) =>
+        input.resultProjection === "internal_run"
+          ? structuredClone(item)
+          : projectEvidence(item)
+      ),
       candidates: [...candidates.values()].map((candidate) =>
         projectCandidate(candidate, identityResolutions.get(candidate.id))
       ),

@@ -315,12 +315,29 @@ export function createDouyinPublicCommentProvider(
         payload = null;
       }
       if (!payload || payload.status_code !== 0 || !Array.isArray(payload.comments)) {
-        throw new DouyinPublicCommentProviderError("source_payload_invalid");
+        throw new DouyinPublicCommentProviderError(
+          "source_payload_invalid",
+          transportRequestCount
+        );
       }
       if (!payload.comments.length) {
-        throw new DouyinPublicCommentProviderError("no_public_comments");
+        throw new DouyinPublicCommentProviderError(
+          "no_public_comments",
+          transportRequestCount
+        );
       }
-      const normalizedComments = payload.comments.map(normalizeComment);
+      let normalizedComments: DouyinPublicComment[];
+      try {
+        normalizedComments = payload.comments.map(normalizeComment);
+      } catch (error) {
+        if (error instanceof DouyinPublicCommentProviderError) {
+          throw new DouyinPublicCommentProviderError(
+            error.code,
+            transportRequestCount
+          );
+        }
+        throw error;
+      }
       const commentIds = new Set<string>();
       const comments: DouyinPublicComment[] = [];
       let duplicateCommentCount = 0;
