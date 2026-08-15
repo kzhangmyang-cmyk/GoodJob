@@ -50,6 +50,29 @@ npm run build
 DOM 或可访问性文字观察，浏览器读取器不应进入 OCR。该通道不读取或上传
 Cookie、完整页面截图或浏览器配置，也不执行私信、点赞、评论、关注或验证码处理。
 
+### 安装未打包的只读扩展
+
+```bash
+npm run test:visual-reader
+npm run build:visual-reader
+```
+
+在 Chrome 的扩展程序页面开启开发者模式，选择“加载已解压的扩展程序”，目录为
+`dist/douyin-visual-reader`。开发构建只允许连接
+`http://127.0.0.1:5191/*`；发布构建必须显式设置以逗号分隔的 HTTPS
+`GOODJOB_APP_ORIGINS`，并设置 `VISUAL_READER_RELEASE=1`，否则构建会失败。
+
+使用时先在 GoodJob 运行详情中创建短时授权会话，再打开扩展弹窗，明确选择一个
+`https://www.douyin.com/video/<id>` 标签页并点击“开始只读读取”。弹窗关闭、标签页
+切换或用户在抖音页面滚动、点击、按键时会安全停止。当前扩展只读取页面已显示的
+一级评论文字、公开时间、公开计数和卡内公开主页链接，最多程序滚动 5 次；不读取
+Cookie、脚本数据、头像地址、二级回复正文或页面内部状态，不执行任何写入或互动。
+
+本阶段只提供 DOM/ARIA 读取，所有观察的 `redactedCrop` 均为 `null`。即使会话允许
+制品上传，也不会截图或运行 OCR；本地遮挡裁剪与 OCR 仍属于后续开发范围。当前实现
+只经过固定 fixture 和本地扩展构建验证，不代表已在真实抖音页面完成兼容性验证或已
+发布到 Chrome 应用商店。
+
 ## Growth 真实模式（Real Mode）
 
 仓库钉住了后端 Growth 合同发布（`contracts/pinned/`，当前 1.0.3），

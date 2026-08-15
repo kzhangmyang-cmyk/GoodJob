@@ -1,0 +1,156 @@
+import { canonicalDouyinVideoUrl, type VisualReaderLimits } from "./protocol";
+
+export interface VisualReaderUsageState {
+  observationCount: number;
+  scrollCount: number;
+  ocrCallCount: number;
+}
+
+export interface VisualReaderPersistedState {
+  sessionId: string;
+  goodJobTabId: number;
+  douyinTabId: number | null;
+  limits: VisualReaderLimits;
+  usage: VisualReaderUsageState;
+  artifactUploadEnabled: boolean;
+  channelNonceHash: string;
+  status: "authorized" | "reading" | "completed" | "partial_success" | "aborted";
+}
+
+export interface VisualReaderRuntimeSnapshot extends VisualReaderPersistedState {
+  pendingBatchId: string | null;
+}
+
+export interface SessionCoordinator {
+  authorizeFromGoodJob(input: {
+    goodJobTabId: number;
+    channelNonce: string;
+    sessionId: string;
+    limits: VisualReaderLimits;
+    artifactUploadEnabled: boolean;
+  }): Promise<void>;
+  confirmDouyinTab(tabId: number, url: string): boolean;
+  beginBatch(batchId: string): boolean;
+  acknowledgeBatch(sessionId: string, batchId: string): boolean;
+  updateUsage(usage: Partial<VisualReaderUsageState>): Promise<void>;
+  finish(status: "completed" | "partial_success"): Promise<void>;
+  abort(reason: "visual_reader_user_takeover" | "user_requested"): Promise<void>;
+  snapshot(): VisualReaderRuntimeSnapshot;
+  rawChannelNonce(): string | null;
+}
+
+export function createSessionCoordinator(dependencies: {
+  persist(state: VisualReaderPersistedState): Promise<void>;
+  log(entry: { event: string; reason?: string; sessionId?: string }): void;
+  nonceHash(value: string): Promise<string>;
+}): SessionCoordinator {
+  let state: VisualReaderPersistedState | null = null;
+  let pendingBatchId: string | null = null;
+  let channelNonce: string | null = null;
+
+  function requireState(): VisualReaderPersistedState {
+    if (!state) throw new Error("视觉读取会话尚未授权");
+    return state;
+  }
+
+  function copy(): VisualReaderPersistedState {
+    const current = requireState();
+    return {
+      ...current,
+      limits: { ...current.limits },
+      usage: { ...current.usage }
+    };
+  }
+
+  return {
+    async authorizeFromGoodJob(input) {
+      if (!Number.isSafeInteger(input.goodJobTabId) || input.goodJobTabId <= 0) {
+        throw new Error("GoodJob 标签页无效");
+      }
+      const nonceDigest = await dependencies.nonceHash(input.channelNonce);
+      state = {
+        sessionId: input.sessionId,
+        goodJobTabId: input.goodJobTabId,
+        douyinTabId: null,
+        limits: { ...input.limits },
+        usage: { observationCount: 0, scrollCount: 0, ocrCallCount: 0 },
+        artifactUploadEnabled: input.artifactUploadEnabled,
+        channelNonceHash: nonceDigest,
+        status: "authorized"
+      };
+      channelNonce = input.channelNonce;
+      pendingBatchId = null;
+      await dependencies.persist(copy());
+      dependencies.log({ event: "visual_reader_authorized", sessionId: input.sessionId });
+    },
+    confirmDouyinTab(tabId, url) {
+      const current = requireState();
+      if (current.status !== "authorized" || current.douyinTabId !== null
+        || !Number.isSafeInteger(tabId) || tabId <= 0 || !canonicalDouyinVideoUrl(url)) return false;
+      current.douyinTabId = tabId;
+      current.status = "reading";
+      void dependencies.persist(copy());
+      dependencies.log({ event: "visual_reader_tab_confirmed", sessionId: current.sessionId });
+      return true;
+    },
+    beginBatch(batchId) {
+      const current = requireState();
+      if (current.status !== "reading" || pendingBatchId !== null || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(batchId)) {
+        return false;
+      }
+      pendingBatchId = batchId;
+      return true;
+    },
+    acknowledgeBatch(sessionId, batchId) {
+      const current = requireState();
+      if (current.status !== "reading" || sessionId !== current.sessionId || batchId !== pendingBatchId) return false;
+      pendingBatchId = null;
+      return true;
+    },
+    async updateUsage(next) {
+      const current = requireState();
+      if (current.status !== "reading") return;
+      current.usage = {
+        observationCount: Math.min(current.limits.maxCommentsPerVideo,
+          Math.max(current.usage.observationCount, next.observationCount ?? current.usage.observationCount)),
+        scrollCount: Math.min(current.limits.maxScrolls,
+          Math.max(current.usage.scrollCount, next.scrollCount ?? current.usage.scrollCount)),
+        ocrCallCount: 0
+      };
+      await dependencies.persist(copy());
+    },
+    async finish(status) {
+      const current = requireState();
+      if (current.status !== "reading") return;
+      current.status = status;
+      pendingBatchId = null;
+      channelNonce = null;
+      await dependencies.persist(copy());
+      dependencies.log({ event: "visual_reader_finished", sessionId: current.sessionId });
+    },
+    async abort(reason) {
+      const current = requireState();
+      if (["completed", "partial_success", "aborted"].includes(current.status)) return;
+      current.status = "aborted";
+      pendingBatchId = null;
+      channelNonce = null;
+      await dependencies.persist(copy());
+      dependencies.log({ event: "visual_reader_aborted", reason, sessionId: current.sessionId });
+    },
+    snapshot() {
+      return { ...copy(), pendingBatchId };
+    },
+    rawChannelNonce() {
+      return channelNonce;
+    }
+  };
+}
+
+export async function sha256(value: string): Promise<string> {
+  if (!globalThis.crypto?.subtle) throw new Error("浏览器缺少安全摘要支持");
+  const digest = new Uint8Array(await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value)
+  ));
+  return `sha256:${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
