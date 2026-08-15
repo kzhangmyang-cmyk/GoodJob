@@ -766,6 +766,7 @@ function renderEvidenceDetail(items: DataRecord[]): string {
     <li>
       <div><strong>${escapeHtml(textValue(item.sourceTitle, "公开来源"))}</strong><span>${escapeHtml(textValue(item.sourcePlatform, "公开网页"))}</span></div>
       <p>${escapeHtml(textValue(item.sourceSnippet, "来源未提供摘要"))}</p>
+      ${textValue(item.sourceUrl) ? `<small>${escapeHtml(textValue(item.sourceUrl))}</small>` : ""}
       <small>${escapeHtml(textValue(item.publishedAt, textValue(item.fetchedAt, "时间未知")))}</small>
       ${textValue(item.id) ? `<small>证据 ID：${escapeHtml(textValue(item.id))}</small>` : ""}
     </li>

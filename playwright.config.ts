@@ -6,6 +6,7 @@ export default defineConfig({
     "demo-auth.spec.ts",
     "acquisition-performance.spec.ts",
     "acquisition-identity-resolution.spec.ts",
+    "acquisition-comment-automation.spec.ts",
     "growth-bootstrap.spec.ts"
   ],
   timeout: 20_000,

@@ -279,6 +279,7 @@ const candidateDetail: AcquisitionCandidateDetail = {
     sourceTitle: "公开短视频",
     sourcePlatform: "douyin",
     sourceSnippet: "公开提到获客成本上升 <script>alert('evidence')</script>",
+    sourceUrl: "https://evidence.example.test/comment?text=<script>",
     publishedAt: timestamp
   }],
   qualification: {
@@ -1162,6 +1163,7 @@ for (const terminalStatus of [
   assert.match(html, /公开证据链/);
   assert.match(html, /公开短视频/);
   assert.match(html, /公开提到获客成本上升/);
+  assert.match(html, /https:\/\/evidence\.example\.test\/comment\?text=&lt;script&gt;/);
   assert.match(html, /客户作战建议/);
   assert.match(html, /先提供行业获客诊断/);
   assert.match(html, /人工审核/);
