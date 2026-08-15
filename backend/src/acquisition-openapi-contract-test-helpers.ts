@@ -31,6 +31,224 @@ let validatedProductionPaths: Promise<
   Record<string, ContractPathItem>
 > | undefined;
 
+const visualComponentSchemaRefs = {
+  DouyinVisualCommentObservation:
+    "../json-schema/douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation",
+  OpaqueRectRedactionProof:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderOpaqueRectRedactionProof",
+  VisualObservationSubmission:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderObservationSubmission",
+  VisualReaderLimits:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderLimits",
+  VisualReaderUsage:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderUsage",
+  VisualReaderOutcome:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderOutcome",
+  VisualReaderSession:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderSession",
+  VisualReaderCreateRequest:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderCreateRequest",
+  VisualObservationBatchRequest:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderObservationBatchRequest",
+  VisualObservationBatchResponse:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderObservationBatchResponse",
+  VisualReaderCompleteRequest:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderCompleteRequest",
+  VisualReaderAbortRequest:
+    "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderAbortRequest"
+} as const;
+
+const visualRouteSchemaRefs = [
+  {
+    path: [
+      "paths",
+      "/api/v1/acquisition/visual-reader-sessions",
+      "post",
+      "requestBody",
+      "content",
+      "application/json",
+      "schema"
+    ],
+    ref: "#/components/schemas/VisualReaderCreateRequest"
+  },
+  {
+    path: [
+      "paths",
+      "/api/v1/acquisition/visual-reader-sessions",
+      "post",
+      "responses",
+      "201",
+      "content",
+      "application/json",
+      "schema"
+    ],
+    ref: "#/components/schemas/VisualReaderSession"
+  },
+  {
+    path: [
+      "paths",
+      "/api/v1/acquisition/visual-reader-sessions",
+      "post",
+      "responses",
+      "200",
+      "content",
+      "application/json",
+      "schema"
+    ],
+    ref: "#/components/schemas/VisualReaderSession"
+  },
+  {
+    path: [
+      "paths",
+      "/api/v1/acquisition/visual-reader-sessions/{sessionId}",
+      "get",
+      "responses",
+      "200",
+      "content",
+      "application/json",
+      "schema"
+    ],
+    ref: "#/components/schemas/VisualReaderSession"
+  },
+  {
+    path: [
+      "paths",
+      "/api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch",
+      "post",
+      "requestBody",
+      "content",
+      "application/json",
+      "schema"
+    ],
+    ref: "#/components/schemas/VisualObservationBatchRequest"
+  },
+  {
+    path: [
+      "paths",
+      "/api/v1/acquisition/visual-reader-sessions/{sessionId}/observations:batch",
+      "post",
+      "responses",
+      "200",
+      "content",
+      "application/json",
+      "schema"
+    ],
+    ref: "#/components/schemas/VisualObservationBatchResponse"
+  },
+  {
+    path: [
+      "paths",
+      "/api/v1/acquisition/visual-reader-sessions/{sessionId}:complete",
+      "post",
+      "requestBody",
+      "content",
+      "application/json",
+      "schema"
+    ],
+    ref: "#/components/schemas/VisualReaderCompleteRequest"
+  },
+  {
+    path: [
+      "paths",
+      "/api/v1/acquisition/visual-reader-sessions/{sessionId}:complete",
+      "post",
+      "responses",
+      "200",
+      "content",
+      "application/json",
+      "schema"
+    ],
+    ref: "#/components/schemas/VisualReaderSession"
+  },
+  {
+    path: [
+      "paths",
+      "/api/v1/acquisition/visual-reader-sessions/{sessionId}:abort",
+      "post",
+      "requestBody",
+      "content",
+      "application/json",
+      "schema"
+    ],
+    ref: "#/components/schemas/VisualReaderAbortRequest"
+  },
+  {
+    path: [
+      "paths",
+      "/api/v1/acquisition/visual-reader-sessions/{sessionId}:abort",
+      "post",
+      "responses",
+      "200",
+      "content",
+      "application/json",
+      "schema"
+    ],
+    ref: "#/components/schemas/VisualReaderSession"
+  }
+] as const;
+
+function sourceValueAtPath(source: any, path: readonly string[]) {
+  let current = source;
+  for (const segment of path) {
+    if (!current || typeof current !== "object") return undefined;
+    current = current[segment];
+  }
+  return current;
+}
+
+function assertExactSourceSchema(
+  source: any,
+  path: readonly string[],
+  expected: Record<string, string>
+) {
+  const actual = sourceValueAtPath(source, path);
+  const actualKeys = actual && typeof actual === "object"
+    && !Array.isArray(actual)
+    ? Object.keys(actual).sort()
+    : [];
+  const expectedKeys = Object.keys(expected).sort();
+  if (
+    actualKeys.length !== expectedKeys.length
+    || actualKeys.some((key, index) => key !== expectedKeys[index])
+    || expectedKeys.some((key) => actual[key] !== expected[key])
+  ) {
+    throw new Error(
+      `Published visual reader schema source mismatch: ${path.join(".")}`
+    );
+  }
+}
+
+export function assertPublishedVisualReaderSchemaSources(source: any) {
+  for (const [name, ref] of Object.entries(visualComponentSchemaRefs)) {
+    assertExactSourceSchema(
+      source,
+      ["components", "schemas", name],
+      { $ref: ref }
+    );
+  }
+  for (const routeSchema of visualRouteSchemaRefs) {
+    assertExactSourceSchema(
+      source,
+      routeSchema.path,
+      { $ref: routeSchema.ref }
+    );
+  }
+  assertExactSourceSchema(
+    source,
+    [
+      "paths",
+      "/api/v1/acquisition/visual-reader-artifacts/{artifactId}",
+      "get",
+      "responses",
+      "200",
+      "content",
+      "image/webp",
+      "schema"
+    ],
+    { type: "string", format: "binary" }
+  );
+}
+
 function canonicalizeOpenApi30Schema(value: any): any {
   if (Array.isArray(value)) {
     return value.map(canonicalizeOpenApi30Schema);
@@ -167,16 +385,26 @@ export function mergeOperationParameters(
 
 export async function loadPublishedAcquisitionPaths(): Promise<
   Record<string, ContractPathItem>
-> {
+>;
+export async function loadPublishedAcquisitionPaths(
+  publishedContractPath: string
+): Promise<Record<string, ContractPathItem>>;
+export async function loadPublishedAcquisitionPaths(
+  publishedContractPath = contractPath
+): Promise<Record<string, ContractPathItem>> {
   const yamlOptions = {
     merge: true,
     maxAliasCount: 1_000
   } as const;
-  const source = parse(await readFile(contractPath, "utf8"), yamlOptions);
+  const source = parse(
+    await readFile(publishedContractPath, "utf8"),
+    yamlOptions
+  );
   if (!source || typeof source !== "object" || !("paths" in source)) {
     throw new Error("Published acquisition OpenAPI document has no paths");
   }
-  const document = await SwaggerParser.dereference(contractPath, {
+  assertPublishedVisualReaderSchemaSources(source);
+  const document = await SwaggerParser.dereference(publishedContractPath, {
     parse: {
       yaml: {
         order: 1,

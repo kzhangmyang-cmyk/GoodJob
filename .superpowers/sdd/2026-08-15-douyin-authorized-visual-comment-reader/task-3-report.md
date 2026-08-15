@@ -59,12 +59,18 @@ serves only encrypted-at-rest, already-redacted WebP artifacts.
 
 Runtime OpenAPI now publishes all six static routes with stable operation IDs,
 closed Task 1 DTOs, real 403/413 write statuses, correct replay semantics, and
-the binary artifact headers. The OpenAPI 3.0 projection retains the strict
-batch shape but omits only Draft 2020-12 `contains/minContains/maxContains`
-after checking the source is exactly the service-enforced five-crop rule;
-every other unsupported keyword still fails closed. Numeric Draft 2020-12
-exclusive bounds are converted losslessly to OpenAPI 3.0 bounds. Drift tests
-compare all six published/runtime operation surfaces.
+the binary artifact headers. Before dereferencing or restoring visual schemas,
+the drift helper checks every raw visual route request/success-response node,
+the exact Task 1 session/observation fragment target of every visual component
+`$ref`, and the inline binary artifact schema. A wrong fragment, wrong route
+schema, missing node, or added schema keyword therefore fails closed instead
+of being hidden by the fragment-restoration step. The OpenAPI 3.0 projection
+retains the strict batch shape but omits only Draft 2020-12
+`contains/minContains/maxContains` after checking the source is exactly the
+service-enforced five-crop rule; every other unsupported keyword still fails
+closed. Numeric Draft 2020-12 exclusive bounds are converted losslessly to
+OpenAPI 3.0 bounds. Drift tests compare all six published/runtime operation
+surfaces.
 
 The static response status/header changes are regenerated into the
 same-repository `frontend/src/features/ai-growth/generated/ai-acquisition.ts`;
@@ -92,6 +98,10 @@ surface behind the existing `requireAuth` middleware and cookie CSRF check.
   JSON was RED 0/1 then GREEN 1/1.
 - Router error response conformance was RED 0/1 then GREEN 1/1, including the
   unknown dependency error fail-closed path.
+- Raw OpenAPI visual source validation was RED 0/3: the assertion was absent,
+  and wrong external fragments and route schemas were silently restored. It
+  was then GREEN 3/3 with exact source-node and target checks before
+  dereference.
 
 ## Final verification record
 
@@ -126,6 +136,9 @@ generated acquisition type freshness
 complete acquisition contract gate
 # exit 0 (contracts, drift, security, OpenAPI, generated types,
 # frontend build/tests, Baota package)
+
+raw visual OpenAPI source validation
+# tests 3; pass 3; fail 0
 
 complete acquisition with --test-force-exit before the file list
 # tests 912; pass 909; fail 2; skip 1

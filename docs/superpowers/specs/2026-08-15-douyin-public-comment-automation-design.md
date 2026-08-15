@@ -138,9 +138,14 @@ CLI 作为 GoodJob 生产依赖，现阶段不复制其脚本、不安装进后�
 3. 默认关闭的客户侧授权浏览器视觉读取器提交的抖音视频 URL 和可见评论观察；该入口
    扩展视频发现与公开端点失效时的可见样本覆盖，但不改变资格研判的权威链路。
 
-三种入口进入同一流水线。系统先使用现有抖音 URL 分类和短链研究能力解析
-`videoId`，再调用公开评论样本 Provider。不能因为作品元数据解析失败就放弃一个已经
-可以从 URL 确定的数字视频 ID。
+前两种 URL discovery 入口进入公开评论 Provider 流水线：系统先使用现有抖音 URL 分类
+和短链研究能力解析 `videoId`，再调用公开评论样本 Provider。不能因为作品元数据解析
+失败就放弃一个已经可以从 URL 确定的数字视频 ID。
+
+授权浏览器入口不经过公开评论 Provider。服务端验证已授权视觉读取会话、Run/Plan 归属、
+受控来源 URL 与 `videoId` 动态一致性后，把 `authorized_visible_top_level_sample` 下的
+`douyin.visual-comment-observation.v1` 直接写入视觉观察持久链路。它不会把视觉观察冒充
+公开端点评论结果，也不会在缺少可验证平台评论 ID 时写入 `douyin.comment.v1`。
 
 当前候选实现使用的是可匿名访问、但未作为抖音开放平台正式能力发布的分享端点。
 因此该 Provider 必须标记为 `experimental_public_sample`，保持可替换、可熔断，并先以

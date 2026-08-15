@@ -266,6 +266,8 @@ export interface AcquisitionVisualReaderRepository {
 - Modify: `backend/src/acquisition-openapi.ts`
 - Modify: `backend/src/acquisition-openapi-test.ts`
 - Modify: `backend/src/acquisition-openapi-response-conformance-test.ts`
+- Modify: `backend/src/acquisition-openapi-contract-test-helpers.ts`
+- Create: `backend/src/acquisition-openapi-contract-test-helpers-test.ts`
 - Modify: `backend/src/acquisition-openapi-contract-drift-test.ts`
 - Modify: `backend/src/security-test.ts`
 - Modify: `backend/src/server.ts`
@@ -291,6 +293,7 @@ export interface AcquisitionVisualReaderRepository {
   真实发生了一次 DOM 滚动。
 - 观察批次路由使用独立 2 MiB JSON body 上限，即使通用 `JSON_BODY_LIMIT` 被配置得更大也不能放宽；图片数超过 5、解码后制品总字节超过 `5 * 256 KiB` 或正文批次超过 20 时，在进入 repository 前拒绝。
 - 稳定错误码：`visual_reader_not_enabled | visual_reader_session_expired | visual_reader_budget_exhausted | visual_source_invalid | visual_observation_invalid | visual_artifact_invalid | visual_extraction_method_disabled | visual_extraction_low_confidence | visual_reader_user_takeover`。默认会话只允许 `dom | accessibility | ocr`，保留的 `vision` 输入返回 `visual_extraction_method_disabled`。
+- OpenAPI drift helper 在 dereference 和视觉 schema 恢复前验证静态源文件：六条视觉路由的请求/成功响应 schema 节点必须存在，组件 `$ref` 必须精确指向 Task 1 的 session/observation fragment，错误 fragment、错误 route schema 或额外 schema 关键字均 fail-closed，不能被恢复步骤掩盖。
 
 - [x] **Step 1: 写 service/router RED 测试**
 
