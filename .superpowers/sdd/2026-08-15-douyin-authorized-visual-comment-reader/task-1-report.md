@@ -121,3 +121,109 @@ All tests are local contract fixtures; none contacts Douyin.
 - No product README/PRD was changed because the feature is not implemented or
   user-operable yet. The current contract README, execution plan, controller
   brief, report, and ledger were synchronized.
+
+## Review round 1
+
+The verified review findings are fixed in the independent commit
+`fix: harden authorized visual reader contracts`. The fix remains inside Task
+1 contract scope: it does not implement Task 2, mount the six Task 3 runtime
+routes, or change the global type generator, JSON Schema converter, or drift
+normalizer.
+
+### Review RED evidence
+
+Each executable finding was reproduced independently before its production
+fix:
+
+```text
+visual crop base64 is canonical...
+# tests 1; pass 0; fail 1
+# non-canonical B== was accepted although it decoded to the same bytes as A==
+
+visual profile keys start alphanumeric...
+# tests 1; pass 0; fail 1
+# public profile key "." was accepted
+
+visual public identifiers use the existing ASCII boundary...
+# tests 1; pass 0; fail 1
+# an identifier containing NUL was accepted
+
+generated visual response DTOs accept real legal values...
+# tests 1; pass 0; fail 1
+# TS2741/TS2322 required schema metadata property $defs on legal DTO values
+
+generated visual helpers remain globally unique...
+# tests 1; pass 0; fail 1
+# VisualReaderUsage did not target visualReaderUsage and displaced Copilot usage
+```
+
+After the schema fix, the existing drift gate supplied one further integration
+RED: 16/17 passed because cross-file Presentation references into a schema
+whose root is itself a `$ref` were aliased to that external root during OpenAPI
+dereferencing. The production builder still had the correct inline closed
+usage and error schemas. The contract source was fixed at that boundary rather
+than changing the converter, normalizer, or builder.
+
+The README ambiguity was a documentation defect, not a runtime behavior. It
+was reviewed directly instead of adding a brittle prose-grep test.
+
+### Review decisions and delivered hardening
+
+- Canonical crop base64 now restricts the final data character to `[AQgw]`
+  before `==` and `[AEIMQUYcgkosw048]` before `=`. Tests cover both pad modes,
+  equal decoded bytes, exactly 256 KiB, and 256 KiB plus one byte.
+- Public visual identifiers use the existing bounded ASCII grammar
+  `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$` and explicitly reject control
+  characters, including the ECMAScript end-anchor trailing-newline edge.
+  Douyin public user keys likewise start with an ASCII letter or digit, so
+  `.`, `..`, `-`, `~`, and `___` are rejected.
+- The two public visual response DTOs are explicit, closed, uniquely named
+  `$defs` fragments selected by root `$ref`; named OpenAPI components target
+  those fragments. Real legal generated consumers therefore need no `$defs`
+  instance property. No generated file was hand-edited.
+- Every new visual helper has a `visualReader*` or `visualObservation*` name.
+  The pre-existing Copilot `usage`, platform `digest`, and comment-event
+  `$defs-digest` helpers and references are unchanged from their prior public
+  names.
+- Run Presentation keeps its small visual usage and stable-error projections
+  inline. This preserves its implemented static/runtime parity without
+  weakening or broadening the shared conversion machinery.
+- `contracts/README.md` now states that planned contract-only routes are the
+  explicit exception and that drift covers only the implemented-path
+  allowlist; the existing Presentation operation remains covered.
+
+### Review GREEN verification
+
+```text
+node --test test/generated-types.test.mjs test/schema-registry.test.mjs test/openapi.test.mjs
+# tests 39
+# pass 39
+
+npm run test:contracts
+# tests 78
+# pass 78
+
+npm run generate:frontend-contract-types
+# exit 0
+
+npm run check:generated-acquisition-types
+# exit 0
+
+npm run test:contract-drift --workspace backend
+# tests 17
+# pass 17
+
+npm run test:acquisition-openapi --workspace backend
+# tests 28
+# pass 28
+
+npm run build --workspace backend
+# exit 0
+
+git diff --check
+# exit 0
+```
+
+All review fixtures remain local and make no real Douyin request. Remaining
+runtime enforcement and evidence ownership stay with Tasks 3 and 7 as recorded
+above.

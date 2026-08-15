@@ -115,11 +115,27 @@
           "enum": ["created", "collecting", "completed", "partial_success", "aborted", "expired"]
         },
         "usage": {
-          "$ref": "acquisition-visual-reader-session.v1.schema.json#/$defs/usage"
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["videoCount", "observationCount", "scrollCount", "ocrCallCount", "domObservationCount", "accessibilityObservationCount", "ocrObservationCount", "lowConfidenceObservationCount", "artifactCount"],
+          "properties": {
+            "videoCount": { "type": "integer", "minimum": 0, "maximum": 10 },
+            "observationCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+            "scrollCount": { "type": "integer", "minimum": 0, "maximum": 5 },
+            "ocrCallCount": { "type": "integer", "minimum": 0, "maximum": 10 },
+            "domObservationCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+            "accessibilityObservationCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+            "ocrObservationCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+            "lowConfidenceObservationCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+            "artifactCount": { "type": "integer", "minimum": 0, "maximum": 300 }
+          }
         },
         "lastErrorCode": {
           "oneOf": [
-            { "$ref": "acquisition-visual-reader-session.v1.schema.json#/$defs/stableErrorCode" },
+            {
+              "type": "string",
+              "enum": ["visual_reader_not_enabled", "visual_reader_session_expired", "visual_reader_budget_exhausted", "visual_source_invalid", "visual_observation_invalid", "visual_artifact_invalid", "visual_extraction_method_disabled", "visual_extraction_low_confidence", "visual_reader_user_takeover"]
+            },
             { "type": "null" }
           ]
         },
@@ -141,7 +157,15 @@
               "completedAt": { "type": ["null", "string"], "format": "date-time" },
               "durationMs": { "type": ["null", "integer"], "minimum": 0 },
               "processedCount": { "type": "integer", "minimum": 0 },
-              "errorCode": { "oneOf": [{ "$ref": "acquisition-visual-reader-session.v1.schema.json#/$defs/stableErrorCode" }, { "type": "null" }] },
+              "errorCode": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "enum": ["visual_reader_not_enabled", "visual_reader_session_expired", "visual_reader_budget_exhausted", "visual_source_invalid", "visual_observation_invalid", "visual_artifact_invalid", "visual_extraction_method_disabled", "visual_extraction_low_confidence", "visual_reader_user_takeover"]
+                  },
+                  { "type": "null" }
+                ]
+              },
               "message": { "type": "string", "minLength": 1, "maxLength": 500 }
             }
           }

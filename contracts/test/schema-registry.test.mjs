@@ -563,20 +563,44 @@ test("visual observation schema records dynamic identity checks for the service 
   }), true, JSON.stringify(validate.errors));
   assert.match(schema.description, /Task 3 service.*sourceUrl.*videoId/u);
   assert.match(
-    schema.properties.publicProfileUrl.description,
+    schema.$defs.douyinVisualCommentObservation.properties.publicProfileUrl.description,
     /Task 3 service.*secUid/u
   );
+});
+
+test("visual profile keys start alphanumeric and reject dot segments or punctuation-only identities", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("douyin-visual-comment-observation");
+  assert.equal(typeof validate, "function");
+
+  for (const invalidKey of [".", "..", "-", "~", "___"]) {
+    assert.equal(validate({
+      ...visualObservation,
+      publicProfileUrl: `https://www.douyin.com/user/${invalidKey}`
+    }), false, `publicProfileUrl key ${invalidKey}`);
+    assert.equal(validate({
+      ...visualObservation,
+      secUid: invalidKey
+    }), false, `secUid ${invalidKey}`);
+  }
+
+  const validKey = "A._~-9";
+  assert.equal(validate({
+    ...visualObservation,
+    publicProfileUrl: `https://www.douyin.com/user/${validKey}`,
+    secUid: validKey
+  }), true, JSON.stringify(validate.errors));
 });
 
 test("visual submissions reject server fields, exfiltration, invalid crops, and batch overflow", async () => {
   const registry = await loadSchemaRegistry();
   const validateSubmission = compileVisualReaderDefinition(
     registry,
-    "visualObservationSubmission"
+    "visualReaderObservationSubmission"
   );
   const validateBatch = compileVisualReaderDefinition(
     registry,
-    "visualObservationBatchRequest"
+    "visualReaderObservationBatchRequest"
   );
   const proof = {
     version: "opaque-rect-v1",
@@ -679,6 +703,54 @@ test("visual submissions reject server fields, exfiltration, invalid crops, and 
   }), true, JSON.stringify(validateBatch.errors));
 });
 
+test("visual crop base64 is canonical at both padding modes and the 256 KiB boundary", async () => {
+  const registry = await loadSchemaRegistry();
+  const validateSubmission = compileVisualReaderDefinition(
+    registry,
+    "visualReaderObservationSubmission"
+  );
+  const proof = {
+    version: "opaque-rect-v1",
+    maskColorRgba: [17, 61, 51, 255],
+    avatarBounds: null,
+    visibleRegions: [{ x: 0, y: 0, width: 1, height: 1 }],
+    maskedRegions: [{ x: 1, y: 0, width: 1, height: 1 }]
+  };
+  const withBase64 = (contentBase64) => ({
+    ...visualSubmission,
+    redactedCrop: {
+      mediaType: "image/webp",
+      contentBase64,
+      redactionProof: proof
+    }
+  });
+
+  const canonicalDoublePad = Buffer.alloc(256 * 1024).toString("base64");
+  const noncanonicalDoublePad = `${canonicalDoublePad.slice(0, -3)}B==`;
+  assert.deepEqual(
+    Buffer.from(noncanonicalDoublePad, "base64"),
+    Buffer.from(canonicalDoublePad, "base64"),
+    "the fixture must change only unused double-padding bits"
+  );
+  assert.equal(validateSubmission(withBase64(canonicalDoublePad)), true);
+  assert.equal(validateSubmission(withBase64(noncanonicalDoublePad)), false);
+
+  const canonicalSinglePad = Buffer.from([0, 0]).toString("base64");
+  const noncanonicalSinglePad = `${canonicalSinglePad.slice(0, -2)}B=`;
+  assert.deepEqual(
+    Buffer.from(noncanonicalSinglePad, "base64"),
+    Buffer.from(canonicalSinglePad, "base64"),
+    "the fixture must change only unused single-padding bits"
+  );
+  assert.equal(validateSubmission(withBase64(canonicalSinglePad)), true);
+  assert.equal(validateSubmission(withBase64(noncanonicalSinglePad)), false);
+
+  assert.equal(
+    validateSubmission(withBase64(Buffer.alloc(256 * 1024 + 1).toString("base64"))),
+    false
+  );
+});
+
 test("visual reader session and command DTOs are closed and server bounded", async () => {
   const registry = await loadSchemaRegistry();
   const validateSession = registry.validators.get("acquisition-visual-reader-session");
@@ -739,7 +811,7 @@ test("visual reader session and command DTOs are closed and server bounded", asy
     outcome: { ...completedOutcome, errorCodes: ["cookie_export_failed"] }
   }), false, "outcomes expose only stable visual reader errors");
 
-  const validateCreate = compileVisualReaderDefinition(registry, "createRequest");
+  const validateCreate = compileVisualReaderDefinition(registry, "visualReaderCreateRequest");
   assert.equal(validateCreate({ runId: "run-1", artifactUploadEnabled: true }), true);
   for (const forbidden of ["planId", "planVersionId", "platform", "authorizedAt", "limits", "Cookie"]) {
     assert.equal(validateCreate({
@@ -749,7 +821,7 @@ test("visual reader session and command DTOs are closed and server bounded", asy
     }), false, forbidden);
   }
 
-  const validateComplete = compileVisualReaderDefinition(registry, "completeRequest");
+  const validateComplete = compileVisualReaderDefinition(registry, "visualReaderCompleteRequest");
   assert.equal(validateComplete({ status: "completed", errorCodes: [] }), true);
   assert.equal(validateComplete({
     status: "partial_success",
@@ -762,7 +834,7 @@ test("visual reader session and command DTOs are closed and server bounded", asy
     message: "client-authored outcome"
   }), false);
 
-  const validateAbort = compileVisualReaderDefinition(registry, "abortRequest");
+  const validateAbort = compileVisualReaderDefinition(registry, "visualReaderAbortRequest");
   assert.equal(validateAbort({ reasonCode: "user_requested" }), true);
   assert.equal(validateAbort({ reasonCode: "visual_reader_user_takeover" }), true);
   assert.equal(validateAbort({ reasonCode: "access_restricted" }), false);
@@ -772,11 +844,63 @@ test("visual reader session and command DTOs are closed and server bounded", asy
   }), false);
 });
 
+test("visual public identifiers use the existing ASCII extensible identifier boundary", async () => {
+  const registry = await loadSchemaRegistry();
+  const validateObservation = registry.validators.get(
+    "douyin-visual-comment-observation"
+  );
+  const validateSession = registry.validators.get(
+    "acquisition-visual-reader-session"
+  );
+  const validateSubmission = compileVisualReaderDefinition(
+    registry,
+    "visualReaderObservationSubmission"
+  );
+  const validateCreate = compileVisualReaderDefinition(registry, "visualReaderCreateRequest");
+  const validIdentifier = "A.z_9:-";
+
+  assert.equal(validateObservation({
+    ...visualObservation,
+    observationId: validIdentifier
+  }), true, JSON.stringify(validateObservation.errors));
+  assert.equal(validateSession({
+    ...visualSession,
+    runId: validIdentifier
+  }), true, JSON.stringify(validateSession.errors));
+  assert.equal(validateSubmission({
+    ...visualSubmission,
+    clientObservationKey: validIdentifier
+  }), true, JSON.stringify(validateSubmission.errors));
+  assert.equal(validateCreate({
+    runId: validIdentifier,
+    artifactUploadEnabled: false
+  }), true, JSON.stringify(validateCreate.errors));
+
+  for (const invalidIdentifier of ["visual\u0000session", "visual-session\n", "visual/session"]) {
+    assert.equal(validateObservation({
+      ...visualObservation,
+      observationId: invalidIdentifier
+    }), false, `observationId ${JSON.stringify(invalidIdentifier)}`);
+    assert.equal(validateSession({
+      ...visualSession,
+      runId: invalidIdentifier
+    }), false, `runId ${JSON.stringify(invalidIdentifier)}`);
+    assert.equal(validateSubmission({
+      ...visualSubmission,
+      clientObservationKey: invalidIdentifier
+    }), false, `clientObservationKey ${JSON.stringify(invalidIdentifier)}`);
+    assert.equal(validateCreate({
+      runId: invalidIdentifier,
+      artifactUploadEnabled: false
+    }), false, `create runId ${JSON.stringify(invalidIdentifier)}`);
+  }
+});
+
 test("visual batch responses expose accepted normalized facts without claiming sibling equality", async () => {
   const registry = await loadSchemaRegistry();
   const validateResponse = compileVisualReaderDefinition(
     registry,
-    "visualObservationBatchResponse"
+    "visualReaderObservationBatchResponse"
   );
   const response = {
     session: { ...visualSession, status: "collecting" },
@@ -804,7 +928,7 @@ test("visual batch responses expose accepted normalized facts without claiming s
     "acquisition-visual-reader-session"
   );
   assert.match(
-    sessionSchema.$defs.visualObservationBatchResponse.description,
+    sessionSchema.$defs.visualReaderObservationBatchResponse.description,
     /Task 3 service.*sessionId/u
   );
 });

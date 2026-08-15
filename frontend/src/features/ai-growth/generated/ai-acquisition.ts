@@ -1536,18 +1536,18 @@ export interface components {
         DouyinCommentEvent: components["schemas"]["douyin-comment-event.v1.schema"];
         ActionPolicy: components["schemas"]["action-policy.v1.schema"];
         ActionReceipt: components["schemas"]["action-receipt.v1.schema"];
-        DouyinVisualCommentObservation: components["schemas"]["douyin-visual-comment-observation.v1.schema"];
-        OpaqueRectRedactionProof: components["schemas"]["opaqueRectRedactionProof"];
-        VisualObservationSubmission: components["schemas"]["visualObservationSubmission"];
-        VisualReaderLimits: components["schemas"]["limits"];
-        VisualReaderUsage: components["schemas"]["usage"];
-        VisualReaderOutcome: components["schemas"]["outcome"];
-        VisualReaderSession: components["schemas"]["acquisition-visual-reader-session.v1.schema"];
-        VisualReaderCreateRequest: components["schemas"]["createRequest"];
-        VisualObservationBatchRequest: components["schemas"]["visualObservationBatchRequest"];
-        VisualObservationBatchResponse: components["schemas"]["visualObservationBatchResponse"];
-        VisualReaderCompleteRequest: components["schemas"]["completeRequest"];
-        VisualReaderAbortRequest: components["schemas"]["abortRequest"];
+        DouyinVisualCommentObservation: components["schemas"]["douyinVisualCommentObservation"];
+        OpaqueRectRedactionProof: components["schemas"]["visualReaderOpaqueRectRedactionProof"];
+        VisualObservationSubmission: components["schemas"]["visualReaderObservationSubmission"];
+        VisualReaderLimits: components["schemas"]["visualReaderLimits"];
+        VisualReaderUsage: components["schemas"]["visualReaderUsage"];
+        VisualReaderOutcome: components["schemas"]["visualReaderOutcome"];
+        VisualReaderSession: components["schemas"]["visualReaderSession"];
+        VisualReaderCreateRequest: components["schemas"]["visualReaderCreateRequest"];
+        VisualObservationBatchRequest: components["schemas"]["visualReaderObservationBatchRequest"];
+        VisualObservationBatchResponse: components["schemas"]["visualReaderObservationBatchResponse"];
+        VisualReaderCompleteRequest: components["schemas"]["visualReaderCompleteRequest"];
+        VisualReaderAbortRequest: components["schemas"]["visualReaderAbortRequest"];
         DiscoveryEvidencePagedResult: {
             items: components["schemas"]["discovery-evidence.v1.schema"][];
             nextCursor: string | null;
@@ -2638,19 +2638,6 @@ export interface components {
                 };
             };
         };
-        usage: {
-            videoCount: number;
-            observationCount: number;
-            scrollCount: number;
-            ocrCallCount: number;
-            domObservationCount: number;
-            accessibilityObservationCount: number;
-            ocrObservationCount: number;
-            lowConfidenceObservationCount: number;
-            artifactCount: number;
-        };
-        /** @enum {string} */
-        stableErrorCode: "visual_reader_not_enabled" | "visual_reader_session_expired" | "visual_reader_budget_exhausted" | "visual_source_invalid" | "visual_observation_invalid" | "visual_artifact_invalid" | "visual_extraction_method_disabled" | "visual_extraction_low_confidence" | "visual_reader_user_takeover";
         /** AcquisitionRunPresentation */
         "acquisition-run-presentation.v1.schema": {
             run: {
@@ -2718,8 +2705,18 @@ export interface components {
                 coverage: "authorized_visible_top_level_sample";
                 /** @enum {string} */
                 status: "created" | "collecting" | "completed" | "partial_success" | "aborted" | "expired";
-                usage: components["schemas"]["usage"];
-                lastErrorCode: components["schemas"]["stableErrorCode"] | null;
+                usage: {
+                    videoCount: number;
+                    observationCount: number;
+                    scrollCount: number;
+                    ocrCallCount: number;
+                    domObservationCount: number;
+                    accessibilityObservationCount: number;
+                    ocrObservationCount: number;
+                    lowConfidenceObservationCount: number;
+                    artifactCount: number;
+                };
+                lastErrorCode: ("visual_reader_not_enabled" | "visual_reader_session_expired" | "visual_reader_budget_exhausted" | "visual_source_invalid" | "visual_observation_invalid" | "visual_artifact_invalid" | "visual_extraction_method_disabled" | "visual_extraction_low_confidence" | "visual_reader_user_takeover") | null;
                 visualSteps: {
                     /** @enum {string} */
                     id: "authorize_visual_reader" | "read_visible_comment_cards" | "extract_visible_text" | "persist_visual_observations" | "review_visual_signal_confidence";
@@ -2731,7 +2728,7 @@ export interface components {
                     completedAt: null | string;
                     durationMs: null | number;
                     processedCount: number;
-                    errorCode: components["schemas"]["stableErrorCode"] | null;
+                    errorCode: ("visual_reader_not_enabled" | "visual_reader_session_expired" | "visual_reader_budget_exhausted" | "visual_source_invalid" | "visual_observation_invalid" | "visual_artifact_invalid" | "visual_extraction_method_disabled" | "visual_extraction_low_confidence" | "visual_reader_user_takeover") | null;
                     message: string;
                 }[];
             };
@@ -2837,337 +2834,14 @@ export interface components {
             nextAfter: string;
             hasMore: boolean;
         };
-        identifier: string;
-        createRequest: {
-            runId: components["schemas"]["identifier"];
+        visualReaderIdentifier: string;
+        visualReaderCreateRequest: {
+            runId: components["schemas"]["visualReaderIdentifier"];
             artifactUploadEnabled: boolean;
         };
-        pixelRect: {
-            x: number;
-            y: number;
-            width: number;
-            height: number;
-        };
-        /** Format: uri */
-        sourceUrl: string;
-        videoId: string;
-        visibleText: string;
-        nullableVisibleString: string | null;
-        nullableCount: number | null;
-        nullablePlatformCommentId: string | null;
-        nullablePublicProfileUrl: string | null;
-        nullableSecUid: string | null;
         /** @enum {string} */
-        extractionMethod: "dom" | "accessibility" | "ocr" | "vision";
-        fieldConfidences: {
-            visibleText: number;
-            displayName?: number;
-            visibleTimeText?: number;
-            likeCount?: number;
-            replyCount?: number;
-            platformCommentId?: number;
-            publicProfileUrl?: number;
-            secUid?: number;
-        };
-        cardBounds: {
-            x: number;
-            y: number;
-            width: number;
-            height: number;
-        };
-        readerVersion: string;
-        /** Format: date-time */
-        capturedAt: string;
-        /** @description Canonical base64 whose decoded length is at most 262144 bytes. Actual WebP decoding and pixel proof validation are Task 3 service responsibilities. */
-        boundedWebpBase64: string;
-        opaqueRectRedactionProof: {
-            /** @constant */
-            version: "opaque-rect-v1";
-            /** @constant */
-            maskColorRgba: [
-                17,
-                61,
-                51,
-                255
-            ];
-            avatarBounds: components["schemas"]["pixelRect"] | null;
-            visibleRegions: components["schemas"]["pixelRect"][];
-            maskedRegions: components["schemas"]["pixelRect"][];
-        };
-        visualObservationSubmission: {
-            clientObservationKey: components["schemas"]["identifier"];
-            sourceUrl: components["schemas"]["sourceUrl"];
-            videoId: components["schemas"]["videoId"];
-            visibleText: components["schemas"]["visibleText"];
-            displayName: components["schemas"]["nullableVisibleString"];
-            visibleTimeText: components["schemas"]["nullableVisibleString"];
-            likeCount: components["schemas"]["nullableCount"];
-            replyCount: components["schemas"]["nullableCount"];
-            platformCommentId: components["schemas"]["nullablePlatformCommentId"];
-            publicProfileUrl: components["schemas"]["nullablePublicProfileUrl"];
-            secUid: components["schemas"]["nullableSecUid"];
-            extractionMethod: components["schemas"]["extractionMethod"];
-            fieldConfidences: components["schemas"]["fieldConfidences"];
-            viewport: {
-                width: number;
-                height: number;
-                deviceScaleFactor: number;
-            };
-            cardBounds: components["schemas"]["cardBounds"];
-            readerVersion: components["schemas"]["readerVersion"];
-            capturedAt: components["schemas"]["capturedAt"];
-            redactedCrop: {
-                /** @constant */
-                mediaType: "image/webp";
-                contentBase64: components["schemas"]["boundedWebpBase64"];
-                redactionProof: components["schemas"]["opaqueRectRedactionProof"];
-            } | null;
-        };
-        digest: string;
-        /**
-         * DouyinVisualCommentObservationV1
-         * @description Server-normalized observation of one currently visible top-level Douyin comment. Standard JSON Schema validates sourceUrl and videoId independently; the Task 3 service must require the numeric sourceUrl video segment to equal videoId before persistence.
-         */
-        "douyin-visual-comment-observation.v1.schema": {
-            observationId: components["schemas"]["identifier"];
-            sessionId: components["schemas"]["identifier"];
-            /** Format: uri */
-            sourceUrl: string;
-            videoId: string;
-            visibleText: string;
-            textHash: components["schemas"]["digest"];
-            displayName: components["schemas"]["nullableVisibleString"];
-            visibleTimeText: components["schemas"]["nullableVisibleString"];
-            likeCount: components["schemas"]["nullableCount"];
-            replyCount: components["schemas"]["nullableCount"];
-            platformCommentId: components["schemas"]["nullablePlatformCommentId"];
-            /** @description Literal public profile link fact only. Standard JSON Schema validates it independently; the Task 3 service must verify its public user key agrees with secUid before persistence. */
-            publicProfileUrl: components["schemas"]["nullablePublicProfileUrl"];
-            secUid: components["schemas"]["nullableSecUid"];
-            /** @enum {string} */
-            extractionMethod: "dom" | "accessibility" | "ocr" | "vision";
-            fieldConfidences: components["schemas"]["fieldConfidences"];
-            viewportHash: components["schemas"]["digest"];
-            cardBounds: components["schemas"]["cardBounds"];
-            redactedCropHash: components["schemas"]["digest"] | null;
-            readerVersion: string;
-            /** Format: date-time */
-            capturedAt: string;
-            $defs: {
-                identifier: string;
-                digest: string;
-                nullableVisibleString: string | null;
-                nullableCount: number | null;
-                nullablePlatformCommentId: string | null;
-                nullablePublicProfileUrl: string | null;
-                nullableSecUid: string | null;
-                fieldConfidences: {
-                    visibleText: number;
-                    displayName?: number;
-                    visibleTimeText?: number;
-                    likeCount?: number;
-                    replyCount?: number;
-                    platformCommentId?: number;
-                    publicProfileUrl?: number;
-                    secUid?: number;
-                };
-                cardBounds: {
-                    x: number;
-                    y: number;
-                    width: number;
-                    height: number;
-                };
-            };
-        };
-        /**
-         * VisualReaderSession
-         * @description Server-owned public projection for one explicitly authorized, bounded, read-only visual reader session.
-         */
-        "acquisition-visual-reader-session.v1.schema": {
-            sessionId: components["schemas"]["identifier"];
-            runId: components["schemas"]["identifier"];
-            planId: components["schemas"]["identifier"];
-            planVersionId: components["schemas"]["identifier"];
-            /** @constant */
-            platform: "douyin";
-            /** @constant */
-            coverage: "authorized_visible_top_level_sample";
-            /** @enum {string} */
-            status: "created" | "collecting" | "completed" | "partial_success" | "aborted" | "expired";
-            artifactUploadEnabled: boolean;
-            limits: components["schemas"]["limits"];
-            usage: components["schemas"]["usage"];
-            outcome: components["schemas"]["outcome"] | null;
-            lastErrorCode: components["schemas"]["stableErrorCode"] | null;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            authorizedAt: string;
-            /** Format: date-time */
-            updatedAt: string;
-            /** Format: date-time */
-            expiresAt: string;
-            completedAt: string | null;
-            $defs: {
-                identifier: string;
-                /** @enum {string} */
-                stableErrorCode: "visual_reader_not_enabled" | "visual_reader_session_expired" | "visual_reader_budget_exhausted" | "visual_source_invalid" | "visual_observation_invalid" | "visual_artifact_invalid" | "visual_extraction_method_disabled" | "visual_extraction_low_confidence" | "visual_reader_user_takeover";
-                limits: {
-                    maxVideos: number;
-                    maxCommentsPerVideo: number;
-                    maxScrolls: number;
-                    maxOcrCalls: number;
-                    maxDurationMs: number;
-                };
-                usage: {
-                    videoCount: number;
-                    observationCount: number;
-                    scrollCount: number;
-                    ocrCallCount: number;
-                    domObservationCount: number;
-                    accessibilityObservationCount: number;
-                    ocrObservationCount: number;
-                    lowConfidenceObservationCount: number;
-                    artifactCount: number;
-                };
-                outcome: {
-                    /** @enum {string} */
-                    status: "completed" | "partial_success" | "aborted" | "expired";
-                    videoCount: number;
-                    observationCount: number;
-                    domObservationCount: number;
-                    accessibilityObservationCount: number;
-                    ocrObservationCount: number;
-                    lowConfidenceObservationCount: number;
-                    artifactCount: number;
-                    errorCodes: components["schemas"]["stableErrorCode"][];
-                };
-                pixelRect: {
-                    x: number;
-                    y: number;
-                    width: number;
-                    height: number;
-                };
-                opaqueRectRedactionProof: {
-                    /** @constant */
-                    version: "opaque-rect-v1";
-                    /** @constant */
-                    maskColorRgba: [
-                        17,
-                        61,
-                        51,
-                        255
-                    ];
-                    avatarBounds: components["schemas"]["pixelRect"] | null;
-                    visibleRegions: components["schemas"]["pixelRect"][];
-                    maskedRegions: components["schemas"]["pixelRect"][];
-                };
-                /** @description Canonical base64 whose decoded length is at most 262144 bytes. Actual WebP decoding and pixel proof validation are Task 3 service responsibilities. */
-                boundedWebpBase64: string;
-                visualObservationSubmission: {
-                    clientObservationKey: components["schemas"]["identifier"];
-                    sourceUrl: components["schemas"]["sourceUrl"];
-                    videoId: components["schemas"]["videoId"];
-                    visibleText: components["schemas"]["visibleText"];
-                    displayName: components["schemas"]["nullableVisibleString"];
-                    visibleTimeText: components["schemas"]["nullableVisibleString"];
-                    likeCount: components["schemas"]["nullableCount"];
-                    replyCount: components["schemas"]["nullableCount"];
-                    platformCommentId: components["schemas"]["nullablePlatformCommentId"];
-                    publicProfileUrl: components["schemas"]["nullablePublicProfileUrl"];
-                    secUid: components["schemas"]["nullableSecUid"];
-                    extractionMethod: components["schemas"]["extractionMethod"];
-                    fieldConfidences: components["schemas"]["fieldConfidences"];
-                    viewport: {
-                        width: number;
-                        height: number;
-                        deviceScaleFactor: number;
-                    };
-                    cardBounds: components["schemas"]["cardBounds"];
-                    readerVersion: components["schemas"]["readerVersion"];
-                    capturedAt: components["schemas"]["capturedAt"];
-                    redactedCrop: {
-                        /** @constant */
-                        mediaType: "image/webp";
-                        contentBase64: components["schemas"]["boundedWebpBase64"];
-                        redactionProof: components["schemas"]["opaqueRectRedactionProof"];
-                    } | null;
-                };
-                createRequest: {
-                    runId: components["schemas"]["identifier"];
-                    artifactUploadEnabled: boolean;
-                };
-                /** @description At most 20 client observations, with no more than five redacted crops. */
-                visualObservationBatchRequest: {
-                    observations: components["schemas"]["visualObservationSubmission"][];
-                };
-                acceptedObservation: {
-                    clientObservationKey: components["schemas"]["identifier"];
-                    observation: components["schemas"]["douyin-visual-comment-observation.v1.schema"];
-                };
-                /** @description Accepted observations are server-normalized facts. Standard JSON Schema validates each sessionId independently; the Task 3 service must require the route, session, and every observation sessionId to agree before returning the response. */
-                visualObservationBatchResponse: {
-                    session: components["schemas"]["acquisition-visual-reader-session.v1.schema"];
-                    accepted: components["schemas"]["acceptedObservation"][];
-                    duplicates: components["schemas"]["identifier"][];
-                };
-                completeRequest: {
-                    /** @enum {string} */
-                    status: "completed" | "partial_success";
-                    errorCodes: components["schemas"]["stableErrorCode"][];
-                };
-                abortRequest: {
-                    /** @enum {string} */
-                    reasonCode: "user_requested" | "visual_reader_user_takeover";
-                };
-            };
-        } & ({
-            /** @enum {unknown} */
-            status?: "created" | "collecting";
-            outcome?: null;
-            completedAt?: null;
-        } | {
-            /** @constant */
-            status?: "completed";
-            outcome?: components["schemas"]["outcome"] & {
-                /** @constant */
-                status?: "completed";
-            };
-            /** Format: date-time */
-            completedAt?: string;
-        } | {
-            /** @constant */
-            status?: "partial_success";
-            outcome?: components["schemas"]["outcome"] & {
-                /** @constant */
-                status?: "partial_success";
-            };
-            /** Format: date-time */
-            completedAt?: string;
-        } | {
-            /** @constant */
-            status?: "aborted";
-            outcome?: components["schemas"]["outcome"] & {
-                /** @constant */
-                status?: "aborted";
-            };
-            /** Format: date-time */
-            completedAt?: string;
-        } | {
-            /** @constant */
-            status?: "expired";
-            outcome?: components["schemas"]["outcome"] & {
-                /** @constant */
-                status?: "expired";
-            };
-            /** Format: date-time */
-            completedAt?: string;
-        });
-        acceptedObservation: {
-            clientObservationKey: components["schemas"]["identifier"];
-            observation: components["schemas"]["douyin-visual-comment-observation.v1.schema"];
-        };
-        outcome: {
+        visualReaderStableErrorCode: "visual_reader_not_enabled" | "visual_reader_session_expired" | "visual_reader_budget_exhausted" | "visual_source_invalid" | "visual_observation_invalid" | "visual_artifact_invalid" | "visual_extraction_method_disabled" | "visual_extraction_low_confidence" | "visual_reader_user_takeover";
+        visualReaderOutcome: {
             /** @enum {string} */
             status: "completed" | "partial_success" | "aborted" | "expired";
             videoCount: number;
@@ -3177,31 +2851,230 @@ export interface components {
             ocrObservationCount: number;
             lowConfidenceObservationCount: number;
             artifactCount: number;
-            errorCodes: components["schemas"]["stableErrorCode"][];
+            errorCodes: components["schemas"]["visualReaderStableErrorCode"][];
         };
-        limits: {
+        visualReaderLimits: {
             maxVideos: number;
             maxCommentsPerVideo: number;
             maxScrolls: number;
             maxOcrCalls: number;
             maxDurationMs: number;
         };
+        visualReaderUsage: {
+            videoCount: number;
+            observationCount: number;
+            scrollCount: number;
+            ocrCallCount: number;
+            domObservationCount: number;
+            accessibilityObservationCount: number;
+            ocrObservationCount: number;
+            lowConfidenceObservationCount: number;
+            artifactCount: number;
+        };
+        /**
+         * VisualReaderSession
+         * @description Server-owned public projection for one explicitly authorized, bounded, read-only visual reader session.
+         */
+        visualReaderSession: {
+            sessionId: components["schemas"]["visualReaderIdentifier"];
+            runId: components["schemas"]["visualReaderIdentifier"];
+            planId: components["schemas"]["visualReaderIdentifier"];
+            planVersionId: components["schemas"]["visualReaderIdentifier"];
+            /** @constant */
+            platform: "douyin";
+            /** @constant */
+            coverage: "authorized_visible_top_level_sample";
+            /** @enum {string} */
+            status: "created" | "collecting" | "completed" | "partial_success" | "aborted" | "expired";
+            artifactUploadEnabled: boolean;
+            limits: components["schemas"]["visualReaderLimits"];
+            usage: components["schemas"]["visualReaderUsage"];
+            outcome: components["schemas"]["visualReaderOutcome"] | null;
+            lastErrorCode: components["schemas"]["visualReaderStableErrorCode"] | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            authorizedAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            completedAt: string | null;
+        } & ({
+            /** @enum {unknown} */
+            status?: "created" | "collecting";
+            outcome?: null;
+            completedAt?: null;
+        } | {
+            /** @constant */
+            status?: "completed";
+            outcome?: components["schemas"]["visualReaderOutcome"] & {
+                /** @constant */
+                status?: "completed";
+            };
+            /** Format: date-time */
+            completedAt?: string;
+        } | {
+            /** @constant */
+            status?: "partial_success";
+            outcome?: components["schemas"]["visualReaderOutcome"] & {
+                /** @constant */
+                status?: "partial_success";
+            };
+            /** Format: date-time */
+            completedAt?: string;
+        } | {
+            /** @constant */
+            status?: "aborted";
+            outcome?: components["schemas"]["visualReaderOutcome"] & {
+                /** @constant */
+                status?: "aborted";
+            };
+            /** Format: date-time */
+            completedAt?: string;
+        } | {
+            /** @constant */
+            status?: "expired";
+            outcome?: components["schemas"]["visualReaderOutcome"] & {
+                /** @constant */
+                status?: "expired";
+            };
+            /** Format: date-time */
+            completedAt?: string;
+        });
+        /** Format: uri */
+        sourceUrl: string;
+        videoId: string;
+        visibleText: string;
+        visualObservationNullableVisibleString: string | null;
+        visualObservationNullableCount: number | null;
+        visualObservationNullablePlatformCommentId: string | null;
+        visualObservationNullablePublicProfileUrl: string | null;
+        visualObservationNullableSecUid: string | null;
+        /** @enum {string} */
+        extractionMethod: "dom" | "accessibility" | "ocr" | "vision";
+        visualObservationFieldConfidences: {
+            visibleText: number;
+            displayName?: number;
+            visibleTimeText?: number;
+            likeCount?: number;
+            replyCount?: number;
+            platformCommentId?: number;
+            publicProfileUrl?: number;
+            secUid?: number;
+        };
+        visualObservationCardBounds: {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+        };
+        readerVersion: string;
+        /** Format: date-time */
+        capturedAt: string;
+        /** @description Canonical base64 whose decoded length is at most 262144 bytes. Actual WebP decoding and pixel proof validation are Task 3 service responsibilities. */
+        visualReaderBoundedWebpBase64: string;
+        visualReaderPixelRect: {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+        };
+        visualReaderOpaqueRectRedactionProof: {
+            /** @constant */
+            version: "opaque-rect-v1";
+            /** @constant */
+            maskColorRgba: [
+                17,
+                61,
+                51,
+                255
+            ];
+            avatarBounds: components["schemas"]["visualReaderPixelRect"] | null;
+            visibleRegions: components["schemas"]["visualReaderPixelRect"][];
+            maskedRegions: components["schemas"]["visualReaderPixelRect"][];
+        };
+        visualReaderObservationSubmission: {
+            clientObservationKey: components["schemas"]["visualReaderIdentifier"];
+            sourceUrl: components["schemas"]["sourceUrl"];
+            videoId: components["schemas"]["videoId"];
+            visibleText: components["schemas"]["visibleText"];
+            displayName: components["schemas"]["visualObservationNullableVisibleString"];
+            visibleTimeText: components["schemas"]["visualObservationNullableVisibleString"];
+            likeCount: components["schemas"]["visualObservationNullableCount"];
+            replyCount: components["schemas"]["visualObservationNullableCount"];
+            platformCommentId: components["schemas"]["visualObservationNullablePlatformCommentId"];
+            publicProfileUrl: components["schemas"]["visualObservationNullablePublicProfileUrl"];
+            secUid: components["schemas"]["visualObservationNullableSecUid"];
+            extractionMethod: components["schemas"]["extractionMethod"];
+            fieldConfidences: components["schemas"]["visualObservationFieldConfidences"];
+            viewport: {
+                width: number;
+                height: number;
+                deviceScaleFactor: number;
+            };
+            cardBounds: components["schemas"]["visualObservationCardBounds"];
+            readerVersion: components["schemas"]["readerVersion"];
+            capturedAt: components["schemas"]["capturedAt"];
+            redactedCrop: {
+                /** @constant */
+                mediaType: "image/webp";
+                contentBase64: components["schemas"]["visualReaderBoundedWebpBase64"];
+                redactionProof: components["schemas"]["visualReaderOpaqueRectRedactionProof"];
+            } | null;
+        };
         /** @description At most 20 client observations, with no more than five redacted crops. */
-        visualObservationBatchRequest: {
-            observations: components["schemas"]["visualObservationSubmission"][];
+        visualReaderObservationBatchRequest: {
+            observations: components["schemas"]["visualReaderObservationSubmission"][];
+        };
+        visualObservationIdentifier: string;
+        visualObservationDigest: string;
+        /**
+         * DouyinVisualCommentObservationV1
+         * @description Server-normalized observation of one currently visible top-level Douyin comment. Standard JSON Schema validates sourceUrl and videoId independently; the Task 3 service must require the numeric sourceUrl video segment to equal videoId before persistence.
+         */
+        douyinVisualCommentObservation: {
+            observationId: components["schemas"]["visualObservationIdentifier"];
+            sessionId: components["schemas"]["visualObservationIdentifier"];
+            /** Format: uri */
+            sourceUrl: string;
+            videoId: string;
+            visibleText: string;
+            textHash: components["schemas"]["visualObservationDigest"];
+            displayName: components["schemas"]["visualObservationNullableVisibleString"];
+            visibleTimeText: components["schemas"]["visualObservationNullableVisibleString"];
+            likeCount: components["schemas"]["visualObservationNullableCount"];
+            replyCount: components["schemas"]["visualObservationNullableCount"];
+            platformCommentId: components["schemas"]["visualObservationNullablePlatformCommentId"];
+            /** @description Literal public profile link fact only. Standard JSON Schema validates it independently; the Task 3 service must verify its public user key agrees with secUid before persistence. */
+            publicProfileUrl: components["schemas"]["visualObservationNullablePublicProfileUrl"];
+            secUid: components["schemas"]["visualObservationNullableSecUid"];
+            /** @enum {string} */
+            extractionMethod: "dom" | "accessibility" | "ocr" | "vision";
+            fieldConfidences: components["schemas"]["visualObservationFieldConfidences"];
+            viewportHash: components["schemas"]["visualObservationDigest"];
+            cardBounds: components["schemas"]["visualObservationCardBounds"];
+            redactedCropHash: components["schemas"]["visualObservationDigest"] | null;
+            readerVersion: string;
+            /** Format: date-time */
+            capturedAt: string;
+        };
+        visualReaderAcceptedObservation: {
+            clientObservationKey: components["schemas"]["visualReaderIdentifier"];
+            observation: components["schemas"]["douyinVisualCommentObservation"];
         };
         /** @description Accepted observations are server-normalized facts. Standard JSON Schema validates each sessionId independently; the Task 3 service must require the route, session, and every observation sessionId to agree before returning the response. */
-        visualObservationBatchResponse: {
-            session: components["schemas"]["acquisition-visual-reader-session.v1.schema"];
-            accepted: components["schemas"]["acceptedObservation"][];
-            duplicates: components["schemas"]["identifier"][];
+        visualReaderObservationBatchResponse: {
+            session: components["schemas"]["visualReaderSession"];
+            accepted: components["schemas"]["visualReaderAcceptedObservation"][];
+            duplicates: components["schemas"]["visualReaderIdentifier"][];
         };
-        completeRequest: {
+        visualReaderCompleteRequest: {
             /** @enum {string} */
             status: "completed" | "partial_success";
-            errorCodes: components["schemas"]["stableErrorCode"][];
+            errorCodes: components["schemas"]["visualReaderStableErrorCode"][];
         };
-        abortRequest: {
+        visualReaderAbortRequest: {
             /** @enum {string} */
             reasonCode: "user_requested" | "visual_reader_user_takeover";
         };
@@ -3802,7 +3675,7 @@ export interface components {
         };
         inputContent: components["schemas"]["textContent"] | components["schemas"]["imageContent"];
         assistantContent: components["schemas"]["textContent"] | components["schemas"]["thinkingContent"] | components["schemas"]["toolCall"];
-        "$defs-usage": {
+        usage: {
             input: number;
             output: number;
             cacheRead: number;
@@ -3838,7 +3711,7 @@ export interface components {
                 responseModel?: string;
                 responseId?: string;
                 diagnostics?: unknown[];
-                usage: components["schemas"]["$defs-usage"];
+                usage: components["schemas"]["usage"];
                 /** @enum {unknown} */
                 stopReason: "stop" | "length" | "toolUse" | "error" | "aborted";
                 errorMessage?: string;
@@ -3850,7 +3723,7 @@ export interface components {
                 toolName: string;
                 content: components["schemas"]["inputContent"][];
                 details?: unknown;
-                usage?: components["schemas"]["$defs-usage"];
+                usage?: components["schemas"]["usage"];
                 addedToolNames?: string[];
                 isError: boolean;
                 timestamp: number;
@@ -3969,10 +3842,10 @@ export interface components {
         };
         boundedString: string;
         /** @description Canonical immutable SHA-256 digest: sha256: followed by exactly 64 lowercase hexadecimal characters. */
-        "$defs-digest": string;
+        digest: string;
         snapshotRef: {
             id: components["schemas"]["boundedString"];
-            hash: components["schemas"]["$defs-digest"];
+            hash: components["schemas"]["digest"];
         };
         limit: {
             limit: number | null;
@@ -4015,7 +3888,7 @@ export interface components {
                 digest: string;
                 snapshotRef: {
                     id: components["schemas"]["boundedString"];
-                    hash: components["schemas"]["$defs-digest"];
+                    hash: components["schemas"]["digest"];
                 };
                 limit: {
                     limit: number | null;
@@ -4041,7 +3914,7 @@ export interface components {
             teamId: components["schemas"]["boundedString"] | null;
             connectionId: components["schemas"]["boundedString"];
             credentialVersion: number;
-            snapshotHash: components["schemas"]["$defs-digest"];
+            snapshotHash: components["schemas"]["digest"];
             /** Format: date-time */
             capturedAt: string;
             /** Format: date-time */
@@ -4076,8 +3949,8 @@ export interface components {
             platformEventRef: components["schemas"]["boundedString"];
             platformSubjectRef: components["schemas"]["boundedString"];
             eventType: string;
-            rawPayloadHash: components["schemas"]["$defs-digest"];
-            normalizedEventHash: components["schemas"]["$defs-digest"];
+            rawPayloadHash: components["schemas"]["digest"];
+            normalizedEventHash: components["schemas"]["digest"];
             /** Format: date-time */
             occurredAt: string;
             /** Format: date-time */
@@ -4085,7 +3958,7 @@ export interface components {
             authorizationSnapshot: {
                 connectionId: components["schemas"]["boundedString"];
                 credentialVersion: number;
-                scopeHash: components["schemas"]["$defs-digest"];
+                scopeHash: components["schemas"]["digest"];
                 capabilitySnapshotRef: components["schemas"]["snapshotRef"];
             };
             dedupeKey: string;
@@ -4098,10 +3971,11 @@ export interface components {
                 digest: string;
                 snapshotRef: {
                     id: components["schemas"]["boundedString"];
-                    hash: components["schemas"]["$defs-digest"];
+                    hash: components["schemas"]["digest"];
                 };
             };
         };
+        "$defs-digest": string;
         nullableBoundedString: components["schemas"]["boundedString"] | null;
         /**
          * DouyinCommentEvent
@@ -4117,7 +3991,7 @@ export interface components {
             videoId: components["schemas"]["boundedString"];
             parentCommentId: null;
             text: string;
-            textHash: components["schemas"]["digest"];
+            textHash: components["schemas"]["$defs-digest"];
             /** Format: date-time */
             occurredAt: string;
             /** Format: date-time */
@@ -4137,7 +4011,7 @@ export interface components {
             /** @constant */
             accessStatus: "public_content";
             providerVersion: components["schemas"]["boundedString"];
-            rawArtifactHash: components["schemas"]["digest"];
+            rawArtifactHash: components["schemas"]["$defs-digest"];
             $defs: {
                 boundedString: string;
                 nullableBoundedString: components["schemas"]["boundedString"] | null;
@@ -4147,12 +4021,12 @@ export interface components {
         planRef: {
             id: components["schemas"]["boundedString"];
             version: number;
-            hash: components["schemas"]["$defs-digest"];
+            hash: components["schemas"]["digest"];
         };
         ruleBundleRef: {
             id: components["schemas"]["boundedString"];
             version: string;
-            hash: components["schemas"]["$defs-digest"];
+            hash: components["schemas"]["digest"];
         };
         /** ActionPolicy */
         "action-policy.v1.schema": {
@@ -4162,7 +4036,7 @@ export interface components {
             version: number;
             planRef: components["schemas"]["planRef"];
             ruleBundleRef: components["schemas"]["ruleBundleRef"];
-            policyHash: components["schemas"]["$defs-digest"];
+            policyHash: components["schemas"]["digest"];
             actions: {
                 [key: string]: "auto_allowed" | "review_required" | "blocked";
             };
@@ -4182,12 +4056,12 @@ export interface components {
                 planRef: {
                     id: components["schemas"]["boundedString"];
                     version: number;
-                    hash: components["schemas"]["$defs-digest"];
+                    hash: components["schemas"]["digest"];
                 };
                 ruleBundleRef: {
                     id: components["schemas"]["boundedString"];
                     version: string;
-                    hash: components["schemas"]["$defs-digest"];
+                    hash: components["schemas"]["digest"];
                 };
             };
         };
@@ -4200,7 +4074,7 @@ export interface components {
         };
         immutableRef: {
             id: components["schemas"]["boundedString"];
-            hash: components["schemas"]["$defs-digest"];
+            hash: components["schemas"]["digest"];
         };
         /** ActionReceipt */
         "action-receipt.v1.schema": {
@@ -4224,8 +4098,8 @@ export interface components {
             /** @enum {unknown} */
             outcome: "succeeded" | "failed" | "unknown";
             error: components["schemas"]["normalizedError"] | null;
-            requestHash: components["schemas"]["$defs-digest"];
-            resultHash: components["schemas"]["$defs-digest"];
+            requestHash: components["schemas"]["digest"];
+            resultHash: components["schemas"]["digest"];
             /** Format: date-time */
             requestedAt: string;
             /** Format: date-time */
@@ -4239,7 +4113,7 @@ export interface components {
                 digest: string;
                 immutableRef: {
                     id: components["schemas"]["boundedString"];
-                    hash: components["schemas"]["$defs-digest"];
+                    hash: components["schemas"]["digest"];
                 };
                 normalizedError: {
                     /** @enum {unknown} */
@@ -6510,7 +6384,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["createRequest"];
+                "application/json": components["schemas"]["visualReaderCreateRequest"];
             };
         };
         responses: {
@@ -6521,7 +6395,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["acquisition-visual-reader-session.v1.schema"];
+                    "application/json": components["schemas"]["visualReaderSession"];
                 };
             };
             /** @description Visual reader session created */
@@ -6530,7 +6404,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["acquisition-visual-reader-session.v1.schema"];
+                    "application/json": components["schemas"]["visualReaderSession"];
                 };
             };
             /** @description Unified API error */
@@ -6597,7 +6471,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["acquisition-visual-reader-session.v1.schema"];
+                    "application/json": components["schemas"]["visualReaderSession"];
                 };
             };
             /** @description Unified API error */
@@ -6660,7 +6534,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["visualObservationBatchRequest"];
+                "application/json": components["schemas"]["visualReaderObservationBatchRequest"];
             };
         };
         responses: {
@@ -6670,7 +6544,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["visualObservationBatchResponse"];
+                    "application/json": components["schemas"]["visualReaderObservationBatchResponse"];
                 };
             };
             /** @description Unified API error */
@@ -6733,7 +6607,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["completeRequest"];
+                "application/json": components["schemas"]["visualReaderCompleteRequest"];
             };
         };
         responses: {
@@ -6743,7 +6617,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["acquisition-visual-reader-session.v1.schema"];
+                    "application/json": components["schemas"]["visualReaderSession"];
                 };
             };
             /** @description Unified API error */
@@ -6806,7 +6680,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["abortRequest"];
+                "application/json": components["schemas"]["visualReaderAbortRequest"];
             };
         };
         responses: {
@@ -6816,7 +6690,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["acquisition-visual-reader-session.v1.schema"];
+                    "application/json": components["schemas"]["visualReaderSession"];
                 };
             };
             /** @description Unified API error */

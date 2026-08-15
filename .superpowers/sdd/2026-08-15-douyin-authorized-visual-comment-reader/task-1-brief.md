@@ -14,6 +14,7 @@
 - Modify `contracts/openapi/ai-acquisition.v1.yaml`
 - Modify `contracts/test/schema-registry.test.mjs`
 - Modify `contracts/test/openapi.test.mjs`
+- Modify `contracts/test/generated-types.test.mjs`
 - Modify `contracts/README.md`
 - Modify `backend/src/acquisition-openapi.ts` only to keep the optional Run Presentation visual schema in static/runtime parity; do not advertise or mount the six unimplemented runtime routes until Task 3
 - Regenerate `frontend/src/features/ai-growth/generated/ai-acquisition.ts`
@@ -53,6 +54,7 @@
   - artifact GET returns only `image/webp` binary with private no-store, nosniff, and restrictive CSP headers; no JSON image bytes.
 - Standard JSON Schema cannot compare sibling values. Task 1 validates the Douyin URL, videoId, and session shapes independently and records the runtime invariants in schema/OpenAPI descriptions and contract tests. Task 3 service must enforce URL video ID equality and path/target session equality before persistence. Do not add Ajv `$data`, custom keywords, or a non-standard schema dialect.
 - The five visual steps use `minItems = maxItems = 5` plus one closed step schema and the five-ID enum so the existing OpenAPI 3.0 converter stays valid. Task 7 projection must enforce exact order, uniqueness, and one occurrence of every ID; do not use unsupported `prefixItems` or weaken drift normalization.
+- Review hardening is part of Task 1: canonical Base64 pad bits; shared ASCII identifier grammar `^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$`; a secUid/user-key grammar that starts alphanumeric; no root `$defs` instance field in generated session/observation response types; globally unique visual helper names that preserve the existing Copilot token `components.schemas.usage`; and a generated-type consumer regression test with real legal visual DTO fixtures.
 
 **TDD protocol:**
 

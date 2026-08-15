@@ -182,18 +182,18 @@ components:
     DouyinCommentEvent: { $ref: ../json-schema/douyin-comment-event.v1.schema.json }
     ActionPolicy: { $ref: ../json-schema/action-policy.v1.schema.json }
     ActionReceipt: { $ref: ../json-schema/action-receipt.v1.schema.json }
-    DouyinVisualCommentObservation: { $ref: ../json-schema/douyin-visual-comment-observation.v1.schema.json }
-    OpaqueRectRedactionProof: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/opaqueRectRedactionProof' }
-    VisualObservationSubmission: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationSubmission' }
-    VisualReaderLimits: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/limits' }
-    VisualReaderUsage: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/usage' }
-    VisualReaderOutcome: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/outcome' }
-    VisualReaderSession: { $ref: ../json-schema/acquisition-visual-reader-session.v1.schema.json }
-    VisualReaderCreateRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/createRequest' }
-    VisualObservationBatchRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationBatchRequest' }
-    VisualObservationBatchResponse: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationBatchResponse' }
-    VisualReaderCompleteRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/completeRequest' }
-    VisualReaderAbortRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/abortRequest' }
+    DouyinVisualCommentObservation: { $ref: '../json-schema/douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation' }
+    OpaqueRectRedactionProof: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderOpaqueRectRedactionProof' }
+    VisualObservationSubmission: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderObservationSubmission' }
+    VisualReaderLimits: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderLimits' }
+    VisualReaderUsage: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderUsage' }
+    VisualReaderOutcome: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderOutcome' }
+    VisualReaderSession: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderSession' }
+    VisualReaderCreateRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderCreateRequest' }
+    VisualObservationBatchRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderObservationBatchRequest' }
+    VisualObservationBatchResponse: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderObservationBatchResponse' }
+    VisualReaderCompleteRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderCompleteRequest' }
+    VisualReaderAbortRequest: { $ref: '../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderAbortRequest' }
     DiscoveryEvidencePagedResult:
       type: object
       additionalProperties: false

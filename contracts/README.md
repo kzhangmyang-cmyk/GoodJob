@@ -6,17 +6,21 @@ agent. JSON Schemas use Draft 2020-12 and OpenAPI describes authenticated
 
 ## Single-source workflow
 
-During migration, every published operation must remain semantically equal to
-the production builder in `backend/src/acquisition-openapi.ts`. The repository
-gate compares the dereferenced production and static operation surfaces; a
-static contract change is not complete while that parity check is red.
+During migration, every implemented operation must remain semantically equal
+to the production builder in `backend/src/acquisition-openapi.ts`. The
+repository gate compares the dereferenced production and static surfaces for
+the implemented-path allowlist; a runtime-backed contract change is not
+complete while that parity check is red.
 
 After `npm run check:acquisition-contracts` is green, the static OpenAPI 3.1
 document in `openapi/ai-acquisition.v1.yaml` is the release and frontend-type
-generation contract. Start release-contract changes there, regenerate the
+generation contract. Start release-contract changes there and regenerate the
 committed frontend transport types with
-`npm run generate:frontend-contract-types`, update the production builder and
-runtime routes in the same change, and keep the repository gate green. Run
+`npm run generate:frontend-contract-types`. Runtime-backed operations update
+the production builder and routes in the same change. An implementation plan
+may explicitly reserve a contract-only route before its service lands; such a
+route stays outside the drift allowlist until implementation, while any
+already-implemented response it extends must retain parity. Run
 `npm run check:generated-acquisition-types` to detect stale or absent generated
 output without modifying repository files.
 
@@ -34,9 +38,11 @@ consumer, and the packaged production start path.
 ## Authorized visual reader contracts
 
 The release contract reserves an authenticated, explicitly authorized visual
-reader API under `/api/v1/acquisition/visual-reader-*`. This task defines the
-transport boundary only; the backend service and browser reader are not yet
-implemented. A session can read only currently visible top-level comment cards
+reader API under `/api/v1/acquisition/visual-reader-*`. It is the explicit
+contract-only exception described above: the six visual routes are not in the
+runtime drift allowlist until Task 3, while the existing Run Presentation route
+remains in static/runtime parity. The backend service and browser reader are
+not yet implemented. A session can read only currently visible top-level comment cards
 from an exact `https://www.douyin.com/video/<digits>` page. DOM and accessibility
 facts are preferred, OCR is a bounded fallback, and `vision` is reserved in the
 enum but remains disabled until a separate connector and data-transfer review.

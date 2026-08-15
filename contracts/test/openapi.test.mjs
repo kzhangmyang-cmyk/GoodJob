@@ -250,8 +250,8 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(importOperation.requestBody.content["application/json"], undefined);
   assert.ok(importOperation.responses["415"]);
   assert.equal(document.components.schemas.AcquisitionRunPresentation.$ref, "../json-schema/acquisition-run-presentation.v1.schema.json");
-  assert.equal(document.components.schemas.DouyinVisualCommentObservation.$ref, "../json-schema/douyin-visual-comment-observation.v1.schema.json");
-  assert.equal(document.components.schemas.VisualReaderSession.$ref, "../json-schema/acquisition-visual-reader-session.v1.schema.json");
+  assert.equal(document.components.schemas.DouyinVisualCommentObservation.$ref, "../json-schema/douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation");
+  assert.equal(document.components.schemas.VisualReaderSession.$ref, "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderSession");
   assert.equal(
     document.paths["/api/v1/acquisition/content-fetch-operations"]
       .get.responses["200"].content["application/json"].schema.$ref,
@@ -365,18 +365,18 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
 test("authorized visual reader routes reuse the acquisition API style and binary artifact boundary", async () => {
   const document = await loadOpenApiSource();
   const componentRefs = {
-    DouyinVisualCommentObservation: "../json-schema/douyin-visual-comment-observation.v1.schema.json",
-    OpaqueRectRedactionProof: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/opaqueRectRedactionProof",
-    VisualObservationSubmission: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationSubmission",
-    VisualReaderLimits: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/limits",
-    VisualReaderUsage: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/usage",
-    VisualReaderOutcome: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/outcome",
-    VisualReaderSession: "../json-schema/acquisition-visual-reader-session.v1.schema.json",
-    VisualReaderCreateRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/createRequest",
-    VisualObservationBatchRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationBatchRequest",
-    VisualObservationBatchResponse: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualObservationBatchResponse",
-    VisualReaderCompleteRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/completeRequest",
-    VisualReaderAbortRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/abortRequest"
+    DouyinVisualCommentObservation: "../json-schema/douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation",
+    OpaqueRectRedactionProof: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderOpaqueRectRedactionProof",
+    VisualObservationSubmission: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderObservationSubmission",
+    VisualReaderLimits: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderLimits",
+    VisualReaderUsage: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderUsage",
+    VisualReaderOutcome: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderOutcome",
+    VisualReaderSession: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderSession",
+    VisualReaderCreateRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderCreateRequest",
+    VisualObservationBatchRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderObservationBatchRequest",
+    VisualObservationBatchResponse: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderObservationBatchResponse",
+    VisualReaderCompleteRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderCompleteRequest",
+    VisualReaderAbortRequest: "../json-schema/acquisition-visual-reader-session.v1.schema.json#/$defs/visualReaderAbortRequest"
   };
   for (const [name, ref] of Object.entries(componentRefs)) {
     assert.equal(document.components.schemas[name]?.$ref, ref, name);

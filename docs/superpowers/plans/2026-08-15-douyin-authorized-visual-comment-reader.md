@@ -50,6 +50,7 @@
 - Modify: `contracts/openapi/ai-acquisition.v1.yaml`
 - Modify: `contracts/test/schema-registry.test.mjs`
 - Modify: `contracts/test/openapi.test.mjs`
+- Modify: `contracts/test/generated-types.test.mjs`
 - Modify: `contracts/README.md`
 - Modify: `backend/src/acquisition-openapi.ts`（仅同步可选 Run Presentation 视觉投影；六条运行时路由在 Task 3 挂载）
 - Modify (generated): `frontend/src/features/ai-growth/generated/ai-acquisition.ts`
@@ -126,10 +127,13 @@ export interface VisualObservationSubmission {
 - 会话状态固定为 `created | collecting | completed | partial_success | aborted | expired`。
 - 会话限制包含 `maxVideos/maxCommentsPerVideo/maxScrolls/maxOcrCalls/maxDurationMs`；所有字段有硬上限且 `additionalProperties: false`。
 - 批量观察每次最多 20 条、其中带图片的观察最多 5 条；单条 `visibleText` 最多 2,000 字符，裁剪 WebP 最多 256 KiB，字段置信度为 0..1。输入不接受服务端 `observationId/textHash/viewportHash/redactedCropHash`，这些字段由服务端规范化后生成。
+- 所有 client/session/run/plan/observation ID 使用现有 ASCII extensible-identifier 闭集，拒绝控制符、换行、NUL 和路径分隔语义。`secUid` 与公开资料 URL 的 user key 必须以 ASCII 字母或数字开头，拒绝 dot segment 和纯标点。
+- `contentBase64` 必须是唯一 canonical Base64：除长度、字符和 padding 外还要约束未使用 pad bits；同一 WebP 字节不能以第二种文本表示通过合同。
 - 裁剪制品使用 `opaque-rect-v1` 遮挡证明：固定 RGBA `[17, 61, 51, 255]`、avatar bounds、允许保留的文字/元数据矩形和客户端实际遮挡矩形；矩形全部以裁剪像素坐标表示。
 - Run Presentation 增加 `authorizedVisualReader` 摘要和视觉时间线步骤，但旧 Run 缺少新字段时保持兼容。
 - 视觉时间线 schema 使用 `minItems = maxItems = 5` 与五个 step ID 的闭集，保持与现有 OpenAPI 3.0 runtime builder 可转换；固定顺序、无重复且每个 ID 恰好一次由 Task 7 服务端投影强制并测试，不使用转换器不支持的 `prefixItems`。
 - 标准 Draft 2020-12 schema 分别严格校验 Douyin URL、videoId 和 session 结构；URL 路径 videoId 必须等于兄弟字段、path sessionId 必须等于目标会话这两项动态一致性由 Task 3 service 在写 repository 前强制。合同 description 和测试必须保留该运行时不变量，不引入 Ajv `$data` 或非标准 keyword。
+- OpenAPI named response/request components 不得把 JSON Schema 的 `$defs` 元数据生成为实例字段；新视觉 helper 使用全局唯一名称，不能抢占既有 Copilot `components.schemas.usage`、digest 或其他公开生成类型。生成类型测试必须用合法 session/observation fixture 证明真实响应可赋值且旧名称未漂移。
 
 - [ ] **Step 1: 写严格 schema 和 OpenAPI 失败测试**
 

@@ -20,6 +20,13 @@ const input = path.join(
   "openapi",
   "ai-acquisition.v1.yaml"
 );
+const repositoryRoot = path.resolve(contractsRoot, "..");
+const tsc = path.join(
+  repositoryRoot,
+  "node_modules",
+  ".bin",
+  process.platform === "win32" ? "tsc.cmd" : "tsc"
+);
 
 function runGenerator(output, ...options) {
   return spawnSync(
@@ -60,6 +67,143 @@ test("generated frontend contract types detect absent and stale outputs without 
       await readFile(output, "utf8"),
       corrupted,
       "--check must not rewrite stale output"
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("generated visual response DTOs accept real legal values without schema metadata fields", async () => {
+  const temporaryDirectory = await mkdtemp(
+    path.join(tmpdir(), "goodjob-generated-visual-consumer-")
+  );
+  const output = path.join(temporaryDirectory, "ai-acquisition.ts");
+  const consumer = path.join(temporaryDirectory, "consumer.ts");
+  const tsconfig = path.join(temporaryDirectory, "tsconfig.json");
+
+  try {
+    const written = runGenerator(output);
+    assert.equal(written.status, 0, written.stderr);
+    await writeFile(consumer, `
+import type { components } from "./ai-acquisition.js";
+
+const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+const observation: components["schemas"]["DouyinVisualCommentObservation"] = {
+  observationId: "visual-observation-1",
+  sessionId: "visual-session-1",
+  sourceUrl: "https://www.douyin.com/video/7536012345678909876",
+  videoId: "7536012345678909876",
+  visibleText: "visible public comment",
+  textHash: digest,
+  displayName: "public user",
+  visibleTimeText: "2 hours ago",
+  likeCount: 3,
+  replyCount: 1,
+  platformCommentId: "1234567890123456789",
+  publicProfileUrl: "https://www.douyin.com/user/MS4wLjABAAAA_public-actor",
+  secUid: "MS4wLjABAAAA_public-actor",
+  extractionMethod: "dom",
+  fieldConfidences: { visibleText: 0.99 },
+  viewportHash: digest,
+  cardBounds: { x: 24, y: 32, width: 640, height: 180 },
+  redactedCropHash: null,
+  readerVersion: "goodjob-douyin-visual-reader@1.0.0",
+  capturedAt: "2026-08-15T03:00:00.000Z"
+};
+
+const session: components["schemas"]["VisualReaderSession"] = {
+  sessionId: "visual-session-1",
+  runId: "run-1",
+  planId: "plan-1",
+  planVersionId: "plan-version-1",
+  platform: "douyin",
+  coverage: "authorized_visible_top_level_sample",
+  status: "created",
+  artifactUploadEnabled: true,
+  limits: {
+    maxVideos: 10,
+    maxCommentsPerVideo: 30,
+    maxScrolls: 5,
+    maxOcrCalls: 10,
+    maxDurationMs: 120000
+  },
+  usage: {
+    videoCount: 1,
+    observationCount: 1,
+    scrollCount: 0,
+    ocrCallCount: 0,
+    domObservationCount: 1,
+    accessibilityObservationCount: 0,
+    ocrObservationCount: 0,
+    lowConfidenceObservationCount: 0,
+    artifactCount: 0
+  },
+  outcome: null,
+  lastErrorCode: null,
+  createdAt: "2026-08-15T03:00:00.000Z",
+  authorizedAt: "2026-08-15T03:00:00.000Z",
+  updatedAt: "2026-08-15T03:00:00.000Z",
+  expiresAt: "2026-08-15T03:02:00.000Z",
+  completedAt: null
+};
+
+void [observation, session];
+`, "utf8");
+    await writeFile(tsconfig, JSON.stringify({
+      compilerOptions: {
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        noEmit: true,
+        skipLibCheck: true,
+        strict: true,
+        target: "ES2022"
+      },
+      files: [output, consumer]
+    }), "utf8");
+
+    const compilation = spawnSync(tsc, ["--project", tsconfig], {
+      cwd: temporaryDirectory,
+      encoding: "utf8"
+    });
+    assert.equal(
+      compilation.status,
+      0,
+      `${compilation.stdout}${compilation.stderr}`
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("generated visual helpers remain globally unique without renaming existing Copilot or digest helpers", async () => {
+  const temporaryDirectory = await mkdtemp(
+    path.join(tmpdir(), "goodjob-generated-visual-helpers-")
+  );
+  const output = path.join(temporaryDirectory, "ai-acquisition.ts");
+
+  try {
+    const written = runGenerator(output);
+    assert.equal(written.status, 0, written.stderr);
+    const generated = await readFile(output, "utf8");
+
+    assert.match(
+      generated,
+      /VisualReaderUsage: components\["schemas"\]\["visualReaderUsage"\]/
+    );
+    assert.match(generated, /\n        usage: \{\n            input: number;/);
+    assert.doesNotMatch(generated, /"\$defs-usage"/);
+    assert.match(
+      generated,
+      /rawPayloadHash: components\["schemas"\]\["digest"\]/
+    );
+    assert.match(
+      generated,
+      /textHash: components\["schemas"\]\["\$defs-digest"\]/
+    );
+    assert.match(
+      generated,
+      /textHash: components\["schemas"\]\["visualObservationDigest"\]/
     );
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
