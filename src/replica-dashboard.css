@@ -3917,6 +3917,14 @@ body.is-authenticated .replica-shell {
   border-radius: 9px;
 }
 
+.replica-acquisition-evidence-list li,
+.replica-acquisition-evidence-list p,
+.replica-acquisition-evidence-list small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .replica-acquisition-evidence-list li > div,
 .replica-acquisition-review-history li > div {
   display: flex;

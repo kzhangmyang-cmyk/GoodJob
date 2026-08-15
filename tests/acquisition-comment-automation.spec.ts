@@ -1,12 +1,26 @@
 import { expect, test, type Page } from "@playwright/test";
+import type {
+  AcquisitionRunPresentation,
+  CandidateEvidence,
+  CandidateQualification,
+  CursorPage,
+  IndividualCandidate,
+  RunCandidatePresentationEvent
+} from "../src/acquisition/detail-center-api";
+import type { AcquisitionTaskDetail } from "../src/acquisition/runtime-api";
+import type {
+  AcquisitionTaskLatestRun,
+  AcquisitionTaskOverview,
+  AcquisitionTaskSummary
+} from "../src/acquisition/runtime-model";
 
 const NOW = "2026-08-15T08:00:00.000Z";
 const PLAN_ID = "plan-public-comment-automation";
 const RUN_ID = "run-public-comment-automation";
 const CANDIDATE_ID = "candidate-public-comment";
 const EVIDENCE_ID = "evidence-public-comment-original";
-const SOURCE_URL = "https://www.douyin.com/video/7480000000000000000";
-const ORIGINAL_COMMENT = "我们正在比较获客系统，预算和交付周期都想了解。";
+const SOURCE_URL = `https://www.douyin.com/video/7480000000000000000/${Array.from({ length: 80 }, () => "source").join("/")}`;
+const ORIGINAL_COMMENT = `我们正在比较获客系统，预算和交付周期都想了解。连续不可断公开评论标记-${"x".repeat(360)}`;
 
 const viewports = [
   { name: "desktop", width: 1440, height: 900 },
@@ -23,15 +37,32 @@ type RecordedRequest = {
   body: string | null;
 };
 
+type AutomationStepStatus = "pending" | "running" | "succeeded" | "partial_success" | "failed" | "skipped";
+type AutomationStep = Omit<NonNullable<AcquisitionRunPresentation["automationSteps"]>[number], "status"> & {
+  status: AutomationStepStatus;
+};
+type TaskRunSnapshot = AcquisitionTaskLatestRun & NonNullable<AcquisitionTaskDetail["latestRun"]>;
+type TaskSnapshot = Omit<AcquisitionTaskDetail, "task" | "latestRun" | "presentation"> & {
+  task: AcquisitionTaskSummary & { latestRun: TaskRunSnapshot };
+  latestRun: TaskRunSnapshot;
+  presentation: NonNullable<AcquisitionTaskDetail["presentation"]>;
+};
+type RevisionFixture = { task: TaskSnapshot; presentation: AcquisitionRunPresentation };
+type PresentedCandidateEvidence = CandidateEvidence & { sourceUrl: string; content: string };
+
+function toRecord(value: object): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value));
+}
+
 function budget() {
   return { requests: 3, results: 5, amountMinor: 120, durationSeconds: 9 };
 }
 
-function automationSteps(revision: RunRevision) {
-  const statuses = revision === "queued"
-    ? ["queued", "queued", "queued", "queued", "queued", "queued", "queued"]
+function automationSteps(revision: RunRevision): AutomationStep[] {
+  const statuses: AutomationStepStatus[] = revision === "queued"
+    ? ["pending", "pending", "pending", "pending", "pending", "pending", "pending"]
     : revision === "running"
-      ? ["succeeded", "succeeded", "running", "queued", "queued", "queued", "queued"]
+      ? ["succeeded", "succeeded", "running", "pending", "pending", "pending", "pending"]
       : ["succeeded", "succeeded", "partial_success", "partial_success", "partial_success", "partial_success", "succeeded"];
   const ids = [
     "discover_video_urls",
@@ -81,7 +112,7 @@ function summary(revision: RunRevision) {
   };
 }
 
-function candidateEvent() {
+function candidateEvent(): RunCandidatePresentationEvent {
   return {
     eventId: "candidate-event-public-comment",
     createdAt: NOW,
@@ -105,7 +136,7 @@ function candidateEvent() {
       decisionEngine: "rules",
       grade: "B",
       score: 72,
-      recommendedAction: "needs_research",
+      recommendedAction: "priority_review",
       evidence: [{ evidenceId: EVIDENCE_ID, excerpt: ORIGINAL_COMMENT }],
       positiveSignals: [{ name: "明确咨询获客方案", score: 20 }],
       negativeSignals: [],
@@ -121,10 +152,10 @@ function candidateEvent() {
     financialValue: null,
     sourcePlatforms: ["douyin"],
     evidenceCount: 1
-  };
+  } satisfies RunCandidatePresentationEvent;
 }
 
-function taskRevision(revision: RunRevision) {
+function taskRevision(revision: RunRevision): RevisionFixture {
   const terminal = revision === "partial_success";
   const run = {
     id: RUN_ID,
@@ -144,8 +175,40 @@ function taskRevision(revision: RunRevision) {
       maxDurationSeconds: 120
     },
     modelSnapshotRef: {}
-  };
-  return {
+  } satisfies TaskRunSnapshot;
+  const presentation = {
+    run: {
+      id: RUN_ID,
+      status: revision,
+      etag: run.etag,
+      updatedAt: NOW,
+      completedAt: run.completedAt
+    },
+    providers: [],
+    summary: summary(revision),
+    automationSteps: automationSteps(revision),
+    commentSignals: revision === "queued" ? [] : [{
+      eventId: "comment-event-public-comment",
+      candidateId: CANDIDATE_ID,
+      displayName: "公开评论用户",
+      handle: "@public-commenter",
+      text: ORIGINAL_COMMENT,
+      occurredAt: NOW,
+      likeCount: 2,
+      replyCount: 0,
+      ipLabel: "福建",
+      sourceUrl: SOURCE_URL,
+      intentBand: "strong_signal",
+      reasons: ["明确咨询预算和交付周期"],
+      confidence: 0.81,
+      identityStatus: "needs_research",
+      evidenceId: EVIDENCE_ID
+    }],
+    candidateEvents: revision === "queued" ? [] : [candidateEvent()],
+    nextAfter: "",
+    hasMore: false
+  } satisfies AcquisitionRunPresentation;
+  const task = {
     task: {
       id: "task-public-comment-automation",
       planId: PLAN_ID,
@@ -176,41 +239,18 @@ function taskRevision(revision: RunRevision) {
     latestRun: run,
     shards: [],
     presentation: {
-      run: {
-        id: RUN_ID,
-        status: revision,
-        etag: run.etag,
-        updatedAt: NOW,
-        completedAt: run.completedAt
-      },
-      providers: [],
-      summary: summary(revision),
-      automationSteps: automationSteps(revision),
-      commentSignals: revision === "queued" ? [] : [{
-        eventId: "comment-event-public-comment",
-        candidateId: CANDIDATE_ID,
-        displayName: "公开评论用户",
-        handle: "@public-commenter",
-        text: ORIGINAL_COMMENT,
-        occurredAt: NOW,
-        likeCount: 2,
-        replyCount: 0,
-        ipLabel: "福建",
-        sourceUrl: SOURCE_URL,
-        intentBand: "strong_signal",
-        reasons: ["明确咨询预算和交付周期"],
-        confidence: 0.81,
-        identityStatus: "needs_research",
-        evidenceId: EVIDENCE_ID
-      }],
-      candidateEvents: revision === "queued" ? [] : [candidateEvent()],
-      nextAfter: null,
-      hasMore: false
+      ...presentation,
+      providers: presentation.providers.map(toRecord),
+      automationSteps: presentation.automationSteps?.map(toRecord),
+      commentSignals: presentation.commentSignals?.map(toRecord),
+      candidateEvents: presentation.candidateEvents.map(toRecord),
+      summary: toRecord(presentation.summary)
     }
-  };
+  } satisfies TaskSnapshot;
+  return { task, presentation };
 }
 
-function candidate() {
+function candidate(): IndividualCandidate {
   return {
     id: CANDIDATE_ID,
     subjectKind: "individual",
@@ -218,23 +258,62 @@ function candidate() {
     publicDisplayName: "公开评论用户",
     publicProfileUrl: SOURCE_URL,
     sourcePlatform: "douyin",
+    demandCategory: "获客系统采购",
+    demandSummary: ORIGINAL_COMMENT,
+    locationHint: "福建",
+    buyingStage: "comparison",
+    negativeSignals: [],
+    firstSeenAt: NOW,
+    lastSeenAt: NOW,
+    evidenceIds: [EVIDENCE_ID],
     status: "pending_review",
     version: 1,
     identityResolved: false,
     latestDecisionVersion: "qualification-v1",
     approvedDecisionVersion: null,
-    createdAt: NOW,
     updatedAt: NOW
-  };
+  } satisfies IndividualCandidate;
 }
 
-function qualification() {
-  return candidateEvent().qualification;
+function qualification(): CandidateQualification {
+  const value = candidateEvent().qualification;
+  if (value === null) throw new Error("comment fixture requires a qualification decision");
+  return value;
+}
+
+function candidateEvidence(): PresentedCandidateEvidence {
+  return {
+    id: EVIDENCE_ID,
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: "抖音一级公开评论",
+    sourceSnippet: ORIGINAL_COMMENT,
+    sourceUrl: SOURCE_URL,
+    publishedAt: NOW,
+    fetchedAt: NOW,
+    locale: "zh-CN",
+    rawArtifactHash: "sha256:public-comment-raw",
+    contentHash: "sha256:public-comment-content",
+    provenance: {
+      kind: "search_result",
+      provider: "douyin-public-comments",
+      providerConnectionId: "experimental_public_sample",
+      requestId: "public-comment-read-1",
+      providerRecordId: "comment-record-1",
+      queryText: "企业服务 获客",
+      sourceUrl: SOURCE_URL,
+      resultRank: 1,
+      sourceType: "public_comment"
+    },
+    accessStatus: "public_content",
+    content: ORIGINAL_COMMENT
+  } satisfies PresentedCandidateEvidence;
 }
 
 async function installFixture(page: Page) {
   let committed: RunRevision = "queued";
   const requests: RecordedRequest[] = [];
+  const undeclaredAcquisitionGets: string[] = [];
   const servedPlanIds: string[] = [];
   const servedRunIds: string[] = [];
   const revisions = {
@@ -278,39 +357,32 @@ async function installFixture(page: Page) {
       return void await json({ code: "read_only_fixture", message: "E2E fixture only permits reads" }, 501);
     }
     if (path === "/api/v1/acquisition/overview") {
-      return void await json({
+      const overview = {
         generatedAt: NOW,
         platform: "douyin",
         totals: { tasks: 1 },
         statusCounts: { [committed]: 1 },
         discoveryMethodCounts: { public_search: 1 },
-        tasks: [revisions[committed].task]
-      });
+        tasks: [revisions[committed].task.task]
+      } satisfies AcquisitionTaskOverview;
+      return void await json(overview);
     }
     if (path === "/api/v1/acquisition/performance") return void await json({});
     if (path === `/api/v1/acquisition/tasks/${PLAN_ID}`) {
-      servedPlanIds.push(revisions[committed].plan.id);
-      servedRunIds.push(revisions[committed].latestRun.id);
-      return void await json(revisions[committed]);
+      servedPlanIds.push(String(revisions[committed].task.plan.id));
+      servedRunIds.push(revisions[committed].task.latestRun.id);
+      return void await json(revisions[committed].task);
     }
     if (path === `/api/v1/acquisition/runs/${RUN_ID}/presentation`) {
       return void await json(revisions[committed].presentation);
     }
     if (path === candidateBase) return void await json(candidate());
     if (path === `${candidateBase}/evidence`) {
-      return void await json({
-        items: [{
-          id: EVIDENCE_ID,
-          sourceTitle: "抖音一级公开评论",
-          sourcePlatform: "douyin",
-          sourceSnippet: ORIGINAL_COMMENT,
-          sourceUrl: SOURCE_URL,
-          publishedAt: NOW,
-          content: ORIGINAL_COMMENT,
-          accessStatus: "public_content"
-        }],
+      const evidence = {
+        items: [candidateEvidence()],
         nextCursor: null
-      });
+      } satisfies CursorPage<PresentedCandidateEvidence>;
+      return void await json(evidence);
     }
     if (path === `${candidateBase}/qualification`) return void await json(qualification());
     if (path === `${candidateBase}/financial-value`) return void await json({ code: "not_found" }, 404);
@@ -336,6 +408,7 @@ async function installFixture(page: Page) {
     }
     if (path === `${candidateBase}/intelligence-operation`) return void await json({ code: "not_found" }, 404);
     if (path === `${candidateBase}/private-domain-handoff`) return void await json({ code: "not_found" }, 404);
+    undeclaredAcquisitionGets.push(`${path}${url.search}`);
     return void await json({ code: "unconfigured_acquisition_api", message: `No fixture for ${path}` }, 501);
   });
 
@@ -344,6 +417,7 @@ async function installFixture(page: Page) {
       committed = revision;
     },
     requests,
+    undeclaredAcquisitionGets,
     servedPlanIds,
     servedRunIds,
     taskRequestCount() {
@@ -352,8 +426,8 @@ async function installFixture(page: Page) {
   };
 }
 
-async function openPlan(page: Page) {
-  await page.goto("/#acquisition");
+async function openPlan(page: Page, options: { navigate?: boolean } = {}) {
+  if (options.navigate !== false) await page.goto("/#acquisition", { waitUntil: "load" });
   await expect(page.locator("body")).toHaveClass(/is-authenticated/);
   await page.evaluate((planId) => {
     document.dispatchEvent(new CustomEvent("goodjob:acquisition-mode-changed", {
@@ -372,7 +446,20 @@ async function expectNoHorizontalOverflow(page: Page) {
     const automation = document.querySelector(".replica-acquisition-comment-automation");
     const steps = document.querySelector(".replica-acquisition-automation-steps");
     const comment = document.querySelector(".replica-acquisition-comment-signal");
-    const checks = [document.documentElement, document.body, detail, automation, steps, comment]
+    const commentCopy = document.querySelector(".replica-acquisition-comment-copy");
+    const inspector = document.querySelector(".replica-acquisition-candidate-inspector");
+    const evidenceList = document.querySelector(".replica-acquisition-evidence-list");
+    const checks = [
+      document.documentElement,
+      document.body,
+      detail,
+      automation,
+      steps,
+      comment,
+      commentCopy,
+      inspector,
+      evidenceList
+    ]
       .filter((element): element is HTMLElement => element instanceof HTMLElement)
       .map((element) => ({
         selector: element.id ? `#${element.id}` : element.className,
@@ -412,11 +499,15 @@ for (const viewport of viewports) {
     await expect(automation).toContainText("访问受限，已保留可用公开样本");
     await expect(automation).toContainText("访问或频率受限，已保留可用公开样本");
     await expect(automation).toContainText(ORIGINAL_COMMENT);
+    expect(ORIGINAL_COMMENT.length).toBeGreaterThan(300);
     const terminalTaskRequests = fixture.taskRequestCount();
     await page.clock.fastForward(30_000);
     expect(fixture.taskRequestCount()).toBe(terminalTaskRequests);
 
     const commentButton = automation.locator("[data-acquisition-detail-action='select-candidate']");
+    await expect(commentButton).toBeVisible();
+    await expect(commentButton).toContainText(ORIGINAL_COMMENT);
+    await expect(commentButton).toContainText(SOURCE_URL);
     await commentButton.focus();
     await expect(commentButton).toBeFocused();
     await commentButton.press("Enter");
@@ -427,8 +518,9 @@ for (const viewport of viewports) {
     await expect(inspector).toContainText("主体身份尚未确认");
     await expectNoHorizontalOverflow(page);
 
-    await page.reload();
-    await openPlan(page);
+    await page.reload({ waitUntil: "load" });
+    await expect(page.locator("body")).toHaveClass(/is-authenticated/);
+    await openPlan(page, { navigate: false });
     await expect(detail).toContainText("抖音公开评论样本");
     await expect(detail).toContainText("部分完成");
     await expect(detail.getByLabel("公开评论自动化进程")).toContainText(ORIGINAL_COMMENT);
@@ -445,6 +537,7 @@ for (const viewport of viewports) {
       && /(?:comment|reply|dm|message|friend|follow|broadcast|bulk|mass|crm|customer|lead|deal|handoff)/i.test(request.path)
     );
     expect(prohibitedWrites).toEqual([]);
+    expect(fixture.undeclaredAcquisitionGets).toEqual([]);
     const externalDouyin = fixture.requests.filter((request) => /(?:^|\.)douyin\.com$|(?:^|\.)iesdouyin\.com$/i.test(new URL(request.origin).hostname));
     expect(externalDouyin).toEqual([]);
   });
