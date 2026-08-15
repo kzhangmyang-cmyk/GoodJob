@@ -335,9 +335,13 @@ export interface AcquisitionVisualReaderRepository {
 - Create: `src/acquisition/visual-reader-controller.self-test.ts`
 - Modify: `src/acquisition/detail-center-controller.ts`
 - Modify: `src/acquisition/detail-center-controller.self-test.ts`
+- Modify: `src/acquisition/detail-center-api.ts`
 - Modify: `src/acquisition/detail-center-view.ts`
 - Modify: `src/acquisition/detail-center-view.self-test.ts`
+- Modify: `src/acquisition/runtime-api.ts`
 - Modify: `src/replica-dashboard.css`
+- Modify: `src/self-test.ts`
+- Modify: `README.md`
 
 **Page bridge protocol:**
 
@@ -345,46 +349,64 @@ export interface AcquisitionVisualReaderRepository {
 type VisualReaderPageCommand =
   | { version: "goodjob.visual-reader.bridge.v1"; type: "probe"; channelNonce: string }
   | { version: "goodjob.visual-reader.bridge.v1"; type: "start"; channelNonce: string;
-      sessionId: string; limits: VisualReaderLimits }
+      sessionId: string; limits: VisualReaderLimits; artifactUploadEnabled: boolean }
+  | { version: "goodjob.visual-reader.bridge.v1"; type: "acknowledge_batch";
+      channelNonce: string; sessionId: string; batchId: string }
   | { version: "goodjob.visual-reader.bridge.v1"; type: "abort"; channelNonce: string;
       sessionId: string };
+
+type VisualReaderExtensionEvent =
+  | { version: "goodjob.visual-reader.bridge.v1"; type: "ready";
+      channelNonce: string; extensionVersion: string }
+  | { version: "goodjob.visual-reader.bridge.v1"; type: "observation_batch";
+      channelNonce: string; sessionId: string; batchId: string;
+      observations: VisualObservationSubmission[] }
+  | { version: "goodjob.visual-reader.bridge.v1"; type: "terminal";
+      channelNonce: string; sessionId: string;
+      status: "completed" | "partial_success" | "aborted";
+      errorCodes: VisualReaderStableErrorCode[] };
 ```
 
 - 页面用 `crypto.getRandomValues` 为每次详情页生命周期生成 256-bit `channelNonce`；扩展事件必须匹配 `event.source === window`、当前 origin、协议版本、nonce、sessionId 和严格 schema。
 - 网页不接受任意扩展 ID 的“已完成”消息直接改变 UI；每批观察必须先由 API 成功持久化，随后从服务端 session/Run Presentation 刷新。
+- 网页仅在批次 API 成功后发送 `acknowledge_batch`；失败批次不 ACK。批次、terminal 和服务端停止在同一 session 内串行，用户主动停止会废弃未确认批次并立即停止扩展，再以稳定幂等键中止服务端 session。
+- `start.artifactUploadEnabled` 必须来自服务端 session。关闭制品时扩展不得运行 OCR 或生成上传裁剪，网页提交前仍把任何裁剪强制置空作为纵深防御。
 - UI 增加“授权读取当前抖音页面”卡片、扩展连接状态、剩余预算、DOM/OCR 数量、低置信度数量、停止按钮和隐私说明。状态只来自扩展事件与服务端事实，不用模拟计时器。
 - 不上传图片前展示“仅上传已遮挡评论卡裁剪”；用户可关闭制品上传而只提交文字观察。
+- 网页 API 使用 `POST /api/v1/acquisition/visual-reader-sessions` 创建 session，使用 session 子路由提交批次、完成和中止，使用 `GET /api/v1/acquisition/visual-reader-artifacts/:artifactId` 读取当前租户范围内的 WebP 制品。
 
-- [ ] **Step 1: 写 bridge、API、controller 和 view RED 测试**
+- [x] **Step 1: 写 bridge、API、controller 和 view RED 测试**
 
   覆盖扩展缺失、nonce 错误、旧 session 重放、跨 origin 消息、超限批次、API 失败不显示成功、用户停止、页面刷新恢复、HTML 转义、键盘操作和旧后端无新字段兼容。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm exec -- tsx src/acquisition/visual-reader-bridge.self-test.ts && npm exec -- tsx src/acquisition/visual-reader-controller.self-test.ts && npm exec -- tsx src/acquisition/detail-center-view.self-test.ts`
 
   Expected: FAIL。
 
-- [ ] **Step 3: 实现 API/bridge/controller**
+- [x] **Step 3: 实现 API/bridge/controller**
 
   API 继续使用现有 same-origin auth/CSRF。Bridge 只处理结构化克隆对象；拒绝字符串 JSON、函数、Blob URL、HTML 和未知字段。每批成功后清除客户端队列；网络失败只按同一 Idempotency-Key 重试。
 
-- [ ] **Step 4: 实现现有风格 UI**
+- [x] **Step 4: 实现现有风格 UI**
 
   扩展 `.replica-acquisition-*` 命名空间。1440/1024/768 宽度无横向滚动；状态更新使用 `aria-live="polite"`，授权/停止按钮有明确焦点与禁用态。
 
-- [ ] **Step 5: 运行 GREEN 和前端构建**
+- [x] **Step 5: 运行 GREEN 和前端构建**
 
   Run: `npm run test && npm run test:types && npm run build`
 
   Expected: PASS；只允许已有 Vite chunk warning。
 
-- [ ] **Step 6: 仅提交本任务文件**
+- [x] **Step 6: 仅提交本任务文件**
 
   ```bash
-  git add src/acquisition/visual-reader-api.ts src/acquisition/visual-reader-api.self-test.ts src/acquisition/visual-reader-bridge.ts src/acquisition/visual-reader-bridge.self-test.ts src/acquisition/visual-reader-controller.ts src/acquisition/visual-reader-controller.self-test.ts src/acquisition/detail-center-controller.ts src/acquisition/detail-center-controller.self-test.ts src/acquisition/detail-center-view.ts src/acquisition/detail-center-view.self-test.ts src/replica-dashboard.css
+  git add README.md src/self-test.ts src/acquisition/visual-reader-api.ts src/acquisition/visual-reader-api.self-test.ts src/acquisition/visual-reader-bridge.ts src/acquisition/visual-reader-bridge.self-test.ts src/acquisition/visual-reader-controller.ts src/acquisition/visual-reader-controller.self-test.ts src/acquisition/detail-center-api.ts src/acquisition/detail-center-controller.ts src/acquisition/detail-center-controller.self-test.ts src/acquisition/detail-center-view.ts src/acquisition/detail-center-view.self-test.ts src/acquisition/runtime-api.ts src/replica-dashboard.css
   git commit -m "feat: add visual reader authorization controls"
   ```
+
+  Implemented in frontend commits `8167ead`, `f351261`, and `e032683`. Fresh verification passed all five focused self-tests, `npm run test` with 125 checks, `npm run test:types`, `npm run build`, and `git diff --check`; the only build message was the existing Vite chunk-size warning. Independent review approved the stable semantic keys, ordered mutation queue, monotonic session reconciliation, strict authorization eligibility, and stop-recovery barrier.
 
 ### Task 5: Manifest V3 只读扩展、DOM/ARIA 提取和有界滚动
 
