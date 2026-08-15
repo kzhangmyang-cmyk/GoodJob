@@ -421,14 +421,23 @@ type VisualReaderExtensionEvent =
 - Create: `browser-extension/douyin-visual-reader/src/douyin-content.ts`
 - Create: `browser-extension/douyin-visual-reader/src/douyin-extractor.ts`
 - Create: `browser-extension/douyin-visual-reader/src/douyin-extractor.self-test.ts`
+- Create: `browser-extension/douyin-visual-reader/src/douyin-reader.ts`
+- Create: `browser-extension/douyin-visual-reader/src/session-coordinator.ts`
+- Create: `browser-extension/douyin-visual-reader/src/runtime-transport.ts`
+- Create: `browser-extension/douyin-visual-reader/src/restart-recovery.ts`
+- Create: `browser-extension/douyin-visual-reader/src/tab-guard.ts`
+- Create: `browser-extension/douyin-visual-reader/src/popup-model.ts`
 - Create: `browser-extension/douyin-visual-reader/src/popup.ts`
 - Create: `browser-extension/douyin-visual-reader/src/popup.html`
 - Create: `browser-extension/douyin-visual-reader/src/popup.css`
 - Create: `browser-extension/douyin-visual-reader/fixtures/*.html`
+- Create: `scripts/build-visual-reader-bundles.mts`
 - Create: `scripts/build-visual-reader-manifest.mts`
+- Create: `scripts/check-visual-reader-bundle.mts`
 - Create: `THIRD_PARTY_NOTICES.md`
+- Modify: `.gitignore`
+- Modify: `README.md`
 - Modify: `package.json`
-- Modify: `package-lock.json`
 
 **Manifest permissions:**
 
@@ -444,39 +453,45 @@ type VisualReaderExtensionEvent =
 - DOM 提取器只读取当前可见一级评论卡的 `innerText`、ARIA label、公开计数文本、时间文本和卡内公开链接；忽略 `img/src/srcset/style`、脚本数据、闭包变量和网络缓存。
 - 选择器采用版本化多信号策略：评论容器/卡片语义、可见文本、层级和卡片几何同时满足；选择器失效返回稳定错误，不扩大到整页文本。
 - 打开评论区或展开正文只允许点击同时满足 button role、可见、位于当前视频容器且 accessible name 精确匹配版本化只读标签的元素；任何歧义都停止，不使用坐标点击。
-- 虚拟列表每次滚动后等待 DOM 稳定，按观察指纹去重；最多 5 次滚动，光标不推进两次立即停止。用户滚动、切换标签、按键或关闭弹窗触发 `visual_reader_user_takeover`。
+- 无公开评论 ID 时，观察 key 是正文、公开可验证身份和稳定可见元数据的本地 SHA-256；不含卡片索引或坐标，卡片移动不改变 key，同位置出现新正文会生成新 key。
+- 可见正文严格沿用 Task 4 的 2000 字符上限；Task 5 只发送 DOM/ARIA 观察且 `redactedCrop: null`，不进入截图、OCR 或视觉模型。
+- 批次在网页 ACK 前保留同一 `batchId`；转发失败、`accepted:false` 和 ACK 丢失会在绝对会话时限内重放同一批次。所有 extract、DOM 稳定、发送、ACK 与滚动等待共享绝对 deadline；terminal 使用有界超时和同事件重试。
+- 虚拟列表每次滚动后等待 DOM 稳定，按观察指纹去重；最多 5 次滚动，光标不推进两次立即停止。用户输入、绑定标签页在同一窗口被替换、URL 变化、关闭或窗口焦点真实离开时触发 `visual_reader_user_takeover`；关闭弹窗不会停止，其他窗口的后台 tab activation 不会误杀。
+- 弹窗确认后重新校验 tab/window/canonical URL，先激活目标窗口和标签页，再次校验 active 状态后才注入。MV3 service worker 重启会清除残留授权并通知存活 content script 失败关闭，不持久化 raw nonce、批次或正文。
 - 测试固定使用 `linkedom@0.18.13` 解析 HTML fixture；它只放在 devDependencies，生产构建检查必须证明扩展 bundle 不包含 linkedom。
 
-- [ ] **Step 1: 写 manifest/protocol/extractor RED 测试**
+- [x] **Step 1: 写 manifest/protocol/extractor RED 测试**
 
   固定 fixture 覆盖普通卡、折叠正文、虚拟列表节点复用、昵称缺失、评论 ID 缺失、二级回复、广告卡、登录弹窗、验证码、安全验证和 selector drift。断言不读取头像 URL、不把回复正文当一级评论、不伪造 ID。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm exec -- tsx browser-extension/douyin-visual-reader/src/douyin-extractor.self-test.ts`
 
   Expected: FAIL。
 
-- [ ] **Step 3: 实现 build/manifest/protocol 和只读提取器**
+- [x] **Step 3: 实现 build/manifest/protocol 和只读提取器**
 
   Service worker 只路由当前 GoodJob tab 与用户确认的 Douyin tab。`chrome.storage.session` 只保存 sessionId/tabId/预算/nonce 哈希，不保存评论正文、图片或认证材料。
 
-- [ ] **Step 4: 实现弹窗、只读滚动和安全停止**
+- [x] **Step 4: 实现弹窗、只读滚动和安全停止**
 
   弹窗展示选中标签 URL、允许动作、剩余预算和停止按钮；用户必须点击一次“开始读取”。遇到登录/验证码/安全验证立即停止，不尝试处理。
 
-- [ ] **Step 5: 运行 GREEN 和扩展构建**
+- [x] **Step 5: 运行 GREEN 和扩展构建**
 
-  Run: `npm run test:visual-reader && npm run build:visual-reader`
+  Run: `npm run test:visual-reader && npm run verify:visual-reader-build-order`
 
-  Expected: PASS；`dist/douyin-visual-reader/manifest.json` 没有禁止权限，内容脚本 origin 严格有界。
+  Expected: PASS；`dist-visual-reader/douyin-visual-reader/manifest.json` 没有禁止权限，内容脚本 origin 严格有界；主站 build 后扩展制品仍存在并通过只读审计。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
   ```bash
-  git add browser-extension/douyin-visual-reader scripts/build-visual-reader-manifest.mts THIRD_PARTY_NOTICES.md package.json package-lock.json
+  git add .gitignore README.md browser-extension/douyin-visual-reader scripts/build-visual-reader-bundles.mts scripts/build-visual-reader-manifest.mts scripts/check-visual-reader-bundle.mts THIRD_PARTY_NOTICES.md package.json
   git commit -m "feat: add bounded douyin visual reader extension"
   ```
+
+  Implemented in frontend commits `fc378c3` and `1732163`. Fresh verification passed all nine extension self-test groups, the 125-check frontend self-test, strict type checks, the real extension-build/main-build/read-only-audit sequence, and `git diff --check`. The frontend worktree retained only the user's untracked `package-lock.json`, which was not read, edited, staged, deleted, or committed. No real Douyin request was made and Task 6 screenshot/OCR work was not started.
 
 ### Task 6: 本地裁剪、头像遮挡和 OCR 兜底
 
