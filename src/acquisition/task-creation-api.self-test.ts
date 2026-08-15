@@ -3,6 +3,7 @@ import {
   buildDouyinPlanInput,
   createAcquisitionTaskCreationApi
 } from "./task-creation-api";
+import * as taskCreationApi from "./task-creation-api";
 
 const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
 let idempotencySerial = 0;
@@ -190,6 +191,12 @@ const planInput = buildDouyinPlanInput({
   individualQuery: "老板 询价",
   providerConnection: searchConnections[0]!,
   modelConnectionId: "model-tool",
+  douyinPublicCommentSample: {
+    enabled: true,
+    maxVideosPerRun: 10,
+    maxCommentsPerVideo: 30,
+    maxPagesPerVideo: 3
+  },
   budget: {
     billingCurrency: "cny",
     maxRequests: 5,
@@ -217,6 +224,29 @@ assert.equal(
 );
 assert.equal(JSON.stringify(planInput).includes("modelSnapshotRef"), false);
 assert.equal(JSON.stringify(planInput).includes("<script>alert(1)</script>"), false);
+const applyCommentPolicy = (taskCreationApi as Record<string, unknown>)
+  .applyDouyinPublicCommentSamplePolicy;
+assert.equal(typeof applyCommentPolicy, "function");
+const commentPolicy = {
+  enabled: true,
+  maxVideosPerRun: 10,
+  maxCommentsPerVideo: 30,
+  maxPagesPerVideo: 3
+};
+for (const source of ["manual", "ai"]) {
+  const result = (applyCommentPolicy as (input: typeof planInput, policy: typeof commentPolicy) => typeof planInput)(
+    { ...planInput, name: `${source} 评论样本计划` },
+    commentPolicy
+  );
+  assert.deepEqual((result as typeof result & { douyinPublicCommentSample?: unknown }).douyinPublicCommentSample, commentPolicy);
+  assert.deepEqual(result.providerConnections.at(-1), {
+    connectionId: "douyin-public-comments",
+    providerId: "experimental_public_sample",
+    kind: "content_fetch",
+    status: "active",
+    credentialVersion: 1
+  });
+}
 for (const [usageField, totalField] of [
   ["requests", "maxRequests"],
   ["results", "maxResults"],

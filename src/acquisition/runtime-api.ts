@@ -24,6 +24,8 @@ export interface AcquisitionTaskDetail {
   presentation: {
     candidateEvents: Array<Record<string, unknown>>;
     providers: Array<Record<string, unknown>>;
+    automationSteps?: Array<Record<string, unknown>>;
+    commentSignals?: Array<Record<string, unknown>>;
     hasMore?: boolean;
     nextAfter?: string | null;
     summary?: Record<string, unknown> | null;

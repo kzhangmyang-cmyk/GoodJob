@@ -5,6 +5,7 @@ import type {
   CandidateIntelligenceOperation
 } from "./detail-center-api";
 import { createAcquisitionDetailCenterController } from "./detail-center-controller";
+import * as detailControllerModule from "./detail-center-controller";
 
 function detailEvent<T>(name: string, detail: T): Event {
   return new CustomEvent<T>(name, { detail });
@@ -134,6 +135,29 @@ class MemorySessionStorage {
   removeItem(key: string) {
     this.values.delete(key);
   }
+}
+
+{
+  const mergeProjection = (detailControllerModule as Record<string, unknown>)
+    .mergeRunPresentationProjection;
+  assert.equal(typeof mergeProjection, "function");
+  const merged = (mergeProjection as (current: Record<string, unknown>, incoming: Record<string, unknown>) => Record<string, unknown>)({
+    summary: { commentsSampled: 18, highPotentialSignals: 1 },
+    automationSteps: [{ id: "fetch_public_comment_samples", status: "running", processedCount: 18 }],
+    commentSignals: [{ eventId: "comment-1", text: "旧投影" }]
+  }, {
+    summary: { commentsSampled: 18, highPotentialSignals: 1 },
+    automationSteps: [{ id: "fetch_public_comment_samples", status: "partial_success", processedCount: 18 }],
+    commentSignals: [{ eventId: "comment-1", text: "新投影" }, { eventId: "comment-2", text: "第二条" }]
+  });
+  assert.deepEqual(merged.automationSteps, [{
+    id: "fetch_public_comment_samples", status: "partial_success", processedCount: 18
+  }]);
+  assert.deepEqual(merged.commentSignals, [
+    { eventId: "comment-1", text: "新投影" },
+    { eventId: "comment-2", text: "第二条" }
+  ]);
+  assert.deepEqual(merged.summary, { commentsSampled: 18, highPotentialSignals: 1 });
 }
 
 function fakeAction(dataset: Record<string, string>) {
@@ -3249,6 +3273,8 @@ function automaticIntelligenceOperation(
           }],
           providers: [],
           summary: { validOpportunities: 1 },
+          automationSteps: [{ id: "fetch_public_comment_samples", status: "running" }],
+          commentSignals: [{ eventId: "comment-tail-1", text: "旧投影" }],
           hasMore: true,
           nextAfter: "cursor-close-page"
         }
@@ -4261,6 +4287,8 @@ function automaticIntelligenceOperation(
           }],
           providers: [],
           summary: { validOpportunities: 1 },
+          automationSteps: [{ id: "fetch_public_comment_samples", status: "running" }],
+          commentSignals: [{ eventId: "comment-tail-1", text: "旧投影" }],
           hasMore: true,
           nextAfter: "cursor-tail-1"
         }
@@ -4282,6 +4310,14 @@ function automaticIntelligenceOperation(
           status: "running"
         }],
         summary: { validOpportunities: presentationReads + 1 },
+        automationSteps: [{
+          id: "fetch_public_comment_samples",
+          status: presentationReads === 1 ? "partial_success" : "succeeded"
+        }],
+        commentSignals: [{
+          eventId: "comment-tail-1",
+          text: presentationReads === 1 ? "已更新投影" : "最终投影"
+        }],
         candidateEvents: [{
           eventId: `event-tail-${presentationReads + 1}`,
           candidateId: `candidate-tail-${presentationReads + 1}`
@@ -4319,6 +4355,12 @@ function automaticIntelligenceOperation(
     controller.getState().detail?.presentation?.summary?.validOpportunities,
     3
   );
+  assert.deepEqual(controller.getState().detail?.presentation?.automationSteps, [{
+    id: "fetch_public_comment_samples", status: "succeeded"
+  }]);
+  assert.deepEqual(controller.getState().detail?.presentation?.commentSignals, [{
+    eventId: "comment-tail-1", text: "最终投影"
+  }]);
   assert.equal(controller.getState().detail?.presentation?.hasMore, false);
   assert.equal(scheduler.pendingCount(), 0);
   controller.destroy();

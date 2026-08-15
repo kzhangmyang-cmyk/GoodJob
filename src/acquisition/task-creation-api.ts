@@ -47,7 +47,15 @@ export interface DouyinPlanForm {
   individualQuery: string;
   providerConnection: AcquisitionSearchConnection;
   modelConnectionId: string;
+  douyinPublicCommentSample?: DouyinPublicCommentSample;
   budget: AcquisitionBudgetInput;
+}
+
+export interface DouyinPublicCommentSample {
+  enabled: boolean;
+  maxVideosPerRun: number;
+  maxCommentsPerVideo: number;
+  maxPagesPerVideo: number;
 }
 
 export interface AcquisitionUsageInput {
@@ -75,7 +83,7 @@ export interface DouyinPlanInput {
   providerConnections: Array<{
     connectionId: string;
     providerId: string;
-    kind: "search";
+    kind: "search" | "content_fetch";
     status: "active";
     credentialVersion: number;
   }>;
@@ -89,9 +97,53 @@ export interface DouyinPlanInput {
   }>;
   budgetSnapshot: AcquisitionBudgetInput;
   modelConnectionId: string;
+  douyinPublicCommentSample?: DouyinPublicCommentSample;
   stopConditions: {
     stopWhenBudgetExhausted: true;
     stopWhenNoMoreResults: true;
+  };
+}
+
+const PUBLIC_COMMENT_CONNECTION = {
+  connectionId: "douyin-public-comments",
+  providerId: "experimental_public_sample",
+  kind: "content_fetch" as const,
+  status: "active" as const,
+  credentialVersion: 1
+};
+
+function commentSamplePolicy(value: DouyinPublicCommentSample | undefined): DouyinPublicCommentSample | undefined {
+  if (!value?.enabled) return undefined;
+  const bounded = (candidate: number, label: string, maximum: number) => {
+    if (!Number.isSafeInteger(candidate) || candidate < 1 || candidate > maximum) {
+      throw new Error(`${label}必须是 1 到 ${maximum} 的整数`);
+    }
+    return candidate;
+  };
+  return {
+    enabled: true,
+    maxVideosPerRun: bounded(value.maxVideosPerRun, "每次最多视频数", 20),
+    maxCommentsPerVideo: bounded(value.maxCommentsPerVideo, "每个视频最多评论数", 100),
+    maxPagesPerVideo: bounded(value.maxPagesPerVideo, "每个视频最多页数", 5)
+  };
+}
+
+/** Applies the only allowed fixed provider snapshot to AI and manual plans alike. */
+export function applyDouyinPublicCommentSamplePolicy(
+  plan: DouyinPlanInput,
+  sample: DouyinPublicCommentSample | undefined
+): DouyinPlanInput {
+  const policy = commentSamplePolicy(sample);
+  const providerConnections = plan.providerConnections.filter((connection) =>
+    connection.connectionId !== PUBLIC_COMMENT_CONNECTION.connectionId);
+  if (!policy) {
+    const { douyinPublicCommentSample: _ignored, ...withoutPolicy } = plan;
+    return { ...withoutPolicy, providerConnections };
+  }
+  return {
+    ...plan,
+    douyinPublicCommentSample: policy,
+    providerConnections: [...providerConnections, PUBLIC_COMMENT_CONNECTION]
   };
 }
 
@@ -256,7 +308,7 @@ export function buildDouyinPlanInput(form: DouyinPlanForm): DouyinPlanInput {
   const [organizationDuration, individualDuration] =
     splitBudget(maxDurationSeconds);
 
-  return {
+  const plan: DouyinPlanInput = {
     targetPlatform: "douyin",
     name: trimText(form.name, "任务名称", 200),
     objective: trimText(form.objective, "获客目标", 2_000),
@@ -328,6 +380,7 @@ export function buildDouyinPlanInput(form: DouyinPlanForm): DouyinPlanInput {
       stopWhenNoMoreResults: true
     }
   };
+  return applyDouyinPublicCommentSamplePolicy(plan, form.douyinPublicCommentSample);
 }
 
 function defaultCookieSource(): string {

@@ -1,4 +1,5 @@
 import {
+  applyDouyinPublicCommentSamplePolicy,
   buildDouyinPlanInput,
   createAcquisitionTaskCreationApi,
   type AcquisitionSearchConnection,
@@ -93,6 +94,8 @@ function initialise(): void {
   const manualFields = byId("replicaRealManualFields");
   const preflight = byId("replicaRealPreflightStatus");
   const submitStatus = byId("replicaRealTaskSubmitStatus");
+  const commentSample = byId<HTMLInputElement>("replicaRealCommentSampleEnabled");
+  const commentSampleFields = byId<HTMLFieldSetElement>("replicaRealCommentSampleFields");
   if (!dialog || !form || !searchSelect || !modelSelect || !submit) return;
 
   const taskDialog = dialog;
@@ -112,6 +115,20 @@ function initialise(): void {
   let mode: "ai" | "manual" = "ai";
   let generatedPlan: ReturnType<typeof buildDouyinPlanInput> | null = null;
   let generation = 0;
+
+  function selectedCommentSample() {
+    if (!commentSample?.checked) return undefined;
+    return {
+      enabled: true,
+      maxVideosPerRun: numberValue("replicaRealCommentMaxVideos"),
+      maxCommentsPerVideo: numberValue("replicaRealCommentMaxComments"),
+      maxPagesPerVideo: numberValue("replicaRealCommentMaxPages")
+    };
+  }
+
+  function updateCommentSampleFields(): void {
+    if (commentSampleFields) commentSampleFields.disabled = commentSample?.checked !== true;
+  }
 
   function setPreflight(message: string, state: "loading" | "ready" | "blocked"): void {
     if (!preflight) return;
@@ -158,6 +175,7 @@ function initialise(): void {
       field.disabled = mode === "ai";
     });
     if (aiPrompt) aiPrompt.disabled = mode !== "ai";
+    updateCommentSampleFields();
     submitButton.innerHTML = mode === "ai"
       ? '<i class="ph ph-play" aria-hidden="true"></i>批准并启动 AI 方案'
       : '<i class="ph ph-play" aria-hidden="true"></i>创建、批准并启动';
@@ -340,6 +358,10 @@ function initialise(): void {
     updateSubmitAvailability();
   });
   approvalConfirmed?.addEventListener("change", updateSubmitAvailability);
+  commentSample?.addEventListener("change", () => {
+    updateCommentSampleFields();
+    invalidateGeneratedPlan();
+  });
   aiMode?.addEventListener("click", () => setMode("ai"));
   manualMode?.addEventListener("click", () => setMode("manual"));
   aiPrompt?.addEventListener("input", () => {
@@ -380,8 +402,10 @@ function initialise(): void {
           maxResults: numberValue("replicaRealMaxResults"),
           maxAmountMinor: numberValue("replicaRealMaxAmount"),
           maxDurationSeconds: numberValue("replicaRealMaxDuration")
-        }
+        },
+        douyinPublicCommentSample: selectedCommentSample()
       });
+      planInput = applyDouyinPublicCommentSamplePolicy(planInput, selectedCommentSample());
     } catch (error) {
       setSubmitStatus(error instanceof Error ? error.message : "任务参数不完整", "error");
       return;

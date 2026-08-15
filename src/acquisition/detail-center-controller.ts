@@ -196,6 +196,28 @@ function mergeRecordItems(
   return merged;
 }
 
+/** Reconciles only server projections; IDs replace stale items and counters never increment locally. */
+export function mergeRunPresentationProjection(
+  current: Record<string, unknown>,
+  incoming: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    ...current,
+    ...incoming,
+    automationSteps: mergeRecordItems(
+      records(current.automationSteps),
+      records(incoming.automationSteps),
+      ["id"]
+    ),
+    commentSignals: mergeRecordItems(
+      records(current.commentSignals),
+      records(incoming.commentSignals),
+      ["eventId"]
+    ),
+    summary: record(incoming.summary) ?? record(current.summary) ?? {}
+  };
+}
+
 function mergePolledTaskDetail(
   current: AcquisitionTaskDetail | null,
   incoming: AcquisitionTaskDetail,
@@ -212,7 +234,7 @@ function mergePolledTaskDetail(
   return {
     ...incoming,
     presentation: {
-      ...incoming.presentation,
+      ...mergeRunPresentationProjection(current.presentation, incoming.presentation),
       candidateEvents: mergeRecordItems(
         current.presentation.candidateEvents,
         incoming.presentation.candidateEvents,
@@ -825,7 +847,10 @@ export function createAcquisitionDetailCenterController(
         state.detail = {
           ...currentDetail,
           presentation: {
-            ...currentPresentation,
+            ...mergeRunPresentationProjection(
+              currentPresentation,
+              nextPage as unknown as Record<string, unknown>
+            ),
             candidateEvents: mergeRecordItems(
               currentPresentation.candidateEvents,
               nextPage.candidateEvents.map((event) => ({ ...event })),
@@ -1664,8 +1689,10 @@ export function createAcquisitionDetailCenterController(
           state.detail = {
             ...currentDetail,
             presentation: {
-              ...currentPresentation,
-              ...nextPage,
+              ...mergeRunPresentationProjection(
+                currentPresentation,
+                nextPage as unknown as Record<string, unknown>
+              ),
               candidateEvents: mergedEvents,
               providers: mergedProviders,
               hasMore: repeatedCursor ? false : nextPage.hasMore,

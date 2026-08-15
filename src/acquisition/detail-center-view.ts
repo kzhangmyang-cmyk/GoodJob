@@ -273,6 +273,75 @@ function renderRunLiveIndicator(status: string): string {
   `;
 }
 
+const AUTOMATION_STEP_LABELS: Readonly<Record<string, string>> = {
+  discover_video_urls: "发现公开视频",
+  resolve_video_ids: "解析视频标识",
+  fetch_public_comment_samples: "采集公开评论样本",
+  normalize_platform_events: "规范化公开事件",
+  aggregate_actor_signals: "聚合需求信号",
+  qualify_candidates: "资格研判",
+  refresh_run_presentation: "刷新运行投影"
+};
+
+const COMMENT_ERROR_LABELS: Readonly<Record<string, string>> = {
+  public_sample_unavailable: "公开样本暂不可用，可稍后再次运行",
+  access_restricted: "访问受限，已保留可用公开样本",
+  rate_limited: "访问或频率受限，已保留可用公开样本",
+  no_public_comments: "未发现可用的一级公开评论样本，不代表没有客户",
+  partial_success: "部分公开样本已完成，受限部分可稍后重试"
+};
+
+function renderCommentAutomation(detail: AcquisitionTaskDetail): string {
+  const presentation = record(detail.presentation);
+  if (!presentation) return "";
+  const summary = record(presentation.summary) ?? {};
+  const steps = records(presentation.automationSteps);
+  const signals = records(presentation.commentSignals);
+  const hasProjection = steps.length > 0 || signals.length > 0 || [
+    "discoveredVideos", "commentsSampled", "validDemandSignals", "unresolvedActors", "highPotentialSignals"
+  ].some((key) => typeof summary[key] === "number");
+  if (!hasProjection) return "";
+  const candidateEvents = records(presentation.candidateEvents);
+  const metrics = [
+    ["已发现视频", finiteNumber(summary.discoveredVideos), "个视频"],
+    ["已采样评论", finiteNumber(summary.commentsSampled), "条评论"],
+    ["有效需求信号", finiteNumber(summary.validDemandSignals), "条"],
+    ["待核验主体", finiteNumber(summary.unresolvedActors), "个"],
+    ["高潜信号", finiteNumber(summary.highPotentialSignals), "个"]
+  ];
+  const stepsHtml = steps.map((step) => {
+    const error = typeof step.errorCode === "string" ? COMMENT_ERROR_LABELS[step.errorCode] : null;
+    return `<li data-automation-step-id="${escapeHtml(textValue(step.id))}" data-status="${escapeHtml(textValue(step.status))}">
+      <strong>${escapeHtml(AUTOMATION_STEP_LABELS[textValue(step.id, "")] ?? textValue(step.id))}</strong>
+      <span>${escapeHtml(textValue(step.message))}</span>
+      <small>${finiteNumber(step.processedCount)} 项 · ${escapeHtml(error ?? readableLabel(step.status, SHARD_STATUS_LABELS))}</small>
+    </li>`;
+  }).join("");
+  const notices = steps.map((step) => typeof step.errorCode === "string" ? COMMENT_ERROR_LABELS[step.errorCode] : null)
+    .filter((item): item is string => item !== null);
+  const signalsHtml = signals.map((signal) => {
+    const candidate = candidateEvents.find((event) => textValue(event.candidateId, "") === textValue(signal.candidateId, ""));
+    const qualification = record(candidate?.qualification);
+    const highIntent = (qualification?.grade === "S" || qualification?.grade === "A")
+      && strings(qualification?.hardGateFailures).length === 0;
+    const highPotential = signal.intentBand === "strong_signal" && signal.identityStatus === "needs_research";
+    const label = highIntent ? "高意向" : highPotential ? "高潜需求信号" : "需求信号";
+    const confidence = Math.round(Math.max(0, Math.min(1, finiteNumber(signal.confidence))) * 100);
+    return `<button type="button" class="replica-acquisition-comment-signal" data-acquisition-detail-action="select-candidate" data-candidate-id="${escapeHtml(textValue(signal.candidateId))}">
+      <span class="replica-acquisition-comment-initials" aria-hidden="true">评</span>
+      <span class="replica-acquisition-comment-copy"><strong>${escapeHtml(label)} · ${escapeHtml(textValue(signal.displayName))}</strong><em>${escapeHtml(textValue(signal.text))}</em><small>${escapeHtml(textValue(signal.handle, "公开用户"))} · ${escapeHtml(textValue(signal.ipLabel, "公开主体"))} · ${escapeHtml(textValue(signal.sourceUrl))} · ${escapeHtml(textValue(signal.occurredAt))}</small></span>
+      <span class="replica-acquisition-comment-meta">${confidence}%<small>${escapeHtml(signal.identityStatus === "resolved" ? "身份已核验" : "身份待核验")}</small></span>
+    </button>`;
+  }).join("");
+  return `<section class="replica-acquisition-comment-automation" aria-label="公开评论自动化进程">
+    <header><div><span>公开评论自动化</span><h4>自动化进程</h4></div><small>仅服务端投影，不按本地时间推演</small></header>
+    <div class="replica-acquisition-comment-metrics" aria-label="公开评论计数带">${metrics.map(([label, value, unit]) => `<span><small>${escapeHtml(label)}</small><strong>${value} ${escapeHtml(unit)}</strong></span>`).join("")}</div>
+    ${stepsHtml ? `<ol class="replica-acquisition-automation-steps">${stepsHtml}</ol>` : ""}
+    ${notices.length > 0 ? `<p class="replica-acquisition-comment-notice" role="status">${escapeHtml(notices[0]!)}</p>` : ""}
+    ${signalsHtml ? `<div class="replica-acquisition-comment-signals" aria-live="polite">${signalsHtml}</div>` : ""}
+  </section>`;
+}
+
 function tabButton(
   mode: AcquisitionDetailCenterMode,
   current: AcquisitionDetailCenterMode,
@@ -587,6 +656,8 @@ function renderPlanOverview(
         <h4>最新运行</h4>
         ${runHtml}
       </article>
+
+      ${renderCommentAutomation(detail)}
 
       <article class="replica-acquisition-detail-section">
         <h4>运行分片</h4>

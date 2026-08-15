@@ -10642,6 +10642,23 @@
           </div>
         </section>
 
+        <section class="replica-real-form-section replica-comment-sample-section" aria-labelledby="replicaRealCommentSampleTitle">
+          <div class="replica-form-section-head"><div><span>公开评论样本</span><h3 id="replicaRealCommentSampleTitle">从已发现视频提取一级公开样本</h3></div></div>
+          <label class="replica-comment-sample-toggle">
+            <input id="replicaRealCommentSampleEnabled" type="checkbox" aria-describedby="replicaRealCommentSampleHint" />
+            <span>启用公开评论样本</span>
+          </label>
+          <p class="replica-form-note" id="replicaRealCommentSampleHint"><i class="ph ph-info" aria-hidden="true"></i>一级公开样本，非全量；访问、频率或页面限制时会保留已获得的公开样本。</p>
+          <fieldset id="replicaRealCommentSampleFields" disabled>
+            <legend>样本上限</legend>
+            <div class="replica-budget-grid">
+              <label><span>每次最多视频</span><input id="replicaRealCommentMaxVideos" type="number" min="1" max="20" step="1" value="10" required /><small>个视频</small></label>
+              <label><span>每个视频评论</span><input id="replicaRealCommentMaxComments" type="number" min="1" max="100" step="1" value="30" required /><small>条</small></label>
+              <label><span>每个视频页数</span><input id="replicaRealCommentMaxPages" type="number" min="1" max="5" step="1" value="3" required /><small>页</small></label>
+            </div>
+          </fieldset>
+        </section>
+
         <section class="replica-real-form-section replica-ai-plan-section" id="replicaRealAiSection">
           <div class="replica-form-section-head"><div><span>AI 增长参谋</span><h3>用一句话生成可批准的完整服务端计划</h3></div></div>
           <label class="wide"><span>你的抖音获客目标</span><textarea id="replicaRealAiPrompt" maxlength="20000" required>帮我寻找厦门企业服务和装修行业，在抖音公开表达采购、询价或合作需求的企业和老板。</textarea><small>AI 会保留所有服务端生成的搜索连接、查询、预算与停止条件，供人工完整核对。</small></label>

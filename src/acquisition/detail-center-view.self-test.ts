@@ -1420,4 +1420,122 @@ for (const terminalStatus of [
   assert.doesNotMatch(html, /运行中，尚未形成候选/);
 }
 
+{
+  // A missing projection field is a legacy response; a real partial public-sample
+  // projection must render server counts and never invent a local counter.
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      presentation: {
+        ...detail.presentation!,
+        summary: {
+          ...detail.presentation!.summary,
+          discoveredVideos: 6,
+          commentsSampled: 42,
+          validDemandSignals: 4,
+          unresolvedActors: 2,
+          highPotentialSignals: 1
+        },
+        automationSteps: [{
+          id: "fetch_public_comment_samples",
+          status: "partial_success",
+          startedAt: timestamp,
+          completedAt: timestamp,
+          durationMs: 3200,
+          processedCount: 42,
+          errorCode: "rate_limited",
+          message: "部分公开评论样本受限"
+        }],
+        commentSignals: [{
+          eventId: "comment-event-1",
+          candidateId: "candidate-unresolved",
+          displayName: "公开用户 <img src=x>",
+          handle: "@public-user",
+          text: "正在找装修获客方案 <script>alert(1)</script>",
+          occurredAt: timestamp,
+          likeCount: 3,
+          replyCount: 1,
+          ipLabel: "福建",
+          sourceUrl: "https://www.douyin.com/video/example",
+          intentBand: "strong_signal",
+          reasons: ["明确询价"],
+          confidence: 0.92,
+          identityStatus: "needs_research",
+          evidenceId: "evidence-comment-1"
+        }]
+      } as typeof detail.presentation
+    }
+  }));
+  assert.match(html, /自动化进程/);
+  assert.match(html, /公开评论样本/);
+  assert.match(html, /6 个视频/);
+  assert.match(html, /42 条评论/);
+  assert.match(html, /部分公开评论样本受限/);
+  assert.match(html, /访问或频率受限，已保留可用公开样本/);
+  assert.match(html, /高潜需求信号/);
+  assert.match(html, /data-acquisition-detail-action="select-candidate"[^>]*data-candidate-id="candidate-unresolved"/);
+  assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
+  assert.doesNotMatch(html, /<img src=x>/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.match(html, /&lt;img/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      presentation: {
+        ...detail.presentation!,
+        summary: { ...detail.presentation!.summary, discoveredVideos: 2, commentsSampled: 0 },
+        automationSteps: [{
+          id: "fetch_public_comment_samples",
+          status: "succeeded",
+          startedAt: timestamp,
+          completedAt: timestamp,
+          durationMs: 200,
+          processedCount: 0,
+          errorCode: "no_public_comments",
+          message: "公开评论样本为空"
+        }],
+        commentSignals: []
+      } as typeof detail.presentation
+    }
+  }));
+  assert.match(html, /未发现可用的一级公开评论样本，不代表没有客户/);
+  assert.doesNotMatch(html, /暂无客户|没有客户。/);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      presentation: {
+        ...detail.presentation!,
+        commentSignals: [{
+          eventId: "comment-qualified-1",
+          candidateId: "candidate-org",
+          displayName: "已核验公开主体",
+          handle: null,
+          text: "需要尽快确认方案",
+          occurredAt: timestamp,
+          likeCount: 0,
+          replyCount: 0,
+          ipLabel: null,
+          sourceUrl: "https://www.douyin.com/video/qualified",
+          intentBand: "strong_signal",
+          reasons: ["明确采购"],
+          confidence: 0.95,
+          identityStatus: "resolved",
+          evidenceId: "evidence-qualified-1"
+        }]
+      } as typeof detail.presentation
+    }
+  }));
+  assert.match(html, /高意向 · 已核验公开主体/);
+  assert.doesNotMatch(html, /高潜需求信号 · 已核验公开主体/);
+}
+
 console.log("Acquisition detail center view self-test passed");
