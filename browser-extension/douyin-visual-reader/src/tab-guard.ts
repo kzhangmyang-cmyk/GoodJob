@@ -69,3 +69,21 @@ export function boundTabNavigationIsTakeover(
   if (tabId !== binding.tabId || nextUrl === undefined) return false;
   return canonicalDouyinVideoUrl(nextUrl)?.sourceUrl !== binding.url;
 }
+
+export function boundTabDocumentLifecycleIsTakeover(
+  binding: BoundDouyinTab,
+  tabId: number,
+  changeInfo: { status?: string; url?: string }
+): boolean {
+  if (tabId !== binding.tabId) return false;
+  return changeInfo.status === "loading"
+    || boundTabNavigationIsTakeover(binding, tabId, changeInfo.url);
+}
+
+export function boundTabReplacementIsTakeover(
+  binding: BoundDouyinTab,
+  _addedTabId: number,
+  removedTabId: number
+): boolean {
+  return removedTabId === binding.tabId;
+}

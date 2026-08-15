@@ -81,8 +81,9 @@ const ACTIVE_SESSION_STATUSES = new Set(["created", "collecting"]);
 const TERMINAL_SESSION_STATUSES = new Set(["completed", "partial_success", "aborted", "expired"]);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
 
-function defaultKey(): string {
-  const crypto = globalThis.crypto;
+export function defaultVisualReaderKey(
+  crypto: Pick<Crypto, "getRandomValues"> | null | undefined = globalThis.crypto
+): string {
   if (!crypto?.getRandomValues) {
     throw new Error("浏览器缺少 crypto 安全随机数支持");
   }
@@ -123,7 +124,7 @@ export function createVisualReaderController(
 ): VisualReaderController {
   const api = options.api ?? createVisualReaderApi();
   const bridgeFactory = options.bridgeFactory ?? (() => createVisualReaderBridge());
-  const keyFactory = options.keyFactory ?? defaultKey;
+  const keyFactory = options.keyFactory ?? defaultVisualReaderKey;
   const refreshPresentation = options.onRequestPresentationRefresh ?? (() => undefined);
   const state: VisualReaderControlState = {
     extensionStatus: "idle",

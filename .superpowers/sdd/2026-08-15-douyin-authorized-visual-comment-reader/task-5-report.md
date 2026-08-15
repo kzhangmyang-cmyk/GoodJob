@@ -3,13 +3,15 @@
 ## Delivered
 
 - Manifest V3 extension with exact `activeTab`, `scripting`, `storage`, and `offscreen` permissions
-- Exact Douyin host permission and generated, allowlisted GoodJob content-script origins
+- Exact Douyin host permission and generated, allowlisted GoodJob content-script origins; the read-only audit deep-compares the complete manifest to its template plus build origins
 - Task 4 bridge protocol parity for `probe`, `start`, `acknowledge_batch`, `abort`, `ready`, `observation_batch`, and `terminal`
 - Explicit popup selection and confirmation of one canonical Douyin video tab
 - Visible, top-level comment extraction using DOM text, ARIA names, public time/count text, literal comment IDs, and literal in-card public profile links
 - Fail-closed handling for selector drift, ambiguous read-only buttons, login, captcha, security verification, ads, and nested replies
-- Bounded batching, ACK retention, deduplication, at most five programmatic scrolls, two-cycle no-progress stop, duration stop, and user-takeover stop
+- Bounded batching, ACK retention, deduplication, at most five programmatic scrolls, two-cycle no-progress stop, duration stop, and user-takeover stop; terminal retries share the same absolute session deadline
 - Strict `chrome.storage.session` projection containing only session/tab IDs, limits, usage, artifact flag, nonce hash, and state
+- Same-canonical-URL reloads, URL-less `loading` lifecycle updates, and bound-tab replacements fail closed without affecting other tabs or windows
+- MV3 restart reports `partial_success` with `visual_reader_session_expired`, so the GoodJob controller uses server completion rather than a user-takeover abort
 - Local fixture tests using pinned `linkedom@0.18.13`; production bundle audit rejects linkedom leakage, remote network APIs, source maps, dynamic code, broad origins, and forbidden permissions
 - Preserved popup visual language with deep green, warm white, cool gray, native controls, visible focus states, and polite live status
 
@@ -29,7 +31,7 @@ npm run build                    PASS (existing large-chunk warning only)
 git diff --check                 PASS
 ```
 
-The development manifest contains only `http://127.0.0.1:5191/*` for the GoodJob content script. Release rendering fails closed unless `VISUAL_READER_RELEASE=1` is accompanied by explicit HTTPS `GOODJOB_APP_ORIGINS`.
+The development manifest contains only `http://127.0.0.1:5191/*` for the GoodJob content script. Release rendering fails closed unless `VISUAL_READER_RELEASE=1` is accompanied by explicit HTTPS `GOODJOB_APP_ORIGINS`. The read-only audit rejects any full-manifest drift from the template and rendered origins, including CSP, optional permissions, content-script attributes, background/action, and web-accessible resources.
 
 The final unpacked extension contains seven files and is approximately 64 KB. It has only been validated with fixed fixtures and local extension builds; real Douyin compatibility and Chrome Web Store publication are not claimed.
 

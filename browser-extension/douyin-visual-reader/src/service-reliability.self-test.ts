@@ -62,6 +62,36 @@ class ManualRetries {
   pending(): number { return this.callbacks.size; }
 }
 
+class ManualClock {
+  now = 0;
+  private nextId = 1;
+  private readonly timers = new Map<number, { at: number; callback: () => void }>();
+
+  schedule = (callback: () => void, delay: number): number => {
+    const id = this.nextId++;
+    this.timers.set(id, { at: this.now + delay, callback });
+    return id;
+  };
+
+  cancel = (handle: unknown): void => {
+    if (typeof handle === "number") this.timers.delete(handle);
+  };
+
+  advance(milliseconds: number): void {
+    this.now += milliseconds;
+    for (;;) {
+      const due = [...this.timers.entries()]
+        .filter(([, timer]) => timer.at <= this.now)
+        .sort((left, right) => left[1].at - right[1].at)[0];
+      if (!due) return;
+      this.timers.delete(due[0]);
+      due[1].callback();
+    }
+  }
+
+  pending(): number { return this.timers.size; }
+}
+
 async function flush(): Promise<void> {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
@@ -133,6 +163,39 @@ async function flush(): Promise<void> {
   await transport.whenIdle();
   assert.equal(attempts, 2, "a hung runtime send is bounded and retried exactly");
   assert.equal(retries.pending(), 0);
+}
+
+{
+  const clock = new ManualClock();
+  let attempts = 0;
+  const transport = createReliableEventTransport({
+    deadlineAt: 20,
+    now: () => clock.now,
+    retryDelayMs: 10,
+    maxTerminalAttempts: 5,
+    scheduleTimeout: clock.schedule,
+    cancelTimeout: clock.cancel,
+    send: async () => {
+      attempts += 1;
+      return { accepted: false };
+    }
+  });
+  transport.queueTerminal({
+    version: BRIDGE_VERSION,
+    type: "terminal",
+    channelNonce: "d".repeat(64),
+    sessionId: "session-terminal-deadline",
+    status: "partial_success",
+    errorCodes: ["visual_reader_budget_exhausted"]
+  });
+  await flush();
+  clock.advance(10);
+  await flush();
+  clock.advance(10);
+  await flush();
+  assert.equal(attempts, 2, "terminal retry shares the session absolute deadline and never sends after it");
+  await transport.whenIdle();
+  assert.equal(clock.pending(), 0, "deadline cleanup cancels every terminal retry timer");
 }
 
 console.log("douyin service reliability self-test passed");

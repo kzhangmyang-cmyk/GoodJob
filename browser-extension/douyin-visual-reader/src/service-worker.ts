@@ -13,7 +13,8 @@ import {
   type VisualReaderPersistedState
 } from "./session-coordinator";
 import {
-  boundTabNavigationIsTakeover,
+  boundTabDocumentLifecycleIsTakeover,
+  boundTabReplacementIsTakeover,
   focusLeavesBoundWindow,
   prepareFreshDouyinTab,
   sameWindowActivationIsTakeover,
@@ -300,9 +301,15 @@ if (typeof chrome !== "undefined") {
       void safeAbort("visual_reader_user_takeover");
     }
   });
-  chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: { url?: string }) => {
+  chrome.tabs.onUpdated.addListener((tabId: number, changeInfo: { status?: string; url?: string }) => {
     const binding = activeBinding();
-    if (binding && boundTabNavigationIsTakeover(binding, tabId, changeInfo.url)) {
+    if (binding && boundTabDocumentLifecycleIsTakeover(binding, tabId, changeInfo)) {
+      void safeAbort("visual_reader_user_takeover");
+    }
+  });
+  chrome.tabs.onReplaced.addListener((addedTabId: number, removedTabId: number) => {
+    const binding = activeBinding();
+    if (binding && boundTabReplacementIsTakeover(binding, addedTabId, removedTabId)) {
       void safeAbort("visual_reader_user_takeover");
     }
   });

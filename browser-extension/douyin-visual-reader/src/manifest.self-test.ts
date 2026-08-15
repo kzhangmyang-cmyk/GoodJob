@@ -55,34 +55,91 @@ for (const originsLiteral of [
 {
   const root = await mkdtemp(join(tmpdir(), "goodjob-visual-reader-"));
   try {
-    await writeFile(join(root, "manifest.json"), JSON.stringify(await renderVisualReaderManifest({
+    const releaseOptions = {
       templateUrl,
       originsLiteral: "https://crm.goodjob.example",
       release: true
-    })));
+    } as const;
+    const validManifest = await renderVisualReaderManifest(releaseOptions);
+    await writeFile(join(root, "manifest.json"), JSON.stringify(validManifest));
     await writeFile(join(root, "service-worker.js"), "globalThis.chrome.runtime.onMessage.addListener(() => undefined);\n");
     await writeFile(join(root, "goodjob-bridge-content.js"), "globalThis.addEventListener('message', () => undefined);\n");
     await writeFile(join(root, "douyin-content.js"), "globalThis.addEventListener('scroll', () => undefined);\n");
     await writeFile(join(root, "popup.js"), "globalThis.document.addEventListener('DOMContentLoaded', () => undefined);\n");
     await writeFile(join(root, "popup.html"), "<!doctype html><script type=\"module\" src=\"./popup.js\"></script>");
     await writeFile(join(root, "popup.css"), "body{color:#173d33}");
-    const report = await auditVisualReaderBundle(root);
+    const report = await auditVisualReaderBundle(root, releaseOptions);
     assert.deepEqual(report, { files: 7, forbiddenFindings: [] });
+    const validCheck = spawnSync("npm", ["run", "check:visual-reader-bundle"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        VISUAL_READER_DIST_DIR: root,
+        VISUAL_READER_RELEASE: "1",
+        GOODJOB_APP_ORIGINS: "https://crm.goodjob.example"
+      },
+      encoding: "utf8"
+    });
+    assert.equal(validCheck.status, 0,
+      "the read-only command accepts a release manifest rendered from this exact template and origin");
     await writeFile(join(root, "service-worker.js"), "fetch('https://remote.example/api')\n//# sourceMappingURL=x.map");
-    await assert.rejects(() => auditVisualReaderBundle(root), /远程网络|source map/u);
-    const parsed = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
+    await assert.rejects(() => auditVisualReaderBundle(root, releaseOptions), /远程网络|source map/u);
+    const parsed = structuredClone(validManifest);
     parsed.permissions.push("cookies");
     await writeFile(join(root, "manifest.json"), JSON.stringify(parsed));
-    await assert.rejects(() => auditVisualReaderBundle(root), /禁止权限/u);
+    await assert.rejects(() => auditVisualReaderBundle(root, releaseOptions), /禁止权限/u);
     await writeFile(join(root, "service-worker.js"), "globalThis.chrome.runtime.onMessage.addListener(() => undefined);\n");
+
+    const tamperedManifests: Array<[string, Record<string, unknown>]> = [
+      ["evil but syntactically specific origin", {
+        ...structuredClone(validManifest),
+        content_scripts: [{
+          ...structuredClone(validManifest.content_scripts?.[0]),
+          matches: ["https://evil.example/*"]
+        }]
+      }],
+      ["remote CSP", {
+        ...structuredClone(validManifest),
+        content_security_policy: {
+          extension_pages: "script-src 'self' https://evil.example; object-src 'self'"
+        }
+      }],
+      ["optional permission", {
+        ...structuredClone(validManifest),
+        optional_permissions: ["cookies"]
+      }],
+      ["changed content script", {
+        ...structuredClone(validManifest),
+        content_scripts: [{
+          ...structuredClone(validManifest.content_scripts?.[0]),
+          js: ["goodjob-bridge-content.js", "evil.js"]
+        }]
+      }]
+    ];
+    for (const [name, tampered] of tamperedManifests) {
+      await writeFile(join(root, "manifest.json"), JSON.stringify(tampered));
+      await assert.rejects(
+        () => auditVisualReaderBundle(root, releaseOptions),
+        /manifest|权限|origin|CSP|content-script/iu,
+        name
+      );
+    }
+
+    const commandTamper = tamperedManifests[0][1];
+    await writeFile(join(root, "manifest.json"), JSON.stringify(commandTamper));
     const checked = spawnSync("npm", ["run", "check:visual-reader-bundle"], {
       cwd: process.cwd(),
-      env: { ...process.env, VISUAL_READER_DIST_DIR: root },
+      env: {
+        ...process.env,
+        VISUAL_READER_DIST_DIR: root,
+        VISUAL_READER_RELEASE: "1",
+        GOODJOB_APP_ORIGINS: "https://crm.goodjob.example"
+      },
       encoding: "utf8"
     });
     assert.notEqual(checked.status, 0, "the check command rejects an already-tampered manifest");
     const afterCheck = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
-    assert.ok(afterCheck.permissions.includes("cookies"), "check is read-only and cannot repair evidence");
+    assert.deepEqual(afterCheck, commandTamper, "check is read-only and cannot repair evidence");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

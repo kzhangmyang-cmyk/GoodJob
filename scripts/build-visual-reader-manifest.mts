@@ -1,6 +1,7 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 interface VisualReaderManifest {
   manifest_version: number;
@@ -73,7 +74,11 @@ async function filesRecursively(root: string): Promise<string[]> {
   return output;
 }
 
-export async function auditVisualReaderBundle(distDir: string): Promise<{
+export async function auditVisualReaderBundle(distDir: string, options: {
+  templateUrl: URL;
+  originsLiteral?: string;
+  release: boolean;
+}): Promise<{
   files: number;
   forbiddenFindings: string[];
 }> {
@@ -81,10 +86,18 @@ export async function auditVisualReaderBundle(distDir: string): Promise<{
   const findings: string[] = [];
   const manifestPath = join(distDir, "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as VisualReaderManifest;
+  const expectedManifest = await renderVisualReaderManifest(options);
+  if (!isDeepStrictEqual(manifest, expectedManifest)) {
+    findings.push("manifest 与当前模板和构建 origin 不精确一致");
+  }
   if (JSON.stringify(manifest.permissions) !== JSON.stringify(EXACT_PERMISSIONS)) {
     findings.push("禁止权限或权限集合不精确");
   }
-  if (manifest.permissions.some((permission) => FORBIDDEN_PERMISSIONS.has(permission))) {
+  const declaredPermissions = [
+    ...(Array.isArray(manifest.permissions) ? manifest.permissions : []),
+    ...(Array.isArray(manifest.optional_permissions) ? manifest.optional_permissions as string[] : [])
+  ];
+  if (declaredPermissions.some((permission) => FORBIDDEN_PERMISSIONS.has(permission))) {
     findings.push("禁止权限");
   }
   if (JSON.stringify(manifest.host_permissions) !== JSON.stringify(EXACT_DOUYIN_HOSTS)) {

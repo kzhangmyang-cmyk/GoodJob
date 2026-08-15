@@ -27,6 +27,7 @@ export function createBoundedReader(dependencies: {
   limits: VisualReaderLimits;
   artifactUploadEnabled: boolean;
   now?: () => number;
+  deadlineAt?: number;
   scheduleTimeout?: (callback: () => void, delay: number) => unknown;
   cancelTimeout?: (handle: unknown) => void;
   retryDelayMs?: number;
@@ -48,7 +49,7 @@ export function createBoundedReader(dependencies: {
   const cancelTimeout = dependencies.cancelTimeout
     ?? ((handle: unknown) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>));
   const retryDelayMs = Math.max(1, Math.min(1_000, dependencies.retryDelayMs ?? 100));
-  const startedAt = now();
+  const deadlineAt = dependencies.deadlineAt ?? now() + dependencies.limits.maxDurationMs;
   const operationAbort = new AbortController();
   let stopped = false;
   let takeover = false;
@@ -62,7 +63,7 @@ export function createBoundedReader(dependencies: {
   const usage = { observationCount: 0, scrollCount: 0, ocrCallCount: 0 as const };
 
   function remainingMs(): number {
-    return dependencies.limits.maxDurationMs - (now() - startedAt);
+    return deadlineAt - now();
   }
 
   async function withinDeadline<T>(operation: Promise<T>): Promise<T> {

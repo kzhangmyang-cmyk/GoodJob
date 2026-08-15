@@ -103,7 +103,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
     limits: VisualReaderLimits;
     artifactUploadEnabled: boolean;
     channelNonce: string;
-  }): Promise<void> {
+  }, deadlineAt: number): Promise<void> {
     reader?.stop();
     activeSessionId = input.sessionId;
     const adapter = browserAdapter();
@@ -111,6 +111,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
     if (!source) throw new BoundedReaderError("visual_source_invalid");
     let attemptedAction = false;
     const sessionTransport = createReliableEventTransport({
+      deadlineAt,
       send: async (event) => {
         const response = await chrome.runtime.sendMessage({ kind: "douyin_reader_event", event });
         return {
@@ -124,6 +125,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
       sessionId: input.sessionId,
       limits: input.limits,
       artifactUploadEnabled: input.artifactUploadEnabled,
+      deadlineAt,
       extract: async (signal) => {
         if (!attemptedAction) {
           attemptedAction = true;
@@ -211,8 +213,10 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
       }, "https://www.douyin.com");
       if (!command || command.type !== "start") return;
       sendResponse({ accepted: true });
-      void start(command).catch(async () => {
+      const deadlineAt = Date.now() + command.limits.maxDurationMs;
+      void start(command, deadlineAt).catch(async () => {
         const fallback = createReliableEventTransport({
+          deadlineAt,
           send: async (event) => {
             const response = await chrome.runtime.sendMessage({ kind: "douyin_reader_event", event });
             return { accepted: response?.accepted === true };

@@ -7,5 +7,10 @@ const distDir = resolve(
   projectRoot,
   process.env.VISUAL_READER_DIST_DIR ?? "dist-visual-reader/douyin-visual-reader"
 );
+const templateUrl = new URL("../browser-extension/douyin-visual-reader/manifest.template.json", import.meta.url);
 
-await auditVisualReaderBundle(distDir);
+await auditVisualReaderBundle(distDir, {
+  templateUrl,
+  originsLiteral: process.env.GOODJOB_APP_ORIGINS,
+  release: process.env.VISUAL_READER_RELEASE === "1"
+});

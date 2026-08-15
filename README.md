@@ -64,12 +64,18 @@ npm run verify:visual-reader-build-order
 开发构建只允许连接
 `http://127.0.0.1:5191/*`；发布构建必须显式设置以逗号分隔的 HTTPS
 `GOODJOB_APP_ORIGINS`，并设置 `VISUAL_READER_RELEASE=1`，否则构建会失败。
+审计会将完整 manifest 与当前模板和构建 origin 深度比对，包含 CSP、可选权限、内容脚本
+的 matches/js/run_at/world/all_frames，以及 background、action 和 web-accessible resources；
+任何额外、缺失或篡改字段都会被拒绝，检查命令不会修复制品。
 
 使用时先在 GoodJob 运行详情中创建短时授权会话，再打开扩展弹窗，明确选择一个
 `https://www.douyin.com/video/<id>` 标签页并点击“开始只读读取”。关闭弹窗不会停止；
 点击“停止”、离开已绑定的可见抖音标签页，或用户在抖音页面滚动、点击、按键时会
-安全停止。扩展后台进程若在读取中重启，会清除残留授权并通知仍存活的网页和抖音
-内容脚本以失败关闭，不会静默续读，也不会把原始 nonce 写入存储。当前扩展只读取
+安全停止。已绑定标签页即使以相同 canonical URL 重载、Chrome 在 loading 时未提供 URL、
+或该 tab 被替换，也会立即安全停止；其他窗口的标签页活动不会误停。扩展后台进程若在
+读取中重启，会清除残留授权并通知仍存活的网页和抖音内容脚本以
+`partial_success + visual_reader_session_expired` 失败关闭，不会静默续读或把它记为用户
+接管，也不会把原始 nonce 写入存储。当前扩展只读取
 页面已显示的
 一级评论文字、公开时间、公开计数和卡内公开主页链接，最多程序滚动 5 次；不读取
 Cookie、脚本数据、头像地址、二级回复正文或页面内部状态，不执行任何写入或互动。

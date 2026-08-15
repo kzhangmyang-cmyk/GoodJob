@@ -48,7 +48,7 @@ export function goodJobRecoveryTerminalFromMemory(
     type: "terminal",
     channelNonce: memory.channelNonce,
     sessionId: memory.sessionId,
-    status: "aborted",
+    status: "partial_success",
     errorCodes: ["visual_reader_session_expired"]
   };
 }

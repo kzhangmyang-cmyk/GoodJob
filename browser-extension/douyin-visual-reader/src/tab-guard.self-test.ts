@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import * as tabGuard from "./tab-guard";
 import {
   boundTabNavigationIsTakeover,
   focusLeavesBoundWindow,
@@ -6,6 +7,7 @@ import {
   sameWindowActivationIsTakeover,
   validateFreshPopupSelection
 } from "./tab-guard";
+import type { BoundDouyinTab } from "./tab-guard";
 
 const selected = {
   id: 21,
@@ -44,6 +46,40 @@ assert.equal(focusLeavesBoundWindow(binding, -1, -1), false,
 assert.equal(boundTabNavigationIsTakeover(binding, 21, "https://www.douyin.com/video/456"), true);
 assert.equal(boundTabNavigationIsTakeover(binding, 21, "https://www.douyin.com/video/123"), false);
 assert.equal(boundTabNavigationIsTakeover(binding, 22, "https://www.douyin.com/video/456"), false);
+
+const lifecycleGuard = tabGuard as typeof tabGuard & {
+  boundTabDocumentLifecycleIsTakeover?: (
+    binding: BoundDouyinTab,
+    tabId: number,
+    changeInfo: { status?: string; url?: string }
+  ) => boolean;
+  boundTabReplacementIsTakeover?: (
+    binding: BoundDouyinTab,
+    addedTabId: number,
+    removedTabId: number
+  ) => boolean;
+};
+assert.equal(typeof lifecycleGuard.boundTabDocumentLifecycleIsTakeover, "function",
+  "a bound document loading lifecycle has an explicit fail-closed guard");
+assert.equal(lifecycleGuard.boundTabDocumentLifecycleIsTakeover?.(binding, 21, { status: "loading" }), true,
+  "a same-URL reload aborts before the target document can continue reading");
+assert.equal(lifecycleGuard.boundTabDocumentLifecycleIsTakeover?.(binding, 21, {
+  status: "loading",
+  url: "https://www.douyin.com/video/123"
+}), true, "loading remains terminal even when Chrome repeats the same canonical URL");
+assert.equal(lifecycleGuard.boundTabDocumentLifecycleIsTakeover?.(binding, 21, {
+  url: "https://www.douyin.com/video/456"
+}), true, "a URL-only target update remains terminal");
+assert.equal(lifecycleGuard.boundTabDocumentLifecycleIsTakeover?.(binding, 22, { status: "loading" }), false,
+  "another tab loading cannot stop the bound reader");
+assert.equal(lifecycleGuard.boundTabDocumentLifecycleIsTakeover?.(binding, 21, { status: "complete" }), false,
+  "non-navigation document updates do not misclassify a target tab as takeover");
+assert.equal(typeof lifecycleGuard.boundTabReplacementIsTakeover, "function",
+  "a bound tab replacement has an explicit fail-closed guard");
+assert.equal(lifecycleGuard.boundTabReplacementIsTakeover?.(binding, 99, 21), true,
+  "replacement of the bound tab aborts even before a replacement URL is observable");
+assert.equal(lifecycleGuard.boundTabReplacementIsTakeover?.(binding, 21, 99), false,
+  "replacement activity for another tab cannot stop the bound reader");
 
 {
   const calls: string[] = [];

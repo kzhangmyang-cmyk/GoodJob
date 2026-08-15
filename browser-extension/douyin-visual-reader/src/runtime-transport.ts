@@ -13,6 +13,8 @@ export function createReliableEventTransport(dependencies: {
   send(event: ExtensionEvent): Promise<{ accepted: boolean }>;
   scheduleTimeout?: (callback: () => void, delay: number) => unknown;
   cancelTimeout?: (handle: unknown) => void;
+  now?: () => number;
+  deadlineAt?: number;
   retryDelayMs?: number;
   attemptTimeoutMs?: number;
   maxTerminalAttempts?: number;
@@ -21,6 +23,8 @@ export function createReliableEventTransport(dependencies: {
     ?? ((callback: () => void, delay: number) => globalThis.setTimeout(callback, delay));
   const cancelTimeout = dependencies.cancelTimeout
     ?? ((handle: unknown) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>));
+  const now = dependencies.now ?? (() => Date.now());
+  const deadlineAt = dependencies.deadlineAt;
   const retryDelayMs = Math.max(1, Math.min(1_000, dependencies.retryDelayMs ?? 100));
   const attemptTimeoutMs = Math.max(1, Math.min(5_000, dependencies.attemptTimeoutMs ?? 1_000));
   const maxAttempts = Math.max(1, Math.min(10, dependencies.maxTerminalAttempts ?? 5));
@@ -31,6 +35,14 @@ export function createReliableEventTransport(dependencies: {
   let closed = false;
   let idle: Promise<void> = Promise.resolve();
   let resolveIdle: (() => void) | null = null;
+
+  function deadlineExpired(): boolean {
+    return deadlineAt !== undefined && now() >= deadlineAt;
+  }
+
+  function remainingDeadlineMs(): number {
+    return deadlineAt === undefined ? Number.POSITIVE_INFINITY : deadlineAt - now();
+  }
 
   function finish(): void {
     if (timer !== null) cancelTimeout(timer);
@@ -43,26 +55,26 @@ export function createReliableEventTransport(dependencies: {
   }
 
   function scheduleRetry(): void {
-    if (closed || attempts >= maxAttempts) {
+    if (closed || attempts >= maxAttempts || deadlineExpired()) {
       finish();
       return;
     }
     timer = scheduleTimeout(() => {
       timer = null;
       void attempt();
-    }, retryDelayMs);
+    }, Math.min(retryDelayMs, Math.max(1, remainingDeadlineMs())));
   }
 
   async function attempt(): Promise<void> {
     const event = terminal;
-    if (!event || closed) return finish();
+    if (!event || closed || deadlineExpired()) return finish();
     attempts += 1;
     try {
       const timeout = new Promise<{ accepted: false }>((resolve) => {
         attemptTimer = scheduleTimeout(() => {
           attemptTimer = null;
           resolve({ accepted: false });
-        }, attemptTimeoutMs);
+        }, Math.min(attemptTimeoutMs, Math.max(1, remainingDeadlineMs())));
       });
       const response = await Promise.race([dependencies.send(event), timeout]);
       if (attemptTimer !== null) cancelTimeout(attemptTimer);

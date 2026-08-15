@@ -101,9 +101,9 @@ assert.deepEqual(goodJobRecoveryTerminalFromMemory(
   type: "terminal",
   channelNonce: memoryNonce,
   sessionId: "session-restart",
-  status: "aborted",
+  status: "partial_success",
   errorCodes: ["visual_reader_session_expired"]
-}, "the surviving GoodJob content script uses only its in-memory nonce to notify the page");
+}, "the surviving GoodJob content script persists restart expiry through the non-user terminal contract");
 assert.equal(matchesUnavailableSession(
   { kind: "visual_reader_unavailable", sessionId: "session-restart" },
   "visual_reader_unavailable",

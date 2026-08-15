@@ -13,6 +13,7 @@ import type {
 } from "./visual-reader-bridge";
 import {
   createVisualReaderController,
+  defaultVisualReaderKey,
   type AuthorizedVisualReaderProjection
 } from "./visual-reader-controller";
 
@@ -433,6 +434,67 @@ function batchEvent(
 
 {
   const bridge = new FakeBridge();
+  const completeCalls: Array<{ status: string; errorCodes: string[] }> = [];
+  let abortCalls = 0;
+  const api = {
+    async getSession() {
+      return session();
+    },
+    async completeSession(
+      _sessionId: string,
+      input: { status: "completed" | "partial_success"; errorCodes: VisualReaderStableErrorCode[] }
+    ) {
+      completeCalls.push({ status: input.status, errorCodes: [...input.errorCodes] });
+      return session({
+        status: "partial_success",
+        completedAt: "2026-08-15T08:01:00.000Z",
+        lastErrorCode: "visual_reader_session_expired",
+        outcome: {
+          status: "partial_success",
+          videoCount: 1,
+          observationCount: 1,
+          domObservationCount: 1,
+          accessibilityObservationCount: 0,
+          ocrObservationCount: 0,
+          lowConfidenceObservationCount: 0,
+          artifactCount: 0,
+          errorCodes: ["visual_reader_session_expired"]
+        }
+      });
+    },
+    async abortSession() {
+      abortCalls += 1;
+      return terminalSession("aborted");
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => bridge,
+    keyFactory: () => "restart-expiry-key"
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
+  bridge.ready();
+  bridge.emit({
+    version: "goodjob.visual-reader.bridge.v1",
+    type: "terminal",
+    channelNonce: bridge.channelNonce,
+    sessionId: "visual-session-1",
+    status: "partial_success",
+    errorCodes: ["visual_reader_session_expired"]
+  });
+  await controller.whenIdle();
+  assert.deepEqual(completeCalls, [{
+    status: "partial_success",
+    errorCodes: ["visual_reader_session_expired"]
+  }], "restart expiry persists through the complete endpoint with its stable error");
+  assert.equal(abortCalls, 0, "restart expiry never invokes the user-takeover abort endpoint");
+  assert.equal(controller.getState().session?.status, "partial_success");
+  assert.equal(controller.getState().session?.lastErrorCode, "visual_reader_session_expired");
+  controller.destroy();
+}
+
+{
+  const bridge = new FakeBridge();
   const abort = deferred<VisualReaderSession>();
   let abortReason: unknown;
   const api = {
@@ -613,30 +675,8 @@ function batchEvent(
 }
 
 {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
-  let createCalls = 0;
-  try {
-    Object.defineProperty(globalThis, "crypto", {
-      configurable: true,
-      value: undefined
-    });
-    const bridge = new FakeBridge();
-    const api = {
-      async createSession() {
-        createCalls += 1;
-        return session({ status: "created" });
-      }
-    } as unknown as VisualReaderApi;
-    const controller = createVisualReaderController({ api, bridgeFactory: () => bridge });
-    await controller.open({ planId: "plan-1", runId: "run-1" });
-    bridge.ready();
-    await assert.rejects(() => controller.authorize(), /安全随机|crypto/u);
-    assert.equal(createCalls, 0, "missing browser crypto fails closed before an API write");
-    controller.destroy();
-  } finally {
-    if (descriptor) Object.defineProperty(globalThis, "crypto", descriptor);
-    else Reflect.deleteProperty(globalThis, "crypto");
-  }
+  assert.throws(() => defaultVisualReaderKey(null), /安全随机|crypto/u,
+    "missing browser crypto fails closed without mutating the aggregate self-test process");
 }
 
 {
