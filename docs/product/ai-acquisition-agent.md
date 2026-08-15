@@ -80,7 +80,8 @@ GoodJob Worker 自动串联；不要求用户逐条点击“评分”或“生�
 
 新建获客任务必须显式携带 `targetPlatform`。当前只有两个可执行值：
 
-- `douyin`：抖音公开商机，只使用搜索服务商已索引的抖音公开页面；
+- `douyin`：抖音公开商机；使用搜索服务商已索引的公开页面，也可在计划明确
+  启用后对发现或用户提交的公开视频读取有界一级评论样本；
 - `web`：全网公开网页，按通用公开搜索规则执行。
 
 抖音链路不是一个可以自由操作网页的巨型 Agent，而是“大模型语义规划、
@@ -94,6 +95,8 @@ GoodJob Worker 自动串联；不要求用户逐条点击“评分”或“生�
   → 人工审批平台、查询、搜索 Provider 和预算
   → 已授权搜索 Provider 执行公开搜索
   → Douyin Public Source Classifier Skill 分类抖音公开页面
+  → 可选 experimental_public_sample 读取有界一级公开评论样本
+  → 不可变评论事件、采集观测、需求信号和公开主体聚合
   → 证据归一、候选研究、意向/财务评分和作战卡
   → 人工复核后才能转 CRM 或创建人工跟进任务
 ```
@@ -130,6 +133,64 @@ GoodJob Worker 自动串联；不要求用户逐条点击“评分”或“生�
 抖音限定查询会丢弃搜索 Provider 返回的站外泄漏结果。这只是证据
 边界，不代表可以通过搜索摘要获得抖音账号权限、私信能力或全量评论。
 
+### 2.3 公开一级评论样本 Beta
+
+公开评论自动化有两个入口：搜索分片中经过当前租户、连接、查询和 Evidence
+完整性校验的抖音公开视频 URL，以及客户通过 content-fetch 提交的公开抖音视频
+URL。它不是一个可配置的通用抓取器。启用评论的抖音计划必须同时固化：
+
+```text
+douyinPublicCommentSample.enabled = true
+provider connection = douyin-public-comments
+providerId = experimental_public_sample
+kind = content_fetch
+status = active
+credentialVersion = 1
+```
+
+前端默认计划上限为每 Run `10` 个视频、每视频 `30` 条、每视频 `3` 页；
+版本化合同允许的硬上限为 `20 / 100 / 5`。实际执行取计划值、服务端上限和 Run
+剩余预算中的更严者。Provider 的 HTTP 请求计入 `maxRequests`，接收评论计入
+`maxResults`；达到视频、评论、页数、请求、结果、费用或时长上限后不再开始新请求。
+
+Provider 固定覆盖语义为 `public_top_level_sample`，只访问代码白名单内的 HTTPS
+抖音公开主机，不接受用户 endpoint，也不使用 Cookie、登录态、私有签名、代理池、
+验证码或浏览器模拟。当前只读取一级评论正文；二级回复仅保存公开返回的
+`replyCount`，不读取回复正文。评论者头像字段被丢弃，不下载或展示人脸资产。
+
+每条含平台评论 ID 的有效记录以
+`ownerId + teamId + platform + platformEventId` 幂等写入不可变事件；重新采集只追加
+observation。公开原文哈希变化时追加内容版本和可追溯 Evidence，原事件与旧 Run
+快照不被覆盖。`sec_uid`、规范化 handle 和 comment-scoped actor key 分别用于稳定
+主体、待研究主体和不可合并主体；缺少平台评论 ID 的记录以
+`source_payload_invalid` 拒绝，不能生成事件。
+
+意愿分类先执行确定性正向、负向和噪音规则。单条“多少钱”最多为
+`potential_signal`；身份未核验的强信号在页面显示“高潜需求信号”，只有通过当前
+身份、证据、资格和人工门禁的 S/A 候选才可显示“高意向”。自动身份研究只能使用
+受控公开搜索与精确公开主页证据；无法形成一致结论时继续停在人工核验工作台。
+
+Run Presentation 的七步时间线与五项评论计数全部由持久化分片、fetch attempt、
+事件、Evidence 和候选事实派生，前端不会用定时器增加数量。单视频失败不回滚同
+Run 已获得的结果；混合结果使用 `partial_success`。稳定语义如下：
+
+| 错误码 | 运维/页面语义 |
+|---|---|
+| `public_sample_unavailable` | 公开 Beta 样本暂不可用，可稍后创建新 Run |
+| `access_restricted` | 当前公开访问受限，保留同 Run 已获得的样本 |
+| `rate_limited` | 访问或频率受限，按有界退避处理并保留已有结果 |
+| `video_id_unresolved` | 来源 URL 未解析到受支持的公开数字视频 ID |
+| `source_payload_invalid` | 公开响应缺少平台 ID 或字段不符合严格合同 |
+| `no_public_comments` | 本次一级公开样本为空；不表示没有客户，也不计为视频失败 |
+
+已批准计划的 Run 进入成功、空成功、部分成功或失败终态后，任务详情可以点击
+“再次运行”创建新的独立 Run。精确 execution 重放复用已落库的终态投影，不重新
+请求 Provider；显式的新 Run 可在相同计划和当前预算内重新采集，并保留全部历史。
+
+客户授权的抖音官方 OAuth 连接器、授权事件/Webhook、官方动作能力和持久化周期
+调度仍是后续任务。当前应用的启动首扫和周期 recovery sweeper 只恢复已经创建的
+Run / execution intent，不会按日、按周或 Cron 自动创建新的获客 Run。
+
 #### 搜索 Provider 与内容来源必须分开
 
 - `provider` 表示谁完成了检索，例如 `baidu_ai_search` 或
@@ -157,7 +218,7 @@ GoodJob Worker 自动串联；不要求用户逐条点击“评分”或“生�
 不应复制一整套 Agent，更不应接入模拟点击、自动私信、自动加好友或规避检测的
 平台脚本。
 
-### 2.3 抖音主体核验工作台
+### 2.4 抖音主体核验工作台
 
 搜索引擎命中的抖音视频页、评论式摘要或短链接只能证明“这里出现了需求信号”，
 不能证明摘要中的账号就是已经核实的客户。此类个人候选会以
@@ -769,6 +830,28 @@ ACQUISITION_MASTER_SECRET='goodjob-e2e-master-secret-at-least-32-bytes' \
 npm run test:e2e --workspace frontend -- ai-douyin-platform-discovery.spec.ts
 ```
 
+公开评论自动化 E2E 使用显式提交的 queued、running 和 `partial_success` 服务端
+快照，验证 1440、1024、768 三个视口、评论证据回溯、刷新恢复、无横向溢出及
+只读请求边界。它使用本地 fixture，不访问真实抖音：
+
+```bash
+cd /path/to/GoodJob-marketing-system-frontend
+npm run test:e2e -- acquisition-comment-automation.spec.ts
+```
+
+真实抖音网络只允许通过显式 opt-in 的手工 Beta smoke 验证。缺少开关或数字视频
+ID 时脚本会报明原因、不发请求；成功输出只包含有界计数、游标/覆盖摘要、制品哈希
+和 Provider 版本，失败只输出稳定错误码，不输出完整评论者个人字段：
+
+```bash
+DOUYIN_VIDEO_ID='<公开视频数字 ID>' \
+DOUYIN_PUBLIC_COMMENT_SMOKE=1 \
+npm run smoke:douyin-public-comments --workspace backend
+```
+
+不要把该命令加入普通单元测试或 CI 快照。公开 endpoint 不可用时保持 Beta
+熔断/受限状态，不补 Cookie、签名、代理或浏览器规避逻辑。
+
 完整交接验收命令：
 
 ```bash
@@ -794,6 +877,10 @@ git diff --check
 6. **部署形态当前以单 API Runtime 为安全基线。** 在完成上面的细粒度事务与多节点抢占验证前，不建议横向扩展多个同时写入同一获客计划/候选的 API 实例。
 7. **Socket 与真实 MySQL 验收要在 CI 补齐。** 沙箱中的专项脚本只证明进程内逻辑，不替代 HTTP、真实数据库、真实厂商测试环境和灰度配额验证。
 8. **连接健康不代表业务质量。** API Key 测试通过只说明端点可访问；搜索质量、证据准确率、模型结构化输出率和转化效果需要按行业持续评估。
+9. **公开评论只是一级有界样本。** 页面和销售材料不得写成全站、完整或实时连续
+   监听；公开可见性、地域、频率、页面结构和 Provider Beta 状态都会改变本次覆盖。
+10. **恢复扫描不是周期获客调度。** 当前 recovery sweeper 只接管已经存在的持久化
+    execution；客户可在终态计划上手工“再次运行”，但尚无持久化日/周/Cron 调度器。
 
 ## 13. 上线前检查
 
@@ -807,6 +894,12 @@ git diff --check
 - [ ] 抖音任务只产生 `site:douyin.com` / `site:iesdouyin.com` 限定查询
 - [ ] 证据同时保留搜索 Provider、`sourcePlatform=douyin`、页面类型和原始 URL
 - [ ] 视频、短链和评论式摘要不会被当成已验证个人身份
+- [ ] 评论策略固定为 `experimental_public_sample` 和 `public_top_level_sample`，
+      上限、Run 预算与一级评论边界均已展示
+- [ ] `partial_success`、`no_public_comments`、访问受限与频率受限没有被解释成
+      “没有客户”
+- [ ] 手工 smoke 只在明确 opt-in 时运行，终端和快照不包含完整评论者个人字段
+- [ ] 官方抖音授权连接器和持久化周期调度仍明确标记为后续能力
 - [ ] 未解析身份、勿扰、明确拒绝、敏感数据和过期证据能被阻断
 - [ ] CRM 转换必须依赖人工批准和准确 decision version
 - [ ] `npm run test:acquisition --workspace backend` 与 TypeScript 编译通过

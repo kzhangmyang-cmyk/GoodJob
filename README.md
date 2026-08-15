@@ -219,6 +219,52 @@ GoodJob CRM 是一款面向外贸销售团队的网页版客户管理软件，�
 
 - AI 自动写跟进总结
 
+### 6.1 抖音公开评论自动化 Beta
+
+获客中心可以在抖音计划获批后，从两类入口读取公开可见的一级评论样本：
+
+- 客户启用的官方搜索 API 所发现的抖音公开视频链接；
+- 客户手工提交的公开抖音视频链接。
+
+这不是全站扫描或完整评论导出。计划必须显式选择 `targetPlatform=douyin`、启用
+`douyinPublicCommentSample`，并绑定服务端固定的只读内容来源：connection ID 为
+`douyin-public-comments`，Provider ID 为 `experimental_public_sample`，类型为
+`content_fetch`，状态为 `active`，凭据版本为 `1`。Beta Provider 只访问代码
+白名单中的 HTTPS 抖音公开主机，
+不接收自定义 endpoint，不使用 Cookie、登录态、私有签名、代理、验证码或浏览器
+模拟。当前只读取一级评论正文；二级回复只保留公开返回的数量，不读取回复正文，
+也不保存或展示评论者头像。
+
+页面默认上限为每次 `10` 个视频、每个视频 `30` 条评论、每个视频最多 `3` 页；
+合同硬上限分别为 `20 / 100 / 5`，并继续受 Run 的 `maxRequests`、`maxResults`、
+时长和费用预算约束。每条有效评论先保存为租户隔离的不可变平台事件和采集观测，
+再形成 Evidence、需求信号与候选。稳定 `sec_uid` 可用于同一公开主体聚合，但聚合
+不等于身份已核验；缺少一致的精确公开主页证据时，`sec_uid`、handle 或无法解析的
+主体都保持待研究。单条“多少钱”最多是潜在信号；未完成身份与资格门禁的强信号
+只显示“高潜需求信号”，不能写成已确认高意向客户。
+
+运行详情的七步时间线、视频数、样本数、有效信号数、未解析主体数和高潜信号数
+全部来自服务端持久化投影。单个视频失败不会丢弃同一 Run 已获得的结果：
+`partial_success` 表示部分成功，`no_public_comments` 只表示本次公开一级样本为空，
+不表示没有客户；`access_restricted`、`rate_limited`、
+`public_sample_unavailable`、`video_id_unresolved` 和
+`source_payload_invalid` 会保留为可审计错误。已批准计划的终态 Run 可以从任务
+详情点击“再次运行”创建新的独立 Run；历史事件和旧 Run 投影不会被覆盖。
+
+自动化测试使用固定 fixture，不访问真实抖音。只有明确提供数字视频 ID 并打开
+开关时，以下手工 smoke 才会发起一次受控 Beta 请求：
+
+```bash
+DOUYIN_VIDEO_ID='<公开视频数字 ID>' \
+DOUYIN_PUBLIC_COMMENT_SMOKE=1 \
+npm run smoke:douyin-public-comments --workspace backend
+```
+
+没有这两个环境变量时命令会明确退出且不发网络请求。smoke 只输出有界统计、覆盖
+语义、Provider 版本或稳定错误码，不应写入 CI 快照。若公开 endpoint 不可用，
+保持 Beta 熔断/受限状态，不改用 Cookie、签名或规避方案。客户授权的抖音官方
+连接器、持久化周期调度以及自动评论、私信、加好友和群发均未在本期实现。
+
 ## 7. 本地开发与验证
 
 启动：
