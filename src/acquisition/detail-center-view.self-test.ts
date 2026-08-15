@@ -8,6 +8,7 @@ import {
   type AcquisitionCandidateDetail,
   type AcquisitionDetailCenterState
 } from "./detail-center-view";
+import type { VisualReaderControlState } from "./visual-reader-controller";
 
 const timestamp = "2026-08-07T05:00:00.000Z";
 
@@ -1591,6 +1592,141 @@ for (const terminalStatus of [
   assert.match(html, /预算明确/);
   assert.match(html, /&lt;img src=x&gt;/);
   assert.doesNotMatch(html, /<img src=x>/);
+}
+
+function visualState(
+  overrides: Partial<VisualReaderControlState> = {}
+): VisualReaderControlState {
+  return {
+    extensionStatus: "ready",
+    extensionVersion: "1.0.0",
+    artifactUploadEnabled: true,
+    busy: false,
+    session: null,
+    projection: null,
+    message: null,
+    error: null,
+    ...overrides
+  };
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    visualReader: visualState()
+  }));
+  assert.match(html, /data-acquisition-visual-reader/u);
+  assert.match(html, /授权读取当前抖音页面/u);
+  assert.match(html, /data-acquisition-detail-action="authorize-visual-reader"/u);
+  assert.match(html, /type="checkbox"[^>]*name="visualReaderArtifactUpload"[^>]*checked/u);
+  assert.match(html, /已连接/u);
+  assert.match(html, /aria-live="polite"/u);
+  assert.match(html, /只上传已遮挡的单张评论卡 WebP/u);
+  assert.match(html, /不读取 Cookie，不发私信，不点赞或评论/u);
+  const card = html.match(/<section[^>]*data-acquisition-visual-reader[\s\S]*?<\/section>/u)?.[0] ?? "";
+  assert.doesNotMatch(card, /[—–]/u, "new visual reader copy does not use decorative dashes");
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    visualReader: visualState({
+      artifactUploadEnabled: false,
+      busy: false,
+      session: {
+        sessionId: "visual-session-1",
+        runId: "run-1",
+        planId: "plan-1",
+        planVersionId: "plan-version-1",
+        platform: "douyin",
+        coverage: "authorized_visible_top_level_sample",
+        status: "collecting",
+        artifactUploadEnabled: false,
+        limits: {
+          maxVideos: 10,
+          maxCommentsPerVideo: 30,
+          maxScrolls: 5,
+          maxOcrCalls: 10,
+          maxDurationMs: 120_000
+        },
+        usage: {
+          videoCount: 2,
+          observationCount: 17,
+          scrollCount: 3,
+          ocrCallCount: 4,
+          domObservationCount: 10,
+          accessibilityObservationCount: 3,
+          ocrObservationCount: 4,
+          lowConfidenceObservationCount: 2,
+          artifactCount: 0
+        },
+        outcome: null,
+        lastErrorCode: null,
+        createdAt: timestamp,
+        authorizedAt: timestamp,
+        updatedAt: "2026-08-15T08:01:00.000Z",
+        expiresAt: "2026-08-15T08:02:00.000Z",
+        completedAt: null
+      },
+      projection: {
+        sessionId: "visual-session-1",
+        coverage: "authorized_visible_top_level_sample",
+        status: "collecting",
+        usage: {
+          videoCount: 2,
+          observationCount: 17,
+          scrollCount: 3,
+          ocrCallCount: 4,
+          domObservationCount: 10,
+          accessibilityObservationCount: 3,
+          ocrObservationCount: 4,
+          lowConfidenceObservationCount: 2,
+          artifactCount: 0
+        },
+        lastErrorCode: null,
+        visualSteps: [{
+          id: "extract_visible_text",
+          status: "running",
+          startedAt: timestamp,
+          completedAt: null,
+          durationMs: null,
+          processedCount: 17,
+          errorCode: null,
+          message: "<img src=x onerror=alert(1)>"
+        }]
+      },
+      message: "正在读取当前可见评论"
+    })
+  }));
+  assert.match(html, /剩余视频[\s\S]*8/u);
+  assert.match(html, /剩余评论容量[\s\S]*283/u);
+  assert.match(html, /剩余采集批次[\s\S]*2/u);
+  assert.match(html, /剩余 OCR[\s\S]*6/u);
+  assert.match(html, /剩余授权时长[\s\S]*60 秒/u);
+  assert.match(html, /DOM[\s\S]*10/u);
+  assert.match(html, /可访问性[\s\S]*3/u);
+  assert.match(html, /OCR[\s\S]*4/u);
+  assert.match(html, /低置信度[\s\S]*2/u);
+  assert.match(html, /制品[\s\S]*0/u);
+  assert.match(html, /data-acquisition-detail-action="stop-visual-reader"/u);
+  assert.doesNotMatch(html, /name="visualReaderArtifactUpload"[^>]*checked/u);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/u);
+  assert.doesNotMatch(html, /<img src=x onerror=alert\(1\)>/u);
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    visualReader: visualState({
+      extensionStatus: "unavailable",
+      extensionVersion: null,
+      error: "<script>alert('reader')</script>"
+    })
+  }));
+  assert.match(html, /data-acquisition-detail-action="retry-visual-reader-probe"/u);
+  assert.match(html, /&lt;script&gt;alert\(&#039;reader&#039;\)&lt;\/script&gt;/u);
+  assert.doesNotMatch(html, /<script>alert\('reader'\)<\/script>/u);
+  assert.match(html, /data-acquisition-detail-action="authorize-visual-reader"[^>]*disabled/u);
 }
 
 console.log("Acquisition detail center view self-test passed");

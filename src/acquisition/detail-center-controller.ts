@@ -16,6 +16,13 @@ import {
   type AcquisitionDetailCenterState,
   type AcquisitionIdentityVerificationState
 } from "./detail-center-view";
+import {
+  createVisualReaderController,
+  type AuthorizedVisualReaderProjection,
+  type VisualReaderController
+} from "./visual-reader-controller";
+import type { VisualReaderApi } from "./visual-reader-api";
+import type { VisualReaderBridge } from "./visual-reader-bridge";
 
 export type AcquisitionCandidateReviewAction = CandidateReviewAction;
 
@@ -30,6 +37,9 @@ export interface AcquisitionDetailCenterControllerOptions {
   schedulePoll?: (callback: () => void, delay: number) => unknown;
   cancelPoll?: (handle: unknown) => void;
   storage?: Pick<Storage, "getItem" | "setItem" | "removeItem"> | null;
+  visualReaderApi?: VisualReaderApi;
+  visualReaderBridgeFactory?: () => VisualReaderBridge;
+  visualReaderController?: VisualReaderController;
 }
 
 export interface AcquisitionDetailCenterController {
@@ -265,7 +275,11 @@ function activeRun(detail: AcquisitionTaskDetail | null): boolean {
 }
 
 function shouldPollRun(detail: AcquisitionTaskDetail | null): boolean {
-  return activeRun(detail) || detail?.presentation?.hasMore === true;
+  const visualStatus = detail?.presentation?.authorizedVisualReader?.status;
+  return activeRun(detail)
+    || detail?.presentation?.hasMore === true
+    || visualStatus === "created"
+    || visualStatus === "collecting";
 }
 
 function shouldPollSelectedCandidate(
@@ -332,8 +346,15 @@ function runProgressFingerprint(detail: AcquisitionTaskDetail | null): string {
     run: detail?.latestRun ?? null,
     shards: detail?.shards ?? [],
     summary: detail?.presentation?.summary ?? null,
-    providers: detail?.presentation?.providers ?? []
+    providers: detail?.presentation?.providers ?? [],
+    authorizedVisualReader: detail?.presentation?.authorizedVisualReader ?? null
   });
+}
+
+function authorizedVisualReaderProjection(
+  detail: AcquisitionTaskDetail | null
+): AuthorizedVisualReaderProjection | undefined {
+  return detail?.presentation?.authorizedVisualReader;
 }
 
 function taskDetailIsOlder(
@@ -609,6 +630,17 @@ export function createAcquisitionDetailCenterController(
   const api = options.api ?? createAcquisitionDetailApi();
   const eventTarget = options.eventTarget ?? defaultEventTarget();
   const keyFactory = options.keyFactory ?? defaultKey;
+  const visualReaderController = options.visualReaderController
+    ?? createVisualReaderController({
+      api: options.visualReaderApi,
+      bridgeFactory: options.visualReaderBridgeFactory,
+      keyFactory,
+      onRequestPresentationRefresh: () => {
+        if (!disposed && detailOpen && currentPlanId) {
+          remember(pollRun(pollGeneration));
+        }
+      }
+    });
   const storage = options.storage === undefined
     ? defaultStorage()
     : options.storage;
@@ -637,7 +669,8 @@ export function createAcquisitionDetailCenterController(
     runControlBusy: false,
     runControlReason: "",
     handoffDialog: null,
-    identityVerification: null
+    identityVerification: null,
+    visualReader: visualReaderController.getState()
   };
   let disposed = false;
   let requestSerial = 0;
@@ -941,6 +974,9 @@ export function createAcquisitionDetailCenterController(
         ? 0
         : Math.min(pollFailureCount + 1, 10);
       state.status = "ready";
+      await visualReaderController.reconcile(
+        authorizedVisualReaderProjection(state.detail)
+      ).catch(() => undefined);
       render();
       if (before !== runProgressFingerprint(state.detail)) {
         eventTarget.dispatchEvent(customEvent(
@@ -1522,6 +1558,12 @@ export function createAcquisitionDetailCenterController(
           if (disposed || serial !== requestSerial) return;
           state.detail = detail;
           state.status = "ready";
+          await visualReaderController.open({
+            planId,
+            runId: requestedPlanId(detail.latestRun?.id),
+            projection: authorizedVisualReaderProjection(detail)
+          }).catch(() => undefined);
+          if (disposed || serial !== requestSerial) return;
           ensureRunPolling();
           if (state.mode === "candidates" && !state.selectedCandidateId) {
             const candidateId = firstCandidateId(detail);
@@ -1553,6 +1595,7 @@ export function createAcquisitionDetailCenterController(
       paginatedRunId = null;
       expectedRunId = null;
       detailOpen = true;
+      visualReaderController.close();
       showRoot();
       state.mode = "candidates";
       state.status = "ready";
@@ -1571,6 +1614,7 @@ export function createAcquisitionDetailCenterController(
 
     close() {
       detailOpen = false;
+      visualReaderController.close();
       invalidateMutation();
       invalidateRunMutation();
       stopSelectedCandidatePolling();
@@ -2513,6 +2557,8 @@ export function createAcquisitionDetailCenterController(
       identityHandoffLedger.clear();
       paginatedRunId = null;
       expectedRunId = null;
+      unsubscribeVisualReader();
+      visualReaderController.destroy();
       eventTarget.removeEventListener(
         "goodjob:acquisition-detail-open-requested",
         onOpenRequested as EventListener
@@ -2522,6 +2568,7 @@ export function createAcquisitionDetailCenterController(
         onAcquisitionModeChanged as EventListener
       );
       root?.removeEventListener("click", onRootClick);
+      root?.removeEventListener("change", onRootChange);
       root?.removeEventListener("submit", onRootSubmit);
       root?.removeEventListener("close", onRootClose);
     }
@@ -2600,6 +2647,15 @@ export function createAcquisitionDetailCenterController(
       consume(controller.loadMoreCandidates());
     } else if (action === "retry") {
       if (currentPlanId) consume(controller.open(state.mode, currentPlanId));
+    } else if (action === "authorize-visual-reader") {
+      event.preventDefault();
+      consume(visualReaderController.authorize());
+    } else if (action === "stop-visual-reader") {
+      event.preventDefault();
+      consume(visualReaderController.stop());
+    } else if (action === "retry-visual-reader-probe") {
+      event.preventDefault();
+      visualReaderController.retryProbe();
     } else if (action === "retry-identity-resolution") {
       event.preventDefault();
       consume(controller.retryIdentityResolution());
@@ -2654,6 +2710,13 @@ export function createAcquisitionDetailCenterController(
         ));
       }
     }
+  }
+
+  function onRootChange(event: Event): void {
+    const target = event.target as HTMLInputElement | null;
+    if (!target?.matches?.('input[name="visualReaderArtifactUpload"]')
+      || !root?.contains(target)) return;
+    visualReaderController.setArtifactUploadEnabled(target.checked);
   }
 
   function onRootSubmit(event: Event): void {
@@ -2730,6 +2793,7 @@ export function createAcquisitionDetailCenterController(
   }
 
   function onRootClose(): void {
+    if (detailOpen) visualReaderController.close();
     detailOpen = false;
     invalidateMutation();
     invalidateRunMutation();
@@ -2751,8 +2815,13 @@ export function createAcquisitionDetailCenterController(
     "goodjob:acquisition-mode-changed",
     onAcquisitionModeChanged as EventListener
   );
+  const unsubscribeVisualReader = visualReaderController.subscribe((visualState) => {
+    state.visualReader = { ...visualState };
+    render();
+  });
   resolveDom();
   root?.addEventListener("click", onRootClick);
+  root?.addEventListener("change", onRootChange);
   root?.addEventListener("submit", onRootSubmit);
   root?.addEventListener("close", onRootClose);
   render();

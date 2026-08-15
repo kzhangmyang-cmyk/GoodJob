@@ -3521,6 +3521,263 @@ body.is-authenticated .replica-shell {
 .replica-acquisition-comment-copy small,.replica-acquisition-comment-meta small { margin-top: 5px; color: #6f7771; font-size: 7px; line-height: 1.4; }
 .replica-acquisition-comment-meta { color: #90e3aa; font-size: 9px; text-align: right; }
 
+.replica-acquisition-visual-reader {
+  min-width: 0;
+  display: grid;
+  gap: 13px;
+  padding: 16px;
+  color: #c8d0ca;
+  background: rgba(12, 18, 15, .92);
+  border: 1px solid rgba(24, 237, 120, .16);
+  border-radius: 12px;
+}
+
+.replica-acquisition-visual-reader > header {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 16px;
+}
+
+.replica-acquisition-visual-reader > header > div {
+  min-width: 0;
+}
+
+.replica-acquisition-visual-reader > header span,
+.replica-acquisition-visual-reader-status small {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #7d8880;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.replica-acquisition-visual-reader h4 {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  color: #e1e8e3;
+  font-size: 14px;
+  font-weight: 680;
+}
+
+.replica-acquisition-visual-reader-status {
+  min-width: 0;
+  text-align: right;
+}
+
+.replica-acquisition-visual-reader-status strong {
+  display: block;
+  margin-bottom: 3px;
+  color: #bff5cf;
+  font-size: 12px;
+  font-weight: 680;
+}
+
+.replica-acquisition-visual-reader-consent {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 12px 0;
+  border-top: 1px solid rgba(255, 255, 255, .06);
+  border-bottom: 1px solid rgba(255, 255, 255, .06);
+}
+
+.replica-acquisition-visual-reader-consent label {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: #d5ddd7;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.replica-acquisition-visual-reader-consent input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 1px 0 0;
+  accent-color: var(--replica-accent);
+}
+
+.replica-acquisition-visual-reader-consent input:disabled + span {
+  color: #707a72;
+  cursor: not-allowed;
+}
+
+.replica-acquisition-visual-reader-consent p {
+  max-width: 82ch;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #7f8982;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.replica-acquisition-visual-reader-budget,
+.replica-acquisition-visual-reader-facts {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  border: 1px solid rgba(255, 255, 255, .06);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.replica-acquisition-visual-reader-budget > span,
+.replica-acquisition-visual-reader-facts > span {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  padding: 10px 11px;
+  background: rgba(255, 255, 255, .015);
+}
+
+.replica-acquisition-visual-reader-budget > span + span,
+.replica-acquisition-visual-reader-facts > span + span {
+  border-left: 1px solid rgba(255, 255, 255, .06);
+}
+
+.replica-acquisition-visual-reader-budget small,
+.replica-acquisition-visual-reader-facts small,
+.replica-acquisition-visual-reader-budget strong,
+.replica-acquisition-visual-reader-facts strong {
+  overflow-wrap: anywhere;
+}
+
+.replica-acquisition-visual-reader-budget small,
+.replica-acquisition-visual-reader-facts small {
+  color: #778179;
+  font-size: 11px;
+}
+
+.replica-acquisition-visual-reader-budget strong,
+.replica-acquisition-visual-reader-facts strong {
+  color: #c5e7cf;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.replica-acquisition-visual-reader-steps {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.replica-acquisition-visual-reader-steps li {
+  min-width: 0;
+  padding: 10px;
+  background: rgba(255, 255, 255, .014);
+  border: 1px solid rgba(255, 255, 255, .055);
+  border-radius: 9px;
+}
+
+.replica-acquisition-visual-reader-steps strong,
+.replica-acquisition-visual-reader-steps span,
+.replica-acquisition-visual-reader-steps small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.replica-acquisition-visual-reader-steps strong {
+  color: #cbd4cd;
+  font-size: 11px;
+}
+
+.replica-acquisition-visual-reader-steps span {
+  margin-top: 5px;
+  color: #8d9890;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.replica-acquisition-visual-reader-steps small {
+  margin-top: 6px;
+  color: #7fca96;
+  font-size: 11px;
+}
+
+.replica-acquisition-visual-reader-message {
+  margin: 0;
+  padding: 9px 11px;
+  overflow-wrap: anywhere;
+  color: #bceccc;
+  background: rgba(24, 237, 120, .04);
+  border: 1px solid rgba(24, 237, 120, .12);
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.replica-acquisition-visual-reader-message.is-error {
+  color: #ffb8b3;
+  background: rgba(255, 93, 86, .045);
+  border-color: rgba(255, 93, 86, .18);
+}
+
+.replica-acquisition-visual-reader > footer {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.replica-acquisition-visual-reader button {
+  min-height: 36px;
+  padding: 0 13px;
+  color: #cbd4cd;
+  background: rgba(255, 255, 255, .025);
+  border: 1px solid rgba(255, 255, 255, .09);
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 680;
+  white-space: nowrap;
+  transition: background-color .16s ease, border-color .16s ease, color .16s ease;
+}
+
+.replica-acquisition-visual-reader button:hover:not(:disabled) {
+  color: #e6ffed;
+  border-color: rgba(24, 237, 120, .24);
+  background: rgba(24, 237, 120, .055);
+}
+
+.replica-acquisition-visual-reader button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.replica-acquisition-visual-reader button.is-primary {
+  color: #06140b;
+  background: #72e39a;
+  border-color: #72e39a;
+}
+
+.replica-acquisition-visual-reader button.is-primary:hover:not(:disabled) {
+  color: #06140b;
+  background: #8be9aa;
+  border-color: #8be9aa;
+}
+
+.replica-acquisition-visual-reader button.is-danger {
+  color: #ffb8b3;
+  background: rgba(255, 93, 86, .045);
+  border-color: rgba(255, 93, 86, .18);
+}
+
+.replica-acquisition-visual-reader button:disabled {
+  opacity: .46;
+  cursor: not-allowed;
+}
+
 .replica-acquisition-run-progress {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4637,6 +4894,15 @@ body.is-authenticated .replica-shell {
   .replica-acquisition-automation-steps { grid-template-columns: 1fr; overflow: visible; }
   .replica-acquisition-comment-signal { grid-template-columns: 28px minmax(0, 1fr); }
   .replica-acquisition-comment-meta { grid-column: 2; text-align: left; }
+  .replica-acquisition-visual-reader > header { grid-template-columns: 1fr; }
+  .replica-acquisition-visual-reader-status { text-align: left; }
+  .replica-acquisition-visual-reader-budget,
+  .replica-acquisition-visual-reader-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .replica-acquisition-visual-reader-budget > span + span,
+  .replica-acquisition-visual-reader-facts > span + span { border-left: 0; border-top: 1px solid rgba(255, 255, 255, .06); }
+  .replica-acquisition-visual-reader-steps { grid-template-columns: 1fr; }
+  .replica-acquisition-visual-reader > footer { justify-content: stretch; }
+  .replica-acquisition-visual-reader button { flex: 1 1 220px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

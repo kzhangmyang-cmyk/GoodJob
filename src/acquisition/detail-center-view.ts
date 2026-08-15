@@ -3,6 +3,7 @@ import type {
   CandidateDouyinIdentityResolutionOperation
 } from "./detail-center-api";
 import type { AcquisitionTaskDetail } from "./runtime-api";
+import type { VisualReaderControlState } from "./visual-reader-controller";
 
 export type AcquisitionDetailCenterMode = "plan" | "candidates";
 export type AcquisitionDetailCenterStatus = "loading" | "ready" | "error";
@@ -64,6 +65,7 @@ export interface AcquisitionDetailCenterState {
   runControlReason?: string;
   handoffDialog?: AcquisitionHandoffDialogState | null;
   identityVerification?: AcquisitionIdentityVerificationState | null;
+  visualReader?: VisualReaderControlState;
 }
 
 type DataRecord = Record<string, unknown>;
@@ -342,6 +344,147 @@ function renderCommentAutomation(detail: AcquisitionTaskDetail): string {
     ${notices.length > 0 ? `<p class="replica-acquisition-comment-notice" role="status">${escapeHtml(notices[0]!)}</p>` : ""}
     ${signalsHtml ? `<div class="replica-acquisition-comment-signals" aria-live="polite">${signalsHtml}</div>` : ""}
   </section>`;
+}
+
+const VISUAL_SESSION_STATUS_LABELS: Readonly<Record<string, string>> = {
+  created: "已授权",
+  collecting: "正在读取",
+  completed: "已完成",
+  partial_success: "部分完成",
+  aborted: "已停止",
+  expired: "已过期"
+};
+
+const VISUAL_STEP_LABELS: Readonly<Record<string, string>> = {
+  authorize_visual_reader: "确认授权",
+  read_visible_comment_cards: "读取可见评论卡",
+  extract_visible_text: "提取可见文字",
+  persist_visual_observations: "保存观察",
+  review_visual_signal_confidence: "检查置信度"
+};
+
+function visualExtensionLabel(state: VisualReaderControlState): string {
+  if (state.extensionStatus === "ready") {
+    return state.extensionVersion
+      ? `已连接（${state.extensionVersion}）`
+      : "已连接";
+  }
+  if (state.extensionStatus === "unavailable") return "未检测到";
+  if (state.extensionStatus === "probing") return "检测中";
+  return "待检测";
+}
+
+function renderVisualReaderMetric(label: string, value: number, unit: string): string {
+  return `<span><small>${escapeHtml(label)}</small><strong>${value} ${escapeHtml(unit)}</strong></span>`;
+}
+
+function renderVisualReader(
+  detail: AcquisitionTaskDetail,
+  visual: VisualReaderControlState | undefined
+): string {
+  if (!visual || detail.task.platform !== "douyin") return "";
+  const session = visual.session;
+  const usage = session?.usage ?? visual.projection?.usage ?? null;
+  const limits = session?.limits ?? null;
+  const active = session !== null && ["created", "collecting"].includes(session.status);
+  const latestRunId = textValue(record(detail.latestRun)?.id, "");
+  const canAuthorize = session === null
+    && latestRunId.length > 0
+    && visual.extensionStatus === "ready"
+    && !visual.busy;
+  const remainingDurationSeconds = session
+    ? Math.max(0, Math.floor((Date.parse(session.expiresAt) - Date.parse(session.updatedAt)) / 1_000))
+    : 0;
+  const remaining = limits && usage ? {
+    videos: Math.max(0, limits.maxVideos - usage.videoCount),
+    comments: Math.max(
+      0,
+      limits.maxVideos * limits.maxCommentsPerVideo - usage.observationCount
+    ),
+    scrolls: Math.max(0, limits.maxScrolls - usage.scrollCount),
+    ocr: Math.max(0, limits.maxOcrCalls - usage.ocrCallCount)
+  } : null;
+  const projectionSteps = visual.projection?.visualSteps ?? [];
+  const steps = projectionSteps.length === 0 ? "" : `
+    <ol class="replica-acquisition-visual-reader-steps" aria-label="服务端视觉读取步骤">
+      ${projectionSteps.map((step) => `<li data-visual-step-id="${escapeHtml(step.id)}" data-status="${escapeHtml(step.status)}">
+        <strong>${escapeHtml(VISUAL_STEP_LABELS[step.id] ?? step.id)}</strong>
+        <span>${escapeHtml(step.message)}</span>
+        <small>${finiteNumber(step.processedCount)} 项 / ${escapeHtml(readableLabel(step.status, SHARD_STATUS_LABELS))}</small>
+      </li>`).join("")}
+    </ol>
+  `;
+  const statusText = session
+    ? VISUAL_SESSION_STATUS_LABELS[session.status] ?? session.status
+    : "尚未授权";
+  return `
+    <section
+      class="replica-acquisition-visual-reader"
+      data-acquisition-visual-reader
+      data-extension-status="${escapeHtml(visual.extensionStatus)}"
+      data-session-status="${escapeHtml(session?.status ?? "idle")}"
+    >
+      <header>
+        <div>
+          <span>授权可见评论读取</span>
+          <h4>读取当前抖音页面</h4>
+        </div>
+        <div class="replica-acquisition-visual-reader-status" aria-live="polite">
+          <strong>${escapeHtml(statusText)}</strong>
+          <small>浏览器读取器：${escapeHtml(visualExtensionLabel(visual))}</small>
+        </div>
+      </header>
+
+      <div class="replica-acquisition-visual-reader-consent">
+        <label>
+          <input
+            type="checkbox"
+            name="visualReaderArtifactUpload"
+            ${visual.artifactUploadEnabled ? "checked" : ""}
+            ${session || visual.busy ? "disabled" : ""}
+          >
+          <span>上传已遮挡的单张评论卡 WebP</span>
+        </label>
+        <p>关闭后仅提交文字观察。只上传已遮挡的单张评论卡 WebP；不读取 Cookie，不发私信，不点赞或评论。</p>
+      </div>
+
+      ${remaining ? `<div class="replica-acquisition-visual-reader-budget" aria-label="视觉读取剩余限额">
+        ${renderVisualReaderMetric("剩余视频", remaining.videos, "个")}
+        ${renderVisualReaderMetric("剩余评论容量", remaining.comments, "条")}
+        ${renderVisualReaderMetric("剩余采集批次", remaining.scrolls, "次")}
+        ${renderVisualReaderMetric("剩余 OCR", remaining.ocr, "次")}
+        ${renderVisualReaderMetric("剩余授权时长", remainingDurationSeconds, "秒")}
+      </div>` : ""}
+
+      ${usage ? `<div class="replica-acquisition-visual-reader-facts" aria-label="服务端视觉读取计数">
+        ${renderVisualReaderMetric("DOM", usage.domObservationCount, "条")}
+        ${renderVisualReaderMetric("可访问性", usage.accessibilityObservationCount, "条")}
+        ${renderVisualReaderMetric("OCR", usage.ocrObservationCount, "条")}
+        ${renderVisualReaderMetric("低置信度", usage.lowConfidenceObservationCount, "条")}
+        ${renderVisualReaderMetric("制品", usage.artifactCount, "个")}
+      </div>` : ""}
+
+      ${steps}
+      ${visual.message ? `<p class="replica-acquisition-visual-reader-message" role="status" aria-live="polite">${escapeHtml(visual.message)}</p>` : ""}
+      ${visual.error ? `<p class="replica-acquisition-visual-reader-message is-error" role="alert">${escapeHtml(visual.error)}</p>` : ""}
+
+      <footer>
+        ${visual.extensionStatus === "unavailable" ? `<button type="button" data-acquisition-detail-action="retry-visual-reader-probe">重新检测读取器</button>` : ""}
+        ${session === null ? `<button
+          type="button"
+          class="is-primary"
+          data-acquisition-detail-action="authorize-visual-reader"
+          ${canAuthorize ? "" : "disabled"}
+        >${visual.busy ? "正在授权" : "授权读取当前抖音页面"}</button>` : ""}
+        ${active ? `<button
+          type="button"
+          class="is-danger"
+          data-acquisition-detail-action="stop-visual-reader"
+          ${visual.busy ? "disabled" : ""}
+        >${visual.busy ? "正在停止" : "停止读取"}</button>` : ""}
+      </footer>
+    </section>
+  `;
 }
 
 function tabButton(
@@ -660,6 +803,8 @@ function renderPlanOverview(
       </article>
 
       ${renderCommentAutomation(detail)}
+
+      ${renderVisualReader(detail, state.visualReader)}
 
       <article class="replica-acquisition-detail-section">
         <h4>运行分片</h4>

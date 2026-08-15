@@ -1,4 +1,5 @@
 import type { AcquisitionTaskDetail } from "./runtime-api";
+import type { AuthorizedVisualReaderProjection } from "./visual-reader-controller";
 export type { AcquisitionTaskDetail } from "./runtime-api";
 
 export type AcquisitionGrade = "S" | "A" | "B" | "C" | "D";
@@ -154,6 +155,7 @@ export interface AcquisitionRunPresentation {
     errorCode: string | null;
     message: string;
   }>;
+  authorizedVisualReader?: AuthorizedVisualReaderProjection;
   commentSignals?: Array<{
     eventId: string;
     candidateId: string;

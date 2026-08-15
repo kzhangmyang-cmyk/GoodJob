@@ -6,6 +6,12 @@ import type {
 } from "./detail-center-api";
 import { createAcquisitionDetailCenterController } from "./detail-center-controller";
 import * as detailControllerModule from "./detail-center-controller";
+import type {
+  AuthorizedVisualReaderProjection,
+  VisualReaderControlState,
+  VisualReaderController,
+  VisualReaderOpenContext
+} from "./visual-reader-controller";
 
 function detailEvent<T>(name: string, detail: T): Event {
   return new CustomEvent<T>(name, { detail });
@@ -67,6 +73,10 @@ class FakeDialogRoot {
       target,
       preventDefault() {}
     });
+  }
+
+  emitChange(target: Record<string, unknown>) {
+    this.emit("change", { target });
   }
 
   nativeClose() {
@@ -5020,4 +5030,140 @@ for (const scenario of [{
     ["candidate-page-new"]
   );
   controller.destroy();
+}
+
+class FakeVisualReaderController implements VisualReaderController {
+  readonly openContexts: VisualReaderOpenContext[] = [];
+  readonly reconciled: Array<AuthorizedVisualReaderProjection | undefined> = [];
+  authorizeCalls = 0;
+  stopCalls = 0;
+  probeCalls = 0;
+  closeCalls = 0;
+  destroyCalls = 0;
+  artifactValues: boolean[] = [];
+  private listener: ((state: Readonly<VisualReaderControlState>) => void) | null = null;
+  private state: VisualReaderControlState = {
+    extensionStatus: "ready",
+    extensionVersion: "1.0.0",
+    artifactUploadEnabled: true,
+    busy: false,
+    session: null,
+    projection: null,
+    message: null,
+    error: null
+  };
+
+  getState() { return this.state; }
+  subscribe(listener: (state: Readonly<VisualReaderControlState>) => void) {
+    this.listener = listener;
+    listener(this.state);
+    return () => {
+      if (this.listener === listener) this.listener = null;
+    };
+  }
+  whenIdle() { return Promise.resolve(); }
+  async open(context: VisualReaderOpenContext) { this.openContexts.push(context); }
+  async reconcile(value?: AuthorizedVisualReaderProjection) { this.reconciled.push(value); }
+  setArtifactUploadEnabled(value: boolean) {
+    this.artifactValues.push(value);
+    this.state = { ...this.state, artifactUploadEnabled: value };
+    this.listener?.(this.state);
+  }
+  async authorize() { this.authorizeCalls += 1; }
+  async stop() { this.stopCalls += 1; }
+  retryProbe() { this.probeCalls += 1; }
+  close() { this.closeCalls += 1; }
+  destroy() { this.destroyCalls += 1; }
+  emit(overrides: Partial<VisualReaderControlState>) {
+    this.state = { ...this.state, ...overrides };
+    this.listener?.(this.state);
+  }
+}
+
+{
+  const projection: AuthorizedVisualReaderProjection = {
+    sessionId: "visual-session-1",
+    coverage: "authorized_visible_top_level_sample",
+    status: "collecting",
+    usage: {
+      videoCount: 1,
+      observationCount: 2,
+      scrollCount: 1,
+      ocrCallCount: 0,
+      domObservationCount: 2,
+      accessibilityObservationCount: 0,
+      ocrObservationCount: 0,
+      lowConfidenceObservationCount: 0,
+      artifactCount: 0
+    },
+    lastErrorCode: null,
+    visualSteps: []
+  };
+  const detailWithVisualProjection = {
+    ...taskDetail,
+    latestRun: {
+      id: "run-visual-1",
+      status: "running" as const,
+      etag: '"run-visual-1:1"',
+      updatedAt: "2026-08-15T08:00:00.000Z",
+      completedAt: null,
+      evidenceCount: 0,
+      consumedBudget: { requests: 0, results: 0, amountMinor: 0, durationSeconds: 0 }
+    },
+    presentation: {
+      candidateEvents: [],
+      providers: [],
+      summary: {},
+      authorizedVisualReader: projection
+    }
+  };
+  const root = new FakeDialogRoot(null);
+  const body = { innerHTML: "" } as HTMLElement;
+  const visual = new FakeVisualReaderController();
+  const api = {
+    async getTask() {
+      return detailWithVisualProjection;
+    }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    root: root as unknown as HTMLElement,
+    body,
+    visualReaderController: visual
+  });
+
+  await controller.open("plan", "plan-1");
+  assert.deepEqual(visual.openContexts, [{
+    planId: "plan-1",
+    runId: "run-visual-1",
+    projection
+  }]);
+  assert.equal(controller.getState().visualReader?.extensionStatus, "ready");
+  assert.match(body.innerHTML, /data-acquisition-visual-reader/u);
+
+  root.emitClick(fakeAction({ acquisitionDetailAction: "authorize-visual-reader" }));
+  root.emitClick(fakeAction({ acquisitionDetailAction: "stop-visual-reader" }));
+  root.emitClick(fakeAction({ acquisitionDetailAction: "retry-visual-reader-probe" }));
+  await controller.whenIdle();
+  assert.equal(visual.authorizeCalls, 1);
+  assert.equal(visual.stopCalls, 1);
+  assert.equal(visual.probeCalls, 1);
+
+  root.emitChange({
+    name: "visualReaderArtifactUpload",
+    checked: false,
+    matches(selector: string) {
+      return selector === 'input[name="visualReaderArtifactUpload"]';
+    }
+  });
+  assert.deepEqual(visual.artifactValues, [false]);
+  assert.equal(controller.getState().visualReader?.artifactUploadEnabled, false);
+
+  visual.emit({ message: "服务端会话已刷新" });
+  assert.match(body.innerHTML, /服务端会话已刷新/u);
+  controller.close();
+  assert.equal(visual.closeCalls, 1);
+  assert.equal(visual.stopCalls, 1, "closing the detail view does not stop the server session");
+  controller.destroy();
+  assert.equal(visual.destroyCalls, 1);
 }

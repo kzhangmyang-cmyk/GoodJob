@@ -3,6 +3,7 @@ import type {
   AcquisitionTaskSummary
 } from "./runtime-model";
 import { csrfFromCookie } from "./csrf";
+import type { AuthorizedVisualReaderProjection } from "./visual-reader-controller";
 
 export interface AcquisitionTaskDetail {
   task: AcquisitionTaskSummary;
@@ -26,6 +27,7 @@ export interface AcquisitionTaskDetail {
     providers: Array<Record<string, unknown>>;
     automationSteps?: Array<Record<string, unknown>>;
     commentSignals?: Array<Record<string, unknown>>;
+    authorizedVisualReader?: AuthorizedVisualReaderProjection;
     hasMore?: boolean;
     nextAfter?: string | null;
     summary?: Record<string, unknown> | null;
