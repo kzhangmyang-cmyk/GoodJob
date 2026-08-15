@@ -2943,16 +2943,16 @@ export interface components {
             completedAt?: string;
         });
         /** Format: uri */
-        sourceUrl: string;
-        videoId: string;
-        visibleText: string;
+        visualObservationSourceUrl: string;
+        visualObservationVideoId: string;
+        visualObservationVisibleText: string;
         visualObservationNullableVisibleString: string | null;
         visualObservationNullableCount: number | null;
         visualObservationNullablePlatformCommentId: string | null;
         visualObservationNullablePublicProfileUrl: string | null;
         visualObservationNullableSecUid: string | null;
         /** @enum {string} */
-        extractionMethod: "dom" | "accessibility" | "ocr" | "vision";
+        visualObservationExtractionMethod: "dom" | "accessibility" | "ocr" | "vision";
         visualObservationFieldConfidences: {
             visibleText: number;
             displayName?: number;
@@ -2969,9 +2969,9 @@ export interface components {
             width: number;
             height: number;
         };
-        readerVersion: string;
+        visualObservationReaderVersion: string;
         /** Format: date-time */
-        capturedAt: string;
+        visualObservationCapturedAt: string;
         /** @description Canonical base64 whose decoded length is at most 262144 bytes. Actual WebP decoding and pixel proof validation are Task 3 service responsibilities. */
         visualReaderBoundedWebpBase64: string;
         visualReaderPixelRect: {
@@ -2996,9 +2996,9 @@ export interface components {
         };
         visualReaderObservationSubmission: {
             clientObservationKey: components["schemas"]["visualReaderIdentifier"];
-            sourceUrl: components["schemas"]["sourceUrl"];
-            videoId: components["schemas"]["videoId"];
-            visibleText: components["schemas"]["visibleText"];
+            sourceUrl: components["schemas"]["visualObservationSourceUrl"];
+            videoId: components["schemas"]["visualObservationVideoId"];
+            visibleText: components["schemas"]["visualObservationVisibleText"];
             displayName: components["schemas"]["visualObservationNullableVisibleString"];
             visibleTimeText: components["schemas"]["visualObservationNullableVisibleString"];
             likeCount: components["schemas"]["visualObservationNullableCount"];
@@ -3006,7 +3006,7 @@ export interface components {
             platformCommentId: components["schemas"]["visualObservationNullablePlatformCommentId"];
             publicProfileUrl: components["schemas"]["visualObservationNullablePublicProfileUrl"];
             secUid: components["schemas"]["visualObservationNullableSecUid"];
-            extractionMethod: components["schemas"]["extractionMethod"];
+            extractionMethod: components["schemas"]["visualObservationExtractionMethod"];
             fieldConfidences: components["schemas"]["visualObservationFieldConfidences"];
             viewport: {
                 width: number;
@@ -3014,8 +3014,8 @@ export interface components {
                 deviceScaleFactor: number;
             };
             cardBounds: components["schemas"]["visualObservationCardBounds"];
-            readerVersion: components["schemas"]["readerVersion"];
-            capturedAt: components["schemas"]["capturedAt"];
+            readerVersion: components["schemas"]["visualObservationReaderVersion"];
+            capturedAt: components["schemas"]["visualObservationCapturedAt"];
             redactedCrop: {
                 /** @constant */
                 mediaType: "image/webp";
@@ -3036,10 +3036,9 @@ export interface components {
         douyinVisualCommentObservation: {
             observationId: components["schemas"]["visualObservationIdentifier"];
             sessionId: components["schemas"]["visualObservationIdentifier"];
-            /** Format: uri */
-            sourceUrl: string;
-            videoId: string;
-            visibleText: string;
+            sourceUrl: components["schemas"]["visualObservationSourceUrl"];
+            videoId: components["schemas"]["visualObservationVideoId"];
+            visibleText: components["schemas"]["visualObservationVisibleText"];
             textHash: components["schemas"]["visualObservationDigest"];
             displayName: components["schemas"]["visualObservationNullableVisibleString"];
             visibleTimeText: components["schemas"]["visualObservationNullableVisibleString"];
@@ -3049,15 +3048,13 @@ export interface components {
             /** @description Literal public profile link fact only. Standard JSON Schema validates it independently; the Task 3 service must verify its public user key agrees with secUid before persistence. */
             publicProfileUrl: components["schemas"]["visualObservationNullablePublicProfileUrl"];
             secUid: components["schemas"]["visualObservationNullableSecUid"];
-            /** @enum {string} */
-            extractionMethod: "dom" | "accessibility" | "ocr" | "vision";
+            extractionMethod: components["schemas"]["visualObservationExtractionMethod"];
             fieldConfidences: components["schemas"]["visualObservationFieldConfidences"];
             viewportHash: components["schemas"]["visualObservationDigest"];
             cardBounds: components["schemas"]["visualObservationCardBounds"];
             redactedCropHash: components["schemas"]["visualObservationDigest"] | null;
-            readerVersion: string;
-            /** Format: date-time */
-            capturedAt: string;
+            readerVersion: components["schemas"]["visualObservationReaderVersion"];
+            capturedAt: components["schemas"]["visualObservationCapturedAt"];
         };
         visualReaderAcceptedObservation: {
             clientObservationKey: components["schemas"]["visualReaderIdentifier"];

@@ -187,6 +187,70 @@ test("generated visual helpers remain globally unique without renaming existing 
     assert.equal(written.status, 0, written.stderr);
     const generated = await readFile(output, "utf8");
 
+    const componentHeaders = [...generated.matchAll(
+      /^        (?:"([^"]+)"|([A-Za-z_$][A-Za-z0-9_$-]*)): /gmu
+    )];
+    const componentBlocks = new Map(componentHeaders.map((match, index) => [
+      match[1] ?? match[2],
+      generated.slice(
+        match.index,
+        componentHeaders[index + 1]?.index ?? generated.length
+      )
+    ]));
+    const visualPublicAliases = new Set([
+      "DouyinVisualCommentObservation",
+      "OpaqueRectRedactionProof",
+      "VisualObservationSubmission",
+      "VisualReaderLimits",
+      "VisualReaderUsage",
+      "VisualReaderOutcome",
+      "VisualReaderSession",
+      "VisualReaderCreateRequest",
+      "VisualObservationBatchRequest",
+      "VisualObservationBatchResponse",
+      "VisualReaderCompleteRequest",
+      "VisualReaderAbortRequest"
+    ]);
+    const reachableVisualComponents = new Set(visualPublicAliases);
+    const pendingComponents = [...visualPublicAliases];
+    while (pendingComponents.length > 0) {
+      const component = pendingComponents.pop();
+      const block = componentBlocks.get(component);
+      assert.ok(block, `missing generated visual component ${component}`);
+      for (const reference of block.matchAll(
+        /components\["schemas"\]\["([^"]+)"\]/gu
+      )) {
+        if (reachableVisualComponents.has(reference[1])) continue;
+        reachableVisualComponents.add(reference[1]);
+        pendingComponents.push(reference[1]);
+      }
+    }
+
+    for (const forbiddenGenericHelper of [
+      "sourceUrl",
+      "videoId",
+      "visibleText",
+      "extractionMethod",
+      "readerVersion",
+      "capturedAt"
+    ]) {
+      assert.equal(
+        componentBlocks.has(forbiddenGenericHelper),
+        false,
+        `visual helper leaked generic component ${forbiddenGenericHelper}`
+      );
+    }
+    for (const component of reachableVisualComponents) {
+      if (visualPublicAliases.has(component)) continue;
+      assert.equal(
+        component === "douyinVisualCommentObservation"
+          || component.startsWith("visualObservation")
+          || component.startsWith("visualReader"),
+        true,
+        `visual helper must use a unique prefix: ${component}`
+      );
+    }
+
     assert.match(
       generated,
       /VisualReaderUsage: components\["schemas"\]\["visualReaderUsage"\]/

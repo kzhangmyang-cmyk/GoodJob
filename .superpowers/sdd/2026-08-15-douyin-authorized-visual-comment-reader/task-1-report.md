@@ -227,3 +227,85 @@ git diff --check
 All review fixtures remain local and make no real Douyin request. Remaining
 runtime enforcement and evidence ownership stay with Tasks 3 and 7 as recorded
 above.
+
+## Review round 2
+
+The remaining generated-helper collision is fixed in the independent commit
+`fix: namespace visual observation leaf contracts`. This round changes only
+Task 1 schema composition, its generated-type regression, committed generated
+types, and the Task 1 report/ledger. It does not change validation limits,
+runtime routes, or Task 2 behavior.
+
+### Review RED evidence
+
+The generated helper test now builds the dependency closure reachable from all
+12 named public visual aliases. Before the production change it failed on the
+first leaked generic component:
+
+```text
+node --test --test-name-pattern="generated visual helpers remain globally unique" test/generated-types.test.mjs
+# tests 1
+# pass 0
+# fail 1
+# visual helper leaked generic component sourceUrl
+```
+
+The same output also contained generic `videoId`, `visibleText`,
+`extractionMethod`, `readerVersion`, and `capturedAt` components. The prior
+round's assertions covered only the known `usage` and digest collisions and
+therefore did not detect this complete reachable helper set.
+
+### Review decision and delivered hardening
+
+The six leaf constraints now live once in the observation schema as
+`visualObservationSourceUrl`, `visualObservationVideoId`,
+`visualObservationVisibleText`, `visualObservationExtractionMethod`,
+`visualObservationReaderVersion`, and `visualObservationCapturedAt`.
+Both the normalized Observation root and the Session submission reference
+those fragments. No schema constraint is duplicated, removed, or relaxed.
+
+The generated regression rejects the six known generic component names and
+walks the complete public visual dependency closure. Every non-public helper
+in that closure must use `visualObservation*` or `visualReader*`; the named
+public Observation component remains the sole documented exception. This
+protects future helpers beyond the six current leaves while retaining the
+round 1 Copilot `usage` and digest checks.
+
+### Review GREEN verification
+
+```text
+node --test --test-name-pattern="generated visual helpers remain globally unique" test/generated-types.test.mjs
+# tests 1
+# pass 1
+
+node --test test/generated-types.test.mjs test/schema-registry.test.mjs test/openapi.test.mjs
+# tests 39
+# pass 39
+
+npm run test:contracts
+# tests 78
+# pass 78
+
+npm run generate:frontend-contract-types
+# exit 0
+
+npm run check:generated-acquisition-types
+# exit 0
+
+npm run test:contract-drift --workspace backend
+# tests 17
+# pass 17
+
+npm run test:acquisition-openapi --workspace backend
+# tests 28
+# pass 28
+
+npm run build --workspace backend
+# exit 0
+
+git diff --check
+# exit 0
+```
+
+All tests remain local and make no real Douyin request. Task 3 and Task 7
+ownership and the prohibited capability boundary are unchanged.

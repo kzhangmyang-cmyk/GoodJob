@@ -193,13 +193,13 @@
       "properties": {
         "clientObservationKey": { "$ref": "#/$defs/visualReaderIdentifier" },
         "sourceUrl": {
-          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/sourceUrl"
+          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/visualObservationSourceUrl"
         },
         "videoId": {
-          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/videoId"
+          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/visualObservationVideoId"
         },
         "visibleText": {
-          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/visibleText"
+          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/visualObservationVisibleText"
         },
         "displayName": {
           "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/displayName"
@@ -223,7 +223,7 @@
           "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/secUid"
         },
         "extractionMethod": {
-          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/extractionMethod"
+          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/visualObservationExtractionMethod"
         },
         "fieldConfidences": {
           "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/fieldConfidences"
@@ -242,10 +242,10 @@
           "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/cardBounds"
         },
         "readerVersion": {
-          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/readerVersion"
+          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/visualObservationReaderVersion"
         },
         "capturedAt": {
-          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/capturedAt"
+          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/visualObservationCapturedAt"
         },
         "redactedCrop": {
           "oneOf": [
