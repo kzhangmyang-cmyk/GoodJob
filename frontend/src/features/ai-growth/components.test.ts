@@ -29,6 +29,11 @@ const summary: ExecutiveSummaryVm = {
   highIntent: 2,
   financialEvaluatedHighIntentCount: 1,
   financialPendingHighIntentCount: 1,
+  discoveredVideos: 0,
+  commentsSampled: 0,
+  validDemandSignals: 0,
+  unresolvedActors: 0,
+  highPotentialSignals: 0,
   expectedRevenueByCurrency: [{
     currency: "CNY",
     amountMinor: 128_000,

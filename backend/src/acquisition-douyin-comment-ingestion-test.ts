@@ -670,7 +670,11 @@ test("recovery completes every pending failure boundary without caller replay", 
       linkedEventCount: 1,
       observationCount: 1,
       fetchAttemptCount: 0,
-      returnedCommentCount: 0
+      discoveredVideoCount: 0,
+      returnedCommentCount: 0,
+      validDemandSignalCount: 1,
+      unresolvedActorCount: 0,
+      strongSignalCount: 0
     }, failOnceAt);
     assert.equal((await harness.eventRepository.listPendingIngestionSagas({
       limit: 100

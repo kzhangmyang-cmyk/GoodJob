@@ -1868,11 +1868,28 @@ implements AcquisitionDomainRepository {
            JSON_UNQUOTE(
              JSON_EXTRACT(qualification_json, '$.grade')
            ) AS qualification_grade,
+           (
+             JSON_UNQUOTE(
+               JSON_EXTRACT(qualification_json, '$.grade')
+             ) IN ('S', 'A')
+             AND JSON_LENGTH(
+               JSON_EXTRACT(qualification_json, '$.hardGateFailures')
+             ) = 0
+             AND JSON_UNQUOTE(
+               JSON_EXTRACT(candidate_json, '$.status')
+             ) <> 'do_not_contact'
+           ) AS is_high_intent,
            CASE
              WHEN financial_id IS NOT NULL
               AND JSON_UNQUOTE(
                 JSON_EXTRACT(qualification_json, '$.grade')
               ) IN ('S', 'A')
+              AND JSON_LENGTH(
+                JSON_EXTRACT(qualification_json, '$.hardGateFailures')
+              ) = 0
+              AND JSON_UNQUOTE(
+                JSON_EXTRACT(candidate_json, '$.status')
+              ) <> 'do_not_contact'
              THEN JSON_UNQUOTE(
                JSON_EXTRACT(financial_json, '$.currency')
              )
@@ -1901,13 +1918,13 @@ implements AcquisitionDomainRepository {
              JSON_EXTRACT(candidate_json, '$.status')
            ) <> 'do_not_contact'
          ) AS valid_count,
-         SUM(qualification_grade IN ('S', 'A')) AS high_intent_count,
+         SUM(is_high_intent) AS high_intent_count,
          SUM(
-           qualification_grade IN ('S', 'A')
+           is_high_intent
            AND financial_id IS NOT NULL
          ) AS financial_evaluated_count,
          SUM(
-           qualification_grade IN ('S', 'A')
+           is_high_intent
            AND financial_id IS NULL
          ) AS financial_pending_count,
          SUM(

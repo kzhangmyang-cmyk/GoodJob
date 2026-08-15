@@ -472,7 +472,11 @@ test("run projections use the latest observation and remain tenant isolated", as
     linkedEventCount: 0,
     observationCount: 0,
     fetchAttemptCount: 0,
-    returnedCommentCount: 0
+    discoveredVideoCount: 0,
+    returnedCommentCount: 0,
+    validDemandSignalCount: 0,
+    unresolvedActorCount: 0,
+    strongSignalCount: 0
   });
 });
 

@@ -397,7 +397,12 @@ application 固定注入 Provider。Content-fetch MySQL schema 在 recovery 启�
 
 优先扩展现有版本化 Acquisition API，不创建平行 REST 体系：
 
-- Run presentation 增加评论读取步骤、覆盖信息和计数；
+- Run presentation 固定返回七个自动化步骤，步骤状态、时间、计数和错误只从持久化
+  Run shard、评论 fetch attempt、已提交 event link 与当前资格决定派生；候选分页继续使用
+  原有签名游标，最新评论信号独立限制为 50 条，不挤占候选游标；
+- Run summary 的视频、评论、有效信号、未核验主体和强信号计数使用 repository 全量聚合，
+  不用 50 条展示窗口反推；只有 S/A 且无 hard gate、非勿扰的候选计入高意向，未核验
+  强信号保留为待身份研究的高潜需求信号；评论投影不返回头像；
 - Candidate/Evidence 读取投影增加平台事件和意愿证据；
 - 公开链接导入响应固定返回持久化 `commentSampleSummary`，包含实际事件、证据、
   候选、usage 和部分失败错误；排队中或旧数据为 `null`；

@@ -1809,6 +1809,7 @@ export async function createAcquisitionApplication(
     const runPresentationService = new AcquisitionRunPresentationService({
       planRunRepository: repositories.planRun,
       domainRepository: repositories.domain,
+      commentEventRepository: repositories.douyinCommentEvents,
       cursorSecret: derivedSecret(
         masterSecret,
         "run-presentation-cursor"

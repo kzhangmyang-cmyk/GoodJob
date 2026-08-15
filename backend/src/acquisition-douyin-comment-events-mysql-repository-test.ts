@@ -949,7 +949,11 @@ test("run summary is aggregated inside owner and team scope", async () => {
     linked_event_count: 3,
     observation_count: 4,
     fetch_attempt_count: 2,
-    returned_comment_count: 7
+    discovered_video_count: 2,
+    returned_comment_count: 7,
+    valid_demand_signal_count: 3,
+    unresolved_actor_count: 1,
+    strong_signal_count: 2
   }]);
   const repository = new MysqlAcquisitionDouyinCommentEventRepository(
     asPool(pool)
@@ -964,7 +968,11 @@ test("run summary is aggregated inside owner and team scope", async () => {
       linkedEventCount: 3,
       observationCount: 4,
       fetchAttemptCount: 2,
-      returnedCommentCount: 7
+      discoveredVideoCount: 2,
+      returnedCommentCount: 7,
+      validDemandSignalCount: 3,
+      unresolvedActorCount: 1,
+      strongSignalCount: 2
     }
   );
   const call = pool.calls[0]!;

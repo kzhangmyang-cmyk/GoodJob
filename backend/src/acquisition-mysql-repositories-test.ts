@@ -1419,6 +1419,9 @@ async function testPresentationReadsAreTenantBoundedPagedAndBatched() {
   const summaryCall = domainPool.calls.at(-1)!;
   assert.match(summaryCall.sql, /FROM acquisition_run_events e/u);
   assert.doesNotMatch(summaryCall.sql, /JSON_TABLE/u);
+  assert.match(summaryCall.sql, /AS is_high_intent/u);
+  assert.match(summaryCall.sql, /\$\.hardGateFailures/u);
+  assert.match(summaryCall.sql, /<> 'do_not_contact'/u);
   assert.match(summaryCall.sql, /GROUP BY revenue_currency/u);
   assert.deepEqual(summaryCall.values, [
     "run-1",

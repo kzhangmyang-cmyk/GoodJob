@@ -16,6 +16,9 @@ import {
   InMemoryAcquisitionPlanRunRepository
 } from "./acquisition-plan-run-repository.js";
 import {
+  InMemoryAcquisitionDouyinCommentEventRepository
+} from "./acquisition-douyin-comment-events.js";
+import {
   AcquisitionPlanRunService,
   type AcquisitionExecutionPort,
   type AcquisitionPlanDraftInput,
@@ -199,6 +202,8 @@ async function fixture(options: { requireAuthFirst?: boolean } = {}) {
   const realPresentationService = new AcquisitionRunPresentationService({
     planRunRepository: repository,
     domainRepository: domain,
+    commentEventRepository:
+      new InMemoryAcquisitionDouyinCommentEventRepository(),
     cursorSecret: "acquisition-task-overview-router-secret-32-bytes"
   });
   const presentationRequests: Array<{

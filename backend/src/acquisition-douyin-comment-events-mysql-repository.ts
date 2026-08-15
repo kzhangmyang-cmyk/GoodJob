@@ -1596,7 +1596,7 @@ implements AcquisitionDouyinCommentEventRepository {
       `WITH requested_scope AS (
          SELECT ? AS owner_id, ? AS team_id, ? AS run_id
        ), run_links AS (
-         SELECT DISTINCT l.event_id, l.observation_id
+         SELECT DISTINCT l.event_id, l.observation_id, l.candidate_id
          FROM acquisition_douyin_comment_event_links l
          INNER JOIN requested_scope s
            ON s.owner_id = l.owner_id AND s.team_id = l.team_id
@@ -1613,12 +1613,37 @@ implements AcquisitionDouyinCommentEventRepository {
             ON s.owner_id = a.owner_id AND s.team_id = a.team_id
             AND s.run_id = a.run_id
          ) AS fetch_attempt_count,
+         (SELECT COUNT(DISTINCT COALESCE(a.video_id, a.source_url))
+          FROM acquisition_douyin_comment_fetch_attempts a
+          INNER JOIN requested_scope s
+            ON s.owner_id = a.owner_id AND s.team_id = a.team_id
+            AND s.run_id = a.run_id
+         ) AS discovered_video_count,
          (SELECT COALESCE(SUM(a.returned_count), 0)
           FROM acquisition_douyin_comment_fetch_attempts a
           INNER JOIN requested_scope s
             ON s.owner_id = a.owner_id AND s.team_id = a.team_id
             AND s.run_id = a.run_id
-         ) AS returned_comment_count`,
+         ) AS returned_comment_count,
+         (SELECT COUNT(DISTINCT event_id)
+          FROM run_links WHERE candidate_id IS NOT NULL
+         ) AS valid_demand_signal_count,
+         (SELECT COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(
+             a.terminal_projection_json, '$.unresolvedActorCount'
+           )) AS UNSIGNED)), 0)
+          FROM acquisition_douyin_comment_fetch_attempts a
+          INNER JOIN requested_scope s
+            ON s.owner_id = a.owner_id AND s.team_id = a.team_id
+            AND s.run_id = a.run_id
+         ) AS unresolved_actor_count,
+         (SELECT COALESCE(SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(
+             a.terminal_projection_json, '$.strongSignalCount'
+           )) AS UNSIGNED)), 0)
+          FROM acquisition_douyin_comment_fetch_attempts a
+          INNER JOIN requested_scope s
+            ON s.owner_id = a.owner_id AND s.team_id = a.team_id
+            AND s.run_id = a.run_id
+         ) AS strong_signal_count`,
       [scope.ownerId, scope.teamId, runId]
     );
     const row = rows(result)[0];
@@ -1627,9 +1652,25 @@ implements AcquisitionDouyinCommentEventRepository {
       linkedEventCount: integer(row.linked_event_count, "linked_event_count"),
       observationCount: integer(row.observation_count, "observation_count"),
       fetchAttemptCount: integer(row.fetch_attempt_count, "fetch_attempt_count"),
+      discoveredVideoCount: integer(
+        row.discovered_video_count,
+        "discovered_video_count"
+      ),
       returnedCommentCount: integer(
         row.returned_comment_count,
         "returned_comment_count"
+      ),
+      validDemandSignalCount: integer(
+        row.valid_demand_signal_count,
+        "valid_demand_signal_count"
+      ),
+      unresolvedActorCount: integer(
+        row.unresolved_actor_count,
+        "unresolved_actor_count"
+      ),
+      strongSignalCount: integer(
+        row.strong_signal_count,
+        "strong_signal_count"
       )
     };
   }

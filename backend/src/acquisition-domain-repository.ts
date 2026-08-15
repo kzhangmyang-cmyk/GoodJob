@@ -921,8 +921,10 @@ implements AcquisitionDomainRepository {
       return [{ candidate, qualification, financial }];
     });
     const highIntent = candidates.filter((item) =>
-      item.qualification?.grade === "S"
-      || item.qualification?.grade === "A"
+      (item.qualification?.grade === "S"
+        || item.qualification?.grade === "A")
+      && item.qualification.hardGateFailures.length === 0
+      && item.candidate.status !== "do_not_contact"
     );
     const revenue = new Map<string, number>();
     for (const item of highIntent) {

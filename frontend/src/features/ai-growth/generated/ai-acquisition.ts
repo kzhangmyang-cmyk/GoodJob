@@ -2543,12 +2543,53 @@ export interface components {
                 highIntent: number;
                 financialEvaluatedHighIntentCount: number;
                 financialPendingHighIntentCount: number;
+                discoveredVideos: number;
+                commentsSampled: number;
+                validDemandSignals: number;
+                unresolvedActors: number;
+                highPotentialSignals: number;
                 /** @description 仅合计高意向且绑定当前资格决定的财务值；币种不换算。 */
                 expectedRevenueByCurrency: {
                     currency: string;
                     amountMinor: number;
                 }[];
             };
+            automationSteps: {
+                /** @enum {string} */
+                id: "discover_video_urls" | "resolve_video_ids" | "fetch_public_comment_samples" | "normalize_platform_events" | "aggregate_actor_signals" | "qualify_candidates" | "refresh_run_presentation";
+                /** @enum {string} */
+                status: "pending" | "running" | "succeeded" | "partial_success" | "failed" | "skipped";
+                /** Format: date-time */
+                startedAt: null | string;
+                /** Format: date-time */
+                completedAt: null | string;
+                durationMs: null | number;
+                processedCount: number;
+                /** @enum {null|string} */
+                errorCode: null | "public_sample_unavailable" | "access_restricted" | "rate_limited" | "video_id_unresolved" | "source_payload_invalid" | "no_public_comments" | "model_output_invalid";
+                message: string;
+            }[];
+            commentSignals: {
+                eventId: string;
+                candidateId: string;
+                displayName: string;
+                handle: null | string;
+                text: string;
+                /** Format: date-time */
+                occurredAt: string;
+                likeCount: number;
+                replyCount: number;
+                ipLabel: null | string;
+                /** Format: uri */
+                sourceUrl: string;
+                /** @enum {string} */
+                intentBand: "strong_signal" | "potential_signal" | "noise" | "negative";
+                reasons: string[];
+                confidence: number;
+                /** @enum {string} */
+                identityStatus: "resolved" | "needs_research";
+                evidenceId: string;
+            }[];
             candidateEvents: {
                 eventId: string;
                 /** Format: date-time */

@@ -88,6 +88,16 @@ coverage result and does not increment failed-result counts. MySQL startup uses
 a dedicated advisory-locked migration session before recovery and upgrades the
 legacy content-fetch status check before workers can persist partial success.
 
+Run presentation exposes a fixed seven-step automation projection plus at most
+50 latest public comment signals. Candidate pagination keeps its signed cursor;
+the comment window is independent and cannot move that cursor. Step timestamps,
+statuses, counts and stable error codes come only from persisted Run shards,
+comment fetch attempts, committed event links and current candidate decisions.
+The summary uses repository aggregates rather than the 50-item display window.
+Only S/A decisions without hard-gate failures or do-not-contact state count as
+high intent; an unresolved strong public signal remains explicitly marked as
+needing identity research. Comment projections never expose an avatar.
+
 Public Douyin comments enter the acquisition domain as immutable comment
 events and `DiscoveryEvidence` with `platform_public_event` provenance. That
 provenance is closed to the public source URL, platform comment ID, provider

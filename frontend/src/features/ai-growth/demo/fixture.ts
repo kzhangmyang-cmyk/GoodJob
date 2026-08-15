@@ -104,6 +104,11 @@ const summary: ExecutiveSummaryDto = {
   highIntent: 3,
   financialEvaluatedHighIntentCount: 2,
   financialPendingHighIntentCount: 1,
+  discoveredVideos: 0,
+  commentsSampled: 0,
+  validDemandSignals: 0,
+  unresolvedActors: 0,
+  highPotentialSignals: 0,
   expectedRevenueByCurrency: [
     { currency: "CNY", amountMinor: 2_680_000 },
     { currency: "USD", amountMinor: 180_000 }
@@ -174,6 +179,25 @@ const presentation: RunPresentationDto = {
     retryAfterAt: null
   })),
   summary,
+  automationSteps: [
+    "discover_video_urls",
+    "resolve_video_ids",
+    "fetch_public_comment_samples",
+    "normalize_platform_events",
+    "aggregate_actor_signals",
+    "qualify_candidates",
+    "refresh_run_presentation"
+  ].map((id) => ({
+    id: id as RunPresentationDto["automationSteps"][number]["id"],
+    status: "succeeded" as const,
+    startedAt: timestamp,
+    completedAt: timestamp,
+    durationMs: 0,
+    processedCount: 0,
+    errorCode: null,
+    message: "演示数据：步骤已完成"
+  })),
+  commentSignals: [],
   candidateEvents: [
     ["demo-candidate-1", "远岚智能装备（演示数据）", "上海", "S", 96, "招聘外贸销售", 0.91, "baidu_ai_search", "CNY", 1_280_000],
     ["demo-candidate-2", "海桥工业零部件（演示数据）", "苏州", "A", 88, "英文站上线", 0.84, "tencent_web_search", "USD", 180_000],

@@ -2109,6 +2109,8 @@ const runPresentationSchema = {
     "run",
     "providers",
     "summary",
+    "automationSteps",
+    "commentSignals",
     "candidateEvents",
     "nextAfter",
     "hasMore"
@@ -2191,7 +2193,12 @@ const runPresentationSchema = {
         "highIntent",
         "financialEvaluatedHighIntentCount",
         "financialPendingHighIntentCount",
-        "expectedRevenueByCurrency"
+        "expectedRevenueByCurrency",
+        "discoveredVideos",
+        "commentsSampled",
+        "validDemandSignals",
+        "unresolvedActors",
+        "highPotentialSignals"
       ],
       properties: {
         sourcesSearched: { type: "integer", minimum: 0 },
@@ -2212,6 +2219,11 @@ const runPresentationSchema = {
           type: "integer",
           minimum: 0
         },
+        discoveredVideos: { type: "integer", minimum: 0 },
+        commentsSampled: { type: "integer", minimum: 0 },
+        validDemandSignals: { type: "integer", minimum: 0 },
+        unresolvedActors: { type: "integer", minimum: 0 },
+        highPotentialSignals: { type: "integer", minimum: 0 },
         expectedRevenueByCurrency: {
           type: "array",
           description: "仅合计高意向且绑定当前资格决定的财务值；币种不换算。",
@@ -2227,6 +2239,121 @@ const runPresentationSchema = {
         }
       },
       additionalProperties: false
+    },
+    automationSteps: {
+      type: "array",
+      minItems: 7,
+      maxItems: 7,
+      items: {
+        type: "object",
+        required: [
+          "id",
+          "status",
+          "startedAt",
+          "completedAt",
+          "durationMs",
+          "processedCount",
+          "errorCode",
+          "message"
+        ],
+        properties: {
+          id: {
+            type: "string",
+            enum: [
+              "discover_video_urls",
+              "resolve_video_ids",
+              "fetch_public_comment_samples",
+              "normalize_platform_events",
+              "aggregate_actor_signals",
+              "qualify_candidates",
+              "refresh_run_presentation"
+            ]
+          },
+          status: {
+            type: "string",
+            enum: [
+              "pending",
+              "running",
+              "succeeded",
+              "partial_success",
+              "failed",
+              "skipped"
+            ]
+          },
+          startedAt: { type: "string", format: "date-time", nullable: true },
+          completedAt: { type: "string", format: "date-time", nullable: true },
+          durationMs: { type: "integer", minimum: 0, nullable: true },
+          processedCount: { type: "integer", minimum: 0 },
+          errorCode: {
+            type: "string",
+            nullable: true,
+            enum: [
+              null,
+              "public_sample_unavailable",
+              "access_restricted",
+              "rate_limited",
+              "video_id_unresolved",
+              "source_payload_invalid",
+              "no_public_comments",
+              "model_output_invalid"
+            ]
+          },
+          message: { type: "string", minLength: 1, maxLength: 500 }
+        },
+        additionalProperties: false
+      }
+    },
+    commentSignals: {
+      type: "array",
+      maxItems: 50,
+      items: {
+        type: "object",
+        required: [
+          "eventId",
+          "candidateId",
+          "displayName",
+          "handle",
+          "text",
+          "occurredAt",
+          "likeCount",
+          "replyCount",
+          "ipLabel",
+          "sourceUrl",
+          "intentBand",
+          "reasons",
+          "confidence",
+          "identityStatus",
+          "evidenceId"
+        ],
+        properties: {
+          eventId: { type: "string", minLength: 1, maxLength: 255 },
+          candidateId: { type: "string", minLength: 1, maxLength: 255 },
+          displayName: { type: "string", minLength: 1, maxLength: 255 },
+          handle: { type: "string", maxLength: 255, nullable: true },
+          text: { type: "string", minLength: 1, maxLength: 2_000 },
+          occurredAt: { type: "string", format: "date-time" },
+          likeCount: { type: "integer", minimum: 0 },
+          replyCount: { type: "integer", minimum: 0 },
+          ipLabel: { type: "string", maxLength: 100, nullable: true },
+          sourceUrl: { type: "string", format: "uri", maxLength: 2_000 },
+          intentBand: {
+            type: "string",
+            enum: ["strong_signal", "potential_signal", "noise", "negative"]
+          },
+          reasons: {
+            type: "array",
+            maxItems: 20,
+            items: { type: "string", maxLength: 200 }
+          },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+          identityStatus: {
+            type: "string",
+            enum: ["resolved", "needs_research"]
+          },
+          evidenceId: { type: "string", minLength: 1, maxLength: 255 }
+        },
+        additionalProperties: false
+      }
     },
     candidateEvents: {
       type: "array",

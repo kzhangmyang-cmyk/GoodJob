@@ -317,7 +317,23 @@ test("OpenAPI exactly covers Section 16 with typed, authenticated responses", as
   assert.equal(document.components.schemas.FinancialValueDecision.$ref, "../json-schema/financial-value-decision.v1.schema.json");
   assert.equal(document.components.schemas.CopilotMessage.$ref, "../json-schema/copilot-message.v1.schema.json");
   const presentation = registry.schemaDocuments.get("acquisition-run-presentation");
-  assert.deepEqual(presentation.required, ["run", "providers", "summary", "candidateEvents", "nextAfter", "hasMore"]);
+  assert.deepEqual(presentation.required, [
+    "run",
+    "providers",
+    "summary",
+    "automationSteps",
+    "commentSignals",
+    "candidateEvents",
+    "nextAfter",
+    "hasMore"
+  ]);
+  assert.equal(presentation.properties.automationSteps.minItems, 7);
+  assert.equal(presentation.properties.automationSteps.maxItems, 7);
+  assert.equal(presentation.properties.commentSignals.maxItems, 50);
+  assert.equal(
+    presentation.properties.commentSignals.items.properties.avatar,
+    undefined
+  );
   assert.deepEqual(
     presentation.properties.candidateEvents.items.properties.candidate.required,
     [

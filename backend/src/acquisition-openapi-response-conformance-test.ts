@@ -395,8 +395,72 @@ test("mounted plan and run responses conform to production OpenAPI", async () =>
   const fixture = await mount(createAcquisitionPlanRouter({
     service,
     presentationService: {
-      async get() {
-        throw new Error("presentation is outside this response fixture");
+      async get(_scope, runId) {
+        const stepIds = [
+          "discover_video_urls",
+          "resolve_video_ids",
+          "fetch_public_comment_samples",
+          "normalize_platform_events",
+          "aggregate_actor_signals",
+          "qualify_candidates",
+          "refresh_run_presentation"
+        ] as const;
+        return {
+          run: {
+            id: runId,
+            status: "running" as const,
+            etag: '"run-response:1"',
+            updatedAt: NOW,
+            completedAt: null
+          },
+          providers: [],
+          summary: {
+            sourcesSearched: 1,
+            pagesAnalyzed: 1,
+            organizationsFound: 0,
+            dedupedCandidates: 1,
+            validOpportunities: 0,
+            highIntent: 0,
+            financialEvaluatedHighIntentCount: 0,
+            financialPendingHighIntentCount: 0,
+            expectedRevenueByCurrency: [],
+            discoveredVideos: 1,
+            commentsSampled: 1,
+            validDemandSignals: 1,
+            unresolvedActors: 1,
+            highPotentialSignals: 1
+          },
+          automationSteps: stepIds.map((id, index) => ({
+            id,
+            status: index < 5 ? "succeeded" as const : "pending" as const,
+            startedAt: index < 5 ? NOW : null,
+            completedAt: index < 5 ? NOW : null,
+            durationMs: index < 5 ? 0 : null,
+            processedCount: index < 5 ? 1 : 0,
+            errorCode: null,
+            message: index < 5 ? "已持久化完成" : "等待持久化事实"
+          })),
+          commentSignals: [{
+            eventId: "comment-event-response",
+            candidateId: "candidate-comment-response",
+            displayName: "公开用户",
+            handle: "public-user",
+            text: "采购100套，预算五万元",
+            occurredAt: NOW,
+            likeCount: 3,
+            replyCount: 1,
+            ipLabel: "广东",
+            sourceUrl: "https://www.douyin.com/video/7312345678901234567",
+            intentBand: "strong_signal" as const,
+            reasons: ["strong:procurement", "strong:budget"],
+            confidence: 0.95,
+            identityStatus: "needs_research" as const,
+            evidenceId: "comment-evidence-response"
+          }],
+          candidateEvents: [],
+          nextAfter: "",
+          hasMore: false
+        };
       }
     },
     async resolveModelSnapshot() {
@@ -497,6 +561,19 @@ test("mounted plan and run responses conform to production OpenAPI", async () =>
       202,
       run.body
     );
+    const presentation = await fixture.request(
+      `/api/v1/acquisition/runs/${run.body.id}/presentation`
+    );
+    assert.equal(presentation.response.status, 200);
+    assertResponseConforms(
+      "/api/v1/acquisition/runs/{id}/presentation",
+      "get",
+      200,
+      presentation.body
+    );
+    assert.equal(presentation.body.automationSteps.length, 7);
+    assert.equal(presentation.body.commentSignals.length, 1);
+    assert.equal(presentation.body.commentSignals[0]?.avatar, undefined);
   } finally {
     await fixture.close();
   }

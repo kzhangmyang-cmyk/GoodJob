@@ -193,7 +193,11 @@ export interface DouyinRunCommentSummary {
   linkedEventCount: number;
   observationCount: number;
   fetchAttemptCount: number;
+  discoveredVideoCount: number;
   returnedCommentCount: number;
+  validDemandSignalCount: number;
+  unresolvedActorCount: number;
+  strongSignalCount: number;
 }
 
 export interface AcquisitionDouyinCommentEventRepository {
@@ -1045,8 +1049,24 @@ implements AcquisitionDouyinCommentEventRepository {
       linkedEventCount: linkedEventIds.size,
       observationCount,
       fetchAttemptCount: attempts.length,
+      discoveredVideoCount: new Set(attempts.map((attempt) =>
+        attempt.videoId ?? attempt.sourceUrl
+      )).size,
       returnedCommentCount: attempts.reduce(
         (total, attempt) => total + attempt.returnedCount,
+        0
+      ),
+      validDemandSignalCount: new Set(runLinks.flatMap((link) =>
+        link.candidateId ? [link.eventId] : []
+      )).size,
+      unresolvedActorCount: attempts.reduce(
+        (total, attempt) =>
+          total + (attempt.terminalProjection?.unresolvedActorCount ?? 0),
+        0
+      ),
+      strongSignalCount: attempts.reduce(
+        (total, attempt) =>
+          total + (attempt.terminalProjection?.strongSignalCount ?? 0),
         0
       )
     };

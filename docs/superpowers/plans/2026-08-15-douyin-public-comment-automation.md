@@ -366,27 +366,32 @@
   }
   ```
 
-- [ ] **Step 1: 先写 Run Presentation 行为失败测试**
+- [x] **Step 1: 先写 Run Presentation 行为失败测试**
 
   构造运行中、全成功、部分 429、全部受限、无公开评论、事件已保存但资格研判未完成、身份未核验强信号等情形。断言时间线顺序稳定，高潜评论证据可回溯，跨租户不可见。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-run-presentation-test.ts`
 
   Expected: FAIL，因为新展示字段尚未组装。
 
-- [ ] **Step 3: 实现投影组装和严格 OpenAPI schema**
+- [x] **Step 3: 实现投影组装和严格 OpenAPI schema**
 
   `AcquisitionRunPresentationService` 注入 Task 3 读 repository，并与现有 shard execution/candidate summary 并行读取。保持现有 candidate cursor 语义；`commentSignals` 是有界最新投影，不挤占 candidate pagination cursor。
 
-- [ ] **Step 4: 运行 GREEN、OpenAPI 一致性和合同检查**
+- [x] **Step 4: 运行 GREEN、OpenAPI 一致性和合同检查**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-run-presentation-test.ts src/acquisition-openapi-test.ts src/acquisition-openapi-response-conformance-test.ts && npm run generate:frontend-contract-types && npm run check:acquisition-contracts`
 
   Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
+
+  ```bash
+  git add backend/src/acquisition-application.ts backend/src/acquisition-domain-repository.ts backend/src/acquisition-douyin-comment-events-mysql-repository-test.ts backend/src/acquisition-douyin-comment-events-mysql-repository.ts backend/src/acquisition-douyin-comment-events-test.ts backend/src/acquisition-douyin-comment-events.ts backend/src/acquisition-douyin-comment-ingestion-test.ts backend/src/acquisition-mysql-repositories-test.ts backend/src/acquisition-mysql-repositories.ts backend/src/acquisition-openapi-response-conformance-test.ts backend/src/acquisition-openapi-test.ts backend/src/acquisition-openapi.ts backend/src/acquisition-run-presentation-test.ts backend/src/acquisition-run-presentation.ts backend/src/acquisition-task-overview-router-test.ts contracts/README.md contracts/json-schema/acquisition-run-presentation.v1.schema.json contracts/test/openapi.test.mjs docs/superpowers/plans/2026-08-15-douyin-public-comment-automation.md docs/superpowers/specs/2026-08-15-douyin-public-comment-automation-design.md frontend/src/features/ai-growth/components.test.ts frontend/src/features/ai-growth/demo/fixture.ts frontend/src/features/ai-growth/generated/ai-acquisition.ts frontend/src/features/ai-growth/poll-run.test.ts frontend/src/features/ai-growth/view-model.test.ts .superpowers/sdd/2026-08-15-douyin-public-comment-automation/task-6-report.md
+  git commit -m "feat: project douyin automation results"
+  ```
 
   ```bash
   git add backend/src/acquisition-run-presentation.ts backend/src/acquisition-run-presentation-test.ts backend/src/acquisition-openapi.ts backend/src/acquisition-openapi-test.ts backend/src/acquisition-openapi-response-conformance-test.ts contracts/json-schema/acquisition-run-presentation.v1.schema.json contracts/openapi/ai-acquisition.v1.yaml frontend/src/features/ai-growth/generated/ai-acquisition.ts

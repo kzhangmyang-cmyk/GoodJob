@@ -276,11 +276,47 @@ test("run presentation publishes a strict read-only paginated DTO", () => {
     "run",
     "providers",
     "summary",
+    "automationSteps",
+    "commentSignals",
     "candidateEvents",
     "nextAfter",
     "hasMore"
   ]);
   assert.equal(schema.additionalProperties, false);
+  assert.equal(schema.properties.automationSteps.minItems, 7);
+  assert.equal(schema.properties.automationSteps.maxItems, 7);
+  assert.deepEqual(schema.properties.automationSteps.items.properties.id.enum, [
+    "discover_video_urls",
+    "resolve_video_ids",
+    "fetch_public_comment_samples",
+    "normalize_platform_events",
+    "aggregate_actor_signals",
+    "qualify_candidates",
+    "refresh_run_presentation"
+  ]);
+  assert.deepEqual(
+    schema.properties.automationSteps.items.properties.errorCode.enum,
+    [
+      null,
+      "public_sample_unavailable",
+      "access_restricted",
+      "rate_limited",
+      "video_id_unresolved",
+      "source_payload_invalid",
+      "no_public_comments",
+      "model_output_invalid"
+    ]
+  );
+  assert.equal(schema.properties.commentSignals.maxItems, 50);
+  assert.equal(
+    schema.properties.commentSignals.items.properties.avatar,
+    undefined
+  );
+  assert.ok(schema.properties.summary.required.includes("discoveredVideos"));
+  assert.ok(schema.properties.summary.required.includes("commentsSampled"));
+  assert.ok(schema.properties.summary.required.includes("validDemandSignals"));
+  assert.ok(schema.properties.summary.required.includes("unresolvedActors"));
+  assert.ok(schema.properties.summary.required.includes("highPotentialSignals"));
   assert.deepEqual(
     schema.properties.candidateEvents.items.required,
     [
