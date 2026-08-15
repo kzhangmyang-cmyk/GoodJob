@@ -70,12 +70,25 @@ export interface VisualReaderControllerOptions {
   onRequestPresentationRefresh?: () => void;
 }
 
+interface QueuedVisualMutation {
+  id: string;
+  kind: "batch" | "terminal" | "stop";
+  sessionId: string;
+  run(): Promise<void>;
+}
+
 const ACTIVE_SESSION_STATUSES = new Set(["created", "collecting"]);
+const TERMINAL_SESSION_STATUSES = new Set(["completed", "partial_success", "aborted", "expired"]);
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
 
 function defaultKey(): string {
-  const random = globalThis.crypto?.randomUUID?.();
-  return `visual-reader-${random ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+  const crypto = globalThis.crypto;
+  if (!crypto?.getRandomValues) {
+    throw new Error("浏览器缺少 crypto 安全随机数支持");
+  }
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return `visual-reader-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
 function safeErrorMessage(error: unknown): string {
@@ -124,22 +137,129 @@ export function createVisualReaderController(
   };
   const listeners = new Set<(state: Readonly<VisualReaderControlState>) => void>();
   const batchKeys = new Map<string, string>();
+  const semanticKeys = new Map<string, string>();
   const processingBatches = new Set<string>();
+  const mutationQueue: QueuedVisualMutation[] = [];
+  const activeDrainEpochs = new Set<number>();
   let bridge: VisualReaderBridge | null = null;
   let context: VisualReaderOpenContext | null = null;
   let generation = 0;
   let disposed = false;
   let startedSessionId: string | null = null;
   let idlePromise: Promise<void> = Promise.resolve();
+  let mutationEpoch = 0;
+  let mutationBlocked = false;
+  let mutationIdlePromise: Promise<void> = Promise.resolve();
+  let resolveMutationIdle: (() => void) | null = null;
+  let rejectMutationIdle: ((reason: unknown) => void) | null = null;
+  let reconcileSerial = 0;
 
   function notify(): void {
     for (const listener of listeners) listener(state);
+  }
+
+  function semanticKey(scope: string): string {
+    const existing = semanticKeys.get(scope);
+    if (existing) return existing;
+    const created = keyFactory();
+    semanticKeys.set(scope, created);
+    return created;
   }
 
   function remember<T>(promise: Promise<T>): Promise<T> {
     idlePromise = promise.then(() => undefined);
     void idlePromise.catch(() => undefined);
     return promise;
+  }
+
+  function beginMutationCycle(): void {
+    if (resolveMutationIdle || rejectMutationIdle) return;
+    mutationIdlePromise = new Promise<void>((resolve, reject) => {
+      resolveMutationIdle = resolve;
+      rejectMutationIdle = reject;
+    });
+    void mutationIdlePromise.catch(() => undefined);
+  }
+
+  function resolveMutationCycle(): void {
+    const resolve = resolveMutationIdle;
+    resolveMutationIdle = null;
+    rejectMutationIdle = null;
+    resolve?.();
+  }
+
+  function rejectMutationCycle(error: unknown): void {
+    const reject = rejectMutationIdle;
+    resolveMutationIdle = null;
+    rejectMutationIdle = null;
+    reject?.(error);
+  }
+
+  function resetMutationQueue(): void {
+    mutationEpoch += 1;
+    mutationQueue.length = 0;
+    mutationBlocked = false;
+    resolveMutationCycle();
+    mutationIdlePromise = Promise.resolve();
+  }
+
+  function drainMutationQueue(epoch: number): void {
+    if (activeDrainEpochs.has(epoch) || mutationBlocked || epoch !== mutationEpoch) return;
+    activeDrainEpochs.add(epoch);
+    void (async () => {
+      try {
+        while (!disposed && epoch === mutationEpoch && !mutationBlocked) {
+          const next = mutationQueue[0];
+          if (!next) {
+            resolveMutationCycle();
+            return;
+          }
+          try {
+            await next.run();
+          } catch (error) {
+            if (epoch !== mutationEpoch || mutationQueue[0] !== next) return;
+            mutationBlocked = true;
+            rejectMutationCycle(error);
+            return;
+          }
+          if (epoch !== mutationEpoch || mutationQueue[0] !== next) return;
+          mutationQueue.shift();
+        }
+      } finally {
+        activeDrainEpochs.delete(epoch);
+        if (epoch === mutationEpoch && !mutationBlocked && mutationQueue.length > 0) {
+          drainMutationQueue(epoch);
+        }
+      }
+    })();
+  }
+
+  function enqueueMutation(operation: QueuedVisualMutation): Promise<void> {
+    const existingIndex = mutationQueue.findIndex((item) => item.id === operation.id);
+    if (existingIndex >= 0) {
+      if (mutationBlocked && existingIndex === 0) {
+        mutationBlocked = false;
+        beginMutationCycle();
+        drainMutationQueue(mutationEpoch);
+      }
+      return mutationIdlePromise;
+    }
+    if (mutationBlocked
+      && mutationQueue[0]?.kind === "terminal"
+      && operation.kind === "terminal"
+      && mutationQueue[0].sessionId === operation.sessionId) {
+      mutationQueue[0] = operation;
+      mutationBlocked = false;
+      beginMutationCycle();
+      drainMutationQueue(mutationEpoch);
+      return mutationIdlePromise;
+    }
+    mutationQueue.push(operation);
+    if (!mutationBlocked) {
+      beginMutationCycle();
+      drainMutationQueue(mutationEpoch);
+    }
+    return mutationIdlePromise;
   }
 
   function resetVisibleState(): void {
@@ -181,14 +301,22 @@ export function createVisualReaderController(
     if (value === "ready") tryStartSession();
   }
 
-  async function loadSession(sessionId: string, expectedGeneration: number): Promise<void> {
+  async function loadSession(
+    sessionId: string,
+    expectedGeneration: number,
+    expectedReconcile: number
+  ): Promise<void> {
     const loaded = await api.getSession(sessionId);
-    if (disposed || expectedGeneration !== generation || !context) return;
+    if (disposed || expectedGeneration !== generation
+      || expectedReconcile !== reconcileSerial || !context) return;
     if (loaded.sessionId !== sessionId
       || loaded.planId !== context.planId
       || (context.runId !== null && loaded.runId !== context.runId)) {
       throw new Error("服务端视觉读取会话与当前运行不一致");
     }
+    if (state.session?.sessionId === loaded.sessionId
+      && TERMINAL_SESSION_STATUSES.has(state.session.status)
+      && ACTIVE_SESSION_STATUSES.has(loaded.status)) return;
     state.session = loaded;
     state.artifactUploadEnabled = loaded.artifactUploadEnabled;
     state.error = null;
@@ -198,7 +326,8 @@ export function createVisualReaderController(
 
   async function handleBatch(
     event: Extract<VisualReaderExtensionEvent, { type: "observation_batch" }>,
-    expectedGeneration: number
+    expectedGeneration: number,
+    expectedMutationEpoch: number
   ): Promise<void> {
     const currentSession = state.session;
     if (!currentSession || event.sessionId !== currentSession.sessionId
@@ -227,7 +356,8 @@ export function createVisualReaderController(
         { observations },
         key
       );
-      if (disposed || expectedGeneration !== generation || !context
+      if (disposed || expectedGeneration !== generation
+        || expectedMutationEpoch !== mutationEpoch || !context
         || state.session?.sessionId !== event.sessionId) return;
       state.session = response.session;
       state.message = `已保存 ${response.accepted.length + response.duplicates.length} 条可见评论观察`;
@@ -236,7 +366,9 @@ export function createVisualReaderController(
       refreshPresentation();
       notify();
     } catch (error) {
-      if (!disposed && expectedGeneration === generation) {
+      if (!disposed && expectedGeneration === generation
+        && expectedMutationEpoch === mutationEpoch
+        && state.session?.sessionId === event.sessionId) {
         state.message = null;
         state.error = safeErrorMessage(error);
         notify();
@@ -249,7 +381,8 @@ export function createVisualReaderController(
 
   async function handleTerminal(
     event: Extract<VisualReaderExtensionEvent, { type: "terminal" }>,
-    expectedGeneration: number
+    expectedGeneration: number,
+    expectedMutationEpoch: number
   ): Promise<void> {
     const currentSession = state.session;
     if (!currentSession || event.sessionId !== currentSession.sessionId
@@ -258,32 +391,43 @@ export function createVisualReaderController(
     state.message = "正在向服务端确认视觉读取结果";
     state.error = null;
     notify();
+    const reasonCode = event.status === "aborted"
+      ? "visual_reader_user_takeover"
+      : "";
+    const keyScope = `terminal:${event.sessionId}:${event.status}:${JSON.stringify(event.errorCodes)}:${reasonCode}`;
     try {
       const updated = event.status === "aborted"
         ? await api.abortSession(
             event.sessionId,
             { reasonCode: "visual_reader_user_takeover" },
-            keyFactory()
+            semanticKey(keyScope)
           )
         : await api.completeSession(
             event.sessionId,
             { status: event.status, errorCodes: [...event.errorCodes] },
-            keyFactory()
+            semanticKey(keyScope)
           );
-      if (disposed || expectedGeneration !== generation || !context) return;
+      semanticKeys.delete(keyScope);
+      if (disposed || expectedGeneration !== generation
+        || expectedMutationEpoch !== mutationEpoch || !context
+        || state.session?.sessionId !== event.sessionId) return;
       state.session = updated;
       state.message = event.status === "aborted"
         ? "视觉读取已停止"
         : "视觉读取结果已由服务端确认";
       refreshPresentation();
     } catch (error) {
-      if (!disposed && expectedGeneration === generation) {
+      if (!disposed && expectedGeneration === generation
+        && expectedMutationEpoch === mutationEpoch
+        && state.session?.sessionId === event.sessionId) {
         state.message = null;
         state.error = safeErrorMessage(error);
       }
       throw error;
     } finally {
-      if (!disposed && expectedGeneration === generation) {
+      if (!disposed && expectedGeneration === generation
+        && expectedMutationEpoch === mutationEpoch
+        && state.session?.sessionId === event.sessionId) {
         state.busy = false;
         notify();
       }
@@ -301,10 +445,22 @@ export function createVisualReaderController(
       return;
     }
     const currentGeneration = generation;
+    const currentMutationEpoch = mutationEpoch;
     if (event.type === "observation_batch") {
-      remember(handleBatch(event, currentGeneration));
+      void enqueueMutation({
+        id: `batch:${event.sessionId}:${event.batchId}`,
+        kind: "batch",
+        sessionId: event.sessionId,
+        run: () => handleBatch(event, currentGeneration, currentMutationEpoch)
+      }).catch(() => undefined);
     } else if (event.type === "terminal") {
-      remember(handleTerminal(event, currentGeneration));
+      const reasonCode = event.status === "aborted" ? "visual_reader_user_takeover" : "";
+      void enqueueMutation({
+        id: `terminal:${event.sessionId}:${event.status}:${JSON.stringify(event.errorCodes)}:${reasonCode}`,
+        kind: "terminal",
+        sessionId: event.sessionId,
+        run: () => handleTerminal(event, currentGeneration, currentMutationEpoch)
+      }).catch(() => undefined);
     }
   }
 
@@ -325,18 +481,21 @@ export function createVisualReaderController(
       return () => listeners.delete(listener);
     },
     whenIdle() {
-      return idlePromise;
+      return Promise.all([idlePromise, mutationIdlePromise]).then(() => undefined);
     },
     open(nextContext) {
       generation += 1;
       const currentGeneration = generation;
+      const currentReconcile = ++reconcileSerial;
       context = {
         planId: nextContext.planId,
         runId: nextContext.runId,
         projection: nextContext.projection
       };
       batchKeys.clear();
+      semanticKeys.clear();
       processingBatches.clear();
+      resetMutationQueue();
       resetVisibleState();
       state.projection = validProjection(nextContext.projection)
         ? nextContext.projection
@@ -344,15 +503,40 @@ export function createVisualReaderController(
       connectBridge();
       notify();
       if (!state.projection) return Promise.resolve();
-      return remember(loadSession(state.projection.sessionId, currentGeneration));
+      return remember(loadSession(
+        state.projection.sessionId,
+        currentGeneration,
+        currentReconcile
+      ));
     },
     reconcile(nextProjection) {
       if (!context) return Promise.resolve();
-      state.projection = validProjection(nextProjection) ? nextProjection : null;
-      context.projection = nextProjection;
+      const currentReconcile = ++reconcileSerial;
+      const normalizedProjection = validProjection(nextProjection) ? nextProjection : null;
+      const previousSessionId = state.projection?.sessionId ?? state.session?.sessionId ?? null;
+      const nextSessionId = normalizedProjection?.sessionId ?? null;
+      const switchedSession = previousSessionId !== null && previousSessionId !== nextSessionId;
+      state.projection = normalizedProjection;
+      context.projection = normalizedProjection ?? undefined;
+      if (switchedSession) {
+        batchKeys.clear();
+        semanticKeys.clear();
+        processingBatches.clear();
+        resetMutationQueue();
+        state.session = null;
+        state.artifactUploadEnabled = true;
+        state.busy = false;
+        state.message = null;
+        state.error = null;
+        connectBridge();
+      }
       notify();
       if (!state.projection) return Promise.resolve();
-      return remember(loadSession(state.projection.sessionId, generation));
+      return remember(loadSession(
+        state.projection.sessionId,
+        generation,
+        currentReconcile
+      ));
     },
     setArtifactUploadEnabled(enabled) {
       if (state.session) return;
@@ -376,12 +560,14 @@ export function createVisualReaderController(
       state.error = null;
       state.message = "正在创建短时授权会话";
       notify();
+      const keyScope = `authorize:${context.runId}:${state.artifactUploadEnabled}`;
       return remember((async () => {
         try {
           const created = await api.createSession({
             runId: context?.runId ?? "",
             artifactUploadEnabled: state.artifactUploadEnabled
-          }, keyFactory());
+          }, semanticKey(keyScope));
+          semanticKeys.delete(keyScope);
           if (disposed || currentGeneration !== generation || !context) return;
           if (created.planId !== context.planId || created.runId !== context.runId) {
             throw new Error("服务端视觉读取会话与当前运行不一致");
@@ -411,35 +597,49 @@ export function createVisualReaderController(
         return Promise.reject(new Error("当前没有正在读取的会话"));
       }
       const currentGeneration = generation;
+      const currentMutationEpoch = mutationEpoch;
       state.busy = true;
       state.message = "正在安全停止视觉读取";
       state.error = null;
       notify();
       bridge?.abortSession(currentSession.sessionId);
-      return remember((async () => {
+      const keyScope = `stop:${currentSession.sessionId}:user_requested`;
+      return enqueueMutation({
+        id: keyScope,
+        kind: "stop",
+        sessionId: currentSession.sessionId,
+        run: async () => {
         try {
           const updated = await api.abortSession(
             currentSession.sessionId,
             { reasonCode: "user_requested" },
-            keyFactory()
+            semanticKey(keyScope)
           );
-          if (disposed || currentGeneration !== generation || !context) return;
+          semanticKeys.delete(keyScope);
+          if (disposed || currentGeneration !== generation
+            || currentMutationEpoch !== mutationEpoch || !context
+            || state.session?.sessionId !== currentSession.sessionId) return;
           state.session = updated;
           state.message = "视觉读取已停止";
           refreshPresentation();
         } catch (error) {
-          if (!disposed && currentGeneration === generation) {
+          if (!disposed && currentGeneration === generation
+            && currentMutationEpoch === mutationEpoch
+            && state.session?.sessionId === currentSession.sessionId) {
             state.message = null;
             state.error = safeErrorMessage(error);
           }
           throw error;
         } finally {
-          if (!disposed && currentGeneration === generation) {
+          if (!disposed && currentGeneration === generation
+            && currentMutationEpoch === mutationEpoch
+            && state.session?.sessionId === currentSession.sessionId) {
             state.busy = false;
             notify();
           }
         }
-      })());
+        }
+      });
     },
     retryProbe() {
       if (!context || disposed) return;
@@ -452,12 +652,15 @@ export function createVisualReaderController(
     },
     close() {
       generation += 1;
+      reconcileSerial += 1;
       bridge?.destroy();
       bridge = null;
       context = null;
       startedSessionId = null;
       batchKeys.clear();
+      semanticKeys.clear();
       processingBatches.clear();
+      resetMutationQueue();
       resetVisibleState();
       notify();
     },

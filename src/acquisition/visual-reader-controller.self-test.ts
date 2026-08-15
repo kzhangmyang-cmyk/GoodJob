@@ -3,7 +3,8 @@ import type {
   VisualObservationBatchResponse,
   VisualObservationSubmission,
   VisualReaderApi,
-  VisualReaderSession
+  VisualReaderSession,
+  VisualReaderStableErrorCode
 } from "./visual-reader-api";
 import type {
   VisualReaderBridge,
@@ -194,6 +195,17 @@ class FakeBridge implements VisualReaderBridge {
   destroy(): void {
     this.destroyed = true;
     this.handlers = null;
+  }
+}
+
+class OrderedBridge extends FakeBridge {
+  constructor(private readonly order: string[]) {
+    super();
+  }
+
+  override acknowledgeBatch(sessionId: string, batchId: string): void {
+    this.order.push("ACK");
+    super.acknowledgeBatch(sessionId, batchId);
   }
 }
 
@@ -448,4 +460,431 @@ function batchEvent(
   assert.equal(controller.getState().session?.status, "aborted");
   controller.close();
   assert.deepEqual(bridge.aborts, ["visual-session-1"], "page close does not abort the server session");
+}
+
+{
+  const bridges: FakeBridge[] = [];
+  const keys: string[] = [];
+  let keySequence = 0;
+  let attempts = 0;
+  const api = {
+    async createSession(_input: unknown, key: string) {
+      attempts += 1;
+      keys.push(key);
+      if (attempts === 1) throw new TypeError("network unavailable");
+      return session({ status: "created" });
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => {
+      const bridge = new FakeBridge();
+      bridges.push(bridge);
+      return bridge;
+    },
+    keyFactory: () => `semantic-key-${++keySequence}`
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1" });
+  bridges.at(-1)?.ready();
+  await assert.rejects(() => controller.authorize(), /network unavailable/u);
+  await controller.authorize();
+  assert.deepEqual(keys.slice(0, 2), ["semantic-key-1", "semantic-key-1"],
+    "an authorize retry reuses the same semantic key after a network failure");
+
+  controller.close();
+  await controller.open({ planId: "plan-1", runId: "run-1" });
+  bridges.at(-1)?.ready();
+  await controller.authorize();
+  assert.equal(keys[2], "semantic-key-2",
+    "a successful authorize followed by a new lifecycle gets a fresh key");
+  controller.destroy();
+}
+
+{
+  const bridge = new FakeBridge();
+  const calls: Array<{ input: unknown; key: string }> = [];
+  let keySequence = 0;
+  const api = {
+    async createSession(input: unknown, key: string) {
+      calls.push({ input, key });
+      if (calls.length === 1) throw new TypeError("network unavailable");
+      return session({ status: "created", artifactUploadEnabled: false });
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => bridge,
+    keyFactory: () => `artifact-key-${++keySequence}`
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1" });
+  bridge.ready();
+  await assert.rejects(() => controller.authorize(), /network unavailable/u);
+  controller.setArtifactUploadEnabled(false);
+  await controller.authorize();
+  assert.notEqual(calls[0]?.key, calls[1]?.key,
+    "changing the artifact policy changes authorize semantics and its key");
+  assert.deepEqual(calls.map((call) => call.input), [
+    { runId: "run-1", artifactUploadEnabled: true },
+    { runId: "run-1", artifactUploadEnabled: false }
+  ]);
+  controller.destroy();
+}
+
+{
+  const bridge = new FakeBridge();
+  const abortKeys: string[] = [];
+  let keySequence = 0;
+  let attempts = 0;
+  const api = {
+    async getSession() {
+      return session();
+    },
+    async abortSession(_sessionId: string, _input: unknown, key: string) {
+      attempts += 1;
+      abortKeys.push(key);
+      if (attempts === 1) throw new TypeError("network unavailable");
+      return terminalSession("aborted");
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => bridge,
+    keyFactory: () => `stop-key-${++keySequence}`
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
+  bridge.ready();
+  await assert.rejects(() => controller.stop(), /network unavailable/u);
+  await controller.stop();
+  assert.deepEqual(abortKeys, ["stop-key-1", "stop-key-1"],
+    "a user stop retry reuses its semantic key");
+  controller.destroy();
+}
+
+{
+  const bridge = new FakeBridge();
+  const completeCalls: Array<{ status: string; errorCodes: string[]; key: string }> = [];
+  let keySequence = 0;
+  const api = {
+    async getSession() {
+      return session();
+    },
+    async completeSession(
+      _sessionId: string,
+      input: { status: string; errorCodes: string[] },
+      key: string
+    ) {
+      completeCalls.push({ ...input, key });
+      throw new TypeError("network unavailable");
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => bridge,
+    keyFactory: () => `terminal-key-${++keySequence}`
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
+  bridge.ready();
+  const terminals: Array<{
+    status: "completed" | "partial_success";
+    errorCodes: VisualReaderStableErrorCode[];
+  }> = [
+    { status: "completed", errorCodes: [] },
+    { status: "completed", errorCodes: [] },
+    { status: "partial_success" as const, errorCodes: ["visual_extraction_low_confidence"] },
+    { status: "partial_success" as const, errorCodes: ["visual_artifact_invalid"] }
+  ];
+  for (const terminal of terminals) {
+    bridge.emit({
+      version: "goodjob.visual-reader.bridge.v1",
+      type: "terminal",
+      channelNonce: bridge.channelNonce,
+      sessionId: "visual-session-1",
+      ...terminal
+    });
+    await assert.rejects(() => controller.whenIdle(), /network unavailable/u);
+  }
+  assert.equal(completeCalls[0]?.key, completeCalls[1]?.key,
+    "an identical terminal retry reuses its semantic key");
+  assert.notEqual(completeCalls[1]?.key, completeCalls[2]?.key,
+    "a different terminal status changes the semantic key");
+  assert.notEqual(completeCalls[2]?.key, completeCalls[3]?.key,
+    "different terminal error codes change the semantic key");
+  controller.destroy();
+}
+
+{
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  let createCalls = 0;
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: undefined
+    });
+    const bridge = new FakeBridge();
+    const api = {
+      async createSession() {
+        createCalls += 1;
+        return session({ status: "created" });
+      }
+    } as unknown as VisualReaderApi;
+    const controller = createVisualReaderController({ api, bridgeFactory: () => bridge });
+    await controller.open({ planId: "plan-1", runId: "run-1" });
+    bridge.ready();
+    await assert.rejects(() => controller.authorize(), /安全随机|crypto/u);
+    assert.equal(createCalls, 0, "missing browser crypto fails closed before an API write");
+    controller.destroy();
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, "crypto", descriptor);
+    else Reflect.deleteProperty(globalThis, "crypto");
+  }
+}
+
+{
+  const order: string[] = [];
+  const bridge = new OrderedBridge(order);
+  const append = deferred<VisualObservationBatchResponse>();
+  const complete = deferred<VisualReaderSession>();
+  const api = {
+    async getSession() {
+      return session();
+    },
+    appendObservationBatch() {
+      order.push("append-start");
+      return append.promise.then((value) => {
+        order.push("append-resolve");
+        return value;
+      });
+    },
+    completeSession() {
+      order.push("complete-start");
+      return complete.promise;
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => bridge,
+    keyFactory: () => "ordered-key"
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
+  bridge.ready();
+  bridge.emit(batchEvent([observation()]));
+  bridge.emit({
+    version: "goodjob.visual-reader.bridge.v1",
+    type: "terminal",
+    channelNonce: bridge.channelNonce,
+    sessionId: "visual-session-1",
+    status: "completed",
+    errorCodes: []
+  });
+  assert.deepEqual(order, ["append-start"],
+    "terminal persistence must not start while a prior batch is pending");
+  const idle = controller.whenIdle();
+  let idleSettled = false;
+  void idle.finally(() => { idleSettled = true; });
+  append.resolve({ session: session(), accepted: [], duplicates: [] });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(order, ["append-start", "append-resolve", "ACK", "complete-start"]);
+  assert.equal(idleSettled, false, "whenIdle covers the entire ordered queue");
+  complete.resolve(terminalSession("completed"));
+  await idle;
+  assert.equal(idleSettled, true);
+  controller.destroy();
+}
+
+{
+  const bridge = new FakeBridge();
+  const older = deferred<VisualReaderSession>();
+  const newest = deferred<VisualReaderSession>();
+  let reads = 0;
+  const api = {
+    getSession() {
+      reads += 1;
+      return reads === 1 ? older.promise : newest.promise;
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({ api, bridgeFactory: () => bridge });
+  await controller.open({ planId: "plan-1", runId: "run-1" });
+  const olderReconcile = controller.reconcile(projection());
+  const newestReconcile = controller.reconcile({
+    ...projection(),
+    status: "completed"
+  });
+  newest.resolve(terminalSession("completed"));
+  await newestReconcile;
+  older.resolve(session({ status: "collecting" }));
+  await olderReconcile;
+  assert.equal(controller.getState().session?.status, "completed",
+    "an older reconcile response cannot overwrite the newest terminal session");
+  controller.destroy();
+}
+
+{
+  const bridge = new FakeBridge();
+  const lateActive = deferred<VisualReaderSession>();
+  let reads = 0;
+  const api = {
+    getSession() {
+      reads += 1;
+      return reads === 1 ? Promise.resolve(session()) : lateActive.promise;
+    },
+    async completeSession() {
+      return terminalSession("completed");
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => bridge,
+    keyFactory: () => "terminal-before-get-key"
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
+  bridge.ready();
+  const reconciling = controller.reconcile(projection());
+  bridge.emit({
+    version: "goodjob.visual-reader.bridge.v1",
+    type: "terminal",
+    channelNonce: bridge.channelNonce,
+    sessionId: "visual-session-1",
+    status: "completed",
+    errorCodes: []
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(controller.getState().session?.status, "completed");
+  lateActive.resolve(session({ status: "collecting" }));
+  await reconciling;
+  await controller.whenIdle();
+  assert.equal(controller.getState().session?.status, "completed",
+    "a late active GET cannot downgrade an already confirmed terminal session");
+  controller.destroy();
+}
+
+{
+  const bridges: FakeBridge[] = [];
+  const append = deferred<VisualObservationBatchResponse>();
+  const loadS2 = deferred<VisualReaderSession>();
+  const api = {
+    getSession(sessionId: string) {
+      return sessionId === "visual-session-1"
+        ? Promise.resolve(session())
+        : loadS2.promise;
+    },
+    appendObservationBatch() {
+      return append.promise;
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => {
+      const bridge = new FakeBridge();
+      bridges.push(bridge);
+      return bridge;
+    },
+    keyFactory: () => "session-switch-key"
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
+  const s1Bridge = bridges[0]!;
+  s1Bridge.ready();
+  s1Bridge.emit(batchEvent([observation()]));
+
+  const switching = controller.reconcile(projection("visual-session-2"));
+  assert.equal(controller.getState().session, null,
+    "a projection session switch clears the old session before the new GET returns");
+  assert.equal(s1Bridge.destroyed, true, "a session switch invalidates the old bridge nonce lifecycle");
+  assert.equal(bridges.length, 2, "a session switch creates a fresh bridge");
+
+  append.resolve({ session: session(), accepted: [], duplicates: [] });
+  loadS2.resolve(session({ sessionId: "visual-session-2" }));
+  await switching;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(s1Bridge.acknowledgements.length, 0,
+    "an old-session batch response cannot acknowledge after the projection switches");
+  assert.equal(controller.getState().session?.sessionId, "visual-session-2");
+  assert.doesNotMatch(controller.getState().message ?? "", /已保存/u);
+  controller.destroy();
+}
+
+{
+  const bridge = new FakeBridge();
+  let appendCalls = 0;
+  let completeCalls = 0;
+  const api = {
+    async getSession() {
+      return session();
+    },
+    async appendObservationBatch() {
+      appendCalls += 1;
+      if (appendCalls === 1) throw new TypeError("batch network failure");
+      return { session: session(), accepted: [], duplicates: [] };
+    },
+    async completeSession() {
+      completeCalls += 1;
+      return terminalSession("completed");
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => bridge,
+    keyFactory: () => "blocked-queue-key"
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
+  bridge.ready();
+  const event = batchEvent([observation()]);
+  bridge.emit(event);
+  bridge.emit({
+    version: "goodjob.visual-reader.bridge.v1",
+    type: "terminal",
+    channelNonce: bridge.channelNonce,
+    sessionId: "visual-session-1",
+    status: "completed",
+    errorCodes: []
+  });
+  await assert.rejects(() => controller.whenIdle(), /batch network failure/u);
+  assert.equal(completeCalls, 0, "a failed batch blocks the queued terminal write");
+  assert.equal(bridge.acknowledgements.length, 0);
+
+  bridge.emit(event);
+  await controller.whenIdle();
+  assert.equal(appendCalls, 2);
+  assert.equal(bridge.acknowledgements.length, 1,
+    "the retried batch is acknowledged only after persistence succeeds");
+  assert.equal(completeCalls, 1, "the retained terminal continues after the batch retry");
+  controller.destroy();
+}
+
+{
+  const order: string[] = [];
+  const bridge = new OrderedBridge(order);
+  const append = deferred<VisualObservationBatchResponse>();
+  const api = {
+    async getSession() {
+      return session();
+    },
+    appendObservationBatch() {
+      order.push("append-start");
+      return append.promise.then((value) => {
+        order.push("append-resolve");
+        return value;
+      });
+    },
+    async abortSession() {
+      order.push("abort-start");
+      return terminalSession("aborted");
+    }
+  } as unknown as VisualReaderApi;
+  const controller = createVisualReaderController({
+    api,
+    bridgeFactory: () => bridge,
+    keyFactory: () => "stop-order-key"
+  });
+  await controller.open({ planId: "plan-1", runId: "run-1", projection: projection() });
+  bridge.ready();
+  bridge.emit(batchEvent([observation()]));
+  const stopping = controller.stop();
+  assert.deepEqual(bridge.aborts, ["visual-session-1"],
+    "stop tells the extension to stop immediately");
+  assert.deepEqual(order, ["append-start"],
+    "the server abort waits for the prior batch");
+  append.resolve({ session: session(), accepted: [], duplicates: [] });
+  await stopping;
+  assert.deepEqual(order, ["append-start", "append-resolve", "ACK", "abort-start"]);
+  controller.destroy();
 }

@@ -5,11 +5,31 @@ import type {
 import { csrfFromCookie } from "./csrf";
 import type { AuthorizedVisualReaderProjection } from "./visual-reader-controller";
 
+export interface AcquisitionTaskPlan {
+  id?: string;
+  status?: string;
+  version?: number;
+  currentVersionId?: string;
+  approvedVersionId?: string | null;
+  payload?: {
+    targetPlatform?: "douyin" | "web";
+    douyinPublicCommentSample?: {
+      enabled: boolean;
+      maxVideosPerRun: number;
+      maxCommentsPerVideo: number;
+      maxPagesPerVideo: number;
+    };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
 export interface AcquisitionTaskDetail {
   task: AcquisitionTaskSummary;
-  plan: Record<string, unknown>;
+  plan: AcquisitionTaskPlan;
   latestRun: (AcquisitionTaskSummary["latestRun"] & {
     etag?: string;
+    planVersionId?: string;
     planVersion?: number;
     revision?: number;
     budgetSnapshot?: {

@@ -378,20 +378,54 @@ function renderVisualReaderMetric(label: string, value: number, unit: string): s
   return `<span><small>${escapeHtml(label)}</small><strong>${value} ${escapeHtml(unit)}</strong></span>`;
 }
 
+function visualReaderEligibility(
+  detail: AcquisitionTaskDetail,
+  visual: VisualReaderControlState
+): { allowed: boolean; reason: string } {
+  const plan = record(detail.plan) ?? {};
+  const payload = record(plan.payload) ?? {};
+  const run = record(detail.latestRun);
+  const currentVersionId = textValue(plan.currentVersionId, "");
+  const approvedVersionId = textValue(plan.approvedVersionId, "");
+  const planVersion = finiteNumber(plan.version, 0);
+  if (plan.status !== "approved" || !currentVersionId || !approvedVersionId
+    || currentVersionId !== approvedVersionId || planVersion < 1) {
+    return { allowed: false, reason: "仅已批准且版本未变更的计划可授权读取" };
+  }
+  if (textValue(run?.planVersionId, "") !== approvedVersionId
+    || finiteNumber(run?.planVersion, 0) !== planVersion) {
+    return { allowed: false, reason: "当前运行版本与已批准计划不一致，无法授权读取" };
+  }
+  if (!run || !["queued", "running"].includes(textValue(run.status, ""))) {
+    return { allowed: false, reason: "仅排队中或运行中的任务可授权读取" };
+  }
+  if (payload.targetPlatform !== "douyin" || detail.task.platform !== "douyin") {
+    return { allowed: false, reason: "当前计划不是抖音任务，无法授权读取" };
+  }
+  if (record(payload.douyinPublicCommentSample)?.enabled !== true) {
+    return { allowed: false, reason: "当前已批准计划未启用公开评论样本" };
+  }
+  if (visual.extensionStatus !== "ready") {
+    return { allowed: false, reason: "请先安装、启用并连接授权浏览器读取器" };
+  }
+  if (visual.busy) {
+    return { allowed: false, reason: "正在处理视觉读取请求，请稍候" };
+  }
+  return { allowed: true, reason: "已满足授权条件，可读取当前页面中可见的一级评论" };
+}
+
 function renderVisualReader(
   detail: AcquisitionTaskDetail,
   visual: VisualReaderControlState | undefined
 ): string {
-  if (!visual || detail.task.platform !== "douyin") return "";
+  if (!visual) return "";
   const session = visual.session;
+  const eligibility = visualReaderEligibility(detail, visual);
   const usage = session?.usage ?? visual.projection?.usage ?? null;
   const limits = session?.limits ?? null;
   const active = session !== null && ["created", "collecting"].includes(session.status);
   const latestRunId = textValue(record(detail.latestRun)?.id, "");
-  const canAuthorize = session === null
-    && latestRunId.length > 0
-    && visual.extensionStatus === "ready"
-    && !visual.busy;
+  const canAuthorize = session === null && latestRunId.length > 0 && eligibility.allowed;
   const remainingDurationSeconds = session
     ? Math.max(0, Math.floor((Date.parse(session.expiresAt) - Date.parse(session.updatedAt)) / 1_000))
     : 0;
@@ -467,6 +501,7 @@ function renderVisualReader(
       ${steps}
       ${visual.message ? `<p class="replica-acquisition-visual-reader-message" role="status" aria-live="polite">${escapeHtml(visual.message)}</p>` : ""}
       ${visual.error ? `<p class="replica-acquisition-visual-reader-message is-error" role="alert">${escapeHtml(visual.error)}</p>` : ""}
+      ${session === null ? `<p class="replica-acquisition-visual-reader-message replica-acquisition-visual-reader-eligibility" role="status">${escapeHtml(eligibility.reason)}</p>` : ""}
 
       <footer>
         ${visual.extensionStatus === "unavailable" ? `<button type="button" data-acquisition-detail-action="retry-visual-reader-probe">重新检测读取器</button>` : ""}

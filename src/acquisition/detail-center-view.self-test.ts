@@ -40,9 +40,17 @@ const detail: AcquisitionTaskDetail = {
     id: "plan-1",
     status: "approved",
     version: 3,
+    currentVersionId: "plan-version-1",
+    approvedVersionId: "plan-version-1",
     approvedAt: timestamp,
     payload: {
       targetPlatform: "douyin",
+      douyinPublicCommentSample: {
+        enabled: true,
+        maxVideosPerRun: 10,
+        maxCommentsPerVideo: 30,
+        maxPagesPerVideo: 3
+      },
       name: "厦门装修商机",
       objective: "识别近期公开表达获客困难的企业 <script>alert('plan')</script>",
       icp: {
@@ -113,6 +121,8 @@ const detail: AcquisitionTaskDetail = {
   latestRun: {
     id: "run-1",
     status: "running",
+    planVersionId: "plan-version-1",
+    planVersion: 3,
     updatedAt: timestamp,
     completedAt: null,
     evidenceCount: 9,
@@ -1727,6 +1737,134 @@ function visualState(
   assert.match(html, /&lt;script&gt;alert\(&#039;reader&#039;\)&lt;\/script&gt;/u);
   assert.doesNotMatch(html, /<script>alert\('reader'\)<\/script>/u);
   assert.match(html, /data-acquisition-detail-action="authorize-visual-reader"[^>]*disabled/u);
+}
+
+{
+  for (const status of ["queued", "running"] as const) {
+    const html = renderAcquisitionDetailCenter(state({
+      detail: {
+        ...detail,
+        latestRun: { ...detail.latestRun!, status }
+      },
+      visualReader: visualState()
+    }));
+    assert.match(
+      html,
+      /type="button"[^>]*data-acquisition-detail-action="authorize-visual-reader"(?![^>]*disabled)[^>]*>/u,
+      `${status} approved Douyin comment-sample run is eligible`
+    );
+    assert.match(html, /已满足授权条件/u);
+  }
+}
+
+{
+  const ineligible: Array<{
+    label: string;
+    detail: AcquisitionTaskDetail;
+    reason: RegExp;
+  }> = [
+    ...(["paused", "cancelled", "succeeded", "failed"] as const).map((status) => ({
+      label: `run ${status}`,
+      detail: { ...detail, latestRun: { ...detail.latestRun!, status } },
+      reason: /仅排队中或运行中的任务/u
+    })),
+    {
+      label: "comment policy off",
+      detail: {
+        ...detail,
+        plan: {
+          ...detail.plan,
+          payload: {
+            ...(detail.plan.payload as Record<string, unknown>),
+            douyinPublicCommentSample: {
+              enabled: false,
+              maxVideosPerRun: 10,
+              maxCommentsPerVideo: 30,
+              maxPagesPerVideo: 3
+            }
+          }
+        }
+      },
+      reason: /未启用公开评论样本/u
+    },
+    {
+      label: "non Douyin plan",
+      detail: {
+        ...detail,
+        task: { ...detail.task, platform: "web" },
+        plan: {
+          ...detail.plan,
+          payload: {
+            ...(detail.plan.payload as Record<string, unknown>),
+            targetPlatform: "web"
+          }
+        }
+      },
+      reason: /不是抖音任务/u
+    },
+    {
+      label: "plan not approved",
+      detail: { ...detail, plan: { ...detail.plan, status: "draft" } },
+      reason: /仅已批准且版本未变更的计划/u
+    },
+    {
+      label: "approved version differs from current version",
+      detail: {
+        ...detail,
+        plan: { ...detail.plan, currentVersionId: "plan-version-2" }
+      },
+      reason: /仅已批准且版本未变更的计划/u
+    },
+    {
+      label: "run uses a different plan version",
+      detail: {
+        ...detail,
+        latestRun: { ...detail.latestRun!, planVersionId: "plan-version-2" }
+      },
+      reason: /运行版本与已批准计划不一致/u
+    },
+    {
+      label: "legacy response lacks immutable version and comment policy fields",
+      detail: {
+        ...detail,
+        plan: {
+          id: "plan-legacy",
+          status: "approved",
+          version: 3,
+          payload: { targetPlatform: "douyin" }
+        },
+        latestRun: {
+          ...detail.latestRun!,
+          planVersionId: undefined,
+          planVersion: undefined
+        }
+      },
+      reason: /仅已批准且版本未变更的计划/u
+    }
+  ];
+  for (const item of ineligible) {
+    const html = renderAcquisitionDetailCenter(state({
+      detail: item.detail,
+      visualReader: visualState()
+    }));
+    assert.match(html, /data-acquisition-visual-reader/u, `${item.label} renders a safe control state`);
+    assert.match(
+      html,
+      /type="button"[^>]*data-acquisition-detail-action="authorize-visual-reader"[^>]*disabled/u,
+      `${item.label} cannot authorize`
+    );
+    assert.match(html, item.reason, `${item.label} explains why authorization is unavailable`);
+  }
+}
+
+{
+  const html = renderAcquisitionDetailCenter(state({
+    visualReader: visualState({ busy: true })
+  }));
+  assert.match(html, /data-acquisition-detail-action="authorize-visual-reader"[^>]*disabled/u);
+  assert.match(html, /正在处理视觉读取请求/u);
+  assert.match(html, /type="checkbox"[^>]*name="visualReaderArtifactUpload"/u);
+  assert.match(html, /type="button"[^>]*data-acquisition-detail-action="authorize-visual-reader"/u);
 }
 
 console.log("Acquisition detail center view self-test passed");
