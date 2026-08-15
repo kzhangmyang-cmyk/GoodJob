@@ -1,6 +1,8 @@
 import { strict as assert } from "node:assert";
 import * as readerModule from "./douyin-reader";
 import { createBoundedReader } from "./douyin-reader";
+import { BRIDGE_VERSION, type ExtensionEvent } from "./protocol";
+import { createReliableEventTransport } from "./runtime-transport";
 
 class ManualScheduler {
   now = 0;
@@ -65,6 +67,62 @@ async function flush(): Promise<void> {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
 
+{
+  const scheduler = new ManualScheduler();
+  const deadlines = readerModule.deriveVisualReaderDeadlines(0, 1);
+  const attempts: ExtensionEvent[] = [];
+  const transport = createReliableEventTransport({
+    deadlineAt: deadlines.sessionDeadlineAt,
+    now: () => scheduler.now,
+    scheduleTimeout: scheduler.schedule,
+    cancelTimeout: scheduler.cancel,
+    send: async (event) => {
+      attempts.push(structuredClone(event));
+      return { accepted: true };
+    }
+  });
+  const reader = createBoundedReader({
+    sessionId: "minimum-duration-budget",
+    limits: { ...limits, maxDurationMs: 1 },
+    workDeadlineAt: deadlines.workDeadlineAt,
+    now: () => scheduler.now,
+    scheduleTimeout: scheduler.schedule,
+    cancelTimeout: scheduler.cancel,
+    artifactUploadEnabled: false,
+    extract: async () => new Promise<never>(() => undefined),
+    programmaticScroll: async () => undefined,
+    sendBatch: async () => ({ accepted: true }),
+    sendTerminal: (terminal) => transport.queueTerminal({
+      version: BRIDGE_VERSION,
+      type: "terminal",
+      channelNonce: "0".repeat(64),
+      sessionId: "minimum-duration-budget",
+      status: terminal.status,
+      errorCodes: terminal.errorCodes
+    })
+  });
+
+  const running = reader.start();
+  assert.equal(attempts.length, 1,
+    "the minimum session starts terminal delivery synchronously at its work deadline");
+  scheduler.advance(1);
+  await running;
+  await transport.whenIdle();
+
+  assert.equal(attempts.length, 1,
+    "the minimum session neither duplicates nor sends terminal after the total deadline");
+  assert.deepEqual(attempts[0], {
+    version: BRIDGE_VERSION,
+    type: "terminal",
+    channelNonce: "0".repeat(64),
+    sessionId: "minimum-duration-budget",
+    status: "partial_success",
+    errorCodes: ["visual_reader_budget_exhausted"]
+  });
+  assert.equal(scheduler.pending(), 0, "minimum-duration finalization clears every timer");
+  transport.close();
+}
+
 for (const blockedStage of ["extract", "send", "ack", "scroll"] as const) {
   const scheduler = new ManualScheduler();
   const terminals: unknown[] = [];
@@ -123,6 +181,10 @@ for (const blockedStage of ["extract", "send", "ack", "scroll"] as const) {
   const running = reader.start();
   await flush();
   scheduler.advance(80);
+  assert.deepEqual(terminals, [{
+    status: "partial_success",
+    errorCodes: ["visual_reader_budget_exhausted"]
+  }], "the work-deadline timer queues the budget terminal before rejection settles");
   await flush();
   assert.deepEqual(terminals, [{
     status: "partial_success",
@@ -161,6 +223,7 @@ for (const blockedStage of ["extract", "send", "ack", "scroll"] as const) {
   scheduler.advance(10);
   await flush();
   assert.deepEqual(attempts, ["batch-1", "batch-1", "batch-1"]);
+  assert.deepEqual(terminals, [], "normal work does not emit terminal before its final batch ACK");
   assert.equal(await reader.acknowledge("wrong-batch"), false);
   assert.equal(await reader.acknowledge("batch-1"), true);
   await running;

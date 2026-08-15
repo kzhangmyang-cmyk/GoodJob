@@ -72,6 +72,7 @@ export function createBoundedReader(dependencies: {
   let takeover = false;
   let requestedAbort = false;
   let running = false;
+  let terminalEmitted = false;
   let batchSequence = 0;
   let pendingBatchId: string | null = null;
   let resolveAck: (() => void) | null = null;
@@ -85,11 +86,15 @@ export function createBoundedReader(dependencies: {
 
   async function withinDeadline<T>(operation: Promise<T>): Promise<T> {
     const remaining = remainingMs();
-    if (remaining <= 0) throw new BoundedReaderError("visual_reader_budget_exhausted");
+    if (remaining <= 0) {
+      emitBudgetTerminalOnce();
+      throw new BoundedReaderError("visual_reader_budget_exhausted");
+    }
     let timer: unknown = null;
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = scheduleTimeout(() => {
         timer = null;
+        emitBudgetTerminalOnce();
         operationAbort.abort();
         reject(new BoundedReaderError("visual_reader_budget_exhausted"));
       }, remaining);
@@ -168,15 +173,25 @@ export function createBoundedReader(dependencies: {
     }
   }
 
-  function emitTerminal(terminal: {
+  function emitTerminalOnce(terminal: {
     status: "completed" | "partial_success" | "aborted";
     errorCodes: StableErrorCode[];
   }): void {
+    if (terminalEmitted) return;
+    terminalEmitted = true;
     try {
       void Promise.resolve(dependencies.sendTerminal(terminal)).catch(() => undefined);
     } catch {
       // The runtime transport owns bounded terminal retries; reader settlement cannot block on it.
     }
+  }
+
+  function emitBudgetTerminalOnce(): void {
+    if (stopped) return;
+    emitTerminalOnce({
+      status: "partial_success",
+      errorCodes: ["visual_reader_budget_exhausted"]
+    });
   }
 
   function interrupt(userTakeover: boolean): void {
@@ -222,13 +237,13 @@ export function createBoundedReader(dependencies: {
           if (error instanceof ReaderStopped) {
             // Terminal selection below reflects user takeover or explicit stop.
           } else if (error instanceof BoundedReaderError) {
-            emitTerminal({ status: "partial_success", errorCodes: [error.code] });
+            emitTerminalOnce({ status: "partial_success", errorCodes: [error.code] });
             return;
           } else {
             throw error;
           }
         }
-        emitTerminal(takeover
+        emitTerminalOnce(takeover
           ? { status: "aborted", errorCodes: ["visual_reader_user_takeover"] }
           : requestedAbort
             ? { status: "aborted", errorCodes: [] }
