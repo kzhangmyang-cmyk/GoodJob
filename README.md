@@ -83,7 +83,10 @@ npm run verify:visual-reader-build-order
 Cookie、脚本数据、头像地址、二级回复正文或页面内部状态，不执行任何写入或互动。
 总会话时限中的最后一小段（时限的 20%，最多 1 秒、至少 1ms）专供终态投递；DOM 读取、
 批次、ACK 和滚动会在较早的 work deadline 停止。预算用尽时会在该 deadline 触发点
-幂等排队 terminal（包括总时限仅 1ms 的会话），且不会在总时限后尝试发送。
+幂等排队 terminal。合法 start 到达时若 work window 已为空或到期，会在创建 DOM adapter、
+解析页面 source、创建 reader 或安装接管监听器之前同步进入终态投递；首次 deadline 判断和
+发送发起使用同一同步决策。因此总时限仅 1ms 时仍会在初始化前发起一次，若排队时总时限
+已经到达则不会发起；重试和 timeout 都不会越过总时限。
 
 本阶段只提供 DOM/ARIA 读取，所有观察的 `redactedCrop` 均为 `null`。即使会话允许
 制品上传，也不会截图或运行 OCR；本地遮挡裁剪与 OCR 仍属于后续开发范围。当前实现

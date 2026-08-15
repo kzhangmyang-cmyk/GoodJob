@@ -6,6 +6,7 @@ const tests = [
   "./tab-guard.self-test.ts",
   "./orchestration.self-test.ts",
   "./reader-reliability.self-test.ts",
+  "./content-start.self-test.ts",
   "./service-reliability.self-test.ts",
   "./restart-recovery.self-test.ts"
 ];

@@ -4,7 +4,7 @@ type TerminalEvent = Extract<ExtensionEvent, { type: "terminal" }>;
 
 export interface ReliableEventTransport {
   sendBatch(event: Extract<ExtensionEvent, { type: "observation_batch" }>): Promise<{ accepted: boolean }>;
-  queueTerminal(event: TerminalEvent): void;
+  queueTerminal(event: TerminalEvent, timing?: { deadlineCheckedAt: number }): void;
   whenIdle(): Promise<void>;
   close(): void;
 }
@@ -36,12 +36,12 @@ export function createReliableEventTransport(dependencies: {
   let idle: Promise<void> = Promise.resolve();
   let resolveIdle: (() => void) | null = null;
 
-  function deadlineExpired(): boolean {
-    return deadlineAt !== undefined && now() >= deadlineAt;
+  function deadlineExpired(checkedAt: number): boolean {
+    return deadlineAt !== undefined && checkedAt >= deadlineAt;
   }
 
-  function remainingDeadlineMs(): number {
-    return deadlineAt === undefined ? Number.POSITIVE_INFINITY : deadlineAt - now();
+  function remainingDeadlineMs(checkedAt: number): number {
+    return deadlineAt === undefined ? Number.POSITIVE_INFINITY : deadlineAt - checkedAt;
   }
 
   function finish(): void {
@@ -55,28 +55,39 @@ export function createReliableEventTransport(dependencies: {
   }
 
   function scheduleRetry(): void {
-    if (closed || attempts >= maxAttempts || deadlineExpired()) {
+    const deadlineCheckedAt = now();
+    if (closed || attempts >= maxAttempts || deadlineExpired(deadlineCheckedAt)) {
       finish();
       return;
     }
     timer = scheduleTimeout(() => {
       timer = null;
       void attempt();
-    }, Math.min(retryDelayMs, Math.max(1, remainingDeadlineMs())));
+    }, Math.min(retryDelayMs, remainingDeadlineMs(deadlineCheckedAt)));
   }
 
-  async function attempt(): Promise<void> {
+  async function attempt(deadlineCheckedAt = now()): Promise<void> {
     const event = terminal;
-    if (!event || closed || deadlineExpired()) return finish();
+    if (!event || closed || deadlineExpired(deadlineCheckedAt)) return finish();
     attempts += 1;
+    let sending: Promise<{ accepted: boolean }>;
     try {
-      const timeout = new Promise<{ accepted: false }>((resolve) => {
-        attemptTimer = scheduleTimeout(() => {
-          attemptTimer = null;
-          resolve({ accepted: false });
-        }, Math.min(attemptTimeoutMs, Math.max(1, remainingDeadlineMs())));
-      });
-      const response = await Promise.race([dependencies.send(event), timeout]);
+      sending = dependencies.send(event);
+    } catch {
+      scheduleRetry();
+      return;
+    }
+    try {
+      const timeoutCheckedAt = now();
+      const timeout: Promise<{ accepted: false }> = deadlineExpired(timeoutCheckedAt)
+        ? Promise.resolve({ accepted: false })
+        : new Promise((resolve) => {
+            attemptTimer = scheduleTimeout(() => {
+              attemptTimer = null;
+              resolve({ accepted: false });
+            }, Math.min(attemptTimeoutMs, remainingDeadlineMs(timeoutCheckedAt)));
+          });
+      const response = await Promise.race([sending, timeout]);
       if (attemptTimer !== null) cancelTimeout(attemptTimer);
       attemptTimer = null;
       if (response.accepted) return finish();
@@ -97,12 +108,12 @@ export function createReliableEventTransport(dependencies: {
         return { accepted: false };
       }
     },
-    queueTerminal(event) {
+    queueTerminal(event, timing) {
       if (closed || terminal) return;
       terminal = structuredClone(event);
       attempts = 0;
       idle = new Promise<void>((resolve) => { resolveIdle = resolve; });
-      void attempt();
+      void attempt(timing?.deadlineCheckedAt ?? now());
     },
     whenIdle() { return idle; },
     close() {

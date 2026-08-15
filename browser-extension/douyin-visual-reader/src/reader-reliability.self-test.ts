@@ -123,6 +123,146 @@ async function flush(): Promise<void> {
   transport.close();
 }
 
+{
+  const scheduler = new ManualScheduler();
+  const deadlines = readerModule.deriveVisualReaderDeadlines(0, 1);
+  const attempts: ExtensionEvent[] = [];
+  const transport = createReliableEventTransport({
+    deadlineAt: deadlines.sessionDeadlineAt,
+    now: () => scheduler.now,
+    scheduleTimeout: scheduler.schedule,
+    cancelTimeout: scheduler.cancel,
+    send: async (event) => {
+      attempts.push(structuredClone(event));
+      return { accepted: true };
+    }
+  });
+  const running = readerModule.startVisualReaderWithinDeadlines({
+    deadlines,
+    now: () => scheduler.now,
+    queueBudgetTerminal: (_currentDeadlines, deadlineCheckedAt) => {
+      transport.queueTerminal({
+        version: BRIDGE_VERSION,
+        type: "terminal",
+        channelNonce: "1".repeat(64),
+        sessionId: "minimum-duration-start-orchestrator",
+        status: "partial_success",
+        errorCodes: ["visual_reader_budget_exhausted"]
+      }, { deadlineCheckedAt });
+      return transport.whenIdle();
+    },
+    startReader: async () => { throw new Error("an empty work window must not initialize the reader"); }
+  });
+  assert.equal(attempts.length, 1,
+    "the start decision and first terminal send are one synchronous pre-setup action");
+  scheduler.advance(1);
+  await running;
+  assert.equal(attempts.length, 1,
+    "setup-time clock advancement cannot erase the already-started minimum-duration attempt");
+  assert.equal(scheduler.pending(), 0);
+  transport.close();
+}
+
+{
+  const scheduler = new ManualScheduler();
+  const deadlines = readerModule.deriveVisualReaderDeadlines(0, 1);
+  scheduler.advance(1);
+  let attempts = 0;
+  const transport = createReliableEventTransport({
+    deadlineAt: deadlines.sessionDeadlineAt,
+    now: () => scheduler.now,
+    scheduleTimeout: scheduler.schedule,
+    cancelTimeout: scheduler.cancel,
+    send: async () => {
+      attempts += 1;
+      return { accepted: true };
+    }
+  });
+  await readerModule.startVisualReaderWithinDeadlines({
+    deadlines,
+    now: () => scheduler.now,
+    queueBudgetTerminal: (_currentDeadlines, deadlineCheckedAt) => {
+      transport.queueTerminal({
+        version: BRIDGE_VERSION,
+        type: "terminal",
+        channelNonce: "2".repeat(64),
+        sessionId: "expired-before-terminal-queue",
+        status: "partial_success",
+        errorCodes: ["visual_reader_budget_exhausted"]
+      }, { deadlineCheckedAt });
+      return transport.whenIdle();
+    },
+    startReader: async () => { throw new Error("an expired session must not initialize the reader"); }
+  });
+  assert.equal(attempts, 0, "queueing at the absolute session deadline starts no terminal send");
+  assert.equal(scheduler.pending(), 0, "an already-expired queue creates no timeout or retry");
+  transport.close();
+}
+
+{
+  const scheduler = new ManualScheduler();
+  const deadlines = readerModule.deriveVisualReaderDeadlines(0, 100);
+  const events: ExtensionEvent[] = [];
+  let reader!: ReturnType<typeof createBoundedReader>;
+  const transport = createReliableEventTransport({
+    deadlineAt: deadlines.sessionDeadlineAt,
+    now: () => scheduler.now,
+    scheduleTimeout: scheduler.schedule,
+    cancelTimeout: scheduler.cancel,
+    send: async (event) => {
+      events.push(structuredClone(event));
+      if (event.type === "observation_batch") await reader.acknowledge(event.batchId);
+      return { accepted: true };
+    }
+  });
+  reader = createBoundedReader({
+    sessionId: "normal-start-orchestrator",
+    limits: { ...limits, maxCommentsPerVideo: 1 },
+    workDeadlineAt: deadlines.workDeadlineAt,
+    now: () => scheduler.now,
+    scheduleTimeout: scheduler.schedule,
+    cancelTimeout: scheduler.cancel,
+    artifactUploadEnabled: false,
+    extract: async () => [{ clientObservationKey: "dom:normal", redactedCrop: null }],
+    programmaticScroll: async () => undefined,
+    sendBatch: (batch) => transport.sendBatch({
+      version: BRIDGE_VERSION,
+      type: "observation_batch",
+      channelNonce: "3".repeat(64),
+      sessionId: "normal-start-orchestrator",
+      batchId: batch.batchId,
+      observations: batch.observations as any
+    }),
+    sendTerminal: (terminal) => transport.queueTerminal({
+      version: BRIDGE_VERSION,
+      type: "terminal",
+      channelNonce: "3".repeat(64),
+      sessionId: "normal-start-orchestrator",
+      status: terminal.status,
+      errorCodes: terminal.errorCodes
+    })
+  });
+  await readerModule.startVisualReaderWithinDeadlines({
+    deadlines,
+    now: () => scheduler.now,
+    queueBudgetTerminal: async () => { throw new Error("a live work window must run the reader"); },
+    startReader: () => reader.start()
+  });
+  await transport.whenIdle();
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.type, "observation_batch");
+  assert.deepEqual(events[1], {
+    version: BRIDGE_VERSION,
+    type: "terminal",
+    channelNonce: "3".repeat(64),
+    sessionId: "normal-start-orchestrator",
+    status: "completed",
+    errorCodes: []
+  }, "a normal work window retains the existing reader completion path");
+  assert.equal(scheduler.pending(), 0, "normal completion clears reader and transport timers");
+  transport.close();
+}
+
 for (const blockedStage of ["extract", "send", "ack", "scroll"] as const) {
   const scheduler = new ManualScheduler();
   const terminals: unknown[] = [];

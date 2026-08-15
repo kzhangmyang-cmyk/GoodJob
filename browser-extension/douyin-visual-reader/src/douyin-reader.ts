@@ -39,6 +39,29 @@ export function deriveVisualReaderDeadlines(
   };
 }
 
+export function startVisualReaderWithinDeadlines(dependencies: {
+  deadlines: ReturnType<typeof deriveVisualReaderDeadlines>;
+  now?: () => number;
+  queueBudgetTerminal(
+    deadlines: ReturnType<typeof deriveVisualReaderDeadlines>,
+    deadlineCheckedAt: number
+  ): void | Promise<void>;
+  startReader(deadlines: ReturnType<typeof deriveVisualReaderDeadlines>): Promise<void>;
+}): Promise<void> {
+  const deadlineCheckedAt = (dependencies.now ?? (() => Date.now()))();
+  if (deadlineCheckedAt >= dependencies.deadlines.workDeadlineAt) {
+    try {
+      return Promise.resolve(dependencies.queueBudgetTerminal(
+        dependencies.deadlines,
+        deadlineCheckedAt
+      ));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+  return dependencies.startReader(dependencies.deadlines);
+}
+
 export function createBoundedReader(dependencies: {
   sessionId: string;
   limits: VisualReaderLimits;

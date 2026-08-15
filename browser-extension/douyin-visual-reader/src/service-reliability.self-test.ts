@@ -233,6 +233,36 @@ async function flush(): Promise<void> {
 
 {
   const clock = new ManualClock();
+  let attempts = 0;
+  const transport = createReliableEventTransport({
+    deadlineAt: 1,
+    now: () => clock.now,
+    scheduleTimeout: clock.schedule,
+    cancelTimeout: clock.cancel,
+    send: () => {
+      attempts += 1;
+      clock.advance(1);
+      return new Promise<{ accepted: boolean }>(() => undefined);
+    }
+  });
+  transport.queueTerminal({
+    version: BRIDGE_VERSION,
+    type: "terminal",
+    channelNonce: "9".repeat(64),
+    sessionId: "session-terminal-send-consumes-deadline",
+    status: "partial_success",
+    errorCodes: ["visual_reader_budget_exhausted"]
+  }, { deadlineCheckedAt: 0 });
+  await flush();
+  assert.equal(attempts, 1, "the eligible first send starts synchronously");
+  assert.equal(clock.pending(), 0,
+    "a send that consumes the remaining deadline cannot schedule a timeout beyond it");
+  await transport.whenIdle();
+  transport.close();
+}
+
+{
+  const clock = new ManualClock();
   clock.now = 80;
   let attempts = 0;
   const transport = createReliableEventTransport({

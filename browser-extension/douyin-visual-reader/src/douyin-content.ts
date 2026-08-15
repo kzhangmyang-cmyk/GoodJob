@@ -14,6 +14,7 @@ import {
   BoundedReaderError,
   createBoundedReader,
   deriveVisualReaderDeadlines,
+  startVisualReaderWithinDeadlines,
   type BoundedReader
 } from "./douyin-reader";
 import { createReliableEventTransport, type ReliableEventTransport } from "./runtime-transport";
@@ -88,6 +89,55 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
   let internalScrollUntil = 0;
   let internalClick = false;
 
+  function createSessionTransport(
+    deadlineAt: number
+  ): ReliableEventTransport {
+    return createReliableEventTransport({
+      deadlineAt,
+      send: async (event) => {
+        const response = await chrome.runtime.sendMessage({ kind: "douyin_reader_event", event });
+        return {
+          accepted: response !== null && typeof response === "object" && !Array.isArray(response)
+            && (response as { accepted?: unknown }).accepted === true
+        };
+      }
+    });
+  }
+
+  function budgetTerminal(input: {
+    sessionId: string;
+    channelNonce: string;
+  }): Extract<ExtensionEvent, { type: "terminal" }> {
+    return {
+      version: BRIDGE_VERSION,
+      type: "terminal",
+      channelNonce: input.channelNonce,
+      sessionId: input.sessionId,
+      status: "partial_success",
+      errorCodes: ["visual_reader_budget_exhausted"]
+    };
+  }
+
+  async function finalizeEmptyWorkWindow(input: {
+    sessionId: string;
+    channelNonce: string;
+  }, deadlines: ReturnType<typeof deriveVisualReaderDeadlines>, deadlineCheckedAt: number): Promise<void> {
+    const previousReader = reader;
+    reader = null;
+    activeSessionId = input.sessionId;
+    const sessionTransport = createSessionTransport(deadlines.sessionDeadlineAt);
+    transport = sessionTransport;
+    sessionTransport.queueTerminal(budgetTerminal(input), { deadlineCheckedAt });
+    previousReader?.stop();
+    try {
+      await sessionTransport.whenIdle();
+    } finally {
+      sessionTransport.close();
+      if (transport === sessionTransport) transport = null;
+      if (activeSessionId === input.sessionId) activeSessionId = null;
+    }
+  }
+
   function installTakeoverListeners(sessionReader: BoundedReader): () => void {
     const listeners = new AbortController();
     const options = { capture: true, signal: listeners.signal };
@@ -115,16 +165,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
     const source = canonicalDouyinVideoUrl(globalThis.location.href);
     if (!source) throw new BoundedReaderError("visual_source_invalid");
     let attemptedAction = false;
-    const sessionTransport = createReliableEventTransport({
-      deadlineAt: deadlines.sessionDeadlineAt,
-      send: async (event) => {
-        const response = await chrome.runtime.sendMessage({ kind: "douyin_reader_event", event });
-        return {
-          accepted: response !== null && typeof response === "object" && !Array.isArray(response)
-            && (response as { accepted?: unknown }).accepted === true
-        };
-      }
-    });
+    const sessionTransport = createSessionTransport(deadlines.sessionDeadlineAt);
     transport = sessionTransport;
     const sessionReader = createBoundedReader({
       sessionId: input.sessionId,
@@ -198,10 +239,12 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
         reader = null;
         activeSessionId = null;
       }
-      void sessionTransport.whenIdle().then(() => {
+      try {
+        await sessionTransport.whenIdle();
+      } finally {
         sessionTransport.close();
         if (transport === sessionTransport) transport = null;
-      });
+      }
     }
   }
 
@@ -219,14 +262,16 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
       if (!command || command.type !== "start") return;
       sendResponse({ accepted: true });
       const deadlines = deriveVisualReaderDeadlines(Date.now(), command.limits.maxDurationMs);
-      void start(command, deadlines).catch(async () => {
-        const fallback = createReliableEventTransport({
-          deadlineAt: deadlines.sessionDeadlineAt,
-          send: async (event) => {
-            const response = await chrome.runtime.sendMessage({ kind: "douyin_reader_event", event });
-            return { accepted: response?.accepted === true };
-          }
-        });
+      void startVisualReaderWithinDeadlines({
+        deadlines,
+        queueBudgetTerminal: (currentDeadlines, deadlineCheckedAt) => finalizeEmptyWorkWindow(
+          command,
+          currentDeadlines,
+          deadlineCheckedAt
+        ),
+        startReader: (currentDeadlines) => start(command, currentDeadlines)
+      }).catch(async () => {
+        const fallback = createSessionTransport(deadlines.sessionDeadlineAt);
         fallback.queueTerminal({
           version: BRIDGE_VERSION,
           type: "terminal",
@@ -235,9 +280,13 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
           status: "partial_success",
           errorCodes: ["visual_source_invalid"]
         });
-        void fallback.whenIdle().then(() => fallback.close());
-        reader = null;
-        activeSessionId = null;
+        try {
+          await fallback.whenIdle();
+        } finally {
+          fallback.close();
+          reader = null;
+          activeSessionId = null;
+        }
       });
       return;
     }
