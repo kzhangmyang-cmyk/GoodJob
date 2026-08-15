@@ -280,6 +280,10 @@ function strictDouyinCommentActorKey(value: string): DouyinCommentActorKey | nul
   return comment ? { kind: "comment", normalized: actorKey } : null;
 }
 
+export function normalizeAcquisitionDouyinCommentActorKey(value: string) {
+  return strictDouyinCommentActorKey(value)?.normalized ?? null;
+}
+
 function safePublicActorKey(value: string) {
   const actorKey = normalizedText(value);
   const douyinCommentActorKey = strictDouyinCommentActorKey(value);

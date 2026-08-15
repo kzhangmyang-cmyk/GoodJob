@@ -405,9 +405,11 @@ application 固定注入 Provider。Content-fetch MySQL schema 在 recovery 启�
   使用 10000 条硬保护，不用 50 条展示窗口反推。有效需求重新读取不可变事件分类并排除
   negative 与 `do_not_contact`；未核验主体按已聚合的稳定公开主体跨视频、跨页去重。event
   已持久化但 saga/link 未提交时，主体聚合保持 pending/partial_success；
-- 高潜评论仅在租户范围内 candidate、Evidence 均真实存在、candidate 拥有该 evidenceId，且
-  `platform_public_event` provenance 精确指向当前评论时公开；悬空 candidate、悬空 Evidence
-  与交叉链接全部 fail closed。最新评论独立限制 50 条，不挤占候选签名游标，也不返回头像；
+- 高潜评论仅在租户范围内 individual candidate、Evidence 均真实存在、candidate 拥有该
+  evidenceId，且 Evidence 的 platform、access status、content hash、provider version、coverage、
+  platform event ID 和 source URL 逐项精确对应当前事件时公开。Candidate 的严格 secUid、
+  规范化 handle 或 comment-scoped key 还必须与事件主体一致；悬空 candidate、悬空
+  Evidence、交叉链接和主体错配全部 fail closed。最新评论独立限制 50 条，不挤占候选签名游标，也不返回头像；
 - Candidate/Evidence 读取投影增加平台事件和意愿证据；
 - 公开链接导入响应固定返回持久化 `commentSampleSummary`，包含实际事件、证据、
   候选、usage 和部分失败错误；排队中或旧数据为 `null`；

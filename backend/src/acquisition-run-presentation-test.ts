@@ -583,12 +583,15 @@ async function appendCommentSignal(
     evidenceId: string;
     text: string;
     actorSecUid?: string | null;
+    actorHandle?: string | null;
     ownerId?: string;
     teamId?: string;
     videoId?: string;
     commit?: boolean;
     persistEvidence?: boolean;
     attachEvidenceToCandidate?: boolean;
+    alignCandidateActor?: boolean;
+    transformEvidence?: (evidence: DiscoveryEvidence) => DiscoveryEvidence;
   }
 ) {
   const ownerId = options.ownerId ?? OWNER;
@@ -597,6 +600,14 @@ async function appendCommentSignal(
   const videoId = options.videoId ?? "7312345678901234567";
   const minute = String(Math.floor(options.index / 60)).padStart(2, "0");
   const second = String(options.index % 60).padStart(2, "0");
+  const actorSecUid = options.actorSecUid === undefined
+    ? options.candidateId
+      ? `actor-${options.candidateId}`
+      : `sec-${suffix}`
+    : options.actorSecUid;
+  const actorHandle = options.actorHandle === undefined
+    ? `public-${suffix}`
+    : options.actorHandle;
   await repository.appendObservation({
     scope: { ownerId, teamId, actorId: ACTOR },
     observationId: `comment-observation-${suffix}`,
@@ -616,10 +627,8 @@ async function appendCommentSignal(
       ipLabel: "广东",
       actor: {
         displayName: `公开用户 ${suffix}`,
-        handle: `public-${suffix}`,
-        secUid: options.actorSecUid === undefined
-          ? `sec-${suffix}`
-          : options.actorSecUid
+        handle: actorHandle,
+        secUid: actorSecUid
       },
       sourceUrl: `https://www.douyin.com/video/${videoId}`,
       coverage: "public_top_level_sample",
@@ -651,18 +660,30 @@ async function appendCommentSignal(
     );
     if (current) {
       if (options.persistEvidence !== false) {
-        await domain.appendEvidence(commentEvidence(
+        const baseEvidence = commentEvidence(
           options.evidenceId,
           options.index,
           options.text,
           ownerId,
           teamId,
           videoId
-        ));
+        );
+        await domain.appendEvidence(
+          options.transformEvidence?.(baseEvidence) ?? baseEvidence
+        );
       }
       if (options.attachEvidenceToCandidate !== false) {
+        const actorKey = actorSecUid
+          ? `douyin:sec_uid:${actorSecUid}`
+          : actorHandle
+            ? `douyin:handle:${actorHandle.toLocaleLowerCase("en-US")}`
+            : `unmergeable:douyin:comment:comment-${suffix}`;
         await domain.saveCandidate({
           ...current,
+          profile: options.alignCandidateActor !== false
+            && current.profile.kind === "individual"
+            ? { ...current.profile, publicActorKey: actorKey }
+            : current.profile,
           evidenceIds: [...new Set([
             ...current.evidenceIds,
             options.evidenceId
@@ -728,9 +749,19 @@ async function appendFetchAttempt(
 
 test("presentation derives the fixed automation timeline and comment signals from durable facts", async () => {
   const { service, domain, commentEvents } = await fixture();
+  const resolvedCommentCandidate = candidate("candidate-comment-resolved", "A", {
+    individual: true,
+    identityResolved: true,
+    evidenceIds: []
+  });
+  await domain.insertCandidate(resolvedCommentCandidate);
+  await domain.appendQualificationDecision(qualification(
+    resolvedCommentCandidate.id,
+    "A"
+  ));
   await appendCommentSignal(commentEvents, domain, {
     index: 1,
-    candidateId: "candidate-2",
+    candidateId: resolvedCommentCandidate.id,
     evidenceId: "comment-evidence-1",
     text: "采购100套，预算五万元，希望本月交付"
   });
@@ -851,7 +882,7 @@ test("presentation derives the fixed automation timeline and comment signals fro
       evidenceId: "comment-evidence-2"
     },
     {
-      candidateId: "candidate-2",
+      candidateId: resolvedCommentCandidate.id,
       intentBand: "strong_signal",
       identityStatus: "resolved",
       evidenceId: "comment-evidence-1"
@@ -1224,7 +1255,7 @@ test("comment cards fail closed for dangling candidates, evidence and cross-link
   const { service, domain, commentEvents } = await fixture();
   await appendCommentSignal(commentEvents, domain, {
     index: 70,
-    candidateId: "candidate-2",
+    candidateId: "candidate-3",
     evidenceId: "comment-evidence-legitimate",
     text: "采购100套，预算五万元"
   });
@@ -1236,7 +1267,7 @@ test("comment cards fail closed for dangling candidates, evidence and cross-link
   });
   await appendCommentSignal(commentEvents, domain, {
     index: 72,
-    candidateId: "candidate-2",
+    candidateId: "candidate-3",
     evidenceId: "comment-evidence-does-not-exist",
     text: "采购300套，预算十五万元",
     persistEvidence: false
@@ -1251,7 +1282,7 @@ test("comment cards fail closed for dangling candidates, evidence and cross-link
   });
   const candidateTwo = await domain.findCandidate(
     { ownerId: OWNER, teamId: TEAM },
-    "candidate-2"
+    "candidate-3"
   );
   assert.ok(candidateTwo);
   await domain.appendEvidence(commentEvidence(
@@ -1267,7 +1298,7 @@ test("comment cards fail closed for dangling candidates, evidence and cross-link
   });
   await appendCommentSignal(commentEvents, domain, {
     index: 74,
-    candidateId: "candidate-2",
+    candidateId: "candidate-3",
     evidenceId: "comment-evidence-cross-tenant",
     text: "采购500套，预算二十五万元",
     persistEvidence: false,
@@ -1278,6 +1309,159 @@ test("comment cards fail closed for dangling candidates, evidence and cross-link
   assert.deepEqual(value.commentSignals.map((signal) => signal.eventId), [
     "comment-event-70"
   ]);
+});
+
+test("comment cards require exact event provenance and stable actor binding", async (t) => {
+  type EvidenceMutation = {
+    name: string;
+    mutate: (evidence: DiscoveryEvidence) => DiscoveryEvidence;
+  };
+  const mutations: EvidenceMutation[] = [
+    {
+      name: "providerVersion",
+      mutate: (evidence) => ({
+        ...evidence,
+        provenance: evidence.provenance.kind === "platform_public_event"
+          ? { ...evidence.provenance, providerVersion: "provider-v0" }
+          : evidence.provenance
+      })
+    },
+    {
+      name: "coverage",
+      mutate: (evidence) => ({
+        ...evidence,
+        provenance: evidence.provenance.kind === "platform_public_event"
+          ? {
+              ...evidence.provenance,
+              coverage: "public_full_sample" as "public_top_level_sample"
+            }
+          : evidence.provenance
+      })
+    },
+    {
+      name: "sourcePlatform",
+      mutate: (evidence) => ({ ...evidence, sourcePlatform: "tiktok" })
+    },
+    {
+      name: "accessStatus",
+      mutate: (evidence) => ({
+        ...evidence,
+        accessStatus: "indexed_summary"
+      })
+    },
+    {
+      name: "contentHash",
+      mutate: (evidence) => ({
+        ...evidence,
+        contentHash: `sha256:${"f".repeat(64)}`
+      })
+    }
+  ];
+
+  for (const [offset, row] of mutations.entries()) {
+    await t.test(`rejects mismatched ${row.name}`, async () => {
+      const { service, domain, commentEvents } = await fixture();
+      const index = 80 + offset;
+      const item = candidate(`candidate-binding-${offset}`, "A", {
+        individual: true,
+        identityResolved: false,
+        evidenceIds: []
+      });
+      assert.equal(item.profile.kind, "individual");
+      await domain.insertCandidate({
+        ...item,
+        profile: {
+          ...item.profile,
+          publicActorKey: `douyin:sec_uid:binding-sec-${offset}`
+        }
+      });
+      await appendCommentSignal(commentEvents, domain, {
+        index,
+        candidateId: item.id,
+        evidenceId: `comment-evidence-binding-${offset}`,
+        text: "正在找供应商，采购100套，预算五万元",
+        actorSecUid: `binding-sec-${offset}`,
+        transformEvidence: row.mutate
+      });
+
+      const value = await service.get(scope, "run-1", { limit: 1 });
+      assert.deepEqual(value.commentSignals, []);
+    });
+  }
+
+  await t.test("rejects a different candidate actor claiming the evidence", async () => {
+    const { service, domain, commentEvents } = await fixture();
+    const item = candidate("candidate-wrong-actor", "A", {
+      individual: true,
+      identityResolved: false,
+      evidenceIds: []
+    });
+    assert.equal(item.profile.kind, "individual");
+    await domain.insertCandidate({
+      ...item,
+      profile: {
+        ...item.profile,
+        publicActorKey: "douyin:sec_uid:different-actor"
+      }
+    });
+    await appendCommentSignal(commentEvents, domain, {
+      index: 85,
+      candidateId: item.id,
+      evidenceId: "comment-evidence-wrong-actor",
+      text: "正在找供应商，采购100套，预算五万元",
+      actorSecUid: "actual-actor",
+      alignCandidateActor: false
+    });
+
+    const value = await service.get(scope, "run-1", { limit: 1 });
+    assert.deepEqual(value.commentSignals, []);
+  });
+
+  for (const identity of [
+    {
+      name: "secUid",
+      actorSecUid: "exact-actor",
+      actorHandle: "ignored-handle",
+      publicActorKey: "douyin:sec_uid:exact-actor"
+    },
+    {
+      name: "normalized handle",
+      actorSecUid: null,
+      actorHandle: "Public_User.01",
+      publicActorKey: "douyin:handle:public_user.01"
+    }
+  ]) {
+    await t.test(`publishes an exact ${identity.name} binding`, async () => {
+      const { service, domain, commentEvents } = await fixture();
+      const item = candidate(`candidate-exact-${identity.name}`, "A", {
+        individual: true,
+        identityResolved: false,
+        evidenceIds: []
+      });
+      assert.equal(item.profile.kind, "individual");
+      await domain.insertCandidate({
+        ...item,
+        profile: {
+          ...item.profile,
+          publicActorKey: identity.publicActorKey
+        }
+      });
+      await appendCommentSignal(commentEvents, domain, {
+        index: identity.name === "secUid" ? 86 : 87,
+        candidateId: item.id,
+        evidenceId: `comment-evidence-exact-${identity.name}`,
+        text: "正在找供应商，采购100套，预算五万元",
+        actorSecUid: identity.actorSecUid,
+        actorHandle: identity.actorHandle
+      });
+
+      const value = await service.get(scope, "run-1", { limit: 1 });
+      assert.deepEqual(
+        value.commentSignals.map((signal) => signal.candidateId),
+        [item.id]
+      );
+    });
+  }
 });
 
 test("non-douyin and disabled immutable plans skip comment automation despite succeeded search shards", async () => {

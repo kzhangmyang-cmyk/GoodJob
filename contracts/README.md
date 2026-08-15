@@ -103,7 +103,10 @@ reclassified from the immutable comment event and excludes negative or
 do-not-contact candidates. Unresolved actors are deduplicated by the aggregated
 public actor candidate across the whole Run. A comment card is published only
 when its scoped candidate and evidence both exist, the candidate owns the
-evidence ID, and the evidence provenance identifies that exact platform event.
+evidence ID, and the evidence matches the event's platform, access status,
+content hash, provider version, coverage, platform comment ID, and source URL.
+The candidate must be an individual whose strict Douyin secUid, normalized
+handle, or comment-scoped public actor key identifies the same event actor.
 Only S/A decisions without hard-gate failures or do-not-contact state count as
 high intent; an unresolved strong public signal remains explicitly marked as
 needing identity research. Comment projections never expose an avatar.

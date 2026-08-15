@@ -15,8 +15,12 @@ import {
   classifyDouyinCommentIntent,
   type DouyinCommentIntentBand
 } from "./acquisition-douyin-comment-ingestion.js";
+import {
+  normalizeAcquisitionDouyinCommentActorKey
+} from "./acquisition-public-identity-resolver.js";
 import type {
   AcquisitionDouyinCommentEventRepository,
+  DouyinCommentEvent,
   DouyinRunCommentPresentationProjection
 } from "./acquisition-douyin-comment-events.js";
 import {
@@ -289,6 +293,40 @@ function eventOrder(
 ) {
   return left.createdAt.localeCompare(right.createdAt)
     || left.eventId.localeCompare(right.eventId);
+}
+
+function eventPublicActorKey(event: DouyinCommentEvent) {
+  const candidates = [
+    event.actor.secUid
+      ? `douyin:sec_uid:${event.actor.secUid}`
+      : null,
+    event.actor.handle
+      ? `douyin:handle:${event.actor.handle}`
+      : null,
+    `unmergeable:douyin:comment:${event.platformEventId}`
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const normalized = normalizeAcquisitionDouyinCommentActorKey(candidate);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function candidateMatchesEventActor(
+  candidate: AcquisitionCandidate,
+  event: DouyinCommentEvent
+) {
+  if (candidate.partyType !== "individual"
+    || candidate.partyRef.partyType !== "individual"
+    || candidate.profile.kind !== "individual") {
+    return false;
+  }
+  const candidateActorKey = normalizeAcquisitionDouyinCommentActorKey(
+    candidate.profile.publicActorKey
+  );
+  return candidateActorKey !== null
+    && candidateActorKey === eventPublicActorKey(event);
 }
 
 function discoveredCandidateId(event: AcquisitionRunEvent) {
@@ -884,7 +922,13 @@ export class AcquisitionRunPresentationService {
         || evidence.provenance.kind !== "platform_public_event"
         || evidence.provenance.platformEventId
           !== signal.event.platformEventId
-        || evidence.provenance.sourceUrl !== signal.event.sourceUrl) {
+        || evidence.provenance.sourceUrl !== signal.event.sourceUrl
+        || evidence.provenance.providerVersion !== signal.event.providerVersion
+        || evidence.provenance.coverage !== signal.event.coverage
+        || evidence.sourcePlatform !== signal.event.platform
+        || evidence.accessStatus !== signal.event.accessStatus
+        || evidence.contentHash !== signal.event.textHash
+        || !candidateMatchesEventActor(candidate, signal.event)) {
         return [];
       }
       return [{ signal, decision, candidate, evidenceId }];

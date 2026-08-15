@@ -46,3 +46,10 @@
 - 一个已提交 link 与另一个 pending saga 并存时，标准化事件仍按已持久事实显示，但主体聚合使用独立 upstream/processed 数量并保持 `partial_success`。资格完整度同时使用全部 attempt terminal candidate 和已验证 link candidate。
 - Application memory/MySQL focused 自然退出 `2/2`；`check:acquisition-contracts` 通过（contracts `66/66`、drift `17/17`、security、OpenAPI、frontend `184/184`、Baota 均 GREEN），generated type check、backend build 与 `git diff --check` 通过。
 - 最终 full acquisition 为 `807/805/2`；两项仍仅是 `acquisition-pi-gateway-runtime-test.ts` 与 `acquisition-pi-runtime-factory-test.ts` 的既有 `MODEL_TOOL_DEFINITION_INVALID`。
+
+## Fix round 2
+
+- RED：`npm exec --workspace backend -- tsx --test --test-name-pattern='comment cards require exact event provenance' src/acquisition-run-presentation-test.ts` 为 `9 tests / 2 pass / 7 fail`。providerVersion、coverage、sourcePlatform、accessStatus、contentHash 及错误 candidate actor 六个子测均证实不一致事实会被错误公开；精确 secUid 和大小写规范化 handle 正例已经通过。
+- GREEN：同一定向矩阵为 `9/9`，完整 presentation focused 为 `32/32`。投影现在逐项匹配 Evidence 与 event 的 platform、access status、content hash、provider version、coverage、platform event ID 和 source URL，并只接受同一 individual candidate 拥有该 Evidence。
+- 主体绑定复用现有严格 Douyin actor-key 规范化：secUid 优先，handle 仅规范化大小写，无可用稳定主体时使用 comment-scoped key；不做模糊 handle 匹配，不引入新 PII。
+- 相关 identity/domain/event repository/MySQL/presentation 组合为 `105/105`；Backend build 与 `git diff --check` 通过。公开 DTO、OpenAPI 与存储接口未变，因此无需重生合同。Round 1 的 full acquisition `807/805/2` 仍为本轮继承门禁，本轮仅有上述事实绑定收紧。

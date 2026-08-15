@@ -352,7 +352,7 @@
 - 评论自动化是否适用只由 Run 引用的不可变计划版本决定：目标必须为 douyin 且公开评论策略明确启用；否则固定七步全部 skipped，普通网页搜索 shard 不计为视频发现。
 - fetch attempt 在 repository 内全量聚合，第 101 条及以后同样参与状态、错误、时间和资格完整度；候选与信号事实设 10000 条硬保护。有效需求排除 negative 与 `do_not_contact`，未核验主体按稳定公开主体在整个 Run 去重。
 - 发现步骤只使用 `shard.started` 与终态 shard 事件时间；标准化、主体聚合、资格研判和刷新没有独立时间事实时返回 null。event 已存但 saga/link 未提交时，主体聚合不得显示 succeeded。
-- 高潜评论必须同时通过真实 scoped candidate、真实 Evidence、candidate 对 evidenceId 的归属和精确 `platform_public_event` provenance 校验；悬空或交叉链接 fail closed。
+- 高潜评论必须同时通过真实 scoped individual candidate、真实 Evidence 和 candidate 对 evidenceId 的归属。Evidence 的 source platform、access status、content hash、provider version、coverage、platform event ID 与 source URL 必须与事件逐项精确一致，candidate 的严格 secUid/规范化 handle/comment-scoped public actor key 必须标识同一主体；悬空、交叉链接或主体错配全部 fail closed。
 - 取数失败不伪造 0：对应步骤为 failed/partial_success 并带错误码。
 - 时间线可见错误码至少覆盖 `public_sample_unavailable`、`access_restricted`、`rate_limited`、`video_id_unresolved`、`source_payload_invalid`、`no_public_comments`、`model_output_invalid`；多步骤有成有败时使用 `partial_success` 状态而不是另造错误。
 
