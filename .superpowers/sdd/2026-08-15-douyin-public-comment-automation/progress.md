@@ -77,3 +77,7 @@ Task 8: fix round 1/5 (5 addressed, 0 open — deterministic reload; schema-vali
 Task 8: complete (frontend commits 77e7afe..674b0ce, independent review clean; three viewports 3/3 and 1024px repeat-each 5/5)
 
 Task 9: complete — current README/execution guide/PRD now match the implemented read-only public top-level comment Beta; official Douyin OAuth/actions and persistent acquisition scheduling remain future work. Final gates: acquisition 816/814/2 with only the two approved Pi `MODEL_TOOL_DEFINITION_INVALID` baselines; contracts/check/build green; marketing frontend 125 checks, comment automation E2E 3/3, and build green. Optional real-network smoke not run because both opt-in environment variables were unset. Report: `.superpowers/sdd/2026-08-15-douyin-public-comment-automation/task-9-report.md`.
+
+Task 9: review round 1/5 (3 Important open — strict sec_uid was overstated as resolved; cost/time were overstated as pre-request hard stops; high-intent label was incorrectly coupled to human approval; commit 77d7e5a)
+
+Task 9: fix round 1/5 (3 addressed, 0 open — docs now match identity, budget-settlement, and UI-label gates)

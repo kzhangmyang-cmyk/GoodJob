@@ -29,8 +29,14 @@ The current documents now state the same operational rules:
   contract caps are `20 / 100 / 5`, and the normal Run request/result/cost/time
   budgets remain authoritative;
 - comment events are immutable, observations are append-only, actor aggregation
-  is not identity verification, and an isolated “多少钱” is at most a potential
-  signal;
+  is not identity verification, and a strict `sec_uid` remains `needs_research`
+  until consistent exact public-profile evidence resolves the identity;
+- request/result budgets stop new comment requests before dispatch; cost/time
+  remain Run shard-settlement gates (the current public sample costs `0`), so a
+  slow request can exhaust time at settlement rather than being pre-empted;
+- an isolated “多少钱” is at most a potential signal; the UI's high-intent label
+  requires resolved identity, S/A qualification, and no hard-gate failures,
+  while human approval remains the later CRM conversion/outreach gate;
 - `partial_success`, `no_public_comments`, access/rate limits, unavailable
   samples, unresolved video IDs, and invalid payloads keep their stable meanings;
 - a terminal approved plan may create a new independent Run through “再次运行”;
@@ -89,3 +95,11 @@ Final static gates before staging:
 - `git diff --check`: pass.
 - Customer-promise wording audit: pass; restricted terms appear only in explicit
   negative or future-scope language.
+
+## Independent review follow-up
+
+The first documentation review found three overstatements and no Critical or
+Minor issue. The current text now matches the implementation for strict
+`sec_uid` identity status, request/result versus cost/time budget enforcement,
+and the distinction between the UI high-intent label and the later human
+conversion/outreach gate.
