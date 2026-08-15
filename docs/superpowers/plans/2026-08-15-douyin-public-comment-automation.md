@@ -407,6 +407,7 @@
 **Repository:** `/Users/mac/Documents/外贸/GoodJob-marketing-system-frontend`
 
 **Files:**
+- Modify: `index.html`
 - Modify: `src/acquisition/task-creation-api.ts`
 - Modify: `src/acquisition/task-creation-api.self-test.ts`
 - Modify: `src/acquisition/task-creation-controller.ts`
@@ -425,11 +426,14 @@
 
 **Interfaces and UI:**
 - 任务创建表单增加“公开评论样本”开关与有界上限，默认 `10 个视频 / 每视频 30 条 / 最多 3 页`，显示“一级公开样本，非全量”。
+- 开关位于 AI 创建与手动创建共用区；两条提交路径都必须应用同一个纯函数策略，不得让默认 AI 模式静默丢失评论配置。
+- 启用时只能由前端附加服务端固定的 `douyin-public-comments / experimental_public_sample / content_fetch / active / credentialVersion=1` snapshot；不在 Provider 列表暴露或让用户选择该内置连接。
 - 详情运行面板首屏增加七步自动化时间线和五项计数带；仅根据 `automationSteps/summary` 渲染。
 - 高潜评论卡显示评论原文、公开主体、视频来源、时间、意愿标签、理由、置信度、身份状态，点击打开现有候选/证据检视器。
 - 身份未核验且信号强时使用“高潜需求信号”；只有资格等级 S/A 且通过硬门禁时显示“高意向”。
 - 对 `public_sample_unavailable/access_restricted/rate_limited/no_public_comments/partial_success` 显示可行的中文状态，不把来源受限误写为“没有客户”。
 - 保留现有暂停、继续、取消、再次运行和人工核验；不增加伪周期调度。
+- 保留现有智能体员工卡通头像资产，但不得将员工头像冒充公开评论用户头像；`commentSignals` 使用中性 initials/现有图标。
 
 - [ ] **Step 1: 写前端合同、渲染和交互失败测试**
 
@@ -443,22 +447,22 @@
 
 - [ ] **Step 3: 实现表单和 API/controller 合同**
 
-  `buildDouyinPlanInput` 只对抖音计划提交 `douyinPublicCommentSample`。Controller 轮询合并 `automationSteps` 时以 step ID 替换最新服务端投影，`commentSignals` 以 event ID 去重；不生成本地模拟事件。
+  `buildDouyinPlanInput` 只对抖音计划提交 `douyinPublicCommentSample`；AI draft 与 manual input 在最终提交前共用同一策略应用函数。Controller 轮询合并 `automationSteps` 时以 step ID 替换最新服务端投影，`commentSignals` 以 event ID 去重；不生成本地模拟事件。
 
 - [ ] **Step 4: 实现时间线、计数带、高潜卡和响应式样式**
 
-  扩展现有 `.replica-acquisition-*` 命名空间，使用当前 CSS 变量。在 1440/1366/1024/768 宽度下不出现横向滚动，焦点、`aria-live` 和按钮禁用状态沿用当前可访问性约定。
+  扩展现有 `.replica-acquisition-*` 命名空间，使用当前 CSS 变量。在 1440/1366/1024/768 宽度下不出现横向滚动；必须修正现有 1024 宽度仍保留 `min-width:1280px` 的全局壳层裁切，并在 768 宽度前将详情网格、五项计数和七步时间线折叠为无溢出布局。焦点、`aria-live` 和按钮禁用状态沿用当前可访问性约定。
 
 - [ ] **Step 5: 运行 GREEN、完整前端测试与构建**
 
-  Run: `npm run test && npm run build`
+  Run: `npm run test && npm run test:types && npm run build`
 
   Expected: PASS；只允许已知 Vite chunk warning。
 
 - [ ] **Step 6: 仅提交本任务文件**
 
   ```bash
-  git add src/acquisition/task-creation-api.ts src/acquisition/task-creation-api.self-test.ts src/acquisition/task-creation-controller.ts src/acquisition/task-creation-controller.self-test.ts src/acquisition/runtime-api.ts src/acquisition/runtime-api.self-test.ts src/acquisition/detail-center-api.ts src/acquisition/detail-center-api.self-test.ts src/acquisition/detail-center-controller.ts src/acquisition/detail-center-controller.self-test.ts src/acquisition/detail-center-view.ts src/acquisition/detail-center-view.self-test.ts src/acquisition/runtime-presenter.ts src/acquisition/runtime-presenter.self-test.ts src/replica-dashboard.css
+  git add index.html src/acquisition/task-creation-api.ts src/acquisition/task-creation-api.self-test.ts src/acquisition/task-creation-controller.ts src/acquisition/task-creation-controller.self-test.ts src/acquisition/runtime-api.ts src/acquisition/runtime-api.self-test.ts src/acquisition/detail-center-api.ts src/acquisition/detail-center-api.self-test.ts src/acquisition/detail-center-controller.ts src/acquisition/detail-center-controller.self-test.ts src/acquisition/detail-center-view.ts src/acquisition/detail-center-view.self-test.ts src/acquisition/runtime-presenter.ts src/acquisition/runtime-presenter.self-test.ts src/replica-dashboard.css
   git commit -m "feat: show douyin acquisition automation"
   ```
 
