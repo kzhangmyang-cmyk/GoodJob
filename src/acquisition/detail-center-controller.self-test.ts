@@ -2492,6 +2492,96 @@ function automaticIntelligenceOperation(
   controller.destroy();
 }
 
+for (const scenario of [{
+  label: "empty-candidate-page",
+  candidateEvents: []
+}, {
+  label: "different-candidate-page",
+  candidateEvents: [{
+    eventId: "comment-event-other-candidate",
+    candidateId: "candidate-other-page"
+  }]
+}]) {
+  const root = new FakeDialogRoot(null);
+  const body = { innerHTML: "" };
+  const evidenceId = `evidence-comment-${scenario.label}`;
+  const evidenceSnippet = `分页外评论公开证据-${scenario.label}`;
+  const api = {
+    async getTask() {
+      return {
+        ...taskDetail,
+        latestRun: { id: `run-${scenario.label}`, status: "succeeded", evidenceCount: 1 },
+        presentation: {
+          candidateEvents: scenario.candidateEvents,
+          commentSignals: [{
+            eventId: `comment-signal-${scenario.label}`,
+            candidateId: "candidate-comment-pagination",
+            displayName: "评论公开主体",
+            text: "想了解企业获客方案",
+            intentBand: "strong_signal",
+            reasons: ["明确询价"],
+            confidence: 0.9,
+            identityStatus: "needs_research"
+          }],
+          providers: [],
+          summary: {},
+          hasMore: false,
+          nextAfter: null
+        }
+      };
+    },
+    async getCandidate() {
+      return {
+        candidate: {
+          id: "candidate-comment-pagination",
+          displayName: "评论公开主体",
+          status: "pending_review",
+          subjectKind: "individual",
+          sourcePlatform: "douyin",
+          identityResolved: false
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() {
+      return {
+        items: [{
+          id: evidenceId,
+          sourceTitle: "抖音公开评论",
+          sourcePlatform: "douyin",
+          sourceSnippet: evidenceSnippet,
+          fetchedAt: "2026-08-15T10:00:00.000Z"
+        }],
+        nextCursor: null
+      };
+    },
+    async getCandidateQualification() { return null; },
+    async getCandidateFinancialValue() { return null; },
+    async getCandidateBattleCard() { return null; },
+    async getCandidateReviews() { return { items: [], nextCursor: null }; },
+    async getLatestIntelligenceOperation() { return null; }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    root: root as unknown as HTMLElement,
+    body: body as unknown as HTMLElement
+  });
+  await controller.open("plan", "plan-1");
+  assert.match(body.innerHTML, /高潜需求信号 · 评论公开主体/);
+  root.emitClick(fakeAction({
+    acquisitionDetailAction: "select-candidate",
+    candidateId: "candidate-comment-pagination"
+  }));
+  await controller.whenIdle();
+  assert.equal(controller.getState().mode, "candidates");
+  assert.equal(controller.getState().selectedCandidateId, "candidate-comment-pagination");
+  assert.match(body.innerHTML, new RegExp(evidenceSnippet));
+  assert.match(body.innerHTML, new RegExp(evidenceId));
+  assert.match(body.innerHTML, /当前候选来自抖音公开内容/);
+  assert.doesNotMatch(body.innerHTML, /comment-event-comment-pagination/);
+  controller.destroy();
+}
+
 {
   const eventTarget = new EventTarget();
   const requestedPlanIds: string[] = [];

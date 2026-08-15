@@ -767,6 +767,7 @@ function renderEvidenceDetail(items: DataRecord[]): string {
       <div><strong>${escapeHtml(textValue(item.sourceTitle, "公开来源"))}</strong><span>${escapeHtml(textValue(item.sourcePlatform, "公开网页"))}</span></div>
       <p>${escapeHtml(textValue(item.sourceSnippet, "来源未提供摘要"))}</p>
       <small>${escapeHtml(textValue(item.publishedAt, textValue(item.fetchedAt, "时间未知")))}</small>
+      ${textValue(item.id) ? `<small>证据 ID：${escapeHtml(textValue(item.id))}</small>` : ""}
     </li>
   `).join("")}</ol>`;
 }
@@ -1202,7 +1203,8 @@ function renderCandidateDetail(
   detail: AcquisitionCandidateDetail | null,
   identityVerification?: AcquisitionIdentityVerificationState | null
 ): string {
-  if (!event) {
+  const candidate = detail?.candidate ?? record(event?.candidate);
+  if (candidate === null) {
     return `
       <div class="replica-acquisition-detail-state">
         <strong>请选择一个候选</strong>
@@ -1210,16 +1212,16 @@ function renderCandidateDetail(
       </div>
     `;
   }
-  const candidate = record(event.candidate) ?? {};
-  const candidateSnapshot = detail?.candidate ?? candidate;
+  const candidateId = candidateEventId(event ?? {}) || textValue(candidate.id);
+  const candidateSnapshot = candidate;
   const qualification = detail
     ? detail.qualification
-    : record(event.qualification);
+    : record(event?.qualification);
   const financial = detail
     ? detail.financialValue
-    : record(event.financialValue);
+    : record(event?.financialValue);
   return `
-    <article class="replica-acquisition-selected-candidate" data-selected-candidate-id="${escapeHtml(candidateEventId(event))}">
+    <article class="replica-acquisition-selected-candidate" data-selected-candidate-id="${escapeHtml(candidateId)}">
       <header>
         <div><span>${candidateSubjectLabel(candidate.subjectKind)}</span><h4>${escapeHtml(textValue(candidate.displayName, textValue(candidate.publicDisplayName, "未命名候选")))}</h4></div>
         <strong>${qualification ? `意向等级 ${escapeHtml(textValue(qualification.grade))}` : "意向待评估"}</strong>
@@ -1330,6 +1332,13 @@ function renderCandidatePanel(state: AcquisitionDetailCenterState): string {
   const runStatus = textValue(latestRun.status, "queued");
   const active = ACTIVE_RUN_STATUSES.has(runStatus);
   const paused = runStatus === "paused";
+  const selectedInspector = state.selectedCandidateId && state.candidateDetail
+    ? `<div class="replica-acquisition-candidate-inspector">${renderCandidateDetail(
+      undefined,
+      state.candidateDetail,
+      state.identityVerification
+    )}</div>`
+    : "";
   if (events.length === 0) {
     const evidenceCount = finiteNumber(latestRun.evidenceCount);
     const emptyTitle = active
@@ -1349,6 +1358,7 @@ function renderCandidatePanel(state: AcquisitionDetailCenterState): string {
           <strong>${emptyTitle}</strong>
           <span>已发现 ${evidenceCount} 条公开证据${emptyDetail}</span>
         </div>
+        ${selectedInspector}
       </section>
     `;
   }
