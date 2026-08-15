@@ -49,4 +49,3 @@ Fresh final verification in the frontend worktree:
 - isolated rendered document width at 1440, 1024, and 768 pixels: equal to the viewport, with no horizontal overflow.
 
 No real Douyin request or real visual-reader session was created during this task. The live local backend had no seeded acquisition task suitable for authorization; the visual check used an isolated server-session fixture and did not persist data.
-
