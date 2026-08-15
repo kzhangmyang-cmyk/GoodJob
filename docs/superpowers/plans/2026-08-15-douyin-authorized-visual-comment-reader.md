@@ -209,9 +209,9 @@ export interface AcquisitionVisualReaderRepository {
 - MySQL 表固定为 `acquisition_visual_reader_sessions`、`acquisition_visual_comment_observations`、`acquisition_visual_reader_artifacts`。
 - 所有主键/唯一键含 `owner_id + team_id`；观察幂等键为 `ownerId + teamId + sessionId + sourceUrl + viewportHash + cardBoundsHash + textHash`。
 - schema migration 使用共享 acquisition MySQL named-lock 生命周期；lock acquisition 或 release 失败的连接必须 destroy，不能回池。append/complete/get 的 transaction rollback 失败也必须 destroy，只有确定可复用的连接才 release。
-- 所有 repository public 方法共用 closed scope/identifier/batch/outcome/session validators。规范观察按 Task 1 normalized schema 逐字段 fail-closed 校验顶层、`fieldConfidences` 和 `cardBounds`；`sourceUrl-videoId` 与 `publicProfileUrl-secUid` 的动态 sibling 相等仍由 Task 3 service 负责。
+- 所有 repository public 方法共用 closed scope/identifier/batch/outcome/session/artifact/expiry validators。显式 `artifact` 属性必须是精确闭合制品对象，`null`/`false`/`undefined` 和 URL、路径、ciphertext、IV、tag、key 等未知字段一律稳定拒绝；到期删除只接受 `{ before, limit }`。规范观察按 Task 1 normalized schema 逐字段 fail-closed 校验顶层、`fieldConfidences` 和 `cardBounds`，所有 JSON Schema `maxLength` 按 Unicode code point 计数；`sourceUrl-videoId` 与 `publicProfileUrl-secUid` 的动态 sibling 相等仍由 Task 3 service 负责。
 - 内部制品输入同时携带明文 `Buffer`、`sha256` 和精确 `byteLength`，repository 在加密前独立重算并校验三者一致。
-- 为保持固定三表，scoped `clientObservationKey` 的首次不可变绑定保存在加锁 session 行的 `client_bindings_json`；观察表只保存规范不可变观察，绑定、观察和用量在同一事务提交。
+- 为保持固定三表，scoped `clientObservationKey` 的首次不可变绑定保存在加锁 session 行的 `client_bindings_json`；每个 session 最多 1000 个绑定，canonical JSON 的 UTF-8 字节数最多 262144。新绑定在任何状态/SQL 写入前整批校验，超限稳定返回 `VISUAL_READER_BUDGET_EXHAUSTED`并不改变用量、观察或已有绑定；精确 replay 在上限处仍可用。
 - MySQL JSON 行从 `unknown` 解析，并交叉校验 scope、session/status/run/client key、所有 denormalized hash/date 列、envelope 版本和 binary view；矛盾行只返回稳定 integrity error。
 - 任一 `getSession`、append 或 complete 首次触达到期都原子持久化 `expired`，`updatedAt/completedAt` 固定为 `expiresAt`；错误响应不能回滚该 transition，后续时钟回退也不能复活会话。
 - 新接受的每条 OCR observation 至少派生一次 OCR call 消耗；调用方报告更高消耗时取较高值，duplicate replay 不重复计费，`maxOcrCalls = 0` 拒绝 OCR observation。
@@ -231,7 +231,7 @@ export interface AcquisitionVisualReaderRepository {
 
 - [x] **Step 3: 实现内存 repository，再写 MySQL RED 测试**
 
-  MySQL 测试覆盖唯一索引竞争、事务内批量观察+加密制品一致提交、所有 `ArrayBufferView` SQL value 都不含明文 WebP、滚回不留孤立 BLOB、named-lock/transaction poisoned connection、矛盾行 fail-closed、持久到期、OCR 计费、租户条件和 memory/MySQL 合同行为一致。存在 `MYSQL_TEST_ADMIN_URL` 时创建并清理随机隔离数据库，运行真实 memory/MySQL 合同矩阵；缺少变量时明确 conditional skip。
+  MySQL 测试覆盖唯一索引竞争、事务内批量观察+加密制品一致提交、所有 `ArrayBufferView` SQL value 都不含明文 WebP、滚回不留孤立 BLOB、named-lock/transaction poisoned connection、矛盾行 fail-closed、绑定 count/UTF-8 双上限、持久到期、OCR 计费、租户条件和 memory/MySQL 合同行为一致。存在 `MYSQL_TEST_ADMIN_URL` 时创建并清理随机隔离数据库，运行真实 memory/MySQL 合同矩阵；pool 关闭或 DROP 失败也必须继续后续清理。缺少变量时明确 conditional skip。
 
 - [x] **Step 4: 实现 MySQL repository 和 application 注入**
 

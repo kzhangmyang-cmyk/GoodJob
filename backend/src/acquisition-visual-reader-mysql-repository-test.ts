@@ -412,6 +412,58 @@ test("memory and MySQL public methods share scope and identifier validation", as
   }
 });
 
+test("memory and MySQL reject explicit or open artifact and expiry inputs", async () => {
+  const invalidArtifacts: Array<{ name: string; value: unknown }> = [
+    { name: "null", value: null },
+    { name: "false", value: false },
+    { name: "undefined", value: undefined },
+    { name: "string", value: "artifact" },
+    ...["url", "path", "ciphertext", "iv", "tag", "key"].map((field) => ({
+      name: `additional ${field}`,
+      value: { ...artifact("closed-artifact"), [field]: "secret-or-location" }
+    }))
+  ];
+
+  for (const repo of repositoryMatrix()) {
+    await repo.createSession(createInput());
+    for (const { name, value } of invalidArtifacts) {
+      await assert.rejects(
+        repo.appendObservationBatch({
+          scope: SCOPE,
+          sessionId: "mysql-visual-session",
+          observations: [{
+            clientObservationKey: `invalid-artifact-${name.replaceAll(" ", "-")}`,
+            observation: observation("closed-artifact"),
+            artifact: value
+          }]
+        } as never),
+        hasRepositoryCode("VISUAL_READER_ARTIFACT_INVALID"),
+        `${repo.constructor.name}: ${name}`
+      );
+    }
+
+    await assert.rejects(
+      repo.deleteExpiredArtifacts({
+        before: START,
+        limit: 1,
+        extra: true
+      } as never),
+      hasRepositoryCode("VISUAL_READER_INVALID_INPUT"),
+      `${repo.constructor.name}: additional expiry property`
+    );
+
+    const accepted = await repo.appendObservationBatch({
+      scope: SCOPE,
+      sessionId: "mysql-visual-session",
+      observations: [{
+        clientObservationKey: "artifact-property-absent",
+        observation: observation("artifact-property-absent")
+      }]
+    });
+    assert.equal(accepted.accepted.length, 1);
+  }
+});
+
 test("memory and MySQL reject malformed terminal outcomes before mutation", async () => {
   const base: VisualReaderOutcome = {
     status: "completed",
@@ -670,6 +722,175 @@ test("memory and MySQL derive OCR calls from newly accepted OCR observations", a
       SCOPE,
       "mysql-visual-session"
     ))?.usage.ocrCallCount, 1);
+  }
+});
+
+test("memory and MySQL cap client bindings atomically while preserving replay", async () => {
+  for (const repo of repositoryMatrix()) {
+    await repo.createSession(createInput());
+    const seed = observation("binding-seed");
+    await repo.appendObservationBatch({
+      scope: SCOPE,
+      sessionId: "mysql-visual-session",
+      observations: [{ clientObservationKey: "binding-seed", observation: seed }]
+    });
+
+    const alias = (index: number) => ({
+      clientObservationKey: `binding-alias-${index.toString().padStart(4, "0")}`,
+      observation: observation(`binding-alias-${index.toString().padStart(4, "0")}`, {
+        visibleText: seed.visibleText,
+        textHash: seed.textHash,
+        viewportHash: seed.viewportHash,
+        cardBounds: seed.cardBounds
+      })
+    });
+    for (let batch = 0; batch < 49; batch += 1) {
+      const start = batch * 20;
+      const result = await repo.appendObservationBatch({
+        scope: SCOPE,
+        sessionId: "mysql-visual-session",
+        observations: Array.from({ length: 20 }, (_, offset) =>
+          alias(start + offset))
+      });
+      assert.equal(result.accepted.length, 0);
+      assert.equal(result.duplicates.length, 20);
+    }
+    await repo.appendObservationBatch({
+      scope: SCOPE,
+      sessionId: "mysql-visual-session",
+      observations: Array.from({ length: 19 }, (_, offset) =>
+        alias(980 + offset))
+    });
+
+    const before = await repo.getSession(SCOPE, "mysql-visual-session");
+    for (let batch = 0; batch < 100; batch += 1) {
+      const start = 2_000 + batch * 20;
+      await assert.rejects(repo.appendObservationBatch({
+        scope: SCOPE,
+        sessionId: "mysql-visual-session",
+        observations: Array.from({ length: 20 }, (_, offset) =>
+          alias(start + offset))
+      }), hasRepositoryCode("VISUAL_READER_BUDGET_EXHAUSTED"));
+    }
+    assert.deepEqual(
+      await repo.getSession(SCOPE, "mysql-visual-session"),
+      before,
+      `${repo.constructor.name}: rejected aliases must roll back session state`
+    );
+    assert.equal((await repo.listRunObservations(
+      SCOPE,
+      "mysql-visual-run",
+      { limit: 20 }
+    )).length, 1);
+
+    const replay = await repo.appendObservationBatch({
+      scope: SCOPE,
+      sessionId: "mysql-visual-session",
+      observations: [{
+        clientObservationKey: "binding-seed",
+        observation: structuredClone(seed)
+      }]
+    });
+    assert.deepEqual(replay, { accepted: [], duplicates: ["binding-seed"] });
+  }
+});
+
+test("memory and MySQL enforce the canonical client-binding byte budget", async () => {
+  for (const repo of repositoryMatrix()) {
+    await repo.createSession(createInput());
+    const seed = observation("byte-binding-seed");
+    await repo.appendObservationBatch({
+      scope: SCOPE,
+      sessionId: "mysql-visual-session",
+      observations: [{
+        clientObservationKey: "byte-binding-seed",
+        observation: seed
+      }]
+    });
+
+    let successfulAliases = 0;
+    let rejectedState: Awaited<ReturnType<typeof repo.getSession>> | null = null;
+    for (let batch = 0; batch < 50; batch += 1) {
+      const items = Array.from({ length: 20 }, (_, offset) => {
+        const index = batch * 20 + offset;
+        const prefix = `binding_${index.toString().padStart(4, "0")}_`;
+        return {
+          clientObservationKey: prefix + "x".repeat(160 - prefix.length),
+          observation: observation(`byte-binding-alias-${index}`, {
+            visibleText: seed.visibleText,
+            textHash: seed.textHash,
+            viewportHash: seed.viewportHash,
+            cardBounds: seed.cardBounds
+          })
+        };
+      });
+      const before = await repo.getSession(SCOPE, "mysql-visual-session");
+      try {
+        await repo.appendObservationBatch({
+          scope: SCOPE,
+          sessionId: "mysql-visual-session",
+          observations: items
+        });
+        successfulAliases += items.length;
+      } catch (error) {
+        assert.ok(hasRepositoryCode("VISUAL_READER_BUDGET_EXHAUSTED")(error));
+        rejectedState = before;
+        assert.deepEqual(
+          await repo.getSession(SCOPE, "mysql-visual-session"),
+          before,
+          `${repo.constructor.name}: byte rejection must roll back`
+        );
+        break;
+      }
+    }
+    assert.ok(rejectedState, `${repo.constructor.name}: byte cap must reject`);
+    assert.ok(successfulAliases < 999,
+      `${repo.constructor.name}: byte cap must bind before count cap`);
+    assert.deepEqual(await repo.appendObservationBatch({
+      scope: SCOPE,
+      sessionId: "mysql-visual-session",
+      observations: [{
+        clientObservationKey: "byte-binding-seed",
+        observation: structuredClone(seed)
+      }]
+    }), { accepted: [], duplicates: ["byte-binding-seed"] });
+  }
+});
+
+test("visual MySQL bounds raw and driver-object bindings before use", async () => {
+  for (const storedBindings of [
+    `{${" ".repeat(262_144)}}`,
+    Buffer.from(`{${" ".repeat(262_144)}}`, "utf8"),
+    Object.fromEntries(Array.from({ length: 1_001 }, (_, index) => [
+      `binding_${index.toString().padStart(4, "0")}`,
+      { inputHash: "a".repeat(64), observationId: "observation" }
+    ])),
+    Object.fromEntries(Array.from({ length: 1_000 }, (_, index) => {
+      const keyPrefix = `binding_${index.toString().padStart(4, "0")}_`;
+      const observationPrefix = `observation_${index.toString().padStart(4, "0")}_`;
+      return [
+        keyPrefix + "k".repeat(160 - keyPrefix.length),
+        {
+          inputHash: "a".repeat(64),
+          observationId: observationPrefix
+            + "o".repeat(160 - observationPrefix.length)
+        }
+      ];
+    }))
+  ]) {
+    const pool = new StatefulVisualMysqlPool();
+    const repo = new MysqlAcquisitionVisualReaderRepository(
+      pool as unknown as mysql.Pool,
+      { masterSecret: SECRET, now: () => START }
+    );
+    await repo.createSession(createInput());
+    const row = [...pool.state.sessions.values()][0];
+    assert.ok(row);
+    row.client_bindings_json = storedBindings;
+    await assert.rejects(
+      repo.getSession(SCOPE, "mysql-visual-session"),
+      /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+    );
   }
 });
 
@@ -1001,6 +1222,50 @@ for (const firstTouch of ["get", "append", "complete"] as const) {
   });
 }
 
+async function cleanupIsolatedVisualMysql(input: {
+  endPool: () => Promise<unknown>;
+  dropDatabase: () => Promise<unknown>;
+  endAdmin: () => Promise<unknown>;
+}) {
+  try {
+    await input.endPool();
+  } finally {
+    try {
+      await input.dropDatabase();
+    } finally {
+      await input.endAdmin();
+    }
+  }
+}
+
+test("visual live MySQL cleanup always reaches database and admin teardown", async () => {
+  const poolFailureCalls: string[] = [];
+  await assert.rejects(cleanupIsolatedVisualMysql({
+    endPool: async () => {
+      poolFailureCalls.push("pool.end");
+      throw new Error("pool close failed");
+    },
+    dropDatabase: async () => { poolFailureCalls.push("drop database"); },
+    endAdmin: async () => { poolFailureCalls.push("admin.end"); }
+  }), /pool close failed/u);
+  assert.deepEqual(poolFailureCalls, [
+    "pool.end", "drop database", "admin.end"
+  ]);
+
+  const dropFailureCalls: string[] = [];
+  await assert.rejects(cleanupIsolatedVisualMysql({
+    endPool: async () => { dropFailureCalls.push("pool.end"); },
+    dropDatabase: async () => {
+      dropFailureCalls.push("drop database");
+      throw new Error("drop database failed");
+    },
+    endAdmin: async () => { dropFailureCalls.push("admin.end"); }
+  }), /drop database failed/u);
+  assert.deepEqual(dropFailureCalls, [
+    "pool.end", "drop database", "admin.end"
+  ]);
+});
+
 async function withIsolatedVisualMysql(
   work: (pool: mysql.Pool) => Promise<void>
 ) {
@@ -1034,10 +1299,13 @@ async function withIsolatedVisualMysql(
     await ensureAcquisitionVisualReaderMysqlSchema(pool);
     await work(pool);
   } finally {
-    await pool?.end();
-    await admin.query(`DROP DATABASE IF EXISTS \`${databaseName}\``)
-      .catch(() => undefined);
-    await admin.end();
+    await cleanupIsolatedVisualMysql({
+      endPool: async () => { await pool?.end(); },
+      dropDatabase: async () => {
+        await admin.query(`DROP DATABASE IF EXISTS \`${databaseName}\``);
+      },
+      endAdmin: async () => { await admin.end(); }
+    });
   }
 }
 

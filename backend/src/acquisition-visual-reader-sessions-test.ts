@@ -268,6 +268,39 @@ test("normalized visual observations enforce every closed Task 1 field constrain
   }, "visual-session-1"));
 });
 
+test("normalized visual string maxLength counts Unicode code points", () => {
+  const base = observation("unicode-length");
+  const withText = (visibleText: string) => ({
+    ...base,
+    visibleText,
+    textHash: digest(visibleText)
+  });
+  for (const valid of [
+    withText("😀".repeat(1_500)),
+    withText("x".repeat(2_000)),
+    { ...base, displayName: "😀".repeat(255) },
+    { ...base, visibleTimeText: "😀".repeat(255) },
+    { ...base, readerVersion: "😀".repeat(100) }
+  ]) {
+    assert.doesNotThrow(() => assertVisualCommentObservation(
+      valid,
+      "visual-session-1"
+    ));
+  }
+  for (const invalid of [
+    withText("😀".repeat(2_001)),
+    withText("x".repeat(2_001)),
+    { ...base, displayName: "😀".repeat(256) },
+    { ...base, visibleTimeText: "😀".repeat(256) },
+    { ...base, readerVersion: "😀".repeat(101) }
+  ]) {
+    assert.throws(
+      () => assertVisualCommentObservation(invalid, "visual-session-1"),
+      hasCode("VISUAL_READER_INVALID_INPUT")
+    );
+  }
+});
+
 test("memory repository creates an exact scoped replay and isolates tenants", async () => {
   const repo = repository();
   const created = await repo.createSession(createInput());

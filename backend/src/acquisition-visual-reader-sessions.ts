@@ -282,6 +282,11 @@ const CONFIDENCE_KEYS = [
   "platformCommentId", "publicProfileUrl", "secUid"
 ] as const;
 const CARD_BOUNDS_KEYS = ["x", "y", "width", "height"] as const;
+const ARTIFACT_INPUT_KEYS = [
+  "artifactId", "observationId", "mediaType", "plaintext", "plaintextHash",
+  "byteLength", "width", "height", "maskedRegionCount", "createdAt",
+  "expiresAt"
+] as const;
 const LIMIT_KEYS = [
   "maxVideos", "maxCommentsPerVideo", "maxScrolls", "maxOcrCalls",
   "maxDurationMs"
@@ -320,6 +325,14 @@ const TERMINAL_STATUSES = new Set<VisualReaderSession["status"]>([
   "expired"
 ]);
 
+export const ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS = 1_000;
+export const ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES = 262_144;
+
+export interface AcquisitionVisualReaderClientBinding {
+  inputHash: string;
+  observationId: string;
+}
+
 function fail(code: AcquisitionVisualReaderRepositoryErrorCode): never {
   throw new AcquisitionVisualReaderRepositoryError(code);
 }
@@ -352,10 +365,41 @@ function clientKey(
   return `${scopeKey(scope)}\u0000${sessionId}\u0000${key}`;
 }
 
+function sessionClientBindings(
+  clientKeys: MemoryState["clientKeys"],
+  scope: AcquisitionScope,
+  sessionId: string
+) {
+  const prefix = clientKey(scope, sessionId, "");
+  const bindings = new Map<string, AcquisitionVisualReaderClientBinding>();
+  for (const [key, binding] of clientKeys) {
+    if (key.startsWith(prefix)) bindings.set(key.slice(prefix.length), binding);
+  }
+  return bindings;
+}
+
 function canonical(value: unknown) {
   const result = canonicalJsonStringify(value);
   if (typeof result !== "string") fail("VISUAL_READER_INVALID_INPUT");
   return result;
+}
+
+export function serializeAcquisitionVisualReaderClientBindings(
+  bindings: Map<string, AcquisitionVisualReaderClientBinding>
+) {
+  return canonical(Object.fromEntries(bindings));
+}
+
+export function assertAcquisitionVisualReaderClientBindingsBudget(
+  bindings: Map<string, AcquisitionVisualReaderClientBinding>
+) {
+  const serialized = serializeAcquisitionVisualReaderClientBindings(bindings);
+  if (bindings.size > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS
+    || Buffer.byteLength(serialized, "utf8")
+      > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES) {
+    fail("VISUAL_READER_BUDGET_EXHAUSTED");
+  }
+  return serialized;
 }
 
 function hashCanonical(value: unknown) {
@@ -420,11 +464,15 @@ function recordWithKeys(
     && actual.every((key) => allowed.has(key));
 }
 
+export function unicodeCodePointLength(value: string) {
+  return Array.from(value).length;
+}
+
 function nullableVisibleString(value: unknown) {
   return value === null
     || (typeof value === "string"
-      && value.length >= 1
-      && value.length <= 255
+      && unicodeCodePointLength(value) >= 1
+      && unicodeCodePointLength(value) <= 255
       && /\S/u.test(value));
 }
 
@@ -503,8 +551,8 @@ export function assertAppendVisualObservationBatchInput(
     || input.observations.length < 1
     || input.observations.length > 20
     || input.observations.filter((item) =>
-      item && typeof item === "object" && "artifact" in item
-      && item.artifact !== undefined).length > 5) {
+      item && typeof item === "object" && Object.hasOwn(item, "artifact")
+    ).length > 5) {
     fail("VISUAL_READER_INVALID_INPUT");
   }
   for (const item of input.observations) {
@@ -514,6 +562,10 @@ export function assertAppendVisualObservationBatchInput(
       ["artifact"]
     )) fail("VISUAL_READER_INVALID_INPUT");
     assertVisualReaderIdentifier(item.clientObservationKey);
+    if (Object.hasOwn(item, "artifact")
+      && !recordWithKeys(item.artifact, ARTIFACT_INPUT_KEYS)) {
+      fail("VISUAL_READER_ARTIFACT_INVALID");
+    }
   }
   const usageDelta = input.usageDelta ?? { scrollCount: 0, ocrCallCount: 0 };
   if (!recordWithKeys(usageDelta, ["scrollCount", "ocrCallCount"])
@@ -547,13 +599,13 @@ function validateObservation(
     || !validIdentifier(observation.observationId)
     || !validIdentifier(observation.sessionId)
     || typeof observation.sourceUrl !== "string"
-    || observation.sourceUrl.length > 80
+    || unicodeCodePointLength(observation.sourceUrl) > 80
     || !DOUYIN_VIDEO_URL.test(observation.sourceUrl)
     || typeof observation.videoId !== "string"
     || !DOUYIN_VIDEO_ID.test(observation.videoId)
     || typeof observation.visibleText !== "string"
-    || observation.visibleText.length < 1
-    || observation.visibleText.length > 2_000
+    || unicodeCodePointLength(observation.visibleText) < 1
+    || unicodeCodePointLength(observation.visibleText) > 2_000
     || !/\S/u.test(observation.visibleText)
     || !DIGEST.test(observation.textHash)
     || !nullableVisibleString(observation.displayName)
@@ -565,7 +617,7 @@ function validateObservation(
         || !DOUYIN_VIDEO_ID.test(observation.platformCommentId)))
     || (observation.publicProfileUrl !== null
       && (typeof observation.publicProfileUrl !== "string"
-        || observation.publicProfileUrl.length > 170
+        || unicodeCodePointLength(observation.publicProfileUrl) > 170
         || !DOUYIN_PROFILE_URL.test(observation.publicProfileUrl)))
     || (observation.secUid !== null
       && (typeof observation.secUid !== "string"
@@ -586,8 +638,8 @@ function validateObservation(
     || observation.fieldConfidences.visibleText < 0
     || observation.fieldConfidences.visibleText > 1
     || typeof observation.readerVersion !== "string"
-    || observation.readerVersion.length < 1
-    || observation.readerVersion.length > 100
+    || unicodeCodePointLength(observation.readerVersion) < 1
+    || unicodeCodePointLength(observation.readerVersion) > 100
     || !/\S/u.test(observation.readerVersion)
     || !recordWithKeys(observation.cardBounds, CARD_BOUNDS_KEYS)) {
     fail("VISUAL_READER_INVALID_INPUT");
@@ -624,35 +676,39 @@ export function assertVisualCommentObservation(
 }
 
 function validateArtifact(
-  artifact: VisualReaderArtifactInput,
+  artifact: unknown,
   observation: DouyinVisualCommentObservationV1,
   session: VisualReaderSession
-) {
-  if (!session.artifactUploadEnabled
-    || !validIdentifier(artifact.artifactId)
-    || artifact.observationId !== observation.observationId
-    || artifact.mediaType !== "image/webp"
-    || !Buffer.isBuffer(artifact.plaintext)
-    || artifact.plaintext.byteLength < 1
-    || artifact.plaintext.byteLength > 262_144
-    || artifact.byteLength !== artifact.plaintext.byteLength
-    || !DIGEST.test(artifact.plaintextHash)
-    || observation.redactedCropHash !== artifact.plaintextHash
-    || `sha256:${createHash("sha256").update(artifact.plaintext)
-      .digest("hex")}` !== artifact.plaintextHash
-    || !Number.isSafeInteger(artifact.width)
-    || artifact.width < 1
-    || artifact.width > 8_192
-    || !Number.isSafeInteger(artifact.height)
-    || artifact.height < 1
-    || artifact.height > 8_192
-    || !Number.isSafeInteger(artifact.maskedRegionCount)
-    || artifact.maskedRegionCount < 1
-    || artifact.maskedRegionCount > 100) {
+): asserts artifact is VisualReaderArtifactInput {
+  if (!recordWithKeys(artifact, ARTIFACT_INPUT_KEYS)) {
     fail("VISUAL_READER_ARTIFACT_INVALID");
   }
-  const createdAt = isoInstant(artifact.createdAt);
-  const expiresAt = isoInstant(artifact.expiresAt);
+  const input = artifact as unknown as VisualReaderArtifactInput;
+  if (!session.artifactUploadEnabled
+    || !validIdentifier(input.artifactId)
+    || input.observationId !== observation.observationId
+    || input.mediaType !== "image/webp"
+    || !Buffer.isBuffer(input.plaintext)
+    || input.plaintext.byteLength < 1
+    || input.plaintext.byteLength > 262_144
+    || input.byteLength !== input.plaintext.byteLength
+    || !DIGEST.test(input.plaintextHash)
+    || observation.redactedCropHash !== input.plaintextHash
+    || `sha256:${createHash("sha256").update(input.plaintext)
+      .digest("hex")}` !== input.plaintextHash
+    || !Number.isSafeInteger(input.width)
+    || input.width < 1
+    || input.width > 8_192
+    || !Number.isSafeInteger(input.height)
+    || input.height < 1
+    || input.height > 8_192
+    || !Number.isSafeInteger(input.maskedRegionCount)
+    || input.maskedRegionCount < 1
+    || input.maskedRegionCount > 100) {
+    fail("VISUAL_READER_ARTIFACT_INVALID");
+  }
+  const createdAt = isoInstant(input.createdAt);
+  const expiresAt = isoInstant(input.expiresAt);
   if (expiresAt <= createdAt
     || expiresAt - createdAt > 30 * 24 * 60 * 60_000) {
     fail("VISUAL_READER_ARTIFACT_INVALID");
@@ -660,11 +716,23 @@ function validateArtifact(
 }
 
 export function assertVisualReaderArtifactInput(
-  artifact: VisualReaderArtifactInput,
+  artifact: unknown,
   observation: DouyinVisualCommentObservationV1,
   session: VisualReaderSession
 ) {
   validateArtifact(artifact, observation, session);
+}
+
+export function assertDeleteExpiredVisualArtifactsInput(
+  input: unknown
+): asserts input is { before: string; limit: number } {
+  if (!recordWithKeys(input, ["before", "limit"])
+    || !Number.isSafeInteger(input.limit)
+    || (input.limit as number) < 1
+    || (input.limit as number) > 100) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+  isoInstant(input.before as string);
 }
 
 function lowConfidence(observation: DouyinVisualCommentObservationV1) {
@@ -1102,6 +1170,10 @@ implements AcquisitionVisualReaderRepository {
         accepted.push(clone(item.observation));
       }
 
+      assertAcquisitionVisualReaderClientBindingsBudget(
+        sessionClientBindings(clientKeys, input.scope, input.sessionId)
+      );
+
       if (accepted.length === 0) {
         this.state = { ...this.state, clientKeys };
         return { accepted: [], duplicates };
@@ -1277,12 +1349,8 @@ implements AcquisitionVisualReaderRepository {
 
   deleteExpiredArtifacts(input: { before: string; limit: number }) {
     return this.mutate(() => {
-      const before = isoInstant(input.before);
-      if (!Number.isSafeInteger(input.limit)
-        || input.limit < 1
-        || input.limit > 100) {
-        fail("VISUAL_READER_INVALID_INPUT");
-      }
+      assertDeleteExpiredVisualArtifactsInput(input);
+      const before = Date.parse(input.before);
       const expired = [...this.state.artifacts.entries()]
         .filter(([, item]) => Date.parse(item.expiresAt) <= before)
         .sort((left, right) =>

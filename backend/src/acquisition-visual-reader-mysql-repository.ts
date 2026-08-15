@@ -16,9 +16,13 @@ import {
   releaseAcquisitionMysqlNamedLocks
 } from "./acquisition-mysql-named-lock.js";
 import {
+  ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS,
+  ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES,
   AcquisitionVisualReaderRepositoryError,
+  assertAcquisitionVisualReaderClientBindingsBudget,
   assertAppendVisualObservationBatchInput,
   assertCreateVisualReaderSessionInput,
+  assertDeleteExpiredVisualArtifactsInput,
   assertVisualCommentObservation,
   assertVisualReaderArtifactInput,
   assertVisualReaderIdentifier,
@@ -33,7 +37,9 @@ import {
   visualObservationIsLowConfidence,
   visualReaderExpiredProjection,
   visualReaderSessionIsActiveAt,
+  serializeAcquisitionVisualReaderClientBindings,
   type AcquisitionScope,
+  type AcquisitionVisualReaderClientBinding,
   type AcquisitionVisualReaderRepository,
   type AppendVisualObservationBatchInput,
   type CreateVisualReaderSessionInput,
@@ -267,40 +273,50 @@ function parseSession(
   }
 }
 
-interface ClientBinding {
-  inputHash: string;
-  observationId: string;
-}
-
 function parseBindings(row: MysqlRow) {
   try {
-    const value = jsonObject(row.client_bindings_json);
-    const bindings = new Map<string, ClientBinding>();
-    for (const [key, candidate] of Object.entries(value)) {
+    const raw = row.client_bindings_json;
+    if ((typeof raw === "string"
+        && Buffer.byteLength(raw, "utf8")
+          > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES)
+      || (Buffer.isBuffer(raw)
+        && raw.byteLength
+          > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES)) {
+      integrity();
+    }
+    const value = jsonObject(raw);
+    const entries = Object.entries(value);
+    if (entries.length > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS) {
+      integrity();
+    }
+    const bindings = new Map<string, AcquisitionVisualReaderClientBinding>();
+    for (const [key, candidate] of entries) {
       assertVisualReaderIdentifier(key);
       if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
         || Object.keys(candidate).length !== 2
         || !Object.hasOwn(candidate, "inputHash")
         || !Object.hasOwn(candidate, "observationId")
-        || typeof (candidate as ClientBinding).inputHash !== "string"
-        || !/^[0-9a-f]{64}$/u.test((candidate as ClientBinding).inputHash)
-        || typeof (candidate as ClientBinding).observationId !== "string") {
+        || typeof (candidate as AcquisitionVisualReaderClientBinding)
+          .inputHash !== "string"
+        || !/^[0-9a-f]{64}$/u.test(
+          (candidate as AcquisitionVisualReaderClientBinding).inputHash)
+        || typeof (candidate as AcquisitionVisualReaderClientBinding)
+          .observationId !== "string") {
         integrity();
       }
-      assertVisualReaderIdentifier((candidate as ClientBinding).observationId);
-      bindings.set(key, structuredClone(candidate as ClientBinding));
+      assertVisualReaderIdentifier(
+        (candidate as AcquisitionVisualReaderClientBinding).observationId);
+      bindings.set(key, structuredClone(
+        candidate as AcquisitionVisualReaderClientBinding));
     }
+    if (Buffer.byteLength(
+      serializeAcquisitionVisualReaderClientBindings(bindings),
+      "utf8"
+    ) > ACQUISITION_VISUAL_READER_MAX_CLIENT_BINDINGS_BYTES) integrity();
     return bindings;
   } catch {
     integrity();
   }
-}
-
-function serializeBindings(bindings: Map<string, ClientBinding>) {
-  return JSON.stringify(Object.fromEntries(
-    [...bindings.entries()].sort(([left], [right]) =>
-      left.localeCompare(right))
-  ));
 }
 
 function parseObservation(
@@ -309,7 +325,7 @@ function parseObservation(
     scope: AcquisitionScope;
     sessionId?: string;
     runId?: string;
-    bindings?: Map<string, ClientBinding>;
+    bindings?: Map<string, AcquisitionVisualReaderClientBinding>;
   }
 ) {
   try {
@@ -659,6 +675,8 @@ implements AcquisitionVisualReaderRepository {
         });
       }
 
+      assertAcquisitionVisualReaderClientBindingsBudget(bindings);
+
       let nextSession = session;
       if (accepted.length > 0) {
         const acceptedOcrCount = accepted.filter(({ observation }) =>
@@ -975,11 +993,7 @@ implements AcquisitionVisualReaderRepository {
   }
 
   async deleteExpiredArtifacts(input: { before: string; limit: number }) {
-    if (!Number.isSafeInteger(input.limit)
-      || input.limit < 1
-      || input.limit > 100) {
-      fail("VISUAL_READER_INVALID_INPUT");
-    }
+    assertDeleteExpiredVisualArtifactsInput(input);
     const [result] = await this.pool.query(
       `DELETE FROM acquisition_visual_reader_artifacts
        WHERE expires_at <= ?
@@ -993,7 +1007,7 @@ implements AcquisitionVisualReaderRepository {
     queryable: Queryable,
     scope: AcquisitionScope,
     session: VisualReaderSession,
-    bindings: Map<string, ClientBinding>
+    bindings: Map<string, AcquisitionVisualReaderClientBinding>
   ) {
     const [result] = await queryable.query(
       `UPDATE acquisition_visual_reader_sessions SET
@@ -1004,7 +1018,7 @@ implements AcquisitionVisualReaderRepository {
         session.status,
         sqlDate(session.expiresAt),
         JSON.stringify(session),
-        serializeBindings(bindings),
+        serializeAcquisitionVisualReaderClientBindings(bindings),
         sqlDate(session.updatedAt),
         scope.ownerId,
         scope.teamId,
