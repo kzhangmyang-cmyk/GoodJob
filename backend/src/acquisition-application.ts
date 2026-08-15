@@ -265,6 +265,17 @@ import {
   createAcquisitionV1Router
 } from "./acquisition-v1-router.js";
 import {
+  InMemoryAcquisitionVisualReaderRepository,
+  type AcquisitionVisualReaderRepository
+} from "./acquisition-visual-reader-sessions.js";
+import {
+  ensureAcquisitionVisualReaderMysqlSchema,
+  MysqlAcquisitionVisualReaderRepository
+} from "./acquisition-visual-reader-mysql-repository.js";
+import {
+  AcquisitionVisualArtifactExpirySweeper
+} from "./acquisition-visual-artifact-expiry-sweeper.js";
+import {
   MODEL_PROVIDER_IDS,
   type StoredAiJobModelSnapshot
 } from "./model-providers/types.js";
@@ -413,6 +424,8 @@ export interface CreateAcquisitionApplicationOptions {
   douyinCommentIngestionRecoveryIntervalMs?: number;
   douyinCommentIngestionRecoveryBatchSize?: number;
   douyinCommentIngestionRecoveryLeaseDurationMs?: number;
+  visualArtifactExpiryIntervalMs?: number;
+  visualArtifactExpiryBatchSize?: number;
   discoveryLeaseDurationMs?: number;
   domainRepository?: AcquisitionDomainRepository;
   domainServiceFactory?: (
@@ -432,6 +445,10 @@ export interface CreateAcquisitionApplicationOptions {
   douyinCommentIngestionRecoverySweeperFactory?: (
     service: AcquisitionDouyinCommentIngestionRecoveryPort
   ) => Pick<AcquisitionDouyinCommentIngestionRecoverySweeper, "start" | "close">;
+  visualReaderRepository?: AcquisitionVisualReaderRepository;
+  visualArtifactExpirySweeperFactory?: (
+    repository: AcquisitionVisualReaderRepository
+  ) => Pick<AcquisitionVisualArtifactExpirySweeper, "start" | "close">;
   douyinPublicCommentProvider?: DouyinPublicCommentProviderPort;
   douyinPublicProfileDiscovery?:
     AcquisitionDouyinPublicProfileDiscoveryPort;
@@ -444,6 +461,7 @@ export interface CreateAcquisitionApplicationOptions {
 
 export interface AcquisitionApplicationRuntime
 extends AcquisitionHttpRuntime {
+  visualReaderRepository: AcquisitionVisualReaderRepository;
   planDraftGenerator: AcquisitionPlanDraftGenerator;
   runOutcomeReconciliation(
     scope: { ownerId: string; teamId: string }
@@ -503,6 +521,7 @@ interface AcquisitionRepositorySet {
   douyinIdentityResolution:
     AcquisitionDouyinIdentityResolutionOperationRepository;
   douyinCommentEvents: AcquisitionDouyinCommentEventRepository;
+  visualReader: AcquisitionVisualReaderRepository;
 }
 
 const GRADE_RANK = Object.freeze({
@@ -1123,6 +1142,9 @@ export async function createAcquisitionApplication(
   let douyinCommentIngestionRecoverySweeper:
     Pick<AcquisitionDouyinCommentIngestionRecoverySweeper, "start" | "close">
     | null = null;
+  let visualArtifactExpirySweeper:
+    Pick<AcquisitionVisualArtifactExpirySweeper, "start" | "close">
+    | null = null;
 
   try {
     let repositories: AcquisitionRepositorySet;
@@ -1151,6 +1173,7 @@ export async function createAcquisitionApplication(
       await ensureAcquisitionCandidateIntelligenceMysqlSchema(pool);
       await ensureAcquisitionDouyinIdentityResolutionMysqlSchema(pool);
       await ensureAcquisitionDouyinCommentEventsMysqlSchema(pool);
+      await ensureAcquisitionVisualReaderMysqlSchema(pool);
       await ensureAdvisorCandidateAuthorityMysqlSchema(pool);
       const mysqlAuthority = options.advisorCandidateAuthority
         instanceof MysqlAdvisorCandidateAuthorityRepository
@@ -1173,7 +1196,11 @@ export async function createAcquisitionApplication(
             pool
           ),
         douyinCommentEvents:
-          new MysqlAcquisitionDouyinCommentEventRepository(pool)
+          new MysqlAcquisitionDouyinCommentEventRepository(pool),
+        visualReader: new MysqlAcquisitionVisualReaderRepository(pool, {
+          masterSecret,
+          now
+        })
       };
       candidateDirectory = new MysqlAcquisitionCandidateDirectory(pool, {
         now,
@@ -1218,7 +1245,11 @@ export async function createAcquisitionApplication(
         douyinIdentityResolution:
           new InMemoryAcquisitionDouyinIdentityResolutionOperationRepository(),
         douyinCommentEvents:
-          new InMemoryAcquisitionDouyinCommentEventRepository()
+          new InMemoryAcquisitionDouyinCommentEventRepository(),
+        visualReader: new InMemoryAcquisitionVisualReaderRepository({
+          masterSecret,
+          now
+        })
       };
       candidateDirectory = new InMemoryAcquisitionCandidateDirectory({
         now,
@@ -1250,6 +1281,9 @@ export async function createAcquisitionApplication(
     }
     if (options.planRunRepository) {
       repositories.planRun = options.planRunRepository;
+    }
+    if (options.visualReaderRepository) {
+      repositories.visualReader = options.visualReaderRepository;
     }
     if (options.domainRepository) {
       repositories.domain = options.domainRepository;
@@ -2104,6 +2138,16 @@ export async function createAcquisitionApplication(
       requestIdFactory: () => idFactory("request")
     }));
 
+    visualArtifactExpirySweeper = options.visualArtifactExpirySweeperFactory
+      ? options.visualArtifactExpirySweeperFactory(repositories.visualReader)
+      : new AcquisitionVisualArtifactExpirySweeper({
+          repository: repositories.visualReader,
+          now,
+          intervalMs: options.visualArtifactExpiryIntervalMs,
+          batchSize: options.visualArtifactExpiryBatchSize
+        });
+    await visualArtifactExpirySweeper.start();
+
     copilotRecoverySweeper = new AcquisitionCopilotRecoverySweeper({
       service: copilotService,
       dispatchTask: dispatchCopilotTask,
@@ -2174,6 +2218,7 @@ export async function createAcquisitionApplication(
     return {
       handler: router as RequestHandler,
       planDraftGenerator,
+      visualReaderRepository: repositories.visualReader,
       runOutcomeReconciliation(scope) {
         return outcomeReconciliation.runTenant(scope, {
           limit: options.outcomeReconciliationBatchSize ?? 100
@@ -2188,6 +2233,7 @@ export async function createAcquisitionApplication(
           try {
             settlements = await waitWithTimeout(
               Promise.allSettled([
+                visualArtifactExpirySweeper?.close() ?? Promise.resolve(),
                 douyinCommentIngestionRecoverySweeper?.close()
                   ?? Promise.resolve(),
                 copilotRecoverySweeper?.close() ?? Promise.resolve(),
@@ -2242,6 +2288,9 @@ export async function createAcquisitionApplication(
       }
     };
   } catch (error) {
+    if (visualArtifactExpirySweeper) {
+      await visualArtifactExpirySweeper.close().catch(() => undefined);
+    }
     if (douyinCommentIngestionRecoverySweeper) {
       await douyinCommentIngestionRecoverySweeper.close()
         .catch(() => undefined);

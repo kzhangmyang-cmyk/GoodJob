@@ -95,6 +95,13 @@ import type {
 import {
   bindModelConnectionSnapshot
 } from "./model-providers/runtime.js";
+import {
+  InMemoryAcquisitionVisualReaderRepository,
+  type AcquisitionVisualReaderRepository
+} from "./acquisition-visual-reader-sessions.js";
+import {
+  MysqlAcquisitionVisualReaderRepository
+} from "./acquisition-visual-reader-mysql-repository.js";
 import { createGrowthCommercialToolPorts } from "./growth-commercial-application.js";
 import {
   DefaultGrowthTemporalBarrier,
@@ -3290,6 +3297,9 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
   let commentRecoveryCloseCount = 0;
   let commentSchemaConnectionReleaseCount = 0;
   let commentSchemaConnectionDestroyCount = 0;
+  let visualExpiryStartCount = 0;
+  let visualExpiryCloseCount = 0;
+  let composedVisualRepository: AcquisitionVisualReaderRepository | null = null;
   const query = async (statement: unknown) => {
     const sql = String(statement);
     statements.push(sql);
@@ -3351,6 +3361,13 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
         },
         async close() { commentRecoveryCloseCount += 1; }
       };
+    },
+    visualArtifactExpirySweeperFactory(repository) {
+      composedVisualRepository = repository;
+      return {
+        async start() { visualExpiryStartCount += 1; },
+        async close() { visualExpiryCloseCount += 1; }
+      };
     }
   });
 
@@ -3367,17 +3384,55 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
     ),
     true
   );
+  assert.equal(
+    statements.some((statement) => statement.includes(
+      "acquisition_visual_reader_sessions"
+    )),
+    true
+  );
+  assert.ok(
+    composedVisualRepository instanceof MysqlAcquisitionVisualReaderRepository
+  );
+  assert.equal(runtime.visualReaderRepository, composedVisualRepository);
   await runtime.close();
   await runtime.close();
   assert.equal(commentRecoveryStartCount, 1);
   assert.equal(commentRecoveryCloseCount, 1);
+  assert.equal(visualExpiryStartCount, 1);
+  assert.equal(visualExpiryCloseCount, 1);
   assert.equal(
     commentSchemaConnectionReleaseCount,
-    2,
-    "comment-event and discovery-operation schemas each release their dedicated migration session"
+    3,
+    "comment-event, discovery-operation, and visual-reader schemas each release their dedicated migration session"
   );
   assert.equal(commentSchemaConnectionDestroyCount, 0);
   assert.equal(closeCount, 1, "the owned pool must close exactly once");
+});
+
+test("memory acquisition application preserves injected visual repository identity and sweeper lifecycle", async () => {
+  const fixture = isolatedMemoryStore();
+  const injected = new InMemoryAcquisitionVisualReaderRepository({
+    masterSecret: MASTER_SECRET
+  });
+  let startCount = 0;
+  let closeCount = 0;
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    visualReaderRepository: injected,
+    visualArtifactExpirySweeperFactory(repository) {
+      assert.equal(repository, injected);
+      return {
+        async start() { startCount += 1; },
+        async close() { closeCount += 1; }
+      };
+    }
+  });
+  assert.equal(runtime.visualReaderRepository, injected);
+  assert.equal(startCount, 1);
+  await runtime.close();
+  await runtime.close();
+  assert.equal(closeCount, 1);
 });
 
 test("background task cleanup handles fulfillment and rejection", async () => {

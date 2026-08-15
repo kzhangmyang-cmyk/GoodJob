@@ -185,6 +185,7 @@ export interface VisualObservationSubmission {
 - Create: `backend/src/acquisition-visual-artifact-expiry-sweeper.ts`
 - Create: `backend/src/acquisition-visual-artifact-expiry-sweeper-test.ts`
 - Modify: `backend/src/acquisition-application.ts`
+- Modify: `backend/src/acquisition-application-test.ts`（验证 memory/MySQL 注入及到期 sweeper 生命周期）
 
 **Interfaces:**
 
@@ -207,29 +208,31 @@ export interface AcquisitionVisualReaderRepository {
 
 - MySQL 表固定为 `acquisition_visual_reader_sessions`、`acquisition_visual_comment_observations`、`acquisition_visual_reader_artifacts`。
 - 所有主键/唯一键含 `owner_id + team_id`；观察幂等键为 `ownerId + teamId + sessionId + sourceUrl + viewportHash + cardBoundsHash + textHash`。
+- 内部制品输入同时携带明文 `Buffer`、`sha256` 和精确 `byteLength`，repository 在加密前独立重算并校验三者一致。
+- 为保持固定三表，scoped `clientObservationKey` 的首次不可变绑定保存在加锁 session 行的 `client_bindings_json`；观察表只保存规范不可变观察，绑定、观察和用量在同一事务提交。
 - 制品只保存 `image/webp` 的遮挡裁剪，记录 `sha256`、字节数、宽高、遮挡矩形数量、创建/到期时间；默认 30 天到期。
-- 制品字节用现有 `ACQUISITION_MASTER_SECRET` 派生的视觉制品子密钥执行 AES-256-GCM envelope encryption；AAD 固定绑定 owner/team/session/artifact/hash，MySQL 不保存明文图片。
+- 制品字节用现有 `ACQUISITION_MASTER_SECRET` 经固定版本 salt/info 的 HKDF-SHA256 派生独立子密钥，执行 AES-256-GCM envelope encryption；AAD 固定绑定 envelope/key/algorithm 版本、owner/team/session/observation/artifact、media type、明文 hash 和字节数，MySQL 不保存明文图片。
 - 图片字节不写审计日志、错误消息或 JSON 响应；下载响应设置 `private, no-store`、`nosniff` 和严格 CSP。
 
-- [ ] **Step 1: 写内存 repository RED 测试**
+- [x] **Step 1: 写内存 repository RED 测试**
 
   覆盖状态机、同批/跨批幂等、不同租户隔离、过期会话拒写、预算递减、低置信度保留、相同昵称不合并、制品哈希/媒体类型/大小校验、AAD 防换租户/换制品、密文篡改失败和到期不可读。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-visual-reader-sessions-test.ts`
 
   Expected: FAIL，因为 repository 不存在。
 
-- [ ] **Step 3: 实现内存 repository，再写 MySQL RED 测试**
+- [x] **Step 3: 实现内存 repository，再写 MySQL RED 测试**
 
   MySQL 测试覆盖唯一索引竞争、事务内批量观察+加密制品一致提交、数据库不含明文 WebP、滚回不留孤立 BLOB、租户条件、过期清理和 memory/MySQL 合同行为一致。
 
-- [ ] **Step 4: 实现 MySQL repository 和 application 注入**
+- [x] **Step 4: 实现 MySQL repository 和 application 注入**
 
   使用独立 `ensureAcquisitionVisualReaderMysqlSchema(pool)`，不继续扩大通用 `acquisition-mysql-repositories.ts`。在应用启动时注入 memory/MySQL 同一 port；artifact expiry sweeper 每次最多删除 100 条到期密文，失败只记录数量和错误码，不记录图片或正文。
 
-- [ ] **Step 5: 运行 GREEN 并提交**
+- [x] **Step 5: 运行 GREEN 并提交**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-visual-reader-sessions-test.ts src/acquisition-visual-reader-mysql-repository-test.ts src/acquisition-visual-artifact-crypto-test.ts src/acquisition-visual-artifact-expiry-sweeper-test.ts && npm run build --workspace backend`
 
