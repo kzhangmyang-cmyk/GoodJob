@@ -22,12 +22,29 @@ export class BoundedReaderError extends Error {
 
 class ReaderStopped extends Error {}
 
+const MAX_TERMINAL_FINALIZATION_RESERVE_MS = 1_000;
+
+export function deriveVisualReaderDeadlines(
+  startedAt: number,
+  maxDurationMs: number
+): { sessionDeadlineAt: number; workDeadlineAt: number } {
+  const terminalReserveMs = Math.min(
+    MAX_TERMINAL_FINALIZATION_RESERVE_MS,
+    Math.max(1, Math.floor(maxDurationMs / 5))
+  );
+  const sessionDeadlineAt = startedAt + maxDurationMs;
+  return {
+    sessionDeadlineAt,
+    workDeadlineAt: sessionDeadlineAt - terminalReserveMs
+  };
+}
+
 export function createBoundedReader(dependencies: {
   sessionId: string;
   limits: VisualReaderLimits;
   artifactUploadEnabled: boolean;
   now?: () => number;
-  deadlineAt?: number;
+  workDeadlineAt?: number;
   scheduleTimeout?: (callback: () => void, delay: number) => unknown;
   cancelTimeout?: (handle: unknown) => void;
   retryDelayMs?: number;
@@ -49,7 +66,7 @@ export function createBoundedReader(dependencies: {
   const cancelTimeout = dependencies.cancelTimeout
     ?? ((handle: unknown) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>));
   const retryDelayMs = Math.max(1, Math.min(1_000, dependencies.retryDelayMs ?? 100));
-  const deadlineAt = dependencies.deadlineAt ?? now() + dependencies.limits.maxDurationMs;
+  const workDeadlineAt = dependencies.workDeadlineAt ?? now() + dependencies.limits.maxDurationMs;
   const operationAbort = new AbortController();
   let stopped = false;
   let takeover = false;
@@ -63,7 +80,7 @@ export function createBoundedReader(dependencies: {
   const usage = { observationCount: 0, scrollCount: 0, ocrCallCount: 0 as const };
 
   function remainingMs(): number {
-    return deadlineAt - now();
+    return workDeadlineAt - now();
   }
 
   async function withinDeadline<T>(operation: Promise<T>): Promise<T> {

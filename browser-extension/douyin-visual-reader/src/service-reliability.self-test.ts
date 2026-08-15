@@ -198,4 +198,70 @@ async function flush(): Promise<void> {
   assert.equal(clock.pending(), 0, "deadline cleanup cancels every terminal retry timer");
 }
 
+{
+  const clock = new ManualClock();
+  clock.now = 80;
+  let attempts = 0;
+  const transport = createReliableEventTransport({
+    deadlineAt: 100,
+    now: () => clock.now,
+    retryDelayMs: 10,
+    attemptTimeoutMs: 50,
+    scheduleTimeout: clock.schedule,
+    cancelTimeout: clock.cancel,
+    send: async () => {
+      attempts += 1;
+      return new Promise<{ accepted: boolean }>(() => undefined);
+    }
+  });
+  transport.queueTerminal({
+    version: BRIDGE_VERSION,
+    type: "terminal",
+    channelNonce: "e".repeat(64),
+    sessionId: "session-terminal-reserve-hang",
+    status: "partial_success",
+    errorCodes: ["visual_reader_budget_exhausted"]
+  });
+  await flush();
+  assert.equal(attempts, 1, "terminal delivery starts immediately inside the reserved finalization window");
+  clock.advance(20);
+  await flush();
+  await transport.whenIdle();
+  assert.equal(attempts, 1, "a hung first terminal attempt cannot outlive the total session deadline");
+  assert.equal(clock.pending(), 0, "a hung reserved terminal attempt clears every timer at the session deadline");
+}
+
+{
+  const clock = new ManualClock();
+  clock.now = 80;
+  let attempts = 0;
+  const transport = createReliableEventTransport({
+    deadlineAt: 100,
+    now: () => clock.now,
+    retryDelayMs: 10,
+    scheduleTimeout: clock.schedule,
+    cancelTimeout: clock.cancel,
+    send: async () => {
+      attempts += 1;
+      return { accepted: false };
+    }
+  });
+  transport.queueTerminal({
+    version: BRIDGE_VERSION,
+    type: "terminal",
+    channelNonce: "f".repeat(64),
+    sessionId: "session-terminal-reserve-retry",
+    status: "partial_success",
+    errorCodes: ["visual_reader_budget_exhausted"]
+  });
+  await flush();
+  clock.advance(10);
+  await flush();
+  clock.advance(10);
+  await flush();
+  await transport.whenIdle();
+  assert.equal(attempts, 2, "a rejected terminal retries only inside the remaining session deadline");
+  assert.equal(clock.pending(), 0, "a rejected reserved terminal leaves no retry timer after the total deadline");
+}
+
 console.log("douyin service reliability self-test passed");

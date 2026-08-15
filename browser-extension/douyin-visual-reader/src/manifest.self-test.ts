@@ -23,6 +23,19 @@ const templateUrl = new URL("../manifest.template.json", import.meta.url);
   assert.equal(manifest.action?.default_popup, "popup.html");
 }
 
+for (const originsLiteral of ["https://evil.example", "http://localhost:5191", "https://crm.goodjob.example,https://growth.goodjob.example", "https://crm.goodjob.example/path"]) {
+  await assert.rejects(
+    () => renderVisualReaderManifest({ templateUrl, originsLiteral, release: false }),
+    /开发构建/u,
+    `development rendering rejects ${originsLiteral}`
+  );
+}
+for (const originsLiteral of [undefined, "", "  ", "http://127.0.0.1:5191"]) {
+  const manifest = await renderVisualReaderManifest({ templateUrl, originsLiteral, release: false });
+  assert.deepEqual(manifest.content_scripts?.[0]?.matches, ["http://127.0.0.1:5191/*"],
+    `development rendering remains the one fixed local origin for ${String(originsLiteral)}`);
+}
+
 {
   const manifest = await renderVisualReaderManifest({
     templateUrl,
@@ -140,6 +153,30 @@ for (const originsLiteral of [
     assert.notEqual(checked.status, 0, "the check command rejects an already-tampered manifest");
     const afterCheck = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
     assert.deepEqual(afterCheck, commandTamper, "check is read-only and cannot repair evidence");
+
+    const developmentManifest = await renderVisualReaderManifest({
+      templateUrl,
+      originsLiteral: undefined,
+      release: false
+    });
+    const evilDevelopmentManifest = structuredClone(developmentManifest);
+    const developmentScripts = evilDevelopmentManifest.content_scripts;
+    assert.ok(developmentScripts?.[0]?.matches);
+    developmentScripts[0].matches = ["https://evil.example/*"];
+    await writeFile(join(root, "manifest.json"), JSON.stringify(evilDevelopmentManifest));
+    const developmentCheckEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      VISUAL_READER_DIST_DIR: root,
+      GOODJOB_APP_ORIGINS: "https://evil.example"
+    };
+    delete developmentCheckEnv.VISUAL_READER_RELEASE;
+    const evilDevelopmentCheck = spawnSync("npm", ["run", "check:visual-reader-bundle"], {
+      cwd: process.cwd(),
+      env: developmentCheckEnv,
+      encoding: "utf8"
+    });
+    assert.notEqual(evilDevelopmentCheck.status, 0,
+      "the read-only development audit never treats an evil environment origin as its baseline");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

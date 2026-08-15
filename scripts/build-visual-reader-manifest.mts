@@ -18,6 +18,7 @@ interface VisualReaderManifest {
 
 const EXACT_PERMISSIONS = ["activeTab", "scripting", "storage", "offscreen"];
 const EXACT_DOUYIN_HOSTS = ["https://www.douyin.com/*"];
+const DEVELOPMENT_GOODJOB_ORIGIN = "http://127.0.0.1:5191";
 const FORBIDDEN_PERMISSIONS = new Set([
   "cookies", "webRequest", "webRequestBlocking", "debugger", "proxy", "downloads", "<all_urls>"
 ]);
@@ -52,8 +53,13 @@ export async function renderVisualReaderManifest(options: {
   if (options.release && !options.originsLiteral?.trim()) {
     throw new Error("发布构建必须显式配置 HTTPS GoodJob origin");
   }
-  const literals = options.originsLiteral?.split(",").map((value) => value.trim()).filter(Boolean)
-    ?? ["http://127.0.0.1:5191"];
+  const requestedDevelopmentOrigin = options.originsLiteral?.trim();
+  if (!options.release && requestedDevelopmentOrigin && requestedDevelopmentOrigin !== DEVELOPMENT_GOODJOB_ORIGIN) {
+    throw new Error("开发构建只能使用固定 GoodJob local origin");
+  }
+  const literals = options.release
+    ? options.originsLiteral!.split(",").map((value) => value.trim()).filter(Boolean)
+    : [DEVELOPMENT_GOODJOB_ORIGIN];
   const origins = [...new Set(literals.map((value) => normalizedOrigin(value, options.release)))].sort();
   if (origins.length === 0 || origins.length > 8) throw new Error("GoodJob origin 数量无效");
   const manifest = JSON.parse(await readFile(options.templateUrl, "utf8")) as VisualReaderManifest;

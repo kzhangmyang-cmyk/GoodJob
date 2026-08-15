@@ -10,7 +10,12 @@ import {
   findExactReadOnlyAction,
   type DouyinDomAdapter
 } from "./douyin-extractor";
-import { BoundedReaderError, createBoundedReader, type BoundedReader } from "./douyin-reader";
+import {
+  BoundedReaderError,
+  createBoundedReader,
+  deriveVisualReaderDeadlines,
+  type BoundedReader
+} from "./douyin-reader";
 import { createReliableEventTransport, type ReliableEventTransport } from "./runtime-transport";
 import { matchesUnavailableSession } from "./restart-recovery";
 
@@ -103,7 +108,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
     limits: VisualReaderLimits;
     artifactUploadEnabled: boolean;
     channelNonce: string;
-  }, deadlineAt: number): Promise<void> {
+  }, deadlines: ReturnType<typeof deriveVisualReaderDeadlines>): Promise<void> {
     reader?.stop();
     activeSessionId = input.sessionId;
     const adapter = browserAdapter();
@@ -111,7 +116,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
     if (!source) throw new BoundedReaderError("visual_source_invalid");
     let attemptedAction = false;
     const sessionTransport = createReliableEventTransport({
-      deadlineAt,
+      deadlineAt: deadlines.sessionDeadlineAt,
       send: async (event) => {
         const response = await chrome.runtime.sendMessage({ kind: "douyin_reader_event", event });
         return {
@@ -125,7 +130,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
       sessionId: input.sessionId,
       limits: input.limits,
       artifactUploadEnabled: input.artifactUploadEnabled,
-      deadlineAt,
+      workDeadlineAt: deadlines.workDeadlineAt,
       extract: async (signal) => {
         if (!attemptedAction) {
           attemptedAction = true;
@@ -213,10 +218,10 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
       }, "https://www.douyin.com");
       if (!command || command.type !== "start") return;
       sendResponse({ accepted: true });
-      const deadlineAt = Date.now() + command.limits.maxDurationMs;
-      void start(command, deadlineAt).catch(async () => {
+      const deadlines = deriveVisualReaderDeadlines(Date.now(), command.limits.maxDurationMs);
+      void start(command, deadlines).catch(async () => {
         const fallback = createReliableEventTransport({
-          deadlineAt,
+          deadlineAt: deadlines.sessionDeadlineAt,
           send: async (event) => {
             const response = await chrome.runtime.sendMessage({ kind: "douyin_reader_event", event });
             return { accepted: response?.accepted === true };

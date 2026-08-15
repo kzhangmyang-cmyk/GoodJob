@@ -64,6 +64,8 @@ npm run verify:visual-reader-build-order
 开发构建只允许连接
 `http://127.0.0.1:5191/*`；发布构建必须显式设置以逗号分隔的 HTTPS
 `GOODJOB_APP_ORIGINS`，并设置 `VISUAL_READER_RELEASE=1`，否则构建会失败。
+开发环境即使提供 `GOODJOB_APP_ORIGINS` 也只接受这一精确 local origin；空值回退到它，
+任何其他 origin、路径或多 origin 都会被拒绝。
 审计会将完整 manifest 与当前模板和构建 origin 深度比对，包含 CSP、可选权限、内容脚本
 的 matches/js/run_at/world/all_frames，以及 background、action 和 web-accessible resources；
 任何额外、缺失或篡改字段都会被拒绝，检查命令不会修复制品。
@@ -79,6 +81,8 @@ npm run verify:visual-reader-build-order
 页面已显示的
 一级评论文字、公开时间、公开计数和卡内公开主页链接，最多程序滚动 5 次；不读取
 Cookie、脚本数据、头像地址、二级回复正文或页面内部状态，不执行任何写入或互动。
+总会话时限中的最后一小段（时限的 20%，最多 1 秒、至少 1ms）专供终态投递；DOM 读取、
+批次、ACK 和滚动会在较早的 work deadline 停止，terminal 重试绝不超过总时限。
 
 本阶段只提供 DOM/ARIA 读取，所有观察的 `redactedCrop` 均为 `null`。即使会话允许
 制品上传，也不会截图或运行 OCR；本地遮挡裁剪与 OCR 仍属于后续开发范围。当前实现

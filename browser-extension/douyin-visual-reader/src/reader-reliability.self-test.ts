@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import * as readerModule from "./douyin-reader";
 import { createBoundedReader } from "./douyin-reader";
 
 class ManualScheduler {
@@ -38,6 +39,27 @@ const limits = {
   maxOcrCalls: 0,
   maxDurationMs: 100
 };
+
+const deadlinePlanner = readerModule as typeof readerModule & {
+  deriveVisualReaderDeadlines?: (startedAt: number, maxDurationMs: number) => {
+    sessionDeadlineAt: number;
+    workDeadlineAt: number;
+  };
+};
+assert.equal(typeof deadlinePlanner.deriveVisualReaderDeadlines, "function",
+  "session time reserves a distinct finalization window before its absolute deadline");
+assert.deepEqual(deadlinePlanner.deriveVisualReaderDeadlines?.(100, 120_000), {
+  sessionDeadlineAt: 120_100,
+  workDeadlineAt: 119_100
+}, "a normal session reserves one second for terminal delivery");
+assert.deepEqual(deadlinePlanner.deriveVisualReaderDeadlines?.(1_000, 100), {
+  sessionDeadlineAt: 1_100,
+  workDeadlineAt: 1_080
+}, "a short session retains a positive proportional finalization window");
+assert.deepEqual(deadlinePlanner.deriveVisualReaderDeadlines?.(50, 1), {
+  sessionDeadlineAt: 51,
+  workDeadlineAt: 50
+}, "the smallest allowed session still reserves its only millisecond for terminal delivery");
 
 async function flush(): Promise<void> {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
@@ -80,6 +102,34 @@ for (const blockedStage of ["extract", "send", "ack", "scroll"] as const) {
   }], `${blockedStage} shares the absolute deadline`);
   assert.equal(scheduler.pending(), 0, `${blockedStage} clears its deadline timer`);
   assert.equal(await reader.acknowledge("batch-1"), false, `${blockedStage} clears pending ACK state`);
+}
+
+{
+  const scheduler = new ManualScheduler();
+  const terminals: unknown[] = [];
+  const reader = createBoundedReader({
+    sessionId: "work-deadline-before-terminal",
+    limits,
+    workDeadlineAt: 80,
+    now: () => scheduler.now,
+    scheduleTimeout: scheduler.schedule,
+    cancelTimeout: scheduler.cancel,
+    artifactUploadEnabled: false,
+    extract: async () => new Promise<never>(() => undefined),
+    programmaticScroll: async () => undefined,
+    sendBatch: async () => ({ accepted: true }),
+    sendTerminal: (terminal) => { terminals.push(terminal); }
+  });
+  const running = reader.start();
+  await flush();
+  scheduler.advance(80);
+  await flush();
+  assert.deepEqual(terminals, [{
+    status: "partial_success",
+    errorCodes: ["visual_reader_budget_exhausted"]
+  }], "a blocked work stage reaches finalization before the session deadline");
+  await running;
+  assert.equal(scheduler.pending(), 0, "work-deadline completion clears its operation timer");
 }
 
 {
