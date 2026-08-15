@@ -1,6 +1,8 @@
 import {
   applyDouyinPublicCommentSamplePolicy,
   buildDouyinPlanInput,
+  type DouyinPlanInput,
+  type DouyinPublicCommentSample,
   createAcquisitionTaskCreationApi,
   type AcquisitionSearchConnection,
   type ToolCallingModelConnection
@@ -44,6 +46,23 @@ export function isPlanDraftSubmissionReady(state: {
   return state.mode === "manual"
     ? state.approvalConfirmed && !state.loading && !state.submitting && !state.completed
     : state.hasDraft && state.approvalConfirmed && !state.loading && !state.submitting && !state.completed;
+}
+
+export function prepareAiPlanForApproval(
+  plan: DouyinPlanInput,
+  sample: DouyinPublicCommentSample | undefined
+): DouyinPlanInput {
+  return applyDouyinPublicCommentSamplePolicy(plan, sample);
+}
+
+export function commentSamplePlanChanged(
+  previous: DouyinPublicCommentSample | undefined,
+  next: DouyinPublicCommentSample | undefined
+): boolean {
+  return previous?.enabled !== next?.enabled
+    || previous?.maxVideosPerRun !== next?.maxVideosPerRun
+    || previous?.maxCommentsPerVideo !== next?.maxCommentsPerVideo
+    || previous?.maxPagesPerVideo !== next?.maxPagesPerVideo;
 }
 
 function byId<T extends HTMLElement = HTMLElement>(id: string): T | null {
@@ -114,6 +133,7 @@ function initialise(): void {
   let completed = false;
   let mode: "ai" | "manual" = "ai";
   let generatedPlan: ReturnType<typeof buildDouyinPlanInput> | null = null;
+  let generatedCommentSample: DouyinPublicCommentSample | undefined;
   let generation = 0;
 
   function selectedCommentSample() {
@@ -186,6 +206,7 @@ function initialise(): void {
     generation += 1;
     planDraftWorkflow.clear();
     generatedPlan = null;
+    generatedCommentSample = undefined;
     if (approvalConfirmed) approvalConfirmed.checked = false;
     if (aiGenerate) aiGenerate.disabled = false;
     if (aiDraft) {
@@ -216,7 +237,9 @@ function initialise(): void {
         prompt
       });
       if (requestGeneration !== generation || mode !== "ai") return;
-      generatedPlan = result.planDraft;
+      const sample = selectedCommentSample();
+      generatedPlan = prepareAiPlanForApproval(result.planDraft, sample);
+      generatedCommentSample = sample;
       if (aiDraft) {
         aiDraft.innerHTML = renderPlanDraftPreview(generatedPlan);
         aiDraft.hidden = false;
@@ -362,6 +385,13 @@ function initialise(): void {
     updateCommentSampleFields();
     invalidateGeneratedPlan();
   });
+  ["replicaRealCommentMaxVideos", "replicaRealCommentMaxComments", "replicaRealCommentMaxPages"]
+    .forEach((id) => byId<HTMLInputElement>(id)?.addEventListener("input", () => {
+      if (mode === "ai" && generatedPlan && commentSamplePlanChanged(
+        generatedCommentSample,
+        selectedCommentSample()
+      )) invalidateGeneratedPlan();
+    }));
   aiMode?.addEventListener("click", () => setMode("ai"));
   manualMode?.addEventListener("click", () => setMode("manual"));
   aiPrompt?.addEventListener("input", () => {
@@ -405,7 +435,6 @@ function initialise(): void {
         },
         douyinPublicCommentSample: selectedCommentSample()
       });
-      planInput = applyDouyinPublicCommentSamplePolicy(planInput, selectedCommentSample());
     } catch (error) {
       setSubmitStatus(error instanceof Error ? error.message : "任务参数不完整", "error");
       return;

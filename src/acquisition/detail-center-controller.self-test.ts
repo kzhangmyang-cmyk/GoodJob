@@ -2347,6 +2347,7 @@ function automaticIntelligenceOperation(
     async getTask() {
       return {
         ...taskDetail,
+        latestRun: { id: "run-comment-click", status: "succeeded", evidenceCount: 1 },
         presentation: {
           candidateEvents: [{
             eventId: "event-auto-1",
@@ -2441,6 +2442,53 @@ function automaticIntelligenceOperation(
   assert.equal(root.hidden, true);
   assert.equal(focusReturns, 2, "native Escape close must return focus");
 
+  controller.destroy();
+}
+
+{
+  const root = new FakeDialogRoot(null);
+  const body = { innerHTML: "" };
+  const api = {
+    async getTask() {
+      return {
+        ...taskDetail,
+        latestRun: { id: "run-comment-click", status: "succeeded", evidenceCount: 1 },
+        presentation: {
+          candidateEvents: [{ eventId: "comment-event-click", candidateId: "candidate-comment-click" }],
+          providers: [],
+          summary: {},
+          hasMore: false,
+          nextAfter: null
+        }
+      };
+    },
+    async getCandidate() {
+      return { candidate: { id: "candidate-comment-click", status: "pending_review", identityResolved: false }, etag: null };
+    },
+    async getCandidateEvidence() {
+      return { items: [{ id: "evidence-comment-click", sourceSnippet: "评论公开证据" }], nextCursor: null };
+    },
+    async getCandidateQualification() { return null; },
+    async getCandidateFinancialValue() { return null; },
+    async getCandidateBattleCard() { return null; },
+    async getCandidateReviews() { return { items: [], nextCursor: null }; },
+    async getLatestIntelligenceOperation() { return null; }
+  } as unknown as AcquisitionDetailApi;
+  const controller = createAcquisitionDetailCenterController({
+    api,
+    root: root as unknown as HTMLElement,
+    body: body as unknown as HTMLElement
+  });
+  await controller.open("plan", "plan-1");
+  root.emitClick(fakeAction({
+    acquisitionDetailAction: "select-candidate",
+    candidateId: "candidate-comment-click"
+  }));
+  await controller.whenIdle();
+  assert.equal(controller.getState().mode, "candidates");
+  assert.equal(controller.getState().selectedCandidateId, "candidate-comment-click");
+  assert.match(body.innerHTML, /data-acquisition-detail-panel="candidates"/);
+  assert.match(body.innerHTML, /评论公开证据/);
   controller.destroy();
 }
 

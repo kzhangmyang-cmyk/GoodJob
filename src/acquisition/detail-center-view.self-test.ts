@@ -1538,4 +1538,57 @@ for (const terminalStatus of [
   assert.doesNotMatch(html, /高潜需求信号 · 已核验公开主体/);
 }
 
+{
+  const signal = (candidateId: string, identityStatus: "resolved" | "needs_research", reasons: string[]) => ({
+    eventId: `comment-${candidateId}`,
+    candidateId,
+    displayName: candidateId,
+    handle: null,
+    text: "需要方案",
+    occurredAt: timestamp,
+    likeCount: 0,
+    replyCount: 0,
+    ipLabel: null,
+    sourceUrl: "https://www.douyin.com/video/comment",
+    intentBand: "strong_signal",
+    reasons,
+    confidence: 0.9,
+    identityStatus,
+    evidenceId: `evidence-${candidateId}`
+  });
+  const html = renderAcquisitionDetailCenter(state({
+    mode: "plan",
+    detail: {
+      ...detail,
+      presentation: {
+        ...detail.presentation!,
+        candidateEvents: [{
+          eventId: "candidate-unresolved",
+          candidateId: "candidate-unresolved",
+          qualification: { grade: "A", hardGateFailures: [] }
+        }, {
+          eventId: "candidate-resolved-a",
+          candidateId: "candidate-resolved-a",
+          qualification: { grade: "A", hardGateFailures: [] }
+        }, {
+          eventId: "candidate-gated-a",
+          candidateId: "candidate-gated-a",
+          qualification: { grade: "A", hardGateFailures: ["identity_unresolved"] }
+        }],
+        commentSignals: [
+          signal("candidate-unresolved", "needs_research", ["<img src=x>", "预算明确"]),
+          signal("candidate-resolved-a", "resolved", ["已核验"]),
+          signal("candidate-gated-a", "resolved", ["仍有门禁"])
+        ]
+      } as typeof detail.presentation
+    }
+  }));
+  assert.match(html, /高潜需求信号 · candidate-unresolved/);
+  assert.match(html, /高意向 · candidate-resolved-a/);
+  assert.match(html, /需求信号 · candidate-gated-a/);
+  assert.match(html, /预算明确/);
+  assert.match(html, /&lt;img src=x&gt;/);
+  assert.doesNotMatch(html, /<img src=x>/);
+}
+
 console.log("Acquisition detail center view self-test passed");

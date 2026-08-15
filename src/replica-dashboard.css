@@ -3516,6 +3516,8 @@ body.is-authenticated .replica-shell {
 .replica-acquisition-comment-copy strong,.replica-acquisition-comment-copy em,.replica-acquisition-comment-copy small,.replica-acquisition-comment-meta small { display: block; overflow-wrap: anywhere; }
 .replica-acquisition-comment-copy strong { color: #d9e1dc; font-size: 9px; font-style: normal; }
 .replica-acquisition-comment-copy em { margin-top: 4px; color: #a1aaa4; font-size: 9px; font-style: normal; line-height: 1.5; }
+.replica-acquisition-comment-reasons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.replica-acquisition-comment-reasons i { max-width: 100%; padding: 2px 5px; overflow-wrap: anywhere; color: #9fcbb0; background: rgba(24,237,120,.05); border-radius: 999px; font-size: 7px; font-style: normal; }
 .replica-acquisition-comment-copy small,.replica-acquisition-comment-meta small { margin-top: 5px; color: #6f7771; font-size: 7px; line-height: 1.4; }
 .replica-acquisition-comment-meta { color: #90e3aa; font-size: 9px; text-align: right; }
 

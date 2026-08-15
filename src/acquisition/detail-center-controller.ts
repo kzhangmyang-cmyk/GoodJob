@@ -2590,7 +2590,12 @@ export function createAcquisitionDetailCenterController(
       const mode = requestedMode(target.dataset.mode);
       if (mode) controller.switchMode(mode);
     } else if (action === "select-candidate") {
-      consume(controller.selectCandidate(target.dataset.candidateId ?? ""));
+      consume(remember((async () => {
+        await controller.selectCandidate(target.dataset.candidateId ?? "");
+        if (state.selectedCandidateId && state.candidateDetail) {
+          controller.switchMode("candidates");
+        }
+      })()));
     } else if (action === "load-more-candidates") {
       consume(controller.loadMoreCandidates());
     } else if (action === "retry") {

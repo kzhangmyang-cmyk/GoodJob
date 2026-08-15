@@ -322,14 +322,16 @@ function renderCommentAutomation(detail: AcquisitionTaskDetail): string {
   const signalsHtml = signals.map((signal) => {
     const candidate = candidateEvents.find((event) => textValue(event.candidateId, "") === textValue(signal.candidateId, ""));
     const qualification = record(candidate?.qualification);
-    const highIntent = (qualification?.grade === "S" || qualification?.grade === "A")
+    const highIntent = signal.identityStatus === "resolved"
+      && (qualification?.grade === "S" || qualification?.grade === "A")
       && strings(qualification?.hardGateFailures).length === 0;
     const highPotential = signal.intentBand === "strong_signal" && signal.identityStatus === "needs_research";
     const label = highIntent ? "高意向" : highPotential ? "高潜需求信号" : "需求信号";
     const confidence = Math.round(Math.max(0, Math.min(1, finiteNumber(signal.confidence))) * 100);
+    const reasons = strings(signal.reasons);
     return `<button type="button" class="replica-acquisition-comment-signal" data-acquisition-detail-action="select-candidate" data-candidate-id="${escapeHtml(textValue(signal.candidateId))}">
       <span class="replica-acquisition-comment-initials" aria-hidden="true">评</span>
-      <span class="replica-acquisition-comment-copy"><strong>${escapeHtml(label)} · ${escapeHtml(textValue(signal.displayName))}</strong><em>${escapeHtml(textValue(signal.text))}</em><small>${escapeHtml(textValue(signal.handle, "公开用户"))} · ${escapeHtml(textValue(signal.ipLabel, "公开主体"))} · ${escapeHtml(textValue(signal.sourceUrl))} · ${escapeHtml(textValue(signal.occurredAt))}</small></span>
+      <span class="replica-acquisition-comment-copy"><strong>${escapeHtml(label)} · ${escapeHtml(textValue(signal.displayName))}</strong><em>${escapeHtml(textValue(signal.text))}</em>${reasons.length > 0 ? `<span class="replica-acquisition-comment-reasons">${reasons.map((reason) => `<i>${escapeHtml(reason)}</i>`).join("")}</span>` : ""}<small>${escapeHtml(textValue(signal.handle, "公开用户"))} · ${escapeHtml(textValue(signal.ipLabel, "公开主体"))} · ${escapeHtml(textValue(signal.sourceUrl))} · ${escapeHtml(textValue(signal.occurredAt))}</small></span>
       <span class="replica-acquisition-comment-meta">${confidence}%<small>${escapeHtml(signal.identityStatus === "resolved" ? "身份已核验" : "身份待核验")}</small></span>
     </button>`;
   }).join("");
