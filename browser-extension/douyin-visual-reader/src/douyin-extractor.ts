@@ -168,9 +168,6 @@ export async function extractVisibleTopLevelComments(input: {
           videoId: source.videoId,
           visibleText: visibleText.normalize("NFC"),
           displayName: displayName?.normalize("NFC") ?? null,
-          visibleTimeText: visibleTimeText?.normalize("NFC") ?? null,
-          likeCount,
-          replyCount,
           publicProfileUrl: profile?.url ?? null,
           secUid: profile?.secUid ?? null
         });

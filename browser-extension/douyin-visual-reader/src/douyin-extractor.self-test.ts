@@ -143,6 +143,40 @@ async function extract(name: string, sourceUrl = "https://www.douyin.com/video/1
 }
 
 {
+  const document = await fixture("missing-id.html");
+  const card = document.querySelector('[role="article"]');
+  assert.ok(card);
+  const time = document.createElement("time");
+  time.textContent = "1小时前";
+  const like = document.createElement("button");
+  like.setAttribute("role", "button");
+  like.setAttribute("aria-label", "点赞 12");
+  const reply = document.createElement("button");
+  reply.setAttribute("role", "button");
+  reply.setAttribute("aria-label", "回复 3");
+  card.append(time, like, reply);
+  const base = adapter(document);
+  const first = await extractVisibleTopLevelComments({
+    document,
+    adapter: base,
+    sourceUrl: "https://www.douyin.com/video/123456789"
+  });
+  time.textContent = "2小时前";
+  like.setAttribute("aria-label", "点赞 99");
+  reply.setAttribute("aria-label", "回复 8");
+  const updatedPublicCounters = await extractVisibleTopLevelComments({
+    document,
+    adapter: base,
+    sourceUrl: "https://www.douyin.com/video/123456789"
+  });
+  assert.equal(
+    updatedPublicCounters.observations[0]?.clientObservationKey,
+    first.observations[0]?.clientObservationKey,
+    "changing relative time and public counters cannot change a missing-ID comment digest"
+  );
+}
+
+{
   const reply = await extract("reply.html");
   assert.equal(reply.observations.length, 1);
   assert.equal(reply.observations[0]?.visibleText, "一级评论正文");
