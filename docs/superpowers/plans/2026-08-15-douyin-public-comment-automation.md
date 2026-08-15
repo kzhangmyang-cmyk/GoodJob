@@ -22,7 +22,7 @@
 - 新增计划限制不得绕过现有 Run 预算：评论 HTTP 请求计入 `maxRequests`，接受的评论计入 `maxResults`，并额外限制每 Run 视频数、每视频评论数和页数。
 - 正式页面只渲染 API 真实数据；运行中只轮询服务端状态，不用前端随机数或倒计时增加评论数。
 - 前端修改保持当前深绿/暖白、圆角卡片、紧凑商务信息密度；不引入第二套 UI 框架。
-- 不修改或提交 `GoodJob-marketing-system-frontend` 中用户现有的 `pnpm-workspace.yaml` 和 `debug-agents.mts`。
+- 不修改或提交 `GoodJob-marketing-system-frontend` 工作树中执行前已记录的用户文件（当前为未跟踪 `package-lock.json`）。
 - 移植或改写开源实现时，必须在 `THIRD_PARTY_NOTICES.md` 中记录仓库、commit、原文件、许可证、用途和改动。
 
 ---
@@ -472,12 +472,12 @@
 
 **Files:**
 - Create: `tests/acquisition-comment-automation.spec.ts`
-- Modify: `playwright.config.ts` only if the existing deterministic server cannot serve the scenario.
+- Modify: `playwright.config.ts` to add `acquisition-comment-automation.spec.ts` to the existing explicit `testMatch` allowlist; keep the existing deterministic Vite server.
 
 **Scenario:**
-- fixture 中的 Run 从 queued 转 running 再转 partial_success，每次 API 轮询返回服务端已持久的新步骤/事件；未声明获客请求一律 501。
+- fixture 中的 Run 由测试显式 commit 不可变的 queued、running、partial_success 服务端快照，再推进伪时钟触发真实轮询；不得按 GET 次数自动切换状态。每次 API 轮询返回服务端已持久的新步骤/事件；未声明获客请求一律 501。
 - 用户能看到任务已自动完成搜索、解析、公开评论读取、事件归一化、主体聚合和研判；点击评论后能回溯证据和身份状态。
-- 写请求记录断言不存在自动评论、私信、加好友、群发或 CRM 自动转换。
+- 请求记录断言除 GET/HEAD/OPTIONS 外没有写请求，且不存在自动评论、私信、加好友、群发、CRM 自动转换或任何抖音外网请求。
 
 - [ ] **Step 1: 先写 Playwright 失败测试**
 
@@ -537,7 +537,7 @@
   git status --short
   ```
 
-  Expected: 全部 PASS；前端 `git status` 仅保留用户原有 `pnpm-workspace.yaml` 和 `debug-agents.mts` 及本计划尚未提交的文件。
+  Expected: 除 ledger 已记录的两项 Pi `MODEL_TOOL_DEFINITION_INVALID` 基线外无新失败；contracts/E2E/build 必须 PASS。前端 `git status` 仅保留执行前已记录的用户文件（当前为未跟踪 `package-lock.json`）及本计划尚未提交的文件。
 
 - [ ] **Step 2: 更新当前文档并运行文档/合同门禁**
 
