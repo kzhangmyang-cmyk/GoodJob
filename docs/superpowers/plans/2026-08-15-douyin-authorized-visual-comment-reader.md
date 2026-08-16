@@ -655,8 +655,8 @@ documentation baseline is `37474c9`. No Task 8 work is included.
 **Frontend repository:** `/Users/mac/Documents/外贸/GoodJob-marketing-system-frontend`
 
 **Current progress:** `COMPLETED` — frontend final HEAD/code
-`00be440cde77a250dd1080243e25e6840ef589cd`, backend documentation baseline
-`8766600`, independent review `APPROVED` with 0 Critical, 0 Important, and
+`bb61826e1da9b9cb7ace705f534c5a2dd3eb999e`, backend Task 8 documentation baseline
+`ac4c7bdd9702186f51d349e251dd7ab13f45af87`, independent review `APPROVED` with 0 Critical, 0 Important, and
 0 Minor findings. Task 8 is the final task; there is no Task 9.
 
 **Files:**
@@ -744,5 +744,7 @@ documentation baseline is `37474c9`. No Task 8 work is included.
 
   Final result: `APPROVED`，0 Critical、0 Important、0 Minor。Browser QA 在
   default、1024、768 下均为 document width 等于 viewport width，console
-  error 为 0；完整业务视觉路径由确定性 Task 8 E2E 证明。Frontend 仅保留
+  error 为 0；完整业务视觉路径由确定性 Task 8 E2E 证明。合并验证还确认
+  `wasm-feature-detect@1.9.0` 必须作为直接运行依赖存在，frontend `bb61826`
+  已同时提交该依赖和更新后的 `pnpm-lock.yaml`。Frontend 视觉 worktree 仅保留
   用户原有未跟踪 `package-lock.json`，backend clean。
