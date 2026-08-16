@@ -169,10 +169,14 @@ use these closed rules:
    swap or MySQL transaction. Recovery uses a bounded fair cross-tenant claim,
    lease and backoff; every claim persists a fresh opaque 64-hex lease token
    and increments its attempt generation. Complete/fail atomically match the
-   tenant/observation, owner, token, attempt, status, and lease time, then clear
-   the token. An old claim stays fenced after same-worker reclamation. Legacy
-   running rows without a token are safely reset to retry during schema setup;
-   poisoned connections are isolated.
+   tenant/observation, owner, token, attempt, status, and require the result
+   strictly before lease expiry, then clear the token. An old claim, including
+   one submitted exactly at expiry, stays fenced after same-worker reclamation.
+   Fresh queued rows have attempt zero; running, retry, and terminal rows have
+   attempt at least one, and contradictory stored lifecycle facts fail closed
+   in reads, claims, mutations, and aggregate projection. Legacy running rows
+   without a token are safely reset to retry with attempt at least one during
+   schema setup; poisoned connections are isolated.
 2. Always create the unique `authorized_visual_observation` Evidence first.
    Its literal Evidence ID is
    `visual:<observationId>:evidence:<textHash>`. Extend `EvidenceProvenance` and

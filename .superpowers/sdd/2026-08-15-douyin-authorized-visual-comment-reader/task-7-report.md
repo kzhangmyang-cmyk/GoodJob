@@ -2,7 +2,7 @@
 
 ## Status
 
-`PENDING independent review`. Implementation commits `6767681` and `7b09567`
+`PENDING independent review`. Implementation commits `6767681`, `7b09567`, and `73c515a`
 contain the Task 7 backend, contracts, generated same-worktree frontend type,
 lease fencing, schema migration, tests, current plan, and authoritative brief.
 Task 8 is not included.
@@ -32,11 +32,15 @@ Task 8 is not included.
   and restarts through an independent application-owned visual sweeper. Every
   claim stores a fresh cryptographic 64-hex lease token and increments attempt;
   complete/fail atomically match tenant/observation, worker, token, attempt,
-  running status, and lease time before clearing the token. Same-worker reclaim
-  therefore cannot authorize a prior asynchronous result.
+  running status, and require the result strictly before lease expiry before
+  clearing the token. Exact-expiry results are stale, and same-worker reclaim
+  cannot authorize a prior asynchronous result.
 - MySQL schema setup adds the nullable token column to an existing Task 7 table
-  and safely resets legacy tokenless running rows to `retry`. Parsing, scoped
-  reads, and aggregate projection reject contradictory token lifecycle facts.
+  and safely resets legacy tokenless running rows to `retry` with attempt at
+  least one. Fresh queued work requires attempt zero; running, retry, and
+  terminal work requires attempt at least one. Shared memory validation,
+  MySQL parsing, scoped reads, claims, mutations, and aggregate projection
+  reject contradictory lifecycle facts.
   Completion/failure first use the tenant+observation primary key and apply
   token+attempt as residual atomic predicates, so no wider recovery index is
   required; the existing recovery index remains aligned to status/time claims.
@@ -95,13 +99,19 @@ RED checkpoints were:
   `tests 3, pass 0, fail 3` because both claims returned no token. The existing
   table migration test then failed with a legacy row still `running` instead of
   the required safe `retry` state.
+- Exact-expiry review RED ran the Memory and MySQL
+  `visual lease results lose authority at the exact expiry instant` tests.
+  Each reported `tests 3, pass 0, fail 3`; complete and fail both missed the
+  expected rejection. Attempt-lifecycle RED reported Memory `tests 8, pass 3,
+  fail 5` and MySQL `tests 12, pass 1, fail 11` for invalid zero-attempt stored
+  states. The legacy migration RED then showed `attemptCount: 0` instead of 1.
 
 ## GREEN verification
 
-- Required focused Task 7 command: `tests 52, pass 52, fail 0, skip 0`.
-- Lease/storage/UOW matrix: `tests 63, pass 62, fail 0, skip 1`; the only skip
+- Required focused Task 7 command: `tests 63, pass 63, fail 0, skip 0`.
+- Exact-expiry, lifecycle, and migration review matrix: `24/24`.
+- Visual ingestion/MySQL matrix: `88 total, 87 pass, 0 fail, 1 skip`; the only skip
   is the conditional live-MySQL matrix because `MYSQL_TEST_ADMIN_URL` is absent.
-- Visual MySQL repository: `46 total, 45 pass, 0 fail, 1 conditional skip`.
 - Public-comment ingestion and shared UOW: `19/19`.
 - Application lifecycle with the repository convention `--test-force-exit`:
   `28/28`.
@@ -109,7 +119,7 @@ RED checkpoints were:
   generated acquisition type freshness: PASS.
 - Backend TypeScript build: PASS. Same-worktree frontend build: PASS with only
   the existing Vite chunk-size warning. `git diff --check`: PASS.
-- Complete acquisition gate with `--test-force-exit`: `951 total, 948 pass,
+- Complete acquisition gate with `--test-force-exit`: `977 total, 974 pass,
   2 fail, 1 skip`. The two failures are the unchanged baseline
   `acquisition-pi-gateway-runtime-test.ts` and
   `acquisition-pi-runtime-factory-test.ts`, both

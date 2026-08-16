@@ -612,7 +612,7 @@ contracts are present in the Task 7 worktree; no Task 8 work is included.
 
 **Ingestion rules:**
 
-- 观察和包含 `actorId`、append-time disposition 的可租赁视觉工作项由视觉仓库原子持久化。每次领取生成新的不透明 `leaseToken` 并递增 attempt；complete/fail 必须在同一原子更新中匹配 owner、token、attempt、status 和租约时间，旧领取结果在同 worker 重领后也不能提交。独立的视觉 recovery sweeper 实现公平领取、退避、租约失效和 poison 隔离；Domain、候选、公开事件和工作完成共用现有 memory/MySQL unit of work。
+- 观察和包含 `actorId`、append-time disposition 的可租赁视觉工作项由视觉仓库原子持久化。新建 `queued` 工作的 attempt 为 0；`running/retry/succeeded/manual_review_only` 必须至少有一次领取。每次领取生成新的不透明 `leaseToken` 并递增 attempt；complete/fail 必须在同一原子更新中匹配 owner、token、attempt、status，并严格早于租约到期时间，旧领取结果在同 worker 重领后也不能提交。存储生命周期矛盾时读取、领取和聚合均失败关闭；独立的视觉 recovery sweeper 实现公平领取、退避、租约失效和 poison 隔离；Domain、候选、公开事件和工作完成共用现有 memory/MySQL unit of work。
 - 自动工作先通过受限 Domain API 创建字面 ID `visual:<observationId>:evidence:<textHash>` 的 `authorized_visual_observation` Evidence。通用 Evidence append 不能伪造该 provenance 或 supersedes 链。
 - 只有完整、高置信且 URL/作品/评论/时间/计数/公开身份都闭合的观察才调用现有 `ingestSample` 一次。升级后保留 platform 和 visual 两条 Evidence，附加 visual Evidence 不再合并第二次信号；负面新身份从创建起即 `do_not_contact`。
 - 验证 `secUid` 与匹配主页使用现有 resolver 的稳定身份；昵称或其他不可验证观察仅使用 `unmergeable:douyin:visual:<observationId>` 且为 `needs_research`。`noise` 仅留 Evidence，不推断身份、收入、金额或敏感属性。
