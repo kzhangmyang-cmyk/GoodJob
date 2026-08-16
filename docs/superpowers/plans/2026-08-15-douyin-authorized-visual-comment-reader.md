@@ -573,8 +573,9 @@ captureVisibleTab (memory only)
 
 ### Task 7: 视觉观察转 Evidence、需求信号和 Run Presentation
 
-**Status:** PENDING independent review. The backend implementation and current
-contracts are present in the Task 7 worktree; no Task 8 work is included.
+**Status:** COMPLETED. Final independent review is `APPROVED` with 0 Critical,
+0 Important, and 0 Minor findings. Final code commit is `73c515a`; the reviewed
+documentation baseline is `37474c9`. No Task 8 work is included.
 
 **Repository:** `/Users/mac/Documents/新项目/GoodJob-growth`
 
@@ -643,9 +644,9 @@ contracts are present in the Task 7 worktree; no Task 8 work is included.
 
   Expected: PASS。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交并通过独立审查**
 
-  独立审查前精确暂存本 Task 上方 Files 清单中的全部后端、合同、生成类型和当前文档；不包含 Task 8、外部前端工作树或任何 `package-lock.json`。
+  Task 7 后端、合同、生成类型和当前文档已精确提交；最终代码为 `73c515a`，审查文档基线为 `37474c9`。独立审查以 0 Critical、0 Important、0 Minor 通过；提交不包含 Task 8、外部前端工作树或任何 `package-lock.json`。
 
 ### Task 8: 双仓 E2E、安全门禁、视觉验收和发布文档
 

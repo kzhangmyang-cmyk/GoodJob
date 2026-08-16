@@ -2,10 +2,11 @@
 
 ## Status
 
-`PENDING independent review`. Implementation commits `6767681`, `7b09567`, and `73c515a`
-contain the Task 7 backend, contracts, generated same-worktree frontend type,
-lease fencing, schema migration, tests, current plan, and authoritative brief.
-Task 8 is not included.
+`COMPLETED`. Final code commit `73c515a` and reviewed documentation baseline
+`37474c9` contain the Task 7 backend, contracts, generated same-worktree
+frontend type, lease fencing, schema migration, tests, current plan, and
+authoritative brief. Final independent review is `APPROVED` with 0 Critical,
+0 Important, and 0 Minor findings. Task 8 is not included.
 
 ## Reused ownership boundaries
 
