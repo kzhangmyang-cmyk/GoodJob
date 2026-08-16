@@ -528,6 +528,16 @@ function snapshotHashForView(value: unknown): `sha256:${string}` {
     .digest("hex")}`;
 }
 
+const LEGACY_TODAY_LIMITS = Object.freeze({
+  priorityCustomers: 10,
+  pendingQuoteApprovals: 50
+});
+
+const AUTHORITY_COMPLETENESS_PROBE_LIMITS = Object.freeze({
+  priorityCustomers: 100,
+  pendingQuoteApprovals: 100
+});
+
 export function createGrowthAdvisorQueryService(
   dependencies: GrowthAdvisorQueryServiceDependencies
 ): GrowthAdvisorSealedQueryService {
@@ -543,9 +553,13 @@ export function createGrowthAdvisorQueryService(
     issuedCutoffs.add(cutoff);
     return cutoff;
   };
-  const getTodayAt = async (
+  const loadTodayAt = async (
     context: ActiveWorkspaceContext,
-    query: { currency: string; cutoff: GrowthSealedReadCutoff }
+    query: { currency: string; cutoff: GrowthSealedReadCutoff },
+    limits: {
+      readonly priorityCustomers: number;
+      readonly pendingQuoteApprovals: number;
+    }
   ): Promise<GrowthAdvisorAuthorityTodayView> => {
     const cutoff = assertGrowthAdvisorReadCutoff(
       issuedCutoffs, context, query.cutoff
@@ -562,10 +576,10 @@ export function createGrowthAdvisorQueryService(
       await dependencies.priorityCandidates.listAsOf(context, {
         cutoff,
         timeZone: settings.timeZone,
-        limit: 10
+        limit: limits.priorityCustomers
       });
     const approvals = await dependencies.quoteApprovals.listPendingAsOf(
-      context, { cutoff, limit: 50 }
+      context, { cutoff, limit: limits.pendingQuoteApprovals }
     );
     const pendingQuoteApprovals: GrowthAdvisorAuthorityTodayView[
       "pendingQuoteApprovals"
@@ -711,6 +725,10 @@ export function createGrowthAdvisorQueryService(
       sourceSnapshotHash
     });
   };
+  const getTodayAt = (
+    context: ActiveWorkspaceContext,
+    query: { currency: string; cutoff: GrowthSealedReadCutoff }
+  ) => loadTodayAt(context, query, AUTHORITY_COMPLETENESS_PROBE_LIMITS);
   return Object.freeze({
     async getToday(
       context: ActiveWorkspaceContext,
@@ -721,9 +739,11 @@ export function createGrowthAdvisorQueryService(
         query.asOf, readStartedAt, 1_000
       );
       const cutoff = await sealTodayCutoff(context, effectiveAsOf);
-      const view = await getTodayAt(context, {
-        currency: query.currency, cutoff
-      });
+      const view = await loadTodayAt(
+        context,
+        { currency: query.currency, cutoff },
+        LEGACY_TODAY_LIMITS
+      );
       const sensitive = context.capabilities.includes("pricing.sensitive.read");
       return Object.freeze({
         ...view,

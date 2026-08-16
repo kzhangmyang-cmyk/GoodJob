@@ -211,7 +211,7 @@ git commit -m "feat(finance): persist financial council runs"
 - Modify: `backend/src/financial-ledger-as-of-mysql-reader-test.ts`
 
 **Interfaces:**
-- Adds internal `GrowthAdvisorSealedQueryService.getTodayAt(context,{currency,cutoff})`; public `getToday` remains backward compatible and delegates after sealing once.
+- Adds internal `GrowthAdvisorSealedQueryService.getTodayAt(context,{currency,cutoff})`; both paths share one sealed loader, while public `getToday` preserves its legacy 10/50 collection limits and internal authority reads use 100-row completeness probes that fail closed when the probe cap is reached.
 - Produces `FinancialCouncilAuthorityReader.readAt(context,{currency,cutoff})` over current CRM visibility, pending quote approvals, verified finance gaps/facts and expected/actual ROI projections.
 - Extends the sealed financial-ledger reader with a workspace-scoped verified-fact enumeration path so production authority snapshots never depend on caller-supplied fact IDs or test fixtures. The cutoff remains the sole temporal authority; the context workspace is the visibility boundary and `pricing.sensitive.read` remains the field-level amount/cost projection boundary.
 - Produces `FinancialSnapshotBuilder.freeze(command,input)` returning a deeply frozen snapshot and deterministic `snapshotHash`.
@@ -247,7 +247,7 @@ Expected: `FinancialSnapshotBuilder` is missing and existing `getToday` seals in
 
 - [ ] **Step 3: Extract the internal sealed query without changing the public response.**
 
-`getToday(context,query)` validates `asOf`, seals once and calls `getTodayAt`. `getTodayAt` rejects an unissued or wrong-workspace cutoff. Existing advisor tests must remain byte-for-byte green.
+`getToday(context,query)` validates `asOf`, seals once and calls the shared private sealed loader with legacy limits. Internal `getTodayAt` calls the same loader with authority completeness probes and rejects an unissued or wrong-workspace cutoff. No path reseals, and existing public advisor responses remain byte-for-byte compatible.
 
 - [ ] **Step 4: Implement snapshot canonicalization.**
 

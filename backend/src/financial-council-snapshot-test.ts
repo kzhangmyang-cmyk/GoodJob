@@ -153,6 +153,8 @@ function createHarness(options: {
   reverse?: boolean;
   incompleteRoi?: boolean;
   mixedApprovalCurrencies?: boolean;
+  priorityCount?: number;
+  approvalCount?: number;
 } = {}) {
   const transactions = new InMemoryGrowthTemporalTransactionRunner(
     "2026-08-16T08:00:00.000Z"
@@ -163,7 +165,7 @@ function createHarness(options: {
     seen.push(cutoff);
     return cutoff;
   };
-  const candidates = [
+  const defaultCandidates = [
     {
       candidateId: "candidate-b", customerId: "customer-b", dealId: "deal-b",
       displayName: "B", priorityScoreBps: 8_000,
@@ -177,7 +179,47 @@ function createHarness(options: {
       qualificationDecisionVersion: "v1", inputSnapshotHash: HASH("a")
     }
   ];
+  const candidates = options.priorityCount === undefined
+    ? defaultCandidates
+    : Array.from({ length: options.priorityCount }, (_, index) => ({
+        candidateId: `candidate-${String(index).padStart(3, "0")}`,
+        customerId: `customer-${String(index).padStart(3, "0")}`,
+        dealId: `deal-${String(index).padStart(3, "0")}`,
+        displayName: `Candidate ${String(index).padStart(3, "0")}`,
+        priorityScoreBps: 9_000,
+        qualificationDecisionId:
+          `qualification-${String(index).padStart(3, "0")}`,
+        qualificationDecisionVersion: "v1",
+        inputSnapshotHash: HASH("b")
+      }));
   if (options.reverse) candidates.reverse();
+  const approval = {
+    quoteCaseId: "quote-case-1", quoteVersionId: "quote-1",
+    approvalId: "approval-1", approvalKind: "confirmation" as const,
+    requiredCapabilities: ["quote.confirm"], lifecycleRevision: 4,
+    currency: "CNY", quotedAmountMinor: 1_000_000,
+    estimatedGrossProfitMinor: 200_000,
+    estimatedContributionMinor: 180_000, grossMarginBps: 2_000,
+    probabilityAssessmentId: "probability-1", closeProbabilityBps: 5_000,
+    commercialAmountHash: HASH("2"), salesOwnerActorId: "sales-1",
+    submittedBy: "sales-1", submittedAt: "2026-08-15T07:00:00.000Z",
+    expiresAt: null
+  };
+  const approvals = options.approvalCount === undefined
+    ? options.mixedApprovalCurrencies ? [approval, {
+        ...approval,
+        quoteCaseId: "quote-case-usd",
+        quoteVersionId: "quote-usd",
+        approvalId: "approval-usd",
+        currency: "USD"
+      }] : [approval]
+    : Array.from({ length: options.approvalCount }, (_, index) => ({
+        ...approval,
+        quoteCaseId: `quote-case-${String(index).padStart(3, "0")}`,
+        quoteVersionId: `quote-${String(index).padStart(3, "0")}`,
+        approvalId: `approval-${String(index).padStart(3, "0")}`
+      }));
+  if (options.reverse) approvals.reverse();
   const advisor = createGrowthAdvisorQueryService({
     temporalBarrier: barrier,
     workspaceSettings: {
@@ -195,14 +237,14 @@ function createHarness(options: {
         return {
           scope: { kind: "workspace", workspaceId: "workspace-a" },
           subjectVisibility: {
-            candidateIds: ["candidate-a", "candidate-b"],
-            customerIds: ["customer-a", "customer-b"],
-            dealIds: ["deal-a", "deal-b"], cohortIds: ["cohort-1"]
+            candidateIds: candidates.map((row) => row.candidateId),
+            customerIds: candidates.map((row) => row.customerId),
+            dealIds: candidates.map((row) => row.dealId), cohortIds: ["cohort-1"]
           },
           financialGapVisibility: {
-            candidateIds: ["candidate-a", "candidate-b"],
-            customerIds: ["customer-a", "customer-b"],
-            dealIds: ["deal-a", "deal-b"], cohortIds: ["cohort-1"]
+            candidateIds: candidates.map((row) => row.candidateId),
+            customerIds: candidates.map((row) => row.customerId),
+            dealIds: candidates.map((row) => row.dealId), cohortIds: ["cohort-1"]
           },
           sourceSnapshotHash: HASH("1")
         };
@@ -211,31 +253,13 @@ function createHarness(options: {
     priorityCandidates: {
       async listAsOf(_context, value) {
         note(value.cutoff);
-        return candidates;
+        return candidates.slice(0, value.limit);
       }
     },
     quoteApprovals: {
       async listPendingAsOf(_context, value) {
         note(value.cutoff);
-        const approval = {
-          quoteCaseId: "quote-case-1", quoteVersionId: "quote-1",
-          approvalId: "approval-1", approvalKind: "confirmation",
-          requiredCapabilities: ["quote.confirm"], lifecycleRevision: 4,
-          currency: "CNY", quotedAmountMinor: 1_000_000,
-          estimatedGrossProfitMinor: 200_000,
-          estimatedContributionMinor: 180_000, grossMarginBps: 2_000,
-          probabilityAssessmentId: "probability-1", closeProbabilityBps: 5_000,
-          commercialAmountHash: HASH("2"), salesOwnerActorId: "sales-1",
-          submittedBy: "sales-1", submittedAt: "2026-08-15T07:00:00.000Z",
-          expiresAt: null
-        };
-        return options.mixedApprovalCurrencies ? [approval, {
-          ...approval,
-          quoteCaseId: "quote-case-usd",
-          quoteVersionId: "quote-usd",
-          approvalId: "approval-usd",
-          currency: "USD"
-        }] : [approval];
+        return approvals.slice(0, value.limit);
       }
     },
     quoteVersions: {
@@ -468,4 +492,46 @@ test("non-sensitive authority filters mixed-currency approvals inside production
     ["quote-1"]
   );
   assert.equal(snapshot.authority.pendingQuoteApprovals[0]?.currency, undefined);
+});
+
+test("internal authority keeps 11 priorities and 51 approvals while public Today stays 10 and 50", async () => {
+  const forward = createHarness({ priorityCount: 11, approvalCount: 51 });
+  const publicView = await forward.advisor.getToday(workspace([]), {
+    currency: "CNY", asOf: "2026-08-16T08:00:00.000Z"
+  });
+  assert.equal(publicView.priorityCustomers.length, 10);
+  assert.equal(publicView.pendingQuoteApprovals.length, 50);
+  assert.equal(publicView.priorityCustomers[0]?.candidateId, "candidate-000");
+  assert.equal(publicView.priorityCustomers.at(-1)?.candidateId, "candidate-009");
+  assert.equal(publicView.pendingQuoteApprovals[0]?.quoteVersionId, "quote-000");
+  assert.equal(publicView.pendingQuoteApprovals.at(-1)?.quoteVersionId, "quote-049");
+  assert.equal(publicView.pendingQuoteApprovals[0]?.currency, undefined);
+
+  const snapshot = await forward.builder.freeze(command(workspace([])), input());
+  assert.equal(snapshot.authority.priorityCustomers.length, 11);
+  assert.equal(snapshot.authority.pendingQuoteApprovals.length, 51);
+
+  const reverse = await createHarness({
+    priorityCount: 11, approvalCount: 51, reverse: true
+  }).builder.freeze(command(workspace([])), input());
+  assert.deepEqual(snapshot.authority.priorityCustomers,
+    reverse.authority.priorityCustomers);
+  assert.deepEqual(snapshot.authority.pendingQuoteApprovals,
+    reverse.authority.pendingQuoteApprovals);
+  assert.equal(snapshot.authority.sourceSnapshotHash,
+    reverse.authority.sourceSnapshotHash);
+  assert.equal(snapshot.snapshotHash, reverse.snapshotHash);
+});
+
+test("internal authority fails closed when priority or approval probes reach 100", async () => {
+  for (const count of [100, 101]) {
+    await assert.rejects(
+      createHarness({ priorityCount: count }).builder.freeze(command(), input()),
+      /financial_council_authority_query_truncated/u
+    );
+    await assert.rejects(
+      createHarness({ approvalCount: count }).builder.freeze(command(), input()),
+      /financial_council_authority_query_truncated/u
+    );
+  }
 });
