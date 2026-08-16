@@ -101,6 +101,13 @@ export type ExtensionEvent =
       errorCodes: StableErrorCode[];
     };
 
+export interface VisualReaderAckMessage {
+  kind: "visual_reader_ack";
+  channelNonce: string;
+  sessionId: string;
+  batchId: string;
+}
+
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
 const NONCE = /^[0-9a-f]{64}$/u;
 const VERSION = /^(?=.{1,100}$)(?=.*\S)[^\u0000-\u001f\u007f]+$/u;
@@ -239,6 +246,15 @@ export function isObservation(value: unknown): value is VisualObservationSubmiss
   if (value.publicProfileUrl !== null && value.secUid !== null
     && PROFILE.exec(value.publicProfileUrl)?.[1] !== value.secUid) return false;
   return true;
+}
+
+export function parseVisualReaderAck(value: unknown): VisualReaderAckMessage | null {
+  return exact(value, ["kind", "channelNonce", "sessionId", "batchId"])
+    && value.kind === "visual_reader_ack"
+    && typeof value.channelNonce === "string" && NONCE.test(value.channelNonce)
+    && typeof value.sessionId === "string" && IDENTIFIER.test(value.sessionId)
+    && typeof value.batchId === "string" && IDENTIFIER.test(value.batchId)
+    ? value as unknown as VisualReaderAckMessage : null;
 }
 
 export function parsePageCommand(value: unknown, expectedOrigin: string): PageCommand | null {

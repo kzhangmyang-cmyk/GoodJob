@@ -57,8 +57,9 @@ The brief's focused command was first run before implementation and failed with 
 - lossless WebP proof, overlapping body/metadata pixel and word exclusion, fresh-queue replacement of a hung generation, deferred old-persistence/offscreen-end settlement before replacement start, cancellation of a queued start by a later synchronous abort revision, and service-worker epoch recovery from a higher surviving offscreen generation.
 - hierarchical Tesseract block/paragraph/line/symbol de-duplication, exact unpacked-smoke text and single amount semantics, same-line baseline jitter, per-coordinator deferred persistence ordering and drain, actual service-worker popup confirmation replacement/abort races with deferred `tabs.get`, and capture-transport rejection for both truncated and missing DOM.
 - round-four one-use popup confirmation binding across different- and same-session replacement, artifact flips, abort, exact TTL expiry, and expiry while content start is pending; immutable observation/ACK ownership under replacement; one-pixel vertical-overlap reading order shared with the validator; and exact popup disclosures for artifact-on and text-only modes.
+- round-five closed service-worker-to-content ACK ownership: the exact in-memory channel nonce crosses only the internal runtime message, content matches it with the current owner object/generation/session before acknowledging, and a delayed old `batch-1` cannot clear a same-session replacement's new `batch-1`.
 
-The round-four review defects now have focused RED→GREEN coverage and fresh full frontend/backend gates pass. Final parent review remains pending. No real Douyin page or traffic was accessed.
+The round-five review defect now has focused RED→GREEN coverage and fresh full frontend/backend gates pass. Final parent review remains pending. No real Douyin page or traffic was accessed.
 
 ## Workspace protection
 

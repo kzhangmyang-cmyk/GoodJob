@@ -2,6 +2,7 @@ import {
   BRIDGE_VERSION,
   canonicalDouyinVideoUrl,
   parsePageCommand,
+  parseVisualReaderAck,
   type ExtensionEvent,
   type VisualReaderLimits
 } from "./protocol";
@@ -90,7 +91,7 @@ function waitForDomStability(signal?: AbortSignal): Promise<void> {
 
 if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
   (globalThis as any)[INSTALL_KEY] = true;
-  type LifecycleOwner = Readonly<{ generation: number; sessionId: string }>;
+  type LifecycleOwner = Readonly<{ generation: number; sessionId: string; channelNonce: string }>;
   let reader: BoundedReader | null = null;
   let activeSessionId: string | null = null;
   let transport: ReliableEventTransport | null = null;
@@ -103,9 +104,9 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
     return currentOwner === owner && lifecycleGeneration === owner.generation;
   }
 
-  function beginLifecycle(sessionId: string): LifecycleOwner {
+  function beginLifecycle(sessionId: string, channelNonce: string): LifecycleOwner {
     const previousReader = reader;
-    const owner = Object.freeze({ generation: lifecycleGeneration + 1, sessionId });
+    const owner = Object.freeze({ generation: lifecycleGeneration + 1, sessionId, channelNonce });
     lifecycleGeneration = owner.generation;
     currentOwner = owner;
     reader = null;
@@ -309,7 +310,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
         artifactUploadEnabled: message.artifactUploadEnabled
       }, "https://www.douyin.com");
       if (!command || command.type !== "start") return;
-      const owner = beginLifecycle(command.sessionId);
+      const owner = beginLifecycle(command.sessionId, command.channelNonce);
       sendResponse({ accepted: true });
       const deadlines = deriveVisualReaderDeadlines(Date.now(), command.limits.maxDurationMs);
       void startVisualReaderWithinDeadlines({
@@ -348,10 +349,20 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
       });
       return;
     }
-    if (exact(message, ["kind", "sessionId", "batchId"])
-      && message.kind === "visual_reader_ack"
-      && message.sessionId === activeSessionId && typeof message.batchId === "string") {
-      void reader?.acknowledge(message.batchId).then((accepted) => sendResponse({ accepted }));
+    if (message !== null && typeof message === "object" && !Array.isArray(message)
+      && (message as { kind?: unknown }).kind === "visual_reader_ack") {
+      const acknowledgement = parseVisualReaderAck(message);
+      const owner = currentOwner;
+      const currentReader = reader;
+      if (!acknowledgement || !owner || !currentReader || !ownsLifecycle(owner)
+        || acknowledgement.sessionId !== activeSessionId
+        || acknowledgement.sessionId !== owner.sessionId
+        || acknowledgement.channelNonce !== owner.channelNonce) {
+        sendResponse({ accepted: false });
+        return;
+      }
+      void currentReader.acknowledge(acknowledgement.batchId)
+        .then((accepted) => sendResponse({ accepted }));
       return true;
     }
     if (exact(message, ["kind", "sessionId"]) && message.kind === "visual_reader_abort"

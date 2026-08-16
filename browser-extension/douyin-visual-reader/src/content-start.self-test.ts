@@ -221,6 +221,75 @@ try {
   await flush();
   assert.equal(attempts.length, 1, "fallback settlement cannot duplicate its terminal");
 
+  attempts.length = 0;
+  clock = 0;
+  sourceUrl = "https://www.douyin.com/video/501";
+  activeDocument = contentDocument(501);
+  const replacementLimits = {
+    maxVideos: 1,
+    maxCommentsPerVideo: 3,
+    maxScrolls: 5,
+    maxOcrCalls: 0,
+    maxDurationMs: 1_500
+  };
+  const replacementSessionId = "same-session-ack-owner";
+  const oldOwnerNonce = "8".repeat(64);
+  const newOwnerNonce = "9".repeat(64);
+  response = null;
+  invoke({
+    kind: "visual_reader_start",
+    sessionId: replacementSessionId,
+    limits: replacementLimits,
+    artifactUploadEnabled: false,
+    channelNonce: oldOwnerNonce
+  }, null, (value) => { response = value; });
+  assert.deepEqual(response, { accepted: true });
+  await waitFor(() => attempts.some((event) => event.type === "observation_batch"
+    && event.channelNonce === oldOwnerNonce && event.batchId === "batch-1"));
+
+  sourceUrl = "https://www.douyin.com/video/502";
+  activeDocument = contentDocument(502);
+  response = null;
+  invoke({
+    kind: "visual_reader_start",
+    sessionId: replacementSessionId,
+    limits: replacementLimits,
+    artifactUploadEnabled: false,
+    channelNonce: newOwnerNonce
+  }, null, (value) => { response = value; });
+  assert.deepEqual(response, { accepted: true });
+  await waitFor(() => attempts.some((event) => event.type === "observation_batch"
+    && event.channelNonce === newOwnerNonce && event.batchId === "batch-1"));
+
+  response = null;
+  invoke({
+    kind: "visual_reader_ack",
+    channelNonce: oldOwnerNonce,
+    sessionId: replacementSessionId,
+    batchId: "batch-1"
+  }, null, (value) => { response = value; });
+  assert.deepEqual(response, { accepted: false },
+    "a delayed ACK from an old same-session lifecycle is rejected explicitly");
+
+  response = null;
+  invoke({
+    kind: "visual_reader_ack",
+    channelNonce: newOwnerNonce,
+    sessionId: replacementSessionId,
+    batchId: "batch-1"
+  }, null, (value) => { response = value; });
+  await waitFor(() => response !== null);
+  assert.deepEqual(response, { accepted: true },
+    "rejecting the old owner keeps the replacement batch pending for its current ACK");
+  response = null;
+  invoke({
+    kind: "visual_reader_abort",
+    sessionId: replacementSessionId
+  }, null, (value) => { response = value; });
+  assert.deepEqual(response, { accepted: true });
+  await waitFor(() => attempts.some((event) => event.type === "terminal"
+    && event.channelNonce === newOwnerNonce && event.status === "aborted"));
+
   async function verifyStaleFallbackCannotOwnRestart(input: {
     oldSessionId: string;
     newSessionId: string;
@@ -281,6 +350,7 @@ try {
     response = null;
     invoke({
       kind: "visual_reader_ack",
+      channelNonce: input.newNonce,
       sessionId: input.newSessionId,
       batchId: "batch-1"
     }, null, (value) => { response = value; });
@@ -297,6 +367,7 @@ try {
     response = null;
     invoke({
       kind: "visual_reader_ack",
+      channelNonce: input.newNonce,
       sessionId: input.newSessionId,
       batchId: "batch-2"
     }, null, (value) => { response = value; });

@@ -79,7 +79,10 @@ npm run verify:visual-reader-build-order
 或该 tab 被替换，也会立即安全停止；其他窗口的标签页活动不会误停。扩展后台进程若在
 读取中重启，会清除残留授权并通知仍存活的网页和抖音内容脚本以
 `partial_success + visual_reader_session_expired` 失败关闭，不会静默续读或把它记为用户
-接管，也不会把原始 nonce 写入存储。当前扩展只读取
+接管，也不会把原始 nonce 写入存储。service worker 到 content 的批次 ACK 是 closed message，
+携带当前会话仅存在内存中的 nonce；content 只有在 session、nonce、owner object 与 lifecycle
+generation 全部匹配时才清除 pending batch，旧 lifecycle 的迟到 ACK 不能作用于同 session replacement。
+当前扩展只读取
 页面已显示的
 一级评论文字、公开时间、公开计数和卡内公开主页链接，最多程序滚动 5 次；不读取
 Cookie、脚本数据、头像地址、二级回复正文或页面内部状态，不执行任何写入或互动。

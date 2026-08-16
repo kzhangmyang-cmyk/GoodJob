@@ -3,7 +3,8 @@ import {
   BRIDGE_VERSION,
   isObservation,
   parseExtensionEvent,
-  parsePageCommand
+  parsePageCommand,
+  parseVisualReaderAck
 } from "./protocol";
 import { isVisualObservationSubmission } from "../../../src/acquisition/visual-reader-api";
 
@@ -15,6 +16,18 @@ const limits = {
   maxOcrCalls: 10,
   maxDurationMs: 120_000
 };
+
+const visualReaderAck = {
+  kind: "visual_reader_ack",
+  channelNonce: nonce,
+  sessionId: "visual-session-1",
+  batchId: "batch-1"
+} as const;
+assert.deepEqual(parseVisualReaderAck(visualReaderAck), visualReaderAck);
+assert.equal(parseVisualReaderAck({ ...visualReaderAck, extra: true }), null,
+  "the service-worker-to-content ACK is a closed message");
+assert.equal(parseVisualReaderAck({ ...visualReaderAck, channelNonce: "old-owner" }), null,
+  "ACK lifecycle ownership requires the exact in-memory nonce shape");
 
 for (const command of [
   { version: BRIDGE_VERSION, type: "probe", channelNonce: nonce },

@@ -10,6 +10,7 @@ let deferGoodJobEvent = false;
 let releaseGoodJobEvent: ((value: unknown) => void) | null = null;
 let deferReaderAck = false;
 let releaseReaderAck: ((value: unknown) => void) | null = null;
+let deferredReaderAckMessage: unknown = null;
 let deferReaderStart = false;
 let releaseReaderStart: ((value: unknown) => void) | null = null;
 let selectedTabReads = 0;
@@ -67,6 +68,7 @@ const passiveListener = { addListener() { return undefined; } };
       }
       if (kind === "visual_reader_ack" && deferReaderAck) {
         deferReaderAck = false;
+        deferredReaderAckMessage = structuredClone(message);
         return new Promise((resolve) => { releaseReaderAck = resolve; });
       }
       if (kind === "visual_reader_start" && deferReaderStart) {
@@ -315,6 +317,12 @@ const oldAck = dispatch({
   }
 }, { tab: { id: 10 }, origin });
 while (!releaseReaderAck) await Promise.resolve();
+assert.deepEqual(deferredReaderAckMessage, {
+  kind: "visual_reader_ack",
+  channelNonce: "e".repeat(64),
+  sessionId: "batch-new",
+  batchId: "shared-batch"
+}, "service worker binds ACK delivery to the captured lifecycle owner");
 
 assert.deepEqual(await start("batch-new", "f".repeat(64), false), { accepted: true });
 assert.deepEqual(await popupConfirm(requireToken(await popupSnapshot())), { accepted: true });

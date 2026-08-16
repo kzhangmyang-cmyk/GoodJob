@@ -301,12 +301,15 @@ async function handleGoodJobCommand(
   const snapshot = target.snapshot();
   if (command.sessionId !== snapshot.sessionId || sender.tab.id !== snapshot.goodJobTabId) return {};
   if (command.type === "acknowledge_batch") {
+    const channelNonce = target.rawChannelNonce();
     if (!ownsCoordinator(target, generation, transitionRevision)
       || !target.canAcknowledgeBatch(command.sessionId, command.batchId)
+      || channelNonce === null || command.channelNonce !== channelNonce
       || snapshot.douyinTabId === null) return { accepted: false };
     try {
       const response = await chrome.tabs.sendMessage(snapshot.douyinTabId, {
         kind: "visual_reader_ack",
+        channelNonce,
         sessionId: command.sessionId,
         batchId: command.batchId
       });
