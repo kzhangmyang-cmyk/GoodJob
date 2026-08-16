@@ -654,6 +654,11 @@ documentation baseline is `37474c9`. No Task 8 work is included.
 
 **Frontend repository:** `/Users/mac/Documents/外贸/GoodJob-marketing-system-frontend`
 
+**Current progress:** `COMPLETED` — frontend final HEAD/code
+`00be440cde77a250dd1080243e25e6840ef589cd`, backend documentation baseline
+`8766600`, independent review `APPROVED` with 0 Critical, 0 Important, and
+0 Minor findings. Task 8 is the final task; there is no Task 9.
+
 **Files:**
 - Create (frontend): `tests/acquisition-visual-reader.spec.ts`
 - Create (frontend): `tests/fixtures/visual-reader-extension-harness.ts`
@@ -670,21 +675,21 @@ documentation baseline is `37474c9`. No Task 8 work is included.
 - fixture 验证错误 nonce、超限观察、原始截图、Cookie 字段和未遮挡头像均被拒绝；写请求记录中不存在评论、私信、点赞、关注、发布或 CRM 自动转换。
 - 真实 Chrome 扩展 smoke 只在显式 `GOODJOB_VISUAL_READER_SMOKE=1` 时运行，必须由人工选中公开视频和点击开始；输出仅包含会话状态、数量、方法和稳定错误码，不输出评论正文或个人字段。
 
-- [ ] **Step 1: 写 E2E RED 测试**
+- [x] **Step 1: 写 E2E RED 测试**
 
   覆盖 1440/1024/768 视口、键盘操作、扩展缺失、DOM 成功、OCR fallback、低置信度、用户停止、安全验证、刷新恢复、制品授权和无横向溢出。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm run test:e2e -- acquisition-visual-reader.spec.ts`
 
   Expected: FAIL，直到 Tasks 4–7 完成。
 
-- [ ] **Step 3: 完成最小集成修正并进行真实页面视觉检查**
+- [x] **Step 3: 完成最小集成修正并进行真实页面视觉检查**
 
   启动后端 4190 与前端 5191，打开 `#acquisition`。检查深绿/暖白风格、授权解释、预算、时间线、长评论折行、低置信度警示、图片遮挡和停止态；不触发真实抖音网络。
 
-- [ ] **Step 4: 运行安全与全量确定性验收**
+- [x] **Step 4: 运行安全与全量确定性验收**
 
   Backend:
 
@@ -706,13 +711,18 @@ documentation baseline is `37474c9`. No Task 8 work is included.
   git status --short
   ```
 
-  Expected: 全部 PASS；manifest 无禁止权限，完整截图/Cookie/浏览器配置不出现在网络 fixture、日志或持久层。
+  Result: Task 8 E2E 10/10、frontend self-test 125/125、三套 types、
+  visual-reader、visual-reader build、OCR smoke、main build 和 diff check
+  全部 PASS。Backend `check:acquisition-contracts` 与 root build PASS；完整
+  acquisition 保留既有 977 total / 974 pass / 两个 Pi baseline failures /
+  一个缺少 live MySQL 的 skip。manifest 无禁止权限，完整截图、Cookie 和
+  浏览器配置不出现在网络 fixture、日志或持久层。
 
-- [ ] **Step 5: 同步当前执行文档**
+- [x] **Step 5: 同步当前执行文档**
 
   README/PRD 正文直接说明授权入口、DOM/OCR 顺序、可见一级样本覆盖、预算、隐私、低置信度、人工复核、扩展安装/卸载和 Beta smoke；不把它写成抖音官方连接器或全量评论能力。历史设计仅在内容真实过期时改正文，不在顶部堆修订说明。
 
-- [ ] **Step 6: 分仓提交**
+- [x] **Step 6: 分仓提交**
 
   Backend:
 
@@ -728,6 +738,11 @@ documentation baseline is `37474c9`. No Task 8 work is included.
   git commit -m "test: verify authorized visual comment reading"
   ```
 
-- [ ] **Step 7: 最终复审与状态核对**
+- [x] **Step 7: 最终复审与状态核对**
 
   独立复审实现对本计划和已批准设计的逐项符合性，特别检查权限、原始截图生命周期、遮挡像素、身份升级、低置信度门禁、恢复语义和真实 UI。两仓分别运行 `git status --short` 与 `git log -15 --oneline`，确认没有带入用户原有文件。
+
+  Final result: `APPROVED`，0 Critical、0 Important、0 Minor。Browser QA 在
+  default、1024、768 下均为 document width 等于 viewport width，console
+  error 为 0；完整业务视觉路径由确定性 Task 8 E2E 证明。Frontend 仅保留
+  用户原有未跟踪 `package-lock.json`，backend clean。
