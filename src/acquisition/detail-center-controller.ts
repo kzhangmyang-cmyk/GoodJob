@@ -771,6 +771,7 @@ export function createAcquisitionDetailCenterController(
     render();
     try {
       const artifact = await visualReaderApi.getArtifact(id);
+      if (disposed || serial !== artifactLoadSerial || !evidenceAuthorizesArtifact(id)) return;
       if (artifact.mediaType !== "image/webp") {
         throw new Error("服务端返回了无效的视觉读取制品");
       }

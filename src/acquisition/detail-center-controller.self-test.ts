@@ -5304,7 +5304,6 @@ function artifactAction(action: string, artifactId?: string) {
 {
   const oldArtifact = deferred<{ mediaType: "image/webp"; content: ArrayBuffer }>();
   const replacementArtifact = deferred<{ mediaType: "image/webp"; content: ArrayBuffer }>();
-  const bothArtifactsDecoded = deferred<void>();
   let call = 0;
   let decoderCalls = 0;
   const created: string[] = [];
@@ -5324,7 +5323,6 @@ function artifactAction(action: string, artifactId?: string) {
     } as unknown as VisualReaderApi,
     artifactDecoder: async () => {
       decoderCalls += 1;
-      if (decoderCalls === 2) bothArtifactsDecoded.resolve();
     },
     artifactObjectUrl: {
       createObjectURL() {
@@ -5348,8 +5346,8 @@ function artifactAction(action: string, artifactId?: string) {
     content: new Uint8Array([1]).buffer
   });
   await controller.whenIdle();
-  await bothArtifactsDecoded.promise;
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  assert.equal(decoderCalls, 1, "a stale API response is rejected before decode");
   assert.match(body.innerHTML, /src="blob:late-1"/u);
   assert.deepEqual(created, ["blob:late-1"],
     "late superseded bytes are discarded after decode and before object URL creation");
