@@ -83,11 +83,30 @@ function waitForDomStability(signal?: AbortSignal): Promise<void> {
 
 if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
   (globalThis as any)[INSTALL_KEY] = true;
+  type LifecycleOwner = Readonly<{ generation: number; sessionId: string }>;
   let reader: BoundedReader | null = null;
   let activeSessionId: string | null = null;
   let transport: ReliableEventTransport | null = null;
+  let lifecycleGeneration = 0;
+  let currentOwner: LifecycleOwner | null = null;
   let internalScrollUntil = 0;
   let internalClick = false;
+
+  function ownsLifecycle(owner: LifecycleOwner): boolean {
+    return currentOwner === owner && lifecycleGeneration === owner.generation;
+  }
+
+  function beginLifecycle(sessionId: string): LifecycleOwner {
+    const previousReader = reader;
+    const owner = Object.freeze({ generation: lifecycleGeneration + 1, sessionId });
+    lifecycleGeneration = owner.generation;
+    currentOwner = owner;
+    reader = null;
+    activeSessionId = sessionId;
+    transport = null;
+    previousReader?.stop();
+    return owner;
+  }
 
   function createSessionTransport(
     deadlineAt: number
@@ -121,20 +140,22 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
   async function finalizeEmptyWorkWindow(input: {
     sessionId: string;
     channelNonce: string;
-  }, deadlines: ReturnType<typeof deriveVisualReaderDeadlines>, deadlineCheckedAt: number): Promise<void> {
-    const previousReader = reader;
-    reader = null;
-    activeSessionId = input.sessionId;
+  }, deadlines: ReturnType<typeof deriveVisualReaderDeadlines>, deadlineCheckedAt: number,
+  owner: LifecycleOwner): Promise<void> {
+    if (!ownsLifecycle(owner)) return;
     const sessionTransport = createSessionTransport(deadlines.sessionDeadlineAt);
     transport = sessionTransport;
     sessionTransport.queueTerminal(budgetTerminal(input), { deadlineCheckedAt });
-    previousReader?.stop();
     try {
       await sessionTransport.whenIdle();
     } finally {
       sessionTransport.close();
-      if (transport === sessionTransport) transport = null;
-      if (activeSessionId === input.sessionId) activeSessionId = null;
+      if (ownsLifecycle(owner) && reader === null && transport === sessionTransport
+        && activeSessionId === owner.sessionId) {
+        transport = null;
+        activeSessionId = null;
+        currentOwner = null;
+      }
     }
   }
 
@@ -158,9 +179,8 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
     limits: VisualReaderLimits;
     artifactUploadEnabled: boolean;
     channelNonce: string;
-  }, deadlines: ReturnType<typeof deriveVisualReaderDeadlines>): Promise<void> {
-    reader?.stop();
-    activeSessionId = input.sessionId;
+  }, deadlines: ReturnType<typeof deriveVisualReaderDeadlines>, owner: LifecycleOwner): Promise<void> {
+    if (!ownsLifecycle(owner)) return;
     const adapter = browserAdapter();
     const source = canonicalDouyinVideoUrl(globalThis.location.href);
     if (!source) throw new BoundedReaderError("visual_source_invalid");
@@ -235,7 +255,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
       await sessionReader.start();
     } finally {
       cleanupTakeover();
-      if (reader === sessionReader) {
+      if (ownsLifecycle(owner) && reader === sessionReader && activeSessionId === owner.sessionId) {
         reader = null;
         activeSessionId = null;
       }
@@ -243,7 +263,10 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
         await sessionTransport.whenIdle();
       } finally {
         sessionTransport.close();
-        if (transport === sessionTransport) transport = null;
+        if (ownsLifecycle(owner) && transport === sessionTransport) {
+          transport = null;
+          currentOwner = null;
+        }
       }
     }
   }
@@ -260,6 +283,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
         artifactUploadEnabled: message.artifactUploadEnabled
       }, "https://www.douyin.com");
       if (!command || command.type !== "start") return;
+      const owner = beginLifecycle(command.sessionId);
       sendResponse({ accepted: true });
       const deadlines = deriveVisualReaderDeadlines(Date.now(), command.limits.maxDurationMs);
       void startVisualReaderWithinDeadlines({
@@ -267,11 +291,15 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
         queueBudgetTerminal: (currentDeadlines, deadlineCheckedAt) => finalizeEmptyWorkWindow(
           command,
           currentDeadlines,
-          deadlineCheckedAt
+          deadlineCheckedAt,
+          owner
         ),
-        startReader: (currentDeadlines) => start(command, currentDeadlines)
+        startReader: (currentDeadlines) => start(command, currentDeadlines, owner)
       }).catch(async () => {
         const fallback = createSessionTransport(deadlines.sessionDeadlineAt);
+        if (ownsLifecycle(owner) && reader === null && activeSessionId === owner.sessionId) {
+          transport = fallback;
+        }
         fallback.queueTerminal({
           version: BRIDGE_VERSION,
           type: "terminal",
@@ -284,8 +312,12 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
           await fallback.whenIdle();
         } finally {
           fallback.close();
-          reader = null;
-          activeSessionId = null;
+          if (ownsLifecycle(owner) && reader === null && transport === fallback
+            && activeSessionId === owner.sessionId) {
+            transport = null;
+            activeSessionId = null;
+            currentOwner = null;
+          }
         }
       });
       return;
@@ -303,11 +335,14 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
       return;
     }
     if (matchesUnavailableSession(message, "visual_reader_unavailable", activeSessionId)) {
-      reader?.stop();
-      transport?.close();
+      const unavailableReader = reader;
+      const unavailableTransport = transport;
+      currentOwner = null;
       reader = null;
       transport = null;
       activeSessionId = null;
+      unavailableReader?.stop();
+      unavailableTransport?.close();
       sendResponse({ accepted: true });
     }
   });

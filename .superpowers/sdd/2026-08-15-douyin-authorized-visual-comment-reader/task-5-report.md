@@ -9,6 +9,7 @@
 - Visible, top-level comment extraction using DOM text, ARIA names, public time/count text, literal comment IDs, and literal in-card public profile links
 - Fail-closed handling for selector drift, ambiguous read-only buttons, login, captcha, security verification, ads, and nested replies
 - Bounded batching, ACK retention, deduplication, at most five programmatic scrolls, two-cycle no-progress stop, duration stop, and user-takeover stop; work stops before a reserved finalization window, empty or expired work queues terminal before content setup, and terminal attempts remain within the same total session deadline
+- Per-start lifecycle ownership uses a monotonic generation plus a unique owner object, so a settled, rejected, or timed-out fallback from an older start cannot clear a replacement reader, session, or transport; this also protects restarts that deliberately reuse the same `sessionId`
 - Strict `chrome.storage.session` projection containing only session/tab IDs, limits, usage, artifact flag, nonce hash, and state
 - Same-canonical-URL reloads, URL-less `loading` lifecycle updates, and bound-tab replacements fail closed without affecting other tabs or windows
 - MV3 restart reports `partial_success` with `visual_reader_session_expired`, so the GoodJob controller uses server completion rather than a user-takeover abort
@@ -25,6 +26,8 @@ The Task 5 extension does not capture screenshots, run OCR, read cookies, inspec
 npm exec -- tsx browser-extension/douyin-visual-reader/src/content-start.self-test.ts
   RED: maxDurationMs=1 content setup advanced the clock and the real transport attempted 0 sends instead of 1
   GREEN: PASS
+  USER-AUTHORIZED EXTRA REPAIR RED: an older deferred fallback settled after a replacement reader reached batch-2, then the replacement ACK returned no response (`null`) instead of `{ accepted: true }`
+  GREEN: PASS for stale fallback success, rejection/retry, and timeout/retry; both different-session and same-sessionId restarts retain ACK/abort routing, the replacement transport emits its aborted terminal, and all tracked timers/unhandled rejections are clear
 npm exec -- tsx browser-extension/douyin-visual-reader/src/service-reliability.self-test.ts
   RED: an eligible send that consumed its last millisecond scheduled 1 timeout beyond the deadline instead of 0
   GREEN: PASS
@@ -35,6 +38,8 @@ npm run check:visual-reader-bundle PASS
 npm run test                     PASS (125 checks)
 git diff --check                 PASS
 ```
+
+This user-authorized extra repair wave is implemented and locally verified; independent review of the repair is pending. It does not change the public protocol, permissions, storage/logging boundary, or Task 6 scope.
 
 The development manifest contains only `http://127.0.0.1:5191/*` for the GoodJob content script; unset or blank development origin input resolves to that fixed local origin, and every other supplied value is rejected. Release rendering fails closed unless `VISUAL_READER_RELEASE=1` is accompanied by explicit HTTPS `GOODJOB_APP_ORIGINS`. The read-only audit rejects any full-manifest drift from the template and rendered origins, including CSP, optional permissions, content-script attributes, background/action, and web-accessible resources.
 
