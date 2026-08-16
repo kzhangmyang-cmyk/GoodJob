@@ -2946,6 +2946,8 @@ export interface components {
         visualObservationSourceUrl: string;
         visualObservationVideoId: string;
         visualObservationVisibleText: string;
+        visualObservationDigest: string;
+        visualObservationNullableDigest: components["schemas"]["visualObservationDigest"] | null;
         visualObservationNullableVisibleString: string | null;
         visualObservationNullableCount: number | null;
         visualObservationNullablePlatformCommentId: string | null;
@@ -2999,6 +3001,8 @@ export interface components {
             sourceUrl: components["schemas"]["visualObservationSourceUrl"];
             videoId: components["schemas"]["visualObservationVideoId"];
             visibleText: components["schemas"]["visualObservationVisibleText"];
+            domTextHash: components["schemas"]["visualObservationNullableDigest"];
+            ocrTextHash: components["schemas"]["visualObservationNullableDigest"];
             displayName: components["schemas"]["visualObservationNullableVisibleString"];
             visibleTimeText: components["schemas"]["visualObservationNullableVisibleString"];
             likeCount: components["schemas"]["visualObservationNullableCount"];
@@ -3028,7 +3032,6 @@ export interface components {
             observations: components["schemas"]["visualReaderObservationSubmission"][];
         };
         visualObservationIdentifier: string;
-        visualObservationDigest: string;
         /**
          * DouyinVisualCommentObservationV1
          * @description Server-normalized observation of one currently visible top-level Douyin comment. Standard JSON Schema validates sourceUrl and videoId independently; the Task 3 service must require the numeric sourceUrl video segment to equal videoId before persistence.
@@ -3040,6 +3043,8 @@ export interface components {
             videoId: components["schemas"]["visualObservationVideoId"];
             visibleText: components["schemas"]["visualObservationVisibleText"];
             textHash: components["schemas"]["visualObservationDigest"];
+            domTextHash: components["schemas"]["visualObservationNullableDigest"];
+            ocrTextHash: components["schemas"]["visualObservationNullableDigest"];
             displayName: components["schemas"]["visualObservationNullableVisibleString"];
             visibleTimeText: components["schemas"]["visualObservationNullableVisibleString"];
             likeCount: components["schemas"]["visualObservationNullableCount"];

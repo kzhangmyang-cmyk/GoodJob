@@ -159,6 +159,8 @@ test("visual reader session and normalized batch responses conform to runtime Op
     videoId: "7536012345678904333",
     visibleText: "公开可见的采购需求",
     textHash: `sha256:${"1".repeat(64)}`,
+    domTextHash: `sha256:${"1".repeat(64)}`,
+    ocrTextHash: null,
     displayName: "公开用户",
     visibleTimeText: "1小时前",
     likeCount: 2,

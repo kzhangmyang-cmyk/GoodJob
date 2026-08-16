@@ -69,6 +69,8 @@ const visualObservation = {
   videoId: "7536012345678909876",
   visibleText: "评论卡当前可见的企业采购需求",
   textHash: validSha256,
+  domTextHash: validSha256,
+  ocrTextHash: null,
   displayName: "公开用户",
   visibleTimeText: "2小时前",
   likeCount: 3,
@@ -90,6 +92,8 @@ const visualSubmission = {
   sourceUrl: visualObservation.sourceUrl,
   videoId: visualObservation.videoId,
   visibleText: visualObservation.visibleText,
+  domTextHash: visualObservation.domTextHash,
+  ocrTextHash: visualObservation.ocrTextHash,
   displayName: visualObservation.displayName,
   visibleTimeText: visualObservation.visibleTimeText,
   likeCount: visualObservation.likeCount,
@@ -534,6 +538,8 @@ test("visual observations accept only strict visible Douyin comment facts", asyn
     { ...visualObservation, publicProfileUrl: "https://www.douyin.com/user/public?token=secret" },
     { ...visualObservation, secUid: "contains whitespace" },
     { ...visualObservation, visibleText: "x".repeat(2_001) },
+    { ...visualObservation, domTextHash: "sha256:ABC" },
+    { ...visualObservation, ocrTextHash: `sha256:${"0".repeat(63)}` },
     { ...visualObservation, fieldConfidences: { visibleText: 1.01 } },
     { ...visualObservation, fieldConfidences: { visibleText: -0.01 } },
     { ...visualObservation, fieldConfidences: { visibleText: 1, inferredIntent: 1 } },
@@ -544,6 +550,12 @@ test("visual observations accept only strict visible Douyin comment facts", asyn
   ]) {
     assert.equal(validate(invalid), false, JSON.stringify(invalid));
   }
+  const withoutDomHash = { ...visualObservation };
+  delete withoutDomHash.domTextHash;
+  assert.equal(validate(withoutDomHash), false, "domTextHash is required nullable provenance");
+  const withoutOcrHash = { ...visualObservation };
+  delete withoutOcrHash.ocrTextHash;
+  assert.equal(validate(withoutOcrHash), false, "ocrTextHash is required nullable provenance");
 });
 
 test("visual observation schema records dynamic identity checks for the service boundary", async () => {
@@ -616,6 +628,12 @@ test("visual submissions reject server fields, exfiltration, invalid crops, and 
   };
 
   assert.equal(validateSubmission(visualSubmission), true, JSON.stringify(validateSubmission.errors));
+  const submissionWithoutDomHash = { ...visualSubmission };
+  delete submissionWithoutDomHash.domTextHash;
+  assert.equal(validateSubmission(submissionWithoutDomHash), false);
+  const submissionWithoutOcrHash = { ...visualSubmission };
+  delete submissionWithoutOcrHash.ocrTextHash;
+  assert.equal(validateSubmission(submissionWithoutOcrHash), false);
   assert.equal(validateSubmission({
     ...visualSubmission,
     extractionMethod: "accessibility"

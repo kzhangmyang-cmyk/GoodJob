@@ -525,17 +525,18 @@ captureVisibleTab (memory only)
 → clamp card bounds to viewport
 → crop one comment card
 → opaque-mask avatar and all pixels outside text/metadata bounds
-→ OCR redacted crop locally when DOM/ARIA text is missing or truncated
+→ mask metadata again and OCR body rectangles only when DOM/ARIA text is missing or truncated
 → compare DOM/OCR normalized text
 → emit structured observation + optional redacted WebP
-→ zero references to raw screenshot
+→ release raw resources before OCR; independently validate the WebP against the authorized request
 ```
 
 - `VisualOcrPort.recognize(redactedCrop, languages)` 返回文字、词级置信度和边界；默认实现固定 `chi_sim+eng`。
-- Tesseract worker 每会话最多一个，惰性加载，空闲 30 秒或会话结束立即 terminate；worker/core/wasm/language assets 全部来自扩展包，不用 CDN、远程脚本或动态代码。Pinned `best_int` 语言 gzip 仅在构建时解压，runtime 使用本地 `.traineddata` 且不包含 Node `Buffer`/`bmp-js`。
+- Tesseract worker 每会话最多一个，惰性加载，初始化与识别各限 20 秒，空闲 30 秒或会话结束立即 terminate；结束后才 resolve 的 worker 也立即销毁。worker/core/wasm/language assets 全部来自扩展包，不用 CDN、远程脚本或动态代码。Pinned `best_int` 语言 gzip 仅在构建时解压，runtime 使用本地 `.traineddata` 且不包含 Node `Buffer`/`bmp-js`。
 - 扩展 CSP 固定为 `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'`，只为本地 Tesseract WASM 开放编译；构建测试拒绝 `unsafe-eval`、远程源和额外 `connect-src`。
-- 若 DOM 文本完整，OCR 不运行。若 DOM/OCR 显著冲突，保留两个哈希和遮挡裁剪但结果为 `manual_review_only`，不让模型择一补写。
-- 只有遮挡后的 WebP 可进入 page bridge；raw screenshot 对象在 crop 完成后的 `finally` 中释放，禁止写 storage、IndexedDB、日志或 crash payload。
+- 若 DOM 文本完整，OCR 不运行。公开时间与计数可以留在遮挡制品 proof 中，但 OCR 输入必须再次遮挡 metadata，只能从正文矩形内的 word bounds 重建文字。若 DOM/OCR 显著冲突，保留两个哈希和遮挡裁剪但结果为 `manual_review_only`；OCR 空、失败或无效时保留原截断 DOM 低置信观察，不让模型择一补写。
+- `domTextHash` / `ocrTextHash` 是 submission 与 normalized observation 的 required-nullable 来源证明；后端按最终 extraction method 交叉校验并原样持久化，且继续独立生成 server `textHash`。
+- 只有再次按当前授权 request 校验过的遮挡 WebP 可进入 page bridge。校验包含 canonical RIFF/WEBP、真实 decode、精确尺寸/proof geometry、alpha、逐像素 mask 和 OCR body word bounds。raw screenshot/image/full canvas/raster 在 OCR await 前释放；end/takeover 会抢占队列、主动清理 offscreen raw 资源并使旧 generation 消息失效。禁止写 storage、IndexedDB、日志或 crash payload。
 
 - [x] **Step 1: 写裁剪/遮挡/OCR 决策 RED 测试**
 
@@ -568,7 +569,7 @@ captureVisibleTab (memory only)
   git commit -m "feat: extract text from redacted comment cards"
   ```
 
-  Implementation is committed at frontend `12e707f` and awaits the independent completion review. Complete DOM and artifact-disabled sessions cannot enter capture/OCR. Authorized missing/truncated cards are serialized through an owner-rechecked `captureVisibleTab`, offscreen crop, exact opaque masking, lossless WebP round-trip proof, and local `chi_sim+eng` OCR; no raw screenshot leaves temporary memory. The dist ships full notices/licenses plus an exact SHA-256 inventory and is 29,612 KiB. A real unpacked Chromium smoke exercises the bundled offscreen/worker/core/language path and immediate worker termination. Fresh focused, full extension, strict types, 125-check main frontend, build/audit, real build-order, and diff gates passed. No real Douyin page was accessed. The protected user-owned untracked `package-lock.json` was not read, modified, staged, deleted, or committed.
+  Implemented and independently re-reviewed clean. End/takeover invalidates work out of band; immutable generation/tab/window/session ownership is reauthorized after capture, after offscreen, and again after asynchronous real-pixel validation immediately before release. Raw data URL/message references are broken as decode starts, decoded PNG resources are cleared before encoding, and encoder scratch/bytes are generation-scoped for immediate end cleanup. Worker initialization/recognition is bounded, OCR is body-only with metadata remasked, failed OCR retains a protocol-valid truncated DOM observation with no crop, `domTextHash`/`ocrTextHash` provenance is persisted, and request-bound WebP validation checks real pixels. The unpacked Chromium smoke covers the packaged offscreen/worker/core/language path and immediate termination; deterministic tests cover authorization/capture ownership, so the smoke is not evidence of a real Douyin/full capture path. Fresh frontend visual/types/main/build/smoke/audit/order/diff gates and backend contracts/drift/security/OpenAPI/generated/frontend/Baota/build/diff gates pass. No real Douyin page was accessed. The protected user-owned untracked `package-lock.json` remained outside Task 6.
 
 ### Task 7: 视觉观察转 Evidence、需求信号和 Run Presentation
 

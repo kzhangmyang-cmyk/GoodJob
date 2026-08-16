@@ -55,13 +55,15 @@ function observation(
   overrides: Partial<DouyinVisualCommentObservationV1> = {}
 ): DouyinVisualCommentObservationV1 {
   const visibleText = `mysql visible ${id}`;
-  return {
+  const result: DouyinVisualCommentObservationV1 = {
     observationId: id,
     sessionId: "mysql-visual-session",
     sourceUrl: "https://www.douyin.com/video/987654321",
     videoId: "987654321",
     visibleText,
     textHash: digest(visibleText),
+    domTextHash: digest(visibleText),
+    ocrTextHash: null,
     displayName: "visible user",
     visibleTimeText: null,
     likeCount: 1,
@@ -80,6 +82,13 @@ function observation(
       : "2026-08-15T01:00:01.000Z",
     ...overrides
   };
+  if (overrides.visibleText !== undefined && overrides.domTextHash === undefined) {
+    result.domTextHash = digest(result.visibleText);
+  }
+  if (result.extractionMethod === "ocr" && overrides.ocrTextHash === undefined) {
+    result.ocrTextHash = digest(result.visibleText);
+  }
+  return result;
 }
 
 function artifact(

@@ -60,13 +60,15 @@ function observation(
   overrides: Partial<DouyinVisualCommentObservationV1> = {}
 ): DouyinVisualCommentObservationV1 {
   const visibleText = `visible text ${id}`;
-  return {
+  const result: DouyinVisualCommentObservationV1 = {
     observationId: id,
     sessionId: "visual-session-1",
     sourceUrl: "https://www.douyin.com/video/123456789",
     videoId: "123456789",
     visibleText,
     textHash: digest(visibleText),
+    domTextHash: digest(visibleText),
+    ocrTextHash: null,
     displayName: "same visible nickname",
     visibleTimeText: "1小时前",
     likeCount: 3,
@@ -83,6 +85,13 @@ function observation(
     capturedAt: `2026-08-15T01:00:${id.endsWith("2") ? "02" : "01"}.000Z`,
     ...overrides
   };
+  if (overrides.visibleText !== undefined && overrides.domTextHash === undefined) {
+    result.domTextHash = digest(result.visibleText);
+  }
+  if (result.extractionMethod === "ocr" && overrides.ocrTextHash === undefined) {
+    result.ocrTextHash = digest(result.visibleText);
+  }
+  return result;
 }
 
 function appendInput(
@@ -153,7 +162,8 @@ test("normalized visual observations enforce every closed Task 1 field constrain
   const withText = (visibleText: string) => ({
     ...base,
     visibleText,
-    textHash: digest(visibleText)
+    textHash: digest(visibleText),
+    domTextHash: digest(visibleText)
   });
   const cases: Array<{ name: string; value: unknown }> = [
     { name: "top-level additional property", value: { ...base, extra: true } },
@@ -235,6 +245,14 @@ test("normalized visual observations enforce every closed Task 1 field constrain
     } },
     { name: "viewport digest format", value: { ...base, viewportHash: "bad" } },
     { name: "crop digest format", value: { ...base, redactedCropHash: "bad" } },
+    { name: "DOM provenance digest format", value: { ...base, domTextHash: "bad" } },
+    { name: "OCR provenance digest format", value: { ...base, ocrTextHash: "SHA256:bad" } },
+    { name: "DOM provenance digest mismatch", value: {
+      ...base, domTextHash: digest("different DOM text")
+    } },
+    { name: "OCR provenance digest mismatch", value: {
+      ...base, extractionMethod: "ocr", ocrTextHash: digest("different OCR text")
+    } },
     { name: "reader version whitespace", value: { ...base, readerVersion: " " } },
     { name: "reader version length", value: {
       ...base, readerVersion: "v".repeat(101)
@@ -273,7 +291,8 @@ test("normalized visual string maxLength counts Unicode code points", () => {
   const withText = (visibleText: string) => ({
     ...base,
     visibleText,
-    textHash: digest(visibleText)
+    textHash: digest(visibleText),
+    domTextHash: digest(visibleText)
   });
   for (const valid of [
     withText("😀".repeat(1_500)),

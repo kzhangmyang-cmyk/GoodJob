@@ -93,6 +93,8 @@ export interface DouyinVisualCommentObservationV1 {
   videoId: string;
   visibleText: string;
   textHash: string;
+  domTextHash: string | null;
+  ocrTextHash: string | null;
   displayName: string | null;
   visibleTimeText: string | null;
   likeCount: number | null;
@@ -293,7 +295,7 @@ const DOUYIN_PROFILE_URL =
 const DOUYIN_PUBLIC_KEY = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u;
 const OBSERVATION_KEYS = [
   "observationId", "sessionId", "sourceUrl", "videoId", "visibleText",
-  "textHash", "displayName", "visibleTimeText", "likeCount", "replyCount",
+  "textHash", "domTextHash", "ocrTextHash", "displayName", "visibleTimeText", "likeCount", "replyCount",
   "platformCommentId", "publicProfileUrl", "secUid", "extractionMethod",
   "fieldConfidences", "viewportHash", "cardBounds", "redactedCropHash",
   "readerVersion", "capturedAt"
@@ -748,6 +750,8 @@ function validateObservation(
     || unicodeCodePointLength(observation.visibleText) > 2_000
     || !/\S/u.test(observation.visibleText)
     || !DIGEST.test(observation.textHash)
+    || (observation.domTextHash !== null && !DIGEST.test(observation.domTextHash))
+    || (observation.ocrTextHash !== null && !DIGEST.test(observation.ocrTextHash))
     || !nullableVisibleString(observation.displayName)
     || !nullableVisibleString(observation.visibleTimeText)
     || !nullableCount(observation.likeCount)
@@ -794,6 +798,15 @@ function validateObservation(
   }
   if (`sha256:${createHash("sha256").update(observation.visibleText)
     .digest("hex")}` !== observation.textHash) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
+  const sourceTextHash = `sha256:${createHash("sha256")
+    .update(observation.visibleText).digest("hex")}`;
+  if ((observation.extractionMethod === "dom"
+      || observation.extractionMethod === "accessibility")
+      && observation.domTextHash !== sourceTextHash
+    || observation.extractionMethod === "ocr"
+      && observation.ocrTextHash !== sourceTextHash) {
     fail("VISUAL_READER_INVALID_INPUT");
   }
   for (const [key, value] of Object.entries(observation.cardBounds)) {

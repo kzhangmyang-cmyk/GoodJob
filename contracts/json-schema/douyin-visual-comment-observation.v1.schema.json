@@ -15,6 +15,12 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "visualObservationNullableDigest": {
+      "oneOf": [
+        { "$ref": "#/$defs/visualObservationDigest" },
+        { "type": "null" }
+      ]
+    },
     "visualObservationSourceUrl": {
       "type": "string",
       "format": "uri",
@@ -118,6 +124,8 @@
         "videoId",
         "visibleText",
         "textHash",
+        "domTextHash",
+        "ocrTextHash",
         "displayName",
         "visibleTimeText",
         "likeCount",
@@ -140,6 +148,8 @@
         "videoId": { "$ref": "#/$defs/visualObservationVideoId" },
         "visibleText": { "$ref": "#/$defs/visualObservationVisibleText" },
         "textHash": { "$ref": "#/$defs/visualObservationDigest" },
+        "domTextHash": { "$ref": "#/$defs/visualObservationNullableDigest" },
+        "ocrTextHash": { "$ref": "#/$defs/visualObservationNullableDigest" },
         "displayName": { "$ref": "#/$defs/visualObservationNullableVisibleString" },
         "visibleTimeText": { "$ref": "#/$defs/visualObservationNullableVisibleString" },
         "likeCount": { "$ref": "#/$defs/visualObservationNullableCount" },

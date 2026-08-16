@@ -96,6 +96,8 @@ const observation: components["schemas"]["DouyinVisualCommentObservation"] = {
   videoId: "7536012345678909876",
   visibleText: "visible public comment",
   textHash: digest,
+  domTextHash: digest,
+  ocrTextHash: null,
   displayName: "public user",
   visibleTimeText: "2 hours ago",
   likeCount: 3,

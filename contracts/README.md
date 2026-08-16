@@ -41,8 +41,9 @@ The release contract reserves an authenticated, explicitly authorized visual
 reader API under `/api/v1/acquisition/visual-reader-*`. It is the explicit
 contract-only exception described above: the six visual routes are not in the
 runtime drift allowlist until Task 3, while the existing Run Presentation route
-remains in static/runtime parity. The backend service and browser reader are
-not yet implemented. A session can read only currently visible top-level comment cards
+remains in static/runtime parity. The backend session/service/repository boundary and
+the external read-only browser reader are implemented through Task 6; Task 7 ingestion
+and projection remain pending. A session can read only currently visible top-level comment cards
 from an exact `https://www.douyin.com/video/<digits>` page. DOM and accessibility
 facts are preferred, OCR is a bounded fallback, and `vision` is reserved in the
 enum but remains disabled until a separate connector and data-transfer review.
@@ -56,6 +57,11 @@ characters and each decoded crop to 256 KiB. Client submissions cannot provide
 server-owned observation or hash fields and reject unknown fields such as
 Cookie, headers, network responses, HTML, browser configuration, fingerprints,
 avatar URLs, or full-page screenshots.
+Each submission and normalized observation has required nullable `domTextHash` and
+`ocrTextHash` fields in canonical `sha256:<64 lowercase hex>` form. They persist the
+client's text-source provenance without replacing the normalized observation's separate,
+server-owned `textHash`. The service and repository require the hash corresponding to the
+final DOM/accessibility/OCR extraction method to equal the normalized visible text.
 
 JSON Schema validates Douyin source URLs, video IDs, public profile links,
 `secUid` values, and session IDs independently. Because Draft 2020-12 cannot

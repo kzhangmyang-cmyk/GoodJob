@@ -29,6 +29,7 @@ const VIDEO_URL = /^https:\/\/www\.douyin\.com\/video\/([1-9][0-9]{0,31})\/?$/u;
 const VIDEO_ID = /^[1-9][0-9]{0,31}$/u;
 const PROFILE_URL = /^https:\/\/www\.douyin\.com\/user\/([A-Za-z0-9][A-Za-z0-9._~-]{0,127})\/?$/u;
 const PUBLIC_KEY = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u;
+const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 const IDEMPOTENCY_KEY = /^[\x21-\x7e]{1,200}$/u;
 const MAX_CROP_BYTES = 262_144;
@@ -47,6 +48,7 @@ const stableErrorCodeSchema = z.enum([
   "visual_reader_user_takeover"
 ]);
 const identifierSchema = z.string().regex(IDENTIFIER);
+const nullableDigestSchema = z.string().regex(DIGEST).nullable();
 const nullableVisibleStringSchema = z.string().min(1).refine((value) =>
   Array.from(value).length <= 255 && /\S/u.test(value)).nullable();
 const nullableCountSchema = z.number().int().min(0).max(2_147_483_647).nullable();
@@ -98,6 +100,8 @@ const observationSubmissionSchema = z.object({
   videoId: z.string().regex(VIDEO_ID),
   visibleText: z.string().min(1).refine((value) =>
     Array.from(value).length <= 2_000 && /\S/u.test(value)),
+  domTextHash: nullableDigestSchema,
+  ocrTextHash: nullableDigestSchema,
   displayName: nullableVisibleStringSchema,
   visibleTimeText: nullableVisibleStringSchema,
   likeCount: nullableCountSchema,
@@ -280,6 +284,16 @@ function dynamicSubmissionCheck(
   }
   if (submission.extractionMethod === "vision") {
     fail("visual_extraction_method_disabled", 400);
+  }
+  const normalizedTextHash = digest(submission.visibleText.trim());
+  if ((submission.extractionMethod === "dom"
+      || submission.extractionMethod === "accessibility")
+    && submission.domTextHash !== normalizedTextHash) {
+    fail("visual_observation_invalid", 400);
+  }
+  if (submission.extractionMethod === "ocr"
+    && submission.ocrTextHash !== normalizedTextHash) {
+    fail("visual_observation_invalid", 400);
   }
   if (submission.extractionMethod === "ocr"
     && (submission.platformCommentId !== null
@@ -499,6 +513,8 @@ export class AcquisitionVisualReaderService {
           sourceUrl: submission.sourceUrl,
           videoId: submission.videoId,
           visibleText,
+          domTextHash: submission.domTextHash,
+          ocrTextHash: submission.ocrTextHash,
           displayName: trimNullable(submission.displayName),
           visibleTimeText: trimNullable(submission.visibleTimeText),
           likeCount: submission.likeCount,

@@ -175,6 +175,8 @@
         "sourceUrl",
         "videoId",
         "visibleText",
+        "domTextHash",
+        "ocrTextHash",
         "displayName",
         "visibleTimeText",
         "likeCount",
@@ -200,6 +202,12 @@
         },
         "visibleText": {
           "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/visualObservationVisibleText"
+        },
+        "domTextHash": {
+          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/visualObservationNullableDigest"
+        },
+        "ocrTextHash": {
+          "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/visualObservationNullableDigest"
         },
         "displayName": {
           "$ref": "douyin-visual-comment-observation.v1.schema.json#/$defs/douyinVisualCommentObservation/properties/displayName"

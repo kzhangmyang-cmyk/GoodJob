@@ -87,11 +87,13 @@ function version(overrides: Partial<AcquisitionPlanVersion> = {}): AcquisitionPl
 }
 
 function observation(overrides: Partial<VisualObservationSubmission> = {}): VisualObservationSubmission {
-  return {
+  const result: VisualObservationSubmission = {
     clientObservationKey: "client-observation-1",
     sourceUrl: "https://www.douyin.com/video/123456789",
     videoId: "123456789",
     visibleText: "  visible buyer need  ",
+    domTextHash: digest("visible buyer need"),
+    ocrTextHash: null,
     displayName: "public name",
     visibleTimeText: "1小时前",
     likeCount: 2,
@@ -108,6 +110,10 @@ function observation(overrides: Partial<VisualObservationSubmission> = {}): Visu
     redactedCrop: null,
     ...overrides
   };
+  if (overrides.visibleText !== undefined && overrides.domTextHash === undefined) {
+    result.domTextHash = digest(overrides.visibleText.trim());
+  }
+  return result;
 }
 
 function planRepository(runValue = run(), versionValue = version()) {
@@ -210,6 +216,14 @@ test("batch enforces dynamic source/profile equality and disables vision before 
   for (const [candidate, code] of [
     [observation({ videoId: "999999999" }), "visual_source_invalid"],
     [observation({ secUid: "otherSecUid" }), "visual_observation_invalid"],
+    [observation({ domTextHash: digest("different DOM text") }), "visual_observation_invalid"],
+    [observation({
+      extractionMethod: "ocr",
+      ocrTextHash: digest("different OCR text"),
+      platformCommentId: null,
+      publicProfileUrl: null,
+      secUid: null
+    }), "visual_observation_invalid"],
     [observation({ extractionMethod: "vision" }), "visual_extraction_method_disabled"]
   ] as const) {
     const { value, repository } = service();
@@ -244,6 +258,7 @@ test("pure DOM may omit a crop but OCR fails closed without its redaction proof"
     { observations: [observation({
       clientObservationKey: "ocr-no-crop",
       extractionMethod: "ocr",
+      ocrTextHash: digest("visible buyer need"),
       fieldConfidences: { visibleText: 0.95 },
       platformCommentId: null,
       publicProfileUrl: null,
@@ -284,6 +299,7 @@ test("OCR cannot assert DOM-only comment or public-profile identity", async () =
         observations: [observation({
           clientObservationKey: `ocr-identity-${Object.keys(identity)[0]}`,
           extractionMethod: "ocr",
+          ocrTextHash: digest("visible buyer need"),
           fieldConfidences: { visibleText: 0.95 },
           platformCommentId: null,
           publicProfileUrl: null,
@@ -314,6 +330,7 @@ test("OCR cannot assert DOM-only comment or public-profile identity", async () =
       observations: [observation({
         clientObservationKey: "valid-ocr",
         extractionMethod: "ocr",
+        ocrTextHash: digest("visible buyer need"),
         fieldConfidences: { visibleText: 0.95 },
         platformCommentId: null,
         publicProfileUrl: null,
@@ -392,6 +409,8 @@ test("capturedAt must stay inside authorization and crop bytes become only a has
   assert.equal(validationCalls, 1, "exact replay must skip artifact validation");
   const normalized = appended.response.accepted[0]?.observation;
   assert.equal(normalized?.redactedCropHash, digest(bytes));
+  assert.equal(normalized?.domTextHash, cropSubmission.domTextHash);
+  assert.equal(normalized?.ocrTextHash, cropSubmission.ocrTextHash);
   assert.equal(JSON.stringify(appended.response).includes(bytes.toString("base64")), false);
   const artifactId = `visual-artifact:${normalized?.observationId.split(":")[1]}`;
   assert.deepEqual((await repository.getArtifact(REPOSITORY_SCOPE, artifactId))?.plaintext, bytes);
