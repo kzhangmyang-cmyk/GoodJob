@@ -414,6 +414,32 @@ export type EvidenceProvenance =
       sheetName: string;
       rowNumber: number;
       sourceUrl?: string;
+    }
+  | {
+      kind: "controlled_public_page";
+      sourceUrl: string;
+      discoveredFromEvidenceId: string;
+      redirectChain: string[];
+      extractorVersion: "douyin-public-profile-v1";
+    }
+  | {
+      kind: "platform_public_event";
+      sourceUrl: string;
+      platformEventId: string;
+      providerVersion: string;
+      coverage: "public_top_level_sample";
+    }
+  | {
+      kind: "authorized_visual_observation";
+      sourceUrl: string;
+      observationId: string;
+      sessionId: string;
+      extractionMethod: "dom" | "accessibility" | "ocr";
+      visibleTextConfidence: number;
+      coverage: "authorized_visible_top_level_sample";
+      artifactId: string | null;
+      domTextHash: string | null;
+      ocrTextHash: string | null;
     };
 
 export interface CandidateEvidence {

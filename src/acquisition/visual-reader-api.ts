@@ -512,6 +512,8 @@ function validNormalizedObservation(value: unknown, sessionId: string): value is
     sourceUrl: value.sourceUrl,
     videoId: value.videoId,
     visibleText: value.visibleText,
+    domTextHash: value.domTextHash,
+    ocrTextHash: value.ocrTextHash,
     displayName: value.displayName,
     visibleTimeText: value.visibleTimeText,
     likeCount: value.likeCount,

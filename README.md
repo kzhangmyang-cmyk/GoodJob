@@ -142,6 +142,33 @@ worker/core/WASM/语言文件的版本、字节数和 SHA-256。当前未压缩�
 当前实现只经过合成 fixture、本地 OCR 和扩展构建审计，不代表已在真实抖音页面完成
 兼容性验证或已发布到 Chrome 应用商店。
 
+候选公开证据链只在 provenance 为 `authorized_visual_observation` 且包含非空
+`artifactId` 时显示“查看遮挡裁剪”。网页使用同源制品 API 读取并验证
+`image/webp`，图片关闭、候选替换、详情关闭或页面销毁时会释放临时 object URL。
+制品过期后仍保留 Evidence ID 和证据哈希，并显示“制品已到期，证据哈希仍保留”；
+过期不等于撤销已经持久化的文字证据。
+
+确定性验收只使用本地 Vite、API fixture 和页面消息 harness，不安装真实扩展、不打开
+抖音、不访问外网。fixture 会审计请求、日志和浏览器存储，禁止原始截图、Cookie、
+浏览器配置、私信/评论/点赞/关注/发布以及自动 CRM 转换：
+
+```bash
+npm run test:e2e -- acquisition-visual-reader.spec.ts
+```
+
+### 卸载与手工 Beta smoke
+
+停止正在进行的会话后，可在 Chrome 扩展程序页面移除“GoodJob 抖音可见评论读取器”，
+并删除本地 `dist-visual-reader/douyin-visual-reader` 构建目录。卸载不会删除服务端 Evidence；
+遮挡制品按服务端保留期到期，证据哈希继续保留。若扩展已被直接移除，GoodJob 页面会在
+探测超时后显示未连接，不能创建新的读取会话。
+
+真实 Chrome smoke 不属于自动测试或 CI。只有人工操作者已确认使用自己的公开测试视频、
+设置 `GOODJOB_VISUAL_READER_SMOKE=1`、在扩展弹窗中亲自选择该视频并点击开始时才允许执行；
+没有开关时必须停止。smoke 输出只能包含会话状态、有界数量、提取方法和稳定错误码，
+不得输出评论正文、昵称、主页标识、Cookie、截图、nonce 或其他个人字段。它仍只是
+`authorized_visible_top_level_sample` Beta 兼容性检查，不是抖音官方连接器或全量评论能力。
+
 ## Growth 真实模式（Real Mode）
 
 仓库钉住了后端 Growth 合同发布（`contracts/pinned/`，当前 1.0.3），

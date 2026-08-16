@@ -7,6 +7,7 @@ export default defineConfig({
     "acquisition-performance.spec.ts",
     "acquisition-identity-resolution.spec.ts",
     "acquisition-comment-automation.spec.ts",
+    "acquisition-visual-reader.spec.ts",
     "growth-bootstrap.spec.ts"
   ],
   timeout: 20_000,

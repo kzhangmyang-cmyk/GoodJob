@@ -21,7 +21,11 @@ import {
   type AuthorizedVisualReaderProjection,
   type VisualReaderController
 } from "./visual-reader-controller";
-import type { VisualReaderApi } from "./visual-reader-api";
+import {
+  createVisualReaderApi,
+  VisualReaderApiError,
+  type VisualReaderApi
+} from "./visual-reader-api";
 import type { VisualReaderBridge } from "./visual-reader-bridge";
 
 export type AcquisitionCandidateReviewAction = CandidateReviewAction;
@@ -40,6 +44,10 @@ export interface AcquisitionDetailCenterControllerOptions {
   visualReaderApi?: VisualReaderApi;
   visualReaderBridgeFactory?: () => VisualReaderBridge;
   visualReaderController?: VisualReaderController;
+  artifactObjectUrl?: {
+    createObjectURL(blob: Blob): string;
+    revokeObjectURL(url: string): void;
+  };
 }
 
 export interface AcquisitionDetailCenterController {
@@ -630,9 +638,10 @@ export function createAcquisitionDetailCenterController(
   const api = options.api ?? createAcquisitionDetailApi();
   const eventTarget = options.eventTarget ?? defaultEventTarget();
   const keyFactory = options.keyFactory ?? defaultKey;
+  const visualReaderApi = options.visualReaderApi ?? createVisualReaderApi();
   const visualReaderController = options.visualReaderController
     ?? createVisualReaderController({
-      api: options.visualReaderApi,
+      api: visualReaderApi,
       bridgeFactory: options.visualReaderBridgeFactory,
       keyFactory,
       onRequestPresentationRefresh: () => {
@@ -670,7 +679,8 @@ export function createAcquisitionDetailCenterController(
     runControlReason: "",
     handoffDialog: null,
     identityVerification: null,
-    visualReader: visualReaderController.getState()
+    visualReader: visualReaderController.getState(),
+    visualArtifact: null
   };
   let disposed = false;
   let requestSerial = 0;
@@ -702,11 +712,81 @@ export function createAcquisitionDetailCenterController(
   let body = options.body
     ?? (root?.querySelector<HTMLElement>("#replicaAcquisitionDetailCenterBody") ?? null);
   let returnFocus: { focus(): void } | null = null;
+  let artifactLoadSerial = 0;
+  const artifactObjectUrl = options.artifactObjectUrl ?? {
+    createObjectURL(blob: Blob) {
+      return globalThis.URL.createObjectURL(blob);
+    },
+    revokeObjectURL(url: string) {
+      globalThis.URL.revokeObjectURL(url);
+    }
+  };
 
   function render(): void {
     if (body) {
       body.innerHTML = renderAcquisitionDetailCenter(state);
     }
+  }
+
+  function releaseVisualArtifact(): void {
+    artifactLoadSerial += 1;
+    const objectUrl = state.visualArtifact?.objectUrl;
+    if (objectUrl) artifactObjectUrl.revokeObjectURL(objectUrl);
+    state.visualArtifact = null;
+  }
+
+  function evidenceAuthorizesArtifact(artifactId: string): boolean {
+    return (state.candidateDetail?.evidence ?? []).some((item) => {
+      const provenance = record(item.provenance);
+      return provenance?.kind === "authorized_visual_observation"
+        && provenance.artifactId === artifactId;
+    });
+  }
+
+  async function viewVisualArtifact(artifactId: string): Promise<void> {
+    const id = requestedPlanId(artifactId);
+    if (!id || !evidenceAuthorizesArtifact(id)) return;
+    releaseVisualArtifact();
+    const serial = artifactLoadSerial;
+    state.visualArtifact = {
+      artifactId: id,
+      status: "loading",
+      objectUrl: null,
+      message: null
+    };
+    render();
+    try {
+      const artifact = await visualReaderApi.getArtifact(id);
+      if (artifact.mediaType !== "image/webp") {
+        throw new Error("服务端返回了无效的视觉读取制品");
+      }
+      const objectUrl = artifactObjectUrl.createObjectURL(new Blob(
+        [artifact.content],
+        { type: "image/webp" }
+      ));
+      if (disposed || serial !== artifactLoadSerial || !evidenceAuthorizesArtifact(id)) {
+        artifactObjectUrl.revokeObjectURL(objectUrl);
+        return;
+      }
+      state.visualArtifact = {
+        artifactId: id,
+        status: "ready",
+        objectUrl,
+        message: null
+      };
+    } catch (error) {
+      if (disposed || serial !== artifactLoadSerial) return;
+      const expired = error instanceof VisualReaderApiError && error.status === 404;
+      state.visualArtifact = {
+        artifactId: id,
+        status: expired ? "expired" : "error",
+        objectUrl: null,
+        message: expired
+          ? "制品已到期，证据哈希仍保留"
+          : "遮挡裁剪暂不可用，证据哈希仍保留"
+      };
+    }
+    render();
   }
 
   function rejectValidation(message: string): Promise<never> {
@@ -1293,6 +1373,11 @@ export function createAcquisitionDetailCenterController(
         }
       : snapshot;
     state.candidateDetail = nextSnapshot;
+    if (state.visualArtifact && !evidenceAuthorizesArtifact(
+      state.visualArtifact.artifactId
+    )) {
+      releaseVisualArtifact();
+    }
     state.identityVerification = identityStateForCandidate(
       nextSnapshot.candidate,
       state.identityVerification
@@ -1530,6 +1615,7 @@ export function createAcquisitionDetailCenterController(
     },
 
     open(mode, planId) {
+      releaseVisualArtifact();
       invalidateMutation();
       invalidateRunMutation();
       stopSelectedCandidatePolling();
@@ -1586,6 +1672,7 @@ export function createAcquisitionDetailCenterController(
     openCandidate(candidateId) {
       const id = requestedCandidateId(candidateId);
       if (!id) return rejectValidation("候选 ID 不能为空");
+      releaseVisualArtifact();
       invalidateMutation();
       invalidateRunMutation();
       stopSelectedCandidatePolling();
@@ -1613,6 +1700,7 @@ export function createAcquisitionDetailCenterController(
     },
 
     close() {
+      releaseVisualArtifact();
       detailOpen = false;
       visualReaderController.close();
       invalidateMutation();
@@ -1646,6 +1734,7 @@ export function createAcquisitionDetailCenterController(
     selectCandidate(candidateId) {
       const id = requestedPlanId(candidateId);
       if (!id) return rejectValidation("候选 ID 不能为空");
+      releaseVisualArtifact();
       invalidateMutation();
       stopSelectedCandidatePolling();
       const serial = ++candidateSerial;
@@ -2545,6 +2634,7 @@ export function createAcquisitionDetailCenterController(
 
     destroy() {
       if (disposed) return;
+      releaseVisualArtifact();
       disposed = true;
       detailOpen = false;
       invalidateMutation();
@@ -2656,6 +2746,13 @@ export function createAcquisitionDetailCenterController(
     } else if (action === "retry-visual-reader-probe") {
       event.preventDefault();
       visualReaderController.retryProbe();
+    } else if (action === "view-visual-artifact") {
+      event.preventDefault();
+      consume(remember(viewVisualArtifact(target.dataset.artifactId ?? "")));
+    } else if (action === "close-visual-artifact") {
+      event.preventDefault();
+      releaseVisualArtifact();
+      render();
     } else if (action === "retry-identity-resolution") {
       event.preventDefault();
       consume(controller.retryIdentityResolution());
@@ -2793,6 +2890,7 @@ export function createAcquisitionDetailCenterController(
   }
 
   function onRootClose(): void {
+    releaseVisualArtifact();
     if (detailOpen) visualReaderController.close();
     detailOpen = false;
     invalidateMutation();

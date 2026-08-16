@@ -6,6 +6,7 @@ import type {
 } from "./detail-center-api";
 import { createAcquisitionDetailCenterController } from "./detail-center-controller";
 import * as detailControllerModule from "./detail-center-controller";
+import { VisualReaderApiError, type VisualReaderApi } from "./visual-reader-api";
 import type {
   AuthorizedVisualReaderProjection,
   VisualReaderControlState,
@@ -5080,6 +5081,71 @@ class FakeVisualReaderController implements VisualReaderController {
   }
 }
 
+function visualEvidence(
+  kind: "authorized_visual_observation" | "search_result" = "authorized_visual_observation",
+  artifactId: string | null = "artifact-authorized"
+) {
+  return {
+    id: `evidence-${kind}-${artifactId ?? "none"}`,
+    sourceTitle: "已授权可见评论观察",
+    sourcePlatform: "douyin",
+    sourceSnippet: "仅用于 controller 制品生命周期测试",
+    fetchedAt: "2026-08-16T08:00:00.000Z",
+    rawArtifactHash: `sha256:${"7".repeat(64)}`,
+    provenance: kind === "authorized_visual_observation" ? {
+      kind,
+      sourceUrl: "https://www.douyin.com/video/7480000000000000000",
+      observationId: `visual-observation:${"9".repeat(64)}`,
+      sessionId: "visual-session-controller-test",
+      extractionMethod: "ocr",
+      visibleTextConfidence: 0.96,
+      coverage: "authorized_visible_top_level_sample",
+      artifactId,
+      domTextHash: `sha256:${"2".repeat(64)}`,
+      ocrTextHash: `sha256:${"3".repeat(64)}`
+    } : {
+      kind,
+      provider: "fixture",
+      queryText: "fixture",
+      sourceUrl: "https://example.test/public",
+      resultRank: 1
+    }
+  };
+}
+
+function visualCandidateApi(evidence: unknown[]): AcquisitionDetailApi {
+  return {
+    async getCandidate(candidateId: string) {
+      return {
+        candidate: {
+          id: candidateId,
+          subjectKind: "individual",
+          sourcePlatform: "douyin",
+          status: "needs_research",
+          identityResolved: false,
+          version: 1
+        },
+        etag: null
+      };
+    },
+    async getCandidateEvidence() { return { items: evidence, nextCursor: null }; },
+    async getCandidateQualification() { return null; },
+    async getCandidateFinancialValue() { return null; },
+    async getCandidateBattleCard() { return null; },
+    async getCandidateReviews() { return { items: [], nextCursor: null }; },
+    async getLatestDouyinIdentityResolutionOperation() { return null; },
+    async getLatestIntelligenceOperation() { return null; },
+    async getCandidatePrivateDomainHandoff() { return null; }
+  } as unknown as AcquisitionDetailApi;
+}
+
+function artifactAction(action: string, artifactId?: string) {
+  return fakeAction({
+    acquisitionDetailAction: action,
+    ...(artifactId ? { artifactId } : {})
+  });
+}
+
 {
   const projection: AuthorizedVisualReaderProjection = {
     sessionId: "visual-session-1",
@@ -5166,4 +5232,206 @@ class FakeVisualReaderController implements VisualReaderController {
   assert.equal(visual.stopCalls, 1, "closing the detail view does not stop the server session");
   controller.destroy();
   assert.equal(visual.destroyCalls, 1);
+}
+
+{
+  const root = new FakeDialogRoot(null);
+  const body = { innerHTML: "" } as HTMLElement;
+  const visual = new FakeVisualReaderController();
+  const gets: string[] = [];
+  const created: Array<{ url: string; type: string }> = [];
+  const revoked: string[] = [];
+  const visualReaderApi = {
+    async getArtifact(artifactId: string) {
+      gets.push(artifactId);
+      return { mediaType: "image/webp" as const, content: new Uint8Array([1, 2, 3]).buffer };
+    }
+  } as VisualReaderApi;
+  const controller = createAcquisitionDetailCenterController({
+    api: visualCandidateApi([
+      visualEvidence("search_result", "artifact-search"),
+      visualEvidence("authorized_visual_observation", null),
+      visualEvidence("authorized_visual_observation", "artifact-authorized")
+    ]),
+    root: root as unknown as HTMLElement,
+    body,
+    visualReaderController: visual,
+    visualReaderApi,
+    artifactObjectUrl: {
+      createObjectURL(blob) {
+        const url = `blob:controller-${created.length + 1}`;
+        created.push({ url, type: blob.type });
+        return url;
+      },
+      revokeObjectURL(url) { revoked.push(url); }
+    }
+  });
+
+  await controller.openCandidate("candidate-artifact");
+  assert.doesNotMatch(body.innerHTML, /data-artifact-id="artifact-search"/u);
+  assert.doesNotMatch(body.innerHTML, /data-artifact-id="null"/u);
+  assert.match(body.innerHTML, /data-artifact-id="artifact-authorized"/u);
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-search"));
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-other"));
+  await controller.whenIdle();
+  assert.deepEqual(gets, [], "only exact authorized visual provenance may fetch an artifact");
+
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  await controller.whenIdle();
+  assert.deepEqual(gets, ["artifact-authorized"]);
+  assert.deepEqual(created, [{ url: "blob:controller-1", type: "image/webp" }]);
+  assert.match(body.innerHTML, /src="blob:controller-1"/u);
+
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  await controller.whenIdle();
+  assert.deepEqual(revoked, ["blob:controller-1"], "replacement revokes the old object URL once");
+  assert.match(body.innerHTML, /src="blob:controller-2"/u);
+  root.emitClick(artifactAction("close-visual-artifact"));
+  assert.deepEqual(revoked, ["blob:controller-1", "blob:controller-2"]);
+  assert.doesNotMatch(body.innerHTML, /src="blob:controller-2"/u);
+
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  await controller.whenIdle();
+  controller.close();
+  assert.deepEqual(revoked, [
+    "blob:controller-1", "blob:controller-2", "blob:controller-3"
+  ], "detail close revokes the active object URL exactly once");
+  controller.destroy();
+  assert.equal(revoked.filter((url) => url === "blob:controller-3").length, 1);
+}
+
+{
+  const oldArtifact = deferred<{ mediaType: "image/webp"; content: ArrayBuffer }>();
+  const replacementArtifact = deferred<{ mediaType: "image/webp"; content: ArrayBuffer }>();
+  let call = 0;
+  const created: string[] = [];
+  const revoked: string[] = [];
+  const root = new FakeDialogRoot(null);
+  const body = { innerHTML: "" } as HTMLElement;
+  const controller = createAcquisitionDetailCenterController({
+    api: visualCandidateApi([visualEvidence()]),
+    root: root as unknown as HTMLElement,
+    body,
+    visualReaderController: new FakeVisualReaderController(),
+    visualReaderApi: {
+      getArtifact() {
+        call += 1;
+        return call === 1 ? oldArtifact.promise : replacementArtifact.promise;
+      }
+    } as unknown as VisualReaderApi,
+    artifactObjectUrl: {
+      createObjectURL() {
+        const url = `blob:late-${created.length + 1}`;
+        created.push(url);
+        return url;
+      },
+      revokeObjectURL(url) { revoked.push(url); }
+    }
+  });
+  await controller.openCandidate("candidate-late-artifact");
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  replacementArtifact.resolve({
+    mediaType: "image/webp",
+    content: new Uint8Array([2]).buffer
+  });
+  await Promise.resolve();
+  oldArtifact.resolve({
+    mediaType: "image/webp",
+    content: new Uint8Array([1]).buffer
+  });
+  await controller.whenIdle();
+  assert.match(body.innerHTML, /src="blob:late-1"/u);
+  assert.deepEqual(created, ["blob:late-1", "blob:late-2"]);
+  assert.deepEqual(revoked, ["blob:late-2"], "late superseded URL is revoked immediately");
+
+  const pendingReload = deferred<{ mediaType: "image/webp"; content: ArrayBuffer }>();
+  const reloadController = createAcquisitionDetailCenterController({
+    api: visualCandidateApi([visualEvidence()]),
+    root: root as unknown as HTMLElement,
+    body,
+    visualReaderController: new FakeVisualReaderController(),
+    visualReaderApi: { getArtifact: () => pendingReload.promise } as unknown as VisualReaderApi,
+    artifactObjectUrl: {
+      createObjectURL() { created.push("blob:reload-late"); return "blob:reload-late"; },
+      revokeObjectURL(url) { revoked.push(url); }
+    }
+  });
+  await reloadController.openCandidate("candidate-reload");
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  const pending = reloadController.whenIdle();
+  await reloadController.openCandidate("candidate-reload");
+  pendingReload.resolve({ mediaType: "image/webp", content: new Uint8Array([3]).buffer });
+  await pending;
+  assert.equal(reloadController.getState().visualArtifact, null);
+  assert.equal(revoked.filter((url) => url === "blob:reload-late").length, 1);
+  reloadController.destroy();
+
+  for (const disposal of ["close", "destroy"] as const) {
+    const pendingDisposal = deferred<{ mediaType: "image/webp"; content: ArrayBuffer }>();
+    const disposalRoot = new FakeDialogRoot(null);
+    const disposalBody = { innerHTML: "" } as HTMLElement;
+    const disposalController = createAcquisitionDetailCenterController({
+      api: visualCandidateApi([visualEvidence()]),
+      root: disposalRoot as unknown as HTMLElement,
+      body: disposalBody,
+      visualReaderController: new FakeVisualReaderController(),
+      visualReaderApi: { getArtifact: () => pendingDisposal.promise } as unknown as VisualReaderApi,
+      artifactObjectUrl: {
+        createObjectURL() {
+          const url = `blob:${disposal}-late`;
+          created.push(url);
+          return url;
+        },
+        revokeObjectURL(url) { revoked.push(url); }
+      }
+    });
+    await disposalController.openCandidate(`candidate-${disposal}`);
+    disposalRoot.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+    const disposalPending = disposalController.whenIdle();
+    if (disposal === "close") disposalController.close();
+    else disposalController.destroy();
+    pendingDisposal.resolve({ mediaType: "image/webp", content: new Uint8Array([4]).buffer });
+    await disposalPending;
+    assert.equal(disposalController.getState().visualArtifact, null);
+    assert.equal(revoked.filter((url) => url === `blob:${disposal}-late`).length, 1,
+      `late ${disposal} result is revoked exactly once and cannot revive`);
+    if (disposal === "close") disposalController.destroy();
+  }
+
+  controller.destroy();
+  assert.equal(revoked.filter((url) => url === "blob:late-1").length, 1,
+    "destroy revokes the surviving replacement URL exactly once");
+}
+
+{
+  const root = new FakeDialogRoot(null);
+  const body = { innerHTML: "" } as HTMLElement;
+  const evidence = visualEvidence();
+  const controller = createAcquisitionDetailCenterController({
+    api: visualCandidateApi([evidence]),
+    root: root as unknown as HTMLElement,
+    body,
+    visualReaderController: new FakeVisualReaderController(),
+    visualReaderApi: {
+      async getArtifact() {
+        throw new VisualReaderApiError(
+          "visual_reader_request_failed",
+          "视觉读取制品请求失败（HTTP 404）",
+          404
+        );
+      }
+    } as unknown as VisualReaderApi,
+    artifactObjectUrl: {
+      createObjectURL() { throw new Error("404 must not create an object URL"); },
+      revokeObjectURL() { throw new Error("404 has no object URL to revoke"); }
+    }
+  });
+  await controller.openCandidate("candidate-expired-artifact");
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  await controller.whenIdle();
+  assert.match(body.innerHTML, /制品已到期，证据哈希仍保留/u);
+  assert.match(body.innerHTML, new RegExp(String(evidence.id), "u"));
+  assert.match(body.innerHTML, new RegExp(String(evidence.rawArtifactHash), "u"));
+  controller.destroy();
 }

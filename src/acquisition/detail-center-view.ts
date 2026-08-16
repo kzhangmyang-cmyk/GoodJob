@@ -52,6 +52,13 @@ export interface AcquisitionIdentityVerificationState {
   error: string | null;
 }
 
+export interface AcquisitionVisualArtifactState {
+  artifactId: string;
+  status: "loading" | "ready" | "expired" | "error";
+  objectUrl: string | null;
+  message: string | null;
+}
+
 export interface AcquisitionDetailCenterState {
   mode: AcquisitionDetailCenterMode;
   status: AcquisitionDetailCenterStatus;
@@ -66,6 +73,7 @@ export interface AcquisitionDetailCenterState {
   handoffDialog?: AcquisitionHandoffDialogState | null;
   identityVerification?: AcquisitionIdentityVerificationState | null;
   visualReader?: VisualReaderControlState;
+  visualArtifact?: AcquisitionVisualArtifactState | null;
 }
 
 type DataRecord = Record<string, unknown>;
@@ -938,19 +946,55 @@ function renderFinancialDetail(value: DataRecord | null): string {
   `;
 }
 
-function renderEvidenceDetail(items: DataRecord[]): string {
+function renderVisualArtifact(
+  provenance: DataRecord | null,
+  visualArtifact: AcquisitionVisualArtifactState | null | undefined
+): string {
+  const artifactId = provenance?.kind === "authorized_visual_observation"
+    && typeof provenance.artifactId === "string"
+    && provenance.artifactId.trim()
+    ? provenance.artifactId.trim()
+    : null;
+  if (!artifactId) return "";
+  const active = visualArtifact?.artifactId === artifactId ? visualArtifact : null;
+  return `
+    <div class="replica-acquisition-visual-artifact" data-visual-artifact-id="${escapeHtml(artifactId)}">
+      <button type="button" data-acquisition-detail-action="view-visual-artifact" data-artifact-id="${escapeHtml(artifactId)}"${active?.status === "loading" ? " disabled" : ""}>
+        ${active?.status === "loading" ? "正在读取遮挡裁剪…" : "查看遮挡裁剪"}
+      </button>
+      ${active?.status === "ready" && active.objectUrl ? `
+        <figure>
+          <img src="${escapeHtml(active.objectUrl)}" alt="已遮挡的评论卡裁剪">
+          <figcaption>仅显示服务端授权返回的 image/webp 遮挡裁剪。</figcaption>
+          <button type="button" data-acquisition-detail-action="close-visual-artifact">关闭裁剪</button>
+        </figure>
+      ` : ""}
+      ${active?.message ? `<p role="status">${escapeHtml(active.message)}</p>` : ""}
+    </div>
+  `;
+}
+
+function renderEvidenceDetail(
+  items: DataRecord[],
+  visualArtifact: AcquisitionVisualArtifactState | null | undefined
+): string {
   if (items.length === 0) {
     return `<div class="replica-acquisition-detail-empty-value">尚未读取到公开证据详情</div>`;
   }
-  return `<ol class="replica-acquisition-evidence-list">${items.map((item) => `
+  return `<ol class="replica-acquisition-evidence-list">${items.map((item) => {
+    const provenance = record(item.provenance);
+    const sourceUrl = textValue(item.sourceUrl, textValue(provenance?.sourceUrl, ""));
+    return `
     <li>
       <div><strong>${escapeHtml(textValue(item.sourceTitle, "公开来源"))}</strong><span>${escapeHtml(textValue(item.sourcePlatform, "公开网页"))}</span></div>
       <p>${escapeHtml(textValue(item.sourceSnippet, "来源未提供摘要"))}</p>
-      ${textValue(item.sourceUrl) ? `<small>${escapeHtml(textValue(item.sourceUrl))}</small>` : ""}
+      ${sourceUrl ? `<small>${escapeHtml(sourceUrl)}</small>` : ""}
       <small>${escapeHtml(textValue(item.publishedAt, textValue(item.fetchedAt, "时间未知")))}</small>
       ${textValue(item.id) ? `<small>证据 ID：${escapeHtml(textValue(item.id))}</small>` : ""}
+      ${textValue(item.rawArtifactHash) ? `<small>证据哈希：${escapeHtml(textValue(item.rawArtifactHash))}</small>` : ""}
+      ${renderVisualArtifact(provenance, visualArtifact)}
     </li>
-  `).join("")}</ol>`;
+  `; }).join("")}</ol>`;
 }
 
 function renderBattleCard(value: DataRecord | null): string {
@@ -1382,7 +1426,8 @@ function renderHandoffDialog(
 function renderCandidateDetail(
   event: DataRecord | undefined,
   detail: AcquisitionCandidateDetail | null,
-  identityVerification?: AcquisitionIdentityVerificationState | null
+  identityVerification?: AcquisitionIdentityVerificationState | null,
+  visualArtifact?: AcquisitionVisualArtifactState | null
 ): string {
   const candidate = detail?.candidate ?? record(event?.candidate);
   if (candidate === null) {
@@ -1424,7 +1469,7 @@ function renderCandidateDetail(
       </section>
       <section class="replica-acquisition-detail-section">
         <h5>公开证据链</h5>
-        ${renderEvidenceDetail(detail?.evidence ?? [])}
+        ${renderEvidenceDetail(detail?.evidence ?? [], visualArtifact)}
       </section>
       <section class="replica-acquisition-detail-section">
         <h5>客户作战建议</h5>
@@ -1490,7 +1535,8 @@ function renderCandidatePanel(state: AcquisitionDetailCenterState): string {
             ${renderCandidateDetail(
               event,
               state.candidateDetail,
-              state.identityVerification
+              state.identityVerification,
+              state.visualArtifact
             )}
           </div>
         </div>
@@ -1517,7 +1563,8 @@ function renderCandidatePanel(state: AcquisitionDetailCenterState): string {
     ? `<div class="replica-acquisition-candidate-inspector">${renderCandidateDetail(
       undefined,
       state.candidateDetail,
-      state.identityVerification
+      state.identityVerification,
+      state.visualArtifact
     )}</div>`
     : "";
   if (events.length === 0) {
@@ -1557,7 +1604,8 @@ function renderCandidatePanel(state: AcquisitionDetailCenterState): string {
           ${renderCandidateDetail(
             selectedEvent,
             state.candidateDetail,
-            state.identityVerification
+            state.identityVerification,
+            state.visualArtifact
           )}
         </div>
       </div>

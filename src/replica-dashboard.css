@@ -4213,6 +4213,35 @@ body.is-authenticated .replica-shell {
   line-height: 1.55;
 }
 
+.replica-acquisition-visual-artifact {
+  display: grid !important;
+  justify-content: stretch !important;
+  gap: 7px !important;
+}
+
+.replica-acquisition-visual-artifact button {
+  justify-self: start;
+}
+
+.replica-acquisition-visual-artifact figure {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.replica-acquisition-visual-artifact img {
+  display: block;
+  width: min(100%, 640px);
+  height: auto;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 8px;
+}
+
+.replica-acquisition-visual-artifact figcaption {
+  color: #666d68;
+  font-size: 7px;
+}
+
 .replica-acquisition-review-section {
   border-color: rgba(24, 237, 120, .11);
 }
