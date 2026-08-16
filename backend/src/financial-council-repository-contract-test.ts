@@ -360,7 +360,7 @@ export function registerFinancialCouncilRepositoryContract(
     );
   });
 
-  test(`${label}: composite cursor uses one code-unit order without skipping`, async () => {
+  test(`${label}: composite cursor uses UTF-8 byte order without skipping`, async () => {
     const repository = await createRepository();
     const identities = [
       ["a", "a"], ["B", "z"], ["B", "A"], ["é", "run"], ["中", "run"],
@@ -392,7 +392,7 @@ export function registerFinancialCouncilRepositoryContract(
     }
     assert.deepEqual(seen, [
       ["B", "A"], ["B", "z"], ["a", "a"], ["é", "run"], ["中", "run"],
-      ["\u{10000}", "run"], ["\uE000", "run"]
+      ["\uE000", "run"], ["\u{10000}", "run"]
     ]);
   });
 

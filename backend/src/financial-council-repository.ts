@@ -803,12 +803,12 @@ implements FinancialCouncilRepository {
     return Object.freeze(runs
       .filter((run) => run.status === "snapshot_frozen"
         && (input.after === null
-          || run.workspaceId > input.after.workspaceId
+          || utf8ByteCompare(run.workspaceId, input.after.workspaceId) > 0
           || (run.workspaceId === input.after.workspaceId
-            && run.runId > input.after.runId)))
-      .sort((left, right) => codeUnitCompare(
+            && utf8ByteCompare(run.runId, input.after.runId) > 0)))
+      .sort((left, right) => utf8ByteCompare(
         left.workspaceId, right.workspaceId
-      ) || codeUnitCompare(left.runId, right.runId))
+      ) || utf8ByteCompare(left.runId, right.runId))
       .slice(0, input.limit));
   }
 
@@ -831,6 +831,6 @@ implements FinancialCouncilRepository {
   }
 }
 
-function codeUnitCompare(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+function utf8ByteCompare(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }

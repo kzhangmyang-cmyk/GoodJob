@@ -29,8 +29,8 @@ function cloneState(state: State): State {
   return structuredClone(state);
 }
 
-function compareCodeUnits(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+function compareUtf8Bytes(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
 type FailurePoint =
@@ -112,12 +112,16 @@ class FakeConnection {
         const limit = Number(values[4]);
         const rows = state.runs.filter((row) => row.status === "snapshot_frozen"
           && (afterWorkspaceId === null
-            || String(row.workspace_id) > afterWorkspaceId
+            || compareUtf8Bytes(
+              String(row.workspace_id), afterWorkspaceId
+            ) > 0
             || (String(row.workspace_id) === afterWorkspaceId
-              && String(row.run_id) > String(afterRunId))))
-          .sort((left, right) => compareCodeUnits(
+              && compareUtf8Bytes(
+                String(row.run_id), String(afterRunId)
+              ) > 0)))
+          .sort((left, right) => compareUtf8Bytes(
             String(left.workspace_id), String(right.workspace_id)
-          ) || compareCodeUnits(String(left.run_id), String(right.run_id)))
+          ) || compareUtf8Bytes(String(left.run_id), String(right.run_id)))
           .slice(0, limit);
         return [structuredClone(rows), []];
       }
@@ -445,15 +449,17 @@ test("real InnoDB concurrent create has one complete writer and one replay", {
     first = mysql.createPool({ uri: target.toString(), connectionLimit: 1 });
     second = mysql.createPool({ uri: target.toString(), connectionLimit: 1 });
     await ensureFinancialCouncilMysqlSchema(first);
+    const firstRepository = new MysqlFinancialCouncilRepository(first);
+    const secondRepository = new MysqlFinancialCouncilRepository(second);
     const left = repositoryRunFixture({ runId: "race-left" });
     const right = repositoryRunFixture({ runId: "race-right" });
     const results = await Promise.all([
-      new MysqlFinancialCouncilRepository(first).createAndFreezeRun(
+      firstRepository.createAndFreezeRun(
         command("race-left"), {
           aggregate: left, snapshot: snapshotFixture(left), occurredAt: T1
         }
       ),
-      new MysqlFinancialCouncilRepository(second).createAndFreezeRun(
+      secondRepository.createAndFreezeRun(
         command("race-right"), {
           aggregate: right, snapshot: snapshotFixture(right), occurredAt: T1
         }
@@ -468,6 +474,10 @@ test("real InnoDB concurrent create has one complete writer and one replay", {
          (SELECT COUNT(*) FROM financial_council_snapshots) AS snapshots`
     );
     assert.deepEqual((counts as Row[])[0], { runs: 1, events: 2, snapshots: 1 });
+    const runnable = await firstRepository.listRunnableRuns({
+      after: null, limit: 10
+    });
+    assert.deepEqual(runnable.map((run) => run.runId), [results[0]!.value.runId]);
   } finally {
     await Promise.allSettled([first?.end(), second?.end()].filter(Boolean));
     await admin.query("DROP DATABASE IF EXISTS ??", [database]);
@@ -495,6 +505,16 @@ test("financial council schema owns exactly three tables behind a named lock", a
   assert.equal(pool.connection.calls.some((sql) => sql.includes("GET_LOCK")), true);
   assert.equal(pool.connection.calls.some((sql) => sql.includes("RELEASE_LOCK")), true);
   assert.equal(pool.connection.released, true);
+});
+
+test("MySQL runnable scan uses binary UTF-8 bytes and no unavailable charset", async () => {
+  const { pool, repository } = repositoryWith();
+  await repository.listRunnableRuns({ after: null, limit: 1 });
+  const query = pool.connection.calls.find((sql) =>
+    sql.includes("status = 'snapshot_frozen'")) ?? "";
+  assert.doesNotMatch(query, /utf16be/iu);
+  assert.match(query, /ORDER BY BINARY workspace_id ASC, BINARY run_id ASC/u);
+  assert.match(query, /BINARY workspace_id > BINARY \?/u);
 });
 
 test("schema lock failures poison the owning connection", async () => {

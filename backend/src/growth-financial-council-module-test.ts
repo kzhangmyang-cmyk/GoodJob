@@ -4,8 +4,8 @@ import type express from "express";
 import {
   FinancialCouncilWakeRelay,
   GROWTH_FINANCIAL_COUNCIL_SERVICES,
-  createGrowthFinancialCouncilModule,
-  type GrowthFinancialCouncilResources
+  createGrowthFinancialCouncilResources,
+  createGrowthFinancialCouncilModule
 } from "./growth-financial-council-module.js";
 import { createGrowthPrivateServiceRegistry } from
   "./growth-commercial-private-services.js";
@@ -15,10 +15,27 @@ import { GROWTH_FINANCE_SERVICES } from "./growth-finance-module.js";
 import { repositoryRunFixture } from
   "./financial-council-repository-contract-test.js";
 import { FinancialCouncilService } from "./financial-council-service.js";
-import { InMemoryFinancialCouncilRepository } from
-  "./financial-council-repository.js";
 import { RepositoryVerifiedFinancialLedgerSealedReader } from
   "./financial-ledger-as-of-reader.js";
+
+class FakeDeadlineClock {
+  private nextId = 1;
+  private readonly callbacks = new Map<number, () => void>();
+  readonly schedule = (callback: () => void, _milliseconds: number): number => {
+    const id = this.nextId++;
+    this.callbacks.set(id, callback);
+    return id;
+  };
+  readonly cancel = (id: unknown): void => {
+    this.callbacks.delete(id as number);
+  };
+  get pending() { return this.callbacks.size; }
+  fireAll(): void {
+    const callbacks = [...this.callbacks.values()];
+    this.callbacks.clear();
+    for (const callback of callbacks) callback();
+  }
+}
 
 function frozenRun() {
   return Object.freeze({
@@ -134,6 +151,126 @@ test("wake relay close clears scheduling and awaits the active delivery", async 
   assert.equal(deliveries, 1);
 });
 
+test("wake relay deadlines a non-settling sink and continues the page", async () => {
+  const clock = new FakeDeadlineClock();
+  const runs = [frozenRun(), Object.freeze({
+    ...frozenRun(), runId: "council-run-2"
+  })];
+  const delivered: string[] = [];
+  let began!: () => void;
+  const started = new Promise<void>((resolve) => { began = resolve; });
+  const relay = new FinancialCouncilWakeRelay({
+    repository: { async listRunnableRuns() { return runs; } },
+    sink: {
+      wake(run) {
+        delivered.push(run.runId);
+        if (run.runId === "council-run-1") {
+          began();
+          return new Promise<void>(() => undefined);
+        }
+        return Promise.resolve();
+      }
+    },
+    deliveryTimeoutMs: 10,
+    scheduleTimeout: clock.schedule,
+    cancelTimeout: clock.cancel,
+    intervalMs: 60_000,
+    batchSize: 10
+  } as never);
+  const sweeping = relay.sweep();
+  await started;
+  assert.equal(clock.pending, 1);
+  clock.fireAll();
+  await sweeping;
+  assert.deepEqual(delivered, ["council-run-1", "council-run-2"]);
+  await relay.close();
+});
+
+test("wake relay deadlines a non-settling observer and close completes", async () => {
+  const clock = new FakeDeadlineClock();
+  let observed = 0;
+  const relay = new FinancialCouncilWakeRelay({
+    repository: { async listRunnableRuns() { return [frozenRun()]; } },
+    sink: { async wake() { throw new Error("delivery failed"); } },
+    onError() {
+      observed += 1;
+      return new Promise<void>(() => undefined);
+    },
+    deliveryTimeoutMs: 10,
+    scheduleTimeout: clock.schedule,
+    cancelTimeout: clock.cancel,
+    intervalMs: 60_000,
+    batchSize: 10
+  } as never);
+  const sweeping = relay.sweep();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(observed, 1);
+  assert.equal(clock.pending, 1);
+  const closing = relay.close();
+  clock.fireAll();
+  await Promise.all([sweeping, closing]);
+});
+
+test("wake relay close completes after a non-settling sink deadline", async () => {
+  const clock = new FakeDeadlineClock();
+  let began!: () => void;
+  const started = new Promise<void>((resolve) => { began = resolve; });
+  const relay = new FinancialCouncilWakeRelay({
+    repository: { async listRunnableRuns() { return [frozenRun()]; } },
+    sink: {
+      wake() {
+        began();
+        return new Promise<void>(() => undefined);
+      }
+    },
+    deliveryTimeoutMs: 10,
+    scheduleTimeout: clock.schedule,
+    cancelTimeout: clock.cancel,
+    intervalMs: 60_000,
+    batchSize: 10
+  } as never);
+  relay.start();
+  await started;
+  const closing = relay.close();
+  assert.equal(clock.pending, 1);
+  clock.fireAll();
+  await closing;
+  assert.equal((relay as unknown as { timer: unknown }).timer, null);
+});
+
+test("wake relay contains a delivery rejection that arrives after timeout", async () => {
+  const clock = new FakeDeadlineClock();
+  let rejectLate!: (error: Error) => void;
+  const late = new Promise<void>((_resolve, reject) => { rejectLate = reject; });
+  let began!: () => void;
+  const started = new Promise<void>((resolve) => { began = resolve; });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => { unhandled.push(error); };
+  process.on("unhandledRejection", onUnhandled);
+  const relay = new FinancialCouncilWakeRelay({
+    repository: { async listRunnableRuns() { return [frozenRun()]; } },
+    sink: { wake() { began(); return late; } },
+    deliveryTimeoutMs: 10,
+    scheduleTimeout: clock.schedule,
+    cancelTimeout: clock.cancel,
+    intervalMs: 60_000,
+    batchSize: 10
+  } as never);
+  try {
+    const sweeping = relay.sweep();
+    await started;
+    assert.equal(clock.pending, 1);
+    clock.fireAll();
+    await sweeping;
+    rejectLate(new Error("late delivery rejection"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    await relay.close();
+  }
+});
+
 test("wake relay advances a composite cursor so persistent first-page facts do not starve", async () => {
   const runs = [frozenRun(), Object.freeze({
     ...frozenRun(), workspaceId: "ws-2", runId: "council-run-2"
@@ -160,13 +297,14 @@ test("wake relay advances a composite cursor so persistent first-page facts do n
   await relay.close();
 });
 
-function moduleFixture() {
+async function moduleFixture() {
   const registry = createGrowthPrivateServiceRegistry();
-  registry.provide(GROWTH_FOUNDATION_SERVICES, {
+  const foundation = {
     workspaceContext: (() => { throw new Error("unused"); }) as never,
     commandContextFactory: (() => { throw new Error("unused"); }) as never,
     httpIdempotency: {} as never
-  } as never);
+  } as never;
+  registry.provide(GROWTH_FOUNDATION_SERVICES, foundation);
   const events: string[] = [];
   const today = Object.freeze({
     async getToday() { throw new Error("unused"); },
@@ -179,26 +317,19 @@ function moduleFixture() {
   const verifiedAsOf = new RepositoryVerifiedFinancialLedgerSealedReader(
     {} as never
   );
-  registry.provide(GROWTH_FINANCE_SERVICES, Object.freeze({
+  const finance = Object.freeze({
     costLedger: {}, financialFacts: {}, imports: {}, verifiedAsOf,
     financialGaps: {}
-  }) as never);
-  const service = new FinancialCouncilService({
-    repository: new InMemoryFinancialCouncilRepository(),
-    snapshotBuilder: { async freeze() { throw new Error("not called"); } }
-  });
-  class RecordingRelay extends FinancialCouncilWakeRelay {
-    override start() { events.push("relay:start"); super.start(); }
-    override async close() { events.push("relay:close"); await super.close(); }
-  }
-  const relay = new RecordingRelay({
-    repository: { async listRunnableRuns() { return []; } },
-    sink: { async wake() {} }, intervalMs: 60_000, batchSize: 10
-  });
-  const resources: GrowthFinancialCouncilResources = Object.freeze({
-    service,
-    relay,
-    async closeFinancialCouncilResources() { events.push("resources:close"); }
+  }) as never;
+  registry.provide(GROWTH_FINANCE_SERVICES, finance);
+  const resources = await createGrowthFinancialCouncilResources({
+    mode: "memory",
+    foundation,
+    advisor: { today },
+    finance,
+    wakeSink: { async wake() {} },
+    relayIntervalMs: 60_000,
+    relayBatchSize: 10
   });
   let mounts = 0;
   const router = ({
@@ -213,7 +344,7 @@ function moduleFixture() {
 
 test("module rejects untrusted service, relay, and close resources before mount", async () => {
   for (const kind of ["service", "relay", "close"] as const) {
-    const fixture = moduleFixture();
+    const fixture = await moduleFixture();
     let starts = 0;
     const invalid = Object.freeze({
       ...fixture.resources,
@@ -235,6 +366,24 @@ test("module rejects untrusted service, relay, and close resources before mount"
     assert.equal(fixture.mounts(), 0, kind);
     assert.equal(starts, 0, kind);
   }
+});
+
+test("module rejects recomposed resources even when children are trusted", async () => {
+  const fixture = await moduleFixture();
+  const recomposed = Object.freeze({ ...fixture.resources });
+  const module = createGrowthFinancialCouncilModule({
+    async initializeSchema() {},
+    async createResources() { return recomposed; }
+  });
+  const [installation] = await Promise.allSettled([module.install({
+    router: fixture.router,
+    toolPorts: {} as never,
+    privateServices: fixture.registry
+  })]);
+  if (installation.status === "fulfilled") await installation.value.close();
+  assert.equal(installation.status, "rejected");
+  assert.equal(fixture.mounts(), 0);
+  assert.equal(fixture.events.includes("relay:start"), false);
 });
 
 test("trusted instance brands require complete constructor dependencies", () => {
@@ -270,7 +419,10 @@ test("module rejects unowned upstream lookalikes before resource creation", asyn
     let created = 0;
     const module = createGrowthFinancialCouncilModule({
       async initializeSchema() {},
-      async createResources() { created += 1; return moduleFixture().resources; }
+      async createResources() {
+        created += 1;
+        return (await moduleFixture()).resources;
+      }
     });
     await assert.rejects(module.install({
       router: { use() {} } as never,
@@ -282,14 +434,14 @@ test("module rejects unowned upstream lookalikes before resource creation", asyn
 });
 
 test("financial council module initializes schema before routes and closes once", async () => {
-  const fixture = moduleFixture();
+  const fixture = await moduleFixture();
   const handle = await fixture.module.install({
     router: fixture.router,
     toolPorts: {} as never,
     privateServices: fixture.registry
   });
   assert.deepEqual(fixture.events, [
-    "schema", "resources:create", "route:mount", "relay:start"
+    "schema", "resources:create", "route:mount"
   ]);
   assert.equal(fixture.mounts(), 1);
   assert.equal(
@@ -298,11 +450,14 @@ test("financial council module initializes schema before routes and closes once"
   );
   await handle.close();
   await handle.close();
-  assert.deepEqual(fixture.events.slice(-2), ["relay:close", "resources:close"]);
+  assert.equal((fixture.resources.relay as unknown as { closed: boolean }).closed,
+    true);
+  assert.equal((fixture.resources.relay as unknown as { timer: unknown }).timer,
+    null);
 });
 
 test("module construction failure mounts no routes and closes created resources", async () => {
-  const fixture = moduleFixture();
+  const fixture = await moduleFixture();
   const module = createGrowthFinancialCouncilModule({
     async initializeSchema() { fixture.events.push("schema"); },
     async createResources() {
@@ -317,7 +472,7 @@ test("module construction failure mounts no routes and closes created resources"
     privateServices: fixture.registry
   }), /router failed/u);
   assert.equal(fixture.mounts(), 0);
-  assert.deepEqual(fixture.events, [
-    "schema", "resources:create", "relay:close", "resources:close"
-  ]);
+  assert.deepEqual(fixture.events, ["schema", "resources:create"]);
+  assert.equal((fixture.resources.relay as unknown as { closed: boolean }).closed,
+    true);
 });

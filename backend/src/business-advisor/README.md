@@ -62,7 +62,7 @@
 
 同一 `Idempotency-Key` 与同一 canonical 请求精确重放同一个运行；修改请求体返回冲突，不会重复提交 snapshot 或 advisory wake。运行与事件读取始终按认证 workspace 隔离。
 
-HTTP 幂等仓库只保存 domain-separated digest，不保存原始 `Idempotency-Key`。持久化 snapshot 与完整事件链在每个读取边界重新校验；runnable 扫描使用 workspace/run 的 UTF-16 code-unit 复合游标。公开创建合同只接受 CNY/USD，策略版本 ID 与业务报表文本分别最多包含 255 和 4000 个 Unicode code point，报表数组上限 100 项。公开 run 从 `snapshot_frozen` 开始，内部 revision-1 `created` 状态只存在于事件历史，不能作为 run 响应。
+HTTP 幂等仓库只保存 domain-separated digest，不保存原始 `Idempotency-Key`。持久化 snapshot 与完整事件链在每个读取边界重新校验；runnable 扫描使用 workspace/run 的 UTF-8 binary-byte 复合游标，Memory 与 MySQL 共用同一全序。relay 对 wake sink 与错误 observer 都设置有界 deadline，因此永久不返回的投递不会阻塞 sweep 或应用关闭。公开创建合同只接受 CNY/USD，策略版本 ID 与业务报表文本分别最多包含 255 和 4000 个 Unicode code point，报表数组上限 100 项。公开 run 从 `snapshot_frozen` 开始，内部 revision-1 `created` 状态只存在于事件历史，不能作为 run 响应。
 
 ## 报表导入（statement-import.ts）
 

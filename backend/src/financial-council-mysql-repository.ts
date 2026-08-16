@@ -822,14 +822,10 @@ implements FinancialCouncilRepository {
       const [rows] = await connection.query(
         `SELECT * FROM financial_council_runs
          WHERE status = 'snapshot_frozen'
-           AND (? IS NULL OR BINARY CONVERT(workspace_id USING utf16be)
-               > BINARY CONVERT(? USING utf16be)
-             OR (BINARY CONVERT(workspace_id USING utf16be)
-                 = BINARY CONVERT(? USING utf16be)
-               AND BINARY CONVERT(run_id USING utf16be)
-                 > BINARY CONVERT(? USING utf16be)))
-         ORDER BY BINARY CONVERT(workspace_id USING utf16be) ASC,
-           BINARY CONVERT(run_id USING utf16be) ASC LIMIT ?`,
+           AND (? IS NULL OR BINARY workspace_id > BINARY ?
+             OR (BINARY workspace_id = BINARY ?
+               AND BINARY run_id > BINARY ?))
+         ORDER BY BINARY workspace_id ASC, BINARY run_id ASC LIMIT ?`,
         [
           input.after?.workspaceId ?? null,
           input.after?.workspaceId ?? null,

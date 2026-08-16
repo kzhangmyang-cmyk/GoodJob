@@ -66,6 +66,11 @@ export interface FinancialCouncilWakeRelayDependencies {
   readonly sink: FinancialCouncilWakeSink;
   readonly intervalMs?: number;
   readonly batchSize?: number;
+  readonly deliveryTimeoutMs?: number;
+  readonly scheduleTimeout?: (
+    callback: () => void, milliseconds: number
+  ) => unknown;
+  readonly cancelTimeout?: (handle: unknown) => void;
   readonly onError?: (
     error: unknown, runId: string | null
   ) => void | Promise<void>;
@@ -88,6 +93,11 @@ export class FinancialCouncilWakeRelay {
   private closed = false;
   private readonly intervalMs: number;
   private readonly batchSize: number;
+  private readonly deliveryTimeoutMs: number;
+  private readonly scheduleTimeout: (
+    callback: () => void, milliseconds: number
+  ) => unknown;
+  private readonly cancelTimeout: (handle: unknown) => void;
 
   constructor(private readonly dependencies: FinancialCouncilWakeRelayDependencies) {
     if (typeof dependencies?.repository?.listRunnableRuns !== "function"
@@ -96,9 +106,20 @@ export class FinancialCouncilWakeRelay {
     }
     this.intervalMs = dependencies.intervalMs ?? 5_000;
     this.batchSize = dependencies.batchSize ?? 25;
+    this.deliveryTimeoutMs = dependencies.deliveryTimeoutMs ?? 5_000;
+    this.scheduleTimeout = dependencies.scheduleTimeout
+      ?? ((callback, milliseconds) => setTimeout(callback, milliseconds));
+    this.cancelTimeout = dependencies.cancelTimeout
+      ?? ((handle) => clearTimeout(handle as NodeJS.Timeout));
     if (!Number.isSafeInteger(this.intervalMs) || this.intervalMs < 1
       || !Number.isSafeInteger(this.batchSize) || this.batchSize < 1
-      || this.batchSize > 100) throw new Error("invalid_financial_council_relay");
+      || this.batchSize > 100
+      || !Number.isSafeInteger(this.deliveryTimeoutMs)
+      || this.deliveryTimeoutMs < 1
+      || typeof this.scheduleTimeout !== "function"
+      || typeof this.cancelTimeout !== "function") {
+      throw new Error("invalid_financial_council_relay");
+    }
     TRUSTED_FINANCIAL_COUNCIL_RELAYS.add(this);
   }
 
@@ -135,9 +156,16 @@ export class FinancialCouncilWakeRelay {
     }
     for (const run of runs) {
       if (this.closed) return;
-      await Promise.resolve()
-        .then(() => this.dependencies.sink.wake(run))
-        .catch((error) => this.report(error, run.runId));
+      const delivery = await this.withDeadline(
+        () => this.dependencies.sink.wake(run)
+      );
+      if (delivery.kind === "rejected") {
+        await this.report(delivery.error, run.runId);
+      } else if (delivery.kind === "timeout") {
+        await this.report(
+          new Error("financial_council_wake_delivery_timeout"), run.runId
+        );
+      }
       this.cursor = Object.freeze({
         workspaceId: run.workspaceId,
         runId: run.runId
@@ -146,9 +174,30 @@ export class FinancialCouncilWakeRelay {
   }
 
   private async report(error: unknown, runId: string | null): Promise<void> {
-    await Promise.resolve()
-      .then(() => this.dependencies.onError?.(error, runId))
-      .catch(() => undefined);
+    if (!this.dependencies.onError) return;
+    await this.withDeadline(() => this.dependencies.onError!(error, runId));
+  }
+
+  private async withDeadline(
+    operation: () => void | Promise<void>
+  ): Promise<
+    | { readonly kind: "fulfilled" }
+    | { readonly kind: "rejected"; readonly error: unknown }
+    | { readonly kind: "timeout" }
+  > {
+    const guarded = Promise.resolve().then(operation).then(
+      () => ({ kind: "fulfilled" as const }),
+      (error) => ({ kind: "rejected" as const, error })
+    );
+    let handle: unknown;
+    const timeout = new Promise<{ readonly kind: "timeout" }>((resolve) => {
+      handle = this.scheduleTimeout(
+        () => resolve({ kind: "timeout" }), this.deliveryTimeoutMs
+      );
+    });
+    const outcome = await Promise.race([guarded, timeout]);
+    if (outcome.kind !== "timeout") this.cancelTimeout(handle);
+    return outcome;
   }
 
   async close(): Promise<void> {
@@ -166,6 +215,7 @@ export interface GrowthFinancialCouncilModuleOptions {
   readonly wakeSink?: FinancialCouncilWakeSink;
   readonly relayIntervalMs?: number;
   readonly relayBatchSize?: number;
+  readonly relayDeliveryTimeoutMs?: number;
   readonly initializeSchema?: () => Promise<void>;
   readonly createResources?: (input: {
     foundation: GrowthFoundationServices;
@@ -226,6 +276,7 @@ function trustedResources(
 ): asserts value is GrowthFinancialCouncilResources {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || !Object.isFrozen(value)
+    || !TRUSTED_FINANCIAL_COUNCIL_RESOURCES.has(value)
     || Object.getPrototypeOf(value) !== Object.prototype
     || Reflect.ownKeys(value).some((key) => typeof key !== "string")
     || (Reflect.ownKeys(value) as string[]).sort().join("\u0000")
@@ -256,6 +307,8 @@ class IdempotentInProcessWakeSink implements FinancialCouncilWakeSink {
   }
 }
 
+const TRUSTED_FINANCIAL_COUNCIL_RESOURCES = new WeakSet<object>();
+
 export async function createGrowthFinancialCouncilResources(input: {
   mode: "memory" | "mysql";
   pool?: mysql.Pool;
@@ -265,6 +318,7 @@ export async function createGrowthFinancialCouncilResources(input: {
   wakeSink?: FinancialCouncilWakeSink;
   relayIntervalMs?: number;
   relayBatchSize?: number;
+  relayDeliveryTimeoutMs?: number;
 }): Promise<GrowthFinancialCouncilResources> {
   const advisor = sealedAdvisor(input.advisor.today);
   const facts = workspaceFacts(input.finance.verifiedAsOf);
@@ -298,13 +352,16 @@ export async function createGrowthFinancialCouncilResources(input: {
     repository,
     sink,
     intervalMs: input.relayIntervalMs,
-    batchSize: input.relayBatchSize
+    batchSize: input.relayBatchSize,
+    deliveryTimeoutMs: input.relayDeliveryTimeoutMs
   });
-  return Object.freeze({
+  const resources = Object.freeze({
     service,
     relay,
     async closeFinancialCouncilResources() {}
   });
+  TRUSTED_FINANCIAL_COUNCIL_RESOURCES.add(resources);
+  return resources;
 }
 
 function missingPrivateService(): Error & { code: string } {
@@ -358,7 +415,8 @@ export function createGrowthFinancialCouncilModule(
               finance,
               wakeSink: options.wakeSink,
               relayIntervalMs: options.relayIntervalMs,
-              relayBatchSize: options.relayBatchSize
+              relayBatchSize: options.relayBatchSize,
+              relayDeliveryTimeoutMs: options.relayDeliveryTimeoutMs
             });
         trustedResources(createdResources);
         resources = createdResources;
