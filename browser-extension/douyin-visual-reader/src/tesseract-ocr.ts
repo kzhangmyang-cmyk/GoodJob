@@ -41,14 +41,9 @@ function confidence(value: unknown): number {
   return Math.max(0, Math.min(1, value / 100));
 }
 
-function collectWords(value: unknown, output: VisualOcrWord[]): void {
-  if (Array.isArray(value)) {
-    for (const item of value) collectWords(item, output);
-    return;
-  }
-  if (!value || typeof value !== "object") return;
-  const record = value as Record<string, unknown>;
-  const candidate = record as TesseractWordLike;
+function appendWord(value: unknown, output: VisualOcrWord[]): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const candidate = value as TesseractWordLike;
   if (typeof candidate.text === "string" && candidate.text.trim()
     && candidate.bbox && typeof candidate.bbox === "object") {
     const { x0, y0, x1, y1 } = candidate.bbox;
@@ -65,8 +60,25 @@ function collectWords(value: unknown, output: VisualOcrWord[]): void {
       });
     }
   }
-  for (const [key, child] of Object.entries(record)) {
-    if (!["text", "confidence", "bbox"].includes(key)) collectWords(child, output);
+}
+
+function collectWords(blocks: unknown, output: VisualOcrWord[]): void {
+  if (!Array.isArray(blocks)) return;
+  for (const block of blocks) {
+    if (!block || typeof block !== "object" || Array.isArray(block)) continue;
+    const paragraphs = (block as Record<string, unknown>).paragraphs;
+    if (!Array.isArray(paragraphs)) continue;
+    for (const paragraph of paragraphs) {
+      if (!paragraph || typeof paragraph !== "object" || Array.isArray(paragraph)) continue;
+      const lines = (paragraph as Record<string, unknown>).lines;
+      if (!Array.isArray(lines)) continue;
+      for (const line of lines) {
+        if (!line || typeof line !== "object" || Array.isArray(line)) continue;
+        const words = (line as Record<string, unknown>).words;
+        if (!Array.isArray(words)) continue;
+        for (const word of words) appendWord(word, output);
+      }
+    }
   }
 }
 

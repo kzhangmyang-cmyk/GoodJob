@@ -40,6 +40,7 @@ export interface SessionCoordinator {
   updateUsage(usage: Partial<VisualReaderUsageState>): Promise<void>;
   finish(status: "completed" | "partial_success"): Promise<void>;
   abort(reason: "visual_reader_user_takeover" | "user_requested"): Promise<void>;
+  whenMutationsSettled(): Promise<void>;
   snapshot(): VisualReaderRuntimeSnapshot;
   rawChannelNonce(): string | null;
 }
@@ -52,6 +53,13 @@ export function createSessionCoordinator(dependencies: {
   let state: VisualReaderPersistedState | null = null;
   let pendingBatchId: string | null = null;
   let channelNonce: string | null = null;
+  let mutationTail: Promise<void> = Promise.resolve();
+
+  function enqueueMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const result = mutationTail.then(operation);
+    mutationTail = result.then(() => undefined, () => undefined);
+    return result;
+  }
 
   function requireState(): VisualReaderPersistedState {
     if (!state) throw new Error("视觉读取会话尚未授权");
@@ -68,43 +76,47 @@ export function createSessionCoordinator(dependencies: {
   }
 
   return {
-    async authorizeFromGoodJob(input) {
-      if (!Number.isSafeInteger(input.goodJobTabId) || input.goodJobTabId <= 0) {
-        throw new Error("GoodJob 标签页无效");
-      }
-      const nonceDigest = await dependencies.nonceHash(input.channelNonce);
-      state = {
-        sessionId: input.sessionId,
-        goodJobTabId: input.goodJobTabId,
-        douyinTabId: null,
-        douyinWindowId: null,
-        douyinSourceUrl: null,
-        limits: { ...input.limits },
-        usage: { observationCount: 0, scrollCount: 0, ocrCallCount: 0 },
-        artifactUploadEnabled: input.artifactUploadEnabled,
-        channelNonceHash: nonceDigest,
-        status: "authorized"
-      };
-      channelNonce = input.channelNonce;
-      pendingBatchId = null;
-      await dependencies.persist(copy());
-      dependencies.log({ event: "visual_reader_authorized", sessionId: input.sessionId });
+    authorizeFromGoodJob(input) {
+      return enqueueMutation(async () => {
+        if (!Number.isSafeInteger(input.goodJobTabId) || input.goodJobTabId <= 0) {
+          throw new Error("GoodJob 标签页无效");
+        }
+        const nonceDigest = await dependencies.nonceHash(input.channelNonce);
+        state = {
+          sessionId: input.sessionId,
+          goodJobTabId: input.goodJobTabId,
+          douyinTabId: null,
+          douyinWindowId: null,
+          douyinSourceUrl: null,
+          limits: { ...input.limits },
+          usage: { observationCount: 0, scrollCount: 0, ocrCallCount: 0 },
+          artifactUploadEnabled: input.artifactUploadEnabled,
+          channelNonceHash: nonceDigest,
+          status: "authorized"
+        };
+        channelNonce = input.channelNonce;
+        pendingBatchId = null;
+        await dependencies.persist(copy());
+        dependencies.log({ event: "visual_reader_authorized", sessionId: input.sessionId });
+      });
     },
-    async confirmDouyinTab(tabId, windowId, url) {
-      const current = requireState();
-      if (current.status !== "authorized" || current.douyinTabId !== null
-        || current.douyinWindowId !== null
-        || !Number.isSafeInteger(tabId) || tabId <= 0
-        || !Number.isSafeInteger(windowId) || windowId < 0) return false;
-      const source = canonicalDouyinVideoUrl(url);
-      if (!source || source.sourceUrl !== url) return false;
-      current.douyinTabId = tabId;
-      current.douyinWindowId = windowId;
-      current.douyinSourceUrl = source.sourceUrl;
-      current.status = "reading";
-      await dependencies.persist(copy());
-      dependencies.log({ event: "visual_reader_tab_confirmed", sessionId: current.sessionId });
-      return true;
+    confirmDouyinTab(tabId, windowId, url) {
+      return enqueueMutation(async () => {
+        const current = requireState();
+        if (current.status !== "authorized" || current.douyinTabId !== null
+          || current.douyinWindowId !== null
+          || !Number.isSafeInteger(tabId) || tabId <= 0
+          || !Number.isSafeInteger(windowId) || windowId < 0) return false;
+        const source = canonicalDouyinVideoUrl(url);
+        if (!source || source.sourceUrl !== url) return false;
+        current.douyinTabId = tabId;
+        current.douyinWindowId = windowId;
+        current.douyinSourceUrl = source.sourceUrl;
+        current.status = "reading";
+        await dependencies.persist(copy());
+        dependencies.log({ event: "visual_reader_tab_confirmed", sessionId: current.sessionId });
+        return true;
+      });
     },
     receiveBatch(batchId) {
       const current = requireState();
@@ -132,36 +144,45 @@ export function createSessionCoordinator(dependencies: {
     acknowledgeBatch(sessionId, batchId) {
       return this.commitAcknowledgedBatch(sessionId, batchId);
     },
-    async updateUsage(next) {
-      const current = requireState();
-      if (current.status !== "reading") return;
-      current.usage = {
-        observationCount: Math.min(current.limits.maxCommentsPerVideo,
-          Math.max(current.usage.observationCount, next.observationCount ?? current.usage.observationCount)),
-        scrollCount: Math.min(current.limits.maxScrolls,
-          Math.max(current.usage.scrollCount, next.scrollCount ?? current.usage.scrollCount)),
-        ocrCallCount: Math.min(current.limits.maxOcrCalls,
-          Math.max(current.usage.ocrCallCount, next.ocrCallCount ?? current.usage.ocrCallCount))
-      };
-      await dependencies.persist(copy());
+    updateUsage(next) {
+      return enqueueMutation(async () => {
+        const current = requireState();
+        if (current.status !== "reading") return;
+        current.usage = {
+          observationCount: Math.min(current.limits.maxCommentsPerVideo,
+            Math.max(current.usage.observationCount, next.observationCount ?? current.usage.observationCount)),
+          scrollCount: Math.min(current.limits.maxScrolls,
+            Math.max(current.usage.scrollCount, next.scrollCount ?? current.usage.scrollCount)),
+          ocrCallCount: Math.min(current.limits.maxOcrCalls,
+            Math.max(current.usage.ocrCallCount, next.ocrCallCount ?? current.usage.ocrCallCount))
+        };
+        await dependencies.persist(copy());
+      });
     },
-    async finish(status) {
-      const current = requireState();
-      if (current.status !== "reading") return;
-      current.status = status;
-      pendingBatchId = null;
-      channelNonce = null;
-      await dependencies.persist(copy());
-      dependencies.log({ event: "visual_reader_finished", sessionId: current.sessionId });
+    finish(status) {
+      return enqueueMutation(async () => {
+        const current = requireState();
+        if (current.status !== "reading") return;
+        current.status = status;
+        pendingBatchId = null;
+        channelNonce = null;
+        await dependencies.persist(copy());
+        dependencies.log({ event: "visual_reader_finished", sessionId: current.sessionId });
+      });
     },
-    async abort(reason) {
-      const current = requireState();
-      if (["completed", "partial_success", "aborted"].includes(current.status)) return;
-      current.status = "aborted";
-      pendingBatchId = null;
-      channelNonce = null;
-      await dependencies.persist(copy());
-      dependencies.log({ event: "visual_reader_aborted", reason, sessionId: current.sessionId });
+    abort(reason) {
+      return enqueueMutation(async () => {
+        const current = requireState();
+        if (["completed", "partial_success", "aborted"].includes(current.status)) return;
+        current.status = "aborted";
+        pendingBatchId = null;
+        channelNonce = null;
+        await dependencies.persist(copy());
+        dependencies.log({ event: "visual_reader_aborted", reason, sessionId: current.sessionId });
+      });
+    },
+    whenMutationsSettled() {
+      return mutationTail;
     },
     snapshot() {
       return { ...copy(), pendingBatchId };

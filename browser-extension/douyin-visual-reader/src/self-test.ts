@@ -8,6 +8,7 @@ const tests = [
   "./visual-capture-authorization.self-test.ts",
   "./visual-coordinator-ownership.self-test.ts",
   "./visual-transition-barrier.self-test.ts",
+  "./service-worker-popup-confirm.self-test.ts",
   "./visual-evidence-validator.self-test.ts",
   "./offscreen-lifecycle.self-test.ts",
   "./visual-content-fallback.self-test.ts",

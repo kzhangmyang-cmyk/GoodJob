@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
-import { resolveVisualCaptureResponse } from "./visual-content-fallback";
+import {
+  requestVisualCaptureFallback,
+  resolveVisualCaptureResponse
+} from "./visual-content-fallback";
 import { isObservation, type VisualObservationSubmission } from "./protocol";
 
 const observation: VisualObservationSubmission = {
@@ -108,6 +111,27 @@ assert.equal(malformedRetained.redactedCrop, null);
   assert.equal(isObservation(retained), true,
     "the retained DOM fallback must pass the real bridge protocol parser");
   assert.ok((retained.fieldConfidences.visibleText ?? 1) < 0.85);
+}
+
+{
+  const sendMessage = async (): Promise<unknown> => {
+    throw new Error("runtime.sendMessage rejected");
+  };
+  const retained = await requestVisualCaptureFallback({
+    observation,
+    domTextState: "truncated",
+    sendMessage
+  });
+  if (!retained) throw new Error("truncated DOM must survive capture transport rejection");
+  assert.equal(retained.visibleText, observation.visibleText);
+  assert.equal(retained.extractionMethod, "dom");
+  assert.equal(retained.redactedCrop, null);
+  assert.ok((retained.fieldConfidences.visibleText ?? 1) < 0.85);
+  assert.equal(await requestVisualCaptureFallback({
+    observation: { ...observation, visibleText: "" },
+    domTextState: "missing",
+    sendMessage
+  }), null, "missing DOM remains null when capture transport rejects");
 }
 
 console.log("visual content fallback self-test passed");

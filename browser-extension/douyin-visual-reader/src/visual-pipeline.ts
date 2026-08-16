@@ -1,7 +1,8 @@
 import type {
   VisualOcrCrop,
   VisualOcrPort,
-  VisualOcrResult
+  VisualOcrResult,
+  VisualOcrWord
 } from "./ocr-port";
 
 export const MASK_COLOR_RGBA = Object.freeze([17, 61, 51, 255] as const);
@@ -243,11 +244,34 @@ function overlaps(left: PixelRect, right: PixelRect): boolean {
     && left.y < right.y + right.height && right.y < left.y + left.height;
 }
 
+function readingOrder(words: VisualOcrWord[]): VisualOcrWord[] {
+  const lines: Array<{ top: number; bottom: number; words: VisualOcrWord[] }> = [];
+  for (const word of [...words].sort((left, right) => left.bounds.y - right.bounds.y
+    || left.bounds.x - right.bounds.x)) {
+    const top = word.bounds.y;
+    const bottom = word.bounds.y + word.bounds.height;
+    const line = lines.find((candidate) => {
+      const overlap = Math.min(candidate.bottom, bottom) - Math.max(candidate.top, top);
+      const lineHeight = candidate.bottom - candidate.top;
+      return overlap > 0 && overlap >= Math.min(lineHeight, word.bounds.height) / 2;
+    });
+    if (line) {
+      line.top = Math.min(line.top, top);
+      line.bottom = Math.max(line.bottom, bottom);
+      line.words.push(word);
+    } else {
+      lines.push({ top, bottom, words: [word] });
+    }
+  }
+  return lines.sort((left, right) => left.top - right.top)
+    .flatMap((line) => line.words.sort((left, right) => left.bounds.x - right.bounds.x));
+}
+
 export function filterOcrResultToBodyRegions(result: VisualOcrResult,
   bodyRegions: PixelRect[], excludedRegions: PixelRect[] = []): VisualOcrResult {
-  const words = result.words.filter((word) => bodyRegions.some((region) => contains(region, word.bounds))
-    && !excludedRegions.some((region) => overlaps(region, word.bounds)))
-    .sort((left, right) => left.bounds.y - right.bounds.y || left.bounds.x - right.bounds.x);
+  const words = readingOrder(result.words.filter((word) => bodyRegions.some(
+    (region) => contains(region, word.bounds)
+  ) && !excludedRegions.some((region) => overlaps(region, word.bounds))));
   return {
     text: words.map((word) => word.text).join(" ").normalize("NFC").trim(),
     confidence: words.length > 0

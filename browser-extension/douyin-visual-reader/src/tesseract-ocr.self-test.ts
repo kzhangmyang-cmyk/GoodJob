@@ -27,8 +27,21 @@ const factory: TesseractWorkerFactory = async (languages, _oem, options) => {
         data: {
           text: "中文报价 128.50 元\n",
           confidence: 94,
-          blocks: [{ paragraphs: [{ lines: [{ words: [
-            { text: "中文报价", confidence: 96, bbox: { x0: 2, y0: 3, x1: 42, y1: 15 } },
+          blocks: [{
+            text: "中文报价 128.50 元",
+            confidence: 95,
+            bbox: { x0: 1, y0: 1, x1: 80, y1: 18 },
+            paragraphs: [{
+              text: "中文报价 128.50 元",
+              confidence: 95,
+              bbox: { x0: 1, y0: 1, x1: 80, y1: 18 },
+              lines: [{
+                text: "中文报价 128.50 元",
+                confidence: 95,
+                bbox: { x0: 1, y0: 1, x1: 80, y1: 18 },
+                words: [
+            { text: "中文报价", confidence: 96, bbox: { x0: 2, y0: 3, x1: 42, y1: 15 },
+              symbols: [{ text: "中", confidence: 97, bbox: { x0: 2, y0: 3, x1: 12, y1: 15 } }] },
             { text: "128.50", confidence: 92, bbox: { x0: 45, y0: 3, x1: 79, y1: 15 } }
           ] }] }] }]
         }

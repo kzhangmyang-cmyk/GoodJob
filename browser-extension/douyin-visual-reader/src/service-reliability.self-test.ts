@@ -45,6 +45,51 @@ const limits = {
   assert.equal(coordinator.snapshot().pendingBatchId, null, "terminal abandons pending ACK without interlock");
 }
 
+{
+  const stored: VisualReaderPersistedState[] = [];
+  let deferred = false;
+  const pending: Array<{ state: VisualReaderPersistedState; release: () => void }> = [];
+  const coordinator = createSessionCoordinator({
+    persist: async (state) => {
+      const snapshot = structuredClone(state);
+      if (deferred) {
+        await new Promise<void>((resolve) => pending.push({ state: snapshot, release: resolve }));
+      }
+      stored.push(snapshot);
+    },
+    log: () => undefined,
+    nonceHash: async () => `sha256:${"2".repeat(64)}`
+  });
+  await coordinator.authorizeFromGoodJob({
+    goodJobTabId: 10,
+    channelNonce: "f".repeat(64),
+    sessionId: "session-mutation-fifo",
+    limits: { ...limits, maxOcrCalls: 2 },
+    artifactUploadEnabled: true
+  });
+  assert.equal(await coordinator.confirmDouyinTab(20, 7, "https://www.douyin.com/video/123"), true);
+  deferred = true;
+
+  const usage = coordinator.updateUsage({ ocrCallCount: 1 });
+  while (pending.length < 1) await Promise.resolve();
+  const abort = coordinator.abort("user_requested");
+  await Promise.resolve();
+  assert.equal(pending.length, 1,
+    "a terminal mutation cannot start persistence while an older usage mutation is pending");
+  let drained = false;
+  const drain = coordinator.whenMutationsSettled().then(() => { drained = true; });
+  await Promise.resolve();
+  assert.equal(drained, false, "replacement settlement waits for the complete coordinator mutation queue");
+
+  pending[0].release();
+  while (pending.length < 2) await Promise.resolve();
+  pending[1].release();
+  await Promise.all([usage, abort, drain]);
+  assert.equal(stored.at(-1)?.sessionId, "session-mutation-fifo");
+  assert.equal(stored.at(-1)?.status, "aborted",
+    "an older deferred persistence cannot overwrite the terminal coordinator state");
+}
+
 class ManualRetries {
   private nextId = 1;
   private readonly callbacks = new Map<number, () => void>();

@@ -121,6 +121,18 @@ assert.deepEqual(filterOcrResultToBodyRegions({
   words: [{ text: "想了解报价", confidence: 0.98, bounds: { x: 10, y: 10, width: 80, height: 20 } }]
 }, "metadata and partially out-of-body words cannot contribute text or numbers");
 
+assert.equal(filterOcrResultToBodyRegions({
+  text: "中文报价 128.50 元",
+  confidence: 0.94,
+  words: [
+    { text: "中", confidence: 0.94, bounds: { x: 10, y: 10, width: 20, height: 30 } },
+    { text: "文报价", confidence: 0.94, bounds: { x: 35, y: 10, width: 60, height: 30 } },
+    { text: "元", confidence: 0.94, bounds: { x: 180, y: 12, width: 20, height: 28 } },
+    { text: "128.50", confidence: 0.94, bounds: { x: 105, y: 14, width: 65, height: 24 } }
+  ]
+}, [{ x: 0, y: 0, width: 220, height: 50 }]).text, "中 文报价 128.50 元",
+"minor baseline jitter on one visual line cannot move a currency label before its amount");
+
 {
   const source = raster(4, 1);
   const restricted = restrictRasterToRegions(source,

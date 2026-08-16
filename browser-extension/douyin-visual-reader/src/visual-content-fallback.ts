@@ -63,3 +63,21 @@ export async function resolveVisualCaptureResponse(input: {
     bytes.fill(0);
   }
 }
+
+export async function requestVisualCaptureFallback(input: {
+  observation: VisualObservationSubmission;
+  domTextState: "missing" | "truncated";
+  sendMessage: () => Promise<unknown>;
+}): Promise<VisualObservationSubmission | null> {
+  let response: unknown;
+  try {
+    response = await input.sendMessage();
+  } catch {
+    response = { accepted: false, evidence: null };
+  }
+  return resolveVisualCaptureResponse({
+    observation: input.observation,
+    domTextState: input.domTextState,
+    response
+  });
+}

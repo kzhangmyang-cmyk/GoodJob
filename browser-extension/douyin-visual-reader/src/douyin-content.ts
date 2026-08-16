@@ -19,7 +19,7 @@ import {
 } from "./douyin-reader";
 import { createReliableEventTransport, type ReliableEventTransport } from "./runtime-transport";
 import { matchesUnavailableSession } from "./restart-recovery";
-import { resolveVisualCaptureResponse } from "./visual-content-fallback";
+import { requestVisualCaptureFallback } from "./visual-content-fallback";
 
 declare const chrome: any;
 
@@ -218,21 +218,21 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
           visualFallback: input.artifactUploadEnabled ? async (fallback) => {
             if (signal?.aborted
               || sessionReader.usage().ocrCallCount >= input.limits.maxOcrCalls) return null;
-            const response = await chrome.runtime.sendMessage({
-              kind: "visual_capture_request",
-              sessionId: input.sessionId,
-              domTextState: fallback.domTextState,
-              viewport: fallback.observation.viewport,
-              cardBounds: fallback.observation.cardBounds,
-              avatarBounds: fallback.avatarBounds,
-              regions: fallback.regions
-            });
-            if (signal?.aborted) return null;
-            return resolveVisualCaptureResponse({
+            const resolved = await requestVisualCaptureFallback({
               observation: fallback.observation,
               domTextState: fallback.domTextState,
-              response
+              sendMessage: async () => chrome.runtime.sendMessage({
+                kind: "visual_capture_request",
+                sessionId: input.sessionId,
+                domTextState: fallback.domTextState,
+                viewport: fallback.observation.viewport,
+                cardBounds: fallback.observation.cardBounds,
+                avatarBounds: fallback.avatarBounds,
+                regions: fallback.regions
+              })
             });
+            if (signal?.aborted) return null;
+            return resolved;
           } : undefined
         });
         if (result.status === "blocked") throw new BoundedReaderError("visual_source_invalid");

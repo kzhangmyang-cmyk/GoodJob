@@ -81,10 +81,18 @@ try {
       || typeof response.evidence.contentBase64 !== "string"
       || response.evidence.contentBase64.length === 0
       || typeof response.evidence.ocrResult?.text !== "string"
-      || !/128[.,]50/u.test(response.evidence.ocrResult.text)
       || !Array.isArray(response.evidence.ocrResult.words)
       || response.evidence.ocrResult.words.length === 0) {
       throw new Error(`unpacked-extension offscreen OCR smoke failed: ${JSON.stringify(response)}`);
+    }
+    const semantic = (value: string) => value.normalize("NFC").replace(/\s/gu, "").replace(/,/gu, ".");
+    const words = response.evidence.ocrResult.words as Array<{ text?: unknown }>;
+    if (words.some((word) => typeof word?.text !== "string")
+      || semantic(response.evidence.ocrResult.text) !== "中文报价128.50元"
+      || semantic(words.map((word) => word.text as string).join("")) !== "中文报价128.50元"
+      || JSON.stringify(response.evidence.ocrResult.text.match(/[0-9]+(?:[.,][0-9]+)*/gu))
+        !== JSON.stringify(["128.50"])) {
+      throw new Error(`unpacked-extension OCR text was duplicated or changed: ${JSON.stringify(response)}`);
     }
     const ended = await serviceWorker.evaluate(() => {
       const scope = globalThis as typeof globalThis & { chrome: any };

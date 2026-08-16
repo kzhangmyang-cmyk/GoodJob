@@ -174,7 +174,10 @@ async function settleAbort(target: SessionCoordinator | null,
   reason: "visual_reader_user_takeover" | "user_requested"): Promise<void> {
   if (!target) return;
   const snapshot = target.snapshot();
-  if (["completed", "partial_success", "aborted"].includes(snapshot.status)) return;
+  if (["completed", "partial_success", "aborted"].includes(snapshot.status)) {
+    await target.whenMutationsSettled();
+    return;
+  }
   const nonce = target.rawChannelNonce();
   if (snapshot.douyinTabId !== null) {
     await chrome.tabs.sendMessage(snapshot.douyinTabId, {
@@ -183,6 +186,7 @@ async function settleAbort(target: SessionCoordinator | null,
     }).catch(() => undefined);
   }
   await target.abort(reason);
+  await target.whenMutationsSettled();
   if (nonce) {
     await sendToGoodJob(snapshot.goodJobTabId, {
       version: BRIDGE_VERSION,
@@ -297,12 +301,27 @@ async function popupSnapshot(): Promise<unknown> {
 }
 
 async function confirmPopup(selected: ConfirmedDouyinTab): Promise<{ accepted: boolean }> {
-  if (!coordinator) return { accepted: false };
-  const snapshot = coordinator.snapshot();
+  const target = coordinator;
+  const generation = coordinatorGeneration;
+  const transitionRevision = coordinatorTransitions.currentRevision();
+  if (!target) return { accepted: false };
+  const snapshot = target.snapshot();
   if (snapshot.status !== "authorized") return { accepted: false };
+  const channelNonce = target.rawChannelNonce();
+  if (!channelNonce) return { accepted: false };
+  const current = (status: "authorized" | "reading"): boolean => {
+    if (coordinator !== target || coordinatorGeneration !== generation
+      || !coordinatorTransitions.isCurrent(transitionRevision)) return false;
+    const latest = target.snapshot();
+    return latest.sessionId === snapshot.sessionId && latest.goodJobTabId === snapshot.goodJobTabId
+      && latest.status === status;
+  };
+  if (!current("authorized")) return { accepted: false };
   const prepared = await prepareFreshDouyinTab(selected, {
     getTab: async (tabId) => {
+      if (!current("authorized")) throw new Error("popup confirmation invalidated");
       const tab = await chrome.tabs.get(tabId);
+      if (!current("authorized")) throw new Error("popup confirmation invalidated");
       return {
         id: tab.id,
         windowId: tab.windowId,
@@ -310,29 +329,44 @@ async function confirmPopup(selected: ConfirmedDouyinTab): Promise<{ accepted: b
         active: tab.active === true
       };
     },
-    focusWindow: async (windowId) => { await chrome.windows.update(windowId, { focused: true }); },
-    activateTab: async (tabId) => { await chrome.tabs.update(tabId, { active: true }); }
+    focusWindow: async (windowId) => {
+      if (!current("authorized")) throw new Error("popup confirmation invalidated");
+      await chrome.windows.update(windowId, { focused: true });
+      if (!current("authorized")) throw new Error("popup confirmation invalidated");
+    },
+    activateTab: async (tabId) => {
+      if (!current("authorized")) throw new Error("popup confirmation invalidated");
+      await chrome.tabs.update(tabId, { active: true });
+      if (!current("authorized")) throw new Error("popup confirmation invalidated");
+    }
   });
-  if (!prepared) return { accepted: false };
+  if (!prepared || !current("authorized")) return { accepted: false };
   try {
+    if (!current("authorized")) return { accepted: false };
     await chrome.scripting.executeScript({ target: { tabId: prepared.id }, files: ["douyin-content.js"] });
-    if (!await coordinator.confirmDouyinTab(prepared.id, prepared.windowId, prepared.url)) {
+    if (!current("authorized")) return { accepted: false };
+    if (!await target.confirmDouyinTab(prepared.id, prepared.windowId, prepared.url)) {
       return { accepted: false };
     }
+    if (!current("reading")) return { accepted: false };
     const response = await chrome.tabs.sendMessage(prepared.id, {
       kind: "visual_reader_start",
       sessionId: snapshot.sessionId,
       limits: snapshot.limits,
       artifactUploadEnabled: snapshot.artifactUploadEnabled,
-      channelNonce: coordinator.rawChannelNonce()
+      channelNonce
     });
+    if (!current("reading")) return { accepted: false };
     if (!record(response) || response.accepted !== true) {
       await safeAbort("user_requested");
       return { accepted: false };
     }
     return { accepted: true };
   } catch {
-    await safeAbort("user_requested");
+    if (coordinator === target && coordinatorGeneration === generation
+      && coordinatorTransitions.isCurrent(transitionRevision)) {
+      await safeAbort("user_requested");
+    }
     return { accepted: false };
   }
 }

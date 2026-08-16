@@ -1,6 +1,7 @@
 export function createVisualTransitionBarrier(): {
   schedule<T>(operation: () => Promise<T>): Promise<T>;
   invalidatePending(): number;
+  currentRevision(): number;
   isCurrent(revision: number): boolean;
   whenSettled(): Promise<void>;
 } {
@@ -14,6 +15,9 @@ export function createVisualTransitionBarrier(): {
     },
     invalidatePending() {
       revision += 1;
+      return revision;
+    },
+    currentRevision() {
       return revision;
     },
     isCurrent(candidate) {
