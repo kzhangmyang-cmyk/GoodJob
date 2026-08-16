@@ -20,6 +20,11 @@ const input = path.join(
   "openapi",
   "ai-acquisition.v1.yaml"
 );
+const growthInput = path.join(
+  contractsRoot,
+  "openapi",
+  "growth-advisor-quote-roi.v1.yaml"
+);
 const repositoryRoot = path.resolve(contractsRoot, "..");
 const tsc = path.join(
   repositoryRoot,
@@ -32,6 +37,14 @@ function runGenerator(output, ...options) {
   return spawnSync(
     process.execPath,
     [script, ...options, "--input", input, "--output", output],
+    { cwd: contractsRoot, encoding: "utf8" }
+  );
+}
+
+function runGrowthGenerator(output, ...options) {
+  return spawnSync(
+    process.execPath,
+    [script, ...options, "--input", growthInput, "--output", output],
     { cwd: contractsRoot, encoding: "utf8" }
   );
 }
@@ -68,6 +81,26 @@ test("generated frontend contract types detect absent and stale outputs without 
       corrupted,
       "--check must not rewrite stale output"
     );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("generated Growth types expose the closed financial council aliases", async () => {
+  const temporaryDirectory = await mkdtemp(
+    path.join(tmpdir(), "goodjob-generated-financial-council-")
+  );
+  const output = path.join(temporaryDirectory, "growth.ts");
+  try {
+    const written = runGrowthGenerator(output);
+    assert.equal(written.status, 0, written.stderr);
+    const generated = await readFile(output, "utf8");
+    for (const alias of [
+      "FinancialCouncilRun", "FinancialCouncilCreateInput", "CandidateAction",
+      "ActionPortfolio", "FinancialCouncilApproval", "FinancialCouncilDispatchView"
+    ]) assert.match(generated, new RegExp(`\\b${alias}\\b`));
+    assert.match(generated, /collect_receivable/);
+    assert.doesNotMatch(generated, /tax_filing/);
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

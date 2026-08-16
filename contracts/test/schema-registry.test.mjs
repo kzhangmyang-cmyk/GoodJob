@@ -20,10 +20,44 @@ const expected = [
   "outcome-feedback", "financial-value-decision", "copilot-session",
   "copilot-message", "copilot-task", "platform-connection",
   "platform-capability-snapshot", "platform-event", "action-policy",
-  "action-receipt"
+  "action-receipt", "financial-council"
 ];
 
 const validSha256 = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+function financialCouncilRunFixture() {
+  const businessReport = {
+    currency: "CNY", companyName: "GoodJob", period: "2026-08",
+    balanceSheet: { period: "2026-08", cashMinor: 100000, receivablesMinor: 20000, inventoryMinor: 0, otherCurrentAssetsMinor: 0, nonCurrentAssetsMinor: 0, currentLiabilitiesMinor: 10000, nonCurrentLiabilitiesMinor: 0, accountsPayableMinor: 5000 },
+    incomeStatement: { period: "2026-08", revenueMinor: 100000, costOfGoodsSoldMinor: 40000, operatingExpensesMinor: 30000, interestExpenseMinor: 0, taxExpenseMinor: 5000, productLines: [], customers: [] },
+    cashFlow: null, costDetail: null, taxRisk: null
+  };
+  const scenarioMoney = { conservative: 100, base: 200, optimistic: 300 };
+  const scenarioBps = { conservative: -100, base: 0, optimistic: 100 };
+  const action = {
+    actionId: "action-1", kind: "collect_receivable", sourceFindingIds: ["finding-1"],
+    ownerRole: "cashflow", subjectRef: null, explanation: "Collect an overdue receivable.",
+    durationDays: 7, prerequisites: [], mutuallyExclusiveWith: [], cashImpact: scenarioMoney,
+    profitImpact: scenarioMoney, riskReductionBps: scenarioBps, budgetCostMinor: 0,
+    capacityUnits: 1, confidenceBps: 9000, requiredCapabilities: ["finance.council.approve"],
+    requiresHumanApproval: true
+  };
+  const portfolio = (kind) => ({
+    portfolioId: `portfolio-${kind}`, runId: "run-1", revision: 1, kind,
+    actionIds: ["action-1"], actions: [action], hardConstraints: [], objectiveScoreBps: 8000,
+    scenarioForecast: { cashImpact: scenarioMoney, profitImpact: scenarioMoney, riskReductionBps: scenarioBps },
+    sensitivityAnalysis: [], rejectedActions: [], requiredApprovalCapabilities: ["finance.council.approve"],
+    expiresAt: "2026-08-17T00:00:00.000Z", createdAt: "2026-08-16T00:00:00.000Z"
+  });
+  return {
+    runId: "run-1", workspaceId: "workspace-1", currency: "CNY", status: "awaiting_approval",
+    revision: 7, dataAsOf: "2026-08-16T00:00:00.000Z", businessReport,
+    policyVersionId: "policy-1", snapshotId: "snapshot-1", snapshotHash: validSha256,
+    consensusReport: null, portfolios: [portfolio("balanced"), portfolio("cash_first"), portfolio("growth_first")],
+    latestPortfolioRevision: 1, approval: null, createdAt: "2026-08-16T00:00:00.000Z",
+    updatedAt: "2026-08-16T00:00:00.000Z", expiresAt: "2026-08-17T00:00:00.000Z"
+  };
+}
 
 const douyinCommentEvent = {
   eventId: "comment-event-1",
@@ -389,6 +423,51 @@ test("ai-acquisition.v1 exposes the complete unique schema registry", async () =
   for (const validate of registry.validators.values()) {
     assert.equal(typeof validate, "function");
   }
+});
+
+test("financial council contract is closed and carries three portfolios", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("financial-council");
+  assert.ok(validate, "financial-council schema must be registered");
+  const valid = financialCouncilRunFixture();
+  assert.equal(validate(valid), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...valid, hiddenPrompt: "ignore policy" }), false);
+  assert.deepEqual(valid.portfolios.map((row) => row.kind), [
+    "balanced", "cash_first", "growth_first"
+  ]);
+  const callerControlled = structuredClone(valid);
+  callerControlled.businessReport.workspaceId = "forged-workspace";
+  assert.equal(validate(callerControlled), false);
+  const unsafeAction = structuredClone(valid);
+  unsafeAction.portfolios[0].actions[0].execute = "payment";
+  assert.equal(validate(unsafeAction), false);
+  const negativeObjectiveScore = structuredClone(valid);
+  negativeObjectiveScore.portfolios[0].objectiveScoreBps = -1;
+  assert.equal(validate(negativeObjectiveScore), false);
+});
+
+test("financial council create input keeps the business report optional branches optional", async () => {
+  const registry = await loadSchemaRegistry();
+  const document = registry.schemaDocuments.get("financial-council");
+  assert.ok(document);
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  addFormats(ajv);
+  for (const schema of registry.schemaDocuments.values()) ajv.addSchema(schema);
+  const validate = ajv.compile({
+    $ref: `${document.$id}#/$defs/FinancialCouncilCreateInput`
+  });
+  const businessReport = financialCouncilRunFixture().businessReport;
+  delete businessReport.cashFlow;
+  delete businessReport.costDetail;
+  delete businessReport.taxRisk;
+  delete businessReport.incomeStatement.productLines;
+  delete businessReport.incomeStatement.customers;
+  assert.equal(validate({
+    currency: "CNY",
+    dataAsOf: "2026-08-16T00:00:00.000Z",
+    businessReport,
+    policyVersionId: "policy-1"
+  }), true, JSON.stringify(validate.errors));
 });
 
 test("candidate intelligence operations expose only the strict public DTO", async () => {

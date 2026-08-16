@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoodJob Growth Advisor, Quote and ROI API
-  version: 1.0.3
+  version: 1.0.6
 servers:
   - url: /
 
@@ -1196,6 +1196,154 @@ paths:
       requestBody: *recommendationTransitionBody
       responses: *recommendationTransitionResponses
 
+  /api/v1/finance/council-runs:
+    post:
+      operationId: createFinancialCouncilRun
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+          csrfToken: []
+      parameters:
+        - $ref: '#/components/parameters/workspaceHeader'
+        - $ref: '#/components/parameters/idempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilCreateInput' }
+      responses:
+        '202': { $ref: '#/components/responses/FinancialCouncilRun' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '422': *apiErrorResponse
+
+  /api/v1/finance/council-runs/{runId}:
+    parameters: [{ $ref: '#/components/parameters/runId' }]
+    get:
+      <<: *read
+      operationId: getFinancialCouncilRun
+      responses:
+        '200': { $ref: '#/components/responses/FinancialCouncilRun' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+
+  /api/v1/finance/council-runs/{runId}/events:
+    parameters: [{ $ref: '#/components/parameters/runId' }]
+    get:
+      <<: *read
+      operationId: listFinancialCouncilRunEvents
+      responses:
+        '200': { $ref: '#/components/responses/FinancialCouncilRunEvents' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+
+  /api/v1/finance/council-policy:
+    get:
+      <<: *read
+      operationId: getFinancialCouncilPolicy
+      responses:
+        '200': { $ref: '#/components/responses/FinancialCouncilPolicyVersion' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+    put:
+      <<: *write
+      operationId: updateFinancialCouncilPolicy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilPolicyInput' }
+      responses:
+        '200': { $ref: '#/components/responses/FinancialCouncilPolicyVersion' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+
+  /api/v1/finance/council-runs/{runId}/portfolio-revisions:
+    parameters: [{ $ref: '#/components/parameters/runId' }]
+    post:
+      <<: *write
+      operationId: createFinancialCouncilPortfolioRevision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/PortfolioRevisionInput' }
+      responses:
+        '200': { $ref: '#/components/responses/ActionPortfolio' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+
+  /api/v1/finance/council-runs/{runId}/portfolio-revisions/{revision}/approve:
+    parameters:
+      - $ref: '#/components/parameters/runId'
+      - $ref: '#/components/parameters/revision'
+    post:
+      <<: *write
+      operationId: approveFinancialCouncilPortfolioRevision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilApprovalInput' }
+      responses:
+        '200': { $ref: '#/components/responses/FinancialCouncilApproval' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+
+  /api/v1/finance/council-runs/{runId}/reject:
+    parameters: [{ $ref: '#/components/parameters/runId' }]
+    post:
+      <<: *write
+      operationId: rejectFinancialCouncilRun
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilRejectInput' }
+      responses:
+        '200': { $ref: '#/components/responses/FinancialCouncilRun' }
+        '400': *apiErrorResponse
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+        '409': *apiErrorResponse
+        '412': *apiErrorResponse
+        '422': *apiErrorResponse
+        '428': *apiErrorResponse
+
+  /api/v1/finance/council-runs/{runId}/dispatches:
+    parameters: [{ $ref: '#/components/parameters/runId' }]
+    get:
+      <<: *read
+      operationId: listFinancialCouncilDispatches
+      responses:
+        '200': { $ref: '#/components/responses/FinancialCouncilDispatches' }
+        '401': *apiErrorResponse
+        '403': *apiErrorResponse
+        '404': *apiErrorResponse
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1223,6 +1371,8 @@ components:
     dealId: { name: dealId, in: path, required: true, schema: { type: string, minLength: 1 } }
     previewId: { name: previewId, in: path, required: true, schema: { type: string, minLength: 1 } }
     closureVersionId: { name: closureVersionId, in: path, required: true, schema: { type: string, minLength: 1 } }
+    runId: { name: runId, in: path, required: true, schema: { type: string, minLength: 1 } }
+    revision: { name: revision, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 9007199254740991 } }
     kind: { name: kind, in: path, required: true, schema: { enum: [acquisition_cost, financial_fact] } }
   headers:
     ETag:
@@ -1231,6 +1381,18 @@ components:
       schema: { type: string, pattern: '^"[^" ]+"$' }
   schemas:
     ApiError: { $ref: ../json-schema/api-error.v1.schema.json }
+    FinancialCouncilRun: { $ref: ../json-schema/financial-council.v1.schema.json }
+    FinancialCouncilRunEvent: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilRunEvent' }
+    FinancialSnapshotView: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialSnapshotView' }
+    FinancialFinding: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialFinding' }
+    CandidateAction: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/CandidateAction' }
+    ConsensusReport: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/ConsensusReport' }
+    ActionPortfolio: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/ActionPortfolio' }
+    FinancialCouncilPolicyVersion: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilPolicyVersion' }
+    FinancialCouncilPolicyInput: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilPolicyInput' }
+    PortfolioRevisionInput: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/PortfolioRevisionInput' }
+    FinancialCouncilApproval: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilApproval' }
+    FinancialCouncilDispatchView: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilDispatchView' }
     GrowthBootstrapResponse: { $ref: ../json-schema/growth-bootstrap.v1.schema.json }
     CatalogItem: { $ref: ../json-schema/catalog-item.v1.schema.json }
     CatalogItemPagedResult:
@@ -1434,6 +1596,16 @@ components:
         hasMore: { type: boolean }
     CopilotTask: { $ref: ../json-schema/copilot-task.v1.schema.json }
   responses:
+    FinancialCouncilRun: { description: Financial council run projection, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilRun' } } } }
+    FinancialCouncilRunEvents:
+      description: Immutable financial council run event stream
+      content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FinancialCouncilRunEvent' } } } }
+    FinancialCouncilPolicyVersion: { description: Immutable financial council policy version, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilPolicyVersion' } } } }
+    ActionPortfolio: { description: Re-optimized financial action portfolio revision, content: { application/json: { schema: { $ref: '#/components/schemas/ActionPortfolio' } } } }
+    FinancialCouncilApproval: { description: Human approval decision for a financial council portfolio, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilApproval' } } } }
+    FinancialCouncilDispatches:
+      description: Controlled draft and todo dispatch projections
+      content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FinancialCouncilDispatchView' } } } }
     CatalogItem:
       description: Catalog item
       headers: &etagHeaders { ETag: { $ref: '#/components/headers/ETag' } }

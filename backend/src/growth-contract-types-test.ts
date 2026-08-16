@@ -10,8 +10,11 @@ import type {
   AdvisorEvidenceRef,
   AdvisorMetricRef,
   AdvisorRecommendedAction,
+  CandidateAction,
   FinancialDataGapCode,
   FinancialDataGapSourceType,
+  FinancialCouncilActionKind,
+  FinancialCouncilRunStatus,
   GrowthRoiSliceKey
 } from "./growth-contract-types.js";
 
@@ -50,7 +53,28 @@ const fixtures = {
   } satisfies AdvisorEntityRef,
   sliceKey: "all" satisfies GrowthRoiSliceKey,
   gapCode: "missing_cogs" satisfies FinancialDataGapCode,
-  sourceType: "financial_fact" satisfies FinancialDataGapSourceType
+  sourceType: "financial_fact" satisfies FinancialDataGapSourceType,
+  financialCouncilAction: {
+    actionId: "action-1",
+    kind: "collect_receivable",
+    sourceFindingIds: ["finding-1"],
+    ownerRole: "cashflow",
+    subjectRef: null,
+    explanation: "Collect an overdue receivable.",
+    durationDays: 7,
+    prerequisites: [],
+    mutuallyExclusiveWith: [],
+    cashImpact: { conservative: 100, base: 200, optimistic: 300 },
+    profitImpact: { conservative: 0, base: 0, optimistic: 0 },
+    riskReductionBps: { conservative: -100, base: 0, optimistic: 100 },
+    budgetCostMinor: 0,
+    capacityUnits: 1,
+    confidenceBps: 9000,
+    requiredCapabilities: ["finance.council.approve"],
+    requiresHumanApproval: true
+  } satisfies CandidateAction,
+  financialCouncilActionKind: "collect_receivable" satisfies FinancialCouncilActionKind,
+  financialCouncilRunStatus: "awaiting_approval" satisfies FinancialCouncilRunStatus
 };
 
 // These compile-time-only fixtures prove the aliases stay closed.
@@ -60,7 +84,11 @@ const invalidSlice: GrowthRoiSliceKey = "cohort:cohort-1";
 const invalidGapCode: FinancialDataGapCode = "missing_verified_cost";
 // @ts-expect-error generic entity refs are deliberately forbidden
 const invalidEntity: AdvisorEntityRef = { kind: "candidate", id: "candidate-1" };
-void [invalidSlice, invalidGapCode, invalidEntity];
+// @ts-expect-error arbitrary tools are deliberately outside the frozen action shape
+const invalidFinancialCouncilAction: CandidateAction = { ...fixtures.financialCouncilAction, execute: "payment" };
+// @ts-expect-error automated execution is never a valid candidate action
+const invalidApproval: CandidateAction = { ...fixtures.financialCouncilAction, requiresHumanApproval: false };
+void [invalidSlice, invalidGapCode, invalidEntity, invalidFinancialCouncilAction, invalidApproval];
 
 test("canonical Growth union fixtures compile with closed negative branches", () => {
   execFileSync(fileURLToPath(new URL(
@@ -106,7 +134,7 @@ test("canonical Growth union fixtures conform to their released JSON Schema bran
 
 test("canonical scalar aliases match the released closed values", () => {
   assert.deepEqual(
-    [fixtures.sliceKey, fixtures.gapCode, fixtures.sourceType],
-    ["all", "missing_cogs", "financial_fact"]
+    [fixtures.sliceKey, fixtures.gapCode, fixtures.sourceType, fixtures.financialCouncilActionKind, fixtures.financialCouncilRunStatus],
+    ["all", "missing_cogs", "financial_fact", "collect_receivable", "awaiting_approval"]
   );
 });

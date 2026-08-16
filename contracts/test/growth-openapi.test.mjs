@@ -73,7 +73,15 @@ const operations = {
   "/api/v1/acquisition/advisor/today": ["get"],
   "/api/v1/acquisition/advisor/recommendations/{id}/accept": ["post"],
   "/api/v1/acquisition/advisor/recommendations/{id}/ignore": ["post"],
-  "/api/v1/acquisition/advisor/recommendations/{id}/complete": ["post"]
+  "/api/v1/acquisition/advisor/recommendations/{id}/complete": ["post"],
+  "/api/v1/finance/council-runs": ["post"],
+  "/api/v1/finance/council-runs/{runId}": ["get"],
+  "/api/v1/finance/council-runs/{runId}/events": ["get"],
+  "/api/v1/finance/council-policy": ["get", "put"],
+  "/api/v1/finance/council-runs/{runId}/portfolio-revisions": ["post"],
+  "/api/v1/finance/council-runs/{runId}/portfolio-revisions/{revision}/approve": ["post"],
+  "/api/v1/finance/council-runs/{runId}/reject": ["post"],
+  "/api/v1/finance/council-runs/{runId}/dispatches": ["get"]
 };
 
 const standardHttpMethods = new Set([
@@ -455,6 +463,44 @@ test("catalog item creation requires workspace and idempotency without If-Match"
     { $ref: "#/components/parameters/workspaceHeader" },
     { $ref: "#/components/parameters/idempotencyKey" }
   ]);
+});
+
+test("financial council commands use the shared Growth precondition protocol", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  const create = document.paths["/api/v1/finance/council-runs"].post;
+  assert.equal(create.responses["202"].$ref, "#/components/responses/FinancialCouncilRun");
+  assert.deepEqual(create.parameters, [
+    { $ref: "#/components/parameters/workspaceHeader" },
+    { $ref: "#/components/parameters/idempotencyKey" }
+  ]);
+  for (const [path, method] of [
+    ["/api/v1/finance/council-policy", "put"],
+    ["/api/v1/finance/council-runs/{runId}/portfolio-revisions", "post"],
+    ["/api/v1/finance/council-runs/{runId}/portfolio-revisions/{revision}/approve", "post"]
+  ]) {
+    const operation = document.paths[path][method];
+    const parameters = effectiveParameters(document, document.paths[path], operation);
+    assert.equal(parameters.some((parameter) => parameter.name === "Idempotency-Key" && parameter.required), true, `${method} ${path}`);
+    assert.equal(parameters.some((parameter) => parameter.name === "If-Match" && parameter.required), true, `${method} ${path}`);
+  }
+});
+
+test("financial council policy updates accept configuration but no server-owned version fields", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  const update = document.paths["/api/v1/finance/council-policy"].put;
+  const input = await resolvePublishedSchema(
+    document,
+    update.requestBody.content["application/json"].schema
+  );
+  assert.deepEqual(Object.keys(input.properties).sort(), [
+    "actionCoefficientVersion", "balancedWeightsBps", "budgetLimitMinor",
+    "capacityLimitUnits", "currency", "dueDebtMinor", "durationLimitDays",
+    "minimumActionConfidenceBps", "minimumCashReserveMinor",
+    "necessaryOutflowMinor"
+  ]);
+  for (const serverOwned of [
+    "workspaceId", "policyVersionId", "version", "revision", "policyHash", "createdAt"
+  ]) assert.equal(serverOwned in input.properties, false, serverOwned);
 });
 
 // Production break caught: returning the logical contract filename or a path-like value instead of the immutable release's strict SemVer identity.
@@ -865,7 +911,7 @@ test("fix round 1 mutations require auth guards and versioned responses publish 
     const ifMatch = parameters.find((parameter) =>
       parameter.in === "header" && parameter.name === "If-Match"
     );
-    if (operation.operationId === "createCatalogItem") {
+    if (["createCatalogItem", "createFinancialCouncilRun"].includes(operation.operationId)) {
       assert.equal(ifMatch, undefined, `${method.toUpperCase()} ${path} If-Match`);
     } else {
       assert.equal(ifMatch?.required, true, `${method.toUpperCase()} ${path} If-Match`);
