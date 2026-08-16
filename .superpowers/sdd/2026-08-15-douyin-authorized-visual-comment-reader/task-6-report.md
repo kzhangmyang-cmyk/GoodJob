@@ -59,7 +59,7 @@ The brief's focused command was first run before implementation and failed with 
 - round-four one-use popup confirmation binding across different- and same-session replacement, artifact flips, abort, exact TTL expiry, and expiry while content start is pending; immutable observation/ACK ownership under replacement; one-pixel vertical-overlap reading order shared with the validator; and exact popup disclosures for artifact-on and text-only modes.
 - round-five closed service-worker-to-content ACK ownership: the exact in-memory channel nonce crosses only the internal runtime message, content matches it with the current owner object/generation/session before acknowledging, and a delayed old `batch-1` cannot clear a same-session replacement's new `batch-1`.
 
-The round-five review defect now has focused RED→GREEN coverage and fresh full frontend/backend gates pass. Final parent review remains pending. No real Douyin page or traffic was accessed.
+Task 6 is complete at frontend code commit `8b2e00d`, with backend documentation baseline `c31abf5`. Final independent review is `APPROVED` with 0 Critical, 0 Important, and 0 Minor findings. Final verification passes the focused protocol/content/service-worker lifecycle tests, strict frontend types, the complete visual-reader suite, the 125-check frontend self-test, the unpacked-extension OCR smoke, extension build/audit and main build; backend verification passes 78/78 contracts, 18/18 acquisition drift, generated-type freshness, and backend build. The only build message is the existing Vite chunk-size warning. No real Douyin page or traffic was accessed.
 
 ## Workspace protection
 
