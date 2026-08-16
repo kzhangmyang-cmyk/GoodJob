@@ -505,12 +505,17 @@ type VisualReaderExtensionEvent =
 - Create: `browser-extension/douyin-visual-reader/src/ocr-port.ts`
 - Create: `browser-extension/douyin-visual-reader/src/tesseract-ocr.ts`
 - Create: `browser-extension/douyin-visual-reader/src/tesseract-ocr.self-test.ts`
+- Create: `browser-extension/douyin-visual-reader/src/tesseract-worker.ts`
+- Create: `browser-extension/douyin-visual-reader/src/visual-capture-guard.ts`
+- Create: `browser-extension/douyin-visual-reader/src/visual-capture-runtime.ts`
+- Create: `browser-extension/douyin-visual-reader/src/visual-content-fallback.ts`
+- Create: `browser-extension/douyin-visual-reader/src/webp-redaction-policy.ts`
+- Create: `scripts/test-visual-reader-ocr-smoke.mts`
 - Create: `browser-extension/douyin-visual-reader/fixtures/*.webp`
 - Modify: `browser-extension/douyin-visual-reader/src/service-worker.ts`
 - Modify: `browser-extension/douyin-visual-reader/src/douyin-content.ts`
 - Modify: `browser-extension/douyin-visual-reader/vite.config.ts`
 - Modify: `package.json`
-- Modify: `package-lock.json`
 - Modify: `THIRD_PARTY_NOTICES.md`
 
 **Pipeline:**
@@ -527,41 +532,43 @@ captureVisibleTab (memory only)
 ```
 
 - `VisualOcrPort.recognize(redactedCrop, languages)` 返回文字、词级置信度和边界；默认实现固定 `chi_sim+eng`。
-- Tesseract worker 每会话最多一个，惰性加载，空闲 30 秒或会话结束立即 terminate；worker/core/wasm/language assets 全部来自扩展包，不用 CDN、远程脚本或 `eval`。
+- Tesseract worker 每会话最多一个，惰性加载，空闲 30 秒或会话结束立即 terminate；worker/core/wasm/language assets 全部来自扩展包，不用 CDN、远程脚本或动态代码。Pinned `best_int` 语言 gzip 仅在构建时解压，runtime 使用本地 `.traineddata` 且不包含 Node `Buffer`/`bmp-js`。
 - 扩展 CSP 固定为 `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'`，只为本地 Tesseract WASM 开放编译；构建测试拒绝 `unsafe-eval`、远程源和额外 `connect-src`。
 - 若 DOM 文本完整，OCR 不运行。若 DOM/OCR 显著冲突，保留两个哈希和遮挡裁剪但结果为 `manual_review_only`，不让模型择一补写。
 - 只有遮挡后的 WebP 可进入 page bridge；raw screenshot 对象在 crop 完成后的 `finally` 中释放，禁止写 storage、IndexedDB、日志或 crash payload。
 
-- [ ] **Step 1: 写裁剪/遮挡/OCR 决策 RED 测试**
+- [x] **Step 1: 写裁剪/遮挡/OCR 决策 RED 测试**
 
   使用合成固定图片覆盖 HiDPI 缩放、视口边缘裁剪、圆形/方形头像、多余导航、长评论、中文+数字、表情、低对比度、截断、DOM/OCR 一致和冲突。逐像素断言 avatar bounds 与所有允许文字/元数据矩形之外的像素为固定 RGBA `[17,61,51,255]`。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm exec -- tsx browser-extension/douyin-visual-reader/src/visual-pipeline.self-test.ts && npm exec -- tsx browser-extension/douyin-visual-reader/src/tesseract-ocr.self-test.ts`
 
   Expected: FAIL。
 
-- [ ] **Step 3: 实现纯 Canvas pipeline 和可替换 OCR port**
+- [x] **Step 3: 实现纯 Canvas pipeline 和可替换 OCR port**
 
   先用 fake OCR 跑通全部裁剪/遮挡/决策测试，再接 `tesseract.js@7.0.0`。固定中文 fixture 的字符召回门禁为 90%，数值/货币关键词不得误补；未达到门禁时结果只能进入人工复核。
 
-- [ ] **Step 4: 自托管 OCR 资产并记录许可证/哈希**
+- [x] **Step 4: 自托管 OCR 资产并记录许可证/哈希**
 
   构建脚本复制 pinned worker/core/wasm/`chi_sim` 资产到扩展 dist，生成 `ocr-assets.json` SHA-256 清单。`THIRD_PARTY_NOTICES.md` 记录包版本、仓库、许可证、用途和未修改/修改范围。
 
-- [ ] **Step 5: 运行 GREEN、CSP/包体检查和构建**
+- [x] **Step 5: 运行 GREEN、CSP/包体检查和构建**
 
   Run: `npm run test:visual-reader && npm run build:visual-reader && npm run check:visual-reader-bundle`
 
   Expected: PASS；dist 无远程脚本 URL、`eval`、原始 fixture 或 sourcemap 中的评论文字；包含本地 WASM 与中文模型的未压缩扩展制品在记录的 80 MiB 上限内。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
   ```bash
-  git add browser-extension/douyin-visual-reader/src/offscreen.html browser-extension/douyin-visual-reader/src/offscreen.ts browser-extension/douyin-visual-reader/src/visual-pipeline.ts browser-extension/douyin-visual-reader/src/visual-pipeline.self-test.ts browser-extension/douyin-visual-reader/src/ocr-port.ts browser-extension/douyin-visual-reader/src/tesseract-ocr.ts browser-extension/douyin-visual-reader/src/tesseract-ocr.self-test.ts browser-extension/douyin-visual-reader/fixtures browser-extension/douyin-visual-reader/src/service-worker.ts browser-extension/douyin-visual-reader/src/douyin-content.ts browser-extension/douyin-visual-reader/vite.config.ts package.json package-lock.json THIRD_PARTY_NOTICES.md
+  git add README.md THIRD_PARTY_NOTICES.md browser-extension/douyin-visual-reader scripts package.json
   git commit -m "feat: extract text from redacted comment cards"
   ```
+
+  Implementation is committed at frontend `12e707f` and awaits the independent completion review. Complete DOM and artifact-disabled sessions cannot enter capture/OCR. Authorized missing/truncated cards are serialized through an owner-rechecked `captureVisibleTab`, offscreen crop, exact opaque masking, lossless WebP round-trip proof, and local `chi_sim+eng` OCR; no raw screenshot leaves temporary memory. The dist ships full notices/licenses plus an exact SHA-256 inventory and is 29,612 KiB. A real unpacked Chromium smoke exercises the bundled offscreen/worker/core/language path and immediate worker termination. Fresh focused, full extension, strict types, 125-check main frontend, build/audit, real build-order, and diff gates passed. No real Douyin page was accessed. The protected user-owned untracked `package-lock.json` was not read, modified, staged, deleted, or committed.
 
 ### Task 7: 视觉观察转 Evidence、需求信号和 Run Presentation
 
