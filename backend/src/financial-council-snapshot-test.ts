@@ -1,0 +1,395 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createBusinessAdvisorService } from "./business-advisor/service.js";
+import type { BusinessReportInput } from "./business-advisor/domain.js";
+import {
+  FinancialCouncilAuthorityReader,
+  type FinancialCouncilVerifiedFactSource
+} from "./financial-council-authority-reader.js";
+import { FinancialSnapshotBuilder } from "./financial-council-snapshot.js";
+import {
+  createGrowthAdvisorQueryService
+} from "./growth-advisor-query.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner,
+  type GrowthSealedReadCutoff
+} from "./growth-temporal-barrier.js";
+import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
+import type { CommandContext } from "./growth-command-context.js";
+import type { FinancialCouncilCreateInput } from "./growth-contract-types.js";
+
+const HASH = (character: string) =>
+  `sha256:${character.repeat(64)}` as `sha256:${string}`;
+
+function workspace(
+  capabilities: ActiveWorkspaceContext["capabilities"] = [
+    "pricing.sensitive.read"
+  ]
+): ActiveWorkspaceContext {
+  return Object.freeze({
+    workspaceId: "workspace-a",
+    kind: "team",
+    actorId: "admin-1",
+    role: "admin",
+    teamId: "all",
+    capabilities: Object.freeze([...capabilities]),
+    capabilityRegistryVersion: "growth-capabilities.v1"
+  });
+}
+
+function command(context = workspace()): CommandContext {
+  return Object.freeze({
+    workspace: context,
+    actorId: context.actorId,
+    idempotencyKey: "financial-council-1",
+    requestHash: HASH("a"),
+    expectedRevision: null
+  });
+}
+
+function businessReport(): BusinessReportInput {
+  return {
+    currency: "CNY",
+    companyName: "Example Co",
+    period: "2026-08",
+    balanceSheet: {
+      period: "2026-08",
+      cashMinor: 800_000,
+      receivablesMinor: 1_200_000,
+      inventoryMinor: 900_000,
+      otherCurrentAssetsMinor: 100_000,
+      nonCurrentAssetsMinor: 500_000,
+      currentLiabilitiesMinor: 1_000_000,
+      nonCurrentLiabilitiesMinor: 300_000,
+      accountsPayableMinor: 700_000
+    },
+    incomeStatement: {
+      period: "2026-08",
+      revenueMinor: 5_000_000,
+      costOfGoodsSoldMinor: 3_000_000,
+      operatingExpensesMinor: 1_000_000,
+      interestExpenseMinor: 50_000,
+      taxExpenseMinor: 60_000,
+      productLines: [
+        {
+          name: "B",
+          revenueMinor: 2_000_000,
+          costOfGoodsSoldMinor: 1_000_000,
+          afterSalesCostMinor: 100_000,
+          shippingCostMinor: 100_000,
+          sellingExpenseMinor: 100_000,
+          allocatedOverheadMinor: 100_000
+        },
+        {
+          name: "A",
+          revenueMinor: 1_000_000,
+          costOfGoodsSoldMinor: 500_000,
+          afterSalesCostMinor: 50_000,
+          shippingCostMinor: 50_000,
+          sellingExpenseMinor: 50_000,
+          allocatedOverheadMinor: 50_000
+        }
+      ]
+    },
+    cashFlow: {
+      period: "2026-08",
+      openingCashMinor: 600_000,
+      operatingInflowMinor: 4_500_000,
+      operatingOutflowMinor: 3_900_000,
+      investingNetMinor: 0,
+      financingNetMinor: 200_000,
+      receivables: [
+        { customer: "B", amountMinor: 200_000, daysOutstanding: 20 },
+        { customer: "A", amountMinor: 100_000, daysOutstanding: 10 }
+      ],
+      expectedInflowsNext30DaysMinor: 1_000_000,
+      expectedOutflowsNext30DaysMinor: 1_300_000,
+      expectedInflowsNext31To90DaysMinor: 2_000_000,
+      expectedOutflowsNext31To90DaysMinor: 1_800_000
+    }
+  };
+}
+
+function input(report = businessReport()): FinancialCouncilCreateInput {
+  return {
+    currency: "CNY",
+    dataAsOf: "2026-08-16T08:00:00.000Z",
+    businessReport: report,
+    policyVersionId: "policy-1"
+  };
+}
+
+class CountingBarrier extends DefaultGrowthTemporalBarrier {
+  sealCalls = 0;
+
+  override async sealReadCutoff(
+    context: ActiveWorkspaceContext,
+    effectiveAsOf: string
+  ) {
+    this.sealCalls += 1;
+    return super.sealReadCutoff(context, effectiveAsOf);
+  }
+}
+
+function fact(): FinancialCouncilVerifiedFactSource {
+  return {
+    workspaceId: "workspace-a",
+    entryId: "fact-1",
+    sourceVersion: 1,
+    factType: "payment_received",
+    amountMinor: 500_000,
+    netAmountMinor: 500_000,
+    currency: "CNY",
+    businessOccurredAt: "2026-08-15T06:00:00.000Z",
+    entryRecordedAt: "2026-08-15T07:00:00.000Z",
+    verificationRevision: 2,
+    verificationRecordedAt: "2026-08-15T08:00:00.000Z",
+    snapshotHash: HASH("f")
+  };
+}
+
+function createHarness(options: {
+  reverse?: boolean;
+  incompleteRoi?: boolean;
+} = {}) {
+  const transactions = new InMemoryGrowthTemporalTransactionRunner(
+    "2026-08-16T08:00:00.000Z"
+  );
+  const barrier = new CountingBarrier(transactions);
+  const seen: GrowthSealedReadCutoff[] = [];
+  const note = (cutoff: GrowthSealedReadCutoff) => {
+    seen.push(cutoff);
+    return cutoff;
+  };
+  const candidates = [
+    {
+      candidateId: "candidate-b", customerId: "customer-b", dealId: "deal-b",
+      displayName: "B", priorityScoreBps: 8_000,
+      qualificationDecisionId: "qualification-b",
+      qualificationDecisionVersion: "v2", inputSnapshotHash: HASH("b")
+    },
+    {
+      candidateId: "candidate-a", customerId: "customer-a", dealId: "deal-a",
+      displayName: "A", priorityScoreBps: 9_000,
+      qualificationDecisionId: "qualification-a",
+      qualificationDecisionVersion: "v1", inputSnapshotHash: HASH("a")
+    }
+  ];
+  if (options.reverse) candidates.reverse();
+  const advisor = createGrowthAdvisorQueryService({
+    temporalBarrier: barrier,
+    workspaceSettings: {
+      async getAt(_context, cutoff) {
+        note(cutoff);
+        return {
+          timeZone: "Asia/Shanghai", revision: "settings-v1",
+          recordedAt: "1970-01-01T00:00:00.000Z", eventSequence: 1
+        };
+      }
+    } as never,
+    visibility: {
+      async resolveAt(_context, cutoff) {
+        note(cutoff);
+        return {
+          scope: { kind: "workspace", workspaceId: "workspace-a" },
+          subjectVisibility: {
+            candidateIds: ["candidate-a", "candidate-b"],
+            customerIds: ["customer-a", "customer-b"],
+            dealIds: ["deal-a", "deal-b"], cohortIds: ["cohort-1"]
+          },
+          financialGapVisibility: {
+            candidateIds: ["candidate-a", "candidate-b"],
+            customerIds: ["customer-a", "customer-b"],
+            dealIds: ["deal-a", "deal-b"], cohortIds: ["cohort-1"]
+          },
+          sourceSnapshotHash: HASH("1")
+        };
+      }
+    } as never,
+    priorityCandidates: {
+      async listAsOf(_context, value) {
+        note(value.cutoff);
+        return candidates;
+      }
+    },
+    quoteApprovals: {
+      async listPendingAsOf(_context, value) {
+        note(value.cutoff);
+        return [{
+          quoteCaseId: "quote-case-1", quoteVersionId: "quote-1",
+          approvalId: "approval-1", approvalKind: "confirmation",
+          requiredCapabilities: ["quote.confirm"], lifecycleRevision: 4,
+          currency: "CNY", quotedAmountMinor: 1_000_000,
+          estimatedGrossProfitMinor: 200_000,
+          estimatedContributionMinor: 180_000, grossMarginBps: 2_000,
+          probabilityAssessmentId: "probability-1", closeProbabilityBps: 5_000,
+          commercialAmountHash: HASH("2"), salesOwnerActorId: "sales-1",
+          submittedBy: "sales-1", submittedAt: "2026-08-15T07:00:00.000Z",
+          expiresAt: null
+        }];
+      }
+    },
+    quoteVersions: {
+      async getAt(_context, quoteVersionId, cutoff) {
+        note(cutoff);
+        return { quoteVersionId, lifecycleRevision: 4 } as never;
+      }
+    },
+    performancePortfolio: {
+      async listVisible(_context, value) {
+        note(value.cutoff);
+        return [{
+          cohortId: "cohort-1",
+          planId: null,
+          performance: {
+            cohortId: "cohort-1", currency: "CNY", planId: null,
+            dataAsOf: value.cutoff.effectiveAsOf, memberIds: [],
+            expectedRoiByCurrency: options.incompleteRoi ? [{
+              currency: "CNY", status: "not_computable", reason: "cost_missing",
+              roiBps: null, formulaVersion: "expected-gross-profit-roi.v1",
+              quoteVersionIds: ["quote-1"], probabilityAssessmentIds: ["probability-1"],
+              costEstimateIds: [], amountVisibility: "full",
+              probabilityWeightedGrossProfitMinor: null,
+              attributedEstimatedCostMinor: null
+            }] : [{
+              currency: "CNY", status: "computed", reason: null, roiBps: 4_000,
+              formulaVersion: "expected-gross-profit-roi.v1",
+              quoteVersionIds: ["quote-1"], probabilityAssessmentIds: ["probability-1"],
+              costEstimateIds: ["cost-1"], amountVisibility: "full",
+              probabilityWeightedGrossProfitMinor: 700_000,
+              attributedEstimatedCostMinor: 500_000
+            }],
+            actualRoiByCurrency: options.incompleteRoi ? [{
+              currency: "CNY", status: "not_computable",
+              reason: "cash_reconciliation_incomplete",
+              closureVersionId: "closure-1",
+              closureAsOf: "2026-08-15T08:00:00.000Z",
+              formulaVersion: "verified-gross-profit-roi.v1"
+            }] : [{
+              currency: "CNY", status: "computed", basis: "verified_gross_profit",
+              roiBps: 3_000, costCoverageBps: 10_000, marginCoverageBps: 10_000,
+              cashCoverageBps: 10_000, attributionCoverageBps: 10_000,
+              closureVersionId: "closure-1", closureAsOf: "2026-08-15T08:00:00.000Z",
+              formulaVersion: "verified-gross-profit-roi.v1",
+              amountVisibility: "full", verifiedGrossProfitMinor: 650_000,
+              verifiedAcquisitionCostMinor: 500_000
+            }],
+            cashByCurrency: [],
+            coverage: {
+              costCoverageBps: 10_000, marginCoverageBps: 10_000,
+              cashCoverageBps: options.incompleteRoi ? 0 : 10_000,
+              attributionCoverageBps: 10_000,
+              gapCodes: options.incompleteRoi ? ["cash_incomplete"] : []
+            },
+            dataGaps: options.incompleteRoi ? ["cash_incomplete"] : [],
+            closureVersionId: "closure-1", formulaVersion: "growth-performance.v1",
+            calculationHash: HASH("3"), membershipSnapshotHash: HASH("4")
+          }
+        }];
+      }
+    },
+    financialGaps: {
+      async listForBindingsAt(_context, value) {
+        note(value.cutoff);
+        return [];
+      }
+    },
+    recommendations: {
+      async listAt(_context, value) {
+        note(value.cutoff);
+        return { items: [], nextCursor: null, hasMore: false };
+      }
+    },
+    now: () => "2026-08-16T09:00:00.000Z"
+  });
+  const authority = new FinancialCouncilAuthorityReader({
+    advisor,
+    verifiedFacts: {
+      async listVisibleAt(_context, value) {
+        note(value.cutoff);
+        return [fact()];
+      }
+    }
+  });
+  const builder = new FinancialSnapshotBuilder({
+    temporalBarrier: barrier,
+    authority,
+    businessAdvisor: createBusinessAdvisorService(),
+    now: () => "2026-08-16T09:00:00.000Z"
+  });
+  return { barrier, seen, builder };
+}
+
+test("snapshot seals once and every reader receives the same cutoff", async () => {
+  const harness = createHarness();
+  const snapshot = await harness.builder.freeze(command(), input());
+  assert.equal(harness.barrier.sealCalls, 1);
+  assert.equal(harness.seen.length > 2, true);
+  assert.equal(new Set(harness.seen).size, 1);
+  assert.equal(snapshot.dataAsOf, "2026-08-16T08:00:00.000Z");
+  assert.match(snapshot.snapshotId, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(snapshot.reportInputHash, /^sha256:[0-9a-f]{64}$/u);
+  assert.match(snapshot.snapshotHash, /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(Object.isFrozen(snapshot), true);
+  assert.equal(Object.isFrozen(snapshot.authority.expectedRoi), true);
+  assert.equal(Object.isFrozen(snapshot.formulaInputs.indicators), true);
+  assert.deepEqual(snapshot.sourceRefs.map((ref) => [ref.kind, ref.sourceId]),
+    [...snapshot.sourceRefs]
+      .sort((left, right) => left.kind.localeCompare(right.kind)
+        || left.sourceId.localeCompare(right.sourceId))
+      .map((ref) => [ref.kind, ref.sourceId]));
+});
+
+test("future dataAsOf is rejected before sealing or reading", async () => {
+  const harness = createHarness();
+  await assert.rejects(
+    harness.builder.freeze(command(), {
+      ...input(), dataAsOf: "2026-08-16T12:00:00.000Z"
+    }),
+    (error: unknown) =>
+      (error as { code?: string }).code === "invalid_as_of"
+  );
+  assert.equal(harness.barrier.sealCalls, 0);
+  assert.equal(harness.seen.length, 0);
+});
+
+test("missing cash flow and incomplete ROI become closed gaps", async () => {
+  const harness = createHarness({ incompleteRoi: true });
+  const report = businessReport();
+  delete report.cashFlow;
+  const snapshot = await harness.builder.freeze(command(), input(report));
+  assert.deepEqual(snapshot.dataGaps.map((gap) => [gap.source, gap.code]), [
+    ["business_report", "import_requires_review"],
+    ["roi", "import_requires_review"],
+    ["roi", "import_requires_review"]
+  ]);
+  assert.equal(snapshot.dataGaps.every((gap) => Object.isFrozen(gap)), true);
+});
+
+test("snapshot identity ignores caller and authority array order", async () => {
+  const leftHarness = createHarness();
+  const rightHarness = createHarness({ reverse: true });
+  const leftReport = businessReport();
+  const rightReport = structuredClone(leftReport);
+  rightReport.incomeStatement.productLines!.reverse();
+  rightReport.cashFlow!.receivables!.reverse();
+  const left = await leftHarness.builder.freeze(command(), input(leftReport));
+  const right = await rightHarness.builder.freeze(command(), input(rightReport));
+  assert.equal(left.reportInputHash, right.reportInputHash);
+  assert.equal(left.snapshotId, right.snapshotId);
+  assert.equal(left.snapshotHash, right.snapshotHash);
+  assert.deepEqual(left, right);
+});
+
+test("non-JSON report input fails closed instead of entering a canonical hash", async () => {
+  const harness = createHarness();
+  const report = businessReport();
+  report.balanceSheet.cashMinor = Number.NaN;
+  await assert.rejects(
+    harness.builder.freeze(command(), input(report)),
+    (error: unknown) =>
+      (error as { code?: string }).code === "financial_council_input_invalid"
+  );
+  assert.equal(harness.barrier.sealCalls, 0);
+});

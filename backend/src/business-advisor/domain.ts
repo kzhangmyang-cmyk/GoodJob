@@ -130,6 +130,257 @@ function requireBps(value: number, field: string): number {
   return value;
 }
 
+const BUSINESS_REPORT_ARRAY_LIMIT = 100;
+const BUSINESS_REPORT_TEXT_LIMIT = 4_000;
+
+function requireBusinessRecord(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = []
+): Record<string, unknown> {
+  if (!value || typeof value !== "object"
+    || Object.getPrototypeOf(value) !== Object.prototype
+    || Reflect.ownKeys(value).some((key) => typeof key !== "string")) {
+    throw businessAdvisorError("business_input_invalid");
+  }
+  const record = value as Record<string, unknown>;
+  const allowed = new Set([...required, ...optional]);
+  const keys = Object.keys(record);
+  if (required.some((key) => !keys.includes(key))
+    || keys.some((key) => !allowed.has(key))) {
+    throw businessAdvisorError("business_input_invalid");
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) {
+      throw businessAdvisorError("business_input_invalid");
+    }
+  }
+  return record;
+}
+
+function requireBusinessText(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === ""
+    || value.length > BUSINESS_REPORT_TEXT_LIMIT) {
+    throw businessAdvisorError("business_input_invalid", `${field} invalid`);
+  }
+  return value;
+}
+
+function requireBusinessInteger(
+  value: unknown,
+  field: string,
+  signed = false
+): number {
+  if (!Number.isSafeInteger(value) || (!signed && Number(value) < 0)) {
+    throw businessAdvisorError("business_input_invalid", `${field} invalid`);
+  }
+  return value as number;
+}
+
+function requireBusinessBps(value: unknown, field: string): number {
+  const integer = requireBusinessInteger(value, field);
+  if (integer > 10_000) {
+    throw businessAdvisorError("business_input_invalid", `${field} invalid`);
+  }
+  return integer;
+}
+
+function requireBusinessArray(
+  value: unknown,
+  field: string
+): readonly unknown[] {
+  if (!Array.isArray(value) || value.length > BUSINESS_REPORT_ARRAY_LIMIT) {
+    throw businessAdvisorError("business_input_invalid", `${field} invalid`);
+  }
+  return value;
+}
+
+function codeUnitCompare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function canonicalRows<T>(rows: readonly T[]): readonly T[] {
+  return Object.freeze([...rows].sort((left, right) =>
+    codeUnitCompare(JSON.stringify(left), JSON.stringify(right))));
+}
+
+function freezeBusinessValue<T>(value: T): T {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    freezeBusinessValue(nested);
+  }
+  return Object.freeze(value);
+}
+
+/** Closed, deterministic representation used at immutable council boundaries.
+ * The legacy normalizer remains intentionally unchanged. */
+export function canonicalBusinessReportInput(
+  input: BusinessReportInput
+): BusinessReportInput {
+  const root = requireBusinessRecord(input, [
+    "currency", "companyName", "period", "balanceSheet", "incomeStatement"
+  ], ["cashFlow", "costDetail", "taxRisk"]);
+  if (root.currency !== "CNY" && root.currency !== "USD") {
+    throw businessAdvisorError("business_input_invalid", "currency invalid");
+  }
+  const balance = requireBusinessRecord(root.balanceSheet, [
+    "period", "cashMinor", "receivablesMinor", "inventoryMinor",
+    "otherCurrentAssetsMinor", "nonCurrentAssetsMinor",
+    "currentLiabilitiesMinor", "nonCurrentLiabilitiesMinor",
+    "accountsPayableMinor"
+  ]);
+  const income = requireBusinessRecord(root.incomeStatement, [
+    "period", "revenueMinor", "costOfGoodsSoldMinor",
+    "operatingExpensesMinor", "interestExpenseMinor", "taxExpenseMinor"
+  ], ["productLines", "customers"]);
+  const productLines = income.productLines === undefined
+    ? undefined
+    : canonicalRows(requireBusinessArray(
+        income.productLines, "incomeStatement.productLines"
+      ).map((value) => {
+        const row = requireBusinessRecord(value, [
+          "name", "revenueMinor", "costOfGoodsSoldMinor",
+          "afterSalesCostMinor", "shippingCostMinor", "sellingExpenseMinor",
+          "allocatedOverheadMinor"
+        ]);
+        return Object.freeze({
+          name: requireBusinessText(row.name, "productLine.name"),
+          revenueMinor: requireBusinessInteger(row.revenueMinor, "productLine.revenueMinor"),
+          costOfGoodsSoldMinor: requireBusinessInteger(row.costOfGoodsSoldMinor, "productLine.costOfGoodsSoldMinor"),
+          afterSalesCostMinor: requireBusinessInteger(row.afterSalesCostMinor, "productLine.afterSalesCostMinor"),
+          shippingCostMinor: requireBusinessInteger(row.shippingCostMinor, "productLine.shippingCostMinor"),
+          sellingExpenseMinor: requireBusinessInteger(row.sellingExpenseMinor, "productLine.sellingExpenseMinor"),
+          allocatedOverheadMinor: requireBusinessInteger(row.allocatedOverheadMinor, "productLine.allocatedOverheadMinor")
+        });
+      }));
+  const customers = income.customers === undefined
+    ? undefined
+    : canonicalRows(requireBusinessArray(
+        income.customers, "incomeStatement.customers"
+      ).map((value) => {
+        const row = requireBusinessRecord(value, [
+          "name", "revenueMinor", "grossProfitMinor", "serviceCostMinor",
+          "paymentDays", "outstandingReceivableMinor"
+        ]);
+        return Object.freeze({
+          name: requireBusinessText(row.name, "customer.name"),
+          revenueMinor: requireBusinessInteger(row.revenueMinor, "customer.revenueMinor"),
+          grossProfitMinor: requireBusinessInteger(row.grossProfitMinor, "customer.grossProfitMinor", true),
+          serviceCostMinor: requireBusinessInteger(row.serviceCostMinor, "customer.serviceCostMinor"),
+          paymentDays: requireBusinessInteger(row.paymentDays, "customer.paymentDays"),
+          outstandingReceivableMinor: requireBusinessInteger(row.outstandingReceivableMinor, "customer.outstandingReceivableMinor")
+        });
+      }));
+  let cashFlow: CashFlowInput | undefined;
+  if (root.cashFlow !== undefined && root.cashFlow !== null) {
+    const cash = requireBusinessRecord(root.cashFlow, [
+      "period", "openingCashMinor", "operatingInflowMinor",
+      "operatingOutflowMinor", "investingNetMinor", "financingNetMinor",
+      "expectedInflowsNext30DaysMinor", "expectedOutflowsNext30DaysMinor",
+      "expectedInflowsNext31To90DaysMinor",
+      "expectedOutflowsNext31To90DaysMinor"
+    ], ["receivables"]);
+    const receivables = cash.receivables === undefined
+      ? undefined
+      : canonicalRows(requireBusinessArray(
+          cash.receivables, "cashFlow.receivables"
+        ).map((value) => {
+          const row = requireBusinessRecord(value, [
+            "customer", "amountMinor", "daysOutstanding"
+          ]);
+          return Object.freeze({
+            customer: requireBusinessText(row.customer, "receivable.customer"),
+            amountMinor: requireBusinessInteger(row.amountMinor, "receivable.amountMinor"),
+            daysOutstanding: requireBusinessInteger(row.daysOutstanding, "receivable.daysOutstanding")
+          });
+        }));
+    cashFlow = Object.freeze({
+      period: requireBusinessText(cash.period, "cashFlow.period"),
+      openingCashMinor: requireBusinessInteger(cash.openingCashMinor, "cashFlow.openingCashMinor"),
+      operatingInflowMinor: requireBusinessInteger(cash.operatingInflowMinor, "cashFlow.operatingInflowMinor"),
+      operatingOutflowMinor: requireBusinessInteger(cash.operatingOutflowMinor, "cashFlow.operatingOutflowMinor"),
+      investingNetMinor: requireBusinessInteger(cash.investingNetMinor, "cashFlow.investingNetMinor", true),
+      financingNetMinor: requireBusinessInteger(cash.financingNetMinor, "cashFlow.financingNetMinor", true),
+      ...(receivables === undefined ? {} : { receivables }),
+      expectedInflowsNext30DaysMinor: requireBusinessInteger(cash.expectedInflowsNext30DaysMinor, "cashFlow.expectedInflowsNext30DaysMinor"),
+      expectedOutflowsNext30DaysMinor: requireBusinessInteger(cash.expectedOutflowsNext30DaysMinor, "cashFlow.expectedOutflowsNext30DaysMinor"),
+      expectedInflowsNext31To90DaysMinor: requireBusinessInteger(cash.expectedInflowsNext31To90DaysMinor, "cashFlow.expectedInflowsNext31To90DaysMinor"),
+      expectedOutflowsNext31To90DaysMinor: requireBusinessInteger(cash.expectedOutflowsNext31To90DaysMinor, "cashFlow.expectedOutflowsNext31To90DaysMinor")
+    });
+  }
+  let costDetail: CostDetailInput | undefined;
+  if (root.costDetail !== undefined && root.costDetail !== null) {
+    const cost = requireBusinessRecord(root.costDetail, [
+      "materialCostRateBps", "laborCostMinor", "rawMaterialCostMinor",
+      "salesCommissionRateBps", "fixedOverheadMinor"
+    ], ["previousMaterialCostRateBps"]);
+    costDetail = Object.freeze({
+      materialCostRateBps: requireBusinessBps(cost.materialCostRateBps, "costDetail.materialCostRateBps"),
+      ...(cost.previousMaterialCostRateBps === undefined ? {} : {
+        previousMaterialCostRateBps: requireBusinessBps(
+          cost.previousMaterialCostRateBps,
+          "costDetail.previousMaterialCostRateBps"
+        )
+      }),
+      laborCostMinor: requireBusinessInteger(cost.laborCostMinor, "costDetail.laborCostMinor"),
+      rawMaterialCostMinor: requireBusinessInteger(cost.rawMaterialCostMinor, "costDetail.rawMaterialCostMinor"),
+      salesCommissionRateBps: requireBusinessBps(cost.salesCommissionRateBps, "costDetail.salesCommissionRateBps"),
+      fixedOverheadMinor: requireBusinessInteger(cost.fixedOverheadMinor, "costDetail.fixedOverheadMinor")
+    });
+  }
+  let taxRisk: TaxRiskInput | undefined;
+  if (root.taxRisk !== undefined && root.taxRisk !== null) {
+    const tax = requireBusinessRecord(root.taxRisk, [
+      "invoiceIssues", "revenueRecognitionIssues", "costAuthenticityIssues",
+      "payrollIssues", "equityIssues"
+    ]);
+    const issues = (value: unknown, field: string) => Object.freeze(
+      requireBusinessArray(value, field)
+        .map((item) => requireBusinessText(item, field))
+        .sort(codeUnitCompare)
+    );
+    taxRisk = Object.freeze({
+      invoiceIssues: issues(tax.invoiceIssues, "taxRisk.invoiceIssues"),
+      revenueRecognitionIssues: issues(tax.revenueRecognitionIssues, "taxRisk.revenueRecognitionIssues"),
+      costAuthenticityIssues: issues(tax.costAuthenticityIssues, "taxRisk.costAuthenticityIssues"),
+      payrollIssues: issues(tax.payrollIssues, "taxRisk.payrollIssues"),
+      equityIssues: issues(tax.equityIssues, "taxRisk.equityIssues")
+    });
+  }
+  return freezeBusinessValue({
+    currency: root.currency,
+    companyName: requireBusinessText(root.companyName, "companyName"),
+    period: requireBusinessText(root.period, "period"),
+    balanceSheet: {
+      period: requireBusinessText(balance.period, "balanceSheet.period"),
+      cashMinor: requireBusinessInteger(balance.cashMinor, "balanceSheet.cashMinor"),
+      receivablesMinor: requireBusinessInteger(balance.receivablesMinor, "balanceSheet.receivablesMinor"),
+      inventoryMinor: requireBusinessInteger(balance.inventoryMinor, "balanceSheet.inventoryMinor"),
+      otherCurrentAssetsMinor: requireBusinessInteger(balance.otherCurrentAssetsMinor, "balanceSheet.otherCurrentAssetsMinor"),
+      nonCurrentAssetsMinor: requireBusinessInteger(balance.nonCurrentAssetsMinor, "balanceSheet.nonCurrentAssetsMinor"),
+      currentLiabilitiesMinor: requireBusinessInteger(balance.currentLiabilitiesMinor, "balanceSheet.currentLiabilitiesMinor"),
+      nonCurrentLiabilitiesMinor: requireBusinessInteger(balance.nonCurrentLiabilitiesMinor, "balanceSheet.nonCurrentLiabilitiesMinor"),
+      accountsPayableMinor: requireBusinessInteger(balance.accountsPayableMinor, "balanceSheet.accountsPayableMinor")
+    },
+    incomeStatement: {
+      period: requireBusinessText(income.period, "incomeStatement.period"),
+      revenueMinor: requireBusinessInteger(income.revenueMinor, "incomeStatement.revenueMinor"),
+      costOfGoodsSoldMinor: requireBusinessInteger(income.costOfGoodsSoldMinor, "incomeStatement.costOfGoodsSoldMinor"),
+      operatingExpensesMinor: requireBusinessInteger(income.operatingExpensesMinor, "incomeStatement.operatingExpensesMinor"),
+      interestExpenseMinor: requireBusinessInteger(income.interestExpenseMinor, "incomeStatement.interestExpenseMinor"),
+      taxExpenseMinor: requireBusinessInteger(income.taxExpenseMinor, "incomeStatement.taxExpenseMinor"),
+      ...(productLines === undefined ? {} : { productLines }),
+      ...(customers === undefined ? {} : { customers })
+    },
+    ...(cashFlow === undefined ? {} : { cashFlow }),
+    ...(costDetail === undefined ? {} : { costDetail }),
+    ...(taxRisk === undefined ? {} : { taxRisk })
+  }) as BusinessReportInput;
+}
+
 export function normalizeBusinessReport(
   input: BusinessReportInput
 ): NormalizedBusinessReport {

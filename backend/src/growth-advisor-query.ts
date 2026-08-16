@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import {
   assertGrowthAsOfNotFuture
 } from "./growth-as-of.js";
-import type {
-  GrowthSealedReadCutoff,
-  GrowthTemporalBarrier
+import {
+  assertGrowthSealedReadCutoff,
+  type GrowthSealedReadCutoff,
+  type GrowthTemporalBarrier
 } from "./growth-temporal-barrier.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import type { GrowthWorkspaceSettingsReader } from "./growth-workspace-settings.js";
@@ -115,6 +116,57 @@ export interface GrowthAdvisorQueryService {
     context: ActiveWorkspaceContext,
     query: AdvisorTodayQuery
   ): Promise<GrowthAdvisorTodayView>;
+}
+
+export interface GrowthAdvisorSealedQueryService
+extends GrowthAdvisorQueryService {
+  getTodayAt(
+    context: ActiveWorkspaceContext,
+    query: { currency: string; cutoff: GrowthSealedReadCutoff }
+  ): Promise<GrowthAdvisorTodayView>;
+}
+
+const advisorCutoffsByBarrier =
+  new WeakMap<GrowthTemporalBarrier, WeakSet<object>>();
+
+function cutoffSetFor(barrier: GrowthTemporalBarrier): WeakSet<object> {
+  let issued = advisorCutoffsByBarrier.get(barrier);
+  if (!issued) {
+    issued = new WeakSet<object>();
+    advisorCutoffsByBarrier.set(barrier, issued);
+  }
+  return issued;
+}
+
+/** Shared issuance path for the public Today boundary and outer snapshot
+ * builders. The WeakMap binds each token by object identity to one barrier. */
+export async function sealGrowthAdvisorReadCutoff(
+  barrier: GrowthTemporalBarrier,
+  context: ActiveWorkspaceContext,
+  effectiveAsOf: string
+): Promise<GrowthSealedReadCutoff> {
+  const cutoff = await barrier.sealReadCutoff(context, effectiveAsOf);
+  cutoffSetFor(barrier).add(cutoff);
+  return cutoff;
+}
+
+function assertGrowthAdvisorReadCutoff(
+  barrier: GrowthTemporalBarrier,
+  context: ActiveWorkspaceContext,
+  cutoff: GrowthSealedReadCutoff
+): GrowthSealedReadCutoff {
+  try {
+    const trusted = assertGrowthSealedReadCutoff(cutoff, context.workspaceId);
+    if (!cutoffSetFor(barrier).has(trusted)) {
+      throw new Error("invalid_growth_advisor_sealed_read_cutoff");
+    }
+    return trusted;
+  } catch (error) {
+    if ((error as Error).message === "invalid_growth_advisor_sealed_read_cutoff") {
+      throw error;
+    }
+    throw new Error("invalid_growth_advisor_sealed_read_cutoff");
+  }
 }
 
 export interface AdvisorPerformancePortfolioReader {
@@ -491,8 +543,174 @@ function snapshotHashForView(value: unknown): `sha256:${string}` {
 
 export function createGrowthAdvisorQueryService(
   dependencies: GrowthAdvisorQueryServiceDependencies
-): GrowthAdvisorQueryService {
+): GrowthAdvisorSealedQueryService {
   const now = dependencies.now ?? (() => new Date().toISOString());
+  const getTodayAt = async (
+    context: ActiveWorkspaceContext,
+    query: { currency: string; cutoff: GrowthSealedReadCutoff }
+  ): Promise<GrowthAdvisorTodayView> => {
+    const cutoff = assertGrowthAdvisorReadCutoff(
+      dependencies.temporalBarrier, context, query.cutoff
+    );
+    const dataAsOf = cutoff.effectiveAsOf;
+    const settings = await dependencies.workspaceSettings.getAt(
+      context, cutoff
+    );
+    const audienceRole = advisorAudienceRoleFor(context.role);
+    const visibility = await dependencies.visibility.resolveAt(
+      context, cutoff
+    );
+    const priorityCustomers =
+      await dependencies.priorityCandidates.listAsOf(context, {
+        cutoff,
+        timeZone: settings.timeZone,
+        limit: 10
+      });
+    const approvals = await dependencies.quoteApprovals.listPendingAsOf(
+      context, { cutoff, limit: 50 }
+    );
+    const pendingQuoteApprovals: PendingQuoteApprovalView[] = [];
+    const projectedGaps: FinancialDataGapView[] = [];
+    const sensitive = context.capabilities.includes("pricing.sensitive.read");
+    for (const approval of approvals) {
+      const quoteVersion = await dependencies.quoteVersions.getAt(
+        context, approval.quoteVersionId, cutoff
+      );
+      if (!quoteVersion) {
+        projectedGaps.push(Object.freeze({
+          code: "missing_commercial_binding" as const,
+          sourceType: "commercial_binding" as const,
+          sourceId: approval.quoteVersionId,
+          sourceSnapshotHash: approval.commercialAmountHash,
+          cohortId: null,
+          currency: approval.currency,
+          asOf: dataAsOf
+        }));
+        continue;
+      }
+      pendingQuoteApprovals.push(Object.freeze({
+        approvalId: approval.approvalId,
+        quoteVersionId: approval.quoteVersionId,
+        quoteVersionRevision: quoteVersion.lifecycleRevision,
+        quoteCaseId: approval.quoteCaseId,
+        approvalKind: approval.approvalKind,
+        requiredCapabilities: Object.freeze([
+          ...approval.requiredCapabilities
+        ]),
+        submittedAt: approval.submittedAt,
+        expiresAt: approval.expiresAt,
+        ...(sensitive ? {
+          currency: approval.currency,
+          quotedAmountMinor: approval.quotedAmountMinor,
+          estimatedGrossProfitMinor: approval.estimatedGrossProfitMinor,
+          estimatedContributionMinor: approval.estimatedContributionMinor,
+          grossMarginBps: approval.grossMarginBps
+        } : {})
+      }));
+    }
+    const portfolio = await dependencies.performancePortfolio.listVisible(
+      context, { currency: query.currency, cutoff, limit: 100 }
+    );
+    const expectedRoi: AdvisorRoiSliceView[] = [];
+    const actualRoi: AdvisorRoiSliceView[] = [];
+    for (const slice of portfolio) {
+      for (const view of slice.performance.expectedRoiByCurrency) {
+        expectedRoi.push(Object.freeze({
+          cohortId: slice.cohortId,
+          planId: slice.planId,
+          ...view
+        }));
+      }
+      if (context.role === "sales") continue;
+      for (const view of slice.performance.actualRoiByCurrency) {
+        actualRoi.push(Object.freeze({
+          cohortId: slice.cohortId,
+          planId: slice.planId,
+          ...view
+        }));
+      }
+    }
+    const financeRows = await dependencies.financialGaps.listForBindingsAt(
+      context, {
+        visibility: visibility.financialGapVisibility,
+        currency: query.currency,
+        cutoff,
+        limit: 100
+      }
+    );
+    const gapViews: FinancialDataGapView[] = [
+      ...projectedGaps,
+      ...financeRows.map((gap: FinancialDataGap) => Object.freeze({
+        code: gap.code,
+        sourceType: gap.sourceType,
+        sourceId: gap.sourceId,
+        sourceSnapshotHash: gap.sourceSnapshotHash,
+        cohortId: gap.cohortId,
+        currency: gap.currency,
+        asOf: gap.recordedAt
+      }))
+    ];
+    const recommendationPage = await dependencies.recommendations.listAt(
+      context, {
+        status: ["proposed", "accepted"],
+        cutoff,
+        limit: 100,
+        cursor: null
+      }
+    );
+    const sourceSnapshotHash = snapshotHashForView({
+      visibility: visibility.sourceSnapshotHash,
+      settings: [settings.revision, settings.timeZone],
+      priorityCustomers: priorityCustomers.map((row) => [
+        row.candidateId,
+        row.qualificationDecisionId,
+        row.qualificationDecisionVersion,
+        row.inputSnapshotHash
+      ]),
+      pendingQuoteApprovals: pendingQuoteApprovals.map((row) => [
+        row.quoteVersionId,
+        row.quoteVersionRevision
+      ]),
+      expectedRoi: expectedRoi.map((row) => [
+        row.cohortId,
+        row.planId,
+        row.currency,
+        row.status,
+        "roiBps" in row ? row.roiBps : null
+      ]),
+      actualRoi: actualRoi.map((row) => [
+        row.cohortId,
+        row.planId,
+        row.currency,
+        row.status,
+        "roiBps" in row ? row.roiBps : null
+      ]),
+      dataGaps: gapViews.map((gap) => [
+        gap.code,
+        gap.sourceType,
+        gap.sourceId,
+        gap.sourceSnapshotHash
+      ]),
+      recommendations: recommendationPage.items.map((row) => [
+        row.id,
+        row.revision,
+        row.inputSnapshotHash
+      ]),
+      dataAsOf
+    });
+    return Object.freeze({
+      workspaceId: context.workspaceId,
+      audienceRole,
+      dataAsOf,
+      priorityCustomers,
+      pendingQuoteApprovals: Object.freeze(pendingQuoteApprovals),
+      expectedRoi: Object.freeze(expectedRoi),
+      actualRoi: Object.freeze(actualRoi),
+      dataGaps: Object.freeze(gapViews),
+      recommendations: Object.freeze([...recommendationPage.items]),
+      sourceSnapshotHash
+    });
+  };
   return Object.freeze({
     async getToday(
       context: ActiveWorkspaceContext,
@@ -502,168 +720,12 @@ export function createGrowthAdvisorQueryService(
       const effectiveAsOf = assertGrowthAsOfNotFuture(
         query.asOf, readStartedAt, 1_000
       );
-      const cutoff = await dependencies.temporalBarrier.sealReadCutoff(
-        context, effectiveAsOf
+      const cutoff = await sealGrowthAdvisorReadCutoff(
+        dependencies.temporalBarrier, context, effectiveAsOf
       );
-      const dataAsOf = cutoff.effectiveAsOf;
-      const settings = await dependencies.workspaceSettings.getAt(
-        context, cutoff
-      );
-      const audienceRole = advisorAudienceRoleFor(context.role);
-      const visibility = await dependencies.visibility.resolveAt(
-        context, cutoff
-      );
-      const priorityCustomers =
-        await dependencies.priorityCandidates.listAsOf(context, {
-          cutoff,
-          timeZone: settings.timeZone,
-          limit: 10
-        });
-      const approvals = await dependencies.quoteApprovals.listPendingAsOf(
-        context, { cutoff, limit: 50 }
-      );
-      const pendingQuoteApprovals: PendingQuoteApprovalView[] = [];
-      const projectedGaps: FinancialDataGapView[] = [];
-      const sensitive = context.capabilities.includes("pricing.sensitive.read");
-      for (const approval of approvals) {
-        const quoteVersion = await dependencies.quoteVersions.getAt(
-          context, approval.quoteVersionId, cutoff
-        );
-        if (!quoteVersion) {
-          projectedGaps.push(Object.freeze({
-            code: "missing_commercial_binding" as const,
-            sourceType: "commercial_binding" as const,
-            sourceId: approval.quoteVersionId,
-            sourceSnapshotHash: approval.commercialAmountHash,
-            cohortId: null,
-            currency: approval.currency,
-            asOf: dataAsOf
-          }));
-          continue;
-        }
-        pendingQuoteApprovals.push(Object.freeze({
-          approvalId: approval.approvalId,
-          quoteVersionId: approval.quoteVersionId,
-          quoteVersionRevision: quoteVersion.lifecycleRevision,
-          quoteCaseId: approval.quoteCaseId,
-          approvalKind: approval.approvalKind,
-          requiredCapabilities: Object.freeze([
-            ...approval.requiredCapabilities
-          ]),
-          submittedAt: approval.submittedAt,
-          expiresAt: approval.expiresAt,
-          ...(sensitive ? {
-            currency: approval.currency,
-            quotedAmountMinor: approval.quotedAmountMinor,
-            estimatedGrossProfitMinor: approval.estimatedGrossProfitMinor,
-            estimatedContributionMinor: approval.estimatedContributionMinor,
-            grossMarginBps: approval.grossMarginBps
-          } : {})
-        }));
-      }
-      const portfolio = await dependencies.performancePortfolio.listVisible(
-        context, { currency: query.currency, cutoff, limit: 100 }
-      );
-      const expectedRoi: AdvisorRoiSliceView[] = [];
-      const actualRoi: AdvisorRoiSliceView[] = [];
-      for (const slice of portfolio) {
-        for (const view of slice.performance.expectedRoiByCurrency) {
-          expectedRoi.push(Object.freeze({
-            cohortId: slice.cohortId,
-            planId: slice.planId,
-            ...view
-          }));
-        }
-        if (context.role === "sales") continue;
-        for (const view of slice.performance.actualRoiByCurrency) {
-          actualRoi.push(Object.freeze({
-            cohortId: slice.cohortId,
-            planId: slice.planId,
-            ...view
-          }));
-        }
-      }
-      const financeRows = await dependencies.financialGaps.listForBindingsAt(
-        context, {
-          visibility: visibility.financialGapVisibility,
-          currency: query.currency,
-          cutoff,
-          limit: 100
-        }
-      );
-      const gapViews: FinancialDataGapView[] = [
-        ...projectedGaps,
-        ...financeRows.map((gap: FinancialDataGap) => Object.freeze({
-          code: gap.code,
-          sourceType: gap.sourceType,
-          sourceId: gap.sourceId,
-          sourceSnapshotHash: gap.sourceSnapshotHash,
-          cohortId: gap.cohortId,
-          currency: gap.currency,
-          asOf: gap.recordedAt
-        }))
-      ];
-      const recommendationPage = await dependencies.recommendations.listAt(
-        context, {
-          status: ["proposed", "accepted"],
-          cutoff,
-          limit: 100,
-          cursor: null
-        }
-      );
-      const sourceSnapshotHash = snapshotHashForView({
-        visibility: visibility.sourceSnapshotHash,
-        settings: [settings.revision, settings.timeZone],
-        priorityCustomers: priorityCustomers.map((row) => [
-          row.candidateId,
-          row.qualificationDecisionId,
-          row.qualificationDecisionVersion,
-          row.inputSnapshotHash
-        ]),
-        pendingQuoteApprovals: pendingQuoteApprovals.map((row) => [
-          row.quoteVersionId,
-          row.quoteVersionRevision
-        ]),
-        expectedRoi: expectedRoi.map((row) => [
-          row.cohortId,
-          row.planId,
-          row.currency,
-          row.status,
-          "roiBps" in row ? row.roiBps : null
-        ]),
-        actualRoi: actualRoi.map((row) => [
-          row.cohortId,
-          row.planId,
-          row.currency,
-          row.status,
-          "roiBps" in row ? row.roiBps : null
-        ]),
-        dataGaps: gapViews.map((gap) => [
-          gap.code,
-          gap.sourceType,
-          gap.sourceId,
-          gap.sourceSnapshotHash
-        ]),
-        recommendations: recommendationPage.items.map((row) => [
-          row.id,
-          row.revision,
-          row.inputSnapshotHash
-        ]),
-        dataAsOf
-      });
-      return Object.freeze({
-        workspaceId: context.workspaceId,
-        audienceRole,
-        dataAsOf,
-        priorityCustomers,
-        pendingQuoteApprovals: Object.freeze(pendingQuoteApprovals),
-        expectedRoi: Object.freeze(expectedRoi),
-        actualRoi: Object.freeze(actualRoi),
-        dataGaps: Object.freeze(gapViews),
-        recommendations: Object.freeze([...recommendationPage.items]),
-        sourceSnapshotHash
-      });
-    }
+      return getTodayAt(context, { currency: query.currency, cutoff });
+    },
+    getTodayAt
   });
 }
 

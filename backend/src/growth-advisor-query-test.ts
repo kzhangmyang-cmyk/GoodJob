@@ -4,10 +4,11 @@ import {
   createGrowthAdvisorQueryService,
   DefaultAdvisorVisibilityResolver,
   DefaultPriorityCandidateReader,
+  sealGrowthAdvisorReadCutoff,
   type AdvisorCandidateEvidenceAsOfReader,
   type AdvisorPerformancePortfolioReader,
   type AdvisorVisibilityResolver,
-  type GrowthAdvisorQueryService,
+  type GrowthAdvisorSealedQueryService,
   type GrowthAdvisorTodayView,
   type PendingQuoteApprovalView,
   type PriorityCandidateReader,
@@ -181,7 +182,7 @@ interface QueryFixture {
   };
   candidateEvidenceReader: AdvisorCandidateEvidenceAsOfReader;
   visibility: AdvisorVisibilityResolver;
-  service: GrowthAdvisorQueryService;
+  service: GrowthAdvisorSealedQueryService;
   fixture: {
     recordLaterQualificationApprovalAndFinanceEvents(): void;
   };
@@ -624,6 +625,117 @@ export async function createAdvisorQueryFixture(
 const basicInput = Object.freeze({
   currency: "CNY",
   asOf: "2026-08-09T08:00:00.000Z"
+});
+
+test("public today seals once while sealed reads reject forged or foreign cutoffs", async () => {
+  class CountingBarrier extends DefaultGrowthTemporalBarrier {
+    sealCalls = 0;
+
+    override async sealReadCutoff(
+      context: ActiveWorkspaceContext,
+      effectiveAsOf: string
+    ) {
+      this.sealCalls += 1;
+      return super.sealReadCutoff(context, effectiveAsOf);
+    }
+  }
+  const makeService = () => {
+    const transactions = new InMemoryGrowthTemporalTransactionRunner(
+      "2026-08-09T08:00:00.000Z"
+    );
+    const barrier = new CountingBarrier(transactions);
+    const seen: GrowthSealedReadCutoff[] = [];
+    const service = createGrowthAdvisorQueryService({
+      temporalBarrier: barrier,
+      workspaceSettings: {
+        async getAt(_context, cutoff) {
+          seen.push(cutoff);
+          return {
+            timeZone: "Asia/Shanghai",
+            revision: "growth-workspace-settings.v1",
+            recordedAt: "1970-01-01T00:00:00.000Z",
+            eventSequence: 1
+          };
+        }
+      } as never,
+      visibility: {
+        async resolveAt(_context, cutoff) {
+          seen.push(cutoff);
+          return {
+            scope: { kind: "workspace", workspaceId: WS_1 },
+            subjectVisibility: {
+              candidateIds: [], customerIds: [], dealIds: [], cohortIds: []
+            },
+            financialGapVisibility: {
+              candidateIds: [], customerIds: [], dealIds: [], cohortIds: []
+            },
+            sourceSnapshotHash: `sha256:${"1".repeat(64)}`
+          };
+        }
+      } as never,
+      priorityCandidates: {
+        async listAsOf(_context, input) {
+          seen.push(input.cutoff);
+          return [];
+        }
+      },
+      quoteApprovals: {
+        async listPendingAsOf(_context, input) {
+          seen.push(input.cutoff);
+          return [];
+        }
+      },
+      quoteVersions: { async getAt() { return null; } },
+      performancePortfolio: {
+        async listVisible(_context, input) {
+          seen.push(input.cutoff);
+          return [];
+        }
+      },
+      financialGaps: {
+        async listForBindingsAt(_context, input) {
+          seen.push(input.cutoff);
+          return [];
+        }
+      },
+      recommendations: {
+        async listAt(_context, input) {
+          seen.push(input.cutoff);
+          return { items: [], nextCursor: null, hasMore: false };
+        }
+      },
+      now: () => "2026-08-09T09:00:00.000Z"
+    });
+    return { barrier, seen, service };
+  };
+  const context = advisorContext(WS_1, [], { role: "admin", teamId: "all" });
+  const first = makeService();
+  const publicView = await first.service.getToday(context, basicInput);
+  assert.equal(first.barrier.sealCalls, 1);
+  assert.equal(new Set(first.seen).size, 1);
+  assert.equal(publicView.dataAsOf, basicInput.asOf);
+
+  const sealed = await sealGrowthAdvisorReadCutoff(
+    first.barrier, context, basicInput.asOf
+  );
+  await first.service.getTodayAt(context, { currency: "CNY", cutoff: sealed });
+  assert.equal(first.barrier.sealCalls, 2);
+
+  await assert.rejects(
+    first.service.getTodayAt(context, {
+      currency: "CNY",
+      cutoff: { ...sealed } as GrowthSealedReadCutoff
+    }),
+    /invalid_growth_advisor_sealed_read_cutoff/u
+  );
+  const second = makeService();
+  const foreign = await sealGrowthAdvisorReadCutoff(
+    second.barrier, context, basicInput.asOf
+  );
+  await assert.rejects(
+    first.service.getTodayAt(context, { currency: "CNY", cutoff: foreign }),
+    /invalid_growth_advisor_sealed_read_cutoff/u
+  );
 });
 
 test("today view combines facts without inventing missing ROI", async () => {

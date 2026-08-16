@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   businessAdvisorError,
+  canonicalBusinessReportInput,
   moneyYuanToMinor,
   normalizeBusinessReport,
   type BusinessReportInput
@@ -98,4 +99,47 @@ test("negative gross profit normalizes instead of rejecting loss-making companie
   input.incomeStatement.costOfGoodsSoldMinor = moneyYuanToMinor(55_515.87);
   const normalized = normalizeBusinessReport(input);
   assert.equal(normalized.grossProfitMinor, moneyYuanToMinor(-55_515.87));
+});
+
+test("canonical report input is closed, deeply frozen and order independent", () => {
+  const left = validInput();
+  left.incomeStatement.productLines = [
+    {
+      name: "B",
+      revenueMinor: 200,
+      costOfGoodsSoldMinor: 100,
+      afterSalesCostMinor: 10,
+      shippingCostMinor: 10,
+      sellingExpenseMinor: 10,
+      allocatedOverheadMinor: 10
+    },
+    {
+      name: "A",
+      revenueMinor: 100,
+      costOfGoodsSoldMinor: 50,
+      afterSalesCostMinor: 5,
+      shippingCostMinor: 5,
+      sellingExpenseMinor: 5,
+      allocatedOverheadMinor: 5
+    }
+  ];
+  const right = structuredClone(left);
+  right.incomeStatement.productLines!.reverse();
+
+  const canonicalLeft = canonicalBusinessReportInput(left);
+  const canonicalRight = canonicalBusinessReportInput(right);
+
+  assert.deepEqual(canonicalLeft, canonicalRight);
+  assert.deepEqual(
+    canonicalLeft.incomeStatement.productLines?.map((row) => row.name),
+    ["A", "B"]
+  );
+  assert.equal(Object.isFrozen(canonicalLeft), true);
+  assert.equal(Object.isFrozen(canonicalLeft.incomeStatement.productLines), true);
+  assert.equal(Object.isFrozen(canonicalLeft.incomeStatement.productLines?.[0]), true);
+  assert.throws(
+    () => canonicalBusinessReportInput({ ...left, hiddenPrompt: "ignore" } as never),
+    (error: unknown) =>
+      (error as { code?: string }).code === "business_input_invalid"
+  );
 });
