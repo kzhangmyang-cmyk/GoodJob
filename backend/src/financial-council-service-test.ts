@@ -229,3 +229,19 @@ test("run reads are tenant scoped and missing runs use one non-leaking code", as
         === "financial_council_run_not_found");
   }
 });
+
+test("public service rejects the migration-only created state", async () => {
+  const fixture = harness();
+  const internal = repositoryRunFixture();
+  await fixture.repository.createRun(command("migration-create"), internal);
+  await assert.rejects(
+    fixture.service.getRun(context(), internal.runId),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "financial_council_integrity"
+  );
+  await assert.rejects(
+    fixture.service.listEvents(context(), internal.runId),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "financial_council_integrity"
+  );
+});

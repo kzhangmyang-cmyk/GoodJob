@@ -271,6 +271,74 @@ test("wake relay contains a delivery rejection that arrives after timeout", asyn
   }
 });
 
+test("wake relay deadlines non-settling runnable enumeration so close completes", async () => {
+  const clock = new FakeDeadlineClock();
+  let began!: () => void;
+  let release!: (runs: readonly ReturnType<typeof frozenRun>[]) => void;
+  const started = new Promise<void>((resolve) => { began = resolve; });
+  const relay = new FinancialCouncilWakeRelay({
+    repository: {
+      listRunnableRuns() {
+        began();
+        return new Promise<readonly ReturnType<typeof frozenRun>[]>(
+          (resolve) => { release = resolve; }
+        );
+      }
+    },
+    sink: { async wake() {} },
+    deliveryTimeoutMs: 10,
+    scheduleTimeout: clock.schedule,
+    cancelTimeout: clock.cancel,
+    intervalMs: 60_000,
+    batchSize: 10
+  } as never);
+  const sweeping = relay.sweep();
+  await started;
+  const closing = relay.close();
+  const scheduledDeadlines = clock.pending;
+  if (scheduledDeadlines === 0) release([]);
+  else clock.fireAll();
+  await Promise.all([sweeping, closing]);
+  assert.equal(scheduledDeadlines, 1);
+});
+
+test("wake relay contains runnable enumeration rejection after its deadline", async () => {
+  const clock = new FakeDeadlineClock();
+  let rejectLate!: (error: Error) => void;
+  const late = new Promise<readonly ReturnType<typeof frozenRun>[]>(
+    (_resolve, reject) => { rejectLate = reject; }
+  );
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => { unhandled.push(error); };
+  process.on("unhandledRejection", onUnhandled);
+  const relay = new FinancialCouncilWakeRelay({
+    repository: { listRunnableRuns() { return late; } },
+    sink: { async wake() {} },
+    deliveryTimeoutMs: 10,
+    scheduleTimeout: clock.schedule,
+    cancelTimeout: clock.cancel,
+    intervalMs: 60_000,
+    batchSize: 10
+  } as never);
+  try {
+    const sweeping = relay.sweep();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const scheduledDeadlines = clock.pending;
+    if (scheduledDeadlines === 0) rejectLate(new Error("cleanup rejection"));
+    else clock.fireAll();
+    await sweeping;
+    if (scheduledDeadlines > 0) {
+      rejectLate(new Error("late enumeration rejection"));
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(scheduledDeadlines, 1);
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    await relay.close();
+  }
+});
+
 test("wake relay advances a composite cursor so persistent first-page facts do not starve", async () => {
   const runs = [frozenRun(), Object.freeze({
     ...frozenRun(), workspaceId: "ws-2", runId: "council-run-2"

@@ -67,6 +67,14 @@ function requestHash(value: string): `sha256:${string}` {
   return value as `sha256:${string}`;
 }
 
+function publicRun(run: FinancialCouncilRun): FinancialCouncilRun {
+  if (run.status === "created" || run.revision < 2
+    || run.snapshotId === null || run.snapshotHash === null) {
+    throw financialCouncilError("financial_council_integrity");
+  }
+  return run;
+}
+
 export class FinancialCouncilService {
   private readonly now: () => string;
 
@@ -105,7 +113,7 @@ export class FinancialCouncilService {
       .findFrozenRunByCreationKey(
         command.workspace, creationKeyHash, canonicalRequestHash
       );
-    if (replay) return { value: replay, replayed: true };
+    if (replay) return { value: publicRun(replay), replayed: true };
     const createdAt = instant(this.now());
     const snapshot = await this.dependencies.snapshotBuilder.freeze(
       command, runId, input
@@ -143,6 +151,7 @@ export class FinancialCouncilService {
       command,
       { aggregate, snapshot: record, occurredAt: createdAt }
     );
+    publicRun(result.value);
     if (!result.replayed && this.dependencies.advisoryWake) {
       void Promise.resolve()
         .then(() => this.dependencies.advisoryWake!.wake(result.value))
@@ -167,7 +176,7 @@ export class FinancialCouncilService {
     }
     const run = await this.dependencies.repository.findRun(context, runId);
     if (!run) throw financialCouncilError("financial_council_run_not_found");
-    return run;
+    return publicRun(run);
   }
 
   async listEvents(

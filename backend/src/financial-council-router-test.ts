@@ -12,6 +12,9 @@ import { InMemoryGrowthHttpIdempotencyRepository } from
   "./growth-http-idempotency-repository.js";
 import { GrowthAuthorizationError } from "./growth-capabilities.js";
 import { financialCouncilError } from "./financial-council-domain.js";
+import { FinancialCouncilService } from "./financial-council-service.js";
+import { InMemoryFinancialCouncilRepository } from
+  "./financial-council-repository.js";
 import type { GrowthHttpIdempotencyRepository } from
   "./growth-http-idempotency-repository.js";
 
@@ -277,6 +280,47 @@ test("real router request and 202 response conform to the council schema", async
     assert.equal(validateResponse({
       ...result.body, status: "created", snapshotId: null, snapshotHash: null
     }), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test("real repository through service never publishes migration-only created", async () => {
+  const schema = JSON.parse(await readFile(new URL(
+    "../../contracts/json-schema/financial-council.v1.schema.json",
+    import.meta.url
+  ), "utf8"));
+  const ajv = new Ajv2020({ strict: false });
+  ajv.addFormat("date-time", true);
+  const validateRun = ajv.compile(schema);
+  const repository = new InMemoryFinancialCouncilRepository();
+  const internal = repositoryRunFixture();
+  await repository.createRun({
+    workspace: Object.freeze({
+      ...workspace(), role: "admin" as const,
+      capabilities: Object.freeze(["finance.council.run"])
+    }) as never,
+    actorId: "manager-1",
+    idempotencyKey: "migration-create",
+    requestHash: internal.requestHash,
+    expectedRevision: null
+  }, internal);
+  const service = new FinancialCouncilService({
+    repository,
+    snapshotBuilder: { async freeze() { throw new Error("unused"); } }
+  });
+  const server = await listen(service as unknown as Record<string, unknown>);
+  try {
+    const result = await server.request(
+      `/api/v1/finance/council-runs/${internal.runId}`
+    );
+    assert.equal(result.response.status, 500);
+    assert.equal(result.body.code, "financial_council_internal_error");
+    assert.equal(validateRun(result.body), false);
+    assert.deepEqual(Object.keys(result.body).sort(), [
+      "code", "details", "message", "requestId", "retryable"
+    ]);
+    assert.equal(result.response.headers.get("cache-control"), "no-store");
   } finally {
     await server.close();
   }

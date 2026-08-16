@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createBusinessAdvisorService } from "./business-advisor/service.js";
+import { normalizeBusinessReport } from "./business-advisor/domain.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import {
@@ -11,6 +13,7 @@ import {
 import type {
   FinancialCouncilRepository
 } from "./financial-council-repository.js";
+import { FinancialSnapshotBuilder } from "./financial-council-snapshot.js";
 
 const T0 = "2026-08-16T08:00:00.000Z";
 export const T1 = "2026-08-16T08:01:00.000Z";
@@ -112,36 +115,26 @@ export function snapshotFixture(
     dataGaps: Object.freeze([])
   });
   const authorityHash = financialCouncilCanonicalHash(authorityProjection);
-  const preimage = Object.freeze({
-    snapshotId: "snapshot-1",
+  const reportInputHash = financialCouncilCanonicalHash(run.businessReport);
+  const identity = Object.freeze({
     runId: run.runId,
     workspaceId: run.workspaceId,
     dataAsOf: run.dataAsOf,
     currency: run.currency,
-    report: Object.freeze({
-      currency: run.currency,
-      companyName: run.businessReport.companyName,
-      period: run.businessReport.period,
-      totalAssetsMinor: 215_000,
-      totalLiabilitiesMinor: 70_000,
-      equityMinor: 145_000,
-      grossProfitMinor: 80_000,
-      netProfitMinor: 43_000,
-      closingCashMinor: 100_000
-    }),
-    reportInputHash: `sha256:${"c".repeat(64)}`,
+    report: Object.freeze(normalizeBusinessReport(run.businessReport)),
+    reportInputHash,
     authority: Object.freeze({
       ...authorityProjection,
       sourceSnapshotHash: authorityHash
     }),
     formulaInputs: Object.freeze({
       indicators: Object.freeze({
-        grossMarginBps: 5_333, netMarginBps: 2_866, roeBps: 2_965,
-        roaBps: 2_000, debtRatioBps: 3_255, currentRatioBps: 4_500,
-        quickRatioBps: 4_166, receivableTurnover: 7,
-        inventoryTurnover: 7, interestCoverage: 22, receivableDays: 49,
-        cashCoverageMonths: 3, cashCollectionRatioBps: 10_000,
-        cashProfitRatioBps: 10_000, revenueMinor: 150_000,
+        grossMarginBps: 5_333, netMarginBps: 2_867, roeBps: 2_966,
+        roaBps: 2_000, debtRatioBps: 3_256, currentRatioBps: 45_000,
+        quickRatioBps: 41_667, receivableTurnover: 7.5,
+        inventoryTurnover: 7, interestCoverage: 25, receivableDays: 49,
+        cashCoverageMonths: 15, cashCollectionRatioBps: 0,
+        cashProfitRatioBps: 0, revenueMinor: 150_000,
         netProfitMinor: 43_000
       }),
       products: Object.freeze([]), customers: Object.freeze([]),
@@ -155,12 +148,27 @@ export function snapshotFixture(
         status: "not_computable", reason: "tax_risk_missing"
       })
     }),
-    dataGaps: Object.freeze([]),
+    dataGaps: Object.freeze([Object.freeze({
+      code: "import_requires_review" as const,
+      source: "business_report" as const,
+      sourceId: null,
+      description: "cash_flow_missing"
+    }), Object.freeze({
+      code: "import_requires_review" as const,
+      source: "roi" as const,
+      sourceId: null,
+      description: "actual_roi_missing"
+    }), Object.freeze({
+      code: "import_requires_review" as const,
+      source: "roi" as const,
+      sourceId: null,
+      description: "expected_roi_missing"
+    })]),
     sourceRefs: Object.freeze([Object.freeze({
       kind: "business_report" as const,
       sourceId: "business-report",
       version: 1,
-      contentHash: `sha256:${"c".repeat(64)}` as const
+      contentHash: reportInputHash
     }), Object.freeze({
       kind: "crm" as const,
       sourceId: "growth-advisor-today",
@@ -168,10 +176,12 @@ export function snapshotFixture(
       contentHash: authorityHash
     })])
   });
+  const snapshotId = financialCouncilCanonicalHash(identity);
+  const preimage = Object.freeze({ snapshotId, ...identity });
   const hash = financialCouncilCanonicalHash(preimage);
   const snapshot = Object.freeze({ ...preimage, snapshotHash: hash });
   return Object.freeze({
-    snapshotId: "snapshot-1",
+    snapshotId,
     runId: run.runId,
     workspaceId: run.workspaceId,
     snapshotHash: hash,
@@ -181,21 +191,80 @@ export function snapshotFixture(
   });
 }
 
-function snapshotWithId(
-  run: FinancialCouncilRun,
-  snapshotId: string
+export async function builderSnapshotFixture(
+  run: FinancialCouncilRun
+): Promise<FinancialSnapshotRecord> {
+  const authorityProjection = Object.freeze({
+    workspaceId: run.workspaceId,
+    currency: run.currency,
+    dataAsOf: run.dataAsOf,
+    projectionLevel: "redacted" as const,
+    priorityCustomers: Object.freeze([]),
+    pendingQuoteApprovals: Object.freeze([]),
+    verifiedFinancialFacts: Object.freeze([]),
+    expectedRoi: Object.freeze([]),
+    actualRoi: Object.freeze([]),
+    dataGaps: Object.freeze([])
+  });
+  const authority = Object.freeze({
+    ...authorityProjection,
+    sourceSnapshotHash: financialCouncilCanonicalHash(authorityProjection)
+  });
+  const builder = new FinancialSnapshotBuilder({
+    cutoffIssuer: {
+      async sealTodayCutoff(context, effectiveAsOf) {
+        return Object.freeze({
+          workspaceId: context.workspaceId,
+          effectiveAsOf,
+          temporalSequence: 1
+        }) as never;
+      }
+    },
+    authority: { async readAt() { return authority; } },
+    businessAdvisor: createBusinessAdvisorService(),
+    now: () => "2026-08-16T09:00:00.000Z"
+  });
+  const snapshot = await builder.freeze(command(
+    `builder-${run.runId}`, run.workspaceId, null, run.requestHash
+  ), run.runId, {
+    currency: run.currency,
+    dataAsOf: run.dataAsOf,
+    businessReport: run.businessReport,
+    policyVersionId: run.policyVersionId
+  });
+  return Object.freeze({
+    snapshotId: snapshot.snapshotId,
+    runId: run.runId,
+    workspaceId: run.workspaceId,
+    snapshotHash: snapshot.snapshotHash,
+    snapshot: snapshot as unknown as Readonly<Record<string, unknown>>,
+    createdAt: T1
+  });
+}
+
+export function resignSnapshotRecord(
+  record: FinancialSnapshotRecord,
+  mutate: (snapshot: Record<string, unknown>) => Record<string, unknown>
 ): FinancialSnapshotRecord {
-  const base = snapshotFixture(run);
-  const { snapshotHash: _snapshotHash, ...basePreimage } = base.snapshot;
-  const preimage = Object.freeze({ ...basePreimage, snapshotId });
+  const { snapshotHash: _oldHash, ...oldPreimage } = record.snapshot;
+  const preimage = mutate(structuredClone(oldPreimage));
   const snapshotHash = financialCouncilCanonicalHash(preimage);
   const snapshot = Object.freeze({ ...preimage, snapshotHash });
   return Object.freeze({
-    ...base,
-    snapshotId,
+    ...record,
+    snapshotId: String(snapshot.snapshotId),
+    runId: String(snapshot.runId),
+    workspaceId: String(snapshot.workspaceId),
     snapshotHash,
     snapshot
   });
+}
+
+function snapshotWithId(
+  run: FinancialCouncilRun,
+  _snapshotId: string
+): FinancialSnapshotRecord {
+  return snapshotFixture(run);
 }
 
 function hasCode(code: string) {
@@ -207,6 +276,133 @@ export function registerFinancialCouncilRepositoryContract(
   createRepository: () => Promise<FinancialCouncilRepository>
     | FinancialCouncilRepository
 ): void {
+  test(`${label}: run validation uses canonical report and policy boundaries`, async () => {
+    const acceptedRepository = await createRepository();
+    const accepted = repositoryRunFixture({
+      policyVersionId: "💰".repeat(255),
+      businessReport: {
+        ...repositoryRunFixture().businessReport,
+        companyName: "💰".repeat(4_000)
+      }
+    });
+    await assert.doesNotReject(acceptedRepository.createRun(
+      command("canonical-boundary"), accepted
+    ));
+
+    const invalid = [
+      repositoryRunFixture({
+        businessReport: {
+          ...repositoryRunFixture().businessReport,
+          companyName: "💰".repeat(4_001)
+        }
+      }),
+      repositoryRunFixture({
+        businessReport: {
+          ...repositoryRunFixture().businessReport,
+          balanceSheet: {
+            ...repositoryRunFixture().businessReport.balanceSheet,
+            cashMinor: -1
+          }
+        }
+      }),
+      repositoryRunFixture({
+        businessReport: {
+          ...repositoryRunFixture().businessReport,
+          incomeStatement: {
+            ...repositoryRunFixture().businessReport.incomeStatement,
+            customers: Array.from({ length: 101 }, (_, index) => ({
+              name: `customer-${index}`,
+              revenueMinor: 1,
+              grossProfitMinor: 0,
+              serviceCostMinor: 0,
+              paymentDays: 0,
+              outstandingReceivableMinor: 0
+            }))
+          }
+        }
+      }),
+      repositoryRunFixture({
+        businessReport: {
+          ...repositoryRunFixture().businessReport,
+          costDetail: {
+            materialCostRateBps: 10_001,
+            laborCostMinor: 0,
+            rawMaterialCostMinor: 0,
+            salesCommissionRateBps: 0,
+            fixedOverheadMinor: 0
+          }
+        }
+      }),
+      repositoryRunFixture({ policyVersionId: "💰".repeat(256) })
+    ];
+    for (const [index, run] of invalid.entries()) {
+      const repository = await createRepository();
+      await assert.rejects(
+        repository.createRun(command(`canonical-invalid-${index}`), run),
+        hasCode("financial_council_input_invalid")
+      );
+    }
+  });
+
+  test(`${label}: compound create rejects re-signed run-bound provenance`, async () => {
+    const mutations = [
+      (snapshot: Record<string, unknown>) => ({
+        ...snapshot,
+        reportInputHash: `sha256:${"e".repeat(64)}`,
+        sourceRefs: (snapshot.sourceRefs as Array<Record<string, unknown>>)
+          .map((row) => row.kind === "business_report"
+            ? { ...row, contentHash: `sha256:${"e".repeat(64)}` }
+            : row)
+      }),
+      (snapshot: Record<string, unknown>) => ({
+        ...snapshot,
+        report: {
+          ...(snapshot.report as Record<string, unknown>),
+          grossProfitMinor: Number(
+            (snapshot.report as Record<string, unknown>).grossProfitMinor
+          ) + 1
+        }
+      }),
+      (snapshot: Record<string, unknown>) => ({
+        ...snapshot,
+        formulaInputs: {
+          ...(snapshot.formulaInputs as Record<string, unknown>),
+          indicators: {
+            ...((snapshot.formulaInputs as Record<string, unknown>)
+              .indicators as Record<string, unknown>),
+            revenueMinor: 1
+          }
+        }
+      }),
+      (snapshot: Record<string, unknown>) => ({
+        ...snapshot,
+        dataGaps: []
+      }),
+      (snapshot: Record<string, unknown>) => ({
+        ...snapshot,
+        snapshotId: `sha256:${"f".repeat(64)}`
+      })
+    ];
+    for (const [index, mutate] of mutations.entries()) {
+      const repository = await createRepository();
+      const aggregate = repositoryRunFixture({
+        runId: `provenance-run-${index}`,
+        creationKeyHash: `sha256:${(index + 1).toString(16).repeat(64)}`,
+        requestHash: `sha256:${(index + 9).toString(16).repeat(64)}`
+      });
+      const record = resignSnapshotRecord(
+        await builderSnapshotFixture(aggregate), mutate
+      );
+      await assert.rejects(repository.createAndFreezeRun(command(
+        `provenance-${index}`, "ws-1", null, aggregate.requestHash
+      ), {
+        aggregate,
+        snapshot: record,
+        occurredAt: T1
+      }), hasCode("financial_council_input_invalid"));
+    }
+  });
+
   test(`${label}: compound create freezes atomically and exact replay is inert`, async () => {
     const repository = await createRepository();
     const aggregate = repositoryRunFixture();
@@ -238,6 +434,49 @@ export function registerFinancialCouncilRepositoryContract(
         .map((event) => [event.revision, event.toStatus]),
       [[1, "created"], [2, "snapshot_frozen"]]
     );
+  });
+
+  test(`${label}: exact compound replay returns the verified progressed aggregate`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    await repository.createAndFreezeRun(command("progress-create"), {
+      aggregate, snapshot, occurredAt: T1
+    });
+    const progressed = (await repository.transitionRun(
+      command("progress", "ws-1", 2), {
+        runId: aggregate.runId,
+        kind: "analyzing",
+        occurredAt: T2,
+        reasonCode: null
+      }
+    )).value;
+    const replayAggregate = repositoryRunFixture({ runId: "ignored-progress" });
+    const replay = await repository.createAndFreezeRun(command(
+      "progress-replay", "ws-1", null, aggregate.requestHash
+    ), {
+      aggregate: replayAggregate,
+      snapshot: snapshotFixture(replayAggregate),
+      occurredAt: T1
+    });
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay.value, progressed);
+    assert.deepEqual(
+      (await repository.listEvents(workspace(), aggregate.runId))
+        .map((event) => event.revision),
+      [1, 2, 3]
+    );
+    await assert.rejects(repository.createAndFreezeRun(command(
+      "progress-conflict", "ws-1", null, SHA_A
+    ), {
+      aggregate: repositoryRunFixture({
+        runId: "changed-progress", requestHash: SHA_A
+      }),
+      snapshot: snapshotFixture(repositoryRunFixture({
+        runId: "changed-progress", requestHash: SHA_A
+      })),
+      occurredAt: T1
+    }), hasCode("financial_council_idempotency_conflict"));
   });
 
   test(`${label}: compound create conflict and invalid snapshot leave zero visible writes`, async () => {
@@ -709,9 +948,10 @@ export function registerFinancialCouncilRepositoryContract(
     const run = (await repository.createRun(
       command("create"), repositoryRunFixture()
     )).value;
+    const firstSnapshot = snapshotFixture(run);
     await repository.storeFrozenSnapshot(command("freeze", "ws-1", 1), {
       runId: run.runId,
-      snapshot: snapshotFixture(run),
+      snapshot: firstSnapshot,
       occurredAt: T1
     });
     await assert.rejects(repository.storeFrozenSnapshot(
@@ -726,11 +966,11 @@ export function registerFinancialCouncilRepositoryContract(
     assert.deepEqual(
       [current?.status, current?.revision, current?.snapshotId,
         (await repository.listEvents(workspace(), run.runId)).length],
-      ["snapshot_frozen", 2, "snapshot-1", 2]
+      ["snapshot_frozen", 2, firstSnapshot.snapshotId, 2]
     );
   });
 
-  test(`${label}: reusing a snapshot ID across runs is a stable conflict`, async () => {
+  test(`${label}: a run-bound snapshot identity cannot be reused across runs`, async () => {
     const repository = await createRepository();
     const first = (await repository.createRun(
       command("create-first"), repositoryRunFixture()
@@ -744,19 +984,24 @@ export function registerFinancialCouncilRepositoryContract(
         requestHash: secondRequestHash
       })
     )).value;
+    const firstSnapshot = snapshotFixture(first);
     await repository.storeFrozenSnapshot(command("freeze-first", "ws-1", 1), {
       runId: first.runId,
-      snapshot: snapshotFixture(first),
+      snapshot: firstSnapshot,
       occurredAt: T1
     });
+    const forged = resignSnapshotRecord(snapshotFixture(second), (value) => ({
+      ...value,
+      snapshotId: firstSnapshot.snapshotId
+    }));
     await assert.rejects(repository.storeFrozenSnapshot(
       command("freeze-second", "ws-1", 1),
       {
         runId: second.runId,
-        snapshot: snapshotFixture(second),
+        snapshot: forged,
         occurredAt: T2
       }
-    ), hasCode("financial_council_snapshot_conflict"));
+    ), hasCode("financial_council_input_invalid"));
     const current = await repository.findRun(workspace(), second.runId);
     assert.deepEqual(
       [current?.status, current?.revision,

@@ -292,122 +292,6 @@ asserts value is Record<string, unknown> {
   }
 }
 
-function requiredKeys(
-  value: unknown,
-  required: readonly string[],
-  optional: readonly string[] = []
-): asserts value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) integrity();
-  const record = value as Record<string, unknown>;
-  if (required.some((key) => !Object.hasOwn(record, key))
-    || Object.keys(record).some((key) =>
-      !required.includes(key) && !optional.includes(key))) {
-    integrity();
-  }
-}
-
-function strings(value: unknown): void {
-  if (!Array.isArray(value)
-    || value.some((item) => typeof item !== "string" || !item)) integrity();
-}
-
-function integers(record: Record<string, unknown>, keys: readonly string[]): void {
-  for (const key of keys) {
-    if (!Number.isSafeInteger(record[key])) integrity();
-  }
-}
-
-function assertBusinessReport(value: unknown): void {
-  requiredKeys(value,
-    ["currency", "companyName", "period", "balanceSheet", "incomeStatement"],
-    ["cashFlow", "costDetail", "taxRisk"]);
-  if (!(["CNY", "USD"] as unknown[]).includes(value.currency)
-    || typeof value.companyName !== "string" || !value.companyName
-    || typeof value.period !== "string" || !value.period) integrity();
-  exactKeys(value.balanceSheet, ["period", "cashMinor", "receivablesMinor",
-    "inventoryMinor", "otherCurrentAssetsMinor", "nonCurrentAssetsMinor",
-    "currentLiabilitiesMinor", "nonCurrentLiabilitiesMinor",
-    "accountsPayableMinor"]);
-  if (typeof value.balanceSheet.period !== "string"
-    || !value.balanceSheet.period) integrity();
-  integers(value.balanceSheet, ["cashMinor", "receivablesMinor",
-    "inventoryMinor", "otherCurrentAssetsMinor", "nonCurrentAssetsMinor",
-    "currentLiabilitiesMinor", "nonCurrentLiabilitiesMinor",
-    "accountsPayableMinor"]);
-  requiredKeys(value.incomeStatement,
-    ["period", "revenueMinor", "costOfGoodsSoldMinor",
-      "operatingExpensesMinor", "interestExpenseMinor", "taxExpenseMinor"],
-    ["productLines", "customers"]);
-  if (typeof value.incomeStatement.period !== "string"
-    || !value.incomeStatement.period) integrity();
-  integers(value.incomeStatement, ["revenueMinor", "costOfGoodsSoldMinor",
-    "operatingExpensesMinor", "interestExpenseMinor", "taxExpenseMinor"]);
-  if (value.incomeStatement.productLines !== undefined) {
-    if (!Array.isArray(value.incomeStatement.productLines)) integrity();
-    for (const item of value.incomeStatement.productLines) {
-      exactKeys(item, ["name", "revenueMinor", "costOfGoodsSoldMinor",
-        "afterSalesCostMinor", "shippingCostMinor", "sellingExpenseMinor",
-        "allocatedOverheadMinor"]);
-      if (typeof item.name !== "string" || !item.name) integrity();
-      integers(item, ["revenueMinor", "costOfGoodsSoldMinor",
-        "afterSalesCostMinor", "shippingCostMinor", "sellingExpenseMinor",
-        "allocatedOverheadMinor"]);
-    }
-  }
-  if (value.incomeStatement.customers !== undefined) {
-    if (!Array.isArray(value.incomeStatement.customers)) integrity();
-    for (const item of value.incomeStatement.customers) {
-      exactKeys(item, ["name", "revenueMinor", "grossProfitMinor",
-        "serviceCostMinor", "paymentDays", "outstandingReceivableMinor"]);
-      if (typeof item.name !== "string" || !item.name) integrity();
-      integers(item, ["revenueMinor", "grossProfitMinor", "serviceCostMinor",
-        "paymentDays", "outstandingReceivableMinor"]);
-    }
-  }
-  if (value.cashFlow !== undefined && value.cashFlow !== null) {
-    requiredKeys(value.cashFlow, ["period", "openingCashMinor",
-      "operatingInflowMinor", "operatingOutflowMinor", "investingNetMinor",
-      "financingNetMinor", "expectedInflowsNext30DaysMinor",
-      "expectedOutflowsNext30DaysMinor", "expectedInflowsNext31To90DaysMinor",
-      "expectedOutflowsNext31To90DaysMinor"], ["receivables"]);
-    if (typeof value.cashFlow.period !== "string" || !value.cashFlow.period) {
-      integrity();
-    }
-    integers(value.cashFlow, ["openingCashMinor", "operatingInflowMinor",
-      "operatingOutflowMinor", "investingNetMinor", "financingNetMinor",
-      "expectedInflowsNext30DaysMinor", "expectedOutflowsNext30DaysMinor",
-      "expectedInflowsNext31To90DaysMinor", "expectedOutflowsNext31To90DaysMinor"]);
-    if (value.cashFlow.receivables !== undefined) {
-      if (!Array.isArray(value.cashFlow.receivables)) integrity();
-      for (const item of value.cashFlow.receivables) {
-        exactKeys(item, ["customer", "amountMinor", "daysOutstanding"]);
-        if (typeof item.customer !== "string" || !item.customer) integrity();
-        integers(item, ["amountMinor", "daysOutstanding"]);
-      }
-    }
-  }
-  if (value.costDetail !== undefined && value.costDetail !== null) {
-    requiredKeys(value.costDetail, ["materialCostRateBps", "laborCostMinor",
-      "rawMaterialCostMinor", "salesCommissionRateBps", "fixedOverheadMinor"],
-    ["previousMaterialCostRateBps"]);
-    integers(value.costDetail, ["materialCostRateBps", "laborCostMinor",
-      "rawMaterialCostMinor", "salesCommissionRateBps", "fixedOverheadMinor"]);
-    if (value.costDetail.previousMaterialCostRateBps !== undefined
-      && !Number.isSafeInteger(value.costDetail.previousMaterialCostRateBps)) {
-      integrity();
-    }
-  }
-  if (value.taxRisk !== undefined && value.taxRisk !== null) {
-    exactKeys(value.taxRisk, ["invoiceIssues", "revenueRecognitionIssues",
-      "costAuthenticityIssues", "payrollIssues", "equityIssues"]);
-    strings(value.taxRisk.invoiceIssues);
-    strings(value.taxRisk.revenueRecognitionIssues);
-    strings(value.taxRisk.costAuthenticityIssues);
-    strings(value.taxRisk.payrollIssues);
-    strings(value.taxRisk.equityIssues);
-  }
-}
-
 const RUN_KEYS = [
   "runId", "workspaceId", "creationKeyHash", "requestHash", "currency",
   "status", "revision", "dataAsOf", "businessReport", "policyVersionId",
@@ -443,7 +327,6 @@ function parseRun(row: MysqlRow): FinancialCouncilRun {
       || typeof value.expiresAt !== "string" || isoDate(value.expiresAt) !== value.expiresAt) {
       integrity();
     }
-    assertBusinessReport(value.businessReport);
     const aggregate = immutableFinancialCouncilValue(value) as unknown as
       FinancialCouncilRun;
     if (aggregate.runId !== rowString(row, "run_id")
@@ -535,6 +418,17 @@ function parseSnapshot(row: MysqlRow): FinancialSnapshotRecord {
     });
     assertFinancialSnapshotRecordValue(record);
     return record;
+  } catch {
+    integrity();
+  }
+}
+
+function assertStoredSnapshot(
+  run: FinancialCouncilRun,
+  snapshot: FinancialSnapshotRecord
+): void {
+  try {
+    assertFinancialSnapshotRecord(run, snapshot);
   } catch {
     integrity();
   }
@@ -853,7 +747,7 @@ implements FinancialCouncilRepository {
         const snapshotRow = (snapshotRows as MysqlRow[])[0];
         if (!snapshotRow) integrity();
         const snapshot = parseSnapshot(snapshotRow);
-        assertFinancialSnapshotRecord(run, snapshot);
+        assertStoredSnapshot(run, snapshot);
         runs.push(run);
       }
       return Object.freeze(runs);
@@ -884,8 +778,10 @@ implements FinancialCouncilRepository {
     if (existing.requestHash !== requestHash) {
       throw financialCouncilError("financial_council_idempotency_conflict");
     }
-    if (existing.status !== "snapshot_frozen"
-      || existing.revision !== 2 || existing.snapshotId === null) integrity();
+    if (existing.status === "created" || existing.revision < 2
+      || existing.snapshotId === null || existing.snapshotHash === null) {
+      integrity();
+    }
     await this.verifyStoredRun(connection, existing);
     return existing;
   }
@@ -910,7 +806,7 @@ implements FinancialCouncilRepository {
       );
       const snapshotRow = (snapshotRows as MysqlRow[])[0];
       if (!snapshotRow) integrity();
-      assertFinancialSnapshotRecord(run, parseSnapshot(snapshotRow));
+      assertStoredSnapshot(run, parseSnapshot(snapshotRow));
     } else if (run.status !== "created") {
       integrity();
     }

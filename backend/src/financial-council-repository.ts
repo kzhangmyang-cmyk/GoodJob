@@ -1,5 +1,6 @@
 import type { CommandContext } from "./growth-command-context.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
+import { canonicalBusinessReportInput } from "./business-advisor/domain.js";
 import {
   FINANCIAL_COUNCIL_RUN_STATUSES,
   applyFinancialCouncilTransition,
@@ -16,7 +17,10 @@ import {
   type FinancialCouncilTransitionKind,
   type FinancialSnapshotRecord
 } from "./financial-council-domain.js";
-import { validateFinancialSnapshot } from "./financial-council-snapshot.js";
+import {
+  validateFinancialSnapshot,
+  validateFinancialSnapshotForRun
+} from "./financial-council-snapshot.js";
 
 export interface FinancialCouncilCommandResult<T> {
   readonly value: T;
@@ -168,96 +172,22 @@ function assertCommand(
     || Number(value.expectedRevision) < 1) inputInvalid();
 }
 
-function assertBusinessReport(value: unknown):
+function assertCanonicalBusinessReport(value: unknown):
 asserts value is FinancialCouncilRun["businessReport"] {
-  exactObject(value,
-    ["currency", "companyName", "period", "balanceSheet", "incomeStatement"],
-    ["cashFlow", "costDetail", "taxRisk"]);
-  if (value.currency !== "CNY" && value.currency !== "USD") inputInvalid();
-  identifier(value.companyName);
-  identifier(value.period);
-  exactObject(value.balanceSheet, ["period", "cashMinor", "receivablesMinor",
-    "inventoryMinor", "otherCurrentAssetsMinor", "nonCurrentAssetsMinor",
-    "currentLiabilitiesMinor", "nonCurrentLiabilitiesMinor",
-    "accountsPayableMinor"]);
-  identifier(value.balanceSheet.period);
-  for (const key of ["cashMinor", "receivablesMinor", "inventoryMinor",
-    "otherCurrentAssetsMinor", "nonCurrentAssetsMinor", "currentLiabilitiesMinor",
-    "nonCurrentLiabilitiesMinor", "accountsPayableMinor"] as const) {
-    integer(value.balanceSheet[key]);
+  try {
+    const canonical = canonicalBusinessReportInput(
+      value as FinancialCouncilRun["businessReport"]
+    );
+    if (financialCouncilCanonicalJson(canonical)
+      !== financialCouncilCanonicalJson(value)) inputInvalid();
+  } catch {
+    inputInvalid();
   }
-  exactObject(value.incomeStatement,
-    ["period", "revenueMinor", "costOfGoodsSoldMinor", "operatingExpensesMinor",
-      "interestExpenseMinor", "taxExpenseMinor"], ["productLines", "customers"]);
-  identifier(value.incomeStatement.period);
-  for (const key of ["revenueMinor", "costOfGoodsSoldMinor",
-    "operatingExpensesMinor", "interestExpenseMinor", "taxExpenseMinor"] as const) {
-    integer(value.incomeStatement[key]);
-  }
-  if (value.incomeStatement.productLines !== undefined) {
-    if (!Array.isArray(value.incomeStatement.productLines)) inputInvalid();
-    for (const item of value.incomeStatement.productLines) {
-      exactObject(item, ["name", "revenueMinor", "costOfGoodsSoldMinor",
-        "afterSalesCostMinor", "shippingCostMinor", "sellingExpenseMinor",
-        "allocatedOverheadMinor"]);
-      identifier(item.name);
-      for (const key of ["revenueMinor", "costOfGoodsSoldMinor",
-        "afterSalesCostMinor", "shippingCostMinor", "sellingExpenseMinor",
-        "allocatedOverheadMinor"] as const) integer(item[key]);
-    }
-  }
-  if (value.incomeStatement.customers !== undefined) {
-    if (!Array.isArray(value.incomeStatement.customers)) inputInvalid();
-    for (const item of value.incomeStatement.customers) {
-      exactObject(item, ["name", "revenueMinor", "grossProfitMinor",
-        "serviceCostMinor", "paymentDays", "outstandingReceivableMinor"]);
-      identifier(item.name);
-      for (const key of ["revenueMinor", "grossProfitMinor", "serviceCostMinor",
-        "paymentDays", "outstandingReceivableMinor"] as const) integer(item[key]);
-    }
-  }
-  if (value.cashFlow !== undefined && value.cashFlow !== null) {
-    exactObject(value.cashFlow, ["period", "openingCashMinor",
-      "operatingInflowMinor", "operatingOutflowMinor", "investingNetMinor",
-      "financingNetMinor", "expectedInflowsNext30DaysMinor",
-      "expectedOutflowsNext30DaysMinor", "expectedInflowsNext31To90DaysMinor",
-      "expectedOutflowsNext31To90DaysMinor"], ["receivables"]);
-    identifier(value.cashFlow.period);
-    for (const key of ["openingCashMinor", "operatingInflowMinor",
-      "operatingOutflowMinor", "investingNetMinor", "financingNetMinor",
-      "expectedInflowsNext30DaysMinor", "expectedOutflowsNext30DaysMinor",
-      "expectedInflowsNext31To90DaysMinor",
-      "expectedOutflowsNext31To90DaysMinor"] as const) integer(value.cashFlow[key]);
-    if (value.cashFlow.receivables !== undefined) {
-      if (!Array.isArray(value.cashFlow.receivables)) inputInvalid();
-      for (const item of value.cashFlow.receivables) {
-        exactObject(item, ["customer", "amountMinor", "daysOutstanding"]);
-        identifier(item.customer);
-        integer(item.amountMinor);
-        integer(item.daysOutstanding);
-      }
-    }
-  }
-  if (value.costDetail !== undefined && value.costDetail !== null) {
-    exactObject(value.costDetail, ["materialCostRateBps", "laborCostMinor",
-      "rawMaterialCostMinor", "salesCommissionRateBps", "fixedOverheadMinor"],
-    ["previousMaterialCostRateBps"]);
-    for (const key of ["materialCostRateBps", "laborCostMinor",
-      "rawMaterialCostMinor", "salesCommissionRateBps",
-      "fixedOverheadMinor"] as const) integer(value.costDetail[key]);
-    if (value.costDetail.previousMaterialCostRateBps !== undefined) {
-      integer(value.costDetail.previousMaterialCostRateBps);
-    }
-  }
-  if (value.taxRisk !== undefined && value.taxRisk !== null) {
-    exactObject(value.taxRisk, ["invoiceIssues", "revenueRecognitionIssues",
-      "costAuthenticityIssues", "payrollIssues", "equityIssues"]);
-    stringArray(value.taxRisk.invoiceIssues);
-    stringArray(value.taxRisk.revenueRecognitionIssues);
-    stringArray(value.taxRisk.costAuthenticityIssues);
-    stringArray(value.taxRisk.payrollIssues);
-    stringArray(value.taxRisk.equityIssues);
-  }
+}
+
+function policyVersionId(value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.trim() === ""
+    || [...value].length > 255) inputInvalid();
 }
 
 const RUN_KEYS = ["runId", "workspaceId", "creationKeyHash", "requestHash",
@@ -280,9 +210,9 @@ asserts value is FinancialCouncilRun {
   integer(value.revision);
   if (value.revision < 1) inputInvalid();
   timestamp(value.dataAsOf);
-  assertBusinessReport(value.businessReport);
+  assertCanonicalBusinessReport(value.businessReport);
   if (value.businessReport.currency !== value.currency) inputInvalid();
-  identifier(value.policyVersionId);
+  policyVersionId(value.policyVersionId);
   if (value.snapshotId !== null) identifier(value.snapshotId);
   if (value.snapshotHash !== null) hash(value.snapshotHash);
   if ((value.snapshotId === null) !== (value.snapshotHash === null)) inputInvalid();
@@ -536,6 +466,7 @@ export function assertFinancialSnapshotRecord(
   aggregate: FinancialCouncilRun,
   record: FinancialSnapshotRecord
 ): void {
+  validateFinancialSnapshotForRun(record.snapshot, aggregate);
   const { snapshotHash: _snapshotHash, ...preimage } = record.snapshot;
   if (record.workspaceId !== aggregate.workspaceId
     || record.runId !== aggregate.runId
@@ -644,7 +575,8 @@ implements FinancialCouncilRepository {
     if (existing.requestHash !== requestHash) {
       throw financialCouncilError("financial_council_idempotency_conflict");
     }
-    if (existing.status !== "snapshot_frozen" || existing.revision !== 2) {
+    if (existing.status === "created" || existing.revision < 2
+      || existing.snapshotId === null || existing.snapshotHash === null) {
       historyIntegrity();
     }
     this.assertStoredRun(existing);

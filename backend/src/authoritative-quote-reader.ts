@@ -305,7 +305,11 @@ export class QuoteApprovalAsOfReader {
 
   async listPendingAsOf(
     context: ActiveWorkspaceContext,
-    input: { cutoff: GrowthSealedReadCutoff; limit: number }
+    input: {
+      cutoff: GrowthSealedReadCutoff;
+      limit: number;
+      currency?: string;
+    }
   ): Promise<readonly PendingQuoteApprovalSnapshot[]> {
     const trusted = cutoffFor(context, input.cutoff);
     const limit = Math.min(100, Math.max(1, input.limit));
@@ -327,6 +331,8 @@ export class QuoteApprovalAsOfReader {
       );
       if (!version || version.versionKind !== "formal"
         || version.recordedAt > trusted.effectiveAsOf) continue;
+      if (input.currency !== undefined
+        && version.currency !== input.currency) continue;
       const lifecycle = lifecycleEvents.filter((event) =>
         event.quoteVersionId === version.id
         && event.recordedAt <= trusted.effectiveAsOf)

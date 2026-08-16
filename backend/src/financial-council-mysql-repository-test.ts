@@ -10,9 +10,11 @@ import {
   financialCouncilAggregateHash
 } from "./financial-council-domain.js";
 import {
+  builderSnapshotFixture,
   command,
   registerFinancialCouncilRepositoryContract,
   repositoryRunFixture,
+  resignSnapshotRecord,
   snapshotFixture,
   workspace
 } from "./financial-council-repository-contract-test.js";
@@ -582,6 +584,79 @@ test("MySQL legacy create replay rejects a missing or corrupted first event", as
         (error as { code?: unknown }).code
           === "financial_council_mysql_integrity"
     );
+  }
+});
+
+test("MySQL reads and replay reject a re-signed noncanonical report", async () => {
+  const { pool, repository } = repositoryWith();
+  const aggregate = repositoryRunFixture();
+  await repository.createRun(command("create"), aggregate);
+  const runRow = pool.state.runs[0]!;
+  const current = JSON.parse(String(runRow.run_json));
+  const changed = {
+    ...current,
+    businessReport: {
+      ...current.businessReport,
+      costDetail: {
+        materialCostRateBps: 10_001,
+        laborCostMinor: 0,
+        rawMaterialCostMinor: 0,
+        salesCommissionRateBps: 0,
+        fixedOverheadMinor: 0
+      }
+    }
+  };
+  runRow.run_json = JSON.stringify(changed);
+  const event = pool.state.events[0]!;
+  event.aggregate_snapshot_json = JSON.stringify(changed);
+  event.aggregate_snapshot_hash = financialCouncilAggregateHash(changed);
+  for (const read of [
+    () => repository.findRun(workspace(), aggregate.runId),
+    () => repository.createRun(command("replay"), aggregate)
+  ]) {
+    await assert.rejects(read(), (error: unknown) =>
+      (error as { code?: unknown }).code
+        === "financial_council_mysql_integrity");
+  }
+});
+
+test("MySQL reads and replay reject re-signed run-bound snapshot provenance", async () => {
+  const { pool, repository } = repositoryWith();
+  const aggregate = repositoryRunFixture();
+  const snapshot = await builderSnapshotFixture(aggregate);
+  const frozen = (await repository.createAndFreezeRun(command("create"), {
+    aggregate, snapshot, occurredAt: T1
+  })).value;
+  const changedSnapshot = resignSnapshotRecord(snapshot, (value) => ({
+    ...value,
+    formulaInputs: {
+      ...(value.formulaInputs as Record<string, unknown>),
+      indicators: {
+        ...((value.formulaInputs as Record<string, unknown>)
+          .indicators as Record<string, unknown>),
+        netProfitMinor: 1
+      }
+    }
+  }));
+  const changedRun = { ...frozen, snapshotHash: changedSnapshot.snapshotHash };
+  const runRow = pool.state.runs[0]!;
+  runRow.snapshot_hash = changedSnapshot.snapshotHash;
+  runRow.run_json = JSON.stringify(changedRun);
+  const event = pool.state.events[1]!;
+  event.aggregate_snapshot_json = JSON.stringify(changedRun);
+  event.aggregate_snapshot_hash = financialCouncilAggregateHash(changedRun);
+  const snapshotRow = pool.state.snapshots[0]!;
+  snapshotRow.snapshot_hash = changedSnapshot.snapshotHash;
+  snapshotRow.snapshot_json = JSON.stringify(changedSnapshot.snapshot);
+  for (const read of [
+    () => repository.findRun(workspace(), aggregate.runId),
+    () => repository.findFrozenRunByCreationKey(
+      workspace(), aggregate.creationKeyHash, aggregate.requestHash
+    )
+  ]) {
+    await assert.rejects(read(), (error: unknown) =>
+      (error as { code?: unknown }).code
+        === "financial_council_mysql_integrity");
   }
 });
 

@@ -7,6 +7,7 @@ import type {
   BusinessAdvisorService,
   BusinessAnalysisResult
 } from "./business-advisor/service.js";
+import { createBusinessAdvisorService } from "./business-advisor/service.js";
 import {
   validateFinancialCouncilAuthoritySnapshot,
   type FinancialCouncilAuthorityReader,
@@ -16,7 +17,8 @@ import {
   financialCouncilCanonicalHash,
   financialCouncilError,
   immutableFinancialCouncilInput,
-  immutableFinancialCouncilValue
+  immutableFinancialCouncilValue,
+  type FinancialCouncilRun
 } from "./financial-council-domain.js";
 import { assertGrowthAsOfNotFuture } from "./growth-as-of.js";
 import type {
@@ -542,6 +544,55 @@ export function validateFinancialSnapshot(value: unknown): FinancialSnapshot {
   const { snapshotHash, ...preimage } = stable;
   if (financialCouncilCanonicalHash(preimage) !== snapshotHash) snapshotError();
   return immutableFinancialCouncilValue(stable as unknown as FinancialSnapshot);
+}
+
+const SNAPSHOT_PROVENANCE_ADVISOR = createBusinessAdvisorService();
+
+/** Rebuilds every deterministic snapshot field from its owning run. */
+export function validateFinancialSnapshotForRun(
+  value: unknown,
+  run: Pick<FinancialCouncilRun, "runId" | "workspaceId" | "dataAsOf"
+    | "currency" | "businessReport" | "snapshotId" | "snapshotHash">
+): FinancialSnapshot {
+  const snapshot = validateFinancialSnapshot(value);
+  let businessReport: FinancialCouncilCreateInput["businessReport"];
+  try {
+    businessReport = canonicalBusinessReportInput(run.businessReport);
+  } catch {
+    return snapshotError();
+  }
+  const reportInputHash = financialCouncilCanonicalHash(businessReport);
+  const report = immutableFinancialCouncilValue(
+    normalizeBusinessReport(businessReport)
+  );
+  const formulaInputs = projectFormulaInputs(
+    SNAPSHOT_PROVENANCE_ADVISOR.analyze(businessReport), businessReport
+  );
+  const dataGaps = snapshotGaps(businessReport, snapshot.authority);
+  const refs = sourceRefs(reportInputHash, snapshot.authority);
+  const identity = {
+    runId: run.runId,
+    workspaceId: run.workspaceId,
+    dataAsOf: run.dataAsOf,
+    currency: run.currency,
+    report,
+    reportInputHash,
+    authority: snapshot.authority,
+    formulaInputs,
+    dataGaps,
+    sourceRefs: refs
+  };
+  const snapshotId = financialCouncilCanonicalHash(identity);
+  const preimage = { snapshotId, ...identity };
+  const expected = { ...preimage,
+    snapshotHash: financialCouncilCanonicalHash(preimage) };
+  if (financialCouncilCanonicalHash(snapshot)
+      !== financialCouncilCanonicalHash(expected)
+    || (run.snapshotId !== null && run.snapshotId !== expected.snapshotId)
+    || (run.snapshotHash !== null && run.snapshotHash !== expected.snapshotHash)) {
+    return snapshotError();
+  }
+  return snapshot;
 }
 
 export class FinancialSnapshotBuilder {

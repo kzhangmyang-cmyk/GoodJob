@@ -22,6 +22,7 @@ import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { FinancialCouncilCreateInput } from "./growth-contract-types.js";
 import { financialCouncilCanonicalHash } from "./financial-council-domain.js";
+import { QuoteApprovalAsOfReader } from "./authoritative-quote-reader.js";
 
 const HASH = (character: string) =>
   `sha256:${character.repeat(64)}` as `sha256:${string}`;
@@ -154,12 +155,72 @@ function fact(): FinancialCouncilVerifiedFactSource {
   };
 }
 
+function currencyLimitedQuoteReader(): QuoteApprovalAsOfReader {
+  const approvals = Array.from({ length: 101 }, (_, index) => ({
+    id: index === 100 ? "approval-target" : `approval-foreign-${index}`,
+    workspaceId: "workspace-a",
+    quoteVersionId: index === 100 ? "quote-target" : `quote-foreign-${index}`,
+    status: "pending" as const,
+    approvalKind: "confirmation" as const,
+    requiredCapabilities: ["quote.confirm"],
+    triggeredRules: ["manager_confirmation"],
+    pricingPolicyVersionId: "policy-1",
+    policySnapshotHash: HASH("a"),
+    capabilityRegistryVersion: "growth-capabilities.v1",
+    submittedBy: "sales-1",
+    submittedAt: `2026-08-15T07:00:00.${String(index).padStart(3, "0")}Z`,
+    decidedBy: null,
+    decidedAt: null,
+    reason: null
+  }));
+  const versions = new Map(approvals.map((approval, index) => [
+    approval.quoteVersionId,
+    {
+      id: approval.quoteVersionId,
+      workspaceId: "workspace-a",
+      quoteCaseId: `quote-case-${index}`,
+      version: 1,
+      lifecycleRevision: 4,
+      versionKind: "formal" as const,
+      sourceDraftVersionId: `draft-${index}`,
+      probabilityAssessmentSnapshot: {
+        id: `probability-${index}`,
+        precision: "bps",
+        closeProbabilityBps: 5_000
+      },
+      status: "submitted" as const,
+      createdBy: "sales-1",
+      createdAt: approval.submittedAt,
+      effectiveAt: approval.submittedAt,
+      recordedAt: approval.submittedAt,
+      temporalSequence: index + 1,
+      salesOwnerActorId: "sales-1",
+      currency: index === 100 ? "CNY" : "USD",
+      quotedAmountMinor: 1_000_000,
+      estimatedGrossProfitMinor: 200_000,
+      estimatedContributionMinor: 180_000,
+      grossMarginBps: 2_000,
+      commercialAmountHash: HASH("2"),
+      expiresAt: null
+    }
+  ]));
+  return new QuoteApprovalAsOfReader({
+    async listApprovals() { return approvals; },
+    async listApprovalEvents() { return []; },
+    async listLifecycleEvents() { return []; },
+    async getVersion(_workspaceId: string, versionId: string) {
+      return versions.get(versionId) ?? null;
+    }
+  } as never);
+}
+
 function createHarness(options: {
   reverse?: boolean;
   incompleteRoi?: boolean;
   mixedApprovalCurrencies?: boolean;
   priorityCount?: number;
   approvalCount?: number;
+  quoteApprovals?: Pick<QuoteApprovalAsOfReader, "listPendingAsOf">;
 } = {}) {
   const transactions = new InMemoryGrowthTemporalTransactionRunner(
     "2026-08-16T08:00:00.000Z"
@@ -261,7 +322,7 @@ function createHarness(options: {
         return candidates.slice(0, value.limit);
       }
     },
-    quoteApprovals: {
+    quoteApprovals: options.quoteApprovals ?? {
       async listPendingAsOf(_context, value) {
         note(value.cutoff);
         return approvals.slice(0, value.limit);
@@ -543,6 +604,17 @@ test("non-sensitive authority filters mixed-currency approvals inside production
     ["quote-1"]
   );
   assert.equal(snapshot.authority.pendingQuoteApprovals[0]?.currency, undefined);
+});
+
+test("snapshot authority retains a target quote behind one hundred foreign currencies", async () => {
+  const harness = createHarness({ quoteApprovals: currencyLimitedQuoteReader() });
+  const snapshot = await harness.builder.freeze(
+    command(), RUN_ID, input()
+  );
+  assert.deepEqual(
+    snapshot.authority.pendingQuoteApprovals.map((row) => row.quoteVersionId),
+    ["quote-target"]
+  );
 });
 
 test("internal authority keeps 11 priorities and 51 approvals while public Today stays 10 and 50", async () => {

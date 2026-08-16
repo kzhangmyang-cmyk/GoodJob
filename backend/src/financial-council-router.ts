@@ -10,7 +10,10 @@ import type { FinancialCouncilService } from "./financial-council-service.js";
 import type { FinancialCouncilCreateInput } from "./growth-contract-types.js";
 import { GrowthHttpError } from "./growth-command-context.js";
 import { GrowthAuthorizationError } from "./growth-capabilities.js";
-import { isFinancialCouncilError } from "./financial-council-domain.js";
+import {
+  financialCouncilError,
+  isFinancialCouncilError
+} from "./financial-council-domain.js";
 import type {
   GrowthCommandContextFactory,
   GrowthWorkspaceContextResolver
@@ -82,6 +85,10 @@ function runId(req: Request): string {
 }
 
 function projectRun(run: Awaited<ReturnType<FinancialCouncilService["getRun"]>>) {
+  if (run.status === "created" || run.revision < 2
+    || run.snapshotId === null || run.snapshotHash === null) {
+    throw financialCouncilError("financial_council_integrity");
+  }
   return Object.freeze({
     runId: run.runId,
     workspaceId: run.workspaceId,
@@ -129,6 +136,9 @@ function trustedError(error: unknown): {
       return { status: 403, code: error.code };
     }
     if (isFinancialCouncilError(error)) {
+      if (error.code === "financial_council_integrity") {
+        return { status: 500, code: "financial_council_internal_error" };
+      }
       const status = error.code === "financial_council_run_not_found" ? 404
         : error.code === "financial_council_idempotency_conflict"
           || error.code === "financial_council_run_conflict"

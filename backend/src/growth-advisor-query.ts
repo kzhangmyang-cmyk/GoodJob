@@ -579,7 +579,11 @@ export function createGrowthAdvisorQueryService(
         limit: limits.priorityCustomers
       });
     const approvals = await dependencies.quoteApprovals.listPendingAsOf(
-      context, { cutoff, limit: limits.pendingQuoteApprovals }
+      context, {
+        cutoff,
+        limit: limits.pendingQuoteApprovals,
+        currency: query.currency
+      }
     );
     const pendingQuoteApprovals: GrowthAdvisorAuthorityTodayView[
       "pendingQuoteApprovals"

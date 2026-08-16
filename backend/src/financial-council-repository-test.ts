@@ -7,7 +7,8 @@ import {
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  command, repositoryRunFixture, snapshotFixture, T1, workspace
+  builderSnapshotFixture, command, repositoryRunFixture, resignSnapshotRecord,
+  snapshotFixture, T1, workspace
 } from "./financial-council-repository-contract-test.js";
 import { financialCouncilAggregateHash } from
   "./financial-council-domain.js";
@@ -16,6 +17,89 @@ registerFinancialCouncilRepositoryContract(
   "memory financial council repository",
   () => new InMemoryFinancialCouncilRepository()
 );
+
+test("memory reads and replay reject a re-signed noncanonical report", async () => {
+  const repository = new InMemoryFinancialCouncilRepository();
+  const aggregate = repositoryRunFixture();
+  await repository.createRun(command("create"), aggregate);
+  const internal = repository as unknown as {
+    state: {
+      runs: Map<string, Record<string, unknown>>;
+      events: Map<string, Array<Record<string, unknown>>>;
+    };
+  };
+  const key = "ws-1\u0000council-run-1";
+  const current = internal.state.runs.get(key)!;
+  const businessReport = {
+    ...(current.businessReport as Record<string, unknown>),
+    balanceSheet: {
+      ...((current.businessReport as Record<string, unknown>)
+        .balanceSheet as Record<string, unknown>),
+      cashMinor: -1
+    }
+  };
+  const changed = { ...current, businessReport };
+  const event = internal.state.events.get(key)![0]!;
+  internal.state.runs.set(key, changed);
+  internal.state.events.set(key, [{
+    ...event,
+    aggregateSnapshot: changed,
+    aggregateSnapshotHash: financialCouncilAggregateHash(changed as never)
+  }]);
+  for (const read of [
+    () => repository.findRun(workspace(), aggregate.runId),
+    () => repository.createRun(command("replay"), aggregate)
+  ]) {
+    await assert.rejects(read(), (error: unknown) =>
+      (error as { code?: unknown }).code === "financial_council_integrity");
+  }
+});
+
+test("memory reads and replay reject re-signed run-bound snapshot provenance", async () => {
+  const repository = new InMemoryFinancialCouncilRepository();
+  const aggregate = repositoryRunFixture();
+  const snapshot = await builderSnapshotFixture(aggregate);
+  const frozen = (await repository.createAndFreezeRun(command("create"), {
+    aggregate, snapshot, occurredAt: T1
+  })).value;
+  const changedSnapshot = resignSnapshotRecord(snapshot, (value) => ({
+    ...value,
+    report: {
+      ...(value.report as Record<string, unknown>),
+      netProfitMinor: Number(
+        (value.report as Record<string, unknown>).netProfitMinor
+      ) + 1
+    }
+  }));
+  const changedRun = { ...frozen, snapshotHash: changedSnapshot.snapshotHash };
+  const internal = repository as unknown as {
+    state: {
+      runs: Map<string, Record<string, unknown>>;
+      events: Map<string, Array<Record<string, unknown>>>;
+      snapshots: Map<string, unknown>;
+    };
+  };
+  const runKey = `ws-1\u0000${aggregate.runId}`;
+  const events = internal.state.events.get(runKey)!;
+  internal.state.runs.set(runKey, changedRun);
+  internal.state.snapshots.set(
+    `ws-1\u0000${snapshot.snapshotId}`, changedSnapshot
+  );
+  events[1] = {
+    ...events[1],
+    aggregateSnapshot: changedRun,
+    aggregateSnapshotHash: financialCouncilAggregateHash(changedRun as never)
+  };
+  for (const read of [
+    () => repository.findRun(workspace(), aggregate.runId),
+    () => repository.findFrozenRunByCreationKey(
+      workspace(), aggregate.creationKeyHash, aggregate.requestHash
+    )
+  ]) {
+    await assert.rejects(read(), (error: unknown) =>
+      (error as { code?: unknown }).code === "financial_council_integrity");
+  }
+});
 
 test("memory replay and reads reject every re-signed history divergence", async () => {
   for (const kind of ["hash", "actor", "time", "aggregate"] as const) {

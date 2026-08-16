@@ -140,16 +140,23 @@ export class FinancialCouncilWakeRelay {
   }
 
   private async runSweep(): Promise<void> {
-    let runs: readonly FinancialCouncilRun[];
-    try {
-      runs = await this.dependencies.repository.listRunnableRuns({
+    const enumeration = await this.withDeadline(
+      () => this.dependencies.repository.listRunnableRuns({
         after: this.cursor,
         limit: this.batchSize
-      });
-    } catch (error) {
-      await this.report(error, null);
+      })
+    );
+    if (enumeration.kind === "rejected") {
+      await this.report(enumeration.error, null);
       return;
     }
+    if (enumeration.kind === "timeout") {
+      await this.report(
+        new Error("financial_council_runnable_enumeration_timeout"), null
+      );
+      return;
+    }
+    const runs = enumeration.value;
     if (runs.length === 0) {
       this.cursor = null;
       return;
@@ -178,15 +185,15 @@ export class FinancialCouncilWakeRelay {
     await this.withDeadline(() => this.dependencies.onError!(error, runId));
   }
 
-  private async withDeadline(
-    operation: () => void | Promise<void>
+  private async withDeadline<T>(
+    operation: () => T | PromiseLike<T>
   ): Promise<
-    | { readonly kind: "fulfilled" }
+    | { readonly kind: "fulfilled"; readonly value: T }
     | { readonly kind: "rejected"; readonly error: unknown }
     | { readonly kind: "timeout" }
   > {
     const guarded = Promise.resolve().then(operation).then(
-      () => ({ kind: "fulfilled" as const }),
+      (value) => ({ kind: "fulfilled" as const, value }),
       (error) => ({ kind: "rejected" as const, error })
     );
     let handle: unknown;
