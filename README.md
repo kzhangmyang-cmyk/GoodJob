@@ -301,6 +301,33 @@ PROSPECT_QUEUE_SYNC_MS=5000
 
 当前生产 Store 仍保持单后端实例约束：候选清洗管道、全局 Provider 限流和独立 Worker 生命周期尚未全部改造成跨进程原子路径，不能仅靠开启 Redis 或 MySQL 执行事务通道横向启动多个 API/Worker 进程。
 
+### 抖音授权可见评论读取 Beta
+
+已批准且正在运行的抖音获客计划可以由用户主动创建最长 120 秒的视觉读取会话。
+覆盖范围固定为 `authorized_visible_top_level_sample`：只接收用户当前选中公开
+视频页中已经显示的一级评论卡，不是全量评论、持续监听或抖音官方连接器。服务端
+拥有视频、评论、滚动、OCR、时长和制品预算；只有服务端接受观察后网页才会 ACK。
+
+DOM/ARIA 正文优先。OCR 仅在正文缺失或截断、制品上传已获授权时处理扩展本地裁剪并
+完成头像和非正文区域遮挡的单张 WebP。完整视口、Cookie、浏览器配置、页面 HTML、
+网络响应和私信/评论/点赞/关注/发布动作都不属于合同。低置信、冲突、截断、安全失败或
+用户接管只形成服务端人工复核事实，不会自动资格判定或转入 CRM。
+
+高置信观察可进入候选 Evidence；其 `authorized_visual_observation` provenance 保存
+观察、会话、方法、置信度、覆盖、hash 和可空 `artifactId`。同租户授权用户可以读取
+仍在保留期内的 `image/webp` 遮挡制品；404/到期后 Evidence 与证据哈希仍保留。
+确定性 E2E 使用本地页面消息和 API fixture，不安装真实扩展、不访问抖音或外网：
+
+```bash
+cd /path/to/GoodJob-marketing-system-frontend
+npm run test:e2e -- acquisition-visual-reader.spec.ts
+```
+
+真实 Chrome Beta smoke 只允许在人工设置 `GOODJOB_VISUAL_READER_SMOKE=1`、亲自选择
+自己的公开测试视频并点击开始后进行，不能加入 CI。输出只允许会话状态、有界数量、
+提取方法和稳定错误码，不得包含评论正文或个人字段。扩展可从 Chrome 扩展程序页面
+直接移除；卸载不会删除服务端 Evidence，遮挡制品按保留期到期。
+
 生产环境还必须配置至少 32 位的独立密钥：
 
 - `PROVIDER_CREDENTIAL_KEY`：加密自动搜客数据源连接密钥。

@@ -348,6 +348,24 @@ Plan → Run → Search / Public Comment Event → Evidence → Signal Aggregate
 评论到候选/Evidence 回溯和无横向溢出；除 GET/HEAD/OPTIONS 外不能产生写请求，
 也不能访问抖音外网。任何未声明的获客请求返回 `501` 并使测试失败。
 
+授权可见评论读取 E2E 进一步用严格页面消息 harness 穿透真实 UI/controller/API，
+覆盖 1440、1024、768、键盘授权、扩展缺失、DOM 优先、遮挡 WebP OCR fallback、
+低置信人工复核、停止、安全拒绝、服务端刷新恢复、授权/到期制品和无横向溢出。
+fixture 必须审计请求、日志、浏览器存储及自身持久状态；禁止真实扩展、真实抖音网络、
+原始视口、Cookie、浏览器配置、互动写动作和自动 CRM 转换。候选 Evidence 仅在
+`authorized_visual_observation.artifactId` 非空时提供遮挡裁剪入口；制品到期仍显示
+Evidence ID 与 hash。运行命令为：
+
+```bash
+cd /path/to/GoodJob-marketing-system-frontend
+npm run test:e2e -- acquisition-visual-reader.spec.ts
+```
+
+真实 Chrome 只允许显式 `GOODJOB_VISUAL_READER_SMOKE=1` 的人工 Beta smoke；操作者
+必须亲自选择自己的公开视频并点击开始。输出仅可包含会话状态、有界数量、提取方法和
+稳定错误码，不能包含评论正文或个人字段，且不得进入 CI。Chrome 扩展程序页移除扩展
+即完成卸载；服务端 Evidence 不随扩展卸载而删除，遮挡制品按保留期到期。
+
 ## Out of Scope
 
 首个抖音发布里不包含：

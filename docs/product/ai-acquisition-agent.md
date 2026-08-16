@@ -842,6 +842,31 @@ cd /path/to/GoodJob-marketing-system-frontend
 npm run test:e2e -- acquisition-comment-automation.spec.ts
 ```
 
+授权可见评论读取 E2E 使用同一个真实获客详情 UI/controller/API 边界和本地页面消息
+harness，严格模拟 `goodjob.visual-reader.bridge.v1`，不安装真实扩展、不打开抖音、
+不访问外网。它覆盖 1440、1024、768、键盘授权、扩展缺失、DOM、受控 OCR、
+低置信人工复核、停止、安全拒绝、刷新恢复、授权制品、过期制品和无横向溢出；
+同时审计请求、日志、local/session storage 和 fixture 状态，确保没有原始截图、Cookie、
+浏览器配置、私域动作或自动 CRM 转换：
+
+```bash
+cd /path/to/GoodJob-marketing-system-frontend
+npm run test:e2e -- acquisition-visual-reader.spec.ts
+```
+
+该能力固定为 `authorized_visible_top_level_sample`。DOM/ARIA 完整正文不调用 OCR；
+仅在用户允许制品、正文缺失或截断时，扩展才在内存中完成评论卡裁剪、遮挡和 OCR。
+低置信、冲突、截断、安全失败和用户接管只进入人工复核，不产生自动资格或 CRM 事实。
+候选 Evidence 只有在 provenance 为 `authorized_visual_observation` 且 `artifactId` 非空时
+可查看遮挡 WebP。制品 404/到期后 Evidence ID 与 hash 仍保留。
+
+真实 Chrome 兼容性检查只能作为手工 Beta smoke：操作者必须先设置
+`GOODJOB_VISUAL_READER_SMOKE=1`，再亲自选择自己的公开视频并点击开始；没有开关就
+停止，不能加入普通测试或 CI。终端或记录只允许会话状态、有界数量、提取方法和稳定
+错误码，不得包含评论正文、昵称、主页标识、截图、Cookie、nonce 或其他个人字段。
+在 Chrome 扩展程序页移除扩展即可卸载；卸载不会删除服务端 Evidence，遮挡制品按
+服务端保留期到期。
+
 真实抖音网络只允许通过显式 opt-in 的手工 Beta smoke 验证。缺少开关或数字视频
 ID 时脚本会报明原因、不发请求；成功输出只包含有界计数、游标/覆盖摘要、制品哈希
 和 Provider 版本，失败只输出稳定错误码，不输出完整评论者个人字段：
