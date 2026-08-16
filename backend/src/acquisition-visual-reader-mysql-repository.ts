@@ -41,6 +41,7 @@ import {
   visualObservationInputHash,
   visualObservationIsLowConfidence,
   visualObservationIsManualReviewOnly,
+  visualIngestionWorkItemHasValidLifecycle,
   visualReaderExpiredProjection,
   visualReaderSessionIsActiveAt,
   serializeAcquisitionVisualReaderBindingsEnvelope,
@@ -241,6 +242,7 @@ export async function ensureAcquisitionVisualReaderMysqlSchema(
     await connection.query(
       `UPDATE acquisition_visual_ingestion_work_items
        SET status = 'retry', next_attempt_at = updated_at,
+           attempt_count = GREATEST(attempt_count, 1),
            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
            last_error_code = 'RECOVERY_FAILED'
        WHERE status = 'running' AND lease_token IS NULL`
@@ -640,31 +642,7 @@ function parseIngestionWorkItem(row: MysqlRow): VisualIngestionWorkItem {
         || Date.parse(completedAt) < Date.parse(updatedAt)))
     || ((leaseOwner === null) !== (leaseExpiresAt === null))
     || ((leaseOwner === null) !== (leaseToken === null))) integrity();
-  const pendingFactsAreEmpty = completedAt === null
-    && evidenceId === null
-    && platformEvidenceId === null
-    && candidateId === null;
-  if ((["queued", "retry"].includes(status)
-      && (leaseOwner !== null || !pendingFactsAreEmpty))
-    || (status === "queued" && lastErrorCode !== null)
-    || (status === "retry" && lastErrorCode !== "RECOVERY_FAILED")
-    || (status === "running"
-      && (leaseOwner === null || !pendingFactsAreEmpty))
-    || (status === "succeeded"
-      && (disposition !== "automatic"
-        || leaseOwner !== null
-        || completedAt === null
-        || evidenceId === null
-        || lastErrorCode !== null))
-    || (status === "manual_review_only"
-      && (disposition !== "manual_review_only"
-        || leaseOwner !== null
-        || completedAt === null
-        || evidenceId === null
-        || platformEvidenceId !== null
-        || candidateId !== null
-        || lastErrorCode !== null))) integrity();
-  return {
+  const workItem: VisualIngestionWorkItem = {
     workItemId,
     ownerId: rowString(row, "owner_id"),
     teamId: rowString(row, "team_id"),
@@ -688,6 +666,8 @@ function parseIngestionWorkItem(row: MysqlRow): VisualIngestionWorkItem {
     updatedAt,
     completedAt
   };
+  if (!visualIngestionWorkItemHasValidLifecycle(workItem)) integrity();
+  return workItem;
 }
 
 async function selectSession(
@@ -1562,30 +1542,32 @@ implements AcquisitionVisualReaderRepository {
          COALESCE(SUM(status = 'manual_review_only'), 0)
            AS manual_review_only_count,
          COALESCE(SUM(NOT (
-           (status = 'queued' AND lease_owner IS NULL
+           (status = 'queued' AND attempt_count = 0 AND lease_owner IS NULL
              AND lease_token IS NULL AND lease_expires_at IS NULL
              AND completed_at IS NULL
              AND evidence_id IS NULL AND platform_evidence_id IS NULL
              AND candidate_id IS NULL AND last_error_code IS NULL)
-           OR (status = 'retry' AND lease_owner IS NULL
+           OR (status = 'retry' AND attempt_count >= 1 AND lease_owner IS NULL
              AND lease_token IS NULL AND lease_expires_at IS NULL
              AND completed_at IS NULL
              AND evidence_id IS NULL AND platform_evidence_id IS NULL
              AND candidate_id IS NULL
              AND last_error_code = 'RECOVERY_FAILED')
-           OR (status = 'running' AND lease_owner IS NOT NULL
+           OR (status = 'running' AND attempt_count >= 1
+             AND lease_owner IS NOT NULL
              AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL
              AND completed_at IS NULL
              AND evidence_id IS NULL AND platform_evidence_id IS NULL
              AND candidate_id IS NULL
              AND (last_error_code IS NULL
                OR last_error_code = 'RECOVERY_FAILED'))
-           OR (status = 'succeeded' AND disposition = 'automatic'
+           OR (status = 'succeeded' AND attempt_count >= 1
+             AND disposition = 'automatic'
              AND lease_owner IS NULL AND lease_token IS NULL
              AND lease_expires_at IS NULL
              AND completed_at IS NOT NULL AND evidence_id IS NOT NULL
              AND last_error_code IS NULL)
-           OR (status = 'manual_review_only'
+           OR (status = 'manual_review_only' AND attempt_count >= 1
              AND disposition = 'manual_review_only'
              AND lease_owner IS NULL AND lease_token IS NULL
              AND lease_expires_at IS NULL
@@ -1788,7 +1770,7 @@ implements AcquisitionVisualReaderRepository {
        WHERE owner_id = ? AND team_id = ? AND observation_id = ?
          AND status = 'running' AND lease_owner = ? AND lease_token = ?
          AND attempt_count = ?
-         AND updated_at <= ? AND lease_expires_at >= ?`,
+         AND updated_at <= ? AND lease_expires_at > ?`,
       [
         nextAttemptAt, failure.errorCode, failedAt,
         scope.ownerId, scope.teamId, observationId, failure.workerId,
@@ -1869,7 +1851,7 @@ implements AcquisitionVisualReaderRepository {
        WHERE owner_id = ? AND team_id = ? AND observation_id = ?
          AND status = 'running' AND lease_owner = ? AND lease_token = ?
          AND attempt_count = ?
-         AND updated_at <= ? AND lease_expires_at >= ?`,
+         AND updated_at <= ? AND lease_expires_at > ?`,
       [
         result.status, completedAt, result.evidenceId,
         result.platformEvidenceId, result.candidateId, completedAt, completedAt,

@@ -700,6 +700,232 @@ test("same-worker reclaim never authorizes the prior visual lease result", async
   }
 });
 
+test("visual lease results lose authority at the exact expiry instant", async (context) => {
+  for (const terminal of ["complete", "fail"] as const) {
+    await context.test(`rejects exact-expiry ${terminal} before reclaim`,
+      async () => {
+        const now = { value: START };
+        const visualRepository = new visualSessionModule
+          .InMemoryAcquisitionVisualReaderRepository({
+            masterSecret: MASTER_SECRET,
+            now: () => now.value
+          });
+        await createSession(visualRepository);
+        const item = observation(`exact-expiry-${terminal}`);
+        await visualRepository.appendObservationBatch({
+          scope,
+          sessionId: item.sessionId,
+          ingestionActorId: "actor-exact-expiry",
+          observations: [{
+            clientObservationKey: `client-exact-expiry-${terminal}`,
+            observation: item
+          }]
+        });
+        const [firstClaim] = await visualRepository
+          .claimPendingIngestionWorkItems({
+            workerId: "exact-expiry-worker",
+            now: START,
+            leaseDurationMs: 1_000,
+            limit: 1
+          });
+        now.value = "2026-08-16T01:00:01.000Z";
+
+        const expiredResult = terminal === "complete"
+          ? visualRepository.completeIngestionWorkItem(
+            scope,
+            item.observationId,
+            {
+              workerId: "exact-expiry-worker",
+              leaseToken: firstClaim!.workItem.leaseToken!,
+              attemptCount: firstClaim!.workItem.attemptCount,
+              status: "succeeded",
+              evidenceId:
+                `visual:${item.observationId}:evidence:${item.textHash}`,
+              platformEvidenceId: null,
+              candidateId: null,
+              completedAt: now.value
+            }
+          )
+          : visualRepository.failIngestionWorkItem(
+            scope,
+            item.observationId,
+            {
+              workerId: "exact-expiry-worker",
+              leaseToken: firstClaim!.workItem.leaseToken!,
+              attemptCount: firstClaim!.workItem.attemptCount,
+              failedAt: now.value,
+              nextAttemptAt: "2026-08-16T01:00:02.000Z",
+              errorCode: "RECOVERY_FAILED"
+            }
+          );
+        await assert.rejects(expiredResult);
+        const [unchanged] = await visualRepository.listRunIngestionWorkItems(
+          scope,
+          "run-task-7",
+          { limit: 1 }
+        );
+        assert.deepEqual(unchanged, firstClaim!.workItem);
+
+        const [reclaimed] = await visualRepository
+          .claimPendingIngestionWorkItems({
+            workerId: "exact-expiry-worker",
+            now: now.value,
+            leaseDurationMs: 30_000,
+            limit: 1
+          });
+        assert.equal(reclaimed?.workItem.attemptCount, 2);
+        assert.notEqual(reclaimed?.workItem.leaseToken,
+          firstClaim?.workItem.leaseToken);
+      });
+  }
+});
+
+test("memory visual work closes attempt generation across every lifecycle boundary", async (context) => {
+  const setup = async (id: string) => {
+    const visualRepository = repository();
+    await createSession(visualRepository);
+    const item = observation(id);
+    await visualRepository.appendObservationBatch({
+      scope,
+      sessionId: item.sessionId,
+      ingestionActorId: "actor-attempt-lifecycle",
+      observations: [{
+        clientObservationKey: `client-${id}`,
+        observation: item
+      }]
+    });
+    const state = (visualRepository as unknown as {
+      state: {
+        ingestionWorkItems: Map<
+          string,
+          visualSessionModule.VisualIngestionWorkItem
+        >;
+      };
+    }).state;
+    const stored = [...state.ingestionWorkItems.values()][0]!;
+    return { visualRepository, item, stored };
+  };
+  const terminalFacts = (
+    item: DouyinVisualCommentObservationV1,
+    status: "succeeded" | "manual_review_only"
+  ) => ({
+    status,
+    disposition: status === "succeeded"
+      ? "automatic" as const
+      : "manual_review_only" as const,
+    attemptCount: 0,
+    nextAttemptAt: "2026-08-16T01:00:01.000Z",
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    lastErrorCode: null,
+    evidenceId: `visual:${item.observationId}:evidence:${item.textHash}`,
+    platformEvidenceId: null,
+    candidateId: null,
+    updatedAt: "2026-08-16T01:00:01.000Z",
+    completedAt: "2026-08-16T01:00:01.000Z"
+  });
+
+  await context.test("fresh queued attempt zero remains valid", async () => {
+    const { visualRepository } = await setup("memory-attempt-queued-zero");
+    const [queued] = await visualRepository.listRunIngestionWorkItems(
+      scope, "run-task-7", { limit: 1 }
+    );
+    assert.equal(queued?.status, "queued");
+    assert.equal(queued?.attemptCount, 0);
+    assert.equal((await visualRepository.getRunIngestionWorkProjection(
+      scope, "run-task-7"
+    )).queuedCount, 1);
+  });
+
+  for (const status of ["succeeded", "manual_review_only"] as const) {
+    await context.test(`list rejects ${status} attempt zero`, async () => {
+      const { visualRepository, item, stored } = await setup(
+        `memory-attempt-list-${status}`
+      );
+      Object.assign(stored, terminalFacts(item, status));
+      await assert.rejects(visualRepository.listRunIngestionWorkItems(
+        scope, "run-task-7", { limit: 1 }
+      ));
+    });
+  }
+
+  await context.test("projection rejects retry attempt zero", async () => {
+    const { visualRepository, stored } = await setup(
+      "memory-attempt-projection-retry"
+    );
+    Object.assign(stored, {
+      status: "retry",
+      attemptCount: 0,
+      lastErrorCode: "RECOVERY_FAILED"
+    });
+    await assert.rejects(visualRepository.getRunIngestionWorkProjection(
+      scope, "run-task-7"
+    ));
+  });
+
+  await context.test("claim rejects retry attempt zero", async () => {
+    const { visualRepository, stored } = await setup(
+      "memory-attempt-claim-retry"
+    );
+    Object.assign(stored, {
+      status: "retry",
+      attemptCount: 0,
+      lastErrorCode: "RECOVERY_FAILED"
+    });
+    await assert.rejects(visualRepository.claimPendingIngestionWorkItems({
+      workerId: "attempt-lifecycle-worker",
+      now: START,
+      leaseDurationMs: 30_000,
+      limit: 1
+    }));
+  });
+
+  for (const boundary of ["complete", "fail"] as const) {
+    await context.test(`${boundary} rejects running attempt zero`, async () => {
+      const { visualRepository, item, stored } = await setup(
+        `memory-attempt-${boundary}-running`
+      );
+      Object.assign(stored, {
+        status: "running",
+        attemptCount: 0,
+        leaseOwner: "attempt-lifecycle-worker",
+        leaseToken: "a".repeat(64),
+        leaseExpiresAt: "2026-08-16T01:00:30.000Z"
+      });
+      const result = boundary === "complete"
+        ? visualRepository.completeIngestionWorkItem(
+          scope,
+          item.observationId,
+          {
+            workerId: "attempt-lifecycle-worker",
+            leaseToken: "a".repeat(64),
+            attemptCount: 1,
+            status: "succeeded",
+            evidenceId:
+              `visual:${item.observationId}:evidence:${item.textHash}`,
+            platformEvidenceId: null,
+            candidateId: null,
+            completedAt: "2026-08-16T01:00:01.000Z"
+          }
+        )
+        : visualRepository.failIngestionWorkItem(
+          scope,
+          item.observationId,
+          {
+            workerId: "attempt-lifecycle-worker",
+            leaseToken: "a".repeat(64),
+            attemptCount: 1,
+            failedAt: "2026-08-16T01:00:01.000Z",
+            nextAttemptAt: "2026-08-16T01:00:02.000Z",
+            errorCode: "RECOVERY_FAILED"
+          }
+        );
+      await assert.rejects(result);
+    });
+  }
+});
+
 test("Domain accepts only the exact literal authorized visual Evidence identity", async () => {
   const createDomain = () => new AcquisitionDomainService({
     repository: new InMemoryAcquisitionDomainRepository(),

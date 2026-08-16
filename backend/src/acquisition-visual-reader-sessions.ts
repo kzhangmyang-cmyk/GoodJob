@@ -401,6 +401,72 @@ const DOUYIN_VIDEO_ID = /^[1-9][0-9]{0,31}$/u;
 const DOUYIN_PROFILE_URL =
   /^https:\/\/www\.douyin\.com\/user\/[A-Za-z0-9][A-Za-z0-9._~-]{0,127}\/?$/u;
 const DOUYIN_PUBLIC_KEY = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u;
+
+export function visualIngestionWorkItemHasValidLifecycle(
+  item: VisualIngestionWorkItem
+) {
+  if (!Number.isSafeInteger(item.attemptCount)
+    || item.attemptCount < 0
+    || item.attemptCount > 2_147_483_647) {
+    return false;
+  }
+  const pendingFactsAreEmpty = item.completedAt === null
+    && item.evidenceId === null
+    && item.platformEvidenceId === null
+    && item.candidateId === null;
+  const leaseFactsAreEmpty = item.leaseOwner === null
+    && item.leaseToken === null
+    && item.leaseExpiresAt === null;
+  const runningLeaseIsValid = item.leaseOwner !== null
+    && SCOPE_IDENTIFIER.test(item.leaseOwner)
+    && item.leaseToken !== null
+    && VISUAL_LEASE_TOKEN.test(item.leaseToken)
+    && item.leaseExpiresAt !== null;
+  switch (item.status) {
+    case "queued":
+      return item.attemptCount === 0
+        && leaseFactsAreEmpty
+        && pendingFactsAreEmpty
+        && item.lastErrorCode === null;
+    case "retry":
+      return item.attemptCount >= 1
+        && leaseFactsAreEmpty
+        && pendingFactsAreEmpty
+        && item.lastErrorCode === "RECOVERY_FAILED";
+    case "running":
+      return item.attemptCount >= 1
+        && runningLeaseIsValid
+        && pendingFactsAreEmpty
+        && (item.lastErrorCode === null
+          || item.lastErrorCode === "RECOVERY_FAILED");
+    case "succeeded":
+      return item.attemptCount >= 1
+        && item.disposition === "automatic"
+        && leaseFactsAreEmpty
+        && item.completedAt !== null
+        && item.evidenceId !== null
+        && item.lastErrorCode === null;
+    case "manual_review_only":
+      return item.attemptCount >= 1
+        && item.disposition === "manual_review_only"
+        && leaseFactsAreEmpty
+        && item.completedAt !== null
+        && item.evidenceId !== null
+        && item.platformEvidenceId === null
+        && item.candidateId === null
+        && item.lastErrorCode === null;
+    default:
+      return false;
+  }
+}
+
+function assertVisualIngestionWorkItemLifecycle(
+  item: VisualIngestionWorkItem
+) {
+  if (!visualIngestionWorkItemHasValidLifecycle(item)) {
+    fail("VISUAL_READER_OBSERVATION_CONFLICT");
+  }
+}
 const OBSERVATION_KEYS = [
   "observationId", "sessionId", "sourceUrl", "videoId", "visibleText",
   "textHash", "domTextHash", "ocrTextHash", "displayName", "visibleTimeText", "likeCount", "replyCount",
@@ -1552,7 +1618,7 @@ implements AcquisitionVisualReaderRepository {
           item.observation.observationId
         );
         if (!ingestionWorkItems.has(workKey)) {
-          ingestionWorkItems.set(workKey, {
+          const workItem: VisualIngestionWorkItem = {
             workItemId: `visual-ingestion:${item.observation.observationId}`,
             ownerId: input.scope.ownerId,
             teamId: input.scope.teamId,
@@ -1577,7 +1643,9 @@ implements AcquisitionVisualReaderRepository {
             createdAt: now,
             updatedAt: now,
             completedAt: null
-          });
+          };
+          assertVisualIngestionWorkItemLifecycle(workItem);
+          ingestionWorkItems.set(workKey, workItem);
         }
       }
       let nextSession = session;
@@ -1846,10 +1914,12 @@ implements AcquisitionVisualReaderRepository {
       fail("VISUAL_READER_INVALID_INPUT");
     }
     const state = await this.settledState();
-    return [...state.ingestionWorkItems.values()]
+    const items = [...state.ingestionWorkItems.values()]
       .filter((item) => item.ownerId === scope.ownerId
         && item.teamId === scope.teamId
-        && item.runId === runId)
+        && item.runId === runId);
+    items.forEach(assertVisualIngestionWorkItemLifecycle);
+    return items
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt)
         || left.workItemId.localeCompare(right.workItemId))
       .slice(0, options.limit)
@@ -1867,6 +1937,7 @@ implements AcquisitionVisualReaderRepository {
       item.ownerId === scope.ownerId
       && item.teamId === scope.teamId
       && item.runId === runId);
+    items.forEach(assertVisualIngestionWorkItemLifecycle);
     const completed = items.flatMap((item) =>
       item.completedAt ? [item.completedAt] : []).sort();
     return {
@@ -1902,6 +1973,9 @@ implements AcquisitionVisualReaderRepository {
         fail("VISUAL_READER_INVALID_INPUT");
       }
       const now = isoInstant(input.now);
+      for (const item of this.state.ingestionWorkItems.values()) {
+        assertVisualIngestionWorkItemLifecycle(item);
+      }
       const eligible = [...this.state.ingestionWorkItems.values()]
         .filter((item) => (item.status === "queued"
             || item.status === "retry")
@@ -1968,6 +2042,7 @@ implements AcquisitionVisualReaderRepository {
           item.observationId
         ));
         if (!observation) fail("VISUAL_READER_OBSERVATION_CONFLICT");
+        assertVisualIngestionWorkItemLifecycle(running);
         workItems.set(ingestionWorkItemKey(scope, item.observationId), running);
         claims.push({ workItem: clone(running), observation: clone(observation) });
       }
@@ -2001,14 +2076,15 @@ implements AcquisitionVisualReaderRepository {
       }
       const key = ingestionWorkItemKey(scope, observationId);
       const item = this.state.ingestionWorkItems.get(key);
-      if (!item
-        || item.status !== "running"
+      if (!item) fail("VISUAL_READER_OBSERVATION_CONFLICT");
+      assertVisualIngestionWorkItemLifecycle(item);
+      if (item.status !== "running"
         || item.leaseOwner !== failure.workerId
         || item.leaseToken !== failure.leaseToken
         || item.attemptCount !== failure.attemptCount
         || item.leaseExpiresAt === null
         || Date.parse(failure.failedAt) < Date.parse(item.updatedAt)
-        || Date.parse(failure.failedAt) > Date.parse(item.leaseExpiresAt)) {
+        || Date.parse(failure.failedAt) >= Date.parse(item.leaseExpiresAt)) {
         fail("VISUAL_READER_OBSERVATION_CONFLICT");
       }
       const retry: VisualIngestionWorkItem = {
@@ -2021,6 +2097,7 @@ implements AcquisitionVisualReaderRepository {
         lastErrorCode: failure.errorCode,
         updatedAt: failure.failedAt
       };
+      assertVisualIngestionWorkItemLifecycle(retry);
       this.state = {
         ...this.state,
         ingestionWorkItems: new Map(this.state.ingestionWorkItems).set(
@@ -2073,15 +2150,15 @@ implements AcquisitionVisualReaderRepository {
       const expectedEvidenceId = observation
         ? `visual:${observationId}:evidence:${observation.textHash}`
         : null;
-      if (!item
-        || !observation
-        || item.status !== "running"
+      if (!item || !observation) fail("VISUAL_READER_OBSERVATION_CONFLICT");
+      assertVisualIngestionWorkItemLifecycle(item);
+      if (item.status !== "running"
         || item.leaseOwner !== result.workerId
         || item.leaseToken !== result.leaseToken
         || item.attemptCount !== result.attemptCount
         || item.leaseExpiresAt === null
         || Date.parse(result.completedAt) < Date.parse(item.updatedAt)
-        || Date.parse(result.completedAt) > Date.parse(item.leaseExpiresAt)
+        || Date.parse(result.completedAt) >= Date.parse(item.leaseExpiresAt)
         || result.evidenceId !== expectedEvidenceId
         || (item.disposition === "manual_review_only"
           && (result.status !== "manual_review_only"
@@ -2105,6 +2182,7 @@ implements AcquisitionVisualReaderRepository {
         updatedAt: result.completedAt,
         completedAt: result.completedAt
       };
+      assertVisualIngestionWorkItemLifecycle(completed);
       this.state = {
         ...this.state,
         ingestionWorkItems: new Map(this.state.ingestionWorkItems).set(
