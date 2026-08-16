@@ -7,6 +7,9 @@ import {
   ensureFinancialCouncilMysqlSchema
 } from "./financial-council-mysql-repository.js";
 import {
+  financialCouncilAggregateHash
+} from "./financial-council-domain.js";
+import {
   command,
   registerFinancialCouncilRepositoryContract,
   repositoryRunFixture,
@@ -26,40 +29,39 @@ function cloneState(state: State): State {
   return structuredClone(state);
 }
 
+type FailurePoint = "snapshot_insert" | "run_update" | "event_insert" | null;
+
 class FakeConnection {
-  state: State;
   pending: State | null = null;
   readonly calls: string[] = [];
   destroyed = false;
   released = false;
-  failSnapshotInsert = false;
-  failRollback = false;
-  lockAcquire = 1;
-  lockRelease = 1;
 
-  constructor(state?: State) {
-    this.state = state ?? { runs: [], events: [], snapshots: [] };
-  }
+  constructor(readonly pool: FakePool) {}
+
+  get state() { return this.pool.state; }
 
   async beginTransaction() {
     this.calls.push("BEGIN");
-    this.pending = cloneState(this.state);
+    this.pending = cloneState(this.pool.state);
   }
 
   async commit() {
     this.calls.push("COMMIT");
     if (this.pending) {
-      this.state.runs = this.pending.runs;
-      this.state.events = this.pending.events;
-      this.state.snapshots = this.pending.snapshots;
+      this.pool.state.runs = this.pending.runs;
+      this.pool.state.events = this.pending.events;
+      this.pool.state.snapshots = this.pending.snapshots;
     }
     this.pending = null;
+    this.pool.releaseRowLocks(this);
   }
 
   async rollback() {
     this.calls.push("ROLLBACK");
-    if (this.failRollback) throw new Error("rollback failed");
+    if (this.pool.failRollback) throw new Error("rollback failed");
     this.pending = null;
+    this.pool.releaseRowLocks(this);
   }
 
   release() {
@@ -70,22 +72,38 @@ class FakeConnection {
   destroy() {
     this.calls.push("DESTROY");
     this.destroyed = true;
+    this.pending = null;
+    this.pool.releaseRowLocks(this);
   }
 
   async query(sql: string, values: unknown[] = []): Promise<[unknown, unknown]> {
     const normalized = sql.replace(/\s+/gu, " ").trim();
     this.calls.push(normalized);
     if (normalized.includes("GET_LOCK")) {
-      return [[{ lock_acquired: this.lockAcquire }], []];
+      return [[{ lock_acquired: this.pool.lockAcquire }], []];
     }
     if (normalized.includes("RELEASE_LOCK")) {
-      return [[{ lock_released: this.lockRelease }], []];
+      return [[{ lock_released: this.pool.lockRelease }], []];
     }
     if (normalized.startsWith("CREATE TABLE")) return [[], []];
-    const state = this.pending ?? this.state;
+    const state = this.pending ?? this.pool.state;
     if (normalized.startsWith("SELECT")
       && normalized.includes("FROM financial_council_runs")) {
       const byCreation = normalized.includes("creation_key_hash");
+      if (normalized.includes("FOR UPDATE") && this.pending) {
+        const lockKey = byCreation
+          ? `creation:${String(values[0])}:${String(values[1])}`
+          : `run:${String(values[0])}:${String(values[1])}`;
+        await this.pool.acquireRowLock(lockKey, this);
+        const committedRows = this.pool.state.runs.filter((row) => byCreation
+          ? row.workspace_id === values[0] && row.creation_key_hash === values[1]
+          : row.workspace_id === values[0] && row.run_id === values[1]);
+        state.runs = state.runs.filter((row) => byCreation
+          ? !(row.workspace_id === values[0]
+            && row.creation_key_hash === values[1])
+          : !(row.workspace_id === values[0] && row.run_id === values[1]));
+        state.runs.push(...structuredClone(committedRows));
+      }
       const rows = state.runs.filter((row) => byCreation
         ? row.workspace_id === values[0] && row.creation_key_hash === values[1]
         : row.workspace_id === values[0] && row.run_id === values[1]);
@@ -100,6 +118,15 @@ class FakeConnection {
     }
     if (normalized.startsWith("SELECT")
       && normalized.includes("FROM financial_council_snapshots")) {
+      if (normalized.includes("FOR UPDATE") && this.pending) {
+        const lockKey = `snapshot-run:${String(values[0])}:${String(values[1])}`;
+        await this.pool.acquireRowLock(lockKey, this);
+        const committedRows = this.pool.state.snapshots.filter((row) =>
+          row.workspace_id === values[0] && row.run_id === values[1]);
+        state.snapshots = state.snapshots.filter((row) =>
+          !(row.workspace_id === values[0] && row.run_id === values[1]));
+        state.snapshots.push(...structuredClone(committedRows));
+      }
       const rows = state.snapshots.filter((row) =>
         row.workspace_id === values[0] && row.run_id === values[1]);
       return [structuredClone(rows.slice(0, 1)), []];
@@ -120,6 +147,9 @@ class FakeConnection {
       return [{ affectedRows: 1 }, []];
     }
     if (normalized.startsWith("INSERT INTO financial_council_run_events")) {
+      if (this.pool.failurePoint === "event_insert") {
+        throw new Error("event insert failed");
+      }
       const [eventId, runId, workspaceId, revision, fromStatus, toStatus,
         reasonCode, occurredAt, actorId, aggregateSnapshotHash,
         aggregateSnapshotJson] = values;
@@ -131,15 +161,26 @@ class FakeConnection {
       return [{ affectedRows: 1 }, []];
     }
     if (normalized.startsWith("INSERT INTO financial_council_snapshots")) {
-      if (this.failSnapshotInsert) throw new Error("snapshot insert failed");
+      if (this.pool.failurePoint === "snapshot_insert") {
+        throw new Error("snapshot insert failed");
+      }
       const [snapshotId, runId, workspaceId, snapshotHash, snapshotJson,
         createdAt] = values;
+      if (state.snapshots.some((row) => row.workspace_id === workspaceId
+        && (row.snapshot_id === snapshotId || row.run_id === runId))) {
+        throw Object.assign(new Error("duplicate"), {
+          code: "ER_DUP_ENTRY", errno: 1062
+        });
+      }
       state.snapshots.push({ snapshot_id: snapshotId, run_id: runId,
         workspace_id: workspaceId, snapshot_hash: snapshotHash,
         snapshot_json: snapshotJson, created_at: createdAt });
       return [{ affectedRows: 1 }, []];
     }
     if (normalized.startsWith("UPDATE financial_council_runs")) {
+      if (this.pool.failurePoint === "run_update") {
+        throw new Error("run update failed");
+      }
       const [revision, status, snapshotId, snapshotHash, runJson,
         workspaceId, runId, expectedRevision] = values;
       const row = state.runs.find((candidate) =>
@@ -155,13 +196,65 @@ class FakeConnection {
 }
 
 class FakePool {
-  readonly connection: FakeConnection;
-  constructor(connection = new FakeConnection()) {
-    this.connection = connection;
+  readonly state: State = { runs: [], events: [], snapshots: [] };
+  readonly connections: FakeConnection[] = [];
+  readonly lockAttempts = new Map<string, number>();
+  private readonly rowLocks = new Map<string, FakeConnection>();
+  private readonly lockWaiters = new Map<string, Array<() => void>>();
+  private barrierResolve: (() => void) | null = null;
+  private barrierPromise: Promise<void> | null = null;
+  failurePoint: FailurePoint = null;
+  failRollback = false;
+  lockAcquire = 1;
+  lockRelease = 1;
+  barrierRunId: string | null = null;
+
+  get connection() { return this.connections.at(-1)!; }
+
+  async getConnection() {
+    const connection = new FakeConnection(this);
+    this.connections.push(connection);
+    return connection;
   }
-  async getConnection() { return this.connection; }
+
   async query(sql: string, values?: unknown[]) {
-    return this.connection.query(sql, values);
+    return new FakeConnection(this).query(sql, values);
+  }
+
+  async acquireRowLock(key: string, connection: FakeConnection) {
+    const attempts = (this.lockAttempts.get(key) ?? 0) + 1;
+    this.lockAttempts.set(key, attempts);
+    if (this.barrierRunId && key.endsWith(`:${this.barrierRunId}`)) {
+      if (!this.barrierPromise) {
+        this.barrierPromise = new Promise<void>((resolve) => {
+          this.barrierResolve = resolve;
+        });
+      }
+      if (attempts >= 2) this.barrierResolve?.();
+    }
+    while (this.rowLocks.has(key)
+      && this.rowLocks.get(key) !== connection) {
+      await new Promise<void>((resolve) => {
+        const waiters = this.lockWaiters.get(key) ?? [];
+        waiters.push(resolve);
+        this.lockWaiters.set(key, waiters);
+      });
+    }
+    this.rowLocks.set(key, connection);
+    if (attempts === 1 && this.barrierRunId
+      && key.endsWith(`:${this.barrierRunId}`)) {
+      await this.barrierPromise;
+    }
+  }
+
+  releaseRowLocks(connection: FakeConnection) {
+    for (const [key, owner] of this.rowLocks) {
+      if (owner !== connection) continue;
+      this.rowLocks.delete(key);
+      const waiters = this.lockWaiters.get(key) ?? [];
+      this.lockWaiters.delete(key);
+      for (const resolve of waiters) resolve();
+    }
   }
 }
 
@@ -170,6 +263,14 @@ function repositoryWith(pool = new FakePool()) {
     pool as unknown as mysql.Pool
   ) };
 }
+
+test("MySQL harness gives concurrent transactions distinct connections", async () => {
+  const pool = new FakePool();
+  const [first, second] = await Promise.all([
+    pool.getConnection(), pool.getConnection()
+  ]);
+  assert.notEqual(first, second);
+});
 
 registerFinancialCouncilRepositoryContract(
   "mysql financial council repository",
@@ -195,15 +296,15 @@ test("financial council schema owns exactly three tables behind a named lock", a
 
 test("schema lock failures poison the owning connection", async () => {
   for (const mode of ["acquire", "release"] as const) {
-    const connection = new FakeConnection();
-    if (mode === "acquire") connection.lockAcquire = 0;
-    else connection.lockRelease = 0;
-    const pool = new FakePool(connection);
+    const pool = new FakePool();
+    if (mode === "acquire") pool.lockAcquire = 0;
+    else pool.lockRelease = 0;
     await assert.rejects(
       ensureFinancialCouncilMysqlSchema(pool as unknown as mysql.Pool),
       (error: unknown) => (error as { code?: unknown }).code
         === "financial_council_schema_lock_failed"
     );
+    const connection = pool.connection;
     assert.equal(connection.destroyed, true, mode);
     assert.equal(connection.released, false, mode);
   }
@@ -259,12 +360,207 @@ test("MySQL event reads reject a broken adjacent status chain", async () => {
       === "financial_council_mysql_integrity");
 });
 
+test("MySQL event reads reject a self-consistent illegal state edge", async () => {
+  const { pool, repository } = repositoryWith();
+  const run = (await repository.createRun(
+    command("create"), repositoryRunFixture()
+  )).value;
+  const approved = Object.freeze({
+    ...run,
+    status: "approved" as const,
+    revision: 2,
+    updatedAt: T1
+  });
+  pool.connection.state.events.push({
+    event_id: `${run.runId}:2`,
+    run_id: run.runId,
+    workspace_id: run.workspaceId,
+    revision: 2,
+    from_status: "created",
+    to_status: "approved",
+    reason_code: null,
+    occurred_at: T1,
+    actor_id: "manager-1",
+    aggregate_snapshot_hash: financialCouncilAggregateHash(approved),
+    aggregate_snapshot_json: JSON.stringify(approved)
+  });
+  await assert.rejects(repository.listEvents(workspace(), run.runId),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "financial_council_mysql_integrity");
+});
+
+test("MySQL event reads bind occurredAt to the aggregate update time", async () => {
+  const { pool, repository } = repositoryWith();
+  const run = (await repository.createRun(
+    command("create"), repositoryRunFixture()
+  )).value;
+  pool.connection.state.events[0]!.occurred_at = T1;
+  await assert.rejects(repository.listEvents(workspace(), run.runId),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "financial_council_mysql_integrity");
+});
+
+test("both MySQL read APIs reject a missing latest event", async () => {
+  const { pool, repository } = repositoryWith();
+  const run = (await repository.createRun(
+    command("create"), repositoryRunFixture()
+  )).value;
+  await repository.storeFrozenSnapshot(command("freeze", "ws-1", 1), {
+    runId: run.runId,
+    snapshot: snapshotFixture(run),
+    occurredAt: T1
+  });
+  pool.connection.state.events.pop();
+  const results = await Promise.allSettled([
+    repository.findRun(workspace(), run.runId),
+    repository.listEvents(workspace(), run.runId)
+  ]);
+  assert.deepEqual(results.map((result) => [
+    result.status,
+    result.status === "rejected" ? result.reason.code : null
+  ]), [
+    ["rejected", "financial_council_mysql_integrity"],
+    ["rejected", "financial_council_mysql_integrity"]
+  ]);
+});
+
+test("both MySQL read APIs reject current run and latest event divergence", async () => {
+  const { pool, repository } = repositoryWith();
+  const run = (await repository.createRun(
+    command("create"), repositoryRunFixture()
+  )).value;
+  const current = pool.connection.state.runs[0]!;
+  const changed = {
+    ...JSON.parse(String(current.run_json)),
+    expiresAt: "2026-08-18T08:00:00.000Z"
+  };
+  current.run_json = JSON.stringify(changed);
+  const results = await Promise.allSettled([
+    repository.findRun(workspace(), run.runId),
+    repository.listEvents(workspace(), run.runId)
+  ]);
+  assert.deepEqual(results.map((result) => [
+    result.status,
+    result.status === "rejected" ? result.reason.code : null
+  ]), [
+    ["rejected", "financial_council_mysql_integrity"],
+    ["rejected", "financial_council_mysql_integrity"]
+  ]);
+});
+
+test("MySQL reads reject an intermediate aggregate not derived by its event", async () => {
+  const { pool, repository } = repositoryWith();
+  const run = (await repository.createRun(
+    command("create"), repositoryRunFixture()
+  )).value;
+  await repository.storeFrozenSnapshot(command("freeze", "ws-1", 1), {
+    runId: run.runId,
+    snapshot: snapshotFixture(run),
+    occurredAt: T1
+  });
+  await repository.transitionRun(command("advance", "ws-1", 2), {
+    runId: run.runId,
+    kind: "analyzing",
+    occurredAt: "2026-08-16T08:02:00.000Z",
+    reasonCode: null
+  });
+  const middle = pool.state.events[1]!;
+  const changed = {
+    ...JSON.parse(String(middle.aggregate_snapshot_json)),
+    expiresAt: "2026-08-18T08:00:00.000Z"
+  };
+  middle.aggregate_snapshot_json = JSON.stringify(changed);
+  middle.aggregate_snapshot_hash = financialCouncilAggregateHash(changed);
+  await assert.rejects(repository.listEvents(workspace(), run.runId),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "financial_council_mysql_integrity");
+});
+
+test("concurrent MySQL transitions serialize on a row lock with one complete winner", async () => {
+  const { pool, repository } = repositoryWith();
+  const run = (await repository.createRun(
+    command("create"), repositoryRunFixture()
+  )).value;
+  await repository.storeFrozenSnapshot(command("freeze", "ws-1", 1), {
+    runId: run.runId,
+    snapshot: snapshotFixture(run),
+    occurredAt: T1
+  });
+  pool.barrierRunId = run.runId;
+  const runLockKey = `run:ws-1:${run.runId}`;
+  const priorLockAttempts = pool.lockAttempts.get(runLockKey) ?? 0;
+  const connectionStart = pool.connections.length;
+  const results = await Promise.allSettled([
+    repository.transitionRun(command("advance-a", "ws-1", 2), {
+      runId: run.runId,
+      kind: "analyzing",
+      occurredAt: "2026-08-16T08:02:00.000Z",
+      reasonCode: null
+    }),
+    repository.transitionRun(command("advance-b", "ws-1", 2), {
+      runId: run.runId,
+      kind: "analyzing",
+      occurredAt: "2026-08-16T08:02:00.000Z",
+      reasonCode: null
+    })
+  ]);
+  const transitionConnections = pool.connections.slice(connectionStart);
+  assert.equal(new Set(transitionConnections).size, 2);
+  assert.deepEqual(results.map((result) => result.status).sort(), [
+    "fulfilled", "rejected"
+  ]);
+  const loser = results.find((result) => result.status === "rejected") as
+    PromiseRejectedResult;
+  assert.equal(loser.reason.code, "financial_council_revision_conflict");
+  pool.barrierRunId = null;
+  const current = await repository.findRun(workspace(), run.runId);
+  const events = await repository.listEvents(workspace(), run.runId);
+  assert.deepEqual(
+    [current?.status, current?.revision, events.length,
+      pool.state.snapshots.length],
+    ["analyzing", 3, 3, 1]
+  );
+  assert.equal(events.at(-1)?.revision, 3);
+  assert.equal(transitionConnections.every((connection) =>
+    connection.released && !connection.destroyed), true);
+  assert.equal(pool.lockAttempts.get(runLockKey), priorLockAttempts + 2);
+});
+
+test("failures after snapshot insert roll back run, event and snapshot together", async () => {
+  for (const failurePoint of ["run_update", "event_insert"] as const) {
+    const { pool, repository } = repositoryWith();
+    const run = (await repository.createRun(
+      command(`create-${failurePoint}`), repositoryRunFixture()
+    )).value;
+    pool.failurePoint = failurePoint;
+    await assert.rejects(repository.storeFrozenSnapshot(
+      command(`freeze-${failurePoint}`, "ws-1", 1),
+      { runId: run.runId, snapshot: snapshotFixture(run), occurredAt: T1 }
+    ), new RegExp(failurePoint.replace("_", " ")));
+    const failedConnection = pool.connection;
+    assert.equal(failedConnection.calls.some((sql) =>
+      sql.startsWith("INSERT INTO financial_council_snapshots")), true);
+    assert.equal(failedConnection.calls.includes("ROLLBACK"), true);
+    assert.equal(failedConnection.released, true);
+    assert.equal(failedConnection.destroyed, false);
+    pool.failurePoint = null;
+    const current = await repository.findRun(workspace(), run.runId);
+    const events = await repository.listEvents(workspace(), run.runId);
+    assert.deepEqual(
+      [current?.status, current?.revision, events.length,
+        pool.state.snapshots.length],
+      ["created", 1, 1, 0],
+      failurePoint
+    );
+  }
+});
+
 test("snapshot insert failure rolls back without partial snapshot or event", async () => {
   const { pool, repository } = repositoryWith();
   const run = (await repository.createRun(
     command("create"), repositoryRunFixture()
   )).value;
-  pool.connection.failSnapshotInsert = true;
+  pool.failurePoint = "snapshot_insert";
   await assert.rejects(repository.storeFrozenSnapshot(
     command("freeze", "ws-1", 1),
     { runId: run.runId, snapshot: snapshotFixture(run), occurredAt: T1 }
@@ -280,9 +576,8 @@ test("rollback failure destroys instead of releasing the connection", async () =
   const run = (await repository.createRun(
     command("create"), repositoryRunFixture()
   )).value;
-  pool.connection.released = false;
-  pool.connection.failSnapshotInsert = true;
-  pool.connection.failRollback = true;
+  pool.failurePoint = "snapshot_insert";
+  pool.failRollback = true;
   await assert.rejects(repository.storeFrozenSnapshot(
     command("freeze", "ws-1", 1),
     { runId: run.runId, snapshot: snapshotFixture(run), occurredAt: T1 }

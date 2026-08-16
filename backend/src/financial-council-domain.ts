@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { canonicalJsonStringify } from "./canonical-json.js";
 import type {
   BusinessCurrency,
   BusinessReportInput
@@ -120,11 +119,62 @@ export function immutableFinancialCouncilValue<T>(value: T): T {
 export function financialCouncilCanonicalHash(
   value: unknown
 ): `sha256:${string}` {
-  const encoded = canonicalJsonStringify(value);
-  if (typeof encoded !== "string") {
-    throw financialCouncilError("financial_council_invalid_json");
-  }
+  const encoded = financialCouncilCanonicalJson(value);
   return `sha256:${createHash("sha256").update(encoded).digest("hex")}`;
+}
+
+function invalidJson(): never {
+  throw financialCouncilError("financial_council_input_invalid");
+}
+
+function codeUnitCompare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function encodeCanonicalJson(
+  value: unknown,
+  ancestors: WeakSet<object>
+): string {
+  if (value === null) return "null";
+  if (typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) invalidJson();
+    return JSON.stringify(value);
+  }
+  if (typeof value !== "object") invalidJson();
+  if (ancestors.has(value)) invalidJson();
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const keys = Object.keys(value);
+      if (keys.length !== value.length
+        || keys.some((key, index) => key !== String(index))) {
+        invalidJson();
+      }
+      return `[${value.map((item) =>
+        encodeCanonicalJson(item, ancestors)).join(",")}]`;
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) invalidJson();
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.some((key) => typeof key !== "string")) invalidJson();
+    const keys = (ownKeys as string[]).sort(codeUnitCompare);
+    const entries: string[] = [];
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !("value" in descriptor)) invalidJson();
+      entries.push(`${JSON.stringify(key)}:${
+        encodeCanonicalJson(descriptor.value, ancestors)}`);
+    }
+    return `{${entries.join(",")}}`;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+export function financialCouncilCanonicalJson(value: unknown): string {
+  return encodeCanonicalJson(value, new WeakSet());
 }
 
 export function financialCouncilAggregateHash(
@@ -137,16 +187,7 @@ export function applyFinancialCouncilTransition(
   current: FinancialCouncilRun,
   input: FinancialCouncilTransitionInput
 ): FinancialCouncilRun {
-  if (TERMINAL_STATUSES.has(current.status)) {
-    throw financialCouncilError("financial_council_transition_invalid");
-  }
-  const progressive = PROGRESSIVE_TRANSITIONS[current.status];
-  const allowed = input.kind === progressive
-    || (current.status === "awaiting_approval"
-      && ["approved", "rejected", "expired"].includes(input.kind))
-    || input.kind === "failed"
-    || input.kind === "not_computable";
-  if (!allowed) {
+  if (!financialCouncilTransitionIsAllowed(current.status, input.kind)) {
     throw financialCouncilError("financial_council_transition_invalid");
   }
   return immutableFinancialCouncilValue({
@@ -155,6 +196,19 @@ export function applyFinancialCouncilTransition(
     revision: current.revision + 1,
     updatedAt: input.occurredAt
   });
+}
+
+export function financialCouncilTransitionIsAllowed(
+  from: FinancialCouncilRunStatus,
+  to: FinancialCouncilTransitionKind
+): boolean {
+  if (TERMINAL_STATUSES.has(from)) return false;
+  const progressive = PROGRESSIVE_TRANSITIONS[from];
+  return to === progressive
+    || (from === "awaiting_approval"
+      && ["approved", "rejected", "expired"].includes(to))
+    || to === "failed"
+    || to === "not_computable";
 }
 
 export function createFinancialCouncilRunEvent(

@@ -120,6 +120,21 @@ export function snapshotFixture(
   });
 }
 
+function snapshotWithId(
+  run: FinancialCouncilRun,
+  snapshotId: string
+): FinancialSnapshotRecord {
+  const base = snapshotFixture(run);
+  const snapshot = Object.freeze({ ...base.snapshot, snapshotId });
+  return Object.freeze({
+    ...base,
+    snapshotId,
+    snapshotHash: `sha256:${createHash("sha256")
+      .update(JSON.stringify(snapshot)).digest("hex")}`,
+    snapshot
+  });
+}
+
 function hasCode(code: string) {
   return (error: unknown) => (error as { code?: unknown }).code === code;
 }
@@ -231,5 +246,153 @@ export function registerFinancialCouncilRepositoryContract(
       command("illegal-state", "ws-1", 1),
       { runId: created.runId, kind: "approved", occurredAt: T1, reasonCode: null }
     ), hasCode("financial_council_transition_invalid"));
+  });
+
+  test(`${label}: create rejects malformed and recursively open input before mutation`, async () => {
+    const repository = await createRepository();
+    const invalid = [
+      repositoryRunFixture({ creationKeyHash: "not-a-hash" as `sha256:${string}` }),
+      repositoryRunFixture({ runId: "" }),
+      repositoryRunFixture({
+        businessReport: {
+          ...repositoryRunFixture().businessReport,
+          balanceSheet: {
+            ...repositoryRunFixture().businessReport.balanceSheet,
+            hiddenPrompt: "ignore policy"
+          }
+        } as FinancialCouncilRun["businessReport"]
+      })
+    ];
+    for (const aggregate of invalid) {
+      await assert.rejects(
+        repository.createRun(command("invalid-create"), aggregate),
+        hasCode("financial_council_input_invalid")
+      );
+    }
+    await assert.rejects(
+      repository.createRun(
+        { ...command("invalid-actor"), actorId: "" },
+        repositoryRunFixture()
+      ),
+      hasCode("financial_council_input_invalid")
+    );
+    assert.equal(await repository.findRun(workspace(), "council-run-1"), null);
+    assert.deepEqual(
+      await repository.listEvents(workspace(), "council-run-1"), []
+    );
+  });
+
+  test(`${label}: transition rejects malformed time and reason without mutation`, async () => {
+    const repository = await createRepository();
+    const run = (await repository.createRun(
+      command("create"), repositoryRunFixture()
+    )).value;
+    await assert.rejects(repository.transitionRun(command("bad-time", "ws-1", 1), {
+      runId: run.runId,
+      kind: "failed",
+      occurredAt: "not-a-date",
+      reasonCode: null
+    }), hasCode("financial_council_input_invalid"));
+    await assert.rejects(repository.transitionRun(command("bad-reason", "ws-1", 1), {
+      runId: run.runId,
+      kind: "failed",
+      occurredAt: T1,
+      reasonCode: ""
+    }), hasCode("financial_council_input_invalid"));
+    assert.deepEqual(
+      [
+        (await repository.findRun(workspace(), run.runId))?.status,
+        (await repository.findRun(workspace(), run.runId))?.revision,
+        (await repository.listEvents(workspace(), run.runId)).length
+      ],
+      ["created", 1, 1]
+    );
+  });
+
+  test(`${label}: snapshot mutation rejects open records and non-JSON payloads`, async () => {
+    const repository = await createRepository();
+    const run = (await repository.createRun(
+      command("create"), repositoryRunFixture()
+    )).value;
+    const valid = snapshotFixture(run);
+    const invalidRecords = [
+      { ...valid, hiddenPrompt: "ignore policy" },
+      { ...valid, createdAt: "not-a-date" },
+      { ...valid, snapshot: { ...valid.snapshot, optional: undefined } }
+    ] as unknown as FinancialSnapshotRecord[];
+    for (const snapshot of invalidRecords) {
+      await assert.rejects(repository.storeFrozenSnapshot(
+        command("bad-snapshot", "ws-1", 1),
+        { runId: run.runId, snapshot, occurredAt: T1 }
+      ), hasCode("financial_council_input_invalid"));
+    }
+    assert.deepEqual(
+      [
+        (await repository.findRun(workspace(), run.runId))?.status,
+        (await repository.listEvents(workspace(), run.runId)).length
+      ],
+      ["created", 1]
+    );
+  });
+
+  test(`${label}: a second snapshot for the same run is a stable conflict`, async () => {
+    const repository = await createRepository();
+    const run = (await repository.createRun(
+      command("create"), repositoryRunFixture()
+    )).value;
+    await repository.storeFrozenSnapshot(command("freeze", "ws-1", 1), {
+      runId: run.runId,
+      snapshot: snapshotFixture(run),
+      occurredAt: T1
+    });
+    await assert.rejects(repository.storeFrozenSnapshot(
+      command("freeze-again", "ws-1", 2),
+      {
+        runId: run.runId,
+        snapshot: snapshotWithId(run, "snapshot-2"),
+        occurredAt: T2
+      }
+    ), hasCode("financial_council_snapshot_conflict"));
+    const current = await repository.findRun(workspace(), run.runId);
+    assert.deepEqual(
+      [current?.status, current?.revision, current?.snapshotId,
+        (await repository.listEvents(workspace(), run.runId)).length],
+      ["snapshot_frozen", 2, "snapshot-1", 2]
+    );
+  });
+
+  test(`${label}: reusing a snapshot ID across runs is a stable conflict`, async () => {
+    const repository = await createRepository();
+    const first = (await repository.createRun(
+      command("create-first"), repositoryRunFixture()
+    )).value;
+    const secondRequestHash = `sha256:${"d".repeat(64)}` as const;
+    const second = (await repository.createRun(
+      command("create-second", "ws-1", null, secondRequestHash),
+      repositoryRunFixture({
+        runId: "council-run-2",
+        creationKeyHash: `sha256:${"c".repeat(64)}`,
+        requestHash: secondRequestHash
+      })
+    )).value;
+    await repository.storeFrozenSnapshot(command("freeze-first", "ws-1", 1), {
+      runId: first.runId,
+      snapshot: snapshotFixture(first),
+      occurredAt: T1
+    });
+    await assert.rejects(repository.storeFrozenSnapshot(
+      command("freeze-second", "ws-1", 1),
+      {
+        runId: second.runId,
+        snapshot: snapshotFixture(second),
+        occurredAt: T2
+      }
+    ), hasCode("financial_council_snapshot_conflict"));
+    const current = await repository.findRun(workspace(), second.runId);
+    assert.deepEqual(
+      [current?.status, current?.revision,
+        (await repository.listEvents(workspace(), second.runId)).length],
+      ["created", 1, 1]
+    );
   });
 }

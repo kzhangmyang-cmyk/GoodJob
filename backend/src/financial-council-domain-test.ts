@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 import {
   applyFinancialCouncilTransition,
@@ -131,4 +132,47 @@ test("aggregate hashes cover canonical immutable run state", () => {
   assert.equal(Object.isFrozen(applyFinancialCouncilTransition(run, {
     kind: "failed", occurredAt: T1, actorId: "system:council"
   })), true);
+});
+
+test("canonical hashes are independent of the process locale", () => {
+  const script = [
+    "import { financialCouncilCanonicalHash as hash }",
+    "from './src/financial-council-domain.ts';",
+    "console.log(hash({ 'ä': 1, z: 2 }));"
+  ].join(" ");
+  const hashAt = (locale: string) => execFileSync(process.execPath, [
+    "--import", "tsx", "--input-type=module", "--eval", script
+  ], {
+    cwd: process.cwd(),
+    env: { ...process.env, LANG: locale, LC_ALL: locale },
+    encoding: "utf8"
+  }).trim();
+  assert.equal(hashAt("en_US.UTF-8"), hashAt("sv_SE.UTF-8"));
+});
+
+test("canonical hashing rejects every non-JSON value without collisions", () => {
+  const cycle: Record<string, unknown> = {};
+  cycle.self = cycle;
+  const sparse = [1, 2];
+  delete sparse[1];
+  const invalid: readonly [string, unknown][] = [
+    ["undefined property", { optional: undefined }],
+    ["NaN", { value: Number.NaN }],
+    ["positive infinity", { value: Number.POSITIVE_INFINITY }],
+    ["negative infinity", { value: Number.NEGATIVE_INFINITY }],
+    ["function", { value: () => 1 }],
+    ["symbol", { value: Symbol("value") }],
+    ["bigint", { value: 1n }],
+    ["sparse array", sparse],
+    ["cycle", cycle],
+    ["non-plain object", { value: new Date(T0) }]
+  ];
+  for (const [label, value] of invalid) {
+    assert.throws(
+      () => financialCouncilAggregateHash(value as FinancialCouncilRun),
+      (error: unknown) => (error as { code?: unknown }).code
+        === "financial_council_input_invalid",
+      label
+    );
+  }
 });

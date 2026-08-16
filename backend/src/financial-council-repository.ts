@@ -1,8 +1,10 @@
 import type { CommandContext } from "./growth-command-context.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import {
+  FINANCIAL_COUNCIL_RUN_STATUSES,
   applyFinancialCouncilTransition,
   createFinancialCouncilRunEvent,
+  financialCouncilCanonicalJson,
   financialCouncilCanonicalHash,
   financialCouncilError,
   immutableFinancialCouncilValue,
@@ -53,30 +55,278 @@ export interface FinancialCouncilRepository {
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>>;
 }
 
+const HASH = /^sha256:[0-9a-f]{64}$/u;
+const TRANSITION_KINDS = new Set<string>(
+  FINANCIAL_COUNCIL_RUN_STATUSES.filter((status) => status !== "created")
+);
+
+function inputInvalid(): never {
+  throw financialCouncilError("financial_council_input_invalid");
+}
+
+function exactObject(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = []
+): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype) inputInvalid();
+  const keys = Object.keys(value);
+  if (required.some((key) => !Object.hasOwn(value, key))
+    || keys.some((key) =>
+      !required.includes(key) && !optional.includes(key))) inputInvalid();
+}
+
+function identifier(value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 255) {
+    inputInvalid();
+  }
+}
+
+function hash(value: unknown): asserts value is `sha256:${string}` {
+  if (typeof value !== "string" || !HASH.test(value)) inputInvalid();
+}
+
+function timestamp(value: unknown): asserts value is string {
+  if (typeof value !== "string") inputInvalid();
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
+    inputInvalid();
+  }
+}
+
+function integer(value: unknown): asserts value is number {
+  if (!Number.isSafeInteger(value)) inputInvalid();
+}
+
+function stringArray(value: unknown): asserts value is string[] {
+  if (!Array.isArray(value)) inputInvalid();
+  for (const item of value) identifier(item);
+}
+
+function assertWorkspace(value: unknown): void {
+  exactObject(value, ["workspaceId", "kind", "actorId", "role", "teamId",
+    "capabilities", "capabilityRegistryVersion"]);
+  identifier(value.workspaceId);
+  if (value.kind !== "team" && value.kind !== "personal") inputInvalid();
+  identifier(value.actorId);
+  identifier(value.role);
+  identifier(value.teamId);
+  stringArray(value.capabilities);
+  identifier(value.capabilityRegistryVersion);
+}
+
+function assertCommand(
+  value: unknown,
+  revision: "null" | "required"
+): asserts value is CommandContext {
+  exactObject(value, ["workspace", "actorId", "idempotencyKey", "requestHash",
+    "expectedRevision"]);
+  assertWorkspace(value.workspace);
+  identifier(value.actorId);
+  identifier(value.idempotencyKey);
+  hash(value.requestHash);
+  if (revision === "null") {
+    if (value.expectedRevision !== null) inputInvalid();
+  } else if (!Number.isSafeInteger(value.expectedRevision)
+    || Number(value.expectedRevision) < 1) inputInvalid();
+}
+
+function assertBusinessReport(value: unknown):
+asserts value is FinancialCouncilRun["businessReport"] {
+  exactObject(value,
+    ["currency", "companyName", "period", "balanceSheet", "incomeStatement"],
+    ["cashFlow", "costDetail", "taxRisk"]);
+  if (value.currency !== "CNY" && value.currency !== "USD") inputInvalid();
+  identifier(value.companyName);
+  identifier(value.period);
+  exactObject(value.balanceSheet, ["period", "cashMinor", "receivablesMinor",
+    "inventoryMinor", "otherCurrentAssetsMinor", "nonCurrentAssetsMinor",
+    "currentLiabilitiesMinor", "nonCurrentLiabilitiesMinor",
+    "accountsPayableMinor"]);
+  identifier(value.balanceSheet.period);
+  for (const key of ["cashMinor", "receivablesMinor", "inventoryMinor",
+    "otherCurrentAssetsMinor", "nonCurrentAssetsMinor", "currentLiabilitiesMinor",
+    "nonCurrentLiabilitiesMinor", "accountsPayableMinor"] as const) {
+    integer(value.balanceSheet[key]);
+  }
+  exactObject(value.incomeStatement,
+    ["period", "revenueMinor", "costOfGoodsSoldMinor", "operatingExpensesMinor",
+      "interestExpenseMinor", "taxExpenseMinor"], ["productLines", "customers"]);
+  identifier(value.incomeStatement.period);
+  for (const key of ["revenueMinor", "costOfGoodsSoldMinor",
+    "operatingExpensesMinor", "interestExpenseMinor", "taxExpenseMinor"] as const) {
+    integer(value.incomeStatement[key]);
+  }
+  if (value.incomeStatement.productLines !== undefined) {
+    if (!Array.isArray(value.incomeStatement.productLines)) inputInvalid();
+    for (const item of value.incomeStatement.productLines) {
+      exactObject(item, ["name", "revenueMinor", "costOfGoodsSoldMinor",
+        "afterSalesCostMinor", "shippingCostMinor", "sellingExpenseMinor",
+        "allocatedOverheadMinor"]);
+      identifier(item.name);
+      for (const key of ["revenueMinor", "costOfGoodsSoldMinor",
+        "afterSalesCostMinor", "shippingCostMinor", "sellingExpenseMinor",
+        "allocatedOverheadMinor"] as const) integer(item[key]);
+    }
+  }
+  if (value.incomeStatement.customers !== undefined) {
+    if (!Array.isArray(value.incomeStatement.customers)) inputInvalid();
+    for (const item of value.incomeStatement.customers) {
+      exactObject(item, ["name", "revenueMinor", "grossProfitMinor",
+        "serviceCostMinor", "paymentDays", "outstandingReceivableMinor"]);
+      identifier(item.name);
+      for (const key of ["revenueMinor", "grossProfitMinor", "serviceCostMinor",
+        "paymentDays", "outstandingReceivableMinor"] as const) integer(item[key]);
+    }
+  }
+  if (value.cashFlow !== undefined && value.cashFlow !== null) {
+    exactObject(value.cashFlow, ["period", "openingCashMinor",
+      "operatingInflowMinor", "operatingOutflowMinor", "investingNetMinor",
+      "financingNetMinor", "expectedInflowsNext30DaysMinor",
+      "expectedOutflowsNext30DaysMinor", "expectedInflowsNext31To90DaysMinor",
+      "expectedOutflowsNext31To90DaysMinor"], ["receivables"]);
+    identifier(value.cashFlow.period);
+    for (const key of ["openingCashMinor", "operatingInflowMinor",
+      "operatingOutflowMinor", "investingNetMinor", "financingNetMinor",
+      "expectedInflowsNext30DaysMinor", "expectedOutflowsNext30DaysMinor",
+      "expectedInflowsNext31To90DaysMinor",
+      "expectedOutflowsNext31To90DaysMinor"] as const) integer(value.cashFlow[key]);
+    if (value.cashFlow.receivables !== undefined) {
+      if (!Array.isArray(value.cashFlow.receivables)) inputInvalid();
+      for (const item of value.cashFlow.receivables) {
+        exactObject(item, ["customer", "amountMinor", "daysOutstanding"]);
+        identifier(item.customer);
+        integer(item.amountMinor);
+        integer(item.daysOutstanding);
+      }
+    }
+  }
+  if (value.costDetail !== undefined && value.costDetail !== null) {
+    exactObject(value.costDetail, ["materialCostRateBps", "laborCostMinor",
+      "rawMaterialCostMinor", "salesCommissionRateBps", "fixedOverheadMinor"],
+    ["previousMaterialCostRateBps"]);
+    for (const key of ["materialCostRateBps", "laborCostMinor",
+      "rawMaterialCostMinor", "salesCommissionRateBps",
+      "fixedOverheadMinor"] as const) integer(value.costDetail[key]);
+    if (value.costDetail.previousMaterialCostRateBps !== undefined) {
+      integer(value.costDetail.previousMaterialCostRateBps);
+    }
+  }
+  if (value.taxRisk !== undefined && value.taxRisk !== null) {
+    exactObject(value.taxRisk, ["invoiceIssues", "revenueRecognitionIssues",
+      "costAuthenticityIssues", "payrollIssues", "equityIssues"]);
+    stringArray(value.taxRisk.invoiceIssues);
+    stringArray(value.taxRisk.revenueRecognitionIssues);
+    stringArray(value.taxRisk.costAuthenticityIssues);
+    stringArray(value.taxRisk.payrollIssues);
+    stringArray(value.taxRisk.equityIssues);
+  }
+}
+
+const RUN_KEYS = ["runId", "workspaceId", "creationKeyHash", "requestHash",
+  "currency", "status", "revision", "dataAsOf", "businessReport",
+  "policyVersionId", "snapshotId", "snapshotHash", "consensusReport",
+  "portfolios", "latestPortfolioRevision", "approval", "createdAt",
+  "updatedAt", "expiresAt"] as const;
+
+export function assertFinancialCouncilRunValue(value: unknown):
+asserts value is FinancialCouncilRun {
+  financialCouncilCanonicalJson(value);
+  exactObject(value, RUN_KEYS);
+  identifier(value.runId);
+  identifier(value.workspaceId);
+  hash(value.creationKeyHash);
+  hash(value.requestHash);
+  if (value.currency !== "CNY" && value.currency !== "USD") inputInvalid();
+  if (!FINANCIAL_COUNCIL_RUN_STATUSES.includes(
+    value.status as FinancialCouncilRun["status"])) inputInvalid();
+  integer(value.revision);
+  if (value.revision < 1) inputInvalid();
+  timestamp(value.dataAsOf);
+  assertBusinessReport(value.businessReport);
+  if (value.businessReport.currency !== value.currency) inputInvalid();
+  identifier(value.policyVersionId);
+  if (value.snapshotId !== null) identifier(value.snapshotId);
+  if (value.snapshotHash !== null) hash(value.snapshotHash);
+  if ((value.snapshotId === null) !== (value.snapshotHash === null)) inputInvalid();
+  if (value.consensusReport !== null
+    || !Array.isArray(value.portfolios) || value.portfolios.length !== 0
+    || value.latestPortfolioRevision !== null || value.approval !== null) {
+    inputInvalid();
+  }
+  timestamp(value.createdAt);
+  timestamp(value.updatedAt);
+  timestamp(value.expiresAt);
+}
+
+export function assertFinancialSnapshotRecordValue(value: unknown):
+asserts value is FinancialSnapshotRecord {
+  exactObject(value, ["snapshotId", "runId", "workspaceId", "snapshotHash",
+    "snapshot", "createdAt"]);
+  identifier(value.snapshotId);
+  identifier(value.runId);
+  identifier(value.workspaceId);
+  hash(value.snapshotHash);
+  timestamp(value.createdAt);
+  financialCouncilCanonicalJson(value.snapshot);
+  exactObject(value.snapshot, [
+    ...Object.keys(value.snapshot as Record<string, unknown>)
+  ]);
+  if (value.snapshot.snapshotId !== value.snapshotId
+    || value.snapshot.runId !== value.runId
+    || value.snapshot.workspaceId !== value.workspaceId
+    || financialCouncilCanonicalHash(value.snapshot) !== value.snapshotHash) {
+    inputInvalid();
+  }
+}
+
+export function assertFinancialCouncilCreateMutation(
+  command: unknown,
+  aggregate: unknown
+): asserts aggregate is FinancialCouncilRun {
+  assertCommand(command, "null");
+  assertFinancialCouncilRunValue(aggregate);
+  if (aggregate.workspaceId !== command.workspace.workspaceId
+    || aggregate.requestHash !== command.requestHash
+    || aggregate.status !== "created" || aggregate.revision !== 1
+    || aggregate.snapshotId !== null || aggregate.snapshotHash !== null
+    || aggregate.createdAt !== aggregate.updatedAt) inputInvalid();
+}
+
+export function assertFinancialCouncilStoreSnapshotMutation(
+  command: unknown,
+  input: unknown
+): asserts input is StoreFrozenFinancialSnapshotInput {
+  assertCommand(command, "required");
+  exactObject(input, ["runId", "snapshot", "occurredAt"]);
+  identifier(input.runId);
+  timestamp(input.occurredAt);
+  assertFinancialSnapshotRecordValue(input.snapshot);
+}
+
+export function assertFinancialCouncilTransitionMutation(
+  command: unknown,
+  input: unknown
+): asserts input is TransitionFinancialCouncilRunInput {
+  assertCommand(command, "required");
+  exactObject(input, ["runId", "kind", "occurredAt", "reasonCode"]);
+  identifier(input.runId);
+  if (typeof input.kind !== "string" || !TRANSITION_KINDS.has(input.kind)) {
+    inputInvalid();
+  }
+  timestamp(input.occurredAt);
+  if (input.reasonCode !== null
+    && (typeof input.reasonCode !== "string" || input.reasonCode.length < 1
+      || input.reasonCode.length > 200)) inputInvalid();
+}
+
 function key(workspaceId: string, id: string): string {
   return `${workspaceId}\u0000${id}`;
 }
 
 function exactRevision(command: CommandContext): number {
-  if (!Number.isSafeInteger(command.expectedRevision)
-    || Number(command.expectedRevision) < 1) {
-    throw financialCouncilError("financial_council_revision_conflict");
-  }
   return command.expectedRevision as number;
-}
-
-function assertCreate(
-  command: CommandContext,
-  aggregate: FinancialCouncilRun
-): void {
-  if (aggregate.workspaceId !== command.workspace.workspaceId
-    || aggregate.requestHash !== command.requestHash
-    || aggregate.status !== "created"
-    || aggregate.revision !== 1
-    || aggregate.snapshotId !== null
-    || aggregate.snapshotHash !== null) {
-    throw financialCouncilError("financial_council_create_invalid");
-  }
 }
 
 export function assertFinancialSnapshotRecord(
@@ -89,7 +339,7 @@ export function assertFinancialSnapshotRecord(
     || record.snapshot.runId !== record.runId
     || record.snapshot.workspaceId !== record.workspaceId
     || financialCouncilCanonicalHash(record.snapshot) !== record.snapshotHash) {
-    throw financialCouncilError("financial_council_snapshot_integrity");
+    inputInvalid();
   }
 }
 
@@ -104,7 +354,7 @@ implements FinancialCouncilRepository {
     command: CommandContext,
     aggregate: FinancialCouncilRun
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
-    assertCreate(command, aggregate);
+    assertFinancialCouncilCreateMutation(command, aggregate);
     const creationKey = key(aggregate.workspaceId, aggregate.creationKeyHash);
     const existingId = this.creationKeys.get(creationKey);
     if (existingId) {
@@ -151,6 +401,7 @@ implements FinancialCouncilRepository {
     command: CommandContext,
     input: StoreFrozenFinancialSnapshotInput
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
+    assertFinancialCouncilStoreSnapshotMutation(command, input);
     const expectedRevision = exactRevision(command);
     const aggregateKey = key(command.workspace.workspaceId, input.runId);
     const current = this.runs.get(aggregateKey);
@@ -161,6 +412,9 @@ implements FinancialCouncilRepository {
       throw financialCouncilError("financial_council_revision_conflict");
     }
     assertFinancialSnapshotRecord(current, input.snapshot);
+    if (current.snapshotId !== null) {
+      throw financialCouncilError("financial_council_snapshot_conflict");
+    }
     if (this.snapshots.has(key(current.workspaceId, input.snapshot.snapshotId))) {
       throw financialCouncilError("financial_council_snapshot_conflict");
     }
@@ -193,6 +447,7 @@ implements FinancialCouncilRepository {
     command: CommandContext,
     input: TransitionFinancialCouncilRunInput
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
+    assertFinancialCouncilTransitionMutation(command, input);
     if (input.kind === "snapshot_frozen") {
       throw financialCouncilError("financial_council_transition_invalid");
     }
