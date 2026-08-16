@@ -479,6 +479,17 @@ export function assertFinancialSnapshotRecord(
   }
 }
 
+export function assertFinancialSnapshotFreezeTime(
+  record: FinancialSnapshotRecord,
+  events: readonly FinancialCouncilRunEvent[],
+  fail: () => never = historyIntegrity
+): void {
+  const frozenEvents = events.filter((event) =>
+    event.toStatus === "snapshot_frozen");
+  if (frozenEvents.length !== 1
+    || frozenEvents[0]!.occurredAt !== record.createdAt) fail();
+}
+
 export class InMemoryFinancialCouncilRepository
 implements FinancialCouncilRepository {
   private state = {
@@ -754,6 +765,7 @@ implements FinancialCouncilRepository {
       try {
         assertFinancialSnapshotRecordValue(snapshot);
         assertFinancialSnapshotRecord(run, snapshot);
+        assertFinancialSnapshotFreezeTime(snapshot, events);
       } catch {
         historyIntegrity();
       }

@@ -62,7 +62,7 @@
 
 同一 `Idempotency-Key` 与同一 canonical 请求精确重放同一个运行；修改请求体返回冲突，不会重复提交 snapshot 或 advisory wake。运行与事件读取始终按认证 workspace 隔离。
 
-HTTP 幂等仓库只保存 domain-separated digest，不保存原始 `Idempotency-Key`。同一创建请求在运行推进到 revision 2 之后仍精确重放当前聚合，不回退或重建 snapshot。持久化 snapshot 与完整事件链在每个读取边界重新校验：业务报表复用唯一 canonical validator，snapshot 会从所属 run 的报表与权威投影重新计算标准报表、公式、缺口、来源引用及 run-bound 身份，不能只靠攻击者重新签名通过。报价权威读取先按请求币种过滤，再应用 100 项完整性探针上限；未指定币种的旧 reader 调用保持原行为。
+HTTP 幂等仓库只保存 domain-separated digest，不保存原始 `Idempotency-Key`。同一创建请求在运行推进到 revision 2 之后仍精确重放当前聚合，不回退或重建 snapshot。持久化 snapshot 与完整事件链在每个读取边界重新校验：业务报表复用唯一 canonical validator，snapshot 会从所属 run 的报表与权威投影重新计算标准报表、公式、缺口、来源引用及 run-bound 身份，并且 record `createdAt` 必须精确等于唯一 `snapshot_frozen` 事件的 `occurredAt`，不能只靠攻击者重新签名通过。报价权威读取先按请求币种过滤，再应用 100 项完整性探针上限；未指定币种的旧 reader 调用保持原行为。
 
 runnable 扫描使用 workspace/run 的 UTF-8 binary-byte 复合游标，Memory 与 MySQL 共用同一全序。relay 对 runnable enumeration、wake sink 与错误 observer 都设置有界 deadline，因此永久不返回的查询或投递不会阻塞 sweep 或应用关闭。公开创建合同只接受 CNY/USD，策略版本 ID 与业务报表文本分别最多包含 255 和 4000 个 Unicode code point，报表数组上限 100 项。公开 run 从 `snapshot_frozen` 开始，内部 revision-1 `created` 状态只存在于事件历史，service 与 router 都不会把它作为 run 响应。
 

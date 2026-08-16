@@ -18,6 +18,7 @@ import {
 } from "./financial-council-domain.js";
 import {
   assertFinancialSnapshotRecord,
+  assertFinancialSnapshotFreezeTime,
   assertFinancialCouncilRunHistory,
   assertFinancialCouncilRunValue,
   assertFinancialSnapshotRecordValue,
@@ -425,10 +426,12 @@ function parseSnapshot(row: MysqlRow): FinancialSnapshotRecord {
 
 function assertStoredSnapshot(
   run: FinancialCouncilRun,
-  snapshot: FinancialSnapshotRecord
+  snapshot: FinancialSnapshotRecord,
+  events: readonly FinancialCouncilRunEvent[]
 ): void {
   try {
     assertFinancialSnapshotRecord(run, snapshot);
+    assertFinancialSnapshotFreezeTime(snapshot, events, integrity);
   } catch {
     integrity();
   }
@@ -747,7 +750,7 @@ implements FinancialCouncilRepository {
         const snapshotRow = (snapshotRows as MysqlRow[])[0];
         if (!snapshotRow) integrity();
         const snapshot = parseSnapshot(snapshotRow);
-        assertStoredSnapshot(run, snapshot);
+        assertStoredSnapshot(run, snapshot, events);
         runs.push(run);
       }
       return Object.freeze(runs);
@@ -806,7 +809,7 @@ implements FinancialCouncilRepository {
       );
       const snapshotRow = (snapshotRows as MysqlRow[])[0];
       if (!snapshotRow) integrity();
-      assertStoredSnapshot(run, parseSnapshot(snapshotRow));
+      assertStoredSnapshot(run, parseSnapshot(snapshotRow), events);
     } else if (run.status !== "created") {
       integrity();
     }

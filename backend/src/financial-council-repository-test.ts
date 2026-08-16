@@ -101,6 +101,33 @@ test("memory reads and replay reject re-signed run-bound snapshot provenance", a
   }
 });
 
+for (const method of ["findRun", "findFrozenRunByCreationKey"] as const) {
+  test(`memory ${method} rejects snapshot freeze time mismatch`, async () => {
+    const repository = new InMemoryFinancialCouncilRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = await builderSnapshotFixture(aggregate);
+    await repository.createAndFreezeRun(command("create"), {
+      aggregate, snapshot, occurredAt: T1
+    });
+    const internal = repository as unknown as {
+      state: { snapshots: Map<string, Record<string, unknown>> }
+    };
+    const snapshotKey = `ws-1\u0000${snapshot.snapshotId}`;
+    const record = internal.state.snapshots.get(snapshotKey)!;
+    internal.state.snapshots.set(snapshotKey, {
+      ...record, createdAt: "2026-08-16T08:02:00.000Z"
+    });
+
+    const read = method === "findRun"
+      ? repository.findRun(workspace(), aggregate.runId)
+      : repository.findFrozenRunByCreationKey(
+          workspace(), aggregate.creationKeyHash, aggregate.requestHash
+        );
+    await assert.rejects(read, (error: unknown) =>
+      (error as { code?: unknown }).code === "financial_council_integrity");
+  });
+}
+
 test("memory replay and reads reject every re-signed history divergence", async () => {
   for (const kind of ["hash", "actor", "time", "aggregate"] as const) {
     const repository = new InMemoryFinancialCouncilRepository();

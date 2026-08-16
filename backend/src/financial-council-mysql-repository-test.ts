@@ -660,6 +660,28 @@ test("MySQL reads and replay reject re-signed run-bound snapshot provenance", as
   }
 });
 
+for (const method of ["findRun", "findFrozenRunByCreationKey"] as const) {
+  test(`MySQL ${method} rejects snapshot freeze time mismatch`, async () => {
+    const { pool, repository } = repositoryWith();
+    const aggregate = repositoryRunFixture();
+    const snapshot = await builderSnapshotFixture(aggregate);
+    await repository.createAndFreezeRun(command("create"), {
+      aggregate, snapshot, occurredAt: T1
+    });
+    pool.state.snapshots[0]!.created_at =
+      new Date("2026-08-16T08:02:00.000Z");
+
+    const read = method === "findRun"
+      ? repository.findRun(workspace(), aggregate.runId)
+      : repository.findFrozenRunByCreationKey(
+          workspace(), aggregate.creationKeyHash, aggregate.requestHash
+        );
+    await assert.rejects(read, (error: unknown) =>
+      (error as { code?: unknown }).code
+        === "financial_council_mysql_integrity");
+  });
+}
+
 test("MySQL event reads reject a broken adjacent status chain", async () => {
   const { pool, repository } = repositoryWith();
   const run = (await repository.createRun(
