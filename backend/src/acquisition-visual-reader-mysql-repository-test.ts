@@ -162,6 +162,7 @@ class StatefulVisualMysqlPool {
   releaseLockResult: unknown = 1;
   failReleaseLock = false;
   bypassObservationScopeFilter = false;
+  leaseTokenColumnPresent = true;
   connectionReleaseCount = 0;
   connectionDestroyCount = 0;
   private transactionTail = Promise.resolve();
@@ -205,6 +206,38 @@ class StatefulVisualMysqlPool {
     const normalized = sql.replace(/\s+/gu, " ").trim();
     this.statements.push({ sql: normalized, values: structuredClone(values) });
     if (normalized.startsWith("CREATE TABLE")) return [[], []];
+    if (normalized.includes("FROM information_schema.columns")
+      && normalized.includes("acquisition_visual_ingestion_work_items")
+      && normalized.includes("lease_token")) {
+      return [[...(this.leaseTokenColumnPresent
+        ? [{ column_name: "lease_token", is_nullable: "YES" }]
+        : [])], []];
+    }
+    if (normalized.startsWith(
+      "ALTER TABLE acquisition_visual_ingestion_work_items ADD COLUMN lease_token"
+    )) {
+      this.leaseTokenColumnPresent = true;
+      for (const row of state.workItems.values()) row.lease_token = null;
+      return [{ affectedRows: 0 }, []];
+    }
+    if (normalized.startsWith(
+      "UPDATE acquisition_visual_ingestion_work_items SET status = 'retry', next_attempt_at = updated_at"
+    )) {
+      let affectedRows = 0;
+      for (const row of state.workItems.values()) {
+        if (row.status !== "running" || row.lease_token !== null) continue;
+        Object.assign(row, {
+          status: "retry",
+          next_attempt_at: row.updated_at,
+          lease_owner: null,
+          lease_token: null,
+          lease_expires_at: null,
+          last_error_code: "RECOVERY_FAILED"
+        });
+        affectedRows += 1;
+      }
+      return [{ affectedRows }, []];
+    }
     if (normalized.includes("SELECT GET_LOCK")) {
       return [[{ lock_acquired: 1 }], []];
     }
@@ -324,10 +357,11 @@ class StatefulVisualMysqlPool {
         observation_id: values[6], artifact_id: values[7],
         disposition: values[8], status: values[9], attempt_count: values[10],
         next_attempt_at: values[11], lease_owner: values[12],
-        lease_expires_at: values[13], last_error_code: values[14],
-        evidence_id: values[15], platform_evidence_id: values[16],
-        candidate_id: values[17], created_at: values[18],
-        updated_at: values[19], completed_at: values[20]
+        lease_token: values[13], lease_expires_at: values[14],
+        last_error_code: values[15], evidence_id: values[16],
+        platform_evidence_id: values[17], candidate_id: values[18],
+        created_at: values[19], updated_at: values[20],
+        completed_at: values[21]
       });
       return [{ affectedRows: 1 }, []];
     }
@@ -370,20 +404,76 @@ class StatefulVisualMysqlPool {
     if (normalized.startsWith(
       "UPDATE acquisition_visual_ingestion_work_items SET status = 'running'"
     )) {
-      const key = `${values[3]}\u0000${values[4]}\u0000${values[5]}`;
+      const key = `${values[4]}\u0000${values[5]}\u0000${values[6]}`;
       const row = state.workItems.get(key);
-      const now = new Date(values[6] as string | Date).getTime();
+      const now = new Date(values[8] as string | Date).getTime();
       const eligible = row && ((["queued", "retry"].includes(String(row.status))
         && new Date(row.next_attempt_at as string | Date).getTime() <= now)
         || (row.status === "running"
           && new Date(row.lease_expires_at as string | Date).getTime() <= now));
-      if (!row || !eligible) return [{ affectedRows: 0 }, []];
+      if (!row || !eligible || row.attempt_count !== values[7]) {
+        return [{ affectedRows: 0 }, []];
+      }
       Object.assign(row, {
         status: "running",
         attempt_count: Number(row.attempt_count) + 1,
         lease_owner: values[0],
-        lease_expires_at: values[1],
+        lease_token: values[1],
+        lease_expires_at: values[2],
+        updated_at: values[3]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "UPDATE acquisition_visual_ingestion_work_items SET status = 'retry'"
+    )) {
+      const key = `${values[3]}\u0000${values[4]}\u0000${values[5]}`;
+      const row = state.workItems.get(key);
+      const failedAt = new Date(values[9] as string | Date).getTime();
+      const matches = row?.status === "running"
+        && row.lease_owner === values[6]
+        && row.lease_token === values[7]
+        && row.attempt_count === values[8]
+        && new Date(row.updated_at as string | Date).getTime() <= failedAt
+        && new Date(row.lease_expires_at as string | Date).getTime() >= failedAt;
+      if (!row || !matches) return [{ affectedRows: 0 }, []];
+      Object.assign(row, {
+        status: "retry",
+        next_attempt_at: values[0],
+        lease_owner: null,
+        lease_token: null,
+        lease_expires_at: null,
+        last_error_code: values[1],
         updated_at: values[2]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "UPDATE acquisition_visual_ingestion_work_items SET status = ?"
+    )) {
+      const key = `${values[7]}\u0000${values[8]}\u0000${values[9]}`;
+      const row = state.workItems.get(key);
+      const completedAt = new Date(values[13] as string | Date).getTime();
+      const matches = row?.status === "running"
+        && row.lease_owner === values[10]
+        && row.lease_token === values[11]
+        && row.attempt_count === values[12]
+        && new Date(row.updated_at as string | Date).getTime() <= completedAt
+        && new Date(row.lease_expires_at as string | Date).getTime()
+          >= completedAt;
+      if (!row || !matches) return [{ affectedRows: 0 }, []];
+      Object.assign(row, {
+        status: values[0],
+        next_attempt_at: values[1],
+        lease_owner: null,
+        lease_token: null,
+        lease_expires_at: null,
+        last_error_code: null,
+        evidence_id: values[2],
+        platform_evidence_id: values[3],
+        candidate_id: values[4],
+        updated_at: values[5],
+        completed_at: values[6]
       });
       return [{ affectedRows: 1 }, []];
     }
@@ -400,27 +490,32 @@ class StatefulVisualMysqlPool {
         .sort((left, right) => new Date(left).getTime() - new Date(right).getTime());
       const validLifecycle = (row: Record<string, unknown>) =>
         (row.status === "queued" && row.lease_owner === null
+          && row.lease_token === null
           && row.lease_expires_at === null && row.completed_at === null
           && row.evidence_id === null && row.platform_evidence_id === null
           && row.candidate_id === null && row.last_error_code === null)
         || (row.status === "retry" && row.lease_owner === null
+          && row.lease_token === null
           && row.lease_expires_at === null && row.completed_at === null
           && row.evidence_id === null && row.platform_evidence_id === null
           && row.candidate_id === null
           && row.last_error_code === "RECOVERY_FAILED")
         || (row.status === "running" && row.lease_owner !== null
+          && typeof row.lease_token === "string"
           && row.lease_expires_at !== null && row.completed_at === null
           && row.evidence_id === null && row.platform_evidence_id === null
           && row.candidate_id === null
           && (row.last_error_code === null
             || row.last_error_code === "RECOVERY_FAILED"))
         || (row.status === "succeeded" && row.disposition === "automatic"
-          && row.lease_owner === null && row.lease_expires_at === null
+          && row.lease_owner === null && row.lease_token === null
+          && row.lease_expires_at === null
           && row.completed_at !== null && row.evidence_id !== null
           && row.last_error_code === null)
         || (row.status === "manual_review_only"
           && row.disposition === "manual_review_only"
-          && row.lease_owner === null && row.lease_expires_at === null
+          && row.lease_owner === null && row.lease_token === null
+          && row.lease_expires_at === null
           && row.completed_at !== null && row.evidence_id !== null
           && row.platform_evidence_id === null && row.candidate_id === null
           && row.last_error_code === null);
@@ -1259,6 +1354,7 @@ test("visual MySQL schema is isolated, repeatable, and fully tenant scoped", asy
   assert.match(schema, /PRIMARY KEY \(owner_id, team_id, artifact_id\)/u);
   assert.match(schema, /MEDIUMBLOB/u);
   assert.match(schema, /evidence_id VARCHAR\(255\)/u);
+  assert.match(schema, /lease_token CHAR\(64\) NULL/u);
   assert.match(schema, /disposition IN \('automatic','manual_review_only'\)/u);
   assert.match(schema, /UNIQUE KEY[\s\S]*owner_id, team_id, session_id/u);
 
@@ -1285,6 +1381,49 @@ test("visual MySQL schema is isolated, repeatable, and fully tenant scoped", asy
   assert.equal(typeof repository.withTransactionConnection, "function");
 });
 
+test("visual schema safely retries legacy running work after adding lease tokens", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  pool.leaseTokenColumnPresent = false;
+  pool.state.workItems.set("legacy-running", {
+    status: "running",
+    updated_at: "2026-08-15 01:00:00.000",
+    next_attempt_at: "2026-08-15 01:00:00.000",
+    lease_owner: "legacy-worker",
+    lease_expires_at: "2026-08-15 01:00:30.000"
+  });
+
+  await ensureAcquisitionVisualReaderMysqlSchema(
+    pool as unknown as mysql.Pool
+  );
+  const migrated = pool.state.workItems.get("legacy-running")!;
+  assert.deepEqual({
+    status: migrated.status,
+    nextAttemptAt: migrated.next_attempt_at,
+    leaseOwner: migrated.lease_owner,
+    leaseToken: migrated.lease_token,
+    leaseExpiresAt: migrated.lease_expires_at,
+    lastErrorCode: migrated.last_error_code
+  }, {
+    status: "retry",
+    nextAttemptAt: "2026-08-15 01:00:00.000",
+    leaseOwner: null,
+    leaseToken: null,
+    leaseExpiresAt: null,
+    lastErrorCode: "RECOVERY_FAILED"
+  });
+  assert.equal(pool.leaseTokenColumnPresent, true);
+  assert.ok(pool.statements.some(({ sql }) => sql.startsWith(
+    "ALTER TABLE acquisition_visual_ingestion_work_items ADD COLUMN lease_token"
+  )));
+  const firstAlterCount = pool.statements.filter(({ sql }) =>
+    sql.startsWith("ALTER TABLE")).length;
+  await ensureAcquisitionVisualReaderMysqlSchema(
+    pool as unknown as mysql.Pool
+  );
+  assert.equal(pool.statements.filter(({ sql }) =>
+    sql.startsWith("ALTER TABLE")).length, firstAlterCount);
+});
+
 test("visual MySQL work rows fail closed on contradictory lifecycle and forged identity", async () => {
   const pool = new StatefulVisualMysqlPool();
   const repo = new MysqlAcquisitionVisualReaderRepository(
@@ -1304,8 +1443,16 @@ test("visual MySQL work rows fail closed on contradictory lifecycle and forged i
     "mysql-visual-run",
     { limit: 100 }
   )).length, 1);
+  const [claim] = await repo.claimPendingIngestionWorkItems({
+    workerId: "mysql-worker",
+    now: START,
+    leaseDurationMs: 30_000,
+    limit: 1
+  });
   const completion = {
     workerId: "mysql-worker",
+    leaseToken: claim!.workItem.leaseToken!,
+    attemptCount: claim!.workItem.attemptCount,
     status: "succeeded" as const,
     evidenceId: `visual:${item.observationId}:evidence:${item.textHash}`,
     platformEvidenceId: null,
@@ -1314,6 +1461,8 @@ test("visual MySQL work rows fail closed on contradictory lifecycle and forged i
   };
   for (const invalid of [
     { ...completion, workerId: " invalid" },
+    { ...completion, leaseToken: "not-a-token" },
+    { ...completion, attemptCount: 0 },
     { ...completion, status: "queued" },
     { ...completion, evidenceId: "" },
     { ...completion, platformEvidenceId: 7 },
@@ -1330,9 +1479,10 @@ test("visual MySQL work rows fail closed on contradictory lifecycle and forged i
     assert.equal(pool.statements.length, statementCount,
       "invalid completion must fail before SQL");
   }
-  const stored = [...pool.state.workItems.values()][0]!;
+  let stored = [...pool.state.workItems.values()][0]!;
   stored.status = "running";
   stored.lease_owner = null;
+  stored.lease_token = null;
   stored.lease_expires_at = null;
   await assert.rejects(
     repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 100 }),
@@ -1342,6 +1492,7 @@ test("visual MySQL work rows fail closed on contradictory lifecycle and forged i
     status: "succeeded",
     disposition: "automatic",
     lease_owner: null,
+    lease_token: null,
     lease_expires_at: null,
     evidence_id: completion.evidenceId,
     platform_evidence_id: null,
@@ -1378,6 +1529,7 @@ test("visual MySQL work rows fail closed on contradictory lifecycle and forged i
     status: "succeeded",
     disposition: "automatic",
     lease_owner: null,
+    lease_token: null,
     lease_expires_at: null,
     evidence_id: completion.evidenceId,
     platform_evidence_id: null,
@@ -1398,6 +1550,101 @@ test("visual MySQL work rows fail closed on contradictory lifecycle and forged i
   } as never), (error: unknown) =>
     error instanceof AcquisitionVisualReaderRepositoryError
       && error.code === "VISUAL_READER_INVALID_INPUT");
+});
+
+test("visual MySQL work parser closes lease-token lifecycle states", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  await repo.createSession(createInput());
+  const item = observation("mysql-token-lifecycle", {
+    fieldConfidences: {
+      visibleText: 0.99,
+      displayName: 0.99,
+      likeCount: 0.99,
+      replyCount: 0.99
+    }
+  });
+  await repo.appendObservationBatch({
+    scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
+    sessionId: item.sessionId,
+    observations: [{
+      clientObservationKey: "mysql-token-lifecycle-client",
+      observation: item
+    }]
+  });
+  let stored = [...pool.state.workItems.values()][0]!;
+  stored.lease_token = "a".repeat(64);
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 1 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+  stored.lease_token = null;
+  const [running] = await repo.claimPendingIngestionWorkItems({
+    workerId: "mysql-token-lifecycle-worker",
+    now: START,
+    leaseDurationMs: 30_000,
+    limit: 1
+  });
+  const token = running!.workItem.leaseToken!;
+  stored = [...pool.state.workItems.values()][0]!;
+  stored.lease_token = null;
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 1 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+  stored.lease_token = "not-a-token";
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 1 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+  stored.lease_token = token;
+  const retry = await repo.failIngestionWorkItem(SCOPE, item.observationId, {
+    workerId: "mysql-token-lifecycle-worker",
+    leaseToken: token,
+    attemptCount: running!.workItem.attemptCount,
+    failedAt: "2026-08-15T01:00:01.000Z",
+    nextAttemptAt: "2026-08-15T01:00:02.000Z",
+    errorCode: "RECOVERY_FAILED"
+  });
+  assert.equal(retry.leaseToken, null);
+  stored = [...pool.state.workItems.values()][0]!;
+  stored.lease_token = "b".repeat(64);
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 1 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+  stored.lease_token = null;
+  const [reclaimed] = await repo.claimPendingIngestionWorkItems({
+    workerId: "mysql-token-lifecycle-worker",
+    now: "2026-08-15T01:00:02.000Z",
+    leaseDurationMs: 30_000,
+    limit: 1
+  });
+  const terminal = await repo.completeIngestionWorkItem(
+    SCOPE,
+    item.observationId,
+    {
+      workerId: "mysql-token-lifecycle-worker",
+      leaseToken: reclaimed!.workItem.leaseToken!,
+      attemptCount: reclaimed!.workItem.attemptCount,
+      status: "succeeded",
+      evidenceId: `visual:${item.observationId}:evidence:${item.textHash}`,
+      platformEvidenceId: null,
+      candidateId: null,
+      completedAt: "2026-08-15T01:00:03.000Z"
+    }
+  );
+  assert.equal(terminal.leaseToken, null);
+  stored = [...pool.state.workItems.values()][0]!;
+  stored.lease_token = "c".repeat(64);
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 1 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
 });
 
 test("visual MySQL fair claims fill capacity after the first tenant round", async () => {
@@ -1443,6 +1690,113 @@ test("visual MySQL fair claims fill capacity after the first tenant round", asyn
   assert.ok(pool.statements.filter(({ sql }) => sql.startsWith(
     "SELECT w.* FROM acquisition_visual_ingestion_work_items w"
   )).length >= 2);
+});
+
+test("visual MySQL same-worker reclaim fences prior completion and failure", async (context) => {
+  for (const terminal of ["complete", "fail"] as const) {
+    await context.test(`rejects the prior ${terminal} lease token`, async () => {
+      const pool = new StatefulVisualMysqlPool();
+      const repo = new MysqlAcquisitionVisualReaderRepository(
+        pool as unknown as mysql.Pool,
+        { masterSecret: SECRET, now: () => START }
+      );
+      await repo.createSession(createInput());
+      const item = observation(`mysql-same-worker-${terminal}`, {
+        fieldConfidences: {
+          visibleText: 0.99,
+          displayName: 0.99,
+          likeCount: 0.99,
+          replyCount: 0.99
+        }
+      });
+      await repo.appendObservationBatch({
+        scope: SCOPE,
+        ingestionActorId: INGESTION_ACTOR_ID,
+        sessionId: item.sessionId,
+        observations: [{
+          clientObservationKey: `mysql-same-worker-client-${terminal}`,
+          observation: item
+        }]
+      });
+      const [firstClaim] = await repo.claimPendingIngestionWorkItems({
+        workerId: "mysql-same-worker",
+        now: START,
+        leaseDurationMs: 1_000,
+        limit: 1
+      });
+      const [secondClaim] = await repo.claimPendingIngestionWorkItems({
+        workerId: "mysql-same-worker",
+        now: "2026-08-15T01:00:01.000Z",
+        leaseDurationMs: 30_000,
+        limit: 1
+      });
+      assert.match(firstClaim!.workItem.leaseToken!, /^[a-f0-9]{64}$/u);
+      assert.match(secondClaim!.workItem.leaseToken!, /^[a-f0-9]{64}$/u);
+      assert.notEqual(firstClaim!.workItem.leaseToken,
+        secondClaim!.workItem.leaseToken);
+
+      const priorResult = terminal === "complete"
+        ? repo.completeIngestionWorkItem(SCOPE, item.observationId, {
+          workerId: "mysql-same-worker",
+          leaseToken: firstClaim!.workItem.leaseToken!,
+          attemptCount: firstClaim!.workItem.attemptCount,
+          status: "succeeded",
+          evidenceId: `visual:${item.observationId}:evidence:${item.textHash}`,
+          platformEvidenceId: null,
+          candidateId: null,
+          completedAt: "2026-08-15T01:00:02.000Z"
+        })
+        : repo.failIngestionWorkItem(SCOPE, item.observationId, {
+          workerId: "mysql-same-worker",
+          leaseToken: firstClaim!.workItem.leaseToken!,
+          attemptCount: firstClaim!.workItem.attemptCount,
+          failedAt: "2026-08-15T01:00:02.000Z",
+          nextAttemptAt: "2026-08-15T01:00:03.000Z",
+          errorCode: "RECOVERY_FAILED"
+        });
+      await assert.rejects(priorResult,
+        hasRepositoryCode("VISUAL_READER_OBSERVATION_CONFLICT"));
+      const [unchanged] = await repo.listRunIngestionWorkItems(
+        SCOPE,
+        "mysql-visual-run",
+        { limit: 1 }
+      );
+      assert.equal(unchanged?.attemptCount, 2);
+      assert.equal(unchanged?.leaseToken, secondClaim?.workItem.leaseToken);
+
+      if (terminal === "complete") {
+        const completed = await repo.completeIngestionWorkItem(
+          SCOPE,
+          item.observationId,
+          {
+            workerId: "mysql-same-worker",
+            leaseToken: secondClaim!.workItem.leaseToken!,
+            attemptCount: secondClaim!.workItem.attemptCount,
+            status: "succeeded",
+            evidenceId: `visual:${item.observationId}:evidence:${item.textHash}`,
+            platformEvidenceId: null,
+            candidateId: null,
+            completedAt: "2026-08-15T01:00:02.000Z"
+          }
+        );
+        assert.equal(completed.status, "succeeded");
+      } else {
+        const failed = await repo.failIngestionWorkItem(
+          SCOPE,
+          item.observationId,
+          {
+            workerId: "mysql-same-worker",
+            leaseToken: secondClaim!.workItem.leaseToken!,
+            attemptCount: secondClaim!.workItem.attemptCount,
+            failedAt: "2026-08-15T01:00:02.000Z",
+            nextAttemptAt: "2026-08-15T01:00:03.000Z",
+            errorCode: "RECOVERY_FAILED"
+          }
+        );
+        assert.equal(failed.status, "retry");
+      }
+    });
+  }
 });
 
 test("memory and MySQL expose exact untruncated Run work projections", async () => {

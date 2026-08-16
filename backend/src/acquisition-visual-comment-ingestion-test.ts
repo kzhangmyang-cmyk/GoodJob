@@ -228,6 +228,7 @@ test("accepting a visual observation atomically queues one tenant-scoped ingesti
     attemptCount: 0,
     nextAttemptAt: START,
     leaseOwner: null,
+    leaseToken: null,
     leaseExpiresAt: null,
     lastErrorCode: null,
     evidenceId: null,
@@ -341,6 +342,8 @@ test("durable visual work claims are fair across tenants and retry with a lease"
     failed.observation.observationId,
     {
       workerId: "visual-worker-1",
+      leaseToken: failed.workItem.leaseToken,
+      attemptCount: failed.workItem.attemptCount,
       failedAt: "2026-08-16T01:00:01.000Z",
       nextAttemptAt: "2026-08-16T01:00:02.000Z",
       errorCode: "RECOVERY_FAILED"
@@ -403,6 +406,8 @@ test("visual work completion records only committed evidence and candidate facts
     item.observationId,
     {
       workerId: "visual-worker-complete",
+      leaseToken: claimed!.workItem.leaseToken,
+      attemptCount: claimed!.workItem.attemptCount,
       status: "succeeded",
       evidenceId: `visual:${item.observationId}:evidence:${item.textHash}`,
       platformEvidenceId: null,
@@ -474,17 +479,23 @@ test("visual work rejects stale leases, invalid completion times and forged resu
       { clientObservationKey: "client-manual-guard", observation: manual }
     ]
   });
-  await visualRepository.claimPendingIngestionWorkItems({
+  const claims = await visualRepository.claimPendingIngestionWorkItems({
     workerId: "visual-worker-lease-guard",
     now: START,
     leaseDurationMs: 30_000,
     limit: 2
   });
+  const automaticClaim = claims.find(({ observation }) =>
+    observation.observationId === automatic.observationId)!;
+  const manualClaim = claims.find(({ observation }) =>
+    observation.observationId === manual.observationId)!;
   await assert.rejects(visualRepository.failIngestionWorkItem(
     scope,
     automatic.observationId,
     {
       workerId: "visual-worker-lease-guard",
+      leaseToken: automaticClaim.workItem.leaseToken!,
+      attemptCount: automaticClaim.workItem.attemptCount,
       failedAt: "2026-08-16T00:59:59.000Z",
       nextAttemptAt: START,
       errorCode: "RECOVERY_FAILED"
@@ -495,6 +506,8 @@ test("visual work rejects stale leases, invalid completion times and forged resu
     automatic.observationId,
     {
       workerId: "visual-worker-lease-guard",
+      leaseToken: automaticClaim.workItem.leaseToken!,
+      attemptCount: automaticClaim.workItem.attemptCount,
       status: "succeeded",
       evidenceId: "caller-selected-evidence-id",
       platformEvidenceId: null,
@@ -507,6 +520,8 @@ test("visual work rejects stale leases, invalid completion times and forged resu
     automatic.observationId,
     {
       workerId: "visual-worker-lease-guard",
+      leaseToken: automaticClaim.workItem.leaseToken!,
+      attemptCount: automaticClaim.workItem.attemptCount,
       status: "succeeded",
       evidenceId:
         `visual:${automatic.observationId}:evidence:${automatic.textHash}`,
@@ -520,6 +535,8 @@ test("visual work rejects stale leases, invalid completion times and forged resu
     automatic.observationId,
     {
       workerId: "visual-worker-lease-guard",
+      leaseToken: automaticClaim.workItem.leaseToken!,
+      attemptCount: automaticClaim.workItem.attemptCount,
       status: "succeeded",
       evidenceId:
         `visual:${automatic.observationId}:evidence:${automatic.textHash}`,
@@ -533,6 +550,8 @@ test("visual work rejects stale leases, invalid completion times and forged resu
     manual.observationId,
     {
       workerId: "visual-worker-lease-guard",
+      leaseToken: manualClaim.workItem.leaseToken!,
+      attemptCount: manualClaim.workItem.attemptCount,
       status: "manual_review_only",
       evidenceId: `visual:${manual.observationId}:evidence:${manual.textHash}`,
       platformEvidenceId: "platform-evidence-forbidden",
@@ -545,11 +564,140 @@ test("visual work rejects stale leases, invalid completion times and forged resu
     automatic.observationId,
     {
       workerId: "visual-worker-lease-guard",
+      leaseToken: automaticClaim.workItem.leaseToken!,
+      attemptCount: automaticClaim.workItem.attemptCount,
       failedAt: "2026-08-16T01:00:31.000Z",
       nextAttemptAt: "2026-08-16T01:00:32.000Z",
       errorCode: "RECOVERY_FAILED"
     }
   ));
+});
+
+test("same-worker reclaim never authorizes the prior visual lease result", async (context) => {
+  for (const terminal of ["complete", "fail"] as const) {
+    await context.test(`rejects prior ${terminal} without mutating the new lease`,
+      async () => {
+        const now = { value: START };
+        const visualRepository = new visualSessionModule
+          .InMemoryAcquisitionVisualReaderRepository({
+            masterSecret: MASTER_SECRET,
+            now: () => now.value
+          });
+        await createSession(visualRepository);
+        const item = observation(`same-worker-reclaim-${terminal}`);
+        await visualRepository.appendObservationBatch({
+          scope,
+          sessionId: item.sessionId,
+          ingestionActorId: "actor-same-worker-reclaim",
+          observations: [{
+            clientObservationKey: `client-same-worker-reclaim-${terminal}`,
+            observation: item
+          }]
+        });
+        const [firstClaim] = await visualRepository
+          .claimPendingIngestionWorkItems({
+            workerId: "same-visual-worker",
+            now: START,
+            leaseDurationMs: 1_000,
+            limit: 1
+          });
+        now.value = "2026-08-16T01:00:01.000Z";
+        const [secondClaim] = await visualRepository
+          .claimPendingIngestionWorkItems({
+            workerId: "same-visual-worker",
+            now: now.value,
+            leaseDurationMs: 30_000,
+            limit: 1
+          });
+        assert.equal(firstClaim?.workItem.attemptCount, 1);
+        assert.equal(secondClaim?.workItem.attemptCount, 2);
+        assert.match(firstClaim!.workItem.leaseToken!, /^[a-f0-9]{64}$/u);
+        assert.match(secondClaim!.workItem.leaseToken!, /^[a-f0-9]{64}$/u);
+        assert.notEqual(
+          firstClaim?.workItem.leaseToken,
+          secondClaim?.workItem.leaseToken
+        );
+
+        const oldResult = terminal === "complete"
+          ? visualRepository.completeIngestionWorkItem(
+            scope,
+            item.observationId,
+            {
+              workerId: "same-visual-worker",
+              leaseToken: firstClaim!.workItem.leaseToken!,
+              attemptCount: firstClaim!.workItem.attemptCount,
+              status: "succeeded",
+              evidenceId:
+                `visual:${item.observationId}:evidence:${item.textHash}`,
+              platformEvidenceId: null,
+              candidateId: null,
+              completedAt: "2026-08-16T01:00:02.000Z"
+            }
+          )
+          : visualRepository.failIngestionWorkItem(
+            scope,
+            item.observationId,
+            {
+              workerId: "same-visual-worker",
+              leaseToken: firstClaim!.workItem.leaseToken!,
+              attemptCount: firstClaim!.workItem.attemptCount,
+              failedAt: "2026-08-16T01:00:02.000Z",
+              nextAttemptAt: "2026-08-16T01:00:03.000Z",
+              errorCode: "RECOVERY_FAILED"
+            }
+          );
+        await assert.rejects(oldResult);
+        const [unchanged] = await visualRepository.listRunIngestionWorkItems(
+          scope,
+          "run-task-7",
+          { limit: 1 }
+        );
+        assert.deepEqual({
+          status: unchanged?.status,
+          attemptCount: unchanged?.attemptCount,
+          leaseOwner: unchanged?.leaseOwner,
+          leaseExpiresAt: unchanged?.leaseExpiresAt
+        }, {
+          status: "running",
+          attemptCount: 2,
+          leaseOwner: "same-visual-worker",
+          leaseExpiresAt: "2026-08-16T01:00:31.000Z"
+        });
+
+        if (terminal === "complete") {
+          const completed = await visualRepository.completeIngestionWorkItem(
+            scope,
+            item.observationId,
+            {
+              workerId: "same-visual-worker",
+              leaseToken: secondClaim!.workItem.leaseToken!,
+              attemptCount: secondClaim!.workItem.attemptCount,
+              status: "succeeded",
+              evidenceId:
+                `visual:${item.observationId}:evidence:${item.textHash}`,
+              platformEvidenceId: null,
+              candidateId: null,
+              completedAt: "2026-08-16T01:00:02.000Z"
+            }
+          );
+          assert.equal(completed.status, "succeeded");
+        } else {
+          const failed = await visualRepository.failIngestionWorkItem(
+            scope,
+            item.observationId,
+            {
+              workerId: "same-visual-worker",
+              leaseToken: secondClaim!.workItem.leaseToken!,
+              attemptCount: secondClaim!.workItem.attemptCount,
+              failedAt: "2026-08-16T01:00:02.000Z",
+              nextAttemptAt: "2026-08-16T01:00:03.000Z",
+              errorCode: "RECOVERY_FAILED"
+            }
+          );
+          assert.equal(failed.status, "retry");
+        }
+      });
+  }
 });
 
 test("Domain accepts only the exact literal authorized visual Evidence identity", async () => {

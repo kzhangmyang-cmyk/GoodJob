@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type mysql from "mysql2/promise";
 import {
@@ -169,6 +169,7 @@ export const ACQUISITION_VISUAL_READER_MYSQL_SCHEMA_STATEMENTS = [
     attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
     next_attempt_at DATETIME(3) NOT NULL,
     lease_owner VARCHAR(100) NULL,
+    lease_token CHAR(64) NULL,
     lease_expires_at DATETIME(3) NULL,
     last_error_code VARCHAR(32) NULL,
     evidence_id VARCHAR(255) NULL,
@@ -199,6 +200,7 @@ export const ACQUISITION_VISUAL_READER_MYSQL_SCHEMA_STATEMENTS = [
 ] as const;
 
 const VISUAL_SCHEMA_LOCK = "acquisition:visual-reader-schema:v1";
+const VISUAL_LEASE_TOKEN = /^[a-f0-9]{64}$/u;
 
 export async function ensureAcquisitionVisualReaderMysqlSchema(
   pool: mysql.Pool
@@ -223,6 +225,26 @@ export async function ensureAcquisitionVisualReaderMysqlSchema(
     for (const statement of ACQUISITION_VISUAL_READER_MYSQL_SCHEMA_STATEMENTS) {
       await connection.query(statement);
     }
+    const [columnResult] = await connection.query(
+      `SELECT column_name, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = DATABASE()
+         AND table_name = 'acquisition_visual_ingestion_work_items'
+         AND column_name = 'lease_token'`
+    );
+    if (!Array.isArray(columnResult) || columnResult.length === 0) {
+      await connection.query(
+        `ALTER TABLE acquisition_visual_ingestion_work_items
+         ADD COLUMN lease_token CHAR(64) NULL AFTER lease_owner`
+      );
+    }
+    await connection.query(
+      `UPDATE acquisition_visual_ingestion_work_items
+       SET status = 'retry', next_attempt_at = updated_at,
+           lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+           last_error_code = 'RECOVERY_FAILED'
+       WHERE status = 'running' AND lease_token IS NULL`
+    );
   } finally {
     try {
       if (locked) {
@@ -589,6 +611,7 @@ function parseIngestionWorkItem(row: MysqlRow): VisualIngestionWorkItem {
   const sessionId = rowString(row, "session_id");
   const runId = rowString(row, "run_id");
   const leaseOwner = nullableRowString(row, "lease_owner");
+  const leaseToken = nullableRowString(row, "lease_token");
   const evidenceId = nullableRowString(row, "evidence_id");
   const platformEvidenceId = nullableRowString(row, "platform_evidence_id");
   const candidateId = nullableRowString(row, "candidate_id");
@@ -603,6 +626,7 @@ function parseIngestionWorkItem(row: MysqlRow): VisualIngestionWorkItem {
       && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(artifactId))
     || (leaseOwner !== null
       && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/u.test(leaseOwner))
+    || (leaseToken !== null && !VISUAL_LEASE_TOKEN.test(leaseToken))
     || [evidenceId, platformEvidenceId].some((value) =>
       value !== null
       && (value.length < 1 || value.length > 255
@@ -614,7 +638,8 @@ function parseIngestionWorkItem(row: MysqlRow): VisualIngestionWorkItem {
     || (completedAt !== null
       && (Date.parse(completedAt) < Date.parse(createdAt)
         || Date.parse(completedAt) < Date.parse(updatedAt)))
-    || ((leaseOwner === null) !== (leaseExpiresAt === null))) integrity();
+    || ((leaseOwner === null) !== (leaseExpiresAt === null))
+    || ((leaseOwner === null) !== (leaseToken === null))) integrity();
   const pendingFactsAreEmpty = completedAt === null
     && evidenceId === null
     && platformEvidenceId === null
@@ -653,6 +678,7 @@ function parseIngestionWorkItem(row: MysqlRow): VisualIngestionWorkItem {
     attemptCount: boundedRowInteger(row, "attempt_count", 0, 2_147_483_647),
     nextAttemptAt: isoDate(row.next_attempt_at),
     leaseOwner,
+    leaseToken,
     leaseExpiresAt,
     lastErrorCode: lastErrorCode as "RECOVERY_FAILED" | null,
     evidenceId,
@@ -1165,10 +1191,11 @@ implements AcquisitionVisualReaderRepository {
           `INSERT INTO acquisition_visual_ingestion_work_items (
              owner_id, team_id, work_item_id, actor_id, session_id, run_id,
              observation_id, artifact_id, disposition, status, attempt_count,
-             next_attempt_at, lease_owner, lease_expires_at, last_error_code,
+             next_attempt_at, lease_owner, lease_token, lease_expires_at,
+             last_error_code,
              evidence_id, platform_evidence_id, candidate_id, created_at,
              updated_at, completed_at
-           ) VALUES (${Array(21).fill("?").join(", ")})`,
+           ) VALUES (${Array(22).fill("?").join(", ")})`,
           [
             input.scope.ownerId,
             input.scope.teamId,
@@ -1184,6 +1211,7 @@ implements AcquisitionVisualReaderRepository {
             "queued",
             0,
             sqlDate(now),
+            null,
             null,
             null,
             null,
@@ -1535,27 +1563,32 @@ implements AcquisitionVisualReaderRepository {
            AS manual_review_only_count,
          COALESCE(SUM(NOT (
            (status = 'queued' AND lease_owner IS NULL
-             AND lease_expires_at IS NULL AND completed_at IS NULL
+             AND lease_token IS NULL AND lease_expires_at IS NULL
+             AND completed_at IS NULL
              AND evidence_id IS NULL AND platform_evidence_id IS NULL
              AND candidate_id IS NULL AND last_error_code IS NULL)
            OR (status = 'retry' AND lease_owner IS NULL
-             AND lease_expires_at IS NULL AND completed_at IS NULL
+             AND lease_token IS NULL AND lease_expires_at IS NULL
+             AND completed_at IS NULL
              AND evidence_id IS NULL AND platform_evidence_id IS NULL
              AND candidate_id IS NULL
              AND last_error_code = 'RECOVERY_FAILED')
            OR (status = 'running' AND lease_owner IS NOT NULL
-             AND lease_expires_at IS NOT NULL AND completed_at IS NULL
+             AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL
+             AND completed_at IS NULL
              AND evidence_id IS NULL AND platform_evidence_id IS NULL
              AND candidate_id IS NULL
              AND (last_error_code IS NULL
                OR last_error_code = 'RECOVERY_FAILED'))
            OR (status = 'succeeded' AND disposition = 'automatic'
-             AND lease_owner IS NULL AND lease_expires_at IS NULL
+             AND lease_owner IS NULL AND lease_token IS NULL
+             AND lease_expires_at IS NULL
              AND completed_at IS NOT NULL AND evidence_id IS NOT NULL
              AND last_error_code IS NULL)
            OR (status = 'manual_review_only'
              AND disposition = 'manual_review_only'
-             AND lease_owner IS NULL AND lease_expires_at IS NULL
+             AND lease_owner IS NULL AND lease_token IS NULL
+             AND lease_expires_at IS NULL
              AND completed_at IS NOT NULL AND evidence_id IS NOT NULL
              AND platform_evidence_id IS NULL AND candidate_id IS NULL
              AND last_error_code IS NULL)
@@ -1668,21 +1701,25 @@ implements AcquisitionVisualReaderRepository {
         if (selected.length === 0) break;
         let madeProgress = false;
         for (const item of selected) {
-        const [updated] = await source.query(
-          `UPDATE acquisition_visual_ingestion_work_items
-           SET status = 'running', attempt_count = attempt_count + 1,
-               lease_owner = ?, lease_expires_at = ?, updated_at = ?
-           WHERE owner_id = ? AND team_id = ? AND observation_id = ?
-             AND (
-               (status IN ('queued','retry') AND next_attempt_at <= ?)
-               OR (status = 'running' AND lease_expires_at <= ?)
-             )`,
-          [
-            input.workerId, sqlDate(leaseExpiresAt), now,
-            item.ownerId, item.teamId, item.observationId, now, now
-          ]
-        );
-        if (affectedRows(updated) !== 1) continue;
+          const leaseToken = randomBytes(32).toString("hex");
+          const [updated] = await source.query(
+            `UPDATE acquisition_visual_ingestion_work_items
+             SET status = 'running', attempt_count = attempt_count + 1,
+                 lease_owner = ?, lease_token = ?, lease_expires_at = ?,
+                 updated_at = ?
+             WHERE owner_id = ? AND team_id = ? AND observation_id = ?
+               AND attempt_count = ?
+               AND (
+                 (status IN ('queued','retry') AND next_attempt_at <= ?)
+                 OR (status = 'running' AND lease_expires_at <= ?)
+               )`,
+            [
+              input.workerId, leaseToken, sqlDate(leaseExpiresAt), now,
+              item.ownerId, item.teamId, item.observationId, item.attemptCount,
+              now, now
+            ]
+          );
+          if (affectedRows(updated) !== 1) continue;
         const [workRows] = await source.query(
           `SELECT * FROM acquisition_visual_ingestion_work_items
            WHERE owner_id = ? AND team_id = ? AND observation_id = ?`,
@@ -1727,11 +1764,17 @@ implements AcquisitionVisualReaderRepository {
     assertVisualReaderIdentifier(observationId);
     if (!exactInputKeys(
       failure,
-      ["workerId", "failedAt", "nextAttemptAt", "errorCode"]
+      [
+        "workerId", "leaseToken", "attemptCount", "failedAt",
+        "nextAttemptAt", "errorCode"
+      ]
     )) fail("VISUAL_READER_INVALID_INPUT");
     const failedAt = sqlDate(failure.failedAt);
     const nextAttemptAt = sqlDate(failure.nextAttemptAt);
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/u.test(failure.workerId)
+      || !VISUAL_LEASE_TOKEN.test(failure.leaseToken)
+      || !Number.isSafeInteger(failure.attemptCount)
+      || failure.attemptCount < 1
       || failure.errorCode !== "RECOVERY_FAILED"
       || Date.parse(failure.nextAttemptAt) < Date.parse(failure.failedAt)) {
       fail("VISUAL_READER_INVALID_INPUT");
@@ -1740,13 +1783,16 @@ implements AcquisitionVisualReaderRepository {
     const [result] = await source.query(
       `UPDATE acquisition_visual_ingestion_work_items
        SET status = 'retry', next_attempt_at = ?, lease_owner = NULL,
-           lease_expires_at = NULL, last_error_code = ?, updated_at = ?
+           lease_token = NULL, lease_expires_at = NULL, last_error_code = ?,
+           updated_at = ?
        WHERE owner_id = ? AND team_id = ? AND observation_id = ?
-         AND status = 'running' AND lease_owner = ?
+         AND status = 'running' AND lease_owner = ? AND lease_token = ?
+         AND attempt_count = ?
          AND updated_at <= ? AND lease_expires_at >= ?`,
       [
         nextAttemptAt, failure.errorCode, failedAt,
         scope.ownerId, scope.teamId, observationId, failure.workerId,
+        failure.leaseToken, failure.attemptCount,
         failedAt, failedAt
       ]
     );
@@ -1762,11 +1808,14 @@ implements AcquisitionVisualReaderRepository {
     assertVisualReaderScope(scope);
     assertVisualReaderIdentifier(observationId);
     if (!exactInputKeys(result, [
-      "workerId", "status", "evidenceId", "platformEvidenceId",
-      "candidateId", "completedAt"
+      "workerId", "leaseToken", "attemptCount", "status", "evidenceId",
+      "platformEvidenceId", "candidateId", "completedAt"
     ])
       || typeof result.workerId !== "string"
       || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/u.test(result.workerId)
+      || !VISUAL_LEASE_TOKEN.test(result.leaseToken)
+      || !Number.isSafeInteger(result.attemptCount)
+      || result.attemptCount < 1
       || typeof result.status !== "string"
       || !["succeeded", "manual_review_only"].includes(result.status)
       || typeof result.evidenceId !== "string"
@@ -1814,16 +1863,18 @@ implements AcquisitionVisualReaderRepository {
     const [updated] = await source.query(
       `UPDATE acquisition_visual_ingestion_work_items
        SET status = ?, next_attempt_at = ?, lease_owner = NULL,
-           lease_expires_at = NULL, last_error_code = NULL, evidence_id = ?,
-           platform_evidence_id = ?, candidate_id = ?, updated_at = ?,
-           completed_at = ?
+           lease_token = NULL, lease_expires_at = NULL,
+           last_error_code = NULL, evidence_id = ?, platform_evidence_id = ?,
+           candidate_id = ?, updated_at = ?, completed_at = ?
        WHERE owner_id = ? AND team_id = ? AND observation_id = ?
-         AND status = 'running' AND lease_owner = ?
+         AND status = 'running' AND lease_owner = ? AND lease_token = ?
+         AND attempt_count = ?
          AND updated_at <= ? AND lease_expires_at >= ?`,
       [
         result.status, completedAt, result.evidenceId,
         result.platformEvidenceId, result.candidateId, completedAt, completedAt,
         scope.ownerId, scope.teamId, observationId, result.workerId,
+        result.leaseToken, result.attemptCount,
         completedAt, completedAt
       ]
     );

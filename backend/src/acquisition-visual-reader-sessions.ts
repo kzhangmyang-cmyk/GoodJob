@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { AcquisitionScope } from "./acquisition-douyin-comment-events.js";
 import {
@@ -278,6 +278,7 @@ export interface VisualIngestionWorkItem {
   attemptCount: number;
   nextAttemptAt: string;
   leaseOwner: string | null;
+  leaseToken: string | null;
   leaseExpiresAt: string | null;
   lastErrorCode: "RECOVERY_FAILED" | null;
   evidenceId: string | null;
@@ -313,6 +314,8 @@ export interface VisualRunIngestionWorkProjection {
 
 export interface FailVisualIngestionWorkItemInput {
   workerId: string;
+  leaseToken: string;
+  attemptCount: number;
   failedAt: string;
   nextAttemptAt: string;
   errorCode: "RECOVERY_FAILED";
@@ -320,6 +323,8 @@ export interface FailVisualIngestionWorkItemInput {
 
 export interface CompleteVisualIngestionWorkItemInput {
   workerId: string;
+  leaseToken: string;
+  attemptCount: number;
   status: "succeeded" | "manual_review_only";
   evidenceId: string;
   platformEvidenceId: string | null;
@@ -389,6 +394,7 @@ const EMPTY_USAGE: VisualReaderUsage = Object.freeze({
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
 const SCOPE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/u;
+const VISUAL_LEASE_TOKEN = /^[a-f0-9]{64}$/u;
 const DOUYIN_VIDEO_URL =
   /^https:\/\/www\.douyin\.com\/video\/[1-9][0-9]{0,31}\/?$/u;
 const DOUYIN_VIDEO_ID = /^[1-9][0-9]{0,31}$/u;
@@ -1562,6 +1568,7 @@ implements AcquisitionVisualReaderRepository {
             attemptCount: 0,
             nextAttemptAt: now,
             leaseOwner: null,
+            leaseToken: null,
             leaseExpiresAt: null,
             lastErrorCode: null,
             evidenceId: null,
@@ -1951,6 +1958,7 @@ implements AcquisitionVisualReaderRepository {
           status: "running",
           attemptCount: item.attemptCount + 1,
           leaseOwner: input.workerId,
+          leaseToken: randomBytes(32).toString("hex"),
           leaseExpiresAt,
           updatedAt: input.now
         };
@@ -1978,9 +1986,15 @@ implements AcquisitionVisualReaderRepository {
       assertVisualReaderIdentifier(observationId);
       if (!recordWithKeys(
         failure,
-        ["workerId", "failedAt", "nextAttemptAt", "errorCode"]
+        [
+          "workerId", "leaseToken", "attemptCount", "failedAt",
+          "nextAttemptAt", "errorCode"
+        ]
       )
         || !SCOPE_IDENTIFIER.test(failure.workerId)
+        || !VISUAL_LEASE_TOKEN.test(failure.leaseToken)
+        || !Number.isSafeInteger(failure.attemptCount)
+        || failure.attemptCount < 1
         || failure.errorCode !== "RECOVERY_FAILED"
         || isoInstant(failure.nextAttemptAt) < isoInstant(failure.failedAt)) {
         fail("VISUAL_READER_INVALID_INPUT");
@@ -1990,6 +2004,8 @@ implements AcquisitionVisualReaderRepository {
       if (!item
         || item.status !== "running"
         || item.leaseOwner !== failure.workerId
+        || item.leaseToken !== failure.leaseToken
+        || item.attemptCount !== failure.attemptCount
         || item.leaseExpiresAt === null
         || Date.parse(failure.failedAt) < Date.parse(item.updatedAt)
         || Date.parse(failure.failedAt) > Date.parse(item.leaseExpiresAt)) {
@@ -2000,6 +2016,7 @@ implements AcquisitionVisualReaderRepository {
         status: "retry",
         nextAttemptAt: failure.nextAttemptAt,
         leaseOwner: null,
+        leaseToken: null,
         leaseExpiresAt: null,
         lastErrorCode: failure.errorCode,
         updatedAt: failure.failedAt
@@ -2024,10 +2041,13 @@ implements AcquisitionVisualReaderRepository {
       assertVisualReaderScope(scope);
       assertVisualReaderIdentifier(observationId);
       if (!recordWithKeys(result, [
-        "workerId", "status", "evidenceId", "platformEvidenceId",
-        "candidateId", "completedAt"
+        "workerId", "leaseToken", "attemptCount", "status", "evidenceId",
+        "platformEvidenceId", "candidateId", "completedAt"
       ])
         || !SCOPE_IDENTIFIER.test(result.workerId)
+        || !VISUAL_LEASE_TOKEN.test(result.leaseToken)
+        || !Number.isSafeInteger(result.attemptCount)
+        || result.attemptCount < 1
         || !["succeeded", "manual_review_only"].includes(result.status)
         || typeof result.evidenceId !== "string"
         || result.evidenceId.length < 1
@@ -2057,6 +2077,8 @@ implements AcquisitionVisualReaderRepository {
         || !observation
         || item.status !== "running"
         || item.leaseOwner !== result.workerId
+        || item.leaseToken !== result.leaseToken
+        || item.attemptCount !== result.attemptCount
         || item.leaseExpiresAt === null
         || Date.parse(result.completedAt) < Date.parse(item.updatedAt)
         || Date.parse(result.completedAt) > Date.parse(item.leaseExpiresAt)
@@ -2074,6 +2096,7 @@ implements AcquisitionVisualReaderRepository {
         status: result.status,
         nextAttemptAt: result.completedAt,
         leaseOwner: null,
+        leaseToken: null,
         leaseExpiresAt: null,
         lastErrorCode: null,
         evidenceId: result.evidenceId,

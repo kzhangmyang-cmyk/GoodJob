@@ -175,6 +175,8 @@ export class AcquisitionVisualCommentIngestionService {
             teamId: work.workItem.teamId
           }, work.workItem.observationId, {
             workerId: this.workerId,
+            leaseToken: work.workItem.leaseToken!,
+            attemptCount: work.workItem.attemptCount,
             failedAt,
             nextAttemptAt: new Date(
               Date.parse(failedAt) + delayMs
@@ -240,6 +242,8 @@ export class AcquisitionVisualCommentIngestionService {
         observation.observationId,
         {
           workerId: this.workerId,
+          leaseToken: workItem.leaseToken!,
+          attemptCount: workItem.attemptCount,
           status: "manual_review_only",
           evidenceId: evidence.id,
           platformEvidenceId: null,
@@ -365,6 +369,8 @@ export class AcquisitionVisualCommentIngestionService {
       observation.observationId,
       {
         workerId: this.workerId,
+        leaseToken: workItem.leaseToken!,
+        attemptCount: workItem.attemptCount,
         status: "succeeded",
         evidenceId: evidence.id,
         platformEvidenceId,
