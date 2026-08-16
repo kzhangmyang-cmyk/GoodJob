@@ -44,9 +44,17 @@ try {
           justification: "Synthetic local OCR production smoke"
         });
       }
+      const runtimeEpoch = "smoke-worker-epoch-0001";
+      const synchronized = await scope.chrome.runtime.sendMessage({
+        kind: "visual_ocr_sync_generation",
+        runtimeEpoch,
+        runtimeGeneration: 0
+      });
+      if (synchronized?.accepted !== true) throw new Error("offscreen epoch synchronization failed");
       return Promise.race([
         scope.chrome.runtime.sendMessage({
           kind: "visual_process_capture",
+          runtimeEpoch,
           runtimeGeneration: 0,
           sessionId: "synthetic-smoke",
           domTextState: "missing",
@@ -80,7 +88,11 @@ try {
     }
     const ended = await serviceWorker.evaluate(() => {
       const scope = globalThis as typeof globalThis & { chrome: any };
-      return scope.chrome.runtime.sendMessage({ kind: "visual_ocr_end_session", runtimeGeneration: 0 });
+      return scope.chrome.runtime.sendMessage({
+        kind: "visual_ocr_end_session",
+        runtimeEpoch: "smoke-worker-epoch-0001",
+        runtimeGeneration: 0
+      });
     }) as { accepted?: unknown };
     if (ended?.accepted !== true) throw new Error("production OCR worker did not terminate");
   } finally {

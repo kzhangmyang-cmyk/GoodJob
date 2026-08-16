@@ -212,14 +212,20 @@ export function redactCommentCard(input: {
   };
 }
 
-export function restrictRasterToRegions(image: RasterImage, regions: PixelRect[]): RasterImage {
+export function restrictRasterToRegions(image: RasterImage, regions: PixelRect[],
+  excludedRegions: PixelRect[] = []): RasterImage {
   validateRaster(image);
   if (!Array.isArray(regions) || regions.length < 1 || regions.length > 20
-    || regions.some((region) => !finiteRect(region))) throw new Error("invalid OCR body regions");
+    || regions.some((region) => !finiteRect(region)) || !Array.isArray(excludedRegions)
+    || excludedRegions.length > 20
+    || excludedRegions.some((region) => !finiteRect(region))) {
+    throw new Error("invalid OCR body regions");
+  }
   const pixels = new Uint8ClampedArray(image.pixels);
   for (let y = 0; y < image.height; y += 1) {
     for (let x = 0; x < image.width; x += 1) {
-      if (regions.some((region) => inRect(region, x, y))) continue;
+      if (regions.some((region) => inRect(region, x, y))
+        && !excludedRegions.some((region) => inRect(region, x, y))) continue;
       pixels.set(MASK_COLOR_RGBA, (y * image.width + x) * 4);
     }
   }
@@ -232,9 +238,15 @@ function contains(outer: PixelRect, inner: PixelRect): boolean {
     && inner.y + inner.height <= outer.y + outer.height;
 }
 
+function overlaps(left: PixelRect, right: PixelRect): boolean {
+  return left.x < right.x + right.width && right.x < left.x + left.width
+    && left.y < right.y + right.height && right.y < left.y + left.height;
+}
+
 export function filterOcrResultToBodyRegions(result: VisualOcrResult,
-  bodyRegions: PixelRect[]): VisualOcrResult {
-  const words = result.words.filter((word) => bodyRegions.some((region) => contains(region, word.bounds)))
+  bodyRegions: PixelRect[], excludedRegions: PixelRect[] = []): VisualOcrResult {
+  const words = result.words.filter((word) => bodyRegions.some((region) => contains(region, word.bounds))
+    && !excludedRegions.some((region) => overlaps(region, word.bounds)))
     .sort((left, right) => left.bounds.y - right.bounds.y || left.bounds.x - right.bounds.x);
   return {
     text: words.map((word) => word.text).join(" ").normalize("NFC").trim(),

@@ -22,46 +22,38 @@ import {
   type ConfirmedDouyinTab
 } from "./tab-guard";
 import { recoverOrphanedVisualReaderSession } from "./restart-recovery";
-import { authorizeVisualCapture, type VisualCaptureRequest } from "./visual-capture-guard";
+import { createVisualCaptureAuthorizationResolver } from "./visual-capture-authorization";
+import type { VisualCaptureRequest } from "./visual-capture-guard";
 import { createVisualCaptureRuntime } from "./visual-capture-runtime";
-import type { VisualCaptureOwner } from "./visual-capture-runtime";
 import { validateVisualCaptureEvidence } from "./visual-evidence-validator";
+import { invalidateCoordinatorOwnership } from "./visual-coordinator-ownership";
+import { createVisualTransitionBarrier } from "./visual-transition-barrier";
 
 declare const chrome: any;
 
 let coordinator: SessionCoordinator | null = null;
 let coordinatorGeneration = 0;
+const coordinatorOwnership = {
+  get current() { return coordinator; },
+  set current(value: SessionCoordinator | null) { coordinator = value; },
+  get generation() { return coordinatorGeneration; },
+  set generation(value: number) { coordinatorGeneration = value; }
+};
+const coordinatorTransitions = createVisualTransitionBarrier();
+const epochBytes = new Uint8Array(16);
+globalThis.crypto.getRandomValues(epochBytes);
+const visualRuntimeEpoch = Array.from(epochBytes,
+  (byte) => byte.toString(16).padStart(2, "0")).join("");
 
-async function visualCaptureAuthorization(
-  request: unknown,
-  senderTabId: number | null,
-  expectedOwner: VisualCaptureOwner | null
-) {
-  const snapshot = coordinator?.snapshot() ?? null;
-  if (!snapshot || snapshot.douyinTabId === null) return null;
-  const [tab, focusedWindow] = await Promise.all([
-    chrome.tabs.get(snapshot.douyinTabId).catch(() => null),
-    chrome.windows.getLastFocused({ populate: false }).catch(() => null)
-  ]);
-  const authorized = authorizeVisualCapture({
-    request,
-    senderTabId,
-    snapshot,
-    tab,
-    focusedWindowId: Number.isSafeInteger(focusedWindow?.id) ? focusedWindow.id : null
-  });
-  if (!authorized || snapshot.douyinWindowId === null) return null;
-  const owner: VisualCaptureOwner = {
-    generation: coordinatorGeneration,
-    sessionId: snapshot.sessionId,
-    tabId: snapshot.douyinTabId,
-    windowId: snapshot.douyinWindowId
-  };
-  if (expectedOwner && (expectedOwner.generation !== owner.generation
-    || expectedOwner.sessionId !== owner.sessionId || expectedOwner.tabId !== owner.tabId
-    || expectedOwner.windowId !== owner.windowId)) return null;
-  return { request: authorized, owner };
-}
+const visualCaptureAuthorization = createVisualCaptureAuthorizationResolver({
+  getCoordinator: () => coordinator,
+  getGeneration: () => coordinatorGeneration,
+  getTab: async (tabId) => chrome.tabs.get(tabId).catch(() => null),
+  getFocusedWindowId: async () => {
+    const focusedWindow = await chrome.windows.getLastFocused({ populate: false }).catch(() => null);
+    return Number.isSafeInteger(focusedWindow?.id) ? focusedWindow.id : null;
+  }
+});
 
 async function ensureVisualOffscreenDocument(runtimeGeneration: number): Promise<void> {
   if (!await chrome.offscreen.hasDocument()) {
@@ -73,6 +65,7 @@ async function ensureVisualOffscreenDocument(runtimeGeneration: number): Promise
   }
   const response = await chrome.runtime.sendMessage({
     kind: "visual_ocr_sync_generation",
+    runtimeEpoch: visualRuntimeEpoch,
     runtimeGeneration
   });
   if (!record(response) || response.accepted !== true) {
@@ -81,30 +74,43 @@ async function ensureVisualOffscreenDocument(runtimeGeneration: number): Promise
 }
 
 const visualCaptureRuntime = createVisualCaptureRuntime({
+  runtimeEpoch: visualRuntimeEpoch,
   authorize: visualCaptureAuthorization,
   ensureOffscreen: ensureVisualOffscreenDocument,
   reserveOcrCall: async (request) => {
-    if (!coordinator) return false;
-    const before = coordinator.snapshot();
+    const target = coordinator;
+    const generation = coordinatorGeneration;
+    if (!target) return false;
+    const before = target.snapshot();
     if (before.status !== "reading" || before.sessionId !== request.sessionId
       || before.artifactUploadEnabled !== true
       || before.usage.ocrCallCount >= before.limits.maxOcrCalls) return false;
-    await coordinator.updateUsage({ ocrCallCount: before.usage.ocrCallCount + 1 });
-    const after = coordinator.snapshot();
+    await target.updateUsage({ ocrCallCount: before.usage.ocrCallCount + 1 });
+    if (coordinator !== target || coordinatorGeneration !== generation) return false;
+    const after = target.snapshot();
     return after.status === "reading" && after.sessionId === request.sessionId
       && after.usage.ocrCallCount === before.usage.ocrCallCount + 1;
   },
-  captureVisibleTab: async () => {
-    const snapshot = coordinator?.snapshot();
-    if (!snapshot || snapshot.douyinWindowId === null) throw new Error("capture session unavailable");
-    return chrome.tabs.captureVisibleTab(snapshot.douyinWindowId, { format: "png" });
+  captureVisibleTab: async (_request, owner) => {
+    let dataUrl: string | null = await chrome.tabs.captureVisibleTab(owner.windowId, { format: "png" });
+    return {
+      get dataUrl() { return dataUrl ?? ""; },
+      clear() { dataUrl = null; }
+    };
   },
-  processOffscreen: async (message) => chrome.runtime.sendMessage(message),
+  processOffscreen: (message) => {
+    try {
+      return chrome.runtime.sendMessage(message);
+    } finally {
+      message.screenshotDataUrl = "";
+    }
+  },
   validateEvidence: validateVisualCaptureEvidence,
   endOffscreenSession: async (runtimeGeneration) => {
     if (!await chrome.offscreen.hasDocument()) return true;
     const response = await chrome.runtime.sendMessage({
       kind: "visual_ocr_end_session",
+      runtimeEpoch: visualRuntimeEpoch,
       runtimeGeneration
     });
     return record(response) && response.accepted === true;
@@ -130,13 +136,15 @@ async function persist(state: VisualReaderPersistedState): Promise<void> {
 }
 
 async function recoverAfterServiceWorkerRestart(): Promise<void> {
+  const ending = visualCaptureRuntime.endSession();
+  if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
+  await ending;
   await recoverOrphanedVisualReaderSession({
     load: async () => (await chrome.storage.session.get("visualReaderSession"))?.visualReaderSession ?? null,
     clear: async () => { await chrome.storage.session.remove("visualReaderSession"); },
     notifyGoodJob: async (tabId, message) => { await chrome.tabs.sendMessage(tabId, message); },
     notifyDouyin: async (tabId, message) => { await chrome.tabs.sendMessage(tabId, message); }
   });
-  await visualCaptureRuntime.endSession();
 }
 
 function safeLog(entry: { event: string; reason?: string; sessionId?: string }): void {
@@ -151,19 +159,30 @@ async function sendToGoodJob(tabId: number, event: ExtensionEvent): Promise<void
   await chrome.tabs.sendMessage(tabId, { kind: "goodjob_extension_event", event });
 }
 
-async function safeAbort(reason: "visual_reader_user_takeover" | "user_requested"): Promise<void> {
-  if (!coordinator) return;
-  const snapshot = coordinator.snapshot();
+function beginCaptureInvalidation(): {
+  target: SessionCoordinator | null;
+  ending: Promise<boolean>;
+  transitionRevision: number;
+} {
+  const transitionRevision = coordinatorTransitions.invalidatePending();
+  const target = invalidateCoordinatorOwnership(coordinatorOwnership);
+  const ending = visualCaptureRuntime.endSession();
+  return { target, ending, transitionRevision };
+}
+
+async function settleAbort(target: SessionCoordinator | null,
+  reason: "visual_reader_user_takeover" | "user_requested"): Promise<void> {
+  if (!target) return;
+  const snapshot = target.snapshot();
   if (["completed", "partial_success", "aborted"].includes(snapshot.status)) return;
-  const nonce = coordinator.rawChannelNonce();
+  const nonce = target.rawChannelNonce();
   if (snapshot.douyinTabId !== null) {
     await chrome.tabs.sendMessage(snapshot.douyinTabId, {
       kind: "visual_reader_abort",
       sessionId: snapshot.sessionId
     }).catch(() => undefined);
   }
-  await coordinator.abort(reason);
-  await visualCaptureRuntime.endSession();
+  await target.abort(reason);
   if (nonce) {
     await sendToGoodJob(snapshot.goodJobTabId, {
       version: BRIDGE_VERSION,
@@ -174,6 +193,17 @@ async function safeAbort(reason: "visual_reader_user_takeover" | "user_requested
       errorCodes: reason === "visual_reader_user_takeover" ? ["visual_reader_user_takeover"] : []
     }).catch(() => undefined);
   }
+}
+
+async function safeAbort(reason: "visual_reader_user_takeover" | "user_requested"): Promise<void> {
+  const invalidation = beginCaptureInvalidation();
+  await coordinatorTransitions.schedule(async () => {
+    try {
+      await settleAbort(invalidation.target, reason);
+    } finally {
+      await invalidation.ending;
+    }
+  });
 }
 
 async function handleGoodJobCommand(
@@ -193,17 +223,28 @@ async function handleGoodJobCommand(
     } };
   }
   if (command.type === "start") {
-    if (coordinator) await safeAbort("user_requested");
-    coordinatorGeneration += 1;
-    coordinator = createCoordinator();
-    await coordinator.authorizeFromGoodJob({
-      goodJobTabId: sender.tab.id,
-      channelNonce: command.channelNonce,
-      sessionId: command.sessionId,
-      limits: command.limits,
-      artifactUploadEnabled: command.artifactUploadEnabled
+    const invalidation = beginCaptureInvalidation();
+    return coordinatorTransitions.schedule(async () => {
+      try {
+        await settleAbort(invalidation.target, "user_requested");
+      } finally {
+        await invalidation.ending;
+      }
+      if (!coordinatorTransitions.isCurrent(invalidation.transitionRevision)
+        || coordinator !== null) return { accepted: false };
+      const target = createCoordinator();
+      coordinator = target;
+      await target.authorizeFromGoodJob({
+        goodJobTabId: sender.tab.id,
+        channelNonce: command.channelNonce,
+        sessionId: command.sessionId,
+        limits: command.limits,
+        artifactUploadEnabled: command.artifactUploadEnabled
+      });
+      if (!coordinatorTransitions.isCurrent(invalidation.transitionRevision)
+        || coordinator !== target) return { accepted: false };
+      return { accepted: true };
     });
-    return { accepted: true };
   }
   if (!coordinator) return {};
   const snapshot = coordinator.snapshot();
@@ -327,15 +368,23 @@ async function handleReaderEvent(raw: unknown, sender: any): Promise<{ accepted:
     }
     return { accepted: true };
   }
-  await sendToGoodJob(snapshot.goodJobTabId, event);
-  if (event.status === "aborted") {
-    await coordinator.abort(event.errorCodes.includes("visual_reader_user_takeover")
-      ? "visual_reader_user_takeover" : "user_requested");
-  } else {
-    await coordinator.finish(event.status === "completed" ? "completed" : "partial_success");
-  }
-  await visualCaptureRuntime.endSession();
-  return { accepted: true };
+  const invalidation = beginCaptureInvalidation();
+  const target = invalidation.target;
+  if (!target) return { accepted: false };
+  return coordinatorTransitions.schedule(async () => {
+    try {
+      await sendToGoodJob(snapshot.goodJobTabId, event);
+      if (event.status === "aborted") {
+        await target.abort(event.errorCodes.includes("visual_reader_user_takeover")
+          ? "visual_reader_user_takeover" : "user_requested");
+      } else {
+        await target.finish(event.status === "completed" ? "completed" : "partial_success");
+      }
+      return { accepted: true };
+    } finally {
+      await invalidation.ending;
+    }
+  });
 }
 
 async function handleReaderUsage(raw: unknown, sender: any): Promise<{ accepted: boolean }> {

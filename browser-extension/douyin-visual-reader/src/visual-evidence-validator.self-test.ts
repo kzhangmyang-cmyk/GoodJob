@@ -94,4 +94,33 @@ assert.equal(await validateVisualCaptureEvidence({
   }
 }, request, decode), null, "OCR words outside body regions cannot cross the service-worker boundary");
 
+{
+  const overlapRequest: VisualCaptureRequest = {
+    ...request,
+    regions: [
+      ...request.regions,
+      { kind: "metadata", bounds: { x: 850, y: 220, width: 80, height: 80 } }
+    ]
+  };
+  const overlapEvidence = {
+    ...evidence,
+    redactionProof: {
+      ...evidence.redactionProof,
+      visibleRegions: [
+        ...evidence.redactionProof.visibleRegions,
+        { x: 500, y: 40, width: 160, height: 160 }
+      ]
+    },
+    ocrResult: {
+      text: "正文报价 128.50 点赞500",
+      confidence: 0.99,
+      words: [...evidence.ocrResult.words, {
+        text: "点赞500", confidence: 0.99, bounds: { x: 520, y: 60, width: 100, height: 30 }
+      }]
+    }
+  };
+  assert.equal(await validateVisualCaptureEvidence(overlapEvidence, overlapRequest, decode), null,
+    "a word intersecting metadata is rejected even when it is fully contained by body");
+}
+
 console.log("visual evidence validator self-test passed");

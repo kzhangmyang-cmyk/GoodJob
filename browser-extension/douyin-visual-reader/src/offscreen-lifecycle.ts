@@ -1,43 +1,55 @@
 export function createOffscreenCaptureLifecycle(): {
-  begin(generation: number, releaseRaw: () => void): symbol | null;
+  begin(epoch: string, generation: number, releaseRaw: () => void): symbol | null;
   active(token: symbol): boolean;
   finish(token: symbol): void;
-  synchronize(generation: number): void;
-  end(generation: number): void;
+  synchronize(epoch: string, generation: number): boolean;
+  end(epoch: string, generation: number): boolean;
 } {
+  let currentEpoch: string | null = null;
   let minimumGeneration = 0;
-  const inflight = new Map<symbol, { generation: number; releaseRaw: () => void }>();
+  const inflight = new Map<symbol, { epoch: string; generation: number; releaseRaw: () => void }>();
+  const validEpoch = (epoch: string) => /^[A-Za-z0-9_-]{16,128}$/u.test(epoch);
+  const releaseWhere = (predicate: (entry: { epoch: string; generation: number }) => boolean) => {
+    for (const [token, entry] of inflight) {
+      if (!predicate(entry)) continue;
+      inflight.delete(token);
+      try { entry.releaseRaw(); } catch { /* fail closed; release remaining captures */ }
+    }
+  };
   return {
-    begin(generation, releaseRaw) {
-      if (!Number.isSafeInteger(generation) || generation !== minimumGeneration) return null;
+    begin(epoch, generation, releaseRaw) {
+      if (epoch !== currentEpoch || !Number.isSafeInteger(generation)
+        || generation !== minimumGeneration) return null;
       const token = Symbol("offscreen-capture");
-      inflight.set(token, { generation, releaseRaw });
+      inflight.set(token, { epoch, generation, releaseRaw });
       return token;
     },
     active(token) {
       const entry = inflight.get(token);
-      return entry !== undefined && entry.generation === minimumGeneration;
+      return entry !== undefined && entry.epoch === currentEpoch
+        && entry.generation === minimumGeneration;
     },
     finish(token) {
       inflight.delete(token);
     },
-    synchronize(generation) {
-      if (!Number.isSafeInteger(generation) || generation < minimumGeneration) return;
+    synchronize(epoch, generation) {
+      if (!validEpoch(epoch) || !Number.isSafeInteger(generation) || generation < 0) return false;
+      if (epoch !== currentEpoch) {
+        releaseWhere(() => true);
+        currentEpoch = epoch;
+        minimumGeneration = generation;
+        return true;
+      }
+      if (generation < minimumGeneration) return false;
       minimumGeneration = generation;
-      for (const [token, entry] of inflight) {
-        if (entry.generation >= generation) continue;
-        inflight.delete(token);
-        try { entry.releaseRaw(); } catch { /* fail closed; release remaining captures */ }
-      }
+      releaseWhere((entry) => entry.epoch === epoch && entry.generation < generation);
+      return true;
     },
-    end(generation) {
-      if (!Number.isSafeInteger(generation) || generation < 0) return;
+    end(epoch, generation) {
+      if (epoch !== currentEpoch || !Number.isSafeInteger(generation) || generation < 0) return false;
       minimumGeneration = Math.max(minimumGeneration, generation + 1);
-      for (const [token, entry] of inflight) {
-        if (entry.generation > generation) continue;
-        inflight.delete(token);
-        try { entry.releaseRaw(); } catch { /* fail closed; release remaining captures */ }
-      }
+      releaseWhere((entry) => entry.epoch === epoch && entry.generation <= generation);
+      return true;
     }
   };
 }

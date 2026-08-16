@@ -4,6 +4,7 @@ import {
   characterRecall,
   filterOcrResultToBodyRegions,
   redactCommentCard,
+  restrictRasterToRegions,
   resolveObservationWithVisualFallback,
   type RasterImage,
   type RedactedCapture
@@ -119,6 +120,29 @@ assert.deepEqual(filterOcrResultToBodyRegions({
   confidence: 0.98,
   words: [{ text: "想了解报价", confidence: 0.98, bounds: { x: 10, y: 10, width: 80, height: 20 } }]
 }, "metadata and partially out-of-body words cannot contribute text or numbers");
+
+{
+  const source = raster(4, 1);
+  const restricted = restrictRasterToRegions(source,
+    [{ x: 0, y: 0, width: 4, height: 1 }],
+    [{ x: 2, y: 0, width: 2, height: 1 }]);
+  assert.notDeepEqual(pixel(restricted, 1, 0), MASK_COLOR_RGBA);
+  assert.deepEqual(pixel(restricted, 2, 0), MASK_COLOR_RGBA,
+    "metadata overlap is subtracted from the body OCR raster");
+  assert.deepEqual(filterOcrResultToBodyRegions({
+    text: "正文 点赞500",
+    confidence: 0.99,
+    words: [
+      { text: "正文", confidence: 0.99, bounds: { x: 10, y: 10, width: 30, height: 15 } },
+      { text: "点赞500", confidence: 0.99, bounds: { x: 65, y: 10, width: 30, height: 15 } }
+    ]
+  }, [{ x: 0, y: 0, width: 100, height: 40 }],
+  [{ x: 60, y: 0, width: 40, height: 40 }]), {
+    text: "正文",
+    confidence: 0.99,
+    words: [{ text: "正文", confidence: 0.99, bounds: { x: 10, y: 10, width: 30, height: 15 } }]
+  }, "a word intersecting metadata cannot be reconstructed as body text");
+}
 
 const baseObservation = {
   clientObservationKey: "dom:fixture",

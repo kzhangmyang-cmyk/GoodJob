@@ -23,18 +23,26 @@ export interface VisualCaptureAuthorization {
   owner: VisualCaptureOwner;
 }
 
+export interface VisualCapturedScreenshot {
+  readonly dataUrl: string;
+  clear(): void;
+}
+
 export type VisualProcessCaptureMessage = Omit<VisualCaptureRequest, "kind"> & {
   kind: "visual_process_capture";
+  runtimeEpoch: string;
   runtimeGeneration: number;
   screenshotDataUrl: string;
 };
 
 export interface VisualCaptureRuntimeDependencies {
+  runtimeEpoch: string;
   authorize(request: unknown, senderTabId: number | null,
     expectedOwner: VisualCaptureOwner | null): Promise<VisualCaptureAuthorization | null>;
   ensureOffscreen(runtimeGeneration: number): Promise<void>;
   reserveOcrCall(request: VisualCaptureRequest): Promise<boolean>;
-  captureVisibleTab(request: VisualCaptureRequest): Promise<string>;
+  captureVisibleTab(request: VisualCaptureRequest,
+    owner: VisualCaptureOwner): Promise<VisualCapturedScreenshot>;
   processOffscreen(message: VisualProcessCaptureMessage): Promise<unknown>;
   validateEvidence(value: unknown, request: VisualCaptureRequest): Promise<VisualCaptureEvidence | null>;
   endOffscreenSession(endingGeneration: number): Promise<boolean>;
@@ -144,13 +152,28 @@ export function createVisualCaptureRuntime(dependencies: VisualCaptureRuntimeDep
   >;
   endSession(): Promise<boolean>;
 } {
-  let queue: Promise<void> = Promise.resolve();
   let runtimeGeneration = 0;
+  interface GenerationState {
+    generation: number;
+    queue: Promise<void>;
+    screenshots: Set<VisualCapturedScreenshot>;
+  }
+  let currentGeneration: GenerationState = {
+    generation: runtimeGeneration,
+    queue: Promise.resolve(),
+    screenshots: new Set()
+  };
 
-  async function run(request: unknown, senderTabId: number | null, expectedGeneration: number): Promise<
+  function releaseScreenshot(state: GenerationState, screenshot: VisualCapturedScreenshot): void {
+    if (!state.screenshots.delete(screenshot)) return;
+    try { screenshot.clear(); } catch { /* continue invalidating the generation */ }
+  }
+
+  async function run(request: unknown, senderTabId: number | null, state: GenerationState): Promise<
     { accepted: true; evidence: VisualCaptureEvidence } | { accepted: false }
   > {
-    let screenshotDataUrl: string | null = null;
+    const expectedGeneration = state.generation;
+    let screenshot: VisualCapturedScreenshot | null = null;
     try {
       const initial = await dependencies.authorize(request, senderTabId, null);
       if (!initial || runtimeGeneration !== expectedGeneration) return { accepted: false };
@@ -162,19 +185,29 @@ export function createVisualCaptureRuntime(dependencies: VisualCaptureRuntimeDep
       const authorizedForCapture = await dependencies.authorize(request, senderTabId, owner);
       if (!authorizedForCapture || !sameOwner(owner, authorizedForCapture.owner)
         || runtimeGeneration !== expectedGeneration) return { accepted: false };
-      screenshotDataUrl = await dependencies.captureVisibleTab(authorizedForCapture.request);
-      if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/u.test(screenshotDataUrl)
-        || screenshotDataUrl.length > 50_000_000) return { accepted: false };
+      screenshot = await dependencies.captureVisibleTab(authorizedForCapture.request, owner);
+      state.screenshots.add(screenshot);
+      if (runtimeGeneration !== expectedGeneration
+        || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/u.test(screenshot.dataUrl)
+        || screenshot.dataUrl.length > 50_000_000) return { accepted: false };
       const authorizedForOffscreen = await dependencies.authorize(request, senderTabId, owner);
       if (!authorizedForOffscreen || !sameOwner(owner, authorizedForOffscreen.owner)
         || runtimeGeneration !== expectedGeneration) return { accepted: false };
-      const processing = dependencies.processOffscreen({
+      const processMessage: VisualProcessCaptureMessage = {
         ...authorizedForOffscreen.request,
         kind: "visual_process_capture",
+        runtimeEpoch: dependencies.runtimeEpoch,
         runtimeGeneration: expectedGeneration,
-        screenshotDataUrl
-      });
-      screenshotDataUrl = null;
+        screenshotDataUrl: screenshot.dataUrl
+      };
+      let processing: Promise<unknown>;
+      try {
+        processing = dependencies.processOffscreen(processMessage);
+      } finally {
+        processMessage.screenshotDataUrl = "";
+      }
+      releaseScreenshot(state, screenshot);
+      screenshot = null;
       const response = await processing;
       const authorizedForRelease = await dependencies.authorize(request, senderTabId, owner);
       if (!authorizedForRelease || !sameOwner(owner, authorizedForRelease.owner)
@@ -193,20 +226,30 @@ export function createVisualCaptureRuntime(dependencies: VisualCaptureRuntimeDep
     } catch {
       return { accepted: false };
     } finally {
-      screenshotDataUrl = null;
+      if (screenshot) releaseScreenshot(state, screenshot);
+      screenshot = null;
     }
   }
 
   return {
     handle(request, senderTabId) {
-      const requestedGeneration = runtimeGeneration;
-      const result = queue.then(() => run(request, senderTabId, requestedGeneration));
-      queue = result.then(() => undefined, () => undefined);
+      const state = currentGeneration;
+      const result = state.queue.then(() => run(request, senderTabId, state));
+      state.queue = result.then(() => undefined, () => undefined);
       return result;
     },
     async endSession() {
-      const endingGeneration = runtimeGeneration;
+      const endingState = currentGeneration;
+      const endingGeneration = endingState.generation;
       runtimeGeneration += 1;
+      currentGeneration = {
+        generation: runtimeGeneration,
+        queue: Promise.resolve(),
+        screenshots: new Set()
+      };
+      for (const screenshot of [...endingState.screenshots]) {
+        releaseScreenshot(endingState, screenshot);
+      }
       return dependencies.endOffscreenSession(endingGeneration).catch(() => false);
     }
   };

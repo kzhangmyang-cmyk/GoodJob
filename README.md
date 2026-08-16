@@ -92,10 +92,17 @@ Cookie、脚本数据、头像地址、二级回复正文或页面内部状态�
 会话中，已绑定且当前可见的抖音标签页出现正文缺失或截断时，后台才会在
 OCR 预算内调用 `captureVisibleTab`。截图前、截图后、offscreen 返回后以及异步 WebP
 逐像素验证完成、放行 content 前都会用不可变的
-session/tab/window/generation owner 重新授权；停止或接管会抢占等待队列、清理 offscreen
-正在处理的 raw 资源，并拒绝已结束 generation 的迟到消息。原始 PNG 只通过 service worker 到
-offscreen document 的临时内存消息，crop/redaction 后即清理；encoder scratch 也注册在该
-generation 的可抢占清理域内，不写入 storage、IndexedDB、日志或错误载荷。
+session/tab/window/generation owner 重新授权；停止或接管在首个 await 前就会撤销 active
+coordinator 并使 runtime generation 失效，同时抢占等待队列、清理 offscreen
+正在处理的 raw 资源，并拒绝已结束 generation 的迟到消息；新 generation 使用独立队列，
+不会被旧 generation 挂起的 OCR 阻塞。旧 coordinator 的 abort/finish 持久化和 offscreen end
+则通过 transition barrier 完全沉降后，新 start 才会安装和持久化新 coordinator，避免旧终态
+覆盖新会话；每个 start 还绑定入口处的 transition revision，后到的停止、接管或 start 会同步
+撤销尚在排队或授权持久化中的旧 start。每次 service worker 启动生成新的本地 epoch，启动
+恢复会先关闭遗留 offscreen document，后续 sync/end/process 同时绑定 epoch 和 generation。
+原始 PNG 在截图后只存于可同步擦除的 service-worker holder；offscreen message 同步克隆后
+立即清除字段引用，crop/redaction 后即清理。encoder scratch 也注册在该 generation 的
+可抢占清理域内，不写入 storage、IndexedDB、日志或错误载荷。
 offscreen pipeline 将评论卡夹到视口，以 crop pixel 坐标遮挡头像和文字/公开元数据
 矩形外的每个像素；固定遮挡色为 `[17,61,51,255]`，允许面积不超过 80%。
 遮挡后 WebP 使用 lossless candidate，并在本地解码后逐字节对比；任何色偏或超过
@@ -108,8 +115,9 @@ OCR 固定使用扩展内的 `tesseract.js 7.0.0`、`tesseract.js-core 7.0.0` �
 只在构建期从 pinned `best_int` gzip 解压；扩展运行时只读本地未压缩
 `.traineddata`，不包含 Node `Buffer` 兼容分支。每会话
 惰性创建一个 worker，初始化和单次识别各有 20 秒上限，空闲 30 秒或会话结束时立即
-terminate；晚到的 worker 也会立即销毁。OCR 输入会把时间与点赞/回复等公开元数据再次遮挡，
-只能从正文矩形内的词边界按顺序重建文字。识别结果不能生成
+terminate；晚到的 worker 也会立即销毁。OCR 输入会从正文区域逐像素减去时间与点赞/
+回复等公开元数据区域，即使两者几何重叠也不例外；任何与 metadata 相交的 OCR word 都会
+在 offscreen 重建和 service-worker 异步 evidence 验证两处被拒绝。识别结果不能生成
 评论 ID、主页地址或 secUid；低召回、低置信或 DOM/OCR 冲突仅作人工复核证据，
 截断 DOM 在 OCR 空、失败或无效时仍以低置信观察保留，不拼接补全文字或金额。
 每条提交和服务端归一化观察都分别保留 required-nullable `domTextHash` / `ocrTextHash`；

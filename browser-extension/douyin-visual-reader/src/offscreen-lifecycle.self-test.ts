@@ -5,21 +5,24 @@ import {
   runPreparedOcr
 } from "./offscreen-lifecycle";
 
+const epoch = "worker-epoch-0001";
+
 {
   const lifecycle = createOffscreenCaptureLifecycle();
   let releases = 0;
-  const first = lifecycle.begin(0, () => { releases += 1; });
+  assert.equal(lifecycle.synchronize(epoch, 0), true);
+  const first = lifecycle.begin(epoch, 0, () => { releases += 1; });
   assert.ok(first);
   assert.equal(lifecycle.active(first), true);
-  lifecycle.end(0);
+  lifecycle.end(epoch, 0);
   assert.equal(releases, 1, "session end actively releases in-flight raw resources");
   assert.equal(lifecycle.active(first), false);
-  assert.equal(lifecycle.begin(0, () => { releases += 1; }), null,
+  assert.equal(lifecycle.begin(epoch, 0, () => { releases += 1; }), null,
     "a late process message from the ended generation is rejected");
-  const replacement = lifecycle.begin(1, () => { releases += 1; });
+  const replacement = lifecycle.begin(epoch, 1, () => { releases += 1; });
   assert.ok(replacement, "the next runtime generation can prepare a capture");
   lifecycle.finish(replacement);
-  lifecycle.end(1);
+  lifecycle.end(epoch, 1);
   assert.equal(releases, 1, "finished capture resources are not released twice");
 }
 
@@ -33,13 +36,14 @@ import {
     value.height = 1;
   });
   let finishEncode: (() => void) | null = null;
-  const token = lifecycle.begin(0, () => {
+  lifecycle.synchronize(epoch, 0);
+  const token = lifecycle.begin(epoch, 0, () => {
     rawScreenshot = null;
     resources.disposeAll();
   });
   assert.ok(token);
   const encoding = new Promise<void>((resolve) => { finishEncode = resolve; });
-  lifecycle.end(0);
+  lifecycle.end(epoch, 0);
   assert.equal(rawScreenshot, null,
     "end clears the full-tab PNG reference while an encoder is pending");
   assert.deepEqual(Array.from(pixels), [0, 0, 0, 0],
@@ -54,10 +58,19 @@ import {
 
 {
   const recreated = createOffscreenCaptureLifecycle();
-  recreated.synchronize(3);
-  assert.equal(recreated.begin(2, () => undefined), null,
+  recreated.synchronize(epoch, 3);
+  assert.equal(recreated.begin(epoch, 2, () => undefined), null,
     "a recreated offscreen document rejects delayed messages older than the service-worker generation");
-  assert.ok(recreated.begin(3, () => undefined));
+  assert.ok(recreated.begin(epoch, 3, () => undefined));
+}
+
+{
+  const lifecycle = createOffscreenCaptureLifecycle();
+  lifecycle.synchronize("worker-epoch-old", 5);
+  assert.ok(lifecycle.begin("worker-epoch-old", 5, () => undefined));
+  lifecycle.synchronize("worker-epoch-new", 0);
+  assert.ok(lifecycle.begin("worker-epoch-new", 0, () => undefined),
+    "a restarted service worker epoch resets a surviving offscreen generation safely");
 }
 
 {

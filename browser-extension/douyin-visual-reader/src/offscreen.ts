@@ -109,6 +109,7 @@ async function encodeWithinLimit(image: RasterImage,
 }
 
 async function processCapture(message: VisualCaptureRequest & {
+  runtimeEpoch: string;
   runtimeGeneration: number;
   screenshotDataUrl: string;
 }) {
@@ -146,7 +147,7 @@ async function processCapture(message: VisualCaptureRequest & {
     if (lifecycleToken) captureLifecycle.finish(lifecycleToken);
     lifecycleToken = null;
   };
-  lifecycleToken = captureLifecycle.begin(message.runtimeGeneration, releaseRaw);
+  lifecycleToken = captureLifecycle.begin(message.runtimeEpoch, message.runtimeGeneration, releaseRaw);
   if (!lifecycleToken) {
     releaseRaw();
     throw new Error("capture generation ended");
@@ -185,8 +186,11 @@ async function processCapture(message: VisualCaptureRequest & {
       const bodyRegions = redacted.regionMappings.flatMap((mapping) => (
         message.regions[mapping.sourceIndex]?.kind === "body" ? [mapping.bounds] : []
       ));
+      const metadataRegions = redacted.regionMappings.flatMap((mapping) => (
+        message.regions[mapping.sourceIndex]?.kind === "metadata" ? [mapping.bounds] : []
+      ));
       if (bodyRegions.length < 1) throw new Error("missing OCR body region");
-      const ocrImage = restrictRasterToRegions(redacted.image, bodyRegions);
+      const ocrImage = restrictRasterToRegions(redacted.image, bodyRegions, metadataRegions);
       ocrPixels = ocrImage.pixels;
       releaseDecodedRaw();
       requireActive();
@@ -205,6 +209,7 @@ async function processCapture(message: VisualCaptureRequest & {
         width: redacted.image.width,
         height: redacted.image.height,
         bodyRegions,
+        metadataRegions,
         redactionProof: redacted.redactionProof
       };
     },
@@ -222,7 +227,8 @@ async function processCapture(message: VisualCaptureRequest & {
         width: prepared.width,
         height: prepared.height,
         redactionProof: prepared.redactionProof,
-        ocrResult: filterOcrResultToBodyRegions(result, prepared.bodyRegions)
+        ocrResult: filterOcrResultToBodyRegions(result, prepared.bodyRegions,
+          prepared.metadataRegions)
       };
     },
     releasePrepared: (prepared) => {
@@ -236,23 +242,30 @@ chrome.runtime.onMessage.addListener((message: unknown, sender: any,
   sendResponse: (value: unknown) => void) => {
   if (sender?.id !== chrome.runtime.id || !message || typeof message !== "object") return;
   const value = message as Record<string, unknown>;
-  if (value.kind === "visual_ocr_sync_generation" && Object.keys(value).length === 2
+  if (value.kind === "visual_ocr_sync_generation" && Object.keys(value).length === 3
+    && typeof value.runtimeEpoch === "string"
     && Number.isSafeInteger(value.runtimeGeneration) && (value.runtimeGeneration as number) >= 0) {
-    captureLifecycle.synchronize(value.runtimeGeneration as number);
-    sendResponse({ accepted: true });
+    sendResponse({ accepted: captureLifecycle.synchronize(value.runtimeEpoch,
+      value.runtimeGeneration as number) });
     return false;
   }
-  if (value.kind === "visual_ocr_end_session" && Object.keys(value).length === 2
+  if (value.kind === "visual_ocr_end_session" && Object.keys(value).length === 3
+    && typeof value.runtimeEpoch === "string"
     && Number.isSafeInteger(value.runtimeGeneration) && (value.runtimeGeneration as number) >= 0) {
-    captureLifecycle.end(value.runtimeGeneration as number);
+    if (!captureLifecycle.end(value.runtimeEpoch, value.runtimeGeneration as number)) {
+      sendResponse({ accepted: false });
+      return false;
+    }
     void ocr.endSession().then(() => sendResponse({ accepted: true }),
       () => sendResponse({ accepted: false }));
     return true;
   }
-  if (value.kind !== "visual_process_capture" || Object.keys(value).length !== 9
+  if (value.kind !== "visual_process_capture" || Object.keys(value).length !== 10
+    || typeof value.runtimeEpoch !== "string"
     || !Number.isSafeInteger(value.runtimeGeneration)
     || (value.runtimeGeneration as number) < 0) return;
   void processCapture({ ...value, kind: "visual_capture_request" } as unknown as VisualCaptureRequest & {
+    runtimeEpoch: string;
     runtimeGeneration: number;
     screenshotDataUrl: string;
   }).then((evidence) => sendResponse({ accepted: true, evidence }),

@@ -17,6 +17,11 @@ function contains(outer: PixelRect, inner: PixelRect): boolean {
     && inner.y + inner.height <= outer.y + outer.height;
 }
 
+function overlaps(left: PixelRect, right: PixelRect): boolean {
+  return left.x < right.x + right.width && right.x < left.x + left.width
+    && left.y < right.y + right.height && right.y < left.y + left.height;
+}
+
 function intersect(rect: PixelRect, bounds: PixelRect): PixelRect | null {
   const left = Math.max(rect.x, bounds.x);
   const top = Math.max(rect.y, bounds.y);
@@ -91,6 +96,8 @@ export async function validateVisualCaptureEvidence(value: unknown, request: Vis
   const expectedVisible = mappings.map((mapping) => mapping.bounds);
   const bodyRegions = mappings.filter((mapping) => mapping.kind === "body")
     .map((mapping) => mapping.bounds);
+  const metadataRegions = mappings.filter((mapping) => mapping.kind === "metadata")
+    .map((mapping) => mapping.bounds);
   const expectedAvatar = request.avatarBounds === null ? null
     : cropRect(request.avatarBounds, card, request.viewport.deviceScaleFactor, width, height);
   const proof = evidence.redactionProof;
@@ -99,7 +106,8 @@ export async function validateVisualCaptureEvidence(value: unknown, request: Vis
     || bodyRegions.length < 1) return null;
   const orderedWords = [...evidence.ocrResult.words]
     .sort((left, right) => left.bounds.y - right.bounds.y || left.bounds.x - right.bounds.x);
-  if (orderedWords.some((word) => !bodyRegions.some((region) => contains(region, word.bounds)))
+  if (orderedWords.some((word) => !bodyRegions.some((region) => contains(region, word.bounds))
+    || metadataRegions.some((region) => overlaps(region, word.bounds)))
     || evidence.ocrResult.text !== orderedWords.map((word) => word.text).join(" ").normalize("NFC").trim()) {
     return null;
   }

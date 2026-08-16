@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
   createVisualCaptureRuntime,
+  type VisualCapturedScreenshot,
   type VisualCaptureAuthorization,
   type VisualCaptureRuntimeDependencies
 } from "./visual-capture-runtime";
@@ -22,6 +23,18 @@ const owner = {
   windowId: 8
 };
 const authorization: VisualCaptureAuthorization = { request, owner };
+
+function capturedScreenshot(value: string, onClear: () => void = () => undefined): VisualCapturedScreenshot {
+  let dataUrl = value;
+  return {
+    get dataUrl() { return dataUrl; },
+    clear() {
+      if (dataUrl === "") return;
+      dataUrl = "";
+      onClear();
+    }
+  };
+}
 
 const evidence = {
   mediaType: "image/webp" as const,
@@ -50,25 +63,27 @@ function dependencies(overrides: Partial<VisualCaptureRuntimeDependencies> = {})
   const calls: string[] = [];
   let authorizations = 0;
   const deps: VisualCaptureRuntimeDependencies = {
+    runtimeEpoch: "worker-epoch-0001",
     authorize: async (_request, _senderTabId, expectedOwner) => {
       authorizations += 1;
       calls.push(`authorize:${authorizations}`);
-      assert.deepEqual(expectedOwner, authorizations === 1 ? null : owner);
+      assert.deepEqual(expectedOwner, expectedOwner === null ? null : owner);
       return authorization;
     },
     ensureOffscreen: async () => { calls.push("offscreen"); },
     reserveOcrCall: async () => { calls.push("reserve"); return true; },
     captureVisibleTab: async () => {
       calls.push("capture");
-      return "data:image/png;base64,iVBORw0KGgo=";
+      return capturedScreenshot("data:image/png;base64,iVBORw0KGgo=");
     },
     processOffscreen: async (message) => {
       calls.push("process");
       assert.deepEqual(Object.keys(message).sort(), [
-        "avatarBounds", "cardBounds", "domTextState", "kind", "regions", "runtimeGeneration",
-        "screenshotDataUrl", "sessionId", "viewport"
+        "avatarBounds", "cardBounds", "domTextState", "kind", "regions", "runtimeEpoch",
+        "runtimeGeneration", "screenshotDataUrl", "sessionId", "viewport"
       ]);
       assert.equal(message.runtimeGeneration, 0);
+      assert.equal(message.runtimeEpoch, "worker-epoch-0001");
       assert.equal(message.kind, "visual_process_capture");
       return { accepted: true, evidence };
     },
@@ -152,7 +167,7 @@ for (const [name, overrides] of [
     ...overrides,
     captureVisibleTab: async () => {
       captures += 1;
-      return "data:image/png;base64,forbidden";
+      return capturedScreenshot("data:image/png;base64,forbidden");
     }
   });
   const result = await createVisualCaptureRuntime(deps).handle(request, 41);
@@ -220,6 +235,99 @@ for (const [name, overrides] of [
   finish({ accepted: true, evidence });
   assert.deepEqual(await pending, { accepted: false },
     "an in-flight owner cannot release evidence after session end");
+}
+
+{
+  let retainedMessage: { screenshotDataUrl: string } | null = null;
+  let releaseProcess: ((value: unknown) => void) | null = null;
+  const { deps } = dependencies({
+    processOffscreen: (message) => {
+      retainedMessage = message;
+      return new Promise((resolve) => { releaseProcess = resolve; });
+    }
+  });
+  const runtime = createVisualCaptureRuntime(deps);
+  const pending = runtime.handle(request, 41);
+  while (!releaseProcess) await Promise.resolve();
+  const retained = retainedMessage as { screenshotDataUrl: string } | null;
+  if (!retained) throw new Error("missing retained process message");
+  assert.equal(retained.screenshotDataUrl, "",
+    "the service worker drops its process-message PNG reference immediately after synchronous cloning");
+  await runtime.endSession();
+  const finish = releaseProcess as ((value: unknown) => void) | null;
+  if (!finish) throw new Error("missing retained-message resolver");
+  finish({ accepted: false, evidence: null });
+  await pending;
+}
+
+{
+  let authorizationCalls = 0;
+  let releaseAuthorization: (() => void) | null = null;
+  let clears = 0;
+  const sensitiveScreenshot = capturedScreenshot("data:image/png;base64,iVBORw0KGgo=", () => {
+    clears += 1;
+  });
+  const { deps } = dependencies({
+    authorize: async () => {
+      authorizationCalls += 1;
+      if (authorizationCalls === 4) {
+        await new Promise<void>((resolve) => { releaseAuthorization = resolve; });
+      }
+      return authorization;
+    },
+    captureVisibleTab: async () => sensitiveScreenshot
+  });
+  const runtime = createVisualCaptureRuntime(deps);
+  const pending = runtime.handle(request, 41);
+  while (!releaseAuthorization) await Promise.resolve();
+  const ending = runtime.endSession();
+  assert.equal(clears, 1,
+    "end synchronously clears a service-worker PNG holder during post-capture authorization");
+  const finish = releaseAuthorization as (() => void) | null;
+  if (!finish) throw new Error("missing deferred authorization resolver");
+  finish();
+  await ending;
+  assert.deepEqual(await pending, { accepted: false });
+}
+
+{
+  let thrownMessage: { screenshotDataUrl: string } | null = null;
+  const { deps } = dependencies({
+    processOffscreen: (message) => {
+      thrownMessage = message;
+      throw new Error("synchronous sendMessage failure");
+    }
+  });
+  assert.deepEqual(await createVisualCaptureRuntime(deps).handle(request, 41), { accepted: false });
+  const retained = thrownMessage as { screenshotDataUrl: string } | null;
+  if (!retained) throw new Error("missing thrown process message");
+  assert.equal(retained.screenshotDataUrl, "",
+    "a synchronous sendMessage failure still clears the message PNG reference");
+}
+
+{
+  let processCalls = 0;
+  let releaseFirst: ((value: unknown) => void) | null = null;
+  const { deps } = dependencies({
+    processOffscreen: () => {
+      processCalls += 1;
+      if (processCalls === 1) return new Promise((resolve) => { releaseFirst = resolve; });
+      return Promise.resolve({ accepted: true, evidence });
+    }
+  });
+  const runtime = createVisualCaptureRuntime(deps);
+  const stale = runtime.handle(request, 41);
+  while (!releaseFirst) await Promise.resolve();
+  await runtime.endSession();
+  const replacement = runtime.handle(request, 41);
+  for (let index = 0; index < 20 && processCalls < 2; index += 1) await Promise.resolve();
+  assert.equal(processCalls, 2,
+    "a replacement generation has a fresh queue and does not wait for an old hung offscreen call");
+  assert.deepEqual(await replacement, { accepted: true, evidence });
+  const finish = releaseFirst as ((value: unknown) => void) | null;
+  if (!finish) throw new Error("missing old-generation resolver");
+  finish({ accepted: true, evidence });
+  assert.deepEqual(await stale, { accepted: false });
 }
 
 {
