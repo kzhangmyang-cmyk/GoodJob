@@ -55,6 +55,20 @@ const evidence = {
 const decode = async () => ({ width: 800, height: 360, pixels: new Uint8ClampedArray(pixels) });
 assert.deepEqual(await validateVisualCaptureEvidence(evidence, request, decode), evidence);
 
+const baselineJitterEvidence = {
+  ...evidence,
+  ocrResult: {
+    ...evidence.ocrResult,
+    words: [
+      { ...evidence.ocrResult.words[0], bounds: { x: 200, y: 89, width: 100, height: 30 } },
+      { ...evidence.ocrResult.words[1], bounds: { x: 320, y: 60, width: 80, height: 30 } }
+    ]
+  }
+};
+assert.deepEqual(await validateVisualCaptureEvidence(baselineJitterEvidence, request, decode),
+  baselineJitterEvidence,
+  "service validation shares the offscreen line grouping so baseline jitter keeps x reading order");
+
 assert.equal(await validateVisualCaptureEvidence({ ...evidence, contentBase64: "UklGRg==" }, request,
   async () => { throw new Error("malformed RIFF must fail before decode"); }), null,
 "a short RIFF prefix is not a WebP");

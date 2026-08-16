@@ -3,7 +3,12 @@ import {
   parseVisualCaptureEvidence,
   type VisualCaptureEvidence
 } from "./visual-capture-runtime";
-import { MASK_COLOR_RGBA, type PixelRect, type RasterImage } from "./visual-pipeline";
+import {
+  MASK_COLOR_RGBA,
+  canonicalOcrReadingOrder,
+  type PixelRect,
+  type RasterImage
+} from "./visual-pipeline";
 
 export type WebpDecoder = (bytes: Uint8Array) => Promise<RasterImage>;
 
@@ -104,8 +109,7 @@ export async function validateVisualCaptureEvidence(value: unknown, request: Vis
   if (!exactRects(proof.visibleRegions, expectedVisible)
     || JSON.stringify(proof.avatarBounds) !== JSON.stringify(expectedAvatar)
     || bodyRegions.length < 1) return null;
-  const orderedWords = [...evidence.ocrResult.words]
-    .sort((left, right) => left.bounds.y - right.bounds.y || left.bounds.x - right.bounds.x);
+  const orderedWords = canonicalOcrReadingOrder(evidence.ocrResult.words);
   if (orderedWords.some((word) => !bodyRegions.some((region) => contains(region, word.bounds))
     || metadataRegions.some((region) => overlaps(region, word.bounds)))
     || evidence.ocrResult.text !== orderedWords.map((word) => word.text).join(" ").normalize("NFC").trim()) {

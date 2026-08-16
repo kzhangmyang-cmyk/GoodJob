@@ -15,6 +15,7 @@ const tests = [
   "./webp-redaction-policy.self-test.ts",
   "./douyin-extractor.self-test.ts",
   "./popup-model.self-test.ts",
+  "./popup-privacy-copy.self-test.ts",
   "./tab-guard.self-test.ts",
   "./orchestration.self-test.ts",
   "./reader-reliability.self-test.ts",

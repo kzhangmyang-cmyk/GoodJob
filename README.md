@@ -48,7 +48,9 @@ npm run build
 
 制品上传默认开启，仅允许上传已遮挡的单张评论卡 WebP；关闭后仅提交
 DOM 或可访问性文字观察，浏览器读取器不应进入 OCR。该通道不读取或上传
-Cookie、完整页面截图或浏览器配置，也不执行私信、点赞、评论、关注或验证码处理。
+Cookie 或浏览器配置，也不上传完整页面截图，不执行私信、点赞、评论、关注或验证码处理。
+制品开启且正文缺失或截断时，原始视口截图仅在扩展内存中短暂存在，用于本地裁剪、
+遮挡和 OCR；离开扩展前只有遮挡后的评论卡 WebP。
 
 ### 安装未打包的只读扩展
 
@@ -100,7 +102,9 @@ coordinator 并使 runtime generation 失效，同时抢占等待队列、清理
 覆盖新会话；每个 start 还绑定入口处的 transition revision，后到的停止、接管或 start 会同步
 撤销尚在排队或授权持久化中的旧 start。coordinator 自身的授权、标签确认、用量和终态 mutation
 也共享 FIFO，replacement 会等旧队列完全持久化后再安装。popup 标签确认绑定不可变 coordinator、
-generation 和 revision，在每个浏览器 await 及确认/发送边界复核，不能把旧选择绑定到新会话。
+generation、revision、session 与制品开关的一次性 30 秒内存 token，在每个浏览器 await 及
+确认/发送边界复核；replacement、停止、接管或新 popup snapshot 会立即使旧 token 失效，
+不能把旧界面选择绑定到新会话。
 每次 service worker 启动生成新的本地 epoch，启动
 恢复会先关闭遗留 offscreen document，后续 sync/end/process 同时绑定 epoch 和 generation。
 原始 PNG 在截图后只存于可同步擦除的 service-worker holder；offscreen message 同步克隆后
@@ -120,7 +124,7 @@ OCR 固定使用扩展内的 `tesseract.js 7.0.0`、`tesseract.js-core 7.0.0` �
 惰性创建一个 worker，初始化和单次识别各有 20 秒上限，空闲 30 秒或会话结束时立即
 terminate；晚到的 worker 也会立即销毁。Tesseract 输出只读取
 `blocks[].paragraphs[].lines[].words[]`，不会把块、段、行或 symbol 重复拼入正文；同一行按
-几何阅读顺序重建。OCR 输入会从正文区域逐像素减去时间与点赞/
+垂直重叠分组后按 x 坐标重建，offscreen 与异步 evidence validator 共用该规则。OCR 输入会从正文区域逐像素减去时间与点赞/
 回复等公开元数据区域，即使两者几何重叠也不例外；任何与 metadata 相交的 OCR word 都会
 在 offscreen 重建和 service-worker 异步 evidence 验证两处被拒绝。识别结果不能生成
 评论 ID、主页地址或 secUid；低召回、低置信或 DOM/OCR 冲突仅作人工复核证据，

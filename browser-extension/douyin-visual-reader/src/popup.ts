@@ -1,4 +1,5 @@
 import { createPopupSelectionModel, type SelectableDouyinTab } from "./popup-model";
+import { popupPrivacyCopy } from "./popup-privacy-copy";
 
 declare const chrome: any;
 
@@ -16,11 +17,17 @@ function element<T extends HTMLElement>(id: string): T {
   return found as T;
 }
 
-function validSnapshot(value: unknown): value is { session: PopupSession | null; tabs: SelectableDouyinTab[] } {
+function validSnapshot(value: unknown): value is {
+  session: PopupSession | null;
+  tabs: SelectableDouyinTab[];
+  confirmationToken: string | null;
+} {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).length !== 2 || !("session" in record) || !Array.isArray(record.tabs)) return false;
-  if (record.session === null) return record.tabs.every(validTab);
+  if (Object.keys(record).length !== 3 || !("session" in record) || !Array.isArray(record.tabs)
+    || !(record.confirmationToken === null || (typeof record.confirmationToken === "string"
+      && /^[0-9a-f]{48}$/u.test(record.confirmationToken)))) return false;
+  if (record.session === null) return record.confirmationToken === null && record.tabs.every(validTab);
   if (typeof record.session !== "object" || Array.isArray(record.session)) return false;
   const session = record.session as Record<string, unknown>;
   return Object.keys(session).length === 5
@@ -46,6 +53,7 @@ const startButton = element<HTMLButtonElement>("start");
 const stopButton = element<HTMLButtonElement>("stop");
 const tabList = element<HTMLDivElement>("tab-list");
 let model = createPopupSelectionModel([]);
+let confirmationToken: string | null = null;
 
 function setStatus(message: string, error = false): void {
   status.textContent = message;
@@ -64,7 +72,7 @@ function renderTabs(tabs: SelectableDouyinTab[]): void {
     radio.value = String(tab.id);
     radio.addEventListener("change", () => {
       model.select(tab.id);
-      startButton.disabled = !model.canStart();
+      startButton.disabled = !model.canStart() || confirmationToken === null;
       setStatus("已选择视频。点击开始后仅执行只读操作");
     });
     const copy = document.createElement("span");
@@ -86,6 +94,7 @@ function renderTabs(tabs: SelectableDouyinTab[]): void {
 async function refresh(): Promise<void> {
   const snapshot = await chrome.runtime.sendMessage({ kind: "popup_snapshot" });
   if (!validSnapshot(snapshot) || !snapshot.session) {
+    confirmationToken = null;
     startButton.disabled = true;
     stopButton.disabled = true;
     setStatus("请先在 GoodJob 运行详情中创建授权视觉读取会话", true);
@@ -93,13 +102,16 @@ async function refresh(): Promise<void> {
     return;
   }
   const session = snapshot.session;
+  confirmationToken = snapshot.confirmationToken;
   element("session-id").textContent = session.sessionId;
   element("remaining-comments").textContent = String(Math.max(0,
     session.limits.maxCommentsPerVideo - session.usage.observationCount));
   element("remaining-scrolls").textContent = String(Math.max(0,
     session.limits.maxScrolls - session.usage.scrollCount));
-  element("artifact-mode").textContent = session.artifactUploadEnabled
-    ? "本阶段仍仅文字" : "仅文字";
+  const privacy = popupPrivacyCopy(session.artifactUploadEnabled);
+  element("artifact-mode").textContent = privacy.artifactMode;
+  element("scope-copy").textContent = privacy.scope;
+  element("privacy-copy").textContent = privacy.lifecycle;
   renderTabs(snapshot.tabs);
   const active = session.status === "reading";
   startButton.disabled = true;
@@ -110,11 +122,14 @@ async function refresh(): Promise<void> {
 
 startButton.addEventListener("click", async () => {
   const tab = model.confirm();
-  if (!tab) return;
+  const token = confirmationToken;
+  if (!tab || !token) return;
+  confirmationToken = null;
   startButton.disabled = true;
   setStatus("正在启动只读读取");
   const response = await chrome.runtime.sendMessage({
     kind: "popup_confirm",
+    confirmationToken: token,
     tab: { id: tab.id, windowId: tab.windowId, url: tab.url }
   });
   const accepted = response !== null && typeof response === "object"

@@ -244,7 +244,7 @@ function overlaps(left: PixelRect, right: PixelRect): boolean {
     && left.y < right.y + right.height && right.y < left.y + left.height;
 }
 
-function readingOrder(words: VisualOcrWord[]): VisualOcrWord[] {
+export function canonicalOcrReadingOrder(words: VisualOcrWord[]): VisualOcrWord[] {
   const lines: Array<{ top: number; bottom: number; words: VisualOcrWord[] }> = [];
   for (const word of [...words].sort((left, right) => left.bounds.y - right.bounds.y
     || left.bounds.x - right.bounds.x)) {
@@ -252,8 +252,7 @@ function readingOrder(words: VisualOcrWord[]): VisualOcrWord[] {
     const bottom = word.bounds.y + word.bounds.height;
     const line = lines.find((candidate) => {
       const overlap = Math.min(candidate.bottom, bottom) - Math.max(candidate.top, top);
-      const lineHeight = candidate.bottom - candidate.top;
-      return overlap > 0 && overlap >= Math.min(lineHeight, word.bounds.height) / 2;
+      return overlap > 0;
     });
     if (line) {
       line.top = Math.min(line.top, top);
@@ -269,7 +268,7 @@ function readingOrder(words: VisualOcrWord[]): VisualOcrWord[] {
 
 export function filterOcrResultToBodyRegions(result: VisualOcrResult,
   bodyRegions: PixelRect[], excludedRegions: PixelRect[] = []): VisualOcrResult {
-  const words = readingOrder(result.words.filter((word) => bodyRegions.some(
+  const words = canonicalOcrReadingOrder(result.words.filter((word) => bodyRegions.some(
     (region) => contains(region, word.bounds)
   ) && !excludedRegions.some((region) => overlaps(region, word.bounds))));
   return {

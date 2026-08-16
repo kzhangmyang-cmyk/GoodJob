@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
   MASK_COLOR_RGBA,
+  canonicalOcrReadingOrder,
   characterRecall,
   filterOcrResultToBodyRegions,
   redactCommentCard,
@@ -132,6 +133,13 @@ assert.equal(filterOcrResultToBodyRegions({
   ]
 }, [{ x: 0, y: 0, width: 220, height: 50 }]).text, "中 文报价 128.50 元",
 "minor baseline jitter on one visual line cannot move a currency label before its amount");
+
+assert.deepEqual(canonicalOcrReadingOrder([
+  { text: "right", confidence: 0.99, bounds: { x: 80, y: 10, width: 20, height: 20 } },
+  { text: "left", confidence: 0.99, bounds: { x: 10, y: 29, width: 20, height: 20 } },
+  { text: "next", confidence: 0.99, bounds: { x: 10, y: 60, width: 20, height: 20 } }
+]).map((word) => word.text), ["left", "right", "next"],
+"even one-pixel vertical overlap forms a visual line before sorting that line by x");
 
 {
   const source = raster(4, 1);

@@ -40,6 +40,17 @@ const coordinatorOwnership = {
   set generation(value: number) { coordinatorGeneration = value; }
 };
 const coordinatorTransitions = createVisualTransitionBarrier();
+const POPUP_CONFIRMATION_TTL_MS = 30_000;
+type PopupConfirmation = Readonly<{
+  token: string;
+  target: SessionCoordinator;
+  sessionId: string;
+  generation: number;
+  transitionRevision: number;
+  artifactUploadEnabled: boolean;
+  expiresAt: number;
+}>;
+let popupConfirmation: PopupConfirmation | null = null;
 const epochBytes = new Uint8Array(16);
 globalThis.crypto.getRandomValues(epochBytes);
 const visualRuntimeEpoch = Array.from(epochBytes,
@@ -123,6 +134,38 @@ function record(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
+function ownsCoordinator(target: SessionCoordinator, generation: number,
+  transitionRevision: number): boolean {
+  return coordinator === target && coordinatorGeneration === generation
+    && coordinatorTransitions.isCurrent(transitionRevision);
+}
+
+function invalidatePopupConfirmation(): void {
+  popupConfirmation = null;
+}
+
+function issuePopupConfirmation(input: Omit<PopupConfirmation, "token" | "expiresAt">): string {
+  const bytes = new Uint8Array(24);
+  globalThis.crypto.getRandomValues(bytes);
+  const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  popupConfirmation = Object.freeze({
+    ...input,
+    token,
+    expiresAt: Date.now() + POPUP_CONFIRMATION_TTL_MS
+  });
+  return token;
+}
+
+function takePopupConfirmation(token: string): PopupConfirmation | null {
+  const current = popupConfirmation;
+  popupConfirmation = null;
+  if (!current || current.token !== token || Date.now() >= current.expiresAt
+    || !ownsCoordinator(current.target, current.generation, current.transitionRevision)) return null;
+  const latest = current.target.snapshot();
+  return latest.status === "authorized" && latest.sessionId === current.sessionId
+    && latest.artifactUploadEnabled === current.artifactUploadEnabled ? current : null;
+}
+
 function exact(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   if (!record(value)) return false;
   const actual = Object.keys(value);
@@ -164,6 +207,7 @@ function beginCaptureInvalidation(): {
   ending: Promise<boolean>;
   transitionRevision: number;
 } {
+  invalidatePopupConfirmation();
   const transitionRevision = coordinatorTransitions.invalidatePending();
   const target = invalidateCoordinatorOwnership(coordinatorOwnership);
   const ending = visualCaptureRuntime.endSession();
@@ -250,11 +294,15 @@ async function handleGoodJobCommand(
       return { accepted: true };
     });
   }
-  if (!coordinator) return {};
-  const snapshot = coordinator.snapshot();
+  const target = coordinator;
+  const generation = coordinatorGeneration;
+  const transitionRevision = coordinatorTransitions.currentRevision();
+  if (!target) return {};
+  const snapshot = target.snapshot();
   if (command.sessionId !== snapshot.sessionId || sender.tab.id !== snapshot.goodJobTabId) return {};
   if (command.type === "acknowledge_batch") {
-    if (!coordinator.canAcknowledgeBatch(command.sessionId, command.batchId)
+    if (!ownsCoordinator(target, generation, transitionRevision)
+      || !target.canAcknowledgeBatch(command.sessionId, command.batchId)
       || snapshot.douyinTabId === null) return { accepted: false };
     try {
       const response = await chrome.tabs.sendMessage(snapshot.douyinTabId, {
@@ -266,20 +314,45 @@ async function handleGoodJobCommand(
     } catch {
       return { accepted: false };
     }
-    return { accepted: coordinator.commitAcknowledgedBatch(command.sessionId, command.batchId) };
+    if (!ownsCoordinator(target, generation, transitionRevision)
+      || !target.canAcknowledgeBatch(command.sessionId, command.batchId)) {
+      return { accepted: false };
+    }
+    return { accepted: target.commitAcknowledgedBatch(command.sessionId, command.batchId) };
   }
   await safeAbort("user_requested");
   return { accepted: true };
 }
 
 async function popupSnapshot(): Promise<unknown> {
-  const snapshot = coordinator?.snapshot() ?? null;
+  invalidatePopupConfirmation();
+  const target = coordinator;
+  const generation = coordinatorGeneration;
+  const transitionRevision = coordinatorTransitions.currentRevision();
+  const snapshot = target?.snapshot() ?? null;
+  const current = (): boolean => target === null
+    ? coordinator === null && coordinatorTransitions.isCurrent(transitionRevision)
+    : ownsCoordinator(target, generation, transitionRevision)
+      && target.snapshot().sessionId === snapshot?.sessionId
+      && target.snapshot().artifactUploadEnabled === snapshot?.artifactUploadEnabled
+      && target.snapshot().status === snapshot?.status;
   const focusedWindow = await chrome.windows.getLastFocused({ populate: false });
+  if (!current()) return { session: null, tabs: [], confirmationToken: null };
   const windowId = Number.isSafeInteger(focusedWindow?.id) ? focusedWindow.id as number : null;
   const tabs = windowId === null ? [] : await chrome.tabs.query({
     windowId,
     url: "https://www.douyin.com/*"
   });
+  if (!current()) return { session: null, tabs: [], confirmationToken: null };
+  const confirmationToken = target && snapshot?.status === "authorized"
+    ? issuePopupConfirmation({
+        target,
+        sessionId: snapshot.sessionId,
+        generation,
+        transitionRevision,
+        artifactUploadEnabled: snapshot.artifactUploadEnabled
+      })
+    : null;
   return {
     session: snapshot ? {
       sessionId: snapshot.sessionId,
@@ -296,25 +369,35 @@ async function popupSnapshot(): Promise<unknown> {
         title: typeof tab.title === "string" ? tab.title.slice(0, 160) : "抖音视频",
         url: canonical.sourceUrl
       }] : [];
-    })
+    }),
+    confirmationToken
   };
 }
 
-async function confirmPopup(selected: ConfirmedDouyinTab): Promise<{ accepted: boolean }> {
-  const target = coordinator;
-  const generation = coordinatorGeneration;
-  const transitionRevision = coordinatorTransitions.currentRevision();
-  if (!target) return { accepted: false };
+async function confirmPopup(selected: ConfirmedDouyinTab,
+  confirmationToken: string): Promise<{ accepted: boolean }> {
+  const confirmation = takePopupConfirmation(confirmationToken);
+  if (!confirmation) return { accepted: false };
+  const { target, generation, transitionRevision } = confirmation;
   const snapshot = target.snapshot();
-  if (snapshot.status !== "authorized") return { accepted: false };
+  if (snapshot.status !== "authorized" || snapshot.sessionId !== confirmation.sessionId
+    || snapshot.artifactUploadEnabled !== confirmation.artifactUploadEnabled) {
+    return { accepted: false };
+  }
   const channelNonce = target.rawChannelNonce();
   if (!channelNonce) return { accepted: false };
-  const current = (status: "authorized" | "reading"): boolean => {
-    if (coordinator !== target || coordinatorGeneration !== generation
-      || !coordinatorTransitions.isCurrent(transitionRevision)) return false;
+  const matchesBinding = (status: "authorized" | "reading"): boolean => {
+    if (!ownsCoordinator(target, generation, transitionRevision)) return false;
     const latest = target.snapshot();
     return latest.sessionId === snapshot.sessionId && latest.goodJobTabId === snapshot.goodJobTabId
+      && latest.artifactUploadEnabled === confirmation.artifactUploadEnabled
       && latest.status === status;
+  };
+  const current = (status: "authorized" | "reading"): boolean =>
+    Date.now() < confirmation.expiresAt && matchesBinding(status);
+  const rejectHalfStarted = async (): Promise<{ accepted: false }> => {
+    if (matchesBinding("reading")) await safeAbort("user_requested");
+    return { accepted: false };
   };
   if (!current("authorized")) return { accepted: false };
   const prepared = await prepareFreshDouyinTab(selected, {
@@ -345,10 +428,9 @@ async function confirmPopup(selected: ConfirmedDouyinTab): Promise<{ accepted: b
     if (!current("authorized")) return { accepted: false };
     await chrome.scripting.executeScript({ target: { tabId: prepared.id }, files: ["douyin-content.js"] });
     if (!current("authorized")) return { accepted: false };
-    if (!await target.confirmDouyinTab(prepared.id, prepared.windowId, prepared.url)) {
-      return { accepted: false };
-    }
-    if (!current("reading")) return { accepted: false };
+    const confirmed = await target.confirmDouyinTab(prepared.id, prepared.windowId, prepared.url);
+    if (!current(confirmed ? "reading" : "authorized")) return rejectHalfStarted();
+    if (!confirmed) return { accepted: false };
     const response = await chrome.tabs.sendMessage(prepared.id, {
       kind: "visual_reader_start",
       sessionId: snapshot.sessionId,
@@ -356,15 +438,14 @@ async function confirmPopup(selected: ConfirmedDouyinTab): Promise<{ accepted: b
       artifactUploadEnabled: snapshot.artifactUploadEnabled,
       channelNonce
     });
-    if (!current("reading")) return { accepted: false };
+    if (!current("reading")) return rejectHalfStarted();
     if (!record(response) || response.accepted !== true) {
       await safeAbort("user_requested");
       return { accepted: false };
     }
     return { accepted: true };
   } catch {
-    if (coordinator === target && coordinatorGeneration === generation
-      && coordinatorTransitions.isCurrent(transitionRevision)) {
+    if (current("authorized") || matchesBinding("reading")) {
       await safeAbort("user_requested");
     }
     return { accepted: false };
@@ -383,36 +464,45 @@ function activeBinding(): BoundDouyinTab | null {
 }
 
 async function handleReaderEvent(raw: unknown, sender: any): Promise<{ accepted: boolean }> {
-  if (!exact(raw, ["kind", "event"]) || raw.kind !== "douyin_reader_event" || !coordinator) {
+  if (!exact(raw, ["kind", "event"]) || raw.kind !== "douyin_reader_event") {
     return { accepted: false };
   }
+  const target = coordinator;
+  const generation = coordinatorGeneration;
+  const transitionRevision = coordinatorTransitions.currentRevision();
+  if (!target) return { accepted: false };
   const event = parseExtensionEvent(raw.event);
   if (!event || event.type === "ready") return { accepted: false };
-  const snapshot = coordinator.snapshot();
+  const snapshot = target.snapshot();
   if (sender.tab?.id !== snapshot.douyinTabId || event.sessionId !== snapshot.sessionId
-    || event.channelNonce !== coordinator.rawChannelNonce()) return { accepted: false };
+    || event.channelNonce !== target.rawChannelNonce()
+    || !ownsCoordinator(target, generation, transitionRevision)) return { accepted: false };
   if (event.type === "observation_batch") {
-    const receipt = coordinator.receiveBatch(event.batchId);
+    const receipt = target.receiveBatch(event.batchId);
     if (receipt === "blocked") return { accepted: false };
     await sendToGoodJob(snapshot.goodJobTabId, event);
+    if (!ownsCoordinator(target, generation, transitionRevision)
+      || target.snapshot().status !== "reading") return { accepted: false };
     if (receipt === "new") {
-      await coordinator.updateUsage({ observationCount:
+      await target.updateUsage({ observationCount:
         Math.min(snapshot.limits.maxCommentsPerVideo,
           snapshot.usage.observationCount + event.observations.length) });
+      if (!ownsCoordinator(target, generation, transitionRevision)
+        || target.snapshot().status !== "reading") return { accepted: false };
     }
     return { accepted: true };
   }
   const invalidation = beginCaptureInvalidation();
-  const target = invalidation.target;
-  if (!target) return { accepted: false };
+  const terminalTarget = invalidation.target;
+  if (!terminalTarget) return { accepted: false };
   return coordinatorTransitions.schedule(async () => {
     try {
       await sendToGoodJob(snapshot.goodJobTabId, event);
       if (event.status === "aborted") {
-        await target.abort(event.errorCodes.includes("visual_reader_user_takeover")
+        await terminalTarget.abort(event.errorCodes.includes("visual_reader_user_takeover")
           ? "visual_reader_user_takeover" : "user_requested");
       } else {
-        await target.finish(event.status === "completed" ? "completed" : "partial_success");
+        await terminalTarget.finish(event.status === "completed" ? "completed" : "partial_success");
       }
       return { accepted: true };
     } finally {
@@ -447,11 +537,14 @@ if (typeof chrome !== "undefined") {
         return handleGoodJobCommand(message, sender);
       }
       if (exact(message, ["kind"]) && message.kind === "popup_snapshot") return popupSnapshot();
-      if (exact(message, ["kind", "tab"]) && message.kind === "popup_confirm"
+      if (exact(message, ["kind", "confirmationToken", "tab"]) && message.kind === "popup_confirm"
+        && typeof message.confirmationToken === "string"
+        && /^[0-9a-f]{48}$/u.test(message.confirmationToken)
         && exact(message.tab, ["id", "windowId", "url"])
         && Number.isSafeInteger(message.tab.id) && Number.isSafeInteger(message.tab.windowId)
         && typeof message.tab.url === "string") {
-        return confirmPopup(message.tab as unknown as ConfirmedDouyinTab);
+        return confirmPopup(message.tab as unknown as ConfirmedDouyinTab,
+          message.confirmationToken);
       }
       if (exact(message, ["kind"]) && message.kind === "popup_abort") {
         await safeAbort("user_requested");
