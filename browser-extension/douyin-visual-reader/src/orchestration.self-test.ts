@@ -71,7 +71,10 @@ const limits = {
 }
 
 {
-  const batches: Array<{ batchId: string; observations: Array<{ clientObservationKey: string; redactedCrop: null }> }> = [];
+  const batches: Array<{
+    batchId: string;
+    observations: Array<{ clientObservationKey: string; redactedCrop: unknown | null }>;
+  }> = [];
   const terminals: Array<{ status: string; errorCodes: string[] }> = [];
   let extraction = 0;
   const scrolls: number[] = [];

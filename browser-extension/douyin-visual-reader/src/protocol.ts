@@ -32,13 +32,23 @@ export interface VisualObservationSubmission {
   platformCommentId: string | null;
   publicProfileUrl: string | null;
   secUid: string | null;
-  extractionMethod: "dom" | "accessibility";
+  extractionMethod: "dom" | "accessibility" | "ocr";
   fieldConfidences: Record<string, number>;
   viewport: { width: number; height: number; deviceScaleFactor: number };
   cardBounds: { x: number; y: number; width: number; height: number };
   readerVersion: string;
   capturedAt: string;
-  redactedCrop: null;
+  redactedCrop: {
+    mediaType: "image/webp";
+    contentBase64: string;
+    redactionProof: {
+      version: "opaque-rect-v1";
+      maskColorRgba: [17, 61, 51, 255];
+      avatarBounds: { x: number; y: number; width: number; height: number } | null;
+      visibleRegions: Array<{ x: number; y: number; width: number; height: number }>;
+      maskedRegions: Array<{ x: number; y: number; width: number; height: number }>;
+    };
+  } | null;
 }
 
 export type PageCommand =
@@ -152,6 +162,36 @@ function nullableText(value: unknown, maximum = 255): value is string | null {
     && value.length <= maximum && /\S/u.test(value));
 }
 
+function integerRect(value: unknown): boolean {
+  return exact(value, ["x", "y", "width", "height"])
+    && integer(value.x, 0, 8192) && integer(value.y, 0, 8192)
+    && integer(value.width, 1, 8192) && integer(value.height, 1, 8192);
+}
+
+function canonicalBase64(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 4 && value.length <= 349_528
+    && value.length % 4 === 0
+    && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$/u.test(value);
+}
+
+function redactedCrop(value: unknown): boolean {
+  if (!exact(value, ["mediaType", "contentBase64", "redactionProof"])
+    || value.mediaType !== "image/webp" || !canonicalBase64(value.contentBase64)
+    || !exact(value.redactionProof, [
+      "version", "maskColorRgba", "avatarBounds", "visibleRegions", "maskedRegions"
+    ])) return false;
+  const proof = value.redactionProof;
+  return proof.version === "opaque-rect-v1"
+    && Array.isArray(proof.maskColorRgba)
+    && proof.maskColorRgba.length === 4
+    && proof.maskColorRgba.every((channel, index) => channel === [17, 61, 51, 255][index])
+    && (proof.avatarBounds === null || integerRect(proof.avatarBounds))
+    && Array.isArray(proof.visibleRegions) && proof.visibleRegions.length >= 1
+    && proof.visibleRegions.length <= 20 && proof.visibleRegions.every(integerRect)
+    && Array.isArray(proof.maskedRegions) && proof.maskedRegions.length >= 1
+    && proof.maskedRegions.length <= 100 && proof.maskedRegions.every(integerRect);
+}
+
 export function isObservation(value: unknown): value is VisualObservationSubmission {
   if (!exact(value, [
     "clientObservationKey", "sourceUrl", "videoId", "visibleText", "displayName",
@@ -171,7 +211,7 @@ export function isObservation(value: unknown): value is VisualObservationSubmiss
       || (typeof value.platformCommentId === "string" && VIDEO_ID.test(value.platformCommentId)))
     || !(value.publicProfileUrl === null || (typeof value.publicProfileUrl === "string" && PROFILE.test(value.publicProfileUrl)))
     || !(value.secUid === null || (typeof value.secUid === "string" && SEC_UID.test(value.secUid)))
-    || !["dom", "accessibility"].includes(String(value.extractionMethod))
+    || !["dom", "accessibility", "ocr"].includes(String(value.extractionMethod))
     || confidences === null
     || Object.keys(confidences).some((key) => !CONFIDENCE_KEYS.has(key)
       || !finite(confidences[key], 0, 1))
@@ -183,8 +223,12 @@ export function isObservation(value: unknown): value is VisualObservationSubmiss
     || typeof value.readerVersion !== "string" || !VERSION.test(value.readerVersion)
     || typeof value.capturedAt !== "string" || value.capturedAt.length > 64
     || !Number.isFinite(Date.parse(value.capturedAt))
-    || value.redactedCrop !== null) return false;
+    || !(value.redactedCrop === null || redactedCrop(value.redactedCrop))) return false;
   if (!Object.prototype.hasOwnProperty.call(confidences, "visibleText")) return false;
+  if (value.extractionMethod === "ocr"
+    && (value.platformCommentId !== null || value.publicProfileUrl !== null
+      || value.secUid !== null || value.redactedCrop === null)) return false;
+  if (value.extractionMethod !== "ocr" && value.redactedCrop !== null) return false;
   if (value.publicProfileUrl !== null && value.secUid !== null
     && PROFILE.exec(value.publicProfileUrl)?.[1] !== value.secUid) return false;
   return true;

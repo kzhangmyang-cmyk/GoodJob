@@ -1,6 +1,12 @@
 const tests = [
   "./manifest.self-test.ts",
   "./protocol.self-test.ts",
+  "./visual-pipeline.self-test.ts",
+  "./tesseract-ocr.self-test.ts",
+  "./visual-capture-guard.self-test.ts",
+  "./visual-capture-runtime.self-test.ts",
+  "./visual-content-fallback.self-test.ts",
+  "./webp-redaction-policy.self-test.ts",
   "./douyin-extractor.self-test.ts",
   "./popup-model.self-test.ts",
   "./tab-guard.self-test.ts",

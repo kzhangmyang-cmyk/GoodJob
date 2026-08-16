@@ -19,6 +19,7 @@ import {
 } from "./douyin-reader";
 import { createReliableEventTransport, type ReliableEventTransport } from "./runtime-transport";
 import { matchesUnavailableSession } from "./restart-recovery";
+import { resolveVisualCaptureResponse } from "./visual-content-fallback";
 
 declare const chrome: any;
 
@@ -40,6 +41,12 @@ function browserAdapter(): DouyinDomAdapter {
     bounds: (element) => {
       const rect = element.getBoundingClientRect();
       return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    },
+    textTruncated: (element) => {
+      const target = element as HTMLElement;
+      return element.getAttribute("aria-expanded") === "false"
+        || target.scrollHeight > target.clientHeight + 1
+        || target.scrollWidth > target.clientWidth + 1;
     },
     viewport: () => ({
       width: globalThis.innerWidth,
@@ -207,7 +214,26 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
         const result = await extractVisibleTopLevelComments({
           document,
           adapter,
-          sourceUrl: source.sourceUrl
+          sourceUrl: source.sourceUrl,
+          visualFallback: input.artifactUploadEnabled ? async (fallback) => {
+            if (signal?.aborted
+              || sessionReader.usage().ocrCallCount >= input.limits.maxOcrCalls) return null;
+            const response = await chrome.runtime.sendMessage({
+              kind: "visual_capture_request",
+              sessionId: input.sessionId,
+              domTextState: fallback.domTextState,
+              viewport: fallback.observation.viewport,
+              cardBounds: fallback.observation.cardBounds,
+              avatarBounds: fallback.avatarBounds,
+              visibleRegions: fallback.visibleRegions
+            });
+            if (signal?.aborted) return null;
+            return resolveVisualCaptureResponse({
+              observation: fallback.observation,
+              domTextState: fallback.domTextState,
+              response
+            });
+          } : undefined
         });
         if (result.status === "blocked") throw new BoundedReaderError("visual_source_invalid");
         return result.observations;

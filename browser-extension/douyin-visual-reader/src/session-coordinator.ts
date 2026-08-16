@@ -140,7 +140,8 @@ export function createSessionCoordinator(dependencies: {
           Math.max(current.usage.observationCount, next.observationCount ?? current.usage.observationCount)),
         scrollCount: Math.min(current.limits.maxScrolls,
           Math.max(current.usage.scrollCount, next.scrollCount ?? current.usage.scrollCount)),
-        ocrCallCount: 0
+        ocrCallCount: Math.min(current.limits.maxOcrCalls,
+          Math.max(current.usage.ocrCallCount, next.ocrCallCount ?? current.usage.ocrCallCount))
       };
       await dependencies.persist(copy());
     },

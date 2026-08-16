@@ -15,7 +15,8 @@
     "test:e2e:growth": "playwright test growth-bootstrap.spec.ts",
     "test:types": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit && tsc -p browser-extension/douyin-visual-reader/tsconfig.json --noEmit",
     "test:visual-reader": "tsx browser-extension/douyin-visual-reader/src/self-test.ts",
-    "build:visual-reader": "tsx scripts/build-visual-reader-bundles.mts && tsx scripts/build-visual-reader-manifest.mts && npm run check:visual-reader-bundle",
+    "test:visual-reader:ocr-smoke": "tsx scripts/test-visual-reader-ocr-smoke.mts",
+    "build:visual-reader": "tsx scripts/build-visual-reader-bundles.mts && tsx scripts/build-visual-reader-manifest.mts && npm run check:visual-reader-bundle && npm run test:visual-reader:ocr-smoke",
     "check:visual-reader-bundle": "tsx scripts/check-visual-reader-bundle.mts",
     "verify:visual-reader-build-order": "npm run build:visual-reader && npm run build && npm run check:visual-reader-bundle"
   },
@@ -24,6 +25,10 @@
     "echarts": "^6.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "tesseract.js": "7.0.0",
+    "tesseract.js-core": "7.0.0",
+    "@tesseract.js-data/chi_sim": "1.0.0",
+    "@tesseract.js-data/eng": "1.0.0",
     "vite": "^6.0.7",
     "xlsx": "^0.18.5"
   },

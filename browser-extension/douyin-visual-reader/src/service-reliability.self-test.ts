@@ -22,10 +22,13 @@ const limits = {
     goodJobTabId: 10,
     channelNonce: "a".repeat(64),
     sessionId: "session-replay",
-    limits,
+    limits: { ...limits, maxOcrCalls: 10 },
     artifactUploadEnabled: false
   });
   assert.equal(await coordinator.confirmDouyinTab(20, 7, "https://www.douyin.com/video/123"), true);
+  await coordinator.updateUsage({ ocrCallCount: 1 });
+  assert.equal(coordinator.snapshot().usage.ocrCallCount, 1,
+    "a successful local OCR call consumes the authorized session budget");
   assert.equal(coordinator.receiveBatch("batch-stable"), "new");
   assert.equal(coordinator.receiveBatch("batch-stable"), "replay");
   assert.equal(coordinator.receiveBatch("batch-other"), "blocked");

@@ -2,7 +2,7 @@ import type { StableErrorCode, VisualReaderLimits } from "./protocol";
 
 export interface DomOnlyObservation {
   clientObservationKey: string;
-  redactedCrop: null;
+  redactedCrop: unknown | null;
 }
 
 export interface BoundedReader {
@@ -10,7 +10,7 @@ export interface BoundedReader {
   acknowledge(batchId: string): Promise<boolean>;
   userTakeover(): void;
   stop(): void;
-  usage(): { observationCount: number; scrollCount: number; ocrCallCount: 0 };
+  usage(): { observationCount: number; scrollCount: number; ocrCallCount: number };
 }
 
 export class BoundedReaderError extends Error {
@@ -101,7 +101,7 @@ export function createBoundedReader(dependencies: {
   let resolveAck: (() => void) | null = null;
   let resolveStop: (() => void) | null = null;
   const stoppedSignal = new Promise<void>((resolve) => { resolveStop = resolve; });
-  const usage = { observationCount: 0, scrollCount: 0, ocrCallCount: 0 as const };
+  const usage = { observationCount: 0, scrollCount: 0, ocrCallCount: 0 };
 
   function remainingMs(): number {
     return workDeadlineAt - now();
@@ -162,9 +162,25 @@ export function createBoundedReader(dependencies: {
   }
 
   async function send(observations: DomOnlyObservation[]): Promise<void> {
-    for (let offset = 0; offset < observations.length && !stopped; offset += 20) {
-      const batch = observations.slice(offset, offset + 20)
-        .map((item) => ({ ...item, redactedCrop: null }));
+    const batches: DomOnlyObservation[][] = [];
+    let current: DomOnlyObservation[] = [];
+    let cropCount = 0;
+    for (const observation of observations) {
+      const item = dependencies.artifactUploadEnabled
+        ? observation
+        : { ...observation, redactedCrop: null };
+      const nextCropCount = cropCount + (item.redactedCrop === null ? 0 : 1);
+      if (current.length >= 20 || nextCropCount > 5) {
+        batches.push(current);
+        current = [];
+        cropCount = 0;
+      }
+      current.push(item);
+      cropCount += item.redactedCrop === null ? 0 : 1;
+    }
+    if (current.length > 0) batches.push(current);
+    for (const batch of batches) {
+      if (stopped) break;
       batchSequence += 1;
       const batchId = `batch-${batchSequence}`;
       pendingBatchId = batchId;
@@ -239,7 +255,11 @@ export function createBoundedReader(dependencies: {
               if (fresh.length + usage.observationCount >= dependencies.limits.maxCommentsPerVideo) break;
               if (typeof item.clientObservationKey !== "string" || seen.has(item.clientObservationKey)) continue;
               seen.add(item.clientObservationKey);
-              fresh.push({ ...item, redactedCrop: null });
+              const normalized = dependencies.artifactUploadEnabled
+                ? item
+                : { ...item, redactedCrop: null };
+              if (normalized.redactedCrop !== null) usage.ocrCallCount += 1;
+              fresh.push(normalized);
             }
             if (fresh.length > 0) {
               noProgressCycles = 0;

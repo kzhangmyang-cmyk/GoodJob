@@ -15,6 +15,7 @@ export interface DouyinDomAdapter {
   parent(element: Element): Element | null;
   visible(element: Element): boolean;
   bounds(element: Element): PixelRect;
+  textTruncated?(element: Element): boolean;
   viewport(): { width: number; height: number; deviceScaleFactor: number };
   now(): Date;
 }
@@ -113,6 +114,12 @@ export async function extractVisibleTopLevelComments(input: {
   document: Document;
   adapter: DouyinDomAdapter;
   sourceUrl: string;
+  visualFallback?(input: {
+    observation: VisualObservationSubmission;
+    domTextState: "missing" | "truncated";
+    avatarBounds: PixelRect | null;
+    visibleRegions: PixelRect[];
+  }): Promise<VisualObservationSubmission | null>;
 }): Promise<ExtractionResult> {
   const source = canonicalDouyinVideoUrl(input.sourceUrl);
   if (!source) throw new Error("抖音视频地址无效");
@@ -146,7 +153,12 @@ export async function extractVisibleTopLevelComments(input: {
     const body = firstOwned(card, '[aria-label="评论内容"]', adapter);
     if (!body || !adapter.visible(body)) continue;
     const visibleText = adapter.innerText(body).trim();
-    if (!visibleText || visibleText.length > 2_000) continue;
+    const domTextState = !visibleText
+      ? "missing" as const
+      : adapter.textTruncated?.(body)
+        ? "truncated" as const
+        : "complete" as const;
+    if ((!visibleText && !input.visualFallback) || visibleText.length > 2_000) continue;
     const author = firstOwned(card, 'a[aria-label="评论作者"]', adapter);
     const displayName = author && adapter.visible(author) ? adapter.innerText(author).trim() || null : null;
     const profile = profileFromLiteral(author ? adapter.attribute(author, "href") : null);
@@ -154,9 +166,15 @@ export async function extractVisibleTopLevelComments(input: {
     const visibleTimeText = time && adapter.visible(time) ? adapter.innerText(time).trim() || null : null;
     const buttons = adapter.queryAll(card, '[role="button"]')
       .filter((button) => ownedByCard(button, card, adapter) && adapter.visible(button));
-    const likeCount = buttons.map((button) => countFromName(adapter.accessibleName(button), "点赞"))
+    const publicCounterButtons = buttons.filter((button) => {
+      const name = adapter.accessibleName(button);
+      return countFromName(name, "点赞") !== null || countFromName(name, "回复") !== null;
+    });
+    const likeCount = publicCounterButtons
+      .map((button) => countFromName(adapter.accessibleName(button), "点赞"))
       .find((value) => value !== null) ?? null;
-    const replyCount = buttons.map((button) => countFromName(adapter.accessibleName(button), "回复"))
+    const replyCount = publicCounterButtons
+      .map((button) => countFromName(adapter.accessibleName(button), "回复"))
       .find((value) => value !== null) ?? null;
     const idLiteral = adapter.attribute(card, "id");
     const platformCommentId = idLiteral ? COMMENT_ID.exec(idLiteral)?.[1] ?? null : null;
@@ -181,7 +199,7 @@ export async function extractVisibleTopLevelComments(input: {
       fieldConfidences.publicProfileUrl = 0.98;
       fieldConfidences.secUid = 0.98;
     }
-    observations.push({
+    let observation: VisualObservationSubmission = {
       clientObservationKey: `dom:${await digestHex(fingerprintMaterial, platformCommentId ? 16 : 32)}`,
       sourceUrl: source.sourceUrl,
       videoId: source.videoId,
@@ -200,7 +218,36 @@ export async function extractVisibleTopLevelComments(input: {
       readerVersion: READER_VERSION,
       capturedAt: adapter.now().toISOString(),
       redactedCrop: null
-    });
+    };
+    if (domTextState !== "complete") {
+      if (!input.visualFallback) {
+        if (domTextState === "missing") continue;
+        observation.fieldConfidences.visibleText = 0.84;
+        observations.push(observation);
+        continue;
+      }
+      const avatar = firstOwned(card,
+        '[role="img"][aria-label="评论作者头像"], img[aria-label="评论作者头像"]', adapter);
+      const avatarBounds = avatar && adapter.visible(avatar)
+        && visibleBounds(adapter.bounds(avatar), viewport)
+        ? adapter.bounds(avatar)
+        : null;
+      const visibleRegions = [body, time, ...publicCounterButtons].flatMap((element) => {
+        if (!element || !adapter.visible(element)) return [];
+        const elementBounds = adapter.bounds(element);
+        return visibleBounds(elementBounds, viewport) ? [elementBounds] : [];
+      });
+      if (visibleRegions.length < 1) continue;
+      const fallback = await input.visualFallback({
+        observation,
+        domTextState,
+        avatarBounds,
+        visibleRegions
+      });
+      if (!fallback) continue;
+      observation = fallback;
+    }
+    observations.push(observation);
   }
   return { status: "ok", reason: null, observations };
 }

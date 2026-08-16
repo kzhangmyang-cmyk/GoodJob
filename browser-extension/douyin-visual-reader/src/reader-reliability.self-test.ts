@@ -68,6 +68,33 @@ async function flush(): Promise<void> {
 }
 
 {
+  const sent: Array<Array<{ clientObservationKey: string; redactedCrop: unknown }>> = [];
+  let reader!: ReturnType<typeof createBoundedReader>;
+  const cropped = Array.from({ length: 6 }, (_value, index) => ({
+    clientObservationKey: `ocr:crop-${index}`,
+    redactedCrop: { mediaType: "image/webp", contentBase64: "UklGRg==", redactionProof: {} }
+  }));
+  reader = createBoundedReader({
+    sessionId: "bounded-crop-batches",
+    limits: { ...limits, maxCommentsPerVideo: 6, maxOcrCalls: 10 },
+    artifactUploadEnabled: true,
+    extract: async () => cropped as any,
+    programmaticScroll: async () => undefined,
+    sendBatch: async (batch) => {
+      sent.push(structuredClone(batch.observations));
+      queueMicrotask(() => { void reader.acknowledge(batch.batchId); });
+      return { accepted: true };
+    },
+    sendTerminal: () => undefined
+  });
+  await reader.start();
+  assert.deepEqual(sent.map((batch) => batch.length), [5, 1]);
+  assert.ok(sent.every((batch) => batch.filter((item) => item.redactedCrop !== null).length <= 5));
+  assert.ok(sent.flat().every((item) => item.redactedCrop !== null),
+    "reader must not erase already-redacted crops before the page bridge");
+}
+
+{
   const scheduler = new ManualScheduler();
   const deadlines = readerModule.deriveVisualReaderDeadlines(0, 1);
   const attempts: ExtensionEvent[] = [];

@@ -77,6 +77,117 @@ async function extract(name: string, sourceUrl = "https://www.douyin.com/video/1
 
 {
   const document = await fixture("normal.html");
+  const card = document.querySelector('[role="article"]');
+  const body = document.querySelector('[aria-label="评论内容"]');
+  assert.ok(card && body);
+  const avatar = document.createElement("span");
+  avatar.setAttribute("role", "img");
+  avatar.setAttribute("aria-label", "评论作者头像");
+  card.prepend(avatar);
+  const unrelatedButton = document.createElement("button");
+  unrelatedButton.setAttribute("role", "button");
+  unrelatedButton.setAttribute("aria-label", "更多");
+  card.append(unrelatedButton);
+  const base = adapter(document);
+  let fallbackCalls = 0;
+  const result = await extractVisibleTopLevelComments({
+    document,
+    sourceUrl: "https://www.douyin.com/video/123456789",
+    adapter: {
+      ...base,
+      bounds: (element) => {
+        if (element === avatar) return { x: 732, y: 232, width: 48, height: 48 };
+        if (element === body) return { x: 800, y: 236, width: 360, height: 64 };
+        if (element === unrelatedButton) return { x: 1_180, y: 232, width: 32, height: 32 };
+        if (element.tagName === "TIME") return { x: 800, y: 310, width: 80, height: 20 };
+        if (element.getAttribute("role") === "button") return { x: 900, y: 310, width: 60, height: 20 };
+        return base.bounds(element);
+      },
+      textTruncated: (element) => element === body
+    },
+    visualFallback: async (fallback) => {
+      fallbackCalls += 1;
+      assert.equal(fallback.domTextState, "truncated");
+      assert.deepEqual(fallback.avatarBounds, { x: 732, y: 232, width: 48, height: 48 });
+      assert.deepEqual(fallback.visibleRegions, [
+        { x: 800, y: 236, width: 360, height: 64 },
+        { x: 800, y: 310, width: 80, height: 20 },
+        { x: 900, y: 310, width: 60, height: 20 },
+        { x: 900, y: 310, width: 60, height: 20 }
+      ]);
+      return {
+        ...fallback.observation,
+        clientObservationKey: `ocr:${"3".repeat(64)}`,
+        visibleText: "OCR 真实可见正文",
+        displayName: null,
+        platformCommentId: null,
+        publicProfileUrl: null,
+        secUid: null,
+        extractionMethod: "ocr",
+        fieldConfidences: { visibleText: 0.84 },
+        redactedCrop: null
+      };
+    }
+  });
+  assert.equal(fallbackCalls, 1);
+  assert.equal(result.observations[0]?.visibleText, "OCR 真实可见正文");
+}
+
+{
+  const document = await fixture("normal.html");
+  const body = document.querySelector('[aria-label="评论内容"]');
+  assert.ok(body);
+  const base = adapter(document);
+  const result = await extractVisibleTopLevelComments({
+    document,
+    sourceUrl: "https://www.douyin.com/video/123456789",
+    adapter: { ...base, textTruncated: (element) => element === body }
+  });
+  assert.equal(result.observations.length, 1,
+    "artifact-disabled extraction retains the literal truncated DOM text without OCR");
+  assert.equal(result.observations[0]?.visibleText, "正在寻找可以长期合作的获客方案");
+  assert.ok((result.observations[0]?.fieldConfidences.visibleText ?? 1) < 0.85);
+  assert.equal(result.observations[0]?.redactedCrop, null);
+}
+
+{
+  const document = await fixture("normal.html");
+  const body = document.querySelector('[aria-label="评论内容"]');
+  assert.ok(body);
+  body.textContent = "";
+  const base = adapter(document);
+  let state: string | null = null;
+  const result = await extractVisibleTopLevelComments({
+    document,
+    sourceUrl: "https://www.douyin.com/video/123456789",
+    adapter: {
+      ...base,
+      bounds: (element) => element === body
+        ? { x: 800, y: 236, width: 360, height: 64 }
+        : base.bounds(element)
+    },
+    visualFallback: async (fallback) => {
+      state = fallback.domTextState;
+      return {
+        ...fallback.observation,
+        clientObservationKey: `ocr:${"4".repeat(64)}`,
+        visibleText: "OCR 缺失正文兜底",
+        displayName: null,
+        platformCommentId: null,
+        publicProfileUrl: null,
+        secUid: null,
+        extractionMethod: "ocr",
+        fieldConfidences: { visibleText: 0.93 },
+        redactedCrop: null
+      };
+    }
+  });
+  assert.equal(state, "missing");
+  assert.equal(result.observations[0]?.visibleText, "OCR 缺失正文兜底");
+}
+
+{
+  const document = await fixture("normal.html");
   const base = adapter(document);
   const result = await extractVisibleTopLevelComments({
     document,

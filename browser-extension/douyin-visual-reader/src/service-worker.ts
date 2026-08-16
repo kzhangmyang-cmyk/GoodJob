@@ -22,10 +22,67 @@ import {
   type ConfirmedDouyinTab
 } from "./tab-guard";
 import { recoverOrphanedVisualReaderSession } from "./restart-recovery";
+import { authorizeVisualCapture, type VisualCaptureRequest } from "./visual-capture-guard";
+import { createVisualCaptureRuntime } from "./visual-capture-runtime";
 
 declare const chrome: any;
 
 let coordinator: SessionCoordinator | null = null;
+
+async function visualCaptureAuthorization(
+  request: unknown,
+  senderTabId: number | null
+): Promise<VisualCaptureRequest | null> {
+  const snapshot = coordinator?.snapshot() ?? null;
+  if (!snapshot || snapshot.douyinTabId === null) return null;
+  const [tab, focusedWindow] = await Promise.all([
+    chrome.tabs.get(snapshot.douyinTabId).catch(() => null),
+    chrome.windows.getLastFocused({ populate: false }).catch(() => null)
+  ]);
+  return authorizeVisualCapture({
+    request,
+    senderTabId,
+    snapshot,
+    tab,
+    focusedWindowId: Number.isSafeInteger(focusedWindow?.id) ? focusedWindow.id : null
+  });
+}
+
+async function ensureVisualOffscreenDocument(): Promise<void> {
+  if (await chrome.offscreen.hasDocument()) return;
+  await chrome.offscreen.createDocument({
+    url: "offscreen.html",
+    reasons: ["WORKERS"],
+    justification: "在扩展内存中遮挡评论卡并运行本地 OCR"
+  });
+}
+
+const visualCaptureRuntime = createVisualCaptureRuntime({
+  authorize: visualCaptureAuthorization,
+  ensureOffscreen: ensureVisualOffscreenDocument,
+  reserveOcrCall: async (request) => {
+    if (!coordinator) return false;
+    const before = coordinator.snapshot();
+    if (before.status !== "reading" || before.sessionId !== request.sessionId
+      || before.artifactUploadEnabled !== true
+      || before.usage.ocrCallCount >= before.limits.maxOcrCalls) return false;
+    await coordinator.updateUsage({ ocrCallCount: before.usage.ocrCallCount + 1 });
+    const after = coordinator.snapshot();
+    return after.status === "reading" && after.sessionId === request.sessionId
+      && after.usage.ocrCallCount === before.usage.ocrCallCount + 1;
+  },
+  captureVisibleTab: async () => {
+    const snapshot = coordinator?.snapshot();
+    if (!snapshot || snapshot.douyinWindowId === null) throw new Error("capture session unavailable");
+    return chrome.tabs.captureVisibleTab(snapshot.douyinWindowId, { format: "png" });
+  },
+  processOffscreen: async (message) => chrome.runtime.sendMessage(message),
+  endOffscreenSession: async () => {
+    if (!await chrome.offscreen.hasDocument()) return true;
+    const response = await chrome.runtime.sendMessage({ kind: "visual_ocr_end_session" });
+    return record(response) && response.accepted === true;
+  }
+});
 
 function record(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
@@ -52,6 +109,7 @@ async function recoverAfterServiceWorkerRestart(): Promise<void> {
     notifyGoodJob: async (tabId, message) => { await chrome.tabs.sendMessage(tabId, message); },
     notifyDouyin: async (tabId, message) => { await chrome.tabs.sendMessage(tabId, message); }
   });
+  await visualCaptureRuntime.endSession();
 }
 
 function safeLog(entry: { event: string; reason?: string; sessionId?: string }): void {
@@ -78,6 +136,7 @@ async function safeAbort(reason: "visual_reader_user_takeover" | "user_requested
     }).catch(() => undefined);
   }
   await coordinator.abort(reason);
+  await visualCaptureRuntime.endSession();
   if (nonce) {
     await sendToGoodJob(snapshot.goodJobTabId, {
       version: BRIDGE_VERSION,
@@ -247,6 +306,7 @@ async function handleReaderEvent(raw: unknown, sender: any): Promise<{ accepted:
   } else {
     await coordinator.finish(event.status === "completed" ? "completed" : "partial_success");
   }
+  await visualCaptureRuntime.endSession();
   return { accepted: true };
 }
 
@@ -266,6 +326,9 @@ async function handleReaderUsage(raw: unknown, sender: any): Promise<{ accepted:
 if (typeof chrome !== "undefined") {
   const startupRecovery = recoverAfterServiceWorkerRestart();
   chrome.runtime.onMessage.addListener((message: unknown, sender: any, sendResponse: (value: unknown) => void) => {
+    if (record(message) && ["visual_process_capture", "visual_ocr_end_session"].includes(
+      String(message.kind)
+    )) return false;
     void (async () => {
       await startupRecovery;
       if (record(message) && message.kind === "goodjob_page_command") {
@@ -284,6 +347,9 @@ if (typeof chrome !== "undefined") {
       }
       if (record(message) && message.kind === "douyin_reader_event") return handleReaderEvent(message, sender);
       if (record(message) && message.kind === "douyin_reader_usage") return handleReaderUsage(message, sender);
+      if (record(message) && message.kind === "visual_capture_request") {
+        return visualCaptureRuntime.handle(message, Number.isSafeInteger(sender.tab?.id) ? sender.tab.id : null);
+      }
       return { accepted: false };
     })().then(sendResponse).catch(() => sendResponse({ accepted: false }));
     return true;

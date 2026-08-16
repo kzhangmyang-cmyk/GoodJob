@@ -103,6 +103,34 @@ const validObservation = {
 assert.equal(isVisualObservationSubmission(validObservation, false), true);
 assert.equal(isObservation(validObservation), true, "2,000 visible characters are accepted across both layers");
 
+const validOcrObservation = {
+  ...validObservation,
+  clientObservationKey: `ocr:${"2".repeat(64)}`,
+  visibleText: "中文报价 128.50 元",
+  displayName: null,
+  platformCommentId: null,
+  publicProfileUrl: null,
+  secUid: null,
+  extractionMethod: "ocr" as const,
+  fieldConfidences: { visibleText: 0.94 },
+  redactedCrop: {
+    mediaType: "image/webp" as const,
+    contentBase64: "UklGRg==",
+    redactionProof: {
+      version: "opaque-rect-v1" as const,
+      maskColorRgba: [17, 61, 51, 255],
+      avatarBounds: { x: 0, y: 0, width: 8, height: 8 },
+      visibleRegions: [{ x: 10, y: 2, width: 40, height: 12 }],
+      maskedRegions: [{ x: 0, y: 0, width: 10, height: 20 }]
+    }
+  }
+};
+assert.equal(isVisualObservationSubmission(validOcrObservation, false), true);
+assert.equal(isObservation(validOcrObservation), true,
+  "extension protocol carries only a strict opaque-rect OCR crop");
+assert.equal(isObservation({ ...validOcrObservation, platformCommentId: "987654321" }), false,
+  "OCR cannot invent a platform comment identity");
+
 const invalidContractCases: Array<[string, unknown]> = [
   ["2,001 visible characters", { ...validObservation, visibleText: "正".repeat(2_001) }],
   ["whitespace-only visible text", { ...validObservation, visibleText: "   " }],

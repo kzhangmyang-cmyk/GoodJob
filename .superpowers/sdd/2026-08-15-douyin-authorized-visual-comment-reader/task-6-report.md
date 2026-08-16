@@ -1,0 +1,66 @@
+# Task 6 report: local redacted comment-card OCR
+
+## Delivered
+
+- A pure, testable raster pipeline clamps one visible comment card to the viewport, converts allowed body/time/public-counter rectangles and avatar bounds to crop pixels at the authorized device scale, and emits an `opaque-rect-v1` proof.
+- Every avatar pixel and every pixel outside the allowed union is overwritten with the exact RGBA `[17,61,51,255]`; the allowed union is at most 80%, crop area is at most 1,000,000 pixels, and declared proof rectangles remain bounded.
+- The offscreen document produces one lossless WebP candidate, decodes it locally, and compares the complete raster byte-for-byte before accepting it. A one-channel difference or a payload over 256 KiB fails closed. This replaced an unsafe lossy quality loop after a synthetic browser round trip showed that quality `0.92` changed 8,800 masked pixels while quality `1` preserved all tested pixels.
+- Complete DOM/ARIA text never enters screenshot capture or OCR. Missing/truncated text can enter the fallback only when `artifactUploadEnabled=true`, the request comes from the exact session-bound Douyin tab, that tab is active in the focused bound window at the same canonical URL, and OCR budget remains.
+- The service worker serializes the capture owner, rechecks authorization before offscreen setup, before budget reservation, and immediately after reservation before `captureVisibleTab`. The reservation is persisted before capture. Unauthorized, disabled, exhausted, stale-focus, stale-session, and malformed-evidence paths return without capture.
+- Raw PNG data exists only in the service-worker-to-offscreen temporary message. The offscreen path zeros the raw raster, redacted raster, encoded bytes, decoded verification raster, image source, canvases, and local screenshot reference in `finally`; it never writes images or OCR text to storage, IndexedDB, logs, or error responses. Only the validated redacted WebP, proof, and OCR result can return to content.
+- OCR uses one lazy `chi_sim+eng` Tesseract worker per live session. It terminates after 30 seconds idle or immediately on abort/completion. Each batch contains at most 20 observations and at most five crops; artifact-disabled batches discard no new evidence because capture is unreachable.
+- OCR observations use only actual recognized text. OCR identity fields (`displayName`, `platformCommentId`, `publicProfileUrl`, and `secUid`) are null. Low confidence, character recall below 90%, number/money mismatch, and truncated/conflicting comparisons remain below the backend manual-review confidence threshold. DOM and OCR hashes are computed in memory for the decision/key; no public DTO was invented and no text is concatenated or completed.
+- The exact extension CSP is `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'`. The build audit rejects `unsafe-eval`, `eval`, direct `Function`, `new Function`, source maps, remote executable URLs/endpoints, Node `Buffer`/`bmp-js` in the OCR worker, fixture/WebP leakage, test dependencies, unexpected OCR assets, hash drift, missing entry points, and bundles at or above 80 MiB.
+
+## Dependency decision and assets
+
+The implementation uses the already-selected Tesseract.js option, not a new OCR comparison. Official upstream evidence was checked on 2026-08-16:
+
+- [`naptha/tesseract.js` v7.0.0](https://github.com/naptha/tesseract.js/releases/tag/v7.0.0), Apache-2.0, is the current official release and supports a reusable browser worker. Upstream activity continued into 2026. The repository provides a security-reporting policy and listed no published GitHub security advisory at review time.
+- [`naptha/tesseract.js-core` v7.0.0](https://github.com/naptha/tesseract.js-core/releases/tag/v7.0.0), Apache-2.0, provides baseline, SIMD, and relaxed-SIMD LSTM WASM builds. The release documents current Emscripten and performance work; its GitHub advisory page also listed no published advisory at review time.
+- [`naptha/tessdata`](https://github.com/naptha/tessdata) documents `4.0.0_best_int` as the default LSTM-only integerized data and explicitly supports self-hosting language packages. `@tesseract.js-data/chi_sim@1.0.0` and `@tesseract.js-data/eng@1.0.0` are MIT licensed.
+- The open upstream MV3/runtime and long-running-worker concerns make the stock CDN-oriented browser artifact a poor direct fit. The extension therefore builds the pinned v7 source for ES2022, removes regenerator and every CDN fallback, requires a local extension language URL, accepts only redacted WebP `Uint8Array` image input, omits the BMP/`bmp-js`/Node `Buffer` branch, disables persistent cache, and bounds worker lifetime. Core/WASM bytes are copied unmodified. The pinned `best_int` language gzip files are decompressed at build time without changing their traineddata payload; runtime gzip support is disabled.
+- `npm audit --package-lock=false --omit=dev --json` reported no Tesseract-family vulnerability. It exited 1 for two pre-existing unrelated findings (`xlsx` high, `yaml` moderate); Task 6 does not change those packages.
+
+The build writes and re-verifies this exact inventory in `ocr-assets.json`:
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `ocr/worker.min.js` | 25,656 | `740be535b9a695902db34b79c38a9bc8ed11cabc4ac79a8f872f7ff620351ca0` |
+| `ocr/core/tesseract-core-lstm.wasm.js` | 3,896,484 | `eef5f8b2f8e20e150680b20adaec4a60babafee3adbe8a94583c81fee46e8680` |
+| `ocr/core/tesseract-core-lstm.wasm` | 2,855,361 | `66b17df6e20c5329a17ffa9c202a47eaa3e32500b253d4c7f38e7f2bc01457c3` |
+| `ocr/core/tesseract-core-simd-lstm.wasm.js` | 3,899,472 | `c58b46a4c796c0b8afccf77591d5b875b6896b45d402bbce8caa6f5362447b38` |
+| `ocr/core/tesseract-core-simd-lstm.wasm` | 2,857,601 | `34e8d50cac216427d86bf397d610fdd9f49492539bbcdfbfccc4eda20c810bea` |
+| `ocr/core/tesseract-core-relaxedsimd-lstm.wasm.js` | 3,905,767 | `861a536cf9ef8e63cb644d57bab39c388f37f7d6b6f60024b741c5f6b39a59b3` |
+| `ocr/core/tesseract-core-relaxedsimd-lstm.wasm` | 2,862,266 | `7985c92d4c64e7267d24cadffe1b2a1da6bf8aa55fdcaf953fe94fe122a24545` |
+| `ocr/lang/chi_sim.traineddata` | 2,471,033 | `9784f7c917c546424b690fcde708ce1f604a4393d08bb51ddab146d7d7c794e6` |
+| `ocr/lang/eng.traineddata` | 5,199,098 | `5dc5d8d640a212c9d6184921ba103b186f50e0fed9ee716c53e6b312b400d747` |
+| `ocr/licenses/tesseract.js-APACHE-2.0.txt` | 11,357 | `b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1` |
+| `ocr/licenses/tesseract.js-core-APACHE-2.0.txt` | 11,358 | `c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08` |
+| `ocr/licenses/tessdata-MIT.txt` | 1,078 | `bc142accb4ceadbcd706f2901aeb6a7d30430f0c454b38a5620f485ea13c02aa` |
+
+The unpacked artifact is 29,612 KiB, below the recorded 80 MiB limit.
+
+## TDD and verification evidence
+
+The brief's focused command was first run before implementation and failed with `ERR_MODULE_NOT_FOUND` for `visual-pipeline` and `tesseract-ocr`. Subsequent RED→GREEN checkpoints covered:
+
+- pixel masking, HiDPI scaling, viewport clipping, circular/square avatar bounds, 80% visible area, Chinese/numbers/emoji, missing/truncated DOM, confidence/recall/money conflicts, and fake OCR;
+- capture authorization and service-worker ownership races, including disabled artifacts, complete DOM, exhausted budget, wrong sender/session/tab/window/focus/URL, and malformed evidence;
+- protocol acceptance of only strict OCR crops, null OCR identity, five-crop batching, OCR accounting, and artifact-disabled crop stripping;
+- content fallback resolution without public-shape expansion;
+- a real local `chi_sim+eng` worker over low-contrast and visibly truncated synthetic WebP fixtures; the fixed Chinese fixture passes the 90% character-recall gate, while altered numeric evidence is either exact or below the 90% confidence gate;
+- a real unpacked Chromium extension smoke through the production service worker, offscreen document, redaction/WebP encoder, self-hosted worker/core/language assets, OCR words output, and immediate session termination. This gate first exposed the upstream gzip adapter's Node `Buffer` dependency and remained RED until runtime decompression was removed;
+- lossless WebP proof, whose first browser experiment exposed the lossy-mask defect described above.
+
+Fresh completion gates are recorded after the final review in the backend progress ledger. No real Douyin page or traffic was accessed.
+
+## Workspace protection
+
+Dependencies were obtained only with:
+
+```text
+npm install --no-save --package-lock=false tesseract.js@7.0.0 @tesseract.js-data/chi_sim@1.0.0 @tesseract.js-data/eng@1.0.0
+```
+
+`package.json` pins `tesseract.js`, `tesseract.js-core`, `@tesseract.js-data/chi_sim`, and `@tesseract.js-data/eng` exactly. The user's pre-existing untracked `package-lock.json` was not read, modified, staged, deleted, or committed, and no substitute lockfile was created.
