@@ -68,6 +68,18 @@ export type EvidenceProvenance =
       coverage: "public_top_level_sample";
     }
   | {
+      kind: "authorized_visual_observation";
+      sourceUrl: string;
+      observationId: string;
+      sessionId: string;
+      extractionMethod: "dom" | "accessibility" | "ocr";
+      visibleTextConfidence: number;
+      coverage: "authorized_visible_top_level_sample";
+      artifactId: string | null;
+      domTextHash: string | null;
+      ocrTextHash: string | null;
+    }
+  | {
       kind: "import_artifact_row";
       importBatchId: string;
       artifactHash: string;
@@ -245,6 +257,7 @@ export interface IndividualCandidateInput {
   negativeSignals: string[];
   individualPartyId: string;
   evidenceIds: string[];
+  initialStatus?: "needs_research" | "do_not_contact";
 }
 
 /**

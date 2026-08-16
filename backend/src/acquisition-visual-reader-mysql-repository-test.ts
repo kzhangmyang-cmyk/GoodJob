@@ -20,6 +20,7 @@ import {
 
 const SECRET = "mysql-visual-reader-master-secret-at-least-32-bytes";
 const SCOPE = { ownerId: "owner-mysql-visual", teamId: "team-mysql-visual" };
+const INGESTION_ACTOR_ID = "actor-mysql-visual";
 const START = "2026-08-15T01:00:00.000Z";
 
 function digest(value: string | Buffer) {
@@ -114,6 +115,7 @@ interface FakeState {
   sessions: Map<string, Record<string, unknown>>;
   observations: Map<string, Record<string, unknown>>;
   artifacts: Map<string, Record<string, unknown>>;
+  workItems: Map<string, Record<string, unknown>>;
 }
 
 function copyState(state: FakeState): FakeState {
@@ -129,6 +131,10 @@ function copyState(state: FakeState): FakeState {
     artifacts: new Map([...state.artifacts].map(([key, value]) => [
       key,
       structuredClone(value)
+    ])),
+    workItems: new Map([...state.workItems].map(([key, value]) => [
+      key,
+      structuredClone(value)
     ]))
   };
 }
@@ -137,6 +143,7 @@ function replaceState(target: FakeState, source: FakeState) {
   target.sessions = source.sessions;
   target.observations = source.observations;
   target.artifacts = source.artifacts;
+  target.workItems = source.workItems;
 }
 
 function scoped(values: unknown[], idIndex = 2) {
@@ -146,7 +153,8 @@ function scoped(values: unknown[], idIndex = 2) {
 class StatefulVisualMysqlPool {
   readonly statements: Array<{ sql: string; values: unknown[] }> = [];
   readonly state: FakeState = {
-    sessions: new Map(), observations: new Map(), artifacts: new Map()
+    sessions: new Map(), observations: new Map(), artifacts: new Map(),
+    workItems: new Map()
   };
   failNextArtifactInsert = false;
   duplicateNextArtifactInsert = false;
@@ -223,6 +231,14 @@ class StatefulVisualMysqlPool {
       return [{ affectedRows: 1 }, []];
     }
     if (normalized.includes("FROM acquisition_visual_reader_sessions")) {
+      if (normalized.includes("run_id = ?")
+        && !normalized.includes("session_id = ?")) {
+        const rows = [...state.sessions.values()].filter((row) =>
+          row.owner_id === values[0]
+          && row.team_id === values[1]
+          && row.run_id === values[2]);
+        return [[...rows.map((row) => structuredClone(row))], []];
+      }
       const key = scoped(values);
       const row = state.sessions.get(key);
       return [[...(row ? [structuredClone(row)] : [])], []];
@@ -247,7 +263,9 @@ class StatefulVisualMysqlPool {
           || (row.owner_id === values[0] && row.team_id === values[1]))
         && (normalized.includes("run_id = ?")
           ? row.run_id === values[2]
-          : row.session_id === values[2]));
+          : normalized.includes("observation_id = ?")
+            ? row.observation_id === values[2]
+            : row.session_id === values[2]));
       return [[...rows.map((row) => structuredClone(row))], []];
     }
     if (normalized.startsWith(
@@ -295,6 +313,139 @@ class StatefulVisualMysqlPool {
         created_at: values[17], expires_at: values[18]
       });
       return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "INSERT INTO acquisition_visual_ingestion_work_items"
+    )) {
+      const key = scoped(values, 6);
+      state.workItems.set(key, {
+        owner_id: values[0], team_id: values[1], work_item_id: values[2],
+        actor_id: values[3], session_id: values[4], run_id: values[5],
+        observation_id: values[6], artifact_id: values[7],
+        disposition: values[8], status: values[9], attempt_count: values[10],
+        next_attempt_at: values[11], lease_owner: values[12],
+        lease_expires_at: values[13], last_error_code: values[14],
+        evidence_id: values[15], platform_evidence_id: values[16],
+        candidate_id: values[17], created_at: values[18],
+        updated_at: values[19], completed_at: values[20]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "SELECT w.* FROM acquisition_visual_ingestion_work_items w"
+    )) {
+      const now = new Date(values[0] as string | Date).getTime();
+      const eligible = [...state.workItems.values()].filter((row) =>
+        (["queued", "retry"].includes(String(row.status))
+          && new Date(row.next_attempt_at as string | Date).getTime() <= now)
+        || (row.status === "running"
+          && new Date(row.lease_expires_at as string | Date).getTime() <= now));
+      const heads = new Map<string, Record<string, unknown>>();
+      for (const row of eligible) {
+        const tenant = `${row.owner_id}\u0000${row.team_id}`;
+        const current = heads.get(tenant);
+        const order = (value: Record<string, unknown>) => [
+          new Date(value.next_attempt_at as string | Date).getTime(),
+          new Date(value.created_at as string | Date).getTime(),
+          String(value.work_item_id)
+        ] as const;
+        if (!current || order(row).join("\u0000") < order(current).join("\u0000")) {
+          heads.set(tenant, row);
+        }
+      }
+      const attempts = (row: Record<string, unknown>) =>
+        [...state.workItems.values()]
+          .filter((item) => item.owner_id === row.owner_id
+            && item.team_id === row.team_id)
+          .reduce((sum, item) => sum + Number(item.attempt_count), 0);
+      const rows = [...heads.values()].sort((left, right) =>
+        attempts(left) - attempts(right)
+        || String(left.next_attempt_at).localeCompare(String(right.next_attempt_at))
+        || String(left.owner_id).localeCompare(String(right.owner_id))
+        || String(left.team_id).localeCompare(String(right.team_id))
+        || String(left.work_item_id).localeCompare(String(right.work_item_id)))
+        .slice(0, Number(values[4]));
+      return [[...rows.map((row) => structuredClone(row))], []];
+    }
+    if (normalized.startsWith(
+      "UPDATE acquisition_visual_ingestion_work_items SET status = 'running'"
+    )) {
+      const key = `${values[3]}\u0000${values[4]}\u0000${values[5]}`;
+      const row = state.workItems.get(key);
+      const now = new Date(values[6] as string | Date).getTime();
+      const eligible = row && ((["queued", "retry"].includes(String(row.status))
+        && new Date(row.next_attempt_at as string | Date).getTime() <= now)
+        || (row.status === "running"
+          && new Date(row.lease_expires_at as string | Date).getTime() <= now));
+      if (!row || !eligible) return [{ affectedRows: 0 }, []];
+      Object.assign(row, {
+        status: "running",
+        attempt_count: Number(row.attempt_count) + 1,
+        lease_owner: values[0],
+        lease_expires_at: values[1],
+        updated_at: values[2]
+      });
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.includes("COUNT(*) AS work_item_count")) {
+      const rows = [...state.workItems.values()].filter((row) =>
+        row.owner_id === values[0] && row.team_id === values[1]
+        && row.run_id === values[2]);
+      const count = (status: string) => rows.filter((row) =>
+        row.status === status).length;
+      const created = rows.map((row) => row.created_at as string | Date)
+        .sort((left, right) => new Date(left).getTime() - new Date(right).getTime());
+      const completed = rows.flatMap((row) => row.completed_at === null
+        ? [] : [row.completed_at as string | Date])
+        .sort((left, right) => new Date(left).getTime() - new Date(right).getTime());
+      const validLifecycle = (row: Record<string, unknown>) =>
+        (row.status === "queued" && row.lease_owner === null
+          && row.lease_expires_at === null && row.completed_at === null
+          && row.evidence_id === null && row.platform_evidence_id === null
+          && row.candidate_id === null && row.last_error_code === null)
+        || (row.status === "retry" && row.lease_owner === null
+          && row.lease_expires_at === null && row.completed_at === null
+          && row.evidence_id === null && row.platform_evidence_id === null
+          && row.candidate_id === null
+          && row.last_error_code === "RECOVERY_FAILED")
+        || (row.status === "running" && row.lease_owner !== null
+          && row.lease_expires_at !== null && row.completed_at === null
+          && row.evidence_id === null && row.platform_evidence_id === null
+          && row.candidate_id === null
+          && (row.last_error_code === null
+            || row.last_error_code === "RECOVERY_FAILED"))
+        || (row.status === "succeeded" && row.disposition === "automatic"
+          && row.lease_owner === null && row.lease_expires_at === null
+          && row.completed_at !== null && row.evidence_id !== null
+          && row.last_error_code === null)
+        || (row.status === "manual_review_only"
+          && row.disposition === "manual_review_only"
+          && row.lease_owner === null && row.lease_expires_at === null
+          && row.completed_at !== null && row.evidence_id !== null
+          && row.platform_evidence_id === null && row.candidate_id === null
+          && row.last_error_code === null);
+      return [[{
+        work_item_count: rows.length,
+        queued_count: count("queued"),
+        running_count: count("running"),
+        retry_count: count("retry"),
+        succeeded_count: count("succeeded"),
+        manual_review_only_count: count("manual_review_only"),
+        invalid_lifecycle_count: rows.filter((row) => !validLifecycle(row)).length,
+        created_at: created.at(0) ?? null,
+        completed_at: rows.length > 0 && completed.length === rows.length
+          ? completed.at(-1)! : null
+      }], []];
+    }
+    if (normalized.startsWith(
+      "SELECT * FROM acquisition_visual_ingestion_work_items"
+    )) {
+      const rows = [...state.workItems.values()].filter((row) =>
+        row.owner_id === values[0] && row.team_id === values[1]
+        && (normalized.includes("run_id = ?")
+          ? row.run_id === values[2]
+          : row.observation_id === values[2]));
+      return [[...rows.map((row) => structuredClone(row))], []];
     }
     if (normalized.startsWith(
       "DELETE FROM acquisition_visual_reader_artifacts"
@@ -356,6 +507,7 @@ test("memory and MySQL public methods share scope and identifier validation", as
         name: "append scope",
         run: () => repo.appendObservationBatch({
           scope: invalidScope,
+          ingestionActorId: INGESTION_ACTOR_ID,
           sessionId: "mysql-visual-session",
           observations: [{
             clientObservationKey: "client",
@@ -367,6 +519,7 @@ test("memory and MySQL public methods share scope and identifier validation", as
         name: "append session identifier",
         run: () => repo.appendObservationBatch({
           scope: SCOPE,
+          ingestionActorId: INGESTION_ACTOR_ID,
           sessionId: " invalid",
           observations: [{
             clientObservationKey: "client",
@@ -378,6 +531,7 @@ test("memory and MySQL public methods share scope and identifier validation", as
         name: "append client identifier",
         run: () => repo.appendObservationBatch({
           scope: SCOPE,
+          ingestionActorId: INGESTION_ACTOR_ID,
           sessionId: "mysql-visual-session",
           observations: [{
             clientObservationKey: " invalid",
@@ -439,6 +593,7 @@ test("memory and MySQL reject explicit or open artifact and expiry inputs", asyn
       await assert.rejects(
         repo.appendObservationBatch({
           scope: SCOPE,
+          ingestionActorId: INGESTION_ACTOR_ID,
           sessionId: "mysql-visual-session",
           observations: [{
             clientObservationKey: `invalid-artifact-${name.replaceAll(" ", "-")}`,
@@ -463,6 +618,7 @@ test("memory and MySQL reject explicit or open artifact and expiry inputs", asyn
 
     const accepted = await repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "artifact-property-absent",
@@ -615,6 +771,7 @@ test("visual MySQL observation rows cross-check every stored identity fact", asy
     await repo.createSession(createInput());
     await repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "integrity-client",
@@ -627,6 +784,7 @@ test("visual MySQL observation rows cross-check every stored identity fact", asy
     if (name === "owner scope") pool.bypassObservationScopeFilter = true;
     await assert.rejects(repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "next-client",
@@ -656,6 +814,7 @@ test("visual MySQL artifact rows fail closed before decryption", async () => {
     const inputArtifact = artifact("integrity-artifact-observation");
     await repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "integrity-artifact-client",
@@ -687,6 +846,7 @@ test("memory and MySQL derive OCR calls from newly accepted OCR observations", a
     });
     await assert.rejects(repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "zero-budget-ocr",
@@ -706,6 +866,7 @@ test("memory and MySQL derive OCR calls from newly accepted OCR observations", a
     });
     await repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "charged-ocr",
@@ -720,6 +881,7 @@ test("memory and MySQL derive OCR calls from newly accepted OCR observations", a
 
     await repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "charged-ocr",
@@ -740,6 +902,7 @@ test("memory and MySQL cap client bindings atomically while preserving replay", 
     const seed = observation("binding-seed");
     await repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{ clientObservationKey: "binding-seed", observation: seed }]
     });
@@ -757,6 +920,7 @@ test("memory and MySQL cap client bindings atomically while preserving replay", 
       const start = batch * 20;
       const result = await repo.appendObservationBatch({
         scope: SCOPE,
+        ingestionActorId: INGESTION_ACTOR_ID,
         sessionId: "mysql-visual-session",
         observations: Array.from({ length: 20 }, (_, offset) =>
           alias(start + offset))
@@ -766,6 +930,7 @@ test("memory and MySQL cap client bindings atomically while preserving replay", 
     }
     await repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: Array.from({ length: 19 }, (_, offset) =>
         alias(980 + offset))
@@ -776,6 +941,7 @@ test("memory and MySQL cap client bindings atomically while preserving replay", 
       const start = 2_000 + batch * 20;
       await assert.rejects(repo.appendObservationBatch({
         scope: SCOPE,
+        ingestionActorId: INGESTION_ACTOR_ID,
         sessionId: "mysql-visual-session",
         observations: Array.from({ length: 20 }, (_, offset) =>
           alias(start + offset))
@@ -794,6 +960,7 @@ test("memory and MySQL cap client bindings atomically while preserving replay", 
 
     const replay = await repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "binding-seed",
@@ -810,6 +977,7 @@ test("memory and MySQL enforce the canonical client-binding byte budget", async 
     const seed = observation("byte-binding-seed");
     await repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "byte-binding-seed",
@@ -837,6 +1005,7 @@ test("memory and MySQL enforce the canonical client-binding byte budget", async 
       try {
         await repo.appendObservationBatch({
           scope: SCOPE,
+          ingestionActorId: INGESTION_ACTOR_ID,
           sessionId: "mysql-visual-session",
           observations: items
         });
@@ -857,6 +1026,7 @@ test("memory and MySQL enforce the canonical client-binding byte budget", async 
       `${repo.constructor.name}: byte cap must bind before count cap`);
     assert.deepEqual(await repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "byte-binding-seed",
@@ -959,6 +1129,7 @@ test("visual MySQL preserves legacy client keys named like v2 namespaces", async
 
   await repo.appendObservationBatch({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{
       clientObservationKey: "new-client-key",
@@ -1041,6 +1212,7 @@ test("visual MySQL upgrades legacy bindings only with a successful mutation", as
   const failedArtifact = artifact("legacy-failed");
   await assert.rejects(repo.appendObservationBatch({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{
       clientObservationKey: "legacy-failed",
@@ -1054,6 +1226,7 @@ test("visual MySQL upgrades legacy bindings only with a successful mutation", as
 
   await repo.appendObservationBatch({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{
       clientObservationKey: "legacy-success",
@@ -1073,17 +1246,20 @@ test("visual MySQL upgrades legacy bindings only with a successful mutation", as
 });
 
 test("visual MySQL schema is isolated, repeatable, and fully tenant scoped", async () => {
-  assert.equal(ACQUISITION_VISUAL_READER_MYSQL_SCHEMA_STATEMENTS.length, 3);
+  assert.equal(ACQUISITION_VISUAL_READER_MYSQL_SCHEMA_STATEMENTS.length, 4);
   const schema = ACQUISITION_VISUAL_READER_MYSQL_SCHEMA_STATEMENTS.join("\n");
   for (const table of [
     "acquisition_visual_reader_sessions",
     "acquisition_visual_comment_observations",
-    "acquisition_visual_reader_artifacts"
+    "acquisition_visual_reader_artifacts",
+    "acquisition_visual_ingestion_work_items"
   ]) assert.match(schema, new RegExp(table, "u"));
   assert.match(schema, /PRIMARY KEY \(owner_id, team_id, session_id\)/u);
   assert.match(schema, /PRIMARY KEY \(owner_id, team_id, observation_id\)/u);
   assert.match(schema, /PRIMARY KEY \(owner_id, team_id, artifact_id\)/u);
   assert.match(schema, /MEDIUMBLOB/u);
+  assert.match(schema, /evidence_id VARCHAR\(255\)/u);
+  assert.match(schema, /disposition IN \('automatic','manual_review_only'\)/u);
   assert.match(schema, /UNIQUE KEY[\s\S]*owner_id, team_id, session_id/u);
 
   const pool = new StatefulVisualMysqlPool();
@@ -1093,7 +1269,245 @@ test("visual MySQL schema is isolated, repeatable, and fully tenant scoped", asy
   ]);
   assert.equal(
     pool.statements.filter(({ sql }) => sql.startsWith("CREATE TABLE")).length,
-    6
+    8
+  );
+  const repository = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  ) as unknown as {
+    transaction?: (work: () => Promise<unknown>) => Promise<unknown>;
+    withTransactionConnection?: (
+      connection: mysql.PoolConnection,
+      work: () => Promise<unknown>
+    ) => Promise<unknown>;
+  };
+  assert.equal(typeof repository.transaction, "function");
+  assert.equal(typeof repository.withTransactionConnection, "function");
+});
+
+test("visual MySQL work rows fail closed on contradictory lifecycle and forged identity", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  await repo.createSession(createInput());
+  const item = observation("mysql-work-integrity");
+  await repo.appendObservationBatch({
+    scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
+    sessionId: item.sessionId,
+    observations: [{ clientObservationKey: "mysql-work-client", observation: item }]
+  });
+  assert.equal((await repo.listRunIngestionWorkItems(
+    SCOPE,
+    "mysql-visual-run",
+    { limit: 100 }
+  )).length, 1);
+  const completion = {
+    workerId: "mysql-worker",
+    status: "succeeded" as const,
+    evidenceId: `visual:${item.observationId}:evidence:${item.textHash}`,
+    platformEvidenceId: null,
+    candidateId: null,
+    completedAt: "2026-08-15T01:00:01.000Z"
+  };
+  for (const invalid of [
+    { ...completion, workerId: " invalid" },
+    { ...completion, status: "queued" },
+    { ...completion, evidenceId: "" },
+    { ...completion, platformEvidenceId: 7 },
+    { ...completion, platformEvidenceId: "p".repeat(256) },
+    { ...completion, candidateId: {} },
+    { ...completion, candidateId: "c".repeat(121) },
+    { ...completion, completedAt: "not-an-instant" }
+  ]) {
+    const statementCount = pool.statements.length;
+    await assert.rejects(
+      repo.completeIngestionWorkItem(SCOPE, item.observationId, invalid as never),
+      hasRepositoryCode("VISUAL_READER_INVALID_INPUT")
+    );
+    assert.equal(pool.statements.length, statementCount,
+      "invalid completion must fail before SQL");
+  }
+  const stored = [...pool.state.workItems.values()][0]!;
+  stored.status = "running";
+  stored.lease_owner = null;
+  stored.lease_expires_at = null;
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 100 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+  Object.assign(stored, {
+    status: "succeeded",
+    disposition: "automatic",
+    lease_owner: null,
+    lease_expires_at: null,
+    evidence_id: completion.evidenceId,
+    platform_evidence_id: null,
+    last_error_code: null,
+    completed_at: "2026-08-15T01:00:01.000Z",
+    candidate_id: "c".repeat(121)
+  });
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 100 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+  Object.assign(stored, {
+    candidate_id: null,
+    evidence_id: "visual:forged:evidence:sha256:forged"
+  });
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 100 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+  stored.status = "queued";
+  stored.work_item_id = "forged-work-item";
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 100 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+  stored.work_item_id = `visual-ingestion:${item.observationId}`;
+  stored.session_id = "forged-session";
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 100 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+  stored.session_id = item.sessionId;
+  Object.assign(stored, {
+    status: "succeeded",
+    disposition: "automatic",
+    lease_owner: null,
+    lease_expires_at: null,
+    evidence_id: completion.evidenceId,
+    platform_evidence_id: null,
+    candidate_id: null,
+    last_error_code: null,
+    completed_at: "2026-08-14T23:59:59.000Z"
+  });
+  await assert.rejects(
+    repo.listRunIngestionWorkItems(SCOPE, "mysql-visual-run", { limit: 100 }),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
+  );
+  await assert.rejects(repo.claimPendingIngestionWorkItems({
+    workerId: "mysql-worker",
+    now: START,
+    leaseDurationMs: 30_000,
+    limit: 1,
+    extra: true
+  } as never), (error: unknown) =>
+    error instanceof AcquisitionVisualReaderRepositoryError
+      && error.code === "VISUAL_READER_INVALID_INPUT");
+});
+
+test("visual MySQL fair claims fill capacity after the first tenant round", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  const otherScope = { ownerId: "owner-mysql-visual-b", teamId: "team-b" };
+  await repo.createSession(createInput());
+  await repo.createSession(createInput({ scope: otherScope }));
+  await repo.appendObservationBatch({
+    scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
+    sessionId: "mysql-visual-session",
+    observations: ["mysql-fair-a1", "mysql-fair-a2"].map((id) => ({
+      clientObservationKey: `client-${id}`,
+      observation: observation(id)
+    }))
+  });
+  await repo.appendObservationBatch({
+    scope: otherScope,
+    ingestionActorId: INGESTION_ACTOR_ID,
+    sessionId: "mysql-visual-session",
+    observations: [{
+      clientObservationKey: "client-mysql-fair-b1",
+      observation: observation("mysql-fair-b1")
+    }]
+  });
+
+  const claims = await repo.claimPendingIngestionWorkItems({
+    workerId: "mysql-fair-worker",
+    now: START,
+    leaseDurationMs: 30_000,
+    limit: 3
+  });
+  assert.equal(claims.length, 3);
+  assert.deepEqual(new Set(claims.slice(0, 2).map(({ workItem }) =>
+    `${workItem.ownerId}:${workItem.teamId}`)), new Set([
+    `${SCOPE.ownerId}:${SCOPE.teamId}`,
+    `${otherScope.ownerId}:${otherScope.teamId}`
+  ]));
+  assert.ok(pool.statements.filter(({ sql }) => sql.startsWith(
+    "SELECT w.* FROM acquisition_visual_ingestion_work_items w"
+  )).length >= 2);
+});
+
+test("memory and MySQL expose exact untruncated Run work projections", async () => {
+  for (const repo of repositoryMatrix()) {
+    await repo.createSession(createInput());
+    await repo.appendObservationBatch({
+      scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
+      sessionId: "mysql-visual-session",
+      observations: ["projection-1", "projection-2"].map((id) => ({
+        clientObservationKey: `client-${id}`,
+        observation: observation(id)
+      }))
+    });
+    assert.deepEqual(await repo.getRunIngestionWorkProjection(
+      SCOPE,
+      "mysql-visual-run"
+    ), {
+      workItemCount: 2,
+      queuedCount: 2,
+      runningCount: 0,
+      retryCount: 0,
+      succeededCount: 0,
+      manualReviewOnlyCount: 0,
+      createdAt: START,
+      completedAt: null
+    });
+    assert.deepEqual(await repo.getRunIngestionWorkProjection(
+      { ownerId: "other-owner", teamId: SCOPE.teamId },
+      "mysql-visual-run"
+    ), {
+      workItemCount: 0,
+      queuedCount: 0,
+      runningCount: 0,
+      retryCount: 0,
+      succeededCount: 0,
+      manualReviewOnlyCount: 0,
+      createdAt: null,
+      completedAt: null
+    });
+  }
+});
+
+test("visual MySQL Run work projection rejects contradictory lifecycle rows", async () => {
+  const pool = new StatefulVisualMysqlPool();
+  const repo = new MysqlAcquisitionVisualReaderRepository(
+    pool as unknown as mysql.Pool,
+    { masterSecret: SECRET, now: () => START }
+  );
+  await repo.createSession(createInput());
+  await repo.appendObservationBatch({
+    scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
+    sessionId: "mysql-visual-session",
+    observations: [{
+      clientObservationKey: "projection-integrity-client",
+      observation: observation("projection-integrity")
+    }]
+  });
+  const stored = [...pool.state.workItems.values()][0]!;
+  stored.status = "manual_review_only";
+  stored.disposition = "automatic";
+  await assert.rejects(
+    repo.getRunIngestionWorkProjection(SCOPE, "mysql-visual-run"),
+    /ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY/u
   );
 });
 
@@ -1124,6 +1538,7 @@ for (const operation of ["append", "complete"] as const) {
     const pending = operation === "append"
       ? repo.appendObservationBatch({
         scope: SCOPE,
+        ingestionActorId: INGESTION_ACTOR_ID,
         sessionId: "missing-visual-session",
         observations: [{
           clientObservationKey: "missing-client-key",
@@ -1162,6 +1577,7 @@ test("visual MySQL repository atomically stores ciphertext and converges duplica
   });
   const first = await repo.appendObservationBatch({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{
       clientObservationKey: "mysql-client-1",
@@ -1174,6 +1590,7 @@ test("visual MySQL repository atomically stores ciphertext and converges duplica
   const [left, right] = await Promise.all([
     repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "mysql-client-2",
@@ -1182,6 +1599,7 @@ test("visual MySQL repository atomically stores ciphertext and converges duplica
     }),
     repo.appendObservationBatch({
       scope: SCOPE,
+      ingestionActorId: INGESTION_ACTOR_ID,
       sessionId: "mysql-visual-session",
       observations: [{
         clientObservationKey: "mysql-client-3",
@@ -1245,6 +1663,7 @@ async function mysqlRequestReplayFixture() {
   };
   await repo.appendObservationBatchWithResult({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{
       clientObservationKey: "mysql-replay-integrity",
@@ -1302,6 +1721,7 @@ test("visual MySQL request binding is transactional and persists no raw header",
   const input: AppendVisualObservationBatchInput = {
     scope: SCOPE,
     sessionId: "mysql-visual-session",
+    ingestionActorId: "visual-reader-actor",
     observations: [{
       clientObservationKey: "mysql-header-binding",
       observation: first
@@ -1358,6 +1778,7 @@ test("visual MySQL request/client namespaces cannot collide", async () => {
   const item = observation("mysql-namespace-collision");
   await repo.appendObservationBatchWithResult({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{ clientObservationKey: collisionKey, observation: item }],
     requestBinding: { keyHash, requestHash: digest("mysql-namespace-body") }
@@ -1384,6 +1805,7 @@ test("visual MySQL append rollback leaves no observation, BLOB, usage, or key bi
   pool.failNextArtifactInsert = true;
   await assert.rejects(repo.appendObservationBatch({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{
       clientObservationKey: "mysql-client-rollback",
@@ -1413,6 +1835,7 @@ test("visual MySQL maps duplicate errors at the artifact insert boundary", async
   pool.duplicateNextArtifactInsert = true;
   await assert.rejects(repo.appendObservationBatch({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{
       clientObservationKey: "artifact-conflict-client",
@@ -1437,6 +1860,7 @@ test("visual MySQL reads are scoped, deterministic, and expiry deletion is bound
   const inputArtifact = artifact("mysql-observation-1");
   await repo.appendObservationBatch({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{
       clientObservationKey: "mysql-client-2",
@@ -1502,7 +1926,7 @@ test("visual MySQL repository persists an expired terminal session", async () =>
   assert.deepEqual(expired.outcome, outcome);
 });
 
-for (const firstTouch of ["get", "append", "complete"] as const) {
+for (const firstTouch of ["get", "append", "complete", "list"] as const) {
   test(`visual MySQL ${firstTouch} first touch durably expires at expiresAt`, async () => {
     const pool = new StatefulVisualMysqlPool();
     let now = START;
@@ -1521,13 +1945,14 @@ for (const firstTouch of ["get", "append", "complete"] as const) {
     } else if (firstTouch === "append") {
       await assert.rejects(repo.appendObservationBatch({
         scope: SCOPE,
+        ingestionActorId: INGESTION_ACTOR_ID,
         sessionId: "mysql-visual-session",
         observations: [{
           clientObservationKey: "expired-first-touch",
           observation: observation("expired-first-touch")
         }]
       }), /VISUAL_READER_SESSION_EXPIRED/u);
-    } else {
+    } else if (firstTouch === "complete") {
       await assert.rejects(repo.completeSession(
         SCOPE,
         "mysql-visual-session",
@@ -1543,6 +1968,11 @@ for (const firstTouch of ["get", "append", "complete"] as const) {
           errorCodes: []
         }
       ), /VISUAL_READER_SESSION_EXPIRED/u);
+    } else {
+      assert.equal((await repo.listRunSessions(
+        SCOPE,
+        "mysql-visual-run"
+      ))[0]?.status, "expired");
     }
 
     now = START;
@@ -1654,6 +2084,7 @@ async function exerciseVisualRepositoryContract(
   });
   const appended = await repo.appendObservationBatch({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{
       clientObservationKey: "contract-client",
@@ -1663,6 +2094,7 @@ async function exerciseVisualRepositoryContract(
   });
   const replay = await repo.appendObservationBatch({
     scope: SCOPE,
+    ingestionActorId: INGESTION_ACTOR_ID,
     sessionId: "mysql-visual-session",
     observations: [{
       clientObservationKey: "contract-client",

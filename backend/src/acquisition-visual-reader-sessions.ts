@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { AcquisitionScope } from "./acquisition-douyin-comment-events.js";
 import {
   decryptAcquisitionVisualArtifact,
@@ -167,6 +168,7 @@ export interface VisualReaderArtifact {
 export interface AppendVisualObservationBatchInput {
   scope: AcquisitionScope;
   sessionId: string;
+  ingestionActorId: string;
   observations: Array<{
     clientObservationKey: string;
     observation: DouyinVisualCommentObservationV1;
@@ -180,6 +182,7 @@ export interface AppendVisualObservationBatchInput {
 }
 
 export interface AcquisitionVisualReaderRepository {
+  transaction<T>(work: () => Promise<T>): Promise<T>;
   createSessionWithResult(
     input: CreateVisualReaderSessionInput
   ): Promise<{ session: VisualReaderSession; created: boolean }>;
@@ -211,11 +214,39 @@ export interface AcquisitionVisualReaderRepository {
     scope: AcquisitionScope,
     sessionId: string
   ): Promise<VisualReaderSession | null>;
+  /** Internal Run Presentation read. Fails closed if the scoped Run has more
+   * than 1000 persisted sessions. */
+  listRunSessions(
+    scope: AcquisitionScope,
+    runId: string
+  ): Promise<VisualReaderSession[]>;
   listRunObservations(
     scope: AcquisitionScope,
     runId: string,
     options: { limit: number }
   ): Promise<VisualCommentObservation[]>;
+  listRunIngestionWorkItems(
+    scope: AcquisitionScope,
+    runId: string,
+    options: { limit: number }
+  ): Promise<VisualIngestionWorkItem[]>;
+  getRunIngestionWorkProjection(
+    scope: AcquisitionScope,
+    runId: string
+  ): Promise<VisualRunIngestionWorkProjection>;
+  claimPendingIngestionWorkItems(
+    input: ClaimPendingVisualIngestionWorkItemsInput
+  ): Promise<VisualIngestionWorkItemClaim[]>;
+  failIngestionWorkItem(
+    scope: AcquisitionScope,
+    observationId: string,
+    failure: FailVisualIngestionWorkItemInput
+  ): Promise<VisualIngestionWorkItem>;
+  completeIngestionWorkItem(
+    scope: AcquisitionScope,
+    observationId: string,
+    result: CompleteVisualIngestionWorkItemInput
+  ): Promise<VisualIngestionWorkItem>;
   getArtifact(
     scope: AcquisitionScope,
     artifactId: string
@@ -224,6 +255,76 @@ export interface AcquisitionVisualReaderRepository {
     before: string;
     limit: number;
   }): Promise<number>;
+}
+
+export type VisualIngestionWorkItemStatus =
+  | "queued"
+  | "running"
+  | "retry"
+  | "succeeded"
+  | "manual_review_only";
+
+export interface VisualIngestionWorkItem {
+  workItemId: string;
+  ownerId: string;
+  teamId: string;
+  actorId: string;
+  sessionId: string;
+  runId: string;
+  observationId: string;
+  artifactId: string | null;
+  disposition: "automatic" | "manual_review_only";
+  status: VisualIngestionWorkItemStatus;
+  attemptCount: number;
+  nextAttemptAt: string;
+  leaseOwner: string | null;
+  leaseExpiresAt: string | null;
+  lastErrorCode: "RECOVERY_FAILED" | null;
+  evidenceId: string | null;
+  platformEvidenceId: string | null;
+  candidateId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface ClaimPendingVisualIngestionWorkItemsInput {
+  workerId: string;
+  now: string;
+  leaseDurationMs: number;
+  limit: number;
+}
+
+export interface VisualIngestionWorkItemClaim {
+  workItem: VisualIngestionWorkItem;
+  observation: DouyinVisualCommentObservationV1;
+}
+
+export interface VisualRunIngestionWorkProjection {
+  workItemCount: number;
+  queuedCount: number;
+  runningCount: number;
+  retryCount: number;
+  succeededCount: number;
+  manualReviewOnlyCount: number;
+  createdAt: string | null;
+  completedAt: string | null;
+}
+
+export interface FailVisualIngestionWorkItemInput {
+  workerId: string;
+  failedAt: string;
+  nextAttemptAt: string;
+  errorCode: "RECOVERY_FAILED";
+}
+
+export interface CompleteVisualIngestionWorkItemInput {
+  workerId: string;
+  status: "succeeded" | "manual_review_only";
+  evidenceId: string;
+  platformEvidenceId: string | null;
+  candidateId: string | null;
+  completedAt: string;
 }
 
 export type AcquisitionVisualReaderRepositoryErrorCode =
@@ -271,6 +372,7 @@ interface MemoryState {
   clientKeys: Map<string, { inputHash: string; observationId: string }>;
   requestBindings: Map<string, AcquisitionVisualReaderRequestReplayRecord>;
   artifacts: Map<string, StoredArtifact>;
+  ingestionWorkItems: Map<string, VisualIngestionWorkItem>;
 }
 
 const EMPTY_USAGE: VisualReaderUsage = Object.freeze({
@@ -389,6 +491,16 @@ function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
+function cloneMemoryState(value: MemoryState): MemoryState {
+  const state = clone(value);
+  for (const artifact of state.artifacts.values()) {
+    artifact.envelope.iv = Buffer.from(artifact.envelope.iv);
+    artifact.envelope.authTag = Buffer.from(artifact.envelope.authTag);
+    artifact.envelope.ciphertext = Buffer.from(artifact.envelope.ciphertext);
+  }
+  return state;
+}
+
 function scopeKey(scope: AcquisitionScope) {
   return `${scope.ownerId}\u0000${scope.teamId}`;
 }
@@ -398,6 +510,13 @@ function sessionKey(scope: AcquisitionScope, sessionId: string) {
 }
 
 function observationKey(scope: AcquisitionScope, observationId: string) {
+  return `${scopeKey(scope)}\u0000${observationId}`;
+}
+
+function ingestionWorkItemKey(
+  scope: AcquisitionScope,
+  observationId: string
+) {
   return `${scopeKey(scope)}\u0000${observationId}`;
 }
 
@@ -682,11 +801,14 @@ export function assertAppendVisualObservationBatchInput(
 ) {
   if (!recordWithKeys(
     input,
-    ["scope", "sessionId", "observations"],
+    ["scope", "sessionId", "ingestionActorId", "observations"],
     ["usageDelta", "requestBinding"]
   )) fail("VISUAL_READER_INVALID_INPUT");
   assertVisualReaderScope(input.scope);
   assertVisualReaderIdentifier(input.sessionId);
+  if (!SCOPE_IDENTIFIER.test(input.ingestionActorId)) {
+    fail("VISUAL_READER_INVALID_INPUT");
+  }
   if (!Array.isArray(input.observations)
     || input.observations.length < 1
     || input.observations.length > 20
@@ -888,10 +1010,30 @@ export function assertDeleteExpiredVisualArtifactsInput(
   isoInstant(input.before as string);
 }
 
+export function visualObservationIsManualReviewOnly(
+  observation: DouyinVisualCommentObservationV1
+) {
+  if (observation.extractionMethod === "vision") return true;
+  if (observation.domTextHash !== null
+    && observation.ocrTextHash !== null
+    && observation.domTextHash !== observation.ocrTextHash) return true;
+  if (observation.extractionMethod === "ocr") {
+    return observation.fieldConfidences.visibleText < 0.90
+      || observation.domTextHash !== null;
+  }
+  const automaticallyUsedFields = [
+    "visibleText", "displayName", "visibleTimeText", "likeCount",
+    "replyCount", "platformCommentId", "publicProfileUrl", "secUid"
+  ] as const;
+  return automaticallyUsedFields.some((field) => {
+    if (field !== "visibleText" && observation[field] === null) return false;
+    const confidence = observation.fieldConfidences[field];
+    return confidence === undefined || confidence < 0.85;
+  });
+}
+
 function lowConfidence(observation: DouyinVisualCommentObservationV1) {
-  const minimum = observation.extractionMethod === "ocr"
-    || observation.extractionMethod === "vision" ? 0.90 : 0.85;
-  return observation.fieldConfidences.visibleText < minimum;
+  return visualObservationIsManualReviewOnly(observation);
 }
 
 export const visualObservationIsLowConfidence = lowConfidence;
@@ -1109,9 +1251,11 @@ implements AcquisitionVisualReaderRepository {
     dedupe: new Map(),
     clientKeys: new Map(),
     requestBindings: new Map(),
-    artifacts: new Map()
+    artifacts: new Map(),
+    ingestionWorkItems: new Map()
   };
   private mutationTail: Promise<void> = Promise.resolve();
+  private readonly transactionContext = new AsyncLocalStorage<boolean>();
   private readonly masterSecret: string;
   private readonly now: () => string;
 
@@ -1122,14 +1266,29 @@ implements AcquisitionVisualReaderRepository {
   }
 
   private mutate<T>(work: () => T | Promise<T>) {
+    if (this.transactionContext.getStore()) return Promise.resolve().then(work);
     const result = this.mutationTail.then(work);
     this.mutationTail = result.then(() => undefined, () => undefined);
     return result;
   }
 
   private async settledState() {
+    if (this.transactionContext.getStore()) return this.state;
     await this.mutationTail;
     return this.state;
+  }
+
+  transaction<T>(work: () => Promise<T>) {
+    if (this.transactionContext.getStore()) return work();
+    return this.mutate(async () => {
+      const snapshot = cloneMemoryState(this.state);
+      try {
+        return await this.transactionContext.run(true, work);
+      } catch (error) {
+        this.state = snapshot;
+        throw error;
+      }
+    });
   }
 
   createSession(input: CreateVisualReaderSessionInput) {
@@ -1259,6 +1418,7 @@ implements AcquisitionVisualReaderRepository {
       const clientKeys = new Map(this.state.clientKeys);
       const requestBindings = new Map(this.state.requestBindings);
       const artifacts = new Map(this.state.artifacts);
+      const ingestionWorkItems = new Map(this.state.ingestionWorkItems);
       const accepted: DouyinVisualCommentObservationV1[] = [];
       const acceptedClientKeys: string[] = [];
       const duplicates: string[] = [];
@@ -1381,6 +1541,37 @@ implements AcquisitionVisualReaderRepository {
         }
         accepted.push(clone(item.observation));
         acceptedClientKeys.push(item.clientObservationKey);
+        const workKey = ingestionWorkItemKey(
+          input.scope,
+          item.observation.observationId
+        );
+        if (!ingestionWorkItems.has(workKey)) {
+          ingestionWorkItems.set(workKey, {
+            workItemId: `visual-ingestion:${item.observation.observationId}`,
+            ownerId: input.scope.ownerId,
+            teamId: input.scope.teamId,
+            actorId: input.ingestionActorId,
+            sessionId: input.sessionId,
+            runId: session.runId,
+            observationId: item.observation.observationId,
+            artifactId: item.artifact?.artifactId ?? null,
+            disposition: visualObservationIsManualReviewOnly(item.observation)
+              ? "manual_review_only"
+              : "automatic",
+            status: "queued",
+            attemptCount: 0,
+            nextAttemptAt: now,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            lastErrorCode: null,
+            evidenceId: null,
+            platformEvidenceId: null,
+            candidateId: null,
+            createdAt: now,
+            updatedAt: now,
+            completedAt: null
+          });
+        }
       }
       let nextSession = session;
       if (accepted.length > 0) {
@@ -1451,7 +1642,8 @@ implements AcquisitionVisualReaderRepository {
         dedupe,
         clientKeys,
         requestBindings,
-        artifacts
+        artifacts,
+        ingestionWorkItems
       };
       return {
         accepted: clone(accepted),
@@ -1575,6 +1767,35 @@ implements AcquisitionVisualReaderRepository {
     });
   }
 
+  listRunSessions(scope: AcquisitionScope, runId: string) {
+    return this.mutate(() => {
+      assertVisualReaderScope(scope);
+      assertVisualReaderIdentifier(runId);
+      const now = this.now();
+      isoInstant(now);
+      const matching = [...this.state.sessions.entries()]
+        .filter(([key, session]) => key.startsWith(
+          `${scope.ownerId}\u0000${scope.teamId}\u0000`
+        ) && session.runId === runId);
+      if (matching.length > 1_000) {
+        throw new Error("ACQUISITION_VISUAL_PRESENTATION_FACT_LIMIT_EXCEEDED");
+      }
+      const sessions = new Map(this.state.sessions);
+      const projected = matching.map(([key, session]) => {
+        if (TERMINAL_STATUSES.has(session.status) || activeAt(session, now)) {
+          return session;
+        }
+        const expired = expiredProjection(session, session.expiresAt);
+        sessions.set(key, expired);
+        return expired;
+      }).sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt)
+        || left.sessionId.localeCompare(right.sessionId));
+      this.state = { ...this.state, sessions };
+      return projected.map(clone);
+    });
+  }
+
   async listRunObservations(
     scope: AcquisitionScope,
     runId: string,
@@ -1602,6 +1823,274 @@ implements AcquisitionVisualReaderRepository {
         || left.observationId.localeCompare(right.observationId))
       .slice(0, options.limit)
       .map(clone);
+  }
+
+  async listRunIngestionWorkItems(
+    scope: AcquisitionScope,
+    runId: string,
+    options: { limit: number }
+  ) {
+    assertVisualReaderScope(scope);
+    assertVisualReaderIdentifier(runId);
+    if (!recordWithKeys(options, ["limit"])
+      || !Number.isSafeInteger(options.limit)
+      || options.limit < 1
+      || options.limit > 1_000) {
+      fail("VISUAL_READER_INVALID_INPUT");
+    }
+    const state = await this.settledState();
+    return [...state.ingestionWorkItems.values()]
+      .filter((item) => item.ownerId === scope.ownerId
+        && item.teamId === scope.teamId
+        && item.runId === runId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt)
+        || left.workItemId.localeCompare(right.workItemId))
+      .slice(0, options.limit)
+      .map(clone);
+  }
+
+  async getRunIngestionWorkProjection(
+    scope: AcquisitionScope,
+    runId: string
+  ): Promise<VisualRunIngestionWorkProjection> {
+    assertVisualReaderScope(scope);
+    assertVisualReaderIdentifier(runId);
+    const state = await this.settledState();
+    const items = [...state.ingestionWorkItems.values()].filter((item) =>
+      item.ownerId === scope.ownerId
+      && item.teamId === scope.teamId
+      && item.runId === runId);
+    const completed = items.flatMap((item) =>
+      item.completedAt ? [item.completedAt] : []).sort();
+    return {
+      workItemCount: items.length,
+      queuedCount: items.filter((item) => item.status === "queued").length,
+      runningCount: items.filter((item) => item.status === "running").length,
+      retryCount: items.filter((item) => item.status === "retry").length,
+      succeededCount: items.filter((item) => item.status === "succeeded").length,
+      manualReviewOnlyCount: items.filter((item) =>
+        item.status === "manual_review_only").length,
+      createdAt: items.map((item) => item.createdAt).sort().at(0) ?? null,
+      completedAt: items.length > 0 && completed.length === items.length
+        ? completed.at(-1)!
+        : null
+    };
+  }
+
+  claimPendingIngestionWorkItems(
+    input: ClaimPendingVisualIngestionWorkItemsInput
+  ) {
+    return this.mutate(() => {
+      if (!recordWithKeys(
+        input,
+        ["workerId", "now", "leaseDurationMs", "limit"]
+      )
+        || !SCOPE_IDENTIFIER.test(input.workerId)
+        || !Number.isSafeInteger(input.leaseDurationMs)
+        || input.leaseDurationMs < 1_000
+        || input.leaseDurationMs > 15 * 60_000
+        || !Number.isSafeInteger(input.limit)
+        || input.limit < 1
+        || input.limit > 100) {
+        fail("VISUAL_READER_INVALID_INPUT");
+      }
+      const now = isoInstant(input.now);
+      const eligible = [...this.state.ingestionWorkItems.values()]
+        .filter((item) => (item.status === "queued"
+            || item.status === "retry")
+          ? Date.parse(item.nextAttemptAt) <= now
+          : item.status === "running"
+            && item.leaseExpiresAt !== null
+            && Date.parse(item.leaseExpiresAt) <= now)
+        .sort((left, right) =>
+          left.nextAttemptAt.localeCompare(right.nextAttemptAt)
+          || left.createdAt.localeCompare(right.createdAt)
+          || left.workItemId.localeCompare(right.workItemId));
+      const byTenant = new Map<string, VisualIngestionWorkItem[]>();
+      for (const item of eligible) {
+        const tenant = `${item.ownerId}\u0000${item.teamId}`;
+        const queue = byTenant.get(tenant) ?? [];
+        queue.push(item);
+        byTenant.set(tenant, queue);
+      }
+      const tenantAttemptCounts = new Map<string, number>();
+      for (const item of this.state.ingestionWorkItems.values()) {
+        const tenant = `${item.ownerId}\u0000${item.teamId}`;
+        tenantAttemptCounts.set(
+          tenant,
+          (tenantAttemptCounts.get(tenant) ?? 0) + item.attemptCount
+        );
+      }
+      const fairTenantQueues = [...byTenant.entries()].sort(
+        ([left], [right]) =>
+          (tenantAttemptCounts.get(left) ?? 0)
+            - (tenantAttemptCounts.get(right) ?? 0)
+          || left.localeCompare(right)
+      );
+      const selected: VisualIngestionWorkItem[] = [];
+      while (selected.length < input.limit) {
+        let selectedInRound = false;
+        for (const [, queue] of fairTenantQueues) {
+          const item = queue.shift();
+          if (!item) continue;
+          selected.push(item);
+          selectedInRound = true;
+          if (selected.length === input.limit) break;
+        }
+        if (!selectedInRound) break;
+      }
+      if (selected.length === 0) return [];
+      const workItems = new Map(this.state.ingestionWorkItems);
+      const leaseExpiresAt = new Date(
+        now + input.leaseDurationMs
+      ).toISOString();
+      const claims: VisualIngestionWorkItemClaim[] = [];
+      for (const item of selected) {
+        const running: VisualIngestionWorkItem = {
+          ...item,
+          status: "running",
+          attemptCount: item.attemptCount + 1,
+          leaseOwner: input.workerId,
+          leaseExpiresAt,
+          updatedAt: input.now
+        };
+        const scope = { ownerId: item.ownerId, teamId: item.teamId };
+        const observation = this.state.observations.get(observationKey(
+          scope,
+          item.observationId
+        ));
+        if (!observation) fail("VISUAL_READER_OBSERVATION_CONFLICT");
+        workItems.set(ingestionWorkItemKey(scope, item.observationId), running);
+        claims.push({ workItem: clone(running), observation: clone(observation) });
+      }
+      this.state = { ...this.state, ingestionWorkItems: workItems };
+      return claims;
+    });
+  }
+
+  failIngestionWorkItem(
+    scope: AcquisitionScope,
+    observationId: string,
+    failure: FailVisualIngestionWorkItemInput
+  ) {
+    return this.mutate(() => {
+      assertVisualReaderScope(scope);
+      assertVisualReaderIdentifier(observationId);
+      if (!recordWithKeys(
+        failure,
+        ["workerId", "failedAt", "nextAttemptAt", "errorCode"]
+      )
+        || !SCOPE_IDENTIFIER.test(failure.workerId)
+        || failure.errorCode !== "RECOVERY_FAILED"
+        || isoInstant(failure.nextAttemptAt) < isoInstant(failure.failedAt)) {
+        fail("VISUAL_READER_INVALID_INPUT");
+      }
+      const key = ingestionWorkItemKey(scope, observationId);
+      const item = this.state.ingestionWorkItems.get(key);
+      if (!item
+        || item.status !== "running"
+        || item.leaseOwner !== failure.workerId
+        || item.leaseExpiresAt === null
+        || Date.parse(failure.failedAt) < Date.parse(item.updatedAt)
+        || Date.parse(failure.failedAt) > Date.parse(item.leaseExpiresAt)) {
+        fail("VISUAL_READER_OBSERVATION_CONFLICT");
+      }
+      const retry: VisualIngestionWorkItem = {
+        ...item,
+        status: "retry",
+        nextAttemptAt: failure.nextAttemptAt,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        lastErrorCode: failure.errorCode,
+        updatedAt: failure.failedAt
+      };
+      this.state = {
+        ...this.state,
+        ingestionWorkItems: new Map(this.state.ingestionWorkItems).set(
+          key,
+          retry
+        )
+      };
+      return clone(retry);
+    });
+  }
+
+  completeIngestionWorkItem(
+    scope: AcquisitionScope,
+    observationId: string,
+    result: CompleteVisualIngestionWorkItemInput
+  ) {
+    return this.mutate(() => {
+      assertVisualReaderScope(scope);
+      assertVisualReaderIdentifier(observationId);
+      if (!recordWithKeys(result, [
+        "workerId", "status", "evidenceId", "platformEvidenceId",
+        "candidateId", "completedAt"
+      ])
+        || !SCOPE_IDENTIFIER.test(result.workerId)
+        || !["succeeded", "manual_review_only"].includes(result.status)
+        || typeof result.evidenceId !== "string"
+        || result.evidenceId.length < 1
+        || (result.platformEvidenceId !== null
+          && (typeof result.platformEvidenceId !== "string"
+            || result.platformEvidenceId.length < 1
+            || result.platformEvidenceId.length > 255
+            || /[\u0000-\u001F\u007F]/u.test(result.platformEvidenceId)))
+        || (result.candidateId !== null
+          && (typeof result.candidateId !== "string"
+            || result.candidateId.length < 1
+            || result.candidateId.length > 120
+            || /[\u0000-\u001F\u007F]/u.test(result.candidateId)))) {
+        fail("VISUAL_READER_INVALID_INPUT");
+      }
+      isoInstant(result.completedAt);
+      const key = ingestionWorkItemKey(scope, observationId);
+      const item = this.state.ingestionWorkItems.get(key);
+      const observation = this.state.observations.get(observationKey(
+        scope,
+        observationId
+      ));
+      const expectedEvidenceId = observation
+        ? `visual:${observationId}:evidence:${observation.textHash}`
+        : null;
+      if (!item
+        || !observation
+        || item.status !== "running"
+        || item.leaseOwner !== result.workerId
+        || item.leaseExpiresAt === null
+        || Date.parse(result.completedAt) < Date.parse(item.updatedAt)
+        || Date.parse(result.completedAt) > Date.parse(item.leaseExpiresAt)
+        || result.evidenceId !== expectedEvidenceId
+        || (item.disposition === "manual_review_only"
+          && (result.status !== "manual_review_only"
+            || result.platformEvidenceId !== null
+            || result.candidateId !== null))
+        || (item.disposition === "automatic"
+          && result.status !== "succeeded")) {
+        fail("VISUAL_READER_OBSERVATION_CONFLICT");
+      }
+      const completed: VisualIngestionWorkItem = {
+        ...item,
+        status: result.status,
+        nextAttemptAt: result.completedAt,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        lastErrorCode: null,
+        evidenceId: result.evidenceId,
+        platformEvidenceId: result.platformEvidenceId,
+        candidateId: result.candidateId,
+        updatedAt: result.completedAt,
+        completedAt: result.completedAt
+      };
+      this.state = {
+        ...this.state,
+        ingestionWorkItems: new Map(this.state.ingestionWorkItems).set(
+          key,
+          completed
+        )
+      };
+      return clone(completed);
+    });
   }
 
   async getArtifact(scope: AcquisitionScope, artifactId: string) {

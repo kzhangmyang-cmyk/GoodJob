@@ -2386,6 +2386,21 @@ export interface components {
                 coverage: "public_top_level_sample";
             } | {
                 /** @constant */
+                kind: "authorized_visual_observation";
+                /** Format: uri */
+                sourceUrl: string;
+                observationId: string;
+                sessionId: string;
+                /** @enum {unknown} */
+                extractionMethod: "dom" | "accessibility" | "ocr";
+                visibleTextConfidence: number;
+                /** @constant */
+                coverage: "authorized_visible_top_level_sample";
+                artifactId: string | null;
+                domTextHash: string | null;
+                ocrTextHash: string | null;
+            } | {
+                /** @constant */
                 kind: "import_artifact_row";
                 importBatchId: string;
                 artifactHash: string;
@@ -2396,7 +2411,7 @@ export interface components {
             };
             /** @enum {unknown} */
             accessStatus: "indexed_summary" | "public_content" | "user_supplied" | "access_restricted";
-        } & unknown;
+        } & (unknown & unknown);
         budgetUsage: {
             requests: number;
             results: number;
@@ -2705,6 +2720,13 @@ export interface components {
                 coverage: "authorized_visible_top_level_sample";
                 /** @enum {string} */
                 status: "created" | "collecting" | "completed" | "partial_success" | "aborted" | "expired";
+                limits: {
+                    maxVideos: number;
+                    maxCommentsPerVideo: number;
+                    maxScrolls: number;
+                    maxOcrCalls: number;
+                    maxDurationMs: number;
+                };
                 usage: {
                     videoCount: number;
                     observationCount: number;
@@ -2716,7 +2738,33 @@ export interface components {
                     lowConfidenceObservationCount: number;
                     artifactCount: number;
                 };
+                outcome: {
+                    /** @enum {string} */
+                    status: "completed" | "partial_success" | "aborted" | "expired";
+                    videoCount: number;
+                    observationCount: number;
+                    domObservationCount: number;
+                    accessibilityObservationCount: number;
+                    ocrObservationCount: number;
+                    lowConfidenceObservationCount: number;
+                    artifactCount: number;
+                    errorCodes: ("visual_reader_not_enabled" | "visual_reader_session_expired" | "visual_reader_budget_exhausted" | "visual_source_invalid" | "visual_observation_invalid" | "visual_artifact_invalid" | "visual_extraction_method_disabled" | "visual_extraction_low_confidence" | "visual_reader_user_takeover")[];
+                } | null;
                 lastErrorCode: ("visual_reader_not_enabled" | "visual_reader_session_expired" | "visual_reader_budget_exhausted" | "visual_source_invalid" | "visual_observation_invalid" | "visual_artifact_invalid" | "visual_extraction_method_disabled" | "visual_extraction_low_confidence" | "visual_reader_user_takeover") | null;
+                sessionCount: number;
+                /** @enum {string} */
+                aggregateStatus: "active" | "succeeded" | "partial_success" | "failed" | "stopped";
+                aggregateUsage: {
+                    videoCount: number;
+                    observationCount: number;
+                    scrollCount: number;
+                    ocrCallCount: number;
+                    domObservationCount: number;
+                    accessibilityObservationCount: number;
+                    ocrObservationCount: number;
+                    lowConfidenceObservationCount: number;
+                    artifactCount: number;
+                };
                 visualSteps: {
                     /** @enum {string} */
                     id: "authorize_visual_reader" | "read_visible_comment_cards" | "extract_visible_text" | "persist_visual_observations" | "review_visual_signal_confidence";
@@ -3130,7 +3178,7 @@ export interface components {
             firstSeenAt: string;
             /** Format: date-time */
             lastSeenAt: string;
-        };
+        } & unknown;
         /** CandidateIntelligenceOperation */
         "candidate-intelligence-operation.v1.schema": {
             id: string;

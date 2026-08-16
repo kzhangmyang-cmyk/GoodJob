@@ -417,6 +417,9 @@ export class AcquisitionDomainService {
   ) {
     this.validateScope(scope);
     const input = this.normalizeEvidenceInput(raw);
+    if (input.provenance.kind === "authorized_visual_observation") {
+      fail("invalid_request", "授权视觉证据必须使用受限写入边界", 400);
+    }
     return this.idempotent(
       scope,
       "append_evidence",
@@ -435,6 +438,49 @@ export class AcquisitionDomainService {
         const evidence: DiscoveryEvidence = {
           ...input,
           id: this.idFactory("evidence"),
+          ownerId: scope.ownerId,
+          teamId: scope.teamId,
+          fetchedAt: validIso(this.clock(), "证据抓取时间")
+        };
+        await this.repository.appendEvidence(evidence);
+        await this.audit(scope, {
+          candidateId: null,
+          eventType: "evidence_appended",
+          fromStatus: null,
+          toStatus: null,
+          resourceId: evidence.id,
+          idempotencyKey,
+          payload: input
+        });
+        return evidence;
+      }
+    );
+  }
+
+  /** Internal-only append boundary for immutable authorized visual facts. */
+  async appendAuthorizedVisualEvidence(
+    scope: AcquisitionActorScope,
+    raw: DiscoveryEvidenceInput,
+    literalEvidenceId: string,
+    idempotencyKey: string
+  ) {
+    this.validateScope(scope);
+    const input = this.normalizeEvidenceInput(raw);
+    if (input.provenance.kind !== "authorized_visual_observation"
+      || input.supersedesEvidenceId !== null
+      || literalEvidenceId !== `visual:${input.provenance.observationId}`
+        + `:evidence:${input.contentHash}`) {
+      fail("invalid_request", "视觉证据 ID 无效", 400);
+    }
+    return this.idempotent(
+      scope,
+      "append_authorized_visual_evidence",
+      idempotencyKey,
+      { input, literalEvidenceId },
+      async () => {
+        const evidence: DiscoveryEvidence = {
+          ...input,
+          id: literalEvidenceId,
           ownerId: scope.ownerId,
           teamId: scope.teamId,
           fetchedAt: validIso(this.clock(), "证据抓取时间")
@@ -558,7 +604,12 @@ export class AcquisitionDomainService {
         "Individual Party ID",
         100
       ),
-      evidenceIds: this.uniqueIds(raw.evidenceIds, "个人需求证据")
+      evidenceIds: this.uniqueIds(raw.evidenceIds, "个人需求证据"),
+      ...(["needs_research", "do_not_contact"].includes(
+        String(raw.initialStatus)
+      )
+        ? { initialStatus: raw.initialStatus }
+        : {})
     };
     const validStages = new Set([
       "awareness",
@@ -605,11 +656,13 @@ export class AcquisitionDomainService {
             negativeSignals: input.negativeSignals
           },
           evidenceIds: input.evidenceIds,
-          status: "normalized",
+          status: input.initialStatus ?? "normalized",
           latestDecisionId: null,
           latestDecisionVersion: null,
           approvedDecisionVersion: null,
-          hardGateFailures: [],
+          hardGateFailures: input.initialStatus === "do_not_contact"
+            ? ["do_not_contact"]
+            : [],
           leadId: null,
           createdAt: now,
           updatedAt: now,
@@ -618,9 +671,11 @@ export class AcquisitionDomainService {
         await this.repository.insertCandidate(candidate);
         await this.audit(scope, {
           candidateId: candidate.id,
-          eventType: "individual_candidate_normalized",
+          eventType: input.initialStatus
+            ? `individual_candidate_${input.initialStatus}`
+            : "individual_candidate_normalized",
           fromStatus: null,
-          toStatus: "normalized",
+          toStatus: input.initialStatus ?? "normalized",
           resourceId: candidate.id,
           idempotencyKey,
           payload: candidate
@@ -822,7 +877,7 @@ export class AcquisitionDomainService {
     this.validateScope(scope);
     const input = {
       candidateId: requiredText(candidateId, "候选 ID", 100),
-      evidenceId: requiredText(evidenceId, "证据 ID", 100)
+      evidenceId: requiredText(evidenceId, "证据 ID", 255)
     };
     return this.idempotent(
       scope,
@@ -831,7 +886,7 @@ export class AcquisitionDomainService {
       input,
       async () => {
         let candidate = await this.requireCandidate(scope, input.candidateId);
-        if (["unresolvable", "do_not_contact", "converted_to_lead"]
+        if (["unresolvable", "converted_to_lead"]
           .includes(candidate.status)) {
           fail("invalid_state", `状态 ${candidate.status} 不能原地追加证据`);
         }
@@ -854,19 +909,23 @@ export class AcquisitionDomainService {
         const fromStatus = candidate.status;
         const previousDecisionVersion = candidate.latestDecisionVersion;
         const keepRejectedState = candidate.status === "rejected";
+        const keepSuppressedState = candidate.status === "do_not_contact";
         candidate = this.updateCandidate(candidate, {
           evidenceIds: [...candidate.evidenceIds, evidence.id],
-          status: keepRejectedState ? "rejected" : (
+          status: keepSuppressedState ? "do_not_contact"
+            : keepRejectedState ? "rejected" : (
             candidate.status === "approved" ? "pending_review" : "normalized"
           ),
-          latestDecisionId: keepRejectedState
+          latestDecisionId: keepRejectedState || keepSuppressedState
             ? candidate.latestDecisionId
             : null,
-          latestDecisionVersion: keepRejectedState
+          latestDecisionVersion: keepRejectedState || keepSuppressedState
             ? candidate.latestDecisionVersion
             : null,
           approvedDecisionVersion: null,
-          hardGateFailures: []
+          hardGateFailures: keepSuppressedState
+            ? [...candidate.hardGateFailures]
+            : []
         });
         await this.repository.saveCandidate(candidate);
         await this.audit(scope, {
@@ -904,7 +963,7 @@ export class AcquisitionDomainService {
       fail("invalid_request", "负向信号必须是数组", 400);
     }
     const input: IndividualDemandSignalMergeInput = {
-      evidenceId: requiredText(raw.evidenceId, "证据 ID", 100),
+      evidenceId: requiredText(raw.evidenceId, "证据 ID", 255),
       demandSummary: requiredText(raw.demandSummary, "需求摘要", 2_000),
       buyingStage,
       negativeSignals: [...new Set(raw.negativeSignals
@@ -2585,6 +2644,54 @@ export class AcquisitionDomainService {
       if (provenance.coverage !== "public_top_level_sample") {
         fail("invalid_request", "平台公开事件覆盖范围无效", 400);
       }
+    } else if (provenance.kind === "authorized_visual_observation") {
+      if (raw.targetType !== "individual_signal"
+        || raw.accessStatus !== "access_restricted"
+        || raw.sourcePlatform !== "douyin"
+        || !/^sha256:[a-f0-9]{64}$/u.test(raw.contentHash)
+        || !/^sha256:[a-f0-9]{64}$/u.test(raw.rawArtifactHash)) {
+        fail("invalid_request", "授权视觉证据目标或访问状态无效", 400);
+      }
+      const exactKeys = [
+        "artifactId", "coverage", "domTextHash", "extractionMethod", "kind",
+        "observationId", "ocrTextHash", "sessionId", "sourceUrl",
+        "visibleTextConfidence"
+      ];
+      if (Object.keys(provenance).sort().join("\u0000")
+        !== exactKeys.join("\u0000")) {
+        fail("invalid_request", "授权视觉 provenance 字段无效", 400);
+      }
+      provenance.sourceUrl = validUrl(provenance.sourceUrl, "视觉观察来源 URL");
+      provenance.observationId = requiredText(
+        provenance.observationId,
+        "视觉观察 ID",
+        160
+      );
+      const suppliedSessionId = provenance.sessionId;
+      provenance.sessionId = requiredText(provenance.sessionId, "视觉会话 ID", 160);
+      const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u;
+      if (!/^https:\/\/www\.douyin\.com\/video\/[1-9][0-9]{0,31}\/?$/u
+        .test(provenance.sourceUrl)
+        || !/^visual-observation:[a-f0-9]{64}$/u.test(
+          provenance.observationId
+        )
+        || provenance.sessionId !== suppliedSessionId
+        || !identifierPattern.test(provenance.sessionId)
+        || !["dom", "accessibility", "ocr"].includes(
+        provenance.extractionMethod
+      )
+        || typeof provenance.visibleTextConfidence !== "number"
+        || !Number.isFinite(provenance.visibleTextConfidence)
+        || provenance.visibleTextConfidence < 0
+        || provenance.visibleTextConfidence > 1
+        || provenance.coverage !== "authorized_visible_top_level_sample"
+        || (provenance.artifactId !== null
+          && (typeof provenance.artifactId !== "string"
+            || !identifierPattern.test(provenance.artifactId)))
+        || [provenance.domTextHash, provenance.ocrTextHash].some((value) =>
+          value !== null && !/^sha256:[a-f0-9]{64}$/u.test(value))) {
+        fail("invalid_request", "授权视觉 provenance 无效", 400);
+      }
     } else if (provenance.kind === "import_artifact_row") {
       provenance.importBatchId = requiredText(
         provenance.importBatchId,
@@ -2656,7 +2763,7 @@ export class AcquisitionDomainService {
       fail("invalid_request", `${label}必须是数组`, 400);
     }
     const ids = [...new Set(values.map((item) =>
-      requiredText(item, `${label} ID`, 100)
+      requiredText(item, `${label} ID`, 255)
     ))];
     if (ids.length === 0) {
       fail("evidence_required", `${label}至少需要一条`, 422);
@@ -2755,7 +2862,7 @@ export class AcquisitionDomainService {
   ) {
     const evidence = await this.repository.findEvidence(
       scope,
-      requiredText(evidenceId, "证据 ID", 100)
+      requiredText(evidenceId, "证据 ID", 255)
     );
     if (!evidence) fail("resource_not_found", "证据不存在", 404);
     return evidence;

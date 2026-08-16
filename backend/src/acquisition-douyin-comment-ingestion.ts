@@ -61,6 +61,13 @@ export interface AcquisitionDouyinCommentIngestionResult {
   invalidCommentCount: number;
 }
 
+interface AcquisitionDouyinCommentCommittedFact {
+  platformEventId: string;
+  evidenceId: string;
+  candidateId: string | null;
+  band: DouyinCommentIntentBand;
+}
+
 export interface AcquisitionDouyinCommentRecoveryDiagnostic {
   code: "RECOVERY_FAILED";
   stage: "resume_saga" | "persist_failure";
@@ -426,7 +433,12 @@ export class AcquisitionDouyinCommentIngestionService {
   }
 
   async ingestSample(
-    input: AcquisitionDouyinCommentIngestionInput
+    input: AcquisitionDouyinCommentIngestionInput,
+    internal?: {
+      onCommitted?: (
+        fact: AcquisitionDouyinCommentCommittedFact
+      ) => void | Promise<void>;
+    }
   ): Promise<AcquisitionDouyinCommentIngestionResult> {
     const prepared = prepareSample(input);
     const capturedAt = prepared.capturedAt;
@@ -519,6 +531,12 @@ export class AcquisitionDouyinCommentIngestionService {
       if (resumed.unresolvedDedupeKey) {
         unresolvedActors.add(resumed.unresolvedDedupeKey);
       }
+      await internal?.onCommitted?.({
+        platformEventId: comment.commentId,
+        evidenceId: resumed.evidenceId,
+        candidateId: resumed.candidateId,
+        band: resumed.band
+      });
     }
 
     return {
@@ -667,6 +685,9 @@ export class AcquisitionDouyinCommentIngestionService {
         },
         evidence,
         idempotencyKey: deterministicId("douyin-comment-signal", evidenceKey),
+        ...(decision.band === "negative"
+          ? { initialCandidateStatus: "do_not_contact" as const }
+          : {}),
         beforeCandidateCommit: injectFailures && this.failureInjector
           ? () => this.failureInjector!("after_candidate")
           : undefined
@@ -684,7 +705,8 @@ export class AcquisitionDouyinCommentIngestionService {
     return {
       band: decision.band,
       candidateId,
-      unresolvedDedupeKey
+      unresolvedDedupeKey,
+      evidenceId: evidence.id
     };
   }
 }

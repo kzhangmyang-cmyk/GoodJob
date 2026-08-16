@@ -106,13 +106,25 @@
     "authorizedVisualReader": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sessionId", "coverage", "status", "usage", "lastErrorCode", "visualSteps"],
+      "required": ["sessionId", "coverage", "status", "limits", "usage", "outcome", "lastErrorCode", "sessionCount", "aggregateStatus", "aggregateUsage", "visualSteps"],
       "properties": {
         "sessionId": { "type": "string", "minLength": 1, "maxLength": 160 },
         "coverage": { "const": "authorized_visible_top_level_sample" },
         "status": {
           "type": "string",
           "enum": ["created", "collecting", "completed", "partial_success", "aborted", "expired"]
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxVideos", "maxCommentsPerVideo", "maxScrolls", "maxOcrCalls", "maxDurationMs"],
+          "properties": {
+            "maxVideos": { "type": "integer", "minimum": 1, "maximum": 10 },
+            "maxCommentsPerVideo": { "type": "integer", "minimum": 1, "maximum": 30 },
+            "maxScrolls": { "type": "integer", "minimum": 0, "maximum": 5 },
+            "maxOcrCalls": { "type": "integer", "minimum": 0, "maximum": 10 },
+            "maxDurationMs": { "type": "integer", "minimum": 1, "maximum": 120000 }
+          }
         },
         "usage": {
           "type": "object",
@@ -130,6 +142,35 @@
             "artifactCount": { "type": "integer", "minimum": 0, "maximum": 300 }
           }
         },
+        "outcome": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "videoCount", "observationCount", "domObservationCount", "accessibilityObservationCount", "ocrObservationCount", "lowConfidenceObservationCount", "artifactCount", "errorCodes"],
+              "properties": {
+                "status": { "type": "string", "enum": ["completed", "partial_success", "aborted", "expired"] },
+                "videoCount": { "type": "integer", "minimum": 0, "maximum": 10 },
+                "observationCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+                "domObservationCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+                "accessibilityObservationCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+                "ocrObservationCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+                "lowConfidenceObservationCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+                "artifactCount": { "type": "integer", "minimum": 0, "maximum": 300 },
+                "errorCodes": {
+                  "type": "array",
+                  "maxItems": 9,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "enum": ["visual_reader_not_enabled", "visual_reader_session_expired", "visual_reader_budget_exhausted", "visual_source_invalid", "visual_observation_invalid", "visual_artifact_invalid", "visual_extraction_method_disabled", "visual_extraction_low_confidence", "visual_reader_user_takeover"]
+                  }
+                }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
         "lastErrorCode": {
           "oneOf": [
             {
@@ -138,6 +179,31 @@
             },
             { "type": "null" }
           ]
+        },
+        "sessionCount": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "aggregateStatus": {
+          "type": "string",
+          "enum": ["active", "succeeded", "partial_success", "failed", "stopped"]
+        },
+        "aggregateUsage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["videoCount", "observationCount", "scrollCount", "ocrCallCount", "domObservationCount", "accessibilityObservationCount", "ocrObservationCount", "lowConfidenceObservationCount", "artifactCount"],
+          "properties": {
+            "videoCount": { "type": "integer", "minimum": 0, "maximum": 10000 },
+            "observationCount": { "type": "integer", "minimum": 0, "maximum": 300000 },
+            "scrollCount": { "type": "integer", "minimum": 0, "maximum": 5000 },
+            "ocrCallCount": { "type": "integer", "minimum": 0, "maximum": 10000 },
+            "domObservationCount": { "type": "integer", "minimum": 0, "maximum": 300000 },
+            "accessibilityObservationCount": { "type": "integer", "minimum": 0, "maximum": 300000 },
+            "ocrObservationCount": { "type": "integer", "minimum": 0, "maximum": 300000 },
+            "lowConfidenceObservationCount": { "type": "integer", "minimum": 0, "maximum": 300000 },
+            "artifactCount": { "type": "integer", "minimum": 0, "maximum": 300000 }
+          }
         },
         "visualSteps": {
           "type": "array",

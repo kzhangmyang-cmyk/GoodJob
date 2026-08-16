@@ -256,7 +256,7 @@ function normalizedProvider(value: string) {
 }
 
 type DouyinCommentActorKey = {
-  kind: "sec_uid" | "handle" | "comment";
+  kind: "sec_uid" | "handle" | "comment" | "visual";
   normalized: string;
 };
 
@@ -277,7 +277,10 @@ function strictDouyinCommentActorKey(value: string): DouyinCommentActorKey | nul
   }
   const comment =
     /^unmergeable:douyin:comment:([A-Za-z0-9._~-]{1,128})$/u.exec(actorKey);
-  return comment ? { kind: "comment", normalized: actorKey } : null;
+  if (comment) return { kind: "comment", normalized: actorKey };
+  const visual = /^unmergeable:douyin:visual:visual-observation:[a-f0-9]{64}$/u
+    .exec(actorKey);
+  return visual ? { kind: "visual", normalized: actorKey } : null;
 }
 
 export function normalizeAcquisitionDouyinCommentActorKey(value: string) {

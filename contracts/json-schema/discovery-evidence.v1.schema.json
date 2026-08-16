@@ -135,6 +135,66 @@
           "additionalProperties": false,
           "required": [
             "kind",
+            "sourceUrl",
+            "observationId",
+            "sessionId",
+            "extractionMethod",
+            "visibleTextConfidence",
+            "coverage",
+            "artifactId",
+            "domTextHash",
+            "ocrTextHash"
+          ],
+          "properties": {
+            "kind": { "const": "authorized_visual_observation" },
+            "sourceUrl": {
+              "type": "string",
+              "format": "uri",
+              "maxLength": 80,
+              "pattern": "^https://www\\.douyin\\.com/video/[1-9][0-9]{0,31}/?$"
+            },
+            "observationId": {
+              "type": "string",
+              "pattern": "^visual-observation:[a-f0-9]{64}$"
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"
+            },
+            "extractionMethod": {
+              "enum": ["dom", "accessibility", "ocr"]
+            },
+            "visibleTextConfidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "coverage": {
+              "const": "authorized_visible_top_level_sample"
+            },
+            "artifactId": {
+              "type": ["string", "null"],
+              "minLength": 1,
+              "maxLength": 160,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$"
+            },
+            "domTextHash": {
+              "type": ["string", "null"],
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "ocrTextHash": {
+              "type": ["string", "null"],
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
             "importBatchId",
             "artifactHash",
             "sheetName",
@@ -178,6 +238,41 @@
         "properties": {
           "targetType": { "const": "individual_signal" },
           "accessStatus": { "const": "public_content" }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "kind": { "const": "authorized_visual_observation" }
+            },
+            "required": ["kind"]
+          }
+        },
+        "required": ["provenance"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^visual:visual-observation:[a-f0-9]{64}:evidence:sha256:[a-f0-9]{64}$"
+          },
+          "sourcePlatform": { "const": "douyin" },
+          "targetType": { "const": "individual_signal" },
+          "accessStatus": { "const": "access_restricted" },
+          "contentHash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "rawArtifactHash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
         }
       }
     }

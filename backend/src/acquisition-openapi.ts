@@ -2665,8 +2665,13 @@ const runPresentationSchema = {
         "sessionId",
         "coverage",
         "status",
+        "limits",
         "usage",
+        "outcome",
         "lastErrorCode",
+        "sessionCount",
+        "aggregateStatus",
+        "aggregateUsage",
         "visualSteps"
       ],
       properties: {
@@ -2683,9 +2688,107 @@ const runPresentationSchema = {
             "expired"
           ]
         },
+        limits: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "maxVideos",
+            "maxCommentsPerVideo",
+            "maxScrolls",
+            "maxOcrCalls",
+            "maxDurationMs"
+          ],
+          properties: {
+            maxVideos: { type: "integer", minimum: 1, maximum: 10 },
+            maxCommentsPerVideo: { type: "integer", minimum: 1, maximum: 30 },
+            maxScrolls: { type: "integer", minimum: 0, maximum: 5 },
+            maxOcrCalls: { type: "integer", minimum: 0, maximum: 10 },
+            maxDurationMs: { type: "integer", minimum: 1, maximum: 120_000 }
+          }
+        },
         usage: visualReaderUsageSchema,
+        outcome: {
+          oneOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "status",
+                "videoCount",
+                "observationCount",
+                "domObservationCount",
+                "accessibilityObservationCount",
+                "ocrObservationCount",
+                "lowConfidenceObservationCount",
+                "artifactCount",
+                "errorCodes"
+              ],
+              properties: {
+                status: {
+                  type: "string",
+                  enum: ["completed", "partial_success", "aborted", "expired"]
+                },
+                videoCount: { type: "integer", minimum: 0, maximum: 10 },
+                observationCount: { type: "integer", minimum: 0, maximum: 300 },
+                domObservationCount: { type: "integer", minimum: 0, maximum: 300 },
+                accessibilityObservationCount: {
+                  type: "integer", minimum: 0, maximum: 300
+                },
+                ocrObservationCount: { type: "integer", minimum: 0, maximum: 300 },
+                lowConfidenceObservationCount: {
+                  type: "integer", minimum: 0, maximum: 300
+                },
+                artifactCount: { type: "integer", minimum: 0, maximum: 300 },
+                errorCodes: {
+                  type: "array",
+                  maxItems: 9,
+                  uniqueItems: true,
+                  items: visualReaderStableErrorCodeSchema
+                }
+              }
+            }
+            , { type: "null" }
+          ]
+        },
         lastErrorCode: {
           oneOf: [visualReaderStableErrorCodeSchema, { type: "null" }]
+        },
+        sessionCount: {
+          type: "integer",
+          minimum: 1,
+          maximum: 1_000
+        },
+        aggregateStatus: {
+          type: "string",
+          enum: ["active", "succeeded", "partial_success", "failed", "stopped"]
+        },
+        aggregateUsage: {
+          type: "object",
+          additionalProperties: false,
+          required: [...visualReaderUsageSchema.required],
+          properties: {
+            videoCount: { type: "integer", minimum: 0, maximum: 10_000 },
+            observationCount: {
+              type: "integer", minimum: 0, maximum: 300_000
+            },
+            scrollCount: { type: "integer", minimum: 0, maximum: 5_000 },
+            ocrCallCount: { type: "integer", minimum: 0, maximum: 10_000 },
+            domObservationCount: {
+              type: "integer", minimum: 0, maximum: 300_000
+            },
+            accessibilityObservationCount: {
+              type: "integer", minimum: 0, maximum: 300_000
+            },
+            ocrObservationCount: {
+              type: "integer", minimum: 0, maximum: 300_000
+            },
+            lowConfidenceObservationCount: {
+              type: "integer", minimum: 0, maximum: 300_000
+            },
+            artifactCount: {
+              type: "integer", minimum: 0, maximum: 300_000
+            }
+          }
         },
         visualSteps: {
           type: "array",

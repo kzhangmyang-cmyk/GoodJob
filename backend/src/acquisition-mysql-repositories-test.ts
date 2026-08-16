@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type mysql from "mysql2/promise";
 import {
   ACQUISITION_MYSQL_SCHEMA_STATEMENTS,
+  ACQUISITION_EVIDENCE_ID_SQL_WIDTH,
   MysqlAcquisitionCopilotRepository,
   MysqlAcquisitionDomainRepository,
   MysqlAcquisitionPlanRunRepository,
@@ -427,6 +428,19 @@ async function testSchemaIsCompleteAndHasNoSecretColumns() {
   );
   assert.match(sql, /unique key uk_acquisition_copilot_message_sequence/);
   assert.match(sql, /unique key uk_acquisition_domain_idempotency/);
+  const longestVisualEvidenceId = `visual:${"o".repeat(160)}`
+    + `:evidence:sha256:${"a".repeat(64)}`;
+  assert.equal(longestVisualEvidenceId.length, 248);
+  assert.match(
+    sql,
+    /acquisition_discovery_evidence \(\s*id varchar\(255\) primary key/u
+  );
+  assert.match(
+    sql,
+    /alter table acquisition_discovery_evidence\s+modify column id varchar\(255\) not null/u
+  );
+  assert.doesNotMatch(sql, /evidence_id varchar\(120\)/u);
+  assert.equal(ACQUISITION_EVIDENCE_ID_SQL_WIDTH, 255);
   assert.match(
     sql,
     /create table if not exists acquisition_run_idempotency \(\s*scope_key_hash char\(64\) primary key/

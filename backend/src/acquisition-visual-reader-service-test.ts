@@ -370,6 +370,74 @@ test("batch normalizes server-owned IDs and hashes and durably binds the header 
   assert.equal((await repository.getSession(REPOSITORY_SCOPE, created.session.sessionId))?.usage.observationCount, 1);
 });
 
+test("fresh and replayed batches share the ruled manual-review predicate", async () => {
+  const { value } = service();
+  const created = await value.createSession(
+    SCOPE,
+    { runId: "run-service", artifactUploadEnabled: true },
+    "create-manual-predicate"
+  );
+  const bytes = Buffer.from("validated-redacted-webp");
+  const crop = {
+    mediaType: "image/webp" as const,
+    contentBase64: bytes.toString("base64"),
+    redactionProof: {
+      version: "opaque-rect-v1" as const,
+      maskColorRgba: [17, 61, 51, 255] as [number, number, number, number],
+      avatarBounds: null,
+      visibleRegions: [{ x: 1, y: 1, width: 10, height: 10 }],
+      maskedRegions: [{ x: 0, y: 0, width: 1, height: 1 }]
+    }
+  };
+  const ocr = (clientObservationKey: string, visibleText: string,
+    confidence: number, domTextHash: string | null) => observation({
+    clientObservationKey,
+    visibleText,
+    extractionMethod: "ocr",
+    fieldConfidences: { visibleText: confidence },
+    domTextHash,
+    ocrTextHash: digest(visibleText),
+    platformCommentId: null,
+    publicProfileUrl: null,
+    secUid: null,
+    redactedCrop: crop
+  });
+  const body = { observations: [
+    observation({
+      clientObservationKey: "manual-missing-confidence",
+      visibleText: "missing metadata confidence",
+      fieldConfidences: { visibleText: 0.99 }
+    }),
+    observation({
+      clientObservationKey: "manual-conflicting-hashes",
+      visibleText: "conflicting source hashes",
+      ocrTextHash: digest("different OCR text")
+    }),
+    ocr("manual-low-ocr", "low OCR confidence", 0.89, null),
+    ocr("manual-truncated-ocr", "truncated OCR source", 0.95,
+      digest("truncated DOM text"))
+  ] };
+  const fresh = await value.appendObservationBatch(
+    SCOPE,
+    created.session.sessionId,
+    body,
+    "manual-predicate-batch"
+  );
+  assert.equal(fresh.replayed, false);
+  assert.deepEqual(new Set(fresh.manualReviewOnlyObservationIds), new Set(
+    fresh.response.accepted.map(({ observation: item }) => item.observationId)
+  ));
+  const replay = await value.appendObservationBatch(
+    SCOPE,
+    created.session.sessionId,
+    structuredClone(body),
+    "manual-predicate-batch"
+  );
+  assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.manualReviewOnlyObservationIds,
+    fresh.manualReviewOnlyObservationIds);
+});
+
 test("capturedAt must stay inside authorization and crop bytes become only a hashed artifact fact", async () => {
   let validationCalls = 0;
   const { value, repository } = service({

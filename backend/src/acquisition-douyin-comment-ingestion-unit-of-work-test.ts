@@ -13,15 +13,23 @@ import type {
 import type {
   MysqlAcquisitionCandidateDirectory
 } from "./acquisition-tool-support-repositories.js";
+import type {
+  MysqlAcquisitionVisualReaderRepository
+} from "./acquisition-visual-reader-mysql-repository.js";
 
 function mysqlUnitOfWorkHarness(options: {
   domainCleanupError?: boolean;
+  visualCleanupError?: boolean;
+  rollbackError?: boolean;
 } = {}) {
   const lifecycle: string[] = [];
   const connection = {
     async beginTransaction() { lifecycle.push("begin"); },
     async commit() { lifecycle.push("commit"); },
-    async rollback() { lifecycle.push("rollback"); },
+    async rollback() {
+      lifecycle.push("rollback");
+      if (options.rollbackError) throw new Error("ROLLBACK_FAILED");
+    },
     release() { lifecycle.push("release"); },
     destroy() { lifecycle.push("destroy"); }
   } as unknown as mysql.PoolConnection;
@@ -65,14 +73,26 @@ function mysqlUnitOfWorkHarness(options: {
       return work();
     }
   } as MysqlAcquisitionCandidateDirectory;
+  const visual = {
+    async withTransactionConnection(
+      selected: mysql.PoolConnection,
+      work: () => Promise<unknown>
+    ) {
+      assert.equal(selected, connection);
+      lifecycle.push("visual");
+      const result = await work();
+      if (options.visualCleanupError) {
+        throw new Error("ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED");
+      }
+      return result;
+    }
+  } as MysqlAcquisitionVisualReaderRepository;
   return {
     lifecycle,
-    unitOfWork: new MysqlAcquisitionDouyinCommentIngestionUnitOfWork(
-      pool,
-      domain,
-      events,
-      directory
-    )
+    unitOfWork: Reflect.construct(
+      MysqlAcquisitionDouyinCommentIngestionUnitOfWork,
+      [pool, domain, events, directory, visual]
+    ) as MysqlAcquisitionDouyinCommentIngestionUnitOfWork
   };
 }
 
@@ -88,6 +108,7 @@ test("mysql comment ingestion uses one connection and commits once", async () =>
     "domain",
     "begin",
     "events",
+    "visual",
     "work",
     "commit",
     "release"
@@ -109,6 +130,7 @@ test("mysql comment ingestion rolls the shared connection back on either side", 
     "domain",
     "begin",
     "events",
+    "visual",
     "work",
     "rollback",
     "release"
@@ -132,6 +154,7 @@ test("mysql comment ingestion destroys a shared session when lock cleanup fails 
     "domain",
     "begin",
     "events",
+    "visual",
     "work",
     "commit",
     "destroy"
@@ -139,4 +162,40 @@ test("mysql comment ingestion destroys a shared session when lock cleanup fails 
   assert.equal(lifecycle.filter((entry) => entry === "commit").length, 1);
   assert.equal(lifecycle.includes("rollback"), false);
   assert.equal(lifecycle.includes("release"), false);
+});
+
+test("mysql visual cleanup poisons the shared session", async () => {
+  const { lifecycle, unitOfWork } = mysqlUnitOfWorkHarness({
+    visualCleanupError: true
+  });
+  await assert.rejects(unitOfWork.transaction(async () => {
+    lifecycle.push("work");
+  }), /ACQUISITION_MYSQL_NAMED_LOCK_RELEASE_FAILED/u);
+  assert.deepEqual(lifecycle, [
+    "acquire", "directory", "domain", "begin", "events", "visual",
+    "work", "rollback", "destroy"
+  ]);
+});
+
+test("nested mysql ingestion reuses the active visual transaction", async () => {
+  const { lifecycle, unitOfWork } = mysqlUnitOfWorkHarness();
+  await unitOfWork.transaction(() => unitOfWork.transaction(async () => {
+    lifecycle.push("nested-work");
+  }));
+  assert.equal(lifecycle.filter((entry) => entry === "acquire").length, 1);
+  assert.equal(lifecycle.filter((entry) => entry === "begin").length, 1);
+  assert.equal(lifecycle.filter((entry) => entry === "visual").length, 1);
+});
+
+test("mysql ingestion destroys a poisoned connection when rollback fails", async () => {
+  const { lifecycle, unitOfWork } = mysqlUnitOfWorkHarness({
+    rollbackError: true
+  });
+  await assert.rejects(unitOfWork.transaction(async () => {
+    throw new Error("WORK_FAILED");
+  }), /ROLLBACK_FAILED/u);
+  assert.deepEqual(lifecycle, [
+    "acquire", "directory", "domain", "begin", "events", "visual",
+    "rollback", "destroy"
+  ]);
 });

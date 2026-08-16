@@ -35,6 +35,13 @@ import type {
   AcquisitionOperationShard,
   AcquisitionRunPresentationExecution
 } from "./acquisition-plan-run-repository.js";
+import type {
+  AcquisitionVisualReaderRepository,
+  VisualRunIngestionWorkProjection,
+  VisualReaderSession,
+  VisualReaderStableErrorCode,
+  VisualReaderUsage
+} from "./acquisition-visual-reader-sessions.js";
 
 export type AcquisitionAutomationStepId =
   | "discover_video_urls"
@@ -162,6 +169,37 @@ export interface AcquisitionRunPresentation {
     highPotentialSignals: number;
   };
   automationSteps: AcquisitionAutomationStep[];
+  authorizedVisualReader?: {
+    sessionId: string;
+    coverage: "authorized_visible_top_level_sample";
+    status: VisualReaderSession["status"];
+    limits: VisualReaderSession["limits"];
+    usage: VisualReaderUsage;
+    outcome: VisualReaderSession["outcome"];
+    lastErrorCode: VisualReaderStableErrorCode | null;
+    sessionCount: number;
+    aggregateStatus:
+      | "active"
+      | "succeeded"
+      | "partial_success"
+      | "failed"
+      | "stopped";
+    aggregateUsage: VisualReaderUsage;
+    visualSteps: Array<{
+      id: "authorize_visual_reader"
+        | "read_visible_comment_cards"
+        | "extract_visible_text"
+        | "persist_visual_observations"
+        | "review_visual_signal_confidence";
+      status: AcquisitionAutomationStep["status"];
+      startedAt: string | null;
+      completedAt: string | null;
+      durationMs: number | null;
+      processedCount: number;
+      errorCode: VisualReaderStableErrorCode | null;
+      message: string;
+    }>;
+  };
   commentSignals: Array<{
     eventId: string;
     candidateId: string;
@@ -188,6 +226,10 @@ export interface AcquisitionRunPresentationServiceOptions {
   planRunRepository: AcquisitionPlanRunRepository;
   domainRepository: AcquisitionDomainRepository;
   commentEventRepository: AcquisitionDouyinCommentEventRepository;
+  visualReaderRepository?: Pick<
+    AcquisitionVisualReaderRepository,
+    "listRunSessions" | "getRunIngestionWorkProjection"
+  >;
   cursorSecret: string;
 }
 
@@ -406,6 +448,230 @@ function persistedLifecycleBounds(values: Array<{
           new Date(completedAt).getTime() - new Date(startedAt).getTime()
         )
       : null
+  };
+}
+
+const VISUAL_USAGE_FIELDS = [
+  "videoCount",
+  "observationCount",
+  "scrollCount",
+  "ocrCallCount",
+  "domObservationCount",
+  "accessibilityObservationCount",
+  "ocrObservationCount",
+  "lowConfidenceObservationCount",
+  "artifactCount"
+] as const;
+
+function visualLifecycle(
+  startedAt: string | null,
+  completedAt: string | null
+) {
+  return {
+    startedAt,
+    completedAt,
+    durationMs: startedAt && completedAt
+      ? Math.max(0, Date.parse(completedAt) - Date.parse(startedAt))
+      : null
+  };
+}
+
+function firstInstant(values: string[]) {
+  return [...values].sort().at(0) ?? null;
+}
+
+function lastInstant(values: string[]) {
+  return [...values].sort().at(-1) ?? null;
+}
+
+function controllingVisualSession(sessions: VisualReaderSession[]) {
+  const active = sessions.filter((session) =>
+    session.status === "created" || session.status === "collecting");
+  return [...(active.length > 0 ? active : sessions)].sort((left, right) =>
+    left.authorizedAt.localeCompare(right.authorizedAt)
+    || left.sessionId.localeCompare(right.sessionId)).at(-1)!;
+}
+
+function aggregateVisualStatus(
+  sessions: VisualReaderSession[],
+  work: VisualRunIngestionWorkProjection
+): NonNullable<
+  AcquisitionRunPresentation["authorizedVisualReader"]
+>["aggregateStatus"] {
+  if (sessions.some((session) =>
+    session.status === "created" || session.status === "collecting")) {
+    return "active";
+  }
+  const success = sessions.some((session) =>
+    session.status === "completed" || session.status === "partial_success");
+  const completed = sessions.some((session) => session.status === "completed");
+  const failedWork = work.retryCount > 0;
+  const degradedSession = sessions.some((session) =>
+    ["partial_success", "aborted", "expired"].includes(session.status));
+  if (success && (degradedSession || failedWork)) return "partial_success";
+  if (sessions.every((session) => session.status === "completed")) {
+    return "succeeded";
+  }
+  if (sessions.every((session) =>
+    session.status === "aborted" || session.status === "expired")) {
+    return "stopped";
+  }
+  if (failedWork && !success) return "failed";
+  if (degradedSession) return "partial_success";
+  return "failed";
+}
+
+function visualStepStatus(
+  status: NonNullable<
+    AcquisitionRunPresentation["authorizedVisualReader"]
+  >["aggregateStatus"]
+): AcquisitionAutomationStep["status"] {
+  if (status === "active") return "running";
+  if (status === "succeeded") return "succeeded";
+  if (status === "partial_success") return "partial_success";
+  return "failed";
+}
+
+function visualPresentation(
+  sessions: VisualReaderSession[],
+  work: VisualRunIngestionWorkProjection
+): NonNullable<AcquisitionRunPresentation["authorizedVisualReader"]> {
+  if (sessions.length < 1 || sessions.length > 1_000) {
+    throw new Error("ACQUISITION_VISUAL_PRESENTATION_FACT_LIMIT_EXCEEDED");
+  }
+  const controller = controllingVisualSession(sessions);
+  const aggregateUsage = Object.fromEntries(
+    VISUAL_USAGE_FIELDS.map((field) => {
+      const total = sessions.reduce(
+        (sum, session) => sum + session.usage[field],
+        0
+      );
+      if (!Number.isSafeInteger(total)) {
+        throw new Error("ACQUISITION_VISUAL_PRESENTATION_FACT_LIMIT_EXCEEDED");
+      }
+      return [field, total];
+    })
+  ) as unknown as VisualReaderUsage;
+  const usageCaps: Record<(typeof VISUAL_USAGE_FIELDS)[number], number> = {
+    videoCount: 10_000,
+    observationCount: 300_000,
+    scrollCount: 5_000,
+    ocrCallCount: 10_000,
+    domObservationCount: 300_000,
+    accessibilityObservationCount: 300_000,
+    ocrObservationCount: 300_000,
+    lowConfidenceObservationCount: 300_000,
+    artifactCount: 300_000
+  };
+  if (VISUAL_USAGE_FIELDS.some((field) =>
+    aggregateUsage[field] > usageCaps[field])
+    || work.workItemCount !== aggregateUsage.observationCount
+    || work.queuedCount + work.runningCount + work.retryCount
+      + work.succeededCount + work.manualReviewOnlyCount
+      !== work.workItemCount) {
+    throw new Error("ACQUISITION_VISUAL_PRESENTATION_FACT_LIMIT_EXCEEDED");
+  }
+  const aggregateStatus = aggregateVisualStatus(sessions, work);
+  const sessionStatus = visualStepStatus(aggregateStatus);
+  const reviewedCount = work.succeededCount + work.manualReviewOnlyCount;
+  const activeWorkCount = work.queuedCount + work.runningCount;
+  const persistedStatus: AcquisitionAutomationStep["status"] =
+    work.workItemCount === 0
+      ? "skipped"
+      : "succeeded";
+  const reviewStatus: AcquisitionAutomationStep["status"] =
+    work.workItemCount === 0
+      ? "skipped"
+      : activeWorkCount > 0
+        ? reviewedCount > 0 ? "running" : "pending"
+        : work.retryCount > 0 || work.manualReviewOnlyCount > 0
+          ? reviewedCount > 0 ? "partial_success" : "failed"
+          : "succeeded";
+  const sessionStartedAt = firstInstant(sessions.map((item) => item.createdAt));
+  const sessionAuthorizedAt = lastInstant(
+    sessions.map((item) => item.authorizedAt)
+  );
+  const allSessionsTerminal = sessions.every((item) => item.completedAt);
+  const sessionCompletedAt = allSessionsTerminal
+    ? lastInstant(sessions.flatMap((item) =>
+        item.completedAt ? [item.completedAt] : []))
+    : null;
+  const workStartedAt = work.createdAt;
+  const workCompletedAt = work.completedAt;
+  const lastErrorCode = [...sessions].sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt)
+    || right.sessionId.localeCompare(left.sessionId)
+  ).find((session) => session.lastErrorCode)?.lastErrorCode ?? null;
+  const noVisibleComments = aggregateUsage.observationCount === 0;
+  return {
+    sessionId: controller.sessionId,
+    coverage: controller.coverage,
+    status: controller.status,
+    limits: structuredClone(controller.limits),
+    usage: structuredClone(controller.usage),
+    outcome: structuredClone(controller.outcome),
+    lastErrorCode: controller.lastErrorCode,
+    sessionCount: sessions.length,
+    aggregateStatus,
+    aggregateUsage,
+    visualSteps: [
+      {
+        id: "authorize_visual_reader",
+        status: sessionStatus,
+        ...visualLifecycle(sessionStartedAt, sessionAuthorizedAt),
+        processedCount: sessions.length,
+        errorCode: lastErrorCode,
+        message: aggregateStatus === "succeeded"
+          ? "已完成授权视觉读取"
+          : "授权视觉读取包含进行中或未完全成功的持久化事实"
+      },
+      {
+        id: "read_visible_comment_cards",
+        status: sessionStatus,
+        ...visualLifecycle(sessionAuthorizedAt, sessionCompletedAt),
+        processedCount: aggregateUsage.observationCount,
+        errorCode: lastErrorCode,
+        message: noVisibleComments
+          ? "no_visible_comments：授权可见范围内没有持久化评论卡片"
+          : "已读取授权可见评论卡片"
+      },
+      {
+        id: "extract_visible_text",
+        status: noVisibleComments ? "skipped" : sessionStatus,
+        ...visualLifecycle(workStartedAt, workStartedAt),
+        processedCount: aggregateUsage.observationCount,
+        errorCode: lastErrorCode,
+        message: noVisibleComments
+          ? "no_visible_comments：没有可提取的可见文字"
+          : "已提取并持久化授权可见文字"
+      },
+      {
+        id: "persist_visual_observations",
+        status: persistedStatus,
+        ...visualLifecycle(workStartedAt, workStartedAt),
+        processedCount: work.workItemCount,
+        errorCode: null,
+        message: noVisibleComments
+          ? "no_visible_comments：没有视觉观察需要处理"
+          : "视觉观察处理结果来自持久化工作项"
+      },
+      {
+        id: "review_visual_signal_confidence",
+        status: reviewStatus,
+        ...visualLifecycle(workStartedAt, workCompletedAt),
+        processedCount: reviewedCount,
+        errorCode: work.manualReviewOnlyCount > 0
+          ? "visual_extraction_low_confidence"
+          : work.retryCount > 0
+            ? "visual_observation_invalid"
+            : null,
+        message: noVisibleComments
+          ? "no_visible_comments：没有视觉信号可复核"
+          : work.manualReviewOnlyCount > 0
+            ? "低置信度视觉信号仅进入人工复核"
+            : "已完成视觉信号置信度复核"
+      }
+    ]
   };
 }
 
@@ -720,6 +986,10 @@ export class AcquisitionRunPresentationService {
   private readonly planRuns: AcquisitionPlanRunRepository;
   private readonly domain: AcquisitionDomainRepository;
   private readonly commentEvents: AcquisitionDouyinCommentEventRepository;
+  private readonly visualReader?: Pick<
+    AcquisitionVisualReaderRepository,
+    "listRunSessions" | "getRunIngestionWorkProjection"
+  >;
   private readonly cursorSecret: string;
 
   constructor(options: AcquisitionRunPresentationServiceOptions) {
@@ -732,6 +1002,7 @@ export class AcquisitionRunPresentationService {
     this.planRuns = options.planRunRepository;
     this.domain = options.domainRepository;
     this.commentEvents = options.commentEventRepository;
+    this.visualReader = options.visualReaderRepository;
     this.cursorSecret = options.cursorSecret;
   }
 
@@ -798,6 +1069,7 @@ export class AcquisitionRunPresentationService {
           eventId: cursor.eventId
         }
       : undefined;
+    const visualScope = { ownerId: scope.ownerId, teamId: scope.teamId };
     const pageLimit = query.limit + 1;
     const [
       execution,
@@ -805,7 +1077,9 @@ export class AcquisitionRunPresentationService {
       auditPage,
       shards,
       commentProjection,
-      durableCommentSignals
+      durableCommentSignals,
+      visualSessions,
+      visualWorkProjection
     ] = await Promise.all([
       this.planRuns.getRunPresentationExecution(runId),
       this.planRuns.listRunCandidateEventsPage(runId, {
@@ -827,7 +1101,22 @@ export class AcquisitionRunPresentationService {
             runId,
             { limit: 10_001 }
           )
-        : Promise.resolve([])
+        : Promise.resolve([]),
+      this.visualReader
+        ? this.visualReader.listRunSessions(visualScope, runId)
+        : Promise.resolve([]),
+      this.visualReader
+        ? this.visualReader.getRunIngestionWorkProjection(visualScope, runId)
+        : Promise.resolve({
+            workItemCount: 0,
+            queuedCount: 0,
+            runningCount: 0,
+            retryCount: 0,
+            succeededCount: 0,
+            manualReviewOnlyCount: 0,
+            createdAt: null,
+            completedAt: null
+          })
     ]);
     if (durableCommentSignals.length > 10_000) {
       throw new Error(
@@ -1050,6 +1339,14 @@ export class AcquisitionRunPresentationService {
         ).length
       },
       automationSteps,
+      ...(visualSessions.length > 0
+        ? {
+            authorizedVisualReader: visualPresentation(
+              visualSessions,
+              visualWorkProjection
+            )
+          }
+        : {}),
       commentSignals,
       candidateEvents,
       nextAfter: last

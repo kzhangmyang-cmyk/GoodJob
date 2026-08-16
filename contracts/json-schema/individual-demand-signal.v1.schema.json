@@ -28,7 +28,12 @@
   ],
   "properties": {
     "id": { "type": "string", "minLength": 1 },
-    "publicActorKey": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "publicActorKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "^(?:unmergeable:douyin:visual:visual-observation:[a-f0-9]{64}|(?!unmergeable:douyin:visual:).+)$"
+    },
     "publicDisplayName": { "type": "string", "minLength": 1, "maxLength": 200 },
     "publicProfileUrl": { "type": "string", "format": "uri" },
     "sourcePlatform": { "type": "string", "minLength": 1, "maxLength": 100 },
@@ -75,5 +80,24 @@
     "updatedAt": { "type": "string", "format": "date-time" },
     "firstSeenAt": { "type": "string", "format": "date-time" },
     "lastSeenAt": { "type": "string", "format": "date-time" }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "publicActorKey": {
+            "type": "string",
+            "pattern": "^unmergeable:douyin:visual:"
+          }
+        },
+        "required": ["publicActorKey"]
+      },
+      "then": {
+        "properties": {
+          "status": { "const": "needs_research" },
+          "identityResolved": { "const": false }
+        }
+      }
+    }
+  ]
 }

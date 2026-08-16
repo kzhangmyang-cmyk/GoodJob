@@ -3160,6 +3160,42 @@ test("application owns the comment ingestion recovery lifecycle", async () => {
   assert.equal(closeCalls, 1, "application close must stop recovery once");
 });
 
+test("application owns a separate visual ingestion recovery lifecycle", async () => {
+  const fixture = isolatedMemoryStore();
+  let factoryCalls = 0;
+  let startCalls = 0;
+  let closeCalls = 0;
+  const runtime = await createAcquisitionApplication({
+    store: fixture.store,
+    masterSecret: MASTER_SECRET,
+    visualReaderRecoverySweeperFactory(service) {
+      factoryCalls += 1;
+      assert.equal(
+        typeof service.recoverPendingVisualIngestionWorkItems,
+        "function"
+      );
+      return {
+        async start() { startCalls += 1; },
+        async close() { closeCalls += 1; }
+      };
+    }
+  } as Parameters<typeof createAcquisitionApplication>[0] & {
+    visualReaderRecoverySweeperFactory: (
+      service: {
+        recoverPendingVisualIngestionWorkItems(
+          options: { limit: number }
+        ): Promise<number>;
+      }
+    ) => { start(): Promise<void>; close(): Promise<void> };
+  });
+
+  assert.equal(factoryCalls, 1);
+  assert.equal(startCalls, 1);
+  await runtime.close();
+  await runtime.close();
+  assert.equal(closeCalls, 1);
+});
+
 test("application stops plan recovery before draining the execution worker", async () => {
   const fixture = isolatedMemoryStore();
   const repository = new DelayedPeriodicPlanRunRepository();
@@ -3299,6 +3335,8 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
   let commentSchemaConnectionDestroyCount = 0;
   let visualExpiryStartCount = 0;
   let visualExpiryCloseCount = 0;
+  let visualRecoveryStartCount = 0;
+  let visualRecoveryCloseCount = 0;
   let composedVisualRepository: AcquisitionVisualReaderRepository | null = null;
   const query = async (statement: unknown) => {
     const sql = String(statement);
@@ -3368,6 +3406,17 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
         async start() { visualExpiryStartCount += 1; },
         async close() { visualExpiryCloseCount += 1; }
       };
+    },
+    visualReaderRecoverySweeperFactory() {
+      return {
+        async start() {
+          assert.equal(statements.some((statement) => statement.includes(
+            "acquisition_visual_ingestion_work_items"
+          )), true, "visual work schema must exist before recovery starts");
+          visualRecoveryStartCount += 1;
+        },
+        async close() { visualRecoveryCloseCount += 1; }
+      };
     }
   });
 
@@ -3400,6 +3449,8 @@ test("mysql acquisition application owns schema setup and pool lifecycle", async
   assert.equal(commentRecoveryCloseCount, 1);
   assert.equal(visualExpiryStartCount, 1);
   assert.equal(visualExpiryCloseCount, 1);
+  assert.equal(visualRecoveryStartCount, 1);
+  assert.equal(visualRecoveryCloseCount, 1);
   assert.equal(
     commentSchemaConnectionReleaseCount,
     3,

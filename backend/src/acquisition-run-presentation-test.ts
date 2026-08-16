@@ -23,6 +23,10 @@ import {
 import {
   AcquisitionRunPresentationService
 } from "./acquisition-run-presentation.js";
+import type {
+  VisualRunIngestionWorkProjection,
+  VisualReaderSession
+} from "./acquisition-visual-reader-sessions.js";
 
 const OWNER = "owner-a";
 const TEAM = "team-a";
@@ -693,6 +697,267 @@ async function appendCommentSignal(
     }
   }
 }
+
+test("Run Presentation selects one controller while aggregating all visual facts", async () => {
+  const base = await fixture();
+  const usage = (observationCount: number) => ({
+    videoCount: observationCount,
+    observationCount,
+    scrollCount: observationCount,
+    ocrCallCount: 0,
+    domObservationCount: observationCount,
+    accessibilityObservationCount: 0,
+    ocrObservationCount: 0,
+    lowConfidenceObservationCount: 0,
+    artifactCount: 0
+  });
+  const session = (
+    sessionId: string,
+    status: VisualReaderSession["status"],
+    authorizedAt: string,
+    observationCount: number
+  ): VisualReaderSession => ({
+    sessionId,
+    runId: "run-1",
+    planId: "plan-1",
+    planVersionId: "plan-version-1",
+    platform: "douyin",
+    coverage: "authorized_visible_top_level_sample",
+    status,
+    artifactUploadEnabled: false,
+    limits: {
+      maxVideos: 2,
+      maxCommentsPerVideo: 20,
+      maxScrolls: 5,
+      maxOcrCalls: 10,
+      maxDurationMs: 120_000
+    },
+    usage: usage(observationCount),
+    outcome: status === "completed" ? {
+      status: "completed",
+      videoCount: observationCount,
+      observationCount,
+      domObservationCount: observationCount,
+      accessibilityObservationCount: 0,
+      ocrObservationCount: 0,
+      lowConfidenceObservationCount: 0,
+      artifactCount: 0,
+      errorCodes: []
+    } : null,
+    lastErrorCode: null,
+    createdAt: authorizedAt,
+    authorizedAt,
+    updatedAt: authorizedAt,
+    expiresAt: new Date(Date.parse(authorizedAt) + 120_000).toISOString(),
+    completedAt: status === "completed"
+      ? new Date(Date.parse(authorizedAt) + 1_000).toISOString()
+      : null
+  });
+  const terminal = session(
+    "visual-terminal-controller",
+    "completed",
+    "2026-07-26T09:00:00.000Z",
+    1
+  );
+  const active = session(
+    "visual-active-controller",
+    "collecting",
+    "2026-07-26T09:00:02.000Z",
+    1
+  );
+  const work: VisualRunIngestionWorkProjection = {
+    workItemCount: 2,
+    queuedCount: 1,
+    runningCount: 0,
+    retryCount: 0,
+    succeededCount: 1,
+    manualReviewOnlyCount: 0,
+    createdAt: "2026-07-26T09:00:00.000Z",
+    completedAt: null
+  };
+  const service = new AcquisitionRunPresentationService({
+    planRunRepository: base.planRuns,
+    domainRepository: base.domain,
+    commentEventRepository: base.commentEvents,
+    visualReaderRepository: {
+      async listRunSessions() { return [terminal, active]; },
+      async getRunIngestionWorkProjection() { return work; }
+    },
+    cursorSecret: CURSOR_SECRET
+  } as ConstructorParameters<typeof AcquisitionRunPresentationService>[0] & {
+    visualReaderRepository: {
+      listRunSessions(): Promise<VisualReaderSession[]>;
+      getRunIngestionWorkProjection(): Promise<VisualRunIngestionWorkProjection>;
+    };
+  });
+
+  const value = await service.get(scope, "run-1", { limit: 10 });
+  const visual = value.authorizedVisualReader!;
+  assert.equal(visual.sessionId, active.sessionId);
+  assert.equal(visual.status, active.status);
+  assert.deepEqual(visual.usage, active.usage);
+  assert.equal(visual.sessionCount, 2);
+  assert.equal(visual.aggregateStatus, "active");
+  assert.deepEqual(visual.aggregateUsage, usage(2));
+  assert.equal(visual.visualSteps[3]?.processedCount, 2);
+  assert.deepEqual(visual.visualSteps.map((step) => step.id), [
+    "authorize_visual_reader",
+    "read_visible_comment_cards",
+    "extract_visible_text",
+    "persist_visual_observations",
+    "review_visual_signal_confidence"
+  ]);
+  assert.equal(
+    visual.visualSteps.some((step) => step.message.includes("客户")),
+    false
+  );
+});
+
+test("Run Presentation rejects a 1001st visual session fact", async () => {
+  const base = await fixture();
+  const service = new AcquisitionRunPresentationService({
+    planRunRepository: base.planRuns,
+    domainRepository: base.domain,
+    commentEventRepository: base.commentEvents,
+    visualReaderRepository: {
+      async listRunSessions() {
+        return Array.from({ length: 1_001 }, (_, index) => ({
+          sessionId: `visual-${index}`
+        })) as VisualReaderSession[];
+      },
+      async getRunIngestionWorkProjection() {
+        return {
+          workItemCount: 0,
+          queuedCount: 0,
+          runningCount: 0,
+          retryCount: 0,
+          succeededCount: 0,
+          manualReviewOnlyCount: 0,
+          createdAt: null,
+          completedAt: null
+        };
+      }
+    },
+    cursorSecret: CURSOR_SECRET
+  } as ConstructorParameters<typeof AcquisitionRunPresentationService>[0] & {
+    visualReaderRepository: {
+      listRunSessions(): Promise<VisualReaderSession[]>;
+      getRunIngestionWorkProjection(): Promise<VisualRunIngestionWorkProjection>;
+    };
+  });
+  await assert.rejects(
+    service.get(scope, "run-1", { limit: 10 }),
+    /ACQUISITION_VISUAL_PRESENTATION_FACT_LIMIT_EXCEEDED/u
+  );
+});
+
+test("Run Presentation closes visual aggregation precedence, controller, caps and zero facts", async () => {
+  const usage = (observationCount: number) => ({
+    videoCount: Math.min(observationCount, 10_000), observationCount,
+    scrollCount: 0, ocrCallCount: 0, domObservationCount: observationCount,
+    accessibilityObservationCount: 0, ocrObservationCount: 0,
+    lowConfidenceObservationCount: 0, artifactCount: 0
+  });
+  const session = (
+    sessionId: string,
+    status: VisualReaderSession["status"],
+    authorizedAt: string,
+    observationCount: number
+  ): VisualReaderSession => ({
+    sessionId, runId: "run-1", planId: "plan-1",
+    planVersionId: "plan-version-1", platform: "douyin",
+    coverage: "authorized_visible_top_level_sample", status,
+    artifactUploadEnabled: false,
+    limits: { maxVideos: 10, maxCommentsPerVideo: 300, maxScrolls: 5,
+      maxOcrCalls: 10, maxDurationMs: 120_000 },
+    usage: usage(observationCount),
+    outcome: ["created", "collecting"].includes(status) ? null : {
+      status: status === "completed" ? "completed" : "partial_success",
+      videoCount: Math.min(observationCount, 10_000), observationCount,
+      domObservationCount: observationCount, accessibilityObservationCount: 0,
+      ocrObservationCount: 0, lowConfidenceObservationCount: 0,
+      artifactCount: 0, errorCodes: []
+    },
+    lastErrorCode: null, createdAt: authorizedAt, authorizedAt,
+    updatedAt: authorizedAt,
+    expiresAt: new Date(Date.parse(authorizedAt) + 120_000).toISOString(),
+    completedAt: ["created", "collecting"].includes(status) ? null
+      : new Date(Date.parse(authorizedAt) + 1_000).toISOString()
+  });
+  const work = (
+    workItemCount: number,
+    statuses: Partial<VisualRunIngestionWorkProjection> = {}
+  ): VisualRunIngestionWorkProjection => ({
+    workItemCount, queuedCount: 0, runningCount: 0, retryCount: 0,
+    succeededCount: workItemCount, manualReviewOnlyCount: 0,
+    createdAt: workItemCount ? "2026-07-26T09:00:00.000Z" : null,
+    completedAt: workItemCount ? "2026-07-26T09:00:05.000Z" : null,
+    ...statuses
+  });
+  const present = async (
+    sessions: VisualReaderSession[],
+    projection: VisualRunIngestionWorkProjection
+  ) => {
+    const base = await fixture();
+    return new AcquisitionRunPresentationService({
+      planRunRepository: base.planRuns,
+      domainRepository: base.domain,
+      commentEventRepository: base.commentEvents,
+      visualReaderRepository: {
+        async listRunSessions() { return sessions; },
+        async getRunIngestionWorkProjection() { return projection; }
+      },
+      cursorSecret: CURSOR_SECRET
+    }).get(scope, "run-1", { limit: 10 });
+  };
+
+  const latestTerminal = await present([
+    session("visual-terminal-old", "completed", "2026-07-26T09:00:00.000Z", 0),
+    session("visual-terminal-new", "partial_success", "2026-07-26T09:00:01.000Z", 0)
+  ], work(0));
+  assert.equal(latestTerminal.authorizedVisualReader?.sessionId,
+    "visual-terminal-new");
+  assert.equal(latestTerminal.authorizedVisualReader?.aggregateStatus,
+    "partial_success");
+  assert.ok(latestTerminal.authorizedVisualReader?.visualSteps.some((step) =>
+    step.message.includes("no_visible_comments")));
+  assert.ok(latestTerminal.authorizedVisualReader?.visualSteps.every((step) =>
+    !step.message.includes("客户")));
+
+  const multiActive = await present([
+    session("visual-active-z", "collecting", "2026-07-26T09:00:02.000Z", 0),
+    session("visual-active-a", "created", "2026-07-26T09:00:02.000Z", 0),
+    session("visual-terminal-later", "completed", "2026-07-26T09:00:03.000Z", 0)
+  ], work(0));
+  assert.equal(multiActive.authorizedVisualReader?.sessionId, "visual-active-z");
+  assert.equal(multiActive.authorizedVisualReader?.aggregateStatus, "active");
+
+  const partialWithRetry = await present([
+    session("visual-partial", "partial_success", "2026-07-26T09:00:00.000Z", 1)
+  ], work(1, { retryCount: 1, succeededCount: 0 }));
+  assert.equal(partialWithRetry.authorizedVisualReader?.aggregateStatus,
+    "partial_success");
+
+  const stoppedWithRetry = await present([
+    session("visual-aborted", "aborted", "2026-07-26T09:00:00.000Z", 1),
+    session("visual-expired", "expired", "2026-07-26T09:00:01.000Z", 0)
+  ], work(1, { retryCount: 1, succeededCount: 0 }));
+  assert.equal(stoppedWithRetry.authorizedVisualReader?.aggregateStatus,
+    "stopped");
+
+  const untruncated = await present([
+    session("visual-many-work", "completed", "2026-07-26T09:00:00.000Z", 1_001)
+  ], work(1_001));
+  assert.equal(untruncated.authorizedVisualReader?.visualSteps[3]?.processedCount,
+    1_001);
+  await assert.rejects(present([
+    session("visual-integrity", "completed", "2026-07-26T09:00:00.000Z", 2)
+  ], work(1)), /ACQUISITION_VISUAL_PRESENTATION_FACT_LIMIT_EXCEEDED/u);
+  await assert.rejects(present([
+    session("visual-cap-a", "completed", "2026-07-26T09:00:00.000Z", 200_000),
+    session("visual-cap-b", "completed", "2026-07-26T09:00:01.000Z", 200_000)
+  ], work(400_000)), /ACQUISITION_VISUAL_PRESENTATION_FACT_LIMIT_EXCEEDED/u);
+});
 
 async function appendFetchAttempt(
   repository: InMemoryAcquisitionDouyinCommentEventRepository,

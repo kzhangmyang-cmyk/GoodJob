@@ -965,10 +965,20 @@ test("run presentation keeps seven public-comment steps and adds an optional fiv
     "sessionId",
     "coverage",
     "status",
+    "limits",
     "usage",
+    "outcome",
     "lastErrorCode",
+    "sessionCount",
+    "aggregateStatus",
+    "aggregateUsage",
     "visualSteps"
   ]);
+  assert.equal(summary.properties.sessionCount.maximum, 1000);
+  assert.equal(
+    summary.properties.aggregateUsage.properties.observationCount.maximum,
+    300000
+  );
   assert.equal(summary.properties.visualSteps.minItems, 5);
   assert.equal(summary.properties.visualSteps.maxItems, 5);
   assert.deepEqual(
@@ -1024,6 +1034,48 @@ test("discovery evidence accepts only exact public platform-event provenance", a
   }), false);
 });
 
+test("discovery evidence closes authorized visual provenance and literal IDs", async () => {
+  const registry = await loadSchemaRegistry();
+  const validate = registry.validators.get("discovery-evidence");
+  const observationId = `visual-observation:${"a".repeat(64)}`;
+  const evidence = {
+    id: `visual:${observationId}:evidence:${validSha256}`,
+    targetType: "individual_signal",
+    sourcePlatform: "douyin",
+    sourceTitle: "Authorized visible comment observation",
+    sourceSnippet: "正在采购 20 套，请报价",
+    publishedAt: "2026-08-15T01:00:00.000Z",
+    fetchedAt: "2026-08-15T01:01:00.000Z",
+    locale: "zh-CN",
+    rawArtifactHash: validSha256,
+    contentHash: validSha256,
+    provenance: {
+      kind: "authorized_visual_observation",
+      sourceUrl: "https://www.douyin.com/video/7536012345678909876",
+      observationId,
+      sessionId: "visual-session-1",
+      extractionMethod: "dom",
+      visibleTextConfidence: 0.99,
+      coverage: "authorized_visible_top_level_sample",
+      artifactId: null,
+      domTextHash: validSha256,
+      ocrTextHash: null
+    },
+    accessStatus: "access_restricted"
+  };
+  assert.equal(validate(evidence), true, JSON.stringify(validate.errors));
+  for (const invalid of [
+    { ...evidence, id: "caller-selected-evidence" },
+    { ...evidence, sourcePlatform: "xhs" },
+    { ...evidence, targetType: "organization" },
+    { ...evidence, accessStatus: "public_content" },
+    { ...evidence, provenance: { ...evidence.provenance, extractionMethod: "vision" } },
+    { ...evidence, provenance: { ...evidence.provenance, unexpected: true } }
+  ]) {
+    assert.equal(validate(invalid), false);
+  }
+});
+
 test("individual demand signals bound profile fields without narrowing v1 negative signals", async () => {
   const registry = await loadSchemaRegistry();
   const validate = registry.validators.get("individual-demand-signal");
@@ -1053,6 +1105,26 @@ test("individual demand signals bound profile fields without narrowing v1 negati
   assert.equal(validate(signal), true, JSON.stringify(validate.errors));
   assert.equal(validate({ ...signal, publicActorKey: "a".repeat(301) }), false);
   assert.equal(validate({ ...signal, demandSummary: "a".repeat(2_001) }), false);
+  const visualActorKey =
+    `unmergeable:douyin:visual:visual-observation:${"b".repeat(64)}`;
+  assert.equal(validate({
+    ...signal,
+    publicActorKey: visualActorKey,
+    status: "needs_research",
+    identityResolved: false
+  }), true, JSON.stringify(validate.errors));
+  assert.equal(validate({
+    ...signal,
+    publicActorKey: "unmergeable:douyin:visual:caller-selected",
+    status: "needs_research",
+    identityResolved: false
+  }), false);
+  assert.equal(validate({
+    ...signal,
+    publicActorKey: visualActorKey,
+    status: "normalized",
+    identityResolved: true
+  }), false);
   const legacyNegativeSignals = [
     ...Array.from({ length: 13 }, (_, index) => `reason-${index}`),
     "reason-1",

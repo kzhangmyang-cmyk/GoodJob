@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type mysql from "mysql2/promise";
 import {
   ACQUISITION_VISUAL_ARTIFACT_ALGORITHM,
@@ -11,6 +12,7 @@ import {
   type AcquisitionVisualArtifactEnvelope
 } from "./acquisition-visual-artifact-crypto.js";
 import {
+  isAcquisitionMysqlNamedLockReleaseError,
   poisonAcquisitionMysqlConnection,
   releaseAcquisitionMysqlConnection,
   releaseAcquisitionMysqlNamedLocks
@@ -38,6 +40,7 @@ import {
   visualObservationDedupeKey,
   visualObservationInputHash,
   visualObservationIsLowConfidence,
+  visualObservationIsManualReviewOnly,
   visualReaderExpiredProjection,
   visualReaderSessionIsActiveAt,
   serializeAcquisitionVisualReaderBindingsEnvelope,
@@ -55,7 +58,12 @@ import {
   type VisualReaderSession,
   type VisualReaderStableErrorCode,
   type VisualObservationBatchReplay,
-  type VisualReaderUsage
+  type VisualReaderUsage,
+  type ClaimPendingVisualIngestionWorkItemsInput,
+  type CompleteVisualIngestionWorkItemInput,
+  type FailVisualIngestionWorkItemInput,
+  type VisualIngestionWorkItem,
+  type VisualIngestionWorkItemClaim
 } from "./acquisition-visual-reader-sessions.js";
 import { canonicalJsonStringify } from "./canonical-json.js";
 
@@ -146,6 +154,47 @@ export const ACQUISITION_VISUAL_READER_MYSQL_SCHEMA_STATEMENTS = [
         (owner_id, team_id, observation_id)
       ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT chk_visual_artifact_media CHECK (media_type = 'image/webp')
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS acquisition_visual_ingestion_work_items (
+    owner_id VARCHAR(100) NOT NULL,
+    team_id VARCHAR(100) NOT NULL,
+    work_item_id VARCHAR(255) NOT NULL,
+    actor_id VARCHAR(100) NOT NULL,
+    session_id VARCHAR(160) NOT NULL,
+    run_id VARCHAR(160) NOT NULL,
+    observation_id VARCHAR(160) NOT NULL,
+    artifact_id VARCHAR(160) NULL,
+    disposition VARCHAR(32) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+    next_attempt_at DATETIME(3) NOT NULL,
+    lease_owner VARCHAR(100) NULL,
+    lease_expires_at DATETIME(3) NULL,
+    last_error_code VARCHAR(32) NULL,
+    evidence_id VARCHAR(255) NULL,
+    platform_evidence_id VARCHAR(255) NULL,
+    candidate_id VARCHAR(120) NULL,
+    created_at DATETIME(3) NOT NULL,
+    updated_at DATETIME(3) NOT NULL,
+    completed_at DATETIME(3) NULL,
+    PRIMARY KEY (owner_id, team_id, observation_id),
+    UNIQUE KEY uk_visual_ingestion_work_item
+      (owner_id, team_id, work_item_id),
+    KEY idx_visual_ingestion_recovery
+      (status, next_attempt_at, lease_expires_at, owner_id, team_id),
+    KEY idx_visual_ingestion_run
+      (owner_id, team_id, run_id, created_at, observation_id),
+    CONSTRAINT fk_visual_ingestion_observation
+      FOREIGN KEY (owner_id, team_id, observation_id)
+      REFERENCES acquisition_visual_comment_observations
+        (owner_id, team_id, observation_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_visual_ingestion_disposition CHECK (
+      disposition IN ('automatic','manual_review_only')
+    ),
+    CONSTRAINT chk_visual_ingestion_status CHECK (
+      status IN ('queued','running','retry','succeeded','manual_review_only')
+    )
   ) ENGINE=InnoDB`
 ] as const;
 
@@ -482,6 +531,12 @@ function affectedRows(result: unknown) {
   return Number((result as { affectedRows?: unknown } | null)?.affectedRows ?? 0);
 }
 
+function exactInputKeys(value: unknown, keys: string[]) {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+    && Object.keys(value).sort().join("\u0000")
+      === [...keys].sort().join("\u0000");
+}
+
 function binaryView(value: unknown, expectedLength?: number) {
   if (!ArrayBuffer.isView(value)) integrity();
   const bytes = Buffer.from(
@@ -506,6 +561,107 @@ function boundedRowInteger(
     integrity();
   }
   return value;
+}
+
+function nullableRowString(row: MysqlRow, key: string) {
+  const value = row[key];
+  if (value === null) return null;
+  return rowString(row, key);
+}
+
+function parseIngestionWorkItem(row: MysqlRow): VisualIngestionWorkItem {
+  const disposition = rowString(row, "disposition");
+  const status = rowString(row, "status");
+  if (!["automatic", "manual_review_only"].includes(disposition)
+    || !["queued", "running", "retry", "succeeded", "manual_review_only"]
+      .includes(status)) integrity();
+  const completedAt = row.completed_at === null
+    ? null
+    : isoDate(row.completed_at);
+  const leaseExpiresAt = row.lease_expires_at === null
+    ? null
+    : isoDate(row.lease_expires_at);
+  const lastErrorCode = nullableRowString(row, "last_error_code");
+  if (lastErrorCode !== null && lastErrorCode !== "RECOVERY_FAILED") integrity();
+  const observationId = rowString(row, "observation_id");
+  const workItemId = rowString(row, "work_item_id");
+  const actorId = rowString(row, "actor_id");
+  const sessionId = rowString(row, "session_id");
+  const runId = rowString(row, "run_id");
+  const leaseOwner = nullableRowString(row, "lease_owner");
+  const evidenceId = nullableRowString(row, "evidence_id");
+  const platformEvidenceId = nullableRowString(row, "platform_evidence_id");
+  const candidateId = nullableRowString(row, "candidate_id");
+  const artifactId = nullableRowString(row, "artifact_id");
+  const createdAt = isoDate(row.created_at);
+  const updatedAt = isoDate(row.updated_at);
+  const identifiers = [observationId, actorId, sessionId, runId];
+  if (workItemId !== `visual-ingestion:${observationId}`
+    || identifiers.some((value) =>
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(value))
+    || (artifactId !== null
+      && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(artifactId))
+    || (leaseOwner !== null
+      && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/u.test(leaseOwner))
+    || [evidenceId, platformEvidenceId].some((value) =>
+      value !== null
+      && (value.length < 1 || value.length > 255
+        || /[\u0000-\u001F\u007F]/u.test(value)))
+    || (candidateId !== null
+      && (candidateId.length < 1 || candidateId.length > 120
+        || /[\u0000-\u001F\u007F]/u.test(candidateId)))
+    || Date.parse(updatedAt) < Date.parse(createdAt)
+    || (completedAt !== null
+      && (Date.parse(completedAt) < Date.parse(createdAt)
+        || Date.parse(completedAt) < Date.parse(updatedAt)))
+    || ((leaseOwner === null) !== (leaseExpiresAt === null))) integrity();
+  const pendingFactsAreEmpty = completedAt === null
+    && evidenceId === null
+    && platformEvidenceId === null
+    && candidateId === null;
+  if ((["queued", "retry"].includes(status)
+      && (leaseOwner !== null || !pendingFactsAreEmpty))
+    || (status === "queued" && lastErrorCode !== null)
+    || (status === "retry" && lastErrorCode !== "RECOVERY_FAILED")
+    || (status === "running"
+      && (leaseOwner === null || !pendingFactsAreEmpty))
+    || (status === "succeeded"
+      && (disposition !== "automatic"
+        || leaseOwner !== null
+        || completedAt === null
+        || evidenceId === null
+        || lastErrorCode !== null))
+    || (status === "manual_review_only"
+      && (disposition !== "manual_review_only"
+        || leaseOwner !== null
+        || completedAt === null
+        || evidenceId === null
+        || platformEvidenceId !== null
+        || candidateId !== null
+        || lastErrorCode !== null))) integrity();
+  return {
+    workItemId,
+    ownerId: rowString(row, "owner_id"),
+    teamId: rowString(row, "team_id"),
+    actorId,
+    sessionId,
+    runId,
+    observationId,
+    artifactId,
+    disposition: disposition as VisualIngestionWorkItem["disposition"],
+    status: status as VisualIngestionWorkItem["status"],
+    attemptCount: boundedRowInteger(row, "attempt_count", 0, 2_147_483_647),
+    nextAttemptAt: isoDate(row.next_attempt_at),
+    leaseOwner,
+    leaseExpiresAt,
+    lastErrorCode: lastErrorCode as "RECOVERY_FAILED" | null,
+    evidenceId,
+    platformEvidenceId,
+    candidateId,
+    createdAt,
+    updatedAt,
+    completedAt
+  };
 }
 
 async function selectSession(
@@ -589,6 +745,8 @@ export class MysqlAcquisitionVisualReaderRepository
 implements AcquisitionVisualReaderRepository {
   private readonly masterSecret: string;
   private readonly now: () => string;
+  private readonly transactionContext =
+    new AsyncLocalStorage<mysql.PoolConnection>();
 
   constructor(
     private readonly pool: mysql.Pool,
@@ -597,6 +755,48 @@ implements AcquisitionVisualReaderRepository {
     deriveAcquisitionVisualArtifactKey(options.masterSecret);
     this.masterSecret = options.masterSecret;
     this.now = options.now ?? (() => new Date().toISOString());
+  }
+
+  private source(): Queryable {
+    return (this.transactionContext.getStore() ?? this.pool) as unknown as Queryable;
+  }
+
+  withTransactionConnection<T>(
+    connection: mysql.PoolConnection,
+    work: () => Promise<T>
+  ) {
+    const active = this.transactionContext.getStore();
+    if (active && active !== connection) {
+      throw new Error("ACQUISITION_VISUAL_READER_TRANSACTION_CONFLICT");
+    }
+    return active ? work() : this.transactionContext.run(connection, work);
+  }
+
+  async transaction<T>(work: () => Promise<T>) {
+    if (this.transactionContext.getStore()) return work();
+    const connection = await this.pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      try {
+        const result = await this.withTransactionConnection(connection, work);
+        await connection.commit();
+        return result;
+      } catch (error) {
+        try {
+          await connection.rollback();
+        } catch {
+          poisonAcquisitionMysqlConnection(connection);
+        }
+        throw error;
+      }
+    } catch (error) {
+      if (isAcquisitionMysqlNamedLockReleaseError(error)) {
+        poisonAcquisitionMysqlConnection(connection);
+      }
+      throw error;
+    } finally {
+      releaseAcquisitionMysqlConnection(connection);
+    }
   }
 
   async createSession(input: CreateVisualReaderSessionInput) {
@@ -961,6 +1161,40 @@ implements AcquisitionVisualReaderRepository {
             throw error;
           }
         }
+        await connection.query(
+          `INSERT INTO acquisition_visual_ingestion_work_items (
+             owner_id, team_id, work_item_id, actor_id, session_id, run_id,
+             observation_id, artifact_id, disposition, status, attempt_count,
+             next_attempt_at, lease_owner, lease_expires_at, last_error_code,
+             evidence_id, platform_evidence_id, candidate_id, created_at,
+             updated_at, completed_at
+           ) VALUES (${Array(21).fill("?").join(", ")})`,
+          [
+            input.scope.ownerId,
+            input.scope.teamId,
+            `visual-ingestion:${observation.observationId}`,
+            input.ingestionActorId,
+            input.sessionId,
+            session.runId,
+            observation.observationId,
+            planned.artifact?.input.artifactId ?? null,
+            visualObservationIsManualReviewOnly(observation)
+              ? "manual_review_only"
+              : "automatic",
+            "queued",
+            0,
+            sqlDate(now),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            sqlDate(now),
+            sqlDate(now),
+            null
+          ]
+        );
       }
       await this.updateSession(connection as unknown as Queryable, input.scope,
         nextSession, { observations: bindings, requests: requestBindings,
@@ -1206,7 +1440,7 @@ implements AcquisitionVisualReaderRepository {
       || options.limit > 1_000) {
       fail("VISUAL_READER_INVALID_INPUT");
     }
-    const [result] = await this.pool.query(
+    const [result] = await this.source().query(
       `SELECT * FROM acquisition_visual_comment_observations
        WHERE owner_id = ? AND team_id = ? AND run_id = ?
        ORDER BY captured_at, observation_id LIMIT ?`,
@@ -1220,11 +1454,388 @@ implements AcquisitionVisualReaderRepository {
       .slice(0, options.limit);
   }
 
+  async listRunSessions(scope: AcquisitionScope, runId: string) {
+    assertVisualReaderScope(scope);
+    assertVisualReaderIdentifier(runId);
+    return this.transaction(async () => {
+      const source = this.source();
+      const [result] = await source.query(
+        `SELECT * FROM acquisition_visual_reader_sessions
+         WHERE owner_id = ? AND team_id = ? AND run_id = ?
+         ORDER BY created_at, session_id LIMIT 1001 FOR UPDATE`,
+        [scope.ownerId, scope.teamId, runId]
+      );
+      const rows = Array.isArray(result) ? result as MysqlRow[] : [];
+      if (rows.length > 1_000) {
+        throw new Error("ACQUISITION_VISUAL_PRESENTATION_FACT_LIMIT_EXCEEDED");
+      }
+      const now = this.now();
+      sqlDate(now);
+      const sessions: VisualReaderSession[] = [];
+      for (const row of rows) {
+        let session = parseSession(row, scope);
+        if (session.runId !== runId) {
+          throw new Error("ACQUISITION_VISUAL_READER_MYSQL_INTEGRITY");
+        }
+        if (!visualReaderSessionIsActiveAt(session, now)
+          && !["completed", "partial_success", "aborted", "expired"].includes(
+            session.status
+          )) {
+          session = visualReaderExpiredProjection(session, session.expiresAt);
+          await this.updateSession(source, scope, session, parseBindings(row));
+        }
+        sessions.push(session);
+      }
+      return sessions;
+    });
+  }
+
+  async listRunIngestionWorkItems(
+    scope: AcquisitionScope,
+    runId: string,
+    options: { limit: number }
+  ) {
+    assertVisualReaderScope(scope);
+    assertVisualReaderIdentifier(runId);
+    if (!options || typeof options !== "object" || Array.isArray(options)
+      || Object.keys(options).length !== 1
+      || !Number.isSafeInteger(options.limit)
+      || options.limit < 1
+      || options.limit > 1_000) {
+      fail("VISUAL_READER_INVALID_INPUT");
+    }
+    const [result] = await this.source().query(
+      `SELECT * FROM acquisition_visual_ingestion_work_items
+       WHERE owner_id = ? AND team_id = ? AND run_id = ?
+       ORDER BY created_at, work_item_id LIMIT ?`,
+      [scope.ownerId, scope.teamId, runId, options.limit]
+    );
+    const workItems = (Array.isArray(result) ? result as MysqlRow[] : [])
+      .map(parseIngestionWorkItem);
+    for (const item of workItems) {
+      await this.requireWorkRelationships(this.source(), item);
+    }
+    return workItems;
+  }
+
+  async getRunIngestionWorkProjection(
+    scope: AcquisitionScope,
+    runId: string
+  ) {
+    assertVisualReaderScope(scope);
+    assertVisualReaderIdentifier(runId);
+    const [result] = await this.source().query(
+      `SELECT
+         COUNT(*) AS work_item_count,
+         COALESCE(SUM(status = 'queued'), 0) AS queued_count,
+         COALESCE(SUM(status = 'running'), 0) AS running_count,
+         COALESCE(SUM(status = 'retry'), 0) AS retry_count,
+         COALESCE(SUM(status = 'succeeded'), 0) AS succeeded_count,
+         COALESCE(SUM(status = 'manual_review_only'), 0)
+           AS manual_review_only_count,
+         COALESCE(SUM(NOT (
+           (status = 'queued' AND lease_owner IS NULL
+             AND lease_expires_at IS NULL AND completed_at IS NULL
+             AND evidence_id IS NULL AND platform_evidence_id IS NULL
+             AND candidate_id IS NULL AND last_error_code IS NULL)
+           OR (status = 'retry' AND lease_owner IS NULL
+             AND lease_expires_at IS NULL AND completed_at IS NULL
+             AND evidence_id IS NULL AND platform_evidence_id IS NULL
+             AND candidate_id IS NULL
+             AND last_error_code = 'RECOVERY_FAILED')
+           OR (status = 'running' AND lease_owner IS NOT NULL
+             AND lease_expires_at IS NOT NULL AND completed_at IS NULL
+             AND evidence_id IS NULL AND platform_evidence_id IS NULL
+             AND candidate_id IS NULL
+             AND (last_error_code IS NULL
+               OR last_error_code = 'RECOVERY_FAILED'))
+           OR (status = 'succeeded' AND disposition = 'automatic'
+             AND lease_owner IS NULL AND lease_expires_at IS NULL
+             AND completed_at IS NOT NULL AND evidence_id IS NOT NULL
+             AND last_error_code IS NULL)
+           OR (status = 'manual_review_only'
+             AND disposition = 'manual_review_only'
+             AND lease_owner IS NULL AND lease_expires_at IS NULL
+             AND completed_at IS NOT NULL AND evidence_id IS NOT NULL
+             AND platform_evidence_id IS NULL AND candidate_id IS NULL
+             AND last_error_code IS NULL)
+         )), 0) AS invalid_lifecycle_count,
+         MIN(created_at) AS created_at,
+         CASE WHEN COUNT(completed_at) = COUNT(*) AND COUNT(*) > 0
+           THEN MAX(completed_at) ELSE NULL END AS completed_at
+       FROM acquisition_visual_ingestion_work_items
+       WHERE owner_id = ? AND team_id = ? AND run_id = ?`,
+      [scope.ownerId, scope.teamId, runId]
+    );
+    const row = Array.isArray(result) && result.length === 1
+      ? result[0] as MysqlRow
+      : null;
+    if (!row) integrity();
+    const count = (field: string) => {
+      const raw = row[field];
+      const value = typeof raw === "bigint"
+        ? Number(raw)
+        : typeof raw === "string" && /^[0-9]+$/u.test(raw)
+          ? Number(raw)
+          : raw;
+      if (!Number.isSafeInteger(value) || Number(value) < 0) integrity();
+      return Number(value);
+    };
+    const projection = {
+      workItemCount: count("work_item_count"),
+      queuedCount: count("queued_count"),
+      runningCount: count("running_count"),
+      retryCount: count("retry_count"),
+      succeededCount: count("succeeded_count"),
+      manualReviewOnlyCount: count("manual_review_only_count"),
+      createdAt: row.created_at === null ? null : isoDate(row.created_at),
+      completedAt: row.completed_at === null ? null : isoDate(row.completed_at)
+    };
+    if (count("invalid_lifecycle_count") !== 0
+      || projection.queuedCount
+      + projection.runningCount
+      + projection.retryCount
+      + projection.succeededCount
+      + projection.manualReviewOnlyCount !== projection.workItemCount
+      || (projection.workItemCount === 0
+        && (projection.createdAt !== null || projection.completedAt !== null))
+      || (projection.workItemCount > 0 && projection.createdAt === null)) {
+      integrity();
+    }
+    return projection;
+  }
+
+  async claimPendingIngestionWorkItems(
+    input: ClaimPendingVisualIngestionWorkItemsInput
+  ): Promise<VisualIngestionWorkItemClaim[]> {
+    if (!exactInputKeys(
+      input,
+      ["workerId", "now", "leaseDurationMs", "limit"]
+    )
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/u.test(input.workerId)
+      || !Number.isSafeInteger(input.leaseDurationMs)
+      || input.leaseDurationMs < 1_000
+      || input.leaseDurationMs > 15 * 60_000
+      || !Number.isSafeInteger(input.limit)
+      || input.limit < 1
+      || input.limit > 100) {
+      fail("VISUAL_READER_INVALID_INPUT");
+    }
+    const now = sqlDate(input.now);
+    const leaseExpiresAt = new Date(
+      Date.parse(input.now) + input.leaseDurationMs
+    ).toISOString();
+    return this.transaction(async () => {
+      const source = this.source();
+      const claims: VisualIngestionWorkItemClaim[] = [];
+      while (claims.length < input.limit) {
+        const [result] = await source.query(
+        `SELECT w.*
+         FROM acquisition_visual_ingestion_work_items w
+         WHERE (
+           (w.status IN ('queued','retry') AND w.next_attempt_at <= ?)
+           OR (w.status = 'running' AND w.lease_expires_at <= ?)
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM acquisition_visual_ingestion_work_items earlier
+           WHERE earlier.owner_id = w.owner_id
+             AND earlier.team_id = w.team_id
+             AND (
+               (earlier.status IN ('queued','retry')
+                 AND earlier.next_attempt_at <= ?)
+               OR (earlier.status = 'running'
+                 AND earlier.lease_expires_at <= ?)
+             )
+             AND (
+               earlier.next_attempt_at < w.next_attempt_at
+               OR (earlier.next_attempt_at = w.next_attempt_at
+                 AND earlier.created_at < w.created_at)
+               OR (earlier.next_attempt_at = w.next_attempt_at
+                 AND earlier.created_at = w.created_at
+                 AND earlier.work_item_id < w.work_item_id)
+             )
+         )
+         ORDER BY (
+           SELECT COALESCE(SUM(history.attempt_count), 0)
+           FROM acquisition_visual_ingestion_work_items history
+           WHERE history.owner_id = w.owner_id AND history.team_id = w.team_id
+         ), w.next_attempt_at, w.owner_id, w.team_id, w.work_item_id
+         LIMIT ? FOR UPDATE SKIP LOCKED`,
+          [now, now, now, now, input.limit - claims.length]
+        );
+        const selected = (Array.isArray(result) ? result as MysqlRow[] : [])
+          .map(parseIngestionWorkItem);
+        if (selected.length === 0) break;
+        let madeProgress = false;
+        for (const item of selected) {
+        const [updated] = await source.query(
+          `UPDATE acquisition_visual_ingestion_work_items
+           SET status = 'running', attempt_count = attempt_count + 1,
+               lease_owner = ?, lease_expires_at = ?, updated_at = ?
+           WHERE owner_id = ? AND team_id = ? AND observation_id = ?
+             AND (
+               (status IN ('queued','retry') AND next_attempt_at <= ?)
+               OR (status = 'running' AND lease_expires_at <= ?)
+             )`,
+          [
+            input.workerId, sqlDate(leaseExpiresAt), now,
+            item.ownerId, item.teamId, item.observationId, now, now
+          ]
+        );
+        if (affectedRows(updated) !== 1) continue;
+        const [workRows] = await source.query(
+          `SELECT * FROM acquisition_visual_ingestion_work_items
+           WHERE owner_id = ? AND team_id = ? AND observation_id = ?`,
+          [item.ownerId, item.teamId, item.observationId]
+        );
+        const workRow = Array.isArray(workRows) ? workRows[0] as MysqlRow : null;
+        if (!workRow) integrity();
+        const running = parseIngestionWorkItem(workRow);
+        const [observationRows] = await source.query(
+          `SELECT * FROM acquisition_visual_comment_observations
+           WHERE owner_id = ? AND team_id = ? AND observation_id = ?`,
+          [item.ownerId, item.teamId, item.observationId]
+        );
+        const observationRow = Array.isArray(observationRows)
+          ? observationRows[0] as MysqlRow
+          : null;
+        if (!observationRow) integrity();
+        const observation = parseObservation(observationRow, {
+          scope: { ownerId: item.ownerId, teamId: item.teamId },
+          sessionId: item.sessionId,
+          runId: item.runId
+        });
+        await this.requireWorkRelationships(source, running, observation);
+          claims.push({
+            workItem: running,
+            observation
+          });
+          madeProgress = true;
+        }
+        if (!madeProgress) break;
+      }
+      return claims;
+    });
+  }
+
+  async failIngestionWorkItem(
+    scope: AcquisitionScope,
+    observationId: string,
+    failure: FailVisualIngestionWorkItemInput
+  ) {
+    assertVisualReaderScope(scope);
+    assertVisualReaderIdentifier(observationId);
+    if (!exactInputKeys(
+      failure,
+      ["workerId", "failedAt", "nextAttemptAt", "errorCode"]
+    )) fail("VISUAL_READER_INVALID_INPUT");
+    const failedAt = sqlDate(failure.failedAt);
+    const nextAttemptAt = sqlDate(failure.nextAttemptAt);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/u.test(failure.workerId)
+      || failure.errorCode !== "RECOVERY_FAILED"
+      || Date.parse(failure.nextAttemptAt) < Date.parse(failure.failedAt)) {
+      fail("VISUAL_READER_INVALID_INPUT");
+    }
+    const source = this.source();
+    const [result] = await source.query(
+      `UPDATE acquisition_visual_ingestion_work_items
+       SET status = 'retry', next_attempt_at = ?, lease_owner = NULL,
+           lease_expires_at = NULL, last_error_code = ?, updated_at = ?
+       WHERE owner_id = ? AND team_id = ? AND observation_id = ?
+         AND status = 'running' AND lease_owner = ?
+         AND updated_at <= ? AND lease_expires_at >= ?`,
+      [
+        nextAttemptAt, failure.errorCode, failedAt,
+        scope.ownerId, scope.teamId, observationId, failure.workerId,
+        failedAt, failedAt
+      ]
+    );
+    if (affectedRows(result) !== 1) fail("VISUAL_READER_OBSERVATION_CONFLICT");
+    return this.requireWorkItem(source, scope, observationId);
+  }
+
+  async completeIngestionWorkItem(
+    scope: AcquisitionScope,
+    observationId: string,
+    result: CompleteVisualIngestionWorkItemInput
+  ) {
+    assertVisualReaderScope(scope);
+    assertVisualReaderIdentifier(observationId);
+    if (!exactInputKeys(result, [
+      "workerId", "status", "evidenceId", "platformEvidenceId",
+      "candidateId", "completedAt"
+    ])
+      || typeof result.workerId !== "string"
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/u.test(result.workerId)
+      || typeof result.status !== "string"
+      || !["succeeded", "manual_review_only"].includes(result.status)
+      || typeof result.evidenceId !== "string"
+      || result.evidenceId.length < 1
+      || result.evidenceId.length > 255
+      || /[\u0000-\u001F\u007F]/u.test(result.evidenceId)
+      || (result.platformEvidenceId !== null
+        && (typeof result.platformEvidenceId !== "string"
+          || result.platformEvidenceId.length < 1
+          || result.platformEvidenceId.length > 255
+          || /[\u0000-\u001F\u007F]/u.test(result.platformEvidenceId)))
+      || (result.candidateId !== null
+        && (typeof result.candidateId !== "string"
+          || result.candidateId.length < 1
+          || result.candidateId.length > 120
+          || /[\u0000-\u001F\u007F]/u.test(result.candidateId)))) {
+      fail("VISUAL_READER_INVALID_INPUT");
+    }
+    const completedAt = sqlDate(result.completedAt);
+    const source = this.source();
+    const current = await this.requireWorkItem(source, scope, observationId);
+    const [observationRows] = await source.query(
+      `SELECT * FROM acquisition_visual_comment_observations
+       WHERE owner_id = ? AND team_id = ? AND observation_id = ?`,
+      [scope.ownerId, scope.teamId, observationId]
+    );
+    const observationRow = Array.isArray(observationRows)
+      ? observationRows[0] as MysqlRow
+      : null;
+    if (!observationRow) integrity();
+    const observation = parseObservation(observationRow, {
+      scope,
+      runId: current.runId
+    });
+    const expectedEvidenceId =
+      `visual:${observationId}:evidence:${observation.textHash}`;
+    if (result.evidenceId !== expectedEvidenceId
+      || (current.disposition === "manual_review_only"
+        && (result.status !== "manual_review_only"
+          || result.platformEvidenceId !== null
+          || result.candidateId !== null))
+      || (current.disposition === "automatic" && result.status !== "succeeded")) {
+      fail("VISUAL_READER_OBSERVATION_CONFLICT");
+    }
+    const [updated] = await source.query(
+      `UPDATE acquisition_visual_ingestion_work_items
+       SET status = ?, next_attempt_at = ?, lease_owner = NULL,
+           lease_expires_at = NULL, last_error_code = NULL, evidence_id = ?,
+           platform_evidence_id = ?, candidate_id = ?, updated_at = ?,
+           completed_at = ?
+       WHERE owner_id = ? AND team_id = ? AND observation_id = ?
+         AND status = 'running' AND lease_owner = ?
+         AND updated_at <= ? AND lease_expires_at >= ?`,
+      [
+        result.status, completedAt, result.evidenceId,
+        result.platformEvidenceId, result.candidateId, completedAt, completedAt,
+        scope.ownerId, scope.teamId, observationId, result.workerId,
+        completedAt, completedAt
+      ]
+    );
+    if (affectedRows(updated) !== 1) fail("VISUAL_READER_OBSERVATION_CONFLICT");
+    return this.requireWorkItem(source, scope, observationId);
+  }
+
   async getArtifact(scope: AcquisitionScope, artifactId: string) {
     assertVisualReaderScope(scope);
     assertVisualReaderIdentifier(artifactId);
     const now = this.now();
-    const [result] = await this.pool.query(
+    const [result] = await this.source().query(
       `SELECT * FROM acquisition_visual_reader_artifacts
        WHERE owner_id = ? AND team_id = ? AND artifact_id = ?
          AND expires_at > ?`,
@@ -1239,13 +1850,68 @@ implements AcquisitionVisualReaderRepository {
 
   async deleteExpiredArtifacts(input: { before: string; limit: number }) {
     assertDeleteExpiredVisualArtifactsInput(input);
-    const [result] = await this.pool.query(
+    const [result] = await this.source().query(
       `DELETE FROM acquisition_visual_reader_artifacts
        WHERE expires_at <= ?
        ORDER BY expires_at, artifact_id LIMIT ?`,
       [sqlDate(input.before), input.limit]
     );
     return affectedRows(result);
+  }
+
+  private async requireWorkItem(
+    source: Queryable,
+    scope: AcquisitionScope,
+    observationId: string
+  ) {
+    const [rows] = await source.query(
+      `SELECT * FROM acquisition_visual_ingestion_work_items
+       WHERE owner_id = ? AND team_id = ? AND observation_id = ?`,
+      [scope.ownerId, scope.teamId, observationId]
+    );
+    const row = Array.isArray(rows) ? rows[0] as MysqlRow : null;
+    if (!row) fail("VISUAL_READER_OBSERVATION_CONFLICT");
+    return parseIngestionWorkItem(row);
+  }
+
+  private async requireWorkRelationships(
+    source: Queryable,
+    item: VisualIngestionWorkItem,
+    knownObservation?: DouyinVisualCommentObservationV1
+  ) {
+    let observation = knownObservation;
+    if (!observation) {
+      const [rows] = await source.query(
+        `SELECT * FROM acquisition_visual_comment_observations
+         WHERE owner_id = ? AND team_id = ? AND observation_id = ?`,
+        [item.ownerId, item.teamId, item.observationId]
+      );
+      const row = Array.isArray(rows) ? rows[0] as MysqlRow : null;
+      if (!row) integrity();
+      observation = parseObservation(row, {
+        scope: { ownerId: item.ownerId, teamId: item.teamId },
+        sessionId: item.sessionId,
+        runId: item.runId
+      });
+    }
+    if (observation.observationId !== item.observationId
+      || observation.sessionId !== item.sessionId
+      || (item.evidenceId !== null
+        && item.evidenceId !==
+          `visual:${item.observationId}:evidence:${observation.textHash}`)) {
+      integrity();
+    }
+    const sessionRow = await selectSession(
+      source,
+      { ownerId: item.ownerId, teamId: item.teamId },
+      item.sessionId
+    );
+    if (!sessionRow) integrity();
+    const session = parseSession(sessionRow, {
+      ownerId: item.ownerId,
+      teamId: item.teamId
+    });
+    if (session.runId !== item.runId) integrity();
   }
 
   private async updateSession(

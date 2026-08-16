@@ -40,6 +40,7 @@ export interface AcquisitionIndividualSignalIngestionInput {
   subject: AcquisitionIndividualSignalSubject;
   evidence: DiscoveryEvidence;
   idempotencyKey: string;
+  initialCandidateStatus?: "needs_research" | "do_not_contact";
   /** Internal saga barrier. Throwing here rolls back the candidate transaction. */
   beforeCandidateCommit?: () => Promise<void>;
 }
@@ -201,7 +202,12 @@ implements AcquisitionIndividualSignalIngestionPort {
             `${dedupeKey}\u0000${input.sourceUrl}`
           ).slice(0, 24)}`,
           individualPartyId: identityResolution.partyId,
-          evidenceIds: [input.evidence.id]
+          evidenceIds: [input.evidence.id],
+          ...(["needs_research", "do_not_contact"].includes(
+            String(input.initialCandidateStatus)
+          )
+            ? { initialStatus: input.initialCandidateStatus }
+            : {})
         },
         childIdempotencyKey(input.idempotencyKey, "candidate", {
           dedupeKey,

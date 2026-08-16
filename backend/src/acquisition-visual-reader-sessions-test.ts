@@ -77,7 +77,13 @@ function observation(
     publicProfileUrl: null,
     secUid: null,
     extractionMethod: "dom",
-    fieldConfidences: { visibleText: 0.99, displayName: 0.99 },
+    fieldConfidences: {
+      visibleText: 0.99,
+      displayName: 0.99,
+      visibleTimeText: 0.99,
+      likeCount: 0.99,
+      replyCount: 0.99
+    },
     viewportHash: digest(`viewport:${id}`),
     cardBounds: { x: 12, y: 24, width: 360, height: 120 },
     redactedCropHash: null,
@@ -101,6 +107,7 @@ function appendInput(
   return {
     scope: OWNER_SCOPE,
     sessionId: "visual-session-1",
+    ingestionActorId: "visual-reader-actor",
     observations: entries,
     usageDelta: { scrollCount: 0, ocrCallCount: 0 },
     ...overrides
@@ -737,7 +744,7 @@ test("memory repository persists the derived expired terminal outcome", async ()
   ), expired);
 });
 
-for (const firstTouch of ["get", "append", "complete"] as const) {
+for (const firstTouch of ["get", "append", "complete", "list"] as const) {
   test(`memory ${firstTouch} first touch durably expires a session at expiresAt`, async () => {
     const clock = { now: START };
     const repo = repository(clock);
@@ -754,7 +761,7 @@ for (const firstTouch of ["get", "append", "complete"] as const) {
         clientObservationKey: "expired-first-touch",
         observation: observation("expired-first-touch")
       }])), hasCode("VISUAL_READER_SESSION_EXPIRED"));
-    } else {
+    } else if (firstTouch === "complete") {
       await assert.rejects(repo.completeSession(
         OWNER_SCOPE,
         "visual-session-1",
@@ -764,6 +771,11 @@ for (const firstTouch of ["get", "append", "complete"] as const) {
           domObservationCount: 0
         })
       ), hasCode("VISUAL_READER_SESSION_EXPIRED"));
+    } else {
+      assert.equal((await repo.listRunSessions(
+        OWNER_SCOPE,
+        "run-visual-1"
+      ))[0]?.status, "expired");
     }
 
     clock.now = START;

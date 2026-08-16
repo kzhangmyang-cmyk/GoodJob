@@ -38,12 +38,11 @@ consumer, and the packaged production start path.
 ## Authorized visual reader contracts
 
 The release contract reserves an authenticated, explicitly authorized visual
-reader API under `/api/v1/acquisition/visual-reader-*`. It is the explicit
-contract-only exception described above: the six visual routes are not in the
-runtime drift allowlist until Task 3, while the existing Run Presentation route
-remains in static/runtime parity. The backend session/service/repository boundary and
-the external read-only browser reader are implemented through Task 6; Task 7 ingestion
-and projection remain pending. A session can read only currently visible top-level comment cards
+reader API under `/api/v1/acquisition/visual-reader-*`. The six visual routes
+and the existing Run Presentation route are implemented and remain in
+static/runtime parity. The backend session/service/repository boundary,
+external read-only browser reader, and Task 7 durable ingestion/projection boundary
+are implemented and await independent Task 7 review. A session can read only currently visible top-level comment cards
 from an exact `https://www.douyin.com/video/<digits>` page. DOM and accessibility
 facts are preferred, OCR is a bounded fallback, and `vision` is reserved in the
 enum but remains disabled until a separate connector and data-transfer review.
@@ -76,7 +75,24 @@ JSON, authentication material, private messages, comments, likes, follows,
 publishing, and CRM write actions are outside the contract. Run Presentation
 keeps its existing seven public-comment automation steps and may add one
 server-derived `authorizedVisualReader` summary with exactly five visual steps;
-absence remains valid for older Runs and Runs without a visual session.
+absence remains valid for older Runs and Runs without a visual session. The
+summary keeps one controlling session for compatibility and requires
+`sessionCount`, `aggregateStatus`, and capped `aggregateUsage` across at most
+1,000 scoped Run sessions. The controller is the newest active session, or the
+latest terminal session by authorization time and session ID. Work totals come
+from an untruncated repository aggregate; zero observations is
+`no_visible_comments`, never a customer conclusion.
+
+Every accepted normalized observation atomically queues one durable visual
+ingestion item before downstream processing. Automatic processing creates the
+literal Evidence ID `visual:<observationId>:evidence:<textHash>` with closed
+`authorized_visual_observation` provenance and restricted access. Generic
+Evidence append cannot create that provenance. Public-event promotion requires
+a complete verified Douyin public-comment input and reuses the existing public
+comment ingestion saga; otherwise visual-only identity stays isolated or enters
+manual review. Visual work completion shares the existing acquisition unit of
+work, while a separate leased recovery sweeper retries persisted work without
+logging observation text or personal fields.
 
 Acquisition plans may optionally version a `douyinPublicCommentSample` policy.
 Legacy plans without it remain valid and sampling is disabled by absence. An

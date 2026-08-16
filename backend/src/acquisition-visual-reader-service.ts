@@ -14,6 +14,7 @@ import {
 import {
   AcquisitionVisualReaderRepositoryError,
   deriveVisualReaderOutcome,
+  visualObservationIsManualReviewOnly,
   type AcquisitionScope,
   type AcquisitionVisualReaderRepository,
   type DouyinVisualCommentObservationV1,
@@ -470,9 +471,8 @@ export class AcquisitionVisualReaderService {
           response: replay,
           replayed: true,
           manualReviewOnlyObservationIds: replay.accepted
-            .filter(({ observation }) => Object.values(
-              observation.fieldConfidences
-            ).some((confidence) => confidence < 0.8))
+            .filter(({ observation }) =>
+              visualObservationIsManualReviewOnly(observation))
             .map(({ observation }) => observation.observationId)
         };
       }
@@ -576,6 +576,7 @@ export class AcquisitionVisualReaderService {
       await this.repository.appendObservationBatchWithResult({
         scope: repositoryScope(scope),
         sessionId,
+        ingestionActorId: scope.actorId,
         observations: normalized,
         usageDelta: { scrollCount: 1, ocrCallCount: 0 },
         requestBinding
@@ -590,9 +591,8 @@ export class AcquisitionVisualReaderService {
         response: stored,
         replayed: false,
         manualReviewOnlyObservationIds: stored.accepted
-          .filter(({ observation }) => Object.values(
-            observation.fieldConfidences
-          ).some((confidence) => confidence < 0.8))
+          .filter(({ observation }) =>
+            visualObservationIsManualReviewOnly(observation))
           .map(({ observation }) => observation.observationId)
       };
     } catch (error) {

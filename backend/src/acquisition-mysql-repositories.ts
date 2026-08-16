@@ -80,12 +80,14 @@ type QuerySource = Pick<mysql.Pool | mysql.PoolConnection, "query">;
 type Scope = Pick<AcquisitionCopilotScope, "ownerId" | "teamId">;
 type MysqlRow = Record<string, unknown>;
 
+export const ACQUISITION_EVIDENCE_ID_SQL_WIDTH = 255;
+
 const SENSITIVE_KEY =
   /(?:password|authorization|(?:api|secret|private)[_-]?key|(?:access|refresh|bearer)[_-]?token|client[_-]?secret|credential[_-]?plaintext)$/i;
 
 export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS acquisition_discovery_evidence (
-    id VARCHAR(120) PRIMARY KEY,
+    id VARCHAR(255) PRIMARY KEY,
     owner_id VARCHAR(100) NOT NULL,
     team_id VARCHAR(100) NOT NULL,
     payload_json JSON NOT NULL,
@@ -93,6 +95,8 @@ export const ACQUISITION_MYSQL_SCHEMA_STATEMENTS = [
     UNIQUE KEY uk_acquisition_evidence_scope (owner_id, team_id, id),
     KEY idx_acquisition_evidence_scope_time (owner_id, team_id, created_at, id)
   ) ENGINE=InnoDB`,
+  `ALTER TABLE acquisition_discovery_evidence
+    MODIFY COLUMN id VARCHAR(255) NOT NULL`,
   `CREATE TABLE IF NOT EXISTS acquisition_candidates (
     id VARCHAR(120) PRIMARY KEY,
     owner_id VARCHAR(100) NOT NULL,
@@ -1771,7 +1775,7 @@ implements AcquisitionDomainRepository {
            INNER JOIN JSON_TABLE(
              ?,
              '$[*]' COLUMNS(
-               evidence_id VARCHAR(120) PATH '$.evidenceId'
+               evidence_id VARCHAR(${ACQUISITION_EVIDENCE_ID_SQL_WIDTH}) PATH '$.evidenceId'
              )
            ) ids ON ids.evidence_id = e.id
            WHERE e.owner_id = ? AND e.team_id = ?`,
@@ -1832,7 +1836,7 @@ implements AcquisitionDomainRepository {
        INNER JOIN JSON_TABLE(
          ?,
          '$[*]' COLUMNS(
-           evidence_id VARCHAR(120) PATH '$.evidenceId'
+           evidence_id VARCHAR(${ACQUISITION_EVIDENCE_ID_SQL_WIDTH}) PATH '$.evidenceId'
          )
        ) ids ON ids.evidence_id = e.id
        WHERE e.owner_id = ? AND e.team_id = ?`,

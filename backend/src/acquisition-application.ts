@@ -282,6 +282,13 @@ import {
   createAcquisitionVisualReaderRouter
 } from "./acquisition-visual-reader-router.js";
 import {
+  AcquisitionVisualCommentIngestionService
+} from "./acquisition-visual-comment-ingestion.js";
+import {
+  AcquisitionVisualReaderRecoverySweeper,
+  type AcquisitionVisualIngestionRecoveryPort
+} from "./acquisition-visual-reader-recovery-sweeper.js";
+import {
   MODEL_PROVIDER_IDS,
   type StoredAiJobModelSnapshot
 } from "./model-providers/types.js";
@@ -432,6 +439,8 @@ export interface CreateAcquisitionApplicationOptions {
   douyinCommentIngestionRecoveryLeaseDurationMs?: number;
   visualArtifactExpiryIntervalMs?: number;
   visualArtifactExpiryBatchSize?: number;
+  visualIngestionRecoveryIntervalMs?: number;
+  visualIngestionRecoveryBatchSize?: number;
   discoveryLeaseDurationMs?: number;
   domainRepository?: AcquisitionDomainRepository;
   domainServiceFactory?: (
@@ -455,6 +464,9 @@ export interface CreateAcquisitionApplicationOptions {
   visualArtifactExpirySweeperFactory?: (
     repository: AcquisitionVisualReaderRepository
   ) => Pick<AcquisitionVisualArtifactExpirySweeper, "start" | "close">;
+  visualReaderRecoverySweeperFactory?: (
+    service: AcquisitionVisualIngestionRecoveryPort
+  ) => Pick<AcquisitionVisualReaderRecoverySweeper, "start" | "close">;
   douyinPublicCommentProvider?: DouyinPublicCommentProviderPort;
   douyinPublicProfileDiscovery?:
     AcquisitionDouyinPublicProfileDiscoveryPort;
@@ -1151,6 +1163,9 @@ export async function createAcquisitionApplication(
   let visualArtifactExpirySweeper:
     Pick<AcquisitionVisualArtifactExpirySweeper, "start" | "close">
     | null = null;
+  let visualReaderRecoverySweeper:
+    Pick<AcquisitionVisualReaderRecoverySweeper, "start" | "close">
+    | null = null;
 
   try {
     let repositories: AcquisitionRepositorySet;
@@ -1394,12 +1409,15 @@ export async function createAcquisitionApplication(
       && repositories.domain instanceof InMemoryAcquisitionDomainRepository
       && repositories.douyinCommentEvents
         instanceof InMemoryAcquisitionDouyinCommentEventRepository
-      && candidateDirectory instanceof InMemoryAcquisitionCandidateDirectory) {
+      && candidateDirectory instanceof InMemoryAcquisitionCandidateDirectory
+      && repositories.visualReader
+        instanceof InMemoryAcquisitionVisualReaderRepository) {
       douyinCommentIngestionUnitOfWork =
         new InMemoryAcquisitionDouyinCommentIngestionUnitOfWork(
           repositories.domain,
           repositories.douyinCommentEvents,
-          candidateDirectory
+          candidateDirectory,
+          repositories.visualReader
         );
     }
     if (!douyinCommentIngestionUnitOfWork
@@ -1407,13 +1425,16 @@ export async function createAcquisitionApplication(
       && repositories.domain instanceof MysqlAcquisitionDomainRepository
       && repositories.douyinCommentEvents
         instanceof MysqlAcquisitionDouyinCommentEventRepository
-      && candidateDirectory instanceof MysqlAcquisitionCandidateDirectory) {
+      && candidateDirectory instanceof MysqlAcquisitionCandidateDirectory
+      && repositories.visualReader
+        instanceof MysqlAcquisitionVisualReaderRepository) {
       douyinCommentIngestionUnitOfWork =
         new MysqlAcquisitionDouyinCommentIngestionUnitOfWork(
           pool,
           repositories.domain,
           repositories.douyinCommentEvents,
-          candidateDirectory
+          candidateDirectory,
+          repositories.visualReader
         );
     }
     if (!douyinCommentIngestionUnitOfWork) {
@@ -1432,6 +1453,25 @@ export async function createAcquisitionApplication(
           options.douyinCommentIngestionRecoveryLeaseDurationMs,
         now
       });
+    const visualCommentIngestion =
+      new AcquisitionVisualCommentIngestionService({
+        visualRepository: repositories.visualReader,
+        domain: domainService,
+        individualSignals,
+        publicCommentIngestion: douyinCommentIngestion,
+        unitOfWork: douyinCommentIngestionUnitOfWork,
+        workerId: idFactory("visual-ingestion-recovery-worker"),
+        now
+      });
+    visualReaderRecoverySweeper =
+      options.visualReaderRecoverySweeperFactory
+        ? options.visualReaderRecoverySweeperFactory(visualCommentIngestion)
+        : new AcquisitionVisualReaderRecoverySweeper({
+            service: visualCommentIngestion,
+            intervalMs: options.visualIngestionRecoveryIntervalMs,
+            batchSize: options.visualIngestionRecoveryBatchSize
+          });
+    await visualReaderRecoverySweeper.start();
     douyinCommentIngestionRecoverySweeper =
       options.douyinCommentIngestionRecoverySweeperFactory
         ? options.douyinCommentIngestionRecoverySweeperFactory(
@@ -1850,6 +1890,7 @@ export async function createAcquisitionApplication(
       planRunRepository: repositories.planRun,
       domainRepository: repositories.domain,
       commentEventRepository: repositories.douyinCommentEvents,
+      visualReaderRepository: repositories.visualReader,
       cursorSecret: derivedSecret(
         masterSecret,
         "run-presentation-cursor"
@@ -2249,6 +2290,7 @@ export async function createAcquisitionApplication(
             settlements = await waitWithTimeout(
               Promise.allSettled([
                 visualArtifactExpirySweeper?.close() ?? Promise.resolve(),
+                visualReaderRecoverySweeper?.close() ?? Promise.resolve(),
                 douyinCommentIngestionRecoverySweeper?.close()
                   ?? Promise.resolve(),
                 copilotRecoverySweeper?.close() ?? Promise.resolve(),
@@ -2305,6 +2347,9 @@ export async function createAcquisitionApplication(
   } catch (error) {
     if (visualArtifactExpirySweeper) {
       await visualArtifactExpirySweeper.close().catch(() => undefined);
+    }
+    if (visualReaderRecoverySweeper) {
+      await visualReaderRecoverySweeper.close().catch(() => undefined);
     }
     if (douyinCommentIngestionRecoverySweeper) {
       await douyinCommentIngestionRecoverySweeper.close()

@@ -573,6 +573,9 @@ captureVisibleTab (memory only)
 
 ### Task 7: 视觉观察转 Evidence、需求信号和 Run Presentation
 
+**Status:** PENDING independent review. The backend implementation and current
+contracts are present in the Task 7 worktree; no Task 8 work is included.
+
 **Repository:** `/Users/mac/Documents/新项目/GoodJob-growth`
 
 **Files:**
@@ -580,41 +583,61 @@ captureVisibleTab (memory only)
 - Create: `backend/src/acquisition-visual-comment-ingestion-test.ts`
 - Create: `backend/src/acquisition-visual-reader-recovery-sweeper.ts`
 - Create: `backend/src/acquisition-visual-reader-recovery-sweeper-test.ts`
+- Modify: `backend/src/acquisition-visual-reader-sessions.ts`
+- Modify: `backend/src/acquisition-visual-reader-sessions-test.ts`
+- Modify: `backend/src/acquisition-visual-reader-mysql-repository.ts`
+- Modify: `backend/src/acquisition-visual-reader-mysql-repository-test.ts`
+- Modify: `backend/src/acquisition-visual-reader-service.ts`
+- Modify: `backend/src/acquisition-visual-reader-service-test.ts`
+- Modify: `backend/src/acquisition-domain.ts`
+- Modify: `backend/src/acquisition-domain-service.ts`
+- Modify: `backend/src/acquisition-public-identity-resolver.ts`
+- Modify: `backend/src/acquisition-individual-signal-ingestion.ts`
+- Modify: `backend/src/acquisition-douyin-comment-ingestion.ts`
+- Modify: `backend/src/acquisition-douyin-comment-ingestion-unit-of-work.ts`
+- Modify: `backend/src/acquisition-douyin-comment-ingestion-unit-of-work-test.ts`
+- Modify: `backend/src/acquisition-mysql-repositories.ts`
+- Modify: `backend/src/acquisition-mysql-repositories-test.ts`
 - Modify: `backend/src/acquisition-run-presentation.ts`
 - Modify: `backend/src/acquisition-run-presentation-test.ts`
 - Modify: `backend/src/acquisition-application.ts`
+- Modify: `backend/src/acquisition-application-test.ts`
+- Modify: `backend/src/acquisition-openapi.ts`
 - Modify: `contracts/json-schema/discovery-evidence.v1.schema.json`
 - Modify: `contracts/json-schema/individual-demand-signal.v1.schema.json`
+- Modify: `contracts/json-schema/acquisition-run-presentation.v1.schema.json`
 - Modify: `contracts/test/schema-registry.test.mjs`
+- Modify: `contracts/README.md`
+- Regenerate: `frontend/src/features/ai-growth/generated/ai-acquisition.ts`
 
 **Ingestion rules:**
 
-- 每条观察先持久化，随后以确定性 ID `visual:<observationId>:evidence:<textHash>` 创建 `authorized_visual_observation` Evidence，引用精确观察和可选遮挡制品。
-- `platformCommentId` 可验证且所有必需字段满足 `douyin.comment.v1` 时，才交给现有公开评论 ingestion 做普通事件升级；否则保持视觉 Evidence。
-- 有可验证 `secUid/publicProfileUrl` 时复用公开身份 resolver；只有昵称时使用 `unmergeable:douyin:visual:<observationId>`，始终 `needs_research`。
-- DOM/ARIA 关键字段置信度低于 0.85、OCR 文字置信度低于 0.90、DOM/OCR 冲突或文字截断时仅 `manual_review_only`，不自动改变候选购买阶段。
-- ingestion 使用 Task 4 修复后的持久 saga/outbox 与 recovery sweeper；失败不能暴露已成功的 Run 事实或修改已批准候选，重启后自动续跑。
-- Run Presentation 增加步骤 `authorize_visual_reader`、`read_visible_comment_cards`、`extract_visible_text`、`persist_visual_observations`、`review_visual_signal_confidence`；处理数量和错误全部从持久事实派生。
+- 观察和包含 `actorId`、append-time disposition 的可租赁视觉工作项由视觉仓库原子持久化。独立的视觉 recovery sweeper 实现公平领取、退避、租约失效和 poison 隔离；Domain、候选、公开事件和工作完成共用现有 memory/MySQL unit of work。
+- 自动工作先通过受限 Domain API 创建字面 ID `visual:<observationId>:evidence:<textHash>` 的 `authorized_visual_observation` Evidence。通用 Evidence append 不能伪造该 provenance 或 supersedes 链。
+- 只有完整、高置信且 URL/作品/评论/时间/计数/公开身份都闭合的观察才调用现有 `ingestSample` 一次。升级后保留 platform 和 visual 两条 Evidence，附加 visual Evidence 不再合并第二次信号；负面新身份从创建起即 `do_not_contact`。
+- 验证 `secUid` 与匹配主页使用现有 resolver 的稳定身份；昵称或其他不可验证观察仅使用 `unmergeable:douyin:visual:<observationId>` 且为 `needs_research`。`noise` 仅留 Evidence，不推断身份、收入、金额或敏感属性。
+- DOM/ARIA 被使用字段缺少或低于 0.85、OCR 文字低于 0.90、DOM/OCR 冲突或截断都只能 `manual_review_only`；`vision` 失败关闭。fresh/replay 响应与仓库 disposition 共用同一 predicate。
+- Run Presentation 保留控制会话的 `sessionId/status/limits/usage/outcome`，并必须输出 `sessionCount`、`aggregateStatus`和安全上限的 `aggregateUsage`。控制会话是最新 active，否则是 `(authorizedAt, sessionId)` 最新 terminal；最多 1000 会话，工作计数使用未截断 aggregate projection。五个视觉步骤严格固定顺序，零观察只表示 `no_visible_comments`。
 
-- [ ] **Step 1: 写 ingestion/projection/recovery RED 测试**
+- [x] **Step 1: 写 ingestion/projection/recovery RED 测试**
 
   覆盖 DOM 高置信度、OCR 高置信度、低置信度、无 ID、真实评论 ID 升级、同昵称不合并、同 secUid 聚合、跨租户、制品到期仍保留证据哈希、每个 saga 故障边界和进程重启自动恢复。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-visual-comment-ingestion-test.ts src/acquisition-visual-reader-recovery-sweeper-test.ts src/acquisition-run-presentation-test.ts`
 
   Expected: FAIL。
 
-- [ ] **Step 3: 实现确定性 Evidence/信号转换和恢复**
+- [x] **Step 3: 实现确定性 Evidence/信号转换和恢复**
 
   复用 `classifyDouyinCommentIntent`，但把 `extractionMethod/confidence/coverage/observationId/artifactId` 写入 provenance。视觉文字只作为公开需求信号，不推断身份、收入或敏感属性。
 
-- [ ] **Step 4: 实现真实 Run Presentation**
+- [x] **Step 4: 实现真实 Run Presentation**
 
   进行中、部分成功、扩展缺失、用户停止、页面安全验证、低置信度和成功状态均由 session/observation/saga 记录组装；不把 0 条观察误写为“没有客户”。
 
-- [ ] **Step 5: 运行 GREEN、合同和构建**
+- [x] **Step 5: 运行 GREEN、合同和构建**
 
   Run: `npm exec --workspace backend -- tsx --test src/acquisition-visual-comment-ingestion-test.ts src/acquisition-visual-reader-recovery-sweeper-test.ts src/acquisition-run-presentation-test.ts && npm run test:contracts && npm run build --workspace backend`
 
@@ -622,10 +645,7 @@ captureVisibleTab (memory only)
 
 - [ ] **Step 6: 提交**
 
-  ```bash
-  git add backend/src/acquisition-visual-comment-ingestion.ts backend/src/acquisition-visual-comment-ingestion-test.ts backend/src/acquisition-visual-reader-recovery-sweeper.ts backend/src/acquisition-visual-reader-recovery-sweeper-test.ts backend/src/acquisition-run-presentation.ts backend/src/acquisition-run-presentation-test.ts backend/src/acquisition-application.ts contracts/json-schema/discovery-evidence.v1.schema.json contracts/json-schema/individual-demand-signal.v1.schema.json contracts/test/schema-registry.test.mjs
-  git commit -m "feat: ingest authorized visual demand signals"
-  ```
+  独立审查前精确暂存本 Task 上方 Files 清单中的全部后端、合同、生成类型和当前文档；不包含 Task 8、外部前端工作树或任何 `package-lock.json`。
 
 ### Task 8: 双仓 E2E、安全门禁、视觉验收和发布文档
 
