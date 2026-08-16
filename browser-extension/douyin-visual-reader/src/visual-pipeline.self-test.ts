@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import {
   MASK_COLOR_RGBA,
   characterRecall,
+  filterOcrResultToBodyRegions,
   redactCommentCard,
   resolveObservationWithVisualFallback,
   type RasterImage,
@@ -104,11 +105,28 @@ assert.throws(() => redactCommentCard({
 assert.equal(characterRecall("中文报价 128.50 元 😊", "中文报价128.50元😊"), 1);
 assert.ok(characterRecall("中文报价 128.50 元", "中文 128.50 元") < 0.9);
 
+assert.deepEqual(filterOcrResultToBodyRegions({
+  text: "想了解报价 刚刚 点赞500",
+  confidence: 0.98,
+  words: [
+    { text: "想了解报价", confidence: 0.98, bounds: { x: 10, y: 10, width: 80, height: 20 } },
+    { text: "刚刚", confidence: 0.99, bounds: { x: 10, y: 60, width: 30, height: 15 } },
+    { text: "点赞500", confidence: 0.99, bounds: { x: 60, y: 60, width: 50, height: 15 } },
+    { text: "越界金额188.50", confidence: 0.99, bounds: { x: 85, y: 15, width: 40, height: 15 } }
+  ]
+}, [{ x: 5, y: 5, width: 100, height: 35 }]), {
+  text: "想了解报价",
+  confidence: 0.98,
+  words: [{ text: "想了解报价", confidence: 0.98, bounds: { x: 10, y: 10, width: 80, height: 20 } }]
+}, "metadata and partially out-of-body words cannot contribute text or numbers");
+
 const baseObservation = {
   clientObservationKey: "dom:fixture",
   sourceUrl: "https://www.douyin.com/video/123",
   videoId: "123",
   visibleText: "DOM 可见正文",
+  domTextHash: `sha256:${"1".repeat(64)}`,
+  ocrTextHash: null,
   displayName: "公开昵称",
   visibleTimeText: "刚刚",
   likeCount: 12,
@@ -161,6 +179,8 @@ const capture: RedactedCapture = {
   assert.equal(ocrCalls, 0);
   assert.equal(result.observation, baseObservation);
   assert.equal(result.manualReviewOnly, false);
+  assert.equal(result.domTextHash, baseObservation.domTextHash);
+  assert.equal(result.ocrTextHash, baseObservation.ocrTextHash);
 }
 
 {
@@ -176,6 +196,22 @@ const capture: RedactedCapture = {
   assert.equal(captures, 0);
   assert.equal(ocrCalls, 0);
   assert.equal(result.observation, null);
+  assert.equal(result.manualReviewOnly, true);
+}
+
+{
+  let captures = 0;
+  const result = await resolveObservationWithVisualFallback({
+    observation: { ...baseObservation, fieldConfidences: { visibleText: 0.99 } },
+    artifactUploadEnabled: false,
+    domTextState: "truncated",
+    capture: async () => { captures += 1; return capture; },
+    ocr: { async recognize() { throw new Error("disabled"); } }
+  });
+  assert.equal(captures, 0);
+  assert.equal(result.observation?.visibleText, baseObservation.visibleText);
+  assert.ok((result.observation?.fieldConfidences.visibleText ?? 1) < 0.85);
+  assert.equal(result.observation?.domTextHash, baseObservation.domTextHash);
   assert.equal(result.manualReviewOnly, true);
 }
 
@@ -212,6 +248,8 @@ const capture: RedactedCapture = {
   assert.equal(result.manualReviewOnly, false);
   assert.match(result.ocrTextHash ?? "", /^sha256:[0-9a-f]{64}$/u);
   assert.equal(result.domTextHash, null);
+  assert.equal(observation.ocrTextHash, result.ocrTextHash);
+  assert.equal(observation.domTextHash, result.domTextHash);
 }
 
 for (const testCase of [
@@ -234,6 +272,8 @@ for (const testCase of [
   assert.equal(observation.visibleText, testCase.text, testCase.name);
   assert.match(result.domTextHash ?? "", /^sha256:[0-9a-f]{64}$/u);
   assert.match(result.ocrTextHash ?? "", /^sha256:[0-9a-f]{64}$/u);
+  assert.equal(observation.domTextHash, result.domTextHash, testCase.name);
+  assert.equal(observation.ocrTextHash, result.ocrTextHash, testCase.name);
 }
 
 console.log("visual pipeline self-test passed");

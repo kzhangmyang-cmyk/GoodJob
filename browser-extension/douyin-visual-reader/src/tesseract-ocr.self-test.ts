@@ -116,6 +116,69 @@ await assert.rejects(
 }
 
 {
+  let resolveFactory: ((worker: Awaited<ReturnType<TesseractWorkerFactory>>) => void) | null = null;
+  let pendingTerminateCalls = 0;
+  const pendingPort = createTesseractOcrPort({
+    assetBaseUrl: "chrome-extension://fixture/ocr",
+    initTimeoutMs: 100,
+    createWorker: () => new Promise((resolve) => { resolveFactory = resolve; })
+  });
+  const recognition = pendingPort.recognize(crop, ["chi_sim", "eng"]);
+  while (!resolveFactory) await Promise.resolve();
+  await pendingPort.endSession();
+  const finishFactory = resolveFactory as ((worker: Awaited<ReturnType<TesseractWorkerFactory>>) => void) | null;
+  if (!finishFactory) throw new Error("missing pending factory resolver");
+  finishFactory({
+    async recognize() { throw new Error("stale worker must not recognize"); },
+    async terminate() { pendingTerminateCalls += 1; }
+  });
+  await assert.rejects(recognition, /ended|cancelled/u,
+    "a factory resolving after end cannot resurrect the session worker");
+  assert.equal(pendingTerminateCalls, 1, "the late worker is terminated exactly once");
+}
+
+{
+  let terminateCalls = 0;
+  const timeoutPort = createTesseractOcrPort({
+    assetBaseUrl: "chrome-extension://fixture/ocr",
+    recognizeTimeoutMs: 5,
+    createWorker: async () => ({
+      recognize: () => new Promise(() => undefined),
+      async terminate() { terminateCalls += 1; }
+    })
+  });
+  await assert.rejects(timeoutPort.recognize(crop, ["chi_sim", "eng"]), /timed out/u,
+    "a hung recognition is bounded");
+  assert.equal(terminateCalls, 1, "recognition timeout terminates the worker");
+}
+
+{
+  let resolveRecognition: ((result: {
+    data: { text: string; confidence: number; blocks: unknown[] };
+  }) => void) | null = null;
+  let terminateCalls = 0;
+  const endingPort = createTesseractOcrPort({
+    assetBaseUrl: "chrome-extension://fixture/ocr",
+    recognizeTimeoutMs: 100,
+    createWorker: async () => ({
+      recognize: () => new Promise((resolve) => { resolveRecognition = resolve; }),
+      async terminate() { terminateCalls += 1; }
+    })
+  });
+  const pending = endingPort.recognize(crop, ["chi_sim", "eng"]);
+  while (!resolveRecognition) await Promise.resolve();
+  await endingPort.endSession();
+  assert.equal(terminateCalls, 1, "end terminates a worker during recognition without queueing");
+  const finishRecognition = resolveRecognition as ((result: {
+    data: { text: string; confidence: number; blocks: unknown[] };
+  }) => void) | null;
+  if (!finishRecognition) throw new Error("missing recognition resolver");
+  finishRecognition({ data: { text: "stale", confidence: 99, blocks: [] } });
+  await assert.rejects(pending, /ended|cancelled/u,
+    "recognition cannot publish after the session generation is invalidated");
+}
+
+{
   const languageDirectory = await mkdtemp(join(tmpdir(), "goodjob-ocr-languages-"));
   let worker: Awaited<ReturnType<typeof createRealWorker>> | null = null;
   try {

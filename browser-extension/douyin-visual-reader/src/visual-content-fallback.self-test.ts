@@ -1,12 +1,14 @@
 import { strict as assert } from "node:assert";
 import { resolveVisualCaptureResponse } from "./visual-content-fallback";
-import type { VisualObservationSubmission } from "./protocol";
+import { isObservation, type VisualObservationSubmission } from "./protocol";
 
 const observation: VisualObservationSubmission = {
   clientObservationKey: "dom:fixture",
   sourceUrl: "https://www.douyin.com/video/123",
   videoId: "123",
   visibleText: "需要报价 128.50 元",
+  domTextHash: `sha256:${"1".repeat(64)}`,
+  ocrTextHash: null,
   displayName: "公开昵称",
   visibleTimeText: "刚刚",
   likeCount: 2,
@@ -27,7 +29,7 @@ const response = {
   accepted: true,
   evidence: {
     mediaType: "image/webp",
-    contentBase64: "UklGRg==",
+    contentBase64: "UklGRgQAAABXRUJQ",
     width: 800,
     height: 360,
     redactionProof: {
@@ -60,13 +62,52 @@ const response = {
   assert.equal(resolved.secUid, null);
   assert.ok((resolved.fieldConfidences.visibleText ?? 1) < 0.85,
     "truncated DOM remains manual-review-only even when OCR agrees");
-  assert.equal(resolved.redactedCrop?.contentBase64, "UklGRg==");
+  assert.equal(resolved.redactedCrop?.contentBase64, "UklGRgQAAABXRUJQ");
 }
 
-assert.equal(await resolveVisualCaptureResponse({
+const malformedRetained = await resolveVisualCaptureResponse({
   observation,
   domTextState: "truncated",
   response: { ...response, evidence: { ...response.evidence, displayName: "forbidden identity" } }
-}), null);
+});
+if (!malformedRetained) throw new Error("truncated DOM must survive malformed OCR evidence");
+assert.equal(malformedRetained.visibleText, observation.visibleText);
+assert.equal(malformedRetained.displayName, observation.displayName);
+assert.equal(malformedRetained.redactedCrop, null);
+
+{
+  const retained = await resolveVisualCaptureResponse({
+    observation,
+    domTextState: "truncated",
+    response: { accepted: false }
+  });
+  if (!retained) throw new Error("truncated DOM must survive unavailable OCR");
+  assert.equal(retained.visibleText, observation.visibleText);
+  assert.equal(retained.extractionMethod, "dom");
+  assert.equal(retained.displayName, observation.displayName);
+  assert.equal(retained.platformCommentId, observation.platformCommentId);
+  assert.equal(retained.redactedCrop, null);
+  assert.ok((retained.fieldConfidences.visibleText ?? 1) < 0.85);
+}
+
+{
+  const retained = await resolveVisualCaptureResponse({
+    observation,
+    domTextState: "truncated",
+    response: {
+      ...response,
+      evidence: { ...response.evidence, ocrResult: { text: "", confidence: 0, words: [] } }
+    }
+  });
+  if (!retained) throw new Error("truncated DOM must survive empty OCR");
+  assert.equal(retained.visibleText, observation.visibleText);
+  assert.equal(retained.extractionMethod, "dom");
+  assert.equal(retained.displayName, observation.displayName);
+  assert.equal(retained.redactedCrop, null,
+    "a DOM fallback cannot carry an OCR-only redacted crop");
+  assert.equal(isObservation(retained), true,
+    "the retained DOM fallback must pass the real bridge protocol parser");
+  assert.ok((retained.fieldConfidences.visibleText ?? 1) < 0.85);
+}
 
 console.log("visual content fallback self-test passed");

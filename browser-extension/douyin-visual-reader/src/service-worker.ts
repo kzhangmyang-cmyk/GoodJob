@@ -24,37 +24,60 @@ import {
 import { recoverOrphanedVisualReaderSession } from "./restart-recovery";
 import { authorizeVisualCapture, type VisualCaptureRequest } from "./visual-capture-guard";
 import { createVisualCaptureRuntime } from "./visual-capture-runtime";
+import type { VisualCaptureOwner } from "./visual-capture-runtime";
+import { validateVisualCaptureEvidence } from "./visual-evidence-validator";
 
 declare const chrome: any;
 
 let coordinator: SessionCoordinator | null = null;
+let coordinatorGeneration = 0;
 
 async function visualCaptureAuthorization(
   request: unknown,
-  senderTabId: number | null
-): Promise<VisualCaptureRequest | null> {
+  senderTabId: number | null,
+  expectedOwner: VisualCaptureOwner | null
+) {
   const snapshot = coordinator?.snapshot() ?? null;
   if (!snapshot || snapshot.douyinTabId === null) return null;
   const [tab, focusedWindow] = await Promise.all([
     chrome.tabs.get(snapshot.douyinTabId).catch(() => null),
     chrome.windows.getLastFocused({ populate: false }).catch(() => null)
   ]);
-  return authorizeVisualCapture({
+  const authorized = authorizeVisualCapture({
     request,
     senderTabId,
     snapshot,
     tab,
     focusedWindowId: Number.isSafeInteger(focusedWindow?.id) ? focusedWindow.id : null
   });
+  if (!authorized || snapshot.douyinWindowId === null) return null;
+  const owner: VisualCaptureOwner = {
+    generation: coordinatorGeneration,
+    sessionId: snapshot.sessionId,
+    tabId: snapshot.douyinTabId,
+    windowId: snapshot.douyinWindowId
+  };
+  if (expectedOwner && (expectedOwner.generation !== owner.generation
+    || expectedOwner.sessionId !== owner.sessionId || expectedOwner.tabId !== owner.tabId
+    || expectedOwner.windowId !== owner.windowId)) return null;
+  return { request: authorized, owner };
 }
 
-async function ensureVisualOffscreenDocument(): Promise<void> {
-  if (await chrome.offscreen.hasDocument()) return;
-  await chrome.offscreen.createDocument({
-    url: "offscreen.html",
-    reasons: ["WORKERS"],
-    justification: "在扩展内存中遮挡评论卡并运行本地 OCR"
+async function ensureVisualOffscreenDocument(runtimeGeneration: number): Promise<void> {
+  if (!await chrome.offscreen.hasDocument()) {
+    await chrome.offscreen.createDocument({
+      url: "offscreen.html",
+      reasons: ["WORKERS"],
+      justification: "在扩展内存中遮挡评论卡并运行本地 OCR"
+    });
+  }
+  const response = await chrome.runtime.sendMessage({
+    kind: "visual_ocr_sync_generation",
+    runtimeGeneration
   });
+  if (!record(response) || response.accepted !== true) {
+    throw new Error("offscreen generation synchronization failed");
+  }
 }
 
 const visualCaptureRuntime = createVisualCaptureRuntime({
@@ -77,9 +100,13 @@ const visualCaptureRuntime = createVisualCaptureRuntime({
     return chrome.tabs.captureVisibleTab(snapshot.douyinWindowId, { format: "png" });
   },
   processOffscreen: async (message) => chrome.runtime.sendMessage(message),
-  endOffscreenSession: async () => {
+  validateEvidence: validateVisualCaptureEvidence,
+  endOffscreenSession: async (runtimeGeneration) => {
     if (!await chrome.offscreen.hasDocument()) return true;
-    const response = await chrome.runtime.sendMessage({ kind: "visual_ocr_end_session" });
+    const response = await chrome.runtime.sendMessage({
+      kind: "visual_ocr_end_session",
+      runtimeGeneration
+    });
     return record(response) && response.accepted === true;
   }
 });
@@ -167,6 +194,7 @@ async function handleGoodJobCommand(
   }
   if (command.type === "start") {
     if (coordinator) await safeAbort("user_requested");
+    coordinatorGeneration += 1;
     coordinator = createCoordinator();
     await coordinator.authorizeFromGoodJob({
       goodJobTabId: sender.tab.id,
@@ -326,7 +354,8 @@ async function handleReaderUsage(raw: unknown, sender: any): Promise<{ accepted:
 if (typeof chrome !== "undefined") {
   const startupRecovery = recoverAfterServiceWorkerRestart();
   chrome.runtime.onMessage.addListener((message: unknown, sender: any, sendResponse: (value: unknown) => void) => {
-    if (record(message) && ["visual_process_capture", "visual_ocr_end_session"].includes(
+    if (record(message) && ["visual_process_capture", "visual_ocr_end_session",
+      "visual_ocr_sync_generation"].includes(
       String(message.kind)
     )) return false;
     void (async () => {

@@ -118,7 +118,7 @@ export async function extractVisibleTopLevelComments(input: {
     observation: VisualObservationSubmission;
     domTextState: "missing" | "truncated";
     avatarBounds: PixelRect | null;
-    visibleRegions: PixelRect[];
+    regions: Array<{ kind: "body" | "metadata"; bounds: PixelRect }>;
   }): Promise<VisualObservationSubmission | null>;
 }): Promise<ExtractionResult> {
   const source = canonicalDouyinVideoUrl(input.sourceUrl);
@@ -204,6 +204,8 @@ export async function extractVisibleTopLevelComments(input: {
       sourceUrl: source.sourceUrl,
       videoId: source.videoId,
       visibleText,
+      domTextHash: visibleText ? `sha256:${await digestHex(visibleText, 32)}` : null,
+      ocrTextHash: null,
       displayName,
       visibleTimeText,
       likeCount,
@@ -232,17 +234,21 @@ export async function extractVisibleTopLevelComments(input: {
         && visibleBounds(adapter.bounds(avatar), viewport)
         ? adapter.bounds(avatar)
         : null;
-      const visibleRegions = [body, time, ...publicCounterButtons].flatMap((element) => {
+      const regions = [
+        { kind: "body" as const, element: body },
+        { kind: "metadata" as const, element: time },
+        ...publicCounterButtons.map((element) => ({ kind: "metadata" as const, element }))
+      ].flatMap(({ kind, element }) => {
         if (!element || !adapter.visible(element)) return [];
         const elementBounds = adapter.bounds(element);
-        return visibleBounds(elementBounds, viewport) ? [elementBounds] : [];
+        return visibleBounds(elementBounds, viewport) ? [{ kind, bounds: elementBounds }] : [];
       });
-      if (visibleRegions.length < 1) continue;
+      if (!regions.some((region) => region.kind === "body")) continue;
       const fallback = await input.visualFallback({
         observation,
         domTextState,
         avatarBounds,
-        visibleRegions
+        regions
       });
       if (!fallback) continue;
       observation = fallback;

@@ -84,6 +84,8 @@ const validObservation = {
   sourceUrl: "https://www.douyin.com/video/123456789",
   videoId: "123456789",
   visibleText: "正".repeat(2_000),
+  domTextHash: `sha256:${"1".repeat(64)}`,
+  ocrTextHash: null,
   displayName: "林经理",
   visibleTimeText: "1小时前",
   likeCount: 12,
@@ -107,6 +109,8 @@ const validOcrObservation = {
   ...validObservation,
   clientObservationKey: `ocr:${"2".repeat(64)}`,
   visibleText: "中文报价 128.50 元",
+  domTextHash: null,
+  ocrTextHash: `sha256:${"2".repeat(64)}`,
   displayName: null,
   platformCommentId: null,
   publicProfileUrl: null,
@@ -132,6 +136,9 @@ assert.equal(isObservation({ ...validOcrObservation, platformCommentId: "9876543
   "OCR cannot invent a platform comment identity");
 
 const invalidContractCases: Array<[string, unknown]> = [
+  ["missing DOM text hash", (({ domTextHash: _removed, ...rest }) => rest)(validObservation)],
+  ["null OCR text hash", { ...validOcrObservation, ocrTextHash: null }],
+  ["uppercase OCR text hash", { ...validOcrObservation, ocrTextHash: `sha256:${"A".repeat(64)}` }],
   ["2,001 visible characters", { ...validObservation, visibleText: "正".repeat(2_001) }],
   ["whitespace-only visible text", { ...validObservation, visibleText: "   " }],
   ["missing visibleText confidence", { ...validObservation, fieldConfidences: {} }],

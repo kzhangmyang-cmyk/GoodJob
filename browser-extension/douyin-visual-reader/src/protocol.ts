@@ -25,6 +25,8 @@ export interface VisualObservationSubmission {
   sourceUrl: string;
   videoId: string;
   visibleText: string;
+  domTextHash: string | null;
+  ocrTextHash: string | null;
   displayName: string | null;
   visibleTimeText: string | null;
   likeCount: number | null;
@@ -106,6 +108,7 @@ const SOURCE = /^https:\/\/www\.douyin\.com\/video\/([1-9][0-9]{0,31})\/?$/u;
 const VIDEO_ID = /^[1-9][0-9]{0,31}$/u;
 const SEC_UID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u;
 const PROFILE = /^https:\/\/www\.douyin\.com\/user\/([A-Za-z0-9][A-Za-z0-9._~-]{0,127})\/?$/u;
+const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const ERROR_CODES = new Set<StableErrorCode>([
   "visual_reader_not_enabled", "visual_reader_session_expired",
   "visual_reader_budget_exhausted", "visual_source_invalid",
@@ -194,7 +197,7 @@ function redactedCrop(value: unknown): boolean {
 
 export function isObservation(value: unknown): value is VisualObservationSubmission {
   if (!exact(value, [
-    "clientObservationKey", "sourceUrl", "videoId", "visibleText", "displayName",
+    "clientObservationKey", "sourceUrl", "videoId", "visibleText", "domTextHash", "ocrTextHash", "displayName",
     "visibleTimeText", "likeCount", "replyCount", "platformCommentId", "publicProfileUrl",
     "secUid", "extractionMethod", "fieldConfidences", "viewport", "cardBounds",
     "readerVersion", "capturedAt", "redactedCrop"
@@ -203,6 +206,8 @@ export function isObservation(value: unknown): value is VisualObservationSubmiss
   const confidences = record(value.fieldConfidences) ? value.fieldConfidences : null;
   if (!source || source[1] !== value.videoId || typeof value.visibleText !== "string"
     || value.visibleText.length < 1 || value.visibleText.length > 2_000 || !/\S/u.test(value.visibleText)
+    || !(value.domTextHash === null || (typeof value.domTextHash === "string" && DIGEST.test(value.domTextHash)))
+    || !(value.ocrTextHash === null || (typeof value.ocrTextHash === "string" && DIGEST.test(value.ocrTextHash)))
     || typeof value.clientObservationKey !== "string" || !IDENTIFIER.test(value.clientObservationKey)
     || !nullableText(value.displayName) || !nullableText(value.visibleTimeText)
     || !(value.likeCount === null || integer(value.likeCount, 0, 2_147_483_647))
@@ -225,8 +230,10 @@ export function isObservation(value: unknown): value is VisualObservationSubmiss
     || !Number.isFinite(Date.parse(value.capturedAt))
     || !(value.redactedCrop === null || redactedCrop(value.redactedCrop))) return false;
   if (!Object.prototype.hasOwnProperty.call(confidences, "visibleText")) return false;
+  if ((value.extractionMethod === "dom" || value.extractionMethod === "accessibility")
+    && value.domTextHash === null) return false;
   if (value.extractionMethod === "ocr"
-    && (value.platformCommentId !== null || value.publicProfileUrl !== null
+    && (value.ocrTextHash === null || value.platformCommentId !== null || value.publicProfileUrl !== null
       || value.secUid !== null || value.redactedCrop === null)) return false;
   if (value.extractionMethod !== "ocr" && value.redactedCrop !== null) return false;
   if (value.publicProfileUrl !== null && value.secUid !== null

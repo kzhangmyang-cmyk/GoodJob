@@ -88,6 +88,8 @@ export interface VisualObservationSubmission {
   sourceUrl: string;
   videoId: string;
   visibleText: string;
+  domTextHash: string | null;
+  ocrTextHash: string | null;
   displayName: string | null;
   visibleTimeText: string | null;
   likeCount: number | null;
@@ -111,6 +113,8 @@ export interface DouyinVisualCommentObservation {
   videoId: string;
   visibleText: string;
   textHash: string;
+  domTextHash: string | null;
+  ocrTextHash: string | null;
   displayName: string | null;
   visibleTimeText: string | null;
   likeCount: number | null;
@@ -415,7 +419,7 @@ export function isVisualObservationSubmission(
   allowVision = true
 ): value is VisualObservationSubmission {
   const required = [
-    "clientObservationKey", "sourceUrl", "videoId", "visibleText", "displayName",
+    "clientObservationKey", "sourceUrl", "videoId", "visibleText", "domTextHash", "ocrTextHash", "displayName",
     "visibleTimeText", "likeCount", "replyCount", "platformCommentId",
     "publicProfileUrl", "secUid", "extractionMethod", "fieldConfidences",
     "viewport", "cardBounds", "readerVersion", "capturedAt", "redactedCrop"
@@ -426,6 +430,10 @@ export function isVisualObservationSubmission(
     || typeof value.videoId !== "string" || !VIDEO_ID.test(value.videoId)
     || typeof value.visibleText !== "string" || value.visibleText.length < 1
     || value.visibleText.length > 2_000 || !/\S/u.test(value.visibleText)
+    || !(value.domTextHash === null
+      || (typeof value.domTextHash === "string" && DIGEST.test(value.domTextHash)))
+    || !(value.ocrTextHash === null
+      || (typeof value.ocrTextHash === "string" && DIGEST.test(value.ocrTextHash)))
     || !nullableText(value.displayName)
     || !nullableText(value.visibleTimeText)
     || !(value.likeCount === null || integer(value.likeCount, 0, 2_147_483_647))
@@ -453,8 +461,10 @@ export function isVisualObservationSubmission(
   if (!confidenceKeys.includes("visibleText")
     || confidenceKeys.some((key) => !FIELD_CONFIDENCE_KEYS.has(key))
     || confidenceKeys.some((key) => !finite(fieldConfidences[key], 0, 1))) return false;
+  if ((value.extractionMethod === "dom" || value.extractionMethod === "accessibility")
+    && value.domTextHash === null) return false;
   if (value.extractionMethod === "ocr"
-    && (value.platformCommentId !== null || value.publicProfileUrl !== null
+    && (value.ocrTextHash === null || value.platformCommentId !== null || value.publicProfileUrl !== null
       || value.secUid !== null || value.redactedCrop === null)) return false;
   if (value.publicProfileUrl !== null && value.secUid !== null) {
     const profileKey = value.publicProfileUrl.match(/\/user\/([^/]+)\/?$/u)?.[1];
@@ -491,7 +501,7 @@ export function parseVisualObservationBatch(
 
 function validNormalizedObservation(value: unknown, sessionId: string): value is DouyinVisualCommentObservation {
   const required = [
-    "observationId", "sessionId", "sourceUrl", "videoId", "visibleText", "textHash",
+    "observationId", "sessionId", "sourceUrl", "videoId", "visibleText", "textHash", "domTextHash", "ocrTextHash",
     "displayName", "visibleTimeText", "likeCount", "replyCount", "platformCommentId",
     "publicProfileUrl", "secUid", "extractionMethod", "fieldConfidences", "viewportHash",
     "cardBounds", "redactedCropHash", "readerVersion", "capturedAt"
@@ -530,6 +540,10 @@ function validNormalizedObservation(value: unknown, sessionId: string): value is
   return typeof value.observationId === "string" && IDENTIFIER.test(value.observationId)
     && value.sessionId === sessionId
     && typeof value.textHash === "string" && DIGEST.test(value.textHash)
+    && (value.domTextHash === null
+      || (typeof value.domTextHash === "string" && DIGEST.test(value.domTextHash)))
+    && (value.ocrTextHash === null
+      || (typeof value.ocrTextHash === "string" && DIGEST.test(value.ocrTextHash)))
     && typeof value.viewportHash === "string" && DIGEST.test(value.viewportHash)
     && (value.redactedCropHash === null
       || (typeof value.redactedCropHash === "string" && DIGEST.test(value.redactedCropHash)))

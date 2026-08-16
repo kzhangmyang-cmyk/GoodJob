@@ -225,7 +225,7 @@ if (typeof chrome !== "undefined" && !(globalThis as any)[INSTALL_KEY]) {
               viewport: fallback.observation.viewport,
               cardBounds: fallback.observation.cardBounds,
               avatarBounds: fallback.avatarBounds,
-              visibleRegions: fallback.visibleRegions
+              regions: fallback.regions
             });
             if (signal?.aborted) return null;
             return resolveVisualCaptureResponse({

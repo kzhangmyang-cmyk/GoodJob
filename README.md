@@ -90,20 +90,30 @@ Cookie、脚本数据、头像地址、二级回复正文或页面内部状态�
 
 完整 DOM/ARIA 正文不运行 OCR。只有服务端授权的 `artifactUploadEnabled=true`
 会话中，已绑定且当前可见的抖音标签页出现正文缺失或截断时，后台才会在
-OCR 预算内调用 `captureVisibleTab`。原始 PNG 只通过 service worker 到
-offscreen document 的临时内存消息，不写入 storage、IndexedDB、日志或错误载荷。
+OCR 预算内调用 `captureVisibleTab`。截图前、截图后、offscreen 返回后以及异步 WebP
+逐像素验证完成、放行 content 前都会用不可变的
+session/tab/window/generation owner 重新授权；停止或接管会抢占等待队列、清理 offscreen
+正在处理的 raw 资源，并拒绝已结束 generation 的迟到消息。原始 PNG 只通过 service worker 到
+offscreen document 的临时内存消息，crop/redaction 后即清理；encoder scratch 也注册在该
+generation 的可抢占清理域内，不写入 storage、IndexedDB、日志或错误载荷。
 offscreen pipeline 将评论卡夹到视口，以 crop pixel 坐标遮挡头像和文字/公开元数据
 矩形外的每个像素；固定遮挡色为 `[17,61,51,255]`，允许面积不超过 80%。
 遮挡后 WebP 使用 lossless candidate，并在本地解码后逐字节对比；任何色偏或超过
 256 KiB 都直接拒绝。每个批次最多 5 张 crop。
+service worker 在放行前还会按授权 request 重新推导 crop 尺寸与 proof geometry，真实解码
+WebP，并逐像素验证 alpha、头像及允许区域外的固定遮挡色；只信任 payload 自述字段不足以通过。
 
 OCR 固定使用扩展内的 `tesseract.js 7.0.0`、`tesseract.js-core 7.0.0` 和
 `chi_sim+eng` 语言资产，不使用 CDN、远程脚本、持久缓存或动态代码。语言包
 只在构建期从 pinned `best_int` gzip 解压；扩展运行时只读本地未压缩
 `.traineddata`，不包含 Node `Buffer` 兼容分支。每会话
-惰性创建一个 worker，空闲 30 秒或会话结束时立即 terminate。识别结果不能生成
+惰性创建一个 worker，初始化和单次识别各有 20 秒上限，空闲 30 秒或会话结束时立即
+terminate；晚到的 worker 也会立即销毁。OCR 输入会把时间与点赞/回复等公开元数据再次遮挡，
+只能从正文矩形内的词边界按顺序重建文字。识别结果不能生成
 评论 ID、主页地址或 secUid；低召回、低置信或 DOM/OCR 冲突仅作人工复核证据，
-不拼接补全文字或金额。扩展 CSP 精确为
+截断 DOM 在 OCR 空、失败或无效时仍以低置信观察保留，不拼接补全文字或金额。
+每条提交和服务端归一化观察都分别保留 required-nullable `domTextHash` / `ocrTextHash`；
+它们是来源证明，不替代服务端独立生成的 `textHash`。扩展 CSP 精确为
 `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'`；`ocr-assets.json` 记录所有本地
 worker/core/WASM/语言文件的版本、字节数和 SHA-256。当前未压缩扩展约 29 MiB，
 构建强制小于 80 MiB。

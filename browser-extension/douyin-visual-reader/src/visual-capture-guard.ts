@@ -8,7 +8,7 @@ export interface VisualCaptureRequest {
   viewport: { width: number; height: number; deviceScaleFactor: number };
   cardBounds: PixelRect;
   avatarBounds: PixelRect | null;
-  visibleRegions: PixelRect[];
+  regions: Array<{ kind: "body" | "metadata"; bounds: PixelRect }>;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -38,7 +38,7 @@ function rect(value: unknown): value is PixelRect {
 
 function request(value: unknown): value is VisualCaptureRequest {
   return exact(value, [
-    "kind", "sessionId", "domTextState", "viewport", "cardBounds", "avatarBounds", "visibleRegions"
+    "kind", "sessionId", "domTextState", "viewport", "cardBounds", "avatarBounds", "regions"
   ]) && value.kind === "visual_capture_request"
     && typeof value.sessionId === "string"
     && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/u.test(value.sessionId)
@@ -51,8 +51,10 @@ function request(value: unknown): value is VisualCaptureRequest {
     && finite(value.viewport.deviceScaleFactor, 0.5, 8)
     && rect(value.cardBounds)
     && (value.avatarBounds === null || rect(value.avatarBounds))
-    && Array.isArray(value.visibleRegions) && value.visibleRegions.length >= 1
-    && value.visibleRegions.length <= 20 && value.visibleRegions.every(rect);
+    && Array.isArray(value.regions) && value.regions.length >= 1 && value.regions.length <= 20
+    && value.regions.some((region) => exact(region, ["kind", "bounds"]) && region.kind === "body")
+    && value.regions.every((region) => exact(region, ["kind", "bounds"])
+      && ["body", "metadata"].includes(String(region.kind)) && rect(region.bounds));
 }
 
 export function authorizeVisualCapture(input: {

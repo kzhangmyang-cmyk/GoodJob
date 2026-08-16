@@ -8,9 +8,9 @@ const request = {
   viewport: { width: 1_000, height: 800, deviceScaleFactor: 2 },
   cardBounds: { x: 100, y: 100, width: 500, height: 180 },
   avatarBounds: { x: 112, y: 116, width: 48, height: 48 },
-  visibleRegions: [
-    { x: 180, y: 116, width: 350, height: 88 },
-    { x: 180, y: 214, width: 180, height: 24 }
+  regions: [
+    { kind: "body" as const, bounds: { x: 180, y: 116, width: 350, height: 88 } },
+    { kind: "metadata" as const, bounds: { x: 180, y: 214, width: 180, height: 24 } }
   ]
 };
 const snapshot = {
@@ -61,7 +61,7 @@ for (const [name, overrides] of Object.entries({
 }
 
 assert.equal(authorizeVisualCapture({
-  request: { ...request, visibleRegions: Array.from({ length: 21 }, () => request.visibleRegions[0]) },
+  request: { ...request, regions: Array.from({ length: 21 }, () => request.regions[0]) },
   senderTabId: 7,
   snapshot,
   tab,

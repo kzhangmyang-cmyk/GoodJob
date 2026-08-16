@@ -5,6 +5,8 @@ const tests = [
   "./tesseract-ocr.self-test.ts",
   "./visual-capture-guard.self-test.ts",
   "./visual-capture-runtime.self-test.ts",
+  "./visual-evidence-validator.self-test.ts",
+  "./offscreen-lifecycle.self-test.ts",
   "./visual-content-fallback.self-test.ts",
   "./webp-redaction-policy.self-test.ts",
   "./douyin-extractor.self-test.ts",

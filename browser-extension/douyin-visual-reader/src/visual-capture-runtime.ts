@@ -11,18 +11,38 @@ export interface VisualCaptureEvidence {
   ocrResult: VisualOcrResult;
 }
 
+export interface VisualCaptureOwner {
+  generation: number;
+  sessionId: string;
+  tabId: number;
+  windowId: number;
+}
+
+export interface VisualCaptureAuthorization {
+  request: VisualCaptureRequest;
+  owner: VisualCaptureOwner;
+}
+
 export type VisualProcessCaptureMessage = Omit<VisualCaptureRequest, "kind"> & {
   kind: "visual_process_capture";
+  runtimeGeneration: number;
   screenshotDataUrl: string;
 };
 
 export interface VisualCaptureRuntimeDependencies {
-  authorize(request: unknown, senderTabId: number | null): Promise<VisualCaptureRequest | null>;
-  ensureOffscreen(): Promise<void>;
+  authorize(request: unknown, senderTabId: number | null,
+    expectedOwner: VisualCaptureOwner | null): Promise<VisualCaptureAuthorization | null>;
+  ensureOffscreen(runtimeGeneration: number): Promise<void>;
   reserveOcrCall(request: VisualCaptureRequest): Promise<boolean>;
   captureVisibleTab(request: VisualCaptureRequest): Promise<string>;
   processOffscreen(message: VisualProcessCaptureMessage): Promise<unknown>;
-  endOffscreenSession(): Promise<boolean>;
+  validateEvidence(value: unknown, request: VisualCaptureRequest): Promise<VisualCaptureEvidence | null>;
+  endOffscreenSession(endingGeneration: number): Promise<boolean>;
+}
+
+function sameOwner(left: VisualCaptureOwner, right: VisualCaptureOwner): boolean {
+  return left.generation === right.generation && left.sessionId === right.sessionId
+    && left.tabId === right.tabId && left.windowId === right.windowId;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -56,11 +76,22 @@ function rect(value: unknown, width: number, height: number): value is PixelRect
 }
 
 function canonicalWebpBase64(value: unknown): value is string {
-  return typeof value === "string" && value.length >= 8 && value.length <= 349_528
+  if (!(typeof value === "string" && value.length >= 16 && value.length <= 349_528
     && value.startsWith("UklGR") && value.length % 4 === 0
     && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$/u.test(value)
     && Math.floor(value.length * 3 / 4) - (value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0)
-      <= 262_144;
+      <= 262_144)) return false;
+  try {
+    const decoded = atob(value);
+    if (decoded.length < 12 || decoded.slice(0, 4) !== "RIFF" || decoded.slice(8, 12) !== "WEBP") {
+      return false;
+    }
+    const declared = decoded.charCodeAt(4) | (decoded.charCodeAt(5) << 8)
+      | (decoded.charCodeAt(6) << 16) | (decoded.charCodeAt(7) << 24);
+    return (declared >>> 0) + 8 === decoded.length;
+  } catch {
+    return false;
+  }
 }
 
 function ocrResult(value: unknown, width: number, height: number): value is VisualOcrResult {
@@ -114,31 +145,51 @@ export function createVisualCaptureRuntime(dependencies: VisualCaptureRuntimeDep
   endSession(): Promise<boolean>;
 } {
   let queue: Promise<void> = Promise.resolve();
+  let runtimeGeneration = 0;
 
-  async function run(request: unknown, senderTabId: number | null): Promise<
+  async function run(request: unknown, senderTabId: number | null, expectedGeneration: number): Promise<
     { accepted: true; evidence: VisualCaptureEvidence } | { accepted: false }
   > {
     let screenshotDataUrl: string | null = null;
     try {
-      if (!await dependencies.authorize(request, senderTabId)) return { accepted: false };
-      await dependencies.ensureOffscreen();
-      const authorized = await dependencies.authorize(request, senderTabId);
-      if (!authorized || !await dependencies.reserveOcrCall(authorized)) return { accepted: false };
-      const authorizedForCapture = await dependencies.authorize(request, senderTabId);
-      if (!authorizedForCapture) return { accepted: false };
-      screenshotDataUrl = await dependencies.captureVisibleTab(authorizedForCapture);
+      const initial = await dependencies.authorize(request, senderTabId, null);
+      if (!initial || runtimeGeneration !== expectedGeneration) return { accepted: false };
+      const owner = initial.owner;
+      await dependencies.ensureOffscreen(expectedGeneration);
+      const reserved = await dependencies.authorize(request, senderTabId, owner);
+      if (!reserved || !sameOwner(owner, reserved.owner) || runtimeGeneration !== expectedGeneration
+        || !await dependencies.reserveOcrCall(reserved.request)) return { accepted: false };
+      const authorizedForCapture = await dependencies.authorize(request, senderTabId, owner);
+      if (!authorizedForCapture || !sameOwner(owner, authorizedForCapture.owner)
+        || runtimeGeneration !== expectedGeneration) return { accepted: false };
+      screenshotDataUrl = await dependencies.captureVisibleTab(authorizedForCapture.request);
       if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/u.test(screenshotDataUrl)
         || screenshotDataUrl.length > 50_000_000) return { accepted: false };
-      const response = await dependencies.processOffscreen({
-        ...authorized,
+      const authorizedForOffscreen = await dependencies.authorize(request, senderTabId, owner);
+      if (!authorizedForOffscreen || !sameOwner(owner, authorizedForOffscreen.owner)
+        || runtimeGeneration !== expectedGeneration) return { accepted: false };
+      const processing = dependencies.processOffscreen({
+        ...authorizedForOffscreen.request,
         kind: "visual_process_capture",
+        runtimeGeneration: expectedGeneration,
         screenshotDataUrl
       });
+      screenshotDataUrl = null;
+      const response = await processing;
+      const authorizedForRelease = await dependencies.authorize(request, senderTabId, owner);
+      if (!authorizedForRelease || !sameOwner(owner, authorizedForRelease.owner)
+        || runtimeGeneration !== expectedGeneration) return { accepted: false };
       if (!exact(response, ["accepted", "evidence"]) || response.accepted !== true) {
         return { accepted: false };
       }
-      const evidence = parseVisualCaptureEvidence(response.evidence);
-      return evidence ? { accepted: true, evidence } : { accepted: false };
+      const evidence = await dependencies.validateEvidence(response.evidence,
+        authorizedForRelease.request);
+      if (!evidence || runtimeGeneration !== expectedGeneration) return { accepted: false };
+      const authorizedAfterValidation = await dependencies.authorize(request, senderTabId, owner);
+      return authorizedAfterValidation && sameOwner(owner, authorizedAfterValidation.owner)
+        && runtimeGeneration === expectedGeneration
+        ? { accepted: true, evidence }
+        : { accepted: false };
     } catch {
       return { accepted: false };
     } finally {
@@ -148,14 +199,15 @@ export function createVisualCaptureRuntime(dependencies: VisualCaptureRuntimeDep
 
   return {
     handle(request, senderTabId) {
-      const result = queue.then(() => run(request, senderTabId));
+      const requestedGeneration = runtimeGeneration;
+      const result = queue.then(() => run(request, senderTabId, requestedGeneration));
       queue = result.then(() => undefined, () => undefined);
       return result;
     },
     async endSession() {
-      const result = queue.then(() => dependencies.endOffscreenSession().catch(() => false));
-      queue = result.then(() => undefined, () => undefined);
-      return result;
+      const endingGeneration = runtimeGeneration;
+      runtimeGeneration += 1;
+      return dependencies.endOffscreenSession(endingGeneration).catch(() => false);
     }
   };
 }

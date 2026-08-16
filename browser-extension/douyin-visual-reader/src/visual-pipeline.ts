@@ -37,6 +37,8 @@ export interface VisualPipelineObservation {
   sourceUrl: string;
   videoId: string;
   visibleText: string;
+  domTextHash: string | null;
+  ocrTextHash: string | null;
   displayName: string | null;
   visibleTimeText: string | null;
   likeCount: number | null;
@@ -141,6 +143,7 @@ export function redactCommentCard(input: {
 }): {
   image: RasterImage;
   cardBounds: PixelRect;
+  regionMappings: Array<{ sourceIndex: number; bounds: PixelRect }>;
   redactionProof: OpaqueRectRedactionProofV1;
 } {
   validateRaster(input.screenshot);
@@ -162,10 +165,11 @@ export function redactCommentCard(input: {
     || input.visibleRegions.length > 20 || input.visibleRegions.some((rect) => !finiteRect(rect))) {
     throw new Error("invalid visible regions");
   }
-  const visibleRegions = input.visibleRegions.flatMap((rect) => {
+  const regionMappings = input.visibleRegions.flatMap((rect, sourceIndex) => {
     const converted = toCropPixels(rect, card, viewport.deviceScaleFactor, width, height);
-    return converted ? [converted] : [];
+    return converted ? [{ sourceIndex, bounds: converted }] : [];
   });
+  const visibleRegions = regionMappings.map((mapping) => mapping.bounds);
   if (visibleRegions.length < 1) throw new Error("no visible text regions in crop");
   let unionPixels = 0;
   for (let y = 0; y < height; y += 1) {
@@ -197,6 +201,7 @@ export function redactCommentCard(input: {
   return {
     image: { width, height, pixels },
     cardBounds: card,
+    regionMappings,
     redactionProof: {
       version: "opaque-rect-v1",
       maskColorRgba: [...MASK_COLOR_RGBA],
@@ -204,6 +209,39 @@ export function redactCommentCard(input: {
       visibleRegions,
       maskedRegions: maskedRectangles(width, height, visibleRegions)
     }
+  };
+}
+
+export function restrictRasterToRegions(image: RasterImage, regions: PixelRect[]): RasterImage {
+  validateRaster(image);
+  if (!Array.isArray(regions) || regions.length < 1 || regions.length > 20
+    || regions.some((region) => !finiteRect(region))) throw new Error("invalid OCR body regions");
+  const pixels = new Uint8ClampedArray(image.pixels);
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      if (regions.some((region) => inRect(region, x, y))) continue;
+      pixels.set(MASK_COLOR_RGBA, (y * image.width + x) * 4);
+    }
+  }
+  return { width: image.width, height: image.height, pixels };
+}
+
+function contains(outer: PixelRect, inner: PixelRect): boolean {
+  return inner.x >= outer.x && inner.y >= outer.y
+    && inner.x + inner.width <= outer.x + outer.width
+    && inner.y + inner.height <= outer.y + outer.height;
+}
+
+export function filterOcrResultToBodyRegions(result: VisualOcrResult,
+  bodyRegions: PixelRect[]): VisualOcrResult {
+  const words = result.words.filter((word) => bodyRegions.some((region) => contains(region, word.bounds)))
+    .sort((left, right) => left.bounds.y - right.bounds.y || left.bounds.x - right.bounds.x);
+  return {
+    text: words.map((word) => word.text).join(" ").normalize("NFC").trim(),
+    confidence: words.length > 0
+      ? Math.min(result.confidence, ...words.map((word) => word.confidence))
+      : 0,
+    words
   };
 }
 
@@ -257,9 +295,29 @@ export async function resolveObservationWithVisualFallback(input: {
   ocrTextHash: string | null;
 }> {
   if (input.domTextState === "complete") {
-    return { observation: input.observation, manualReviewOnly: false, domTextHash: null, ocrTextHash: null };
+    return {
+      observation: input.observation,
+      manualReviewOnly: false,
+      domTextHash: input.observation.domTextHash,
+      ocrTextHash: input.observation.ocrTextHash
+    };
   }
   if (!input.artifactUploadEnabled) {
+    if (input.domTextState === "truncated") {
+      return {
+        observation: {
+          ...input.observation,
+          fieldConfidences: {
+            ...input.observation.fieldConfidences,
+            visibleText: Math.min(0.84, input.observation.fieldConfidences.visibleText ?? 0.84)
+          },
+          redactedCrop: null
+        },
+        manualReviewOnly: true,
+        domTextHash: input.observation.domTextHash,
+        ocrTextHash: input.observation.ocrTextHash
+      };
+    }
     return { observation: null, manualReviewOnly: true, domTextHash: null, ocrTextHash: null };
   }
   const capture = await input.capture();
@@ -300,6 +358,8 @@ export async function resolveObservationWithVisualFallback(input: {
       ...input.observation,
       clientObservationKey: `ocr:${clientDigest.slice("sha256:".length)}`,
       visibleText: text,
+      domTextHash,
+      ocrTextHash,
       displayName: null,
       platformCommentId: null,
       publicProfileUrl: null,

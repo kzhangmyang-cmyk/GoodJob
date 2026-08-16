@@ -49,6 +49,8 @@ async function extract(name: string, sourceUrl = "https://www.douyin.com/video/1
     sourceUrl: "https://www.douyin.com/video/123456789",
     videoId: "123456789",
     visibleText: "正在寻找可以长期合作的获客方案",
+    domTextHash: "sha256:ca5efd004e49bd8c19cfdcc59a915f7ad0ef94f2a8b2b6489eeba3576415663b",
+    ocrTextHash: null,
     displayName: "林经理",
     visibleTimeText: "1小时前",
     likeCount: 12,
@@ -109,11 +111,11 @@ async function extract(name: string, sourceUrl = "https://www.douyin.com/video/1
       fallbackCalls += 1;
       assert.equal(fallback.domTextState, "truncated");
       assert.deepEqual(fallback.avatarBounds, { x: 732, y: 232, width: 48, height: 48 });
-      assert.deepEqual(fallback.visibleRegions, [
-        { x: 800, y: 236, width: 360, height: 64 },
-        { x: 800, y: 310, width: 80, height: 20 },
-        { x: 900, y: 310, width: 60, height: 20 },
-        { x: 900, y: 310, width: 60, height: 20 }
+      assert.deepEqual(fallback.regions, [
+        { kind: "body", bounds: { x: 800, y: 236, width: 360, height: 64 } },
+        { kind: "metadata", bounds: { x: 800, y: 310, width: 80, height: 20 } },
+        { kind: "metadata", bounds: { x: 900, y: 310, width: 60, height: 20 } },
+        { kind: "metadata", bounds: { x: 900, y: 310, width: 60, height: 20 } }
       ]);
       return {
         ...fallback.observation,

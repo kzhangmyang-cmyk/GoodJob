@@ -47,12 +47,16 @@ try {
       return Promise.race([
         scope.chrome.runtime.sendMessage({
           kind: "visual_process_capture",
+          runtimeGeneration: 0,
           sessionId: "synthetic-smoke",
           domTextState: "missing",
           viewport: { width: 900, height: 260, deviceScaleFactor: 1 },
           cardBounds: { x: 0, y: 0, width: 900, height: 260 },
           avatarBounds: { x: 15, y: 15, width: 48, height: 48 },
-          visibleRegions: [{ x: 80, y: 70, width: 720, height: 100 }],
+          regions: [{
+            kind: "body",
+            bounds: { x: 80, y: 70, width: 720, height: 100 }
+          }],
           screenshotDataUrl: dataUrl
         }),
         new Promise((_, reject) => setTimeout(() => reject(new Error("offscreen OCR smoke timeout")), 60_000))
@@ -72,11 +76,11 @@ try {
       || !/128[.,]50/u.test(response.evidence.ocrResult.text)
       || !Array.isArray(response.evidence.ocrResult.words)
       || response.evidence.ocrResult.words.length === 0) {
-      throw new Error(`production offscreen OCR smoke failed: ${JSON.stringify(response)}`);
+      throw new Error(`unpacked-extension offscreen OCR smoke failed: ${JSON.stringify(response)}`);
     }
     const ended = await serviceWorker.evaluate(() => {
       const scope = globalThis as typeof globalThis & { chrome: any };
-      return scope.chrome.runtime.sendMessage({ kind: "visual_ocr_end_session" });
+      return scope.chrome.runtime.sendMessage({ kind: "visual_ocr_end_session", runtimeGeneration: 0 });
     }) as { accepted?: unknown };
     if (ended?.accepted !== true) throw new Error("production OCR worker did not terminate");
   } finally {
@@ -86,4 +90,4 @@ try {
   await rm(profileDir, { recursive: true, force: true });
 }
 
-console.log("douyin visual reader production offscreen OCR smoke passed");
+console.log("douyin visual reader unpacked-extension offscreen OCR smoke passed");

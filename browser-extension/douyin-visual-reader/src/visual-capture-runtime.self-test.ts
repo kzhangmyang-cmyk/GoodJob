@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
   createVisualCaptureRuntime,
+  type VisualCaptureAuthorization,
   type VisualCaptureRuntimeDependencies
 } from "./visual-capture-runtime";
 import type { VisualCaptureRequest } from "./visual-capture-guard";
@@ -12,8 +13,15 @@ const request: VisualCaptureRequest = {
   viewport: { width: 1200, height: 800, deviceScaleFactor: 2 },
   cardBounds: { x: 600, y: 200, width: 400, height: 180 },
   avatarBounds: { x: 620, y: 220, width: 48, height: 48 },
-  visibleRegions: [{ x: 690, y: 220, width: 240, height: 80 }]
+  regions: [{ kind: "body", bounds: { x: 690, y: 220, width: 240, height: 80 } }]
 };
+const owner = {
+  generation: 7,
+  sessionId: request.sessionId,
+  tabId: 41,
+  windowId: 8
+};
+const authorization: VisualCaptureAuthorization = { request, owner };
 
 const evidence = {
   mediaType: "image/webp" as const,
@@ -42,10 +50,11 @@ function dependencies(overrides: Partial<VisualCaptureRuntimeDependencies> = {})
   const calls: string[] = [];
   let authorizations = 0;
   const deps: VisualCaptureRuntimeDependencies = {
-    authorize: async () => {
+    authorize: async (_request, _senderTabId, expectedOwner) => {
       authorizations += 1;
       calls.push(`authorize:${authorizations}`);
-      return request;
+      assert.deepEqual(expectedOwner, authorizations === 1 ? null : owner);
+      return authorization;
     },
     ensureOffscreen: async () => { calls.push("offscreen"); },
     reserveOcrCall: async () => { calls.push("reserve"); return true; },
@@ -56,13 +65,22 @@ function dependencies(overrides: Partial<VisualCaptureRuntimeDependencies> = {})
     processOffscreen: async (message) => {
       calls.push("process");
       assert.deepEqual(Object.keys(message).sort(), [
-        "avatarBounds", "cardBounds", "domTextState", "kind", "screenshotDataUrl",
-        "sessionId", "viewport", "visibleRegions"
+        "avatarBounds", "cardBounds", "domTextState", "kind", "regions", "runtimeGeneration",
+        "screenshotDataUrl", "sessionId", "viewport"
       ]);
+      assert.equal(message.runtimeGeneration, 0);
       assert.equal(message.kind, "visual_process_capture");
       return { accepted: true, evidence };
     },
-    endOffscreenSession: async () => { calls.push("end"); return true; },
+    validateEvidence: async (value, boundRequest) => {
+      calls.push("validate");
+      assert.equal(boundRequest, request);
+      return value === evidence ? evidence : null;
+    },
+    endOffscreenSession: async (endingGeneration) => {
+      calls.push(`end:${endingGeneration}`);
+      return true;
+    },
     ...overrides
   };
   return { deps, calls };
@@ -74,10 +92,43 @@ function dependencies(overrides: Partial<VisualCaptureRuntimeDependencies> = {})
   const result = await runtime.handle(request, 41);
   assert.deepEqual(result, { accepted: true, evidence });
   assert.deepEqual(calls, [
-    "authorize:1", "offscreen", "authorize:2", "reserve", "authorize:3", "capture", "process"
-  ], "authorization is repeated after reservation immediately before the only raw screenshot capture");
+    "authorize:1", "offscreen", "authorize:2", "reserve", "authorize:3", "capture",
+    "authorize:4", "process", "authorize:5", "validate", "authorize:6"
+  ], "authorization and immutable owner are rechecked around capture and offscreen processing");
   await runtime.endSession();
-  assert.equal(calls.at(-1), "end");
+  assert.equal(calls.at(-1), "end:0");
+}
+
+{
+  let releaseValidation: (() => void) | null = null;
+  const { deps } = dependencies({
+    validateEvidence: async () => {
+      await new Promise<void>((resolve) => { releaseValidation = resolve; });
+      return evidence;
+    }
+  });
+  const runtime = createVisualCaptureRuntime(deps);
+  const pending = runtime.handle(request, 41);
+  while (!releaseValidation) await Promise.resolve();
+  await runtime.endSession();
+  const finish = releaseValidation as (() => void) | null;
+  if (!finish) throw new Error("missing deferred validator resolver");
+  finish();
+  assert.deepEqual(await pending, { accepted: false },
+    "session end during asynchronous raster validation rejects stale evidence");
+}
+
+{
+  let authorizations = 0;
+  const replacement = { ...authorization, owner: { ...owner, generation: owner.generation + 1 } };
+  const { deps } = dependencies({
+    authorize: async () => {
+      authorizations += 1;
+      return authorizations < 6 ? authorization : replacement;
+    }
+  });
+  assert.deepEqual(await createVisualCaptureRuntime(deps).handle(request, 41), { accepted: false },
+    "owner replacement during raster validation rejects prior-owner evidence");
 }
 
 for (const [name, overrides] of [
@@ -85,13 +136,13 @@ for (const [name, overrides] of [
   ["budget race", {
     authorize: (() => {
       let calls = 0;
-      return async () => (++calls === 1 ? request : null);
+      return async () => (++calls === 1 ? authorization : null);
     })()
   }],
   ["focus race after reservation", {
     authorize: (() => {
       let calls = 0;
-      return async () => (++calls < 3 ? request : null);
+      return async () => (++calls < 3 ? authorization : null);
     })()
   }],
   ["reservation rejected", { reserveOcrCall: async () => false }]
@@ -107,6 +158,68 @@ for (const [name, overrides] of [
   const result = await createVisualCaptureRuntime(deps).handle(request, 41);
   assert.deepEqual(result, { accepted: false }, name);
   assert.equal(captures, 0, `${name} never captures`);
+}
+
+{
+  let authorizations = 0;
+  let processes = 0;
+  const { deps } = dependencies({
+    authorize: async () => {
+      authorizations += 1;
+      return authorizations < 4 ? authorization : null;
+    },
+    processOffscreen: async () => { processes += 1; return { accepted: true, evidence }; }
+  });
+  assert.deepEqual(await createVisualCaptureRuntime(deps).handle(request, 41), { accepted: false });
+  assert.equal(processes, 0,
+    "authorization revoked while captureVisibleTab is pending drops raw capture before offscreen");
+}
+
+{
+  let authorizations = 0;
+  let processes = 0;
+  const replacement = { ...authorization, owner: { ...owner, generation: owner.generation + 1 } };
+  const { deps } = dependencies({
+    authorize: async () => {
+      authorizations += 1;
+      return authorizations < 4 ? authorization : replacement;
+    },
+    processOffscreen: async () => { processes += 1; return { accepted: true, evidence }; }
+  });
+  assert.deepEqual(await createVisualCaptureRuntime(deps).handle(request, 41), { accepted: false });
+  assert.equal(processes, 0, "a replacement owner cannot receive the prior owner's screenshot");
+}
+
+{
+  let authorizations = 0;
+  const { deps } = dependencies({
+    authorize: async () => {
+      authorizations += 1;
+      return authorizations < 5 ? authorization : null;
+    }
+  });
+  assert.deepEqual(await createVisualCaptureRuntime(deps).handle(request, 41), { accepted: false },
+    "authorization revoked during OCR rejects evidence before content release");
+}
+
+{
+  let releaseProcess: ((value: unknown) => void) | null = null;
+  let ended = 0;
+  const { deps } = dependencies({
+    processOffscreen: () => new Promise((resolve) => { releaseProcess = resolve; }),
+    endOffscreenSession: async () => { ended += 1; return true; }
+  });
+  const runtime = createVisualCaptureRuntime(deps);
+  const pending = runtime.handle(request, 41);
+  while (!releaseProcess) await Promise.resolve();
+  assert.equal(await runtime.endSession(), true,
+    "endSession terminates OCR out-of-band instead of waiting behind the capture queue");
+  assert.equal(ended, 1);
+  const finish = releaseProcess as ((value: unknown) => void) | null;
+  if (!finish) throw new Error("missing deferred offscreen resolver");
+  finish({ accepted: true, evidence });
+  assert.deepEqual(await pending, { accepted: false },
+    "an in-flight owner cannot release evidence after session end");
 }
 
 {
@@ -131,7 +244,8 @@ for (const [name, overrides] of [
     processOffscreen: async () => ({
       accepted: true,
       evidence: { ...evidence, contentBase64: "raw comment text must not pass" }
-    })
+    }),
+    validateEvidence: async () => null
   });
   assert.deepEqual(await createVisualCaptureRuntime(deps).handle(request, 41), { accepted: false },
     "the service worker rejects malformed offscreen evidence before content sees it");

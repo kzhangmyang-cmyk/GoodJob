@@ -89,6 +89,8 @@ function observation(
     sourceUrl: "https://www.douyin.com/video/123456789",
     videoId: "123456789",
     visibleText: "想了解企业获客方案",
+    domTextHash: `sha256:${"1".repeat(64)}`,
+    ocrTextHash: null,
     displayName: "林经理",
     visibleTimeText: "1小时前",
     likeCount: 2,

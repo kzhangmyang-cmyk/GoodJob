@@ -17,14 +17,27 @@ function decodeBase64(value: string): Uint8Array {
   return bytes;
 }
 
+function retainTruncatedDom(observation: VisualObservationSubmission): VisualObservationSubmission {
+  return {
+    ...observation,
+    fieldConfidences: {
+      ...observation.fieldConfidences,
+      visibleText: Math.min(0.84, observation.fieldConfidences.visibleText ?? 0.84)
+    },
+    redactedCrop: null
+  };
+}
+
 export async function resolveVisualCaptureResponse(input: {
   observation: VisualObservationSubmission;
   domTextState: "missing" | "truncated";
   response: unknown;
 }): Promise<VisualObservationSubmission | null> {
-  if (!exactResponse(input.response) || input.response.accepted !== true) return null;
+  if (!exactResponse(input.response) || input.response.accepted !== true) {
+    return input.domTextState === "truncated" ? retainTruncatedDom(input.observation) : null;
+  }
   const evidence = parseVisualCaptureEvidence(input.response.evidence);
-  if (!evidence) return null;
+  if (!evidence) return input.domTextState === "truncated" ? retainTruncatedDom(input.observation) : null;
   const bytes = decodeBase64(evidence.contentBase64);
   try {
     const resolved = await resolveObservationWithVisualFallback({
@@ -41,9 +54,11 @@ export async function resolveVisualCaptureResponse(input: {
       }),
       ocr: { async recognize() { return evidence.ocrResult; } }
     });
-    return resolved.observation as VisualObservationSubmission | null;
+    return (resolved.observation ?? (input.domTextState === "truncated"
+      ? retainTruncatedDom(input.observation)
+      : null)) as VisualObservationSubmission | null;
   } catch {
-    return null;
+    return input.domTextState === "truncated" ? retainTruncatedDom(input.observation) : null;
   } finally {
     bytes.fill(0);
   }
