@@ -44,6 +44,7 @@ export interface AcquisitionDetailCenterControllerOptions {
   visualReaderApi?: VisualReaderApi;
   visualReaderBridgeFactory?: () => VisualReaderBridge;
   visualReaderController?: VisualReaderController;
+  artifactDecoder?: (blob: Blob) => Promise<void>;
   artifactObjectUrl?: {
     createObjectURL(blob: Blob): string;
     revokeObjectURL(url: string): void;
@@ -721,6 +722,19 @@ export function createAcquisitionDetailCenterController(
       globalThis.URL.revokeObjectURL(url);
     }
   };
+  const artifactDecoder = options.artifactDecoder ?? (async (blob: Blob) => {
+    if (typeof globalThis.createImageBitmap !== "function") {
+      throw new Error("浏览器缺少安全图像解码支持");
+    }
+    const bitmap = await globalThis.createImageBitmap(blob);
+    try {
+      if (bitmap.width < 1 || bitmap.height < 1) {
+        throw new Error("服务端返回了无效的视觉读取制品");
+      }
+    } finally {
+      bitmap.close();
+    }
+  });
 
   function render(): void {
     if (body) {
@@ -760,10 +774,13 @@ export function createAcquisitionDetailCenterController(
       if (artifact.mediaType !== "image/webp") {
         throw new Error("服务端返回了无效的视觉读取制品");
       }
-      const objectUrl = artifactObjectUrl.createObjectURL(new Blob(
+      const blob = new Blob(
         [artifact.content],
         { type: "image/webp" }
-      ));
+      );
+      await artifactDecoder(blob);
+      if (disposed || serial !== artifactLoadSerial || !evidenceAuthorizesArtifact(id)) return;
+      const objectUrl = artifactObjectUrl.createObjectURL(blob);
       if (disposed || serial !== artifactLoadSerial || !evidenceAuthorizesArtifact(id)) {
         artifactObjectUrl.revokeObjectURL(objectUrl);
         return;

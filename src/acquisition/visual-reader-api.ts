@@ -391,6 +391,42 @@ function validBase64(value: unknown): value is string {
   return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$/u.test(value);
 }
 
+function rectCoveredByUnion(target: VisualPixelRect, masks: VisualPixelRect[]): boolean {
+  const targetRight = target.x + target.width;
+  const targetBottom = target.y + target.height;
+  const xEdges = new Set([target.x, targetRight]);
+  for (const mask of masks) {
+    const left = Math.max(target.x, mask.x);
+    const right = Math.min(targetRight, mask.x + mask.width);
+    if (left < right) {
+      xEdges.add(left);
+      xEdges.add(right);
+    }
+  }
+  const sortedX = [...xEdges].sort((left, right) => left - right);
+  for (let index = 0; index < sortedX.length - 1; index += 1) {
+    const left = sortedX[index];
+    const right = sortedX[index + 1];
+    if (left === undefined || right === undefined || left >= right) continue;
+    const yIntervals = masks
+      .filter((mask) => mask.x <= left && mask.x + mask.width >= right)
+      .map((mask) => [
+        Math.max(target.y, mask.y),
+        Math.min(targetBottom, mask.y + mask.height)
+      ] as const)
+      .filter(([top, bottom]) => top < bottom)
+      .sort(([leftTop], [rightTop]) => leftTop - rightTop);
+    let coveredTo = target.y;
+    for (const [top, bottom] of yIntervals) {
+      if (top > coveredTo) break;
+      coveredTo = Math.max(coveredTo, bottom);
+      if (coveredTo >= targetBottom) break;
+    }
+    if (coveredTo < targetBottom) return false;
+  }
+  return true;
+}
+
 function validRedactedCrop(value: unknown): value is VisualRedactedCrop {
   if (!exactKeys(value, ["mediaType", "contentBase64", "redactionProof"])
     || value.mediaType !== "image/webp"
@@ -399,19 +435,24 @@ function validRedactedCrop(value: unknown): value is VisualRedactedCrop {
       "version", "maskColorRgba", "avatarBounds", "visibleRegions", "maskedRegions"
     ])) return false;
   const proof = value.redactionProof;
-  return proof.version === "opaque-rect-v1"
-    && Array.isArray(proof.maskColorRgba)
-    && proof.maskColorRgba.length === 4
-    && proof.maskColorRgba.every((item, index) => item === [17, 61, 51, 255][index])
-    && (proof.avatarBounds === null || validRect(proof.avatarBounds, true))
-    && Array.isArray(proof.visibleRegions)
-    && proof.visibleRegions.length >= 1
-    && proof.visibleRegions.length <= 20
-    && proof.visibleRegions.every((rect) => validRect(rect, true))
-    && Array.isArray(proof.maskedRegions)
-    && proof.maskedRegions.length >= 1
-    && proof.maskedRegions.length <= 100
-    && proof.maskedRegions.every((rect) => validRect(rect, true));
+  if (proof.version !== "opaque-rect-v1"
+    || !Array.isArray(proof.maskColorRgba)
+    || proof.maskColorRgba.length !== 4
+    || !proof.maskColorRgba.every((item, index) => item === [17, 61, 51, 255][index])
+    || !Array.isArray(proof.visibleRegions)
+    || proof.visibleRegions.length < 1
+    || proof.visibleRegions.length > 20
+    || !proof.visibleRegions.every((rect) => validRect(rect, true))
+    || !Array.isArray(proof.maskedRegions)
+    || proof.maskedRegions.length < 1
+    || proof.maskedRegions.length > 100) return false;
+  const maskedRegions = proof.maskedRegions.filter(
+    (rect): rect is VisualPixelRect => validRect(rect, true)
+  );
+  if (maskedRegions.length !== proof.maskedRegions.length) return false;
+  if (proof.avatarBounds === null) return true;
+  return validRect(proof.avatarBounds, true)
+    && rectCoveredByUnion(proof.avatarBounds, maskedRegions);
 }
 
 export function isVisualObservationSubmission(
@@ -569,6 +610,16 @@ function pathSegment(value: string, label: string): string {
   return encodeURIComponent(identifier(value, label));
 }
 
+function validWebp(content: ArrayBuffer): boolean {
+  if (content.byteLength < 12) return false;
+  const bytes = new Uint8Array(content);
+  const riff = [82, 73, 70, 70];
+  const webp = [87, 69, 66, 80];
+  if (!riff.every((byte, index) => bytes[index] === byte)
+    || !webp.every((byte, index) => bytes[index + 8] === byte)) return false;
+  return new DataView(content).getUint32(4, true) + 8 === content.byteLength;
+}
+
 export function createVisualReaderApi(
   fetchImpl: typeof fetch = fetch,
   options: VisualReaderApiOptions = {}
@@ -699,7 +750,9 @@ export function createVisualReaderApi(
       if (response.headers.get("content-type")?.split(";", 1)[0]?.trim() !== "image/webp") {
         throw new Error("服务端返回了无效的视觉读取制品");
       }
-      return { mediaType: "image/webp", content: await response.arrayBuffer() };
+      const content = await response.arrayBuffer();
+      if (!validWebp(content)) throw new Error("服务端返回了无效的视觉读取制品");
+      return { mediaType: "image/webp", content };
     }
   };
 }

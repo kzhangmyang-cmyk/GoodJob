@@ -5257,6 +5257,7 @@ function artifactAction(action: string, artifactId?: string) {
     body,
     visualReaderController: visual,
     visualReaderApi,
+    artifactDecoder: async () => undefined,
     artifactObjectUrl: {
       createObjectURL(blob) {
         const url = `blob:controller-${created.length + 1}`;
@@ -5303,7 +5304,9 @@ function artifactAction(action: string, artifactId?: string) {
 {
   const oldArtifact = deferred<{ mediaType: "image/webp"; content: ArrayBuffer }>();
   const replacementArtifact = deferred<{ mediaType: "image/webp"; content: ArrayBuffer }>();
+  const bothArtifactsDecoded = deferred<void>();
   let call = 0;
+  let decoderCalls = 0;
   const created: string[] = [];
   const revoked: string[] = [];
   const root = new FakeDialogRoot(null);
@@ -5319,6 +5322,10 @@ function artifactAction(action: string, artifactId?: string) {
         return call === 1 ? oldArtifact.promise : replacementArtifact.promise;
       }
     } as unknown as VisualReaderApi,
+    artifactDecoder: async () => {
+      decoderCalls += 1;
+      if (decoderCalls === 2) bothArtifactsDecoded.resolve();
+    },
     artifactObjectUrl: {
       createObjectURL() {
         const url = `blob:late-${created.length + 1}`;
@@ -5341,30 +5348,36 @@ function artifactAction(action: string, artifactId?: string) {
     content: new Uint8Array([1]).buffer
   });
   await controller.whenIdle();
+  await bothArtifactsDecoded.promise;
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
   assert.match(body.innerHTML, /src="blob:late-1"/u);
-  assert.deepEqual(created, ["blob:late-1", "blob:late-2"]);
-  assert.deepEqual(revoked, ["blob:late-2"], "late superseded URL is revoked immediately");
+  assert.deepEqual(created, ["blob:late-1"],
+    "late superseded bytes are discarded after decode and before object URL creation");
+  assert.deepEqual(revoked, []);
 
   const pendingReload = deferred<{ mediaType: "image/webp"; content: ArrayBuffer }>();
+  const reloadRoot = new FakeDialogRoot(null);
   const reloadController = createAcquisitionDetailCenterController({
     api: visualCandidateApi([visualEvidence()]),
-    root: root as unknown as HTMLElement,
+    root: reloadRoot as unknown as HTMLElement,
     body,
     visualReaderController: new FakeVisualReaderController(),
     visualReaderApi: { getArtifact: () => pendingReload.promise } as unknown as VisualReaderApi,
+    artifactDecoder: async () => undefined,
     artifactObjectUrl: {
       createObjectURL() { created.push("blob:reload-late"); return "blob:reload-late"; },
-      revokeObjectURL(url) { revoked.push(url); }
+      revokeObjectURL() { return; }
     }
   });
   await reloadController.openCandidate("candidate-reload");
-  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  reloadRoot.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
   const pending = reloadController.whenIdle();
   await reloadController.openCandidate("candidate-reload");
   pendingReload.resolve({ mediaType: "image/webp", content: new Uint8Array([3]).buffer });
   await pending;
   assert.equal(reloadController.getState().visualArtifact, null);
-  assert.equal(revoked.filter((url) => url === "blob:reload-late").length, 1);
+  assert.equal(created.length, 1,
+    "reload reauthorizes before creating an object URL");
   reloadController.destroy();
 
   for (const disposal of ["close", "destroy"] as const) {
@@ -5377,13 +5390,14 @@ function artifactAction(action: string, artifactId?: string) {
       body: disposalBody,
       visualReaderController: new FakeVisualReaderController(),
       visualReaderApi: { getArtifact: () => pendingDisposal.promise } as unknown as VisualReaderApi,
+      artifactDecoder: async () => undefined,
       artifactObjectUrl: {
         createObjectURL() {
           const url = `blob:${disposal}-late`;
           created.push(url);
           return url;
         },
-        revokeObjectURL(url) { revoked.push(url); }
+        revokeObjectURL() { return; }
       }
     });
     await disposalController.openCandidate(`candidate-${disposal}`);
@@ -5394,14 +5408,100 @@ function artifactAction(action: string, artifactId?: string) {
     pendingDisposal.resolve({ mediaType: "image/webp", content: new Uint8Array([4]).buffer });
     await disposalPending;
     assert.equal(disposalController.getState().visualArtifact, null);
-    assert.equal(revoked.filter((url) => url === `blob:${disposal}-late`).length, 1,
-      `late ${disposal} result is revoked exactly once and cannot revive`);
+    assert.equal(created.length, 1,
+      `late ${disposal} result cannot create an object URL or revive`);
     if (disposal === "close") disposalController.destroy();
   }
 
   controller.destroy();
   assert.equal(revoked.filter((url) => url === "blob:late-1").length, 1,
     "destroy revokes the surviving replacement URL exactly once");
+}
+
+{
+  const firstDecode = deferred<void>();
+  const secondDecode = deferred<void>();
+  const firstDecodeStarted = deferred<void>();
+  const secondDecodeStarted = deferred<void>();
+  let decodeCall = 0;
+  const created: string[] = [];
+  const root = new FakeDialogRoot(null);
+  const body = { innerHTML: "" } as HTMLElement;
+  const controller = createAcquisitionDetailCenterController({
+    api: visualCandidateApi([visualEvidence()]),
+    root: root as unknown as HTMLElement,
+    body,
+    visualReaderController: new FakeVisualReaderController(),
+    visualReaderApi: {
+      async getArtifact() {
+        return { mediaType: "image/webp", content: new Uint8Array([1]).buffer };
+      }
+    } as unknown as VisualReaderApi,
+    artifactDecoder() {
+      decodeCall += 1;
+      if (decodeCall === 1) {
+        firstDecodeStarted.resolve();
+        return firstDecode.promise;
+      }
+      secondDecodeStarted.resolve();
+      return secondDecode.promise;
+    },
+    artifactObjectUrl: {
+      createObjectURL() {
+        const url = `blob:decoder-${created.length + 1}`;
+        created.push(url);
+        return url;
+      },
+      revokeObjectURL() { return; }
+    }
+  });
+  await controller.openCandidate("candidate-late-decoder");
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  await firstDecodeStarted.promise;
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  await secondDecodeStarted.promise;
+  secondDecode.resolve();
+  await controller.whenIdle();
+  assert.deepEqual(created, ["blob:decoder-1"]);
+  firstDecode.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(created, ["blob:decoder-1"],
+    "a superseded decoder cannot create or replace an object URL");
+
+  const closingDecode = deferred<void>();
+  const closingDecodeStarted = deferred<void>();
+  const closingRoot = new FakeDialogRoot(null);
+  const closingController = createAcquisitionDetailCenterController({
+    api: visualCandidateApi([visualEvidence()]),
+    root: closingRoot as unknown as HTMLElement,
+    body,
+    visualReaderController: new FakeVisualReaderController(),
+    visualReaderApi: {
+      async getArtifact() {
+        return { mediaType: "image/webp", content: new Uint8Array([1]).buffer };
+      }
+    } as unknown as VisualReaderApi,
+    artifactDecoder() {
+      closingDecodeStarted.resolve();
+      return closingDecode.promise;
+    },
+    artifactObjectUrl: {
+      createObjectURL() { created.push("blob:closed-decoder"); return "blob:closed-decoder"; },
+      revokeObjectURL() { return; }
+    }
+  });
+  await closingController.openCandidate("candidate-closing-decoder");
+  closingRoot.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  const closingIdle = closingController.whenIdle();
+  await closingDecodeStarted.promise;
+  closingController.close();
+  closingDecode.resolve();
+  await closingIdle;
+  assert.doesNotMatch(created.join("\n"), /closed-decoder/u,
+    "a decoder completing after close cannot create an object URL");
+  closingController.destroy();
+  controller.destroy();
 }
 
 {
@@ -5433,5 +5533,36 @@ function artifactAction(action: string, artifactId?: string) {
   assert.match(body.innerHTML, /制品已到期，证据哈希仍保留/u);
   assert.match(body.innerHTML, new RegExp(String(evidence.id), "u"));
   assert.match(body.innerHTML, new RegExp(String(evidence.rawArtifactHash), "u"));
+  controller.destroy();
+}
+
+{
+  const root = new FakeDialogRoot(null);
+  const body = { innerHTML: "" } as HTMLElement;
+  let objectUrlCount = 0;
+  const controller = createAcquisitionDetailCenterController({
+    api: visualCandidateApi([visualEvidence()]),
+    root: root as unknown as HTMLElement,
+    body,
+    visualReaderController: new FakeVisualReaderController(),
+    visualReaderApi: {
+      async getArtifact() {
+        return { mediaType: "image/webp", content: new Uint8Array([1]).buffer };
+      }
+    } as unknown as VisualReaderApi,
+    async artifactDecoder() {
+      throw new Error("syntactically valid but undecodable WebP");
+    },
+    artifactObjectUrl: {
+      createObjectURL() { objectUrlCount += 1; return "blob:must-not-exist"; },
+      revokeObjectURL() { throw new Error("an undecodable artifact has no URL to revoke"); }
+    }
+  });
+  await controller.openCandidate("candidate-undecodable-artifact");
+  root.emitClick(artifactAction("view-visual-artifact", "artifact-authorized"));
+  await controller.whenIdle();
+  assert.equal(objectUrlCount, 0, "decode must succeed before an object URL is created");
+  assert.match(body.innerHTML, /遮挡裁剪暂不可用，证据哈希仍保留/u);
+  assert.doesNotMatch(body.innerHTML, /blob:must-not-exist/u);
   controller.destroy();
 }

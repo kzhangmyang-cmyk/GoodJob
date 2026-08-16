@@ -70,13 +70,45 @@ const observation: VisualObservationSubmission = {
   redactedCrop: null
 };
 
+function ocrObservation(
+  clientObservationKey: string,
+  maskedRegions: Array<{ x: number; y: number; width: number; height: number }>
+): VisualObservationSubmission {
+  return {
+    ...observation,
+    clientObservationKey,
+    domTextHash: null,
+    ocrTextHash: `sha256:${"2".repeat(64)}`,
+    platformCommentId: null,
+    publicProfileUrl: null,
+    secUid: null,
+    extractionMethod: "ocr",
+    fieldConfidences: { visibleText: 0.94 },
+    redactedCrop: {
+      mediaType: "image/webp",
+      contentBase64: "AAAA",
+      redactionProof: {
+        version: "opaque-rect-v1",
+        maskColorRgba: [17, 61, 51, 255],
+        avatarBounds: { x: 0, y: 0, width: 4, height: 2 },
+        visibleRegions: [{ x: 4, y: 0, width: 4, height: 2 }],
+        maskedRegions
+      }
+    }
+  };
+}
+
+const minimalWebp = new Uint8Array([
+  82, 73, 70, 70, 4, 0, 0, 0, 87, 69, 66, 80
+]);
+
 {
   const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
   const fetchImpl: typeof fetch = async (input, init) => {
     calls.push({ input, init });
     const path = String(input);
     if (path === "/api/v1/acquisition/visual-reader-artifacts/artifact-1") {
-      return new Response(new Uint8Array([82, 73, 70, 70]), {
+      return new Response(minimalWebp, {
         headers: { "Content-Type": "image/webp" }
       });
     }
@@ -168,7 +200,91 @@ const observation: VisualObservationSubmission = {
     observations: [observation]
   });
   assert.equal(artifact.mediaType, "image/webp");
-  assert.equal(artifact.content.byteLength, 4);
+  assert.equal(artifact.content.byteLength, minimalWebp.byteLength);
+}
+
+{
+  let fetchCount = 0;
+  const api = createVisualReaderApi(async () => {
+    fetchCount += 1;
+    return Response.json({
+      session: session({ status: "collecting" }),
+      accepted: [],
+      duplicates: []
+    });
+  }, { cookie: "gj_csrf=csrf" });
+  const unionCovered = ocrObservation("ocr-union-covered", [
+    { x: 0, y: 0, width: 2, height: 2 },
+    { x: 2, y: 0, width: 2, height: 2 }
+  ]);
+  await api.appendObservationBatch(
+    "visual-session-1",
+    { observations: [unionCovered] },
+    "union-covered"
+  );
+  assert.equal(fetchCount, 1, "a geometric union may fully cover the avatar");
+
+  const gapInMask = ocrObservation("ocr-mask-gap", [
+    { x: 0, y: 0, width: 1, height: 2 },
+    { x: 2, y: 0, width: 2, height: 2 }
+  ]);
+  await assert.rejects(
+    () => api.appendObservationBatch(
+      "visual-session-1",
+      { observations: [gapInMask] },
+      "mask-gap"
+    ),
+    /视觉观察批次无效/u
+  );
+  assert.equal(fetchCount, 1, "an uncovered avatar must be rejected before fetch");
+
+  const sixCrops = Array.from({ length: 6 }, (_, index) => ocrObservation(
+    `ocr-crop-${index}`,
+    [{ x: 0, y: 0, width: 4, height: 2 }]
+  ));
+  await assert.rejects(
+    () => api.appendObservationBatch(
+      "visual-session-1",
+      { observations: sixCrops },
+      "six-crops"
+    ),
+    /视觉观察批次无效/u
+  );
+  assert.equal(fetchCount, 1, "more than five crops must be rejected before fetch");
+
+  const browserConfigured = Object.assign({}, unionCovered, {
+    browserConfig: "BROWSER_CONFIG_SENTINEL"
+  });
+  await assert.rejects(
+    () => api.appendObservationBatch(
+      "visual-session-1",
+      { observations: [browserConfigured] },
+      "browser-config"
+    ),
+    /视觉观察批次无效/u
+  );
+  assert.equal(fetchCount, 1, "undeclared browser configuration must be rejected before fetch");
+}
+
+{
+  for (const [name, contentType, bytes] of [
+    ["wrong MIME", "application/octet-stream", minimalWebp],
+    ["spoofed WebP", "image/webp", new Uint8Array([
+      82, 73, 70, 70, 4, 0, 0, 0, 70, 65, 75, 69
+    ])],
+    ["wrong RIFF length", "image/webp", new Uint8Array([
+      82, 73, 70, 70, 99, 0, 0, 0, 87, 69, 66, 80
+    ])]
+  ] as const) {
+    const api = createVisualReaderApi(async () => new Response(bytes, {
+      headers: { "Content-Type": contentType }
+    }), { cookie: "gj_csrf=csrf" });
+    await assert.rejects(
+      () => api.getArtifact("artifact-1"),
+      /服务端返回了无效的视觉读取制品/u,
+      name
+    );
+  }
 }
 
 {

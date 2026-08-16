@@ -18,10 +18,15 @@ const SESSION_ID = "session-visual-reader-e2e";
 const CANDIDATE_ID = "candidate-visual-reader-e2e";
 const EVIDENCE_ID = `visual:visual-observation:${"9".repeat(64)}:evidence:sha256:${"8".repeat(64)}`;
 const ARTIFACT_ID = "visual-artifact:e2e-redacted";
+const FORBIDDEN_ARTIFACT_ID = "visual-artifact:e2e-forbidden";
 const VIDEO_ID = "7480000000000000000";
 const SOURCE_URL = `https://www.douyin.com/video/${VIDEO_ID}`;
 const COOKIE_SECRET = "e2e-visual-cookie-secret";
-const MASKED_WEBP_BASE64 = "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJQBOgCHwAP7+4AAA";
+const RAW_SCREENSHOT_SENTINEL = "RAW_SCREENSHOT_SENTINEL_e2e_private_pixels";
+const BROWSER_CONFIG_SENTINEL = "BROWSER_CONFIG_SENTINEL_e2e_private_runtime";
+const NONCE_SENTINEL = "NONCE_SENTINEL_e2e_private_channel";
+const LOCAL_VITE_ORIGIN = "http://127.0.0.1:5388";
+const MASKED_WEBP_BASE64 = "UklGRgACAABXRUJQVlA4WAoAAAAgAAAAAQAAAQAASUNDUMgBAAAAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADZWUDhMEQAAAC8BQAAAB9CeRnSm/4GI6H8AAA==";
 const LONG_DOM_COMMENT = `需要比较出海获客方案的预算和交付周期，这是仅当前可见的一级评论样本。${"long-visible-comment-".repeat(24)}`;
 
 const performance = {
@@ -52,6 +57,9 @@ type FixtureState = {
   observations: VisualObservationSubmission[];
   candidateAvailable: boolean;
   artifactExpired: boolean;
+  artifactForbidden?: boolean;
+  evidenceArtifactId?: string;
+  artifactVariant?: "valid" | "wrong_mime" | "fake_webp";
 };
 
 function usage(overrides: Partial<VisualReaderUsage> = {}): VisualReaderUsage {
@@ -461,6 +469,11 @@ async function installApiFixture(page: Page, state: FixtureState) {
       body: request.postData()
     });
   });
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin !== LOCAL_VITE_ORIGIN) return void await route.abort("blockedbyclient");
+    return void await route.fallback();
+  });
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -513,15 +526,6 @@ async function installApiFixture(page: Page, state: FixtureState) {
         || /cookie|rawScreenshot|fullPageScreenshot|browserConfig|networkResponse|avatarUrl/iu.test(serialized)) {
         return void await json({ code: "visual_observation_invalid", message: "视觉读取数据未通过安全校验" }, 400);
       }
-      const unredactedAvatar = observations.some((candidate) => {
-        const crop = (candidate as VisualObservationSubmission).redactedCrop;
-        if (!crop?.redactionProof.avatarBounds) return false;
-        return !crop.redactionProof.maskedRegions.some((rect) =>
-          JSON.stringify(rect) === JSON.stringify(crop.redactionProof.avatarBounds));
-      });
-      if (unredactedAvatar) {
-        return void await json({ code: "visual_artifact_invalid", message: "遮挡后的评论卡裁剪未通过安全校验" }, 400);
-      }
       if (!state.session) return void await json({ code: "resource_not_found" }, 404);
       const accepted = (observations as VisualObservationSubmission[]).map((item) => {
         const low = item.fieldConfidences.visibleText < (item.extractionMethod === "ocr" ? 0.9 : 0.85);
@@ -564,13 +568,36 @@ async function installApiFixture(page: Page, state: FixtureState) {
     if (path === `/api/v1/acquisition/visual-reader-sessions/${SESSION_ID}:abort`
       && request.method() === "POST") {
       if (!state.session) return void await json({ code: "resource_not_found" }, 404);
+      if (request.postData() !== '{"reasonCode":"user_requested"}') {
+        return void await json({ code: "visual_observation_invalid" }, 400);
+      }
       state.session = terminalSession(state.session, "aborted", []);
       return void await json(state.session);
     }
-    if (path === `/api/v1/acquisition/visual-reader-artifacts/${encodeURIComponent(ARTIFACT_ID)}`
+    const evidenceArtifactId = state.evidenceArtifactId ?? ARTIFACT_ID;
+    if (path === `/api/v1/acquisition/visual-reader-artifacts/${encodeURIComponent(evidenceArtifactId)}`
       && request.method() === "GET") {
+      if (state.artifactForbidden) {
+        return void await json({ code: "artifact_forbidden", message: "private artifact policy detail" }, 403);
+      }
       if (state.artifactExpired) {
         return void await json({ code: "resource_not_found", message: "制品已到期" }, 404);
+      }
+      if (state.artifactVariant === "wrong_mime") {
+        return void await route.fulfill({
+          status: 200,
+          contentType: "application/octet-stream",
+          headers: { "cache-control": "private, no-store", "x-content-type-options": "nosniff" },
+          body: Buffer.from(MASKED_WEBP_BASE64, "base64")
+        });
+      }
+      if (state.artifactVariant === "fake_webp") {
+        return void await route.fulfill({
+          status: 200,
+          contentType: "image/webp",
+          headers: { "cache-control": "private, no-store", "x-content-type-options": "nosniff" },
+          body: Buffer.from([82, 73, 70, 70, 4, 0, 0, 0, 70, 65, 75, 69])
+        });
       }
       return void await route.fulfill({
         status: 200,
@@ -611,7 +638,7 @@ async function installApiFixture(page: Page, state: FixtureState) {
             extractionMethod: "ocr",
             visibleTextConfidence: 0.96,
             coverage: "authorized_visible_top_level_sample",
-            artifactId: ARTIFACT_ID,
+            artifactId: evidenceArtifactId,
             domTextHash: `sha256:${"2".repeat(64)}`,
             ocrTextHash: `sha256:${"3".repeat(64)}`
           },
@@ -668,15 +695,32 @@ async function openPlan(page: Page, navigate = true) {
   await expect(page.locator("#replicaAcquisitionDetailCenter")).toBeVisible();
 }
 
-async function authorize(page: Page, harness: VisualReaderExtensionHarness) {
+async function authorize(
+  page: Page,
+  harness: VisualReaderExtensionHarness,
+  fixture: Awaited<ReturnType<typeof installApiFixture>>
+) {
   const card = page.locator("[data-acquisition-visual-reader]");
   await expect(card).toHaveAttribute("data-extension-status", "ready");
+  const consent = card.getByRole("checkbox", { name: "上传已遮挡的单张评论卡 WebP" });
+  await consent.focus();
+  await expect(consent).toBeFocused();
+  await consent.press("Space");
+  await expect(consent).not.toBeChecked();
+  await consent.press("Space");
+  await expect(consent).toBeChecked();
   const button = card.getByRole("button", { name: "授权读取当前抖音页面" });
   await button.focus();
   await expect(button).toBeFocused();
   await button.press("Enter");
   await expect.poll(async () => (await harness.commands()).filter((item) => item.type === "start").length)
     .toBe(1);
+  const create = fixture.requests.filter((request) => request.method === "POST"
+    && request.path === "/api/v1/acquisition/visual-reader-sessions");
+  expect(create).toHaveLength(1);
+  expect(create[0]?.body).toBe(JSON.stringify({ runId: RUN_ID, artifactUploadEnabled: true }));
+  expect((await harness.commands()).find((item) => item.type === "start")?.artifactUploadEnabled)
+    .toBe(true);
   await expect(card).toHaveAttribute("data-session-status", /created|collecting/u);
 }
 
@@ -705,9 +749,7 @@ async function securityAudit(
     /(?:comment|reply|dm|message|friend|follow|publish|broadcast|bulk|mass|crm|customer|lead|deal|handoff)/iu
       .test(request.path)
     && !request.path.includes("visual-reader"))).toEqual([]);
-  expect(fixture.requests.filter((request) =>
-    /(?:^|\.)douyin\.com$|(?:^|\.)iesdouyin\.com$/iu.test(new URL(request.origin).hostname)))
-    .toEqual([]);
+  expect(fixture.requests.filter((request) => request.origin !== LOCAL_VITE_ORIGIN)).toEqual([]);
   const bodies = writes.map((request) => request.body ?? "").join("\n");
   expect(bodies).not.toContain(COOKIE_SECRET);
   expect(bodies).not.toMatch(/rawScreenshot|fullPageScreenshot|browserConfig|networkResponse/iu);
@@ -715,14 +757,59 @@ async function securityAudit(
   expect(fixture.consoleMessages.join("\n")).not.toContain(MASKED_WEBP_BASE64);
   const storage = await page.evaluate(() => ({
     local: Object.fromEntries(Object.entries(localStorage)),
-    session: Object.fromEntries(Object.entries(sessionStorage))
+    session: Object.fromEntries(Object.entries(sessionStorage)),
+    harness: window.__GOODJOB_VISUAL_READER_E2E_HARNESS__ ?? null
   }));
   expect(JSON.stringify(storage)).not.toContain(COOKIE_SECRET);
   expect(JSON.stringify(storage)).not.toContain(MASKED_WEBP_BASE64);
   expect(JSON.stringify(state)).not.toContain(COOKIE_SECRET);
   expect(JSON.stringify(state)).not.toMatch(/rawScreenshot|fullPageScreenshot|browserConfig/iu);
+  assertSentinelsAbsent({
+    body: bodies,
+    console: fixture.consoleMessages.join("\n"),
+    storage: JSON.stringify(storage),
+    fixture: JSON.stringify(state)
+  });
   expect(fixture.undeclared).toEqual([]);
 }
+
+function assertSentinelsAbsent(surfaces: Record<"body" | "console" | "storage" | "fixture", string>) {
+  for (const sentinel of [RAW_SCREENSHOT_SENTINEL, BROWSER_CONFIG_SENTINEL, NONCE_SENTINEL]) {
+    for (const value of Object.values(surfaces)) expect(value).not.toContain(sentinel);
+  }
+}
+
+test("security audit rejects every non-local network origin", async ({ page }) => {
+  await page.goto("/", { waitUntil: "load" });
+  const state: FixtureState = {
+    session: null,
+    observations: [],
+    candidateAvailable: false,
+    artifactExpired: false
+  };
+  await expect(securityAudit(page, {
+    requests: [{
+      method: "POST",
+      origin: "https://evil.example",
+      path: "/collect",
+      body: "{}"
+    }],
+    consoleMessages: [],
+    undeclared: []
+  }, state)).rejects.toThrow();
+
+  for (const sentinel of [RAW_SCREENSHOT_SENTINEL, BROWSER_CONFIG_SENTINEL, NONCE_SENTINEL]) {
+    for (const surface of ["body", "console", "storage", "fixture"] as const) {
+      expect(() => assertSentinelsAbsent({
+        body: "",
+        console: "",
+        storage: "",
+        fixture: "",
+        [surface]: sentinel
+      })).toThrow();
+    }
+  }
+});
 
 for (const viewport of viewports) {
   test(`authorized DOM/OCR observations restore and open redacted Evidence at ${viewport.width}px`, async ({ page }) => {
@@ -739,7 +826,7 @@ for (const viewport of viewports) {
     await openPlan(page);
     const card = page.locator("[data-acquisition-visual-reader]");
     await expect(card).toContainText("只上传已遮挡的单张评论卡 WebP");
-    await authorize(page, harness);
+    await authorize(page, harness, fixture);
 
     await harness.emitObservationBatch("batch-dom-e2e", [domObservation({
       viewport: { width: viewport.width, height: viewport.height, deviceScaleFactor: 1 }
@@ -774,10 +861,20 @@ for (const viewport of viewports) {
     await expect(evidence).toBeVisible();
     const viewArtifact = evidence.getByRole("button", { name: "查看遮挡裁剪" });
     await viewArtifact.focus();
+    const artifactResponse = page.waitForResponse((response) =>
+      response.url().includes(`/visual-reader-artifacts/${encodeURIComponent(ARTIFACT_ID)}`));
     await viewArtifact.press("Enter");
+    const response = await artifactResponse;
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("image/webp");
+    expect(response.headers()["cache-control"]).toBe("private, no-store");
+    expect(response.headers()["content-security-policy"]).toBe("default-src 'none'; sandbox");
+    expect(response.headers()["x-content-type-options"]).toBe("nosniff");
     const image = page.getByRole("img", { name: "已遮挡的评论卡裁剪" });
     await expect(image).toBeVisible();
     await expect(image).toHaveAttribute("src", /^blob:/u);
+    await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+      .toBeGreaterThan(0);
     await expectNoHorizontalOverflow(page);
 
     await page.reload({ waitUntil: "load" });
@@ -808,12 +905,12 @@ test("extension missing and malformed bridge events fail closed before persisten
 
   await harness.setAvailable(true);
   await card.getByRole("button", { name: "重新检测读取器" }).click();
-  await authorize(page, harness);
+  await authorize(page, harness, fixture);
   const appendPath = `/api/v1/acquisition/visual-reader-sessions/${SESSION_ID}/observations:batch`;
   const appendCount = () => fixture.requests.filter((item) => item.path === appendPath).length;
   const valid = domObservation();
   await harness.emitObservationBatch("wrong-nonce", [valid], {
-    channelNonce: "f".repeat(64)
+    channelNonce: NONCE_SENTINEL
   });
   await harness.emitRaw({
     type: "observation_batch",
@@ -829,13 +926,23 @@ test("extension missing and malformed bridge events fail closed before persisten
       window.__GOODJOB_VISUAL_READER_E2E_HARNESS__?.channelNonce)),
     sessionId: SESSION_ID,
     batchId: "raw-screenshot-field",
-    observations: [{ ...valid, rawScreenshot: "raw-viewport-secret" }]
+    observations: [{ ...valid, rawScreenshot: RAW_SCREENSHOT_SENTINEL }]
+  });
+  await harness.emitRaw({
+    type: "observation_batch",
+    channelNonce: (await page.evaluate(() =>
+      window.__GOODJOB_VISUAL_READER_E2E_HARNESS__?.channelNonce)),
+    sessionId: SESSION_ID,
+    batchId: "browser-config-field",
+    observations: [{ ...valid, browserConfig: BROWSER_CONFIG_SENTINEL }]
   });
   await harness.emitObservationBatch("over-limit", Array.from({ length: 21 }, (_, index) =>
     domObservation({ clientObservationKey: `over-limit-${index}` })));
   await harness.emitObservationBatch("ocr-forged-identity", [ocrObservation({
     platformCommentId: "7480000000000000002"
   })]);
+  await harness.emitObservationBatch("crop-over-limit", Array.from({ length: 6 }, (_, index) =>
+    ocrObservation({ clientObservationKey: `crop-over-limit-${index}` })));
   await page.waitForTimeout(100);
   expect(appendCount()).toBe(0);
   expect(state.observations).toEqual([]);
@@ -852,7 +959,7 @@ test("low confidence, unredacted avatar, and explicit stop remain manual and rea
   const harness = await installVisualReaderExtensionHarness(page);
   const fixture = await installApiFixture(page, state);
   await openPlan(page);
-  await authorize(page, harness);
+  await authorize(page, harness, fixture);
   const card = page.locator("[data-acquisition-visual-reader]");
 
   await harness.emitObservationBatch("low-confidence", [domObservation({
@@ -885,8 +992,13 @@ test("low confidence, unredacted avatar, and explicit stop remain manual and rea
       }
     }
   });
+  const appendPath = `/api/v1/acquisition/visual-reader-sessions/${SESSION_ID}/observations:batch`;
+  const appendCountBeforeInvalidCrop = fixture.requests.filter((item) => item.path === appendPath).length;
   await harness.emitObservationBatch("unredacted-avatar", [invalidCrop]);
-  await expect(card.getByRole("alert")).toContainText("遮挡后的评论卡裁剪未通过安全校验");
+  await page.waitForTimeout(100);
+  expect(fixture.requests.filter((item) => item.path === appendPath)).toHaveLength(
+    appendCountBeforeInvalidCrop
+  );
   expect((await harness.commands()).some((item) =>
     item.type === "acknowledge_batch" && item.batchId === "unredacted-avatar"))
     .toBe(false);
@@ -898,6 +1010,10 @@ test("low confidence, unredacted avatar, and explicit stop remain manual and rea
     .toBe(true);
   await expect(card).toHaveAttribute("data-session-status", "aborted");
   await expect(card).toContainText("视觉读取已停止");
+  const abort = fixture.requests.filter((item) => item.method === "POST"
+    && item.path === `/api/v1/acquisition/visual-reader-sessions/${SESSION_ID}:abort`);
+  expect(abort).toHaveLength(1);
+  expect(abort[0]?.body).toBe('{"reasonCode":"user_requested"}');
   await securityAudit(page, fixture, state);
 });
 
@@ -933,3 +1049,61 @@ test("expired redacted artifact keeps the Evidence hash and shows a stable messa
   await expect(evidence).toBeVisible();
   await securityAudit(page, fixture, state);
 });
+
+test("forbidden redacted artifact never renders or leaks policy detail", async ({ page }) => {
+  const state: FixtureState = {
+    session: terminalSession(activeSession({
+      status: "collecting",
+      usage: usage({ observationCount: 1, ocrObservationCount: 1, artifactCount: 1 })
+    }), "completed", []),
+    observations: [ocrObservation()],
+    candidateAvailable: true,
+    artifactExpired: false,
+    artifactForbidden: true,
+    evidenceArtifactId: FORBIDDEN_ARTIFACT_ID
+  };
+  await installVisualReaderExtensionHarness(page);
+  const fixture = await installApiFixture(page, state);
+  await openPlan(page);
+  await page.locator("[data-acquisition-detail-action='select-candidate']", {
+    hasText: "需要获客方案"
+  }).click();
+  const evidence = page.locator(".replica-acquisition-evidence-list").filter({ hasText: EVIDENCE_ID });
+  const responsePromise = page.waitForResponse((response) =>
+    response.url().includes(encodeURIComponent(FORBIDDEN_ARTIFACT_ID)));
+  await evidence.getByRole("button", { name: "查看遮挡裁剪" }).click();
+  expect((await responsePromise).status()).toBe(403);
+  await expect(page.getByText("遮挡裁剪暂不可用，证据哈希仍保留")).toBeVisible();
+  await expect(page.getByRole("img", { name: "已遮挡的评论卡裁剪" })).toHaveCount(0);
+  await expect(evidence).toContainText(`sha256:${"7".repeat(64)}`);
+  await expect(bodyText(page)).resolves.not.toContain("private artifact policy detail");
+  await securityAudit(page, fixture, state);
+});
+
+for (const artifactVariant of ["wrong_mime", "fake_webp"] as const) {
+  test(`${artifactVariant} artifact fails closed before display`, async ({ page }) => {
+    const state: FixtureState = {
+      session: terminalSession(activeSession({ status: "collecting" }), "completed", []),
+      observations: [ocrObservation()],
+      candidateAvailable: true,
+      artifactExpired: false,
+      artifactVariant
+    };
+    await installVisualReaderExtensionHarness(page);
+    const fixture = await installApiFixture(page, state);
+    await openPlan(page);
+    await page.locator("[data-acquisition-detail-action='select-candidate']", {
+      hasText: "需要获客方案"
+    }).click();
+    const evidence = page.locator(".replica-acquisition-evidence-list").filter({ hasText: EVIDENCE_ID });
+    await evidence.getByRole("button", { name: "查看遮挡裁剪" }).click();
+    await expect(page.getByText("遮挡裁剪暂不可用，证据哈希仍保留")).toBeVisible();
+    await expect(page.getByRole("img", { name: "已遮挡的评论卡裁剪" })).toHaveCount(0);
+    await expect(evidence).toContainText(`sha256:${"7".repeat(64)}`);
+    await securityAudit(page, fixture, state);
+  });
+}
+
+async function bodyText(page: Page): Promise<string> {
+  return await page.locator("body").innerText();
+}
