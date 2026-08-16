@@ -2988,7 +2988,7 @@ async function ensureSchema(pool: mysql.Pool) {
     ["owner_id", "team_id", "idempotency_key_hash"]
   );
   await pool.query(`CREATE TABLE IF NOT EXISTS ai_job_model_snapshots (
-    job_id VARCHAR(90) PRIMARY KEY,
+    job_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
     owner_id VARCHAR(64) NOT NULL,
     team_id VARCHAR(64) NOT NULL,
     connection_id VARCHAR(64) NOT NULL,
@@ -3044,7 +3044,7 @@ async function ensureSchema(pool: mysql.Pool) {
     id VARCHAR(100) NOT NULL,
     owner_id VARCHAR(64) NOT NULL,
     team_id VARCHAR(64) NOT NULL,
-    job_id VARCHAR(90) NOT NULL,
+    job_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     attempt_id VARCHAR(100) NOT NULL,
     connection_id VARCHAR(64) NOT NULL,
     credential_version INT NOT NULL,
@@ -3071,6 +3071,7 @@ async function ensureSchema(pool: mysql.Pool) {
     INDEX idx_ai_model_call_owner(owner_id, created_at),
     INDEX idx_ai_model_call_job(job_id, created_at)
   )`);
+  await ensureAiModelJobIdCapacity(pool);
   await ensureColumn(
     pool,
     "ai_model_configs",
@@ -5144,6 +5145,44 @@ async function ensureColumn(pool: mysql.Pool, table: string, column: string, def
   );
   const exists = Number((result as Array<{ count: number }>)[0]?.count || 0) > 0;
   if (!exists) await pool.query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+export async function ensureAiModelJobIdCapacity(
+  pool: Pick<mysql.Pool, "query">
+) {
+  for (const table of [
+    "ai_job_model_snapshots",
+    "ai_model_call_records"
+  ] as const) {
+    const [result] = await pool.query(
+      `SELECT CHARACTER_MAXIMUM_LENGTH AS maximumLength,
+              CHARACTER_SET_NAME AS characterSet,
+              COLLATION_NAME AS collationName
+       FROM information_schema.columns
+       WHERE table_schema = DATABASE()
+         AND table_name = ?
+         AND column_name = 'job_id'`,
+      [table]
+    );
+    const column = (result as Array<{
+      maximumLength: number;
+      characterSet: string;
+      collationName: string;
+    }>)[0];
+    if (!column) {
+      throw new Error(`Missing ${table}.job_id during model schema migration`);
+    }
+    if (Number(column.maximumLength) === 255
+      && column.characterSet === "ascii"
+      && column.collationName === "ascii_bin") {
+      continue;
+    }
+    await pool.query(
+      `ALTER TABLE ${table} `
+      + "MODIFY COLUMN job_id VARCHAR(255) CHARACTER SET ascii "
+      + "COLLATE ascii_bin NOT NULL"
+    );
+  }
 }
 
 async function migrateLegacyAiModelConnections(pool: mysql.Pool) {

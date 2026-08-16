@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { encryptAiModelApiKey } from "./credential-security.js";
 import {
   bindActiveModelSnapshot,
+  bindActiveModelSnapshotDurably,
   createActiveModelGatewayForSnapshot,
   createStoreModelCallLedger,
   resolveSnapshottedModelCredential
@@ -152,6 +153,63 @@ test("binding an AI job snapshots the active connection once for all retries", (
   );
   assert.equal(store.aiJobModelSnapshots.length, 1);
   assert.equal(store.pendingAiJobModelSnapshots.length, 1);
+});
+
+test("durable binding persists once and rejects immutable job identity drift", async () => {
+  const store = runtimeStore();
+  const persisted: string[] = [];
+  let releaseFirstPersist!: () => void;
+  let markFirstPersistStarted!: () => void;
+  const firstPersistStarted = new Promise<void>((resolve) => {
+    markFirstPersistStarted = resolve;
+  });
+  const holdFirstPersist = new Promise<void>((resolve) => {
+    releaseFirstPersist = resolve;
+  });
+  const durableStore = {
+    ...store,
+    async persist() {
+      persisted.push(
+        `${this.pendingAiJobModelSnapshots.length}:`
+        + `${this.pendingModelCallRecords.length}`
+      );
+      if (persisted.length === 1) {
+        markFirstPersistStarted();
+        await holdFirstPersist;
+      }
+      this.pendingAiJobModelSnapshots.splice(0);
+      this.pendingModelCallRecords.splice(0);
+    }
+  };
+  const input = {
+    jobId: "job_durable_binding",
+    ownerId,
+    teamId,
+    promptVersion: "financial-council-finance-analyze.v1",
+    schemaVersion: "financial-council-specialist-output.v1",
+    promptHash: contentHash("financial council prompt"),
+    schemaHash: contentHash("financial council schema")
+  };
+
+  const firstBinding = bindActiveModelSnapshotDurably(durableStore, input);
+  await firstPersistStarted;
+  const concurrentReplay = bindActiveModelSnapshotDurably(durableStore, input);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const callsBeforeRelease = persisted.length;
+  releaseFirstPersist();
+  const [first, replay] = await Promise.all([firstBinding, concurrentReplay]);
+  assert.equal(replay, first);
+  assert.equal(callsBeforeRelease, 1);
+  assert.deepEqual(persisted, ["1:0"]);
+
+  await assert.rejects(
+    bindActiveModelSnapshotDurably(durableStore, {
+      ...input,
+      promptHash: contentHash("changed prompt")
+    }),
+    /immutable identity mismatch/i
+  );
+  assert.equal(store.aiJobModelSnapshots.length, 1);
 });
 
 test("credential resolution decrypts the exact snapshotted version", async () => {

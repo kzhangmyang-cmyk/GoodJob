@@ -29,6 +29,12 @@ export interface OpenAiCompatibleStream {
   events: AsyncIterable<OpenAiCompatibleStreamEvent>;
 }
 
+interface TimedOpenAiCompatibleResponse {
+  readonly response: Response;
+  readonly deadline: Promise<never>;
+  release(): void;
+}
+
 export class OpenAiCompatibleRequestError extends Error {
   constructor(
     public readonly status: number | null,
@@ -68,6 +74,7 @@ export interface OpenAiCompatibleAdapterRequest {
 export interface OpenAiCompatibleChatRequest
   extends OpenAiCompatibleAdapterRequest {
   snapshot: AiJobModelSnapshot;
+  systemPrompt?: string;
   prompt: string;
   jsonMode?: boolean;
   signal?: AbortSignal;
@@ -78,6 +85,15 @@ export interface OpenAiCompatibleChatRequest
   }>;
   toolChoice?: "auto" | "none" | "required";
   parallelToolCalls?: boolean;
+}
+
+function chatMessages(request: OpenAiCompatibleChatRequest) {
+  return [
+    ...(request.systemPrompt === undefined
+      ? []
+      : [{ role: "system", content: request.systemPrompt }]),
+    { role: "user", content: request.prompt }
+  ];
 }
 
 interface OpenAiUsagePayload {
@@ -146,12 +162,12 @@ export class OpenAiCompatibleAdapter {
   }
 
   async listModels(request: OpenAiCompatibleAdapterRequest) {
-    const response = await this.#request("/models", {
+    const { response, value } = await this.#requestJson("/models", {
       method: "GET",
       credential: request.credential,
       requestId: request.requestId
     });
-    const body = asRecord(await response.json());
+    const body = asRecord(value);
     if (!Array.isArray(body.data)) {
       throw new TypeError("Provider model list must contain data");
     }
@@ -177,12 +193,22 @@ export class OpenAiCompatibleAdapter {
     const body = await this.#chat(request, false);
     const choice = this.#firstChoice(body.value);
     const message = asRecord(choice.message);
-    if (typeof message.content !== "string" || !message.content.trim()) {
+    if (choice.finish_reason !== "stop") {
       throw new OpenAiCompatibleResponseError(
         choice.finish_reason === "content_filter"
           ? "content_filtered"
-          : "empty_response"
+          : "invalid_response"
       );
+    }
+    if ("tool_calls" in message
+      && (!Array.isArray(message.tool_calls) || message.tool_calls.length > 0)) {
+      throw new OpenAiCompatibleResponseError("invalid_response");
+    }
+    if ("function_call" in message && message.function_call != null) {
+      throw new OpenAiCompatibleResponseError("invalid_response");
+    }
+    if (typeof message.content !== "string" || !message.content.trim()) {
+      throw new OpenAiCompatibleResponseError("empty_response");
     }
     return {
       ...body,
@@ -226,17 +252,19 @@ export class OpenAiCompatibleAdapter {
   async streamText(
     request: OpenAiCompatibleChatRequest
   ): Promise<OpenAiCompatibleStream> {
-    const response = await this.#request("/chat/completions", {
+    const pending = await this.#request("/chat/completions", {
       method: "POST",
       credential: request.credential,
       requestId: request.requestId,
       body: {
         model: request.snapshot.model,
-        messages: [{ role: "user", content: request.prompt }],
+        messages: chatMessages(request),
         stream: true,
         stream_options: { include_usage: true }
       }
     });
+    const { response } = pending;
+    pending.release();
     if (!response.body) {
       throw new OpenAiCompatibleResponseError("empty_response");
     }
@@ -254,7 +282,7 @@ export class OpenAiCompatibleAdapter {
   async #chat(request: OpenAiCompatibleChatRequest, stream: boolean) {
     const body: Record<string, unknown> = {
       model: request.snapshot.model,
-      messages: [{ role: "user", content: request.prompt }],
+      messages: chatMessages(request),
       stream
     };
     if (request.jsonMode) {
@@ -272,13 +300,13 @@ export class OpenAiCompatibleAdapter {
       body.tool_choice = request.toolChoice ?? "required";
       body.parallel_tool_calls = request.parallelToolCalls ?? false;
     }
-    const response = await this.#request("/chat/completions", {
+    const { response, value } = await this.#requestJson("/chat/completions", {
       method: "POST",
       credential: request.credential,
       requestId: request.requestId,
       body
     });
-    const responseBody = asRecord(await response.json());
+    const responseBody = asRecord(value);
     return {
       value: responseBody,
       usage: usageFromPayload(responseBody.usage),
@@ -429,38 +457,88 @@ export class OpenAiCompatibleAdapter {
       requestId: string;
       body?: Record<string, unknown>;
     }
-  ) {
+  ): Promise<TimedOpenAiCompatibleResponse> {
     let response: Response;
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(
-        new DOMException("Model provider request timed out", "TimeoutError")
-      ),
-      this.#requestTimeoutMs
-    );
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      if (timeout) clearTimeout(timeout);
+    };
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = setTimeout(() => {
+        const error = new DOMException(
+          "Model provider request timed out",
+          "TimeoutError"
+        );
+        controller.abort(error);
+        reject(error);
+      }, this.#requestTimeoutMs);
+    });
     try {
-      response = await this.#fetch(`${this.#baseUrl}${path}`, {
-        method: options.method,
-        headers: {
-          authorization: `Bearer ${options.credential}`,
-          "content-type": "application/json",
-          "x-client-request-id": options.requestId
-        },
-        body: options.body ? JSON.stringify(options.body) : undefined,
-        signal: controller.signal
-      });
+      response = await Promise.race([
+        this.#fetch(`${this.#baseUrl}${path}`, {
+          method: options.method,
+          headers: {
+            authorization: `Bearer ${options.credential}`,
+            "content-type": "application/json",
+            "x-client-request-id": options.requestId
+          },
+          body: options.body ? JSON.stringify(options.body) : undefined,
+          signal: controller.signal
+        }),
+        deadline
+      ]);
     } catch (error) {
+      release();
       throw new OpenAiCompatibleRequestError(null, null, null, error);
-    } finally {
-      clearTimeout(timeout);
     }
     if (!response.ok) {
+      release();
       throw new OpenAiCompatibleRequestError(
         response.status,
         providerRequestId(response),
         retryAfterMs(response)
       );
     }
-    return response;
+    return { response, deadline, release };
+  }
+
+  async #requestJson(
+    path: string,
+    options: {
+      method: "GET" | "POST";
+      credential: string;
+      requestId: string;
+      body?: Record<string, unknown>;
+    }
+  ) {
+    const pending = await this.#request(path, options);
+    try {
+      return {
+        response: pending.response,
+        value: await Promise.race([
+          pending.response.json(),
+          pending.deadline
+        ])
+      };
+    } catch (error) {
+      const name = error && typeof error === "object" && "name" in error
+        ? String(error.name)
+        : "";
+      if (name === "AbortError" || name === "TimeoutError") {
+        throw new OpenAiCompatibleRequestError(
+          null,
+          providerRequestId(pending.response),
+          null,
+          error
+        );
+      }
+      throw error;
+    } finally {
+      pending.release();
+    }
   }
 }

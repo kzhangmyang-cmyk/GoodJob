@@ -105,7 +105,18 @@ git commit -m "feat(finance): version council formulas and actions"
 - Create: `backend/src/financial-council-model-gateway.ts`
 - Create: `backend/src/financial-council-model-gateway-test.ts`
 - Modify: `backend/src/model-providers/runtime.ts`
+- Modify: `backend/src/model-providers/gateway.ts`
+- Modify: `backend/src/model-providers/adapters/openai-compatible.ts`
+- Modify: `backend/src/model-gateway-test.ts`
 - Modify: `backend/src/model-runtime-integration-test.ts`
+- Modify: `backend/src/financial-council-service.ts`
+- Modify: `backend/src/financial-council-service-test.ts`
+- Modify: `backend/src/mysql-store.ts`
+- Modify: `backend/schema.mysql.sql`
+- Modify: `backend/goodjob_crm.full.sql`
+- Modify if the migration test requires it: `backend/src/model-pending-appends-test.ts`
+- Modify if the live migration test requires it: `backend/src/provider-mysql-persistence-test.ts`
+- Modify: `docs/superpowers/plans/2026-08-16-financial-council-contracts-snapshot.md`
 
 **Interfaces:**
 - Produces `FinancialCouncilModelPort.analyze(input)` and `.rebut(input)`; tests use an in-memory fake, production uses `ActiveModelGateway.generateStructured`.
@@ -119,6 +130,15 @@ schemaVersion: financial-council-specialist-output.v1
 
 - Model output contains only `findingDrafts[]` and `actionHypotheses[]`; all refs are IDs already supplied in the input allowlist.
 - `rebut` output is exactly `{decision:"uphold"|"revise"|"withdraw";findingId;evidenceRefs;replacement|null;explanation}`.
+- P1 run IDs remain the published `financial-council:create:sha256:<64hex>` shape but hash a canonical tenant scope plus the physical idempotency-key hash, so mandated specialist job IDs are globally collision-free across workspaces.
+- Official model snapshot/call-ledger `job_id` columns accept the full mandated ID (bounded to 255 ASCII bytes); existing tables are migrated fail-closed before use and the static schema matches runtime schema.
+- Both maintained SQL schema artifacts match the runtime migration; the full dump is not left at the obsolete 90-character boundary.
+- The trusted prompt embeds the canonical phase output schema and closed field instructions; `response_format=json_object` alone is not treated as sufficient provider guidance.
+- The gateway's single repair request retains the original trusted prompt/schema context plus bounded validation issues and prior output; repair never becomes a context-free second protocol.
+- Structured generation carries separate trusted system and untrusted user prompts through the official adapter as actual `system` and `user` messages; a delimiter inside one user message is not treated as instruction-priority isolation.
+- Specialist single-flight entries bind the complete tenant, run, frozen snapshot, role, phase, attempt, content, prompt and schema identity; a colliding in-flight request cannot reuse another tenant's result.
+- Non-tool structured generation rejects any provider tool call, and its request deadline remains active through response-body parsing.
+- Finding/action/rebut narratives use only closed server-authored text codes or supplied allowlist IDs, so models cannot express authoritative figures through prose. Tax narratives are closed to the server-authored `税务风险需专业人员复核` boundary with no model-authored tax assumptions, compliance claims or filing instructions.
 
 - [ ] **Step 1: Write missing-connection, content-hash and prompt-injection RED tests.**
 
@@ -149,7 +169,7 @@ npm run build --workspace backend
 - [ ] **Step 5: Commit.**
 
 ```bash
-git add backend/src/financial-council-model-* backend/src/model-providers/runtime.ts backend/src/model-runtime-integration-test.ts
+git add backend/src/financial-council-model-* backend/src/model-providers/runtime.ts backend/src/model-providers/gateway.ts backend/src/model-providers/adapters/openai-compatible.ts backend/src/model-gateway-test.ts backend/src/model-runtime-integration-test.ts backend/src/financial-council-service.ts backend/src/financial-council-service-test.ts backend/src/mysql-store.ts backend/src/model-pending-appends-test.ts backend/schema.mysql.sql backend/goodjob_crm.full.sql docs/superpowers/plans/2026-08-16-financial-council-contracts-snapshot.md docs/superpowers/plans/2026-08-16-financial-council-specialists-audit.md
 git commit -m "feat(finance): bind council specialists to model snapshots"
 ```
 

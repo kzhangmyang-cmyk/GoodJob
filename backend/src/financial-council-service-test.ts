@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { FinancialCouncilService } from "./financial-council-service.js";
 import {
@@ -164,6 +165,44 @@ test("create freezes atomically, exact replay is stable, and replay does not wak
       .map((event) => event.revision),
     [1, 2]
   );
+});
+
+test("same physical idempotency key produces tenant-scoped public run IDs", async () => {
+  const fixture = harness();
+  const firstScope = context("ws-1");
+  const secondScope = Object.freeze({
+    ...context("ws-2"),
+    actorId: "manager-2"
+  }) as CommandContext["workspace"];
+  const first = await fixture.service.createRun(
+    command("shared-physical-key", undefined, firstScope),
+    input()
+  );
+  const second = await fixture.service.createRun(
+    command("shared-physical-key", undefined, secondScope),
+    input()
+  );
+
+  const physicalHash = `sha256:${createHash("sha256")
+    .update("shared-physical-key")
+    .digest("hex")}`;
+  const firstPreimage = JSON.stringify({
+    idempotencyKeyHash: physicalHash,
+    ownerId: "manager-1",
+    teamId: "ws-1",
+    workspaceId: "ws-1"
+  });
+  const firstScopedHash = `sha256:${createHash("sha256")
+    .update(firstPreimage)
+    .digest("hex")}`;
+
+  assert.equal(
+    first.value.runId,
+    `financial-council:create:${firstScopedHash}`
+  );
+  assert.match(second.value.runId,
+    /^financial-council:create:sha256:[0-9a-f]{64}$/u);
+  assert.notEqual(second.value.runId, first.value.runId);
 });
 
 test("same creation key with a changed canonical request conflicts without wake", async () => {

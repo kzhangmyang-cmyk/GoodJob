@@ -83,6 +83,66 @@ export function bindActiveModelSnapshot(
   });
 }
 
+export type DurableModelRuntimeStore = ModelRuntimeStore & {
+  persist(): Promise<void>;
+};
+
+const durableSnapshotBindingTails = new WeakMap<
+  DurableModelRuntimeStore,
+  Promise<void>
+>();
+
+function exactStoredSnapshotBinding(
+  snapshot: StoredAiJobModelSnapshot,
+  input: BindActiveModelSnapshotInput
+) {
+  return snapshot.jobId === input.jobId
+    && snapshot.ownerId === input.ownerId
+    && snapshot.teamId === input.teamId
+    && snapshot.promptVersion === input.promptVersion
+    && snapshot.schemaVersion === input.schemaVersion
+    && snapshot.promptHash === input.promptHash
+    && snapshot.schemaHash === input.schemaHash;
+}
+
+/**
+ * Binds one immutable job identity and durably stores a new snapshot before
+ * callers are allowed to contact the provider.
+ */
+export async function bindActiveModelSnapshotDurably(
+  store: DurableModelRuntimeStore,
+  input: BindActiveModelSnapshotInput
+) {
+  const predecessor = durableSnapshotBindingTails.get(store)
+    ?? Promise.resolve();
+  let release!: () => void;
+  const turn = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  durableSnapshotBindingTails.set(store, predecessor.then(() => turn));
+  await predecessor;
+  try {
+    const existing = store.aiJobModelSnapshots.find(
+      (item) => item.jobId === input.jobId
+    );
+    if (existing && !exactStoredSnapshotBinding(existing, input)) {
+      throw new Error("AI job snapshot immutable identity mismatch");
+    }
+    const snapshot = existing ?? bindActiveModelSnapshot(store, input);
+    if (!exactStoredSnapshotBinding(snapshot, input)) {
+      throw new Error("AI job snapshot immutable identity mismatch");
+    }
+    if (store.pendingAiJobModelSnapshots.some(
+      (item) => item.jobId === snapshot.jobId
+    )) {
+      await store.persist();
+    }
+    return snapshot;
+  } finally {
+    release();
+  }
+}
+
 export function bindModelConnectionSnapshot(
   store: ModelRuntimeStore,
   input: BindModelConnectionSnapshotInput

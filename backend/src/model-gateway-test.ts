@@ -235,8 +235,15 @@ test("structured generation repairs invalid output once with the same snapshot a
     completionResponse("{\"plan\":7}"),
     completionResponse(rawOutput)
   ]);
+  const trustedPrompt = [
+    "FIXED_SERVER_POLICY_V1",
+    "BEGIN_TRUSTED_OUTPUT_SCHEMA",
+    '{"additionalProperties":false,"required":["plan"],"type":"object"}',
+    "END_TRUSTED_OUTPUT_SCHEMA"
+  ].join("\n");
   const result = await fixture.gateway.generateStructured({
-    prompt: rawPrompt,
+    systemPrompt: trustedPrompt,
+    prompt: "BEGIN_UNTRUSTED_DATA\nrepair fixture\nEND_UNTRUSTED_DATA",
     schema: z.object({ plan: z.string() }).strict()
   });
 
@@ -276,15 +283,61 @@ test("structured generation repairs invalid output once with the same snapshot a
   const bodies = fixture.requests.map((item) =>
     JSON.parse(String(item.init?.body)) as {
       model: string;
-      messages: Array<{ content: string }>;
+      messages: Array<{ role: string; content: string }>;
     }
   );
   assert.deepEqual(bodies.map((body) => body.model), [
     "moonshot-v1-8k",
     "moonshot-v1-8k"
   ]);
-  assert.match(bodies[1].messages[0].content, /invalid_type/);
-  assert.match(bodies[1].messages[0].content, /plan/);
+  assert.deepEqual(
+    bodies.map((body) => body.messages.map((message) => message.role)),
+    [["system", "user"], ["system", "user"]]
+  );
+  assert.match(bodies[1].messages[1].content, /invalid_type/);
+  assert.match(bodies[1].messages[1].content, /plan/);
+  assert.match(bodies[1].messages[0].content, /FIXED_SERVER_POLICY_V1/);
+  assert.match(
+    bodies[1].messages[0].content,
+    /BEGIN_TRUSTED_OUTPUT_SCHEMA[\s\S]*additionalProperties[\s\S]*END_TRUSTED_OUTPUT_SCHEMA/
+  );
+  assert.match(
+    bodies[1].messages[1].content,
+    /BEGIN_UNTRUSTED_PREVIOUS_OUTPUT[\s\S]*\{"plan":7\}[\s\S]*END_UNTRUSTED_PREVIOUS_OUTPUT/
+  );
+});
+
+test("structured repair bounds the prior output copied into its prompt", async () => {
+  const oversized = `{"plan":"${"x".repeat(40_000)}TAIL_SENTINEL"}`;
+  const fixture = createFixture([
+    completionResponse(oversized),
+    completionResponse(rawOutput)
+  ]);
+  const result = await fixture.gateway.generateStructured({
+    systemPrompt: [
+      "FIXED_SERVER_POLICY_WITH_SCHEMA",
+      "BEGIN_TRUSTED_OUTPUT_SCHEMA",
+      '{"required":["plan"]}',
+      "END_TRUSTED_OUTPUT_SCHEMA"
+    ].join("\n"),
+    prompt: rawPrompt,
+    schema: z.object({ plan: z.string().max(20) }).strict()
+  });
+  assert.equal(result.repaired, true);
+  const repairBody = JSON.parse(
+    String(fixture.requests[1]?.init?.body)
+  ) as { messages: Array<{ role: string; content: string }> };
+  assert.deepEqual(
+    repairBody.messages.map((message) => message.role),
+    ["system", "user"]
+  );
+  assert.match(
+    repairBody.messages[0]?.content ?? "",
+    /FIXED_SERVER_POLICY_WITH_SCHEMA[\s\S]*required/
+  );
+  const repairPrompt = repairBody.messages[1]?.content ?? "";
+  assert.ok(repairPrompt.length < 30_000);
+  assert.equal(repairPrompt.includes("TAIL_SENTINEL"), false);
 });
 
 test("structured generation stops after one repair with MODEL_SCHEMA_INVALID", async () => {

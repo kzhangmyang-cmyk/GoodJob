@@ -106,7 +106,13 @@ export class FinancialCouncilService {
     const idempotencyKeyHash = growthHttpIdempotencyKeyHash(
       command.idempotencyKey
     );
-    const runId = `financial-council:create:${idempotencyKeyHash}`;
+    const tenantScopedIdempotencyHash = financialCouncilCanonicalHash({
+      workspaceId: command.workspace.workspaceId,
+      ownerId: command.actorId,
+      teamId: command.workspace.teamId,
+      idempotencyKeyHash
+    });
+    const runId = `financial-council:create:${tenantScopedIdempotencyHash}`;
     const creationKeyHash = financialCouncilCanonicalHash(runId);
     const canonicalRequestHash = requestHash(command.requestHash);
     const replay = await this.dependencies.repository

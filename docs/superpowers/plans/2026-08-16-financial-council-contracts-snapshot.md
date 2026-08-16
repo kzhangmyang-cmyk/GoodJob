@@ -361,7 +361,7 @@ Expected: missing service/router/module imports.
 
 - [ ] **Step 3: Implement service, router and module.**
 
-Use `financial-council:create:<idempotency-key-hash>` as the stable creation identity. The module initializes schema before mounting routes and closes workers/resources in reverse order.
+Use `financial-council:create:sha256:<64hex>` as the stable creation identity. The digest preimage is canonical `{workspaceId,ownerId,teamId,idempotencyKeyHash}`, where `idempotencyKeyHash` is the physical command-idempotency key hash. This keeps same-tenant replay stable while making the public run identity globally tenant-scoped. The module initializes schema before mounting routes and closes workers/resources in reverse order.
 
 - [ ] **Step 4: Add focused script and run it.**
 
