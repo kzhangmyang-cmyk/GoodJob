@@ -167,7 +167,12 @@ use these closed rules:
    lease, attempt, next-attempt, last-error, and completion timestamps. An
    accepted observation and its queued item commit in the same memory-state
    swap or MySQL transaction. Recovery uses a bounded fair cross-tenant claim,
-   lease and backoff; poisoned connections are isolated.
+   lease and backoff; every claim persists a fresh opaque 64-hex lease token
+   and increments its attempt generation. Complete/fail atomically match the
+   tenant/observation, owner, token, attempt, status, and lease time, then clear
+   the token. An old claim stays fenced after same-worker reclamation. Legacy
+   running rows without a token are safely reset to retry during schema setup;
+   poisoned connections are isolated.
 2. Always create the unique `authorized_visual_observation` Evidence first.
    Its literal Evidence ID is
    `visual:<observationId>:evidence:<textHash>`. Extend `EvidenceProvenance` and

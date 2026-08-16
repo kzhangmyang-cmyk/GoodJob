@@ -92,7 +92,10 @@ a complete verified Douyin public-comment input and reuses the existing public
 comment ingestion saga; otherwise visual-only identity stays isolated or enters
 manual review. Visual work completion shares the existing acquisition unit of
 work, while a separate leased recovery sweeper retries persisted work without
-logging observation text or personal fields.
+logging observation text or personal fields. Every claim receives a fresh
+opaque lease token and incremented attempt generation; completion and failure
+must atomically match both values, so an expired result cannot commit after the
+same worker reclaims the observation.
 
 Acquisition plans may optionally version a `douyinPublicCommentSample` policy.
 Legacy plans without it remain valid and sampling is disabled by absence. An

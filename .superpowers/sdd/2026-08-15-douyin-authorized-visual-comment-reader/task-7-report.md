@@ -2,9 +2,10 @@
 
 ## Status
 
-`PENDING independent review`. Implementation commit `6767681` contains the
-Task 7 backend, contracts, generated same-worktree frontend type, current plan,
-and authoritative brief. Task 8 is not included.
+`PENDING independent review`. Implementation commits `6767681` and `7b09567`
+contain the Task 7 backend, contracts, generated same-worktree frontend type,
+lease fencing, schema migration, tests, current plan, and authoritative brief.
+Task 8 is not included.
 
 ## Reused ownership boundaries
 
@@ -28,8 +29,17 @@ and authoritative brief. Task 8 is not included.
 - Observation plus work creation is atomic in memory/MySQL. Work stores the
   authenticated `actorId` and immutable `automatic | manual_review_only`
   disposition, rotates tenants fairly even for repeated `limit: 1` claims,
-  fences leases/timestamps, isolates poison, and restarts through an independent
-  application-owned visual sweeper.
+  and restarts through an independent application-owned visual sweeper. Every
+  claim stores a fresh cryptographic 64-hex lease token and increments attempt;
+  complete/fail atomically match tenant/observation, worker, token, attempt,
+  running status, and lease time before clearing the token. Same-worker reclaim
+  therefore cannot authorize a prior asynchronous result.
+- MySQL schema setup adds the nullable token column to an existing Task 7 table
+  and safely resets legacy tokenless running rows to `retry`. Parsing, scoped
+  reads, and aggregate projection reject contradictory token lifecycle facts.
+  Completion/failure first use the tenant+observation primary key and apply
+  token+attempt as residual atomic predicates, so no wider recovery index is
+  required; the existing recovery index remains aligned to status/time claims.
 - Authorized Evidence is created first with exact ID
   `visual:<observationId>:evidence:<textHash>`, exact Douyin video provenance,
   canonical identifiers, SHA-256 hashes, no supersedes, and 255-byte SQL
@@ -77,20 +87,29 @@ RED checkpoints were:
   fixture separately failed `Missing expected rejection` for 121 characters.
   The same three-test command finished GREEN at `3/3` after closed optional-fact,
   parser, literal-Evidence, and aggregate-lifecycle validation.
+- Lease-fencing review RED used
+  `tsx --test --test-name-pattern='same-worker reclaim never authorizes' backend/src/acquisition-visual-comment-ingestion-test.ts`.
+  Reclaiming the same observation with the same worker allowed both stale
+  complete and stale fail results; TAP reported `tests 3, pass 0, fail 3` with
+  `Missing expected rejection`. The equivalent MySQL fake-pool test reported
+  `tests 3, pass 0, fail 3` because both claims returned no token. The existing
+  table migration test then failed with a legacy row still `running` instead of
+  the required safe `retry` state.
 
 ## GREEN verification
 
-- Required focused Task 7 command: `tests 49, pass 49, fail 0, skip 0`.
-- Relevant backend matrix: `tests 166, pass 165, fail 0, skip 1`; the only skip
+- Required focused Task 7 command: `tests 52, pass 52, fail 0, skip 0`.
+- Lease/storage/UOW matrix: `tests 63, pass 62, fail 0, skip 1`; the only skip
   is the conditional live-MySQL matrix because `MYSQL_TEST_ADMIN_URL` is absent.
-- Visual MySQL repository: `41 total, 40 pass, 0 fail, 1 conditional skip`.
+- Visual MySQL repository: `46 total, 45 pass, 0 fail, 1 conditional skip`.
+- Public-comment ingestion and shared UOW: `19/19`.
 - Application lifecycle with the repository convention `--test-force-exit`:
   `28/28`.
 - Contracts: `79/79`; acquisition drift: `18/18`; runtime OpenAPI: `30/30`;
   generated acquisition type freshness: PASS.
 - Backend TypeScript build: PASS. Same-worktree frontend build: PASS with only
   the existing Vite chunk-size warning. `git diff --check`: PASS.
-- Complete acquisition gate with `--test-force-exit`: `943 total, 940 pass,
+- Complete acquisition gate with `--test-force-exit`: `951 total, 948 pass,
   2 fail, 1 skip`. The two failures are the unchanged baseline
   `acquisition-pi-gateway-runtime-test.ts` and
   `acquisition-pi-runtime-factory-test.ts`, both
