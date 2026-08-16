@@ -96,10 +96,25 @@ const TERMINAL_STATUSES = new Set<FinancialCouncilRunStatus>([
   "approved", "rejected", "expired", "failed", "not_computable"
 ]);
 
-export function financialCouncilError(
-  code: string
-): Error & { code: string } {
-  return Object.assign(new Error(code), { code });
+const FINANCIAL_COUNCIL_ERRORS = new WeakSet<object>();
+
+export class FinancialCouncilError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = "FinancialCouncilError";
+    FINANCIAL_COUNCIL_ERRORS.add(this);
+  }
+}
+
+export function financialCouncilError(code: string): FinancialCouncilError {
+  return new FinancialCouncilError(code);
+}
+
+export function isFinancialCouncilError(
+  value: unknown
+): value is FinancialCouncilError {
+  return !!value && typeof value === "object"
+    && FINANCIAL_COUNCIL_ERRORS.has(value);
 }
 
 function deepFreeze<T>(value: T): T {

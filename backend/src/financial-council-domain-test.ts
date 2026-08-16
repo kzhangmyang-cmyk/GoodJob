@@ -3,10 +3,19 @@ import { execFileSync } from "node:child_process";
 import test from "node:test";
 import {
   applyFinancialCouncilTransition,
+  financialCouncilError,
   financialCouncilAggregateHash,
   financialCouncilCanonicalHash,
+  isFinancialCouncilError,
   type FinancialCouncilRun
 } from "./financial-council-domain.js";
+
+test("financial council errors are branded and cannot be forged by shape", () => {
+  const trusted = financialCouncilError("financial_council_input_invalid");
+  assert.equal(isFinancialCouncilError(trusted), true);
+  assert.equal(isFinancialCouncilError({ code: trusted.code }), false);
+  assert.equal(isFinancialCouncilError(Object.create(trusted)), false);
+});
 
 export const T0 = "2026-08-16T08:00:00.000Z";
 export const T1 = "2026-08-16T08:01:00.000Z";

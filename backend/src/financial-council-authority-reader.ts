@@ -7,6 +7,8 @@ import type {
 } from "./growth-advisor-query.js";
 import {
   financialCouncilCanonicalHash,
+  financialCouncilError,
+  immutableFinancialCouncilInput,
   immutableFinancialCouncilValue
 } from "./financial-council-domain.js";
 import type { FinancialFactType } from "./financial-ledger-domain.js";
@@ -109,7 +111,7 @@ export interface FinancialCouncilAuthorityReaderDependencies {
 }
 
 function authorityError(code: string): never {
-  throw Object.assign(new Error(code), { code });
+  throw financialCouncilError(code);
 }
 
 function text(value: unknown, code: string, max = 191): string {
@@ -175,6 +177,219 @@ function canonicalAuthorityRows<Input, Output>(
     identities.add(identity);
   }
   return Object.freeze(projected);
+}
+
+function exactAuthorityObject(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = []
+): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype) {
+    return authorityError("financial_council_authority_invalid");
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== "string")
+    || required.some((key) => !Object.hasOwn(value, key))
+    || keys.some((key) => typeof key === "string"
+      && !required.includes(key) && !optional.includes(key))) {
+    return authorityError("financial_council_authority_invalid");
+  }
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) {
+      return authorityError("financial_council_authority_invalid");
+    }
+  }
+}
+
+function exactAuthorityRows(
+  value: unknown,
+  shape: (row: Record<string, unknown>) => readonly string[]
+): void {
+  if (!Array.isArray(value) || value.length >= QUERY_LIMIT) {
+    return authorityError("financial_council_authority_invalid");
+  }
+  for (const row of value) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      return authorityError("financial_council_authority_invalid");
+    }
+    exactAuthorityObject(row, shape(row as Record<string, unknown>));
+  }
+}
+
+function assertCanonicalAuthorityOrder(
+  value: unknown,
+  keyOf: (row: Record<string, unknown>) => string
+): void {
+  const rows = value as readonly Record<string, unknown>[];
+  let previous: string | null = null;
+  for (const row of rows) {
+    const current = keyOf(row);
+    if (previous !== null && compare(previous, current) >= 0) {
+      return authorityError("financial_council_authority_invalid");
+    }
+    previous = current;
+  }
+}
+
+function assertProjectedAuthorityRows(
+  value: unknown,
+  project: (row: Record<string, unknown>) => unknown
+): void {
+  for (const row of value as readonly Record<string, unknown>[]) {
+    if (financialCouncilCanonicalHash(project(row))
+      !== financialCouncilCanonicalHash(row)) {
+      return authorityError("financial_council_authority_invalid");
+    }
+  }
+}
+
+function projectPersistedFact(
+  row: Record<string, unknown>,
+  sensitive: boolean
+): FinancialCouncilVerifiedFactView {
+  if (!FACT_TYPES.has(String(row.factType))) {
+    return authorityError("financial_council_authority_invalid");
+  }
+  const common = {
+    entryId: text(row.entryId, "financial_council_authority_invalid"),
+    sourceVersion: safeInteger(row.sourceVersion),
+    factType: row.factType as FinancialFactType,
+    currency: text(row.currency, "financial_council_authority_invalid", 3),
+    businessOccurredAt: text(row.businessOccurredAt,
+      "financial_council_authority_invalid", 35),
+    entryRecordedAt: text(row.entryRecordedAt,
+      "financial_council_authority_invalid", 35),
+    verificationRevision: safeInteger(row.verificationRevision),
+    verificationRecordedAt: text(row.verificationRecordedAt,
+      "financial_council_authority_invalid", 35),
+    snapshotHash: hash(row.snapshotHash)
+  };
+  if (!sensitive) return Object.freeze({
+    ...common, amountVisibility: "redacted" as const
+  });
+  return Object.freeze({
+    ...common,
+    amountVisibility: "full" as const,
+    amountMinor: safeInteger(row.amountMinor),
+    netAmountMinor: safeInteger(row.netAmountMinor)
+  });
+}
+
+/** The single closed runtime validator for produced and persisted authority. */
+export function validateFinancialCouncilAuthoritySnapshot(
+  value: unknown
+): FinancialCouncilAuthoritySnapshot {
+  const stable = immutableFinancialCouncilInput(value) as unknown;
+  exactAuthorityObject(stable, ["workspaceId", "currency", "dataAsOf",
+    "projectionLevel", "priorityCustomers", "pendingQuoteApprovals",
+    "verifiedFinancialFacts", "expectedRoi", "actualRoi", "dataGaps",
+    "sourceSnapshotHash"]);
+  text(stable.workspaceId, "financial_council_authority_invalid");
+  if (stable.currency !== "CNY" && stable.currency !== "USD") {
+    return authorityError("financial_council_authority_invalid");
+  }
+  text(stable.dataAsOf, "financial_council_authority_invalid", 35);
+  if (stable.projectionLevel !== "full"
+    && stable.projectionLevel !== "redacted") {
+    return authorityError("financial_council_authority_invalid");
+  }
+  exactAuthorityRows(stable.priorityCustomers, () => ["candidateId",
+    "customerId", "dealId", "displayName", "priorityScoreBps",
+    "qualificationDecisionId", "qualificationDecisionVersion",
+    "inputSnapshotHash"]);
+  assertCanonicalAuthorityOrder(stable.priorityCustomers,
+    (row) => canonicalKey(String(row.candidateId)));
+  assertProjectedAuthorityRows(stable.priorityCustomers,
+    (row) => projectPriority(row as unknown as PriorityCustomerView));
+  exactAuthorityRows(stable.pendingQuoteApprovals, (row) => row.currency === undefined
+    ? ["approvalId", "quoteVersionId", "quoteVersionRevision", "quoteCaseId",
+        "approvalKind", "requiredCapabilities", "submittedAt", "expiresAt"]
+    : ["approvalId", "quoteVersionId", "quoteVersionRevision", "quoteCaseId",
+        "approvalKind", "requiredCapabilities", "submittedAt", "expiresAt",
+        "currency", "quotedAmountMinor", "estimatedGrossProfitMinor",
+        "estimatedContributionMinor", "grossMarginBps"]);
+  assertCanonicalAuthorityOrder(stable.pendingQuoteApprovals,
+    (row) => canonicalKey(String(row.quoteVersionId), String(row.approvalId)));
+  assertProjectedAuthorityRows(stable.pendingQuoteApprovals,
+    (row) => projectApproval(
+      row as unknown as PendingQuoteApprovalView,
+      stable.projectionLevel === "full"
+    ));
+  exactAuthorityRows(stable.verifiedFinancialFacts, (row) =>
+    row.amountVisibility === "full"
+      ? ["entryId", "sourceVersion", "factType", "currency",
+          "businessOccurredAt", "entryRecordedAt", "verificationRevision",
+          "verificationRecordedAt", "snapshotHash", "amountVisibility",
+          "amountMinor", "netAmountMinor"]
+      : ["entryId", "sourceVersion", "factType", "currency",
+          "businessOccurredAt", "entryRecordedAt", "verificationRevision",
+          "verificationRecordedAt", "snapshotHash", "amountVisibility"]);
+  assertCanonicalAuthorityOrder(stable.verifiedFinancialFacts,
+    (row) => canonicalKey(String(row.entryId)));
+  assertProjectedAuthorityRows(stable.verifiedFinancialFacts,
+    (row) => projectPersistedFact(row, stable.projectionLevel === "full"));
+  exactAuthorityRows(stable.expectedRoi, (row) =>
+    row.amountVisibility === "full"
+      ? ["cohortId", "planId", "currency", "status", "reason", "roiBps",
+          "formulaVersion", "quoteVersionIds", "probabilityAssessmentIds",
+          "costEstimateIds", "amountVisibility",
+          "probabilityWeightedGrossProfitMinor", "attributedEstimatedCostMinor"]
+      : ["cohortId", "planId", "currency", "status", "reason", "roiBps",
+          "formulaVersion", "quoteVersionIds", "probabilityAssessmentIds",
+          "costEstimateIds", "amountVisibility"]);
+  assertCanonicalAuthorityOrder(stable.expectedRoi,
+    (row) => canonicalKey(String(row.cohortId), row.planId === null
+      ? null : String(row.planId), String(row.currency)));
+  assertProjectedAuthorityRows(stable.expectedRoi,
+    (row) => projectExpected(
+      row as unknown as AdvisorRoiSliceView,
+      stable.projectionLevel === "full"
+    ));
+  exactAuthorityRows(stable.actualRoi, (row) => row.status === "not_computable"
+    ? ["cohortId", "planId", "currency", "status", "reason",
+        "closureVersionId", "closureAsOf", "formulaVersion"]
+    : row.amountVisibility === "full"
+      ? ["cohortId", "planId", "currency", "status", "basis", "roiBps",
+          "costCoverageBps", "marginCoverageBps", "cashCoverageBps",
+          "attributionCoverageBps", "closureVersionId", "closureAsOf",
+          "formulaVersion", "amountVisibility", "verifiedGrossProfitMinor",
+          "verifiedAcquisitionCostMinor"]
+      : ["cohortId", "planId", "currency", "status", "basis", "roiBps",
+          "costCoverageBps", "marginCoverageBps", "cashCoverageBps",
+          "attributionCoverageBps", "closureVersionId", "closureAsOf",
+          "formulaVersion", "amountVisibility"]);
+  assertCanonicalAuthorityOrder(stable.actualRoi,
+    (row) => canonicalKey(String(row.cohortId), row.planId === null
+      ? null : String(row.planId), String(row.currency)));
+  assertProjectedAuthorityRows(stable.actualRoi,
+    (row) => projectActual(
+      row as unknown as AdvisorRoiSliceView,
+      stable.projectionLevel === "full"
+    ));
+  exactAuthorityRows(stable.dataGaps, () => ["code", "sourceType", "sourceId",
+    "sourceSnapshotHash", "cohortId", "currency", "asOf"]);
+  assertCanonicalAuthorityOrder(stable.dataGaps,
+    (row) => canonicalKey(String(row.sourceType), String(row.sourceId),
+      String(row.code)));
+  assertProjectedAuthorityRows(stable.dataGaps,
+    (row) => projectGap(row as unknown as FinancialDataGapView));
+  for (const collection of [stable.pendingQuoteApprovals,
+    stable.verifiedFinancialFacts, stable.expectedRoi, stable.actualRoi,
+    stable.dataGaps] as const) {
+    if ((collection as readonly Record<string, unknown>[]).some(
+      (row) => row.currency !== undefined && row.currency !== stable.currency
+    )) return authorityError("financial_council_authority_invalid");
+  }
+  const sourceSnapshotHash = hash(stable.sourceSnapshotHash);
+  const { sourceSnapshotHash: _sourceSnapshotHash, ...projection } = stable;
+  if (financialCouncilCanonicalHash(projection) !== sourceSnapshotHash) {
+    return authorityError("financial_council_authority_invalid");
+  }
+  return immutableFinancialCouncilValue(
+    stable as unknown as FinancialCouncilAuthoritySnapshot
+  );
 }
 
 function projectPriority(row: PriorityCustomerView): PriorityCustomerView {
@@ -497,7 +712,7 @@ export class FinancialCouncilAuthorityReader {
       actualRoi,
       dataGaps
     };
-    return immutableFinancialCouncilValue({
+    return validateFinancialCouncilAuthoritySnapshot({
       ...projection,
       sourceSnapshotHash: financialCouncilCanonicalHash(projection)
     });

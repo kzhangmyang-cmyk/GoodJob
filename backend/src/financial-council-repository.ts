@@ -4,9 +4,11 @@ import {
   FINANCIAL_COUNCIL_RUN_STATUSES,
   applyFinancialCouncilTransition,
   createFinancialCouncilRunEvent,
+  financialCouncilAggregateHash,
   financialCouncilCanonicalJson,
   financialCouncilCanonicalHash,
   financialCouncilError,
+  financialCouncilTransitionIsAllowed,
   immutableFinancialCouncilInput,
   immutableFinancialCouncilValue,
   type FinancialCouncilRun,
@@ -14,6 +16,7 @@ import {
   type FinancialCouncilTransitionKind,
   type FinancialSnapshotRecord
 } from "./financial-council-domain.js";
+import { validateFinancialSnapshot } from "./financial-council-snapshot.js";
 
 export interface FinancialCouncilCommandResult<T> {
   readonly value: T;
@@ -302,19 +305,107 @@ asserts value is FinancialSnapshotRecord {
   identifier(value.workspaceId);
   hash(value.snapshotHash);
   timestamp(value.createdAt);
-  financialCouncilCanonicalJson(value.snapshot);
-  exactObject(value.snapshot, [
-    ...Object.keys(value.snapshot as Record<string, unknown>)
-  ]);
-  const nestedHash = value.snapshot.snapshotHash;
-  if (typeof nestedHash !== "string" || !HASH.test(nestedHash)) inputInvalid();
-  const { snapshotHash: _snapshotHash, ...preimage } = value.snapshot;
-  if (value.snapshot.snapshotId !== value.snapshotId
-    || value.snapshot.runId !== value.runId
-    || value.snapshot.workspaceId !== value.workspaceId
+  const snapshot = validateFinancialSnapshot(value.snapshot);
+  const nestedHash = snapshot.snapshotHash;
+  const { snapshotHash: _snapshotHash, ...preimage } = snapshot;
+  if (snapshot.snapshotId !== value.snapshotId
+    || snapshot.runId !== value.runId
+    || snapshot.workspaceId !== value.workspaceId
     || nestedHash !== value.snapshotHash
     || financialCouncilCanonicalHash(preimage) !== value.snapshotHash) {
     inputInvalid();
+  }
+}
+
+function historyIntegrity(): never {
+  throw financialCouncilError("financial_council_integrity");
+}
+
+function assertFinancialCouncilRunEventValue(
+  value: unknown
+): asserts value is FinancialCouncilRunEvent {
+  exactObject(value, ["eventId", "runId", "workspaceId", "revision",
+    "fromStatus", "toStatus", "reasonCode", "occurredAt", "actorId",
+    "aggregateSnapshotHash", "aggregateSnapshot"]);
+  identifier(value.eventId);
+  identifier(value.runId);
+  identifier(value.workspaceId);
+  integer(value.revision);
+  if (value.fromStatus !== null
+    && !FINANCIAL_COUNCIL_RUN_STATUSES.includes(
+      value.fromStatus as FinancialCouncilRun["status"]
+    )) inputInvalid();
+  if (!FINANCIAL_COUNCIL_RUN_STATUSES.includes(
+    value.toStatus as FinancialCouncilRun["status"]
+  )) inputInvalid();
+  if (value.reasonCode !== null
+    && (typeof value.reasonCode !== "string" || value.reasonCode.length < 1
+      || value.reasonCode.length > 200)) inputInvalid();
+  timestamp(value.occurredAt);
+  identifier(value.actorId);
+  hash(value.aggregateSnapshotHash);
+  assertFinancialCouncilRunValue(value.aggregateSnapshot);
+}
+
+export function assertFinancialCouncilRunHistory(
+  run: FinancialCouncilRun,
+  events: readonly FinancialCouncilRunEvent[],
+  fail: () => never = historyIntegrity
+): void {
+  try {
+    assertFinancialCouncilRunValue(run);
+    for (const event of events) assertFinancialCouncilRunEventValue(event);
+  } catch {
+    fail();
+  }
+  if (events.length === 0) fail();
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index]!;
+    const previous = events[index - 1];
+    if (event.eventId !== `${run.runId}:${index + 1}`
+      || event.runId !== run.runId || event.workspaceId !== run.workspaceId
+      || event.revision !== index + 1
+      || event.aggregateSnapshot.runId !== run.runId
+      || event.aggregateSnapshot.workspaceId !== run.workspaceId
+      || event.aggregateSnapshot.revision !== event.revision
+      || event.aggregateSnapshot.status !== event.toStatus
+      || event.aggregateSnapshot.updatedAt !== event.occurredAt
+      || event.aggregateSnapshotHash
+        !== financialCouncilAggregateHash(event.aggregateSnapshot)
+      || (index === 0 && (event.toStatus !== "created"
+        || event.fromStatus !== null
+        || event.aggregateSnapshot.createdAt !== event.occurredAt))
+      || (previous && (event.fromStatus !== previous.toStatus
+        || event.toStatus === "created"
+        || !financialCouncilTransitionIsAllowed(
+          previous.toStatus,
+          event.toStatus as FinancialCouncilTransitionKind
+        )))) fail();
+    if (previous) {
+      const transitionBase = event.toStatus === "snapshot_frozen"
+        ? immutableFinancialCouncilValue({
+            ...previous.aggregateSnapshot,
+            snapshotId: event.aggregateSnapshot.snapshotId,
+            snapshotHash: event.aggregateSnapshot.snapshotHash
+          })
+        : previous.aggregateSnapshot;
+      const expected = applyFinancialCouncilTransition(transitionBase, {
+        kind: event.toStatus as FinancialCouncilTransitionKind,
+        occurredAt: event.occurredAt,
+        actorId: event.actorId
+      });
+      if (financialCouncilCanonicalJson(expected)
+          !== financialCouncilCanonicalJson(event.aggregateSnapshot)
+        || (event.toStatus === "snapshot_frozen"
+          && event.actorId !== previous.actorId)) fail();
+    }
+  }
+  const latest = events.at(-1)!;
+  if (financialCouncilCanonicalJson(latest.aggregateSnapshot)
+      !== financialCouncilCanonicalJson(run)
+    || latest.aggregateSnapshotHash !== financialCouncilAggregateHash(run)
+    || latest.revision !== run.revision || latest.toStatus !== run.status) {
+    fail();
   }
 }
 
@@ -553,24 +644,10 @@ implements FinancialCouncilRepository {
     if (existing.requestHash !== requestHash) {
       throw financialCouncilError("financial_council_idempotency_conflict");
     }
-    if (existing.status !== "snapshot_frozen" || existing.revision !== 2
-      || existing.snapshotId === null) {
-      throw financialCouncilError("financial_council_integrity");
+    if (existing.status !== "snapshot_frozen" || existing.revision !== 2) {
+      historyIntegrity();
     }
-    const snapshot = this.snapshots.get(key(
-      context.workspaceId, existing.snapshotId
-    ));
-    const events = this.events.get(key(context.workspaceId, existing.runId));
-    if (!snapshot || events?.length !== 2
-      || events[0]?.revision !== 1 || events[0].fromStatus !== null
-      || events[0].toStatus !== "created"
-      || events[1]?.revision !== 2 || events[1].fromStatus !== "created"
-      || events[1].toStatus !== "snapshot_frozen"
-      || financialCouncilCanonicalJson(events[1].aggregateSnapshot)
-        !== financialCouncilCanonicalJson(existing)) {
-      throw financialCouncilError("financial_council_integrity");
-    }
-    assertFinancialSnapshotRecord(existing, snapshot);
+    this.assertStoredRun(existing);
     return existing;
   }
 
@@ -585,7 +662,11 @@ implements FinancialCouncilRepository {
     const existingId = this.creationKeys.get(creationKey);
     if (existingId) {
       const existing = this.runs.get(key(aggregate.workspaceId, existingId));
-      if (!existing || existing.requestHash !== aggregate.requestHash) {
+      if (!existing) {
+        throw financialCouncilError("financial_council_integrity");
+      }
+      this.assertStoredRun(existing);
+      if (existing.requestHash !== aggregate.requestHash) {
         throw financialCouncilError("financial_council_idempotency_conflict");
       }
       return { value: existing, replayed: true };
@@ -611,16 +692,23 @@ implements FinancialCouncilRepository {
     context: ActiveWorkspaceContext,
     runId: string
   ): Promise<FinancialCouncilRun | null> {
-    return this.runs.get(key(context.workspaceId, runId)) ?? null;
+    const run = this.runs.get(key(context.workspaceId, runId)) ?? null;
+    if (run) this.assertStoredRun(run);
+    return run;
   }
 
   async listEvents(
     context: ActiveWorkspaceContext,
     runId: string
   ): Promise<readonly FinancialCouncilRunEvent[]> {
-    return Object.freeze([
-      ...(this.events.get(key(context.workspaceId, runId)) ?? [])
-    ]);
+    const run = this.runs.get(key(context.workspaceId, runId));
+    const events = this.events.get(key(context.workspaceId, runId)) ?? [];
+    if (!run) {
+      if (events.length) historyIntegrity();
+      return Object.freeze([]);
+    }
+    this.assertStoredRun(run);
+    return Object.freeze([...events]);
   }
 
   async storeFrozenSnapshot(
@@ -710,14 +798,39 @@ implements FinancialCouncilRepository {
     input: ListRunnableFinancialCouncilRunsInput
   ): Promise<readonly FinancialCouncilRun[]> {
     input = validateListRunnableFinancialCouncilRunsInput(input);
-    return Object.freeze([...this.runs.values()]
+    const runs = [...this.runs.values()];
+    for (const run of runs) this.assertStoredRun(run);
+    return Object.freeze(runs
       .filter((run) => run.status === "snapshot_frozen"
         && (input.after === null
           || run.workspaceId > input.after.workspaceId
           || (run.workspaceId === input.after.workspaceId
             && run.runId > input.after.runId)))
-      .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId)
-        || left.runId.localeCompare(right.runId))
+      .sort((left, right) => codeUnitCompare(
+        left.workspaceId, right.workspaceId
+      ) || codeUnitCompare(left.runId, right.runId))
       .slice(0, input.limit));
   }
+
+  private assertStoredRun(run: FinancialCouncilRun): void {
+    const aggregateKey = key(run.workspaceId, run.runId);
+    const events = this.events.get(aggregateKey) ?? [];
+    assertFinancialCouncilRunHistory(run, events);
+    if (run.snapshotId !== null) {
+      const snapshot = this.snapshots.get(key(run.workspaceId, run.snapshotId));
+      if (!snapshot) historyIntegrity();
+      try {
+        assertFinancialSnapshotRecordValue(snapshot);
+        assertFinancialSnapshotRecord(run, snapshot);
+      } catch {
+        historyIntegrity();
+      }
+    } else if (run.status !== "created") {
+      historyIntegrity();
+    }
+  }
+}
+
+function codeUnitCompare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

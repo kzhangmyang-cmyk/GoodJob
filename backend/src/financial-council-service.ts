@@ -31,8 +31,17 @@ export interface FinancialCouncilServiceDependencies {
   readonly onAdvisoryWakeError?: (
     error: unknown,
     run: FinancialCouncilRun
-  ) => void;
+  ) => void | Promise<void>;
   readonly now?: () => string;
+}
+
+const TRUSTED_FINANCIAL_COUNCIL_SERVICES = new WeakSet<object>();
+
+export function isFinancialCouncilService(
+  value: unknown
+): value is FinancialCouncilService {
+  return !!value && typeof value === "object"
+    && TRUSTED_FINANCIAL_COUNCIL_SERVICES.has(value);
 }
 
 function authorize(context: ActiveWorkspaceContext): void {
@@ -62,7 +71,18 @@ export class FinancialCouncilService {
   private readonly now: () => string;
 
   constructor(private readonly dependencies: FinancialCouncilServiceDependencies) {
+    const repository = dependencies?.repository;
+    if (!repository || !["createAndFreezeRun", "createRun",
+      "findFrozenRunByCreationKey", "findRun", "listEvents",
+      "storeFrozenSnapshot", "transitionRun", "listRunnableRuns"].every(
+      (key) => typeof Reflect.get(repository, key) === "function"
+    ) || typeof dependencies.snapshotBuilder?.freeze !== "function"
+      || (dependencies.advisoryWake !== undefined
+        && typeof dependencies.advisoryWake.wake !== "function")) {
+      throw new Error("invalid_financial_council_service");
+    }
     this.now = dependencies.now ?? (() => new Date().toISOString());
+    TRUSTED_FINANCIAL_COUNCIL_SERVICES.add(this);
   }
 
   async createRun(
@@ -124,9 +144,15 @@ export class FinancialCouncilService {
       { aggregate, snapshot: record, occurredAt: createdAt }
     );
     if (!result.replayed && this.dependencies.advisoryWake) {
-      await this.dependencies.advisoryWake.wake(result.value).catch((error) => {
-        this.dependencies.onAdvisoryWakeError?.(error, result.value);
-      });
+      void Promise.resolve()
+        .then(() => this.dependencies.advisoryWake!.wake(result.value))
+        .catch((error) => {
+          void Promise.resolve()
+            .then(() => this.dependencies.onAdvisoryWakeError?.(
+              error, result.value
+            ))
+            .catch(() => undefined);
+        });
     }
     return result;
   }

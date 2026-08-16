@@ -18,6 +18,7 @@ import {
 } from "./financial-council-domain.js";
 import {
   assertFinancialSnapshotRecord,
+  assertFinancialCouncilRunHistory,
   assertFinancialCouncilRunValue,
   assertFinancialSnapshotRecordValue,
   validateFinancialCouncilCreateMutation,
@@ -37,13 +38,13 @@ type MysqlRow = Record<string, unknown>;
 
 export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
   `CREATE TABLE IF NOT EXISTS financial_council_runs (
-    run_id VARCHAR(191) NOT NULL,
-    workspace_id VARCHAR(191) NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     creation_key_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     request_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     revision BIGINT UNSIGNED NOT NULL,
     status VARCHAR(32) NOT NULL,
-    snapshot_id VARCHAR(191) NULL,
+    snapshot_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
     snapshot_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NULL,
     run_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     PRIMARY KEY (workspace_id, run_id),
@@ -56,15 +57,15 @@ export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
        'failed','not_computable'))
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS financial_council_run_events (
-    event_id VARCHAR(255) NOT NULL,
-    run_id VARCHAR(191) NOT NULL,
-    workspace_id VARCHAR(191) NOT NULL,
+    event_id VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     revision BIGINT UNSIGNED NOT NULL,
     from_status VARCHAR(32) NULL,
     to_status VARCHAR(32) NOT NULL,
     reason_code VARCHAR(200) NULL,
     occurred_at DATETIME(3) NOT NULL,
-    actor_id VARCHAR(191) NOT NULL,
+    actor_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     aggregate_snapshot_hash CHAR(71)
       CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     aggregate_snapshot_json LONGTEXT
@@ -79,9 +80,9 @@ export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
       CHECK (JSON_VALID(aggregate_snapshot_json))
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS financial_council_snapshots (
-    snapshot_id VARCHAR(191) NOT NULL,
-    run_id VARCHAR(191) NOT NULL,
-    workspace_id VARCHAR(191) NOT NULL,
+    snapshot_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     snapshot_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
     snapshot_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     created_at DATETIME(3) NOT NULL,
@@ -169,6 +170,14 @@ function canonical(value: unknown): string {
 function duplicateEntry(error: unknown): boolean {
   const value = error as { code?: unknown; errno?: unknown } | null;
   return value?.code === "ER_DUP_ENTRY" || value?.errno === 1062;
+}
+
+function transientCreateRace(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { errno?: unknown; code?: unknown };
+  return candidate.errno === 1213 || candidate.errno === 1205
+    || candidate.code === "ER_LOCK_DEADLOCK"
+    || candidate.code === "ER_LOCK_WAIT_TIMEOUT";
 }
 
 function affectedRows(result: unknown): number {
@@ -531,54 +540,6 @@ function parseSnapshot(row: MysqlRow): FinancialSnapshotRecord {
   }
 }
 
-function assertRunHistoryIntegrity(
-  run: FinancialCouncilRun,
-  events: readonly FinancialCouncilRunEvent[]
-): void {
-  if (events.length === 0) integrity();
-  for (let index = 0; index < events.length; index += 1) {
-    const event = events[index]!;
-    const previous = events[index - 1];
-    if (event.revision !== index + 1
-      || event.aggregateSnapshot.updatedAt !== event.occurredAt
-      || (index === 0 && (event.toStatus !== "created"
-        || event.fromStatus !== null
-        || event.aggregateSnapshot.createdAt !== event.occurredAt))
-      || (previous && (event.fromStatus !== previous.toStatus
-        || event.toStatus === "created"
-        || !financialCouncilTransitionIsAllowed(
-          previous.toStatus,
-          event.toStatus as FinancialCouncilTransitionKind
-        )))) {
-      integrity();
-    }
-    if (previous) {
-      const transitionBase = event.toStatus === "snapshot_frozen"
-        ? immutableFinancialCouncilValue({
-            ...previous.aggregateSnapshot,
-            snapshotId: event.aggregateSnapshot.snapshotId,
-            snapshotHash: event.aggregateSnapshot.snapshotHash
-          })
-        : previous.aggregateSnapshot;
-      const expected = applyFinancialCouncilTransition(transitionBase, {
-        kind: event.toStatus as FinancialCouncilTransitionKind,
-        occurredAt: event.occurredAt,
-        actorId: event.actorId
-      });
-      if (canonical(expected) !== canonical(event.aggregateSnapshot)) {
-        integrity();
-      }
-    }
-  }
-  const latest = events.at(-1)!;
-  if (canonical(latest.aggregateSnapshot) !== canonical(run)
-    || latest.aggregateSnapshotHash !== financialCouncilAggregateHash(run)
-    || latest.revision !== run.revision
-    || latest.toStatus !== run.status) {
-    integrity();
-  }
-}
-
 function expectedRevision(command: CommandContext): number {
   return command.expectedRevision as number;
 }
@@ -595,8 +556,9 @@ implements FinancialCouncilRepository {
       command, input
     ));
     const { aggregate, snapshot, occurredAt } = input;
-    try {
-      return await this.transaction(async (connection) => {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await this.transaction(async (connection) => {
         const existing = await this.readVerifiedFrozenByCreationKey(
           connection, aggregate.workspaceId, aggregate.creationKeyHash,
           aggregate.requestHash, true
@@ -642,20 +604,32 @@ implements FinancialCouncilRepository {
           }
         ));
         return { value: frozen, replayed: false };
-      });
-    } catch (error) {
-      if (!duplicateEntry(error)) throw error;
-      const existing = await this.transaction((connection) =>
-        this.readVerifiedFrozenByCreationKey(
-          connection, aggregate.workspaceId, aggregate.creationKeyHash,
-          aggregate.requestHash, false
-        ), true
-      );
-      if (!existing) {
-        throw financialCouncilError("financial_council_run_conflict");
+        });
+      } catch (error) {
+        if (transientCreateRace(error)) {
+          const existing = await this.transaction((connection) =>
+            this.readVerifiedFrozenByCreationKey(
+              connection, aggregate.workspaceId, aggregate.creationKeyHash,
+              aggregate.requestHash, false
+            ), true
+          );
+          if (existing) return { value: existing, replayed: true };
+          if (attempt < 3) continue;
+        }
+        if (!duplicateEntry(error)) throw error;
+        const existing = await this.transaction((connection) =>
+          this.readVerifiedFrozenByCreationKey(
+            connection, aggregate.workspaceId, aggregate.creationKeyHash,
+            aggregate.requestHash, false
+          ), true
+        );
+        if (!existing) {
+          throw financialCouncilError("financial_council_run_conflict");
+        }
+        return { value: existing, replayed: true };
       }
-      return { value: existing, replayed: true };
     }
+    throw financialCouncilError("financial_council_run_conflict");
   }
 
   async findFrozenRunByCreationKey(
@@ -685,7 +659,10 @@ implements FinancialCouncilRepository {
         const existing = await this.findByCreationKey(
           connection, aggregate.workspaceId, aggregate.creationKeyHash, true
         );
-        if (existing) return this.replay(existing, aggregate.requestHash);
+        if (existing) {
+          await this.verifyStoredRun(connection, existing);
+          return this.replay(existing, aggregate.requestHash);
+        }
         const stored = immutableFinancialCouncilValue(aggregate);
         await connection.query(
           `INSERT INTO financial_council_runs (
@@ -706,13 +683,16 @@ implements FinancialCouncilRepository {
       });
     } catch (error) {
       if (!duplicateEntry(error)) throw error;
-      const existing = await this.findByCreationKey(
-        this.pool, aggregate.workspaceId, aggregate.creationKeyHash, false
-      );
-      if (!existing) {
-        throw financialCouncilError("financial_council_run_conflict");
-      }
-      return this.replay(existing, aggregate.requestHash);
+      return this.transaction(async (connection) => {
+        const existing = await this.findByCreationKey(
+          connection, aggregate.workspaceId, aggregate.creationKeyHash, false
+        );
+        if (!existing) {
+          throw financialCouncilError("financial_council_run_conflict");
+        }
+        await this.verifyStoredRun(connection, existing);
+        return this.replay(existing, aggregate.requestHash);
+      }, true);
     }
   }
 
@@ -842,9 +822,14 @@ implements FinancialCouncilRepository {
       const [rows] = await connection.query(
         `SELECT * FROM financial_council_runs
          WHERE status = 'snapshot_frozen'
-           AND (? IS NULL OR workspace_id > ?
-             OR (workspace_id = ? AND run_id > ?))
-         ORDER BY workspace_id ASC, run_id ASC LIMIT ?`,
+           AND (? IS NULL OR BINARY CONVERT(workspace_id USING utf16be)
+               > BINARY CONVERT(? USING utf16be)
+             OR (BINARY CONVERT(workspace_id USING utf16be)
+                 = BINARY CONVERT(? USING utf16be)
+               AND BINARY CONVERT(run_id USING utf16be)
+                 > BINARY CONVERT(? USING utf16be)))
+         ORDER BY BINARY CONVERT(workspace_id USING utf16be) ASC,
+           BINARY CONVERT(run_id USING utf16be) ASC LIMIT ?`,
         [
           input.after?.workspaceId ?? null,
           input.after?.workspaceId ?? null,
@@ -863,7 +848,7 @@ implements FinancialCouncilRepository {
           [run.workspaceId, run.runId]
         );
         const events = Object.freeze((eventRows as MysqlRow[]).map(parseEvent));
-        assertRunHistoryIntegrity(run, events);
+        assertFinancialCouncilRunHistory(run, events, integrity);
         const [snapshotRows] = await connection.query(
           `SELECT * FROM financial_council_snapshots
            WHERE workspace_id = ? AND run_id = ?`,
@@ -905,23 +890,35 @@ implements FinancialCouncilRepository {
     }
     if (existing.status !== "snapshot_frozen"
       || existing.revision !== 2 || existing.snapshotId === null) integrity();
-    const [eventRows] = await connection.query(
+    await this.verifyStoredRun(connection, existing);
+    return existing;
+  }
+
+  private async verifyStoredRun(
+    source: Pick<mysql.Pool, "query">,
+    run: FinancialCouncilRun,
+    suppliedEventRows?: readonly MysqlRow[]
+  ): Promise<readonly FinancialCouncilRunEvent[]> {
+    const eventRows = suppliedEventRows ?? (await source.query(
       `SELECT * FROM financial_council_run_events
        WHERE workspace_id = ? AND run_id = ? ORDER BY revision ASC`,
-      [workspaceId, existing.runId]
-    );
-    assertRunHistoryIntegrity(existing, Object.freeze(
-      (eventRows as MysqlRow[]).map(parseEvent)
-    ));
-    const [snapshotRows] = await connection.query(
-      `SELECT * FROM financial_council_snapshots
-       WHERE workspace_id = ? AND run_id = ?`,
-      [workspaceId, existing.runId]
-    );
-    const row = (snapshotRows as MysqlRow[])[0];
-    if (!row) integrity();
-    assertFinancialSnapshotRecord(existing, parseSnapshot(row));
-    return existing;
+      [run.workspaceId, run.runId]
+    ))[0] as MysqlRow[];
+    const events = Object.freeze(eventRows.map(parseEvent));
+    assertFinancialCouncilRunHistory(run, events, integrity);
+    if (run.snapshotId !== null) {
+      const [snapshotRows] = await source.query(
+        `SELECT * FROM financial_council_snapshots
+         WHERE workspace_id = ? AND run_id = ?`,
+        [run.workspaceId, run.runId]
+      );
+      const snapshotRow = (snapshotRows as MysqlRow[])[0];
+      if (!snapshotRow) integrity();
+      assertFinancialSnapshotRecord(run, parseSnapshot(snapshotRow));
+    } else if (run.status !== "created") {
+      integrity();
+    }
+    return events;
   }
 
   private async readVerifiedHistory(
@@ -949,8 +946,7 @@ implements FinancialCouncilRepository {
         return null;
       }
       const run = parseRun(runRow);
-      const events = Object.freeze(rawEvents.map(parseEvent));
-      assertRunHistoryIntegrity(run, events);
+      const events = await this.verifyStoredRun(connection, run, rawEvents);
       return Object.freeze({ run, events });
     }, true);
   }

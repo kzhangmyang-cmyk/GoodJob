@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type mysql from "mysql2/promise";
+import mysql from "mysql2/promise";
 import {
   FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS,
   MysqlFinancialCouncilRepository,
@@ -27,6 +27,10 @@ type State = {
 
 function cloneState(state: State): State {
   return structuredClone(state);
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 type FailurePoint =
@@ -111,9 +115,9 @@ class FakeConnection {
             || String(row.workspace_id) > afterWorkspaceId
             || (String(row.workspace_id) === afterWorkspaceId
               && String(row.run_id) > String(afterRunId))))
-          .sort((left, right) => String(left.workspace_id).localeCompare(
-            String(right.workspace_id)
-          ) || String(left.run_id).localeCompare(String(right.run_id)))
+          .sort((left, right) => compareCodeUnits(
+            String(left.workspace_id), String(right.workspace_id)
+          ) || compareCodeUnits(String(left.run_id), String(right.run_id)))
           .slice(0, limit);
         return [structuredClone(rows), []];
       }
@@ -183,6 +187,13 @@ class FakeConnection {
       return [structuredClone(rows.slice(0, 1)), []];
     }
     if (normalized.startsWith("INSERT INTO financial_council_runs")) {
+      this.pool.createInsertAttempts += 1;
+      if (this.pool.transientCreateFailures > 0) {
+        this.pool.transientCreateFailures -= 1;
+        throw Object.assign(new Error("deadlock"), {
+          code: "ER_LOCK_DEADLOCK", errno: 1213
+        });
+      }
       if (this.pool.failurePoint === "run_insert") {
         throw new Error("run insert failed");
       }
@@ -267,6 +278,8 @@ class FakePool {
   private barrierResolve: (() => void) | null = null;
   private barrierPromise: Promise<void> | null = null;
   failurePoint: FailurePoint = null;
+  transientCreateFailures = 0;
+  createInsertAttempts = 0;
   failRollback = false;
   lockAcquire = 1;
   lockRelease = 1;
@@ -387,6 +400,81 @@ test("compound create rolls back every write point to zero visible state", async
   }
 });
 
+test("compound create retries bounded transient deadlocks from a clean rollback", async () => {
+  const { pool, repository } = repositoryWith();
+  const aggregate = repositoryRunFixture();
+  pool.transientCreateFailures = 1;
+  const result = await repository.createAndFreezeRun(command("deadlock"), {
+    aggregate, snapshot: snapshotFixture(aggregate), occurredAt: T1
+  });
+  assert.equal(result.value.status, "snapshot_frozen");
+  assert.equal(pool.createInsertAttempts, 2);
+  assert.equal(pool.connections[0]?.calls.includes("ROLLBACK"), true);
+  assert.deepEqual([pool.state.runs.length, pool.state.events.length,
+    pool.state.snapshots.length], [1, 2, 1]);
+});
+
+test("compound create stops after three transient attempts without partial state", async () => {
+  const { pool, repository } = repositoryWith();
+  const aggregate = repositoryRunFixture();
+  pool.transientCreateFailures = 10;
+  await assert.rejects(repository.createAndFreezeRun(command("deadlock"), {
+    aggregate, snapshot: snapshotFixture(aggregate), occurredAt: T1
+  }), (error: unknown) => (error as { errno?: unknown }).errno === 1213);
+  assert.equal(pool.createInsertAttempts, 3);
+  assert.deepEqual([pool.state.runs.length, pool.state.events.length,
+    pool.state.snapshots.length], [0, 0, 0]);
+  assert.equal(pool.connections.filter((connection) => connection.calls.some(
+    (call) => call.startsWith("INSERT INTO financial_council_runs")
+  )).every((connection) =>
+    connection.calls.includes("ROLLBACK") && connection.released), true);
+});
+
+test("real InnoDB concurrent create has one complete writer and one replay", {
+  skip: !process.env.MYSQL_TEST_ADMIN_URL
+}, async () => {
+  const adminUrl = process.env.MYSQL_TEST_ADMIN_URL!;
+  const database = `financial_council_${process.pid}_${Date.now()}`;
+  const admin = mysql.createPool(adminUrl);
+  const target = new URL(adminUrl);
+  target.pathname = `/${database}`;
+  let first: mysql.Pool | undefined;
+  let second: mysql.Pool | undefined;
+  try {
+    await admin.query("CREATE DATABASE ?? CHARACTER SET utf8mb4 COLLATE utf8mb4_bin", [database]);
+    first = mysql.createPool({ uri: target.toString(), connectionLimit: 1 });
+    second = mysql.createPool({ uri: target.toString(), connectionLimit: 1 });
+    await ensureFinancialCouncilMysqlSchema(first);
+    const left = repositoryRunFixture({ runId: "race-left" });
+    const right = repositoryRunFixture({ runId: "race-right" });
+    const results = await Promise.all([
+      new MysqlFinancialCouncilRepository(first).createAndFreezeRun(
+        command("race-left"), {
+          aggregate: left, snapshot: snapshotFixture(left), occurredAt: T1
+        }
+      ),
+      new MysqlFinancialCouncilRepository(second).createAndFreezeRun(
+        command("race-right"), {
+          aggregate: right, snapshot: snapshotFixture(right), occurredAt: T1
+        }
+      )
+    ]);
+    assert.deepEqual(results.map((result) => result.replayed).sort(), [false, true]);
+    assert.equal(results[0]!.value.runId, results[1]!.value.runId);
+    const [counts] = await first.query(
+      `SELECT
+         (SELECT COUNT(*) FROM financial_council_runs) AS runs,
+         (SELECT COUNT(*) FROM financial_council_run_events) AS events,
+         (SELECT COUNT(*) FROM financial_council_snapshots) AS snapshots`
+    );
+    assert.deepEqual((counts as Row[])[0], { runs: 1, events: 2, snapshots: 1 });
+  } finally {
+    await Promise.allSettled([first?.end(), second?.end()].filter(Boolean));
+    await admin.query("DROP DATABASE IF EXISTS ??", [database]);
+    await admin.end();
+  }
+});
+
 registerFinancialCouncilRepositoryContract(
   "mysql financial council repository",
   () => repositoryWith().repository
@@ -457,6 +545,24 @@ test("MySQL reads reject denormalized status and aggregate hash mismatch", async
   await assert.rejects(repository.listEvents(workspace(), run.runId),
     (error: unknown) => (error as { code?: unknown }).code
       === "financial_council_mysql_integrity");
+});
+
+test("MySQL legacy create replay rejects a missing or corrupted first event", async () => {
+  for (const corruption of ["missing", "hash"] as const) {
+    const { pool, repository } = repositoryWith();
+    const run = repositoryRunFixture();
+    await repository.createRun(command("create"), run);
+    if (corruption === "missing") pool.state.events.splice(0, 1);
+    else pool.state.events[0]!.aggregate_snapshot_hash
+      = `sha256:${"f".repeat(64)}`;
+
+    await assert.rejects(
+      repository.createRun(command("replay"), run),
+      (error: unknown) =>
+        (error as { code?: unknown }).code
+          === "financial_council_mysql_integrity"
+    );
+  }
 });
 
 test("MySQL event reads reject a broken adjacent status chain", async () => {

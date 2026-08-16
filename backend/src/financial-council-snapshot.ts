@@ -7,12 +7,14 @@ import type {
   BusinessAdvisorService,
   BusinessAnalysisResult
 } from "./business-advisor/service.js";
-import type {
-  FinancialCouncilAuthorityReader,
-  FinancialCouncilAuthoritySnapshot
+import {
+  validateFinancialCouncilAuthoritySnapshot,
+  type FinancialCouncilAuthorityReader,
+  type FinancialCouncilAuthoritySnapshot
 } from "./financial-council-authority-reader.js";
 import {
   financialCouncilCanonicalHash,
+  financialCouncilError,
   immutableFinancialCouncilInput,
   immutableFinancialCouncilValue
 } from "./financial-council-domain.js";
@@ -81,7 +83,7 @@ export interface FinancialSnapshotBuilderDependencies {
 }
 
 function snapshotError(code = "financial_council_input_invalid"): never {
-  throw Object.assign(new Error(code), { code });
+  throw financialCouncilError(code);
 }
 
 function compare(left: string, right: string): number {
@@ -102,7 +104,8 @@ function exactCreateInput(value: unknown): FinancialCouncilCreateInput {
     || typeof record.currency !== "string"
     || typeof record.dataAsOf !== "string"
     || typeof record.policyVersionId !== "string"
-    || record.policyVersionId.trim() === "") {
+    || record.policyVersionId.trim() === ""
+    || [...record.policyVersionId].length > 255) {
     return snapshotError();
   }
   const businessReport = canonicalBusinessReportInput(
@@ -320,6 +323,227 @@ function sourceRefs(
   return Object.freeze(unique);
 }
 
+function exactSnapshotObject(
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = []
+): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype) snapshotError();
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== "string")
+    || required.some((key) => !Object.hasOwn(value, key))
+    || keys.some((key) => typeof key === "string"
+      && !required.includes(key) && !optional.includes(key))) snapshotError();
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) snapshotError();
+  }
+}
+
+function snapshotString(value: unknown, nullable = false): void {
+  if (nullable && value === null) return;
+  if (typeof value !== "string") snapshotError();
+}
+
+const SNAPSHOT_HASH = /^sha256:[0-9a-f]{64}$/u;
+const SNAPSHOT_SOURCE_KINDS = new Set<FinancialCouncilSourceKind>([
+  "acquisition_cost", "business_report", "crm", "financial_fact", "quote",
+  "roi"
+]);
+const SNAPSHOT_GAP_CODES = new Set<FinancialCouncilDataGap["code"]>([
+  "unverified_cost", "unverified_financial_fact", "missing_cogs",
+  "unmatched_payment", "missing_commercial_binding", "import_requires_review"
+]);
+const SNAPSHOT_GAP_SOURCES = new Set<FinancialCouncilDataGap["source"]>([
+  "crm", "quote", "financial_fact", "acquisition_cost", "roi",
+  "business_report"
+]);
+
+function snapshotNonemptyString(value: unknown, nullable = false): void {
+  if (nullable && value === null) return;
+  if (typeof value !== "string" || value.length === 0) snapshotError();
+}
+
+function assertSnapshotHash(value: unknown): void {
+  if (typeof value !== "string" || !SNAPSHOT_HASH.test(value)) snapshotError();
+}
+
+function snapshotInteger(value: unknown, nullable = false): void {
+  if (nullable && value === null) return;
+  if (!Number.isSafeInteger(value)) snapshotError();
+}
+
+function snapshotNumber(value: unknown): void {
+  if (typeof value !== "number" || !Number.isFinite(value)
+    || Math.abs(value) > Number.MAX_SAFE_INTEGER) snapshotError();
+}
+
+function snapshotStringArray(value: unknown): void {
+  if (!Array.isArray(value)) snapshotError();
+  for (const item of value) snapshotString(item);
+}
+
+function snapshotRows(
+  value: unknown,
+  validate: (row: unknown) => void
+): void {
+  if (!Array.isArray(value)) snapshotError();
+  for (const row of value) validate(row);
+}
+
+function validateFormulaInputs(value: unknown): void {
+  exactSnapshotObject(value, ["indicators", "products", "customers",
+    "cashflow", "cost", "tax"]);
+  exactSnapshotObject(value.indicators, ["grossMarginBps", "netMarginBps",
+    "roeBps", "roaBps", "debtRatioBps", "currentRatioBps", "quickRatioBps",
+    "receivableTurnover", "inventoryTurnover", "interestCoverage",
+    "receivableDays", "cashCoverageMonths", "cashCollectionRatioBps",
+    "cashProfitRatioBps", "revenueMinor", "netProfitMinor"]);
+  for (const item of Object.values(value.indicators)) snapshotNumber(item);
+  snapshotRows(value.products, (row) => {
+    exactSnapshotObject(row, ["name", "revenueMinor", "grossMarginBps",
+      "trueProfitMinor", "trueMarginBps", "isFakeProfit"]);
+    snapshotString(row.name);
+    for (const key of ["revenueMinor", "grossMarginBps", "trueProfitMinor",
+      "trueMarginBps"] as const) snapshotInteger(row[key]);
+    if (typeof row.isFakeProfit !== "boolean") snapshotError();
+  });
+  snapshotRows(value.customers, (row) => {
+    exactSnapshotObject(row, ["name", "revenueMinor", "trueProfitMinor",
+      "trueMarginBps", "paymentDays", "grade"]);
+    snapshotString(row.name);
+    for (const key of ["revenueMinor", "trueProfitMinor", "trueMarginBps",
+      "paymentDays"] as const) snapshotInteger(row[key]);
+    if (row.grade !== "A" && row.grade !== "B" && row.grade !== "C") snapshotError();
+  });
+  if (!value.cashflow || typeof value.cashflow !== "object") snapshotError();
+  if ((value.cashflow as Record<string, unknown>).status === "computed") {
+    exactSnapshotObject(value.cashflow, ["status", "next30DaysNetMinor",
+      "next90DaysNetMinor", "projectedClosingCash30DaysMinor",
+      "projectedClosingCash90DaysMinor", "warning"]);
+    for (const key of ["next30DaysNetMinor", "next90DaysNetMinor",
+      "projectedClosingCash30DaysMinor", "projectedClosingCash90DaysMinor"] as const) {
+      snapshotInteger(value.cashflow[key]);
+    }
+    snapshotStringArray(value.cashflow.warning);
+  } else {
+    exactSnapshotObject(value.cashflow, ["status", "reason"]);
+    if (value.cashflow.status !== "not_computable"
+      || value.cashflow.reason !== "cash_flow_missing") snapshotError();
+  }
+  if (!value.cost || typeof value.cost !== "object") snapshotError();
+  if ((value.cost as Record<string, unknown>).status === "computed") {
+    exactSnapshotObject(value.cost, ["status", "materialCostRateBps",
+      "previousMaterialCostRateBps", "materialRateChangeBps", "anomaly",
+      "laborShareBps", "variableShareBps", "fixedShareBps"]);
+    for (const key of ["materialCostRateBps", "materialRateChangeBps",
+      "laborShareBps", "variableShareBps", "fixedShareBps"] as const) {
+      snapshotInteger(value.cost[key]);
+    }
+    snapshotInteger(value.cost.previousMaterialCostRateBps, true);
+    snapshotStringArray(value.cost.anomaly);
+  } else {
+    exactSnapshotObject(value.cost, ["status", "reason"]);
+    if (value.cost.status !== "not_computable"
+      || value.cost.reason !== "cost_detail_missing") snapshotError();
+  }
+  if (!value.tax || typeof value.tax !== "object") snapshotError();
+  if ((value.tax as Record<string, unknown>).status === "computed") {
+    exactSnapshotObject(value.tax, ["status", "redCount", "yellowCount",
+      "greenCount", "level", "findings"]);
+    for (const key of ["redCount", "yellowCount", "greenCount"] as const) {
+      snapshotInteger(value.tax[key]);
+    }
+    if (value.tax.level !== "red" && value.tax.level !== "yellow"
+      && value.tax.level !== "green") snapshotError();
+    snapshotRows(value.tax.findings, (row) => {
+      exactSnapshotObject(row, ["category", "issue", "level"]);
+      snapshotString(row.category);
+      snapshotString(row.issue);
+      if (row.level !== "red" && row.level !== "yellow" && row.level !== "green") {
+        snapshotError();
+      }
+    });
+  } else {
+    exactSnapshotObject(value.tax, ["status", "reason"]);
+    if (value.tax.status !== "not_computable"
+      || value.tax.reason !== "tax_risk_missing") snapshotError();
+  }
+}
+
+/** Validates and closes a persisted snapshot before its hash is trusted. */
+export function validateFinancialSnapshot(value: unknown): FinancialSnapshot {
+  const stable = immutableFinancialCouncilInput(value) as unknown;
+  exactSnapshotObject(stable, ["snapshotId", "runId", "workspaceId",
+    "dataAsOf", "currency", "report", "reportInputHash", "authority",
+    "formulaInputs", "dataGaps", "sourceRefs", "snapshotHash"]);
+  for (const key of ["snapshotId", "runId", "workspaceId", "dataAsOf",
+  ] as const) snapshotNonemptyString(stable[key]);
+  assertSnapshotHash(stable.reportInputHash);
+  assertSnapshotHash(stable.snapshotHash);
+  if (stable.currency !== "CNY" && stable.currency !== "USD") snapshotError();
+  exactSnapshotObject(stable.report, ["currency", "companyName", "period",
+    "totalAssetsMinor", "totalLiabilitiesMinor", "equityMinor",
+    "grossProfitMinor", "netProfitMinor", "closingCashMinor"]);
+  if (stable.report.currency !== stable.currency) snapshotError();
+  snapshotString(stable.report.companyName);
+  snapshotString(stable.report.period);
+  for (const key of ["totalAssetsMinor", "totalLiabilitiesMinor", "equityMinor",
+    "grossProfitMinor", "netProfitMinor", "closingCashMinor"] as const) {
+    snapshotInteger(stable.report[key]);
+  }
+  let authority: FinancialCouncilAuthoritySnapshot;
+  try {
+    authority = validateFinancialCouncilAuthoritySnapshot(stable.authority);
+  } catch {
+    return snapshotError();
+  }
+  if (authority.workspaceId !== stable.workspaceId
+    || authority.currency !== stable.currency
+    || authority.dataAsOf !== stable.dataAsOf) snapshotError();
+  validateFormulaInputs(stable.formulaInputs);
+  snapshotRows(stable.dataGaps, (row) => {
+    exactSnapshotObject(row, ["code", "source", "sourceId", "description"]);
+    if (!SNAPSHOT_GAP_CODES.has(row.code as FinancialCouncilDataGap["code"])
+      || !SNAPSHOT_GAP_SOURCES.has(
+        row.source as FinancialCouncilDataGap["source"]
+      )) snapshotError();
+    snapshotNonemptyString(row.sourceId, true);
+    snapshotNonemptyString(row.description);
+  });
+  const persistedGaps = stable.dataGaps as unknown as FinancialCouncilDataGap[];
+  for (let index = 1; index < persistedGaps.length; index += 1) {
+    const left = persistedGaps[index - 1]!;
+    const right = persistedGaps[index]!;
+    const order = compare(left.source, right.source)
+      || compare(left.sourceId ?? "", right.sourceId ?? "")
+      || compare(left.code, right.code)
+      || compare(left.description, right.description);
+    if (order >= 0) snapshotError();
+  }
+  snapshotRows(stable.sourceRefs, (row) => {
+    exactSnapshotObject(row, ["kind", "sourceId", "version", "contentHash"]);
+    if (!SNAPSHOT_SOURCE_KINDS.has(row.kind as FinancialCouncilSourceKind)) {
+      snapshotError();
+    }
+    snapshotNonemptyString(row.sourceId);
+    if ((typeof row.version !== "string" || row.version.length === 0)
+      && (!Number.isSafeInteger(row.version) || Number(row.version) < 1)) {
+      snapshotError();
+    }
+    assertSnapshotHash(row.contentHash);
+  });
+  const expectedRefs = sourceRefs(
+    stable.reportInputHash as `sha256:${string}`, authority
+  );
+  if (financialCouncilCanonicalHash(stable.sourceRefs)
+    !== financialCouncilCanonicalHash(expectedRefs)) snapshotError();
+  const { snapshotHash, ...preimage } = stable;
+  if (financialCouncilCanonicalHash(preimage) !== snapshotHash) snapshotError();
+  return immutableFinancialCouncilValue(stable as unknown as FinancialSnapshot);
+}
+
 export class FinancialSnapshotBuilder {
   private readonly now: () => string;
 
@@ -355,8 +579,10 @@ export class FinancialSnapshotBuilder {
     const cutoff = await this.dependencies.cutoffIssuer.sealTodayCutoff(
       command.workspace, effectiveAsOf
     );
-    const authority = await this.dependencies.authority.readAt(
-      command.workspace, { currency: input.currency, cutoff }
+    const authority = validateFinancialCouncilAuthoritySnapshot(
+      await this.dependencies.authority.readAt(
+        command.workspace, { currency: input.currency, cutoff }
+      )
     );
     if (authority.workspaceId !== workspaceId
       || authority.currency !== input.currency

@@ -9,6 +9,7 @@ import { InMemoryFinancialCouncilRepository } from
   "./financial-council-repository.js";
 import {
   repositoryRunFixture,
+  snapshotFixture,
   workspace
 } from "./financial-council-repository-contract-test.js";
 import type { CommandContext } from "./growth-command-context.js";
@@ -55,26 +56,16 @@ function input(
 }
 
 function frozenSnapshot(runId: string, workspaceId = "ws-1") {
-  const identity = {
-    snapshotId: financialCouncilCanonicalHash({ runId, workspaceId }),
-    runId,
-    workspaceId,
-    dataAsOf: repositoryRunFixture().dataAsOf,
-    currency: "CNY",
-    report: {},
-    reportInputHash: `sha256:${"d".repeat(64)}`,
-    authority: {},
-    formulaInputs: {},
-    dataGaps: [],
-    sourceRefs: []
-  };
-  return Object.freeze({
-    ...identity,
-    snapshotHash: financialCouncilCanonicalHash(identity)
-  });
+  return snapshotFixture(repositoryRunFixture({
+    runId, workspaceId
+  })).snapshot;
 }
 
-function harness(options: { freezeError?: Error } = {}) {
+function harness(options: {
+  freezeError?: Error;
+  wake?: { wake(run: FinancialCouncilRun): Promise<void> };
+  onWakeError?: (error: unknown, run: FinancialCouncilRun) => void | Promise<void>;
+} = {}) {
   const repository = new InMemoryFinancialCouncilRepository();
   const wakes: FinancialCouncilRun[] = [];
   let freezeCalls = 0;
@@ -89,9 +80,10 @@ function harness(options: { freezeError?: Error } = {}) {
         return frozenSnapshot(runId, commandValue.workspace.workspaceId) as never;
       }
     },
-    advisoryWake: {
+    advisoryWake: options.wake ?? {
       async wake(run) { wakes.push(run); }
     },
+    onAdvisoryWakeError: options.onWakeError,
     now: () => NOW
   });
   return {
@@ -100,6 +92,59 @@ function harness(options: { freezeError?: Error } = {}) {
     seenCommand: () => seenCommand
   };
 }
+
+test("committed create contains a synchronous advisory wake failure", async () => {
+  const fixture = harness({
+    wake: { wake() { throw new Error("sync wake failed"); } } as never
+  });
+  const result = await fixture.service.createRun(command(), input());
+  assert.equal(result.value.status, "snapshot_frozen");
+  assert.equal((await fixture.repository.listEvents(
+    context(), result.value.runId
+  )).length, 2);
+});
+
+test("committed create never waits for a non-settling advisory wake", async () => {
+  let wakeCalled = false;
+  const fixture = harness({
+    wake: {
+      wake() {
+        wakeCalled = true;
+        return new Promise<void>(() => undefined);
+      }
+    }
+  });
+  const result = await Promise.race([
+    fixture.service.createRun(command(), input()).then((value) => ({
+      kind: "created" as const, value
+    })),
+    new Promise<{ kind: "blocked" }>((resolve) => setImmediate(() => resolve({
+      kind: "blocked"
+    })))
+  ]);
+  assert.equal(result.kind, "created");
+  assert.equal(wakeCalled, true);
+  if (result.kind === "created") {
+    assert.equal(result.value.value.status, "snapshot_frozen");
+  }
+});
+
+test("advisory wake assimilates and contains an asynchronous observer", async () => {
+  let assimilated = false;
+  const observer = {
+    then(_resolve: () => void, reject: (error: Error) => void) {
+      assimilated = true;
+      reject(new Error("observer failed"));
+    }
+  };
+  const fixture = harness({
+    wake: { async wake() { throw new Error("wake failed"); } },
+    onWakeError: (() => observer) as never
+  });
+  await fixture.service.createRun(command(), input());
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(assimilated, true);
+});
 
 test("create freezes atomically, exact replay is stable, and replay does not wake", async () => {
   const fixture = harness();

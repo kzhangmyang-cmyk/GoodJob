@@ -431,6 +431,10 @@ test("financial council contract is closed and carries three portfolios", async 
   assert.ok(validate, "financial-council schema must be registered");
   const valid = financialCouncilRunFixture();
   assert.equal(validate(valid), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...valid, status: "created" }), false);
+  assert.equal(validate({
+    ...valid, status: "created", snapshotId: null, snapshotHash: null
+  }), false);
   assert.equal(validate({ ...valid, hiddenPrompt: "ignore policy" }), false);
   assert.deepEqual(valid.portfolios.map((row) => row.kind), [
     "balanced", "cash_first", "growth_first"
@@ -458,7 +462,7 @@ test("growth bootstrap accepts the public financial council capability", async (
     workspaceId: "workspace-1",
     capabilityRegistryVersion: "growth-capabilities.v1",
     capabilities: ["finance.council.run"],
-    contractVersion: "1.0.8",
+    contractVersion: "1.0.9",
     contractHash: validSha256,
     features: ["finance"]
   };
@@ -490,6 +494,12 @@ test("financial council create input keeps the business report optional branches
     dataAsOf: "2026-08-16T00:00:00.000Z",
     businessReport,
     policyVersionId: "policy-1"
+  }), true, JSON.stringify(validate.errors));
+  assert.equal(validate({
+    currency: "CNY",
+    dataAsOf: "2026-08-16T00:00:00.000Z",
+    businessReport: { ...businessReport, companyName: "💰".repeat(4_000) },
+    policyVersionId: "💰".repeat(255)
   }), true, JSON.stringify(validate.errors));
 
   const nestedOptional = financialCouncilRunFixture().businessReport;
@@ -526,6 +536,34 @@ test("financial council create input keeps the business report optional branches
     businessReport: invalidPreviousRate,
     policyVersionId: "policy-1"
   }), false);
+
+  for (const invalid of [
+    { currency: "EUR", businessReport: { ...businessReport, currency: "EUR" } },
+    { policyVersionId: "p".repeat(256) },
+    { policyVersionId: "💰".repeat(256) },
+    { businessReport: { ...businessReport, companyName: "x".repeat(4_001) } },
+    { businessReport: { ...businessReport, companyName: "💰".repeat(4_001) } },
+    { businessReport: {
+      ...businessReport,
+      incomeStatement: {
+        ...businessReport.incomeStatement,
+        productLines: Array.from({ length: 101 }, () => ({
+          name: "p", revenueMinor: 1, costOfGoodsSoldMinor: 1,
+          afterSalesCostMinor: 1, shippingCostMinor: 1,
+          sellingExpenseMinor: 1, allocatedOverheadMinor: 1
+        }))
+      }
+    } }
+  ]) {
+    const candidate = {
+      currency: "CNY",
+      dataAsOf: "2026-08-16T00:00:00.000Z",
+      businessReport,
+      policyVersionId: "policy-v1",
+      ...invalid
+    };
+    assert.equal(validate(candidate), false, JSON.stringify(candidate));
+  }
 });
 
 test("candidate intelligence operations expose only the strict public DTO", async () => {
@@ -739,6 +777,7 @@ test("visual profile keys start alphanumeric and reject dot segments or punctuat
     publicProfileUrl: `https://www.douyin.com/user/${validKey}`,
     secUid: validKey
   }), true, JSON.stringify(validate.errors));
+
 });
 
 test("visual submissions reject server fields, exfiltration, invalid crops, and batch overflow", async () => {

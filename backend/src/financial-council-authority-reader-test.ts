@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   FinancialCouncilAuthorityReader,
   SealedLedgerFinancialCouncilVerifiedFactsReader,
+  validateFinancialCouncilAuthoritySnapshot,
   type FinancialCouncilVerifiedFactSource
 } from "./financial-council-authority-reader.js";
 import type { GrowthAdvisorTodayView } from "./growth-advisor-query.js";
@@ -15,6 +16,7 @@ import { financialFactProjectionFixture } from "./growth-finance-test-fixtures.j
 import { InMemoryFinancialLedgerRepository } from "./financial-ledger-repository.js";
 import { RepositoryVerifiedFinancialLedgerSealedReader } from
   "./financial-ledger-as-of-reader.js";
+import { financialCouncilCanonicalHash } from "./financial-council-domain.js";
 
 const HASH = (character: string) =>
   `sha256:${character.repeat(64)}` as `sha256:${string}`;
@@ -190,6 +192,15 @@ test("authority projection keeps prompt-like CRM text bounded and redacts money"
       "inputSnapshotHash", "priorityScoreBps", "qualificationDecisionId",
       "qualificationDecisionVersion"].sort()
   );
+  const { sourceSnapshotHash: _sourceSnapshotHash, ...projection } = authority;
+  const tamperedProjection = {
+    ...projection,
+    priorityCustomers: [{ ...authority.priorityCustomers[0]!, unexpected: true }]
+  };
+  assert.throws(() => validateFinancialCouncilAuthoritySnapshot({
+    ...tamperedProjection,
+    sourceSnapshotHash: financialCouncilCanonicalHash(tamperedProjection)
+  }), /financial_council_authority_invalid/u);
 });
 
 test("sensitive capability preserves authorized amount projections", async () => {

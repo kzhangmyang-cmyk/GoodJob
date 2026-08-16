@@ -14,6 +14,7 @@ import {
 import { createFinancialCouncilRouter } from "./financial-council-router.js";
 import {
   FinancialCouncilService,
+  isFinancialCouncilService,
   type FinancialCouncilWakeSink
 } from "./financial-council-service.js";
 import { FinancialSnapshotBuilder } from "./financial-council-snapshot.js";
@@ -39,6 +40,10 @@ import {
 } from "./growth-foundation-module.js";
 import type { WorkspaceVerifiedFinancialLedgerSealedReader } from
   "./financial-ledger-as-of-reader.js";
+import { RepositoryVerifiedFinancialLedgerSealedReader } from
+  "./financial-ledger-as-of-reader.js";
+import { MysqlVerifiedFinancialLedgerSealedReader } from
+  "./financial-ledger-as-of-mysql-reader.js";
 
 export interface GrowthFinancialCouncilServices {
   readonly service: FinancialCouncilService;
@@ -61,7 +66,18 @@ export interface FinancialCouncilWakeRelayDependencies {
   readonly sink: FinancialCouncilWakeSink;
   readonly intervalMs?: number;
   readonly batchSize?: number;
-  readonly onError?: (error: unknown, runId: string | null) => void;
+  readonly onError?: (
+    error: unknown, runId: string | null
+  ) => void | Promise<void>;
+}
+
+const TRUSTED_FINANCIAL_COUNCIL_RELAYS = new WeakSet<object>();
+
+export function isFinancialCouncilWakeRelay(
+  value: unknown
+): value is FinancialCouncilWakeRelay {
+  return !!value && typeof value === "object"
+    && TRUSTED_FINANCIAL_COUNCIL_RELAYS.has(value);
 }
 
 export class FinancialCouncilWakeRelay {
@@ -74,17 +90,24 @@ export class FinancialCouncilWakeRelay {
   private readonly batchSize: number;
 
   constructor(private readonly dependencies: FinancialCouncilWakeRelayDependencies) {
+    if (typeof dependencies?.repository?.listRunnableRuns !== "function"
+      || typeof dependencies?.sink?.wake !== "function") {
+      throw new Error("invalid_financial_council_relay");
+    }
     this.intervalMs = dependencies.intervalMs ?? 5_000;
     this.batchSize = dependencies.batchSize ?? 25;
     if (!Number.isSafeInteger(this.intervalMs) || this.intervalMs < 1
       || !Number.isSafeInteger(this.batchSize) || this.batchSize < 1
       || this.batchSize > 100) throw new Error("invalid_financial_council_relay");
+    TRUSTED_FINANCIAL_COUNCIL_RELAYS.add(this);
   }
 
   start(): void {
     if (this.closed || this.timer) return;
-    void this.sweep();
-    this.timer = setInterval(() => { void this.sweep(); }, this.intervalMs);
+    void this.sweep().catch(() => undefined);
+    this.timer = setInterval(() => {
+      void this.sweep().catch(() => undefined);
+    }, this.intervalMs);
     this.timer.unref?.();
   }
 
@@ -103,7 +126,7 @@ export class FinancialCouncilWakeRelay {
         limit: this.batchSize
       });
     } catch (error) {
-      this.report(error, null);
+      await this.report(error, null);
       return;
     }
     if (runs.length === 0) {
@@ -112,9 +135,9 @@ export class FinancialCouncilWakeRelay {
     }
     for (const run of runs) {
       if (this.closed) return;
-      await this.dependencies.sink.wake(run).catch((error) => {
-        this.report(error, run.runId);
-      });
+      await Promise.resolve()
+        .then(() => this.dependencies.sink.wake(run))
+        .catch((error) => this.report(error, run.runId));
       this.cursor = Object.freeze({
         workspaceId: run.workspaceId,
         runId: run.runId
@@ -122,12 +145,10 @@ export class FinancialCouncilWakeRelay {
     }
   }
 
-  private report(error: unknown, runId: string | null): void {
-    try {
-      this.dependencies.onError?.(error, runId);
-    } catch {
-      // Error observation must never break the durable relay sweep.
-    }
+  private async report(error: unknown, runId: string | null): Promise<void> {
+    await Promise.resolve()
+      .then(() => this.dependencies.onError?.(error, runId))
+      .catch(() => undefined);
   }
 
   async close(): Promise<void> {
@@ -156,22 +177,76 @@ export interface GrowthFinancialCouncilModuleOptions {
 
 function sealedAdvisor(value: unknown): GrowthAdvisorSealedQueryService {
   if (!value || typeof value !== "object"
-    || typeof Reflect.get(value, "getToday") !== "function"
-    || typeof Reflect.get(value, "getTodayAt") !== "function"
-    || typeof Reflect.get(value, "sealTodayCutoff") !== "function") {
+    || !Object.isFrozen(value)
+    || Object.getPrototypeOf(value) !== Object.prototype
+    || !["getToday", "getTodayAt", "sealTodayCutoff"].every((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return descriptor?.enumerable === true && "value" in descriptor
+        && typeof descriptor.value === "function";
+    })
+    || Reflect.ownKeys(value).length !== 3) {
     throw new Error("INVALID_GROWTH_ADVISOR_SEALED_SERVICE");
   }
-  return value as GrowthAdvisorSealedQueryService;
+  const trusted = value as GrowthAdvisorSealedQueryService;
+  return Object.freeze({
+    getToday: trusted.getToday.bind(trusted),
+    getTodayAt: trusted.getTodayAt.bind(trusted),
+    sealTodayCutoff: trusted.sealTodayCutoff.bind(trusted)
+  });
 }
 
 function workspaceFacts(
   value: unknown
 ): WorkspaceVerifiedFinancialLedgerSealedReader {
   if (!value || typeof value !== "object"
-    || typeof Reflect.get(value, "listWorkspaceVerifiedFactsAt") !== "function") {
+    || (Object.getPrototypeOf(value)
+        !== RepositoryVerifiedFinancialLedgerSealedReader.prototype
+      && Object.getPrototypeOf(value)
+        !== MysqlVerifiedFinancialLedgerSealedReader.prototype)) {
     throw new Error("INVALID_GROWTH_FINANCE_WORKSPACE_READER");
   }
-  return value as WorkspaceVerifiedFinancialLedgerSealedReader;
+  const trusted = value as WorkspaceVerifiedFinancialLedgerSealedReader;
+  for (const key of ["getVerifiedAt", "listVerifiedCostsAt",
+    "listVerifiedFactsAt", "listWorkspaceVerifiedFactsAt"] as const) {
+    if (typeof trusted[key] !== "function") {
+      throw new Error("INVALID_GROWTH_FINANCE_WORKSPACE_READER");
+    }
+  }
+  return Object.freeze({
+    getVerifiedAt: trusted.getVerifiedAt.bind(trusted),
+    listVerifiedCostsAt: trusted.listVerifiedCostsAt.bind(trusted),
+    listVerifiedFactsAt: trusted.listVerifiedFactsAt.bind(trusted),
+    listWorkspaceVerifiedFactsAt:
+      trusted.listWorkspaceVerifiedFactsAt.bind(trusted)
+  });
+}
+
+function trustedResources(
+  value: unknown
+): asserts value is GrowthFinancialCouncilResources {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || !Object.isFrozen(value)
+    || Object.getPrototypeOf(value) !== Object.prototype
+    || Reflect.ownKeys(value).some((key) => typeof key !== "string")
+    || (Reflect.ownKeys(value) as string[]).sort().join("\u0000")
+      !== ["service", "relay", "closeFinancialCouncilResources"]
+        .sort().join("\u0000")) {
+    throw new Error("INVALID_GROWTH_FINANCIAL_COUNCIL_RESOURCES");
+  }
+  const serviceDescriptor = Object.getOwnPropertyDescriptor(value, "service");
+  const relayDescriptor = Object.getOwnPropertyDescriptor(value, "relay");
+  const closeDescriptor = Object.getOwnPropertyDescriptor(value,
+    "closeFinancialCouncilResources");
+  const data = (descriptor: PropertyDescriptor | undefined): descriptor is
+    PropertyDescriptor & { value: unknown } =>
+    descriptor?.enumerable === true && "value" in descriptor;
+  if (!data(serviceDescriptor) || !data(relayDescriptor)
+    || !data(closeDescriptor)
+    || !isFinancialCouncilService(serviceDescriptor.value)
+    || !isFinancialCouncilWakeRelay(relayDescriptor.value)
+    || typeof closeDescriptor.value !== "function") {
+    throw new Error("INVALID_GROWTH_FINANCIAL_COUNCIL_RESOURCES");
+  }
 }
 
 class IdempotentInProcessWakeSink implements FinancialCouncilWakeSink {
@@ -264,6 +339,8 @@ export function createGrowthFinancialCouncilModule(
       } catch {
         throw missingPrivateService();
       }
+      sealedAdvisor(advisor.today);
+      workspaceFacts(finance.verifiedAsOf);
       let resources: GrowthFinancialCouncilResources | null = null;
       try {
         if (options.initializeSchema) await options.initializeSchema();
@@ -271,7 +348,7 @@ export function createGrowthFinancialCouncilModule(
           if (!options.pool) throw new Error("GROWTH_FINANCIAL_COUNCIL_POOL_REQUIRED");
           await ensureFinancialCouncilMysqlSchema(options.pool);
         }
-        resources = options.createResources
+        const createdResources = options.createResources
           ? await options.createResources({ foundation, advisor, finance })
           : await createGrowthFinancialCouncilResources({
               mode: options.mode ?? "memory",
@@ -283,6 +360,8 @@ export function createGrowthFinancialCouncilModule(
               relayIntervalMs: options.relayIntervalMs,
               relayBatchSize: options.relayBatchSize
             });
+        trustedResources(createdResources);
+        resources = createdResources;
         const services = Object.freeze({ service: resources.service });
         input.privateServices.provide(
           GROWTH_FINANCIAL_COUNCIL_SERVICES, services

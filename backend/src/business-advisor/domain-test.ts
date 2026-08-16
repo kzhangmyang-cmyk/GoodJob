@@ -143,3 +143,23 @@ test("canonical report input is closed, deeply frozen and order independent", ()
       (error as { code?: string }).code === "business_input_invalid"
   );
 });
+
+test("canonical report text limits count Unicode code points", () => {
+  const asciiBoundary = validInput();
+  asciiBoundary.companyName = "a".repeat(4_000);
+  assert.equal(canonicalBusinessReportInput(asciiBoundary).companyName,
+    asciiBoundary.companyName);
+
+  const emojiBoundary = validInput();
+  emojiBoundary.companyName = "💰".repeat(4_000);
+  assert.equal(canonicalBusinessReportInput(emojiBoundary).companyName,
+    emojiBoundary.companyName);
+
+  for (const companyName of ["a".repeat(4_001), "💰".repeat(4_001)]) {
+    assert.throws(
+      () => canonicalBusinessReportInput({ ...validInput(), companyName }),
+      (error: unknown) =>
+        (error as { code?: unknown }).code === "business_input_invalid"
+    );
+  }
+});

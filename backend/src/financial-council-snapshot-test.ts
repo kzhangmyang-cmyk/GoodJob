@@ -6,7 +6,10 @@ import {
   FinancialCouncilAuthorityReader,
   type FinancialCouncilVerifiedFactSource
 } from "./financial-council-authority-reader.js";
-import { FinancialSnapshotBuilder } from "./financial-council-snapshot.js";
+import {
+  FinancialSnapshotBuilder,
+  validateFinancialSnapshot
+} from "./financial-council-snapshot.js";
 import {
   createGrowthAdvisorQueryService
 } from "./growth-advisor-query.js";
@@ -378,6 +381,45 @@ test("snapshot seals once and every reader receives the same cutoff", async () =
       .map((ref) => [ref.kind, ref.sourceId]));
 });
 
+test("persisted snapshot rejects re-signed impossible provenance", async () => {
+  const snapshot = await createHarness().builder.freeze(
+    command(), RUN_ID, input()
+  );
+  const resign = (changed: Record<string, unknown>) => {
+    const { snapshotHash: _ignored, ...preimage } = changed;
+    return { ...preimage, snapshotHash: financialCouncilCanonicalHash(preimage) };
+  };
+  const invalid = [
+    resign({ ...snapshot, reportInputHash: "not-a-hash" }),
+    resign({
+      ...snapshot,
+      dataGaps: [{
+        code: "unknown_gap", source: "prompt", sourceId: "x",
+        description: "forged"
+      }]
+    }),
+    resign({
+      ...snapshot,
+      sourceRefs: snapshot.sourceRefs.map((ref, index) => index === 0
+        ? { ...ref, kind: "prompt", contentHash: "not-a-hash" }
+        : ref)
+    }),
+    resign({
+      ...snapshot,
+      sourceRefs: [snapshot.sourceRefs[0], snapshot.sourceRefs[0],
+        ...snapshot.sourceRefs.slice(1)]
+    }),
+    resign({ ...snapshot, sourceRefs: [...snapshot.sourceRefs].reverse() })
+  ];
+  for (const candidate of invalid) {
+    assert.throws(
+      () => validateFinancialSnapshot(candidate),
+      (error: unknown) => (error as { code?: unknown }).code
+        === "financial_council_input_invalid"
+    );
+  }
+});
+
 test("future dataAsOf is rejected before sealing or reading", async () => {
   const harness = createHarness();
   await assert.rejects(
@@ -485,7 +527,7 @@ test("snapshot rejects duplicate source identities instead of silently deduplica
 
   await assert.rejects(
     builder.freeze(command(), RUN_ID, input()),
-    /financial_council_input_invalid/u
+    /financial_council_authority_invalid/u
   );
 });
 

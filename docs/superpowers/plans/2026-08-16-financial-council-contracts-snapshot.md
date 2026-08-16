@@ -304,6 +304,8 @@ git commit -m "feat(finance): freeze council authority snapshots"
 - Modify: `backend/src/growth-commercial-application-test.ts`
 - Modify: `backend/package.json`
 - Modify: `backend/src/business-advisor/README.md`
+- Modify: `backend/src/business-advisor/domain.ts`
+- Modify: `backend/src/business-advisor/domain-test.ts`
 - Modify: `backend/src/financial-council-repository.ts`
 - Modify: `backend/src/financial-council-repository-contract-test.ts`
 - Modify: `backend/src/financial-council-repository-test.ts`
@@ -311,18 +313,25 @@ git commit -m "feat(finance): freeze council authority snapshots"
 - Modify: `backend/src/financial-council-mysql-repository-test.ts`
 - Modify: `backend/src/financial-council-snapshot.ts`
 - Modify: `backend/src/financial-council-snapshot-test.ts`
+- Modify: `backend/src/financial-council-domain.ts`
+- Modify: `backend/src/financial-council-domain-test.ts`
+- Modify: `backend/src/financial-council-authority-reader.ts`
+- Modify: `backend/src/financial-council-authority-reader-test.ts`
 - Modify: `backend/src/growth-capabilities.ts`
 - Modify: `backend/src/growth-capabilities-test.ts`
 - Modify: `backend/src/growth-bootstrap-router-test.ts`
 - Modify: `backend/src/growth-openapi-test.ts`
 - Modify: `backend/src/growth-openapi-response-conformance-test.ts`
 - Modify: `contracts/json-schema/growth-bootstrap.v1.schema.json`
+- Modify: `contracts/json-schema/financial-council.v1.schema.json`
 - Modify: `contracts/openapi/growth-advisor-quote-roi.v1.yaml`
 - Modify: `contracts/test/schema-registry.test.mjs`
 - Modify: `contracts/test/growth-openapi.test.mjs`
 - Modify: `contracts/test/growth-contract-release.test.mjs`
 - Create: `contracts/releases/growth-advisor-quote-roi/1.0.8/manifest.json`
 - Create: `contracts/releases/growth-advisor-quote-roi/1.0.8/openapi.json`
+- Create: `contracts/releases/growth-advisor-quote-roi/1.0.9/manifest.json`
+- Create: `contracts/releases/growth-advisor-quote-roi/1.0.9/openapi.json`
 
 **Interfaces:**
 - Produces `FinancialCouncilService.createRun/getRun/listEvents`.
@@ -333,6 +342,7 @@ git commit -m "feat(finance): freeze council authority snapshots"
 - Adds `GROWTH_FINANCIAL_COUNCIL_SERVICES` after `GROWTH_ADVISOR_SERVICES` in module order.
 - Router reuses standard Growth error response, workspace resolution, command idempotency and no-store headers.
 - `finance.council.run` is added to the existing additive capability-registry line and the public bootstrap enum. It is granted only to `admin` and `super_admin` in a concrete active workspace; `sales` and `manager` remain denied. The Growth wire contract advances to immutable release `1.0.8`.
+- Contract/runtime create-input parity fixes discovered during independent review advance the immutable Growth wire release again to `1.0.9`; release `1.0.8` remains untouched.
 
 - [ ] **Step 1: Write route/application RED tests.**
 

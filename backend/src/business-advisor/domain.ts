@@ -161,7 +161,7 @@ function requireBusinessRecord(
 
 function requireBusinessText(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim() === ""
-    || value.length > BUSINESS_REPORT_TEXT_LIMIT) {
+    || [...value].length > BUSINESS_REPORT_TEXT_LIMIT) {
     throw businessAdvisorError("business_input_invalid", `${field} invalid`);
   }
   return value;

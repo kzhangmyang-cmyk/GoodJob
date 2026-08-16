@@ -9,6 +9,8 @@ import { canonicalBusinessReportInput } from "./business-advisor/domain.js";
 import type { FinancialCouncilService } from "./financial-council-service.js";
 import type { FinancialCouncilCreateInput } from "./growth-contract-types.js";
 import { GrowthHttpError } from "./growth-command-context.js";
+import { GrowthAuthorizationError } from "./growth-capabilities.js";
+import { isFinancialCouncilError } from "./financial-council-domain.js";
 import type {
   GrowthCommandContextFactory,
   GrowthWorkspaceContextResolver
@@ -16,6 +18,7 @@ import type {
 import { setRevisionEtag } from "./growth-http-preconditions.js";
 import {
   executeGrowthIdempotentCommand,
+  growthHttpIdempotencyKeyHash,
   type GrowthHttpIdempotencyRepository
 } from "./growth-http-idempotency-repository.js";
 
@@ -56,7 +59,8 @@ function exactCreateInput(raw: unknown): FinancialCouncilCreateInput {
       || typeof record.dataAsOf !== "string"
       || new Date(record.dataAsOf).toISOString() !== record.dataAsOf
       || typeof record.policyVersionId !== "string"
-      || !record.policyVersionId.trim()) throw new Error();
+      || !record.policyVersionId.trim()
+      || [...record.policyVersionId].length > 255) throw new Error();
     return Object.freeze({
       currency: record.currency,
       dataAsOf: record.dataAsOf,
@@ -113,28 +117,44 @@ function projectEvent(event: Awaited<ReturnType<
   });
 }
 
-function statusFor(error: unknown, code: string): number {
-  if (error instanceof GrowthHttpError) return error.status;
-  if (code === "capability_forbidden") return 403;
-  if (code.includes("not_found")) return 404;
-  if (code.includes("idempotency") || code.includes("conflict")) return 409;
-  if (code.includes("input") || code.includes("invalid")
-    || code === "invalid_as_of") return 422;
-  return 500;
-}
-
-function codeFor(error: unknown): string {
-  if (error && typeof error === "object") {
-    const code = Reflect.get(error, "code");
-    if (typeof code === "string" && code.trim()) return code;
+function trustedError(error: unknown): {
+  readonly status: number;
+  readonly code: string;
+} {
+  try {
+    if (error instanceof GrowthHttpError) {
+      return { status: error.status, code: error.code };
+    }
+    if (error instanceof GrowthAuthorizationError) {
+      return { status: 403, code: error.code };
+    }
+    if (isFinancialCouncilError(error)) {
+      const status = error.code === "financial_council_run_not_found" ? 404
+        : error.code === "financial_council_idempotency_conflict"
+          || error.code === "financial_council_run_conflict"
+          || error.code === "financial_council_snapshot_conflict"
+          || error.code === "financial_council_revision_conflict" ? 409
+          : error.code === "financial_council_input_invalid"
+            || error.code === "financial_council_transition_invalid"
+            || error.code === "financial_council_timestamp_invalid"
+            || error.code === "financial_council_context_invalid"
+            || error.code === "financial_council_authority_workspace_mismatch"
+            || error.code === "financial_council_authority_invalid"
+            || error.code === "financial_council_authority_duplicate"
+            || error.code === "financial_council_authority_query_truncated"
+            || error.code === "invalid_as_of" ? 422 : 500;
+      return { status, code: error.code };
+    }
+  } catch {
+    // Unknown objects, including hostile proxies, are opaque internal errors.
   }
-  return "financial_council_internal_error";
+  return { status: 500, code: "financial_council_internal_error" };
 }
 
 function sendError(req: Request, res: Response, error: unknown): void {
-  const code = codeFor(error);
+  const { code, status } = trustedError(error);
   const requestId = res.getHeader("X-Request-Id") as string;
-  res.status(statusFor(error, code));
+  res.status(status);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.removeHeader("ETag");
   res.end(JSON.stringify({
@@ -174,7 +194,9 @@ export function createFinancialCouncilRouter(
         actorId: command.actorId,
         method: "POST",
         canonicalPath: CREATE_PATH,
-        key: command.idempotencyKey,
+        key: `financial-council:http:${growthHttpIdempotencyKeyHash(
+          command.idempotencyKey
+        )}`,
         requestHash: command.requestHash,
         attemptedAt: now(),
         leaseOwner: `financial-council-http-${randomUUID()}`,
