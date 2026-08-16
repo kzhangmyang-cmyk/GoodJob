@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   applyFinancialCouncilTransition,
   financialCouncilAggregateHash,
+  financialCouncilCanonicalHash,
   type FinancialCouncilRun
 } from "./financial-council-domain.js";
 
@@ -173,6 +174,27 @@ test("canonical hashing rejects every non-JSON value without collisions", () => 
       (error: unknown) => (error as { code?: unknown }).code
         === "financial_council_input_invalid",
       label
+    );
+  }
+});
+
+test("canonical hashing rejects decorated and accessor-backed arrays", () => {
+  const nonEnumerable = [1];
+  Object.defineProperty(nonEnumerable, "hidden", { value: 2 });
+  const symbolKey = [1];
+  Object.defineProperty(symbolKey, Symbol("hidden"), { value: 2 });
+  const accessor: unknown[] = [];
+  Object.defineProperty(accessor, "0", {
+    enumerable: true,
+    configurable: true,
+    get: () => 1
+  });
+  accessor.length = 1;
+
+  for (const value of [nonEnumerable, symbolKey, accessor]) {
+    assert.throws(
+      () => financialCouncilCanonicalHash(value),
+      hasCode("financial_council_input_invalid")
     );
   }
 });

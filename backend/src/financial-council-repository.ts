@@ -7,6 +7,7 @@ import {
   financialCouncilCanonicalJson,
   financialCouncilCanonicalHash,
   financialCouncilError,
+  immutableFinancialCouncilInput,
   immutableFinancialCouncilValue,
   type FinancialCouncilRun,
   type FinancialCouncilRunEvent,
@@ -71,10 +72,16 @@ function exactObject(
 ): asserts value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || Object.getPrototypeOf(value) !== Object.prototype) inputInvalid();
-  const keys = Object.keys(value);
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.some((key) => typeof key !== "string")) inputInvalid();
+  const keys = ownKeys as string[];
   if (required.some((key) => !Object.hasOwn(value, key))
     || keys.some((key) =>
       !required.includes(key) && !optional.includes(key))) inputInvalid();
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) inputInvalid();
+  }
 }
 
 function identifier(value: unknown): asserts value is string {
@@ -321,6 +328,45 @@ export function assertFinancialCouncilTransitionMutation(
       || input.reasonCode.length > 200)) inputInvalid();
 }
 
+export function validateFinancialCouncilCreateMutation(
+  command: unknown,
+  aggregate: unknown
+): { readonly command: CommandContext; readonly aggregate: FinancialCouncilRun } {
+  const stableCommand = immutableFinancialCouncilInput(command);
+  const stableAggregate = immutableFinancialCouncilInput(aggregate);
+  assertFinancialCouncilCreateMutation(stableCommand, stableAggregate);
+  return {
+    command: stableCommand as CommandContext,
+    aggregate: stableAggregate
+  };
+}
+
+export function validateFinancialCouncilStoreSnapshotMutation(
+  command: unknown,
+  input: unknown
+): {
+  readonly command: CommandContext;
+  readonly input: StoreFrozenFinancialSnapshotInput;
+} {
+  const stableCommand = immutableFinancialCouncilInput(command);
+  const stableInput = immutableFinancialCouncilInput(input);
+  assertFinancialCouncilStoreSnapshotMutation(stableCommand, stableInput);
+  return { command: stableCommand as CommandContext, input: stableInput };
+}
+
+export function validateFinancialCouncilTransitionMutation(
+  command: unknown,
+  input: unknown
+): {
+  readonly command: CommandContext;
+  readonly input: TransitionFinancialCouncilRunInput;
+} {
+  const stableCommand = immutableFinancialCouncilInput(command);
+  const stableInput = immutableFinancialCouncilInput(input);
+  assertFinancialCouncilTransitionMutation(stableCommand, stableInput);
+  return { command: stableCommand as CommandContext, input: stableInput };
+}
+
 function key(workspaceId: string, id: string): string {
   return `${workspaceId}\u0000${id}`;
 }
@@ -354,7 +400,9 @@ implements FinancialCouncilRepository {
     command: CommandContext,
     aggregate: FinancialCouncilRun
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
-    assertFinancialCouncilCreateMutation(command, aggregate);
+    ({ command, aggregate } = validateFinancialCouncilCreateMutation(
+      command, aggregate
+    ));
     const creationKey = key(aggregate.workspaceId, aggregate.creationKeyHash);
     const existingId = this.creationKeys.get(creationKey);
     if (existingId) {
@@ -401,7 +449,9 @@ implements FinancialCouncilRepository {
     command: CommandContext,
     input: StoreFrozenFinancialSnapshotInput
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
-    assertFinancialCouncilStoreSnapshotMutation(command, input);
+    ({ command, input } = validateFinancialCouncilStoreSnapshotMutation(
+      command, input
+    ));
     const expectedRevision = exactRevision(command);
     const aggregateKey = key(command.workspace.workspaceId, input.runId);
     const current = this.runs.get(aggregateKey);
@@ -447,7 +497,9 @@ implements FinancialCouncilRepository {
     command: CommandContext,
     input: TransitionFinancialCouncilRunInput
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
-    assertFinancialCouncilTransitionMutation(command, input);
+    ({ command, input } = validateFinancialCouncilTransitionMutation(
+      command, input
+    ));
     if (input.kind === "snapshot_frozen") {
       throw financialCouncilError("financial_council_transition_invalid");
     }

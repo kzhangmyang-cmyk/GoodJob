@@ -18,11 +18,11 @@ import {
 } from "./financial-council-domain.js";
 import {
   assertFinancialSnapshotRecord,
-  assertFinancialCouncilCreateMutation,
   assertFinancialCouncilRunValue,
-  assertFinancialCouncilStoreSnapshotMutation,
-  assertFinancialCouncilTransitionMutation,
   assertFinancialSnapshotRecordValue,
+  validateFinancialCouncilCreateMutation,
+  validateFinancialCouncilStoreSnapshotMutation,
+  validateFinancialCouncilTransitionMutation,
   type FinancialCouncilCommandResult,
   type FinancialCouncilRepository,
   type StoreFrozenFinancialSnapshotInput,
@@ -584,7 +584,9 @@ implements FinancialCouncilRepository {
     command: CommandContext,
     aggregate: FinancialCouncilRun
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
-    assertFinancialCouncilCreateMutation(command, aggregate);
+    ({ command, aggregate } = validateFinancialCouncilCreateMutation(
+      command, aggregate
+    ));
     try {
       return await this.transaction(async (connection) => {
         const existing = await this.findByCreationKey(
@@ -640,7 +642,9 @@ implements FinancialCouncilRepository {
     command: CommandContext,
     input: StoreFrozenFinancialSnapshotInput
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
-    assertFinancialCouncilStoreSnapshotMutation(command, input);
+    ({ command, input } = validateFinancialCouncilStoreSnapshotMutation(
+      command, input
+    ));
     const revision = expectedRevision(command);
     return this.transaction(async (connection) => {
       const current = await this.findByRunId(
@@ -704,7 +708,9 @@ implements FinancialCouncilRepository {
     command: CommandContext,
     input: TransitionFinancialCouncilRunInput
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
-    assertFinancialCouncilTransitionMutation(command, input);
+    ({ command, input } = validateFinancialCouncilTransitionMutation(
+      command, input
+    ));
     if (input.kind === "snapshot_frozen") {
       throw financialCouncilError("financial_council_transition_invalid");
     }
@@ -752,26 +758,28 @@ implements FinancialCouncilRepository {
     readonly run: FinancialCouncilRun;
     readonly events: readonly FinancialCouncilRunEvent[];
   } | null> {
-    const [runRows] = await this.pool.query(
-      `SELECT * FROM financial_council_runs
-       WHERE workspace_id = ? AND run_id = ?`,
-      [context.workspaceId, runId]
-    );
-    const [eventRows] = await this.pool.query(
-      `SELECT * FROM financial_council_run_events
-       WHERE workspace_id = ? AND run_id = ? ORDER BY revision ASC`,
-      [context.workspaceId, runId]
-    );
-    const runRow = (runRows as MysqlRow[])[0];
-    const rawEvents = eventRows as MysqlRow[];
-    if (!runRow) {
-      if (rawEvents.length !== 0) integrity();
-      return null;
-    }
-    const run = parseRun(runRow);
-    const events = Object.freeze(rawEvents.map(parseEvent));
-    assertRunHistoryIntegrity(run, events);
-    return Object.freeze({ run, events });
+    return this.transaction(async (connection) => {
+      const [runRows] = await connection.query(
+        `SELECT * FROM financial_council_runs
+         WHERE workspace_id = ? AND run_id = ?`,
+        [context.workspaceId, runId]
+      );
+      const [eventRows] = await connection.query(
+        `SELECT * FROM financial_council_run_events
+         WHERE workspace_id = ? AND run_id = ? ORDER BY revision ASC`,
+        [context.workspaceId, runId]
+      );
+      const runRow = (runRows as MysqlRow[])[0];
+      const rawEvents = eventRows as MysqlRow[];
+      if (!runRow) {
+        if (rawEvents.length !== 0) integrity();
+        return null;
+      }
+      const run = parseRun(runRow);
+      const events = Object.freeze(rawEvents.map(parseEvent));
+      assertRunHistoryIntegrity(run, events);
+      return Object.freeze({ run, events });
+    }, true);
   }
 
   private async findByCreationKey(
@@ -840,11 +848,17 @@ implements FinancialCouncilRepository {
   }
 
   private async transaction<T>(
-    work: (connection: mysql.PoolConnection) => Promise<T>
+    work: (connection: mysql.PoolConnection) => Promise<T>,
+    consistentSnapshot = false
   ): Promise<T> {
     const connection = await this.pool.getConnection();
     let poisoned = false;
     try {
+      if (consistentSnapshot) {
+        await connection.query(
+          "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        );
+      }
       await connection.beginTransaction();
       try {
         const result = await work(connection);

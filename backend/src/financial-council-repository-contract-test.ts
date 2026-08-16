@@ -282,6 +282,91 @@ export function registerFinancialCouncilRepositoryContract(
     );
   });
 
+  test(`${label}: public mutations reject unstable and hidden object structure`, async () => {
+    const invalidCommands = [
+      (() => {
+        const base = command("changing-getter");
+        let reads = 0;
+        const value = { ...base } as Record<string, unknown>;
+        Object.defineProperty(value, "actorId", {
+          enumerable: true,
+          get: () => reads++ === 0 ? "manager-1" : ""
+        });
+        return value;
+      })(),
+      (() => {
+        const value = { ...command("symbol") } as Record<PropertyKey, unknown>;
+        value[Symbol("hidden")] = true;
+        return value;
+      })(),
+      (() => {
+        const value = { ...command("non-enumerable") };
+        Object.defineProperty(value, "hidden", { value: true });
+        return value;
+      })(),
+      Object.assign(Object.create({ inherited: true }), command("prototype"))
+    ];
+    for (const [index, invalid] of invalidCommands.entries()) {
+      const repository = await createRepository();
+      await assert.rejects(
+        repository.createRun(
+          invalid as unknown as CommandContext,
+          repositoryRunFixture({ runId: `invalid-structure-${index}` })
+        ),
+        hasCode("financial_council_input_invalid")
+      );
+      assert.equal(
+        await repository.findRun(workspace(), `invalid-structure-${index}`),
+        null
+      );
+      assert.deepEqual(
+        await repository.listEvents(workspace(), `invalid-structure-${index}`),
+        []
+      );
+    }
+
+    const repository = await createRepository();
+    const aggregate = structuredClone(repositoryRunFixture());
+    Object.defineProperty(aggregate.businessReport.balanceSheet, "cashMinor", {
+      enumerable: true,
+      get: () => 100_000
+    });
+    await assert.rejects(
+      repository.createRun(command("nested-accessor"), aggregate),
+      hasCode("financial_council_input_invalid")
+    );
+    assert.equal(await repository.findRun(workspace(), aggregate.runId), null);
+
+    const run = (await repository.createRun(
+      command("valid-create"), repositoryRunFixture()
+    )).value;
+    const transitionCommand = { ...command("unstable-transition", "ws-1", 1) };
+    Object.defineProperty(transitionCommand, "actorId", {
+      enumerable: true,
+      get: () => "manager-1"
+    });
+    await assert.rejects(repository.transitionRun(transitionCommand, {
+      runId: run.runId,
+      kind: "failed",
+      occurredAt: T1,
+      reasonCode: null
+    }), hasCode("financial_council_input_invalid"));
+    const snapshotInput = {
+      runId: run.runId,
+      snapshot: snapshotFixture(run),
+      occurredAt: T1
+    };
+    Object.defineProperty(snapshotInput, "hidden", { value: true });
+    await assert.rejects(repository.storeFrozenSnapshot(
+      command("hidden-snapshot", "ws-1", 1), snapshotInput
+    ), hasCode("financial_council_input_invalid"));
+    assert.deepEqual(
+      [(await repository.findRun(workspace(), run.runId))?.revision,
+        (await repository.listEvents(workspace(), run.runId)).length],
+      [1, 1]
+    );
+  });
+
   test(`${label}: transition rejects malformed time and reason without mutation`, async () => {
     const repository = await createRepository();
     const run = (await repository.createRun(

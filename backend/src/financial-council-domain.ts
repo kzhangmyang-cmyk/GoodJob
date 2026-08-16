@@ -112,6 +112,70 @@ function deepFreeze<T>(value: T): T {
   return Object.freeze(value);
 }
 
+function materializeJsonValue(
+  value: unknown,
+  ancestors: WeakSet<object>
+): unknown {
+  if (value === null || typeof value === "string"
+    || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) invalidJson();
+    return value;
+  }
+  if (typeof value !== "object" || ancestors.has(value)) invalidJson();
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      if (!lengthDescriptor || !("value" in lengthDescriptor)
+        || lengthDescriptor.enumerable
+        || !Number.isSafeInteger(lengthDescriptor.value)
+        || lengthDescriptor.value < 0) invalidJson();
+      const length = lengthDescriptor.value as number;
+      const keys = Reflect.ownKeys(value);
+      if (keys.length !== length + 1
+        || keys.some((key) => typeof key !== "string"
+          || (key !== "length" && (!/^(0|[1-9][0-9]*)$/u.test(key)
+            || Number(key) >= length)))) invalidJson();
+      const copy: unknown[] = [];
+      for (let index = 0; index < length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor?.enumerable || !("value" in descriptor)) invalidJson();
+        copy.push(materializeJsonValue(descriptor.value, ancestors));
+      }
+      return Object.freeze(copy);
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) invalidJson();
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string")) invalidJson();
+    const copy: Record<string, unknown> = {};
+    for (const key of keys as string[]) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !("value" in descriptor)) invalidJson();
+      Object.defineProperty(copy, key, {
+        value: materializeJsonValue(descriptor.value, ancestors),
+        enumerable: true,
+        configurable: false,
+        writable: false
+      });
+    }
+    return Object.freeze(copy);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+export function immutableFinancialCouncilInput<T>(value: T): T {
+  try {
+    return materializeJsonValue(value, new WeakSet()) as T;
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "financial_council_input_invalid") {
+      throw error;
+    }
+    invalidJson();
+  }
+}
+
 export function immutableFinancialCouncilValue<T>(value: T): T {
   return deepFreeze(structuredClone(value));
 }
@@ -174,7 +238,10 @@ function encodeCanonicalJson(
 }
 
 export function financialCouncilCanonicalJson(value: unknown): string {
-  return encodeCanonicalJson(value, new WeakSet());
+  return encodeCanonicalJson(
+    immutableFinancialCouncilInput(value),
+    new WeakSet()
+  );
 }
 
 export function financialCouncilAggregateHash(
