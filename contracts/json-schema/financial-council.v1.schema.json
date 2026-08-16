@@ -78,13 +78,13 @@
     },
     "CashFlowInput": {
       "type": "object", "additionalProperties": false,
-      "required": ["period", "openingCashMinor", "operatingInflowMinor", "operatingOutflowMinor", "investingNetMinor", "financingNetMinor", "receivables", "expectedInflowsNext30DaysMinor", "expectedOutflowsNext30DaysMinor", "expectedInflowsNext31To90DaysMinor", "expectedOutflowsNext31To90DaysMinor"],
+      "required": ["period", "openingCashMinor", "operatingInflowMinor", "operatingOutflowMinor", "investingNetMinor", "financingNetMinor", "expectedInflowsNext30DaysMinor", "expectedOutflowsNext30DaysMinor", "expectedInflowsNext31To90DaysMinor", "expectedOutflowsNext31To90DaysMinor"],
       "properties": { "period": { "$ref": "#/$defs/nonempty" }, "openingCashMinor": { "$ref": "#/$defs/nonNegativeInteger" }, "operatingInflowMinor": { "$ref": "#/$defs/nonNegativeInteger" }, "operatingOutflowMinor": { "$ref": "#/$defs/nonNegativeInteger" }, "investingNetMinor": { "$ref": "#/$defs/safeInteger" }, "financingNetMinor": { "$ref": "#/$defs/safeInteger" }, "receivables": { "type": "array", "items": { "$ref": "#/$defs/ReceivableInput" } }, "expectedInflowsNext30DaysMinor": { "$ref": "#/$defs/nonNegativeInteger" }, "expectedOutflowsNext30DaysMinor": { "$ref": "#/$defs/nonNegativeInteger" }, "expectedInflowsNext31To90DaysMinor": { "$ref": "#/$defs/nonNegativeInteger" }, "expectedOutflowsNext31To90DaysMinor": { "$ref": "#/$defs/nonNegativeInteger" } }
     },
     "CostDetailInput": {
       "type": "object", "additionalProperties": false,
       "required": ["materialCostRateBps", "laborCostMinor", "rawMaterialCostMinor", "salesCommissionRateBps", "fixedOverheadMinor"],
-      "properties": { "materialCostRateBps": { "$ref": "#/$defs/bps" }, "previousMaterialCostRateBps": { "type": ["integer", "null"], "minimum": 0, "maximum": 10000 }, "laborCostMinor": { "$ref": "#/$defs/nonNegativeInteger" }, "rawMaterialCostMinor": { "$ref": "#/$defs/nonNegativeInteger" }, "salesCommissionRateBps": { "$ref": "#/$defs/bps" }, "fixedOverheadMinor": { "$ref": "#/$defs/nonNegativeInteger" } }
+      "properties": { "materialCostRateBps": { "$ref": "#/$defs/bps" }, "previousMaterialCostRateBps": { "$ref": "#/$defs/bps" }, "laborCostMinor": { "$ref": "#/$defs/nonNegativeInteger" }, "rawMaterialCostMinor": { "$ref": "#/$defs/nonNegativeInteger" }, "salesCommissionRateBps": { "$ref": "#/$defs/bps" }, "fixedOverheadMinor": { "$ref": "#/$defs/nonNegativeInteger" } }
     },
     "TaxRiskInput": {
       "type": "object", "additionalProperties": false,
@@ -105,6 +105,11 @@
       "type": "object", "additionalProperties": false,
       "required": ["eventId", "runId", "revision", "fromStatus", "toStatus", "reasonCode", "occurredAt"],
       "properties": { "eventId": { "$ref": "#/$defs/nonempty" }, "runId": { "$ref": "#/$defs/nonempty" }, "revision": { "$ref": "#/$defs/revision" }, "fromStatus": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/runStatus" }] }, "toStatus": { "$ref": "#/$defs/runStatus" }, "reasonCode": { "type": ["string", "null"], "minLength": 1, "maxLength": 200 }, "occurredAt": { "$ref": "#/$defs/dateTime" } }
+    },
+    "FinancialCouncilRunEventPagedResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["items", "nextAfter", "hasMore"],
+      "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/FinancialCouncilRunEvent" } }, "nextAfter": { "type": ["string", "null"], "minLength": 1 }, "hasMore": { "type": "boolean" } }
     },
     "FinancialSnapshotView": {
       "type": "object", "additionalProperties": false,
@@ -138,6 +143,7 @@
     "PortfolioRevisionInput": { "type": "object", "additionalProperties": false, "required": ["baseRevision", "kind", "actionIds"], "properties": { "baseRevision": { "$ref": "#/$defs/revision" }, "kind": { "$ref": "#/$defs/portfolioKind" }, "actionIds": { "type": "array", "items": { "$ref": "#/$defs/nonempty" } } } },
     "FinancialCouncilApproval": { "type": "object", "additionalProperties": false, "required": ["approvalId", "runId", "portfolioRevision", "status", "approvedActionIds", "requiredCapabilities", "approvedAt"], "properties": { "approvalId": { "$ref": "#/$defs/nonempty" }, "runId": { "$ref": "#/$defs/nonempty" }, "portfolioRevision": { "$ref": "#/$defs/revision" }, "status": { "enum": ["approved", "rejected"] }, "approvedActionIds": { "type": "array", "items": { "$ref": "#/$defs/nonempty" } }, "requiredCapabilities": { "type": "array", "items": { "$ref": "#/$defs/nonempty" } }, "approvedAt": { "$ref": "#/$defs/dateTime" } } },
     "FinancialCouncilDispatchView": { "type": "object", "additionalProperties": false, "required": ["dispatchId", "runId", "approvalId", "actionId", "status", "receiptId", "createdAt", "updatedAt"], "properties": { "dispatchId": { "$ref": "#/$defs/nonempty" }, "runId": { "$ref": "#/$defs/nonempty" }, "approvalId": { "$ref": "#/$defs/nonempty" }, "actionId": { "$ref": "#/$defs/nonempty" }, "status": { "enum": ["pending", "dispatched", "failed"] }, "receiptId": { "type": ["string", "null"], "minLength": 1 }, "createdAt": { "$ref": "#/$defs/dateTime" }, "updatedAt": { "$ref": "#/$defs/dateTime" } } },
+    "FinancialCouncilDispatchPagedResult": { "type": "object", "additionalProperties": false, "required": ["items", "nextAfter", "hasMore"], "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/FinancialCouncilDispatchView" } }, "nextAfter": { "type": ["string", "null"], "minLength": 1 }, "hasMore": { "type": "boolean" } } },
     "FinancialCouncilRejectInput": { "type": "object", "additionalProperties": false, "required": ["reason"], "properties": { "reason": { "$ref": "#/$defs/nonempty" } } },
     "FinancialCouncilApprovalInput": { "type": "object", "additionalProperties": false, "required": ["portfolioRevision"], "properties": { "portfolioRevision": { "$ref": "#/$defs/revision" } } }
   }

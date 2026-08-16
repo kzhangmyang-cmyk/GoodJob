@@ -247,13 +247,58 @@ export interface FinancialCouncilRunEvent {
   occurredAt: string;
 }
 
+export type FinancialCouncilEvidenceSource =
+  | "crm"
+  | "quote"
+  | "financial_fact"
+  | "acquisition_cost"
+  | "roi"
+  | "business_report";
+
+export interface FinancialCouncilEvidenceRef {
+  source: FinancialCouncilEvidenceSource;
+  sourceId: string;
+  contentHash: Sha256;
+}
+
+export type FinancialCouncilSnapshotSource =
+  | "crm"
+  | "quote"
+  | "financial_fact"
+  | "acquisition_cost"
+  | "roi";
+
+export interface FinancialCouncilSourceVersion {
+  source: FinancialCouncilSnapshotSource;
+  sourceId: string;
+  version: number;
+  contentHash: Sha256;
+}
+
+export type FinancialCouncilConflictKind =
+  | "formula"
+  | "evidence"
+  | "definition"
+  | "action_exclusivity"
+  | "resource_competition"
+  | "risk_preference";
+
+export type FinancialCouncilConflictStatus = "unresolved" | "resolved" | "withdrawn";
+
+export interface FinancialCouncilConflict {
+  conflictId: string;
+  type: FinancialCouncilConflictKind;
+  findingIds: readonly string[];
+  status: FinancialCouncilConflictStatus;
+}
+
 export interface FinancialCouncilFinding {
   findingId: string;
   runId: string;
   snapshotId: string;
   agentRole: FinancialCouncilAgentRole;
   conclusion: string;
-  evidenceRefs: readonly { source: string; sourceId: string; contentHash: Sha256 }[];
+  evidenceRefs: readonly FinancialCouncilEvidenceRef[];
   formulaRef: { formulaVersion: string; inputHash: Sha256; resultHash: Sha256 } | null;
   confidenceBps: number;
   severity: "info" | "warning" | "critical";
@@ -320,7 +365,7 @@ export interface FinancialCouncilRun {
   policyVersionId: string;
   snapshotId: string;
   snapshotHash: Sha256;
-  consensusReport: unknown | null;
+  consensusReport: ConsensusReport | null;
   portfolios: readonly FinancialCouncilActionPortfolio[];
   latestPortfolioRevision: number | null;
   approval: FinancialCouncilApproval | null;
@@ -336,7 +381,7 @@ export interface FinancialSnapshotView {
   dataAsOf: string;
   currency: BusinessCurrency;
   businessReport: BusinessReportInput;
-  sourceVersions: readonly { source: string; sourceId: string; version: number; contentHash: Sha256 }[];
+  sourceVersions: readonly FinancialCouncilSourceVersion[];
   dataGaps: readonly FinancialCouncilDataGap[];
   redactionLevel: "full" | "redacted";
   snapshotHash: Sha256;
@@ -350,7 +395,7 @@ export interface ConsensusReport {
   acceptedFindings: readonly FinancialCouncilFinding[];
   minorityFindings: readonly FinancialCouncilFinding[];
   rejectedFindings: readonly FinancialCouncilFinding[];
-  unresolvedConflicts: readonly { conflictId: string; type: string; findingIds: readonly string[]; status: "unresolved" | "resolved" | "withdrawn" }[];
+  unresolvedConflicts: readonly FinancialCouncilConflict[];
   dataGaps: readonly FinancialCouncilDataGap[];
   overallDiagnosis: string;
   inputVersionHash: Sha256;
@@ -381,6 +426,18 @@ export interface FinancialCouncilDispatchView {
   receiptId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface FinancialCouncilRunEventPagedResult {
+  items: readonly FinancialCouncilRunEvent[];
+  nextAfter: string | null;
+  hasMore: boolean;
+}
+
+export interface FinancialCouncilDispatchPagedResult {
+  items: readonly FinancialCouncilDispatchView[];
+  nextAfter: string | null;
+  hasMore: boolean;
 }
 
 export type CandidateAction = FinancialCouncilCandidateAction;

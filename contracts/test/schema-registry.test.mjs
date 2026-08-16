@@ -468,6 +468,41 @@ test("financial council create input keeps the business report optional branches
     businessReport,
     policyVersionId: "policy-1"
   }), true, JSON.stringify(validate.errors));
+
+  const nestedOptional = financialCouncilRunFixture().businessReport;
+  nestedOptional.cashFlow = {
+    period: "2026-08",
+    openingCashMinor: 100000,
+    operatingInflowMinor: 50000,
+    operatingOutflowMinor: 40000,
+    investingNetMinor: 0,
+    financingNetMinor: 0,
+    expectedInflowsNext30DaysMinor: 20000,
+    expectedOutflowsNext30DaysMinor: 10000,
+    expectedInflowsNext31To90DaysMinor: 10000,
+    expectedOutflowsNext31To90DaysMinor: 5000
+  };
+  nestedOptional.costDetail = {
+    materialCostRateBps: 4000,
+    laborCostMinor: 10000,
+    rawMaterialCostMinor: 20000,
+    salesCommissionRateBps: 500,
+    fixedOverheadMinor: 5000
+  };
+  assert.equal(validate({
+    currency: "CNY",
+    dataAsOf: "2026-08-16T00:00:00.000Z",
+    businessReport: nestedOptional,
+    policyVersionId: "policy-1"
+  }), true, JSON.stringify(validate.errors));
+  const invalidPreviousRate = structuredClone(nestedOptional);
+  invalidPreviousRate.costDetail.previousMaterialCostRateBps = null;
+  assert.equal(validate({
+    currency: "CNY",
+    dataAsOf: "2026-08-16T00:00:00.000Z",
+    businessReport: invalidPreviousRate,
+    policyVersionId: "policy-1"
+  }), false);
 });
 
 test("candidate intelligence operations expose only the strict public DTO", async () => {

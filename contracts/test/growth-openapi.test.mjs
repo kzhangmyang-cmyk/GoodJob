@@ -503,6 +503,20 @@ test("financial council policy updates accept configuration but no server-owned 
   ]) assert.equal(serverOwned in input.properties, false, serverOwned);
 });
 
+test("financial council stream reads use closed pagination envelopes", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  for (const path of [
+    "/api/v1/finance/council-runs/{runId}/events",
+    "/api/v1/finance/council-runs/{runId}/dispatches"
+  ]) {
+    const response = resolveInternalResponse(document, document.paths[path].get.responses["200"]);
+    const schema = await resolvePublishedSchema(document, response.content["application/json"].schema);
+    assert.equal(schema.type, "object", path);
+    assert.equal(schema.additionalProperties, false, path);
+    assert.deepEqual(schema.required, ["items", "nextAfter", "hasMore"], path);
+  }
+});
+
 // Production break caught: returning the logical contract filename or a path-like value instead of the immutable release's strict SemVer identity.
 test("bootstrap responses require the release manifest's strict SemVer contract version", async () => {
   const registry = await loadSchemaRegistry();
@@ -929,7 +943,14 @@ test("fix round 1 mutations require auth guards and versioned responses publish 
     ["/api/v1/quotes/versions/{id}/approve", "post"],
     ["/api/v1/acquisition/attribution-allocation-sets/{id}/activate", "post"],
     ["/api/v1/finance/settlement-allocation-sets/{id}/activate", "post"],
-    ["/api/v1/acquisition/roi-closures/{closureVersionId}/reopen", "post"]
+    ["/api/v1/acquisition/roi-closures/{closureVersionId}/reopen", "post"],
+    ["/api/v1/finance/council-runs", "post"],
+    ["/api/v1/finance/council-runs/{runId}", "get"],
+    ["/api/v1/finance/council-policy", "get"],
+    ["/api/v1/finance/council-policy", "put"],
+    ["/api/v1/finance/council-runs/{runId}/portfolio-revisions", "post"],
+    ["/api/v1/finance/council-runs/{runId}/portfolio-revisions/{revision}/approve", "post"],
+    ["/api/v1/finance/council-runs/{runId}/reject", "post"]
   ]) {
     const operation = document.paths[path][method];
     const success = Object.entries(operation.responses).find(([status]) => /^2\d\d$/.test(status));
@@ -1128,7 +1149,10 @@ test("fix round 2 transition ETags describe the returned next-If-Match resource"
     createFinancialFact: "#/components/responses/FinancialFact", verifyFinancialFact: "#/components/responses/FinancialFact", rejectFinancialFact: "#/components/responses/FinancialFact", reverseFinancialFact: "#/components/responses/FinancialFact", correctFinancialFact: "#/components/responses/FinancialFactCorrectionResult",
     createCashSettlementAllocationSet: "#/components/responses/CashSettlementAllocationSet", getCashSettlementAllocationSet: "#/components/responses/CashSettlementAllocationSet", activateCashSettlementAllocationSet: "#/components/responses/CashSettlementAllocationSet",
     reopenRoiClosureVersion: "#/components/responses/RoiClosureSeries",
-    acceptAdvisorRecommendation: "#/components/responses/AdvisorRecommendation", ignoreAdvisorRecommendation: "#/components/responses/AdvisorRecommendation", completeAdvisorRecommendation: "#/components/responses/AdvisorRecommendation"
+    acceptAdvisorRecommendation: "#/components/responses/AdvisorRecommendation", ignoreAdvisorRecommendation: "#/components/responses/AdvisorRecommendation", completeAdvisorRecommendation: "#/components/responses/AdvisorRecommendation",
+    createFinancialCouncilRun: "#/components/responses/FinancialCouncilRun", getFinancialCouncilRun: "#/components/responses/FinancialCouncilRun", rejectFinancialCouncilRun: "#/components/responses/FinancialCouncilRun",
+    getFinancialCouncilPolicy: "#/components/responses/FinancialCouncilPolicyVersion", updateFinancialCouncilPolicy: "#/components/responses/FinancialCouncilPolicyVersion",
+    createFinancialCouncilPortfolioRevision: "#/components/responses/ActionPortfolio", approveFinancialCouncilPortfolioRevision: "#/components/responses/FinancialCouncilApproval"
   };
   const actualRevisionedResponses = {};
   for (const { operation } of allPublishedOperations(document)) {

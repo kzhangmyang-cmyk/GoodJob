@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -19,7 +19,7 @@ test("growth release derives the version directory and never overwrites differen
     const second = path.join(secondRoot, secondManifest.contractVersion);
     const bytes = await readFile(path.join(first, "openapi.json"));
     const expectedHash = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-    assert.equal(firstManifest.contractVersion, "1.0.6");
+    assert.equal(firstManifest.contractVersion, "1.0.7");
     assert.equal(firstManifest.contractHash, expectedHash);
     assert.deepEqual(firstManifest, secondManifest);
     assert.deepEqual(bytes, await readFile(path.join(second, "openapi.json")));
@@ -33,17 +33,25 @@ test("growth release derives the version directory and never overwrites differen
     );
     await assert.rejects(
       buildGrowthContractRelease({ input, releasesRoot: firstRoot }),
-      /immutable growth contract release collision for 1\.0\.6/u
+      /immutable growth contract release collision for 1\.0\.7/u
     );
     await writeFile(path.join(first, "manifest.json"), committedManifestBytes);
     await writeFile(path.join(first, "openapi.json"), "{}\n", "utf8");
     await assert.rejects(
       buildGrowthContractRelease({ input, releasesRoot: firstRoot }),
-      /immutable growth contract release collision for 1\.0\.6/u
+      /immutable growth contract release collision for 1\.0\.7/u
     );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("the committed council releases discard invalid intermediates and retain the valid 1.0.6 baseline", async () => {
+  const releasesRoot = new URL("../releases/growth-advisor-quote-roi/", import.meta.url);
+  const versions = await readdir(releasesRoot);
+  assert.equal(versions.includes("1.0.4"), false);
+  assert.equal(versions.includes("1.0.5"), false);
+  assert.equal(versions.includes("1.0.6"), true);
 });
 
 test("publishing a successor preserves the immutable 1.0.0 release bytes", async () => {

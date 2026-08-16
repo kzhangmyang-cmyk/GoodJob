@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoodJob Growth Advisor, Quote and ROI API
-  version: 1.0.6
+  version: 1.0.7
 servers:
   - url: /
 
@@ -1383,6 +1383,7 @@ components:
     ApiError: { $ref: ../json-schema/api-error.v1.schema.json }
     FinancialCouncilRun: { $ref: ../json-schema/financial-council.v1.schema.json }
     FinancialCouncilRunEvent: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilRunEvent' }
+    FinancialCouncilRunEventPagedResult: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilRunEventPagedResult' }
     FinancialSnapshotView: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialSnapshotView' }
     FinancialFinding: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialFinding' }
     CandidateAction: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/CandidateAction' }
@@ -1393,6 +1394,7 @@ components:
     PortfolioRevisionInput: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/PortfolioRevisionInput' }
     FinancialCouncilApproval: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilApproval' }
     FinancialCouncilDispatchView: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilDispatchView' }
+    FinancialCouncilDispatchPagedResult: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilDispatchPagedResult' }
     GrowthBootstrapResponse: { $ref: ../json-schema/growth-bootstrap.v1.schema.json }
     CatalogItem: { $ref: ../json-schema/catalog-item.v1.schema.json }
     CatalogItemPagedResult:
@@ -1596,16 +1598,16 @@ components:
         hasMore: { type: boolean }
     CopilotTask: { $ref: ../json-schema/copilot-task.v1.schema.json }
   responses:
-    FinancialCouncilRun: { description: Financial council run projection, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilRun' } } } }
+    FinancialCouncilRun: { description: Financial council run projection, headers: { ETag: { $ref: '#/components/headers/ETag' } }, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilRun' } } } }
     FinancialCouncilRunEvents:
       description: Immutable financial council run event stream
-      content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FinancialCouncilRunEvent' } } } }
-    FinancialCouncilPolicyVersion: { description: Immutable financial council policy version, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilPolicyVersion' } } } }
-    ActionPortfolio: { description: Re-optimized financial action portfolio revision, content: { application/json: { schema: { $ref: '#/components/schemas/ActionPortfolio' } } } }
-    FinancialCouncilApproval: { description: Human approval decision for a financial council portfolio, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilApproval' } } } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilRunEventPagedResult' } } }
+    FinancialCouncilPolicyVersion: { description: Immutable financial council policy version, headers: { ETag: { $ref: '#/components/headers/ETag' } }, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilPolicyVersion' } } } }
+    ActionPortfolio: { description: Re-optimized financial action portfolio revision, headers: { ETag: { $ref: '#/components/headers/ETag' } }, content: { application/json: { schema: { $ref: '#/components/schemas/ActionPortfolio' } } } }
+    FinancialCouncilApproval: { description: Human approval decision for a financial council portfolio, headers: { ETag: { $ref: '#/components/headers/ETag' } }, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilApproval' } } } }
     FinancialCouncilDispatches:
       description: Controlled draft and todo dispatch projections
-      content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/FinancialCouncilDispatchView' } } } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilDispatchPagedResult' } } }
     CatalogItem:
       description: Catalog item
       headers: &etagHeaders { ETag: { $ref: '#/components/headers/ETag' } }

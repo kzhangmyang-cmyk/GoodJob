@@ -238,7 +238,12 @@
             }
           }
         },
-        "description": "Re-optimized financial action portfolio revision"
+        "description": "Re-optimized financial action portfolio revision",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        }
       },
       "AdvisorRecommendation": {
         "content": {
@@ -398,16 +403,18 @@
             }
           }
         },
-        "description": "Human approval decision for a financial council portfolio"
+        "description": "Human approval decision for a financial council portfolio",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        }
       },
       "FinancialCouncilDispatches": {
         "content": {
           "application/json": {
             "schema": {
-              "items": {
-                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilDispatchView"
-              },
-              "type": "array"
+              "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilDispatchPagedResult"
             }
           }
         },
@@ -421,7 +428,12 @@
             }
           }
         },
-        "description": "Immutable financial council policy version"
+        "description": "Immutable financial council policy version",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        }
       },
       "FinancialCouncilRun": {
         "content": {
@@ -431,16 +443,18 @@
             }
           }
         },
-        "description": "Financial council run projection"
+        "description": "Financial council run projection",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        }
       },
       "FinancialCouncilRunEvents": {
         "content": {
           "application/json": {
             "schema": {
-              "items": {
-                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilRunEvent"
-              },
-              "type": "array"
+              "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilRunEventPagedResult"
             }
           }
         },
@@ -4633,8 +4647,14 @@
       "FinancialCouncilApproval": {
         "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilApproval"
       },
+      "FinancialCouncilDispatchPagedResult": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilDispatchPagedResult"
+      },
       "FinancialCouncilDispatchView": {
         "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilDispatchView"
+      },
+      "FinancialCouncilPolicyInput": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPolicyInput"
       },
       "FinancialCouncilPolicyVersion": {
         "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPolicyVersion"
@@ -4672,7 +4692,7 @@
                 "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/portfolioKind"
               },
               "objectiveScoreBps": {
-                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/signedBps"
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
               },
               "portfolioId": {
                 "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
@@ -4965,7 +4985,6 @@
               "operatingOutflowMinor",
               "investingNetMinor",
               "financingNetMinor",
-              "receivables",
               "expectedInflowsNext30DaysMinor",
               "expectedOutflowsNext30DaysMinor",
               "expectedInflowsNext31To90DaysMinor",
@@ -5116,12 +5135,7 @@
                 "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
               },
               "previousMaterialCostRateBps": {
-                "maximum": 10000,
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
               },
               "rawMaterialCostMinor": {
                 "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
@@ -5331,6 +5345,33 @@
             ],
             "type": "object"
           },
+          "FinancialCouncilDispatchPagedResult": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "type": "boolean"
+              },
+              "items": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilDispatchView"
+                },
+                "type": "array"
+              },
+              "nextAfter": {
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items",
+              "nextAfter",
+              "hasMore"
+            ],
+            "type": "object"
+          },
           "FinancialCouncilDispatchView": {
             "additionalProperties": false,
             "properties": {
@@ -5376,6 +5417,54 @@
               "receiptId",
               "createdAt",
               "updatedAt"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilPolicyInput": {
+            "additionalProperties": false,
+            "properties": {
+              "actionCoefficientVersion": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "balancedWeightsBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ObjectiveWeights"
+              },
+              "budgetLimitMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "capacityLimitUnits": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "currency": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/currency"
+              },
+              "dueDebtMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "durationLimitDays": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "minimumActionConfidenceBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "minimumCashReserveMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/safeInteger"
+              },
+              "necessaryOutflowMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              }
+            },
+            "required": [
+              "currency",
+              "balancedWeightsBps",
+              "minimumCashReserveMinor",
+              "dueDebtMinor",
+              "necessaryOutflowMinor",
+              "budgetLimitMinor",
+              "capacityLimitUnits",
+              "durationLimitDays",
+              "minimumActionConfidenceBps",
+              "actionCoefficientVersion"
             ],
             "type": "object"
           },
@@ -5508,6 +5597,33 @@
               "toStatus",
               "reasonCode",
               "occurredAt"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilRunEventPagedResult": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "type": "boolean"
+              },
+              "items": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilRunEvent"
+                },
+                "type": "array"
+              },
+              "nextAfter": {
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items",
+              "nextAfter",
+              "hasMore"
             ],
             "type": "object"
           },
@@ -6173,6 +6289,9 @@
       },
       "FinancialCouncilRunEvent": {
         "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilRunEvent"
+      },
+      "FinancialCouncilRunEventPagedResult": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilRunEventPagedResult"
       },
       "FinancialDataGapView": {
         "$ref": "#/components/schemas/AdvisorTodayResponse/%24defs/FinancialDataGapView"
@@ -10369,7 +10488,7 @@
   },
   "info": {
     "title": "GoodJob Growth Advisor, Quote and ROI API",
-    "version": "1.0.4"
+    "version": "1.0.7"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -14448,7 +14567,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPolicyVersion"
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPolicyInput"
               }
             }
           },

@@ -11,10 +11,14 @@ import type {
   AdvisorMetricRef,
   AdvisorRecommendedAction,
   CandidateAction,
+  ConsensusReport,
   FinancialDataGapCode,
   FinancialDataGapSourceType,
   FinancialCouncilActionKind,
+  FinancialCouncilFinding,
+  FinancialCouncilRun,
   FinancialCouncilRunStatus,
+  FinancialSnapshotView,
   GrowthRoiSliceKey
 } from "./growth-contract-types.js";
 
@@ -88,7 +92,19 @@ const invalidEntity: AdvisorEntityRef = { kind: "candidate", id: "candidate-1" }
 const invalidFinancialCouncilAction: CandidateAction = { ...fixtures.financialCouncilAction, execute: "payment" };
 // @ts-expect-error automated execution is never a valid candidate action
 const invalidApproval: CandidateAction = { ...fixtures.financialCouncilAction, requiresHumanApproval: false };
-void [invalidSlice, invalidGapCode, invalidEntity, invalidFinancialCouncilAction, invalidApproval];
+const financialCouncilRun = {} as FinancialCouncilRun;
+const financialCouncilFinding = {} as FinancialCouncilFinding;
+const financialSnapshot = {} as FinancialSnapshotView;
+const financialConsensus = {} as ConsensusReport;
+// @ts-expect-error consensus reports cannot be untyped public values
+const invalidConsensusInRun: FinancialCouncilRun = { ...financialCouncilRun, consensusReport: "opaque" };
+// @ts-expect-error evidence sources are a closed public union
+const invalidEvidenceSource: FinancialCouncilFinding = { ...financialCouncilFinding, evidenceRefs: [{ source: "tool", sourceId: "source-1", contentHash: hash }] };
+// @ts-expect-error snapshot sources are a closed public union
+const invalidSnapshotSource: FinancialSnapshotView = { ...financialSnapshot, sourceVersions: [{ source: "tool", sourceId: "source-1", version: 1, contentHash: hash }] };
+// @ts-expect-error conflict kinds are a closed public union
+const invalidConflictKind: ConsensusReport = { ...financialConsensus, unresolvedConflicts: [{ conflictId: "conflict-1", type: "tool", findingIds: ["finding-1"], status: "unresolved" }] };
+void [invalidSlice, invalidGapCode, invalidEntity, invalidFinancialCouncilAction, invalidApproval, invalidConsensusInRun, invalidEvidenceSource, invalidSnapshotSource, invalidConflictKind];
 
 test("canonical Growth union fixtures compile with closed negative branches", () => {
   execFileSync(fileURLToPath(new URL(
