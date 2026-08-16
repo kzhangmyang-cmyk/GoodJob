@@ -47,4 +47,4 @@ Fresh final verification in the frontend worktree:
 
 The only build message was the existing Vite chunk-size warning. Tests used fixed local HTML fixtures and fake runtime/state transports. No real Douyin request was made, no Chrome Web Store publication was claimed, and Task 6 screenshot, crop, OCR, and vision work was not started.
 
-The user-authorized extra repair is implemented and locally verified at frontend commit `1c00cbf`; its independent review is pending. The earlier deadline-snapshot adjudication remains unchanged.
+The user-authorized extra repair is implemented at frontend commit `1c00cbf` and independently approved. The reviewer replayed fallback success, rejection/retry, timeout/retry, and same-session-ID replacement paths; new-session ACK/abort routing survived every stale completion, while old local transports and timers still closed. No new Critical or Important finding remained. The earlier deadline-snapshot adjudication remains unchanged.
