@@ -388,10 +388,12 @@ git commit -m "feat(finance): expose financial council runs"
 
 **Files:**
 - Modify only if findings require it: files from Tasks 1-4
+- Modify if final-review finding I4 requires it: `backend/src/authoritative-quote-reader.ts`
+- Test if final-review finding I4 requires it: `backend/src/authoritative-quote-reader-test.ts`
 - Modify: `docs/superpowers/specs/2026-08-16-financial-multi-agent-council-design.md`
 - Modify: `docs/superpowers/plans/2026-08-16-financial-multi-agent-council-implementation-index.md`
 
-- [ ] **Step 1: Run all P1 gates fresh.**
+- [x] **Step 1: Run all P1 gates fresh.**
 
 ```bash
 npm run test:business-advisor --workspace backend
@@ -404,7 +406,7 @@ npm run build
 git diff --check
 ```
 
-- [ ] **Step 2: Run live MySQL when configured.**
+- [x] **Step 2: Run live MySQL when configured.**
 
 ```bash
 MYSQL_TEST_ADMIN_URL="$MYSQL_TEST_ADMIN_URL" \
@@ -413,13 +415,13 @@ MYSQL_TEST_ADMIN_URL="$MYSQL_TEST_ADMIN_URL" \
 
 Expected: PASS when configured; otherwise exactly one documented conditional skip, never a fabricated live result.
 
-- [ ] **Step 3: Request independent review.**
+- [x] **Step 3: Request independent review.**
 
 Reviewer checks contract closure, one-cutoff identity, snapshot hash stability, sensitive projection, cross-tenant reads, transaction rollback, parser integrity, idempotent create and module shutdown.
 
-- [ ] **Step 4: Fix every Critical/Important with a new RED → GREEN cycle.**
+- [x] **Step 4: Fix every Critical/Important with a new RED → GREEN cycle.**
 
-- [ ] **Step 5: Mark only P1 complete in the implementation index and commit docs.**
+- [x] **Step 5: Mark only P1 complete in the implementation index and commit docs.**
 
 ```bash
 git add docs/superpowers/specs/2026-08-16-financial-multi-agent-council-design.md docs/superpowers/plans/2026-08-16-financial-multi-agent-council-implementation-index.md

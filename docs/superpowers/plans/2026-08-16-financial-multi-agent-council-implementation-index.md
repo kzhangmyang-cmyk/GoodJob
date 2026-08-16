@@ -8,6 +8,8 @@
 
 **Tech Stack:** TypeScript、Express、MySQL 8、Zod、JSON Schema 2020-12、OpenAPI 3.1、现有 Model Gateway、Node test runner、Vite、vanilla controller/view、Playwright。
 
+**当前状态：** P1 已完成并通过独立审查；P2 五专家、P3 CFO 与组合优化器、P4 人工审批派发、P5 前端与纵向发布仍待实施。整体功能只有在 P5 Exit 通过后才能宣布完成。
+
 ## Global Constraints
 
 - Backend repository: `/Users/mac/Documents/新项目/GoodJob-growth`，branch `codex/growth-advisor-quote-roi`。
@@ -74,9 +76,9 @@ GET  /api/v1/finance/council-runs/{runId}/dispatches
 
 ### P1 Exit
 
-- [ ] 公开 schema、OpenAPI、运行领域和 snapshot hash 已冻结。
-- [ ] 同一请求的所有权威读取只 seal 一次并复用一个 cutoff。
-- [ ] snapshot 与 run memory/MySQL parity 全绿，跨租户与 open-shape fail closed。
+- [x] 公开 schema、OpenAPI、运行领域和 snapshot hash 已冻结。
+- [x] 同一请求的所有权威读取只 seal 一次并复用一个 cutoff。
+- [x] snapshot 与 run memory/MySQL parity 全绿，跨租户与 open-shape fail closed。真实 InnoDB 用例在 `MYSQL_TEST_ADMIN_URL` 未配置时保持唯一条件跳过，不虚构 live 结果。
 
 ### P2 Exit
 
