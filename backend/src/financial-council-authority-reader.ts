@@ -10,6 +10,8 @@ import {
   immutableFinancialCouncilValue
 } from "./financial-council-domain.js";
 import type { FinancialFactType } from "./financial-ledger-domain.js";
+import type { WorkspaceVerifiedFinancialLedgerSealedReader } from
+  "./financial-ledger-as-of-reader.js";
 import {
   assertGrowthSealedReadCutoff,
   type GrowthSealedReadCutoff
@@ -17,7 +19,7 @@ import {
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 
 const MAX_UNTRUSTED_TEXT = 1_000;
-const MAX_ROWS = 100;
+const QUERY_LIMIT = 100;
 const HASH = /^sha256:[0-9a-f]{64}$/u;
 const FACT_TYPES = new Set<string>([
   "contract_won", "payment_received", "revenue_recognized",
@@ -146,6 +148,33 @@ function hash(value: unknown): `sha256:${string}` {
 
 function compare(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function canonicalKey(...parts: readonly (string | null)[]): string {
+  return parts.map((part) => part === null ? "-1:" : `${part.length}:${part}`)
+    .join("");
+}
+
+function canonicalAuthorityRows<Input, Output>(
+  rows: readonly Input[],
+  project: (row: Input) => Output,
+  sortKey: (row: Output) => string,
+  identityKey: (row: Output) => string = sortKey
+): readonly Output[] {
+  const projected = rows.map(project).sort((left, right) =>
+    compare(sortKey(left), sortKey(right)));
+  if (projected.length >= QUERY_LIMIT) {
+    return authorityError("financial_council_authority_query_truncated");
+  }
+  const identities = new Set<string>();
+  for (const row of projected) {
+    const identity = identityKey(row);
+    if (identities.has(identity)) {
+      return authorityError("financial_council_authority_duplicate");
+    }
+    identities.add(identity);
+  }
+  return Object.freeze(projected);
 }
 
 function projectPriority(row: PriorityCustomerView): PriorityCustomerView {
@@ -352,6 +381,50 @@ function projectGap(row: FinancialDataGapView): FinancialDataGapView {
   });
 }
 
+export class SealedLedgerFinancialCouncilVerifiedFactsReader
+implements FinancialCouncilVerifiedFactsReader {
+  constructor(
+    private readonly ledger: Pick<
+      WorkspaceVerifiedFinancialLedgerSealedReader,
+      "listWorkspaceVerifiedFactsAt"
+    >
+  ) {}
+
+  async listVisibleAt(
+    context: ActiveWorkspaceContext,
+    input: {
+      readonly currency: string;
+      readonly cutoff: GrowthSealedReadCutoff;
+      readonly limit: number;
+    }
+  ): Promise<readonly FinancialCouncilVerifiedFactSource[]> {
+    const cutoff = assertGrowthSealedReadCutoff(
+      input.cutoff, context.workspaceId
+    );
+    const rows = await this.ledger.listWorkspaceVerifiedFactsAt(cutoff, {
+      currency: input.currency,
+      limit: input.limit
+    });
+    if (rows.some((row) => row.workspaceId !== context.workspaceId)) {
+      return authorityError("financial_council_authority_workspace_mismatch");
+    }
+    return immutableFinancialCouncilValue(rows.map((row) => ({
+      workspaceId: row.workspaceId,
+      entryId: row.entryId,
+      sourceVersion: row.sourceVersion,
+      factType: row.factType,
+      amountMinor: row.amountMinor,
+      netAmountMinor: row.netAmountMinor,
+      currency: row.currency,
+      businessOccurredAt: row.businessOccurredAt,
+      entryRecordedAt: row.entryRecordedAt,
+      verificationRevision: row.verificationRevision,
+      verificationRecordedAt: row.verificationRecordedAt,
+      snapshotHash: row.snapshotHash
+    })));
+  }
+}
+
 export class FinancialCouncilAuthorityReader {
   constructor(
     private readonly dependencies: FinancialCouncilAuthorityReaderDependencies
@@ -372,7 +445,7 @@ export class FinancialCouncilAuthorityReader {
         currency: input.currency, cutoff
       }),
       this.dependencies.verifiedFacts.listVisibleAt(context, {
-        currency: input.currency, cutoff, limit: MAX_ROWS
+        currency: input.currency, cutoff, limit: QUERY_LIMIT
       })
     ]);
     if (today.workspaceId !== context.workspaceId
@@ -381,31 +454,37 @@ export class FinancialCouncilAuthorityReader {
       return authorityError("financial_council_authority_workspace_mismatch");
     }
     const sensitive = context.capabilities.includes("pricing.sensitive.read");
-    const priorityCustomers = today.priorityCustomers.slice(0, MAX_ROWS)
-      .map(projectPriority).sort((left, right) =>
-        compare(left.candidateId, right.candidateId));
-    const pendingQuoteApprovals = today.pendingQuoteApprovals
-      .slice(0, MAX_ROWS).map((row) => projectApproval(row, sensitive))
-      .sort((left, right) => compare(left.quoteVersionId, right.quoteVersionId)
-        || compare(left.approvalId, right.approvalId));
-    const verifiedFinancialFacts = factRows
-      .filter((row) => row.currency === input.currency)
-      .slice(0, MAX_ROWS).map((row) => projectFact(row, sensitive))
-      .sort((left, right) => compare(left.entryId, right.entryId));
-    const expectedRoi = today.expectedRoi.filter((row) =>
-      row.currency === input.currency).slice(0, MAX_ROWS)
-      .map((row) => projectExpected(row, sensitive))
-      .sort((left, right) => compare(left.cohortId, right.cohortId)
-        || compare(left.planId ?? "", right.planId ?? ""));
-    const actualRoi = today.actualRoi.filter((row) =>
-      row.currency === input.currency).slice(0, MAX_ROWS)
-      .map((row) => projectActual(row, sensitive))
-      .sort((left, right) => compare(left.cohortId, right.cohortId)
-        || compare(left.planId ?? "", right.planId ?? ""));
-    const dataGaps = today.dataGaps.filter((row) =>
-      row.currency === input.currency).slice(0, MAX_ROWS).map(projectGap)
-      .sort((left, right) => compare(left.sourceType, right.sourceType)
-        || compare(left.sourceId, right.sourceId) || compare(left.code, right.code));
+    const priorityCustomers = canonicalAuthorityRows(
+      today.priorityCustomers,
+      projectPriority,
+      (row) => canonicalKey(row.candidateId)
+    );
+    const pendingQuoteApprovals = canonicalAuthorityRows(
+      today.pendingQuoteApprovals.filter((row) => row.currency === input.currency),
+      (row) => projectApproval(row, sensitive),
+      (row) => canonicalKey(row.quoteVersionId, row.approvalId),
+      (row) => canonicalKey(row.approvalId)
+    );
+    const verifiedFinancialFacts = canonicalAuthorityRows(
+      factRows.filter((row) => row.currency === input.currency),
+      (row) => projectFact(row, sensitive),
+      (row) => canonicalKey(row.entryId)
+    );
+    const expectedRoi = canonicalAuthorityRows(
+      today.expectedRoi.filter((row) => row.currency === input.currency),
+      (row) => projectExpected(row, sensitive),
+      (row) => canonicalKey(row.cohortId, row.planId, row.currency)
+    );
+    const actualRoi = canonicalAuthorityRows(
+      today.actualRoi.filter((row) => row.currency === input.currency),
+      (row) => projectActual(row, sensitive),
+      (row) => canonicalKey(row.cohortId, row.planId, row.currency)
+    );
+    const dataGaps = canonicalAuthorityRows(
+      today.dataGaps.filter((row) => row.currency === input.currency),
+      projectGap,
+      (row) => canonicalKey(row.sourceType, row.sourceId, row.code)
+    );
     const projection = {
       workspaceId: context.workspaceId,
       currency: input.currency,

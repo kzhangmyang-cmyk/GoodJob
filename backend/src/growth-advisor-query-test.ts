@@ -4,7 +4,6 @@ import {
   createGrowthAdvisorQueryService,
   DefaultAdvisorVisibilityResolver,
   DefaultPriorityCandidateReader,
-  sealGrowthAdvisorReadCutoff,
   type AdvisorCandidateEvidenceAsOfReader,
   type AdvisorPerformancePortfolioReader,
   type AdvisorVisibilityResolver,
@@ -639,11 +638,11 @@ test("public today seals once while sealed reads reject forged or foreign cutoff
       return super.sealReadCutoff(context, effectiveAsOf);
     }
   }
-  const makeService = () => {
+  const makeService = (sharedBarrier?: CountingBarrier) => {
     const transactions = new InMemoryGrowthTemporalTransactionRunner(
       "2026-08-09T08:00:00.000Z"
     );
-    const barrier = new CountingBarrier(transactions);
+    const barrier = sharedBarrier ?? new CountingBarrier(transactions);
     const seen: GrowthSealedReadCutoff[] = [];
     const service = createGrowthAdvisorQueryService({
       temporalBarrier: barrier,
@@ -715,9 +714,7 @@ test("public today seals once while sealed reads reject forged or foreign cutoff
   assert.equal(new Set(first.seen).size, 1);
   assert.equal(publicView.dataAsOf, basicInput.asOf);
 
-  const sealed = await sealGrowthAdvisorReadCutoff(
-    first.barrier, context, basicInput.asOf
-  );
+  const sealed = await first.service.sealTodayCutoff(context, basicInput.asOf);
   await first.service.getTodayAt(context, { currency: "CNY", cutoff: sealed });
   assert.equal(first.barrier.sealCalls, 2);
 
@@ -728,10 +725,12 @@ test("public today seals once while sealed reads reject forged or foreign cutoff
     }),
     /invalid_growth_advisor_sealed_read_cutoff/u
   );
-  const second = makeService();
-  const foreign = await sealGrowthAdvisorReadCutoff(
-    second.barrier, context, basicInput.asOf
+  const second = makeService(first.barrier);
+  await assert.rejects(
+    second.service.getTodayAt(context, { currency: "CNY", cutoff: sealed }),
+    /invalid_growth_advisor_sealed_read_cutoff/u
   );
+  const foreign = await second.service.sealTodayCutoff(context, basicInput.asOf);
   await assert.rejects(
     first.service.getTodayAt(context, { currency: "CNY", cutoff: foreign }),
     /invalid_growth_advisor_sealed_read_cutoff/u

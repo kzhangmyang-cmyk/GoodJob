@@ -91,6 +91,14 @@ export interface VerifiedFinancialLedgerSealedReader {
   }): Promise<readonly VerifiedFinancialFactLedgerRow[]>;
 }
 
+export interface WorkspaceVerifiedFinancialLedgerSealedReader
+extends VerifiedFinancialLedgerSealedReader {
+  listWorkspaceVerifiedFactsAt(cutoff: GrowthSealedReadCutoff, input: {
+    currency: string;
+    limit: number;
+  }): Promise<readonly VerifiedFinancialFactLedgerRow[]>;
+}
+
 export interface VerifiedFinancialLedgerAsOfReader {
   getVerifiedAt(context: ActiveWorkspaceContext, input: {
     ledgerType: "cost" | "financial";
@@ -111,7 +119,7 @@ export interface VerifiedFinancialLedgerAsOfReader {
 }
 
 interface FinancialLedgerHistoricalRepository extends Pick<FinancialLedgerRepository,
-  "getCostEntry" | "getFinancialFact"> {
+  "getCostEntry" | "getFinancialFact" | "listFinancialFacts"> {
   listVerificationEvents(workspaceId: string, ledgerType: LedgerType, ledgerEntryId: string): Promise<LedgerVerificationEvent[]>;
 }
 
@@ -221,8 +229,15 @@ function stableRows<T extends VerifiedLedgerRow>(rows: T[]): readonly T[] {
     || (left.entryId < right.entryId ? -1 : left.entryId > right.entryId ? 1 : 0)));
 }
 
+function boundedLimit(limit: number): number {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+    throw new Error("invalid_ledger_limit");
+  }
+  return limit;
+}
+
 export class RepositoryVerifiedFinancialLedgerSealedReader
-implements VerifiedFinancialLedgerSealedReader {
+implements WorkspaceVerifiedFinancialLedgerSealedReader {
   constructor(private readonly repository: FinancialLedgerHistoricalRepository) {}
 
   private trusted(cutoff: GrowthSealedReadCutoff): GrowthSealedReadCutoff {
@@ -316,6 +331,28 @@ implements VerifiedFinancialLedgerSealedReader {
     return stableRows(rows.filter(
       (row): row is VerifiedFinancialFactLedgerRow => row !== null
     ));
+  }
+
+  async listWorkspaceVerifiedFactsAt(cutoff: GrowthSealedReadCutoff, input: {
+    currency: string;
+    limit: number;
+  }): Promise<readonly VerifiedFinancialFactLedgerRow[]> {
+    const trusted = this.trusted(cutoff);
+    const currency = concreteText(input.currency, "invalid_currency");
+    const limit = boundedLimit(input.limit);
+    const candidates = await this.repository.listFinancialFacts(
+      trusted.workspaceId
+    );
+    const rows = await Promise.all(candidates.map(async (entry) => {
+      if (!this.visible(trusted, entry, currency)) return null;
+      const row = await this.getVerifiedAt(trusted, {
+        ledgerType: "financial", entryId: entry.id, currency
+      });
+      return row?.ledgerType === "financial" ? row : null;
+    }));
+    return Object.freeze(stableRows(rows.filter(
+      (row): row is VerifiedFinancialFactLedgerRow => row !== null
+    )).slice(0, limit));
   }
 }
 

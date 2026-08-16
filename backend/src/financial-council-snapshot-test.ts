@@ -152,6 +152,7 @@ function fact(): FinancialCouncilVerifiedFactSource {
 function createHarness(options: {
   reverse?: boolean;
   incompleteRoi?: boolean;
+  mixedApprovalCurrencies?: boolean;
 } = {}) {
   const transactions = new InMemoryGrowthTemporalTransactionRunner(
     "2026-08-16T08:00:00.000Z"
@@ -216,7 +217,7 @@ function createHarness(options: {
     quoteApprovals: {
       async listPendingAsOf(_context, value) {
         note(value.cutoff);
-        return [{
+        const approval = {
           quoteCaseId: "quote-case-1", quoteVersionId: "quote-1",
           approvalId: "approval-1", approvalKind: "confirmation",
           requiredCapabilities: ["quote.confirm"], lifecycleRevision: 4,
@@ -227,7 +228,14 @@ function createHarness(options: {
           commercialAmountHash: HASH("2"), salesOwnerActorId: "sales-1",
           submittedBy: "sales-1", submittedAt: "2026-08-15T07:00:00.000Z",
           expiresAt: null
-        }];
+        };
+        return options.mixedApprovalCurrencies ? [approval, {
+          ...approval,
+          quoteCaseId: "quote-case-usd",
+          quoteVersionId: "quote-usd",
+          approvalId: "approval-usd",
+          currency: "USD"
+        }] : [approval];
       }
     },
     quoteVersions: {
@@ -313,12 +321,12 @@ function createHarness(options: {
     }
   });
   const builder = new FinancialSnapshotBuilder({
-    temporalBarrier: barrier,
+    cutoffIssuer: advisor,
     authority,
     businessAdvisor: createBusinessAdvisorService(),
     now: () => "2026-08-16T09:00:00.000Z"
   });
-  return { barrier, seen, builder };
+  return { advisor, authority, barrier, seen, builder };
 }
 
 test("snapshot seals once and every reader receives the same cutoff", async () => {
@@ -367,6 +375,34 @@ test("missing cash flow and incomplete ROI become closed gaps", async () => {
   assert.equal(snapshot.dataGaps.every((gap) => Object.isFrozen(gap)), true);
 });
 
+test("missing optional report sections never become zero-valued formula facts", async () => {
+  const harness = createHarness({ incompleteRoi: true });
+  const report = businessReport();
+  delete report.cashFlow;
+  delete report.costDetail;
+  delete report.taxRisk;
+
+  const snapshot = await harness.builder.freeze(command(), input(report));
+
+  assert.deepEqual(snapshot.formulaInputs.cashflow, {
+    status: "not_computable",
+    reason: "cash_flow_missing"
+  });
+  assert.equal("next30DaysNetMinor" in snapshot.formulaInputs.cashflow, false);
+  assert.equal("projectedClosingCash90DaysMinor" in snapshot.formulaInputs.cashflow, false);
+  assert.deepEqual(snapshot.formulaInputs.cost, {
+    status: "not_computable",
+    reason: "cost_detail_missing"
+  });
+  assert.equal("materialCostRateBps" in snapshot.formulaInputs.cost, false);
+  assert.deepEqual(snapshot.formulaInputs.tax, {
+    status: "not_computable",
+    reason: "tax_risk_missing"
+  });
+  assert.equal("redCount" in snapshot.formulaInputs.tax, false);
+  assert.equal(Object.isFrozen(snapshot.formulaInputs.cashflow), true);
+});
+
 test("snapshot identity ignores caller and authority array order", async () => {
   const leftHarness = createHarness();
   const rightHarness = createHarness({ reverse: true });
@@ -392,4 +428,44 @@ test("non-JSON report input fails closed instead of entering a canonical hash", 
       (error as { code?: string }).code === "financial_council_input_invalid"
   );
   assert.equal(harness.barrier.sealCalls, 0);
+});
+
+test("snapshot rejects duplicate source identities instead of silently deduplicating", async () => {
+  const harness = createHarness();
+  const builder = new FinancialSnapshotBuilder({
+    cutoffIssuer: harness.advisor,
+    authority: {
+      async readAt(context, value) {
+        const authority = await harness.authority.readAt(context, value);
+        return {
+          ...authority,
+          priorityCustomers: [
+            ...authority.priorityCustomers,
+            authority.priorityCustomers[0]!
+          ]
+        };
+      }
+    },
+    businessAdvisor: createBusinessAdvisorService(),
+    now: () => "2026-08-16T09:00:00.000Z"
+  });
+
+  await assert.rejects(
+    builder.freeze(command(), input()),
+    /financial_council_input_invalid/u
+  );
+});
+
+test("non-sensitive authority filters mixed-currency approvals inside production query", async () => {
+  const harness = createHarness({ mixedApprovalCurrencies: true });
+
+  const snapshot = await harness.builder.freeze(
+    command(workspace([])), input()
+  );
+
+  assert.deepEqual(
+    snapshot.authority.pendingQuoteApprovals.map((row) => row.quoteVersionId),
+    ["quote-1"]
+  );
+  assert.equal(snapshot.authority.pendingQuoteApprovals[0]?.currency, undefined);
 });

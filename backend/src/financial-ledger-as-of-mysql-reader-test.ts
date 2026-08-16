@@ -103,6 +103,40 @@ test("fake sealed reader replays byte-identically from SQL cutoffs and never rea
   assert.ok(sql.every((statement) => statement.includes("temporal_sequence <= ?")));
 });
 
+test("MySQL sealed workspace enumeration applies row and verification cutoff gates", async () => {
+  const sql: string[] = [];
+  const pendingRow = {
+    ...factRow, id: "pending-1", external_id: "pending-1"
+  };
+  const source = {
+    query: async (statement: string, parameters: unknown[]) => {
+      sql.push(statement.replace(/\s+/gu, " ").trim());
+      if (statement.includes("FROM financial_facts")) {
+        return [[factRow, pendingRow], []];
+      }
+      return parameters[2] === "pending-1"
+        ? [[], []]
+        : [[verificationRow], []];
+    }
+  } as unknown as Pick<mysql.Pool, "query">;
+  const reader = new MysqlVerifiedFinancialLedgerSealedReader(source);
+  const sealed = await token("2026-08-11T00:00:00.000Z");
+
+  const rows = await reader.listWorkspaceVerifiedFactsAt(sealed, {
+    currency: "CNY", limit: 100
+  });
+
+  assert.deepEqual(rows.map((row) => row.entryId), ["revenue-1"]);
+  const enumeration = sql[0] ?? "";
+  assert.match(enumeration, /workspace_id = \?/u);
+  assert.match(enumeration, /currency = \?/u);
+  assert.match(enumeration, /business_occurred_at <= \?/u);
+  assert.match(enumeration, /recorded_at <= \?/u);
+  assert.match(enumeration, /temporal_sequence <= \?/u);
+  assert.equal(sql.filter((statement) =>
+    statement.includes("ledger_verification_events")).length, 2);
+});
+
 test("fake sealed reader rejects forged tokens and unsafe MySQL BIGINT before projection", async () => {
   let queries = 0;
   const source = {

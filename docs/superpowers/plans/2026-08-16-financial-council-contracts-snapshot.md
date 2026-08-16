@@ -203,10 +203,17 @@ git commit -m "feat(finance): persist financial council runs"
 - Create: `backend/src/financial-council-authority-reader-test.ts`
 - Modify: `backend/src/business-advisor/domain.ts`
 - Modify: `backend/src/business-advisor/domain-test.ts`
+- Modify: `backend/src/financial-ledger-repository.ts`
+- Modify: `backend/src/financial-ledger-mysql-repository.ts`
+- Modify: `backend/src/financial-ledger-as-of-reader.ts`
+- Modify: `backend/src/financial-ledger-as-of-reader-test.ts`
+- Modify: `backend/src/financial-ledger-as-of-mysql-reader.ts`
+- Modify: `backend/src/financial-ledger-as-of-mysql-reader-test.ts`
 
 **Interfaces:**
 - Adds internal `GrowthAdvisorSealedQueryService.getTodayAt(context,{currency,cutoff})`; public `getToday` remains backward compatible and delegates after sealing once.
 - Produces `FinancialCouncilAuthorityReader.readAt(context,{currency,cutoff})` over current CRM visibility, pending quote approvals, verified finance gaps/facts and expected/actual ROI projections.
+- Extends the sealed financial-ledger reader with a workspace-scoped verified-fact enumeration path so production authority snapshots never depend on caller-supplied fact IDs or test fixtures. The cutoff remains the sole temporal authority; the context workspace is the visibility boundary and `pricing.sensitive.read` remains the field-level amount/cost projection boundary.
 - Produces `FinancialSnapshotBuilder.freeze(command,input)` returning a deeply frozen snapshot and deterministic `snapshotHash`.
 - Snapshot contains canonical normalized report, deterministic business-analysis facts, Growth authority view, closed data gaps, source refs/hashes, projection level and one `dataAsOf`.
 
@@ -268,11 +275,14 @@ Canonical sort keys are source kind then source ID; array order from callers nev
 npm run test:business-advisor --workspace backend
 npm run test:growth-advisor --workspace backend
 npm exec --workspace backend -- tsx --test --test-concurrency=1 \
+  src/financial-ledger-as-of-reader-test.ts \
+  src/financial-ledger-as-of-mysql-reader-test.ts
+npm exec --workspace backend -- tsx --test --test-concurrency=1 \
   src/financial-council-authority-reader-test.ts \
   src/financial-council-snapshot-test.ts
 npm run build --workspace backend
 git diff --check
-git add backend/src/growth-advisor-query.ts backend/src/growth-advisor-query-test.ts backend/src/business-advisor/domain.ts backend/src/business-advisor/domain-test.ts backend/src/financial-council-snapshot.ts backend/src/financial-council-snapshot-test.ts backend/src/financial-council-authority-reader.ts backend/src/financial-council-authority-reader-test.ts
+git add backend/src/growth-advisor-query.ts backend/src/growth-advisor-query-test.ts backend/src/business-advisor/domain.ts backend/src/business-advisor/domain-test.ts backend/src/financial-council-snapshot.ts backend/src/financial-council-snapshot-test.ts backend/src/financial-council-authority-reader.ts backend/src/financial-council-authority-reader-test.ts backend/src/financial-ledger-repository.ts backend/src/financial-ledger-mysql-repository.ts backend/src/financial-ledger-as-of-reader.ts backend/src/financial-ledger-as-of-reader-test.ts backend/src/financial-ledger-as-of-mysql-reader.ts backend/src/financial-ledger-as-of-mysql-reader-test.ts docs/superpowers/plans/2026-08-16-financial-council-contracts-snapshot.md
 git commit -m "feat(finance): freeze council authority snapshots"
 ```
 

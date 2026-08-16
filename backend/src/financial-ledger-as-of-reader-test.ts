@@ -7,6 +7,12 @@ import {
   verifiedLedgerAsOfFixture
 } from "./growth-finance-test-fixtures.js";
 import { projectVerifiedFinancialFact } from "./financial-ledger-as-of-reader.js";
+import { RepositoryVerifiedFinancialLedgerSealedReader } from "./financial-ledger-as-of-reader.js";
+import { InMemoryFinancialLedgerRepository } from "./financial-ledger-repository.js";
+import {
+  DefaultGrowthTemporalBarrier,
+  InMemoryGrowthTemporalTransactionRunner
+} from "./growth-temporal-barrier.js";
 
 test("verified as-of reads require both business time and recorded verification time", async () => {
   const state = verifiedLedgerAsOfFixture();
@@ -135,4 +141,60 @@ test("sealed ledger reader derives scope only from the token", async () => {
     { ledgerType: "cost", entryId: "cost-1", currency: "CNY" }
   ), /invalid_workspace/);
   assert.equal(state.internalSealCallCount(), 0);
+});
+
+test("sealed workspace enumeration exposes only verified facts visible at cutoff", async () => {
+  const fixture = financialFactProjectionFixture();
+  const fact = fixture.fact;
+  const event = fixture.verification;
+  const pending = { ...fact, id: "pending-1", externalId: "pending-1" };
+  const usd = { ...fact, id: "usd-1", externalId: "usd-1", currency: "USD" };
+  const foreign = {
+    ...fact, id: "foreign-1", externalId: "foreign-1", workspaceId: "workspace-b"
+  };
+  const lateEntry = {
+    ...fact, id: "late-entry", externalId: "late-entry",
+    recordedAt: "2026-08-09T04:00:00.000Z", temporalSequence: 2
+  };
+  const lateVerification = {
+    ...fact, id: "late-verification", externalId: "late-verification"
+  };
+  const verify = (entry: typeof fact, overrides: Record<string, unknown> = {}) => ({
+    ...event,
+    id: `verify-${entry.id}`,
+    workspaceId: entry.workspaceId,
+    ledgerEntryId: entry.id,
+    ...overrides
+  });
+  const repository = new InMemoryFinancialLedgerRepository({
+    financialFacts: [fact, pending, usd, foreign, lateEntry, lateVerification],
+    verificationEvents: [
+      event,
+      verify(usd),
+      verify(foreign),
+      verify(lateEntry, { temporalSequence: 2 }),
+      verify(lateVerification, {
+        recordedAt: "2026-08-09T04:00:00.000Z", temporalSequence: 2
+      })
+    ]
+  });
+  const reader = new RepositoryVerifiedFinancialLedgerSealedReader(repository);
+  const sealed = await new DefaultGrowthTemporalBarrier(
+    new InMemoryGrowthTemporalTransactionRunner("2026-08-09T03:00:00.000Z")
+  ).sealReadCutoff({
+    ...verifiedFinancialFactAsOfFixture({
+      factType: "refund", candidateId: "candidate-1", customerId: "customer-1",
+      dealId: "deal-1", quoteVersionId: "quote-1", evidenceHash: "evidence",
+      commercialBindingHash: null, commercialAmountHash: null
+    }).workspace,
+    workspaceId: "workspace-a"
+  }, "2026-08-09T03:00:00.000Z");
+
+  const rows = await reader.listWorkspaceVerifiedFactsAt(sealed, {
+    currency: "CNY", limit: 100
+  });
+
+  assert.deepEqual(rows.map((row) => row.entryId), [fact.id]);
+  assert.equal(rows[0]?.workspaceId, "workspace-a");
+  assert.equal(rows[0]?.currency, "CNY");
 });

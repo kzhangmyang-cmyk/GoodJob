@@ -4,7 +4,7 @@ import {
   projectVerifiedFinancialFact,
   type VerifiedCostLedgerRow,
   type VerifiedFinancialFactLedgerRow,
-  type VerifiedFinancialLedgerSealedReader,
+  type WorkspaceVerifiedFinancialLedgerSealedReader,
   type VerifiedLedgerRow
 } from "./financial-ledger-as-of-reader.js";
 import { ledgerEntryStatus, type LedgerType } from "./financial-ledger-domain.js";
@@ -16,6 +16,7 @@ import {
 import { growthMysqlDate } from "./growth-temporal-barrier-mysql-repository.js";
 
 type MysqlRow = Record<string, unknown>;
+const MAX_ENUMERATION_CANDIDATES = 500;
 
 function concreteText(value: string, code: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(code);
@@ -33,6 +34,13 @@ function boundedEntryIds(entryIds: readonly string[]): readonly string[] {
   return normalized;
 }
 
+function boundedLimit(limit: number): number {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+    throw new Error("invalid_ledger_limit");
+  }
+  return limit;
+}
+
 function stableRows<T extends VerifiedLedgerRow>(rows: T[]): readonly T[] {
   return Object.freeze(rows.sort((left, right) =>
     Date.parse(left.businessOccurredAt) - Date.parse(right.businessOccurredAt)
@@ -40,7 +48,7 @@ function stableRows<T extends VerifiedLedgerRow>(rows: T[]): readonly T[] {
 }
 
 export class MysqlVerifiedFinancialLedgerSealedReader
-implements VerifiedFinancialLedgerSealedReader {
+implements WorkspaceVerifiedFinancialLedgerSealedReader {
   constructor(private readonly source: Pick<mysql.Pool | mysql.PoolConnection, "query">) {}
 
   private trusted(cutoff: GrowthSealedReadCutoff): GrowthSealedReadCutoff {
@@ -144,5 +152,40 @@ implements VerifiedFinancialLedgerSealedReader {
     return stableRows(rows.filter(
       (row): row is VerifiedFinancialFactLedgerRow => row !== null
     ));
+  }
+
+  async listWorkspaceVerifiedFactsAt(cutoff: GrowthSealedReadCutoff, input: {
+    currency: string;
+    limit: number;
+  }): Promise<readonly VerifiedFinancialFactLedgerRow[]> {
+    const trusted = this.trusted(cutoff);
+    const currency = concreteText(input.currency, "invalid_currency");
+    const limit = boundedLimit(input.limit);
+    const [candidateRows] = await this.source.query(
+      `SELECT * FROM financial_facts
+       WHERE workspace_id = ? AND currency = ? AND amount_minor <> 0
+         AND business_occurred_at <= ? AND recorded_at <= ?
+         AND temporal_sequence <= ?
+       ORDER BY business_occurred_at ASC, id ASC
+       LIMIT ?`,
+      [trusted.workspaceId, currency,
+        growthMysqlDate(trusted.effectiveAsOf),
+        growthMysqlDate(trusted.effectiveAsOf), trusted.temporalSequence,
+        MAX_ENUMERATION_CANDIDATES + 1]
+    );
+    const candidates = candidateRows as MysqlRow[];
+    if (candidates.length > MAX_ENUMERATION_CANDIDATES) {
+      throw new Error("verified_financial_fact_query_truncated");
+    }
+    const verified = await Promise.all(candidates.map(async (candidate) => {
+      const entry = financialLedgerMysqlRowParsers.financialFact(candidate);
+      const event = await this.verifiedEvent(
+        trusted, "financial", entry.id
+      );
+      return event ? projectVerifiedFinancialFact(entry, event) : null;
+    }));
+    return Object.freeze(stableRows(verified.filter(
+      (row): row is VerifiedFinancialFactLedgerRow => row !== null
+    )).slice(0, limit));
   }
 }

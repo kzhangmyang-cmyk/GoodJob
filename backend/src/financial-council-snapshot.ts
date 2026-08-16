@@ -21,9 +21,8 @@ import type {
   FinancialCouncilCreateInput,
   FinancialCouncilDataGap
 } from "./growth-contract-types.js";
-import { sealGrowthAdvisorReadCutoff } from "./growth-advisor-query.js";
+import type { GrowthAdvisorSealedQueryService } from "./growth-advisor-query.js";
 import type { CommandContext } from "./growth-command-context.js";
-import type { GrowthTemporalBarrier } from "./growth-temporal-barrier.js";
 
 export type FinancialCouncilSourceKind =
   | "acquisition_cost"
@@ -48,14 +47,33 @@ export interface FinancialSnapshot {
   readonly report: NormalizedBusinessReport;
   readonly reportInputHash: `sha256:${string}`;
   readonly authority: FinancialCouncilAuthoritySnapshot;
-  readonly formulaInputs: BusinessAnalysisResult;
+  readonly formulaInputs: FinancialCouncilFormulaInputs;
   readonly dataGaps: readonly FinancialCouncilDataGap[];
   readonly sourceRefs: readonly FinancialCouncilSourceRef[];
   readonly snapshotHash: `sha256:${string}`;
 }
 
+type ClosedFormulaSection<Computed extends object, Reason extends string> =
+  | ({ readonly status: "computed" } & Computed)
+  | { readonly status: "not_computable"; readonly reason: Reason };
+
+export interface FinancialCouncilFormulaInputs {
+  readonly indicators: BusinessAnalysisResult["indicators"];
+  readonly products: BusinessAnalysisResult["products"];
+  readonly customers: BusinessAnalysisResult["customers"];
+  readonly cashflow: ClosedFormulaSection<
+    BusinessAnalysisResult["cashflow"], "cash_flow_missing"
+  >;
+  readonly cost: ClosedFormulaSection<
+    BusinessAnalysisResult["cost"], "cost_detail_missing"
+  >;
+  readonly tax: ClosedFormulaSection<
+    BusinessAnalysisResult["tax"], "tax_risk_missing"
+  >;
+}
+
 export interface FinancialSnapshotBuilderDependencies {
-  readonly temporalBarrier: GrowthTemporalBarrier;
+  readonly cutoffIssuer: Pick<GrowthAdvisorSealedQueryService, "sealTodayCutoff">;
   readonly authority: Pick<FinancialCouncilAuthorityReader, "readAt">;
   readonly businessAdvisor: Pick<BusinessAdvisorService, "analyze">;
   readonly now?: () => string;
@@ -99,8 +117,9 @@ function exactCreateInput(value: unknown): FinancialCouncilCreateInput {
 }
 
 function projectFormulaInputs(
-  result: BusinessAnalysisResult
-): BusinessAnalysisResult {
+  result: BusinessAnalysisResult,
+  report: FinancialCouncilCreateInput["businessReport"]
+): FinancialCouncilFormulaInputs {
   const indicators = Object.freeze({
     grossMarginBps: result.indicators.grossMarginBps,
     netMarginBps: result.indicators.netMarginBps,
@@ -135,7 +154,8 @@ function projectFormulaInputs(
     paymentDays: row.paymentDays,
     grade: row.grade
   })).sort((left, right) => compare(left.name, right.name));
-  const cashflow = Object.freeze({
+  const cashflow = report.cashFlow ? Object.freeze({
+    status: "computed" as const,
     next30DaysNetMinor: result.cashflow.next30DaysNetMinor,
     next90DaysNetMinor: result.cashflow.next90DaysNetMinor,
     projectedClosingCash30DaysMinor:
@@ -143,8 +163,12 @@ function projectFormulaInputs(
     projectedClosingCash90DaysMinor:
       result.cashflow.projectedClosingCash90DaysMinor,
     warning: Object.freeze([...result.cashflow.warning].sort(compare))
+  }) : Object.freeze({
+    status: "not_computable" as const,
+    reason: "cash_flow_missing" as const
   });
-  const cost = Object.freeze({
+  const cost = report.costDetail ? Object.freeze({
+    status: "computed" as const,
     materialCostRateBps: result.cost.materialCostRateBps,
     previousMaterialCostRateBps: result.cost.previousMaterialCostRateBps,
     materialRateChangeBps: result.cost.materialRateChangeBps,
@@ -152,8 +176,12 @@ function projectFormulaInputs(
     laborShareBps: result.cost.laborShareBps,
     variableShareBps: result.cost.variableShareBps,
     fixedShareBps: result.cost.fixedShareBps
+  }) : Object.freeze({
+    status: "not_computable" as const,
+    reason: "cost_detail_missing" as const
   });
-  const tax = Object.freeze({
+  const tax = report.taxRisk ? Object.freeze({
+    status: "computed" as const,
     redCount: result.tax.redCount,
     yellowCount: result.tax.yellowCount,
     greenCount: result.tax.greenCount,
@@ -164,6 +192,9 @@ function projectFormulaInputs(
       level: row.level
     })).sort((left, right) => compare(left.category, right.category)
       || compare(left.issue, right.issue)))
+  }) : Object.freeze({
+    status: "not_computable" as const,
+    reason: "tax_risk_missing" as const
   });
   return immutableFinancialCouncilValue({
     indicators, products, customers, cashflow, cost, tax
@@ -281,9 +312,7 @@ function sourceRefs(
   for (const ref of refs) {
     const previous = unique.at(-1);
     if (previous?.kind === ref.kind && previous.sourceId === ref.sourceId) {
-      if (previous.version !== ref.version
-        || previous.contentHash !== ref.contentHash) return snapshotError();
-      continue;
+      return snapshotError();
     }
     unique.push(Object.freeze({ ...ref }));
   }
@@ -316,10 +345,11 @@ export class FinancialSnapshotBuilder {
       normalizeBusinessReport(input.businessReport)
     );
     const formulaInputs = projectFormulaInputs(
-      this.dependencies.businessAdvisor.analyze(input.businessReport)
+      this.dependencies.businessAdvisor.analyze(input.businessReport),
+      input.businessReport
     );
-    const cutoff = await sealGrowthAdvisorReadCutoff(
-      this.dependencies.temporalBarrier, command.workspace, effectiveAsOf
+    const cutoff = await this.dependencies.cutoffIssuer.sealTodayCutoff(
+      command.workspace, effectiveAsOf
     );
     const authority = await this.dependencies.authority.readAt(
       command.workspace, { currency: input.currency, cutoff }

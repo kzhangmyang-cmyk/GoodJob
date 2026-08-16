@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   FinancialCouncilAuthorityReader,
+  SealedLedgerFinancialCouncilVerifiedFactsReader,
   type FinancialCouncilVerifiedFactSource
 } from "./financial-council-authority-reader.js";
 import type { GrowthAdvisorTodayView } from "./growth-advisor-query.js";
@@ -10,6 +11,10 @@ import {
   InMemoryGrowthTemporalTransactionRunner
 } from "./growth-temporal-barrier.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
+import { financialFactProjectionFixture } from "./growth-finance-test-fixtures.js";
+import { InMemoryFinancialLedgerRepository } from "./financial-ledger-repository.js";
+import { RepositoryVerifiedFinancialLedgerSealedReader } from
+  "./financial-ledger-as-of-reader.js";
 
 const HASH = (character: string) =>
   `sha256:${character.repeat(64)}` as `sha256:${string}`;
@@ -221,5 +226,107 @@ test("teamId all stays bound to one workspace and foreign rows fail closed", asy
       currency: "CNY", cutoff: sealed.cutoff
     }),
     /financial_council_authority_workspace_mismatch/u
+  );
+});
+
+test("authority sorts complete rows before bounding and fails closed at query limit", async () => {
+  const sealed = await cutoff();
+  const gaps = Array.from({ length: 99 }, (_, index) => ({
+    code: "unverified_financial_fact" as const,
+    sourceType: "financial_fact" as const,
+    sourceId: `fact-${String(index).padStart(3, "0")}`,
+    sourceSnapshotHash: HASH("5"),
+    cohortId: null,
+    currency: "CNY",
+    asOf: "2026-08-16T07:00:00.000Z"
+  }));
+  const read = async (rows: typeof gaps) => new FinancialCouncilAuthorityReader({
+    advisor: {
+      async getTodayAt() {
+        return { ...today("workspace-a"), dataGaps: rows };
+      }
+    } as never,
+    verifiedFacts: { async listVisibleAt() { return []; } }
+  }).readAt(sealed.context, { currency: "CNY", cutoff: sealed.cutoff });
+
+  const forward = await read(gaps);
+  const reverse = await read([...gaps].reverse());
+  assert.equal(forward.sourceSnapshotHash, reverse.sourceSnapshotHash);
+  assert.deepEqual(forward.dataGaps, reverse.dataGaps);
+
+  const hundred = [...gaps, {
+    ...gaps[0]!, sourceId: "fact-099"
+  }];
+  await assert.rejects(read(hundred),
+    /financial_council_authority_query_truncated/u);
+  await assert.rejects(read([...hundred, {
+    ...gaps[0]!, sourceId: "fact-100"
+  }]), /financial_council_authority_query_truncated/u);
+});
+
+test("authority rejects duplicate semantic identities instead of hashing caller order", async () => {
+  const sealed = await cutoff();
+  const first = today("workspace-a").priorityCustomers[0]!;
+  const reader = new FinancialCouncilAuthorityReader({
+    advisor: {
+      async getTodayAt() {
+        return {
+          ...today("workspace-a"),
+          priorityCustomers: [
+            { ...first, displayName: "A" },
+            { ...first, displayName: "B" }
+          ]
+        };
+      }
+    } as never,
+    verifiedFacts: { async listVisibleAt() { return []; } }
+  });
+
+  await assert.rejects(
+    reader.readAt(sealed.context, {
+      currency: "CNY", cutoff: sealed.cutoff
+    }),
+    /financial_council_authority_duplicate/u
+  );
+});
+
+test("production ledger adapter enumerates only same-cutoff verified workspace facts", async () => {
+  const sealed = await cutoff();
+  const fixture = financialFactProjectionFixture();
+  const pending = {
+    ...fixture.fact, id: "pending-1", externalId: "pending-1"
+  };
+  const foreign = {
+    ...fixture.fact, id: "foreign-1", externalId: "foreign-1",
+    workspaceId: "workspace-b"
+  };
+  const late = {
+    ...fixture.fact, id: "late-1", externalId: "late-1",
+    recordedAt: "2026-08-16T09:00:00.000Z", temporalSequence: 2
+  };
+  const repository = new InMemoryFinancialLedgerRepository({
+    financialFacts: [fixture.fact, pending, foreign, late],
+    verificationEvents: [
+      fixture.verification,
+      { ...fixture.verification, id: "verify-foreign-1", workspaceId: "workspace-b",
+        ledgerEntryId: "foreign-1" },
+      { ...fixture.verification, id: "verify-late-1", ledgerEntryId: "late-1",
+        recordedAt: "2026-08-16T09:00:00.000Z", temporalSequence: 2 }
+    ]
+  });
+  const reader = new FinancialCouncilAuthorityReader({
+    advisor: { async getTodayAt() { return today("workspace-a"); } } as never,
+    verifiedFacts: new SealedLedgerFinancialCouncilVerifiedFactsReader(
+      new RepositoryVerifiedFinancialLedgerSealedReader(repository)
+    )
+  });
+
+  const authority = await reader.readAt(sealed.context, {
+    currency: "CNY", cutoff: sealed.cutoff
+  });
+
+  assert.deepEqual(
+    authority.verifiedFinancialFacts.map((row) => row.entryId),
+    [fixture.fact.id]
   );
 });

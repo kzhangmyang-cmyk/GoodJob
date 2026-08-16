@@ -111,6 +111,13 @@ export interface GrowthAdvisorTodayView {
   sourceSnapshotHash: `sha256:${string}`;
 }
 
+export interface GrowthAdvisorAuthorityTodayView
+extends Omit<GrowthAdvisorTodayView, "pendingQuoteApprovals"> {
+  pendingQuoteApprovals: readonly (
+    PendingQuoteApprovalView & { readonly currency: string }
+  )[];
+}
+
 export interface GrowthAdvisorQueryService {
   getToday(
     context: ActiveWorkspaceContext,
@@ -120,44 +127,24 @@ export interface GrowthAdvisorQueryService {
 
 export interface GrowthAdvisorSealedQueryService
 extends GrowthAdvisorQueryService {
+  sealTodayCutoff(
+    context: ActiveWorkspaceContext,
+    effectiveAsOf: string
+  ): Promise<GrowthSealedReadCutoff>;
   getTodayAt(
     context: ActiveWorkspaceContext,
     query: { currency: string; cutoff: GrowthSealedReadCutoff }
-  ): Promise<GrowthAdvisorTodayView>;
-}
-
-const advisorCutoffsByBarrier =
-  new WeakMap<GrowthTemporalBarrier, WeakSet<object>>();
-
-function cutoffSetFor(barrier: GrowthTemporalBarrier): WeakSet<object> {
-  let issued = advisorCutoffsByBarrier.get(barrier);
-  if (!issued) {
-    issued = new WeakSet<object>();
-    advisorCutoffsByBarrier.set(barrier, issued);
-  }
-  return issued;
-}
-
-/** Shared issuance path for the public Today boundary and outer snapshot
- * builders. The WeakMap binds each token by object identity to one barrier. */
-export async function sealGrowthAdvisorReadCutoff(
-  barrier: GrowthTemporalBarrier,
-  context: ActiveWorkspaceContext,
-  effectiveAsOf: string
-): Promise<GrowthSealedReadCutoff> {
-  const cutoff = await barrier.sealReadCutoff(context, effectiveAsOf);
-  cutoffSetFor(barrier).add(cutoff);
-  return cutoff;
+  ): Promise<GrowthAdvisorAuthorityTodayView>;
 }
 
 function assertGrowthAdvisorReadCutoff(
-  barrier: GrowthTemporalBarrier,
+  issuedCutoffs: WeakSet<object>,
   context: ActiveWorkspaceContext,
   cutoff: GrowthSealedReadCutoff
 ): GrowthSealedReadCutoff {
   try {
     const trusted = assertGrowthSealedReadCutoff(cutoff, context.workspaceId);
-    if (!cutoffSetFor(barrier).has(trusted)) {
+    if (!issuedCutoffs.has(trusted)) {
       throw new Error("invalid_growth_advisor_sealed_read_cutoff");
     }
     return trusted;
@@ -545,12 +532,23 @@ export function createGrowthAdvisorQueryService(
   dependencies: GrowthAdvisorQueryServiceDependencies
 ): GrowthAdvisorSealedQueryService {
   const now = dependencies.now ?? (() => new Date().toISOString());
+  const issuedCutoffs = new WeakSet<object>();
+  const sealTodayCutoff = async (
+    context: ActiveWorkspaceContext,
+    effectiveAsOf: string
+  ): Promise<GrowthSealedReadCutoff> => {
+    const cutoff = await dependencies.temporalBarrier.sealReadCutoff(
+      context, effectiveAsOf
+    );
+    issuedCutoffs.add(cutoff);
+    return cutoff;
+  };
   const getTodayAt = async (
     context: ActiveWorkspaceContext,
     query: { currency: string; cutoff: GrowthSealedReadCutoff }
-  ): Promise<GrowthAdvisorTodayView> => {
+  ): Promise<GrowthAdvisorAuthorityTodayView> => {
     const cutoff = assertGrowthAdvisorReadCutoff(
-      dependencies.temporalBarrier, context, query.cutoff
+      issuedCutoffs, context, query.cutoff
     );
     const dataAsOf = cutoff.effectiveAsOf;
     const settings = await dependencies.workspaceSettings.getAt(
@@ -569,7 +567,9 @@ export function createGrowthAdvisorQueryService(
     const approvals = await dependencies.quoteApprovals.listPendingAsOf(
       context, { cutoff, limit: 50 }
     );
-    const pendingQuoteApprovals: PendingQuoteApprovalView[] = [];
+    const pendingQuoteApprovals: GrowthAdvisorAuthorityTodayView[
+      "pendingQuoteApprovals"
+    ][number][] = [];
     const projectedGaps: FinancialDataGapView[] = [];
     const sensitive = context.capabilities.includes("pricing.sensitive.read");
     for (const approval of approvals) {
@@ -599,8 +599,8 @@ export function createGrowthAdvisorQueryService(
         ]),
         submittedAt: approval.submittedAt,
         expiresAt: approval.expiresAt,
+        currency: approval.currency,
         ...(sensitive ? {
-          currency: approval.currency,
           quotedAmountMinor: approval.quotedAmountMinor,
           estimatedGrossProfitMinor: approval.estimatedGrossProfitMinor,
           estimatedContributionMinor: approval.estimatedContributionMinor,
@@ -720,11 +720,35 @@ export function createGrowthAdvisorQueryService(
       const effectiveAsOf = assertGrowthAsOfNotFuture(
         query.asOf, readStartedAt, 1_000
       );
-      const cutoff = await sealGrowthAdvisorReadCutoff(
-        dependencies.temporalBarrier, context, effectiveAsOf
-      );
-      return getTodayAt(context, { currency: query.currency, cutoff });
+      const cutoff = await sealTodayCutoff(context, effectiveAsOf);
+      const view = await getTodayAt(context, {
+        currency: query.currency, cutoff
+      });
+      const sensitive = context.capabilities.includes("pricing.sensitive.read");
+      return Object.freeze({
+        ...view,
+        pendingQuoteApprovals: Object.freeze(
+          view.pendingQuoteApprovals.map((row) => Object.freeze({
+            approvalId: row.approvalId,
+            quoteVersionId: row.quoteVersionId,
+            quoteVersionRevision: row.quoteVersionRevision,
+            quoteCaseId: row.quoteCaseId,
+            approvalKind: row.approvalKind,
+            requiredCapabilities: row.requiredCapabilities,
+            submittedAt: row.submittedAt,
+            expiresAt: row.expiresAt,
+            ...(sensitive ? {
+              currency: row.currency,
+              quotedAmountMinor: row.quotedAmountMinor,
+              estimatedGrossProfitMinor: row.estimatedGrossProfitMinor,
+              estimatedContributionMinor: row.estimatedContributionMinor,
+              grossMarginBps: row.grossMarginBps
+            } : {})
+          }))
+        )
+      });
     },
+    sealTodayCutoff,
     getTodayAt
   });
 }

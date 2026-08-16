@@ -38,6 +38,7 @@ export interface FinancialLedgerRepository {
   getCostEntryBySource(workspaceId: string, sourceIdentityRoot: string): Promise<AcquisitionCostEntry | null>;
   getFinancialFact(workspaceId: string, id: string): Promise<FinancialFact | null>;
   getFinancialFactBySource(workspaceId: string, sourceIdentityRoot: string): Promise<FinancialFact | null>;
+  listFinancialFacts(workspaceId: string): Promise<FinancialFact[]>;
   getCostEstimate(workspaceId: string, id: string): Promise<AcquisitionCostEstimate | null>;
   listCostEstimateLifecycleEvents(workspaceId: string, currency: string, sourceStableKey: string, asOf: string): Promise<AcquisitionCostEstimateLifecycleEvent[]>;
 }
