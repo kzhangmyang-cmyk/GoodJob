@@ -446,6 +446,29 @@ test("financial council contract is closed and carries three portfolios", async 
   assert.equal(validate(negativeObjectiveScore), false);
 });
 
+test("growth bootstrap accepts the public financial council capability", async () => {
+  const raw = JSON.parse(await readFile(new URL(
+    "../json-schema/growth-bootstrap.v1.schema.json", import.meta.url
+  ), "utf8"));
+  const ajv = new Ajv2020({ strict: true, allErrors: true });
+  addFormats(ajv);
+  const validate = ajv.compile(raw);
+  const value = {
+    status: "ready",
+    workspaceId: "workspace-1",
+    capabilityRegistryVersion: "growth-capabilities.v1",
+    capabilities: ["finance.council.run"],
+    contractVersion: "1.0.8",
+    contractHash: validSha256,
+    features: ["finance"]
+  };
+  assert.equal(validate(value), true, JSON.stringify(validate.errors));
+  assert.equal(validate({
+    ...value,
+    capabilities: ["acquisition.outcome.reconcile.internal"]
+  }), false);
+});
+
 test("financial council create input keeps the business report optional branches optional", async () => {
   const registry = await loadSchemaRegistry();
   const document = registry.schemaDocuments.get("financial-council");

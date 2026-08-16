@@ -35,6 +35,8 @@
 - Modify: `backend/src/growth-openapi-test.ts`
 - Modify: `backend/src/growth-openapi-contract-drift-test.ts`
 - Modify: `backend/src/growth-openapi-response-conformance-test.ts`
+- Modify: `backend/src/catalog-runtime-response-conformance-test.ts`
+- Modify: `backend/src/quote-runtime-response-conformance-test.ts`
 
 **Interfaces:**
 - Produces closed `$defs` for `FinancialCouncilCreateInput`, `FinancialCouncilRun`, `FinancialCouncilRunEvent`, `FinancialSnapshotView`, `FinancialFinding`, `CandidateAction`, `ConsensusReport`, `ActionPortfolio`, `FinancialCouncilPolicyVersion`, `PortfolioRevisionInput`, `FinancialCouncilApproval`, and `FinancialCouncilDispatchView`.
@@ -301,12 +303,36 @@ git commit -m "feat(finance): freeze council authority snapshots"
 - Modify: `backend/src/growth-commercial-composition-test.ts`
 - Modify: `backend/src/growth-commercial-application-test.ts`
 - Modify: `backend/package.json`
+- Modify: `backend/src/business-advisor/README.md`
+- Modify: `backend/src/financial-council-repository.ts`
+- Modify: `backend/src/financial-council-repository-contract-test.ts`
+- Modify: `backend/src/financial-council-repository-test.ts`
+- Modify: `backend/src/financial-council-mysql-repository.ts`
+- Modify: `backend/src/financial-council-mysql-repository-test.ts`
+- Modify: `backend/src/financial-council-snapshot.ts`
+- Modify: `backend/src/financial-council-snapshot-test.ts`
+- Modify: `backend/src/growth-capabilities.ts`
+- Modify: `backend/src/growth-capabilities-test.ts`
+- Modify: `backend/src/growth-bootstrap-router-test.ts`
+- Modify: `backend/src/growth-openapi-test.ts`
+- Modify: `backend/src/growth-openapi-response-conformance-test.ts`
+- Modify: `contracts/json-schema/growth-bootstrap.v1.schema.json`
+- Modify: `contracts/openapi/growth-advisor-quote-roi.v1.yaml`
+- Modify: `contracts/test/schema-registry.test.mjs`
+- Modify: `contracts/test/growth-openapi.test.mjs`
+- Modify: `contracts/test/growth-contract-release.test.mjs`
+- Create: `contracts/releases/growth-advisor-quote-roi/1.0.8/manifest.json`
+- Create: `contracts/releases/growth-advisor-quote-roi/1.0.8/openapi.json`
 
 **Interfaces:**
 - Produces `FinancialCouncilService.createRun/getRun/listEvents`.
 - `createRun(command,input)` validates capability `finance.council.run`, persists run, freezes/stores snapshot, advances to `snapshot_frozen`, and enqueues an internal wake signal; it never runs models inline.
+- The repository exposes one compound create-and-freeze mutation. It atomically persists the creation-key binding, run, frozen snapshot, `created` event and `snapshot_frozen` event; exact replay returns the existing frozen run and conflicts never leak a partial row.
+- `FinancialSnapshotBuilder` receives the target `runId` before hashing. The persisted snapshot includes `runId`; `snapshotHash` is recomputed from the closed snapshot preimage with only the `snapshotHash` field omitted, so the service and repository share one run-bound hash meaning.
+- The durable recoverable wake fact is the persisted `snapshot_frozen` run. The repository can enumerate bounded runnable runs from the existing runs table; after-commit wake delivery is advisory and an application-owned relay retries runnable runs idempotently. No fourth table is added.
 - Adds `GROWTH_FINANCIAL_COUNCIL_SERVICES` after `GROWTH_ADVISOR_SERVICES` in module order.
 - Router reuses standard Growth error response, workspace resolution, command idempotency and no-store headers.
+- `finance.council.run` is added to the existing additive capability-registry line and the public bootstrap enum. It is granted only to `admin` and `super_admin` in a concrete active workspace; `sales` and `manager` remain denied. The Growth wire contract advances to immutable release `1.0.8`.
 
 - [ ] **Step 1: Write route/application RED tests.**
 

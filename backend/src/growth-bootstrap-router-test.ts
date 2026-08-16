@@ -112,6 +112,17 @@ test("bootstrap filters internal capabilities and rejects unknown projection val
   assert.equal(JSON.stringify(invalid.body).includes("unknown-growth-feature"), false);
 });
 
+test("bootstrap publishes the authenticated financial council capability", async () => {
+  const result = await getBootstrap({
+    context: context(["catalog.read", "finance.council.run"]),
+    enabledFeatures: () => ["finance"]
+  });
+  assert.equal(result.response.status, 200);
+  assert.deepEqual(result.body.capabilities, [
+    "catalog.read", "finance.council.run"
+  ]);
+});
+
 test("workspace selection response never evaluates workspace features", async () => {
   const result = await getBootstrap({
     context: null,

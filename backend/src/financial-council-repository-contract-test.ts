@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 import type { CommandContext } from "./growth-command-context.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import {
   financialCouncilAggregateHash,
+  financialCouncilCanonicalHash,
   type FinancialCouncilRun,
   type FinancialSnapshotRecord
 } from "./financial-council-domain.js";
@@ -99,7 +99,7 @@ export function snapshotFixture(
   run: FinancialCouncilRun,
   overrides: Partial<FinancialSnapshotRecord> = {}
 ): FinancialSnapshotRecord {
-  const snapshot = Object.freeze({
+  const preimage = Object.freeze({
     currency: run.currency,
     dataAsOf: run.dataAsOf,
     marker: "frozen-authority",
@@ -107,8 +107,8 @@ export function snapshotFixture(
     snapshotId: "snapshot-1",
     workspaceId: run.workspaceId
   });
-  const hash = `sha256:${createHash("sha256")
-    .update(JSON.stringify(snapshot)).digest("hex")}` as const;
+  const hash = financialCouncilCanonicalHash(preimage);
+  const snapshot = Object.freeze({ ...preimage, snapshotHash: hash });
   return Object.freeze({
     snapshotId: "snapshot-1",
     runId: run.runId,
@@ -125,12 +125,14 @@ function snapshotWithId(
   snapshotId: string
 ): FinancialSnapshotRecord {
   const base = snapshotFixture(run);
-  const snapshot = Object.freeze({ ...base.snapshot, snapshotId });
+  const { snapshotHash: _snapshotHash, ...basePreimage } = base.snapshot;
+  const preimage = Object.freeze({ ...basePreimage, snapshotId });
+  const snapshotHash = financialCouncilCanonicalHash(preimage);
+  const snapshot = Object.freeze({ ...preimage, snapshotHash });
   return Object.freeze({
     ...base,
     snapshotId,
-    snapshotHash: `sha256:${createHash("sha256")
-      .update(JSON.stringify(snapshot)).digest("hex")}`,
+    snapshotHash,
     snapshot
   });
 }
@@ -144,6 +146,159 @@ export function registerFinancialCouncilRepositoryContract(
   createRepository: () => Promise<FinancialCouncilRepository>
     | FinancialCouncilRepository
 ): void {
+  test(`${label}: compound create freezes atomically and exact replay is inert`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const first = await repository.createAndFreezeRun(command("create"), {
+      aggregate,
+      snapshot,
+      occurredAt: T1
+    });
+    const replay = await repository.createAndFreezeRun(
+      command("replay", "ws-1", null, aggregate.requestHash),
+      {
+        aggregate: repositoryRunFixture({ runId: "ignored-replay-run" }),
+        snapshot: snapshotFixture(repositoryRunFixture({
+          runId: "ignored-replay-run"
+        })),
+        occurredAt: T1
+      }
+    );
+    assert.equal(first.replayed, false);
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay.value, first.value);
+    assert.deepEqual(
+      [first.value.status, first.value.revision, first.value.snapshotId],
+      ["snapshot_frozen", 2, snapshot.snapshotId]
+    );
+    assert.deepEqual(
+      (await repository.listEvents(workspace(), aggregate.runId))
+        .map((event) => [event.revision, event.toStatus]),
+      [[1, "created"], [2, "snapshot_frozen"]]
+    );
+  });
+
+  test(`${label}: compound create conflict and invalid snapshot leave zero visible writes`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const valid = snapshotFixture(aggregate);
+    const tamperedSnapshot = {
+      ...valid.snapshot,
+      runId: "another-run"
+    };
+    await assert.rejects(repository.createAndFreezeRun(command("invalid"), {
+      aggregate,
+      snapshot: {
+        ...valid,
+        snapshot: tamperedSnapshot
+      },
+      occurredAt: T1
+    }), hasCode("financial_council_input_invalid"));
+    assert.equal(await repository.findRun(workspace(), aggregate.runId), null);
+    assert.deepEqual(await repository.listEvents(workspace(), aggregate.runId), []);
+
+    await repository.createAndFreezeRun(command("first"), {
+      aggregate,
+      snapshot: valid,
+      occurredAt: T1
+    });
+    const changedHash = `sha256:${"c".repeat(64)}` as const;
+    const changed = repositoryRunFixture({
+      runId: "changed-run",
+      requestHash: changedHash
+    });
+    await assert.rejects(repository.createAndFreezeRun(
+      command("changed", "ws-1", null, changedHash),
+      {
+        aggregate: changed,
+        snapshot: snapshotFixture(changed),
+        occurredAt: T1
+      }
+    ), hasCode("financial_council_idempotency_conflict"));
+    assert.equal(await repository.findRun(workspace(), changed.runId), null);
+    assert.deepEqual(await repository.listEvents(workspace(), changed.runId), []);
+  });
+
+  test(`${label}: concurrent compound create has one writer and one exact replay`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const attempts = await Promise.all([
+      repository.createAndFreezeRun(command("first"), {
+        aggregate,
+        snapshot: snapshotFixture(aggregate),
+        occurredAt: T1
+      }),
+      repository.createAndFreezeRun(command("second"), {
+        aggregate: repositoryRunFixture({ runId: "loser-run" }),
+        snapshot: snapshotFixture(repositoryRunFixture({ runId: "loser-run" })),
+        occurredAt: T1
+      })
+    ]);
+    assert.deepEqual(attempts.map((result) => result.replayed).sort(), [false, true]);
+    assert.equal(new Set(attempts.map((result) => result.value.runId)).size, 1);
+    assert.equal((await repository.listEvents(
+      workspace(), aggregate.runId
+    )).length, 2);
+    assert.equal(await repository.findRun(workspace(), "loser-run"), null);
+  });
+
+  test(`${label}: runnable enumeration is bounded, deterministic and status closed`, async () => {
+    const repository = await createRepository();
+    for (const [index, runId] of ["run-b", "run-a", "run-c"].entries()) {
+      const requestHash = `sha256:${String(index + 1).repeat(64)}` as const;
+      const creationKeyHash = `sha256:${String(index + 4).repeat(64)}` as const;
+      const aggregate = repositoryRunFixture({
+        runId, requestHash, creationKeyHash,
+        createdAt: `2026-08-16T08:00:0${index}.000Z`,
+        updatedAt: `2026-08-16T08:00:0${index}.000Z`
+      });
+      await repository.createAndFreezeRun(
+        command(`create-${runId}`, "ws-1", null, requestHash),
+        {
+          aggregate,
+          snapshot: snapshotWithId(aggregate, `snapshot-${runId}`),
+          occurredAt: T1
+        }
+      );
+    }
+    await repository.transitionRun(command("advance-b", "ws-1", 2), {
+      runId: "run-b", kind: "analyzing", occurredAt: T2, reasonCode: null
+    });
+    const crossWorkspace = repositoryRunFixture({
+      workspaceId: "ws-2",
+      runId: "run-a",
+      requestHash: `sha256:${"8".repeat(64)}`,
+      creationKeyHash: `sha256:${"9".repeat(64)}`
+    });
+    await repository.createAndFreezeRun(
+      command("create-cross", "ws-2", null, crossWorkspace.requestHash),
+      {
+        aggregate: crossWorkspace,
+        snapshot: snapshotWithId(crossWorkspace, "snapshot-cross"),
+        occurredAt: T1
+      }
+    );
+    const first = await repository.listRunnableRuns({ after: null, limit: 2 });
+    const second = await repository.listRunnableRuns({
+      after: {
+        workspaceId: first.at(-1)!.workspaceId,
+        runId: first.at(-1)!.runId
+      },
+      limit: 2
+    });
+    assert.deepEqual(first.map((run) => [run.workspaceId, run.runId]), [
+      ["ws-1", "run-a"], ["ws-1", "run-c"]
+    ]);
+    assert.deepEqual(second.map((run) => [run.workspaceId, run.runId]), [
+      ["ws-2", "run-a"]
+    ]);
+    await assert.rejects(
+      repository.listRunnableRuns({ after: null, limit: 0 }),
+      hasCode("financial_council_input_invalid")
+    );
+  });
+
   test(`${label}: duplicate create replays exactly and isolates workspaces`, async () => {
     const repository = await createRepository();
     const initial = repositoryRunFixture();

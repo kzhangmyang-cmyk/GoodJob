@@ -43,7 +43,9 @@
 
 ## API
 
-路由挂在 `backend/src/business-advisor-router.ts`：
+### 同步经营诊断
+
+旧路由挂在 `backend/src/business-advisor-router.ts`，在单个 HTTP 请求中同步计算公式与诊断，不创建可恢复运行：
 
 - `GET /api/v1/business-advisor/agents`：智能体团队与知识库标题
 - `POST /api/v1/business-advisor/analyze`：指标 + 产品/客户/现金流/成本/税务分析
@@ -51,6 +53,14 @@
 - `POST /api/v1/business-advisor/statements/parse`：解析标准报表（资产负债表 + 利润表）为引擎输入
 - `POST /api/v1/business-advisor/statements/diagnose`：解析报表并直接生成诊断报告
 - `POST /api/v1/business-advisor/statements/import`：多 sheet / 集团报表导入，按公司分组返回全部诊断结果
+
+### 冻结财务委员会运行
+
+`POST /api/v1/finance/council-runs` 是独立的异步工作流入口。认证上下文必须具有 `finance.council.run`；workspace、actor 和 capabilities 只取自认证上下文，请求体只能提交币种、数据时点、报表证据与策略版本。
+
+创建运行时，服务先在同一 cutoff 读取 CRM、报价、已验证财务事实与 ROI 权威投影，再把报表、公式输入、数据缺口和敏感字段投影冻结成 run-bound snapshot。Repository 在一个原子 mutation 中提交 `snapshot_frozen` 运行、snapshot 以及连续的 `created` / `snapshot_frozen` 事件；不会在 HTTP 请求中执行模型。`snapshot_frozen` 是可恢复的持久工作事实，内部 relay 会把它投递给幂等 wake sink，失败后按后续 sweep 重试。
+
+同一 `Idempotency-Key` 与同一 canonical 请求精确重放同一个运行；修改请求体返回冲突，不会重复提交 snapshot 或 advisory wake。运行与事件读取始终按认证 workspace 隔离。
 
 ## 报表导入（statement-import.ts）
 

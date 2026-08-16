@@ -40,6 +40,8 @@ import {
   createGrowthAdvisorModule,
   createGrowthAdvisorResources
 } from "./growth-advisor-module.js";
+import { createGrowthFinancialCouncilModule } from
+  "./growth-financial-council-module.js";
 import {
   CurrentFinanceImportRecoveryAuthorizer
 } from "./finance-import-worker.js";
@@ -326,6 +328,11 @@ export function createGrowthCommercialCompositionForStore(options: {
   modules.push(createGrowthAdvisorModule({
     createResources: createGrowthAdvisorResources
   }));
+  modules.push(createGrowthFinancialCouncilModule(
+    financePool
+      ? { mode: "mysql", pool: financePool }
+      : { mode: "memory" }
+  ));
   return Object.freeze({
     composition: createGrowthCommercialComposition({
       acquisitionWorkspace,

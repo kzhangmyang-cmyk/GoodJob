@@ -41,6 +41,7 @@ export interface FinancialCouncilSourceRef {
 
 export interface FinancialSnapshot {
   readonly snapshotId: string;
+  readonly runId: string;
   readonly workspaceId: string;
   readonly dataAsOf: string;
   readonly currency: string;
@@ -330,11 +331,14 @@ export class FinancialSnapshotBuilder {
 
   async freeze(
     command: CommandContext,
+    runId: string,
     rawInput: FinancialCouncilCreateInput
   ): Promise<FinancialSnapshot> {
     const input = exactCreateInput(rawInput);
     const workspaceId = command?.workspace?.workspaceId?.trim();
-    if (!workspaceId || workspaceId === "all") return snapshotError();
+    if (!workspaceId || workspaceId === "all"
+      || typeof runId !== "string" || !runId.trim()
+      || runId.trim() !== runId || runId.length > 255) return snapshotError();
     const effectiveAsOf = assertGrowthAsOfNotFuture(
       input.dataAsOf, this.now(), 1_000
     );
@@ -362,6 +366,7 @@ export class FinancialSnapshotBuilder {
     const dataGaps = snapshotGaps(input.businessReport, authority);
     const refs = sourceRefs(reportInputHash, authority);
     const identity = {
+      runId,
       workspaceId,
       dataAsOf: cutoff.effectiveAsOf,
       currency: input.currency,
@@ -373,12 +378,12 @@ export class FinancialSnapshotBuilder {
       sourceRefs: refs
     };
     const snapshotId = financialCouncilCanonicalHash(identity);
-    const snapshotHash = financialCouncilCanonicalHash({
+    const preimage = {
       snapshotId, ...identity
-    });
+    };
+    const snapshotHash = financialCouncilCanonicalHash(preimage);
     return immutableFinancialCouncilValue({
-      snapshotId,
-      ...identity,
+      ...preimage,
       snapshotHash
     });
   }

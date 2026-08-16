@@ -187,7 +187,7 @@ test("composition factories preserve isolated Foundation identities", () => {
   );
 });
 
-test("production memory composition installs Foundation, Catalog, then Quote", async () => {
+test("production memory composition installs the council after Advisor", async () => {
   const production = createGrowthCommercialCompositionForStore({
     store: {
       mode: "memory",
@@ -212,7 +212,8 @@ test("production memory composition installs Foundation, Catalog, then Quote", a
       "growth-quote",
       "growth-finance",
       "growth-roi",
-      "growth-advisor"
+      "growth-advisor",
+      "growth-financial-council"
     ]
   );
   const runtime = await createGrowthCommercialApplication({

@@ -13,6 +13,15 @@ test("human grants are closed and never include the reconciler identity", () => 
     "catalog.read",
     "quote.draft.create"
   ]);
+  assert.equal(capabilitiesForHumanRole("manager").includes(
+    "finance.council.run"
+  ), false);
+  assert.equal(capabilitiesForHumanRole("admin").includes(
+    "finance.council.run"
+  ), true);
+  assert.equal(capabilitiesForHumanRole("super_admin").includes(
+    "finance.council.run"
+  ), true);
   for (const role of ["sales", "manager", "admin", "super_admin"] as const) {
     const grants = capabilitiesForHumanRole(role);
     assert.equal(

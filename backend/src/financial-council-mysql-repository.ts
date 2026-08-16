@@ -21,10 +21,14 @@ import {
   assertFinancialCouncilRunValue,
   assertFinancialSnapshotRecordValue,
   validateFinancialCouncilCreateMutation,
+  validateFinancialCouncilCreateAndFreezeMutation,
+  validateListRunnableFinancialCouncilRunsInput,
   validateFinancialCouncilStoreSnapshotMutation,
   validateFinancialCouncilTransitionMutation,
   type FinancialCouncilCommandResult,
+  type CreateAndFreezeFinancialCouncilRunInput,
   type FinancialCouncilRepository,
+  type ListRunnableFinancialCouncilRunsInput,
   type StoreFrozenFinancialSnapshotInput,
   type TransitionFinancialCouncilRunInput
 } from "./financial-council-repository.js";
@@ -502,11 +506,14 @@ function parseSnapshot(row: MysqlRow): FinancialSnapshotRecord {
     const runId = rowString(row, "run_id");
     const workspaceId = rowString(row, "workspace_id");
     const snapshotHash = rowString(row, "snapshot_hash");
+    const nestedHash = snapshot.snapshotHash;
+    const { snapshotHash: _snapshotHash, ...preimage } = snapshot;
     if (!HASH.test(snapshotHash)
       || snapshot.snapshotId !== snapshotId
       || snapshot.runId !== runId
       || snapshot.workspaceId !== workspaceId
-      || financialCouncilCanonicalHash(snapshot) !== snapshotHash) {
+      || nestedHash !== snapshotHash
+      || financialCouncilCanonicalHash(preimage) !== snapshotHash) {
       integrity();
     }
     const record = immutableFinancialCouncilValue({
@@ -579,6 +586,92 @@ function expectedRevision(command: CommandContext): number {
 export class MysqlFinancialCouncilRepository
 implements FinancialCouncilRepository {
   constructor(private readonly pool: mysql.Pool) {}
+
+  async createAndFreezeRun(
+    command: CommandContext,
+    input: CreateAndFreezeFinancialCouncilRunInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
+    ({ command, input } = validateFinancialCouncilCreateAndFreezeMutation(
+      command, input
+    ));
+    const { aggregate, snapshot, occurredAt } = input;
+    try {
+      return await this.transaction(async (connection) => {
+        const existing = await this.readVerifiedFrozenByCreationKey(
+          connection, aggregate.workspaceId, aggregate.creationKeyHash,
+          aggregate.requestHash, true
+        );
+        if (existing) return { value: existing, replayed: true };
+        const created = immutableFinancialCouncilValue(aggregate);
+        const withSnapshot = immutableFinancialCouncilValue({
+          ...created,
+          snapshotId: snapshot.snapshotId,
+          snapshotHash: snapshot.snapshotHash
+        });
+        const frozen = applyFinancialCouncilTransition(withSnapshot, {
+          kind: "snapshot_frozen", occurredAt, actorId: command.actorId
+        });
+        await connection.query(
+          `INSERT INTO financial_council_runs (
+             run_id, workspace_id, creation_key_hash, request_hash, revision,
+             status, snapshot_id, snapshot_hash, run_json
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [frozen.runId, frozen.workspaceId, frozen.creationKeyHash,
+            frozen.requestHash, frozen.revision, frozen.status,
+            frozen.snapshotId, frozen.snapshotHash, canonical(frozen)]
+        );
+        await this.appendEvent(connection, createFinancialCouncilRunEvent(
+          created, {
+            fromStatus: null, reasonCode: null,
+            occurredAt: created.createdAt, actorId: command.actorId
+          }
+        ));
+        await connection.query(
+          `INSERT INTO financial_council_snapshots (
+             snapshot_id, run_id, workspace_id, snapshot_hash, snapshot_json,
+             created_at
+           ) VALUES (?, ?, ?, ?, ?, ?)`,
+          [snapshot.snapshotId, snapshot.runId, snapshot.workspaceId,
+            snapshot.snapshotHash, canonical(snapshot.snapshot),
+            sqlDate(snapshot.createdAt)]
+        );
+        await this.appendEvent(connection, createFinancialCouncilRunEvent(
+          frozen, {
+            fromStatus: "created", reasonCode: null,
+            occurredAt, actorId: command.actorId
+          }
+        ));
+        return { value: frozen, replayed: false };
+      });
+    } catch (error) {
+      if (!duplicateEntry(error)) throw error;
+      const existing = await this.transaction((connection) =>
+        this.readVerifiedFrozenByCreationKey(
+          connection, aggregate.workspaceId, aggregate.creationKeyHash,
+          aggregate.requestHash, false
+        ), true
+      );
+      if (!existing) {
+        throw financialCouncilError("financial_council_run_conflict");
+      }
+      return { value: existing, replayed: true };
+    }
+  }
+
+  async findFrozenRunByCreationKey(
+    context: ActiveWorkspaceContext,
+    creationKeyHash: string,
+    requestHash: string
+  ): Promise<FinancialCouncilRun | null> {
+    if (!HASH.test(creationKeyHash) || !HASH.test(requestHash)) {
+      throw financialCouncilError("financial_council_input_invalid");
+    }
+    return this.transaction((connection) =>
+      this.readVerifiedFrozenByCreationKey(
+        connection, context.workspaceId, creationKeyHash, requestHash, false
+      ), true
+    );
+  }
 
   async createRun(
     command: CommandContext,
@@ -741,6 +834,51 @@ implements FinancialCouncilRepository {
     });
   }
 
+  async listRunnableRuns(
+    input: ListRunnableFinancialCouncilRunsInput
+  ): Promise<readonly FinancialCouncilRun[]> {
+    input = validateListRunnableFinancialCouncilRunsInput(input);
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(
+        `SELECT * FROM financial_council_runs
+         WHERE status = 'snapshot_frozen'
+           AND (? IS NULL OR workspace_id > ?
+             OR (workspace_id = ? AND run_id > ?))
+         ORDER BY workspace_id ASC, run_id ASC LIMIT ?`,
+        [
+          input.after?.workspaceId ?? null,
+          input.after?.workspaceId ?? null,
+          input.after?.workspaceId ?? null,
+          input.after?.runId ?? null,
+          input.limit
+        ]
+      );
+      const runs: FinancialCouncilRun[] = [];
+      for (const row of rows as MysqlRow[]) {
+        const run = parseRun(row);
+        if (run.status !== "snapshot_frozen") integrity();
+        const [eventRows] = await connection.query(
+          `SELECT * FROM financial_council_run_events
+           WHERE workspace_id = ? AND run_id = ? ORDER BY revision ASC`,
+          [run.workspaceId, run.runId]
+        );
+        const events = Object.freeze((eventRows as MysqlRow[]).map(parseEvent));
+        assertRunHistoryIntegrity(run, events);
+        const [snapshotRows] = await connection.query(
+          `SELECT * FROM financial_council_snapshots
+           WHERE workspace_id = ? AND run_id = ?`,
+          [run.workspaceId, run.runId]
+        );
+        const snapshotRow = (snapshotRows as MysqlRow[])[0];
+        if (!snapshotRow) integrity();
+        const snapshot = parseSnapshot(snapshotRow);
+        assertFinancialSnapshotRecord(run, snapshot);
+        runs.push(run);
+      }
+      return Object.freeze(runs);
+    }, true);
+  }
+
   private replay(
     existing: FinancialCouncilRun,
     requestHash: string
@@ -749,6 +887,41 @@ implements FinancialCouncilRepository {
       throw financialCouncilError("financial_council_idempotency_conflict");
     }
     return { value: existing, replayed: true };
+  }
+
+  private async readVerifiedFrozenByCreationKey(
+    connection: mysql.PoolConnection,
+    workspaceId: string,
+    creationKeyHash: string,
+    requestHash: string,
+    lock: boolean
+  ): Promise<FinancialCouncilRun | null> {
+    const existing = await this.findByCreationKey(
+      connection, workspaceId, creationKeyHash, lock
+    );
+    if (!existing) return null;
+    if (existing.requestHash !== requestHash) {
+      throw financialCouncilError("financial_council_idempotency_conflict");
+    }
+    if (existing.status !== "snapshot_frozen"
+      || existing.revision !== 2 || existing.snapshotId === null) integrity();
+    const [eventRows] = await connection.query(
+      `SELECT * FROM financial_council_run_events
+       WHERE workspace_id = ? AND run_id = ? ORDER BY revision ASC`,
+      [workspaceId, existing.runId]
+    );
+    assertRunHistoryIntegrity(existing, Object.freeze(
+      (eventRows as MysqlRow[]).map(parseEvent)
+    ));
+    const [snapshotRows] = await connection.query(
+      `SELECT * FROM financial_council_snapshots
+       WHERE workspace_id = ? AND run_id = ?`,
+      [workspaceId, existing.runId]
+    );
+    const row = (snapshotRows as MysqlRow[])[0];
+    if (!row) integrity();
+    assertFinancialSnapshotRecord(existing, parseSnapshot(row));
+    return existing;
   }
 
   private async readVerifiedHistory(

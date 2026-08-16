@@ -541,6 +541,10 @@ test("bootstrap responses require the release manifest's strict SemVer contract 
     contractHash: `sha256:${"a".repeat(64)}`,
     features: []
   };
+  assert.equal(validate({
+    ...ready,
+    capabilities: ["catalog.read", "finance.council.run"]
+  }), true, JSON.stringify(validate.errors));
 
   for (const contractVersion of ["1.0.0", "2.7.0-beta.1+build.42"]) {
     assert.equal(validate({ ...ready, contractVersion }), true, JSON.stringify(validate.errors));

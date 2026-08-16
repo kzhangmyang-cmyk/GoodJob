@@ -18,9 +18,11 @@ import {
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { FinancialCouncilCreateInput } from "./growth-contract-types.js";
+import { financialCouncilCanonicalHash } from "./financial-council-domain.js";
 
 const HASH = (character: string) =>
   `sha256:${character.repeat(64)}` as `sha256:${string}`;
+const RUN_ID = "council-run-1";
 
 function workspace(
   capabilities: ActiveWorkspaceContext["capabilities"] = [
@@ -355,14 +357,17 @@ function createHarness(options: {
 
 test("snapshot seals once and every reader receives the same cutoff", async () => {
   const harness = createHarness();
-  const snapshot = await harness.builder.freeze(command(), input());
+  const snapshot = await harness.builder.freeze(command(), RUN_ID, input());
   assert.equal(harness.barrier.sealCalls, 1);
   assert.equal(harness.seen.length > 2, true);
   assert.equal(new Set(harness.seen).size, 1);
   assert.equal(snapshot.dataAsOf, "2026-08-16T08:00:00.000Z");
+  assert.equal(snapshot.runId, RUN_ID);
   assert.match(snapshot.snapshotId, /^sha256:[0-9a-f]{64}$/u);
   assert.match(snapshot.reportInputHash, /^sha256:[0-9a-f]{64}$/u);
   assert.match(snapshot.snapshotHash, /^sha256:[0-9a-f]{64}$/u);
+  const { snapshotHash: _snapshotHash, ...preimage } = snapshot;
+  assert.equal(snapshot.snapshotHash, financialCouncilCanonicalHash(preimage));
   assert.equal(Object.isFrozen(snapshot), true);
   assert.equal(Object.isFrozen(snapshot.authority.expectedRoi), true);
   assert.equal(Object.isFrozen(snapshot.formulaInputs.indicators), true);
@@ -376,7 +381,7 @@ test("snapshot seals once and every reader receives the same cutoff", async () =
 test("future dataAsOf is rejected before sealing or reading", async () => {
   const harness = createHarness();
   await assert.rejects(
-    harness.builder.freeze(command(), {
+    harness.builder.freeze(command(), RUN_ID, {
       ...input(), dataAsOf: "2026-08-16T12:00:00.000Z"
     }),
     (error: unknown) =>
@@ -390,7 +395,7 @@ test("missing cash flow and incomplete ROI become closed gaps", async () => {
   const harness = createHarness({ incompleteRoi: true });
   const report = businessReport();
   delete report.cashFlow;
-  const snapshot = await harness.builder.freeze(command(), input(report));
+  const snapshot = await harness.builder.freeze(command(), RUN_ID, input(report));
   assert.deepEqual(snapshot.dataGaps.map((gap) => [gap.source, gap.code]), [
     ["business_report", "import_requires_review"],
     ["roi", "import_requires_review"],
@@ -406,7 +411,7 @@ test("missing optional report sections never become zero-valued formula facts", 
   delete report.costDetail;
   delete report.taxRisk;
 
-  const snapshot = await harness.builder.freeze(command(), input(report));
+  const snapshot = await harness.builder.freeze(command(), RUN_ID, input(report));
 
   assert.deepEqual(snapshot.formulaInputs.cashflow, {
     status: "not_computable",
@@ -434,8 +439,12 @@ test("snapshot identity ignores caller and authority array order", async () => {
   const rightReport = structuredClone(leftReport);
   rightReport.incomeStatement.productLines!.reverse();
   rightReport.cashFlow!.receivables!.reverse();
-  const left = await leftHarness.builder.freeze(command(), input(leftReport));
-  const right = await rightHarness.builder.freeze(command(), input(rightReport));
+  const left = await leftHarness.builder.freeze(
+    command(), RUN_ID, input(leftReport)
+  );
+  const right = await rightHarness.builder.freeze(
+    command(), RUN_ID, input(rightReport)
+  );
   assert.equal(left.reportInputHash, right.reportInputHash);
   assert.equal(left.snapshotId, right.snapshotId);
   assert.equal(left.snapshotHash, right.snapshotHash);
@@ -447,7 +456,7 @@ test("non-JSON report input fails closed instead of entering a canonical hash", 
   const report = businessReport();
   report.balanceSheet.cashMinor = Number.NaN;
   await assert.rejects(
-    harness.builder.freeze(command(), input(report)),
+    harness.builder.freeze(command(), RUN_ID, input(report)),
     (error: unknown) =>
       (error as { code?: string }).code === "financial_council_input_invalid"
   );
@@ -475,7 +484,7 @@ test("snapshot rejects duplicate source identities instead of silently deduplica
   });
 
   await assert.rejects(
-    builder.freeze(command(), input()),
+    builder.freeze(command(), RUN_ID, input()),
     /financial_council_input_invalid/u
   );
 });
@@ -484,7 +493,7 @@ test("non-sensitive authority filters mixed-currency approvals inside production
   const harness = createHarness({ mixedApprovalCurrencies: true });
 
   const snapshot = await harness.builder.freeze(
-    command(workspace([])), input()
+    command(workspace([])), RUN_ID, input()
   );
 
   assert.deepEqual(
@@ -507,13 +516,15 @@ test("internal authority keeps 11 priorities and 51 approvals while public Today
   assert.equal(publicView.pendingQuoteApprovals.at(-1)?.quoteVersionId, "quote-049");
   assert.equal(publicView.pendingQuoteApprovals[0]?.currency, undefined);
 
-  const snapshot = await forward.builder.freeze(command(workspace([])), input());
+  const snapshot = await forward.builder.freeze(
+    command(workspace([])), RUN_ID, input()
+  );
   assert.equal(snapshot.authority.priorityCustomers.length, 11);
   assert.equal(snapshot.authority.pendingQuoteApprovals.length, 51);
 
   const reverse = await createHarness({
     priorityCount: 11, approvalCount: 51, reverse: true
-  }).builder.freeze(command(workspace([])), input());
+  }).builder.freeze(command(workspace([])), RUN_ID, input());
   assert.deepEqual(snapshot.authority.priorityCustomers,
     reverse.authority.priorityCustomers);
   assert.deepEqual(snapshot.authority.pendingQuoteApprovals,
@@ -526,12 +537,31 @@ test("internal authority keeps 11 priorities and 51 approvals while public Today
 test("internal authority fails closed when priority or approval probes reach 100", async () => {
   for (const count of [100, 101]) {
     await assert.rejects(
-      createHarness({ priorityCount: count }).builder.freeze(command(), input()),
+      createHarness({ priorityCount: count }).builder.freeze(
+        command(), RUN_ID, input()
+      ),
       /financial_council_authority_query_truncated/u
     );
     await assert.rejects(
-      createHarness({ approvalCount: count }).builder.freeze(command(), input()),
+      createHarness({ approvalCount: count }).builder.freeze(
+        command(), RUN_ID, input()
+      ),
       /financial_council_authority_query_truncated/u
     );
   }
+});
+
+test("snapshot identity is bound to the target run and rejects invalid run IDs", async () => {
+  const left = await createHarness().builder.freeze(
+    command(), "council-run-left", input()
+  );
+  const right = await createHarness().builder.freeze(
+    command(), "council-run-right", input()
+  );
+  assert.notEqual(left.snapshotId, right.snapshotId);
+  assert.notEqual(left.snapshotHash, right.snapshotHash);
+  await assert.rejects(
+    createHarness().builder.freeze(command(), "", input()),
+    /financial_council_input_invalid/u
+  );
 });

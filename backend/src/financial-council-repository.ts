@@ -33,11 +33,34 @@ export interface TransitionFinancialCouncilRunInput {
   readonly reasonCode: string | null;
 }
 
+export interface CreateAndFreezeFinancialCouncilRunInput {
+  readonly aggregate: FinancialCouncilRun;
+  readonly snapshot: FinancialSnapshotRecord;
+  readonly occurredAt: string;
+}
+
+export interface ListRunnableFinancialCouncilRunsInput {
+  readonly after: {
+    readonly workspaceId: string;
+    readonly runId: string;
+  } | null;
+  readonly limit: number;
+}
+
 export interface FinancialCouncilRepository {
+  createAndFreezeRun(
+    command: CommandContext,
+    input: CreateAndFreezeFinancialCouncilRunInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>>;
   createRun(
     command: CommandContext,
     aggregate: FinancialCouncilRun
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>>;
+  findFrozenRunByCreationKey(
+    context: ActiveWorkspaceContext,
+    creationKeyHash: string,
+    requestHash: string
+  ): Promise<FinancialCouncilRun | null>;
   findRun(
     context: ActiveWorkspaceContext,
     runId: string
@@ -54,6 +77,9 @@ export interface FinancialCouncilRepository {
     command: CommandContext,
     input: TransitionFinancialCouncilRunInput
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>>;
+  listRunnableRuns(
+    input: ListRunnableFinancialCouncilRunsInput
+  ): Promise<readonly FinancialCouncilRun[]>;
 }
 
 const HASH = /^sha256:[0-9a-f]{64}$/u;
@@ -280,10 +306,14 @@ asserts value is FinancialSnapshotRecord {
   exactObject(value.snapshot, [
     ...Object.keys(value.snapshot as Record<string, unknown>)
   ]);
+  const nestedHash = value.snapshot.snapshotHash;
+  if (typeof nestedHash !== "string" || !HASH.test(nestedHash)) inputInvalid();
+  const { snapshotHash: _snapshotHash, ...preimage } = value.snapshot;
   if (value.snapshot.snapshotId !== value.snapshotId
     || value.snapshot.runId !== value.runId
     || value.snapshot.workspaceId !== value.workspaceId
-    || financialCouncilCanonicalHash(value.snapshot) !== value.snapshotHash) {
+    || nestedHash !== value.snapshotHash
+    || financialCouncilCanonicalHash(preimage) !== value.snapshotHash) {
     inputInvalid();
   }
 }
@@ -367,6 +397,42 @@ export function validateFinancialCouncilTransitionMutation(
   return { command: stableCommand as CommandContext, input: stableInput };
 }
 
+export function validateFinancialCouncilCreateAndFreezeMutation(
+  command: unknown,
+  input: unknown
+): {
+  readonly command: CommandContext;
+  readonly input: CreateAndFreezeFinancialCouncilRunInput;
+} {
+  const stableCommand = immutableFinancialCouncilInput(command);
+  const stableInput = immutableFinancialCouncilInput(input);
+  exactObject(stableInput, ["aggregate", "snapshot", "occurredAt"]);
+  assertFinancialCouncilCreateMutation(stableCommand, stableInput.aggregate);
+  assertFinancialSnapshotRecordValue(stableInput.snapshot);
+  timestamp(stableInput.occurredAt);
+  assertFinancialSnapshotRecord(stableInput.aggregate, stableInput.snapshot);
+  if (stableInput.snapshot.createdAt !== stableInput.occurredAt) inputInvalid();
+  return {
+    command: stableCommand as CommandContext,
+    input: stableInput as unknown as CreateAndFreezeFinancialCouncilRunInput
+  };
+}
+
+export function validateListRunnableFinancialCouncilRunsInput(
+  input: unknown
+): ListRunnableFinancialCouncilRunsInput {
+  const stable = immutableFinancialCouncilInput(input);
+  exactObject(stable, ["after", "limit"]);
+  if (stable.after !== null) {
+    exactObject(stable.after, ["workspaceId", "runId"]);
+    identifier(stable.after.workspaceId);
+    identifier(stable.after.runId);
+  }
+  if (!Number.isSafeInteger(stable.limit)
+    || Number(stable.limit) < 1 || Number(stable.limit) > 100) inputInvalid();
+  return stable as unknown as ListRunnableFinancialCouncilRunsInput;
+}
+
 function key(workspaceId: string, id: string): string {
   return `${workspaceId}\u0000${id}`;
 }
@@ -379,22 +445,134 @@ export function assertFinancialSnapshotRecord(
   aggregate: FinancialCouncilRun,
   record: FinancialSnapshotRecord
 ): void {
+  const { snapshotHash: _snapshotHash, ...preimage } = record.snapshot;
   if (record.workspaceId !== aggregate.workspaceId
     || record.runId !== aggregate.runId
     || record.snapshot.snapshotId !== record.snapshotId
     || record.snapshot.runId !== record.runId
     || record.snapshot.workspaceId !== record.workspaceId
-    || financialCouncilCanonicalHash(record.snapshot) !== record.snapshotHash) {
+    || record.snapshot.snapshotHash !== record.snapshotHash
+    || financialCouncilCanonicalHash(preimage) !== record.snapshotHash) {
     inputInvalid();
   }
 }
 
 export class InMemoryFinancialCouncilRepository
 implements FinancialCouncilRepository {
-  private readonly runs = new Map<string, FinancialCouncilRun>();
-  private readonly events = new Map<string, FinancialCouncilRunEvent[]>();
-  private readonly snapshots = new Map<string, FinancialSnapshotRecord>();
-  private readonly creationKeys = new Map<string, string>();
+  private state = {
+    runs: new Map<string, FinancialCouncilRun>(),
+    events: new Map<string, FinancialCouncilRunEvent[]>(),
+    snapshots: new Map<string, FinancialSnapshotRecord>(),
+    creationKeys: new Map<string, string>()
+  };
+
+  private get runs() { return this.state.runs; }
+  private get events() { return this.state.events; }
+  private get snapshots() { return this.state.snapshots; }
+  private get creationKeys() { return this.state.creationKeys; }
+
+  async createAndFreezeRun(
+    command: CommandContext,
+    input: CreateAndFreezeFinancialCouncilRunInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
+    ({ command, input } = validateFinancialCouncilCreateAndFreezeMutation(
+      command, input
+    ));
+    const { aggregate, snapshot, occurredAt } = input;
+    const creationKey = key(aggregate.workspaceId, aggregate.creationKeyHash);
+    const existing = this.readFrozenRunByCreationKey(
+      command.workspace, aggregate.creationKeyHash, aggregate.requestHash
+    );
+    if (existing) {
+      return { value: existing, replayed: true };
+    }
+    const aggregateKey = key(aggregate.workspaceId, aggregate.runId);
+    const snapshotKey = key(aggregate.workspaceId, snapshot.snapshotId);
+    if (this.runs.has(aggregateKey)) {
+      throw financialCouncilError("financial_council_run_conflict");
+    }
+    if (this.snapshots.has(snapshotKey)) {
+      throw financialCouncilError("financial_council_snapshot_conflict");
+    }
+    const created = immutableFinancialCouncilValue(aggregate);
+    const withSnapshot = immutableFinancialCouncilValue({
+      ...created,
+      snapshotId: snapshot.snapshotId,
+      snapshotHash: snapshot.snapshotHash
+    });
+    const frozen = applyFinancialCouncilTransition(withSnapshot, {
+      kind: "snapshot_frozen", occurredAt, actorId: command.actorId
+    });
+    const createdEvent = createFinancialCouncilRunEvent(created, {
+      fromStatus: null, reasonCode: null,
+      occurredAt: created.createdAt, actorId: command.actorId
+    });
+    const frozenEvent = createFinancialCouncilRunEvent(frozen, {
+      fromStatus: "created", reasonCode: null,
+      occurredAt, actorId: command.actorId
+    });
+    const nextState = {
+      runs: new Map(this.runs),
+      events: new Map(this.events),
+      snapshots: new Map(this.snapshots),
+      creationKeys: new Map(this.creationKeys)
+    };
+    nextState.runs.set(aggregateKey, frozen);
+    nextState.events.set(aggregateKey, [createdEvent, frozenEvent]);
+    nextState.snapshots.set(
+      snapshotKey, immutableFinancialCouncilValue(snapshot)
+    );
+    nextState.creationKeys.set(creationKey, frozen.runId);
+    this.state = nextState;
+    return { value: frozen, replayed: false };
+  }
+
+  async findFrozenRunByCreationKey(
+    context: ActiveWorkspaceContext,
+    creationKeyHash: string,
+    requestHash: string
+  ): Promise<FinancialCouncilRun | null> {
+    return this.readFrozenRunByCreationKey(
+      context, creationKeyHash, requestHash
+    );
+  }
+
+  private readFrozenRunByCreationKey(
+    context: ActiveWorkspaceContext,
+    creationKeyHash: string,
+    requestHash: string
+  ): FinancialCouncilRun | null {
+    hash(creationKeyHash);
+    hash(requestHash);
+    const existingId = this.creationKeys.get(key(
+      context.workspaceId, creationKeyHash
+    ));
+    if (!existingId) return null;
+    const existing = this.runs.get(key(context.workspaceId, existingId));
+    if (!existing) throw financialCouncilError("financial_council_integrity");
+    if (existing.requestHash !== requestHash) {
+      throw financialCouncilError("financial_council_idempotency_conflict");
+    }
+    if (existing.status !== "snapshot_frozen" || existing.revision !== 2
+      || existing.snapshotId === null) {
+      throw financialCouncilError("financial_council_integrity");
+    }
+    const snapshot = this.snapshots.get(key(
+      context.workspaceId, existing.snapshotId
+    ));
+    const events = this.events.get(key(context.workspaceId, existing.runId));
+    if (!snapshot || events?.length !== 2
+      || events[0]?.revision !== 1 || events[0].fromStatus !== null
+      || events[0].toStatus !== "created"
+      || events[1]?.revision !== 2 || events[1].fromStatus !== "created"
+      || events[1].toStatus !== "snapshot_frozen"
+      || financialCouncilCanonicalJson(events[1].aggregateSnapshot)
+        !== financialCouncilCanonicalJson(existing)) {
+      throw financialCouncilError("financial_council_integrity");
+    }
+    assertFinancialSnapshotRecord(existing, snapshot);
+    return existing;
+  }
 
   async createRun(
     command: CommandContext,
@@ -526,5 +704,20 @@ implements FinancialCouncilRepository {
     this.runs.set(aggregateKey, next);
     this.events.get(aggregateKey)!.push(event);
     return { value: next, replayed: false };
+  }
+
+  async listRunnableRuns(
+    input: ListRunnableFinancialCouncilRunsInput
+  ): Promise<readonly FinancialCouncilRun[]> {
+    input = validateListRunnableFinancialCouncilRunsInput(input);
+    return Object.freeze([...this.runs.values()]
+      .filter((run) => run.status === "snapshot_frozen"
+        && (input.after === null
+          || run.workspaceId > input.after.workspaceId
+          || (run.workspaceId === input.after.workspaceId
+            && run.runId > input.after.runId)))
+      .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId)
+        || left.runId.localeCompare(right.runId))
+      .slice(0, input.limit));
   }
 }

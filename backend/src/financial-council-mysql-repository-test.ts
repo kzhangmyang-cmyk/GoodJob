@@ -29,7 +29,14 @@ function cloneState(state: State): State {
   return structuredClone(state);
 }
 
-type FailurePoint = "snapshot_insert" | "run_update" | "event_insert" | null;
+type FailurePoint =
+  | "run_insert"
+  | "created_event_insert"
+  | "snapshot_insert"
+  | "run_update"
+  | "event_insert"
+  | "frozen_event_insert"
+  | null;
 
 class FakeConnection {
   pending: State | null = null;
@@ -95,6 +102,21 @@ class FakeConnection {
     const state = this.pending ?? this.pool.state;
     if (normalized.startsWith("SELECT")
       && normalized.includes("FROM financial_council_runs")) {
+      if (normalized.includes("status = 'snapshot_frozen'")) {
+        const afterWorkspaceId = values[0] as string | null;
+        const afterRunId = values[3] as string | null;
+        const limit = Number(values[4]);
+        const rows = state.runs.filter((row) => row.status === "snapshot_frozen"
+          && (afterWorkspaceId === null
+            || String(row.workspace_id) > afterWorkspaceId
+            || (String(row.workspace_id) === afterWorkspaceId
+              && String(row.run_id) > String(afterRunId))))
+          .sort((left, right) => String(left.workspace_id).localeCompare(
+            String(right.workspace_id)
+          ) || String(left.run_id).localeCompare(String(right.run_id)))
+          .slice(0, limit);
+        return [structuredClone(rows), []];
+      }
       const byCreation = normalized.includes("creation_key_hash");
       if (normalized.includes("FOR UPDATE") && this.pending) {
         const lockKey = byCreation
@@ -109,6 +131,25 @@ class FakeConnection {
             && row.creation_key_hash === values[1])
           : !(row.workspace_id === values[0] && row.run_id === values[1]));
         state.runs.push(...structuredClone(committedRows));
+        if (byCreation) {
+          const committedRunIds = new Set(committedRows.map((row) => row.run_id));
+          state.events = state.events.filter((row) =>
+            row.workspace_id !== values[0]
+              || !committedRunIds.has(row.run_id));
+          state.events.push(...structuredClone(this.pool.state.events.filter(
+            (row) => row.workspace_id === values[0]
+              && committedRunIds.has(row.run_id)
+          )));
+          state.snapshots = state.snapshots.filter((row) =>
+            row.workspace_id !== values[0]
+              || !committedRunIds.has(row.run_id));
+          state.snapshots.push(...structuredClone(
+            this.pool.state.snapshots.filter((row) =>
+              row.workspace_id === values[0]
+                && committedRunIds.has(row.run_id)
+            )
+          ));
+        }
       }
       const rows = state.runs.filter((row) => byCreation
         ? row.workspace_id === values[0] && row.creation_key_hash === values[1]
@@ -142,6 +183,9 @@ class FakeConnection {
       return [structuredClone(rows.slice(0, 1)), []];
     }
     if (normalized.startsWith("INSERT INTO financial_council_runs")) {
+      if (this.pool.failurePoint === "run_insert") {
+        throw new Error("run insert failed");
+      }
       const [runId, workspaceId, creationKeyHash, requestHash, revision,
         status, snapshotId, snapshotHash, runJson] = values;
       const duplicate = state.runs.some((row) =>
@@ -158,7 +202,12 @@ class FakeConnection {
       return [{ affectedRows: 1 }, []];
     }
     if (normalized.startsWith("INSERT INTO financial_council_run_events")) {
-      if (this.pool.failurePoint === "event_insert") {
+      const eventRevision = Number(values[3]);
+      if (this.pool.failurePoint === "event_insert"
+        || (this.pool.failurePoint === "created_event_insert"
+          && eventRevision === 1)
+        || (this.pool.failurePoint === "frozen_event_insert"
+          && eventRevision === 2)) {
         throw new Error("event insert failed");
       }
       const [eventId, runId, workspaceId, revision, fromStatus, toStatus,
@@ -314,6 +363,28 @@ test("MySQL harness gives concurrent transactions distinct connections", async (
     pool.getConnection(), pool.getConnection()
   ]);
   assert.notEqual(first, second);
+});
+
+test("compound create rolls back every write point to zero visible state", async () => {
+  for (const failurePoint of [
+    "run_insert", "created_event_insert", "snapshot_insert",
+    "frozen_event_insert"
+  ] as const) {
+    const { pool, repository } = repositoryWith();
+    const aggregate = repositoryRunFixture();
+    pool.failurePoint = failurePoint;
+    await assert.rejects(repository.createAndFreezeRun(command("create"), {
+      aggregate,
+      snapshot: snapshotFixture(aggregate),
+      occurredAt: T1
+    }));
+    assert.deepEqual({
+      runs: pool.state.runs.length,
+      events: pool.state.events.length,
+      snapshots: pool.state.snapshots.length
+    }, { runs: 0, events: 0, snapshots: 0 }, failurePoint);
+    assert.equal(pool.connection.calls.includes("ROLLBACK"), true, failurePoint);
+  }
 });
 
 registerFinancialCouncilRepositoryContract(

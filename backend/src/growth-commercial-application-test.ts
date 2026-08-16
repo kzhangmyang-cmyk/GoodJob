@@ -178,6 +178,19 @@ test("modules install once, project last, and close once in reverse order", asyn
   ]);
 });
 
+test("application shutdown naturally closes the financial council relay handle", async () => {
+  const events: string[] = [];
+  const runtime = await createGrowthCommercialApplication(options({
+    modules: [module("growth-financial-council", events)],
+    projectIntegrations: () => ({ ready: true })
+  }));
+  await runtime.close();
+  assert.deepEqual(events, [
+    "install:growth-financial-council",
+    "close:growth-financial-council"
+  ]);
+});
+
 test("close attempts every handle once and replays the first failure", async () => {
   const events: string[] = [];
   const runtime = await createGrowthCommercialApplication(options({
