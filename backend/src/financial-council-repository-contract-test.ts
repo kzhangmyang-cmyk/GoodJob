@@ -15,6 +15,10 @@ import type {
   FinancialCouncilSpecialistPhase,
   FinancialCouncilSpecialistResult
 } from "./financial-council-repository.js";
+import {
+  createFinancialCouncilPortfolioRevision,
+  financialCouncilOptimizationRunHash
+} from "./financial-council-repository.js";
 import type {
   ConsensusReport,
   FinancialCouncilAgentRole,
@@ -29,6 +33,8 @@ import {
 } from "./financial-council-finding-validator.js";
 import { buildCanonicalFinancialCouncilAuditGraph } from
   "./financial-council-audit.js";
+import { FINANCIAL_PORTFOLIO_HARD_CONSTRAINT_KINDS } from
+  "./financial-portfolio-constraints.js";
 import { buildFinancialCouncilModelContent } from
   "./financial-council-model-content.js";
 import { buildConsensus } from "./financial-council-consensus.js";
@@ -482,13 +488,14 @@ function hasCode(code: string) {
 }
 
 export async function storedConsensusFixture(
-  repository: FinancialCouncilRepository
+  repository: FinancialCouncilRepository,
+  runOverrides: Partial<FinancialCouncilRun> = {}
 ): Promise<{
   readonly report: ConsensusReport;
   readonly findingId: string;
   readonly first: { readonly value: ConsensusReport; readonly replayed: boolean };
 }> {
-  const aggregate = repositoryRunFixture();
+  const aggregate = repositoryRunFixture(runOverrides);
   const snapshot = snapshotFixture(aggregate);
   const run = (await repository.createAndFreezeRun(command("consensus"), {
     aggregate, snapshot, occurredAt: T1
@@ -515,6 +522,91 @@ export async function storedConsensusFixture(
   });
   const first = await repository.storeConsensus(workspace(), report);
   return { report, findingId: result.findings[0]!.findingId, first };
+}
+
+function emptyPortfolio(
+  runId: string,
+  kind: "balanced" | "cash_first" | "growth_first"
+) {
+  return Object.freeze({
+    portfolioId: financialCouncilCanonicalHash({ runId, revision: 1, kind }),
+    runId,
+    revision: 1,
+    kind,
+    actionIds: Object.freeze([]),
+    actions: Object.freeze([]),
+    hardConstraints: Object.freeze(
+      FINANCIAL_PORTFOLIO_HARD_CONSTRAINT_KINDS.map((code) => Object.freeze({
+        code,
+        satisfied: false,
+        reason: "no_feasible_nonempty_portfolio"
+      }))
+    ),
+    objectiveScoreBps: 0,
+    scenarioForecast: Object.freeze({
+      cashImpact: Object.freeze({ conservative: 0, base: 0, optimistic: 0 }),
+      profitImpact: Object.freeze({ conservative: 0, base: 0, optimistic: 0 }),
+      riskReductionBps: Object.freeze({ conservative: 0, base: 0,
+        optimistic: 0 })
+    }),
+    sensitivityAnalysis: Object.freeze([]),
+    rejectedActions: Object.freeze([]),
+    requiredApprovalCapabilities: Object.freeze([]),
+    expiresAt: "2026-08-17T08:00:00.000Z",
+    createdAt: "2026-08-16T08:06:00.000Z"
+  });
+}
+
+export async function storedPortfolioRevisionFixture(
+  repository: FinancialCouncilRepository
+) {
+  const { report } = await storedConsensusFixture(repository);
+  const context = workspace();
+  let run = (await repository.findRun(context, report.runId))!;
+  const lease = (await repository.claimAnalysisRun({
+    workspaceId: run.workspaceId,
+    runId: run.runId,
+    workerId: "optimizer-worker",
+    leaseToken: "8".repeat(64),
+    claimedAt: "2026-08-16T08:02:00.000Z",
+    leaseExpiresAt: "2026-08-16T08:20:00.000Z"
+  }))!;
+  for (const [kind, occurredAt] of [
+    ["analyzing", "2026-08-16T08:03:00.000Z"],
+    ["auditing", "2026-08-16T08:04:00.000Z"],
+    ["synthesizing", "2026-08-16T08:05:00.000Z"],
+    ["optimizing", "2026-08-16T08:06:00.000Z"]
+  ] as const) {
+    run = (await repository.transitionRunWithLease(lease, {
+      kind, occurredAt, reasonCode: null
+    })).value;
+  }
+  const graph = (await repository.getAuditGraph(context, run.runId))!;
+  const portfolios = Object.freeze([
+    emptyPortfolio(run.runId, "balanced"),
+    emptyPortfolio(run.runId, "cash_first"),
+    emptyPortfolio(run.runId, "growth_first")
+  ]);
+  const input = {
+    workspaceId: run.workspaceId,
+    runId: run.runId,
+    revision: 1,
+    runHash: financialCouncilOptimizationRunHash(run),
+    snapshotId: run.snapshotId!,
+    snapshotHash: run.snapshotHash!,
+    auditHash: graph.graphHash,
+    policyVersionId: run.policyVersionId,
+    policyHash: `sha256:${"7".repeat(64)}` as const,
+    consensusReportId: report.reportId,
+    candidateSetHash: financialCouncilCanonicalHash([]),
+    portfolios,
+    createdAt: "2026-08-16T08:06:00.000Z"
+  } as const;
+  const revision = createFinancialCouncilPortfolioRevision(input);
+  const stored = await repository.storePortfolioRevision(revision, {
+    lease, completedAt: "2026-08-16T08:06:00.000Z"
+  });
+  return { report, run, lease, revision, stored, input };
 }
 
 export function registerFinancialCouncilRepositoryContract(
@@ -579,6 +671,124 @@ export function registerFinancialCouncilRepositoryContract(
     await assert.rejects(repository.storeConsensus(workspace(), {
       ...preimage, reportId: financialCouncilCanonicalHash(preimage)
     }), hasCode("financial_council_consensus_conflict"));
+  });
+
+  test(`${label}: portfolio revision one binds every immutable optimizer input and replays exactly`, async () => {
+    const repository = await createRepository();
+    const { report, revision, stored, lease, input } =
+      await storedPortfolioRevisionFixture(repository);
+    const replay = await repository.storePortfolioRevision(revision, {
+      lease, completedAt: "2026-08-16T08:06:30.000Z"
+    });
+
+    assert.equal(stored.replayed, false);
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(await repository.getConsensus(
+      workspace(), revision.runId
+    ), report);
+    assert.deepEqual(await repository.getPortfolioRevision(
+      workspace(), revision.runId, 1
+    ), revision);
+    assert.equal(await repository.getPortfolioRevision(
+      workspace("ws-2"), revision.runId, 1
+    ), null);
+    const changed = createFinancialCouncilPortfolioRevision({
+      ...input, policyHash: `sha256:${"6".repeat(64)}`
+    });
+    await assert.rejects(repository.storePortfolioRevision(changed, {
+      lease, completedAt: "2026-08-16T08:06:30.000Z"
+    }),
+      hasCode("financial_council_portfolio_conflict"));
+  });
+
+  test(`${label}: fenced publish attaches revision one and advances optimizing to awaiting approval`, async () => {
+    const repository = await createRepository();
+    const { report, lease, revision } = await storedPortfolioRevisionFixture(
+      repository
+    );
+
+    const published = await repository.publishPortfolioRevisionWithLease(
+      lease, {
+        revision: 1,
+        expectedOutputHash: revision.outputHash,
+        occurredAt: "2026-08-16T08:07:00.000Z"
+      }
+    );
+
+    assert.equal(published.value.status, "awaiting_approval");
+    assert.equal(published.value.latestPortfolioRevision, 1);
+    assert.deepEqual(published.value.consensusReport, report);
+    assert.deepEqual(published.value.portfolios, revision.portfolios);
+    assert.equal(published.value.revision, 7);
+  });
+
+  test(`${label}: stale or replaced optimization lease cannot store or publish`, async () => {
+    const repository = await createRepository();
+    const { report, lease, revision } =
+      await storedPortfolioRevisionFixture(repository);
+    const stale = hasCode("financial_council_lease_stale");
+
+    await assert.rejects(repository.storeConsensus(workspace("ws-2"), report, {
+      lease, completedAt: "2026-08-16T08:06:30.000Z"
+    }), stale);
+    await assert.rejects(repository.storeConsensus(workspace(), report, {
+      lease, completedAt: lease.leaseExpiresAt
+    }), stale);
+    await assert.rejects(repository.storePortfolioRevision(revision, {
+      lease, completedAt: lease.leaseExpiresAt
+    }), stale);
+    await assert.rejects(repository.publishPortfolioRevisionWithLease(lease, {
+      revision: 1,
+      expectedOutputHash: revision.outputHash,
+      occurredAt: lease.leaseExpiresAt
+    }), stale);
+  });
+
+  test(`${label}: synthesizing and optimizing runs are recoverable after lease release`, async () => {
+    for (const target of ["synthesizing", "optimizing"] as const) {
+      const repository = await createRepository();
+      const aggregate = repositoryRunFixture({ runId: `recover-${target}` });
+      const run = (await repository.createAndFreezeRun(command(
+        `recover-${target}`
+      ), {
+        aggregate,
+        snapshot: snapshotFixture(aggregate),
+        occurredAt: T1
+      })).value;
+      const lease = (await repository.claimAnalysisRun({
+        workspaceId: run.workspaceId,
+        runId: run.runId,
+        workerId: "worker-a",
+        leaseToken: "5".repeat(64),
+        claimedAt: "2026-08-16T08:02:00.000Z",
+        leaseExpiresAt: "2026-08-16T08:20:00.000Z"
+      }))!;
+      const path = target === "synthesizing"
+        ? ["analyzing", "auditing", "synthesizing"] as const
+        : ["analyzing", "auditing", "synthesizing", "optimizing"] as const;
+      for (let index = 0; index < path.length; index += 1) {
+        await repository.transitionRunWithLease(lease, {
+          kind: path[index]!,
+          occurredAt: `2026-08-16T08:0${index + 3}:00.000Z`,
+          reasonCode: null
+        });
+      }
+      await repository.releaseAnalysisLease(
+        lease, "2026-08-16T08:10:00.000Z"
+      );
+
+      assert.deepEqual((await repository.listRecoverableAnalysisRuns(
+        "2026-08-16T08:11:00.000Z", 10
+      )).map((candidate) => candidate.runId), [run.runId]);
+      assert.ok(await repository.claimAnalysisRun({
+        workspaceId: run.workspaceId,
+        runId: run.runId,
+        workerId: "worker-b",
+        leaseToken: "6".repeat(64),
+        claimedAt: "2026-08-16T08:11:00.000Z",
+        leaseExpiresAt: "2026-08-16T08:30:00.000Z"
+      }));
+    }
   });
 
   test(`${label}: round-one rebuttal reserves before completion and replays exactly`, async () => {

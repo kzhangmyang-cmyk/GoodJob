@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript、Express、MySQL 8、Zod、JSON Schema 2020-12、OpenAPI 3.1、现有 Model Gateway、Node test runner、Vite、vanilla controller/view、Playwright。
 
-**当前状态：** P1 与 P2 已完成：五专家、确定性校验、一轮反驳以及 lease-fenced 可恢复 worker 已接入生产模块。P3 CFO 与组合优化器、P4 人工审批派发、P5 前端与纵向发布仍待实施。整体功能只有在 P5 Exit 通过后才能宣布完成。
+**当前状态：** P1–P3 已完成：五专家、确定性校验、一轮反驳、CFO 闭合合意、不可变策略与 exact 三组合优化已接入 lease-fenced 可恢复生产流程。P4 人工修订/审批/派发与 P5 前端/纵向发布仍待实施。整体功能只有在 P5 Exit 通过后才能宣布完成。
 
 ## Global Constraints
 
@@ -90,9 +90,9 @@ GET  /api/v1/finance/council-runs/{runId}/dispatches
 
 ### P3 Exit
 
-- [ ] CFO 报告保留少数意见、拒绝项、未解决冲突与数据缺口。
-- [ ] branch-and-bound 在随机小规模案例中与 brute-force 完全一致。
-- [ ] 平衡、现金优先、增长优先三套组合确定性稳定，任何硬约束失败返回空组合及闭合原因。
+- [x] CFO 报告保留少数意见、拒绝项、未解决冲突与数据缺口；模型不可用时使用确定性服务端模板。
+- [x] exact branch-and-bound 在至少 200 个 seeded 小规模案例中与 exhaustive oracle 完全一致。
+- [x] 平衡、现金优先、增长优先三套 revision 1 绑定全部不可变输入并可恢复发布；无非空可行集仍返回三个空组合与完整 blocker，关键输入失效则 `not_computable`。
 
 ### P4 Exit
 

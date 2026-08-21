@@ -21,6 +21,7 @@ import {
   resignSnapshotRecord,
   specialistResultFixture,
   snapshotFixture, storedConsensusFixture,
+  storedPortfolioRevisionFixture,
   workspace
 } from "./financial-council-repository-contract-test.js";
 import { T1 } from "./financial-council-repository-contract-test.js";
@@ -39,6 +40,7 @@ type State = {
   rebuttalAttempts: Row[];
   dispositions: Row[];
   consensusReports: Row[];
+  portfolioRevisions: Row[];
   analysisControls: Row[];
   analysisGaps: Row[];
 };
@@ -81,6 +83,7 @@ type FailurePoint =
   | "action_insert"
   | "audit_graph_insert"
   | "disposition_insert"
+  | "portfolio_revision_insert"
   | null;
 
 class FakeConnection {
@@ -112,6 +115,7 @@ class FakeConnection {
       this.pool.state.rebuttalAttempts = this.pending.rebuttalAttempts;
       this.pool.state.dispositions = this.pending.dispositions;
       this.pool.state.consensusReports = this.pending.consensusReports;
+      this.pool.state.portfolioRevisions = this.pending.portfolioRevisions;
       this.pool.state.analysisControls = this.pending.analysisControls;
       this.pool.state.analysisGaps = this.pending.analysisGaps;
     }
@@ -163,7 +167,8 @@ class FakeConnection {
           candidate.workspace_id === run.workspace_id
             && candidate.run_id === run.run_id);
         return !!control
-          && ["snapshot_frozen", "analyzing", "auditing"].includes(
+          && ["snapshot_frozen", "analyzing", "auditing", "synthesizing",
+            "optimizing"].includes(
             String(run.status))
           && (control.lease_expires_at === null
             || String(control.lease_expires_at) <= now);
@@ -344,6 +349,15 @@ class FakeConnection {
       && normalized.includes("FROM financial_council_consensus_reports")) {
       const rows = state.consensusReports.filter((row) =>
         row.workspace_id === values[0] && row.run_id === values[1]);
+      return [mysqlDatetimeRows(rows.slice(0, 1), "created_at",
+        normalized.includes("DATE_FORMAT(created_at"),
+        this.pool.shiftDatetimeDates), []];
+    }
+    if (normalized.startsWith("SELECT")
+      && normalized.includes("FROM financial_council_portfolio_revisions")) {
+      const rows = state.portfolioRevisions.filter((row) =>
+        row.workspace_id === values[0] && row.run_id === values[1]
+          && row.revision === values[2]);
       return [mysqlDatetimeRows(rows.slice(0, 1), "created_at",
         normalized.includes("DATE_FORMAT(created_at"),
         this.pool.shiftDatetimeDates), []];
@@ -547,6 +561,33 @@ class FakeConnection {
       return [{ affectedRows: 1 }, []];
     }
     if (normalized.startsWith(
+      "INSERT INTO financial_council_portfolio_revisions")) {
+      if (this.pool.failurePoint === "portfolio_revision_insert") {
+        throw new Error("portfolio revision insert failed");
+      }
+      const [workspaceId, runId, revision, revisionId, runHash, snapshotId,
+        snapshotHash, auditHash, policyVersionId, policyHash,
+        consensusReportId, candidateSetHash, outputHash, revisionJson,
+        createdAt] = values;
+      if (state.portfolioRevisions.some((row) =>
+        row.workspace_id === workspaceId
+          && ((row.run_id === runId && row.revision === revision)
+            || row.revision_id === revisionId))) {
+        throw Object.assign(new Error("duplicate"), {
+          code: "ER_DUP_ENTRY", errno: 1062
+        });
+      }
+      state.portfolioRevisions.push({ workspace_id: workspaceId,
+        run_id: runId, revision, revision_id: revisionId, run_hash: runHash,
+        snapshot_id: snapshotId, snapshot_hash: snapshotHash,
+        audit_hash: auditHash, policy_version_id: policyVersionId,
+        policy_hash: policyHash, consensus_report_id: consensusReportId,
+        candidate_set_hash: candidateSetHash, output_hash: outputHash,
+        revision_json: revisionJson, created_at: createdAt });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
       "UPDATE financial_council_rebuttal_attempts")) {
       const [status, attemptJson, workspaceId, runId, role] = values;
       const row = state.rebuttalAttempts.find((item) =>
@@ -618,7 +659,7 @@ class FakePool {
   readonly state: State = {
     runs: [], events: [], snapshots: [], specialistResults: [], findings: [],
     actions: [], auditGraphs: [], rebuttalAttempts: [], dispositions: [],
-    consensusReports: [],
+    consensusReports: [], portfolioRevisions: [],
     analysisControls: [], analysisGaps: []
   };
   readonly connections: FakeConnection[] = [];
@@ -902,6 +943,59 @@ test("MySQL consensus read reports stored canonical corruption as integrity", as
       === "financial_council_mysql_integrity");
 });
 
+test("portfolio insert and publish failures roll back without partial visibility", async () => {
+  {
+    const { pool, repository } = repositoryWith();
+    const { revision, lease } = await storedPortfolioRevisionFixture(repository);
+    pool.state.portfolioRevisions.splice(0, 1);
+    pool.failurePoint = "portfolio_revision_insert";
+
+    await assert.rejects(repository.storePortfolioRevision(revision, {
+      lease, completedAt: "2026-08-16T08:06:30.000Z"
+    }), /portfolio revision insert failed/u);
+
+    assert.equal(pool.state.portfolioRevisions.length, 0);
+    assert.equal((await repository.findRun(workspace(), revision.runId))?.status,
+      "optimizing");
+  }
+  {
+    const { pool, repository } = repositoryWith();
+    const { revision, lease } = await storedPortfolioRevisionFixture(repository);
+    const eventCount = pool.state.events.length;
+    pool.failurePoint = "run_update";
+
+    await assert.rejects(repository.publishPortfolioRevisionWithLease(lease, {
+      revision: 1,
+      expectedOutputHash: revision.outputHash,
+      occurredAt: "2026-08-16T08:07:00.000Z"
+    }), /run update failed/u);
+
+    assert.equal(pool.state.portfolioRevisions.length, 1);
+    assert.equal(pool.state.events.length, eventCount);
+    assert.equal((await repository.findRun(workspace(), revision.runId))?.status,
+      "optimizing");
+  }
+});
+
+test("MySQL portfolio reads reject tampered revision and published aggregate", async () => {
+  const { pool, repository } = repositoryWith();
+  const { revision, lease } = await storedPortfolioRevisionFixture(repository);
+  await repository.publishPortfolioRevisionWithLease(lease, {
+    revision: 1,
+    expectedOutputHash: revision.outputHash,
+    occurredAt: "2026-08-16T08:07:00.000Z"
+  });
+  pool.state.portfolioRevisions[0]!.output_hash = `sha256:${"f".repeat(64)}`;
+
+  for (const read of [
+    () => repository.getPortfolioRevision(workspace(), revision.runId, 1),
+    () => repository.findRun(workspace(), revision.runId)
+  ]) {
+    await assert.rejects(read(), (error: unknown) =>
+      (error as { code?: unknown }).code === "financial_council_mysql_integrity");
+  }
+});
+
 test("specialist result, finding, and action inserts roll back atomically", async () => {
   for (const failurePoint of [
     "specialist_result_insert", "finding_insert", "action_insert"
@@ -958,8 +1052,8 @@ test("audit graph and disposition inserts roll back atomically", async () => {
   }
 });
 
-test("financial council schema owns twelve tables behind a named lock", async () => {
-  assert.equal(FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.length, 12);
+test("financial council schema owns thirteen tables behind a named lock", async () => {
+  assert.equal(FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.length, 13);
   const ddl = FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.join("\n");
   const names = [...ddl.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/gu)]
     .map((match) => match[1]);
@@ -974,6 +1068,7 @@ test("financial council schema owns twelve tables behind a named lock", async ()
     "financial_council_rebuttal_attempts",
     "financial_council_finding_dispositions",
     "financial_council_consensus_reports",
+    "financial_council_portfolio_revisions",
     "financial_council_analysis_controls",
     "financial_council_analysis_gaps"
   ]);

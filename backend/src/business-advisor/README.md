@@ -76,13 +76,17 @@ runnable 扫描使用 workspace/run 的 UTF-8 binary-byte 复合游标，Memory 
 
 生产模块把官方 active model gateway、五专家 coordinator、确定性冲突图、一轮反驳、lease-fenced worker 与 recovery sweeper 组合成真实异步流程：
 
-`snapshot_frozen -> analyzing -> auditing -> synthesizing`
+`snapshot_frozen -> analyzing -> auditing -> synthesizing -> optimizing -> awaiting_approval`
 
 创建/冻结时会在内部原子持久分析 owner/team，恢复不使用当前切换的 workspace 或模型身份。每次 claim 使用随机 64 位十六进制 token 和递增 attempt；精确到期时刻已算 stale，同 worker reclaim 后的旧 token 也不能写入。专家 result、gap、audit graph、rebuttal reservation/result/disposition 与运行转移都在同一 token + attempt + strict-expiry fence 下提交。
 
 五个 analyze job 与最多五个 rebuttal job 的逻辑 attempt 始终为 `1`；可重试传输失败一次，不增加专家提交轮次。恢复先读已持久的 analyze result、graph 和 rebuttal reservation/completion，不创建第二轮，变更的 replay 会冲突关闭。
 
-`finance` 和 `cashflow` 是硬约束角色，失败或缺失现金硬约束会进入 `not_computable`。`profit|cost|tax` 只有在确定性检查证明不依赖未可用硬约束或动作公式时才可部分继续，并持久仅含闭集 code 的脱敏 gap。缺少税务输入记为 `tax_input_missing`，不伪造税务结论。关闭顺序是 relay、sweeper、worker drain，然后底层资源。
+`finance` 和 `cashflow` 是硬约束角色，失败或缺失现金硬约束会进入 `not_computable`。`profit|cost|tax` 只有在确定性检查证明不依赖未可用硬约束或动作公式时才可部分继续，并持久仅含闭集 code 的脱敏 gap。缺少税务输入记为 `tax_input_missing`，不伪造税务结论。
+
+CFO 只为已验证的 consensus 生成叙述；模型不可用或输出越界时使用服务端模板，不阻塞优化。优化器只消费运行绑定的 snapshot、audit graph、不可变 policy version 和 accepted/minority 候选集，固定返回 balanced、cash-first、growth-first 三套 revision 1。无非空可行集仍发布三个空组合及完整 blocker；候选超界等关键输入失效才进入 `not_computable`。
+
+revision 1 是独立不可变记录，同时绑定 run/snapshot/audit/policy/consensus/candidate-set/output hash。崩溃发生在 revision insert 之后时，恢复 worker 用同一冻结输入重算并与已存字节比较，一致才发布；篡改或 replay 漂移会 fail closed。Memory 与 MySQL 共用行为合同，MySQL insert 和运行转移位于受 lease fence 的事务边界内。关闭顺序是 relay、recovery sweeper、optimization worker drain、analysis worker drain，然后底层资源。
 
 ## 报表导入（statement-import.ts）
 

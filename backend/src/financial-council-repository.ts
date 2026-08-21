@@ -37,16 +37,126 @@ import {
 import { MODEL_PROVIDER_IDS } from "./model-providers/types.js";
 import type {
   ConsensusReport,
+  FinancialCouncilActionPortfolio,
   FinancialCouncilAgentRole,
   FinancialCouncilCandidateAction,
   FinancialCouncilDataGap,
   FinancialCouncilFinding
 } from "./growth-contract-types.js";
 import { buildConsensus } from "./financial-council-consensus.js";
+import { FINANCIAL_PORTFOLIO_HARD_CONSTRAINT_KINDS } from
+  "./financial-portfolio-constraints.js";
 
 export interface FinancialCouncilCommandResult<T> {
   readonly value: T;
   readonly replayed: boolean;
+}
+
+export interface FinancialCouncilPortfolioRevision {
+  readonly revisionId: `sha256:${string}`;
+  readonly workspaceId: string;
+  readonly runId: string;
+  readonly revision: 1;
+  readonly runHash: `sha256:${string}`;
+  readonly snapshotId: string;
+  readonly snapshotHash: `sha256:${string}`;
+  readonly auditHash: `sha256:${string}`;
+  readonly policyVersionId: string;
+  readonly policyHash: `sha256:${string}`;
+  readonly consensusReportId: string;
+  readonly candidateSetHash: `sha256:${string}`;
+  readonly outputHash: `sha256:${string}`;
+  readonly portfolios: readonly FinancialCouncilActionPortfolio[];
+  readonly createdAt: string;
+}
+
+export interface CreateFinancialCouncilPortfolioRevisionInput
+extends Omit<FinancialCouncilPortfolioRevision, "revisionId" | "outputHash"> {}
+
+export interface PublishFinancialCouncilPortfolioRevisionInput {
+  readonly revision: 1;
+  readonly expectedOutputHash: `sha256:${string}`;
+  readonly occurredAt: string;
+}
+
+export function financialCouncilOptimizationRunHash(
+  rawRun: FinancialCouncilRun
+): `sha256:${string}` {
+  const run = immutableFinancialCouncilInput(rawRun);
+  assertFinancialCouncilRunValue(run);
+  return financialCouncilCanonicalHash({
+    workspaceId: run.workspaceId,
+    runId: run.runId,
+    creationKeyHash: run.creationKeyHash,
+    requestHash: run.requestHash,
+    currency: run.currency,
+    dataAsOf: run.dataAsOf,
+    businessReport: run.businessReport,
+    policyVersionId: run.policyVersionId,
+    snapshotId: run.snapshotId,
+    snapshotHash: run.snapshotHash,
+    createdAt: run.createdAt,
+    expiresAt: run.expiresAt
+  });
+}
+
+export function createFinancialCouncilPortfolioRevision(
+  rawInput: CreateFinancialCouncilPortfolioRevisionInput
+): FinancialCouncilPortfolioRevision {
+  try {
+    const input = immutableFinancialCouncilInput(rawInput);
+    exactObject(input, ["workspaceId", "runId", "revision", "runHash",
+      "snapshotId", "snapshotHash", "auditHash", "policyVersionId",
+      "policyHash", "consensusReportId", "candidateSetHash", "portfolios",
+      "createdAt"]);
+    identifier(input.workspaceId);
+    identifier(input.runId);
+    if (input.revision !== 1) inputInvalid();
+    hash(input.runHash);
+    identifier(input.snapshotId);
+    hash(input.snapshotHash);
+    hash(input.auditHash);
+    policyVersionId(input.policyVersionId);
+    hash(input.policyHash);
+    hash(input.consensusReportId);
+    hash(input.candidateSetHash);
+    timestamp(input.createdAt);
+    assertFinancialCouncilPortfolios(input.portfolios, input.runId, 1);
+    const outputHash = financialCouncilCanonicalHash(input.portfolios);
+    const preimage = { ...input, outputHash };
+    return immutableFinancialCouncilValue({
+      revisionId: financialCouncilCanonicalHash(preimage),
+      ...preimage
+    });
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code
+      === "financial_council_portfolio_invalid") throw error;
+    throw financialCouncilError("financial_council_portfolio_invalid");
+  }
+}
+
+export function selectFinancialCouncilOptimizationCandidates(
+  consensus: ConsensusReport,
+  results: readonly FinancialCouncilSpecialistResult[]
+): readonly FinancialCouncilCandidateAction[] {
+  const stableConsensus = immutableFinancialCouncilInput(consensus);
+  const stableResults = immutableFinancialCouncilInput(results);
+  const allowed = new Set([
+    ...stableConsensus.acceptedFindings.map((finding) => finding.findingId),
+    ...stableConsensus.minorityFindings.map((finding) => finding.findingId)
+  ]);
+  const actions = stableResults
+    .filter((result) => result.runId === stableConsensus.runId
+      && result.phase === "analyze")
+    .flatMap((result) => result.actions)
+    .filter((action) => action.sourceFindingIds.length > 0
+      && action.sourceFindingIds.every((findingId) => allowed.has(findingId)))
+    .sort((left, right) => utf8ByteCompare(left.actionId, right.actionId));
+  if (actions.some((action, index) => index > 0
+    && action.actionId === actions[index - 1]!.actionId)) {
+    throw financialCouncilError("financial_council_portfolio_invalid");
+  }
+  return Object.freeze(actions);
 }
 
 export interface StoreFrozenFinancialSnapshotInput {
@@ -319,12 +429,26 @@ export interface FinancialCouncilRepository {
   ): Promise<readonly FinancialCouncilFindingDisposition[]>;
   storeConsensus(
     context: ActiveWorkspaceContext,
-    consensus: ConsensusReport
+    consensus: ConsensusReport,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<ConsensusReport>>;
   getConsensus(
     context: ActiveWorkspaceContext,
     runId: string
   ): Promise<ConsensusReport | null>;
+  storePortfolioRevision(
+    revision: FinancialCouncilPortfolioRevision,
+    write: FinancialCouncilLeaseWrite
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilPortfolioRevision>>;
+  getPortfolioRevision(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    revision: number
+  ): Promise<FinancialCouncilPortfolioRevision | null>;
+  publishPortfolioRevisionWithLease(
+    lease: FinancialCouncilAnalysisLease,
+    input: PublishFinancialCouncilPortfolioRevisionInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>>;
 }
 
 interface StoredSpecialistFinding {
@@ -761,6 +885,75 @@ function policyVersionId(value: unknown): asserts value is string {
     || [...value].length > 255) inputInvalid();
 }
 
+function assertFinancialCouncilPortfolios(
+  value: unknown,
+  runId: string,
+  revision: number
+): asserts value is readonly FinancialCouncilActionPortfolio[] {
+  if (!Array.isArray(value) || value.length !== 3) inputInvalid();
+  const kinds = ["balanced", "cash_first", "growth_first"] as const;
+  for (let index = 0; index < kinds.length; index += 1) {
+    const portfolio = value[index];
+    exactObject(portfolio, ["portfolioId", "runId", "revision", "kind",
+      "actionIds", "actions", "hardConstraints", "objectiveScoreBps",
+      "scenarioForecast", "sensitivityAnalysis", "rejectedActions",
+      "requiredApprovalCapabilities", "expiresAt", "createdAt"]);
+    identifier(portfolio.portfolioId);
+    if (portfolio.runId !== runId || portfolio.revision !== revision
+      || portfolio.kind !== kinds[index]) inputInvalid();
+    const actionIds = portfolio.actionIds;
+    stringArray(actionIds);
+    if (new Set(actionIds).size !== actionIds.length
+      || [...actionIds].sort(utf8ByteCompare).some((id, position) =>
+        id !== actionIds[position])) inputInvalid();
+    if (!Array.isArray(portfolio.actions)
+      || portfolio.actions.length !== actionIds.length
+      || portfolio.actions.some((action, position) =>
+        !action || typeof action !== "object" || Array.isArray(action)
+        || (action as FinancialCouncilCandidateAction).actionId
+          !== actionIds[position])) inputInvalid();
+    if (!Array.isArray(portfolio.hardConstraints)
+      || portfolio.hardConstraints.length
+        !== FINANCIAL_PORTFOLIO_HARD_CONSTRAINT_KINDS.length) inputInvalid();
+    for (let constraintIndex = 0;
+      constraintIndex < portfolio.hardConstraints.length;
+      constraintIndex += 1) {
+      const result = portfolio.hardConstraints[constraintIndex];
+      exactObject(result, ["code", "satisfied", "reason"]);
+      if (result.code
+          !== FINANCIAL_PORTFOLIO_HARD_CONSTRAINT_KINDS[constraintIndex]
+        || typeof result.satisfied !== "boolean"
+        || (result.reason !== null && (typeof result.reason !== "string"
+          || !result.reason))) inputInvalid();
+    }
+    integer(portfolio.objectiveScoreBps);
+    if (portfolio.objectiveScoreBps < 0
+      || portfolio.objectiveScoreBps > 10_000) inputInvalid();
+    exactObject(portfolio.scenarioForecast,
+      ["cashImpact", "profitImpact", "riskReductionBps"]);
+    assertScenario(portfolio.scenarioForecast.cashImpact, false);
+    assertScenario(portfolio.scenarioForecast.profitImpact, false);
+    assertScenario(portfolio.scenarioForecast.riskReductionBps, true);
+    if (!Array.isArray(portfolio.sensitivityAnalysis)) inputInvalid();
+    for (const row of portfolio.sensitivityAnalysis) {
+      exactObject(row, ["factor", "impactBps"]);
+      identifier(row.factor);
+      integer(row.impactBps);
+      if (row.impactBps < -10_000 || row.impactBps > 10_000) inputInvalid();
+    }
+    if (!Array.isArray(portfolio.rejectedActions)) inputInvalid();
+    for (const row of portfolio.rejectedActions) {
+      exactObject(row, ["actionId", "reasonCode", "reason"]);
+      identifier(row.actionId);
+      identifier(row.reasonCode);
+      identifier(row.reason);
+    }
+    stringArray(portfolio.requiredApprovalCapabilities);
+    timestamp(portfolio.expiresAt);
+    timestamp(portfolio.createdAt);
+  }
+}
+
 const RUN_KEYS = ["runId", "workspaceId", "creationKeyHash", "requestHash",
   "currency", "status", "revision", "dataAsOf", "businessReport",
   "policyVersionId", "snapshotId", "snapshotHash", "consensusReport",
@@ -787,10 +980,19 @@ asserts value is FinancialCouncilRun {
   if (value.snapshotId !== null) identifier(value.snapshotId);
   if (value.snapshotHash !== null) hash(value.snapshotHash);
   if ((value.snapshotId === null) !== (value.snapshotHash === null)) inputInvalid();
-  if (value.consensusReport !== null
-    || !Array.isArray(value.portfolios) || value.portfolios.length !== 0
-    || value.latestPortfolioRevision !== null || value.approval !== null) {
-    inputInvalid();
+  const latestPortfolioRevision = value.latestPortfolioRevision;
+  const published = latestPortfolioRevision !== null;
+  if (!published) {
+    if (value.consensusReport !== null || !Array.isArray(value.portfolios)
+      || value.portfolios.length !== 0 || value.approval !== null) inputInvalid();
+  } else {
+    if (!Number.isSafeInteger(latestPortfolioRevision)
+      || Number(latestPortfolioRevision) < 1 || value.consensusReport === null
+      || value.approval !== null
+      || !["awaiting_approval", "approved", "rejected", "expired"]
+        .includes(String(value.status))) inputInvalid();
+    assertFinancialCouncilPortfolios(value.portfolios, value.runId,
+      Number(latestPortfolioRevision));
   }
   timestamp(value.createdAt);
   timestamp(value.updatedAt);
@@ -889,6 +1091,14 @@ export function assertFinancialCouncilRunHistory(
             snapshotId: event.aggregateSnapshot.snapshotId,
             snapshotHash: event.aggregateSnapshot.snapshotHash
           })
+        : event.toStatus === "awaiting_approval"
+          ? immutableFinancialCouncilValue({
+              ...previous.aggregateSnapshot,
+              consensusReport: event.aggregateSnapshot.consensusReport,
+              portfolios: event.aggregateSnapshot.portfolios,
+              latestPortfolioRevision:
+                event.aggregateSnapshot.latestPortfolioRevision
+            })
         : previous.aggregateSnapshot;
       const expected = applyFinancialCouncilTransition(transitionBase, {
         kind: event.toStatus as FinancialCouncilTransitionKind,
@@ -897,7 +1107,7 @@ export function assertFinancialCouncilRunHistory(
       });
       if (financialCouncilCanonicalJson(expected)
           !== financialCouncilCanonicalJson(event.aggregateSnapshot)
-        || (event.toStatus === "snapshot_frozen"
+        || (["snapshot_frozen", "awaiting_approval"].includes(event.toStatus)
           && event.actorId !== previous.actorId)) fail();
     }
   }
@@ -1133,6 +1343,7 @@ implements FinancialCouncilRepository {
     rebuttalAttempts: new Map<string, FinancialCouncilRebuttalAttempt>(),
     findingDispositions: new Map<string, FinancialCouncilFindingDisposition>(),
     consensusReports: new Map<string, ConsensusReport>(),
+    portfolioRevisions: new Map<string, FinancialCouncilPortfolioRevision>(),
     analysisControls: new Map<string, FinancialCouncilAnalysisControl>(),
     analysisGaps: new Map<string, FinancialCouncilAnalysisGap>()
   };
@@ -1148,6 +1359,7 @@ implements FinancialCouncilRepository {
   private get rebuttalAttempts() { return this.state.rebuttalAttempts; }
   private get findingDispositions() { return this.state.findingDispositions; }
   private get consensusReports() { return this.state.consensusReports; }
+  private get portfolioRevisions() { return this.state.portfolioRevisions; }
   private get analysisControls() { return this.state.analysisControls; }
   private get analysisGaps() { return this.state.analysisGaps; }
 
@@ -1203,6 +1415,7 @@ implements FinancialCouncilRepository {
       rebuttalAttempts: new Map(this.rebuttalAttempts),
       findingDispositions: new Map(this.findingDispositions),
       consensusReports: new Map(this.consensusReports),
+      portfolioRevisions: new Map(this.portfolioRevisions),
       analysisControls: new Map(this.analysisControls),
       analysisGaps: new Map(this.analysisGaps)
     };
@@ -1463,8 +1676,8 @@ implements FinancialCouncilRepository {
       || Date.parse(input.leaseExpiresAt) <= Date.parse(input.claimedAt)) {
       throw financialCouncilError("financial_council_lease_invalid");
     }
-    if (["approved", "rejected", "expired", "failed", "not_computable"]
-      .includes(run.status) || run.status === "synthesizing") return null;
+    if (!["snapshot_frozen", "analyzing", "auditing", "synthesizing",
+      "optimizing"].includes(run.status)) return null;
     if (control.lease
       && Date.parse(control.lease.leaseExpiresAt) > Date.parse(input.claimedAt)) {
       return null;
@@ -1538,7 +1751,8 @@ implements FinancialCouncilRepository {
   ): Promise<readonly FinancialCouncilRun[]> {
     const at = Date.parse(now);
     return Object.freeze([...this.runs.values()].filter((run) => {
-      if (!["snapshot_frozen", "analyzing", "auditing"]
+      if (!["snapshot_frozen", "analyzing", "auditing", "synthesizing",
+        "optimizing"]
         .includes(run.status)) return false;
       const control = this.analysisControls.get(key(run.workspaceId, run.runId));
       return !!control && (!control.lease
@@ -1632,6 +1846,7 @@ implements FinancialCouncilRepository {
       rebuttalAttempts: new Map(this.rebuttalAttempts),
       findingDispositions: new Map(this.findingDispositions),
       consensusReports: new Map(this.consensusReports),
+      portfolioRevisions: new Map(this.portfolioRevisions),
       analysisControls: new Map(this.analysisControls),
       analysisGaps: new Map(this.analysisGaps)
     };
@@ -1978,9 +2193,17 @@ implements FinancialCouncilRepository {
 
   async storeConsensus(
     context: ActiveWorkspaceContext,
-    rawConsensus: ConsensusReport
+    rawConsensus: ConsensusReport,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<ConsensusReport>> {
     const consensus = immutableFinancialCouncilInput(rawConsensus);
+    if (write) {
+      this.requireLiveAnalysisLease(write.lease, write.completedAt);
+      if (write.lease.workspaceId !== context.workspaceId
+        || write.lease.runId !== consensus.runId) {
+        throw financialCouncilError("financial_council_lease_stale");
+      }
+    }
     await this.assertStoredConsensus(context, consensus, false);
     const consensusKey = key(context.workspaceId, consensus.runId);
     const existing = this.consensusReports.get(consensusKey);
@@ -2009,6 +2232,163 @@ implements FinancialCouncilRepository {
     return consensus;
   }
 
+  async storePortfolioRevision(
+    rawRevision: FinancialCouncilPortfolioRevision,
+    write: FinancialCouncilLeaseWrite
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilPortfolioRevision>> {
+    const revision = immutableFinancialCouncilInput(rawRevision);
+    this.requireLiveAnalysisLease(write.lease, write.completedAt);
+    if (revision.workspaceId !== write.lease.workspaceId
+      || revision.runId !== write.lease.runId) {
+      throw financialCouncilError("financial_council_lease_stale");
+    }
+    const run = this.runs.get(key(write.lease.workspaceId, write.lease.runId));
+    if (!run || run.status !== "optimizing") {
+      throw financialCouncilError("financial_council_portfolio_state_invalid");
+    }
+    await this.assertStoredPortfolioRevision(revision, false);
+    const revisionKey = portfolioKey(
+      revision.workspaceId, revision.runId, revision.revision
+    );
+    const existing = this.portfolioRevisions.get(revisionKey);
+    if (existing) {
+      await this.assertStoredPortfolioRevision(existing, true);
+      if (financialCouncilCanonicalJson(existing)
+        !== financialCouncilCanonicalJson(revision)) {
+        throw financialCouncilError("financial_council_portfolio_conflict");
+      }
+      return { value: existing, replayed: true };
+    }
+    const next = new Map(this.portfolioRevisions);
+    next.set(revisionKey, immutableFinancialCouncilValue(revision));
+    this.state = { ...this.state, portfolioRevisions: next };
+    return { value: revision, replayed: false };
+  }
+
+  async getPortfolioRevision(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    revision: number
+  ): Promise<FinancialCouncilPortfolioRevision | null> {
+    if (!Number.isSafeInteger(revision) || revision < 1) inputInvalid();
+    const stored = this.portfolioRevisions.get(portfolioKey(
+      context.workspaceId, runId, revision
+    )) ?? null;
+    if (stored) await this.assertStoredPortfolioRevision(stored, true);
+    return stored;
+  }
+
+  async publishPortfolioRevisionWithLease(
+    lease: FinancialCouncilAnalysisLease,
+    input: PublishFinancialCouncilPortfolioRevisionInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
+    const stable = immutableFinancialCouncilInput(input);
+    this.requireLiveAnalysisLease(lease, stable.occurredAt);
+    if (stable.revision !== 1 || !HASH.test(stable.expectedOutputHash)) {
+      throw financialCouncilError("financial_council_portfolio_invalid");
+    }
+    const aggregateKey = key(lease.workspaceId, lease.runId);
+    const current = this.runs.get(aggregateKey);
+    if (!current || current.status !== "optimizing") {
+      throw financialCouncilError("financial_council_portfolio_state_invalid");
+    }
+    const revision = this.portfolioRevisions.get(portfolioKey(
+      lease.workspaceId, lease.runId, stable.revision
+    ));
+    if (!revision) {
+      throw financialCouncilError("financial_council_portfolio_not_found");
+    }
+    await this.assertStoredPortfolioRevision(revision, true);
+    if (revision.outputHash !== stable.expectedOutputHash) {
+      throw financialCouncilError("financial_council_portfolio_integrity");
+    }
+    const consensus = this.consensusReports.get(
+      key(lease.workspaceId, lease.runId)
+    );
+    if (!consensus || consensus.reportId !== revision.consensusReportId) {
+      historyIntegrity();
+    }
+    const withPortfolio = immutableFinancialCouncilValue({
+      ...current,
+      consensusReport: consensus,
+      portfolios: revision.portfolios,
+      latestPortfolioRevision: revision.revision
+    });
+    const next = applyFinancialCouncilTransition(withPortfolio, {
+      kind: "awaiting_approval",
+      occurredAt: stable.occurredAt,
+      actorId: this.analysisControls.get(aggregateKey)!.ownerId
+    });
+    const event = createFinancialCouncilRunEvent(next, {
+      fromStatus: current.status,
+      reasonCode: null,
+      occurredAt: stable.occurredAt,
+      actorId: this.analysisControls.get(aggregateKey)!.ownerId
+    });
+    const runs = new Map(this.runs);
+    const events = new Map(this.events);
+    runs.set(aggregateKey, next);
+    events.set(aggregateKey, [...(events.get(aggregateKey) ?? []), event]);
+    this.state = { ...this.state, runs, events };
+    return { value: next, replayed: false };
+  }
+
+  private optimizationCandidates(
+    runId: string,
+    consensus: ConsensusReport
+  ): readonly FinancialCouncilCandidateAction[] {
+    return selectFinancialCouncilOptimizationCandidates(consensus,
+      [...this.specialistResults.values()].filter((result) =>
+        result.runId === runId));
+  }
+
+  private async assertStoredPortfolioRevision(
+    revision: FinancialCouncilPortfolioRevision,
+    stored: boolean
+  ): Promise<void> {
+    try {
+      const { revisionId, outputHash, ...input } =
+        immutableFinancialCouncilInput(revision);
+      const rebuilt = createFinancialCouncilPortfolioRevision(input);
+      if (financialCouncilCanonicalJson(rebuilt)
+        !== financialCouncilCanonicalJson(revision)) inputInvalid();
+      const run = this.runs.get(key(revision.workspaceId, revision.runId));
+      const consensus = this.consensusReports.get(
+        key(revision.workspaceId, revision.runId)
+      );
+      const graph = this.auditGraphs.get(key(
+        revision.workspaceId, revision.runId
+      ));
+      if (!run || !consensus || !graph
+        || revision.runHash !== financialCouncilOptimizationRunHash(run)
+        || revision.snapshotId !== run.snapshotId
+        || revision.snapshotHash !== run.snapshotHash
+        || revision.auditHash !== graph.graphHash
+        || revision.policyVersionId !== run.policyVersionId
+        || revision.consensusReportId !== consensus.reportId
+        || revision.candidateSetHash !== financialCouncilCanonicalHash(
+          this.optimizationCandidates(run.runId, consensus))
+        || Date.parse(revision.createdAt) < Date.parse(consensus.createdAt)
+        || Date.parse(revision.createdAt) > Date.parse(run.expiresAt)
+        || revisionId !== rebuilt.revisionId
+        || outputHash !== rebuilt.outputHash) inputInvalid();
+      const candidates = new Map(this.optimizationCandidates(
+        run.runId, consensus
+      ).map((action) => [action.actionId, action]));
+      for (const portfolio of revision.portfolios) {
+        for (const action of portfolio.actions) {
+          if (financialCouncilCanonicalJson(candidates.get(action.actionId))
+            !== financialCouncilCanonicalJson(action)) inputInvalid();
+        }
+      }
+    } catch (error) {
+      if (stored) historyIntegrity();
+      const code = (error as { code?: unknown } | null)?.code;
+      if (code === "financial_council_portfolio_invalid") throw error;
+      throw financialCouncilError("financial_council_portfolio_invalid");
+    }
+  }
+
   private async assertStoredConsensus(
     context: ActiveWorkspaceContext,
     consensus: ConsensusReport,
@@ -2027,10 +2407,13 @@ implements FinancialCouncilRepository {
       );
       const findings = results.filter((result) => result.phase === "analyze")
         .flatMap((result) => result.findings);
-      if (!graph || !verified) inputInvalid();
+      const snapshotRecord = verified && this.snapshots.get(key(
+        context.workspaceId, verified.run.snapshotId!
+      ));
+      if (!graph || !verified || !snapshotRecord) inputInvalid();
       validateFinancialCouncilConsensusReport(consensus, {
         graph, findings, dispositions, dataGaps: verified.snapshot.dataGaps,
-        earliestCreatedAt: verified.run.updatedAt,
+        earliestCreatedAt: snapshotRecord.createdAt,
         expiresAt: verified.run.expiresAt
       });
     } catch (error) {
@@ -2080,6 +2463,7 @@ implements FinancialCouncilRepository {
     const aggregateKey = key(run.workspaceId, run.runId);
     const events = this.events.get(aggregateKey) ?? [];
     assertFinancialCouncilRunHistory(run, events);
+    let snapshotRecord: FinancialSnapshotRecord | null = null;
     if (run.snapshotId !== null) {
       const snapshot = this.snapshots.get(key(run.workspaceId, run.snapshotId));
       if (!snapshot) historyIntegrity();
@@ -2090,8 +2474,50 @@ implements FinancialCouncilRepository {
       } catch {
         historyIntegrity();
       }
+      snapshotRecord = snapshot;
     } else if (run.status !== "created") {
       historyIntegrity();
+    }
+    if (run.latestPortfolioRevision !== null) {
+      const revision = this.portfolioRevisions.get(portfolioKey(
+        run.workspaceId, run.runId, run.latestPortfolioRevision
+      ));
+      const consensus = this.consensusReports.get(key(
+        run.workspaceId, run.runId
+      ));
+      if (!revision || !consensus
+        || revision.outputHash !== financialCouncilCanonicalHash(
+          revision.portfolios)
+        || revision.consensusReportId !== consensus.reportId
+        || financialCouncilCanonicalJson(run.consensusReport)
+          !== financialCouncilCanonicalJson(consensus)
+        || financialCouncilCanonicalJson(run.portfolios)
+          !== financialCouncilCanonicalJson(revision.portfolios)) {
+        historyIntegrity();
+      }
+      const graph = this.auditGraphs.get(key(run.workspaceId, run.runId));
+      if (!graph || !snapshotRecord) historyIntegrity();
+      const results = [...this.specialistResults.values()].filter((result) =>
+        result.workspaceId === run.workspaceId && result.runId === run.runId)
+        .map((result) => this.assertStoredSpecialistResult(result));
+      const dispositions = [...this.findingDispositions.values()]
+        .filter((item) => item.workspaceId === run.workspaceId
+          && item.runId === run.runId);
+      try {
+        validateFinancialCouncilConsensusReport(consensus, {
+          graph,
+          findings: results.filter((result) => result.phase === "analyze")
+            .flatMap((result) => result.findings),
+          dispositions,
+          dataGaps: validateFinancialSnapshotForRun(
+            snapshotRecord.snapshot, run
+          ).dataGaps,
+          earliestCreatedAt: snapshotRecord.createdAt,
+          expiresAt: run.expiresAt
+        });
+      } catch {
+        historyIntegrity();
+      }
     }
   }
 }
@@ -2120,6 +2546,14 @@ function dispositionKey(
   findingId: string
 ): string {
   return `${workspaceId}\u0000${runId}\u0000${findingId}`;
+}
+
+function portfolioKey(
+  workspaceId: string,
+  runId: string,
+  revision: number
+): string {
+  return `${workspaceId}\u0000${runId}\u0000${revision}`;
 }
 
 function rebuttalContentHash(input: FinancialCouncilRebutInput):

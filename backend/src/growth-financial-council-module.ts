@@ -65,6 +65,10 @@ import {
 } from "./financial-council-analysis-worker.js";
 import { FinancialCouncilRecoverySweeper } from
   "./financial-council-recovery-sweeper.js";
+import {
+  FinancialCouncilOptimizationWorker,
+  FinancialCouncilPipelineWorker
+} from "./financial-council-optimization-worker.js";
 
 export interface GrowthFinancialCouncilServices {
   readonly service: FinancialCouncilService;
@@ -379,7 +383,7 @@ export async function createGrowthFinancialCouncilResources(input: {
     businessAdvisor: createBusinessAdvisorService()
   });
   const now = () => new Date().toISOString();
-  let worker: FinancialCouncilAnalysisWorker | null = null;
+  let worker: FinancialCouncilPipelineWorker | null = null;
   let sweeper: FinancialCouncilRecoverySweeper | null = null;
   let sink = input.wakeSink ?? null;
   if (!sink && input.modelStore) {
@@ -415,11 +419,23 @@ export async function createGrowthFinancialCouncilResources(input: {
     const pipeline = new DefaultFinancialCouncilAnalysisPipeline({
       repository, specialists, rebuttals, resolvePolicy, now
     });
-    worker = new FinancialCouncilAnalysisWorker({
+    const analysisWorker = new FinancialCouncilAnalysisWorker({
       repository, pipeline,
       workerId: `financial-council-worker-${process.pid}`,
       now,
       leaseDurationMs: 30 * 60_000
+    });
+    const optimizationWorker = new FinancialCouncilOptimizationWorker({
+      repository,
+      policyRepository,
+      cfo: model,
+      workerId: `financial-council-optimizer-${process.pid}`,
+      now,
+      leaseDurationMs: 30 * 60_000
+    });
+    worker = new FinancialCouncilPipelineWorker({
+      analysis: analysisWorker,
+      optimization: optimizationWorker
     });
     sweeper = new FinancialCouncilRecoverySweeper({
       repository, worker, now, intervalMs: 5_000, batchSize: 25,

@@ -29,6 +29,9 @@ import {
   validateFinancialCouncilTransitionMutation,
   validateFinancialCouncilSpecialistResult,
   validateFinancialCouncilConsensusReport,
+  createFinancialCouncilPortfolioRevision,
+  financialCouncilOptimizationRunHash,
+  selectFinancialCouncilOptimizationCandidates,
   type FinancialCouncilCommandResult,
   type CreateAndFreezeFinancialCouncilRunInput,
   type FinancialCouncilRepository,
@@ -41,6 +44,8 @@ import {
   type FinancialCouncilAnalysisGap,
   type FinancialCouncilAnalysisLease,
   type FinancialCouncilLeaseWrite,
+  type FinancialCouncilPortfolioRevision,
+  type PublishFinancialCouncilPortfolioRevisionInput,
   type FinancialCouncilSpecialistPhase,
   type FinancialCouncilSpecialistResult,
   type ListRunnableFinancialCouncilRunsInput,
@@ -255,6 +260,33 @@ export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
       ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT chk_financial_council_consensus_json
       CHECK (JSON_VALID(report_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_portfolio_revisions (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    revision BIGINT UNSIGNED NOT NULL,
+    revision_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    run_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    snapshot_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    snapshot_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    audit_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    policy_version_id VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    policy_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    consensus_report_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    candidate_set_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    output_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    revision_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    created_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id, run_id, revision),
+    UNIQUE KEY uk_financial_council_portfolio_revision
+      (workspace_id, revision_id),
+    CONSTRAINT fk_financial_council_portfolio_consensus
+      FOREIGN KEY (workspace_id, run_id)
+      REFERENCES financial_council_consensus_reports (workspace_id, run_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_portfolio_revision CHECK (revision = 1),
+    CONSTRAINT chk_financial_council_portfolio_json
+      CHECK (JSON_VALID(revision_json))
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS financial_council_analysis_controls (
     workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
@@ -567,9 +599,6 @@ function parseRun(row: MysqlRow): FinancialCouncilRun {
       || (value.snapshotHash !== null
         && (typeof value.snapshotHash !== "string" || !HASH.test(value.snapshotHash)))
       || (value.snapshotId === null) !== (value.snapshotHash === null)
-      || value.consensusReport !== null
-      || !Array.isArray(value.portfolios) || value.portfolios.length !== 0
-      || value.latestPortfolioRevision !== null
       || value.approval !== null
       || typeof value.createdAt !== "string" || isoDate(value.createdAt) !== value.createdAt
       || typeof value.updatedAt !== "string" || isoDate(value.updatedAt) !== value.updatedAt
@@ -851,6 +880,33 @@ function parseConsensusRow(row: MysqlRow): ConsensusReport {
     || rowString(row, "report_id") !== report.reportId
     || isoDate(row.created_at) !== report.createdAt) integrity();
   return report;
+}
+
+function parsePortfolioRevision(row: MysqlRow): FinancialCouncilPortfolioRevision {
+  try {
+    const raw = jsonObject(row.revision_json) as unknown as
+      FinancialCouncilPortfolioRevision;
+    const { revisionId: _revisionId, outputHash: _outputHash, ...input } = raw;
+    const revision = createFinancialCouncilPortfolioRevision(input);
+    if (canonical(revision) !== canonical(raw)
+      || revision.workspaceId !== rowString(row, "workspace_id")
+      || revision.runId !== rowString(row, "run_id")
+      || revision.revision !== rowInteger(row, "revision")
+      || revision.revisionId !== rowString(row, "revision_id")
+      || revision.runHash !== rowString(row, "run_hash")
+      || revision.snapshotId !== rowString(row, "snapshot_id")
+      || revision.snapshotHash !== rowString(row, "snapshot_hash")
+      || revision.auditHash !== rowString(row, "audit_hash")
+      || revision.policyVersionId !== rowString(row, "policy_version_id")
+      || revision.policyHash !== rowString(row, "policy_hash")
+      || revision.consensusReportId !== rowString(row, "consensus_report_id")
+      || revision.candidateSetHash !== rowString(row, "candidate_set_hash")
+      || revision.outputHash !== rowString(row, "output_hash")
+      || revision.createdAt !== isoDate(row.created_at)) integrity();
+    return revision;
+  } catch {
+    integrity();
+  }
 }
 
 function expectedRevision(command: CommandContext): number {
@@ -1247,8 +1303,8 @@ implements FinancialCouncilRepository {
       const run = await this.findByRunId(
         connection, input.workspaceId, input.runId, true
       );
-      if (!current || !run || !["snapshot_frozen", "analyzing", "auditing"]
-        .includes(run.status)) return null;
+      if (!current || !run || !["snapshot_frozen", "analyzing", "auditing",
+        "synthesizing", "optimizing"].includes(run.status)) return null;
       if (current.lease && Date.parse(current.lease.leaseExpiresAt)
         > Date.parse(input.claimedAt)) return null;
       const lease = immutableFinancialCouncilValue({
@@ -1324,7 +1380,8 @@ implements FinancialCouncilRepository {
         `SELECT r.* FROM financial_council_runs r
          INNER JOIN financial_council_analysis_controls c
            ON c.workspace_id = r.workspace_id AND c.run_id = r.run_id
-         WHERE r.status IN ('snapshot_frozen','analyzing','auditing')
+         WHERE r.status IN
+           ('snapshot_frozen','analyzing','auditing','synthesizing','optimizing')
            AND (c.lease_expires_at IS NULL OR c.lease_expires_at <= ?)
          ORDER BY BINARY r.workspace_id ASC, BINARY r.run_id ASC LIMIT ?`,
         [sqlDate(now), limit]
@@ -1829,11 +1886,21 @@ implements FinancialCouncilRepository {
 
   async storeConsensus(
     context: ActiveWorkspaceContext,
-    rawConsensus: ConsensusReport
+    rawConsensus: ConsensusReport,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<ConsensusReport>> {
     const consensus = immutableFinancialCouncilValue(rawConsensus);
     try {
       return await this.transaction(async (connection) => {
+        if (write) {
+          await this.assertLiveAnalysisLease(
+            connection, write.lease, write.completedAt
+          );
+          if (write.lease.workspaceId !== context.workspaceId
+            || write.lease.runId !== consensus.runId) {
+            throw financialCouncilError("financial_council_lease_stale");
+          }
+        }
         const validated = await this.validateConsensus(
           connection, context, consensus, true, false
         );
@@ -1882,6 +1949,150 @@ implements FinancialCouncilRepository {
     }, true);
   }
 
+  async storePortfolioRevision(
+    rawRevision: FinancialCouncilPortfolioRevision,
+    write: FinancialCouncilLeaseWrite
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilPortfolioRevision>> {
+    const revision = immutableFinancialCouncilValue(rawRevision);
+    try {
+      return await this.transaction(async (connection) => {
+        await this.assertLiveAnalysisLease(
+          connection, write.lease, write.completedAt
+        );
+        if (revision.workspaceId !== write.lease.workspaceId
+          || revision.runId !== write.lease.runId) {
+          throw financialCouncilError("financial_council_lease_stale");
+        }
+        const run = await this.findByRunId(
+          connection, write.lease.workspaceId, write.lease.runId, true
+        );
+        if (!run || run.status !== "optimizing") {
+          throw financialCouncilError("financial_council_portfolio_state_invalid");
+        }
+        await this.validatePortfolioRevision(connection, revision, true, false);
+        const existing = await this.readPortfolioRevision(
+          connection, revision.workspaceId, revision.runId,
+          revision.revision, true
+        );
+        if (existing) {
+          await this.validatePortfolioRevision(connection, existing, true, true);
+          if (canonical(existing) !== canonical(revision)) {
+            throw financialCouncilError("financial_council_portfolio_conflict");
+          }
+          return { value: existing, replayed: true };
+        }
+        await connection.query(
+          `INSERT INTO financial_council_portfolio_revisions (
+             workspace_id, run_id, revision, revision_id, run_hash,
+             snapshot_id, snapshot_hash, audit_hash, policy_version_id,
+             policy_hash, consensus_report_id, candidate_set_hash, output_hash,
+             revision_json, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [revision.workspaceId, revision.runId, revision.revision,
+            revision.revisionId, revision.runHash, revision.snapshotId,
+            revision.snapshotHash, revision.auditHash,
+            revision.policyVersionId, revision.policyHash,
+            revision.consensusReportId, revision.candidateSetHash,
+            revision.outputHash, canonical(revision),
+            sqlDate(revision.createdAt)]
+        );
+        return { value: revision, replayed: false };
+      });
+    } catch (error) {
+      if (!duplicateEntry(error)) throw error;
+      const existing = await this.transaction(async (connection) => {
+        const stored = await this.readPortfolioRevision(
+          connection, revision.workspaceId, revision.runId,
+          revision.revision, false
+        );
+        if (stored) {
+          await this.validatePortfolioRevision(
+            connection, stored, false, true
+          );
+        }
+        return stored;
+      }, true);
+      if (existing && canonical(existing) === canonical(revision)) {
+        return { value: existing, replayed: true };
+      }
+      throw financialCouncilError("financial_council_portfolio_conflict");
+    }
+  }
+
+  async getPortfolioRevision(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    revision: number
+  ): Promise<FinancialCouncilPortfolioRevision | null> {
+    if (!Number.isSafeInteger(revision) || revision < 1) {
+      throw financialCouncilError("financial_council_input_invalid");
+    }
+    return this.transaction(async (connection) => {
+      const stored = await this.readPortfolioRevision(
+        connection, context.workspaceId, runId, revision, false
+      );
+      if (stored) {
+        await this.validatePortfolioRevision(connection, stored, false, true);
+      }
+      return stored;
+    }, true);
+  }
+
+  async publishPortfolioRevisionWithLease(
+    lease: FinancialCouncilAnalysisLease,
+    input: PublishFinancialCouncilPortfolioRevisionInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
+    return this.transaction(async (connection) => {
+      const control = await this.assertLiveAnalysisLease(
+        connection, lease, input.occurredAt
+      );
+      if (input.revision !== 1 || !HASH.test(input.expectedOutputHash)) {
+        throw financialCouncilError("financial_council_portfolio_invalid");
+      }
+      const current = await this.findByRunId(
+        connection, lease.workspaceId, lease.runId, true
+      );
+      if (!current || current.status !== "optimizing") {
+        throw financialCouncilError("financial_council_portfolio_state_invalid");
+      }
+      const revision = await this.readPortfolioRevision(
+        connection, lease.workspaceId, lease.runId, input.revision, true
+      );
+      if (!revision) {
+        throw financialCouncilError("financial_council_portfolio_not_found");
+      }
+      await this.validatePortfolioRevision(connection, revision, true, true);
+      if (revision.outputHash !== input.expectedOutputHash) {
+        throw financialCouncilError("financial_council_portfolio_integrity");
+      }
+      const consensus = await this.readConsensus(
+        connection, lease.workspaceId, lease.runId, true
+      );
+      if (!consensus || consensus.reportId !== revision.consensusReportId) {
+        integrity();
+      }
+      const attached = immutableFinancialCouncilValue({
+        ...current,
+        consensusReport: consensus,
+        portfolios: revision.portfolios,
+        latestPortfolioRevision: revision.revision
+      });
+      const next = applyFinancialCouncilTransition(attached, {
+        kind: "awaiting_approval",
+        occurredAt: input.occurredAt,
+        actorId: control.ownerId
+      });
+      await this.updateRun(connection, current, next);
+      await this.appendEvent(connection, createFinancialCouncilRunEvent(next, {
+        fromStatus: current.status,
+        reasonCode: null,
+        occurredAt: input.occurredAt,
+        actorId: control.ownerId
+      }));
+      return { value: next, replayed: false };
+    });
+  }
+
   private replay(
     existing: FinancialCouncilRun,
     requestHash: string
@@ -1890,6 +2101,110 @@ implements FinancialCouncilRepository {
       throw financialCouncilError("financial_council_idempotency_conflict");
     }
     return { value: existing, replayed: true };
+  }
+
+  private async readPortfolioRevision(
+    source: Pick<mysql.Pool, "query">,
+    workspaceId: string,
+    runId: string,
+    revision: number,
+    lock: boolean
+  ): Promise<FinancialCouncilPortfolioRevision | null> {
+    const [rows] = await source.query(
+      `SELECT workspace_id, run_id, revision, revision_id, run_hash,
+              snapshot_id, snapshot_hash, audit_hash, policy_version_id,
+              policy_hash, consensus_report_id, candidate_set_hash,
+              output_hash, revision_json,
+              DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at
+       FROM financial_council_portfolio_revisions
+       WHERE workspace_id = ? AND run_id = ? AND revision = ?`
+        + (lock ? " FOR UPDATE" : ""),
+      [workspaceId, runId, revision]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parsePortfolioRevision(row) : null;
+  }
+
+  private async readAllSpecialistResults(
+    source: Pick<mysql.Pool, "query">,
+    workspaceId: string,
+    runId: string
+  ): Promise<readonly FinancialCouncilSpecialistResult[]> {
+    const [rows] = await source.query(
+      `SELECT workspace_id, run_id, role, phase, result_id, snapshot_id,
+              snapshot_hash, result_hash, result_json,
+              DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at
+       FROM financial_council_specialist_results
+       WHERE workspace_id = ? AND run_id = ?
+       ORDER BY CASE role
+         WHEN 'finance' THEN 1 WHEN 'profit' THEN 2 WHEN 'cost' THEN 3
+         WHEN 'cashflow' THEN 4 WHEN 'tax' THEN 5 ELSE 6 END, phase ASC`,
+      [workspaceId, runId]
+    );
+    const results: FinancialCouncilSpecialistResult[] = [];
+    for (const row of rows as MysqlRow[]) {
+      results.push(await this.readSpecialistResultByRow(source, row));
+    }
+    return Object.freeze(results);
+  }
+
+  private async validatePortfolioRevision(
+    source: Pick<mysql.Pool, "query">,
+    rawRevision: FinancialCouncilPortfolioRevision,
+    lock: boolean,
+    stored: boolean
+  ): Promise<FinancialCouncilPortfolioRevision> {
+    try {
+      const { revisionId: _revisionId, outputHash: _outputHash, ...input } =
+        immutableFinancialCouncilValue(rawRevision);
+      const revision = createFinancialCouncilPortfolioRevision(input);
+      if (canonical(revision) !== canonical(rawRevision)) {
+        throw financialCouncilError("financial_council_portfolio_invalid");
+      }
+      const run = await this.findByRunId(
+        source, revision.workspaceId, revision.runId, lock
+      );
+      const consensus = await this.readConsensus(
+        source, revision.workspaceId, revision.runId, lock
+      );
+      const graph = await this.readAuditGraph(
+        source, revision.workspaceId, revision.runId, lock
+      );
+      const results = await this.readAllSpecialistResults(
+        source, revision.workspaceId, revision.runId
+      );
+      if (!run || !consensus || !graph) {
+        throw financialCouncilError("financial_council_portfolio_invalid");
+      }
+      const candidates = selectFinancialCouncilOptimizationCandidates(
+        consensus, results
+      );
+      if (revision.runHash !== financialCouncilOptimizationRunHash(run)
+        || revision.snapshotId !== run.snapshotId
+        || revision.snapshotHash !== run.snapshotHash
+        || revision.auditHash !== graph.graphHash
+        || revision.policyVersionId !== run.policyVersionId
+        || revision.consensusReportId !== consensus.reportId
+        || revision.candidateSetHash !== financialCouncilCanonicalHash(candidates)
+        || Date.parse(revision.createdAt) < Date.parse(consensus.createdAt)
+        || Date.parse(revision.createdAt) > Date.parse(run.expiresAt)) {
+        throw financialCouncilError("financial_council_portfolio_invalid");
+      }
+      const byId = new Map(candidates.map((action) => [action.actionId, action]));
+      for (const portfolio of revision.portfolios) {
+        for (const action of portfolio.actions) {
+          if (canonical(byId.get(action.actionId)) !== canonical(action)) {
+            throw financialCouncilError("financial_council_portfolio_invalid");
+          }
+        }
+      }
+      return revision;
+    } catch (error) {
+      if (stored) integrity();
+      if ((error as { code?: unknown } | null)?.code
+        === "financial_council_portfolio_invalid") throw error;
+      throw financialCouncilError("financial_council_portfolio_invalid");
+    }
   }
 
   private async validateConsensus(
@@ -1951,7 +2266,7 @@ implements FinancialCouncilRepository {
         dataGaps: validateFinancialSnapshotForRun(
           snapshot.snapshot, run
         ).dataGaps,
-        earliestCreatedAt: run.updatedAt,
+        earliestCreatedAt: snapshot.createdAt,
         expiresAt: run.expiresAt
       });
     } catch (error) {
@@ -2088,6 +2403,7 @@ implements FinancialCouncilRepository {
     ))[0] as MysqlRow[];
     const events = Object.freeze(eventRows.map(parseEvent));
     assertFinancialCouncilRunHistory(run, events, integrity);
+    let snapshotRecord: FinancialSnapshotRecord | null = null;
     if (run.snapshotId !== null) {
       const [snapshotRows] = await source.query(
         `${SNAPSHOT_SELECT}
@@ -2096,9 +2412,53 @@ implements FinancialCouncilRepository {
       );
       const snapshotRow = (snapshotRows as MysqlRow[])[0];
       if (!snapshotRow) integrity();
-      assertStoredSnapshot(run, parseSnapshot(snapshotRow), events);
+      snapshotRecord = parseSnapshot(snapshotRow);
+      assertStoredSnapshot(run, snapshotRecord, events);
     } else if (run.status !== "created") {
       integrity();
+    }
+    if (run.latestPortfolioRevision !== null) {
+      const revision = await this.readPortfolioRevision(
+        source, run.workspaceId, run.runId, run.latestPortfolioRevision, false
+      );
+      if (!revision) integrity();
+      await this.validatePortfolioRevision(source, revision, false, true);
+      const consensus = await this.readConsensus(
+        source, run.workspaceId, run.runId, false
+      );
+      if (!consensus
+        || canonical(run.consensusReport) !== canonical(consensus)
+        || canonical(run.portfolios) !== canonical(revision.portfolios)
+        || revision.consensusReportId !== consensus.reportId) integrity();
+      const graph = await this.readAuditGraph(
+        source, run.workspaceId, run.runId, false
+      );
+      const [dispositionRows] = await source.query(
+        `SELECT * FROM financial_council_finding_dispositions
+         WHERE workspace_id = ? AND run_id = ?
+         ORDER BY BINARY finding_id ASC`,
+        [run.workspaceId, run.runId]
+      );
+      const results = await this.readAllSpecialistResults(
+        source, run.workspaceId, run.runId
+      );
+      if (!graph || !snapshotRecord) integrity();
+      try {
+        validateFinancialCouncilConsensusReport(consensus, {
+          graph,
+          findings: results.filter((result) => result.phase === "analyze")
+            .flatMap((result) => result.findings),
+          dispositions: (dispositionRows as MysqlRow[])
+            .map(parseDispositionRow),
+          dataGaps: validateFinancialSnapshotForRun(
+            snapshotRecord.snapshot, run
+          ).dataGaps,
+          earliestCreatedAt: snapshotRecord.createdAt,
+          expiresAt: run.expiresAt
+        });
+      } catch {
+        integrity();
+      }
     }
     return events;
   }

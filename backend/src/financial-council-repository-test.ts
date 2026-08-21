@@ -9,7 +9,8 @@ import test from "node:test";
 import {
   authorizeSpecialistResultFixture, builderSnapshotFixture, command,
   repositoryRunFixture, resignSnapshotRecord, snapshotFixture,
-  specialistResultFixture, storedConsensusFixture, T1, workspace
+  specialistResultFixture, storedConsensusFixture, storedPortfolioRevisionFixture,
+  T1, workspace
 } from "./financial-council-repository-contract-test.js";
 import {
   financialCouncilAggregateHash,
@@ -37,6 +38,33 @@ test("memory consensus read reports stored canonical corruption as integrity", a
   await assert.rejects(repository.getConsensus(workspace(), report.runId),
     (error: unknown) => (error as { code?: unknown }).code
       === "financial_council_integrity");
+});
+
+test("memory published run and revision reads reject stored portfolio tampering", async () => {
+  const repository = new InMemoryFinancialCouncilRepository();
+  const { lease, revision } = await storedPortfolioRevisionFixture(repository);
+  await repository.publishPortfolioRevisionWithLease(lease, {
+    revision: 1,
+    expectedOutputHash: revision.outputHash,
+    occurredAt: "2026-08-16T08:07:00.000Z"
+  });
+  const internal = repository as unknown as {
+    state: { portfolioRevisions: Map<string, Record<string, unknown>> }
+  };
+  const key = `ws-1\u0000${revision.runId}\u00001`;
+  const stored = internal.state.portfolioRevisions.get(key)!;
+  internal.state.portfolioRevisions.set(key, {
+    ...stored,
+    outputHash: `sha256:${"f".repeat(64)}`
+  });
+
+  for (const read of [
+    () => repository.getPortfolioRevision(workspace(), revision.runId, 1),
+    () => repository.findRun(workspace(), revision.runId)
+  ]) {
+    await assert.rejects(read(), (error: unknown) =>
+      (error as { code?: unknown }).code === "financial_council_integrity");
+  }
 });
 
 test("memory reads and replay reject a re-signed noncanonical report", async () => {
