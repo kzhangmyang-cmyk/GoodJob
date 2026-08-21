@@ -123,13 +123,24 @@ test("every nonterminal may fail or become not computable", () => {
 
 test("terminal runs never reopen", () => {
   for (const status of [
-    "approved", "rejected", "expired", "failed", "not_computable"
+    "approved", "rejected", "stale", "expired", "failed", "not_computable"
   ] as const) {
     assert.throws(() => applyFinancialCouncilTransition(
       runFixture({ status }),
       { kind: "analyzing", occurredAt: T1, actorId: "actor-1" }
     ), hasCode("financial_council_transition_invalid"), status);
   }
+});
+
+test("an awaiting approval run may become explicitly stale and never reopen",
+() => {
+  const stale = applyFinancialCouncilTransition(runFixture({
+    status: "awaiting_approval"
+  }), { kind: "stale", occurredAt: T1, actorId: "system:council" });
+  assert.equal(stale.status, "stale");
+  assert.throws(() => applyFinancialCouncilTransition(stale, {
+    kind: "approved", occurredAt: T2, actorId: "actor-1"
+  }), hasCode("financial_council_transition_invalid"));
 });
 
 test("aggregate hashes cover canonical immutable run state", () => {

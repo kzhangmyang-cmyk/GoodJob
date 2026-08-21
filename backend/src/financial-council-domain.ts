@@ -20,6 +20,7 @@ export const FINANCIAL_COUNCIL_RUN_STATUSES = Object.freeze([
   "awaiting_approval",
   "approved",
   "rejected",
+  "stale",
   "expired",
   "failed",
   "not_computable"
@@ -93,7 +94,7 @@ const PROGRESSIVE_TRANSITIONS: Readonly<
 });
 
 const TERMINAL_STATUSES = new Set<FinancialCouncilRunStatus>([
-  "approved", "rejected", "expired", "failed", "not_computable"
+  "approved", "rejected", "stale", "expired", "failed", "not_computable"
 ]);
 
 const FINANCIAL_COUNCIL_ERRORS = new WeakSet<object>();
@@ -288,7 +289,7 @@ export function financialCouncilTransitionIsAllowed(
   const progressive = PROGRESSIVE_TRANSITIONS[from];
   return to === progressive
     || (from === "awaiting_approval"
-      && ["approved", "rejected", "expired"].includes(to))
+      && ["approved", "rejected", "stale", "expired"].includes(to))
     || to === "failed"
     || to === "not_computable";
 }

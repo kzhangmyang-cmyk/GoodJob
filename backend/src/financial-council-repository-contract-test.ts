@@ -558,6 +558,107 @@ function emptyPortfolio(
   });
 }
 
+function actionablePortfolio(
+  runId: string,
+  kind: "balanced" | "cash_first" | "growth_first",
+  action: ReturnType<typeof authorizedSpecialistActionResultFixture>["actions"][number]
+) {
+  return Object.freeze({
+    ...emptyPortfolio(runId, kind),
+    actionIds: Object.freeze([action.actionId]),
+    actions: Object.freeze([action]),
+    hardConstraints: Object.freeze(
+      FINANCIAL_PORTFOLIO_HARD_CONSTRAINT_KINDS.map((code) => Object.freeze({
+        code, satisfied: true, reason: null
+      }))
+    ),
+    objectiveScoreBps: 1_000,
+    requiredApprovalCapabilities: action.requiredCapabilities
+  });
+}
+
+export async function storedActionPortfolioRevisionFixture(
+  repository: FinancialCouncilRepository
+) {
+  const aggregate = repositoryRunFixture();
+  const snapshot = snapshotFixture(aggregate);
+  let run = (await repository.createAndFreezeRun(command("approval-seed"), {
+    aggregate, snapshot, occurredAt: T1
+  })).value;
+  const result = authorizedSpecialistActionResultFixture(run, snapshot);
+  await repository.storeSpecialistResult(workspace(), result);
+  const graph = buildCanonicalFinancialCouncilAuditGraph({
+    workspaceId: run.workspaceId, runId: run.runId,
+    snapshotId: snapshot.snapshotId, snapshotHash: snapshot.snapshotHash,
+    facts: result.findings.map((finding) => ({ finding,
+      actions: result.actions.filter((action) =>
+        action.sourceFindingIds.includes(finding.findingId)) }))
+  });
+  await repository.storeAuditGraph(workspace(), graph,
+    result.findings.map((finding) => ({
+      findingId: finding.findingId, role: finding.agentRole,
+      status: "unresolved" as const, blockingConflictIds: []
+    })));
+  const report = buildConsensus({
+    graph,
+    findings: result.findings,
+    dispositions: await repository.listFindingDispositions(
+      workspace(), run.runId
+    ),
+    dataGaps: snapshot.snapshot.dataGaps as readonly FinancialCouncilDataGap[],
+    createdAt: T2
+  });
+  await repository.storeConsensus(workspace(), report);
+  const lease = (await repository.claimAnalysisRun({
+    workspaceId: run.workspaceId,
+    runId: run.runId,
+    workerId: "approval-fixture-worker",
+    leaseToken: "9".repeat(64),
+    claimedAt: "2026-08-16T08:02:00.000Z",
+    leaseExpiresAt: "2026-08-16T08:20:00.000Z"
+  }))!;
+  for (const [kind, occurredAt] of [
+    ["analyzing", "2026-08-16T08:03:00.000Z"],
+    ["auditing", "2026-08-16T08:04:00.000Z"],
+    ["synthesizing", "2026-08-16T08:05:00.000Z"],
+    ["optimizing", "2026-08-16T08:06:00.000Z"]
+  ] as const) {
+    run = (await repository.transitionRunWithLease(lease, {
+      kind, occurredAt, reasonCode: null
+    })).value;
+  }
+  const action = result.actions[0]!;
+  const portfolios = Object.freeze([
+    actionablePortfolio(run.runId, "balanced", action),
+    actionablePortfolio(run.runId, "cash_first", action),
+    actionablePortfolio(run.runId, "growth_first", action)
+  ]);
+  const revision = createFinancialCouncilPortfolioRevision({
+    workspaceId: run.workspaceId,
+    runId: run.runId,
+    revision: 1,
+    runHash: financialCouncilOptimizationRunHash(run),
+    snapshotId: run.snapshotId!,
+    snapshotHash: run.snapshotHash!,
+    auditHash: graph.graphHash,
+    policyVersionId: run.policyVersionId,
+    policyHash: `sha256:${"7".repeat(64)}`,
+    consensusReportId: report.reportId,
+    candidateSetHash: financialCouncilCanonicalHash([action]),
+    portfolios,
+    createdAt: "2026-08-16T08:06:00.000Z"
+  });
+  await repository.storePortfolioRevision(revision, {
+    lease, completedAt: "2026-08-16T08:06:00.000Z"
+  });
+  run = (await repository.publishPortfolioRevisionWithLease(lease, {
+    revision: 1,
+    expectedOutputHash: revision.outputHash,
+    occurredAt: "2026-08-16T08:07:00.000Z"
+  })).value;
+  return { run, revision, snapshot, action };
+}
+
 export async function storedPortfolioRevisionFixture(
   repository: FinancialCouncilRepository,
   options: { readonly policyVersionId?: string } = {}

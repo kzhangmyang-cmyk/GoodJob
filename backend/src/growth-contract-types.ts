@@ -182,6 +182,7 @@ export type FinancialCouncilRunStatus =
   | "awaiting_approval"
   | "approved"
   | "rejected"
+  | "stale"
   | "expired"
   | "failed"
   | "not_computable";

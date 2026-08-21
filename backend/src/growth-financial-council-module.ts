@@ -26,6 +26,8 @@ import {
   type FinancialCouncilWakeSink
 } from "./financial-council-service.js";
 import { FinancialSnapshotBuilder } from "./financial-council-snapshot.js";
+import { FinancialCouncilSourceVerifier } from
+  "./financial-council-source-verifier.js";
 import type { GrowthAdvisorSealedQueryService } from
   "./growth-advisor-query.js";
 import { GROWTH_ADVISOR_SERVICES } from "./growth-advisor-module.js";
@@ -362,7 +364,9 @@ export async function createGrowthFinancialCouncilResources(input: {
   }
   const repository = input.mode === "mysql"
     ? new MysqlFinancialCouncilRepository(input.pool!)
-    : new InMemoryFinancialCouncilRepository();
+    : new InMemoryFinancialCouncilRepository(
+        input.foundation.temporalTransactions
+      );
   const policyRepository = input.mode === "mysql"
     ? new MysqlFinancialCouncilPolicyRepository(input.pool!)
     : new InMemoryFinancialCouncilPolicyRepository();
@@ -382,6 +386,14 @@ export async function createGrowthFinancialCouncilResources(input: {
     authority,
     businessAdvisor: createBusinessAdvisorService()
   });
+  const sourceVerifier = typeof input.foundation.acquisitionWorkspace?.resolve
+    === "function"
+    ? new FinancialCouncilSourceVerifier({
+        cutoffIssuer: advisor,
+        authority,
+        workspaceResolver: input.foundation.acquisitionWorkspace
+      })
+    : undefined;
   const now = () => new Date().toISOString();
   let worker: FinancialCouncilPipelineWorker | null = null;
   let sweeper: FinancialCouncilRecoverySweeper | null = null;
@@ -445,7 +457,8 @@ export async function createGrowthFinancialCouncilResources(input: {
   }
   sink ??= new IdempotentInProcessWakeSink();
   const service = new FinancialCouncilService({
-    repository, policyRepository, snapshotBuilder, advisoryWake: sink
+    repository, policyRepository, snapshotBuilder, sourceVerifier,
+    advisoryWake: sink
   });
   const relay = new FinancialCouncilWakeRelay({
     repository,

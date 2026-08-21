@@ -114,7 +114,8 @@ test("policy service materializes one default and activates immutable versions",
   async () => {
     const fixture = harness();
     const authorized = context("ws-1", [
-      "finance.council.run", "catalog.manage", "pricing.sensitive.read"
+      "finance.council.run", "finance.council.policy.manage",
+      "pricing.sensitive.read"
     ]);
     const first = await fixture.service.getPolicy(authorized);
     const same = await fixture.service.getPolicy(authorized);

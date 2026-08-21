@@ -48,6 +48,14 @@ import type {
 import { buildConsensus } from "./financial-council-consensus.js";
 import { FINANCIAL_PORTFOLIO_HARD_CONSTRAINT_KINDS } from
   "./financial-portfolio-constraints.js";
+import type { GrowthTemporalTransactionRunner } from
+  "./growth-temporal-barrier.js";
+import {
+  assertFinancialCouncilApprovalRecord,
+  createFinancialCouncilDispatchOutboxRows,
+  type FinancialCouncilApprovalRecord,
+  type FinancialCouncilDispatchOutboxRow
+} from "./financial-council-approval.js";
 
 export interface FinancialCouncilCommandResult<T> {
   readonly value: T;
@@ -87,6 +95,12 @@ export interface PublishFinancialCouncilPortfolioRevisionInput {
 
 export interface CommitFinancialCouncilPortfolioRevisionInput {
   readonly revision: FinancialCouncilPortfolioRevision;
+}
+
+export interface CommitFinancialCouncilApprovalDecisionInput {
+  readonly approval: FinancialCouncilApprovalRecord;
+  readonly outbox: readonly FinancialCouncilDispatchOutboxRow[];
+  readonly verifiedTemporalSequence: number;
 }
 
 export function financialCouncilPortfolioCommandKeyHash(
@@ -482,6 +496,18 @@ export interface FinancialCouncilRepository {
     command: CommandContext,
     input: CommitFinancialCouncilPortfolioRevisionInput
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilPortfolioRevision>>;
+  commitApprovalDecision(
+    command: CommandContext,
+    input: CommitFinancialCouncilApprovalDecisionInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilApprovalRecord>>;
+  getApproval(
+    context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    approvalId: string
+  ): Promise<FinancialCouncilApprovalRecord | null>;
+  listDispatchOutbox(
+    context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    runId: string
+  ): Promise<readonly FinancialCouncilDispatchOutboxRow[]>;
   publishPortfolioRevisionWithLease(
     lease: FinancialCouncilAnalysisLease,
     input: PublishFinancialCouncilPortfolioRevisionInput
@@ -1012,6 +1038,25 @@ const RUN_KEYS = ["runId", "workspaceId", "creationKeyHash", "requestHash",
   "portfolios", "latestPortfolioRevision", "approval", "createdAt",
   "updatedAt", "expiresAt"] as const;
 
+function assertPublicApproval(value: unknown, run: FinancialCouncilRun): void {
+  exactObject(value, ["approvalId", "runId", "portfolioRevision", "status",
+    "approvedActionIds", "requiredCapabilities", "approvedAt"]);
+  identifier(value.approvalId);
+  identifier(value.runId);
+  integer(value.portfolioRevision);
+  if (value.runId !== run.runId
+    || value.portfolioRevision !== run.latestPortfolioRevision
+    || (value.status !== "approved" && value.status !== "rejected")
+    || value.status !== run.status) inputInvalid();
+  stringArray(value.approvedActionIds);
+  stringArray(value.requiredCapabilities);
+  timestamp(value.approvedAt);
+  if ((value.status === "approved" && value.approvedActionIds.length === 0)
+    || (value.status === "rejected" && value.approvedActionIds.length !== 0)) {
+    inputInvalid();
+  }
+}
+
 export function assertFinancialCouncilRunValue(value: unknown):
 asserts value is FinancialCouncilRun {
   financialCouncilCanonicalJson(value);
@@ -1040,11 +1085,15 @@ asserts value is FinancialCouncilRun {
   } else {
     if (!Number.isSafeInteger(latestPortfolioRevision)
       || Number(latestPortfolioRevision) < 1 || value.consensusReport === null
-      || value.approval !== null
-      || !["awaiting_approval", "approved", "rejected", "expired"]
+      || !["awaiting_approval", "approved", "rejected", "stale", "expired"]
         .includes(String(value.status))) inputInvalid();
     assertFinancialCouncilPortfolios(value.portfolios, value.runId,
       Number(latestPortfolioRevision));
+    if (value.status === "approved" || value.status === "rejected") {
+      if (value.approval === null) inputInvalid();
+      assertPublicApproval(value.approval,
+        value as unknown as FinancialCouncilRun);
+    } else if (value.approval !== null) inputInvalid();
   }
   timestamp(value.createdAt);
   timestamp(value.updatedAt);
@@ -1150,6 +1199,11 @@ export function assertFinancialCouncilRunHistory(
               portfolios: event.aggregateSnapshot.portfolios,
               latestPortfolioRevision:
                 event.aggregateSnapshot.latestPortfolioRevision
+            })
+        : event.toStatus === "approved" || event.toStatus === "rejected"
+          ? immutableFinancialCouncilValue({
+              ...previous.aggregateSnapshot,
+              approval: event.aggregateSnapshot.approval
             })
         : previous.aggregateSnapshot;
       const expected = applyFinancialCouncilTransition(transitionBase, {
@@ -1383,6 +1437,9 @@ export function validateFinancialCouncilConsensusReport(
 
 export class InMemoryFinancialCouncilRepository
 implements FinancialCouncilRepository {
+  constructor(private readonly temporalTransactions?:
+  GrowthTemporalTransactionRunner) {}
+
   private state = {
     runs: new Map<string, FinancialCouncilRun>(),
     events: new Map<string, FinancialCouncilRunEvent[]>(),
@@ -1396,6 +1453,8 @@ implements FinancialCouncilRepository {
     findingDispositions: new Map<string, FinancialCouncilFindingDisposition>(),
     consensusReports: new Map<string, ConsensusReport>(),
     portfolioRevisions: new Map<string, FinancialCouncilPortfolioRevision>(),
+    approvals: new Map<string, FinancialCouncilApprovalRecord>(),
+    dispatchOutbox: new Map<string, FinancialCouncilDispatchOutboxRow>(),
     analysisControls: new Map<string, FinancialCouncilAnalysisControl>(),
     analysisGaps: new Map<string, FinancialCouncilAnalysisGap>()
   };
@@ -1412,6 +1471,8 @@ implements FinancialCouncilRepository {
   private get findingDispositions() { return this.state.findingDispositions; }
   private get consensusReports() { return this.state.consensusReports; }
   private get portfolioRevisions() { return this.state.portfolioRevisions; }
+  private get approvals() { return this.state.approvals; }
+  private get dispatchOutbox() { return this.state.dispatchOutbox; }
   private get analysisControls() { return this.state.analysisControls; }
   private get analysisGaps() { return this.state.analysisGaps; }
 
@@ -1468,6 +1529,8 @@ implements FinancialCouncilRepository {
       findingDispositions: new Map(this.findingDispositions),
       consensusReports: new Map(this.consensusReports),
       portfolioRevisions: new Map(this.portfolioRevisions),
+      approvals: new Map(this.approvals),
+      dispatchOutbox: new Map(this.dispatchOutbox),
       analysisControls: new Map(this.analysisControls),
       analysisGaps: new Map(this.analysisGaps)
     };
@@ -1899,6 +1962,8 @@ implements FinancialCouncilRepository {
       findingDispositions: new Map(this.findingDispositions),
       consensusReports: new Map(this.consensusReports),
       portfolioRevisions: new Map(this.portfolioRevisions),
+      approvals: new Map(this.approvals),
+      dispatchOutbox: new Map(this.dispatchOutbox),
       analysisControls: new Map(this.analysisControls),
       analysisGaps: new Map(this.analysisGaps)
     };
@@ -2396,6 +2461,168 @@ implements FinancialCouncilRepository {
     }));
     this.state = { ...this.state, portfolioRevisions: revisions, runs };
     return { value: revision, replayed: false };
+  }
+
+  async commitApprovalDecision(
+    command: CommandContext,
+    rawInput: CommitFinancialCouncilApprovalDecisionInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilApprovalRecord>> {
+    command = immutableFinancialCouncilInput(command);
+    const input = immutableFinancialCouncilInput(rawInput);
+    assertFinancialCouncilApprovalRecord(input.approval);
+    if (!Number.isSafeInteger(input.verifiedTemporalSequence)
+      || input.verifiedTemporalSequence < 0
+      || command.actorId !== command.workspace.actorId
+      || command.workspace.workspaceId !== input.approval.workspaceId
+      || command.requestHash !== input.approval.commandRequestHash
+      || financialCouncilPortfolioCommandKeyHash(command)
+        !== input.approval.commandKeyHash) inputInvalid();
+    const expectedOutbox = createFinancialCouncilDispatchOutboxRows(
+      input.approval
+    );
+    if (financialCouncilCanonicalJson(expectedOutbox)
+      !== financialCouncilCanonicalJson(input.outbox)) inputInvalid();
+    return this.withApprovalFence(input.approval.workspaceId,
+      input.verifiedTemporalSequence, async () => {
+    const aggregateKey = key(input.approval.workspaceId, input.approval.runId);
+    const current = this.runs.get(aggregateKey);
+    if (!current) throw financialCouncilError("financial_council_run_not_found");
+    const existing = [...this.approvals.values()].find((row) =>
+      row.workspaceId === input.approval.workspaceId
+      && row.runId === input.approval.runId);
+    if (existing) {
+      assertFinancialCouncilApprovalRecord(existing);
+      if (existing.commandKeyHash === input.approval.commandKeyHash
+        && existing.commandRequestHash === input.approval.commandRequestHash) {
+        return { value: existing, replayed: true };
+      }
+      if (existing.commandKeyHash === input.approval.commandKeyHash) {
+        throw financialCouncilError("financial_council_idempotency_conflict");
+      }
+      throw financialCouncilError("financial_council_approval_conflict");
+    }
+    if (current.status !== "awaiting_approval") {
+      throw financialCouncilError("financial_council_approval_state_invalid");
+    }
+    if (current.revision !== command.expectedRevision) {
+      throw financialCouncilError("financial_council_revision_conflict");
+    }
+    if (current.latestPortfolioRevision !== input.approval.portfolioRevision) {
+      throw financialCouncilError(
+        "financial_council_portfolio_revision_conflict"
+      );
+    }
+    const revision = this.portfolioRevisions.get(portfolioKey(
+      current.workspaceId, current.runId, input.approval.portfolioRevision
+    ));
+    if (!revision) {
+      throw financialCouncilError("financial_council_portfolio_not_found");
+    }
+    await this.assertStoredPortfolioRevision(revision, true);
+    const portfolio = revision.portfolios.find((row) =>
+      row.kind === input.approval.portfolioKind);
+    if (!portfolio
+      || input.approval.portfolioOutputHash
+        !== financialCouncilCanonicalHash(portfolio)
+      || input.approval.snapshotId !== revision.snapshotId
+      || input.approval.snapshotHash !== revision.snapshotHash
+      || input.approval.policyVersionId !== revision.policyVersionId
+      || input.approval.policyHash !== revision.policyHash
+      || (input.approval.status === "approved"
+        && (financialCouncilCanonicalJson(input.approval.approvedActionIds)
+          !== financialCouncilCanonicalJson(portfolio.actionIds)
+          || financialCouncilCanonicalJson(input.approval.approvedActionHashes)
+            !== financialCouncilCanonicalJson(portfolio.actions.map(
+              (action) => ({ actionId: action.actionId,
+                actionHash: financialCouncilCanonicalHash(action) })))
+          || portfolio.actionIds.length === 0
+          || portfolio.hardConstraints.some((row) => !row.satisfied)))) {
+      throw financialCouncilError("financial_council_approval_invalid");
+    }
+    const expectedCapabilities = [...new Set([
+      "finance.council.approve", ...portfolio.requiredApprovalCapabilities
+    ])];
+    if (financialCouncilCanonicalJson(input.approval.requiredCapabilities)
+      !== financialCouncilCanonicalJson(expectedCapabilities)) {
+      throw financialCouncilError("financial_council_approval_invalid");
+    }
+    const publicApproval = immutableFinancialCouncilValue({
+      approvalId: input.approval.approvalId,
+      runId: input.approval.runId,
+      portfolioRevision: input.approval.portfolioRevision,
+      status: input.approval.status,
+      approvedActionIds: input.approval.approvedActionIds,
+      requiredCapabilities: input.approval.requiredCapabilities,
+      approvedAt: input.approval.approvedAt
+    });
+    const withApproval = immutableFinancialCouncilValue({
+      ...current, approval: publicApproval
+    });
+    const next = applyFinancialCouncilTransition(withApproval, {
+      kind: input.approval.status,
+      occurredAt: input.approval.approvedAt,
+      actorId: input.approval.approverId
+    });
+    const event = createFinancialCouncilRunEvent(next, {
+      fromStatus: current.status,
+      reasonCode: input.approval.reason,
+      occurredAt: input.approval.approvedAt,
+      actorId: input.approval.approverId
+    });
+    const runs = new Map(this.runs);
+    const events = new Map(this.events);
+    const approvals = new Map(this.approvals);
+    const dispatchOutbox = new Map(this.dispatchOutbox);
+    runs.set(aggregateKey, next);
+    events.set(aggregateKey, [...(events.get(aggregateKey) ?? []), event]);
+    approvals.set(key(input.approval.workspaceId, input.approval.approvalId),
+      immutableFinancialCouncilValue(input.approval));
+    for (const row of input.outbox) {
+      const rowKey = key(row.workspaceId, row.dispatchId);
+      if (dispatchOutbox.has(rowKey)) {
+        throw financialCouncilError("financial_council_dispatch_conflict");
+      }
+      dispatchOutbox.set(rowKey, immutableFinancialCouncilValue(row));
+    }
+    this.state = { ...this.state, runs, events, approvals, dispatchOutbox };
+    return { value: input.approval, replayed: false };
+    });
+  }
+
+  private async withApprovalFence<T>(
+    workspaceId: string,
+    expectedSequence: number,
+    work: () => Promise<T>
+  ): Promise<T> {
+    if (!this.temporalTransactions) return work();
+    return this.temporalTransactions.run(async (transaction) => {
+      const tail = await transaction.lockWorkspaceTemporalBarrierForUpdate(
+        workspaceId
+      );
+      if (tail.temporalSequence !== expectedSequence) {
+        throw financialCouncilError("financial_council_source_stale");
+      }
+      return work();
+    });
+  }
+
+  async getApproval(
+    context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    approvalId: string
+  ): Promise<FinancialCouncilApprovalRecord | null> {
+    const approval = this.approvals.get(key(context.workspaceId, approvalId))
+      ?? null;
+    if (approval) assertFinancialCouncilApprovalRecord(approval);
+    return approval;
+  }
+
+  async listDispatchOutbox(
+    context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    runId: string
+  ): Promise<readonly FinancialCouncilDispatchOutboxRow[]> {
+    return Object.freeze([...this.dispatchOutbox.values()].filter((row) =>
+      row.workspaceId === context.workspaceId && row.runId === runId)
+      .sort((left, right) => utf8ByteCompare(left.actionId, right.actionId)));
   }
 
   async publishPortfolioRevisionWithLease(

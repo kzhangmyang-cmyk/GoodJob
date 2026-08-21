@@ -161,6 +161,9 @@ class FakeConnection {
     if (normalized.startsWith(
       "ALTER TABLE financial_council_portfolio_revisions"
     )) return [[], []];
+    if (normalized.startsWith(
+      "ALTER TABLE financial_council_runs"
+    )) return [[], []];
     if (normalized.startsWith("SELECT r.*")
       && normalized.includes("financial_council_analysis_controls")) {
       const now = String(values[0]);
@@ -1055,7 +1058,8 @@ test("audit graph and disposition inserts roll back atomically", async () => {
   }
 });
 
-test("financial council schema owns thirteen tables behind a named lock", async () => {
+test("financial council schema owns approval/outbox tables behind a named lock",
+async () => {
   const ddl = FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.join("\n");
   const names = [...ddl.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/gu)]
     .map((match) => match[1]);
@@ -1071,11 +1075,15 @@ test("financial council schema owns thirteen tables behind a named lock", async 
     "financial_council_finding_dispositions",
     "financial_council_consensus_reports",
     "financial_council_portfolio_revisions",
+    "financial_council_approvals",
+    "financial_council_dispatch_outbox",
     "financial_council_analysis_controls",
     "financial_council_analysis_gaps"
   ]);
   assert.match(ddl,
     /DROP CHECK chk_financial_council_portfolio_revision[\s\S]+revision >= 1/u);
+  assert.match(ddl, /approved','rejected','stale','expired/u);
+  assert.match(ddl, /uk_financial_council_dispatch_action/u);
   const pool = new FakePool();
   await ensureFinancialCouncilMysqlSchema(pool as unknown as mysql.Pool);
   assert.equal(pool.connection.calls.some((sql) => sql.includes("GET_LOCK")), true);

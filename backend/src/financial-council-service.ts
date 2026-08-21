@@ -33,6 +33,13 @@ import {
   FinancialPortfolioRevisionService,
   type ReviseFinancialPortfolioInput
 } from "./financial-portfolio-revision.js";
+import {
+  FinancialCouncilApprovalService,
+  type FinancialCouncilApprovalCommandInput,
+  type FinancialCouncilRejectionCommandInput
+} from "./financial-council-approval.js";
+import type { FinancialCouncilSourceVerifier } from
+  "./financial-council-source-verifier.js";
 
 export interface FinancialCouncilWakeSink {
   wake(run: FinancialCouncilRun): Promise<void>;
@@ -43,6 +50,7 @@ export interface FinancialCouncilServiceDependencies {
   readonly policyRepository?: FinancialCouncilPolicyRepository;
   readonly snapshotBuilder: Pick<FinancialSnapshotBuilder, "freeze">;
   readonly advisoryWake?: FinancialCouncilWakeSink;
+  readonly sourceVerifier?: FinancialCouncilSourceVerifier;
   readonly onAdvisoryWakeError?: (
     error: unknown,
     run: FinancialCouncilRun
@@ -93,6 +101,7 @@ function publicRun(run: FinancialCouncilRun): FinancialCouncilRun {
 export class FinancialCouncilService {
   private readonly now: () => string;
   private readonly portfolioRevisions: FinancialPortfolioRevisionService | null;
+  private readonly approvals: FinancialCouncilApprovalService | null;
 
   constructor(private readonly dependencies: FinancialCouncilServiceDependencies) {
     const repository = dependencies?.repository;
@@ -115,6 +124,13 @@ export class FinancialCouncilService {
       ? new FinancialPortfolioRevisionService({
           repository: dependencies.repository,
           policyRepository: dependencies.policyRepository,
+          now: this.now
+        }) : null;
+    this.approvals = dependencies.policyRepository && dependencies.sourceVerifier
+      ? new FinancialCouncilApprovalService({
+          repository: dependencies.repository,
+          policyRepository: dependencies.policyRepository,
+          sourceVerifier: dependencies.sourceVerifier,
           now: this.now
         }) : null;
     TRUSTED_FINANCIAL_COUNCIL_SERVICES.add(this);
@@ -160,7 +176,8 @@ export class FinancialCouncilService {
     rawInput: FinancialCouncilPolicyInput
   ) {
     authorize(command?.workspace);
-    requireGrowthCapabilities(command.workspace, ["catalog.manage"]);
+    requireGrowthCapabilities(command.workspace,
+      ["finance.council.policy.manage"]);
     if (command.actorId !== command.workspace.actorId) {
       throw financialCouncilError("financial_council_policy_context_invalid");
     }
@@ -292,6 +309,26 @@ export class FinancialCouncilService {
       throw financialCouncilError("financial_council_policy_integrity");
     }
     return this.portfolioRevisions.revisePortfolio(command, input);
+  }
+
+  async approve(
+    command: CommandContext,
+    input: FinancialCouncilApprovalCommandInput
+  ) {
+    if (!this.approvals) throw financialCouncilError(
+      "financial_council_approval_integrity"
+    );
+    return this.approvals.approve(command, input);
+  }
+
+  async reject(
+    command: CommandContext,
+    input: FinancialCouncilRejectionCommandInput
+  ) {
+    if (!this.approvals) throw financialCouncilError(
+      "financial_council_approval_integrity"
+    );
+    return this.approvals.reject(command, input);
   }
 
   async listEvents(

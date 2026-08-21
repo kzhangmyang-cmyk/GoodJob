@@ -19,6 +19,8 @@ export const GROWTH_CAPABILITIES = [
   "ledger.pending.create",
   "ledger.verify",
   "finance.council.run",
+  "finance.council.approve",
+  "finance.council.policy.manage",
   "roi.close",
   "growth.performance.team.read",
   "growth.performance.workspace.read",

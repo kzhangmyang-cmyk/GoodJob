@@ -48,6 +48,7 @@ import {
   type FinancialCouncilLeaseWrite,
   type FinancialCouncilPortfolioRevision,
   type CommitFinancialCouncilPortfolioRevisionInput,
+  type CommitFinancialCouncilApprovalDecisionInput,
   type PublishFinancialCouncilPortfolioRevisionInput,
   type FinancialCouncilSpecialistPhase,
   type FinancialCouncilSpecialistResult,
@@ -56,6 +57,14 @@ import {
   type TransitionFinancialCouncilRunInput,
   type VerifiedFinancialCouncilRunSnapshot
 } from "./financial-council-repository.js";
+import {
+  assertFinancialCouncilApprovalRecord,
+  createFinancialCouncilDispatchOutboxRows,
+  type FinancialCouncilApprovalRecord,
+  type FinancialCouncilDispatchOutboxRow
+} from "./financial-council-approval.js";
+import { MysqlGrowthTemporalTransaction } from
+  "./growth-temporal-barrier-mysql-repository.js";
 import type { FinancialCouncilAuditGraph } from
   "./financial-council-audit.js";
 import {
@@ -90,9 +99,15 @@ export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
     CONSTRAINT chk_financial_council_run_json CHECK (JSON_VALID(run_json)),
     CONSTRAINT chk_financial_council_run_status CHECK (status IN
       ('created','snapshot_frozen','analyzing','auditing','synthesizing',
-       'optimizing','awaiting_approval','approved','rejected','expired',
+       'optimizing','awaiting_approval','approved','rejected','stale','expired',
        'failed','not_computable'))
   ) ENGINE=InnoDB`,
+  `ALTER TABLE financial_council_runs
+     DROP CHECK chk_financial_council_run_status,
+     ADD CONSTRAINT chk_financial_council_run_status CHECK (status IN
+       ('created','snapshot_frozen','analyzing','auditing','synthesizing',
+        'optimizing','awaiting_approval','approved','rejected','stale','expired',
+        'failed','not_computable'))`,
   `CREATE TABLE IF NOT EXISTS financial_council_run_events (
     event_id VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
@@ -295,6 +310,48 @@ export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
      DROP CHECK chk_financial_council_portfolio_revision,
      ADD CONSTRAINT chk_financial_council_portfolio_revision
        CHECK (revision >= 1)`,
+  `CREATE TABLE IF NOT EXISTS financial_council_approvals (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    approval_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    approval_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    command_key_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    command_request_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    approval_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    approved_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id, run_id),
+    UNIQUE KEY uk_financial_council_approval_id (workspace_id, approval_id),
+    UNIQUE KEY uk_financial_council_approval_command
+      (workspace_id, command_key_hash),
+    CONSTRAINT fk_financial_council_approval_run
+      FOREIGN KEY (workspace_id, run_id)
+      REFERENCES financial_council_runs (workspace_id, run_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_approval_json
+      CHECK (JSON_VALID(approval_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_dispatch_outbox (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    dispatch_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    approval_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    action_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    status VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    dispatch_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    created_at DATETIME(3) NOT NULL,
+    updated_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id, dispatch_id),
+    UNIQUE KEY uk_financial_council_dispatch_action
+      (workspace_id, approval_id, action_id),
+    CONSTRAINT fk_financial_council_dispatch_approval
+      FOREIGN KEY (workspace_id, run_id)
+      REFERENCES financial_council_approvals (workspace_id, run_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_dispatch_status
+      CHECK (status IN ('queued')),
+    CONSTRAINT chk_financial_council_dispatch_json
+      CHECK (JSON_VALID(dispatch_json))
+  ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS financial_council_analysis_controls (
     workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
@@ -606,7 +663,6 @@ function parseRun(row: MysqlRow): FinancialCouncilRun {
       || (value.snapshotHash !== null
         && (typeof value.snapshotHash !== "string" || !HASH.test(value.snapshotHash)))
       || (value.snapshotId === null) !== (value.snapshotHash === null)
-      || value.approval !== null
       || typeof value.createdAt !== "string" || isoDate(value.createdAt) !== value.createdAt
       || typeof value.updatedAt !== "string" || isoDate(value.updatedAt) !== value.updatedAt
       || typeof value.expiresAt !== "string" || isoDate(value.expiresAt) !== value.expiresAt) {
@@ -911,6 +967,44 @@ function parsePortfolioRevision(row: MysqlRow): FinancialCouncilPortfolioRevisio
       || revision.outputHash !== rowString(row, "output_hash")
       || revision.createdAt !== isoDate(row.created_at)) integrity();
     return revision;
+  } catch {
+    integrity();
+  }
+}
+
+function parseApproval(row: MysqlRow): FinancialCouncilApprovalRecord {
+  try {
+    const approval = immutableFinancialCouncilValue(
+      jsonObject(row.approval_json)
+    ) as unknown as FinancialCouncilApprovalRecord;
+    assertFinancialCouncilApprovalRecord(approval);
+    if (approval.workspaceId !== rowString(row, "workspace_id")
+      || approval.runId !== rowString(row, "run_id")
+      || approval.approvalId !== rowString(row, "approval_id")
+      || approval.approvalHash !== rowString(row, "approval_hash")
+      || approval.commandKeyHash !== rowString(row, "command_key_hash")
+      || approval.commandRequestHash !== rowString(row, "command_request_hash")
+      || approval.approvedAt !== isoDate(row.approved_at)) integrity();
+    return approval;
+  } catch {
+    integrity();
+  }
+}
+
+function parseDispatch(row: MysqlRow): FinancialCouncilDispatchOutboxRow {
+  try {
+    const value = immutableFinancialCouncilValue(
+      jsonObject(row.dispatch_json)
+    ) as unknown as FinancialCouncilDispatchOutboxRow;
+    if (value.workspaceId !== rowString(row, "workspace_id")
+      || value.dispatchId !== rowString(row, "dispatch_id")
+      || value.runId !== rowString(row, "run_id")
+      || value.approvalId !== rowString(row, "approval_id")
+      || value.actionId !== rowString(row, "action_id")
+      || value.status !== "queued" || value.attempt !== 0
+      || value.createdAt !== isoDate(row.created_at)
+      || value.updatedAt !== isoDate(row.updated_at)) integrity();
+    return value;
   } catch {
     integrity();
   }
@@ -2141,6 +2235,216 @@ implements FinancialCouncilRepository {
     }
   }
 
+  async commitApprovalDecision(
+    command: CommandContext,
+    input: CommitFinancialCouncilApprovalDecisionInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilApprovalRecord>> {
+    assertFinancialCouncilApprovalRecord(input.approval);
+    const approval = input.approval;
+    if (!Number.isSafeInteger(input.verifiedTemporalSequence)
+      || input.verifiedTemporalSequence < 0
+      || command.actorId !== command.workspace.actorId
+      || command.workspace.workspaceId !== approval.workspaceId
+      || command.requestHash !== approval.commandRequestHash
+      || financialCouncilPortfolioCommandKeyHash(command)
+        !== approval.commandKeyHash) {
+      throw financialCouncilError("financial_council_input_invalid");
+    }
+    const expectedOutbox = createFinancialCouncilDispatchOutboxRows(approval);
+    if (canonical(expectedOutbox) !== canonical(input.outbox)) {
+      throw financialCouncilError("financial_council_input_invalid");
+    }
+    try {
+      return await this.transaction(async (connection) => {
+        const tail = await new MysqlGrowthTemporalTransaction(connection)
+          .lockWorkspaceTemporalBarrierForUpdate(approval.workspaceId);
+        if (tail.temporalSequence !== input.verifiedTemporalSequence) {
+          throw financialCouncilError("financial_council_source_stale");
+        }
+        const [policyRows] = await connection.query(
+          `SELECT h.active_policy_version_id, v.policy_json
+           FROM financial_council_policy_heads h
+           JOIN financial_council_policy_versions v
+             ON v.workspace_id = h.workspace_id
+            AND v.policy_version_id = h.active_policy_version_id
+           WHERE h.workspace_id = ? FOR UPDATE`,
+          [approval.workspaceId]
+        );
+        const policyRow = (policyRows as MysqlRow[])[0];
+        const activePolicy = policyRow
+          ? jsonObject(policyRow.policy_json) : null;
+        if (!activePolicy
+          || activePolicy.policyVersionId !== approval.policyVersionId
+          || activePolicy.policyHash !== approval.policyHash) {
+          throw financialCouncilError("financial_council_policy_stale");
+        }
+        const existing = await this.readApprovalByRun(
+          connection, approval.workspaceId, approval.runId, true
+        );
+        if (existing) {
+          if (existing.commandKeyHash === approval.commandKeyHash
+            && existing.commandRequestHash === approval.commandRequestHash) {
+            return { value: existing, replayed: true };
+          }
+          if (existing.commandKeyHash === approval.commandKeyHash) {
+            throw financialCouncilError("financial_council_idempotency_conflict");
+          }
+          throw financialCouncilError("financial_council_approval_conflict");
+        }
+        const current = await this.findByRunId(
+          connection, approval.workspaceId, approval.runId, true
+        );
+        if (!current) throw financialCouncilError(
+          "financial_council_run_not_found"
+        );
+        if (current.status !== "awaiting_approval") {
+          throw financialCouncilError("financial_council_approval_state_invalid");
+        }
+        if (current.revision !== expectedRevision(command)) {
+          throw financialCouncilError("financial_council_revision_conflict");
+        }
+        if (current.latestPortfolioRevision !== approval.portfolioRevision) {
+          throw financialCouncilError(
+            "financial_council_portfolio_revision_conflict"
+          );
+        }
+        const revision = await this.readPortfolioRevision(connection,
+          approval.workspaceId, approval.runId,
+          approval.portfolioRevision, true);
+        if (!revision) throw financialCouncilError(
+          "financial_council_portfolio_not_found"
+        );
+        await this.validatePortfolioRevision(connection, revision, true, true);
+        const portfolio = revision.portfolios.find((row) =>
+          row.kind === approval.portfolioKind);
+        const expectedCapabilities = portfolio && [...new Set([
+          "finance.council.approve", ...portfolio.requiredApprovalCapabilities
+        ])];
+        if (!portfolio
+          || approval.portfolioOutputHash
+            !== financialCouncilCanonicalHash(portfolio)
+          || approval.snapshotId !== revision.snapshotId
+          || approval.snapshotHash !== revision.snapshotHash
+          || approval.policyVersionId !== revision.policyVersionId
+          || approval.policyHash !== revision.policyHash
+          || canonical(approval.requiredCapabilities)
+            !== canonical(expectedCapabilities)
+          || (approval.status === "approved"
+            && (canonical(approval.approvedActionIds)
+                !== canonical(portfolio.actionIds)
+              || canonical(approval.approvedActionHashes)
+                !== canonical(portfolio.actions.map((action) => ({
+                  actionId: action.actionId,
+                  actionHash: financialCouncilCanonicalHash(action)
+                })))
+              || portfolio.actionIds.length === 0
+              || portfolio.hardConstraints.some((row) => !row.satisfied)))) {
+          throw financialCouncilError("financial_council_approval_invalid");
+        }
+        const publicApproval = immutableFinancialCouncilValue({
+          approvalId: approval.approvalId,
+          runId: approval.runId,
+          portfolioRevision: approval.portfolioRevision,
+          status: approval.status,
+          approvedActionIds: approval.approvedActionIds,
+          requiredCapabilities: approval.requiredCapabilities,
+          approvedAt: approval.approvedAt
+        });
+        const next = applyFinancialCouncilTransition(
+          immutableFinancialCouncilValue({ ...current,
+            approval: publicApproval }), {
+            kind: approval.status,
+            occurredAt: approval.approvedAt,
+            actorId: approval.approverId
+          }
+        );
+        await connection.query(
+          `INSERT INTO financial_council_approvals (
+             workspace_id, run_id, approval_id, approval_hash,
+             command_key_hash, command_request_hash, approval_json, approved_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [approval.workspaceId, approval.runId, approval.approvalId,
+            approval.approvalHash, approval.commandKeyHash,
+            approval.commandRequestHash, canonical(approval),
+            sqlDate(approval.approvedAt)]
+        );
+        for (const row of input.outbox) {
+          await connection.query(
+            `INSERT INTO financial_council_dispatch_outbox (
+               workspace_id, dispatch_id, run_id, approval_id, action_id,
+               status, dispatch_json, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [row.workspaceId, row.dispatchId, row.runId, row.approvalId,
+              row.actionId, row.status, canonical(row), sqlDate(row.createdAt),
+              sqlDate(row.updatedAt)]
+          );
+        }
+        await this.updateRun(connection, current, next);
+        await this.appendEvent(connection, createFinancialCouncilRunEvent(next, {
+          fromStatus: current.status,
+          reasonCode: approval.reason,
+          occurredAt: approval.approvedAt,
+          actorId: approval.approverId
+        }));
+        return { value: approval, replayed: false };
+      });
+    } catch (error) {
+      if (!duplicateEntry(error)) throw error;
+      const existing = await this.getApproval(
+        command.workspace, approval.approvalId
+      );
+      if (existing?.commandKeyHash === approval.commandKeyHash
+        && existing.commandRequestHash === approval.commandRequestHash) {
+        return { value: existing, replayed: true };
+      }
+      throw financialCouncilError("financial_council_approval_conflict");
+    }
+  }
+
+  async getApproval(
+    context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    approvalId: string
+  ): Promise<FinancialCouncilApprovalRecord | null> {
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(
+        `SELECT *, DATE_FORMAT(approved_at, '%Y-%m-%dT%H:%i:%s.%fZ')
+           AS approved_at
+         FROM financial_council_approvals
+         WHERE workspace_id = ? AND approval_id = ?`,
+        [context.workspaceId, approvalId]
+      );
+      const row = (rows as MysqlRow[])[0];
+      return row ? parseApproval(row) : null;
+    }, true);
+  }
+
+  async listDispatchOutbox(
+    context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    runId: string
+  ): Promise<readonly FinancialCouncilDispatchOutboxRow[]> {
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(
+        `SELECT *,
+           DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at,
+           DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS updated_at
+         FROM financial_council_dispatch_outbox
+         WHERE workspace_id = ? AND run_id = ? ORDER BY action_id`,
+        [context.workspaceId, runId]
+      );
+      const outbox = (rows as MysqlRow[]).map(parseDispatch);
+      if (outbox.length) {
+        const approval = await this.readApprovalByRun(
+          connection, context.workspaceId, runId, false
+        );
+        if (!approval || canonical(outbox)
+          !== canonical(createFinancialCouncilDispatchOutboxRows(approval))) {
+          integrity();
+        }
+      }
+      return Object.freeze(outbox);
+    }, true);
+  }
+
   async publishPortfolioRevisionWithLease(
     lease: FinancialCouncilAnalysisLease,
     input: PublishFinancialCouncilPortfolioRevisionInput
@@ -2226,6 +2530,23 @@ implements FinancialCouncilRepository {
     );
     const row = (rows as MysqlRow[])[0];
     return row ? parsePortfolioRevision(row) : null;
+  }
+
+  private async readApprovalByRun(
+    source: Pick<mysql.Pool, "query">,
+    workspaceId: string,
+    runId: string,
+    lock: boolean
+  ): Promise<FinancialCouncilApprovalRecord | null> {
+    const [rows] = await source.query(
+      `SELECT *, DATE_FORMAT(approved_at, '%Y-%m-%dT%H:%i:%s.%fZ')
+         AS approved_at
+       FROM financial_council_approvals
+       WHERE workspace_id = ? AND run_id = ?${lock ? " FOR UPDATE" : ""}`,
+      [workspaceId, runId]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseApproval(row) : null;
   }
 
   private async readAllSpecialistResults(
