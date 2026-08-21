@@ -9,15 +9,35 @@ import test from "node:test";
 import {
   authorizeSpecialistResultFixture, builderSnapshotFixture, command,
   repositoryRunFixture, resignSnapshotRecord, snapshotFixture,
-  specialistResultFixture, T1, workspace
+  specialistResultFixture, storedConsensusFixture, T1, workspace
 } from "./financial-council-repository-contract-test.js";
-import { financialCouncilAggregateHash } from
+import {
+  financialCouncilAggregateHash,
+  financialCouncilCanonicalHash
+} from
   "./financial-council-domain.js";
 
 registerFinancialCouncilRepositoryContract(
   "memory financial council repository",
   () => new InMemoryFinancialCouncilRepository()
 );
+
+test("memory consensus read reports stored canonical corruption as integrity", async () => {
+  const repository = new InMemoryFinancialCouncilRepository();
+  const { report } = await storedConsensusFixture(repository);
+  const changed = { ...report, acceptedFindings: [] };
+  const { reportId: _old, ...preimage } = changed;
+  const internal = repository as unknown as {
+    state: { consensusReports: Map<string, unknown> }
+  };
+  internal.state.consensusReports.set(`ws-1\u0000${report.runId}`, {
+    ...preimage, reportId: financialCouncilCanonicalHash(preimage)
+  });
+
+  await assert.rejects(repository.getConsensus(workspace(), report.runId),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "financial_council_integrity");
+});
 
 test("memory reads and replay reject a re-signed noncanonical report", async () => {
   const repository = new InMemoryFinancialCouncilRepository();

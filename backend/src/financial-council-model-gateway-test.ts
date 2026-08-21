@@ -9,6 +9,7 @@ import {
 } from "./financial-council-model-port.js";
 import type {
   FinancialCouncilAnalyzeInput,
+  FinancialCfoNarrativeInput,
   FinancialCouncilModelFailureCode,
   FinancialCouncilRebutInput
 } from "./financial-council-model-port.js";
@@ -156,6 +157,21 @@ function completion(
     status,
     headers: { "content-type": "application/json", ...headers }
   });
+}
+
+function cfoInput(): FinancialCfoNarrativeInput {
+  return {
+    ownerId, teamId, runId: "run_cfo", snapshotId: "snapshot_cfo",
+    snapshotHash, auditHash: snapshotHash, attempt: 1,
+    acceptedFindings: [{ findingId: "finding:accepted", agentRole: "finance",
+      conclusion: "risk_hypothesis", severity: "warning",
+      evidenceRefIds: ["business_report:evidence:1"], formulaRefId: null }],
+    minorityFindings: [{ findingId: "finding:minority", agentRole: "cashflow",
+      conclusion: "risk_hypothesis", severity: "critical",
+      evidenceRefIds: ["business_report:evidence:2"], formulaRefId: null }],
+    rejectedFindingIds: ["finding:rejected"], unresolvedConflicts: [],
+    dataGapRefs: []
+  };
 }
 
 function completionWithToolCall(value: unknown) {
@@ -885,4 +901,29 @@ test("provider success is never returned when call-ledger persistence fails", as
   assert.equal(f.requests.length, 1);
   assert.equal(f.store.modelCallRecords.at(-1)?.status, "succeeded");
   assert.equal(f.store.pendingModelCallRecords.length, 1);
+});
+
+test("CFO synthesis uses the durable gateway and rejects non-contract output", async () => {
+  const valid = {
+    overallDiagnosis: "已审计结论 [finding:accepted]",
+    priorityFindingIds: ["finding:accepted"],
+    minorityFindingIds: ["finding:minority"],
+    riskNotes: ["少数意见已保留 [finding:minority]"]
+  };
+  const accepted = fixture([completion(valid)]);
+
+  assert.deepEqual(await accepted.port.synthesize(cfoInput()), valid);
+  assert.equal(accepted.store.aiJobModelSnapshots[0]?.jobId,
+    "financial-council:run_cfo:cfo:synthesize:1");
+  assert.equal(accepted.store.modelCallRecords.length, 1);
+
+  const invalid = completion({ ...valid, amountMinor: 1 });
+  const rejected = fixture([invalid,
+    completion({ ...valid, amountMinor: 1 })]);
+  await rejectsWith(
+    rejected.port.synthesize(cfoInput()),
+    "financial_council_model_output_invalid",
+    false
+  );
+  assert.equal(rejected.store.modelCallRecords.length, 2);
 });

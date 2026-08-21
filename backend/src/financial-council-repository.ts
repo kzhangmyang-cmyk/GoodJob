@@ -36,10 +36,13 @@ import {
 } from "./financial-council-finding-validator.js";
 import { MODEL_PROVIDER_IDS } from "./model-providers/types.js";
 import type {
+  ConsensusReport,
   FinancialCouncilAgentRole,
   FinancialCouncilCandidateAction,
+  FinancialCouncilDataGap,
   FinancialCouncilFinding
 } from "./growth-contract-types.js";
+import { buildConsensus } from "./financial-council-consensus.js";
 
 export interface FinancialCouncilCommandResult<T> {
   readonly value: T;
@@ -314,6 +317,14 @@ export interface FinancialCouncilRepository {
     context: ActiveWorkspaceContext,
     runId: string
   ): Promise<readonly FinancialCouncilFindingDisposition[]>;
+  storeConsensus(
+    context: ActiveWorkspaceContext,
+    consensus: ConsensusReport
+  ): Promise<FinancialCouncilCommandResult<ConsensusReport>>;
+  getConsensus(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<ConsensusReport | null>;
 }
 
 interface StoredSpecialistFinding {
@@ -1050,6 +1061,64 @@ export function assertFinancialSnapshotFreezeTime(
     || frozenEvents[0]!.occurredAt !== record.createdAt) fail();
 }
 
+export function validateFinancialCouncilConsensusReport(
+  rawConsensus: unknown,
+  expected: {
+    readonly graph: FinancialCouncilAuditGraph;
+    readonly findings: readonly FinancialCouncilFinding[];
+    readonly dispositions: readonly FinancialCouncilFindingDisposition[];
+    readonly dataGaps: readonly FinancialCouncilDataGap[];
+    readonly earliestCreatedAt: string;
+    readonly expiresAt: string;
+  }
+): ConsensusReport {
+  try {
+    const consensus = immutableFinancialCouncilInput(rawConsensus) as unknown as
+      ConsensusReport;
+    exactObject(consensus, ["reportId", "runId", "snapshotId",
+      "acceptedFindings", "minorityFindings", "rejectedFindings",
+      "unresolvedConflicts", "dataGaps", "overallDiagnosis",
+      "inputVersionHash", "createdAt"]);
+    const { reportId, ...preimage } = consensus;
+    hash(reportId);
+    timestamp(consensus.createdAt);
+    if (reportId !== financialCouncilCanonicalHash(preimage)
+      || typeof consensus.overallDiagnosis !== "string"
+      || consensus.overallDiagnosis.length < 1
+      || consensus.overallDiagnosis.length > 2_000
+      || consensus.runId !== expected.graph.runId
+      || consensus.snapshotId !== expected.graph.snapshotId
+      || consensus.inputVersionHash !== expected.graph.graphHash
+      || Date.parse(consensus.createdAt) < Date.parse(expected.earliestCreatedAt)
+      || Date.parse(consensus.createdAt) > Date.parse(expected.expiresAt)) {
+      inputInvalid();
+    }
+    const deterministic = buildConsensus({ graph: expected.graph,
+      findings: expected.findings, dispositions: expected.dispositions,
+      dataGaps: expected.dataGaps, createdAt: consensus.createdAt });
+    for (const field of ["runId", "snapshotId", "acceptedFindings",
+      "minorityFindings", "rejectedFindings", "unresolvedConflicts",
+      "dataGaps", "inputVersionHash", "createdAt"] as const) {
+      if (financialCouncilCanonicalJson(consensus[field])
+        !== financialCouncilCanonicalJson(deterministic[field])) inputInvalid();
+    }
+    const allowed = new Set([
+      ...consensus.acceptedFindings.map((row) => row.findingId),
+      ...consensus.minorityFindings.map((row) => row.findingId),
+      ...consensus.unresolvedConflicts.flatMap((row) => row.findingIds)
+    ]);
+    if (allowed.size > 0
+      && !consensus.overallDiagnosis.split(/\n\s*\n/u)
+        .every((paragraph) => [...allowed].some((findingId) =>
+          paragraph.includes(`[${findingId}]`)))) inputInvalid();
+    return immutableFinancialCouncilValue(consensus);
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code
+      === "financial_council_consensus_invalid") throw error;
+    throw financialCouncilError("financial_council_consensus_invalid");
+  }
+}
+
 export class InMemoryFinancialCouncilRepository
 implements FinancialCouncilRepository {
   private state = {
@@ -1063,6 +1132,7 @@ implements FinancialCouncilRepository {
     auditGraphs: new Map<string, FinancialCouncilAuditGraph>(),
     rebuttalAttempts: new Map<string, FinancialCouncilRebuttalAttempt>(),
     findingDispositions: new Map<string, FinancialCouncilFindingDisposition>(),
+    consensusReports: new Map<string, ConsensusReport>(),
     analysisControls: new Map<string, FinancialCouncilAnalysisControl>(),
     analysisGaps: new Map<string, FinancialCouncilAnalysisGap>()
   };
@@ -1077,6 +1147,7 @@ implements FinancialCouncilRepository {
   private get auditGraphs() { return this.state.auditGraphs; }
   private get rebuttalAttempts() { return this.state.rebuttalAttempts; }
   private get findingDispositions() { return this.state.findingDispositions; }
+  private get consensusReports() { return this.state.consensusReports; }
   private get analysisControls() { return this.state.analysisControls; }
   private get analysisGaps() { return this.state.analysisGaps; }
 
@@ -1131,6 +1202,7 @@ implements FinancialCouncilRepository {
       auditGraphs: new Map(this.auditGraphs),
       rebuttalAttempts: new Map(this.rebuttalAttempts),
       findingDispositions: new Map(this.findingDispositions),
+      consensusReports: new Map(this.consensusReports),
       analysisControls: new Map(this.analysisControls),
       analysisGaps: new Map(this.analysisGaps)
     };
@@ -1559,6 +1631,7 @@ implements FinancialCouncilRepository {
       auditGraphs: new Map(this.auditGraphs),
       rebuttalAttempts: new Map(this.rebuttalAttempts),
       findingDispositions: new Map(this.findingDispositions),
+      consensusReports: new Map(this.consensusReports),
       analysisControls: new Map(this.analysisControls),
       analysisGaps: new Map(this.analysisGaps)
     };
@@ -1901,6 +1974,75 @@ implements FinancialCouncilRepository {
       .sort((left, right) => utf8ByteCompare(
         left.findingId, right.findingId
       )));
+  }
+
+  async storeConsensus(
+    context: ActiveWorkspaceContext,
+    rawConsensus: ConsensusReport
+  ): Promise<FinancialCouncilCommandResult<ConsensusReport>> {
+    const consensus = immutableFinancialCouncilInput(rawConsensus);
+    await this.assertStoredConsensus(context, consensus, false);
+    const consensusKey = key(context.workspaceId, consensus.runId);
+    const existing = this.consensusReports.get(consensusKey);
+    if (existing) {
+      await this.assertStoredConsensus(context, existing, true);
+      if (financialCouncilCanonicalJson(existing)
+        !== financialCouncilCanonicalJson(consensus)) {
+        throw financialCouncilError("financial_council_consensus_conflict");
+      }
+      return { value: existing, replayed: true };
+    }
+    const next = new Map(this.consensusReports);
+    next.set(consensusKey, immutableFinancialCouncilValue(consensus));
+    this.state = { ...this.state, consensusReports: next };
+    return { value: consensus, replayed: false };
+  }
+
+  async getConsensus(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<ConsensusReport | null> {
+    const consensus = this.consensusReports.get(
+      key(context.workspaceId, runId)
+    ) ?? null;
+    if (consensus) await this.assertStoredConsensus(context, consensus, true);
+    return consensus;
+  }
+
+  private async assertStoredConsensus(
+    context: ActiveWorkspaceContext,
+    consensus: ConsensusReport,
+    stored: boolean
+  ): Promise<void> {
+    try {
+      const graph = await this.getAuditGraph(context, consensus.runId);
+      const verified = await this.getVerifiedRunSnapshot(
+        context, consensus.runId
+      );
+      const dispositions = await this.listFindingDispositions(
+        context, consensus.runId
+      );
+      const results = await this.listSpecialistResults(
+        context, consensus.runId
+      );
+      const findings = results.filter((result) => result.phase === "analyze")
+        .flatMap((result) => result.findings);
+      if (!graph || !verified) inputInvalid();
+      validateFinancialCouncilConsensusReport(consensus, {
+        graph, findings, dispositions, dataGaps: verified.snapshot.dataGaps,
+        earliestCreatedAt: verified.run.updatedAt,
+        expiresAt: verified.run.expiresAt
+      });
+    } catch (error) {
+      if (stored) historyIntegrity();
+      const code = (error as { code?: unknown } | null)?.code;
+      if (code === "financial_council_consensus_invalid"
+        || code === "financial_council_input_invalid") {
+        throw financialCouncilError("financial_council_consensus_invalid");
+      }
+      if (code) throw error;
+      throw financialCouncilError("financial_council_consensus_invalid");
+    }
   }
 
   private assertStoredSpecialistResult(

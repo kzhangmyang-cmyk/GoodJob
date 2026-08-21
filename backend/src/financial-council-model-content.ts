@@ -11,6 +11,8 @@ import {
 import type {
   FinancialCouncilAnalyzeInput,
   FinancialCouncilAnalyzeOutput,
+  FinancialCfoNarrativeInput,
+  FinancialCfoNarrativeOutput,
   FinancialCouncilModelPhase,
   FinancialCouncilRebutInput,
   FinancialCouncilRebutOutput
@@ -19,6 +21,8 @@ import { hashModelCallValue } from "./model-providers/call-ledger.js";
 
 export const FINANCIAL_COUNCIL_SPECIALIST_SCHEMA_VERSION =
   "financial-council-specialist-output.v1";
+export const FINANCIAL_COUNCIL_CFO_SCHEMA_VERSION =
+  "financial-council-cfo-output.v1";
 
 const ROLES = ["finance", "profit", "cost", "cashflow", "tax"] as const;
 const ACTION_KINDS = [
@@ -28,6 +32,10 @@ const ACTION_KINDS = [
   "prepare_cash_reserve_budget",
   "complete_financial_data",
   "schedule_tax_review"
+] as const;
+const CONFLICT_KINDS = [
+  "formula", "evidence", "definition", "action_exclusivity",
+  "resource_competition", "risk_preference"
 ] as const;
 const HASH = /^sha256:[0-9a-f]{64}$/u;
 const JOB_PART = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,190}$/u;
@@ -90,6 +98,53 @@ const rebutInputSchema = analyzeInputSchema.extend({
   }
 });
 
+const cfoFindingSchema = z.object({
+  findingId: boundedId,
+  agentRole: z.enum(ROLES),
+  conclusion: nonemptyText(1_000),
+  severity: z.enum(["info", "warning", "critical"]),
+  evidenceRefIds: uniqueIds,
+  formulaRefId: boundedId.nullable()
+}).strict();
+
+const cfoInputSchema = z.object({
+  ownerId: boundedId,
+  teamId: boundedId,
+  runId: z.string().regex(JOB_PART),
+  snapshotId: boundedId,
+  snapshotHash: z.string().regex(HASH),
+  auditHash: z.string().regex(HASH),
+  attempt: z.number().int().min(1).max(100),
+  acceptedFindings: z.array(cfoFindingSchema).max(120),
+  minorityFindings: z.array(cfoFindingSchema).max(120),
+  rejectedFindingIds: uniqueIds,
+  unresolvedConflicts: z.array(z.object({
+    conflictId: boundedId,
+    type: z.enum(CONFLICT_KINDS),
+    findingIds: uniqueIds,
+    status: z.literal("unresolved")
+  }).strict()).max(200),
+  dataGapRefs: uniqueIds
+}).strict().superRefine((input, context) => {
+  const categories = [
+    input.acceptedFindings.map((row) => row.findingId),
+    input.minorityFindings.map((row) => row.findingId),
+    input.rejectedFindingIds,
+    [...new Set(input.unresolvedConflicts.flatMap((row) => row.findingIds))]
+  ];
+  const hasDuplicateCategoryId = categories
+    .slice(0, 2)
+    .some((ids) => new Set(ids).size !== ids.length);
+  const categorySets = categories.map((ids) => new Set(ids));
+  const overlapsCategory = categorySets.some((ids, index) =>
+    categorySets.slice(index + 1).some((other) =>
+      [...ids].some((id) => other.has(id))));
+  if (hasDuplicateCategoryId || overlapsCategory) {
+    context.addIssue({ code: z.ZodIssueCode.custom,
+      message: "CFO finding partitions must be disjoint" });
+  }
+});
+
 function inputError(cause?: unknown): never {
   throw new FinancialCouncilModelError(
     "financial_council_model_input_invalid",
@@ -108,17 +163,26 @@ function parseInput(
   input: FinancialCouncilRebutInput
 ): FinancialCouncilRebutInput;
 function parseInput(
+  phase: "synthesize",
+  input: FinancialCfoNarrativeInput
+): FinancialCfoNarrativeInput;
+function parseInput(
   phase: FinancialCouncilModelPhase,
   input: FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput
-): FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput {
+    | FinancialCfoNarrativeInput
+): FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput
+  | FinancialCfoNarrativeInput {
   try {
     const stable = immutableFinancialCouncilInput(input);
     const parsed = phase === "analyze"
       ? analyzeInputSchema.safeParse(stable)
-      : rebutInputSchema.safeParse(stable);
+      : phase === "rebut"
+        ? rebutInputSchema.safeParse(stable)
+        : cfoInputSchema.safeParse(stable);
     if (!parsed.success) return inputError(parsed.error);
     return immutableFinancialCouncilValue(parsed.data) as
-      FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput;
+      FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput
+      | FinancialCfoNarrativeInput;
   } catch (error) {
     if (error instanceof FinancialCouncilModelError) throw error;
     return inputError(error);
@@ -247,6 +311,46 @@ function rebutOutputSchema(input: FinancialCouncilRebutInput) {
   });
 }
 
+function cfoOutputSchema(input: FinancialCfoNarrativeInput) {
+  const accepted = new Set(input.acceptedFindings.map((row) => row.findingId));
+  const minority = new Set(input.minorityFindings.map((row) => row.findingId));
+  const all = new Set([
+    ...accepted,
+    ...minority,
+    ...input.unresolvedConflicts.flatMap((row) => row.findingIds)
+  ]);
+  const referenced = (text: string) => {
+    for (const id of all) if (text.includes(`[${id}]`)) return true;
+    return false;
+  };
+  const prohibited = (text: string) => {
+    let prose = text;
+    for (const id of all) prose = prose.replaceAll(`[${id}]`, "");
+    return /\d|[零〇一二三四五六七八九十百千万亿兆壹贰叁肆伍陆柒捌玖拾佰仟两元倍成¥$￥%]|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|thousands?|millions?|billions?|grand|doubled?|tripled?|halved?)\b|\bbps\b|基点|金额|人民币|美元|\bminor\b|合规|compliant|compliance|执行|实施|批准|动作|\baction\b|状态|\bstatus\b|推理过程|思考过程|chain[ -]?of[ -]?thought|\breasoning\b/iu
+      .test(prose);
+  };
+  return z.object({
+    overallDiagnosis: nonemptyText(2_000),
+    priorityFindingIds: allowedArray(accepted),
+    minorityFindingIds: allowedArray(minority),
+    riskNotes: z.array(nonemptyText(1_000)).max(24)
+  }).strict().superRefine((output, context) => {
+    const submittedMinority = new Set(output.minorityFindingIds);
+    if (input.minorityFindings.some((row) => row.severity === "critical"
+      && !submittedMinority.has(row.findingId))) {
+      context.addIssue({ code: z.ZodIssueCode.custom,
+        path: ["minorityFindingIds"],
+        message: "critical minority findings cannot be omitted" });
+    }
+    if (!output.overallDiagnosis.split(/\n\s*\n/u).every(referenced)
+      || !output.riskNotes.every(referenced)
+      || [output.overallDiagnosis, ...output.riskNotes].some(prohibited)) {
+      context.addIssue({ code: z.ZodIssueCode.custom,
+        message: "CFO narrative must be bounded and finding-referenced" });
+    }
+  });
+}
+
 const findingJsonSchema = Object.freeze({
   type: "object",
   additionalProperties: false,
@@ -332,11 +436,34 @@ const rebutJsonSchema = Object.freeze({
   }
 });
 
+const cfoJsonSchema = Object.freeze({
+  type: "object",
+  additionalProperties: false,
+  required: ["overallDiagnosis", "priorityFindingIds",
+    "minorityFindingIds", "riskNotes"],
+  properties: {
+    overallDiagnosis: { type: "string", minLength: 1, maxLength: 2_000 },
+    priorityFindingIds: {
+      type: "array", maxItems: 100, uniqueItems: true,
+      items: { type: "string", minLength: 1, maxLength: 255 }
+    },
+    minorityFindingIds: {
+      type: "array", maxItems: 100, uniqueItems: true,
+      items: { type: "string", minLength: 1, maxLength: 255 }
+    },
+    riskNotes: {
+      type: "array", maxItems: 24,
+      items: { type: "string", minLength: 1, maxLength: 1_000 }
+    }
+  }
+});
+
 export function financialCouncilModelOutputJsonSchema(
   phase: FinancialCouncilModelPhase
 ) {
   return structuredClone(
-    phase === "analyze" ? analyzeJsonSchema : rebutJsonSchema
+    phase === "analyze" ? analyzeJsonSchema
+      : phase === "rebut" ? rebutJsonSchema : cfoJsonSchema
   );
 }
 
@@ -368,10 +495,23 @@ function systemPolicy(role: FinancialCouncilAnalyzeInput["role"]) {
   return lines.join("\n");
 }
 
+function cfoSystemPolicy() {
+  return [
+    "GOODJOB_FINANCIAL_COUNCIL_CFO_V1",
+    "你只能叙述输入中已审计的结构化 finding IDs 和冲突决定。",
+    "每个段落和每条风险说明必须使用 [findingId] 形式引用输入 ID。",
+    "不得生成、复述或修改金额、BPS、状态、动作或税务合规结论。",
+    "不得输出 chain-of-thought、reasoning、思考过程或推理过程。",
+    "没有任何工具可用（no tools）；不得执行写操作。",
+    "输出必须严格匹配闭合 JSON schema，不得添加字段。"
+  ].join("\n");
+}
+
 export interface FinancialCouncilModelContent<Value> {
   readonly jobId: string;
   readonly promptVersion: string;
-  readonly schemaVersion: typeof FINANCIAL_COUNCIL_SPECIALIST_SCHEMA_VERSION;
+  readonly schemaVersion: typeof FINANCIAL_COUNCIL_SPECIALIST_SCHEMA_VERSION
+    | typeof FINANCIAL_COUNCIL_CFO_SCHEMA_VERSION;
   readonly contentHash: `sha256:${string}`;
   readonly promptHash: `sha256:${string}`;
   readonly schemaHash: `sha256:${string}`;
@@ -389,35 +529,57 @@ export function buildFinancialCouncilModelContent(
   rawInput: FinancialCouncilRebutInput
 ): FinancialCouncilModelContent<FinancialCouncilRebutOutput>;
 export function buildFinancialCouncilModelContent(
+  phase: "synthesize",
+  rawInput: FinancialCfoNarrativeInput
+): FinancialCouncilModelContent<FinancialCfoNarrativeOutput>;
+export function buildFinancialCouncilModelContent(
   phase: FinancialCouncilModelPhase,
   rawInput: FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput
+    | FinancialCfoNarrativeInput
 ): FinancialCouncilModelContent<
   FinancialCouncilAnalyzeOutput | FinancialCouncilRebutOutput
+  | FinancialCfoNarrativeOutput
 > {
   const input = phase === "analyze"
     ? parseInput("analyze", rawInput as FinancialCouncilAnalyzeInput)
-    : parseInput("rebut", rawInput as FinancialCouncilRebutInput);
+    : phase === "rebut"
+      ? parseInput("rebut", rawInput as FinancialCouncilRebutInput)
+      : parseInput("synthesize", rawInput as FinancialCfoNarrativeInput);
   const untrustedData = phase === "analyze"
-    ? { allowlist: input.allowlist, businessData: input.businessData }
-    : {
-        allowlist: input.allowlist,
-        businessData: input.businessData,
-        targetFindingId: (input as FinancialCouncilRebutInput).targetFindingId,
-        conflictData: (input as FinancialCouncilRebutInput).conflictData
-      };
+    ? { allowlist: (input as FinancialCouncilAnalyzeInput).allowlist,
+        businessData: (input as FinancialCouncilAnalyzeInput).businessData }
+    : phase === "rebut"
+      ? { allowlist: (input as FinancialCouncilRebutInput).allowlist,
+          businessData: (input as FinancialCouncilRebutInput).businessData,
+          targetFindingId:
+            (input as FinancialCouncilRebutInput).targetFindingId,
+          conflictData: (input as FinancialCouncilRebutInput).conflictData }
+      : {
+          acceptedFindings:
+            (input as FinancialCfoNarrativeInput).acceptedFindings,
+          minorityFindings:
+            (input as FinancialCfoNarrativeInput).minorityFindings,
+          rejectedFindingIds:
+            (input as FinancialCfoNarrativeInput).rejectedFindingIds,
+          unresolvedConflicts:
+            (input as FinancialCfoNarrativeInput).unresolvedConflicts,
+          dataGapRefs: (input as FinancialCfoNarrativeInput).dataGapRefs
+        };
   const contentHash = financialCouncilCanonicalHash(untrustedData);
   const trustedBinding = {
     runId: input.runId,
     snapshotId: input.snapshotId,
     snapshotHash: input.snapshotHash,
-    role: input.role,
+    role: phase === "synthesize" ? "cfo"
+      : (input as FinancialCouncilAnalyzeInput).role,
     phase,
     attempt: input.attempt,
     contentHash
   };
   const jsonSchema = financialCouncilModelOutputJsonSchema(phase);
   const systemPrompt = [
-    systemPolicy(input.role),
+    phase === "synthesize" ? cfoSystemPolicy()
+      : systemPolicy((input as FinancialCouncilAnalyzeInput).role),
     "TRUSTED_TASK_BINDING",
     financialCouncilCanonicalJson(trustedBinding),
     "TRUSTED_OUTPUT_CONTRACT",
@@ -432,13 +594,19 @@ export function buildFinancialCouncilModelContent(
     "END_UNTRUSTED_DATA"
   ].join("\n");
   const schema = phase === "analyze"
-    ? analyzeOutputSchema(input)
-    : rebutOutputSchema(input as FinancialCouncilRebutInput);
+    ? analyzeOutputSchema(input as FinancialCouncilAnalyzeInput)
+    : phase === "rebut"
+      ? rebutOutputSchema(input as FinancialCouncilRebutInput)
+      : cfoOutputSchema(input as FinancialCfoNarrativeInput);
+  const role = phase === "synthesize" ? "cfo"
+    : (input as FinancialCouncilAnalyzeInput).role;
   return Object.freeze({
     jobId:
-      `financial-council:${input.runId}:${input.role}:${phase}:${input.attempt}`,
-    promptVersion: `financial-council-${input.role}-${phase}.v1`,
-    schemaVersion: FINANCIAL_COUNCIL_SPECIALIST_SCHEMA_VERSION,
+      `financial-council:${input.runId}:${role}:${phase}:${input.attempt}`,
+    promptVersion: `financial-council-${role}-${phase}.v1`,
+    schemaVersion: phase === "synthesize"
+      ? FINANCIAL_COUNCIL_CFO_SCHEMA_VERSION
+      : FINANCIAL_COUNCIL_SPECIALIST_SCHEMA_VERSION,
     contentHash,
     promptHash: hashModelCallValue({
       systemPrompt,

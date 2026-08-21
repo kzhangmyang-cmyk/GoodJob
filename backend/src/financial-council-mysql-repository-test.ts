@@ -8,7 +8,8 @@ import {
 } from "./financial-council-mysql-repository.js";
 import {
   financialCouncilAggregateHash,
-  financialCouncilCanonicalHash
+  financialCouncilCanonicalHash,
+  financialCouncilCanonicalJson
 } from "./financial-council-domain.js";
 import {
   authorizeSpecialistResultFixture,
@@ -19,7 +20,7 @@ import {
   repositoryRunFixture,
   resignSnapshotRecord,
   specialistResultFixture,
-  snapshotFixture,
+  snapshotFixture, storedConsensusFixture,
   workspace
 } from "./financial-council-repository-contract-test.js";
 import { T1 } from "./financial-council-repository-contract-test.js";
@@ -37,6 +38,7 @@ type State = {
   auditGraphs: Row[];
   rebuttalAttempts: Row[];
   dispositions: Row[];
+  consensusReports: Row[];
   analysisControls: Row[];
   analysisGaps: Row[];
 };
@@ -109,6 +111,7 @@ class FakeConnection {
       this.pool.state.auditGraphs = this.pending.auditGraphs;
       this.pool.state.rebuttalAttempts = this.pending.rebuttalAttempts;
       this.pool.state.dispositions = this.pending.dispositions;
+      this.pool.state.consensusReports = this.pending.consensusReports;
       this.pool.state.analysisControls = this.pending.analysisControls;
       this.pool.state.analysisGaps = this.pending.analysisGaps;
     }
@@ -337,6 +340,14 @@ class FakeConnection {
       ));
       return [structuredClone(rows), []];
     }
+    if (normalized.startsWith("SELECT")
+      && normalized.includes("FROM financial_council_consensus_reports")) {
+      const rows = state.consensusReports.filter((row) =>
+        row.workspace_id === values[0] && row.run_id === values[1]);
+      return [mysqlDatetimeRows(rows.slice(0, 1), "created_at",
+        normalized.includes("DATE_FORMAT(created_at"),
+        this.pool.shiftDatetimeDates), []];
+    }
     if (normalized.startsWith("INSERT INTO financial_council_runs")) {
       this.pool.createInsertAttempts += 1;
       if (this.pool.transientCreateFailures > 0) {
@@ -519,6 +530,23 @@ class FakeConnection {
       return [{ affectedRows: 1 }, []];
     }
     if (normalized.startsWith(
+      "INSERT INTO financial_council_consensus_reports")) {
+      const [workspaceId, runId, snapshotId, auditHash, reportId,
+        reportJson, createdAt] = values;
+      if (state.consensusReports.some((row) =>
+        row.workspace_id === workspaceId
+          && (row.run_id === runId || row.report_id === reportId))) {
+        throw Object.assign(new Error("duplicate"), {
+          code: "ER_DUP_ENTRY", errno: 1062
+        });
+      }
+      state.consensusReports.push({ workspace_id: workspaceId, run_id: runId,
+        snapshot_id: snapshotId, audit_hash: auditHash, report_id: reportId,
+        report_json: reportJson, created_at: createdAt });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
       "UPDATE financial_council_rebuttal_attempts")) {
       const [status, attemptJson, workspaceId, runId, role] = values;
       const row = state.rebuttalAttempts.find((item) =>
@@ -590,6 +618,7 @@ class FakePool {
   readonly state: State = {
     runs: [], events: [], snapshots: [], specialistResults: [], findings: [],
     actions: [], auditGraphs: [], rebuttalAttempts: [], dispositions: [],
+    consensusReports: [],
     analysisControls: [], analysisGaps: []
   };
   readonly connections: FakeConnection[] = [];
@@ -856,6 +885,23 @@ registerFinancialCouncilRepositoryContract(
   () => repositoryWith().repository
 );
 
+test("MySQL consensus read reports stored canonical corruption as integrity", async () => {
+  const { pool, repository } = repositoryWith();
+  const { report } = await storedConsensusFixture(repository);
+  const changed = { ...report, acceptedFindings: [] };
+  const { reportId: _old, ...preimage } = changed;
+  const stored = {
+    ...preimage, reportId: financialCouncilCanonicalHash(preimage)
+  };
+  const row = pool.state.consensusReports[0]!;
+  row.report_id = stored.reportId;
+  row.report_json = financialCouncilCanonicalJson(stored);
+
+  await assert.rejects(repository.getConsensus(workspace(), report.runId),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "financial_council_mysql_integrity");
+});
+
 test("specialist result, finding, and action inserts roll back atomically", async () => {
   for (const failurePoint of [
     "specialist_result_insert", "finding_insert", "action_insert"
@@ -912,8 +958,8 @@ test("audit graph and disposition inserts roll back atomically", async () => {
   }
 });
 
-test("financial council schema owns eleven tables behind a named lock", async () => {
-  assert.equal(FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.length, 11);
+test("financial council schema owns twelve tables behind a named lock", async () => {
+  assert.equal(FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.length, 12);
   const ddl = FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.join("\n");
   const names = [...ddl.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/gu)]
     .map((match) => match[1]);
@@ -927,6 +973,7 @@ test("financial council schema owns eleven tables behind a named lock", async ()
     "financial_council_audit_graphs",
     "financial_council_rebuttal_attempts",
     "financial_council_finding_dispositions",
+    "financial_council_consensus_reports",
     "financial_council_analysis_controls",
     "financial_council_analysis_gaps"
   ]);

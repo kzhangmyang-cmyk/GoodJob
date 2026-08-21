@@ -28,6 +28,7 @@ import {
   validateFinancialCouncilStoreSnapshotMutation,
   validateFinancialCouncilTransitionMutation,
   validateFinancialCouncilSpecialistResult,
+  validateFinancialCouncilConsensusReport,
   type FinancialCouncilCommandResult,
   type CreateAndFreezeFinancialCouncilRunInput,
   type FinancialCouncilRepository,
@@ -55,7 +56,10 @@ import {
 } from "./financial-council-finding-validator.js";
 import { validateFinancialSnapshotForRun } from
   "./financial-council-snapshot.js";
-import type { FinancialCouncilAgentRole } from "./growth-contract-types.js";
+import type {
+  ConsensusReport,
+  FinancialCouncilAgentRole
+} from "./growth-contract-types.js";
 import type { FinancialCouncilRebutInput } from
   "./financial-council-model-port.js";
 
@@ -233,6 +237,24 @@ export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
       CHECK (status IN ('unresolved','upheld','revised','withdrawn')),
     CONSTRAINT chk_financial_council_disposition_json
       CHECK (JSON_VALID(disposition_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_consensus_reports (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    snapshot_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    audit_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    report_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    report_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    created_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id, run_id),
+    UNIQUE KEY uk_financial_council_consensus_report
+      (workspace_id, report_id),
+    CONSTRAINT fk_financial_council_consensus_graph
+      FOREIGN KEY (workspace_id, run_id)
+      REFERENCES financial_council_audit_graphs (workspace_id, run_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_consensus_json
+      CHECK (JSON_VALID(report_json))
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS financial_council_analysis_controls (
     workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
@@ -814,6 +836,21 @@ function parseDispositionRow(row: MysqlRow): FinancialCouncilFindingDisposition 
     integrity();
   }
   return disposition;
+}
+
+function parseConsensusRow(row: MysqlRow): ConsensusReport {
+  const raw = jsonObject(row.report_json);
+  exactKeys(raw, ["reportId", "runId", "snapshotId", "acceptedFindings",
+    "minorityFindings", "rejectedFindings", "unresolvedConflicts",
+    "dataGaps", "overallDiagnosis", "inputVersionHash", "createdAt"]);
+  const report = immutableFinancialCouncilValue(raw) as unknown as
+    ConsensusReport;
+  if (rowString(row, "run_id") !== report.runId
+    || rowString(row, "snapshot_id") !== report.snapshotId
+    || rowString(row, "audit_hash") !== report.inputVersionHash
+    || rowString(row, "report_id") !== report.reportId
+    || isoDate(row.created_at) !== report.createdAt) integrity();
+  return report;
 }
 
 function expectedRevision(command: CommandContext): number {
@@ -1790,6 +1827,61 @@ implements FinancialCouncilRepository {
     }, true);
   }
 
+  async storeConsensus(
+    context: ActiveWorkspaceContext,
+    rawConsensus: ConsensusReport
+  ): Promise<FinancialCouncilCommandResult<ConsensusReport>> {
+    const consensus = immutableFinancialCouncilValue(rawConsensus);
+    try {
+      return await this.transaction(async (connection) => {
+        const validated = await this.validateConsensus(
+          connection, context, consensus, true, false
+        );
+        const existing = await this.readConsensus(
+          connection, context.workspaceId, validated.runId, true
+        );
+        if (existing) {
+          await this.validateConsensus(connection, context, existing,
+            true, true);
+          if (canonical(existing) !== canonical(validated)) {
+            throw financialCouncilError("financial_council_consensus_conflict");
+          }
+          return { value: existing, replayed: true };
+        }
+        await connection.query(
+          `INSERT INTO financial_council_consensus_reports (
+             workspace_id, run_id, snapshot_id, audit_hash, report_id,
+             report_json, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [context.workspaceId, validated.runId, validated.snapshotId,
+            validated.inputVersionHash, validated.reportId,
+            canonical(validated), sqlDate(validated.createdAt)]
+        );
+        return { value: validated, replayed: false };
+      });
+    } catch (error) {
+      if (!duplicateEntry(error)) throw error;
+      const existing = await this.getConsensus(context, consensus.runId);
+      if (existing && canonical(existing) === canonical(consensus)) {
+        return { value: existing, replayed: true };
+      }
+      throw financialCouncilError("financial_council_consensus_conflict");
+    }
+  }
+
+  async getConsensus(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<ConsensusReport | null> {
+    return this.transaction(async (connection) => {
+      const report = await this.readConsensus(
+        connection, context.workspaceId, runId, false
+      );
+      if (!report) return null;
+      return this.validateConsensus(connection, context, report, false, true);
+    }, true);
+  }
+
   private replay(
     existing: FinancialCouncilRun,
     requestHash: string
@@ -1798,6 +1890,92 @@ implements FinancialCouncilRepository {
       throw financialCouncilError("financial_council_idempotency_conflict");
     }
     return { value: existing, replayed: true };
+  }
+
+  private async validateConsensus(
+    connection: mysql.PoolConnection,
+    context: ActiveWorkspaceContext,
+    report: ConsensusReport,
+    lock: boolean,
+    stored: boolean
+  ): Promise<ConsensusReport> {
+    try {
+      const run = await this.findByRunId(
+        connection, context.workspaceId, report.runId, lock
+      );
+      const graph = await this.readAuditGraph(
+        connection, context.workspaceId, report.runId, lock
+      );
+      if (!run || !graph) {
+        if (stored) integrity();
+        throw financialCouncilError("financial_council_consensus_invalid");
+      }
+      await this.verifyStoredRun(connection, run);
+      const [snapshotRows] = await connection.query(
+        `${SNAPSHOT_SELECT}
+         WHERE workspace_id = ? AND run_id = ?${lock ? " FOR UPDATE" : ""}`,
+        [context.workspaceId, report.runId]
+      );
+      const snapshotRow = (snapshotRows as MysqlRow[])[0];
+      if (!snapshotRow) integrity();
+      const snapshot = parseSnapshot(snapshotRow);
+      const [dispositionRows] = await connection.query(
+        `SELECT * FROM financial_council_finding_dispositions
+         WHERE workspace_id = ? AND run_id = ?
+         ORDER BY BINARY finding_id ASC${lock ? " FOR UPDATE" : ""}`,
+        [context.workspaceId, report.runId]
+      );
+      const dispositions = (dispositionRows as MysqlRow[])
+        .map(parseDispositionRow);
+      const [resultRows] = await connection.query(
+        `SELECT workspace_id, run_id, role, phase, result_id, snapshot_id,
+                snapshot_hash, result_hash, result_json,
+                DATE_FORMAT(created_at,
+                  '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at
+         FROM financial_council_specialist_results
+         WHERE workspace_id = ? AND run_id = ?
+         ORDER BY CASE role
+           WHEN 'finance' THEN 1 WHEN 'profit' THEN 2 WHEN 'cost' THEN 3
+           WHEN 'cashflow' THEN 4 WHEN 'tax' THEN 5 ELSE 6 END, phase ASC`,
+        [context.workspaceId, report.runId]
+      );
+      const results: FinancialCouncilSpecialistResult[] = [];
+      for (const row of resultRows as MysqlRow[]) {
+        results.push(await this.readSpecialistResultByRow(connection, row));
+      }
+      return validateFinancialCouncilConsensusReport(report, {
+        graph,
+        findings: results.filter((result) => result.phase === "analyze")
+          .flatMap((result) => result.findings),
+        dispositions,
+        dataGaps: validateFinancialSnapshotForRun(
+          snapshot.snapshot, run
+        ).dataGaps,
+        earliestCreatedAt: run.updatedAt,
+        expiresAt: run.expiresAt
+      });
+    } catch (error) {
+      if (stored) integrity();
+      throw error;
+    }
+  }
+
+  private async readConsensus(
+    source: Pick<mysql.Pool, "query">,
+    workspaceId: string,
+    runId: string,
+    lock: boolean
+  ): Promise<ConsensusReport | null> {
+    const [rows] = await source.query(
+      `SELECT workspace_id, run_id, snapshot_id, audit_hash, report_id,
+              report_json,
+              DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at
+       FROM financial_council_consensus_reports
+       WHERE workspace_id = ? AND run_id = ?${lock ? " FOR UPDATE" : ""}`,
+      [workspaceId, runId]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseConsensusRow(row) : null;
   }
 
   private async readAuditGraph(

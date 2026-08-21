@@ -15,7 +15,11 @@ import type {
   FinancialCouncilSpecialistPhase,
   FinancialCouncilSpecialistResult
 } from "./financial-council-repository.js";
-import type { FinancialCouncilAgentRole } from "./growth-contract-types.js";
+import type {
+  ConsensusReport,
+  FinancialCouncilAgentRole,
+  FinancialCouncilDataGap
+} from "./growth-contract-types.js";
 import type { FinancialCouncilVerifiedFactView } from
   "./financial-council-authority-reader.js";
 import { FinancialSnapshotBuilder } from "./financial-council-snapshot.js";
@@ -27,6 +31,7 @@ import { buildCanonicalFinancialCouncilAuditGraph } from
   "./financial-council-audit.js";
 import { buildFinancialCouncilModelContent } from
   "./financial-council-model-content.js";
+import { buildConsensus } from "./financial-council-consensus.js";
 
 const T0 = "2026-08-16T08:00:00.000Z";
 export const T1 = "2026-08-16T08:01:00.000Z";
@@ -476,6 +481,42 @@ function hasCode(code: string) {
   return (error: unknown) => (error as { code?: unknown }).code === code;
 }
 
+export async function storedConsensusFixture(
+  repository: FinancialCouncilRepository
+): Promise<{
+  readonly report: ConsensusReport;
+  readonly findingId: string;
+  readonly first: { readonly value: ConsensusReport; readonly replayed: boolean };
+}> {
+  const aggregate = repositoryRunFixture();
+  const snapshot = snapshotFixture(aggregate);
+  const run = (await repository.createAndFreezeRun(command("consensus"), {
+    aggregate, snapshot, occurredAt: T1
+  })).value;
+  const result = authorizeSpecialistResultFixture(run, snapshot);
+  await repository.storeSpecialistResult(workspace(), result);
+  const graph = buildCanonicalFinancialCouncilAuditGraph({
+    workspaceId: run.workspaceId, runId: run.runId,
+    snapshotId: snapshot.snapshotId, snapshotHash: snapshot.snapshotHash,
+    facts: result.findings.map((finding) => ({ finding, actions: [] }))
+  });
+  const initial = result.findings.map((finding) => ({
+    findingId: finding.findingId, role: finding.agentRole,
+    status: "unresolved" as const, blockingConflictIds: []
+  }));
+  await repository.storeAuditGraph(workspace(), graph, initial);
+  const dispositions = await repository.listFindingDispositions(
+    workspace(), run.runId
+  );
+  const report = buildConsensus({
+    graph, findings: result.findings, dispositions,
+    dataGaps: snapshot.snapshot.dataGaps as readonly FinancialCouncilDataGap[],
+    createdAt: T2
+  });
+  const first = await repository.storeConsensus(workspace(), report);
+  return { report, findingId: result.findings[0]!.findingId, first };
+}
+
 export function registerFinancialCouncilRepositoryContract(
   label: string,
   createRepository: () => Promise<FinancialCouncilRepository>
@@ -517,6 +558,27 @@ export function registerFinancialCouncilRepositoryContract(
       workspace(), run.runId
     )).map((item) => [item.findingId, item.status]),
     [[result.findings[0]!.findingId, "unresolved"]]);
+  });
+
+  test(`${label}: canonical consensus replays by run snapshot and audit hash`, async () => {
+    const repository = await createRepository();
+    const { report, findingId, first } = await storedConsensusFixture(repository);
+    const replay = await repository.storeConsensus(workspace(), report);
+
+    assert.equal(first.replayed, false);
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(await repository.getConsensus(
+      workspace(), report.runId
+    ), report);
+    assert.equal(await repository.getConsensus(
+      workspace("ws-2"), report.runId
+    ), null);
+    const changed = { ...report, overallDiagnosis:
+      `${report.overallDiagnosis} [${findingId}]` };
+    const { reportId: _old, ...preimage } = changed;
+    await assert.rejects(repository.storeConsensus(workspace(), {
+      ...preimage, reportId: financialCouncilCanonicalHash(preimage)
+    }), hasCode("financial_council_consensus_conflict"));
   });
 
   test(`${label}: round-one rebuttal reserves before completion and replays exactly`, async () => {

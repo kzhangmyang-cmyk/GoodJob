@@ -12,6 +12,8 @@ import {
 import type {
   FinancialCouncilAnalyzeInput,
   FinancialCouncilAnalyzeOutput,
+  FinancialCfoNarrativeInput,
+  FinancialCfoNarrativeOutput,
   FinancialCouncilModelFailureCode,
   FinancialCouncilModelPhase,
   FinancialCouncilModelPort,
@@ -40,7 +42,7 @@ interface InFlightFinancialCouncilModelCall {
   readonly runId: string;
   readonly snapshotId: string;
   readonly snapshotHash: string;
-  readonly role: FinancialCouncilAnalyzeInput["role"];
+  readonly role: FinancialCouncilAnalyzeInput["role"] | "cfo";
   readonly phase: FinancialCouncilModelPhase;
   readonly attempt: number;
   readonly contentHash: string;
@@ -136,7 +138,8 @@ function modelGatewayFailure(error: unknown): never {
 
 function exactSnapshot(
   snapshot: StoredAiJobModelSnapshot,
-  input: FinancialCouncilAnalyzeInput,
+  input: FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput
+    | FinancialCfoNarrativeInput,
   phase: FinancialCouncilModelPhase,
   content: {
     jobId: string;
@@ -146,6 +149,8 @@ function exactSnapshot(
     schemaHash: string;
   }
 ) {
+  const role = phase === "synthesize" ? "cfo"
+    : (input as FinancialCouncilAnalyzeInput).role;
   return snapshot.jobId === content.jobId
     && snapshot.ownerId === input.ownerId
     && snapshot.teamId === input.teamId
@@ -154,7 +159,7 @@ function exactSnapshot(
     && snapshot.promptHash === content.promptHash
     && snapshot.schemaHash === content.schemaHash
     && content.jobId ===
-      `financial-council:${input.runId}:${input.role}:${phase}:${input.attempt}`;
+      `financial-council:${input.runId}:${role}:${phase}:${input.attempt}`;
 }
 
 export class ActiveModelGatewayFinancialCouncilModelPort
@@ -189,6 +194,12 @@ implements FinancialCouncilModelPort {
     return this.#run("rebut", input);
   }
 
+  async synthesize(
+    input: FinancialCfoNarrativeInput
+  ): Promise<FinancialCfoNarrativeOutput> {
+    return (await this.#run("synthesize", input)).value;
+  }
+
   async #run(
     phase: "analyze",
     input: FinancialCouncilAnalyzeInput
@@ -198,25 +209,41 @@ implements FinancialCouncilModelPort {
     input: FinancialCouncilRebutInput
   ): Promise<FinancialCouncilModelResult<FinancialCouncilRebutOutput>>;
   async #run(
+    phase: "synthesize",
+    input: FinancialCfoNarrativeInput
+  ): Promise<FinancialCouncilModelResult<FinancialCfoNarrativeOutput>>;
+  async #run(
     phase: FinancialCouncilModelPhase,
     input: FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput
+      | FinancialCfoNarrativeInput
   ): Promise<FinancialCouncilModelResult<
     FinancialCouncilAnalyzeOutput | FinancialCouncilRebutOutput
+    | FinancialCfoNarrativeOutput
   >> {
     if (phase === "analyze") {
-      const content = buildFinancialCouncilModelContent("analyze", input);
-      return this.#singleFlight(phase, input, content, () =>
-        this.#execute(phase, input, content));
+      const analyzeInput = input as FinancialCouncilAnalyzeInput;
+      const content = buildFinancialCouncilModelContent(
+        "analyze", analyzeInput
+      );
+      return this.#singleFlight(phase, analyzeInput, content, () =>
+        this.#execute(phase, analyzeInput, content));
     }
-    const rebutInput = input as FinancialCouncilRebutInput;
-    const content = buildFinancialCouncilModelContent("rebut", rebutInput);
-    return this.#singleFlight(phase, rebutInput, content, () =>
-      this.#execute(phase, rebutInput, content));
+    if (phase === "rebut") {
+      const rebutInput = input as FinancialCouncilRebutInput;
+      const content = buildFinancialCouncilModelContent("rebut", rebutInput);
+      return this.#singleFlight(phase, rebutInput, content, () =>
+        this.#execute(phase, rebutInput, content));
+    }
+    const cfoInput = input as FinancialCfoNarrativeInput;
+    const content = buildFinancialCouncilModelContent("synthesize", cfoInput);
+    return this.#singleFlight(phase, cfoInput, content, () =>
+      this.#execute(phase, cfoInput, content));
   }
 
   #singleFlight<Value>(
     phase: FinancialCouncilModelPhase,
-    input: FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput,
+    input: FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput
+      | FinancialCfoNarrativeInput,
     content: FinancialCouncilModelContent<Value>,
     execute: () => Promise<FinancialCouncilModelResult<Value>>
   ): Promise<FinancialCouncilModelResult<Value>> {
@@ -232,7 +259,8 @@ implements FinancialCouncilModelPort {
         || existing.runId !== input.runId
         || existing.snapshotId !== input.snapshotId
         || existing.snapshotHash !== input.snapshotHash
-        || existing.role !== input.role
+        || existing.role !== (phase === "synthesize" ? "cfo"
+          : (input as FinancialCouncilAnalyzeInput).role)
         || existing.phase !== phase
         || existing.attempt !== input.attempt
         || existing.contentHash !== content.contentHash
@@ -263,7 +291,8 @@ implements FinancialCouncilModelPort {
       runId: input.runId,
       snapshotId: input.snapshotId,
       snapshotHash: input.snapshotHash,
-      role: input.role,
+      role: phase === "synthesize" ? "cfo"
+        : (input as FinancialCouncilAnalyzeInput).role,
       phase,
       attempt: input.attempt,
       contentHash: content.contentHash,
@@ -287,7 +316,8 @@ implements FinancialCouncilModelPort {
 
   async #execute<Value>(
     phase: FinancialCouncilModelPhase,
-    input: FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput,
+    input: FinancialCouncilAnalyzeInput | FinancialCouncilRebutInput
+      | FinancialCfoNarrativeInput,
     content: FinancialCouncilModelContent<Value>
   ): Promise<FinancialCouncilModelResult<Value>> {
     let snapshot: StoredAiJobModelSnapshot;
@@ -375,7 +405,8 @@ implements FinancialCouncilModelPort {
         runId: input.runId,
         snapshotId: input.snapshotId,
         snapshotHash: input.snapshotHash,
-        role: input.role,
+        role: phase === "synthesize" ? "cfo"
+          : (input as FinancialCouncilAnalyzeInput).role,
         phase,
         attempt: input.attempt,
         connectionId: snapshot.connectionId,

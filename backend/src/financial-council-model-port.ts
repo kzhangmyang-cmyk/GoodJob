@@ -1,12 +1,57 @@
 import type { FinancialActionHypothesis } from "./financial-council-action-projector.js";
 import type {
-  FinancialCouncilAgentRole
+  FinancialCouncilAgentRole,
+  FinancialCouncilConflictKind
 } from "./growth-contract-types.js";
 import type {
   ModelProviderId
 } from "./model-providers/types.js";
 
-export type FinancialCouncilModelPhase = "analyze" | "rebut";
+export type FinancialCouncilModelPhase = "analyze" | "rebut" | "synthesize";
+export type FinancialCouncilModelRole = FinancialCouncilAgentRole | "cfo";
+
+export interface FinancialCfoFindingProjection {
+  readonly findingId: string;
+  readonly agentRole: FinancialCouncilAgentRole;
+  readonly conclusion: string;
+  readonly severity: "info" | "warning" | "critical";
+  readonly evidenceRefIds: readonly string[];
+  readonly formulaRefId: string | null;
+}
+
+export interface FinancialCfoNarrativeInput {
+  readonly ownerId: string;
+  readonly teamId: string;
+  readonly runId: string;
+  readonly snapshotId: string;
+  readonly snapshotHash: `sha256:${string}`;
+  readonly auditHash: `sha256:${string}`;
+  readonly attempt: number;
+  readonly acceptedFindings: readonly FinancialCfoFindingProjection[];
+  readonly minorityFindings: readonly FinancialCfoFindingProjection[];
+  readonly rejectedFindingIds: readonly string[];
+  readonly unresolvedConflicts: readonly {
+    readonly conflictId: string;
+    readonly type: FinancialCouncilConflictKind;
+    readonly findingIds: readonly string[];
+    readonly status: "unresolved";
+  }[];
+  readonly dataGapRefs: readonly string[];
+}
+
+export interface FinancialCfoNarrativeOutput {
+  readonly overallDiagnosis: string;
+  readonly priorityFindingIds: readonly string[];
+  readonly minorityFindingIds: readonly string[];
+  readonly riskNotes: readonly string[];
+}
+
+export interface FinancialCfoNarrative extends FinancialCfoNarrativeOutput {
+  readonly narrativeStatus:
+    | "model_valid"
+    | "model_unavailable"
+    | "model_invalid";
+}
 
 export interface FinancialCouncilModelAllowlist {
   readonly evidenceRefIds: readonly string[];
@@ -66,7 +111,7 @@ export interface FinancialCouncilModelBinding {
   readonly runId: string;
   readonly snapshotId: string;
   readonly snapshotHash: `sha256:${string}`;
-  readonly role: FinancialCouncilAgentRole;
+  readonly role: FinancialCouncilModelRole;
   readonly phase: FinancialCouncilModelPhase;
   readonly attempt: number;
   readonly connectionId: string;
@@ -96,6 +141,9 @@ export interface FinancialCouncilModelPort {
   rebut(
     input: FinancialCouncilRebutInput
   ): Promise<FinancialCouncilModelResult<FinancialCouncilRebutOutput>>;
+  synthesize(
+    input: FinancialCfoNarrativeInput
+  ): Promise<FinancialCfoNarrativeOutput>;
 }
 
 export type FinancialCouncilModelFailureCode =
