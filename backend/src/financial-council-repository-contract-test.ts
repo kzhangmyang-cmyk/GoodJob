@@ -11,9 +11,18 @@ import {
   type FinancialSnapshotRecord
 } from "./financial-council-domain.js";
 import type {
-  FinancialCouncilRepository
+  FinancialCouncilRepository,
+  FinancialCouncilSpecialistPhase,
+  FinancialCouncilSpecialistResult
 } from "./financial-council-repository.js";
+import type { FinancialCouncilAgentRole } from "./growth-contract-types.js";
+import type { FinancialCouncilVerifiedFactView } from
+  "./financial-council-authority-reader.js";
 import { FinancialSnapshotBuilder } from "./financial-council-snapshot.js";
+import {
+  FinancialFindingValidator,
+  type AuthorizedFinancialCouncilSpecialistResult
+} from "./financial-council-finding-validator.js";
 
 const T0 = "2026-08-16T08:00:00.000Z";
 export const T1 = "2026-08-16T08:01:00.000Z";
@@ -192,7 +201,8 @@ export function snapshotFixture(
 }
 
 export async function builderSnapshotFixture(
-  run: FinancialCouncilRun
+  run: FinancialCouncilRun,
+  verifiedFinancialFacts: readonly FinancialCouncilVerifiedFactView[] = []
 ): Promise<FinancialSnapshotRecord> {
   const authorityProjection = Object.freeze({
     workspaceId: run.workspaceId,
@@ -201,7 +211,7 @@ export async function builderSnapshotFixture(
     projectionLevel: "redacted" as const,
     priorityCustomers: Object.freeze([]),
     pendingQuoteApprovals: Object.freeze([]),
-    verifiedFinancialFacts: Object.freeze([]),
+    verifiedFinancialFacts: Object.freeze([...verifiedFinancialFacts]),
     expectedRoi: Object.freeze([]),
     actualRoi: Object.freeze([]),
     dataGaps: Object.freeze([])
@@ -260,6 +270,197 @@ export function resignSnapshotRecord(
   });
 }
 
+export function specialistResultFixture(
+  run: FinancialCouncilRun,
+  snapshot: FinancialSnapshotRecord,
+  role: FinancialCouncilAgentRole = "finance",
+  overrides: Partial<FinancialCouncilSpecialistResult> = {},
+  phase: FinancialCouncilSpecialistPhase = "analyze"
+): FinancialCouncilSpecialistResult {
+  const findingId = `finding:${financialCouncilCanonicalHash({
+    runId: run.runId,
+    snapshotId: snapshot.snapshotId,
+    snapshotHash: snapshot.snapshotHash,
+    role,
+    slot: 1
+  })}`;
+  const outputHash = financialCouncilCanonicalHash({ role, phase, findingId });
+  const modelJobId = `financial-council:${run.runId}:${role}:${phase}:1`;
+  const resultId = financialCouncilCanonicalHash({
+    workspaceId: run.workspaceId,
+    runId: run.runId,
+    snapshotId: snapshot.snapshotId,
+    snapshotHash: snapshot.snapshotHash,
+    role,
+    phase,
+    attempt: 1,
+    outputHash,
+    modelJobId
+  });
+  const preimage = {
+    resultId,
+    workspaceId: run.workspaceId,
+    runId: run.runId,
+    snapshotId: snapshot.snapshotId,
+    snapshotHash: snapshot.snapshotHash,
+    role,
+    phase,
+    attempt: 1,
+    outputHash,
+    modelBinding: {
+      jobId: modelJobId,
+      runId: run.runId,
+      snapshotId: snapshot.snapshotId,
+      snapshotHash: snapshot.snapshotHash,
+      role,
+      phase,
+      attempt: 1,
+      connectionId: "connection-1",
+      credentialVersion: 1,
+      provider: "openai" as const,
+      model: "gpt-test",
+      capabilitySnapshotHash: SHA_A,
+      baseUrlFingerprint: "official-endpoint",
+      promptVersion: `financial-council-${role}-${phase}.v1`,
+      schemaVersion: "financial-council-specialist-output.v1",
+      contentHash: SHA_A,
+      promptHash: SHA_A,
+      schemaHash: SHA_A
+    },
+    repaired: false,
+    providerRequestId: null,
+    findings: [{
+      findingId,
+      runId: run.runId,
+      snapshotId: snapshot.snapshotId,
+      agentRole: role,
+      conclusion: role === "tax"
+        ? "税务风险需专业人员复核" : "risk_hypothesis",
+      evidenceRefs: [{
+        source: "business_report" as const,
+        sourceId: "business-report",
+        contentHash: (snapshot.snapshot as {
+          reportInputHash: `sha256:${string}`
+        }).reportInputHash
+      }],
+      formulaRef: null,
+      confidenceBps: 8_000,
+      severity: "warning" as const,
+      assumptions: [],
+      missingData: [],
+      candidateActionIds: []
+    }],
+    actions: [],
+    createdAt: T2,
+    ...overrides
+  };
+  const { resultHash: _ignored, ...stable } = preimage as typeof preimage & {
+    resultHash?: `sha256:${string}`
+  };
+  return Object.freeze({
+    ...stable,
+    resultHash: financialCouncilCanonicalHash(stable)
+  }) as FinancialCouncilSpecialistResult;
+}
+
+export function authorizeSpecialistResultFixture(
+  run: FinancialCouncilRun,
+  snapshot: FinancialSnapshotRecord,
+  result: FinancialCouncilSpecialistResult = specialistResultFixture(
+    run, snapshot
+  )
+): AuthorizedFinancialCouncilSpecialistResult {
+  return fixtureFindingValidator(run, snapshot)
+    .authorizeSpecialistResult(result);
+}
+
+function fixtureFindingValidator(
+  run: FinancialCouncilRun,
+  snapshot: FinancialSnapshotRecord
+): FinancialFindingValidator {
+  return new FinancialFindingValidator({
+    run,
+    snapshot: snapshot.snapshot,
+    formulaPolicy: {
+      formulaPolicyVersion: "financial-council-formula-policy.v1",
+      minimumProductMarginBps: 1_000,
+      minimumCashReserveMinor: 90_000
+    },
+    actionPolicy: {
+      actionCoefficientVersion: "financial-council-actions.v1",
+      costRealizationBps: {
+        conservative: 2_500, base: 5_000, optimistic: 7_500
+      },
+      dataRiskReductionBps: {
+        conservative: 500, base: 1_000, optimistic: 1_500
+      },
+      taxRiskReductionBps: {
+        conservative: 1_000, base: 2_000, optimistic: 3_000
+      }
+    },
+    now: () => T2
+  });
+}
+
+export function authorizedSpecialistActionResultFixture(
+  run: FinancialCouncilRun,
+  snapshot: FinancialSnapshotRecord
+): AuthorizedFinancialCouncilSpecialistResult {
+  const validator = fixtureFindingValidator(run, snapshot);
+  const projection = validator.project("finance");
+  const formula = (projection.businessData as {
+    formulas: Array<{
+      refId: string;
+      formulaId: string;
+      evidenceRefIds: string[];
+    }>;
+  }).formulas.find((candidate) =>
+    candidate.formulaId === "financial_data_gaps")!;
+  const findingId = projection.allowlist.findingIds[0]!;
+  const validated = validator.validate("finance", {
+    findingDrafts: [{
+      findingId,
+      conclusion: "risk_hypothesis",
+      evidenceRefs: [formula.evidenceRefIds[0]!],
+      formulaRef: formula.refId,
+      confidenceBps: 8_000,
+      severity: "warning",
+      assumptions: [],
+      missingDataRefs: []
+    }],
+    actionHypotheses: [{
+      kind: "complete_financial_data",
+      sourceFindingIds: [findingId],
+      subjectRef: null,
+      explanation: "complete_financial_data_hypothesis"
+    }]
+  });
+  const base = specialistResultFixture(run, snapshot);
+  const resultId = financialCouncilCanonicalHash({
+    workspaceId: run.workspaceId,
+    runId: run.runId,
+    snapshotId: snapshot.snapshotId,
+    snapshotHash: snapshot.snapshotHash,
+    role: "finance",
+    phase: "analyze",
+    attempt: 1,
+    outputHash: validated.outputHash,
+    modelJobId: base.modelBinding.jobId
+  });
+  const { resultHash: _old, ...basePreimage } = base;
+  const preimage = {
+    ...basePreimage,
+    resultId,
+    outputHash: validated.outputHash,
+    findings: validated.findings,
+    actions: validated.actions
+  };
+  return validator.authorizeSpecialistResult({
+    ...preimage,
+    resultHash: financialCouncilCanonicalHash(preimage)
+  });
+}
+
 function snapshotWithId(
   run: FinancialCouncilRun,
   _snapshotId: string
@@ -276,6 +477,292 @@ export function registerFinancialCouncilRepositoryContract(
   createRepository: () => Promise<FinancialCouncilRepository>
     | FinancialCouncilRepository
 ): void {
+  test(`${label}: verified snapshot read returns one run-bound aggregate`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("verified"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+
+    const verified = await repository.getVerifiedRunSnapshot(
+      workspace(), run.runId
+    );
+
+    assert.equal(verified?.run.runId, run.runId);
+    assert.equal(verified?.snapshot.snapshotId, snapshot.snapshotId);
+    assert.equal(verified?.snapshot.snapshotHash, snapshot.snapshotHash);
+    assert.equal(await repository.getVerifiedRunSnapshot(
+      workspace("ws-2"), run.runId
+    ), null);
+  });
+
+  test(`${label}: a fully rehashed direct specialist DTO has no store authority`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command(
+      "untrusted-specialist-dto"
+    ), { aggregate, snapshot, occurredAt: T1 })).value;
+    const forged = specialistResultFixture(run, snapshot);
+
+    await assert.rejects(
+      repository.storeSpecialistResult(workspace(), forged),
+      hasCode("financial_council_specialist_result_invalid")
+    );
+    assert.deepEqual(await repository.listSpecialistResults(
+      workspace(), run.runId
+    ), []);
+  });
+
+  test(`${label}: specialist results replay exactly and five roles bind one snapshot`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("specialist"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+    const roles = ["finance", "profit", "cost", "cashflow", "tax"] as const;
+    for (const role of roles) {
+      const result = authorizeSpecialistResultFixture(
+        run, snapshot, specialistResultFixture(run, snapshot, role)
+      );
+      const first = await repository.storeSpecialistResult(
+        workspace(), result
+      );
+      const replay = await repository.storeSpecialistResult(
+        workspace(), result
+      );
+      assert.equal(first.replayed, false);
+      assert.equal(replay.replayed, true);
+      assert.deepEqual(replay.value, first.value);
+    }
+    const listed = await repository.listSpecialistResults(
+      workspace(), run.runId
+    );
+    assert.deepEqual(listed.map((result) => result.role), roles);
+    assert.equal(new Set(listed.map((result) => result.snapshotHash)).size, 1);
+    assert.equal((await repository.getSpecialistResult(
+      workspace(), run.runId, "cashflow", "analyze"
+    ))?.role, "cashflow");
+  });
+
+  test(`${label}: analyze and rebut child records stay phase isolated`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("phases"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+    const analyze = authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(run, snapshot)
+    );
+    const rebut = authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(
+        run, snapshot, "finance", {}, "rebut"
+      )
+    );
+
+    await repository.storeSpecialistResult(workspace(), analyze);
+    await repository.storeSpecialistResult(workspace(), rebut);
+
+    assert.deepEqual(await repository.getSpecialistResult(
+      workspace(), run.runId, "finance", "analyze"
+    ), analyze);
+    assert.deepEqual(await repository.getSpecialistResult(
+      workspace(), run.runId, "finance", "rebut"
+    ), rebut);
+  });
+
+  test(`${label}: altered specialist replay conflicts without partial visibility`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("changed"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+    const original = authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(run, snapshot)
+    );
+    await repository.storeSpecialistResult(workspace(), original);
+    const changed = authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(run, snapshot, "finance", {
+        repaired: true
+      })
+    );
+
+    await assert.rejects(
+      repository.storeSpecialistResult(workspace(), changed),
+      hasCode("financial_council_specialist_conflict")
+    );
+    const listed = await repository.listSpecialistResults(
+      workspace(), run.runId
+    );
+    assert.equal(listed.length, 1);
+    assert.deepEqual(listed[0], original);
+  });
+
+  test(`${label}: validator-issued specialist result identities are role unique`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("result-id"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+    const finance = authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(run, snapshot, "finance")
+    );
+    const profit = authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(run, snapshot, "profit")
+    );
+
+    await repository.storeSpecialistResult(workspace(), finance);
+    await repository.storeSpecialistResult(workspace(), profit);
+    assert.notEqual(finance.resultId, profit.resultId);
+    assert.deepEqual((await repository.listSpecialistResults(
+      workspace(), run.runId
+    )).map((result) => result.resultId), [finance.resultId, profit.resultId]);
+  });
+
+  test(`${label}: specialist parser rejects open and cross-snapshot records`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("closed"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+    const base = specialistResultFixture(run, snapshot);
+    const open = { ...base, hiddenMoneyMinor: 999_999 };
+    const nested = structuredClone(base) as unknown as {
+      findings: Array<Record<string, unknown>>;
+      resultHash: string;
+    };
+    nested.findings[0]!.hidden = true;
+    const { resultHash: _old, ...nestedPreimage } = nested;
+    nested.resultHash = financialCouncilCanonicalHash(nestedPreimage);
+    const crossSnapshot = specialistResultFixture(run, snapshot, "finance", {
+      snapshotHash: SHA_A
+    });
+    const crossRole = structuredClone(base) as unknown as {
+      findings: Array<Record<string, unknown>>;
+      resultHash: string;
+    };
+    crossRole.findings[0]!.agentRole = "profit";
+    const { resultHash: _roleHash, ...crossRolePreimage } = crossRole;
+    crossRole.resultHash = financialCouncilCanonicalHash(crossRolePreimage);
+    const crossRun = structuredClone(base) as unknown as {
+      actions: Array<Record<string, unknown>>;
+      findings: Array<Record<string, unknown>>;
+      resultHash: string;
+    };
+    const actionId = `sha256:${"d".repeat(64)}`;
+    crossRun.actions = [{
+      actionId,
+      kind: "complete_financial_data",
+      sourceFindingIds: ["finding-from-another-run"],
+      ownerRole: "finance",
+      subjectRef: null,
+      explanation: "complete_financial_data_hypothesis",
+      durationDays: 14,
+      prerequisites: ["formula:test"],
+      mutuallyExclusiveWith: [],
+      cashImpact: { conservative: 0, base: 0, optimistic: 0 },
+      profitImpact: { conservative: 0, base: 0, optimistic: 0 },
+      riskReductionBps: { conservative: 500, base: 1_000, optimistic: 1_500 },
+      budgetCostMinor: 0,
+      capacityUnits: 1,
+      confidenceBps: 9_000,
+      requiredCapabilities: [],
+      requiresHumanApproval: true
+    }];
+    crossRun.findings[0]!.candidateActionIds = [actionId];
+    const { resultHash: _crossRunHash, ...crossRunPreimage } = crossRun;
+    crossRun.resultHash = financialCouncilCanonicalHash(crossRunPreimage);
+    for (const invalid of [open, nested, crossSnapshot, crossRole, crossRun]) {
+      await assert.rejects(
+        repository.storeSpecialistResult(
+          workspace(), invalid as FinancialCouncilSpecialistResult
+        ),
+        hasCode("financial_council_specialist_result_invalid")
+      );
+    }
+    await assert.rejects(
+      repository.storeSpecialistResult(workspace("ws-2"), base),
+      hasCode("financial_council_specialist_result_invalid")
+    );
+    assert.deepEqual(await repository.listSpecialistResults(
+      workspace(), run.runId
+    ), []);
+  });
+
+  test(`${label}: specialist parser rejects a forged cross-role tax action`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("forged-action"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+    const base = specialistResultFixture(run, snapshot, "finance");
+    const actionId = financialCouncilCanonicalHash({ forgedTaxAction: true });
+    const findings = [{
+      ...base.findings[0]!, candidateActionIds: [actionId]
+    }];
+    const actions = [{
+      actionId,
+      kind: "schedule_tax_review" as const,
+      sourceFindingIds: [findings[0]!.findingId],
+      ownerRole: "finance" as const,
+      subjectRef: null,
+      explanation: "已合规，可直接申报",
+      durationDays: 14,
+      prerequisites: ["formula:forged"],
+      mutuallyExclusiveWith: [],
+      cashImpact: { conservative: 1, base: 2, optimistic: 3 },
+      profitImpact: { conservative: 0, base: 0, optimistic: 0 },
+      riskReductionBps: { conservative: 1_000, base: 2_000, optimistic: 3_000 },
+      budgetCostMinor: 0,
+      capacityUnits: 1,
+      confidenceBps: 6_000,
+      requiredCapabilities: [],
+      requiresHumanApproval: true as const
+    }];
+    const { resultHash: _old, ...oldPreimage } = base;
+    const preimage = { ...oldPreimage, findings, actions };
+    const forged = {
+      ...preimage, resultHash: financialCouncilCanonicalHash(preimage)
+    } as FinancialCouncilSpecialistResult;
+
+    await assert.rejects(
+      repository.storeSpecialistResult(workspace(), forged),
+      hasCode("financial_council_specialist_result_invalid")
+    );
+    assert.deepEqual(await repository.listSpecialistResults(
+      workspace(), run.runId
+    ), []);
+  });
+
+  test(`${label}: specialist persistence rejects future creation time`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture({
+      expiresAt: "9999-12-31T23:59:59.999Z"
+    });
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("future-result"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+    const future = specialistResultFixture(run, snapshot, "finance", {
+      createdAt: "9999-12-31T23:59:58.000Z"
+    });
+
+    await assert.rejects(
+      repository.storeSpecialistResult(workspace(), future),
+      hasCode("financial_council_specialist_result_invalid")
+    );
+    assert.deepEqual(await repository.listSpecialistResults(
+      workspace(), run.runId
+    ), []);
+  });
+
   test(`${label}: run validation uses canonical report and policy boundaries`, async () => {
     const acceptedRepository = await createRepository();
     const accepted = repositoryRunFixture({

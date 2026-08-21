@@ -10,11 +10,14 @@ import {
   financialCouncilAggregateHash
 } from "./financial-council-domain.js";
 import {
+  authorizeSpecialistResultFixture,
+  authorizedSpecialistActionResultFixture,
   builderSnapshotFixture,
   command,
   registerFinancialCouncilRepositoryContract,
   repositoryRunFixture,
   resignSnapshotRecord,
+  specialistResultFixture,
   snapshotFixture,
   workspace
 } from "./financial-council-repository-contract-test.js";
@@ -25,6 +28,9 @@ type State = {
   runs: Row[];
   events: Row[];
   snapshots: Row[];
+  specialistResults: Row[];
+  findings: Row[];
+  actions: Row[];
 };
 
 function cloneState(state: State): State {
@@ -35,6 +41,24 @@ function compareUtf8Bytes(left: string, right: string): number {
   return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
+function mysqlDatetimeRows(
+  rows: readonly Row[],
+  column: string,
+  formatted: boolean,
+  shiftLocalDates: boolean
+): Row[] {
+  const result = structuredClone(rows);
+  if (!shiftLocalDates) return result;
+  for (const row of result) {
+    const raw = String(row[column]);
+    const utc = `${raw.replace(" ", "T")}Z`;
+    row[column] = formatted
+      ? new Date(utc).toISOString()
+      : new Date(`${raw.replace(" ", "T")}+08:00`);
+  }
+  return result;
+}
+
 type FailurePoint =
   | "run_insert"
   | "created_event_insert"
@@ -42,6 +66,9 @@ type FailurePoint =
   | "run_update"
   | "event_insert"
   | "frozen_event_insert"
+  | "specialist_result_insert"
+  | "finding_insert"
+  | "action_insert"
   | null;
 
 class FakeConnection {
@@ -66,6 +93,9 @@ class FakeConnection {
       this.pool.state.runs = this.pending.runs;
       this.pool.state.events = this.pending.events;
       this.pool.state.snapshots = this.pending.snapshots;
+      this.pool.state.specialistResults = this.pending.specialistResults;
+      this.pool.state.findings = this.pending.findings;
+      this.pool.state.actions = this.pending.actions;
     }
     this.pending = null;
     this.dirty = false;
@@ -175,7 +205,9 @@ class FakeConnection {
       const rows = state.events.filter((row) =>
         row.workspace_id === values[0] && row.run_id === values[1]);
       rows.sort((a, b) => Number(a.revision) - Number(b.revision));
-      return [structuredClone(rows), []];
+      return [mysqlDatetimeRows(rows, "occurred_at",
+        normalized.includes("DATE_FORMAT(occurred_at"),
+        this.pool.shiftDatetimeDates), []];
     }
     if (normalized.startsWith("SELECT")
       && normalized.includes("FROM financial_council_snapshots")) {
@@ -190,7 +222,45 @@ class FakeConnection {
       }
       const rows = state.snapshots.filter((row) =>
         row.workspace_id === values[0] && row.run_id === values[1]);
-      return [structuredClone(rows.slice(0, 1)), []];
+      return [mysqlDatetimeRows(rows.slice(0, 1), "created_at",
+        normalized.includes("DATE_FORMAT(created_at"),
+        this.pool.shiftDatetimeDates), []];
+    }
+    if (normalized.startsWith("SELECT")
+      && normalized.includes("FROM financial_council_specialist_results")) {
+      let rows = state.specialistResults.filter((row) =>
+        row.workspace_id === values[0] && row.run_id === values[1]);
+      if (values.length >= 4) rows = rows.filter((row) =>
+        row.role === values[2] && row.phase === values[3]);
+      const order = ["finance", "profit", "cost", "cashflow", "tax"];
+      rows.sort((left, right) => order.indexOf(String(left.role))
+        - order.indexOf(String(right.role))
+        || String(left.phase).localeCompare(String(right.phase)));
+      return [mysqlDatetimeRows(
+        values.length >= 4 ? rows.slice(0, 1) : rows, "created_at",
+        normalized.includes("DATE_FORMAT(created_at"),
+        this.pool.shiftDatetimeDates
+      ), []];
+    }
+    if (normalized.startsWith("SELECT")
+      && normalized.includes("FROM financial_council_findings")) {
+      const rows = state.findings.filter((row) =>
+        row.workspace_id === values[0] && row.run_id === values[1]
+          && row.role === values[2] && row.phase === values[3])
+        .sort((left, right) => compareUtf8Bytes(
+          String(left.finding_id), String(right.finding_id)
+        ));
+      return [structuredClone(rows), []];
+    }
+    if (normalized.startsWith("SELECT")
+      && normalized.includes("FROM financial_council_candidate_actions")) {
+      const rows = state.actions.filter((row) =>
+        row.workspace_id === values[0] && row.run_id === values[1]
+          && row.role === values[2] && row.phase === values[3])
+        .sort((left, right) => compareUtf8Bytes(
+          String(left.action_id), String(right.action_id)
+        ));
+      return [structuredClone(rows), []];
     }
     if (normalized.startsWith("INSERT INTO financial_council_runs")) {
       this.pool.createInsertAttempts += 1;
@@ -256,6 +326,68 @@ class FakeConnection {
       this.dirty = true;
       return [{ affectedRows: 1 }, []];
     }
+    if (normalized.startsWith(
+      "INSERT INTO financial_council_specialist_results")) {
+      if (this.pool.failurePoint === "specialist_result_insert") {
+        throw new Error("specialist result insert failed");
+      }
+      const [workspaceId, runId, role, phase, resultId, snapshotId,
+        snapshotHash, resultHash, resultJson, createdAt] = values;
+      if (state.specialistResults.some((row) =>
+        row.workspace_id === workspaceId
+          && ((row.run_id === runId && row.role === role && row.phase === phase)
+            || row.result_id === resultId))) {
+        throw Object.assign(new Error("duplicate"), {
+          code: "ER_DUP_ENTRY", errno: 1062
+        });
+      }
+      state.specialistResults.push({ workspace_id: workspaceId,
+        run_id: runId, role, phase, result_id: resultId,
+        snapshot_id: snapshotId, snapshot_hash: snapshotHash,
+        result_hash: resultHash, result_json: resultJson,
+        created_at: createdAt });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith("INSERT INTO financial_council_findings")) {
+      if (this.pool.failurePoint === "finding_insert") {
+        throw new Error("finding insert failed");
+      }
+      const [workspaceId, runId, findingId, role, phase, snapshotId,
+        findingJson] = values;
+      if (state.findings.some((row) => row.workspace_id === workspaceId
+        && row.run_id === runId && row.role === role && row.phase === phase
+        && row.finding_id === findingId)) {
+        throw Object.assign(new Error("duplicate"), {
+          code: "ER_DUP_ENTRY", errno: 1062
+        });
+      }
+      state.findings.push({ workspace_id: workspaceId, run_id: runId,
+        finding_id: findingId, role, phase, snapshot_id: snapshotId,
+        finding_json: findingJson });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "INSERT INTO financial_council_candidate_actions")) {
+      if (this.pool.failurePoint === "action_insert") {
+        throw new Error("action insert failed");
+      }
+      const [workspaceId, runId, actionId, role, phase, snapshotId,
+        actionJson] = values;
+      if (state.actions.some((row) => row.workspace_id === workspaceId
+        && row.run_id === runId && row.role === role && row.phase === phase
+        && row.action_id === actionId)) {
+        throw Object.assign(new Error("duplicate"), {
+          code: "ER_DUP_ENTRY", errno: 1062
+        });
+      }
+      state.actions.push({ workspace_id: workspaceId, run_id: runId,
+        action_id: actionId, role, phase, snapshot_id: snapshotId,
+        action_json: actionJson });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
     if (normalized.startsWith("UPDATE financial_council_runs")) {
       if (this.pool.failurePoint === "run_update") {
         throw new Error("run update failed");
@@ -276,7 +408,10 @@ class FakeConnection {
 }
 
 class FakePool {
-  readonly state: State = { runs: [], events: [], snapshots: [] };
+  readonly state: State = {
+    runs: [], events: [], snapshots: [], specialistResults: [], findings: [],
+    actions: []
+  };
   readonly connections: FakeConnection[] = [];
   readonly lockAttempts = new Map<string, number>();
   private readonly rowLocks = new Map<string, FakeConnection>();
@@ -287,6 +422,7 @@ class FakePool {
   transientCreateFailures = 0;
   createInsertAttempts = 0;
   failRollback = false;
+  shiftDatetimeDates = false;
   lockAcquire = 1;
   lockRelease = 1;
   barrierRunId: string | null = null;
@@ -487,20 +623,98 @@ test("real InnoDB concurrent create has one complete writer and one replay", {
   }
 });
 
+test("real InnoDB specialist persistence has exact replay and three-table parity", {
+  skip: !process.env.MYSQL_TEST_ADMIN_URL
+}, async () => {
+  const adminUrl = process.env.MYSQL_TEST_ADMIN_URL!;
+  const database = `financial_specialists_${process.pid}_${Date.now()}`;
+  const admin = mysql.createPool(adminUrl);
+  const target = new URL(adminUrl);
+  target.pathname = `/${database}`;
+  let pool: mysql.Pool | undefined;
+  try {
+    await admin.query(
+      "CREATE DATABASE ?? CHARACTER SET utf8mb4 COLLATE utf8mb4_bin",
+      [database]
+    );
+    pool = mysql.createPool({ uri: target.toString(), connectionLimit: 2 });
+    await ensureFinancialCouncilMysqlSchema(pool);
+    const repository = new MysqlFinancialCouncilRepository(pool);
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("live"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+    const result = authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(run, snapshot)
+    );
+
+    const first = await repository.storeSpecialistResult(workspace(), result);
+    const replay = await repository.storeSpecialistResult(workspace(), result);
+
+    assert.equal(first.replayed, false);
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay.value, first.value);
+    const [counts] = await pool.query(
+      `SELECT
+         (SELECT COUNT(*) FROM financial_council_specialist_results) AS results,
+         (SELECT COUNT(*) FROM financial_council_findings) AS findings,
+         (SELECT COUNT(*) FROM financial_council_candidate_actions) AS actions`
+    );
+    assert.deepEqual((counts as Row[])[0], {
+      results: 1, findings: 1, actions: 0
+    });
+  } finally {
+    await pool?.end();
+    await admin.query("DROP DATABASE IF EXISTS ??", [database]);
+    await admin.end();
+  }
+});
+
 registerFinancialCouncilRepositoryContract(
   "mysql financial council repository",
   () => repositoryWith().repository
 );
 
-test("financial council schema owns exactly three tables behind a named lock", async () => {
-  assert.equal(FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.length, 3);
+test("specialist result, finding, and action inserts roll back atomically", async () => {
+  for (const failurePoint of [
+    "specialist_result_insert", "finding_insert", "action_insert"
+  ] as const) {
+    const { pool, repository } = repositoryWith();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command(
+      `specialist-${failurePoint}`
+    ), { aggregate, snapshot, occurredAt: T1 })).value;
+    const result = authorizedSpecialistActionResultFixture(run, snapshot);
+    pool.failurePoint = failurePoint;
+
+    await assert.rejects(
+      repository.storeSpecialistResult(workspace(), result),
+      new RegExp(failurePoint.replaceAll("_", " "))
+    );
+
+    assert.deepEqual([
+      pool.state.specialistResults.length,
+      pool.state.findings.length,
+      pool.state.actions.length
+    ], [0, 0, 0], failurePoint);
+    assert.equal(pool.connection.calls.includes("ROLLBACK"), true);
+  }
+});
+
+test("financial council schema owns six tables behind a named lock", async () => {
+  assert.equal(FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.length, 6);
   const ddl = FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.join("\n");
   const names = [...ddl.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/gu)]
     .map((match) => match[1]);
   assert.deepEqual(names, [
     "financial_council_runs",
     "financial_council_run_events",
-    "financial_council_snapshots"
+    "financial_council_snapshots",
+    "financial_council_specialist_results",
+    "financial_council_findings",
+    "financial_council_candidate_actions"
   ]);
   const pool = new FakePool();
   await ensureFinancialCouncilMysqlSchema(pool as unknown as mysql.Pool);
@@ -517,6 +731,29 @@ test("MySQL runnable scan uses binary UTF-8 bytes and no unavailable charset", a
   assert.doesNotMatch(query, /utf16be/iu);
   assert.match(query, /ORDER BY BINARY workspace_id ASC, BINARY run_id ASC/u);
   assert.match(query, /BINARY workspace_id > BINARY \?/u);
+});
+
+test("MySQL specialist reads format DATETIME as explicit UTC text", async () => {
+  const { pool, repository } = repositoryWith();
+  const aggregate = repositoryRunFixture();
+  const snapshot = snapshotFixture(aggregate);
+  const run = (await repository.createAndFreezeRun(command("utc-result"), {
+    aggregate, snapshot, occurredAt: T1
+  })).value;
+  const result = authorizeSpecialistResultFixture(
+    run, snapshot, specialistResultFixture(run, snapshot)
+  );
+  await repository.storeSpecialistResult(workspace(), result);
+  pool.shiftDatetimeDates = true;
+
+  assert.deepEqual(await repository.getSpecialistResult(
+    workspace(), run.runId, "finance", "analyze"
+  ), result);
+  const selects = pool.connection.calls.filter((sql) =>
+    sql.includes("FROM financial_council_specialist_results"));
+  assert.equal(selects.length > 0, true);
+  assert.equal(selects.every((sql) =>
+    /DATE_FORMAT\(created_at,\s*'%Y-%m-%dT%H:%i:%s\.%fZ'\)/u.test(sql)), true);
 });
 
 test("schema lock failures poison the owning connection", async () => {
@@ -550,6 +787,34 @@ test("MySQL run reads reject open JSON and duplicate object keys", async () => {
       (error: unknown) => (error as { code?: unknown }).code
         === "financial_council_mysql_integrity"
     );
+  }
+});
+
+test("MySQL specialist reads reject open result JSON and missing child rows", async () => {
+  for (const corruption of ["open", "missing_finding"] as const) {
+    const { pool, repository } = repositoryWith();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command(
+      `specialist-corruption-${corruption}`
+    ), { aggregate, snapshot, occurredAt: T1 })).value;
+    const result = authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(run, snapshot)
+    );
+    await repository.storeSpecialistResult(workspace(), result);
+    if (corruption === "open") {
+      const row = pool.state.specialistResults[0]!;
+      row.result_json = JSON.stringify({
+        ...JSON.parse(String(row.result_json)), hidden: true
+      });
+    } else {
+      pool.state.findings.splice(0, 1);
+    }
+
+    await assert.rejects(repository.getSpecialistResult(
+      workspace(), run.runId, "finance", "analyze"
+    ), (error: unknown) => (error as { code?: unknown }).code
+      === "financial_council_mysql_integrity");
   }
 });
 

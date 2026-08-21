@@ -27,13 +27,24 @@ import {
   validateListRunnableFinancialCouncilRunsInput,
   validateFinancialCouncilStoreSnapshotMutation,
   validateFinancialCouncilTransitionMutation,
+  validateFinancialCouncilSpecialistResult,
   type FinancialCouncilCommandResult,
   type CreateAndFreezeFinancialCouncilRunInput,
   type FinancialCouncilRepository,
+  type FinancialCouncilSpecialistPhase,
+  type FinancialCouncilSpecialistResult,
   type ListRunnableFinancialCouncilRunsInput,
   type StoreFrozenFinancialSnapshotInput,
-  type TransitionFinancialCouncilRunInput
+  type TransitionFinancialCouncilRunInput,
+  type VerifiedFinancialCouncilRunSnapshot
 } from "./financial-council-repository.js";
+import {
+  assertFinancialCouncilSpecialistResultAuthorized,
+  type AuthorizedFinancialCouncilSpecialistResult
+} from "./financial-council-finding-validator.js";
+import { validateFinancialSnapshotForRun } from
+  "./financial-council-snapshot.js";
+import type { FinancialCouncilAgentRole } from "./growth-contract-types.js";
 
 type MysqlRow = Record<string, unknown>;
 
@@ -95,12 +106,88 @@ export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
       ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT chk_financial_council_snapshot_json
       CHECK (JSON_VALID(snapshot_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_specialist_results (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    role VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    phase VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    result_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    snapshot_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    snapshot_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    result_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    result_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    created_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id, run_id, role, phase),
+    UNIQUE KEY uk_financial_council_specialist_result_id
+      (workspace_id, result_id),
+    CONSTRAINT fk_financial_council_specialist_run
+      FOREIGN KEY (workspace_id, run_id)
+      REFERENCES financial_council_runs (workspace_id, run_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT fk_financial_council_specialist_snapshot
+      FOREIGN KEY (workspace_id, snapshot_id)
+      REFERENCES financial_council_snapshots (workspace_id, snapshot_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_specialist_role CHECK
+      (role IN ('finance','profit','cost','cashflow','tax')),
+    CONSTRAINT chk_financial_council_specialist_phase CHECK
+      (phase IN ('analyze','rebut')),
+    CONSTRAINT chk_financial_council_specialist_json
+      CHECK (JSON_VALID(result_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_findings (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    finding_id VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    role VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    phase VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    snapshot_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    finding_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    PRIMARY KEY (workspace_id, run_id, role, phase, finding_id),
+    CONSTRAINT fk_financial_council_finding_result
+      FOREIGN KEY (workspace_id, run_id, role, phase)
+      REFERENCES financial_council_specialist_results
+        (workspace_id, run_id, role, phase)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_finding_json
+      CHECK (JSON_VALID(finding_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_candidate_actions (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    action_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    role VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    phase VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    snapshot_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    action_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    PRIMARY KEY (workspace_id, run_id, role, phase, action_id),
+    CONSTRAINT fk_financial_council_action_result
+      FOREIGN KEY (workspace_id, run_id, role, phase)
+      REFERENCES financial_council_specialist_results
+        (workspace_id, run_id, role, phase)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_action_json
+      CHECK (JSON_VALID(action_json))
   ) ENGINE=InnoDB`
 ] as const);
 
 const FINANCIAL_COUNCIL_SCHEMA_LOCK = "financial:council-schema:v1";
 const HASH = /^sha256:[0-9a-f]{64}$/u;
 const STATUSES = new Set<string>(FINANCIAL_COUNCIL_RUN_STATUSES);
+const SPECIALIST_ROLES = new Set<string>([
+  "finance", "profit", "cost", "cashflow", "tax"
+]);
+const SPECIALIST_PHASES = new Set<string>(["analyze", "rebut"]);
+const EVENT_SELECT = `SELECT event_id, run_id, workspace_id, revision,
+  from_status, to_status, reason_code,
+  DATE_FORMAT(occurred_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS occurred_at,
+  actor_id, aggregate_snapshot_hash, aggregate_snapshot_json
+  FROM financial_council_run_events`;
+const SNAPSHOT_SELECT = `SELECT snapshot_id, run_id, workspace_id,
+  snapshot_hash, snapshot_json,
+  DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at
+  FROM financial_council_snapshots`;
 
 function codedError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });
@@ -437,6 +524,68 @@ function assertStoredSnapshot(
   }
 }
 
+function parseSpecialistResult(
+  row: MysqlRow,
+  findingRows: readonly MysqlRow[],
+  actionRows: readonly MysqlRow[]
+): FinancialCouncilSpecialistResult {
+  try {
+    const result = validateFinancialCouncilSpecialistResult(
+      jsonObject(row.result_json)
+    );
+    if (result.workspaceId !== rowString(row, "workspace_id")
+      || result.runId !== rowString(row, "run_id")
+      || result.role !== rowString(row, "role")
+      || result.phase !== rowString(row, "phase")
+      || result.resultId !== rowString(row, "result_id")
+      || result.snapshotId !== rowString(row, "snapshot_id")
+      || result.snapshotHash !== rowString(row, "snapshot_hash")
+      || result.resultHash !== rowString(row, "result_hash")
+      || result.createdAt !== isoDate(row.created_at)) integrity();
+    const findings = findingRows.map((findingRow) => {
+      const value = jsonObject(findingRow.finding_json);
+      if (rowString(findingRow, "workspace_id") !== result.workspaceId
+        || rowString(findingRow, "run_id") !== result.runId
+        || rowString(findingRow, "role") !== result.role
+        || rowString(findingRow, "phase") !== result.phase
+        || rowString(findingRow, "snapshot_id") !== result.snapshotId
+        || rowString(findingRow, "finding_id") !== value.findingId) {
+        integrity();
+      }
+      return value;
+    }).sort((left, right) => Buffer.compare(
+      Buffer.from(String(left.findingId), "utf8"),
+      Buffer.from(String(right.findingId), "utf8")
+    ));
+    const actions = actionRows.map((actionRow) => {
+      const value = jsonObject(actionRow.action_json);
+      if (rowString(actionRow, "workspace_id") !== result.workspaceId
+        || rowString(actionRow, "run_id") !== result.runId
+        || rowString(actionRow, "role") !== result.role
+        || rowString(actionRow, "phase") !== result.phase
+        || rowString(actionRow, "snapshot_id") !== result.snapshotId
+        || rowString(actionRow, "action_id") !== value.actionId) {
+        integrity();
+      }
+      return value;
+    }).sort((left, right) => Buffer.compare(
+      Buffer.from(String(left.actionId), "utf8"),
+      Buffer.from(String(right.actionId), "utf8")
+    ));
+    const expectedFindings = [...result.findings].sort((left, right) =>
+      Buffer.compare(Buffer.from(left.findingId, "utf8"),
+        Buffer.from(right.findingId, "utf8")));
+    const expectedActions = [...result.actions].sort((left, right) =>
+      Buffer.compare(Buffer.from(left.actionId, "utf8"),
+        Buffer.from(right.actionId, "utf8")));
+    if (canonical(findings) !== canonical(expectedFindings)
+      || canonical(actions) !== canonical(expectedActions)) integrity();
+    return result;
+  } catch {
+    integrity();
+  }
+}
+
 function expectedRevision(command: CommandContext): number {
   return command.expectedRevision as number;
 }
@@ -600,6 +749,36 @@ implements FinancialCouncilRepository {
     return (await this.readVerifiedHistory(context, runId))?.run ?? null;
   }
 
+  async getVerifiedRunSnapshot(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<VerifiedFinancialCouncilRunSnapshot | null> {
+    return this.transaction(async (connection) => {
+      const [runRows] = await connection.query(
+        `SELECT * FROM financial_council_runs
+         WHERE workspace_id = ? AND run_id = ?`,
+        [context.workspaceId, runId]
+      );
+      const row = (runRows as MysqlRow[])[0];
+      if (!row) return null;
+      const run = parseRun(row);
+      const events = await this.verifyStoredRun(connection, run);
+      const [snapshotRows] = await connection.query(
+        `${SNAPSHOT_SELECT}
+         WHERE workspace_id = ? AND run_id = ?`,
+        [context.workspaceId, runId]
+      );
+      const snapshotRow = (snapshotRows as MysqlRow[])[0];
+      if (!snapshotRow) integrity();
+      const record = parseSnapshot(snapshotRow);
+      assertStoredSnapshot(run, record, events);
+      return immutableFinancialCouncilValue({
+        run,
+        snapshot: validateFinancialSnapshotForRun(record.snapshot, run)
+      });
+    }, true);
+  }
+
   async listEvents(
     context: ActiveWorkspaceContext,
     runId: string
@@ -628,7 +807,7 @@ implements FinancialCouncilRepository {
       }
       assertFinancialSnapshotRecord(current, input.snapshot);
       const [existingRows] = await connection.query(
-        `SELECT * FROM financial_council_snapshots
+        `${SNAPSHOT_SELECT}
          WHERE workspace_id = ? AND run_id = ? FOR UPDATE`,
         [current.workspaceId, current.runId]
       );
@@ -736,14 +915,14 @@ implements FinancialCouncilRepository {
         const run = parseRun(row);
         if (run.status !== "snapshot_frozen") integrity();
         const [eventRows] = await connection.query(
-          `SELECT * FROM financial_council_run_events
+          `${EVENT_SELECT}
            WHERE workspace_id = ? AND run_id = ? ORDER BY revision ASC`,
           [run.workspaceId, run.runId]
         );
         const events = Object.freeze((eventRows as MysqlRow[]).map(parseEvent));
         assertFinancialCouncilRunHistory(run, events, integrity);
         const [snapshotRows] = await connection.query(
-          `SELECT * FROM financial_council_snapshots
+          `${SNAPSHOT_SELECT}
            WHERE workspace_id = ? AND run_id = ?`,
           [run.workspaceId, run.runId]
         );
@@ -757,6 +936,157 @@ implements FinancialCouncilRepository {
     }, true);
   }
 
+  async storeSpecialistResult(
+    context: ActiveWorkspaceContext,
+    rawResult: AuthorizedFinancialCouncilSpecialistResult
+  ): Promise<FinancialCouncilCommandResult<
+  AuthorizedFinancialCouncilSpecialistResult>> {
+    assertFinancialCouncilSpecialistResultAuthorized(rawResult);
+    const result = validateFinancialCouncilSpecialistResult(rawResult);
+    if (result.workspaceId !== context.workspaceId) {
+      throw financialCouncilError("financial_council_specialist_result_invalid");
+    }
+    try {
+      return await this.transaction(async (connection) => {
+        const run = await this.findByRunId(
+          connection, context.workspaceId, result.runId, true
+        );
+        if (!run) throw financialCouncilError("financial_council_run_not_found");
+        const events = await this.verifyStoredRun(connection, run);
+        const [snapshotRows] = await connection.query(
+          `${SNAPSHOT_SELECT}
+           WHERE workspace_id = ? AND run_id = ? FOR UPDATE`,
+          [context.workspaceId, result.runId]
+        );
+        const snapshotRow = (snapshotRows as MysqlRow[])[0];
+        if (!snapshotRow) integrity();
+        const snapshot = parseSnapshot(snapshotRow);
+        assertStoredSnapshot(run, snapshot, events);
+        if (result.snapshotId !== snapshot.snapshotId
+          || result.snapshotHash !== snapshot.snapshotHash
+          || Date.parse(result.createdAt) < Date.parse(run.updatedAt)
+          || Date.parse(result.createdAt) > Date.parse(run.expiresAt)
+          || Date.parse(result.createdAt) > Date.now() + 1_000) {
+          throw financialCouncilError(
+            "financial_council_specialist_result_invalid"
+          );
+        }
+        const existing = await this.readSpecialistResult(
+          connection, result.workspaceId, result.runId,
+          result.role, result.phase, true
+        );
+        if (existing) {
+          if (canonical(existing) !== canonical(result)) {
+            throw financialCouncilError("financial_council_specialist_conflict");
+          }
+          return { value: rawResult, replayed: true };
+        }
+        await connection.query(
+          `INSERT INTO financial_council_specialist_results (
+             workspace_id, run_id, role, phase, result_id, snapshot_id,
+             snapshot_hash, result_hash, result_json, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [result.workspaceId, result.runId, result.role, result.phase,
+            result.resultId, result.snapshotId, result.snapshotHash,
+            result.resultHash, canonical(result), sqlDate(result.createdAt)]
+        );
+        for (const finding of result.findings) {
+          await connection.query(
+            `INSERT INTO financial_council_findings (
+               workspace_id, run_id, finding_id, role, phase, snapshot_id,
+               finding_json
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [result.workspaceId, result.runId, finding.findingId, result.role,
+              result.phase, result.snapshotId, canonical(finding)]
+          );
+        }
+        for (const action of result.actions) {
+          await connection.query(
+            `INSERT INTO financial_council_candidate_actions (
+               workspace_id, run_id, action_id, role, phase, snapshot_id,
+               action_json
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [result.workspaceId, result.runId, action.actionId, result.role,
+              result.phase, result.snapshotId, canonical(action)]
+          );
+        }
+        return { value: rawResult, replayed: false };
+      });
+    } catch (error) {
+      if (!duplicateEntry(error)) throw error;
+      const existing = await this.getSpecialistResult(
+        context, result.runId, result.role, result.phase
+      );
+      if (existing && canonical(existing) === canonical(result)) {
+        return { value: rawResult, replayed: true };
+      }
+      throw financialCouncilError("financial_council_specialist_conflict");
+    }
+  }
+
+  async getSpecialistResult(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    role: FinancialCouncilAgentRole,
+    phase: FinancialCouncilSpecialistPhase
+  ): Promise<FinancialCouncilSpecialistResult | null> {
+    if (!SPECIALIST_ROLES.has(role) || !SPECIALIST_PHASES.has(phase)) {
+      throw financialCouncilError("financial_council_specialist_result_invalid");
+    }
+    return this.transaction(async (connection) => {
+      const run = await this.findByRunId(
+        connection, context.workspaceId, runId, false
+      );
+      const result = await this.readSpecialistResult(
+        connection, context.workspaceId, runId, role, phase, false
+      );
+      if (!run) {
+        if (result) integrity();
+        return null;
+      }
+      await this.verifyStoredRun(connection, run);
+      if (result && (result.snapshotId !== run.snapshotId
+        || result.snapshotHash !== run.snapshotHash)) integrity();
+      return result;
+    }, true);
+  }
+
+  async listSpecialistResults(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<readonly FinancialCouncilSpecialistResult[]> {
+    return this.transaction(async (connection) => {
+      const run = await this.findByRunId(
+        connection, context.workspaceId, runId, false
+      );
+      const [rows] = await connection.query(
+        `SELECT workspace_id, run_id, role, phase, result_id, snapshot_id,
+                snapshot_hash, result_hash, result_json,
+                DATE_FORMAT(created_at,
+                  '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at
+         FROM financial_council_specialist_results
+         WHERE workspace_id = ? AND run_id = ?
+         ORDER BY CASE role
+           WHEN 'finance' THEN 1 WHEN 'profit' THEN 2 WHEN 'cost' THEN 3
+           WHEN 'cashflow' THEN 4 WHEN 'tax' THEN 5 ELSE 6 END, phase ASC`,
+        [context.workspaceId, runId]
+      );
+      if (!run) {
+        if ((rows as MysqlRow[]).length !== 0) integrity();
+        return Object.freeze([]);
+      }
+      await this.verifyStoredRun(connection, run);
+      const results: FinancialCouncilSpecialistResult[] = [];
+      for (const row of rows as MysqlRow[]) {
+        const result = await this.readSpecialistResultByRow(connection, row);
+        if (result.snapshotId !== run.snapshotId
+          || result.snapshotHash !== run.snapshotHash) integrity();
+        results.push(result);
+      }
+      return Object.freeze(results);
+    }, true);
+  }
+
   private replay(
     existing: FinancialCouncilRun,
     requestHash: string
@@ -765,6 +1095,49 @@ implements FinancialCouncilRepository {
       throw financialCouncilError("financial_council_idempotency_conflict");
     }
     return { value: existing, replayed: true };
+  }
+
+  private async readSpecialistResult(
+    source: Pick<mysql.Pool, "query">,
+    workspaceId: string,
+    runId: string,
+    role: FinancialCouncilAgentRole,
+    phase: FinancialCouncilSpecialistPhase,
+    lock: boolean
+  ): Promise<FinancialCouncilSpecialistResult | null> {
+    const [rows] = await source.query(
+      `SELECT workspace_id, run_id, role, phase, result_id, snapshot_id,
+              snapshot_hash, result_hash, result_json,
+              DATE_FORMAT(created_at,
+                '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at
+       FROM financial_council_specialist_results
+       WHERE workspace_id = ? AND run_id = ? AND role = ? AND phase = ?`
+        + (lock ? " FOR UPDATE" : ""),
+      [workspaceId, runId, role, phase]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? this.readSpecialistResultByRow(source, row) : null;
+  }
+
+  private async readSpecialistResultByRow(
+    source: Pick<mysql.Pool, "query">,
+    row: MysqlRow
+  ): Promise<FinancialCouncilSpecialistResult> {
+    const values = [rowString(row, "workspace_id"), rowString(row, "run_id"),
+      rowString(row, "role"), rowString(row, "phase")];
+    const [findingRows] = await source.query(
+      `SELECT * FROM financial_council_findings
+       WHERE workspace_id = ? AND run_id = ? AND role = ? AND phase = ?
+       ORDER BY BINARY finding_id ASC`, values
+    );
+    const [actionRows] = await source.query(
+      `SELECT * FROM financial_council_candidate_actions
+       WHERE workspace_id = ? AND run_id = ? AND role = ? AND phase = ?
+       ORDER BY BINARY action_id ASC`, values
+    );
+    return parseSpecialistResult(
+      row, findingRows as MysqlRow[], actionRows as MysqlRow[]
+    );
   }
 
   private async readVerifiedFrozenByCreationKey(
@@ -795,7 +1168,7 @@ implements FinancialCouncilRepository {
     suppliedEventRows?: readonly MysqlRow[]
   ): Promise<readonly FinancialCouncilRunEvent[]> {
     const eventRows = suppliedEventRows ?? (await source.query(
-      `SELECT * FROM financial_council_run_events
+      `${EVENT_SELECT}
        WHERE workspace_id = ? AND run_id = ? ORDER BY revision ASC`,
       [run.workspaceId, run.runId]
     ))[0] as MysqlRow[];
@@ -803,7 +1176,7 @@ implements FinancialCouncilRepository {
     assertFinancialCouncilRunHistory(run, events, integrity);
     if (run.snapshotId !== null) {
       const [snapshotRows] = await source.query(
-        `SELECT * FROM financial_council_snapshots
+        `${SNAPSHOT_SELECT}
          WHERE workspace_id = ? AND run_id = ?`,
         [run.workspaceId, run.runId]
       );
@@ -830,7 +1203,7 @@ implements FinancialCouncilRepository {
         [context.workspaceId, runId]
       );
       const [eventRows] = await connection.query(
-        `SELECT * FROM financial_council_run_events
+        `${EVENT_SELECT}
          WHERE workspace_id = ? AND run_id = ? ORDER BY revision ASC`,
         [context.workspaceId, runId]
       );

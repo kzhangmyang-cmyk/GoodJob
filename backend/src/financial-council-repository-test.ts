@@ -7,8 +7,9 @@ import {
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  builderSnapshotFixture, command, repositoryRunFixture, resignSnapshotRecord,
-  snapshotFixture, T1, workspace
+  authorizeSpecialistResultFixture, builderSnapshotFixture, command,
+  repositoryRunFixture, resignSnapshotRecord, snapshotFixture,
+  specialistResultFixture, T1, workspace
 } from "./financial-council-repository-contract-test.js";
 import { financialCouncilAggregateHash } from
   "./financial-council-domain.js";
@@ -193,5 +194,85 @@ test("memory legacy create replay rejects a missing or corrupted first event", a
       (error: unknown) =>
         (error as { code?: unknown }).code === "financial_council_integrity"
     );
+  }
+});
+
+test("memory specialist reads reject missing atomic child records", async () => {
+  const repository = new InMemoryFinancialCouncilRepository();
+  const aggregate = repositoryRunFixture();
+  const snapshot = snapshotFixture(aggregate);
+  const run = (await repository.createAndFreezeRun(command("specialist"), {
+    aggregate, snapshot, occurredAt: T1
+  })).value;
+  await repository.storeSpecialistResult(
+    workspace(), authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(run, snapshot)
+    )
+  );
+  const internal = repository as unknown as {
+    state: { specialistFindings: Map<string, unknown> }
+  };
+  internal.state.specialistFindings.clear();
+
+  await assert.rejects(repository.getSpecialistResult(
+    workspace(), run.runId, "finance", "analyze"
+  ), (error: unknown) => (error as { code?: unknown }).code
+    === "financial_council_integrity");
+});
+
+test("memory specialist listing rejects an orphan result without its run", async () => {
+  const repository = new InMemoryFinancialCouncilRepository();
+  const aggregate = repositoryRunFixture();
+  const snapshot = snapshotFixture(aggregate);
+  const run = (await repository.createAndFreezeRun(command("specialist"), {
+    aggregate, snapshot, occurredAt: T1
+  })).value;
+  await repository.storeSpecialistResult(
+    workspace(), authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(run, snapshot)
+    )
+  );
+  const internal = repository as unknown as {
+    state: { runs: Map<string, unknown> }
+  };
+  internal.state.runs.clear();
+
+  await assert.rejects(repository.listSpecialistResults(
+    workspace(), run.runId
+  ), (error: unknown) => (error as { code?: unknown }).code
+    === "financial_council_integrity");
+});
+
+test("memory specialist reads bind each map key to its role and phase", async () => {
+  const repository = new InMemoryFinancialCouncilRepository();
+  const aggregate = repositoryRunFixture();
+  const snapshot = snapshotFixture(aggregate);
+  const run = (await repository.createAndFreezeRun(command("specialist"), {
+    aggregate, snapshot, occurredAt: T1
+  })).value;
+  await repository.storeSpecialistResult(
+    workspace(), authorizeSpecialistResultFixture(
+      run, snapshot, specialistResultFixture(run, snapshot)
+    )
+  );
+  const internal = repository as unknown as {
+    state: { specialistResults: Map<string, unknown> }
+  };
+  const financeKey = `${run.workspaceId}\u0000${run.runId}`
+    + "\u0000finance\u0000analyze";
+  const profitKey = `${run.workspaceId}\u0000${run.runId}`
+    + "\u0000profit\u0000analyze";
+  const stored = internal.state.specialistResults.get(financeKey)!;
+  internal.state.specialistResults.delete(financeKey);
+  internal.state.specialistResults.set(profitKey, stored);
+
+  for (const read of [
+    () => repository.getSpecialistResult(
+      workspace(), run.runId, "profit", "analyze"
+    ),
+    () => repository.listSpecialistResults(workspace(), run.runId)
+  ]) {
+    await assert.rejects(read(), (error: unknown) =>
+      (error as { code?: unknown }).code === "financial_council_integrity");
   }
 });

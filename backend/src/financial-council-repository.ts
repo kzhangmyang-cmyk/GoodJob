@@ -19,8 +19,21 @@ import {
 } from "./financial-council-domain.js";
 import {
   validateFinancialSnapshot,
-  validateFinancialSnapshotForRun
+  validateFinancialSnapshotForRun,
+  type FinancialSnapshot
 } from "./financial-council-snapshot.js";
+import type { FinancialCouncilModelBinding } from
+  "./financial-council-model-port.js";
+import {
+  assertFinancialCouncilSpecialistResultAuthorized,
+  type AuthorizedFinancialCouncilSpecialistResult
+} from "./financial-council-finding-validator.js";
+import { MODEL_PROVIDER_IDS } from "./model-providers/types.js";
+import type {
+  FinancialCouncilAgentRole,
+  FinancialCouncilCandidateAction,
+  FinancialCouncilFinding
+} from "./growth-contract-types.js";
 
 export interface FinancialCouncilCommandResult<T> {
   readonly value: T;
@@ -54,6 +67,32 @@ export interface ListRunnableFinancialCouncilRunsInput {
   readonly limit: number;
 }
 
+export type FinancialCouncilSpecialistPhase = "analyze" | "rebut";
+
+export interface VerifiedFinancialCouncilRunSnapshot {
+  readonly run: FinancialCouncilRun;
+  readonly snapshot: FinancialSnapshot;
+}
+
+export interface FinancialCouncilSpecialistResult {
+  readonly resultId: `sha256:${string}`;
+  readonly workspaceId: string;
+  readonly runId: string;
+  readonly snapshotId: string;
+  readonly snapshotHash: `sha256:${string}`;
+  readonly role: FinancialCouncilAgentRole;
+  readonly phase: FinancialCouncilSpecialistPhase;
+  readonly attempt: number;
+  readonly outputHash: `sha256:${string}`;
+  readonly modelBinding: FinancialCouncilModelBinding;
+  readonly repaired: boolean;
+  readonly providerRequestId: string | null;
+  readonly findings: readonly FinancialCouncilFinding[];
+  readonly actions: readonly FinancialCouncilCandidateAction[];
+  readonly createdAt: string;
+  readonly resultHash: `sha256:${string}`;
+}
+
 export interface FinancialCouncilRepository {
   createAndFreezeRun(
     command: CommandContext,
@@ -72,6 +111,10 @@ export interface FinancialCouncilRepository {
     context: ActiveWorkspaceContext,
     runId: string
   ): Promise<FinancialCouncilRun | null>;
+  getVerifiedRunSnapshot(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<VerifiedFinancialCouncilRunSnapshot | null>;
   listEvents(
     context: ActiveWorkspaceContext,
     runId: string
@@ -87,12 +130,81 @@ export interface FinancialCouncilRepository {
   listRunnableRuns(
     input: ListRunnableFinancialCouncilRunsInput
   ): Promise<readonly FinancialCouncilRun[]>;
+  storeSpecialistResult(
+    context: ActiveWorkspaceContext,
+    result: AuthorizedFinancialCouncilSpecialistResult
+  ): Promise<FinancialCouncilCommandResult<
+  AuthorizedFinancialCouncilSpecialistResult>>;
+  getSpecialistResult(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    role: FinancialCouncilAgentRole,
+    phase: FinancialCouncilSpecialistPhase
+  ): Promise<FinancialCouncilSpecialistResult | null>;
+  listSpecialistResults(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<readonly FinancialCouncilSpecialistResult[]>;
+}
+
+interface StoredSpecialistFinding {
+  readonly role: FinancialCouncilAgentRole;
+  readonly phase: FinancialCouncilSpecialistPhase;
+  readonly value: FinancialCouncilFinding;
+}
+
+interface StoredSpecialistAction {
+  readonly role: FinancialCouncilAgentRole;
+  readonly phase: FinancialCouncilSpecialistPhase;
+  readonly value: FinancialCouncilCandidateAction;
 }
 
 const HASH = /^sha256:[0-9a-f]{64}$/u;
 const TRANSITION_KINDS = new Set<string>(
   FINANCIAL_COUNCIL_RUN_STATUSES.filter((status) => status !== "created")
 );
+const SPECIALIST_ROLES = new Set<string>([
+  "finance", "profit", "cost", "cashflow", "tax"
+]);
+const SPECIALIST_PHASES = new Set<string>(["analyze", "rebut"]);
+const SPECIALIST_ACTION_KINDS = new Set<string>([
+  "collect_receivable", "review_loss_product_pricing",
+  "reduce_cost_anomaly", "prepare_cash_reserve_budget",
+  "complete_financial_data", "schedule_tax_review"
+]);
+const SPECIALIST_ACTION_RULES = Object.freeze({
+  collect_receivable: {
+    role: "cashflow", explanation: "collect_receivable_hypothesis",
+    formulaVersion: "eligible-overdue-receivable.v1", durationDays: 30,
+    confidenceBps: 7_500, subject: "optional", impact: "cash"
+  },
+  review_loss_product_pricing: {
+    role: "profit", explanation: "review_loss_product_pricing_hypothesis",
+    formulaVersion: "loss-product-pricing-gap.v1", durationDays: 14,
+    confidenceBps: 7_000, subject: "optional", impact: "profit"
+  },
+  reduce_cost_anomaly: {
+    role: "cost", explanation: "reduce_cost_anomaly_hypothesis",
+    formulaVersion: "verified-avoidable-cost.v1", durationDays: 30,
+    confidenceBps: 6_500, subject: "null", impact: "profit"
+  },
+  prepare_cash_reserve_budget: {
+    role: "cashflow", explanation: "prepare_cash_reserve_budget_hypothesis",
+    formulaVersion: "cash-shortfall.v1", durationDays: 7,
+    confidenceBps: 8_000, subject: "null", impact: "negative_cash"
+  },
+  complete_financial_data: {
+    role: "finance", explanation: "complete_financial_data_hypothesis",
+    formulaVersion: "financial-data-gaps.v1", durationDays: 14,
+    confidenceBps: 9_000, subject: "null", impact: "risk"
+  },
+  schedule_tax_review: {
+    role: "tax", explanation: "税务风险筛查动作；需专业人员复核",
+    formulaVersion: "tax-risk.v1", durationDays: 14,
+    confidenceBps: 6_000, subject: "null", impact: "risk"
+  }
+} as const);
+const MODEL_PROVIDERS = new Set<string>(MODEL_PROVIDER_IDS);
 
 function inputInvalid(): never {
   throw financialCouncilError("financial_council_input_invalid");
@@ -142,6 +254,285 @@ function integer(value: unknown): asserts value is number {
 function stringArray(value: unknown): asserts value is string[] {
   if (!Array.isArray(value)) inputInvalid();
   for (const item of value) identifier(item);
+}
+
+function specialInvalid(): never {
+  throw financialCouncilError("financial_council_specialist_result_invalid");
+}
+
+function specialExact(
+  value: unknown,
+  required: readonly string[]
+): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype
+    || Reflect.ownKeys(value).some((key) => typeof key !== "string")) {
+    specialInvalid();
+  }
+  const keys = Reflect.ownKeys(value) as string[];
+  if (keys.length !== required.length
+    || required.some((key) => !Object.hasOwn(value, key))
+    || keys.some((key) => !required.includes(key))) specialInvalid();
+  for (const key of keys) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) specialInvalid();
+  }
+}
+
+function specialId(value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.trim() !== value
+    || value.length < 1 || value.length > 255) specialInvalid();
+}
+
+function specialHash(value: unknown): asserts value is `sha256:${string}` {
+  if (typeof value !== "string" || !HASH.test(value)) specialInvalid();
+}
+
+function specialTimestamp(value: unknown): asserts value is string {
+  if (typeof value !== "string") specialInvalid();
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
+    specialInvalid();
+  }
+}
+
+function specialInteger(
+  value: unknown,
+  minimum = Number.MIN_SAFE_INTEGER,
+  maximum = Number.MAX_SAFE_INTEGER
+): asserts value is number {
+  if (!Number.isSafeInteger(value)
+    || Number(value) < minimum || Number(value) > maximum) specialInvalid();
+}
+
+function specialIds(value: unknown, minimum = 0): asserts value is string[] {
+  if (!Array.isArray(value) || value.length < minimum || value.length > 100) {
+    specialInvalid();
+  }
+  for (const item of value) specialId(item);
+  if (new Set(value).size !== value.length) specialInvalid();
+}
+
+function assertSpecialistEvidence(value: unknown): void {
+  specialExact(value, ["source", "sourceId", "contentHash"]);
+  if (!["crm", "quote", "financial_fact", "acquisition_cost", "roi",
+    "business_report"].includes(String(value.source))) specialInvalid();
+  specialId(value.sourceId);
+  specialHash(value.contentHash);
+}
+
+function assertSpecialistGap(value: unknown): void {
+  specialExact(value, ["code", "source", "sourceId", "description"]);
+  if (!["unverified_cost", "unverified_financial_fact", "missing_cogs",
+    "unmatched_payment", "missing_commercial_binding",
+    "import_requires_review"].includes(String(value.code))
+    || !["crm", "quote", "financial_fact", "acquisition_cost", "roi",
+      "business_report"].includes(String(value.source))) specialInvalid();
+  if (value.sourceId !== null) specialId(value.sourceId);
+  specialId(value.description);
+}
+
+function assertSpecialistFinding(
+  value: unknown,
+  outer: Pick<FinancialCouncilSpecialistResult,
+  "runId" | "snapshotId" | "role">
+): asserts value is FinancialCouncilFinding {
+  specialExact(value, ["findingId", "runId", "snapshotId", "agentRole",
+    "conclusion", "evidenceRefs", "formulaRef", "confidenceBps", "severity",
+    "assumptions", "missingData", "candidateActionIds"]);
+  specialId(value.findingId);
+  if (value.runId !== outer.runId || value.snapshotId !== outer.snapshotId
+    || value.agentRole !== outer.role) specialInvalid();
+  specialId(value.conclusion);
+  if (value.conclusion !== (outer.role === "tax"
+    ? "税务风险需专业人员复核" : "risk_hypothesis")) specialInvalid();
+  if (!Array.isArray(value.evidenceRefs) || value.evidenceRefs.length < 1
+    || value.evidenceRefs.length > 100) specialInvalid();
+  for (const ref of value.evidenceRefs) assertSpecialistEvidence(ref);
+  if (value.formulaRef !== null) {
+    specialExact(value.formulaRef,
+      ["formulaVersion", "inputHash", "resultHash"]);
+    specialId(value.formulaRef.formulaVersion);
+    specialHash(value.formulaRef.inputHash);
+    specialHash(value.formulaRef.resultHash);
+  }
+  specialInteger(value.confidenceBps, 0, 10_000);
+  if (!["info", "warning", "critical"].includes(String(value.severity))) {
+    specialInvalid();
+  }
+  specialIds(value.assumptions);
+  if (outer.role === "tax" && value.assumptions.length !== 0) specialInvalid();
+  if (!Array.isArray(value.missingData) || value.missingData.length > 100) {
+    specialInvalid();
+  }
+  for (const gap of value.missingData) assertSpecialistGap(gap);
+  specialIds(value.candidateActionIds);
+}
+
+function assertScenario(
+  value: unknown,
+  bps: boolean
+): void {
+  specialExact(value, ["conservative", "base", "optimistic"]);
+  for (const key of ["conservative", "base", "optimistic"] as const) {
+    specialInteger(value[key], bps ? 0 : Number.MIN_SAFE_INTEGER,
+      bps ? 10_000 : Number.MAX_SAFE_INTEGER);
+  }
+  if (Number(value.conservative) > Number(value.base)
+    || Number(value.base) > Number(value.optimistic)) specialInvalid();
+}
+
+function assertSpecialistAction(
+  value: unknown,
+  outer: Pick<FinancialCouncilSpecialistResult, "role">,
+  findingsById: ReadonlyMap<string, FinancialCouncilFinding>
+): asserts value is FinancialCouncilCandidateAction {
+  specialExact(value, ["actionId", "kind", "sourceFindingIds", "ownerRole",
+    "subjectRef", "explanation", "durationDays", "prerequisites",
+    "mutuallyExclusiveWith", "cashImpact", "profitImpact",
+    "riskReductionBps", "budgetCostMinor", "capacityUnits", "confidenceBps",
+    "requiredCapabilities", "requiresHumanApproval"]);
+  specialHash(value.actionId);
+  if (!SPECIALIST_ACTION_KINDS.has(String(value.kind))) specialInvalid();
+  const rule = SPECIALIST_ACTION_RULES[
+    value.kind as keyof typeof SPECIALIST_ACTION_RULES
+  ];
+  if (!rule || value.ownerRole !== outer.role || value.ownerRole !== rule.role) {
+    specialInvalid();
+  }
+  specialIds(value.sourceFindingIds, 1);
+  const sourceFindings = value.sourceFindingIds.map((id) => {
+    const finding = findingsById.get(id);
+    if (!finding?.formulaRef
+      || finding.formulaRef.formulaVersion !== rule.formulaVersion) {
+      return specialInvalid();
+    }
+    return finding;
+  });
+  if (value.subjectRef !== null) specialId(value.subjectRef);
+  if (rule.subject === "null" && value.subjectRef !== null) specialInvalid();
+  specialId(value.explanation);
+  if (value.explanation !== rule.explanation) specialInvalid();
+  specialInteger(value.durationDays, 0);
+  if (value.durationDays !== rule.durationDays) specialInvalid();
+  specialIds(value.prerequisites);
+  specialIds(value.mutuallyExclusiveWith);
+  const formulaPrerequisites = new Set(sourceFindings.map((finding) =>
+    `formula:${finding.formulaRef!.formulaVersion}:`
+      + `${finding.formulaRef!.inputHash}:${finding.formulaRef!.resultHash}`));
+  if (formulaPrerequisites.size !== 1 || value.prerequisites.length !== 1
+    || !formulaPrerequisites.has(value.prerequisites[0]!)
+    || value.mutuallyExclusiveWith.length !== 0) specialInvalid();
+  assertScenario(value.cashImpact, false);
+  assertScenario(value.profitImpact, false);
+  assertScenario(value.riskReductionBps, true);
+  specialInteger(value.budgetCostMinor, 0);
+  specialInteger(value.capacityUnits, 0);
+  specialInteger(value.confidenceBps, 0, 10_000);
+  specialIds(value.requiredCapabilities);
+  if (value.budgetCostMinor !== 0 || value.capacityUnits !== 1
+    || value.confidenceBps !== rule.confidenceBps
+    || value.requiredCapabilities.length !== 0
+    || value.requiresHumanApproval !== true) specialInvalid();
+  const cash = Object.values(value.cashImpact as Record<string, number>);
+  const profit = Object.values(value.profitImpact as Record<string, number>);
+  const risk = Object.values(value.riskReductionBps as Record<string, number>);
+  const zero = (values: readonly number[]) => values.every((item) => item === 0);
+  if ((rule.impact === "cash"
+      && (!zero(profit) || !zero(risk) || cash.some((item) => item < 0)))
+    || (rule.impact === "profit"
+      && (!zero(cash) || !zero(risk) || profit.some((item) => item < 0)))
+    || (rule.impact === "negative_cash"
+      && (!zero(profit) || !zero(risk) || cash.some((item) => item > 0)))
+    || (rule.impact === "risk" && (!zero(cash) || !zero(profit)))) {
+    specialInvalid();
+  }
+}
+
+function assertModelBinding(
+  value: unknown,
+  outer: Pick<FinancialCouncilSpecialistResult,
+  "runId" | "snapshotId" | "snapshotHash" | "role" | "phase" | "attempt">
+): asserts value is FinancialCouncilModelBinding {
+  specialExact(value, ["jobId", "runId", "snapshotId", "snapshotHash",
+    "role", "phase", "attempt", "connectionId", "credentialVersion",
+    "provider", "model", "capabilitySnapshotHash", "baseUrlFingerprint",
+    "promptVersion", "schemaVersion", "contentHash", "promptHash",
+    "schemaHash"]);
+  for (const key of ["jobId", "connectionId", "model", "baseUrlFingerprint",
+    "promptVersion", "schemaVersion"] as const) specialId(value[key]);
+  for (const key of ["snapshotHash", "capabilitySnapshotHash", "contentHash",
+    "promptHash", "schemaHash"] as const) specialHash(value[key]);
+  specialInteger(value.credentialVersion, 1);
+  if (!MODEL_PROVIDERS.has(String(value.provider))
+    || value.runId !== outer.runId || value.snapshotId !== outer.snapshotId
+    || value.snapshotHash !== outer.snapshotHash || value.role !== outer.role
+    || value.phase !== outer.phase || value.attempt !== outer.attempt
+    || value.jobId !== `financial-council:${outer.runId}:${outer.role}:`
+      + `${outer.phase}:${outer.attempt}`) specialInvalid();
+}
+
+export function validateFinancialCouncilSpecialistResult(
+  raw: unknown
+): FinancialCouncilSpecialistResult {
+  try {
+    const stable = immutableFinancialCouncilInput(raw) as unknown;
+    specialExact(stable, ["resultId", "workspaceId", "runId", "snapshotId",
+      "snapshotHash", "role", "phase", "attempt", "outputHash",
+      "modelBinding", "repaired", "providerRequestId", "findings", "actions",
+      "createdAt", "resultHash"]);
+    specialHash(stable.resultId);
+    specialId(stable.workspaceId);
+    specialId(stable.runId);
+    specialId(stable.snapshotId);
+    specialHash(stable.snapshotHash);
+    if (!SPECIALIST_ROLES.has(String(stable.role))
+      || !SPECIALIST_PHASES.has(String(stable.phase))) specialInvalid();
+    specialInteger(stable.attempt, 1, 100);
+    specialHash(stable.outputHash);
+    specialTimestamp(stable.createdAt);
+    if (typeof stable.repaired !== "boolean") specialInvalid();
+    if (stable.providerRequestId !== null) specialId(stable.providerRequestId);
+    const result = stable as unknown as FinancialCouncilSpecialistResult;
+    assertModelBinding(result.modelBinding, result);
+    if (!Array.isArray(result.findings) || result.findings.length < 1
+      || result.findings.length > 24) specialInvalid();
+    const findingsById = new Map<string, FinancialCouncilFinding>();
+    for (const finding of result.findings) {
+      assertSpecialistFinding(finding, result);
+      if (findingsById.has(finding.findingId)) specialInvalid();
+      findingsById.set(finding.findingId, finding);
+    }
+    if (!Array.isArray(result.actions) || result.actions.length > 24) {
+      specialInvalid();
+    }
+    const actionIds = new Set<string>();
+    for (const action of result.actions) {
+      assertSpecialistAction(action, result, findingsById);
+      if (actionIds.has(action.actionId)) specialInvalid();
+      actionIds.add(action.actionId);
+    }
+    for (const finding of result.findings) {
+      if (finding.candidateActionIds.some((id: string) => !actionIds.has(id))) {
+        specialInvalid();
+      }
+      const expected = result.actions.filter((action) =>
+        action.sourceFindingIds.includes(finding.findingId))
+        .map((action) => action.actionId).sort();
+      if (financialCouncilCanonicalJson(expected)
+        !== financialCouncilCanonicalJson(finding.candidateActionIds)) {
+        specialInvalid();
+      }
+    }
+    const { resultHash, ...preimage } = result;
+    specialHash(resultHash);
+    if (financialCouncilCanonicalHash(preimage) !== resultHash) specialInvalid();
+    return immutableFinancialCouncilValue(result);
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code
+      === "financial_council_specialist_result_invalid") throw error;
+    return specialInvalid();
+  }
 }
 
 function assertWorkspace(value: unknown): void {
@@ -496,13 +887,19 @@ implements FinancialCouncilRepository {
     runs: new Map<string, FinancialCouncilRun>(),
     events: new Map<string, FinancialCouncilRunEvent[]>(),
     snapshots: new Map<string, FinancialSnapshotRecord>(),
-    creationKeys: new Map<string, string>()
+    creationKeys: new Map<string, string>(),
+    specialistResults: new Map<string, FinancialCouncilSpecialistResult>(),
+    specialistFindings: new Map<string, StoredSpecialistFinding>(),
+    specialistActions: new Map<string, StoredSpecialistAction>()
   };
 
   private get runs() { return this.state.runs; }
   private get events() { return this.state.events; }
   private get snapshots() { return this.state.snapshots; }
   private get creationKeys() { return this.state.creationKeys; }
+  private get specialistResults() { return this.state.specialistResults; }
+  private get specialistFindings() { return this.state.specialistFindings; }
+  private get specialistActions() { return this.state.specialistActions; }
 
   async createAndFreezeRun(
     command: CommandContext,
@@ -548,7 +945,10 @@ implements FinancialCouncilRepository {
       runs: new Map(this.runs),
       events: new Map(this.events),
       snapshots: new Map(this.snapshots),
-      creationKeys: new Map(this.creationKeys)
+      creationKeys: new Map(this.creationKeys),
+      specialistResults: new Map(this.specialistResults),
+      specialistFindings: new Map(this.specialistFindings),
+      specialistActions: new Map(this.specialistActions)
     };
     nextState.runs.set(aggregateKey, frozen);
     nextState.events.set(aggregateKey, [createdEvent, frozenEvent]);
@@ -638,6 +1038,22 @@ implements FinancialCouncilRepository {
     const run = this.runs.get(key(context.workspaceId, runId)) ?? null;
     if (run) this.assertStoredRun(run);
     return run;
+  }
+
+  async getVerifiedRunSnapshot(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<VerifiedFinancialCouncilRunSnapshot | null> {
+    const run = this.runs.get(key(context.workspaceId, runId)) ?? null;
+    if (!run) return null;
+    this.assertStoredRun(run);
+    if (run.snapshotId === null) historyIntegrity();
+    const record = this.snapshots.get(key(run.workspaceId, run.snapshotId));
+    if (!record) historyIntegrity();
+    return immutableFinancialCouncilValue({
+      run,
+      snapshot: validateFinancialSnapshotForRun(record.snapshot, run)
+    });
   }
 
   async listEvents(
@@ -755,6 +1171,169 @@ implements FinancialCouncilRepository {
       .slice(0, input.limit));
   }
 
+  async storeSpecialistResult(
+    context: ActiveWorkspaceContext,
+    rawResult: AuthorizedFinancialCouncilSpecialistResult
+  ): Promise<FinancialCouncilCommandResult<
+  AuthorizedFinancialCouncilSpecialistResult>> {
+    assertFinancialCouncilSpecialistResultAuthorized(rawResult);
+    const result = validateFinancialCouncilSpecialistResult(rawResult);
+    if (result.workspaceId !== context.workspaceId) specialInvalid();
+    const verified = await this.getVerifiedRunSnapshot(context, result.runId);
+    if (!verified) {
+      throw financialCouncilError("financial_council_run_not_found");
+    }
+    if (verified.snapshot.snapshotId !== result.snapshotId
+      || verified.snapshot.snapshotHash !== result.snapshotHash
+      || Date.parse(result.createdAt) < Date.parse(verified.run.updatedAt)
+      || Date.parse(result.createdAt) > Date.parse(verified.run.expiresAt)
+      || Date.parse(result.createdAt) > Date.now() + 1_000) {
+      specialInvalid();
+    }
+    const resultKey = specialistKey(result.workspaceId, result.runId,
+      result.role, result.phase);
+    const existing = this.specialistResults.get(resultKey);
+    if (existing) {
+      const parsed = this.assertStoredSpecialistResult(existing);
+      if (financialCouncilCanonicalJson(parsed)
+        !== financialCouncilCanonicalJson(result)) {
+        throw financialCouncilError("financial_council_specialist_conflict");
+      }
+      return { value: rawResult, replayed: true };
+    }
+    if ([...this.specialistResults.values()].some((candidate) =>
+      candidate.workspaceId === result.workspaceId
+      && candidate.resultId === result.resultId)) {
+      throw financialCouncilError("financial_council_specialist_conflict");
+    }
+    const nextState = {
+      runs: new Map(this.runs),
+      events: new Map(this.events),
+      snapshots: new Map(this.snapshots),
+      creationKeys: new Map(this.creationKeys),
+      specialistResults: new Map(this.specialistResults),
+      specialistFindings: new Map(this.specialistFindings),
+      specialistActions: new Map(this.specialistActions)
+    };
+    for (const finding of result.findings) {
+      const findingKey = key(result.workspaceId,
+        `${result.runId}\u0000${result.role}\u0000${result.phase}`
+          + `\u0000${finding.findingId}`);
+      if (nextState.specialistFindings.has(findingKey)) {
+        throw financialCouncilError("financial_council_specialist_conflict");
+      }
+      nextState.specialistFindings.set(findingKey, Object.freeze({
+        role: result.role, phase: result.phase, value: finding
+      }));
+    }
+    for (const action of result.actions) {
+      const actionKey = key(result.workspaceId,
+        `${result.runId}\u0000${result.role}\u0000${result.phase}`
+          + `\u0000${action.actionId}`);
+      if (nextState.specialistActions.has(actionKey)) {
+        throw financialCouncilError("financial_council_specialist_conflict");
+      }
+      nextState.specialistActions.set(actionKey, Object.freeze({
+        role: result.role, phase: result.phase, value: action
+      }));
+    }
+    nextState.specialistResults.set(resultKey, result);
+    this.state = nextState;
+    return { value: rawResult, replayed: false };
+  }
+
+  async getSpecialistResult(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    rawRole: FinancialCouncilAgentRole,
+    rawPhase: FinancialCouncilSpecialistPhase
+  ): Promise<FinancialCouncilSpecialistResult | null> {
+    if (!SPECIALIST_ROLES.has(rawRole) || !SPECIALIST_PHASES.has(rawPhase)) {
+      specialInvalid();
+    }
+    const result = this.specialistResults.get(specialistKey(
+      context.workspaceId, runId, rawRole, rawPhase
+    )) ?? null;
+    if (!result) return null;
+    const parsed = this.assertStoredSpecialistResult(result);
+    if (parsed.workspaceId !== context.workspaceId || parsed.runId !== runId
+      || parsed.role !== rawRole || parsed.phase !== rawPhase) {
+      historyIntegrity();
+    }
+    const verified = await this.getVerifiedRunSnapshot(context, runId);
+    if (!verified || parsed.snapshotId !== verified.snapshot.snapshotId
+      || parsed.snapshotHash !== verified.snapshot.snapshotHash) {
+      historyIntegrity();
+    }
+    return parsed;
+  }
+
+  async listSpecialistResults(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<readonly FinancialCouncilSpecialistResult[]> {
+    const verified = await this.getVerifiedRunSnapshot(context, runId);
+    const prefix = `${context.workspaceId}\u0000${runId}\u0000`;
+    if (!verified) {
+      if ([...this.specialistResults].some(([storedKey, result]) =>
+        storedKey.startsWith(prefix)
+        || (result.workspaceId === context.workspaceId
+          && result.runId === runId))) {
+        historyIntegrity();
+      }
+      return Object.freeze([]);
+    }
+    const results = [...this.specialistResults]
+      .filter(([storedKey, result]) => storedKey.startsWith(prefix)
+        || (result.workspaceId === context.workspaceId
+          && result.runId === runId))
+      .map(([storedKey, result]) => {
+        const parsed = this.assertStoredSpecialistResult(result);
+        if (storedKey !== specialistKey(parsed.workspaceId, parsed.runId,
+          parsed.role, parsed.phase)) historyIntegrity();
+        return parsed;
+      })
+      .sort((left, right) => compareSpecialist(left, right));
+    for (const result of results) {
+      if (result.snapshotId !== verified.snapshot.snapshotId
+        || result.snapshotHash !== verified.snapshot.snapshotHash) {
+        historyIntegrity();
+      }
+    }
+    return Object.freeze(results);
+  }
+
+  private assertStoredSpecialistResult(
+    raw: FinancialCouncilSpecialistResult
+  ): FinancialCouncilSpecialistResult {
+    try {
+      const result = validateFinancialCouncilSpecialistResult(raw);
+      const prefix = `${result.workspaceId}\u0000${result.runId}\u0000`
+        + `${result.role}\u0000${result.phase}\u0000`;
+      const storedFindings = [...this.specialistFindings]
+        .filter(([storedKey]) => storedKey.startsWith(prefix))
+        .map(([, stored]) => stored.value);
+      const storedActions = [...this.specialistActions]
+        .filter(([storedKey]) => storedKey.startsWith(prefix))
+        .map(([, stored]) => stored.value);
+      if (financialCouncilCanonicalJson(storedFindings.sort((left, right) =>
+          utf8ByteCompare(left.findingId, right.findingId)))
+          !== financialCouncilCanonicalJson([...result.findings]
+            .sort((left, right) => utf8ByteCompare(
+              left.findingId, right.findingId
+            )))
+        || financialCouncilCanonicalJson(storedActions.sort((left, right) =>
+          utf8ByteCompare(left.actionId, right.actionId)))
+          !== financialCouncilCanonicalJson([...result.actions]
+            .sort((left, right) => utf8ByteCompare(
+              left.actionId, right.actionId
+            )))) historyIntegrity();
+      return result;
+    } catch {
+      historyIntegrity();
+    }
+  }
+
   private assertStoredRun(run: FinancialCouncilRun): void {
     const aggregateKey = key(run.workspaceId, run.runId);
     const events = this.events.get(aggregateKey) ?? [];
@@ -773,6 +1352,24 @@ implements FinancialCouncilRepository {
       historyIntegrity();
     }
   }
+}
+
+function specialistKey(
+  workspaceId: string,
+  runId: string,
+  role: FinancialCouncilAgentRole,
+  phase: FinancialCouncilSpecialistPhase
+): string {
+  return `${workspaceId}\u0000${runId}\u0000${role}\u0000${phase}`;
+}
+
+function compareSpecialist(
+  left: FinancialCouncilSpecialistResult,
+  right: FinancialCouncilSpecialistResult
+): number {
+  const roleOrder = ["finance", "profit", "cost", "cashflow", "tax"];
+  return roleOrder.indexOf(left.role) - roleOrder.indexOf(right.role)
+    || left.phase.localeCompare(right.phase);
 }
 
 function utf8ByteCompare(left: string, right: string): number {
