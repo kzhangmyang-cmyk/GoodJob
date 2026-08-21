@@ -45,8 +45,9 @@ import type {
 import type {
   RoiClosureEvidenceSealedReader
 } from "./roi-closure-evidence-reader.js";
-import type {
-  AdvisorRecommendationRepository
+import {
+  advisorSnapshotHash,
+  type AdvisorRecommendationRepository
 } from "./advisor-recommendation-repository.js";
 import type { AdvisorRecommendation } from "./advisor-recommendation-domain.js";
 import {
@@ -57,6 +58,10 @@ import { stableAdvisorActionHash } from "./advisor-action-operation.js";
 import type {
   GrowthWorkspaceMemberAssignabilityReader
 } from "./growth-workspace-member-assignability.js";
+import type {
+  FinancialCouncilApprovalProof,
+  FinancialCouncilApprovalProofIssuer
+} from "./financial-council-approval.js";
 
 export interface AdvisorReferenceSet {
   readonly metricRefs: readonly AdvisorMetricRef[];
@@ -617,6 +622,29 @@ export interface AdvisorRecommendationCreateInput {
   generationIdempotencyKey: string;
 }
 
+/** Internal-only hand-off shape. It is deliberately not used by HTTP or model
+ * tool adapters; the opaque approval proof is checked before any create path. */
+export interface AdvisorCouncilAcceptedCreateInput {
+  readonly councilActionId: string;
+  readonly recommendation: AdvisorRecommendationCreateInput;
+}
+
+/** The dispatch identity is persisted by Task 4 and is the only idempotency
+ * boundary accepted by this internal council hand-off. */
+export interface AdvisorCouncilApprovedDispatchInput
+extends AdvisorCouncilAcceptedCreateInput {
+  readonly dispatchHash: `sha256:${string}`;
+}
+
+/** Redacted result consumed by the council dispatch receipt. */
+export interface AdvisorCouncilDispatchResult {
+  readonly resourceRefs: readonly [{
+    readonly kind: "advisor_recommendation";
+    readonly id: string;
+  }];
+  readonly contentHash: `sha256:${string}`;
+}
+
 export class AdvisorRecommendationAuthorizer {
   constructor(
     private readonly assignability: GrowthWorkspaceMemberAssignabilityReader
@@ -672,6 +700,21 @@ function advisorRecommendationForbidden(): Error & { code: string } {
     new Error("advisor_recommendation_forbidden"),
     { code: "advisor_recommendation_forbidden" }
   );
+}
+
+function isCanonicalHash(value: unknown): value is `sha256:${string}` {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
+}
+
+function advisorCouncilDispatchResult(
+  recommendation: AdvisorRecommendation
+): AdvisorCouncilDispatchResult {
+  return Object.freeze({
+    resourceRefs: Object.freeze([Object.freeze({
+      kind: "advisor_recommendation" as const, id: recommendation.id
+    })] as const),
+    contentHash: advisorSnapshotHash(recommendation)
+  });
 }
 
 export class AdvisorRecommendationService {
@@ -769,6 +812,83 @@ export class AdvisorRecommendationService {
     };
     const result = await this.repository.create(command, aggregate);
     return result.value;
+  }
+
+  async createAcceptedFromCouncil(
+    command: CommandContext,
+    input: AdvisorCouncilAcceptedCreateInput,
+    rawApprovalProof: unknown,
+    proofs: Pick<FinancialCouncilApprovalProofIssuer, "verify">
+  ): Promise<AdvisorRecommendation> {
+    const proof = proofs.verify(rawApprovalProof);
+    return this.createAcceptedFromVerifiedCouncilProof(
+      command, input, proof, `council:${proof.approvalId}:${proof.actionId}`
+    );
+  }
+
+  async probeByDispatchHash(
+    context: ActiveWorkspaceContext,
+    dispatchHash: `sha256:${string}`
+  ): Promise<AdvisorCouncilDispatchResult | null> {
+    if (!isCanonicalHash(dispatchHash)) throw advisorRecommendationForbidden();
+    const recommendation = await this.repository.findById(
+      context, `recommendation-council:${dispatchHash}`
+    );
+    return recommendation ? advisorCouncilDispatchResult(recommendation) : null;
+  }
+
+  async createFromApprovedDispatch(
+    command: CommandContext,
+    input: AdvisorCouncilApprovedDispatchInput,
+    rawApprovalProof: unknown,
+    proofs: Pick<FinancialCouncilApprovalProofIssuer, "verify">
+  ): Promise<AdvisorCouncilDispatchResult> {
+    const proof = proofs.verify(rawApprovalProof);
+    if (!input || typeof input !== "object" || !isCanonicalHash(input.dispatchHash)) {
+      throw advisorRecommendationForbidden();
+    }
+    const recommendation = await this.createAcceptedFromVerifiedCouncilProof(
+      command, input, proof, `council:${input.dispatchHash}`
+    );
+    return advisorCouncilDispatchResult(recommendation);
+  }
+
+  private async createAcceptedFromVerifiedCouncilProof(
+    command: CommandContext,
+    input: AdvisorCouncilAcceptedCreateInput,
+    proof: FinancialCouncilApprovalProof,
+    councilKey: string
+  ): Promise<AdvisorRecommendation> {
+    if (!input || typeof input !== "object"
+      || !/^sha256:[0-9a-f]{64}$/u.test(input.councilActionId)
+      || proof.workspaceId !== command.workspace.workspaceId
+      || proof.actionId !== input.councilActionId) {
+      throw advisorRecommendationForbidden();
+    }
+    const created = await this.create(Object.freeze({
+      ...command,
+      idempotencyKey: councilKey,
+      requestHash: `sha256:${proof.approvalHash.slice(7)}`,
+      expectedRevision: null
+    }), {
+      ...input.recommendation,
+      generationIdempotencyKey: councilKey
+    });
+    if (created.status === "accepted") return created;
+    if (created.status !== "proposed") throw advisorRecommendationForbidden();
+    await this.authorizer.assertCanTransition(command.workspace, created);
+    const accepted = await this.repository.transition(Object.freeze({
+      ...command,
+      actorId: proof.approverId,
+      idempotencyKey: councilKey,
+      requestHash: `sha256:${proof.approvalHash.slice(7)}`,
+      expectedRevision: created.revision
+    }), {
+      recommendationId: created.id,
+      kind: "accept",
+      reason: null
+    });
+    return accepted.value;
   }
 
   async accept(

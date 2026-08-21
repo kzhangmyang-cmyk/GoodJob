@@ -34,6 +34,10 @@ import {
   createGrowthWorkspaceMemberAssignabilityReader
 } from "./growth-workspace-member-assignability.js";
 import { canonicalGrowthRequestHash } from "./growth-http-idempotency-repository.js";
+import {
+  FinancialCouncilApprovalProofIssuer,
+  createFinancialCouncilApprovalRecord
+} from "./financial-council-approval.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import type { AdvisorRecommendationCreateInput } from "./advisor-recommendation-service.js";
@@ -462,4 +466,107 @@ test("missing or swapped receipts fail completion with zero transition", async (
     (error: unknown) =>
       (error as { code?: string }).code === "advisor_recommendation_forbidden"
   );
+});
+
+test("council accepted creation rejects a structural lookalike proof", async () => {
+  const fixture = await createServiceFixture();
+  const proofs = new FinancialCouncilApprovalProofIssuer({
+    async getApproval() { return null; }
+  });
+
+  await assert.rejects(
+    () => fixture.service.createAcceptedFromCouncil(
+      command("council-proof", managerWorkspace),
+      { councilActionId: `sha256:${"a".repeat(64)}`,
+        recommendation: validRecommendationInput() },
+      { approvalId: `sha256:${"b".repeat(64)}` }, proofs
+    ),
+    (error: unknown) => (error as { code?: string }).code
+      === "financial_council_approval_proof_invalid"
+  );
+});
+
+test("verified council proof creates one accepted recommendation through normal reference validation", async () => {
+  const fixture = await createServiceFixture();
+  const approval = createFinancialCouncilApprovalRecord({
+    workspaceId: "ws-1", runId: "run-1", portfolioRevision: 2,
+    portfolioKind: "balanced", approvedActionIds: [`sha256:${"a".repeat(64)}`],
+    approvedActionHashes: [{ actionId: `sha256:${"a".repeat(64)}`,
+      actionHash: `sha256:${"0".repeat(64)}` }],
+    requiredCapabilities: ["finance.council.approve"], approverId: "manager-1",
+    portfolioOutputHash: `sha256:${"b".repeat(64)}`, snapshotId: "snapshot-1",
+    snapshotHash: `sha256:${"c".repeat(64)}`, policyVersionId: "policy-1",
+    policyHash: `sha256:${"d".repeat(64)}`, sourceSetHash: `sha256:${"e".repeat(64)}`,
+    commandKeyHash: `sha256:${"f".repeat(64)}`,
+    commandRequestHash: `sha256:${"1".repeat(64)}`, status: "approved",
+    reason: null, approvedAt: "2026-08-09T08:00:00.000Z"
+  });
+  const proofs = new FinancialCouncilApprovalProofIssuer({
+    async getApproval() { return approval; }
+  });
+  const proof = await proofs.issue({ workspaceId: "ws-1", runId: "run-1",
+    approvalId: approval.approvalId, actionId: `sha256:${"a".repeat(64)}` });
+
+  const created = await fixture.service.createAcceptedFromCouncil(
+    command("caller-controlled-key", managerWorkspace), {
+      councilActionId: proof.actionId,
+      recommendation: validRecommendationInput({ generationIdempotencyKey: "ignored" })
+    }, proof, proofs
+  );
+  const replay = await fixture.service.createAcceptedFromCouncil(
+    command("changed-caller-key", managerWorkspace), {
+      councilActionId: proof.actionId,
+      recommendation: validRecommendationInput({ generationIdempotencyKey: "other" })
+    }, proof, proofs
+  );
+
+  assert.equal(created.status, "accepted");
+  assert.equal(created.acceptedBy, "manager-1");
+  assert.equal(replay.id, created.id);
+  assert.equal(replay.status, "accepted");
+});
+
+test("council dispatch probes its accepted recommendation before stable replay", async () => {
+  const fixture = await createServiceFixture();
+  const approval = createFinancialCouncilApprovalRecord({
+    workspaceId: "ws-1", runId: "run-1", portfolioRevision: 2,
+    portfolioKind: "balanced", approvedActionIds: [`sha256:${"a".repeat(64)}`],
+    approvedActionHashes: [{ actionId: `sha256:${"a".repeat(64)}`,
+      actionHash: `sha256:${"0".repeat(64)}` }],
+    requiredCapabilities: ["finance.council.approve"], approverId: "manager-1",
+    portfolioOutputHash: `sha256:${"b".repeat(64)}`, snapshotId: "snapshot-1",
+    snapshotHash: `sha256:${"c".repeat(64)}`, policyVersionId: "policy-1",
+    policyHash: `sha256:${"d".repeat(64)}`, sourceSetHash: `sha256:${"e".repeat(64)}`,
+    commandKeyHash: `sha256:${"f".repeat(64)}`,
+    commandRequestHash: `sha256:${"1".repeat(64)}`, status: "approved",
+    reason: null, approvedAt: "2026-08-09T08:00:00.000Z"
+  });
+  const proofs = new FinancialCouncilApprovalProofIssuer({
+    async getApproval() { return approval; }
+  });
+  const proof = await proofs.issue({ workspaceId: "ws-1", runId: "run-1",
+    approvalId: approval.approvalId, actionId: `sha256:${"a".repeat(64)}` });
+  const dispatchHash = `sha256:${"9".repeat(64)}` as `sha256:${string}`;
+
+  assert.equal(await fixture.service.probeByDispatchHash(
+    managerWorkspace, dispatchHash
+  ), null);
+  const created = await fixture.service.createFromApprovedDispatch(
+    command("caller-controlled-key", managerWorkspace), {
+      dispatchHash, councilActionId: proof.actionId,
+      recommendation: validRecommendationInput({ generationIdempotencyKey: "ignored" })
+    }, proof, proofs
+  );
+  const replay = await fixture.service.createFromApprovedDispatch(
+    command("changed-caller-key", managerWorkspace), {
+      dispatchHash, councilActionId: proof.actionId,
+      recommendation: validRecommendationInput({ generationIdempotencyKey: "other" })
+    }, proof, proofs
+  );
+
+  assert.deepEqual(replay.resourceRefs, created.resourceRefs);
+  assert.match(created.contentHash, /^sha256:[0-9a-f]{64}$/u);
+  assert.deepEqual(await fixture.service.probeByDispatchHash(
+    managerWorkspace, dispatchHash
+  ), created);
 });
