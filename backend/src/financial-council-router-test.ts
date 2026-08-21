@@ -15,6 +15,7 @@ import { InMemoryGrowthHttpIdempotencyRepository } from
 import { GrowthAuthorizationError } from "./growth-capabilities.js";
 import { financialCouncilError } from "./financial-council-domain.js";
 import { FinancialCouncilService } from "./financial-council-service.js";
+import { loadGrowthContractRelease } from "./growth-openapi.js";
 import { InMemoryFinancialCouncilRepository } from
   "./financial-council-repository.js";
 import type { GrowthHttpIdempotencyRepository } from
@@ -225,16 +226,17 @@ function frozenRun() {
 async function listen(
   service: Record<string, unknown>,
   httpIdempotency: GrowthHttpIdempotencyRepository
-    = new InMemoryGrowthHttpIdempotencyRepository()
+    = new InMemoryGrowthHttpIdempotencyRepository(),
+  capabilities: readonly string[] = ["finance.council.run"],
+  workspaceId = "ws-1"
 ) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    const workspaceId = req.header("X-Workspace-Id") || "ws-1";
     req.activeWorkspace = Object.freeze({
       ...workspace(workspaceId),
       role: "admin" as const,
-      capabilities: Object.freeze(["finance.council.run"])
+      capabilities: Object.freeze([...capabilities])
     }) as never;
     next();
   });
@@ -254,12 +256,245 @@ async function listen(
   return {
     async request(path: string, init: RequestInit = {}) {
       const response = await fetch(`http://127.0.0.1:${port}${path}`, init);
-      return { response, body: await response.json() };
+      const body = response.headers.get("content-type")?.includes("application/json")
+        ? await response.json() : await response.text();
+      return { response, body };
     },
     close: () => new Promise<void>((resolve, reject) => server.close((error) =>
       error ? reject(error) : resolve()))
   };
 }
+
+function revisionResult() {
+  return Object.freeze({
+    runId: "council-run-1",
+    revision: 2,
+    baseRevision: 1,
+    portfolios: Object.freeze([]),
+    createdAt: NOW,
+    revisionId: `sha256:${"1".repeat(64)}`,
+    outputHash: `sha256:${"2".repeat(64)}`
+  });
+}
+
+function approvalResult(status: "approved" | "rejected") {
+  return Object.freeze({
+    approvalId: `sha256:${"3".repeat(64)}`,
+    runId: "council-run-1",
+    portfolioRevision: 2,
+    portfolioKind: "balanced" as const,
+    status,
+    approvedActionIds: status === "approved" ? Object.freeze(["action-1"])
+      : Object.freeze([]),
+    requiredCapabilities: Object.freeze(["finance.council.approve"]),
+    reason: status === "rejected" ? "needs review" : null,
+    approvedAt: NOW,
+    approvalHash: `sha256:${"4".repeat(64)}`
+  });
+}
+
+test("portfolio revision route accepts only a closed edit request and returns all recomputed portfolios", async () => {
+  const server = await listen({
+    async revisePortfolio() { return { value: revisionResult(), replayed: false }; },
+    async getRun() { return frozenRun(); },
+    async createRun() { return { value: frozenRun(), replayed: false }; },
+    async listEvents() { return []; }
+  });
+  try {
+    const result = await server.request(
+      "/api/v1/finance/council-runs/council-run-1/portfolio-revisions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json", "Idempotency-Key": "edit-1",
+          "If-Match": '"financial-council-run:council-run-1:2"'
+        },
+        body: JSON.stringify({
+          baseRevision: 1,
+          operations: [{ kind: "select_portfolio", portfolioKind: "balanced" }]
+        })
+      }
+    );
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.body, {
+      runId: "council-run-1", revision: 2, baseRevision: 1,
+      portfolios: [], createdAt: NOW
+    });
+    assert.equal(result.response.headers.get("etag"),
+      '"financial-council-run:council-run-1:2"');
+  } finally { await server.close(); }
+});
+
+test("approval and rejection bind the selected portfolio and expose only public decisions", async () => {
+  const server = await listen({
+    async approve() { return { value: approvalResult("approved"), replayed: false }; },
+    async reject() { return { value: approvalResult("rejected"), replayed: false }; },
+    async getRun() { return frozenRun(); },
+    async createRun() { return { value: frozenRun(), replayed: false }; },
+    async listEvents() { return []; }
+  }, undefined, ["finance.council.run", "finance.council.approve"]);
+  const headers = {
+    "Content-Type": "application/json", "If-Match":
+      '"financial-council-run:council-run-1:2"'
+  };
+  try {
+    const approved = await server.request(
+      "/api/v1/finance/council-runs/council-run-1/portfolio-revisions/2/approve", {
+        method: "POST", headers: { ...headers, "Idempotency-Key": "approve-1" },
+        body: JSON.stringify({ portfolioKind: "balanced" })
+      }
+    );
+    assert.equal(approved.response.status, 202);
+    assert.deepEqual(approved.body, {
+      approvalId: `sha256:${"3".repeat(64)}`, runId: "council-run-1",
+      portfolioRevision: 2, portfolioKind: "balanced", status: "approved",
+      approvedActionIds: ["action-1"],
+      requiredCapabilities: ["finance.council.approve"], reason: null,
+      approvedAt: NOW
+    });
+    assert.equal("approvalHash" in approved.body, false);
+
+    const rejected = await server.request(
+      "/api/v1/finance/council-runs/council-run-1/reject", {
+        method: "POST", headers: { ...headers, "Idempotency-Key": "reject-1" },
+        body: JSON.stringify({
+          portfolioRevision: 2, portfolioKind: "balanced", reason: "needs review"
+        })
+      }
+    );
+    assert.equal(rejected.response.status, 200);
+    assert.equal(rejected.body.status, "rejected");
+    assert.equal(rejected.body.reason, "needs review");
+  } finally { await server.close(); }
+});
+
+test("dispatch polling exposes nonterminal operation state without worker fences or hashes", async () => {
+  const server = await listen({
+    async listDispatches() {
+      return [{
+        dispatchId: `sha256:${"5".repeat(64)}`, runId: "council-run-1",
+        approvalId: `sha256:${"3".repeat(64)}`, portfolioRevision: 2,
+        portfolioKind: "balanced", actionId: "action-1", status: "retry",
+        attempt: 2, receiptId: null, lastErrorCode: "dispatch_retryable",
+        createdAt: NOW, updatedAt: NOW
+      }];
+    },
+    async getRun() { return frozenRun(); },
+    async createRun() { return { value: frozenRun(), replayed: false }; },
+    async listEvents() { return []; }
+  });
+  try {
+    const result = await server.request(
+      "/api/v1/finance/council-runs/council-run-1/dispatches"
+    );
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.body, {
+      items: [{
+        dispatchId: `sha256:${"5".repeat(64)}`, runId: "council-run-1",
+        approvalId: `sha256:${"3".repeat(64)}`, portfolioRevision: 2,
+        portfolioKind: "balanced", actionId: "action-1", status: "retry",
+        attempt: 2, receiptId: null, lastErrorCode: "dispatch_retryable",
+        createdAt: NOW, updatedAt: NOW
+      }], nextAfter: null, hasMore: false
+    });
+    assert.equal(result.response.headers.get("cache-control"), "no-store");
+  } finally { await server.close(); }
+});
+
+test("P4 route payloads conform to the closed financial council runtime schemas", async () => {
+  const schema = JSON.parse(await readFile(new URL(
+    "../../contracts/json-schema/financial-council.v1.schema.json",
+    import.meta.url
+  ), "utf8"));
+  const ajv = new Ajv2020({ strict: false });
+  ajv.addFormat("date-time", true);
+  ajv.addSchema(schema);
+  const input = ajv.compile({
+    $ref: `${schema.$id}#/$defs/FinancialCouncilPortfolioRevisionInput`
+  });
+  const revision = ajv.compile({
+    $ref: `${schema.$id}#/$defs/FinancialCouncilPortfolioRevisionView`
+  });
+  const approval = ajv.compile({
+    $ref: `${schema.$id}#/$defs/FinancialCouncilApprovalInput`
+  });
+  const rejection = ajv.compile({
+    $ref: `${schema.$id}#/$defs/FinancialCouncilRejectInput`
+  });
+  const dispatches = ajv.compile({
+    $ref: `${schema.$id}#/$defs/FinancialCouncilDispatchPagedResult`
+  });
+  assert.equal(input({
+    baseRevision: 1,
+    operations: [{ kind: "select_portfolio", portfolioKind: "balanced" }]
+  }), true, JSON.stringify(input.errors));
+  assert.equal(revision({
+    runId: "council-run-1", revision: 2, baseRevision: 1,
+    portfolios: [], createdAt: NOW
+  }), true, JSON.stringify(revision.errors));
+  assert.equal(approval({ portfolioKind: "balanced" }), true,
+    JSON.stringify(approval.errors));
+  assert.equal(rejection({
+    portfolioRevision: 2, portfolioKind: "balanced", reason: "needs review"
+  }), true, JSON.stringify(rejection.errors));
+  assert.equal(dispatches({
+    items: [{
+      dispatchId: `sha256:${"5".repeat(64)}`, runId: "council-run-1",
+      approvalId: `sha256:${"3".repeat(64)}`, portfolioRevision: 2,
+      portfolioKind: "balanced", actionId: "action-1", status: "running",
+      attempt: 1, receiptId: null, lastErrorCode: null,
+      createdAt: NOW, updatedAt: NOW
+    }], nextAfter: null, hasMore: false
+  }), true, JSON.stringify(dispatches.errors));
+});
+
+test("real mounted P4 responses conform to the immutable 1.0.10 release", async () => {
+  const release = loadGrowthContractRelease();
+  assert.equal(release.manifest.contractVersion, "1.0.10");
+  const components = structuredClone((release.document as {
+    components: { schemas: Record<string, Record<string, unknown>> };
+  }).components);
+  for (const schema of Object.values(components.schemas)) delete schema.$id;
+  const root = { $schema: "https://json-schema.org/draft/2020-12/schema", components };
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  ajv.addFormat("date-time", true);
+  const validate = (name: string, value: unknown) => {
+    const check = ajv.compile({ ...root, $ref: `#/components/schemas/${name}` });
+    assert.equal(check(value), true, `${name}: ${JSON.stringify(check.errors)}`);
+  };
+  const server = await listen({
+    async revisePortfolio() { return { value: revisionResult(), replayed: false }; },
+    async approve() { return { value: approvalResult("approved"), replayed: false }; },
+    async getRun() { return frozenRun(); },
+    async listDispatches() { return [{
+      dispatchId: `sha256:${"5".repeat(64)}`, runId: "council-run-1",
+      approvalId: `sha256:${"3".repeat(64)}`, portfolioRevision: 2,
+      portfolioKind: "balanced", actionId: "action-1", status: "retry",
+      attempt: 2, receiptId: null, lastErrorCode: "dispatch_retryable",
+      createdAt: NOW, updatedAt: NOW
+    }]; }
+  }, undefined, ["finance.council.run", "finance.council.approve"]);
+  try {
+    const headers = { "Content-Type": "application/json", "If-Match":
+      '"financial-council-run:council-run-1:2"' };
+    const revised = await server.request("/api/v1/finance/council-runs/council-run-1/portfolio-revisions", {
+      method: "POST", headers: { ...headers, "Idempotency-Key": "release-revise" },
+      body: JSON.stringify({ baseRevision: 1, operations: [
+        { kind: "select_portfolio", portfolioKind: "balanced" }
+      ] })
+    });
+    assert.equal(revised.response.status, 200);
+    validate("FinancialCouncilPortfolioRevision", revised.body);
+    const approved = await server.request("/api/v1/finance/council-runs/council-run-1/portfolio-revisions/2/approve", {
+      method: "POST", headers: { ...headers, "Idempotency-Key": "release-approve" },
+      body: JSON.stringify({ portfolioKind: "balanced" })
+    });
+    assert.equal(approved.response.status, 202);
+    validate("FinancialCouncilApproval", approved.body);
+    const dispatches = await server.request("/api/v1/finance/council-runs/council-run-1/dispatches");
+    assert.equal(dispatches.response.status, 200);
+    validate("FinancialCouncilDispatchPagedResult", dispatches.body);
+  } finally { await server.close(); }
+});
 
 test("POST returns the closed 202 projection, ETag, request id and exact replay", async () => {
   const run = frozenRun();
@@ -573,7 +808,7 @@ test("runtime create text bounds count Unicode code points like JSON Schema", as
 test("GET tenant isolation is 404 and events use the Task 1 page envelope", async () => {
   const run = frozenRun();
   const notFound = financialCouncilError("financial_council_run_not_found");
-  const server = await listen({
+  const service = {
     async createRun() { return { value: run, replayed: false }; },
     async getRun(context: { workspaceId: string }) {
       if (context.workspaceId !== run.workspaceId) throw notFound;
@@ -590,7 +825,9 @@ test("GET tenant isolation is 404 and events use the Task 1 page envelope", asyn
         aggregateSnapshot: run
       }];
     }
-  });
+  };
+  const server = await listen(service);
+  const hiddenServer = await listen(service, undefined, undefined, "ws-2");
   try {
     const found = await server.request(
       "/api/v1/finance/council-runs/council-run-1"
@@ -610,13 +847,10 @@ test("GET tenant isolation is 404 and events use the Task 1 page envelope", asyn
       nextAfter: null,
       hasMore: false
     });
-    const hidden = await server.request(
-      "/api/v1/finance/council-runs/council-run-1",
-      { headers: { "X-Workspace-Id": "ws-2" } }
-    );
+    const hidden = await hiddenServer.request("/api/v1/finance/council-runs/council-run-1");
     assert.equal(hidden.response.status, 404);
     assert.equal(hidden.body.code, "financial_council_run_not_found");
   } finally {
-    await server.close();
+    await Promise.all([server.close(), hiddenServer.close()]);
   }
 });

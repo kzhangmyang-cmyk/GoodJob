@@ -66,7 +66,7 @@ HTTP 幂等仓库只保存 domain-separated digest，不保存原始 `Idempotenc
 
 ### 不可变财务委员会策略
 
-`GET /api/v1/finance/council-policy` 按认证 workspace 读取当前策略；当且仅当该 workspace 没有任何策略版本时，服务端物化命名默认版本 `financial-council-policy.v1`。`PUT /api/v1/finance/council-policy` 需要 `finance.council.run` 与 `catalog.manage` 能力、`Idempotency-Key` 和 workspace-scoped `If-Match`；它只追加新版本，不覆盖旧版本。完全相同的幂等重放返回原版本，同键改体或过期 revision 均闭合失败。
+`GET /api/v1/finance/council-policy` 按认证 workspace 读取当前策略；当且仅当该 workspace 没有任何策略版本时，服务端物化命名默认版本 `financial-council-policy.v1`。`PUT /api/v1/finance/council-policy` 需要 `finance.council.run` 与 `finance.council.policy.manage` 能力、`Idempotency-Key` 和 workspace-scoped `If-Match`；它只追加新版本，不覆盖旧版本。完全相同的幂等重放返回原版本，同键改体或过期 revision 均闭合失败。
 
 策略请求为严格闭合对象：所有金额和限制必须为非负 safe integer，平衡权重总和固定为 10,000 BPS，系数版本由服务端 allowlist 控制。现金优先和增长优先权重转换固定在代码中；现金储备、到期债务/必要支出、合规、权限、关键数据、预算、容量、时限、前置、互斥和置信度门槛不是可关闭布尔开关。新运行只能引用本 workspace 中已存在的不可变策略 ID，该 ID 可唯一解析到确切 version、revision 和 hash。
 
@@ -87,6 +87,12 @@ runnable 扫描使用 workspace/run 的 UTF-8 binary-byte 复合游标，Memory 
 CFO 只为已验证的 consensus 生成叙述；模型不可用或输出越界时使用服务端模板，不阻塞优化。优化器只消费运行绑定的 snapshot、audit graph、不可变 policy version 和 accepted/minority 候选集，固定返回 balanced、cash-first、growth-first 三套 revision 1。无非空可行集仍发布三个空组合及完整 blocker；候选超界等关键输入失效才进入 `not_computable`。
 
 revision 1 是独立不可变记录，同时绑定 run/snapshot/audit/policy/consensus/candidate-set/output hash。崩溃发生在 revision insert 之后时，恢复 worker 用同一冻结输入重算并与已存字节比较，一致才发布；篡改或 replay 漂移会 fail closed。Memory 与 MySQL 共用行为合同，MySQL insert 和运行转移位于受 lease fence 的事务边界内。关闭顺序是 relay、recovery sweeper、optimization worker drain、analysis worker drain，然后底层资源。
+
+### 审批、编辑与派发查询
+
+委员会公开 API 使用认证的 active workspace；浏览器和客户端不得发送 `X-Workspace-Id`。`POST /api/v1/finance/council-runs/{runId}/portfolio-revisions` 只接受严格闭合的 edit operations，并返回新的 revision 中三套重新计算组合。该命令以及 approve/reject 都需要 `Idempotency-Key` 和对应 run 的 `If-Match`：缺失 `If-Match` 返回 428，缺失或格式错误的幂等键返回 400，过期 revision 返回 412，重复但不同请求返回 409；相同请求重放会标记 `Idempotency-Replayed: true`。
+
+`POST /api/v1/finance/council-runs/{runId}/portfolio-revisions/{revision}/approve` 需要 `finance.council.approve`，显式绑定 `portfolioKind`，以 202 只创建受控草案、待办或后续审批任务，绝不直接写权威财务、报价或 CRM 数据。`POST /api/v1/finance/council-runs/{runId}/reject` 同样绑定 revision、portfolio kind 与原因。`GET /api/v1/finance/council-runs/{runId}/dispatches` 返回 no-store 的公共操作投影；`queued`、`running`、`retry` 均表示非终态，且永不暴露 proof、hash、lease 或 fence。发布消费者应导入不可变 Growth contract `1.0.10`。
 
 ## 报表导入（statement-import.ts）
 

@@ -98,6 +98,7 @@ test("generated Growth types expose the closed financial council aliases", async
     for (const alias of [
       "FinancialCouncilRun", "FinancialCouncilCreateInput", "CandidateAction",
       "ActionPortfolio", "FinancialCouncilApproval", "FinancialCouncilDispatchView",
+      "FinancialCouncilPortfolioRevisionInput", "FinancialCouncilPortfolioRevision",
       "FinancialCouncilRunEventPagedResult", "FinancialCouncilDispatchPagedResult"
     ]) assert.match(generated, new RegExp(`\\b${alias}\\b`));
     assert.match(generated, /collect_receivable/);

@@ -108,6 +108,7 @@
         "awaiting_approval",
         "approved",
         "rejected",
+        "stale",
         "expired",
         "failed",
         "not_computable"
@@ -123,6 +124,7 @@
         "awaiting_approval",
         "approved",
         "rejected",
+        "stale",
         "expired",
         "failed",
         "not_computable"
@@ -888,17 +890,75 @@
         "strategic": { "$ref": "#/$defs/bps" }
       }
     },
-    "PortfolioRevisionInput": {
+    "FinancialCouncilPortfolioRevisionInput": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["baseRevision", "kind", "actionIds"],
+      "required": ["baseRevision", "operations"],
       "properties": {
         "baseRevision": { "$ref": "#/$defs/revision" },
-        "kind": { "$ref": "#/$defs/portfolioKind" },
-        "actionIds": {
+        "operations": {
           "type": "array",
-          "items": { "$ref": "#/$defs/nonempty" }
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/FinancialPortfolioEditOperation" }
         }
+      }
+    },
+    "FinancialPortfolioEditOperation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "portfolioKind"],
+          "properties": {
+            "kind": { "const": "select_portfolio" },
+            "portfolioKind": { "$ref": "#/$defs/portfolioKind" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "actionId"],
+          "properties": {
+            "kind": { "enum": ["remove_action", "restore_action"] },
+            "actionId": { "$ref": "#/$defs/identifier" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "actionId", "parameters"],
+          "properties": {
+            "kind": { "const": "replace_action_parameters" },
+            "actionId": { "$ref": "#/$defs/identifier" },
+            "parameters": {
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "ownerRole": { "$ref": "#/$defs/agentRole" },
+                "durationDays": { "type": "integer", "minimum": 1, "maximum": 365 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "FinancialCouncilPortfolioRevisionView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "revision", "baseRevision", "portfolios", "createdAt"],
+      "properties": {
+        "runId": { "$ref": "#/$defs/nonempty" },
+        "revision": { "$ref": "#/$defs/revision" },
+        "baseRevision": { "$ref": "#/$defs/revision" },
+        "portfolios": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/ActionPortfolio" }
+        },
+        "createdAt": { "$ref": "#/$defs/dateTime" }
       }
     },
     "FinancialCouncilApproval": {
@@ -908,15 +968,18 @@
         "approvalId",
         "runId",
         "portfolioRevision",
+        "portfolioKind",
         "status",
         "approvedActionIds",
         "requiredCapabilities",
+        "reason",
         "approvedAt"
       ],
       "properties": {
         "approvalId": { "$ref": "#/$defs/nonempty" },
         "runId": { "$ref": "#/$defs/nonempty" },
         "portfolioRevision": { "$ref": "#/$defs/revision" },
+        "portfolioKind": { "$ref": "#/$defs/portfolioKind" },
         "status": { "enum": ["approved", "rejected"] },
         "approvedActionIds": {
           "type": "array",
@@ -926,6 +989,7 @@
           "type": "array",
           "items": { "$ref": "#/$defs/nonempty" }
         },
+        "reason": { "type": ["string", "null"], "minLength": 1, "maxLength": 10000 },
         "approvedAt": { "$ref": "#/$defs/dateTime" }
       }
     },
@@ -936,9 +1000,13 @@
         "dispatchId",
         "runId",
         "approvalId",
+        "portfolioRevision",
+        "portfolioKind",
         "actionId",
         "status",
+        "attempt",
         "receiptId",
+        "lastErrorCode",
         "createdAt",
         "updatedAt"
       ],
@@ -946,9 +1014,13 @@
         "dispatchId": { "$ref": "#/$defs/nonempty" },
         "runId": { "$ref": "#/$defs/nonempty" },
         "approvalId": { "$ref": "#/$defs/nonempty" },
+        "portfolioRevision": { "$ref": "#/$defs/revision" },
+        "portfolioKind": { "$ref": "#/$defs/portfolioKind" },
         "actionId": { "$ref": "#/$defs/nonempty" },
-        "status": { "enum": ["pending", "dispatched", "failed"] },
+        "status": { "enum": ["queued", "running", "retry", "succeeded", "failed"] },
+        "attempt": { "$ref": "#/$defs/nonNegativeInteger" },
         "receiptId": { "type": ["string", "null"], "minLength": 1 },
+        "lastErrorCode": { "type": ["string", "null"], "minLength": 1, "maxLength": 96 },
         "createdAt": { "$ref": "#/$defs/dateTime" },
         "updatedAt": { "$ref": "#/$defs/dateTime" }
       }
@@ -969,14 +1041,18 @@
     "FinancialCouncilRejectInput": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["reason"],
-      "properties": { "reason": { "$ref": "#/$defs/nonempty" } }
+      "required": ["portfolioRevision", "portfolioKind", "reason"],
+      "properties": {
+        "portfolioRevision": { "$ref": "#/$defs/revision" },
+        "portfolioKind": { "$ref": "#/$defs/portfolioKind" },
+        "reason": { "$ref": "#/$defs/nonempty" }
+      }
     },
     "FinancialCouncilApprovalInput": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["portfolioRevision"],
-      "properties": { "portfolioRevision": { "$ref": "#/$defs/revision" } }
+      "required": ["portfolioKind"],
+      "properties": { "portfolioKind": { "$ref": "#/$defs/portfolioKind" } }
     }
   }
 }

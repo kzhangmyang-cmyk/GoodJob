@@ -40,6 +40,12 @@ import {
 } from "./financial-council-approval.js";
 import type { FinancialCouncilSourceVerifier } from
   "./financial-council-source-verifier.js";
+import type { FinancialCouncilPortfolioRevision } from
+  "./financial-council-repository.js";
+import type { FinancialCouncilApprovalRecord } from
+  "./financial-council-approval.js";
+import type { FinancialCouncilDispatchOperationStatus } from
+  "./financial-council-dispatch-operation.js";
 
 export interface FinancialCouncilWakeSink {
   wake(run: FinancialCouncilRun): Promise<void>;
@@ -331,6 +337,65 @@ export class FinancialCouncilService {
     return this.approvals.reject(command, input);
   }
 
+  async getPortfolioRevision(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    revision: number
+  ): Promise<FinancialCouncilPortfolioRevision> {
+    await this.getRun(context, runId);
+    if (!Number.isSafeInteger(revision) || revision < 1) {
+      throw financialCouncilError("financial_council_input_invalid");
+    }
+    const result = await this.dependencies.repository.getPortfolioRevision(
+      context, runId, revision
+    );
+    if (!result) throw financialCouncilError("financial_council_portfolio_not_found");
+    return result;
+  }
+
+  async getApproval(
+    context: ActiveWorkspaceContext,
+    approvalId: string
+  ): Promise<FinancialCouncilApprovalRecord> {
+    if (typeof approvalId !== "string" || !approvalId.trim()) {
+      throw financialCouncilError("financial_council_input_invalid");
+    }
+    const approval = await this.dependencies.repository.getApproval(
+      context, approvalId
+    );
+    if (!approval) throw financialCouncilError("financial_council_run_not_found");
+    return approval;
+  }
+
+  async listDispatches(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<readonly FinancialCouncilPublicDispatchView[]> {
+    await this.getRun(context, runId);
+    const outbox = await this.dependencies.repository.listDispatchOutbox(
+      context, runId
+    );
+    return Object.freeze(await Promise.all(outbox.map(async (row) => {
+      const operation = await this.dependencies.repository.getDispatchOperation(
+        context, row.dispatchId
+      );
+      return Object.freeze({
+        dispatchId: row.dispatchId,
+        runId: row.runId,
+        approvalId: row.approvalId,
+        portfolioRevision: row.portfolioRevision,
+        portfolioKind: row.portfolioKind,
+        actionId: row.actionId,
+        status: operation?.status ?? row.status,
+        attempt: operation?.attempt ?? row.attempt,
+        receiptId: operation?.receiptId ?? null,
+        lastErrorCode: operation?.lastErrorCode ?? null,
+        createdAt: operation?.createdAt ?? row.createdAt,
+        updatedAt: operation?.updatedAt ?? row.updatedAt
+      });
+    })));
+  }
+
   async listEvents(
     context: ActiveWorkspaceContext,
     runId: string
@@ -338,6 +403,21 @@ export class FinancialCouncilService {
     await this.getRun(context, runId);
     return this.dependencies.repository.listEvents(context, runId);
   }
+}
+
+export interface FinancialCouncilPublicDispatchView {
+  readonly dispatchId: string;
+  readonly runId: string;
+  readonly approvalId: string;
+  readonly portfolioRevision: number;
+  readonly portfolioKind: "balanced" | "cash_first" | "growth_first";
+  readonly actionId: string;
+  readonly status: FinancialCouncilDispatchOperationStatus;
+  readonly attempt: number;
+  readonly receiptId: string | null;
+  readonly lastErrorCode: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export type { FinancialSnapshot };

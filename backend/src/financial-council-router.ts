@@ -33,12 +33,26 @@ import {
   growthHttpIdempotencyKeyHash,
   type GrowthHttpIdempotencyRepository
 } from "./growth-http-idempotency-repository.js";
+import type { ReviseFinancialPortfolioInput } from
+  "./financial-portfolio-revision.js";
+import type { FinancialCouncilPortfolioKind } from
+  "./growth-contract-types.js";
+import type { FinancialCouncilApprovalRecord } from
+  "./financial-council-approval.js";
+import type { FinancialCouncilPortfolioRevision } from
+  "./financial-council-repository.js";
+import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 
 const CREATE_PATH = "/api/v1/finance/council-runs";
+const REVISE_PATH = "/api/v1/finance/council-runs/:runId/portfolio-revisions";
+const APPROVE_PATH = "/api/v1/finance/council-runs/:runId/portfolio-revisions/:revision/approve";
+const REJECT_PATH = "/api/v1/finance/council-runs/:runId/reject";
 
 export interface FinancialCouncilRouterDependencies {
   readonly service: Pick<FinancialCouncilService,
-    "createRun" | "getRun" | "listEvents">;
+    "createRun" | "getRun" | "listEvents" | "revisePortfolio"
+    | "getPortfolioRevision" | "approve" | "reject" | "getApproval"
+    | "listDispatches">;
   readonly workspaceContext: GrowthWorkspaceContextResolver;
   readonly commandContextFactory: GrowthCommandContextFactory;
   readonly httpIdempotency: GrowthHttpIdempotencyRepository;
@@ -93,6 +107,140 @@ function runId(req: Request): string {
   return value;
 }
 
+function revision(req: Request): number {
+  const value = req.params.revision;
+  if (!/^[1-9]\d*$/u.test(value ?? "")) {
+    throw new GrowthHttpError(422, "financial_council_input_invalid");
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new GrowthHttpError(422, "financial_council_input_invalid");
+  }
+  return parsed;
+}
+
+const PORTFOLIO_KINDS = new Set<FinancialCouncilPortfolioKind>([
+  "balanced", "cash_first", "growth_first"
+]);
+const OWNER_ROLES = new Set(["finance", "profit", "cost", "cashflow", "tax"]);
+
+function exactKeys(value: unknown, keys: readonly string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new GrowthHttpError(422, "financial_council_input_invalid");
+  }
+  const record = value as Record<string, unknown>;
+  const actual = Object.keys(record).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length
+    || actual.some((key, index) => key !== expected[index])) {
+    throw new GrowthHttpError(422, "financial_council_input_invalid");
+  }
+  return record;
+}
+
+function identifier(value: unknown): string {
+  if (typeof value !== "string" || value.trim() !== value || !value
+    || [...value].length > 255) {
+    throw new GrowthHttpError(422, "financial_council_input_invalid");
+  }
+  return value;
+}
+
+function portfolioKind(value: unknown): FinancialCouncilPortfolioKind {
+  if (typeof value !== "string" || !PORTFOLIO_KINDS.has(value as
+    FinancialCouncilPortfolioKind)) {
+    throw new GrowthHttpError(422, "financial_council_input_invalid");
+  }
+  return value as FinancialCouncilPortfolioKind;
+}
+
+function exactRevisionInput(raw: unknown): ReviseFinancialPortfolioInput {
+  const record = exactKeys(raw, ["baseRevision", "operations"]);
+  if (!Number.isSafeInteger(record.baseRevision) || Number(record.baseRevision) < 1
+    || !Array.isArray(record.operations) || record.operations.length < 1
+    || record.operations.length > 100) {
+    throw new GrowthHttpError(422, "financial_council_input_invalid");
+  }
+  const operations = record.operations.map((rawOperation) => {
+    if (!rawOperation || typeof rawOperation !== "object" || Array.isArray(rawOperation)
+      || Object.getPrototypeOf(rawOperation) !== Object.prototype) {
+      throw new GrowthHttpError(422, "financial_council_input_invalid");
+    }
+    const operation = rawOperation as Record<string, unknown>;
+    if (operation.kind === "select_portfolio") {
+      const selected = exactKeys(rawOperation, ["kind", "portfolioKind"]);
+      return Object.freeze({ kind: "select_portfolio" as const,
+        portfolioKind: portfolioKind(selected.portfolioKind) });
+    }
+    if (operation.kind === "remove_action" || operation.kind === "restore_action") {
+      const action = exactKeys(rawOperation, ["kind", "actionId"]);
+      return Object.freeze({ kind: operation.kind, actionId: identifier(action.actionId) });
+    }
+    if (operation.kind === "replace_action_parameters") {
+      const replacement = exactKeys(rawOperation, ["kind", "actionId", "parameters"]);
+      const parameters = replacement.parameters;
+      if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)
+        || Object.getPrototypeOf(parameters) !== Object.prototype) {
+        throw new GrowthHttpError(422, "financial_council_input_invalid");
+      }
+      const parameterRecord = parameters as Record<string, unknown>;
+      const parameterKeys = Object.keys(parameterRecord);
+      if (parameterKeys.length < 1 || parameterKeys.some((key) =>
+        key !== "ownerRole" && key !== "durationDays")
+        || (parameterRecord.ownerRole !== undefined
+          && (typeof parameterRecord.ownerRole !== "string"
+            || !OWNER_ROLES.has(parameterRecord.ownerRole)))
+        || (parameterRecord.durationDays !== undefined
+          && (!Number.isSafeInteger(parameterRecord.durationDays)
+            || Number(parameterRecord.durationDays) < 1
+            || Number(parameterRecord.durationDays) > 365))) {
+        throw new GrowthHttpError(422, "financial_council_input_invalid");
+      }
+      return Object.freeze({
+        kind: "replace_action_parameters" as const,
+        actionId: identifier(replacement.actionId),
+        parameters: Object.freeze({
+          ...(parameterRecord.ownerRole === undefined ? {} : {
+            ownerRole: parameterRecord.ownerRole as "finance" | "profit" | "cost" | "cashflow" | "tax"
+          }),
+          ...(parameterRecord.durationDays === undefined ? {} : {
+            durationDays: Number(parameterRecord.durationDays)
+          })
+        })
+      });
+    }
+    throw new GrowthHttpError(422, "financial_council_input_invalid");
+  });
+  return Object.freeze({
+    runId: "",
+    baseRevision: Number(record.baseRevision),
+    operations: Object.freeze(operations)
+  });
+}
+
+function exactApprovalInput(raw: unknown): { readonly portfolioKind: FinancialCouncilPortfolioKind } {
+  const record = exactKeys(raw, ["portfolioKind"]);
+  return Object.freeze({ portfolioKind: portfolioKind(record.portfolioKind) });
+}
+
+function exactRejectInput(raw: unknown): {
+  readonly portfolioRevision: number;
+  readonly portfolioKind: FinancialCouncilPortfolioKind;
+  readonly reason: string;
+} {
+  const record = exactKeys(raw, ["portfolioRevision", "portfolioKind", "reason"]);
+  if (!Number.isSafeInteger(record.portfolioRevision)
+    || Number(record.portfolioRevision) < 1) {
+    throw new GrowthHttpError(422, "financial_council_input_invalid");
+  }
+  return Object.freeze({
+    portfolioRevision: Number(record.portfolioRevision),
+    portfolioKind: portfolioKind(record.portfolioKind),
+    reason: identifier(record.reason)
+  });
+}
+
 function projectRun(run: Awaited<ReturnType<FinancialCouncilService["getRun"]>>) {
   if (run.status === "created" || run.revision < 2
     || run.snapshotId === null || run.snapshotHash === null) {
@@ -133,6 +281,43 @@ function projectEvent(event: Awaited<ReturnType<
   });
 }
 
+function projectPortfolioRevision(revision: FinancialCouncilPortfolioRevision) {
+  return Object.freeze({
+    runId: revision.runId,
+    revision: revision.revision,
+    baseRevision: revision.baseRevision ?? null,
+    portfolios: revision.portfolios,
+    createdAt: revision.createdAt
+  });
+}
+
+function projectApproval(approval: FinancialCouncilApprovalRecord) {
+  return Object.freeze({
+    approvalId: approval.approvalId,
+    runId: approval.runId,
+    portfolioRevision: approval.portfolioRevision,
+    portfolioKind: approval.portfolioKind,
+    status: approval.status,
+    approvedActionIds: approval.approvedActionIds,
+    requiredCapabilities: approval.requiredCapabilities,
+    reason: approval.reason,
+    approvedAt: approval.approvedAt
+  });
+}
+
+async function approvalForRun(
+  service: Pick<FinancialCouncilRouterDependencies["service"], "getApproval">,
+  workspace: ActiveWorkspaceContext,
+  runId: string,
+  approvalId: string
+): Promise<FinancialCouncilApprovalRecord> {
+  const approval = await service.getApproval(workspace, approvalId);
+  if (approval.runId !== runId) {
+    throw new GrowthHttpError(404, "financial_council_run_not_found");
+  }
+  return approval;
+}
+
 function trustedError(error: unknown): {
   readonly status: number;
   readonly code: string;
@@ -150,14 +335,21 @@ function trustedError(error: unknown): {
       }
       const status = error.code === "financial_council_run_not_found" ? 404
         : error.code === "financial_council_policy_not_found" ? 404
-        : error.code === "financial_council_policy_revision_conflict" ? 412
+        : error.code === "financial_council_policy_revision_conflict"
+          || error.code === "financial_council_revision_conflict" ? 412
         : error.code === "financial_council_idempotency_conflict"
           || error.code === "financial_council_run_conflict"
           || error.code === "financial_council_snapshot_conflict"
-          || error.code === "financial_council_revision_conflict"
           || error.code === "financial_council_policy_idempotency_conflict"
-          || error.code === "financial_council_policy_version_conflict" ? 409
-          : error.code === "financial_council_input_invalid"
+          || error.code === "financial_council_policy_version_conflict"
+          || error.code === "financial_council_portfolio_revision_conflict"
+          || error.code === "financial_council_approval_conflict"
+          || error.code === "financial_council_approval_state_invalid"
+          || error.code === "financial_council_portfolio_state_invalid"
+          || error.code === "financial_council_policy_stale"
+          || error.code === "financial_council_source_stale"
+          || error.code === "financial_council_workspace_stale" ? 409
+        : error.code === "financial_council_input_invalid"
             || error.code === "financial_council_policy_input_invalid"
             || error.code === "financial_council_policy_context_invalid"
             || error.code === "financial_council_policy_workspace_mismatch"
@@ -171,6 +363,10 @@ function trustedError(error: unknown): {
             || error.code === "financial_council_authority_invalid"
             || error.code === "financial_council_authority_duplicate"
             || error.code === "financial_council_authority_query_truncated"
+            || error.code === "financial_council_portfolio_operation_invalid"
+            || error.code === "financial_council_portfolio_operation_duplicate"
+            || error.code === "financial_council_portfolio_action_not_found"
+            || error.code === "financial_council_approval_invalid"
             || error.code === "invalid_as_of" ? 422 : 500;
       return { status, code: error.code };
     }
@@ -272,6 +468,137 @@ export function createFinancialCouncilRouter(
       nextAfter: null,
       hasMore: false
     }));
+  }));
+
+  router.post("/:runId/portfolio-revisions", route(async (req, res) => {
+    const id = runId(req);
+    const input = exactRevisionInput(req.body);
+    const expectedRevision = parseIfMatchRevision(
+      req, `financial-council-run:${id}`
+    );
+    const payload = Object.freeze({ ...input, runId: id });
+    const command = dependencies.commandContextFactory(req, {
+      canonicalPath: REVISE_PATH,
+      pathParams: Object.freeze({ runId: id }),
+      payload,
+      expectedRevision
+    });
+    let immediate: FinancialCouncilPortfolioRevision | null = null;
+    let repositoryReplayed = false;
+    const result = await executeGrowthIdempotentCommand({
+      repository: dependencies.httpIdempotency,
+      reservation: {
+        workspaceId: command.workspace.workspaceId, actorId: command.actorId,
+        method: "POST", canonicalPath: REVISE_PATH,
+        key: `financial-council-revision:http:${growthHttpIdempotencyKeyHash(command.idempotencyKey)}`,
+        requestHash: command.requestHash, attemptedAt: now(),
+        leaseOwner: `financial-council-revision-http-${randomUUID()}`,
+        leaseDurationMs: 30_000
+      }
+    }, async (resourceId, operationId) => {
+      if (immediate) return immediate;
+      const parsed = Number(operationId);
+      if (!resourceId || !Number.isSafeInteger(parsed)) {
+        throw new GrowthHttpError(409, "idempotency_conflict");
+      }
+      return dependencies.service.getPortfolioRevision(command.workspace, resourceId, parsed);
+    }, async () => {
+      const revised = await dependencies.service.revisePortfolio(command, payload);
+      immediate = revised.value;
+      repositoryReplayed = revised.replayed;
+      return { resourceId: revised.value.runId, operationId: String(revised.value.revision) };
+    });
+    if (result.replayed || repositoryReplayed) res.setHeader("Idempotency-Replayed", "true");
+    const run = await dependencies.service.getRun(command.workspace, id);
+    setRevisionEtag(res, "financial-council-run", id, run.revision);
+    res.status(200).json(projectPortfolioRevision(result.value));
+  }));
+
+  router.post("/:runId/portfolio-revisions/:revision/approve", route(async (req, res) => {
+    const id = runId(req);
+    const portfolioRevision = revision(req);
+    const body = exactApprovalInput(req.body);
+    const expectedRevision = parseIfMatchRevision(req, `financial-council-run:${id}`);
+    const payload = Object.freeze({ runId: id, portfolioRevision, ...body });
+    const command = dependencies.commandContextFactory(req, {
+      canonicalPath: APPROVE_PATH,
+      pathParams: Object.freeze({ runId: id, revision: String(portfolioRevision) }),
+      payload, expectedRevision
+    });
+    let immediate: FinancialCouncilApprovalRecord | null = null;
+    let repositoryReplayed = false;
+    const result = await executeGrowthIdempotentCommand({
+      repository: dependencies.httpIdempotency,
+      reservation: {
+        workspaceId: command.workspace.workspaceId, actorId: command.actorId,
+        method: "POST", canonicalPath: APPROVE_PATH,
+        key: `financial-council-approve:http:${growthHttpIdempotencyKeyHash(command.idempotencyKey)}`,
+        requestHash: command.requestHash, attemptedAt: now(),
+        leaseOwner: `financial-council-approve-http-${randomUUID()}`,
+        leaseDurationMs: 30_000
+      }
+    }, async (resourceId) => {
+      if (immediate) return immediate;
+      if (!resourceId) throw new GrowthHttpError(409, "idempotency_conflict");
+      return approvalForRun(dependencies.service, command.workspace, id, resourceId);
+    }, async () => {
+      const approved = await dependencies.service.approve(command, payload);
+      immediate = approved.value;
+      repositoryReplayed = approved.replayed;
+      return { resourceId: approved.value.approvalId, operationId: null };
+    });
+    if (result.replayed || repositoryReplayed) res.setHeader("Idempotency-Replayed", "true");
+    const run = await dependencies.service.getRun(command.workspace, id);
+    setRevisionEtag(res, "financial-council-run", id, run.revision);
+    res.status(202).json(projectApproval(result.value));
+  }));
+
+  router.post("/:runId/reject", route(async (req, res) => {
+    const id = runId(req);
+    const body = exactRejectInput(req.body);
+    const expectedRevision = parseIfMatchRevision(req, `financial-council-run:${id}`);
+    const payload = Object.freeze({ runId: id, ...body });
+    const command = dependencies.commandContextFactory(req, {
+      canonicalPath: REJECT_PATH, pathParams: Object.freeze({ runId: id }),
+      payload, expectedRevision
+    });
+    let immediate: FinancialCouncilApprovalRecord | null = null;
+    let repositoryReplayed = false;
+    const result = await executeGrowthIdempotentCommand({
+      repository: dependencies.httpIdempotency,
+      reservation: {
+        workspaceId: command.workspace.workspaceId, actorId: command.actorId,
+        method: "POST", canonicalPath: REJECT_PATH,
+        key: `financial-council-reject:http:${growthHttpIdempotencyKeyHash(command.idempotencyKey)}`,
+        requestHash: command.requestHash, attemptedAt: now(),
+        leaseOwner: `financial-council-reject-http-${randomUUID()}`,
+        leaseDurationMs: 30_000
+      }
+    }, async (resourceId) => {
+      if (immediate) return immediate;
+      if (!resourceId) throw new GrowthHttpError(409, "idempotency_conflict");
+      return approvalForRun(dependencies.service, command.workspace, id, resourceId);
+    }, async () => {
+      const rejected = await dependencies.service.reject(command, payload);
+      immediate = rejected.value;
+      repositoryReplayed = rejected.replayed;
+      return { resourceId: rejected.value.approvalId, operationId: null };
+    });
+    if (result.replayed || repositoryReplayed) res.setHeader("Idempotency-Replayed", "true");
+    const run = await dependencies.service.getRun(command.workspace, id);
+    setRevisionEtag(res, "financial-council-run", id, run.revision);
+    res.status(200).json(projectApproval(result.value));
+  }));
+
+  router.get("/:runId/dispatches", route(async (req, res) => {
+    if (Object.keys(req.query).length !== 0) {
+      throw new GrowthHttpError(422, "financial_council_input_invalid");
+    }
+    const id = runId(req);
+    const items = await dependencies.service.listDispatches(
+      dependencies.workspaceContext(req), id
+    );
+    res.status(200).json(Object.freeze({ items, nextAfter: null, hasMore: false }));
   }));
 
   router.use((error: unknown, req: Request, res: Response,

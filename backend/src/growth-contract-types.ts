@@ -336,9 +336,11 @@ export interface FinancialCouncilApproval {
   approvalId: string;
   runId: string;
   portfolioRevision: number;
+  portfolioKind: FinancialCouncilPortfolioKind;
   status: "approved" | "rejected";
   approvedActionIds: readonly string[];
   requiredCapabilities: readonly string[];
+  reason: string | null;
   approvedAt: string;
 }
 

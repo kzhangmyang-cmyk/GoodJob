@@ -1064,16 +1064,21 @@ const RUN_KEYS = ["runId", "workspaceId", "creationKeyHash", "requestHash",
 
 function assertPublicApproval(value: unknown, run: FinancialCouncilRun): void {
   exactObject(value, ["approvalId", "runId", "portfolioRevision", "status",
-    "approvedActionIds", "requiredCapabilities", "approvedAt"]);
+    "portfolioKind", "approvedActionIds", "requiredCapabilities", "reason", "approvedAt"]);
   identifier(value.approvalId);
   identifier(value.runId);
   integer(value.portfolioRevision);
+  if (value.portfolioKind !== "cash_first" && value.portfolioKind !== "growth_first"
+    && value.portfolioKind !== "balanced") inputInvalid();
   if (value.runId !== run.runId
     || value.portfolioRevision !== run.latestPortfolioRevision
     || (value.status !== "approved" && value.status !== "rejected")
     || value.status !== run.status) inputInvalid();
   stringArray(value.approvedActionIds);
   stringArray(value.requiredCapabilities);
+  if (value.reason !== null && (typeof value.reason !== "string" || !value.reason.trim())) {
+    inputInvalid();
+  }
   timestamp(value.approvedAt);
   if ((value.status === "approved" && value.approvedActionIds.length === 0)
     || (value.status === "rejected" && value.approvedActionIds.length !== 0)) {
@@ -2582,9 +2587,11 @@ implements FinancialCouncilRepository {
       approvalId: input.approval.approvalId,
       runId: input.approval.runId,
       portfolioRevision: input.approval.portfolioRevision,
+      portfolioKind: input.approval.portfolioKind,
       status: input.approval.status,
       approvedActionIds: input.approval.approvedActionIds,
       requiredCapabilities: input.approval.requiredCapabilities,
+      reason: input.approval.reason,
       approvedAt: input.approval.approvedAt
     });
     const withApproval = immutableFinancialCouncilValue({

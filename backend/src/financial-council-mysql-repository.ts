@@ -2375,9 +2375,11 @@ implements FinancialCouncilRepository {
           approvalId: approval.approvalId,
           runId: approval.runId,
           portfolioRevision: approval.portfolioRevision,
+          portfolioKind: approval.portfolioKind,
           status: approval.status,
           approvedActionIds: approval.approvedActionIds,
           requiredCapabilities: approval.requiredCapabilities,
+          reason: approval.reason,
           approvedAt: approval.approvedAt
         });
         const next = applyFinancialCouncilTransition(

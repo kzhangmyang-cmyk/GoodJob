@@ -470,13 +470,13 @@ test("financial council commands use the shared Growth precondition protocol", a
   const create = document.paths["/api/v1/finance/council-runs"].post;
   assert.equal(create.responses["202"].$ref, "#/components/responses/FinancialCouncilRun");
   assert.deepEqual(create.parameters, [
-    { $ref: "#/components/parameters/workspaceHeader" },
     { $ref: "#/components/parameters/idempotencyKey" }
   ]);
   for (const [path, method] of [
     ["/api/v1/finance/council-policy", "put"],
     ["/api/v1/finance/council-runs/{runId}/portfolio-revisions", "post"],
-    ["/api/v1/finance/council-runs/{runId}/portfolio-revisions/{revision}/approve", "post"]
+    ["/api/v1/finance/council-runs/{runId}/portfolio-revisions/{revision}/approve", "post"],
+    ["/api/v1/finance/council-runs/{runId}/reject", "post"]
   ]) {
     const operation = document.paths[path][method];
     const parameters = effectiveParameters(document, document.paths[path], operation);
@@ -893,13 +893,17 @@ test("fix round 1 every mutation has a strict body and Finance preview accepts o
 });
 
 // Production break caught: resolving a non-bootstrap operation from a query selector, omitting the Foundation header, or accepting the pseudo-workspace all.
-test("fix round 1 every operation uses the canonical concrete workspace header", async () => {
+test("fix round 1 non-council operations use the canonical concrete workspace header", async () => {
   const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
   for (const { path, method, pathItem, operation } of allPublishedOperations(document)) {
     const parameters = effectiveParameters(document, pathItem, operation);
     const workspaceHeaders = parameters.filter((parameter) =>
       parameter.name?.toLowerCase() === "x-workspace-id" && parameter.in === "header"
     );
+    if (path.startsWith("/api/v1/finance/council")) {
+      assert.equal(workspaceHeaders.length, 0, `${method.toUpperCase()} ${path}`);
+      continue;
+    }
     assert.equal(workspaceHeaders.length, 1, `${method.toUpperCase()} ${path}`);
     assert.equal(
       workspaceHeaders[0].required,
@@ -912,6 +916,17 @@ test("fix round 1 every operation uses the canonical concrete workspace header",
       false,
       `${method.toUpperCase()} ${path}`
     );
+  }
+});
+
+test("financial council public operations derive workspace from authenticated context", async () => {
+  const document = await loadNamedOpenApiSource("growth-advisor-quote-roi.v1.yaml");
+  for (const { path, method, pathItem, operation } of allPublishedOperations(document)) {
+    if (!path.startsWith("/api/v1/finance/council")) continue;
+    const parameters = effectiveParameters(document, pathItem, operation);
+    assert.equal(parameters.some((parameter) =>
+      parameter.name?.toLowerCase() === "x-workspace-id" && parameter.in === "header"
+    ), false, `${method.toUpperCase()} ${path}`);
   }
 });
 
@@ -1154,9 +1169,9 @@ test("fix round 2 transition ETags describe the returned next-If-Match resource"
     createCashSettlementAllocationSet: "#/components/responses/CashSettlementAllocationSet", getCashSettlementAllocationSet: "#/components/responses/CashSettlementAllocationSet", activateCashSettlementAllocationSet: "#/components/responses/CashSettlementAllocationSet",
     reopenRoiClosureVersion: "#/components/responses/RoiClosureSeries",
     acceptAdvisorRecommendation: "#/components/responses/AdvisorRecommendation", ignoreAdvisorRecommendation: "#/components/responses/AdvisorRecommendation", completeAdvisorRecommendation: "#/components/responses/AdvisorRecommendation",
-    createFinancialCouncilRun: "#/components/responses/FinancialCouncilRun", getFinancialCouncilRun: "#/components/responses/FinancialCouncilRun", rejectFinancialCouncilRun: "#/components/responses/FinancialCouncilRun",
+    createFinancialCouncilRun: "#/components/responses/FinancialCouncilRun", getFinancialCouncilRun: "#/components/responses/FinancialCouncilRun", rejectFinancialCouncilRun: "#/components/responses/FinancialCouncilApproval",
     getFinancialCouncilPolicy: "#/components/responses/FinancialCouncilPolicyVersion", updateFinancialCouncilPolicy: "#/components/responses/FinancialCouncilPolicyVersion",
-    createFinancialCouncilPortfolioRevision: "#/components/responses/ActionPortfolio", approveFinancialCouncilPortfolioRevision: "#/components/responses/FinancialCouncilApproval"
+    createFinancialCouncilPortfolioRevision: "#/components/responses/FinancialCouncilPortfolioRevision", approveFinancialCouncilPortfolioRevision: "#/components/responses/FinancialCouncilApproval"
   };
   const actualRevisionedResponses = {};
   for (const { operation } of allPublishedOperations(document)) {

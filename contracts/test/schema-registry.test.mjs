@@ -450,7 +450,7 @@ test("financial council contract is closed and carries three portfolios", async 
   assert.equal(validate(negativeObjectiveScore), false);
 });
 
-test("growth bootstrap accepts the public financial council capability", async () => {
+test("growth bootstrap accepts the public financial council capabilities", async () => {
   const raw = JSON.parse(await readFile(new URL(
     "../json-schema/growth-bootstrap.v1.schema.json", import.meta.url
   ), "utf8"));
@@ -461,8 +461,8 @@ test("growth bootstrap accepts the public financial council capability", async (
     status: "ready",
     workspaceId: "workspace-1",
     capabilityRegistryVersion: "growth-capabilities.v1",
-    capabilities: ["finance.council.run"],
-    contractVersion: "1.0.9",
+    capabilities: ["finance.council.run", "finance.council.approve", "finance.council.policy.manage"],
+    contractVersion: "1.0.10",
     contractHash: validSha256,
     features: ["finance"]
   };

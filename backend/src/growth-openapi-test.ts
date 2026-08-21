@@ -10,7 +10,7 @@ import {
 test("released Growth OpenAPI loader verifies and exposes the immutable release", () => {
   const release = loadGrowthContractRelease();
   assert.equal(release.manifest.name, "growth-advisor-quote-roi");
-  assert.equal(release.manifest.contractVersion, "1.0.9");
+  assert.equal(release.manifest.contractVersion, "1.0.10");
   assert.equal(
     selectGrowthContractReleaseVersion([release.manifest.contractVersion]),
     release.manifest.contractVersion
@@ -100,7 +100,6 @@ test("Growth production paths retain valid component references for the 3.0 docu
   assert.equal(paths["/api/v1/acquisition/advisor/today"]?.get?.operationId, "getAdvisorToday");
   assert.equal(paths["/api/v1/finance/council-runs"]?.post?.operationId, "createFinancialCouncilRun");
   assert.deepEqual(paths["/api/v1/finance/council-runs"]?.post?.parameters, [
-    { $ref: "#/components/parameters/workspaceHeader" },
     { $ref: "#/components/parameters/idempotencyKey" }
   ]);
   assert.ok(Object.keys(components.schemas).length > 50);

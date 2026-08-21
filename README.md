@@ -456,6 +456,7 @@ Swagger 文档默认启用，但必须先使用管理员或超级管理员账号
 - 页面入口：`/api/docs/`
 - OpenAPI JSON：`/api/docs/openapi.json`
 - 浏览器 Cookie 调试：自动携带登录会话，写请求自动附加 CSRF Token
+- 财务委员会 API：workspace 只由认证 active workspace 解析；不要发送 `X-Workspace-Id`
 - Bearer 调试：调用 `/api/auth/login` 取得 `token`，在 Swagger 的 Authorize 中填写
 - 关闭文档：部署时设置 `ENABLE_API_DOCS=false`
 

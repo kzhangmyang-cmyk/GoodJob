@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: GoodJob Growth Advisor, Quote and ROI API
-  version: 1.0.9
+  version: 1.0.10
 servers:
   - url: /
 
@@ -1204,7 +1204,6 @@ paths:
         - cookieAuth: []
           csrfToken: []
       parameters:
-        - $ref: '#/components/parameters/workspaceHeader'
         - $ref: '#/components/parameters/idempotencyKey'
       requestBody:
         required: true
@@ -1224,6 +1223,7 @@ paths:
     get:
       <<: *read
       operationId: getFinancialCouncilRun
+      parameters: []
       responses:
         '200': { $ref: '#/components/responses/FinancialCouncilRun' }
         '401': *apiErrorResponse
@@ -1235,6 +1235,7 @@ paths:
     get:
       <<: *read
       operationId: listFinancialCouncilRunEvents
+      parameters: []
       responses:
         '200': { $ref: '#/components/responses/FinancialCouncilRunEvents' }
         '401': *apiErrorResponse
@@ -1245,6 +1246,7 @@ paths:
     get:
       <<: *read
       operationId: getFinancialCouncilPolicy
+      parameters: []
       responses:
         '200': { $ref: '#/components/responses/FinancialCouncilPolicyVersion' }
         '401': *apiErrorResponse
@@ -1253,6 +1255,9 @@ paths:
     put:
       <<: *write
       operationId: updateFinancialCouncilPolicy
+      parameters:
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/ifMatch'
       requestBody:
         required: true
         content:
@@ -1273,13 +1278,16 @@ paths:
     post:
       <<: *write
       operationId: createFinancialCouncilPortfolioRevision
+      parameters:
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/ifMatch'
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/PortfolioRevisionInput' }
+            schema: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilPortfolioRevisionInput' }
       responses:
-        '200': { $ref: '#/components/responses/ActionPortfolio' }
+        '200': { $ref: '#/components/responses/FinancialCouncilPortfolioRevision' }
         '400': *apiErrorResponse
         '401': *apiErrorResponse
         '403': *apiErrorResponse
@@ -1296,13 +1304,16 @@ paths:
     post:
       <<: *write
       operationId: approveFinancialCouncilPortfolioRevision
+      parameters:
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/ifMatch'
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilApprovalInput' }
       responses:
-        '200': { $ref: '#/components/responses/FinancialCouncilApproval' }
+        '202': { $ref: '#/components/responses/FinancialCouncilApproval' }
         '400': *apiErrorResponse
         '401': *apiErrorResponse
         '403': *apiErrorResponse
@@ -1317,13 +1328,16 @@ paths:
     post:
       <<: *write
       operationId: rejectFinancialCouncilRun
+      parameters:
+        - $ref: '#/components/parameters/idempotencyKey'
+        - $ref: '#/components/parameters/ifMatch'
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilRejectInput' }
       responses:
-        '200': { $ref: '#/components/responses/FinancialCouncilRun' }
+        '200': { $ref: '#/components/responses/FinancialCouncilApproval' }
         '400': *apiErrorResponse
         '401': *apiErrorResponse
         '403': *apiErrorResponse
@@ -1338,6 +1352,7 @@ paths:
     get:
       <<: *read
       operationId: listFinancialCouncilDispatches
+      parameters: []
       responses:
         '200': { $ref: '#/components/responses/FinancialCouncilDispatches' }
         '401': *apiErrorResponse
@@ -1379,6 +1394,10 @@ components:
       description: Strong revision token for the returned resource state
       required: true
       schema: { type: string, pattern: '^"[^" ]+"$' }
+    IdempotencyReplayed:
+      description: Present only when this exact command result was replayed.
+      required: false
+      schema: { type: string, enum: ["true"] }
   schemas:
     ApiError: { $ref: ../json-schema/api-error.v1.schema.json }
     FinancialCouncilRun: { $ref: ../json-schema/financial-council.v1.schema.json }
@@ -1391,7 +1410,8 @@ components:
     ActionPortfolio: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/ActionPortfolio' }
     FinancialCouncilPolicyVersion: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilPolicyVersion' }
     FinancialCouncilPolicyInput: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilPolicyInput' }
-    PortfolioRevisionInput: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/PortfolioRevisionInput' }
+    FinancialCouncilPortfolioRevisionInput: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilPortfolioRevisionInput' }
+    FinancialCouncilPortfolioRevision: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilPortfolioRevisionView' }
     FinancialCouncilApproval: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilApproval' }
     FinancialCouncilDispatchView: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilDispatchView' }
     FinancialCouncilDispatchPagedResult: { $ref: '../json-schema/financial-council.v1.schema.json#/$defs/FinancialCouncilDispatchPagedResult' }
@@ -1604,7 +1624,8 @@ components:
       content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilRunEventPagedResult' } } }
     FinancialCouncilPolicyVersion: { description: Immutable financial council policy version, headers: { ETag: { $ref: '#/components/headers/ETag' } }, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilPolicyVersion' } } } }
     ActionPortfolio: { description: Re-optimized financial action portfolio revision, headers: { ETag: { $ref: '#/components/headers/ETag' } }, content: { application/json: { schema: { $ref: '#/components/schemas/ActionPortfolio' } } } }
-    FinancialCouncilApproval: { description: Human approval decision for a financial council portfolio, headers: { ETag: { $ref: '#/components/headers/ETag' } }, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilApproval' } } } }
+    FinancialCouncilPortfolioRevision: { description: Immutable re-optimized financial council portfolio revision, headers: { ETag: { $ref: '#/components/headers/ETag' }, Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' } }, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilPortfolioRevision' } } } }
+    FinancialCouncilApproval: { description: Human approval or rejection decision; approval queues only controlled drafts or todos, headers: { ETag: { $ref: '#/components/headers/ETag' }, Idempotency-Replayed: { $ref: '#/components/headers/IdempotencyReplayed' } }, content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilApproval' } } } }
     FinancialCouncilDispatches:
       description: Controlled draft and todo dispatch projections
       content: { application/json: { schema: { $ref: '#/components/schemas/FinancialCouncilDispatchPagedResult' } } }
