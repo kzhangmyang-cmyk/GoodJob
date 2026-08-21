@@ -212,3 +212,17 @@ pnpm run test:e2e
 pnpm build
 git diff --check
 ```
+
+财务委员会的真实纵向验收使用独立 Playwright 配置，会启动 `127.0.0.1:4288`
+的 test-only 后端和 `127.0.0.1:5388` 的 Vite 前端。浏览器只访问 Vite 同源 API
+代理，测试不拦截或伪造网络响应。运行前需要提供可用的 MySQL 测试管理连接：
+
+```bash
+MYSQL_TEST_ADMIN_URL="$MYSQL_TEST_ADMIN_URL" \
+GOODJOB_BACKEND_ROOT=/Users/mac/Documents/新项目/GoodJob-growth \
+pnpm run test:e2e:financial-council:real
+```
+
+可通过 `FINANCIAL_COUNCIL_E2E_USER`、`FINANCIAL_COUNCIL_E2E_PASSWORD` 和
+`FINANCIAL_COUNCIL_E2E_DATA_AS_OF` 覆盖 test-only server 的默认账号与数据截止时间。
+未提供 `MYSQL_TEST_ADMIN_URL` 时，不能将真实 MySQL/browser 验收记为通过。
