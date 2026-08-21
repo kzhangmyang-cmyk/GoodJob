@@ -22,6 +22,12 @@ import {
 } from "./financial-council-policy-mysql-repository.js";
 import { ensureFinancialCouncilDraftMysqlSchema } from
   "./financial-council-draft-mysql-repository.js";
+import { MysqlFinancialCouncilDraftRepository } from
+  "./financial-council-draft-mysql-repository.js";
+import { InMemoryFinancialCouncilDraftRepository } from
+  "./financial-council-draft-repository.js";
+import { createFinancialCouncilDispatchRuntime } from
+  "./financial-council-dispatch-runtime.js";
 import {
   FinancialCouncilService,
   isFinancialCouncilService,
@@ -372,6 +378,9 @@ export async function createGrowthFinancialCouncilResources(input: {
   const policyRepository = input.mode === "mysql"
     ? new MysqlFinancialCouncilPolicyRepository(input.pool!)
     : new InMemoryFinancialCouncilPolicyRepository();
+  const draftRepository = input.mode === "mysql"
+    ? new MysqlFinancialCouncilDraftRepository(input.pool!)
+    : new InMemoryFinancialCouncilDraftRepository();
   const authority = new FinancialCouncilAuthorityReader({
     advisor,
     verifiedFacts: {
@@ -458,6 +467,13 @@ export async function createGrowthFinancialCouncilResources(input: {
     sink = worker;
   }
   sink ??= new IdempotentInProcessWakeSink();
+  const dispatch = createFinancialCouncilDispatchRuntime({
+    repository,
+    drafts: draftRepository,
+    workerId: `financial-council-dispatch-${process.pid}`,
+    now,
+    onError() {}
+  });
   const service = new FinancialCouncilService({
     repository, policyRepository, snapshotBuilder, sourceVerifier,
     advisoryWake: sink
@@ -473,11 +489,13 @@ export async function createGrowthFinancialCouncilResources(input: {
     service,
     relay,
     async closeFinancialCouncilResources() {
+      await dispatch.close();
       await sweeper?.close();
       await worker?.close();
     }
   });
   TRUSTED_FINANCIAL_COUNCIL_RESOURCES.add(resources);
+  dispatch.start();
   sweeper?.start();
   return resources;
 }

@@ -94,6 +94,8 @@ revision 1 是独立不可变记录，同时绑定 run/snapshot/audit/policy/con
 
 `POST /api/v1/finance/council-runs/{runId}/portfolio-revisions/{revision}/approve` 需要 `finance.council.approve`，显式绑定 `portfolioKind`，以 202 只创建受控草案、待办或后续审批任务，绝不直接写权威财务、报价或 CRM 数据。`POST /api/v1/finance/council-runs/{runId}/reject` 同样绑定 revision、portfolio kind 与原因。`GET /api/v1/finance/council-runs/{runId}/dispatches` 返回 no-store 的公共操作投影；`queued`、`running`、`retry` 均表示非终态，且永不暴露 proof、hash、lease 或 fence。发布消费者应导入不可变 Growth contract `1.0.10`。
 
+生产 composition 为 Memory/MySQL 各自装配 draft repository、approved-action loader、进程内 approval proof issuer、dispatch worker 与 recovery sweeper。消费者必须从已批准的确切 portfolio revision 重读 action 并核对 action/portfolio hash，才能创建非权威 draft；进程重启后通过 dispatch hash probe 继续，不重复产生副作用。同角色、portfolio-level 的不同行动风险偏好以 `role:<role>` 形成真实 `risk_preference` 冲突，每个角色仍最多一次 rebuttal。
+
 ## 报表导入（statement-import.ts）
 
 支持两类标准格式：
@@ -115,7 +117,10 @@ revision 1 是独立不可变记录，同时绑定 run/snapshot/audit/policy/con
 ```bash
 npm run test:business-advisor --workspace backend
 npm run test:financial-council --workspace backend
-npm run test:financial-council:mysql --workspace backend
+npm run test:financial-council:vertical --workspace backend
+MYSQL_TEST_ADMIN_URL="mysql://..." npm run test:financial-council:mysql --workspace backend
 ```
+
+`test:financial-council:mysql` 是真实 InnoDB 发布门禁；未配置 `MYSQL_TEST_ADMIN_URL` 时必须显式失败，不得将缺少证据记为通过。
 
 覆盖：金额换算、勾稽校验、指标计算、假利润/客户 ABC/现金流预警、知识库条目、诊断阈值（负债率/应收天数/利息保障/净现比）、两种报表格式解析与勾稽错误。

@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript、Express、MySQL 8、Zod、JSON Schema 2020-12、OpenAPI 3.1、现有 Model Gateway、Node test runner、Vite、vanilla controller/view、Playwright。
 
-**当前状态：** P1–P3 已完成：五专家、确定性校验、一轮反驳、CFO 闭合合意、不可变策略与 exact 三组合优化已接入 lease-fenced 可恢复生产流程。P4 人工修订/审批/派发与 P5 前端/纵向发布仍待实施。整体功能只有在 P5 Exit 通过后才能宣布完成。
+**当前状态：** P1–P4 已完成；P5 前端 fixture 流程与后端 Memory vertical 已绿。Memory vertical 覆盖完整报表、五专家、同角色 `risk_preference`、恰好一次 rebuttal、三组合、revision 2、approve、draft receipt 与无权威投影变更。当前环境未配置 `MYSQL_TEST_ADMIN_URL`，真实 MySQL 门禁明确失败；无 route-intercept 浏览器 E2E 仍待 Phase B，所以整体功能尚未完成。
 
 ## Global Constraints
 
@@ -96,13 +96,13 @@ GET  /api/v1/finance/council-runs/{runId}/dispatches
 
 ### P4 Exit
 
-- [ ] 任何编辑都会创建新 revision 并重新计算依赖、约束和得分。
-- [ ] 旧 revision、stale snapshot、权限不足与重复批准均无法派发。
-- [ ] 每个已批动作至多产生一个受控草案/待办/审批任务，恢复不重复副作用。
+- [x] 任何编辑都会创建新 revision 并重新计算依赖、约束和得分。
+- [x] 旧 revision、stale snapshot、权限不足与重复批准均无法派发。
+- [x] 每个已批动作至多产生一个受控草案/待办/审批任务，恢复不重复副作用。
 
 ### P5 Exit
 
-- [ ] 前端展示专家结论、冲突、统一判断、三组合、淘汰原因、敏感性、revision 和派发回执。
+- [x] 前端 fixture 展示专家结论、冲突、统一判断、三组合、淘汰原因、敏感性、revision 和派发回执。
 - [ ] 三视口、键盘、错误态、轮询恢复和真实后端/MySQL E2E 通过。
 - [ ] 合同、生成类型、backend/frontend build、security、diff check 和双仓状态全部可复现。
 

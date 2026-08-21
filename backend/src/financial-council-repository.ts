@@ -114,6 +114,11 @@ export interface CommitFinancialCouncilApprovalDecisionInput {
   readonly verifiedTemporalSequence: number;
 }
 
+export interface FinancialCouncilDispatchAction {
+  readonly operation: FinancialCouncilDispatchOperation;
+  readonly action: FinancialCouncilCandidateAction;
+}
+
 export function financialCouncilPortfolioCommandKeyHash(
   command: CommandContext
 ): `sha256:${string}` {
@@ -524,6 +529,10 @@ export interface FinancialCouncilRepository {
   }): Promise<FinancialCouncilDispatchLease | null>;
   getDispatchOperation(context: Pick<ActiveWorkspaceContext, "workspaceId">,
     dispatchId: string): Promise<FinancialCouncilDispatchOperation | null>;
+  loadDispatchAction(
+    context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    dispatchId: string
+  ): Promise<FinancialCouncilDispatchAction>;
   completeDispatchOperation(lease: FinancialCouncilDispatchLease,
     receipt: FinancialCouncilDispatchReceipt, completedAt: string): Promise<void>;
   failDispatchOperation(lease: FinancialCouncilDispatchLease, input: {
@@ -1232,6 +1241,9 @@ export function assertFinancialCouncilRunHistory(
         : event.toStatus === "approved" || event.toStatus === "rejected"
           ? immutableFinancialCouncilValue({
               ...previous.aggregateSnapshot,
+              portfolios: event.aggregateSnapshot.portfolios,
+              latestPortfolioRevision:
+                event.aggregateSnapshot.latestPortfolioRevision,
               approval: event.aggregateSnapshot.approval
             })
         : previous.aggregateSnapshot;
@@ -2702,6 +2714,46 @@ implements FinancialCouncilRepository {
   async getDispatchOperation(context: Pick<ActiveWorkspaceContext, "workspaceId">,
     dispatchId: string): Promise<FinancialCouncilDispatchOperation | null> {
     return this.dispatchOperations.get(key(context.workspaceId, dispatchId)) ?? null;
+  }
+
+  async loadDispatchAction(
+    context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    dispatchId: string
+  ): Promise<FinancialCouncilDispatchAction> {
+    const seed = this.dispatchSeed(context.workspaceId, dispatchId);
+    const operation = this.dispatchOperations.get(
+      key(context.workspaceId, dispatchId)
+    );
+    const revision = this.portfolioRevisions.get(portfolioKey(
+      seed.workspaceId, seed.runId, seed.portfolioRevision
+    ));
+    if (!operation || !revision) {
+      throw financialCouncilError("financial_council_dispatch_stale");
+    }
+    await this.assertStoredPortfolioRevision(revision, true);
+    const portfolio = revision.portfolios.find((row) =>
+      row.kind === seed.portfolioKind
+    );
+    const action = portfolio?.actions.find((row) =>
+      row.actionId === seed.actionId
+    );
+    if (!portfolio || !action
+      || financialCouncilCanonicalHash(portfolio) !== seed.portfolioOutputHash
+      || financialCouncilCanonicalHash(action) !== seed.actionHash
+      || operation.dispatchId !== seed.dispatchId
+      || operation.workspaceId !== seed.workspaceId
+      || operation.runId !== seed.runId
+      || operation.approvalId !== seed.approvalId
+      || operation.approvalHash !== seed.approvalHash
+      || operation.portfolioRevision !== seed.portfolioRevision
+      || operation.portfolioKind !== seed.portfolioKind
+      || operation.actionId !== seed.actionId
+      || operation.actionHash !== seed.actionHash
+      || operation.resultHash !== seed.resultHash
+      || operation.portfolioOutputHash !== seed.portfolioOutputHash) {
+      throw financialCouncilError("financial_council_dispatch_stale");
+    }
+    return immutableFinancialCouncilValue({ operation, action });
   }
 
   async completeDispatchOperation(lease: FinancialCouncilDispatchLease,

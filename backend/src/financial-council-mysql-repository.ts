@@ -45,6 +45,7 @@ import {
   type FinancialCouncilAnalysisControl,
   type FinancialCouncilAnalysisGap,
   type FinancialCouncilAnalysisLease,
+  type FinancialCouncilDispatchAction,
   type FinancialCouncilLeaseWrite,
   type FinancialCouncilPortfolioRevision,
   type CommitFinancialCouncilPortfolioRevisionInput,
@@ -85,7 +86,8 @@ import { validateFinancialSnapshotForRun } from
   "./financial-council-snapshot.js";
 import type {
   ConsensusReport,
-  FinancialCouncilAgentRole
+  FinancialCouncilAgentRole,
+  FinancialCouncilCandidateAction
 } from "./growth-contract-types.js";
 import type { FinancialCouncilRebutInput } from
   "./financial-council-model-port.js";
@@ -2542,6 +2544,74 @@ implements FinancialCouncilRepository {
       [context.workspaceId, dispatchId]);
       const row = (rows as MysqlRow[])[0];
       return row ? jsonObject(row.operation_json) as unknown as FinancialCouncilDispatchOperation : null;
+    }, true);
+  }
+
+  async loadDispatchAction(
+    context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    dispatchId: string
+  ): Promise<FinancialCouncilDispatchAction> {
+    return this.transaction(async (connection) => {
+      const [outboxRows] = await connection.query(
+        `SELECT *,
+           DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at,
+           DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS updated_at
+         FROM financial_council_dispatch_outbox
+         WHERE workspace_id = ? AND dispatch_id = ?`,
+        [context.workspaceId, dispatchId]
+      );
+      const outboxRow = (outboxRows as MysqlRow[])[0];
+      const [operationRows] = await connection.query(
+        `SELECT operation_json FROM financial_council_dispatch_operations
+         WHERE workspace_id = ? AND dispatch_id = ?`,
+        [context.workspaceId, dispatchId]
+      );
+      const operationRow = (operationRows as MysqlRow[])[0];
+      if (!outboxRow || !operationRow) {
+        throw financialCouncilError("financial_council_dispatch_stale");
+      }
+      const seed = parseDispatch(outboxRow);
+      const operation = immutableFinancialCouncilValue(
+        jsonObject(operationRow.operation_json)
+      ) as unknown as FinancialCouncilDispatchOperation;
+      const approval = await this.readApprovalByRun(
+        connection, seed.workspaceId, seed.runId, false
+      );
+      const revision = await this.readPortfolioRevision(
+        connection, seed.workspaceId, seed.runId,
+        seed.portfolioRevision, false
+      );
+      if (!approval || approval.status !== "approved" || !revision) {
+        throw financialCouncilError("financial_council_dispatch_stale");
+      }
+      await this.validatePortfolioRevision(connection, revision, false, true);
+      const portfolio = revision.portfolios.find((row) =>
+        row.kind === seed.portfolioKind
+      );
+      const action = portfolio?.actions.find((row) =>
+        row.actionId === seed.actionId
+      ) as FinancialCouncilCandidateAction | undefined;
+      if (!portfolio || !action
+        || approval.approvalId !== seed.approvalId
+        || approval.approvalHash !== seed.approvalHash
+        || !approval.approvedActionIds.includes(seed.actionId)
+        || financialCouncilCanonicalHash(portfolio)
+          !== seed.portfolioOutputHash
+        || financialCouncilCanonicalHash(action) !== seed.actionHash
+        || operation.dispatchId !== seed.dispatchId
+        || operation.workspaceId !== seed.workspaceId
+        || operation.runId !== seed.runId
+        || operation.approvalId !== seed.approvalId
+        || operation.approvalHash !== seed.approvalHash
+        || operation.portfolioRevision !== seed.portfolioRevision
+        || operation.portfolioKind !== seed.portfolioKind
+        || operation.actionId !== seed.actionId
+        || operation.actionHash !== seed.actionHash
+        || operation.resultHash !== seed.resultHash
+        || operation.portfolioOutputHash !== seed.portfolioOutputHash) {
+        throw financialCouncilError("financial_council_dispatch_stale");
+      }
+      return immutableFinancialCouncilValue({ operation, action });
     }, true);
   }
 

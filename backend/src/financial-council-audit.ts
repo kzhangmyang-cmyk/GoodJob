@@ -194,8 +194,13 @@ export function buildCanonicalFinancialCouncilAuditGraph(
         resourceSignatures(right).includes(signature));
       const sharedRiskSubject = !exclusive && sharedResources.length === 0
         && left.kind !== right.kind
-        && left.subjectRef !== null && left.subjectRef === right.subjectRef
-        ? [`subject:${left.subjectRef}`] : [];
+        && left.subjectRef === right.subjectRef
+        ? left.subjectRef !== null
+          ? [`subject:${left.subjectRef}`]
+          : left.ownerRole === right.ownerRole
+            ? [`role:${left.ownerRole}`]
+            : []
+        : [];
       for (const findingIds of actionFindingPairs(left, right)) {
         if (exclusive) candidates.push(edge(identity, "action_exclusivity",
           findingIds, [`actions:${actionIds.join("|")}`],

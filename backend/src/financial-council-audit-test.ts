@@ -219,3 +219,30 @@ test("definition and risk preference remain closed deterministic conflict kinds"
   assert.deepEqual(graph.edges.map((edge) => edge.kind),
     ["definition", "risk_preference"]);
 });
+
+test("same-role portfolio risk alternatives create exactly one real conflict", () => {
+  const cashAction = (
+    findingId: string,
+    kind: "collect_receivable" | "prepare_cash_reserve_budget"
+  ) => fact({
+    finding: { ...fact().finding, findingId, agentRole: "cashflow" },
+    actions: [{
+      actionId: `action-${findingId}`, kind,
+      sourceFindingIds: [findingId], ownerRole: "cashflow", subjectRef: null,
+      explanation: `${kind}_hypothesis`, durationDays: 1,
+      prerequisites: [], mutuallyExclusiveWith: [],
+      cashImpact: { conservative: 0, base: 0, optimistic: 0 },
+      profitImpact: { conservative: 0, base: 0, optimistic: 0 },
+      riskReductionBps: { conservative: 0, base: 0, optimistic: 0 },
+      budgetCostMinor: 0, capacityUnits: 0, confidenceBps: 8_000,
+      requiredCapabilities: [], requiresHumanApproval: true
+    }]
+  });
+  const graph = buildCanonicalFinancialCouncilAuditGraph({ ...identity,
+    facts: [cashAction("cash-collect", "collect_receivable"),
+      cashAction("cash-reserve", "prepare_cash_reserve_budget")] });
+
+  assert.equal(graph.edges.length, 1);
+  assert.equal(graph.edges[0]!.kind, "risk_preference");
+  assert.deepEqual(graph.edges[0]!.sharedRefs, ["role:cashflow"]);
+});
