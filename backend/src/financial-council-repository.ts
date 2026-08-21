@@ -1,5 +1,7 @@
 import type { CommandContext } from "./growth-command-context.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
+import { growthHttpIdempotencyKeyHash } from
+  "./growth-http-idempotency-repository.js";
 import { canonicalBusinessReportInput } from "./business-advisor/domain.js";
 import {
   FINANCIAL_COUNCIL_RUN_STATUSES,
@@ -56,7 +58,11 @@ export interface FinancialCouncilPortfolioRevision {
   readonly revisionId: `sha256:${string}`;
   readonly workspaceId: string;
   readonly runId: string;
-  readonly revision: 1;
+  readonly revision: number;
+  readonly baseRevision?: number;
+  readonly commandKeyHash?: `sha256:${string}`;
+  readonly commandRequestHash?: `sha256:${string}`;
+  readonly operationsHash?: `sha256:${string}`;
   readonly runHash: `sha256:${string}`;
   readonly snapshotId: string;
   readonly snapshotHash: `sha256:${string}`;
@@ -77,6 +83,20 @@ export interface PublishFinancialCouncilPortfolioRevisionInput {
   readonly revision: 1;
   readonly expectedOutputHash: `sha256:${string}`;
   readonly occurredAt: string;
+}
+
+export interface CommitFinancialCouncilPortfolioRevisionInput {
+  readonly revision: FinancialCouncilPortfolioRevision;
+}
+
+export function financialCouncilPortfolioCommandKeyHash(
+  command: CommandContext
+): `sha256:${string}` {
+  return financialCouncilCanonicalHash({
+    workspaceId: command.workspace.workspaceId,
+    actorId: command.actorId,
+    idempotencyKeyHash: growthHttpIdempotencyKeyHash(command.idempotencyKey)
+  });
 }
 
 export function financialCouncilOptimizationRunHash(
@@ -105,13 +125,24 @@ export function createFinancialCouncilPortfolioRevision(
 ): FinancialCouncilPortfolioRevision {
   try {
     const input = immutableFinancialCouncilInput(rawInput);
-    exactObject(input, ["workspaceId", "runId", "revision", "runHash",
+    exactObject(input, ["workspaceId", "runId", "revision",
+      ...(input.revision === 1 ? [] : ["baseRevision", "commandKeyHash",
+        "commandRequestHash", "operationsHash"]), "runHash",
       "snapshotId", "snapshotHash", "auditHash", "policyVersionId",
       "policyHash", "consensusReportId", "candidateSetHash", "portfolios",
       "createdAt"]);
     identifier(input.workspaceId);
     identifier(input.runId);
-    if (input.revision !== 1) inputInvalid();
+    if (!Number.isSafeInteger(input.revision) || input.revision < 1) {
+      inputInvalid();
+    }
+    if (input.revision > 1) {
+      if (!Number.isSafeInteger(input.baseRevision)
+        || input.baseRevision !== input.revision - 1) inputInvalid();
+      hash(input.commandKeyHash);
+      hash(input.commandRequestHash);
+      hash(input.operationsHash);
+    }
     hash(input.runHash);
     identifier(input.snapshotId);
     hash(input.snapshotHash);
@@ -121,7 +152,9 @@ export function createFinancialCouncilPortfolioRevision(
     hash(input.consensusReportId);
     hash(input.candidateSetHash);
     timestamp(input.createdAt);
-    assertFinancialCouncilPortfolios(input.portfolios, input.runId, 1);
+    assertFinancialCouncilPortfolios(
+      input.portfolios, input.runId, input.revision
+    );
     const outputHash = financialCouncilCanonicalHash(input.portfolios);
     const preimage = { ...input, outputHash };
     return immutableFinancialCouncilValue({
@@ -445,6 +478,10 @@ export interface FinancialCouncilRepository {
     runId: string,
     revision: number
   ): Promise<FinancialCouncilPortfolioRevision | null>;
+  commitPortfolioRevision(
+    command: CommandContext,
+    input: CommitFinancialCouncilPortfolioRevisionInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilPortfolioRevision>>;
   publishPortfolioRevisionWithLease(
     lease: FinancialCouncilAnalysisLease,
     input: PublishFinancialCouncilPortfolioRevisionInput
@@ -476,6 +513,21 @@ const SPECIALIST_ACTION_KINDS = new Set<string>([
   "reduce_cost_anomaly", "prepare_cash_reserve_budget",
   "complete_financial_data", "schedule_tax_review"
 ]);
+
+export function financialCouncilActionEditIsSafe(
+  original: FinancialCouncilCandidateAction,
+  edited: FinancialCouncilCandidateAction
+): boolean {
+  const { ownerRole: _originalOwner, durationDays: _originalDuration,
+    ...originalProtected } = original;
+  const { ownerRole: _editedOwner, durationDays: _editedDuration,
+    ...editedProtected } = edited;
+  return Number.isSafeInteger(edited.durationDays)
+    && edited.durationDays >= 1 && edited.durationDays <= 365
+    && SPECIALIST_ROLES.has(edited.ownerRole)
+    && financialCouncilCanonicalJson(originalProtected)
+      === financialCouncilCanonicalJson(editedProtected);
+}
 const SPECIALIST_ACTION_RULES = Object.freeze({
   collect_receivable: {
     role: "cashflow", explanation: "collect_receivable_hypothesis",
@@ -2278,6 +2330,74 @@ implements FinancialCouncilRepository {
     return stored;
   }
 
+  async commitPortfolioRevision(
+    command: CommandContext,
+    rawInput: CommitFinancialCouncilPortfolioRevisionInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilPortfolioRevision>> {
+    assertCommand(command, "required");
+    const revision = immutableFinancialCouncilInput(rawInput?.revision);
+    if (revision.workspaceId !== command.workspace.workspaceId
+      || command.actorId !== command.workspace.actorId
+      || revision.commandRequestHash !== command.requestHash
+      || revision.commandKeyHash
+        !== financialCouncilPortfolioCommandKeyHash(command)) inputInvalid();
+    const aggregateKey = key(revision.workspaceId, revision.runId);
+    const run = this.runs.get(aggregateKey);
+    if (!run) throw financialCouncilError("financial_council_run_not_found");
+    if (run.status !== "awaiting_approval") {
+      throw financialCouncilError("financial_council_portfolio_state_invalid");
+    }
+    const targetKey = portfolioKey(revision.workspaceId, revision.runId,
+      revision.revision);
+    const existing = this.portfolioRevisions.get(targetKey);
+    if (existing) {
+      await this.assertStoredPortfolioRevision(existing, true);
+      if (existing.commandKeyHash === revision.commandKeyHash
+        && existing.commandRequestHash === revision.commandRequestHash
+        && financialCouncilCanonicalJson(existing)
+          === financialCouncilCanonicalJson(revision)) {
+        return { value: existing, replayed: true };
+      }
+      if (existing.commandKeyHash === revision.commandKeyHash) {
+        throw financialCouncilError("financial_council_idempotency_conflict");
+      }
+      throw financialCouncilError("financial_council_portfolio_conflict");
+    }
+    if (run.revision !== command.expectedRevision) {
+      throw financialCouncilError("financial_council_revision_conflict");
+    }
+    if (run.latestPortfolioRevision !== revision.baseRevision) {
+      throw financialCouncilError("financial_council_portfolio_revision_conflict");
+    }
+    await this.assertStoredPortfolioRevision(revision, false);
+    const concurrent = this.portfolioRevisions.get(targetKey);
+    if (concurrent) {
+      if (concurrent.commandKeyHash === revision.commandKeyHash
+        && concurrent.commandRequestHash === revision.commandRequestHash
+        && financialCouncilCanonicalJson(concurrent)
+          === financialCouncilCanonicalJson(revision)) {
+        return { value: concurrent, replayed: true };
+      }
+      if (concurrent.commandKeyHash === revision.commandKeyHash) {
+        throw financialCouncilError("financial_council_idempotency_conflict");
+      }
+      throw financialCouncilError("financial_council_portfolio_revision_conflict");
+    }
+    if (this.runs.get(aggregateKey)?.latestPortfolioRevision
+      !== revision.baseRevision) {
+      throw financialCouncilError("financial_council_portfolio_revision_conflict");
+    }
+    const revisions = new Map(this.portfolioRevisions);
+    const runs = new Map(this.runs);
+    revisions.set(targetKey, immutableFinancialCouncilValue(revision));
+    runs.set(aggregateKey, immutableFinancialCouncilValue({
+      ...run, portfolios: revision.portfolios,
+      latestPortfolioRevision: revision.revision
+    }));
+    this.state = { ...this.state, portfolioRevisions: revisions, runs };
+    return { value: revision, replayed: false };
+  }
+
   async publishPortfolioRevisionWithLease(
     lease: FinancialCouncilAnalysisLease,
     input: PublishFinancialCouncilPortfolioRevisionInput
@@ -2377,8 +2497,10 @@ implements FinancialCouncilRepository {
       ).map((action) => [action.actionId, action]));
       for (const portfolio of revision.portfolios) {
         for (const action of portfolio.actions) {
-          if (financialCouncilCanonicalJson(candidates.get(action.actionId))
-            !== financialCouncilCanonicalJson(action)) inputInvalid();
+          const original = candidates.get(action.actionId);
+          if (!original || !financialCouncilActionEditIsSafe(original, action)) {
+            inputInvalid();
+          }
         }
       }
     } catch (error) {
@@ -2462,7 +2584,15 @@ implements FinancialCouncilRepository {
   private assertStoredRun(run: FinancialCouncilRun): void {
     const aggregateKey = key(run.workspaceId, run.runId);
     const events = this.events.get(aggregateKey) ?? [];
-    assertFinancialCouncilRunHistory(run, events);
+    const eventRun = events.at(-1)?.aggregateSnapshot;
+    const isEditedPortfolioOverlay = eventRun?.status === "awaiting_approval"
+      && run.status === "awaiting_approval"
+      && eventRun.revision === run.revision
+      && (run.latestPortfolioRevision ?? 0)
+        > (eventRun.latestPortfolioRevision ?? 0);
+    assertFinancialCouncilRunHistory(
+      isEditedPortfolioOverlay ? eventRun : run, events
+    );
     let snapshotRecord: FinancialSnapshotRecord | null = null;
     if (run.snapshotId !== null) {
       const snapshot = this.snapshots.get(key(run.workspaceId, run.snapshotId));

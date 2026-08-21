@@ -29,6 +29,10 @@ import type {
   FinancialSnapshot,
   FinancialSnapshotBuilder
 } from "./financial-council-snapshot.js";
+import {
+  FinancialPortfolioRevisionService,
+  type ReviseFinancialPortfolioInput
+} from "./financial-portfolio-revision.js";
 
 export interface FinancialCouncilWakeSink {
   wake(run: FinancialCouncilRun): Promise<void>;
@@ -88,6 +92,7 @@ function publicRun(run: FinancialCouncilRun): FinancialCouncilRun {
 
 export class FinancialCouncilService {
   private readonly now: () => string;
+  private readonly portfolioRevisions: FinancialPortfolioRevisionService | null;
 
   constructor(private readonly dependencies: FinancialCouncilServiceDependencies) {
     const repository = dependencies?.repository;
@@ -106,6 +111,12 @@ export class FinancialCouncilService {
       throw new Error("invalid_financial_council_service");
     }
     this.now = dependencies.now ?? (() => new Date().toISOString());
+    this.portfolioRevisions = dependencies.policyRepository
+      ? new FinancialPortfolioRevisionService({
+          repository: dependencies.repository,
+          policyRepository: dependencies.policyRepository,
+          now: this.now
+        }) : null;
     TRUSTED_FINANCIAL_COUNCIL_SERVICES.add(this);
   }
 
@@ -270,6 +281,17 @@ export class FinancialCouncilService {
     const run = await this.dependencies.repository.findRun(context, runId);
     if (!run) throw financialCouncilError("financial_council_run_not_found");
     return publicRun(run);
+  }
+
+  async revisePortfolio(
+    command: CommandContext,
+    input: ReviseFinancialPortfolioInput
+  ) {
+    authorize(command?.workspace);
+    if (!this.portfolioRevisions) {
+      throw financialCouncilError("financial_council_policy_integrity");
+    }
+    return this.portfolioRevisions.revisePortfolio(command, input);
   }
 
   async listEvents(

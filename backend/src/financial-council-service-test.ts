@@ -14,8 +14,11 @@ import { policyInput } from "./financial-council-policy-test-support.js";
 import {
   repositoryRunFixture,
   snapshotFixture,
+  storedPortfolioRevisionFixture,
   workspace
 } from "./financial-council-repository-contract-test.js";
+import { createDefaultFinancialCouncilPolicy } from
+  "./financial-council-policy.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { FinancialCouncilCreateInput } from "./growth-contract-types.js";
 
@@ -353,4 +356,56 @@ test("public service rejects the migration-only created state", async () => {
     (error: unknown) => (error as { code?: unknown }).code
       === "financial_council_integrity"
   );
+});
+
+test("portfolio revision service has one concurrent base-revision winner and exact replay", async () => {
+  const repository = new InMemoryFinancialCouncilRepository();
+  const policyRepository = new InMemoryFinancialCouncilPolicyRepository();
+  const { lease, revision: first, run } =
+    await storedPortfolioRevisionFixture(repository, {
+      policyVersionId: "financial-council-policy.v1"
+    });
+  const published = await repository.publishPortfolioRevisionWithLease(lease, {
+    revision: 1,
+    expectedOutputHash: first.outputHash,
+    occurredAt: "2026-08-16T08:07:00.000Z"
+  });
+  const policy = createDefaultFinancialCouncilPolicy(run.workspaceId,
+    "2026-08-16T08:00:00.000Z");
+  await policyRepository.getOrCreateActive(workspace(), policy);
+  const service = new FinancialCouncilService({
+    repository,
+    policyRepository,
+    snapshotBuilder: { async freeze() { throw new Error("unused"); } },
+    now: () => "2026-08-16T08:08:00.000Z"
+  });
+  const authorized = context();
+  const edit = (key: string, hashCharacter: string) => Object.freeze({
+    workspace: authorized,
+    actorId: authorized.actorId,
+    idempotencyKey: key,
+    requestHash: `sha256:${hashCharacter.repeat(64)}`,
+    expectedRevision: published.value.revision
+  }) as CommandContext;
+  const input = {
+    runId: run.runId,
+    baseRevision: 1,
+    operations: [{ kind: "select_portfolio" as const,
+      portfolioKind: "balanced" as const }]
+  };
+
+  const results = await Promise.allSettled([
+    service.revisePortfolio(edit("winner-a", "3"), input),
+    service.revisePortfolio(edit("winner-b", "4"), input)
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length,
+    1);
+  assert.equal(results.filter((result) => result.status === "rejected").length,
+    1);
+  const winner = results.find((result) => result.status === "fulfilled")!;
+  const winnerCommand = winner === results[0]
+    ? edit("winner-a", "3") : edit("winner-b", "4");
+  const replay = await service.revisePortfolio(winnerCommand, input);
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.value.revision, 2);
 });

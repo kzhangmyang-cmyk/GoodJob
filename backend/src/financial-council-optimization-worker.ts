@@ -192,11 +192,13 @@ function boundedSignedBps(value: number): number {
   return Math.max(-10_000, Math.min(10_000, value));
 }
 
-function publicPortfolios(input: {
+export function projectFinancialActionPortfolios(input: {
   readonly run: FinancialCouncilRun;
   readonly rows: readonly FinancialActionPortfolio[];
   readonly createdAt: string;
+  readonly revision?: number;
 }): readonly FinancialCouncilActionPortfolio[] {
+  const revision = input.revision ?? 1;
   return immutableFinancialCouncilValue(input.rows.map((row) => {
     const hardConstraints = row.hardConstraints.map((result) => ({
       code: result.kind,
@@ -210,7 +212,7 @@ function publicPortfolios(input: {
     const preimage = {
       optimizerPortfolioId: row.portfolioId,
       runId: input.run.runId,
-      revision: 1,
+      revision,
       kind: row.kind,
       actionIds,
       hardConstraints,
@@ -221,7 +223,7 @@ function publicPortfolios(input: {
     return {
       portfolioId: financialCouncilCanonicalHash(preimage),
       runId: input.run.runId,
-      revision: 1,
+      revision,
       kind: row.kind,
       actionIds,
       actions,
@@ -241,7 +243,7 @@ function publicPortfolios(input: {
   }));
 }
 
-function optimizerInput(input: {
+export function createFinancialActionOptimizerInput(input: {
   readonly run: FinancialCouncilRun;
   readonly snapshot: FinancialSnapshot;
   readonly consensus: ConsensusReport;
@@ -412,7 +414,7 @@ implements FinancialCouncilOptimizationWorkerLike {
     const actions = selectFinancialCouncilOptimizationCandidates(
       consensus, results
     );
-    const rows = this.#optimize(optimizerInput({
+    const rows = this.#optimize(createFinancialActionOptimizerInput({
       run,
       snapshot: verified.snapshot,
       consensus,
@@ -433,7 +435,7 @@ implements FinancialCouncilOptimizationWorkerLike {
       context, run.runId, 1
     );
     const createdAt = existing?.createdAt ?? this.#now();
-    const portfolios = publicPortfolios({ run, rows, createdAt });
+    const portfolios = projectFinancialActionPortfolios({ run, rows, createdAt });
     const revision = createFinancialCouncilPortfolioRevision({
       workspaceId: run.workspaceId,
       runId: run.runId,

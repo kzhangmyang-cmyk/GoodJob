@@ -17,6 +17,7 @@ import type {
 } from "./financial-council-repository.js";
 import {
   createFinancialCouncilPortfolioRevision,
+  financialCouncilPortfolioCommandKeyHash,
   financialCouncilOptimizationRunHash
 } from "./financial-council-repository.js";
 import type {
@@ -558,9 +559,10 @@ function emptyPortfolio(
 }
 
 export async function storedPortfolioRevisionFixture(
-  repository: FinancialCouncilRepository
+  repository: FinancialCouncilRepository,
+  options: { readonly policyVersionId?: string } = {}
 ) {
-  const { report } = await storedConsensusFixture(repository);
+  const { report } = await storedConsensusFixture(repository, options);
   const context = workspace();
   let run = (await repository.findRun(context, report.runId))!;
   const lease = (await repository.claimAnalysisRun({
@@ -720,6 +722,54 @@ export function registerFinancialCouncilRepositoryContract(
     assert.deepEqual(published.value.consensusReport, report);
     assert.deepEqual(published.value.portfolios, revision.portfolios);
     assert.equal(published.value.revision, 7);
+  });
+
+  test(`${label}: edited portfolio revisions commit atomically and replay exactly`, async () => {
+    const repository = await createRepository();
+    const { lease, revision: first, input } =
+      await storedPortfolioRevisionFixture(repository);
+    const published = await repository.publishPortfolioRevisionWithLease(
+      lease, { revision: 1, expectedOutputHash: first.outputHash,
+        occurredAt: "2026-08-16T08:07:00.000Z" }
+    );
+    const requestHash = `sha256:${"3".repeat(64)}` as const;
+    const operationsHash = `sha256:${"5".repeat(64)}` as const;
+    const portfolios = first.portfolios.map((portfolio) => ({
+      ...portfolio,
+      portfolioId: financialCouncilCanonicalHash({
+        prior: portfolio.portfolioId, revision: 2
+      }),
+      revision: 2,
+      createdAt: "2026-08-16T08:08:00.000Z"
+    }));
+    const editCommand = command("edit-key", "ws-1",
+      published.value.revision, requestHash);
+    const commandKeyHash = financialCouncilPortfolioCommandKeyHash(editCommand);
+    const second = createFinancialCouncilPortfolioRevision({
+      ...input,
+      revision: 2,
+      baseRevision: 1,
+      commandKeyHash,
+      commandRequestHash: requestHash,
+      operationsHash,
+      portfolios,
+      createdAt: "2026-08-16T08:08:00.000Z"
+    });
+    const committed = await repository.commitPortfolioRevision(editCommand, {
+      revision: second
+    });
+    const replayed = await repository.commitPortfolioRevision(editCommand, {
+      revision: second
+    });
+
+    assert.equal(committed.replayed, false);
+    assert.equal(replayed.replayed, true);
+    assert.deepEqual(await repository.getPortfolioRevision(
+      workspace(), first.runId, 2
+    ), second);
+    assert.equal((await repository.findRun(
+      workspace(), first.runId
+    ))!.latestPortfolioRevision, 2);
   });
 
   test(`${label}: stale or replaced optimization lease cannot store or publish`, async () => {
