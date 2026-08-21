@@ -7,7 +7,8 @@ import {
   ensureFinancialCouncilMysqlSchema
 } from "./financial-council-mysql-repository.js";
 import {
-  financialCouncilAggregateHash
+  financialCouncilAggregateHash,
+  financialCouncilCanonicalHash
 } from "./financial-council-domain.js";
 import {
   authorizeSpecialistResultFixture,
@@ -36,6 +37,8 @@ type State = {
   auditGraphs: Row[];
   rebuttalAttempts: Row[];
   dispositions: Row[];
+  analysisControls: Row[];
+  analysisGaps: Row[];
 };
 
 function cloneState(state: State): State {
@@ -106,6 +109,8 @@ class FakeConnection {
       this.pool.state.auditGraphs = this.pending.auditGraphs;
       this.pool.state.rebuttalAttempts = this.pending.rebuttalAttempts;
       this.pool.state.dispositions = this.pending.dispositions;
+      this.pool.state.analysisControls = this.pending.analysisControls;
+      this.pool.state.analysisGaps = this.pending.analysisGaps;
     }
     this.pending = null;
     this.dirty = false;
@@ -135,6 +140,7 @@ class FakeConnection {
   async query(sql: string, values: unknown[] = []): Promise<[unknown, unknown]> {
     const normalized = sql.replace(/\s+/gu, " ").trim();
     this.calls.push(normalized);
+    const state = this.pending ?? this.pool.state;
     if (normalized.includes("GET_LOCK")) {
       return [[{ lock_acquired: this.pool.lockAcquire }], []];
     }
@@ -145,7 +151,36 @@ class FakeConnection {
       return [[], []];
     }
     if (normalized.startsWith("CREATE TABLE")) return [[], []];
-    const state = this.pending ?? this.pool.state;
+    if (normalized.startsWith("SELECT r.*")
+      && normalized.includes("financial_council_analysis_controls")) {
+      const now = String(values[0]);
+      const limit = Number(values[1]);
+      const rows = state.runs.filter((run) => {
+        const control = state.analysisControls.find((candidate) =>
+          candidate.workspace_id === run.workspace_id
+            && candidate.run_id === run.run_id);
+        return !!control
+          && ["snapshot_frozen", "analyzing", "auditing"].includes(
+            String(run.status))
+          && (control.lease_expires_at === null
+            || String(control.lease_expires_at) <= now);
+      }).slice(0, limit);
+      return [structuredClone(rows), []];
+    }
+    if (normalized.startsWith("SELECT")
+      && normalized.includes("FROM financial_council_analysis_controls")) {
+      const rows = state.analysisControls.filter((row) =>
+        row.workspace_id === values[0] && row.run_id === values[1]);
+      return [structuredClone(rows.slice(0, 1)), []];
+    }
+    if (normalized.startsWith("SELECT")
+      && normalized.includes("FROM financial_council_analysis_gaps")) {
+      let rows = state.analysisGaps.filter((row) =>
+        row.workspace_id === values[0] && row.run_id === values[1]);
+      if (normalized.includes("role = ?")) rows = rows.filter((row) =>
+        row.role === values[2]);
+      return [structuredClone(rows), []];
+    }
     if (normalized.startsWith("SELECT")
       && normalized.includes("FROM financial_council_runs")) {
       if (normalized.includes("status = 'snapshot_frozen'")) {
@@ -367,6 +402,26 @@ class FakeConnection {
       return [{ affectedRows: 1 }, []];
     }
     if (normalized.startsWith(
+      "INSERT INTO financial_council_analysis_controls")) {
+      const [workspaceId, runId, ownerId, teamId, createdAt] = values;
+      state.analysisControls.push({ workspace_id: workspaceId, run_id: runId,
+        owner_id: ownerId, team_id: teamId, lease_worker_id: null,
+        lease_token: null, attempt: 0, claimed_at: null,
+        lease_expires_at: null, created_at: createdAt });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "INSERT INTO financial_council_analysis_gaps")) {
+      const [workspaceId, runId, role, code, gapHash, gapJson, createdAt]
+        = values;
+      state.analysisGaps.push({ workspace_id: workspaceId, run_id: runId,
+        role, code, gap_hash: gapHash, gap_json: gapJson,
+        created_at: createdAt });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
       "INSERT INTO financial_council_specialist_results")) {
       if (this.pool.failurePoint === "specialist_result_insert") {
         throw new Error("specialist result insert failed");
@@ -487,6 +542,31 @@ class FakeConnection {
       this.dirty = true;
       return [{ affectedRows: 1 }, []];
     }
+    if (normalized.startsWith(
+      "UPDATE financial_council_analysis_controls")) {
+      const row = state.analysisControls.find((candidate) =>
+        candidate.workspace_id === values.at(-4)
+          && candidate.run_id === values.at(-3))
+        ?? state.analysisControls.find((candidate) =>
+          candidate.workspace_id === values.at(-2)
+            && candidate.run_id === values.at(-1));
+      if (!row) return [{ affectedRows: 0 }, []];
+      if (normalized.includes("lease_worker_id = NULL")) {
+        const [workspaceId, runId, token, attempt] = values;
+        if (row.workspace_id !== workspaceId || row.run_id !== runId
+          || row.lease_token !== token || row.attempt !== attempt) {
+          return [{ affectedRows: 0 }, []];
+        }
+        Object.assign(row, { lease_worker_id: null, lease_token: null,
+          claimed_at: null, lease_expires_at: null });
+      } else {
+        const [workerId, token, attempt, claimedAt, expiresAt] = values;
+        Object.assign(row, { lease_worker_id: workerId, lease_token: token,
+          attempt, claimed_at: claimedAt, lease_expires_at: expiresAt });
+      }
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
     if (normalized.startsWith("UPDATE financial_council_runs")) {
       if (this.pool.failurePoint === "run_update") {
         throw new Error("run update failed");
@@ -509,7 +589,8 @@ class FakeConnection {
 class FakePool {
   readonly state: State = {
     runs: [], events: [], snapshots: [], specialistResults: [], findings: [],
-    actions: [], auditGraphs: [], rebuttalAttempts: [], dispositions: []
+    actions: [], auditGraphs: [], rebuttalAttempts: [], dispositions: [],
+    analysisControls: [], analysisGaps: []
   };
   readonly connections: FakeConnection[] = [];
   readonly lockAttempts = new Map<string, number>();
@@ -831,8 +912,8 @@ test("audit graph and disposition inserts roll back atomically", async () => {
   }
 });
 
-test("financial council schema owns nine tables behind a named lock", async () => {
-  assert.equal(FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.length, 9);
+test("financial council schema owns eleven tables behind a named lock", async () => {
+  assert.equal(FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.length, 11);
   const ddl = FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.join("\n");
   const names = [...ddl.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/gu)]
     .map((match) => match[1]);
@@ -845,13 +926,55 @@ test("financial council schema owns nine tables behind a named lock", async () =
     "financial_council_candidate_actions",
     "financial_council_audit_graphs",
     "financial_council_rebuttal_attempts",
-    "financial_council_finding_dispositions"
+    "financial_council_finding_dispositions",
+    "financial_council_analysis_controls",
+    "financial_council_analysis_gaps"
   ]);
   const pool = new FakePool();
   await ensureFinancialCouncilMysqlSchema(pool as unknown as mysql.Pool);
   assert.equal(pool.connection.calls.some((sql) => sql.includes("GET_LOCK")), true);
   assert.equal(pool.connection.calls.some((sql) => sql.includes("RELEASE_LOCK")), true);
   assert.equal(pool.connection.released, true);
+});
+
+test("MySQL analysis lease preserves identity, exact expiry, ABA and redacted gap parity", async () => {
+  const { repository } = repositoryWith();
+  const aggregate = repositoryRunFixture();
+  const snapshot = snapshotFixture(aggregate);
+  const run = (await repository.createAndFreezeRun(command("lease-mysql"), {
+    aggregate, snapshot, occurredAt: T1
+  })).value;
+  const first = await repository.claimAnalysisRun({
+    workspaceId: run.workspaceId, runId: run.runId, workerId: "worker-a",
+    leaseToken: "a".repeat(64), claimedAt: "2026-08-16T08:01:00.000Z",
+    leaseExpiresAt: "2026-08-16T08:02:00.000Z"
+  });
+  assert.equal(first?.attempt, 1);
+  const control = await repository.getAnalysisControl(workspace(), run.runId);
+  assert.equal(control?.ownerId, workspace().actorId);
+  assert.equal(control?.teamId, workspace().teamId);
+  assert.equal((await repository.listRecoverableAnalysisRuns(
+    "2026-08-16T08:01:59.999Z", 10)).length, 0);
+  assert.equal((await repository.listRecoverableAnalysisRuns(
+    "2026-08-16T08:02:00.000Z", 10)).length, 1);
+  await assert.rejects(repository.transitionRunWithLease(first!, {
+    kind: "analyzing", occurredAt: "2026-08-16T08:02:00.000Z",
+    reasonCode: null
+  }), (error: unknown) => (error as { code?: unknown }).code
+    === "financial_council_lease_stale");
+  const second = await repository.claimAnalysisRun({
+    workspaceId: run.workspaceId, runId: run.runId, workerId: "worker-a",
+    leaseToken: "b".repeat(64), claimedAt: "2026-08-16T08:02:00.000Z",
+    leaseExpiresAt: "2026-08-16T08:03:00.000Z"
+  });
+  assert.equal(second?.attempt, 2);
+  const gapPreimage = { workspaceId: run.workspaceId, runId: run.runId,
+    role: "tax" as const, code: "tax_input_missing" as const, detail: null,
+    createdAt: "2026-08-16T08:02:01.000Z" };
+  await repository.storeAnalysisGap(second!, { ...gapPreimage,
+    gapHash: financialCouncilCanonicalHash(gapPreimage) });
+  assert.deepEqual((await repository.listAnalysisGaps(
+    workspace(), run.runId)).map((gap) => gap.code), ["tax_input_missing"]);
 });
 
 test("MySQL runnable scan uses binary UTF-8 bytes and no unavailable charset", async () => {

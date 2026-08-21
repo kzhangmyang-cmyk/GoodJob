@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript、Express、MySQL 8、Zod、JSON Schema 2020-12、OpenAPI 3.1、现有 Model Gateway、Node test runner、Vite、vanilla controller/view、Playwright。
 
-**当前状态：** P1 已完成并通过独立审查；P2 五专家、P3 CFO 与组合优化器、P4 人工审批派发、P5 前端与纵向发布仍待实施。整体功能只有在 P5 Exit 通过后才能宣布完成。
+**当前状态：** P1 与 P2 已完成：五专家、确定性校验、一轮反驳以及 lease-fenced 可恢复 worker 已接入生产模块。P3 CFO 与组合优化器、P4 人工审批派发、P5 前端与纵向发布仍待实施。整体功能只有在 P5 Exit 通过后才能宣布完成。
 
 ## Global Constraints
 
@@ -45,7 +45,7 @@ P1 Contract + domain + immutable snapshot + run repository
  |
  +--> P2 Formula catalog + five specialists + validation + one rebuttal
        |
-       +--> P3 Consensus + policy versions + exact optimizer + run worker
+       +--> P3 Consensus + policy versions + exact optimizer
              |
              +--> P4 Revision/edit/approve + stale check + draft outbox
                    |
@@ -82,9 +82,9 @@ GET  /api/v1/finance/council-runs/{runId}/dispatches
 
 ### P2 Exit
 
-- [ ] 五专家各自持久一个闭合结果并引用同一 snapshot ID/hash。
-- [ ] 模型金额与未声明证据不能进入 finding/action。
-- [ ] 冲突图可重放，每名专家最多一次反驳，未解决关键冲突会阻断动作。
+- [x] 五专家各自持久一个闭合结果并引用同一 snapshot ID/hash；符合闭合部分角色策略时以脱敏 gap 取代缺席结果。
+- [x] 模型金额与未声明证据不能进入 finding/action。
+- [x] 冲突图可重放，每名专家最多一次反驳，未解决冲突保留在 disposition 的 blocking set 中供 P3 组合过滤。
 
 ### P3 Exit
 

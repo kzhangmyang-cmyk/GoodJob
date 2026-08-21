@@ -59,6 +59,49 @@ export interface TransitionFinancialCouncilRunInput {
   readonly reasonCode: string | null;
 }
 
+export interface FinancialCouncilAnalysisLease {
+  readonly workspaceId: string;
+  readonly runId: string;
+  readonly workerId: string;
+  readonly leaseToken: string;
+  readonly attempt: number;
+  readonly claimedAt: string;
+  readonly leaseExpiresAt: string;
+}
+
+export interface FinancialCouncilAnalysisControl {
+  readonly workspaceId: string;
+  readonly runId: string;
+  readonly ownerId: string;
+  readonly teamId: string;
+  readonly lease: FinancialCouncilAnalysisLease | null;
+  readonly createdAt: string;
+}
+
+export interface ClaimFinancialCouncilAnalysisRunInput {
+  readonly workspaceId: string;
+  readonly runId: string;
+  readonly workerId: string;
+  readonly leaseToken: string;
+  readonly claimedAt: string;
+  readonly leaseExpiresAt: string;
+}
+
+export interface FinancialCouncilAnalysisGap {
+  readonly workspaceId: string;
+  readonly runId: string;
+  readonly role: FinancialCouncilAgentRole;
+  readonly code: "specialist_unavailable" | "tax_input_missing";
+  readonly detail: null;
+  readonly createdAt: string;
+  readonly gapHash: `sha256:${string}`;
+}
+
+export interface FinancialCouncilLeaseWrite {
+  readonly lease: FinancialCouncilAnalysisLease;
+  readonly completedAt: string;
+}
+
 export interface CreateAndFreezeFinancialCouncilRunInput {
   readonly aggregate: FinancialCouncilRun;
   readonly snapshot: FinancialSnapshotRecord;
@@ -194,9 +237,37 @@ export interface FinancialCouncilRepository {
   listRunnableRuns(
     input: ListRunnableFinancialCouncilRunsInput
   ): Promise<readonly FinancialCouncilRun[]>;
+  getAnalysisControl(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<FinancialCouncilAnalysisControl | null>;
+  claimAnalysisRun(
+    input: ClaimFinancialCouncilAnalysisRunInput
+  ): Promise<FinancialCouncilAnalysisLease | null>;
+  releaseAnalysisLease(
+    lease: FinancialCouncilAnalysisLease,
+    releasedAt: string
+  ): Promise<void>;
+  transitionRunWithLease(
+    lease: FinancialCouncilAnalysisLease,
+    input: Omit<TransitionFinancialCouncilRunInput, "runId">
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>>;
+  listRecoverableAnalysisRuns(
+    now: string,
+    limit: number
+  ): Promise<readonly FinancialCouncilRun[]>;
+  storeAnalysisGap(
+    lease: FinancialCouncilAnalysisLease,
+    gap: FinancialCouncilAnalysisGap
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilAnalysisGap>>;
+  listAnalysisGaps(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<readonly FinancialCouncilAnalysisGap[]>;
   storeSpecialistResult(
     context: ActiveWorkspaceContext,
-    result: AuthorizedFinancialCouncilSpecialistResult
+    result: AuthorizedFinancialCouncilSpecialistResult,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<
   AuthorizedFinancialCouncilSpecialistResult>>;
   getSpecialistResult(
@@ -212,7 +283,8 @@ export interface FinancialCouncilRepository {
   storeAuditGraph(
     context: ActiveWorkspaceContext,
     graph: FinancialCouncilAuditGraph,
-    dispositions: readonly InitialFinancialCouncilFindingDisposition[]
+    dispositions: readonly InitialFinancialCouncilFindingDisposition[],
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilAuditGraph>>;
   getAuditGraph(
     context: ActiveWorkspaceContext,
@@ -220,7 +292,8 @@ export interface FinancialCouncilRepository {
   ): Promise<FinancialCouncilAuditGraph | null>;
   reserveRebuttalAttempt(
     context: ActiveWorkspaceContext,
-    attempt: FinancialCouncilRebuttalAttempt
+    attempt: FinancialCouncilRebuttalAttempt,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>>;
   getRebuttalAttempt(
     context: ActiveWorkspaceContext,
@@ -234,7 +307,8 @@ export interface FinancialCouncilRepository {
   ): Promise<readonly FinancialCouncilRebuttalAttempt[]>;
   completeRebuttalAttempt(
     context: ActiveWorkspaceContext,
-    input: CompleteFinancialCouncilRebuttalInput
+    input: CompleteFinancialCouncilRebuttalInput,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>>;
   listFindingDispositions(
     context: ActiveWorkspaceContext,
@@ -988,7 +1062,9 @@ implements FinancialCouncilRepository {
     specialistActions: new Map<string, StoredSpecialistAction>(),
     auditGraphs: new Map<string, FinancialCouncilAuditGraph>(),
     rebuttalAttempts: new Map<string, FinancialCouncilRebuttalAttempt>(),
-    findingDispositions: new Map<string, FinancialCouncilFindingDisposition>()
+    findingDispositions: new Map<string, FinancialCouncilFindingDisposition>(),
+    analysisControls: new Map<string, FinancialCouncilAnalysisControl>(),
+    analysisGaps: new Map<string, FinancialCouncilAnalysisGap>()
   };
 
   private get runs() { return this.state.runs; }
@@ -1001,6 +1077,8 @@ implements FinancialCouncilRepository {
   private get auditGraphs() { return this.state.auditGraphs; }
   private get rebuttalAttempts() { return this.state.rebuttalAttempts; }
   private get findingDispositions() { return this.state.findingDispositions; }
+  private get analysisControls() { return this.state.analysisControls; }
+  private get analysisGaps() { return this.state.analysisGaps; }
 
   async createAndFreezeRun(
     command: CommandContext,
@@ -1052,7 +1130,9 @@ implements FinancialCouncilRepository {
       specialistActions: new Map(this.specialistActions),
       auditGraphs: new Map(this.auditGraphs),
       rebuttalAttempts: new Map(this.rebuttalAttempts),
-      findingDispositions: new Map(this.findingDispositions)
+      findingDispositions: new Map(this.findingDispositions),
+      analysisControls: new Map(this.analysisControls),
+      analysisGaps: new Map(this.analysisGaps)
     };
     nextState.runs.set(aggregateKey, frozen);
     nextState.events.set(aggregateKey, [createdEvent, frozenEvent]);
@@ -1060,6 +1140,15 @@ implements FinancialCouncilRepository {
       snapshotKey, immutableFinancialCouncilValue(snapshot)
     );
     nextState.creationKeys.set(creationKey, frozen.runId);
+    nextState.analysisControls.set(aggregateKey,
+      immutableFinancialCouncilValue({
+        workspaceId: frozen.workspaceId,
+        runId: frozen.runId,
+        ownerId: command.actorId,
+        teamId: command.workspace.teamId,
+        lease: null,
+        createdAt: occurredAt
+      }));
     this.state = nextState;
     return { value: frozen, replayed: false };
   }
@@ -1132,6 +1221,14 @@ implements FinancialCouncilRepository {
     this.runs.set(aggregateKey, stored);
     this.creationKeys.set(creationKey, stored.runId);
     this.events.set(aggregateKey, [event]);
+    this.analysisControls.set(aggregateKey, immutableFinancialCouncilValue({
+      workspaceId: stored.workspaceId,
+      runId: stored.runId,
+      ownerId: command.actorId,
+      teamId: command.workspace.teamId,
+      lease: null,
+      createdAt: stored.createdAt
+    }));
     return { value: stored, replayed: false };
   }
 
@@ -1275,11 +1372,152 @@ implements FinancialCouncilRepository {
       .slice(0, input.limit));
   }
 
+  async getAnalysisControl(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<FinancialCouncilAnalysisControl | null> {
+    return this.analysisControls.get(key(context.workspaceId, runId)) ?? null;
+  }
+
+  async claimAnalysisRun(
+    input: ClaimFinancialCouncilAnalysisRunInput
+  ): Promise<FinancialCouncilAnalysisLease | null> {
+    const controlKey = key(input.workspaceId, input.runId);
+    const control = this.analysisControls.get(controlKey);
+    const run = this.runs.get(controlKey);
+    if (!control || !run) return null;
+    if (!/^[0-9a-f]{64}$/u.test(input.leaseToken)
+      || !input.workerId.trim()
+      || Date.parse(input.leaseExpiresAt) <= Date.parse(input.claimedAt)) {
+      throw financialCouncilError("financial_council_lease_invalid");
+    }
+    if (["approved", "rejected", "expired", "failed", "not_computable"]
+      .includes(run.status) || run.status === "synthesizing") return null;
+    if (control.lease
+      && Date.parse(control.lease.leaseExpiresAt) > Date.parse(input.claimedAt)) {
+      return null;
+    }
+    const lease = immutableFinancialCouncilValue({
+      ...input,
+      attempt: (control.lease?.attempt ?? 0) + 1
+    });
+    this.analysisControls.set(controlKey, immutableFinancialCouncilValue({
+      ...control, lease
+    }));
+    return lease;
+  }
+
+  private requireLiveAnalysisLease(
+    lease: FinancialCouncilAnalysisLease,
+    completedAt: string
+  ): FinancialCouncilAnalysisControl {
+    const control = this.analysisControls.get(key(
+      lease.workspaceId, lease.runId
+    ));
+    const current = control?.lease;
+    if (!control || !current
+      || current.workerId !== lease.workerId
+      || current.leaseToken !== lease.leaseToken
+      || current.attempt !== lease.attempt
+      || current.claimedAt !== lease.claimedAt
+      || current.leaseExpiresAt !== lease.leaseExpiresAt
+      || Date.parse(completedAt) >= Date.parse(current.leaseExpiresAt)) {
+      throw financialCouncilError("financial_council_lease_stale");
+    }
+    return control;
+  }
+
+  async releaseAnalysisLease(
+    lease: FinancialCouncilAnalysisLease,
+    releasedAt: string
+  ): Promise<void> {
+    const control = this.requireLiveAnalysisLease(lease, releasedAt);
+    this.analysisControls.set(key(lease.workspaceId, lease.runId),
+      immutableFinancialCouncilValue({ ...control, lease: null }));
+  }
+
+  async transitionRunWithLease(
+    lease: FinancialCouncilAnalysisLease,
+    input: Omit<TransitionFinancialCouncilRunInput, "runId">
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
+    const control = this.requireLiveAnalysisLease(lease, input.occurredAt);
+    const aggregateKey = key(lease.workspaceId, lease.runId);
+    const current = this.runs.get(aggregateKey);
+    if (!current) throw financialCouncilError("financial_council_run_not_found");
+    const next = applyFinancialCouncilTransition(current, {
+      kind: input.kind,
+      occurredAt: input.occurredAt,
+      actorId: control.ownerId
+    });
+    const event = createFinancialCouncilRunEvent(next, {
+      fromStatus: current.status,
+      reasonCode: input.reasonCode,
+      occurredAt: input.occurredAt,
+      actorId: control.ownerId
+    });
+    this.runs.set(aggregateKey, next);
+    this.events.get(aggregateKey)!.push(event);
+    return { value: next, replayed: false };
+  }
+
+  async listRecoverableAnalysisRuns(
+    now: string,
+    limit: number
+  ): Promise<readonly FinancialCouncilRun[]> {
+    const at = Date.parse(now);
+    return Object.freeze([...this.runs.values()].filter((run) => {
+      if (!["snapshot_frozen", "analyzing", "auditing"]
+        .includes(run.status)) return false;
+      const control = this.analysisControls.get(key(run.workspaceId, run.runId));
+      return !!control && (!control.lease
+        || Date.parse(control.lease.leaseExpiresAt) <= at);
+    }).sort((a, b) => utf8ByteCompare(a.workspaceId, b.workspaceId)
+      || utf8ByteCompare(a.runId, b.runId)).slice(0, limit));
+  }
+
+  async storeAnalysisGap(
+    lease: FinancialCouncilAnalysisLease,
+    gap: FinancialCouncilAnalysisGap
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilAnalysisGap>> {
+    this.requireLiveAnalysisLease(lease, gap.createdAt);
+    if (gap.workspaceId !== lease.workspaceId || gap.runId !== lease.runId
+      || !["profit", "cost", "tax"].includes(gap.role)
+      || !["specialist_unavailable", "tax_input_missing"].includes(gap.code)
+      || gap.detail !== null
+      || gap.gapHash !== financialCouncilCanonicalHash({
+        workspaceId: gap.workspaceId, runId: gap.runId, role: gap.role,
+        code: gap.code, detail: gap.detail, createdAt: gap.createdAt
+      })) throw financialCouncilError("financial_council_analysis_gap_invalid");
+    const gapKey = key(gap.workspaceId, `${gap.runId}\u0000${gap.role}`);
+    const existing = this.analysisGaps.get(gapKey);
+    if (existing) {
+      if (financialCouncilCanonicalJson(existing)
+        !== financialCouncilCanonicalJson(gap)) {
+        throw financialCouncilError("financial_council_analysis_gap_conflict");
+      }
+      return { value: existing, replayed: true };
+    }
+    const stored = immutableFinancialCouncilValue(gap);
+    this.analysisGaps.set(gapKey, stored);
+    return { value: stored, replayed: false };
+  }
+
+  async listAnalysisGaps(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<readonly FinancialCouncilAnalysisGap[]> {
+    return Object.freeze([...this.analysisGaps.values()].filter((gap) =>
+      gap.workspaceId === context.workspaceId && gap.runId === runId)
+      .sort((a, b) => utf8ByteCompare(a.role, b.role)));
+  }
+
   async storeSpecialistResult(
     context: ActiveWorkspaceContext,
-    rawResult: AuthorizedFinancialCouncilSpecialistResult
+    rawResult: AuthorizedFinancialCouncilSpecialistResult,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<
   AuthorizedFinancialCouncilSpecialistResult>> {
+    if (write) this.requireLiveAnalysisLease(write.lease, write.completedAt);
     assertFinancialCouncilSpecialistResultAuthorized(rawResult);
     const result = validateFinancialCouncilSpecialistResult(rawResult);
     if (result.workspaceId !== context.workspaceId) specialInvalid();
@@ -1320,7 +1558,9 @@ implements FinancialCouncilRepository {
       specialistActions: new Map(this.specialistActions),
       auditGraphs: new Map(this.auditGraphs),
       rebuttalAttempts: new Map(this.rebuttalAttempts),
-      findingDispositions: new Map(this.findingDispositions)
+      findingDispositions: new Map(this.findingDispositions),
+      analysisControls: new Map(this.analysisControls),
+      analysisGaps: new Map(this.analysisGaps)
     };
     for (const finding of result.findings) {
       const findingKey = key(result.workspaceId,
@@ -1413,8 +1653,10 @@ implements FinancialCouncilRepository {
   async storeAuditGraph(
     context: ActiveWorkspaceContext,
     rawGraph: FinancialCouncilAuditGraph,
-    rawDispositions: readonly InitialFinancialCouncilFindingDisposition[]
+    rawDispositions: readonly InitialFinancialCouncilFindingDisposition[],
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilAuditGraph>> {
+    if (write) this.requireLiveAnalysisLease(write.lease, write.completedAt);
     const graph = immutableFinancialCouncilInput(rawGraph);
     const dispositions = immutableFinancialCouncilInput(rawDispositions);
     try {
@@ -1499,8 +1741,10 @@ implements FinancialCouncilRepository {
 
   async reserveRebuttalAttempt(
     context: ActiveWorkspaceContext,
-    rawAttempt: FinancialCouncilRebuttalAttempt
+    rawAttempt: FinancialCouncilRebuttalAttempt,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>> {
+    if (write) this.requireLiveAnalysisLease(write.lease, write.completedAt);
     const attempt = immutableFinancialCouncilInput(rawAttempt);
     try {
       exactObject(attempt, ["attemptId", "workspaceId", "runId",
@@ -1574,8 +1818,10 @@ implements FinancialCouncilRepository {
 
   async completeRebuttalAttempt(
     context: ActiveWorkspaceContext,
-    rawInput: CompleteFinancialCouncilRebuttalInput
+    rawInput: CompleteFinancialCouncilRebuttalInput,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>> {
+    if (write) this.requireLiveAnalysisLease(write.lease, write.completedAt);
     const input = immutableFinancialCouncilInput(rawInput);
     const entry = [...this.rebuttalAttempts.entries()].find(([, item]) =>
       item.workspaceId === context.workspaceId

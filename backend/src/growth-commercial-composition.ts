@@ -330,8 +330,9 @@ export function createGrowthCommercialCompositionForStore(options: {
   }));
   modules.push(createGrowthFinancialCouncilModule(
     financePool
-      ? { mode: "mysql", pool: financePool }
-      : { mode: "memory" }
+      ? { mode: "mysql", pool: financePool,
+          modelStore: options.store as CrmStore }
+      : { mode: "memory", modelStore: options.store as CrmStore }
   ));
   return Object.freeze({
     composition: createGrowthCommercialComposition({

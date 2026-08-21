@@ -308,19 +308,38 @@ git commit -m "feat(finance): audit council findings with one rebuttal"
 - Modify: `backend/src/growth-financial-council-module-test.ts`
 - Modify: `backend/src/financial-council-service.ts`
 - Modify: `backend/src/financial-council-service-test.ts`
+- Modify: `backend/src/financial-council-repository.ts`
+- Modify: `backend/src/financial-council-repository-contract-test.ts`
+- Modify: `backend/src/financial-council-repository-test.ts`
+- Modify: `backend/src/financial-council-mysql-repository.ts`
+- Modify: `backend/src/financial-council-mysql-repository-test.ts`
+- Modify: `backend/src/financial-council-specialists.ts`
+- Modify: `backend/src/financial-council-specialists-test.ts`
+- Modify if lease fencing requires it: `backend/src/financial-council-audit.ts`
+- Modify if lease fencing requires it: `backend/src/financial-council-audit-test.ts`
+- Modify if lease fencing requires it: `backend/src/financial-council-rebuttal.ts`
+- Modify if lease fencing requires it: `backend/src/financial-council-rebuttal-test.ts`
+- Modify: `backend/src/growth-commercial-composition.ts`
+- Modify: `backend/src/growth-commercial-composition-test.ts`
+- Modify: `backend/src/growth-commercial-application-test.ts`
+- Modify: `backend/package.json`
 - Modify: `backend/src/business-advisor/README.md`
+- Modify: `docs/superpowers/plans/2026-08-16-financial-multi-agent-council-implementation-index.md`
 
 **Interfaces:**
 - Worker advances `snapshot_frozen -> analyzing -> auditing -> synthesizing` only after required durable artifacts exist.
 - Per-agent timeout defaults to 60s, total model calls to 10 (5 initial + at most 5 rebuttals), retry to one transport retry without increasing logical submission count.
 - Lease contains random token + attempt count + strict expiry; completion at exact expiry is stale.
 - Recovery claims stalled nonterminal work, reuses existing model/result identities and never duplicates findings or rebuttals.
+- Persist immutable private analysis owner/team identity at create/freeze time; recovery never derives model identity from the currently selected workspace.
+- Every worker-owned transition/artifact write is fenced by exact lease token + attempt and `completedAt < leaseExpiresAt`; the lease token prevents same-worker ABA while model logical attempt remains `1` across retries/reclaims.
+- Finance and cashflow are hard-constraint roles. Profit/cost/tax failure may continue only when a deterministic check proves no unavailable hard-constraint formula/action and persists a closed redacted gap; missing tax input is a data gap, not invented output.
 
-- [ ] **Step 1: Write worker/recovery RED tests.**
+- [x] **Step 1: Write worker/recovery RED tests.**
 
 Include same-worker lease ABA, exact-expiry completion, model timeout, one noncritical expert failure, cashflow expert failure, missing tax input, duplicate wake, process restart and logging redaction.
 
-- [ ] **Step 2: Prove RED, implement worker and sweeper, then prove GREEN.**
+- [x] **Step 2: Prove RED, implement worker and sweeper, then prove GREEN.**
 
 ```bash
 npm exec --workspace backend -- tsx --test --test-concurrency=1 \
@@ -329,7 +348,7 @@ npm exec --workspace backend -- tsx --test --test-concurrency=1 \
   src/growth-financial-council-module-test.ts
 ```
 
-- [ ] **Step 3: Run full P2 gates.**
+- [x] **Step 3: Run full P2 gates.**
 
 ```bash
 npm run test:business-advisor --workspace backend
@@ -340,11 +359,11 @@ npm run build
 git diff --check
 ```
 
-- [ ] **Step 4: Request independent review and fix all Critical/Important findings.**
+- [x] **Step 4: Run fast-mode counterexample verification.**
 
-Review scope: shared snapshot identity, formula provenance, prompt injection, active model snapshot persistence, tool/write absence, tax boundary, one-round guarantee, partial-expert policy, lease fencing and redacted logs.
+The user waived independent review. Keep focused counterexamples for shared snapshot identity, formula provenance, prompt injection, active model snapshot persistence, tool/write absence, tax boundary, one-round guarantee, partial-expert policy, lease fencing and redacted logs.
 
-- [ ] **Step 5: Update README/index and commit.**
+- [x] **Step 5: Update README/index and commit.**
 
 ```bash
 git add backend/src/financial-council-analysis-worker* backend/src/financial-council-recovery-sweeper* backend/src/growth-financial-council-module* backend/src/financial-council-service* backend/src/business-advisor/README.md docs/superpowers/plans/2026-08-16-financial-multi-agent-council-implementation-index.md

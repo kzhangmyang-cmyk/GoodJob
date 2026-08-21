@@ -44,6 +44,19 @@ import { RepositoryVerifiedFinancialLedgerSealedReader } from
   "./financial-ledger-as-of-reader.js";
 import { MysqlVerifiedFinancialLedgerSealedReader } from
   "./financial-ledger-as-of-mysql-reader.js";
+import { ActiveModelGatewayFinancialCouncilModelPort } from
+  "./financial-council-model-gateway.js";
+import type { DurableModelRuntimeStore } from "./model-providers/runtime.js";
+import { FinancialCouncilSpecialistCoordinator } from
+  "./financial-council-specialists.js";
+import { FinancialCouncilRebuttalCoordinator } from
+  "./financial-council-rebuttal.js";
+import {
+  DefaultFinancialCouncilAnalysisPipeline,
+  FinancialCouncilAnalysisWorker
+} from "./financial-council-analysis-worker.js";
+import { FinancialCouncilRecoverySweeper } from
+  "./financial-council-recovery-sweeper.js";
 
 export interface GrowthFinancialCouncilServices {
   readonly service: FinancialCouncilService;
@@ -220,6 +233,7 @@ export interface GrowthFinancialCouncilModuleOptions {
   readonly mode?: "memory" | "mysql";
   readonly pool?: mysql.Pool;
   readonly wakeSink?: FinancialCouncilWakeSink;
+  readonly modelStore?: DurableModelRuntimeStore;
   readonly relayIntervalMs?: number;
   readonly relayBatchSize?: number;
   readonly relayDeliveryTimeoutMs?: number;
@@ -323,6 +337,7 @@ export async function createGrowthFinancialCouncilResources(input: {
   advisor: { readonly today: unknown };
   finance: GrowthFinanceServices;
   wakeSink?: FinancialCouncilWakeSink;
+  modelStore?: DurableModelRuntimeStore;
   relayIntervalMs?: number;
   relayBatchSize?: number;
   relayDeliveryTimeoutMs?: number;
@@ -351,7 +366,56 @@ export async function createGrowthFinancialCouncilResources(input: {
     authority,
     businessAdvisor: createBusinessAdvisorService()
   });
-  const sink = input.wakeSink ?? new IdempotentInProcessWakeSink();
+  const now = () => new Date().toISOString();
+  let worker: FinancialCouncilAnalysisWorker | null = null;
+  let sweeper: FinancialCouncilRecoverySweeper | null = null;
+  let sink = input.wakeSink ?? null;
+  if (!sink && input.modelStore) {
+    const resolvePolicy = async () => Object.freeze({
+      formulaPolicy: Object.freeze({
+        formulaPolicyVersion: "financial-council-formula-policy.v1" as const,
+        minimumProductMarginBps: 1_000,
+        minimumCashReserveMinor: 0
+      }),
+      actionPolicy: Object.freeze({
+        actionCoefficientVersion: "financial-council-actions.v1" as const,
+        costRealizationBps: Object.freeze({
+          conservative: 2_500, base: 5_000, optimistic: 7_500
+        }),
+        dataRiskReductionBps: Object.freeze({
+          conservative: 500, base: 1_000, optimistic: 1_500
+        }),
+        taxRiskReductionBps: Object.freeze({
+          conservative: 1_000, base: 2_000, optimistic: 3_000
+        })
+      })
+    });
+    const model = new ActiveModelGatewayFinancialCouncilModelPort({
+      store: input.modelStore
+    });
+    const specialists = new FinancialCouncilSpecialistCoordinator({
+      repository, model, resolvePolicy, now
+    });
+    const rebuttals = new FinancialCouncilRebuttalCoordinator({
+      repository, model, now,
+      validateOutput: (_role, output) => output
+    });
+    const pipeline = new DefaultFinancialCouncilAnalysisPipeline({
+      repository, specialists, rebuttals, resolvePolicy, now
+    });
+    worker = new FinancialCouncilAnalysisWorker({
+      repository, pipeline,
+      workerId: `financial-council-worker-${process.pid}`,
+      now,
+      leaseDurationMs: 30 * 60_000
+    });
+    sweeper = new FinancialCouncilRecoverySweeper({
+      repository, worker, now, intervalMs: 5_000, batchSize: 25,
+      onError() {}
+    });
+    sink = worker;
+  }
+  sink ??= new IdempotentInProcessWakeSink();
   const service = new FinancialCouncilService({
     repository, snapshotBuilder, advisoryWake: sink
   });
@@ -365,9 +429,13 @@ export async function createGrowthFinancialCouncilResources(input: {
   const resources = Object.freeze({
     service,
     relay,
-    async closeFinancialCouncilResources() {}
+    async closeFinancialCouncilResources() {
+      await sweeper?.close();
+      await worker?.close();
+    }
   });
   TRUSTED_FINANCIAL_COUNCIL_RESOURCES.add(resources);
+  sweeper?.start();
   return resources;
 }
 
@@ -421,6 +489,7 @@ export function createGrowthFinancialCouncilModule(
               advisor,
               finance,
               wakeSink: options.wakeSink,
+              modelStore: options.modelStore,
               relayIntervalMs: options.relayIntervalMs,
               relayBatchSize: options.relayBatchSize,
               relayDeliveryTimeoutMs: options.relayDeliveryTimeoutMs

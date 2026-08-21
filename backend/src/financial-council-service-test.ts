@@ -160,6 +160,11 @@ test("create freezes atomically, exact replay is stable, and replay does not wak
     /^financial-council:create:sha256:[0-9a-f]{64}$/u);
   assert.equal(fixture.wakes.length, 1);
   assert.equal(fixture.freezeCalls(), 1);
+  const analysisIdentity = await fixture.repository.getAnalysisControl(
+    context(), first.value.runId
+  );
+  assert.equal(analysisIdentity?.ownerId, context().actorId);
+  assert.equal(analysisIdentity?.teamId, context().teamId);
   assert.deepEqual(
     (await fixture.repository.listEvents(context(), first.value.runId))
       .map((event) => event.revision),

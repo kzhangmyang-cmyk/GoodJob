@@ -35,6 +35,11 @@ import {
   type FinancialCouncilRebuttalAttempt,
   type InitialFinancialCouncilFindingDisposition,
   type CompleteFinancialCouncilRebuttalInput,
+  type ClaimFinancialCouncilAnalysisRunInput,
+  type FinancialCouncilAnalysisControl,
+  type FinancialCouncilAnalysisGap,
+  type FinancialCouncilAnalysisLease,
+  type FinancialCouncilLeaseWrite,
   type FinancialCouncilSpecialistPhase,
   type FinancialCouncilSpecialistResult,
   type ListRunnableFinancialCouncilRunsInput,
@@ -228,6 +233,40 @@ export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
       CHECK (status IN ('unresolved','upheld','revised','withdrawn')),
     CONSTRAINT chk_financial_council_disposition_json
       CHECK (JSON_VALID(disposition_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_analysis_controls (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    owner_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    team_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    lease_worker_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+    lease_token CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    attempt BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    claimed_at DATETIME(3) NULL,
+    lease_expires_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id, run_id),
+    CONSTRAINT fk_financial_council_analysis_control_run
+      FOREIGN KEY (workspace_id, run_id)
+      REFERENCES financial_council_runs (workspace_id, run_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_analysis_gaps (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    role VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    code VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    gap_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    gap_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    created_at DATETIME(3) NOT NULL,
+    PRIMARY KEY (workspace_id, run_id, role),
+    CONSTRAINT fk_financial_council_analysis_gap_control
+      FOREIGN KEY (workspace_id, run_id)
+      REFERENCES financial_council_analysis_controls (workspace_id, run_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_analysis_gap_role
+      CHECK (role IN ('profit','cost','tax')),
+    CONSTRAINT chk_financial_council_analysis_gap_json CHECK (JSON_VALID(gap_json))
   ) ENGINE=InnoDB`
 ] as const);
 
@@ -345,6 +384,47 @@ function rowInteger(row: MysqlRow, key: string): number {
   const value = Number(row[key]);
   if (!Number.isSafeInteger(value) || value < 1) integrity();
   return value;
+}
+
+function parseAnalysisControl(row: MysqlRow): FinancialCouncilAnalysisControl {
+  const workspaceId = rowString(row, "workspace_id");
+  const runId = rowString(row, "run_id");
+  const workerId = rowNullableString(row, "lease_worker_id");
+  const leaseToken = rowNullableString(row, "lease_token");
+  const attempt = Number(row.attempt);
+  if (!Number.isSafeInteger(attempt) || attempt < 0) integrity();
+  const claimedAt = row.claimed_at === null ? null : isoDate(row.claimed_at);
+  const leaseExpiresAt = row.lease_expires_at === null
+    ? null : isoDate(row.lease_expires_at);
+  if ((workerId === null) !== (leaseToken === null)
+    || (workerId === null) !== (claimedAt === null)
+    || (workerId === null) !== (leaseExpiresAt === null)
+    || (leaseToken !== null && !/^[0-9a-f]{64}$/u.test(leaseToken))) integrity();
+  return immutableFinancialCouncilValue({
+    workspaceId,
+    runId,
+    ownerId: rowString(row, "owner_id"),
+    teamId: rowString(row, "team_id"),
+    lease: workerId === null ? null : {
+      workspaceId, runId, workerId, leaseToken: leaseToken!, attempt,
+      claimedAt: claimedAt!, leaseExpiresAt: leaseExpiresAt!
+    },
+    createdAt: isoDate(row.created_at)
+  });
+}
+
+function parseAnalysisGap(row: MysqlRow): FinancialCouncilAnalysisGap {
+  const raw = jsonObject(row.gap_json) as unknown as FinancialCouncilAnalysisGap;
+  const { gapHash: _hash, ...preimage } = raw;
+  if (rowString(row, "workspace_id") !== raw.workspaceId
+    || rowString(row, "run_id") !== raw.runId
+    || rowString(row, "role") !== raw.role
+    || rowString(row, "code") !== raw.code
+    || rowString(row, "gap_hash") !== raw.gapHash
+    || isoDate(row.created_at) !== raw.createdAt
+    || raw.detail !== null
+    || raw.gapHash !== financialCouncilCanonicalHash(preimage)) integrity();
+  return immutableFinancialCouncilValue(raw);
 }
 
 function isoDate(value: unknown): string {
@@ -793,6 +873,13 @@ implements FinancialCouncilRepository {
             snapshot.snapshotHash, canonical(snapshot.snapshot),
             sqlDate(snapshot.createdAt)]
         );
+        await connection.query(
+          `INSERT INTO financial_council_analysis_controls (
+             workspace_id, run_id, owner_id, team_id, created_at
+           ) VALUES (?, ?, ?, ?, ?)`,
+          [frozen.workspaceId, frozen.runId, command.actorId,
+            command.workspace.teamId, sqlDate(occurredAt)]
+        );
         await this.appendEvent(connection, createFinancialCouncilRunEvent(
           frozen, {
             fromStatus: "created", reasonCode: null,
@@ -868,6 +955,13 @@ implements FinancialCouncilRepository {
           [stored.runId, stored.workspaceId, stored.creationKeyHash,
             stored.requestHash, stored.revision, stored.status,
             stored.snapshotId, stored.snapshotHash, canonical(stored)]
+        );
+        await connection.query(
+          `INSERT INTO financial_council_analysis_controls (
+             workspace_id, run_id, owner_id, team_id, created_at
+           ) VALUES (?, ?, ?, ?, ?)`,
+          [stored.workspaceId, stored.runId, command.actorId,
+            command.workspace.teamId, sqlDate(stored.createdAt)]
         );
         await this.appendEvent(connection, createFinancialCouncilRunEvent(stored, {
           fromStatus: null,
@@ -1086,9 +1180,178 @@ implements FinancialCouncilRepository {
     }, true);
   }
 
+  async getAnalysisControl(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<FinancialCouncilAnalysisControl | null> {
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(
+        `SELECT * FROM financial_council_analysis_controls
+         WHERE workspace_id = ? AND run_id = ?`,
+        [context.workspaceId, runId]
+      );
+      const row = (rows as MysqlRow[])[0];
+      return row ? parseAnalysisControl(row) : null;
+    }, true);
+  }
+
+  async claimAnalysisRun(
+    input: ClaimFinancialCouncilAnalysisRunInput
+  ): Promise<FinancialCouncilAnalysisLease | null> {
+    if (!/^[0-9a-f]{64}$/u.test(input.leaseToken)
+      || !input.workerId.trim()
+      || Date.parse(input.leaseExpiresAt) <= Date.parse(input.claimedAt)) {
+      throw financialCouncilError("financial_council_lease_invalid");
+    }
+    return this.transaction(async (connection) => {
+      const current = await this.readAnalysisControl(
+        connection, input.workspaceId, input.runId, true
+      );
+      const run = await this.findByRunId(
+        connection, input.workspaceId, input.runId, true
+      );
+      if (!current || !run || !["snapshot_frozen", "analyzing", "auditing"]
+        .includes(run.status)) return null;
+      if (current.lease && Date.parse(current.lease.leaseExpiresAt)
+        > Date.parse(input.claimedAt)) return null;
+      const lease = immutableFinancialCouncilValue({
+        ...input, attempt: (current.lease?.attempt ?? 0) + 1
+      });
+      const [result] = await connection.query(
+        `UPDATE financial_council_analysis_controls
+         SET lease_worker_id = ?, lease_token = ?, attempt = ?,
+           claimed_at = ?, lease_expires_at = ?
+         WHERE workspace_id = ? AND run_id = ?`,
+        [lease.workerId, lease.leaseToken, lease.attempt,
+          sqlDate(lease.claimedAt), sqlDate(lease.leaseExpiresAt),
+          lease.workspaceId, lease.runId]
+      );
+      if (affectedRows(result) !== 1) {
+        throw financialCouncilError("financial_council_lease_stale");
+      }
+      return lease;
+    });
+  }
+
+  async releaseAnalysisLease(
+    lease: FinancialCouncilAnalysisLease,
+    releasedAt: string
+  ): Promise<void> {
+    await this.transaction(async (connection) => {
+      await this.assertLiveAnalysisLease(connection, lease, releasedAt);
+      const [result] = await connection.query(
+        `UPDATE financial_council_analysis_controls
+         SET lease_worker_id = NULL, lease_token = NULL,
+           claimed_at = NULL, lease_expires_at = NULL
+         WHERE workspace_id = ? AND run_id = ? AND lease_token = ?
+           AND attempt = ?`,
+        [lease.workspaceId, lease.runId, lease.leaseToken, lease.attempt]
+      );
+      if (affectedRows(result) !== 1) {
+        throw financialCouncilError("financial_council_lease_stale");
+      }
+    });
+  }
+
+  async transitionRunWithLease(
+    lease: FinancialCouncilAnalysisLease,
+    input: Omit<TransitionFinancialCouncilRunInput, "runId">
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRun>> {
+    return this.transaction(async (connection) => {
+      const control = await this.assertLiveAnalysisLease(
+        connection, lease, input.occurredAt
+      );
+      const current = await this.findByRunId(
+        connection, lease.workspaceId, lease.runId, true
+      );
+      if (!current) throw financialCouncilError("financial_council_run_not_found");
+      const next = applyFinancialCouncilTransition(current, {
+        kind: input.kind, occurredAt: input.occurredAt,
+        actorId: control.ownerId
+      });
+      await this.updateRun(connection, current, next);
+      await this.appendEvent(connection, createFinancialCouncilRunEvent(next, {
+        fromStatus: current.status, reasonCode: input.reasonCode,
+        occurredAt: input.occurredAt, actorId: control.ownerId
+      }));
+      return { value: next, replayed: false };
+    });
+  }
+
+  async listRecoverableAnalysisRuns(
+    now: string,
+    limit: number
+  ): Promise<readonly FinancialCouncilRun[]> {
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(
+        `SELECT r.* FROM financial_council_runs r
+         INNER JOIN financial_council_analysis_controls c
+           ON c.workspace_id = r.workspace_id AND c.run_id = r.run_id
+         WHERE r.status IN ('snapshot_frozen','analyzing','auditing')
+           AND (c.lease_expires_at IS NULL OR c.lease_expires_at <= ?)
+         ORDER BY BINARY r.workspace_id ASC, BINARY r.run_id ASC LIMIT ?`,
+        [sqlDate(now), limit]
+      );
+      return Object.freeze((rows as MysqlRow[]).map(parseRun));
+    }, true);
+  }
+
+  async storeAnalysisGap(
+    lease: FinancialCouncilAnalysisLease,
+    gap: FinancialCouncilAnalysisGap
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilAnalysisGap>> {
+    return this.transaction(async (connection) => {
+      await this.assertLiveAnalysisLease(connection, lease, gap.createdAt);
+      const [rows] = await connection.query(
+        `SELECT * FROM financial_council_analysis_gaps
+         WHERE workspace_id = ? AND run_id = ? AND role = ? FOR UPDATE`,
+        [gap.workspaceId, gap.runId, gap.role]
+      );
+      const row = (rows as MysqlRow[])[0];
+      if (row) {
+        const existing = parseAnalysisGap(row);
+        if (canonical(existing) !== canonical(gap)) {
+          throw financialCouncilError("financial_council_analysis_gap_conflict");
+        }
+        return { value: existing, replayed: true };
+      }
+      const { gapHash: _hash, ...preimage } = gap;
+      if (gap.workspaceId !== lease.workspaceId || gap.runId !== lease.runId
+        || !["profit", "cost", "tax"].includes(gap.role)
+        || !["specialist_unavailable", "tax_input_missing"].includes(gap.code)
+        || gap.detail !== null
+        || gap.gapHash !== financialCouncilCanonicalHash(preimage)) {
+        throw financialCouncilError("financial_council_analysis_gap_invalid");
+      }
+      await connection.query(
+        `INSERT INTO financial_council_analysis_gaps (
+           workspace_id, run_id, role, code, gap_hash, gap_json, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [gap.workspaceId, gap.runId, gap.role, gap.code, gap.gapHash,
+          canonical(gap), sqlDate(gap.createdAt)]
+      );
+      return { value: immutableFinancialCouncilValue(gap), replayed: false };
+    });
+  }
+
+  async listAnalysisGaps(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<readonly FinancialCouncilAnalysisGap[]> {
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(
+        `SELECT * FROM financial_council_analysis_gaps
+         WHERE workspace_id = ? AND run_id = ? ORDER BY BINARY role ASC`,
+        [context.workspaceId, runId]
+      );
+      return Object.freeze((rows as MysqlRow[]).map(parseAnalysisGap));
+    }, true);
+  }
+
   async storeSpecialistResult(
     context: ActiveWorkspaceContext,
-    rawResult: AuthorizedFinancialCouncilSpecialistResult
+    rawResult: AuthorizedFinancialCouncilSpecialistResult,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<
   AuthorizedFinancialCouncilSpecialistResult>> {
     assertFinancialCouncilSpecialistResultAuthorized(rawResult);
@@ -1098,6 +1361,9 @@ implements FinancialCouncilRepository {
     }
     try {
       return await this.transaction(async (connection) => {
+        if (write) await this.assertLiveAnalysisLease(
+          connection, write.lease, write.completedAt
+        );
         const run = await this.findByRunId(
           connection, context.workspaceId, result.runId, true
         );
@@ -1240,9 +1506,13 @@ implements FinancialCouncilRepository {
   async storeAuditGraph(
     context: ActiveWorkspaceContext,
     graph: FinancialCouncilAuditGraph,
-    dispositions: readonly InitialFinancialCouncilFindingDisposition[]
+    dispositions: readonly InitialFinancialCouncilFindingDisposition[],
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilAuditGraph>> {
     return this.transaction(async (connection) => {
+      if (write) await this.assertLiveAnalysisLease(
+        connection, write.lease, write.completedAt
+      );
       const run = await this.findByRunId(
         connection, context.workspaceId, graph.runId, true
       );
@@ -1326,7 +1596,8 @@ implements FinancialCouncilRepository {
 
   async reserveRebuttalAttempt(
     context: ActiveWorkspaceContext,
-    attempt: FinancialCouncilRebuttalAttempt
+    attempt: FinancialCouncilRebuttalAttempt,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>> {
     if (attempt.workspaceId !== context.workspaceId || attempt.round !== 1
       || attempt.status !== "reserved" || attempt.result !== null
@@ -1340,35 +1611,38 @@ implements FinancialCouncilRepository {
     }
     try {
       return await this.transaction(async (connection) => {
-      const graph = await this.readAuditGraph(
-        connection, context.workspaceId, attempt.runId, false
-      );
-      if (!graph || graph.graphId !== attempt.graphId
-        || graph.snapshotId !== attempt.snapshotId
-        || graph.snapshotHash !== attempt.snapshotHash
-        || !graph.edges.some((edge) => edge.edgeId === attempt.edgeId
-          && edge.findingIds.includes(attempt.targetFindingId))) {
-        throw financialCouncilError("financial_council_rebuttal_invalid");
-      }
-      const existing = await this.readRebuttalAttempt(connection,
-        context.workspaceId, attempt.runId, attempt.role, 1, true);
-      if (existing) {
-        if (existing.attemptId !== attempt.attemptId
-          || existing.inputHash !== attempt.inputHash
-          || existing.edgeId !== attempt.edgeId) {
-          throw financialCouncilError("financial_council_rebuttal_conflict");
+        if (write) await this.assertLiveAnalysisLease(
+          connection, write.lease, write.completedAt
+        );
+        const graph = await this.readAuditGraph(
+          connection, context.workspaceId, attempt.runId, false
+        );
+        if (!graph || graph.graphId !== attempt.graphId
+          || graph.snapshotId !== attempt.snapshotId
+          || graph.snapshotHash !== attempt.snapshotHash
+          || !graph.edges.some((edge) => edge.edgeId === attempt.edgeId
+            && edge.findingIds.includes(attempt.targetFindingId))) {
+          throw financialCouncilError("financial_council_rebuttal_invalid");
         }
-        return { value: existing, replayed: true };
-      }
-      await connection.query(
-        `INSERT INTO financial_council_rebuttal_attempts (
-           workspace_id, run_id, role, round_number, attempt_id, input_hash,
-           status, attempt_json
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [attempt.workspaceId, attempt.runId, attempt.role, 1,
-          attempt.attemptId, attempt.inputHash, attempt.status,
-          canonical(attempt)]
-      );
+        const existing = await this.readRebuttalAttempt(connection,
+          context.workspaceId, attempt.runId, attempt.role, 1, true);
+        if (existing) {
+          if (existing.attemptId !== attempt.attemptId
+            || existing.inputHash !== attempt.inputHash
+            || existing.edgeId !== attempt.edgeId) {
+            throw financialCouncilError("financial_council_rebuttal_conflict");
+          }
+          return { value: existing, replayed: true };
+        }
+        await connection.query(
+          `INSERT INTO financial_council_rebuttal_attempts (
+             workspace_id, run_id, role, round_number, attempt_id, input_hash,
+             status, attempt_json
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [attempt.workspaceId, attempt.runId, attempt.role, 1,
+            attempt.attemptId, attempt.inputHash, attempt.status,
+            canonical(attempt)]
+        );
         return { value: attempt, replayed: false };
       });
     } catch (error) {
@@ -1412,9 +1686,13 @@ implements FinancialCouncilRepository {
 
   async completeRebuttalAttempt(
     context: ActiveWorkspaceContext,
-    input: CompleteFinancialCouncilRebuttalInput
+    input: CompleteFinancialCouncilRebuttalInput,
+    write?: FinancialCouncilLeaseWrite
   ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>> {
     return this.transaction(async (connection) => {
+      if (write) await this.assertLiveAnalysisLease(
+        connection, write.lease, write.completedAt
+      );
       const [rows] = await connection.query(
         `SELECT * FROM financial_council_rebuttal_attempts
          WHERE workspace_id = ? AND attempt_id = ? FOR UPDATE`,
@@ -1690,6 +1968,41 @@ implements FinancialCouncilRepository {
     );
     const row = (rows as MysqlRow[])[0];
     return row ? parseRun(row) : null;
+  }
+
+  private async readAnalysisControl(
+    source: Pick<mysql.Pool, "query">,
+    workspaceId: string,
+    runId: string,
+    lock: boolean
+  ): Promise<FinancialCouncilAnalysisControl | null> {
+    const [rows] = await source.query(
+      `SELECT * FROM financial_council_analysis_controls
+       WHERE workspace_id = ? AND run_id = ?${lock ? " FOR UPDATE" : ""}`,
+      [workspaceId, runId]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseAnalysisControl(row) : null;
+  }
+
+  private async assertLiveAnalysisLease(
+    source: Pick<mysql.Pool, "query">,
+    lease: FinancialCouncilAnalysisLease,
+    completedAt: string
+  ): Promise<FinancialCouncilAnalysisControl> {
+    const control = await this.readAnalysisControl(
+      source, lease.workspaceId, lease.runId, true
+    );
+    const current = control?.lease;
+    if (!control || !current || current.workerId !== lease.workerId
+      || current.leaseToken !== lease.leaseToken
+      || current.attempt !== lease.attempt
+      || current.claimedAt !== lease.claimedAt
+      || current.leaseExpiresAt !== lease.leaseExpiresAt
+      || Date.parse(completedAt) >= Date.parse(current.leaseExpiresAt)) {
+      throw financialCouncilError("financial_council_lease_stale");
+    }
+    return control;
   }
 
   private async findByRunId(

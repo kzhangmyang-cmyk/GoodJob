@@ -66,6 +66,18 @@ HTTP 幂等仓库只保存 domain-separated digest，不保存原始 `Idempotenc
 
 runnable 扫描使用 workspace/run 的 UTF-8 binary-byte 复合游标，Memory 与 MySQL 共用同一全序。relay 对 runnable enumeration、wake sink 与错误 observer 都设置有界 deadline，因此永久不返回的查询或投递不会阻塞 sweep 或应用关闭。公开创建合同只接受 CNY/USD，策略版本 ID 与业务报表文本分别最多包含 255 和 4000 个 Unicode code point，报表数组上限 100 项。公开 run 从 `snapshot_frozen` 开始，内部 revision-1 `created` 状态只存在于事件历史，service 与 router 都不会把它作为 run 响应。
 
+### 五专家可恢复执行
+
+生产模块把官方 active model gateway、五专家 coordinator、确定性冲突图、一轮反驳、lease-fenced worker 与 recovery sweeper 组合成真实异步流程：
+
+`snapshot_frozen -> analyzing -> auditing -> synthesizing`
+
+创建/冻结时会在内部原子持久分析 owner/team，恢复不使用当前切换的 workspace 或模型身份。每次 claim 使用随机 64 位十六进制 token 和递增 attempt；精确到期时刻已算 stale，同 worker reclaim 后的旧 token 也不能写入。专家 result、gap、audit graph、rebuttal reservation/result/disposition 与运行转移都在同一 token + attempt + strict-expiry fence 下提交。
+
+五个 analyze job 与最多五个 rebuttal job 的逻辑 attempt 始终为 `1`；可重试传输失败一次，不增加专家提交轮次。恢复先读已持久的 analyze result、graph 和 rebuttal reservation/completion，不创建第二轮，变更的 replay 会冲突关闭。
+
+`finance` 和 `cashflow` 是硬约束角色，失败或缺失现金硬约束会进入 `not_computable`。`profit|cost|tax` 只有在确定性检查证明不依赖未可用硬约束或动作公式时才可部分继续，并持久仅含闭集 code 的脱敏 gap。缺少税务输入记为 `tax_input_missing`，不伪造税务结论。关闭顺序是 relay、sweeper、worker drain，然后底层资源。
+
 ## 报表导入（statement-import.ts）
 
 支持两类标准格式：
@@ -86,6 +98,8 @@ runnable 扫描使用 workspace/run 的 UTF-8 binary-byte 复合游标，Memory 
 
 ```bash
 npm run test:business-advisor --workspace backend
+npm run test:financial-council --workspace backend
+npm run test:financial-council:mysql --workspace backend
 ```
 
 覆盖：金额换算、勾稽校验、指标计算、假利润/客户 ABC/现金流预警、知识库条目、诊断阈值（负债率/应收天数/利息保障/净现比）、两种报表格式解析与勾稽错误。

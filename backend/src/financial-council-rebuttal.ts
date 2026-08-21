@@ -15,6 +15,7 @@ import type {
   CompleteFinancialCouncilRebuttalInput,
   FinancialCouncilCommandResult,
   FinancialCouncilRebuttalAttempt,
+  FinancialCouncilLeaseWrite,
   FinancialCouncilRepository
 } from "./financial-council-repository.js";
 import type { ActiveWorkspaceContext } from
@@ -127,7 +128,8 @@ function reservation(
 export class FinancialCouncilRebuttalCoordinator {
   constructor(private readonly options: FinancialCouncilRebuttalCoordinatorOptions) {}
 
-  async run(rawRequest: RunFinancialCouncilRebuttalInput): Promise<
+  async run(rawRequest: RunFinancialCouncilRebuttalInput,
+    write?: FinancialCouncilLeaseWrite): Promise<
   FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>> {
     const request = immutableFinancialCouncilInput(rawRequest);
     const requestedInput = rebuttalInput(request);
@@ -135,14 +137,27 @@ export class FinancialCouncilRebuttalCoordinator {
       request, requestedInput, this.options.now()
     );
     const reserved = await this.options.repository.reserveRebuttalAttempt(
-      request.context, requestedReservation
+      request.context, requestedReservation,
+      write ? { lease: write.lease, completedAt: this.options.now() } : undefined
     );
     if (reserved.value.status === "completed") {
       return { value: reserved.value, replayed: true };
     }
     const input = reserved.value.input;
     const expectedContent = buildFinancialCouncilModelContent("rebut", input);
-    const modelResult = await this.options.model.rebut(input);
+    let modelResult;
+    let failure: unknown;
+    for (let transportAttempt = 0; transportAttempt < 2;
+      transportAttempt += 1) {
+      try {
+        modelResult = await this.options.model.rebut(input);
+        break;
+      } catch (error) {
+        failure = error;
+        if (!(error as { retryable?: unknown } | null)?.retryable) throw error;
+      }
+    }
+    if (!modelResult) throw failure;
     if (modelResult.binding.jobId !== expectedContent.jobId
       || modelResult.binding.contentHash !== expectedContent.contentHash
       || modelResult.binding.runId !== input.runId
@@ -164,11 +179,12 @@ export class FinancialCouncilRebuttalCoordinator {
       .map((edge) => edge.edgeId);
     const status = output.decision === "withdraw" ? "withdrawn"
       : output.decision === "revise" ? "revised" : "upheld";
+    const completedAt = this.options.now();
     const completion: CompleteFinancialCouncilRebuttalInput = {
       attemptId: reserved.value.attemptId,
       inputHash: reserved.value.inputHash,
       result: immutableFinancialCouncilValue({ ...modelResult, value: output }),
-      completedAt: this.options.now(),
+      completedAt,
       disposition: {
         status,
         blockingConflictIds: output.decision === "withdraw" ? []
@@ -178,7 +194,8 @@ export class FinancialCouncilRebuttalCoordinator {
       }
     };
     return this.options.repository.completeRebuttalAttempt(
-      request.context, completion
+      request.context, completion,
+      write ? { lease: write.lease, completedAt } : undefined
     );
   }
 }

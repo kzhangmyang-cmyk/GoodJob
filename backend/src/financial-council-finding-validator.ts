@@ -275,7 +275,8 @@ export class FinancialFindingValidator {
     try {
       assertFinancialCouncilRunValue(options.run);
       if (options.run.status !== "snapshot_frozen"
-        && options.run.status !== "analyzing") invalid();
+        && options.run.status !== "analyzing"
+        && options.run.status !== "auditing") invalid();
       this.#run = immutableFinancialCouncilValue(options.run);
       this.#snapshot = validateFinancialSnapshotForRun(
         options.snapshot, this.#run

@@ -13,12 +13,14 @@ import {
 import type {
   FinancialCouncilModelPort,
   FinancialCouncilModelResult,
-  FinancialCouncilAnalyzeOutput
+  FinancialCouncilAnalyzeOutput,
+  FinancialCouncilRebutInput
 } from "./financial-council-model-port.js";
 import { buildFinancialCouncilModelContent } from
   "./financial-council-model-content.js";
 import type {
   FinancialCouncilRepository,
+  FinancialCouncilLeaseWrite,
   FinancialCouncilSpecialistResult,
   VerifiedFinancialCouncilRunSnapshot
 } from "./financial-council-repository.js";
@@ -168,94 +170,177 @@ export class FinancialCouncilSpecialistCoordinator {
       return invalid("financial_council_specialist_context_invalid");
     }
     const prepared = await prepareSpecialistAuthority({
-      repository: this.#repository,
-      context,
-      runId,
-      resolvePolicy: this.#resolvePolicy,
-      now: this.#now
+      repository: this.#repository, context, runId,
+      resolvePolicy: this.#resolvePolicy, now: this.#now
     });
-    const { verified, validator } = prepared;
-    const byRole = new Map(prepared.results
-      .filter((result) => result.phase === "analyze")
-      .map((result) => [result.role, result] as const));
-    const existing = FINANCIAL_COUNCIL_SPECIALIST_ROLES.map((role) =>
-      byRole.get(role) ?? null);
-    if (existing.every((result) => result !== null)) {
-      return Object.freeze(existing as FinancialCouncilSpecialistResult[]);
-    }
     const settled = await Promise.allSettled(
-      FINANCIAL_COUNCIL_SPECIALIST_ROLES.map(async (role, index) => {
-        if (existing[index]) return existing[index]!;
-        const projection = validator.project(role);
-        const input = {
-          ownerId: context.actorId,
-          teamId: context.teamId,
-          runId: verified.run.runId,
-          snapshotId: verified.snapshot.snapshotId,
-          snapshotHash: verified.snapshot.snapshotHash,
-          role,
-          attempt: 1,
-          allowlist: projection.allowlist,
-          businessData: projection.businessData
-        };
-        const content = buildFinancialCouncilModelContent("analyze", input);
-        const modelResult = await this.#model.analyze(input);
-        exactBinding(modelResult, {
-          runId: verified.run.runId,
-          snapshotId: verified.snapshot.snapshotId,
-          snapshotHash: verified.snapshot.snapshotHash,
-          role,
-          contentHash: content.contentHash,
-          promptHash: content.promptHash,
-          schemaHash: content.schemaHash,
-          promptVersion: content.promptVersion,
-          schemaVersion: content.schemaVersion
-        });
-        const validated = validator.validate(role, modelResult.value);
-        const createdAt = instant(this.#now());
-        const resultId = financialCouncilCanonicalHash({
-          workspaceId: verified.run.workspaceId,
-          runId: verified.run.runId,
-          snapshotId: verified.snapshot.snapshotId,
-          snapshotHash: verified.snapshot.snapshotHash,
-          role,
-          phase: "analyze",
-          attempt: 1,
-          outputHash: validated.outputHash,
-          modelJobId: modelResult.binding.jobId
-        });
-        const preimage = immutableFinancialCouncilValue({
-          resultId,
-          workspaceId: verified.run.workspaceId,
-          runId: verified.run.runId,
-          snapshotId: verified.snapshot.snapshotId,
-          snapshotHash: verified.snapshot.snapshotHash,
-          role,
-          phase: "analyze" as const,
-          attempt: 1,
-          outputHash: validated.outputHash,
-          modelBinding: modelResult.binding,
-          repaired: modelResult.repaired,
-          providerRequestId: modelResult.providerRequestId,
-          findings: validated.findings,
-          actions: validated.actions,
-          createdAt
-        });
-        const result = validator.authorizeSpecialistResult(
-          immutableFinancialCouncilValue({
-          ...preimage,
-          resultHash: financialCouncilCanonicalHash(preimage)
-          })
-        );
-        return (await this.#repository.storeSpecialistResult(
-          context, result
-        )).value;
-      })
+      FINANCIAL_COUNCIL_SPECIALIST_ROLES.map((role) =>
+        this.#runPrepared(context, role, prepared))
     );
     const failed = settled.find((result) => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
     return Object.freeze(settled.map((result) =>
       (result as PromiseFulfilledResult<FinancialCouncilSpecialistResult>)
         .value));
+  }
+
+  async inspectRole(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    role: FinancialCouncilAgentRole
+  ): Promise<{
+    readonly available: boolean;
+    readonly gapCode?: "tax_input_missing";
+    readonly hardConstraintDependency: boolean;
+    readonly actionDependency: boolean;
+  }> {
+    const prepared = await prepareSpecialistAuthority({
+      repository: this.#repository,
+      context,
+      runId,
+      resolvePolicy: this.#resolvePolicy,
+      now: this.#now
+    });
+    const projection = prepared.validator.project(role);
+    const data = projection.businessData as {
+      formulas: readonly { formulaId: string }[];
+    };
+    const requiredActionFormula = role === "profit"
+      ? "loss_product_pricing_gap" : role === "cost"
+        ? "verified_avoidable_cost" : role === "tax" ? "tax_risk" : null;
+    const actionDependency = requiredActionFormula !== null
+      && data.formulas.some((formula) =>
+        formula.formulaId === requiredActionFormula);
+    const available = role !== "tax" || data.formulas.some((formula) =>
+      formula.formulaId === "tax_risk");
+    return Object.freeze({
+      available,
+      ...(available ? {} : { gapCode: "tax_input_missing" as const }),
+      hardConstraintDependency: role === "finance" || role === "cashflow",
+      actionDependency
+    });
+  }
+
+  async runRole(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    role: FinancialCouncilAgentRole,
+    write?: FinancialCouncilLeaseWrite
+  ): Promise<FinancialCouncilSpecialistResult> {
+    const prepared = await prepareSpecialistAuthority({
+      repository: this.#repository,
+      context,
+      runId,
+      resolvePolicy: this.#resolvePolicy,
+      now: this.#now
+    });
+    return this.#runPrepared(context, role, prepared, write);
+  }
+
+  async #runPrepared(
+    context: ActiveWorkspaceContext,
+    role: FinancialCouncilAgentRole,
+    prepared: PreparedSpecialistAuthority,
+    write?: FinancialCouncilLeaseWrite
+  ): Promise<FinancialCouncilSpecialistResult> {
+    const { verified, validator } = prepared;
+    const existing = prepared.results.find((result) =>
+      result.phase === "analyze" && result.role === role);
+    if (existing) return existing;
+    const projection = validator.project(role);
+    const input = {
+      ownerId: context.actorId,
+      teamId: context.teamId,
+      runId: verified.run.runId,
+      snapshotId: verified.snapshot.snapshotId,
+      snapshotHash: verified.snapshot.snapshotHash,
+      role,
+      attempt: 1,
+      allowlist: projection.allowlist,
+      businessData: projection.businessData
+    };
+    const content = buildFinancialCouncilModelContent("analyze", input);
+    const modelResult = await this.#model.analyze(input);
+    exactBinding(modelResult, {
+      runId: verified.run.runId,
+      snapshotId: verified.snapshot.snapshotId,
+      snapshotHash: verified.snapshot.snapshotHash,
+      role,
+      contentHash: content.contentHash,
+      promptHash: content.promptHash,
+      schemaHash: content.schemaHash,
+      promptVersion: content.promptVersion,
+      schemaVersion: content.schemaVersion
+    });
+    const validated = validator.validate(role, modelResult.value);
+    const createdAt = instant(this.#now());
+    const resultId = financialCouncilCanonicalHash({
+      workspaceId: verified.run.workspaceId,
+      runId: verified.run.runId,
+      snapshotId: verified.snapshot.snapshotId,
+      snapshotHash: verified.snapshot.snapshotHash,
+      role,
+      phase: "analyze",
+      attempt: 1,
+      outputHash: validated.outputHash,
+      modelJobId: modelResult.binding.jobId
+    });
+    const preimage = immutableFinancialCouncilValue({
+      resultId,
+      workspaceId: verified.run.workspaceId,
+      runId: verified.run.runId,
+      snapshotId: verified.snapshot.snapshotId,
+      snapshotHash: verified.snapshot.snapshotHash,
+      role,
+      phase: "analyze" as const,
+      attempt: 1,
+      outputHash: validated.outputHash,
+      modelBinding: modelResult.binding,
+      repaired: modelResult.repaired,
+      providerRequestId: modelResult.providerRequestId,
+      findings: validated.findings,
+      actions: validated.actions,
+      createdAt
+    });
+    const result = validator.authorizeSpecialistResult(
+      immutableFinancialCouncilValue({
+        ...preimage,
+        resultHash: financialCouncilCanonicalHash(preimage)
+      })
+    );
+    return (await this.#repository.storeSpecialistResult(
+      context, result,
+      write ? { lease: write.lease, completedAt: instant(this.#now()) }
+        : undefined
+    )).value;
+  }
+
+  async rebuttalBaseInput(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    role: FinancialCouncilAgentRole,
+    targetFindingId: string
+  ): Promise<FinancialCouncilRebutInput> {
+    const prepared = await prepareSpecialistAuthority({
+      repository: this.#repository, context, runId,
+      resolvePolicy: this.#resolvePolicy, now: this.#now
+    });
+    const projection = prepared.validator.project(role);
+    if (!projection.allowlist.findingIds.includes(targetFindingId)) {
+      return invalid("financial_council_rebuttal_invalid");
+    }
+    return immutableFinancialCouncilValue({
+      ownerId: context.actorId,
+      teamId: context.teamId,
+      runId,
+      snapshotId: prepared.verified.snapshot.snapshotId,
+      snapshotHash: prepared.verified.snapshot.snapshotHash,
+      role,
+      attempt: 1,
+      allowlist: projection.allowlist,
+      businessData: projection.businessData,
+      targetFindingId,
+      conflictData: {}
+    });
   }
 }

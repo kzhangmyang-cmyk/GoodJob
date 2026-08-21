@@ -166,3 +166,42 @@ test("crash recovery completes exact result once and never creates round two", a
   }), (error: unknown) => (error as { code?: unknown }).code
     === "financial_council_rebuttal_invalid");
 });
+
+test("lease fencing uses actual rebuttal completion time after the model call", async () => {
+  const { repository, run, graph, target, snapshot, boundFacts } =
+    await fixture();
+  const lease = (await repository.claimAnalysisRun({
+    workspaceId: run.workspaceId,
+    runId: run.runId,
+    workerId: "worker-a",
+    leaseToken: "7".repeat(64),
+    claimedAt: "2026-08-16T08:00:00.000Z",
+    leaseExpiresAt: "2026-08-16T08:01:00.000Z"
+  }))!;
+  const output: FinancialCouncilRebutOutput = {
+    decision: "withdraw", findingId: target.findingId,
+    evidenceRefs: [], replacement: null, explanation: "finding_rebuttal"
+  };
+  const model: FinancialCouncilModelPort = {
+    async analyze() { throw new Error("unused"); },
+    async rebut(input) { return result(input, output); }
+  };
+  const times = [
+    "2026-08-16T08:00:00.000Z",
+    "2026-08-16T08:00:00.000Z",
+    "2026-08-16T08:01:00.000Z"
+  ];
+  const coordinator = new FinancialCouncilRebuttalCoordinator({
+    repository, model, now: () => times.shift()!,
+    validateOutput: (_role, value) => value
+  });
+  await assert.rejects(coordinator.run({
+    context: workspace(), graph, target,
+    originalFinding: boundFacts[0]!.finding,
+    peerFinding: boundFacts[1]!.finding,
+    baseInput: baseInput(target.findingId, snapshot.snapshotId,
+      snapshot.snapshotHash)
+  }, { lease, completedAt: "2026-08-16T08:00:00.000Z" }),
+  (error: unknown) => (error as { code?: unknown }).code
+    === "financial_council_lease_stale");
+});
