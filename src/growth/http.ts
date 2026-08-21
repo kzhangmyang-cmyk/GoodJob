@@ -21,7 +21,7 @@ export class GrowthApiError extends Error {
 }
 
 export interface GrowthHttpRequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   idempotencyKey?: string;
   ifMatch?: string;

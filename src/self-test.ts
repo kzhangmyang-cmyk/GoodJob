@@ -53,6 +53,8 @@ import "./growth/advisor/copilot-workflow.self-test";
 import "./growth/advisor/controller.self-test";
 import "./growth/advisor/view.self-test";
 import "./growth/agents/view.self-test";
+import "./growth/council/api.self-test";
+import "./growth/council/controller.self-test";
 import "./connections/connection-view.self-test";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");

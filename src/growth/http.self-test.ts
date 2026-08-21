@@ -47,6 +47,16 @@ assert.equal(requests[1]?.headers["Idempotency-Key"], "key-1");
 assert.equal(requests[1]?.headers["If-Match"], "\"advisor-recommendation-v:1\"");
 assert.equal(requests[1]?.body, JSON.stringify({ reason: null }));
 
+await client.request("/api/v1/finance/council-policy", {
+  method: "PUT",
+  body: { currency: "CNY" },
+  idempotencyKey: "policy-key-1",
+  ifMatch: '"financial-council-policy:ws-1:1"'
+});
+assert.equal(requests[2]?.method, "PUT");
+assert.equal(requests[2]?.headers["x-csrf-token"], "csrf-token");
+assert.equal(requests[2]?.headers["If-Match"], '"financial-council-policy:ws-1:1"');
+
 await assert.rejects(
   client.request("/api/v1/acquisition/advisor/today?asOf=future"),
   (error: unknown) => error instanceof GrowthApiError
