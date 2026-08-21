@@ -7,18 +7,27 @@ import express, {
 } from "express";
 import { canonicalBusinessReportInput } from "./business-advisor/domain.js";
 import type { FinancialCouncilService } from "./financial-council-service.js";
-import type { FinancialCouncilCreateInput } from "./growth-contract-types.js";
+import type {
+  FinancialCouncilCreateInput,
+  FinancialCouncilPolicyInput,
+  FinancialCouncilPolicyVersion
+} from "./growth-contract-types.js";
 import { GrowthHttpError } from "./growth-command-context.js";
 import { GrowthAuthorizationError } from "./growth-capabilities.js";
 import {
   financialCouncilError,
   isFinancialCouncilError
 } from "./financial-council-domain.js";
+import { normalizeFinancialCouncilPolicyInput } from
+  "./financial-council-policy.js";
 import type {
   GrowthCommandContextFactory,
   GrowthWorkspaceContextResolver
 } from "./growth-http-preconditions.js";
-import { setRevisionEtag } from "./growth-http-preconditions.js";
+import {
+  parseIfMatchRevision,
+  setRevisionEtag
+} from "./growth-http-preconditions.js";
 import {
   executeGrowthIdempotentCommand,
   growthHttpIdempotencyKeyHash,
@@ -140,11 +149,21 @@ function trustedError(error: unknown): {
         return { status: 500, code: "financial_council_internal_error" };
       }
       const status = error.code === "financial_council_run_not_found" ? 404
+        : error.code === "financial_council_policy_not_found" ? 404
+        : error.code === "financial_council_policy_revision_conflict" ? 412
         : error.code === "financial_council_idempotency_conflict"
           || error.code === "financial_council_run_conflict"
           || error.code === "financial_council_snapshot_conflict"
-          || error.code === "financial_council_revision_conflict" ? 409
+          || error.code === "financial_council_revision_conflict"
+          || error.code === "financial_council_policy_idempotency_conflict"
+          || error.code === "financial_council_policy_version_conflict" ? 409
           : error.code === "financial_council_input_invalid"
+            || error.code === "financial_council_policy_input_invalid"
+            || error.code === "financial_council_policy_context_invalid"
+            || error.code === "financial_council_policy_workspace_mismatch"
+            || error.code === "financial_council_policy_currency_mismatch"
+            || error.code === "financial_council_policy_default_invalid"
+            || error.code === "financial_council_policy_coefficient_unknown"
             || error.code === "financial_council_transition_invalid"
             || error.code === "financial_council_timestamp_invalid"
             || error.code === "financial_council_context_invalid"
@@ -255,6 +274,126 @@ export function createFinancialCouncilRouter(
     }));
   }));
 
+  router.use((error: unknown, req: Request, res: Response,
+    _next: NextFunction) => sendError(req, res, error));
+  return router;
+}
+
+export interface FinancialCouncilPolicyRouterDependencies {
+  readonly service: Pick<FinancialCouncilService,
+    "getPolicy" | "getPolicyVersion" | "updatePolicy">;
+  readonly workspaceContext: GrowthWorkspaceContextResolver;
+  readonly commandContextFactory: GrowthCommandContextFactory;
+  readonly httpIdempotency: GrowthHttpIdempotencyRepository;
+  readonly now?: () => string;
+}
+
+function exactPolicyInput(raw: unknown): FinancialCouncilPolicyInput {
+  try {
+    return normalizeFinancialCouncilPolicyInput(
+      raw as FinancialCouncilPolicyInput
+    );
+  } catch (error) {
+    if (isFinancialCouncilError(error)) {
+      throw new GrowthHttpError(422, error.code);
+    }
+    throw new GrowthHttpError(422, "financial_council_policy_input_invalid");
+  }
+}
+
+function projectPolicy(policy: FinancialCouncilPolicyVersion) {
+  return Object.freeze({
+    policyVersionId: policy.policyVersionId,
+    workspaceId: policy.workspaceId,
+    version: policy.version,
+    revision: policy.revision,
+    currency: policy.currency,
+    balancedWeightsBps: policy.balancedWeightsBps,
+    minimumCashReserveMinor: policy.minimumCashReserveMinor,
+    dueDebtMinor: policy.dueDebtMinor,
+    necessaryOutflowMinor: policy.necessaryOutflowMinor,
+    budgetLimitMinor: policy.budgetLimitMinor,
+    capacityLimitUnits: policy.capacityLimitUnits,
+    durationLimitDays: policy.durationLimitDays,
+    minimumActionConfidenceBps: policy.minimumActionConfidenceBps,
+    actionCoefficientVersion: policy.actionCoefficientVersion,
+    policyHash: policy.policyHash,
+    createdAt: policy.createdAt
+  });
+}
+
+export function createFinancialCouncilPolicyRouter(
+  dependencies: FinancialCouncilPolicyRouterDependencies
+): Router {
+  const router = express.Router();
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  router.use((req, res, next) => {
+    const requestId = req.header("X-Request-Id")?.trim() || randomUUID();
+    res.setHeader("X-Request-Id", requestId);
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  });
+  router.get("/", route(async (req, res) => {
+    if (Object.keys(req.query).length !== 0) {
+      throw new GrowthHttpError(422, "financial_council_policy_input_invalid");
+    }
+    const context = dependencies.workspaceContext(req);
+    const policy = await dependencies.service.getPolicy(context);
+    setRevisionEtag(
+      res, "financial-council-policy", context.workspaceId, policy.revision
+    );
+    res.status(200).json(projectPolicy(policy));
+  }));
+  router.put("/", route(async (req, res) => {
+    const body = exactPolicyInput(req.body);
+    const workspace = dependencies.workspaceContext(req);
+    const expectedRevision = parseIfMatchRevision(
+      req, `financial-council-policy:${workspace.workspaceId}`
+    );
+    const command = dependencies.commandContextFactory(req, {
+      canonicalPath: "/api/v1/finance/council-policy",
+      pathParams: Object.freeze({}),
+      payload: body,
+      expectedRevision
+    });
+    let repositoryReplayed = false;
+    const result = await executeGrowthIdempotentCommand({
+      repository: dependencies.httpIdempotency,
+      reservation: {
+        workspaceId: command.workspace.workspaceId,
+        actorId: command.actorId,
+        method: "PUT",
+        canonicalPath: "/api/v1/finance/council-policy",
+        key: `financial-council-policy:http:${growthHttpIdempotencyKeyHash(
+          command.idempotencyKey
+        )}`,
+        requestHash: command.requestHash,
+        attemptedAt: now(),
+        leaseOwner: `financial-council-policy-http-${randomUUID()}`,
+        leaseDurationMs: 30_000
+      }
+    }, async (resourceId) => {
+      if (!resourceId) throw new GrowthHttpError(409, "idempotency_conflict");
+      return projectPolicy(await dependencies.service.getPolicyVersion(
+        command.workspace, resourceId
+      ));
+    }, async () => {
+      const created = await dependencies.service.updatePolicy(command, body);
+      repositoryReplayed = created.replayed;
+      return {
+        resourceId: created.value.policyVersionId,
+        operationId: null
+      };
+    });
+    if (result.replayed || repositoryReplayed) {
+      res.setHeader("Idempotency-Replayed", "true");
+    }
+    setRevisionEtag(
+      res, "financial-council-policy", command.workspace.workspaceId,
+      result.value.revision
+    );
+    res.status(200).json(result.value);
+  }));
   router.use((error: unknown, req: Request, res: Response,
     _next: NextFunction) => sendError(req, res, error));
   return router;

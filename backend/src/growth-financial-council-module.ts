@@ -12,6 +12,14 @@ import {
   type FinancialCouncilRepository
 } from "./financial-council-repository.js";
 import { createFinancialCouncilRouter } from "./financial-council-router.js";
+import { createFinancialCouncilPolicyRouter } from
+  "./financial-council-router.js";
+import { InMemoryFinancialCouncilPolicyRepository } from
+  "./financial-council-policy-repository.js";
+import {
+  MysqlFinancialCouncilPolicyRepository,
+  ensureFinancialCouncilPolicyMysqlSchema
+} from "./financial-council-policy-mysql-repository.js";
 import {
   FinancialCouncilService,
   isFinancialCouncilService,
@@ -244,6 +252,7 @@ export interface GrowthFinancialCouncilModuleOptions {
     finance: GrowthFinanceServices;
   }) => Promise<GrowthFinancialCouncilResources>;
   readonly createRouter?: typeof createFinancialCouncilRouter;
+  readonly createPolicyRouter?: typeof createFinancialCouncilPolicyRouter;
 }
 
 function sealedAdvisor(value: unknown): GrowthAdvisorSealedQueryService {
@@ -344,12 +353,15 @@ export async function createGrowthFinancialCouncilResources(input: {
 }): Promise<GrowthFinancialCouncilResources> {
   const advisor = sealedAdvisor(input.advisor.today);
   const facts = workspaceFacts(input.finance.verifiedAsOf);
-  const repository = input.mode === "mysql"
-    ? new MysqlFinancialCouncilRepository(input.pool!)
-    : new InMemoryFinancialCouncilRepository();
   if (input.mode === "mysql" && !input.pool) {
     throw new Error("GROWTH_FINANCIAL_COUNCIL_POOL_REQUIRED");
   }
+  const repository = input.mode === "mysql"
+    ? new MysqlFinancialCouncilRepository(input.pool!)
+    : new InMemoryFinancialCouncilRepository();
+  const policyRepository = input.mode === "mysql"
+    ? new MysqlFinancialCouncilPolicyRepository(input.pool!)
+    : new InMemoryFinancialCouncilPolicyRepository();
   const authority = new FinancialCouncilAuthorityReader({
     advisor,
     verifiedFacts: {
@@ -417,7 +429,7 @@ export async function createGrowthFinancialCouncilResources(input: {
   }
   sink ??= new IdempotentInProcessWakeSink();
   const service = new FinancialCouncilService({
-    repository, snapshotBuilder, advisoryWake: sink
+    repository, policyRepository, snapshotBuilder, advisoryWake: sink
   });
   const relay = new FinancialCouncilWakeRelay({
     repository,
@@ -479,6 +491,7 @@ export function createGrowthFinancialCouncilModule(
         else if (options.mode === "mysql") {
           if (!options.pool) throw new Error("GROWTH_FINANCIAL_COUNCIL_POOL_REQUIRED");
           await ensureFinancialCouncilMysqlSchema(options.pool);
+          await ensureFinancialCouncilPolicyMysqlSchema(options.pool);
         }
         const createdResources = options.createResources
           ? await options.createResources({ foundation, advisor, finance })
@@ -505,6 +518,17 @@ export function createGrowthFinancialCouncilModule(
         input.router.use(
           "/api/v1/finance/council-runs",
           routerFactory({
+            service: resources.service,
+            workspaceContext: foundation.workspaceContext,
+            commandContextFactory: foundation.commandContextFactory,
+            httpIdempotency: foundation.httpIdempotency
+          })
+        );
+        const policyRouterFactory = options.createPolicyRouter
+          ?? createFinancialCouncilPolicyRouter;
+        input.router.use(
+          "/api/v1/finance/council-policy",
+          policyRouterFactory({
             service: resources.service,
             workspaceContext: foundation.workspaceContext,
             commandContextFactory: foundation.commandContextFactory,

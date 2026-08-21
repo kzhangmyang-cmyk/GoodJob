@@ -64,6 +64,12 @@
 
 HTTP 幂等仓库只保存 domain-separated digest，不保存原始 `Idempotency-Key`。同一创建请求在运行推进到 revision 2 之后仍精确重放当前聚合，不回退或重建 snapshot。持久化 snapshot 与完整事件链在每个读取边界重新校验：业务报表复用唯一 canonical validator，snapshot 会从所属 run 的报表与权威投影重新计算标准报表、公式、缺口、来源引用及 run-bound 身份，并且 record `createdAt` 必须精确等于唯一 `snapshot_frozen` 事件的 `occurredAt`，不能只靠攻击者重新签名通过。报价权威读取先按请求币种过滤，再应用 100 项完整性探针上限；未指定币种的旧 reader 调用保持原行为。
 
+### 不可变财务委员会策略
+
+`GET /api/v1/finance/council-policy` 按认证 workspace 读取当前策略；当且仅当该 workspace 没有任何策略版本时，服务端物化命名默认版本 `financial-council-policy.v1`。`PUT /api/v1/finance/council-policy` 需要 `finance.council.run` 与 `catalog.manage` 能力、`Idempotency-Key` 和 workspace-scoped `If-Match`；它只追加新版本，不覆盖旧版本。完全相同的幂等重放返回原版本，同键改体或过期 revision 均闭合失败。
+
+策略请求为严格闭合对象：所有金额和限制必须为非负 safe integer，平衡权重总和固定为 10,000 BPS，系数版本由服务端 allowlist 控制。现金优先和增长优先权重转换固定在代码中；现金储备、到期债务/必要支出、合规、权限、关键数据、预算、容量、时限、前置、互斥和置信度门槛不是可关闭布尔开关。新运行只能引用本 workspace 中已存在的不可变策略 ID，该 ID 可唯一解析到确切 version、revision 和 hash。
+
 runnable 扫描使用 workspace/run 的 UTF-8 binary-byte 复合游标，Memory 与 MySQL 共用同一全序。relay 对 runnable enumeration、wake sink 与错误 observer 都设置有界 deadline，因此永久不返回的查询或投递不会阻塞 sweep 或应用关闭。公开创建合同只接受 CNY/USD，策略版本 ID 与业务报表文本分别最多包含 255 和 4000 个 Unicode code point，报表数组上限 100 项。公开 run 从 `snapshot_frozen` 开始，内部 revision-1 `created` 状态只存在于事件历史，service 与 router 都不会把它作为 run 响应。
 
 ### 五专家可恢复执行

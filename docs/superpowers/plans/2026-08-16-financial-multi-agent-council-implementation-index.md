@@ -72,6 +72,8 @@ GET  /api/v1/finance/council-runs/{runId}/dispatches
 
 创建运行返回 `202` 和可轮询的运行投影。运行内部异步推进，不能把五次模型调用绑在一个 HTTP 请求生命周期内。
 
+策略读取只在 workspace 无任何版本时物化一次服务端默认 `financial-council-policy.v1`。策略写入使用 workspace-scoped `If-Match` 和幂等键追加不可变新版本；旧运行引用的策略 ID 不会被改写。平衡权重严格合计 10,000 BPS，`cash_first` / `growth_first` 转换和全部硬约束种类都在代码中固定，不暴露可关闭开关。
+
 ## Ordered Exit Gates
 
 ### P1 Exit

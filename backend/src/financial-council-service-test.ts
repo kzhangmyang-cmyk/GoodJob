@@ -8,6 +8,9 @@ import {
 } from "./financial-council-domain.js";
 import { InMemoryFinancialCouncilRepository } from
   "./financial-council-repository.js";
+import { InMemoryFinancialCouncilPolicyRepository } from
+  "./financial-council-policy-repository.js";
+import { policyInput } from "./financial-council-policy-test-support.js";
 import {
   repositoryRunFixture,
   snapshotFixture,
@@ -51,14 +54,18 @@ function input(
     currency: run.currency,
     dataAsOf: run.dataAsOf,
     businessReport: run.businessReport,
-    policyVersionId: run.policyVersionId,
+    policyVersionId: "financial-council-policy.v1",
     ...overrides
   };
 }
 
-function frozenSnapshot(runId: string, workspaceId = "ws-1") {
+function frozenSnapshot(
+  runId: string,
+  workspaceId = "ws-1",
+  policyVersionId = "financial-council-policy.v1"
+) {
   return snapshotFixture(repositoryRunFixture({
-    runId, workspaceId
+    runId, workspaceId, policyVersionId
   })).snapshot;
 }
 
@@ -68,17 +75,23 @@ function harness(options: {
   onWakeError?: (error: unknown, run: FinancialCouncilRun) => void | Promise<void>;
 } = {}) {
   const repository = new InMemoryFinancialCouncilRepository();
+  const policyRepository = new InMemoryFinancialCouncilPolicyRepository();
   const wakes: FinancialCouncilRun[] = [];
   let freezeCalls = 0;
   let seenCommand: CommandContext | null = null;
   const service = new FinancialCouncilService({
     repository,
+    policyRepository,
     snapshotBuilder: {
-      async freeze(commandValue, runId) {
+      async freeze(commandValue, runId, createInput) {
         freezeCalls += 1;
         seenCommand = commandValue;
         if (options.freezeError) throw options.freezeError;
-        return frozenSnapshot(runId, commandValue.workspace.workspaceId) as never;
+        return frozenSnapshot(
+          runId,
+          commandValue.workspace.workspaceId,
+          createInput.policyVersionId
+        ) as never;
       }
     },
     advisoryWake: options.wake ?? {
@@ -88,11 +101,63 @@ function harness(options: {
     now: () => NOW
   });
   return {
-    repository, service, wakes,
+    repository, policyRepository, service, wakes,
     freezeCalls: () => freezeCalls,
     seenCommand: () => seenCommand
   };
 }
+
+test("policy service materializes one default and activates immutable versions",
+  async () => {
+    const fixture = harness();
+    const authorized = context("ws-1", [
+      "finance.council.run", "catalog.manage", "pricing.sensitive.read"
+    ]);
+    const first = await fixture.service.getPolicy(authorized);
+    const same = await fixture.service.getPolicy(authorized);
+    assert.deepEqual(same, first);
+    assert.equal(first.policyVersionId, "financial-council-policy.v1");
+    const updateCommand = Object.freeze({
+      ...command("policy-update", `sha256:${"9".repeat(64)}`, authorized),
+      expectedRevision: 1
+    });
+    const updated = await fixture.service.updatePolicy(
+      updateCommand, policyInput() as never
+    );
+    const replay = await fixture.service.updatePolicy(
+      updateCommand, policyInput() as never
+    );
+    assert.equal(updated.value.version, 2);
+    assert.equal(updated.value.revision, 2);
+    assert.equal(updated.replayed, false);
+    assert.equal(replay.replayed, true);
+    assert.deepEqual(replay.value, updated.value);
+    assert.deepEqual(await fixture.service.getPolicy(authorized), updated.value);
+  });
+
+test("policy service capability and old revision checks fail closed", async () => {
+  const fixture = harness();
+  await assert.rejects(
+    fixture.service.getPolicy(context("ws-1", [])),
+    (error: unknown) => (error as { code?: unknown }).code
+      === "capability_forbidden"
+  );
+  await fixture.service.getPolicy(context());
+  await assert.rejects(fixture.service.updatePolicy(
+    Object.freeze({ ...command("no-manage"), expectedRevision: 1 }),
+    policyInput() as never
+  ), (error: unknown) => (error as { code?: unknown }).code
+    === "capability_forbidden");
+});
+
+test("run creation binds an existing immutable workspace policy", async () => {
+  const fixture = harness();
+  await assert.rejects(fixture.service.createRun(
+    command("missing-policy"), input({ policyVersionId: "missing-policy" })
+  ), (error: unknown) => (error as { code?: unknown }).code
+    === "financial_council_policy_not_found");
+  assert.equal(fixture.freezeCalls(), 0);
+});
 
 test("committed create contains a synchronous advisory wake failure", async () => {
   const fixture = harness({

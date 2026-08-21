@@ -5,6 +5,8 @@ import express from "express";
 import Ajv2020 from "ajv/dist/2020.js";
 import { readFile } from "node:fs/promises";
 import { createFinancialCouncilRouter } from "./financial-council-router.js";
+import * as financialCouncilRouterModule from
+  "./financial-council-router.js";
 import { repositoryRunFixture, workspace } from
   "./financial-council-repository-contract-test.js";
 import { commandContextFromRequest } from "./growth-http-preconditions.js";
@@ -20,6 +22,14 @@ import type { GrowthHttpIdempotencyRepository } from
 
 const NOW = "2026-08-16T08:01:00.000Z";
 
+test("financial council router exposes the workspace policy capability", () => {
+  assert.equal(
+    typeof Reflect.get(financialCouncilRouterModule,
+      "createFinancialCouncilPolicyRouter"),
+    "function"
+  );
+});
+
 function createInput(extra: Record<string, unknown> = {}) {
   const run = repositoryRunFixture();
   return {
@@ -30,6 +40,176 @@ function createInput(extra: Record<string, unknown> = {}) {
     ...extra
   };
 }
+
+function policyInput(extra: Record<string, unknown> = {}) {
+  return {
+    currency: "CNY",
+    balancedWeightsBps: {
+      cash: 3_000, profit: 3_000, risk: 2_000, strategic: 2_000
+    },
+    minimumCashReserveMinor: 100_000,
+    dueDebtMinor: 20_000,
+    necessaryOutflowMinor: 30_000,
+    budgetLimitMinor: 50_000,
+    capacityLimitUnits: 20,
+    durationLimitDays: 90,
+    minimumActionConfidenceBps: 6_000,
+    actionCoefficientVersion: "financial-council-actions.v1",
+    ...extra
+  };
+}
+
+function policyVersion(version = 1) {
+  return Object.freeze({
+    policyVersionId: version === 1
+      ? "financial-council-policy.v1" : `policy-${version}`,
+    workspaceId: "ws-1", version, revision: version,
+    ...policyInput(), policyHash: `sha256:${String(version).repeat(64)}`,
+    createdAt: NOW
+  });
+}
+
+async function listenPolicy(
+  service: Record<string, unknown>,
+  capabilities: readonly string[] = [
+    "finance.council.run", "catalog.manage", "pricing.sensitive.read"
+  ]
+) {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    req.activeWorkspace = Object.freeze({
+      ...workspace("ws-1"), role: "admin" as const,
+      capabilities: Object.freeze([...capabilities])
+    }) as never;
+    next();
+  });
+  const factory = Reflect.get(financialCouncilRouterModule,
+    "createFinancialCouncilPolicyRouter") as Function;
+  const completeService = {
+    ...service,
+    getPolicyVersion: service.getPolicyVersion ?? service.getPolicy
+  };
+  app.use("/api/v1/finance/council-policy", factory({
+    service: completeService,
+    workspaceContext(req: express.Request) { return req.activeWorkspace!; },
+    commandContextFactory: commandContextFromRequest,
+    httpIdempotency: new InMemoryGrowthHttpIdempotencyRepository(),
+    now: () => NOW
+  }));
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve, reject) => {
+    server.once("listening", resolve); server.once("error", reject);
+  });
+  const { port } = server.address() as AddressInfo;
+  return {
+    async request(init: RequestInit = {}) {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/v1/finance/council-policy`, init
+      );
+      return { response, body: await response.json() };
+    },
+    close: () => new Promise<void>((resolve, reject) => server.close((error) =>
+      error ? reject(error) : resolve()))
+  };
+}
+
+test("policy GET and PUT publish capability-scoped immutable versions", async () => {
+  let active = policyVersion();
+  let updates = 0;
+  const server = await listenPolicy({
+    async getPolicy() { return active; },
+    async updatePolicy() { updates += 1; active = policyVersion(2); return {
+      value: active, replayed: false
+    }; }
+  });
+  try {
+    const get = await server.request();
+    assert.equal(get.response.status, 200);
+    assert.equal(get.response.headers.get("etag"),
+      '"financial-council-policy:ws-1:1"');
+    assert.deepEqual(Object.keys(get.body).sort(), [
+      "actionCoefficientVersion", "balancedWeightsBps", "budgetLimitMinor",
+      "capacityLimitUnits", "createdAt", "currency", "dueDebtMinor",
+      "durationLimitDays", "minimumActionConfidenceBps",
+      "minimumCashReserveMinor", "necessaryOutflowMinor", "policyHash",
+      "policyVersionId", "revision", "version", "workspaceId"
+    ].sort());
+    const put = await server.request({
+      method: "PUT",
+      headers: { "Content-Type": "application/json",
+        "Idempotency-Key": "policy-put-1",
+        "If-Match": '"financial-council-policy:ws-1:1"' },
+      body: JSON.stringify(policyInput())
+    });
+    assert.equal(put.response.status, 200);
+    assert.equal(put.response.headers.get("etag"),
+      '"financial-council-policy:ws-1:2"');
+    assert.equal(updates, 1);
+  } finally { await server.close(); }
+});
+
+test("policy PUT requires If-Match and exact replay conflicts on changed body",
+  async () => {
+    let active = policyVersion();
+    let updates = 0;
+    const server = await listenPolicy({
+      async getPolicy() { return active; },
+      async updatePolicy() { updates += 1; active = policyVersion(2); return {
+        value: active, replayed: false
+      }; }
+    });
+    const put = (body: unknown, ifMatch?: string) => server.request({
+      method: "PUT", headers: { "Content-Type": "application/json",
+        "Idempotency-Key": "same-policy-key",
+        ...(ifMatch ? { "If-Match": ifMatch } : {}) },
+      body: JSON.stringify(body)
+    });
+    try {
+      assert.equal((await put(policyInput())).response.status, 428);
+      assert.equal((await put(policyInput(),
+        '"financial-council-policy:ws-1:1"')).response.status, 200);
+      const replay = await put(policyInput(),
+        '"financial-council-policy:ws-1:1"');
+      assert.equal(replay.response.status, 200);
+      assert.equal(replay.response.headers.get("idempotency-replayed"), "true");
+      assert.equal(updates, 1);
+      const changed = await put(policyInput({ budgetLimitMinor: 40_000 }),
+        '"financial-council-policy:ws-1:1"');
+      assert.equal(changed.response.status, 409);
+      assert.equal(changed.body.code, "idempotency_conflict");
+    } finally { await server.close(); }
+  });
+
+test("policy route rejects disable flags, timestamps and missing capabilities",
+  async () => {
+    const service = {
+      async getPolicy() { return policyVersion(); },
+      async updatePolicy() { return { value: policyVersion(2), replayed: false }; }
+    };
+    const allowed = await listenPolicy(service);
+    const denied = await listenPolicy({
+      ...service,
+      async updatePolicy() { throw new GrowthAuthorizationError(); }
+    }, ["finance.council.run"]);
+    const put = (server: Awaited<ReturnType<typeof listenPolicy>>, body: unknown,
+      key: string) => server.request({ method: "PUT", headers: {
+        "Content-Type": "application/json", "Idempotency-Key": key,
+        "If-Match": '"financial-council-policy:ws-1:1"'
+      }, body: JSON.stringify(body) });
+    try {
+      for (const [body, key] of [
+        [policyInput({ enforceCash: false }), "disable"],
+        [policyInput({ createdAt: NOW }), "timestamp"]
+      ] as const) {
+        const result = await put(allowed, body, key);
+        assert.equal(result.response.status, 422);
+        assert.equal(result.body.code, "financial_council_policy_input_invalid");
+      }
+      assert.equal((await put(denied, policyInput(), "denied")).response.status,
+        403);
+    } finally { await Promise.all([allowed.close(), denied.close()]); }
+  });
 
 function frozenRun() {
   return Object.freeze({

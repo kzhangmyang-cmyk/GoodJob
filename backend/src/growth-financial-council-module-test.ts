@@ -17,6 +17,7 @@ import { repositoryRunFixture } from
 import { FinancialCouncilService } from "./financial-council-service.js";
 import { RepositoryVerifiedFinancialLedgerSealedReader } from
   "./financial-ledger-as-of-reader.js";
+import { policyWorkspace } from "./financial-council-policy-test-support.js";
 
 class FakeDeadlineClock {
   private nextId = 1;
@@ -410,6 +411,14 @@ async function moduleFixture() {
   return { registry, events, resources, router, module, mounts: () => mounts };
 }
 
+test("constructed resources own a workspace policy repository", async () => {
+  const fixture = await moduleFixture();
+  const policy = await fixture.resources.service.getPolicy(policyWorkspace());
+  assert.equal(policy.policyVersionId, "financial-council-policy.v1");
+  await fixture.resources.relay.close();
+  await fixture.resources.closeFinancialCouncilResources();
+});
+
 test("module rejects untrusted service, relay, and close resources before mount", async () => {
   for (const kind of ["service", "relay", "close"] as const) {
     const fixture = await moduleFixture();
@@ -509,9 +518,9 @@ test("financial council module initializes schema before routes and closes once"
     privateServices: fixture.registry
   });
   assert.deepEqual(fixture.events, [
-    "schema", "resources:create", "route:mount"
+    "schema", "resources:create", "route:mount", "route:mount"
   ]);
-  assert.equal(fixture.mounts(), 1);
+  assert.equal(fixture.mounts(), 2);
   assert.equal(
     fixture.registry.require(GROWTH_FINANCIAL_COUNCIL_SERVICES).service,
     fixture.resources.service

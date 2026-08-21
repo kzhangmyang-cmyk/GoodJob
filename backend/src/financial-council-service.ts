@@ -1,4 +1,7 @@
-import type { FinancialCouncilCreateInput } from "./growth-contract-types.js";
+import type {
+  FinancialCouncilCreateInput,
+  FinancialCouncilPolicyInput
+} from "./growth-contract-types.js";
 import type { CommandContext } from "./growth-command-context.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import { requireGrowthCapabilities } from "./growth-capabilities.js";
@@ -15,6 +18,13 @@ import {
 } from "./financial-council-domain.js";
 import type { FinancialCouncilRepository } from
   "./financial-council-repository.js";
+import {
+  createDefaultFinancialCouncilPolicy,
+  createFinancialCouncilPolicyVersion,
+  normalizeFinancialCouncilPolicyInput
+} from "./financial-council-policy.js";
+import type { FinancialCouncilPolicyRepository } from
+  "./financial-council-policy-repository.js";
 import type {
   FinancialSnapshot,
   FinancialSnapshotBuilder
@@ -26,6 +36,7 @@ export interface FinancialCouncilWakeSink {
 
 export interface FinancialCouncilServiceDependencies {
   readonly repository: FinancialCouncilRepository;
+  readonly policyRepository?: FinancialCouncilPolicyRepository;
   readonly snapshotBuilder: Pick<FinancialSnapshotBuilder, "freeze">;
   readonly advisoryWake?: FinancialCouncilWakeSink;
   readonly onAdvisoryWakeError?: (
@@ -85,12 +96,81 @@ export class FinancialCouncilService {
       "storeFrozenSnapshot", "transitionRun", "listRunnableRuns"].every(
       (key) => typeof Reflect.get(repository, key) === "function"
     ) || typeof dependencies.snapshotBuilder?.freeze !== "function"
+      || (dependencies.policyRepository !== undefined
+        && !["findActive", "findVersion", "getOrCreateActive",
+          "createVersion"].every((key) => typeof Reflect.get(
+          dependencies.policyRepository!, key
+        ) === "function"))
       || (dependencies.advisoryWake !== undefined
         && typeof dependencies.advisoryWake.wake !== "function")) {
       throw new Error("invalid_financial_council_service");
     }
     this.now = dependencies.now ?? (() => new Date().toISOString());
     TRUSTED_FINANCIAL_COUNCIL_SERVICES.add(this);
+  }
+
+  private policyRepository(): FinancialCouncilPolicyRepository {
+    const repository = this.dependencies.policyRepository;
+    if (!repository) throw financialCouncilError(
+      "financial_council_policy_integrity"
+    );
+    return repository;
+  }
+
+  async getPolicy(context: ActiveWorkspaceContext) {
+    authorize(context);
+    const createdAt = instant(this.now());
+    return this.policyRepository().getOrCreateActive(
+      context,
+      createDefaultFinancialCouncilPolicy(context.workspaceId, createdAt)
+    );
+  }
+
+  async getPolicyVersion(
+    context: ActiveWorkspaceContext,
+    policyVersionId: string
+  ) {
+    authorize(context);
+    if (typeof policyVersionId !== "string" || !policyVersionId.trim()
+      || [...policyVersionId].length > 255) {
+      throw financialCouncilError("financial_council_policy_input_invalid");
+    }
+    const policy = await this.policyRepository().findVersion(
+      context, policyVersionId
+    );
+    if (!policy) throw financialCouncilError(
+      "financial_council_policy_not_found"
+    );
+    return policy;
+  }
+
+  async updatePolicy(
+    command: CommandContext,
+    rawInput: FinancialCouncilPolicyInput
+  ) {
+    authorize(command?.workspace);
+    requireGrowthCapabilities(command.workspace, ["catalog.manage"]);
+    if (command.actorId !== command.workspace.actorId) {
+      throw financialCouncilError("financial_council_policy_context_invalid");
+    }
+    const input = normalizeFinancialCouncilPolicyInput(rawInput);
+    const active = await this.getPolicy(command.workspace);
+    const createdAt = instant(this.now());
+    const policyVersionId = `financial-council-policy:${
+      financialCouncilCanonicalHash({
+        workspaceId: command.workspace.workspaceId,
+        version: active.version + 1,
+        input
+      })}`;
+    const policy = createFinancialCouncilPolicyVersion({
+      policyVersionId,
+      workspaceId: command.workspace.workspaceId,
+      version: active.version + 1,
+      revision: active.revision + 1,
+      input,
+      createdAt
+    });
+    return this.policyRepository().createVersion(command, policy);
   }
 
   async createRun(
@@ -120,6 +200,13 @@ export class FinancialCouncilService {
         command.workspace, creationKeyHash, canonicalRequestHash
       );
     if (replay) return { value: publicRun(replay), replayed: true };
+    await this.getPolicy(command.workspace);
+    const selectedPolicy = await this.getPolicyVersion(
+      command.workspace, input.policyVersionId
+    );
+    if (selectedPolicy.currency !== input.currency) {
+      throw financialCouncilError("financial_council_policy_currency_mismatch");
+    }
     const createdAt = instant(this.now());
     const snapshot = await this.dependencies.snapshotBuilder.freeze(
       command, runId, input
