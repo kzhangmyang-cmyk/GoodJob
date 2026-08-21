@@ -275,6 +275,15 @@ export const app = express();
 let activeProspectWorkerService: ProspectWorkerService | null = null;
 const acquisitionRuntimeBridge = new AcquisitionRuntimeBridge();
 const growthRuntimeBridge = new GrowthCommercialRuntimeBridge();
+
+export function installTestGrowthCommercialRuntime(
+  runtime: Parameters<GrowthCommercialRuntimeBridge["install"]>[0]
+): void {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error("TEST_GROWTH_RUNTIME_INSTALL_FORBIDDEN");
+  }
+  growthRuntimeBridge.install(runtime);
+}
 type LegacyCommissionCatalogBinding = Readonly<{
   workspaceMiddleware: RequestHandler;
   commissionCatalogProjection: CommissionCatalogProjectionPort;

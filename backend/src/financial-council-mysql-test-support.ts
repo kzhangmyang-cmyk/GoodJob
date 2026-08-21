@@ -9,6 +9,8 @@ import { ensureFinancialCouncilPolicyMysqlSchema } from
   "./financial-council-policy-mysql-repository.js";
 import { ensureGrowthTemporalBarrierMysqlSchema } from
   "./growth-temporal-barrier-mysql-repository.js";
+import { ensureGrowthHttpIdempotencyMysqlSchema } from
+  "./growth-http-idempotency-mysql-repository.js";
 
 function connectionOptions(url: URL) {
   return {
@@ -42,17 +44,21 @@ export interface FinancialCouncilMysqlTestDatabase {
   readonly connectionB: mysql.PoolConnection;
 }
 
-export async function withFinancialCouncilMysqlTestDatabase<T>(
-  run: (fixture: FinancialCouncilMysqlTestDatabase) => Promise<T>
-): Promise<T> {
+export interface OwnedFinancialCouncilMysqlTestDatabase {
+  readonly databaseName: string;
+  readonly pool: mysql.Pool;
+  close(): Promise<void>;
+}
+
+export async function createFinancialCouncilMysqlTestDatabase():
+Promise<OwnedFinancialCouncilMysqlTestDatabase> {
   const adminUrl = requireFinancialCouncilMysqlTestAdminUrl();
   const databaseName = `financial_council_${process.pid}_${randomUUID()
     .replaceAll("-", "").slice(0, 12)}`;
   const admin = await mysql.createConnection(connectionOptions(adminUrl));
   let pool: mysql.Pool | undefined;
-  let connectionA: mysql.PoolConnection | undefined;
-  let connectionB: mysql.PoolConnection | undefined;
   let created = false;
+  let closePromise: Promise<void> | null = null;
   try {
     await admin.query(`CREATE DATABASE \`${databaseName}\`
       CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
@@ -62,21 +68,68 @@ export async function withFinancialCouncilMysqlTestDatabase<T>(
       connectionLimit: 8
     });
     await ensureGrowthTemporalBarrierMysqlSchema(pool);
+    await ensureGrowthHttpIdempotencyMysqlSchema(pool);
     await ensureFinancialCouncilMysqlSchema(pool);
     await ensureFinancialCouncilPolicyMysqlSchema(pool);
     await ensureFinancialCouncilDraftMysqlSchema(pool);
-    connectionA = await pool.getConnection();
-    connectionB = await pool.getConnection();
+    const ownedPool = pool;
+    return Object.freeze({
+      databaseName,
+      pool: ownedPool,
+      close() {
+        closePromise ??= (async () => {
+          let failure: unknown;
+          try {
+            await ownedPool.end();
+          } catch (error) {
+            failure = error;
+          }
+          try {
+            await admin.query(`DROP DATABASE IF EXISTS \`${databaseName}\``);
+          } catch (error) {
+            failure ??= error;
+          }
+          try {
+            await admin.end();
+          } catch (error) {
+            failure ??= error;
+          }
+          if (failure) throw failure;
+        })();
+        return closePromise;
+      }
+    });
+  } catch (error) {
+    if (pool) await pool.end().catch(() => undefined);
+    if (created) {
+      await admin.query(`DROP DATABASE IF EXISTS \`${databaseName}\``)
+        .catch(() => undefined);
+    }
+    await admin.end().catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function withFinancialCouncilMysqlTestDatabase<T>(
+  run: (fixture: FinancialCouncilMysqlTestDatabase) => Promise<T>
+): Promise<T> {
+  const database = await createFinancialCouncilMysqlTestDatabase();
+  let connectionA: mysql.PoolConnection | undefined;
+  let connectionB: mysql.PoolConnection | undefined;
+  try {
+    connectionA = await database.pool.getConnection();
+    connectionB = await database.pool.getConnection();
     assert.notEqual(connectionA.threadId, connectionB.threadId,
       "financial council live gate requires two physical connections");
-    return await run({ databaseName, pool, connectionA, connectionB });
+    return await run({
+      databaseName: database.databaseName,
+      pool: database.pool,
+      connectionA,
+      connectionB
+    });
   } finally {
     connectionB?.release();
     connectionA?.release();
-    if (pool) await pool.end();
-    if (created) {
-      await admin.query(`DROP DATABASE IF EXISTS \`${databaseName}\``);
-    }
-    await admin.end();
+    await database.close();
   }
 }

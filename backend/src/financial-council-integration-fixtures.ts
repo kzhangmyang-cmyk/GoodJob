@@ -148,9 +148,12 @@ BusinessReportInput {
   });
 }
 
-function authorityAt(dataAsOf: string): FinancialCouncilAuthoritySnapshot {
+function authorityAt(
+  dataAsOf: string,
+  workspaceId = FINANCIAL_COUNCIL_INTEGRATION_WORKSPACE
+): FinancialCouncilAuthoritySnapshot {
   const projection = Object.freeze({
-    workspaceId: FINANCIAL_COUNCIL_INTEGRATION_WORKSPACE,
+    workspaceId,
     currency: "CNY",
     dataAsOf,
     projectionLevel: "full" as const,
@@ -270,8 +273,21 @@ function modelResult<Value>(
 
 export class DeterministicFinancialCouncilModelPort
 implements FinancialCouncilModelPort {
+  constructor(private readonly delayMs = 0) {
+    if (!Number.isSafeInteger(delayMs) || delayMs < 0) {
+      throw new TypeError("invalid_financial_council_model_delay");
+    }
+  }
+
+  private async delay(): Promise<void> {
+    if (this.delayMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, this.delayMs));
+    }
+  }
+
   async analyze(input: FinancialCouncilAnalyzeInput):
   Promise<FinancialCouncilModelResult<FinancialCouncilAnalyzeOutput>> {
+    await this.delay();
     const specs = input.role === "cashflow"
       ? [{ formulaId: "eligible_overdue_receivable",
           action: "collect_receivable" as const },
@@ -323,6 +339,7 @@ implements FinancialCouncilModelPort {
 
   async rebut(input: FinancialCouncilRebutInput):
   Promise<FinancialCouncilModelResult<FinancialCouncilRebutOutput>> {
+    await this.delay();
     return modelResult("rebut", input, Object.freeze({
       decision: "uphold" as const,
       findingId: input.targetFindingId,
@@ -361,11 +378,16 @@ export async function createFinancialCouncilIntegrationFixture(options: {
   repository?: FinancialCouncilRepository;
   policyRepository?: FinancialCouncilPolicyRepository;
   draftRepository?: FinancialCouncilDraftRepository;
+  workspaceId?: string;
+  autoWake?: boolean;
+  modelDelayMs?: number;
 } = {}): Promise<FinancialCouncilIntegrationFixture> {
   const repository = options.repository
     ?? new InMemoryFinancialCouncilRepository();
   const policyRepository = options.policyRepository
     ?? new InMemoryFinancialCouncilPolicyRepository();
+  const workspaceId = options.workspaceId
+    ?? FINANCIAL_COUNCIL_INTEGRATION_WORKSPACE;
   const now = () => "2026-08-16T08:10:00.000Z";
   const cutoffIssuer = Object.freeze({
     async sealTodayCutoff(
@@ -383,7 +405,7 @@ export async function createFinancialCouncilIntegrationFixture(options: {
     async readAt(_context: ActiveWorkspaceContext, input: {
       cutoff: { effectiveAsOf: string };
     }) {
-      return authorityAt(input.cutoff.effectiveAsOf);
+      return authorityAt(input.cutoff.effectiveAsOf, workspaceId);
     }
   });
   const snapshotBuilder = new FinancialSnapshotBuilder({
@@ -399,7 +421,7 @@ export async function createFinancialCouncilIntegrationFixture(options: {
       async resolve(scope: { readonly ownerId: string;
         readonly teamId: string | null }) {
         return Object.freeze({
-          workspaceId: FINANCIAL_COUNCIL_INTEGRATION_WORKSPACE,
+          workspaceId,
           kind: "team" as const,
           ownerId: scope.ownerId,
           teamId: scope.teamId,
@@ -409,7 +431,9 @@ export async function createFinancialCouncilIntegrationFixture(options: {
     } as never,
     now
   });
-  const model = new DeterministicFinancialCouncilModelPort();
+  const model = new DeterministicFinancialCouncilModelPort(
+    options.modelDelayMs ?? 0
+  );
   const resolvePolicy = async () => Object.freeze({
     formulaPolicy: Object.freeze({
       formulaPolicyVersion: "financial-council-formula-policy.v1" as const,
@@ -459,12 +483,13 @@ export async function createFinancialCouncilIntegrationFixture(options: {
     leaseTokenFactory: () => "3".repeat(64)
   });
   const service = new FinancialCouncilService({
-    repository, policyRepository, snapshotBuilder, sourceVerifier, now
+    repository, policyRepository, snapshotBuilder, sourceVerifier, now,
+    advisoryWake: options.autoWake ? pipeline : undefined
   });
   return Object.freeze({
     repository, policyRepository, service, pipeline, dispatch, drafts,
     authorityReadHash() {
-      return HASH(authorityAt(FINANCIAL_COUNCIL_INTEGRATION_AS_OF));
+      return HASH(authorityAt(FINANCIAL_COUNCIL_INTEGRATION_AS_OF, workspaceId));
     },
     async close() {
       await dispatch.close();
