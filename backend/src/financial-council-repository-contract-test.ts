@@ -23,6 +23,10 @@ import {
   FinancialFindingValidator,
   type AuthorizedFinancialCouncilSpecialistResult
 } from "./financial-council-finding-validator.js";
+import { buildCanonicalFinancialCouncilAuditGraph } from
+  "./financial-council-audit.js";
+import { buildFinancialCouncilModelContent } from
+  "./financial-council-model-content.js";
 
 const T0 = "2026-08-16T08:00:00.000Z";
 export const T1 = "2026-08-16T08:01:00.000Z";
@@ -477,6 +481,137 @@ export function registerFinancialCouncilRepositoryContract(
   createRepository: () => Promise<FinancialCouncilRepository>
     | FinancialCouncilRepository
 ): void {
+  test(`${label}: audit graph and initial dispositions commit atomically`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("audit"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+    const result = authorizeSpecialistResultFixture(run, snapshot);
+    const graph = buildCanonicalFinancialCouncilAuditGraph({
+      workspaceId: run.workspaceId, runId: run.runId,
+      snapshotId: snapshot.snapshotId, snapshotHash: snapshot.snapshotHash,
+      facts: result.findings.map((finding) => ({ finding,
+        actions: result.actions.filter((action) =>
+          action.sourceFindingIds.includes(finding.findingId)) }))
+    });
+    const initial = result.findings.map((finding) => ({
+      findingId: finding.findingId, role: finding.agentRole,
+      status: "unresolved" as const, blockingConflictIds: []
+    }));
+
+    const stored = await repository.storeAuditGraph(workspace(), graph, initial);
+    const replay = await repository.storeAuditGraph(workspace(), graph, initial);
+
+    assert.equal(stored.replayed, false);
+    assert.equal(replay.replayed, true);
+    await assert.rejects(repository.storeAuditGraph(workspace(), graph, [
+      ...initial, { findingId: "changed-finding", role: "tax",
+        status: "unresolved", blockingConflictIds: [] }
+    ]), hasCode("financial_council_audit_conflict"));
+    assert.deepEqual(await repository.getAuditGraph(
+      workspace(), run.runId
+    ), graph);
+    assert.deepEqual((await repository.listFindingDispositions(
+      workspace(), run.runId
+    )).map((item) => [item.findingId, item.status]),
+    [[result.findings[0]!.findingId, "unresolved"]]);
+  });
+
+  test(`${label}: round-one rebuttal reserves before completion and replays exactly`, async () => {
+    const repository = await createRepository();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command("rebut-store"), {
+      aggregate, snapshot, occurredAt: T1
+    })).value;
+    const base = authorizeSpecialistResultFixture(run, snapshot);
+    const original = base.findings[0]!;
+    const peer = { ...original, findingId: "finding-peer", agentRole: "profit" as const,
+      formulaRef: { formulaVersion: "ratio.v1",
+        inputHash: SHA_A, resultHash: SHA_B } };
+    const own = { ...original, formulaRef: { formulaVersion: "ratio.v1",
+      inputHash: SHA_A, resultHash: `sha256:${"c".repeat(64)}` as const } };
+    const graph = buildCanonicalFinancialCouncilAuditGraph({
+      workspaceId: run.workspaceId, runId: run.runId,
+      snapshotId: snapshot.snapshotId, snapshotHash: snapshot.snapshotHash,
+      facts: [{ finding: own, actions: [] }, { finding: peer, actions: [] }]
+    });
+    await repository.storeAuditGraph(workspace(), graph, [
+      { findingId: own.findingId, role: own.agentRole, status: "unresolved",
+        blockingConflictIds: [graph.edges[0]!.edgeId] },
+      { findingId: peer.findingId, role: peer.agentRole, status: "unresolved",
+        blockingConflictIds: [graph.edges[0]!.edgeId] }
+    ]);
+    const modelInput = {
+      ownerId: "owner-1", teamId: "ws-1", runId: run.runId,
+      snapshotId: snapshot.snapshotId, snapshotHash: snapshot.snapshotHash,
+      role: "finance" as const, attempt: 1,
+      allowlist: { evidenceRefIds: [], formulaRefIds: [],
+        findingIds: [own.findingId], subjectRefs: [], dataGapRefs: [] },
+      businessData: {}, targetFindingId: own.findingId,
+      conflictData: { edgeId: graph.edges[0]!.edgeId }
+    };
+    const identity = { workspaceId: run.workspaceId, runId: run.runId,
+      graphId: graph.graphId, role: "finance" as const, round: 1 as const,
+      edgeId: graph.edges[0]!.edgeId, targetFindingId: own.findingId };
+    const reservationPreimage = {
+      attemptId: financialCouncilCanonicalHash(identity), ...identity,
+      snapshotId: snapshot.snapshotId, snapshotHash: snapshot.snapshotHash,
+      inputHash: financialCouncilCanonicalHash(modelInput), input: modelInput,
+      status: "reserved" as const, result: null, outputHash: null,
+      createdAt: T2, completedAt: null
+    };
+    const reservation = { ...reservationPreimage,
+      attemptHash: financialCouncilCanonicalHash(reservationPreimage) };
+    assert.equal((await repository.reserveRebuttalAttempt(
+      workspace(), reservation
+    )).replayed, false);
+    assert.equal((await repository.reserveRebuttalAttempt(
+      workspace(), reservation
+    )).replayed, true);
+
+    const value = { decision: "withdraw" as const,
+      findingId: own.findingId, evidenceRefs: [], replacement: null,
+      explanation: "finding_rebuttal" };
+    const content = buildFinancialCouncilModelContent("rebut", modelInput);
+    const result = { value, repaired: false, providerRequestId: null,
+      binding: { jobId: content.jobId,
+        runId: run.runId, snapshotId: snapshot.snapshotId,
+        snapshotHash: snapshot.snapshotHash, role: "finance" as const,
+        phase: "rebut" as const, attempt: 1, connectionId: "connection-1",
+        credentialVersion: 1, provider: "openai" as const, model: "gpt-test",
+        capabilitySnapshotHash: SHA_A, baseUrlFingerprint: "official",
+        promptVersion: "financial-council-finance-rebut.v1",
+        schemaVersion: "financial-council-specialist-output.v1",
+        contentHash: content.contentHash, promptHash: content.promptHash,
+        schemaHash: content.schemaHash } };
+    const completion = { attemptId: reservation.attemptId,
+      inputHash: reservation.inputHash, result, completedAt: T2,
+      disposition: { status: "withdrawn" as const, blockingConflictIds: [] } };
+    await assert.rejects(repository.completeRebuttalAttempt(workspace(), {
+      ...completion, result: { ...result, binding: { ...result.binding,
+        contentHash: SHA_A } }
+    }), hasCode("financial_council_rebuttal_invalid"));
+    assert.equal((await repository.completeRebuttalAttempt(
+      workspace(), completion
+    )).replayed, false);
+    assert.equal((await repository.completeRebuttalAttempt(
+      workspace(), completion
+    )).replayed, true);
+    await assert.rejects(repository.completeRebuttalAttempt(workspace(), {
+      ...completion, result: { ...result, value: { ...value,
+        decision: "uphold" as const } }
+    }), hasCode("financial_council_rebuttal_conflict"));
+    assert.equal((await repository.listRebuttalAttempts(
+      workspace(), run.runId
+    )).length, 1);
+    assert.equal((await repository.listFindingDispositions(
+      workspace(), run.runId
+    )).find((item) => item.findingId === own.findingId)?.status, "withdrawn");
+  });
+
   test(`${label}: verified snapshot read returns one run-bound aggregate`, async () => {
     const repository = await createRepository();
     const aggregate = repositoryRunFixture();

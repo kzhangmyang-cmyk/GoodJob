@@ -22,6 +22,8 @@ import {
   workspace
 } from "./financial-council-repository-contract-test.js";
 import { T1 } from "./financial-council-repository-contract-test.js";
+import { buildCanonicalFinancialCouncilAuditGraph } from
+  "./financial-council-audit.js";
 
 type Row = Record<string, unknown>;
 type State = {
@@ -31,6 +33,9 @@ type State = {
   specialistResults: Row[];
   findings: Row[];
   actions: Row[];
+  auditGraphs: Row[];
+  rebuttalAttempts: Row[];
+  dispositions: Row[];
 };
 
 function cloneState(state: State): State {
@@ -69,6 +74,8 @@ type FailurePoint =
   | "specialist_result_insert"
   | "finding_insert"
   | "action_insert"
+  | "audit_graph_insert"
+  | "disposition_insert"
   | null;
 
 class FakeConnection {
@@ -96,6 +103,9 @@ class FakeConnection {
       this.pool.state.specialistResults = this.pending.specialistResults;
       this.pool.state.findings = this.pending.findings;
       this.pool.state.actions = this.pending.actions;
+      this.pool.state.auditGraphs = this.pending.auditGraphs;
+      this.pool.state.rebuttalAttempts = this.pending.rebuttalAttempts;
+      this.pool.state.dispositions = this.pending.dispositions;
     }
     this.pending = null;
     this.dirty = false;
@@ -262,6 +272,36 @@ class FakeConnection {
         ));
       return [structuredClone(rows), []];
     }
+    if (normalized.startsWith("SELECT")
+      && normalized.includes("FROM financial_council_audit_graphs")) {
+      const rows = state.auditGraphs.filter((row) =>
+        row.workspace_id === values[0] && row.run_id === values[1]);
+      return [structuredClone(rows.slice(0, 1)), []];
+    }
+    if (normalized.startsWith("SELECT")
+      && normalized.includes("FROM financial_council_rebuttal_attempts")) {
+      let rows = state.rebuttalAttempts.filter((row) =>
+        row.workspace_id === values[0]);
+      if (normalized.includes("attempt_id = ?")) {
+        rows = rows.filter((row) => row.attempt_id === values[1]);
+      } else {
+        rows = rows.filter((row) => row.run_id === values[1]);
+        if (normalized.includes("role = ?")) rows = rows.filter((row) =>
+          row.role === values[2] && row.round_number === values[3]);
+      }
+      return [structuredClone(rows), []];
+    }
+    if (normalized.startsWith("SELECT")
+      && normalized.includes("FROM financial_council_finding_dispositions")) {
+      let rows = state.dispositions.filter((row) =>
+        row.workspace_id === values[0] && row.run_id === values[1]);
+      if (normalized.includes("finding_id = ?")) rows = rows.filter((row) =>
+        row.finding_id === values[2]);
+      rows.sort((left, right) => compareUtf8Bytes(
+        String(left.finding_id), String(right.finding_id)
+      ));
+      return [structuredClone(rows), []];
+    }
     if (normalized.startsWith("INSERT INTO financial_council_runs")) {
       this.pool.createInsertAttempts += 1;
       if (this.pool.transientCreateFailures > 0) {
@@ -388,6 +428,65 @@ class FakeConnection {
       this.dirty = true;
       return [{ affectedRows: 1 }, []];
     }
+    if (normalized.startsWith("INSERT INTO financial_council_audit_graphs")) {
+      if (this.pool.failurePoint === "audit_graph_insert") {
+        throw new Error("audit graph insert failed");
+      }
+      const [workspaceId, runId, snapshotId, snapshotHash, graphId,
+        graphHash, graphJson] = values;
+      state.auditGraphs.push({ workspace_id: workspaceId, run_id: runId,
+        snapshot_id: snapshotId, snapshot_hash: snapshotHash,
+        graph_id: graphId, graph_hash: graphHash, graph_json: graphJson });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "INSERT INTO financial_council_rebuttal_attempts")) {
+      const [workspaceId, runId, role, roundNumber, attemptId, inputHash,
+        status, attemptJson] = values;
+      state.rebuttalAttempts.push({ workspace_id: workspaceId, run_id: runId,
+        role, round_number: roundNumber, attempt_id: attemptId,
+        input_hash: inputHash, status, attempt_json: attemptJson });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "INSERT INTO financial_council_finding_dispositions")) {
+      if (this.pool.failurePoint === "disposition_insert") {
+        throw new Error("disposition insert failed");
+      }
+      const [workspaceId, runId, findingId, role, status, dispositionHash,
+        dispositionJson] = values;
+      state.dispositions.push({ workspace_id: workspaceId, run_id: runId,
+        finding_id: findingId, role, status, disposition_hash: dispositionHash,
+        disposition_json: dispositionJson });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "UPDATE financial_council_rebuttal_attempts")) {
+      const [status, attemptJson, workspaceId, runId, role] = values;
+      const row = state.rebuttalAttempts.find((item) =>
+        item.workspace_id === workspaceId && item.run_id === runId
+          && item.role === role && item.round_number === 1);
+      if (!row) return [{ affectedRows: 0 }, []];
+      Object.assign(row, { status, attempt_json: attemptJson });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
+    if (normalized.startsWith(
+      "UPDATE financial_council_finding_dispositions")) {
+      const [status, dispositionHash, dispositionJson, workspaceId, runId,
+        findingId] = values;
+      const row = state.dispositions.find((item) =>
+        item.workspace_id === workspaceId && item.run_id === runId
+          && item.finding_id === findingId);
+      if (!row) return [{ affectedRows: 0 }, []];
+      Object.assign(row, { status, disposition_hash: dispositionHash,
+        disposition_json: dispositionJson });
+      this.dirty = true;
+      return [{ affectedRows: 1 }, []];
+    }
     if (normalized.startsWith("UPDATE financial_council_runs")) {
       if (this.pool.failurePoint === "run_update") {
         throw new Error("run update failed");
@@ -410,7 +509,7 @@ class FakeConnection {
 class FakePool {
   readonly state: State = {
     runs: [], events: [], snapshots: [], specialistResults: [], findings: [],
-    actions: []
+    actions: [], auditGraphs: [], rebuttalAttempts: [], dispositions: []
   };
   readonly connections: FakeConnection[] = [];
   readonly lockAttempts = new Map<string, number>();
@@ -703,8 +802,37 @@ test("specialist result, finding, and action inserts roll back atomically", asyn
   }
 });
 
-test("financial council schema owns six tables behind a named lock", async () => {
-  assert.equal(FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.length, 6);
+test("audit graph and disposition inserts roll back atomically", async () => {
+  for (const failurePoint of [
+    "audit_graph_insert", "disposition_insert"
+  ] as const) {
+    const { pool, repository } = repositoryWith();
+    const aggregate = repositoryRunFixture();
+    const snapshot = snapshotFixture(aggregate);
+    const run = (await repository.createAndFreezeRun(command(
+      `audit-${failurePoint}`
+    ), { aggregate, snapshot, occurredAt: T1 })).value;
+    const result = authorizeSpecialistResultFixture(run, snapshot);
+    const graph = buildCanonicalFinancialCouncilAuditGraph({
+      workspaceId: run.workspaceId, runId: run.runId,
+      snapshotId: snapshot.snapshotId, snapshotHash: snapshot.snapshotHash,
+      facts: result.findings.map((finding) => ({ finding, actions: [] }))
+    });
+    pool.failurePoint = failurePoint;
+
+    await assert.rejects(repository.storeAuditGraph(workspace(), graph,
+      result.findings.map((finding) => ({ findingId: finding.findingId,
+        role: finding.agentRole, status: "unresolved" as const,
+        blockingConflictIds: [] }))));
+
+    assert.deepEqual([pool.state.auditGraphs.length,
+      pool.state.dispositions.length], [0, 0], failurePoint);
+    assert.equal(pool.connection.calls.includes("ROLLBACK"), true);
+  }
+});
+
+test("financial council schema owns nine tables behind a named lock", async () => {
+  assert.equal(FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.length, 9);
   const ddl = FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS.join("\n");
   const names = [...ddl.matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/gu)]
     .map((match) => match[1]);
@@ -714,7 +842,10 @@ test("financial council schema owns six tables behind a named lock", async () =>
     "financial_council_snapshots",
     "financial_council_specialist_results",
     "financial_council_findings",
-    "financial_council_candidate_actions"
+    "financial_council_candidate_actions",
+    "financial_council_audit_graphs",
+    "financial_council_rebuttal_attempts",
+    "financial_council_finding_dispositions"
   ]);
   const pool = new FakePool();
   await ensureFinancialCouncilMysqlSchema(pool as unknown as mysql.Pool);

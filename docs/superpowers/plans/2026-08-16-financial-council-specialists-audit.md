@@ -256,16 +256,19 @@ git commit -m "feat(finance): persist validated specialist findings"
 - Modify: `backend/src/financial-council-mysql-repository-test.ts`
 
 **Interfaces:**
-- Closed conflict kinds: `formula|evidence|definition|action_exclusion|resource_competition|risk_preference`.
+- Closed conflict kinds: `formula|evidence|definition|action_exclusivity|resource_competition|risk_preference`.
 - Edge identity is a canonical hash of run/snapshot/kind/sorted finding IDs/shared refs; input order cannot change it.
 - Formula/evidence/permission conflicts are resolved only by deterministic validation or withdrawal, never majority vote.
 - Repository adds audit graph, rebuttal attempts and final finding disposition. One `(run_id,role,round=1)` row is allowed; round 2 is invalid.
+- Each role receives at most one rebuttal call. When several directed conflicts exist, select one target deterministically by `formula > evidence > definition > action_exclusivity > resource_competition > risk_preference`, then edge ID and finding ID. Unselected unresolved conflicts receive no second call and continue to block affected actions.
+- `resource_competition` is structural in P2: actions sharing one canonical subject/resource signature conflict. Numeric capacity policy remains P3 scope.
+- Reserve the immutable rebuttal input hash durably before the provider call; restart reuses the same `(run,role,round=1)` reservation/job identity and completion is exact-replay-only.
 
-- [ ] **Step 1: Write joint counterexample RED tests.**
+- [x] **Step 1: Write joint counterexample RED tests.**
 
 Cover profitable-but-cash-negative, high gross margin/negative true profit, high ROI/incomplete evidence, same action competing for capacity, unrelated findings not linked, and one expert timing out during rebuttal.
 
-- [ ] **Step 2: Prove RED.**
+- [x] **Step 2: Prove RED.**
 
 ```bash
 npm exec --workspace backend -- tsx --test --test-concurrency=1 \
@@ -273,15 +276,15 @@ npm exec --workspace backend -- tsx --test --test-concurrency=1 \
   src/financial-council-rebuttal-test.ts
 ```
 
-- [ ] **Step 3: Implement deterministic graph and one-round coordinator.**
+- [x] **Step 3: Implement deterministic graph and one-round coordinator.**
 
 Rebuttal input contains only the specialist's original finding, the exact conflicting refs, the peer's structured claim summary without hidden chain-of-thought, and the validator reason. Rebuttal output re-enters the same validator.
 
-- [ ] **Step 4: Prove recovery cannot create a second round.**
+- [x] **Step 4: Prove recovery cannot create a second round.**
 
 Test crash after model result/before persist, crash after persist/before run transition, duplicate worker wake and changed rebuttal result. At most one durable round exists.
 
-- [ ] **Step 5: Run and commit.**
+- [x] **Step 5: Run and commit.**
 
 ```bash
 npm run test:financial-council --workspace backend

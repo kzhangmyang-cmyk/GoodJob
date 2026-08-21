@@ -22,8 +22,14 @@ import {
   validateFinancialSnapshotForRun,
   type FinancialSnapshot
 } from "./financial-council-snapshot.js";
-import type { FinancialCouncilModelBinding } from
-  "./financial-council-model-port.js";
+import type {
+  FinancialCouncilModelBinding,
+  FinancialCouncilModelResult,
+  FinancialCouncilRebutInput,
+  FinancialCouncilRebutOutput
+} from "./financial-council-model-port.js";
+import type { FinancialCouncilAuditGraph } from
+  "./financial-council-audit.js";
 import {
   assertFinancialCouncilSpecialistResultAuthorized,
   type AuthorizedFinancialCouncilSpecialistResult
@@ -93,6 +99,64 @@ export interface FinancialCouncilSpecialistResult {
   readonly resultHash: `sha256:${string}`;
 }
 
+export type FinancialCouncilFindingDispositionStatus =
+  | "unresolved" | "upheld" | "revised" | "withdrawn";
+
+export interface FinancialCouncilFindingDisposition {
+  readonly workspaceId: string;
+  readonly runId: string;
+  readonly snapshotId: string;
+  readonly snapshotHash: `sha256:${string}`;
+  readonly graphId: `sha256:${string}`;
+  readonly findingId: string;
+  readonly role: FinancialCouncilAgentRole;
+  readonly status: FinancialCouncilFindingDispositionStatus;
+  readonly blockingConflictIds: readonly `sha256:${string}`[];
+  readonly updatedAt: string;
+  readonly dispositionHash: `sha256:${string}`;
+}
+
+export interface FinancialCouncilRebuttalAttempt {
+  readonly attemptId: `sha256:${string}`;
+  readonly workspaceId: string;
+  readonly runId: string;
+  readonly snapshotId: string;
+  readonly snapshotHash: `sha256:${string}`;
+  readonly graphId: `sha256:${string}`;
+  readonly role: FinancialCouncilAgentRole;
+  readonly round: 1;
+  readonly edgeId: `sha256:${string}`;
+  readonly targetFindingId: string;
+  readonly inputHash: `sha256:${string}`;
+  readonly input: FinancialCouncilRebutInput;
+  readonly status: "reserved" | "completed";
+  readonly result: FinancialCouncilModelResult<FinancialCouncilRebutOutput>
+    | null;
+  readonly outputHash: `sha256:${string}` | null;
+  readonly createdAt: string;
+  readonly completedAt: string | null;
+  readonly attemptHash: `sha256:${string}`;
+}
+
+export interface InitialFinancialCouncilFindingDisposition {
+  readonly findingId: string;
+  readonly role: FinancialCouncilAgentRole;
+  readonly status: "unresolved";
+  readonly blockingConflictIds: readonly `sha256:${string}`[];
+}
+
+export interface CompleteFinancialCouncilRebuttalInput {
+  readonly attemptId: `sha256:${string}`;
+  readonly inputHash: `sha256:${string}`;
+  readonly result: FinancialCouncilModelResult<FinancialCouncilRebutOutput>;
+  readonly completedAt: string;
+  readonly disposition: {
+    readonly status: Exclude<FinancialCouncilFindingDispositionStatus,
+    "unresolved">;
+    readonly blockingConflictIds: readonly `sha256:${string}`[];
+  };
+}
+
 export interface FinancialCouncilRepository {
   createAndFreezeRun(
     command: CommandContext,
@@ -145,6 +209,37 @@ export interface FinancialCouncilRepository {
     context: ActiveWorkspaceContext,
     runId: string
   ): Promise<readonly FinancialCouncilSpecialistResult[]>;
+  storeAuditGraph(
+    context: ActiveWorkspaceContext,
+    graph: FinancialCouncilAuditGraph,
+    dispositions: readonly InitialFinancialCouncilFindingDisposition[]
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilAuditGraph>>;
+  getAuditGraph(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<FinancialCouncilAuditGraph | null>;
+  reserveRebuttalAttempt(
+    context: ActiveWorkspaceContext,
+    attempt: FinancialCouncilRebuttalAttempt
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>>;
+  getRebuttalAttempt(
+    context: ActiveWorkspaceContext,
+    runId: string,
+    role: FinancialCouncilAgentRole,
+    round: number
+  ): Promise<FinancialCouncilRebuttalAttempt | null>;
+  listRebuttalAttempts(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<readonly FinancialCouncilRebuttalAttempt[]>;
+  completeRebuttalAttempt(
+    context: ActiveWorkspaceContext,
+    input: CompleteFinancialCouncilRebuttalInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>>;
+  listFindingDispositions(
+    context: ActiveWorkspaceContext,
+    runId: string
+  ): Promise<readonly FinancialCouncilFindingDisposition[]>;
 }
 
 interface StoredSpecialistFinding {
@@ -890,7 +985,10 @@ implements FinancialCouncilRepository {
     creationKeys: new Map<string, string>(),
     specialistResults: new Map<string, FinancialCouncilSpecialistResult>(),
     specialistFindings: new Map<string, StoredSpecialistFinding>(),
-    specialistActions: new Map<string, StoredSpecialistAction>()
+    specialistActions: new Map<string, StoredSpecialistAction>(),
+    auditGraphs: new Map<string, FinancialCouncilAuditGraph>(),
+    rebuttalAttempts: new Map<string, FinancialCouncilRebuttalAttempt>(),
+    findingDispositions: new Map<string, FinancialCouncilFindingDisposition>()
   };
 
   private get runs() { return this.state.runs; }
@@ -900,6 +998,9 @@ implements FinancialCouncilRepository {
   private get specialistResults() { return this.state.specialistResults; }
   private get specialistFindings() { return this.state.specialistFindings; }
   private get specialistActions() { return this.state.specialistActions; }
+  private get auditGraphs() { return this.state.auditGraphs; }
+  private get rebuttalAttempts() { return this.state.rebuttalAttempts; }
+  private get findingDispositions() { return this.state.findingDispositions; }
 
   async createAndFreezeRun(
     command: CommandContext,
@@ -948,7 +1049,10 @@ implements FinancialCouncilRepository {
       creationKeys: new Map(this.creationKeys),
       specialistResults: new Map(this.specialistResults),
       specialistFindings: new Map(this.specialistFindings),
-      specialistActions: new Map(this.specialistActions)
+      specialistActions: new Map(this.specialistActions),
+      auditGraphs: new Map(this.auditGraphs),
+      rebuttalAttempts: new Map(this.rebuttalAttempts),
+      findingDispositions: new Map(this.findingDispositions)
     };
     nextState.runs.set(aggregateKey, frozen);
     nextState.events.set(aggregateKey, [createdEvent, frozenEvent]);
@@ -1213,7 +1317,10 @@ implements FinancialCouncilRepository {
       creationKeys: new Map(this.creationKeys),
       specialistResults: new Map(this.specialistResults),
       specialistFindings: new Map(this.specialistFindings),
-      specialistActions: new Map(this.specialistActions)
+      specialistActions: new Map(this.specialistActions),
+      auditGraphs: new Map(this.auditGraphs),
+      rebuttalAttempts: new Map(this.rebuttalAttempts),
+      findingDispositions: new Map(this.findingDispositions)
     };
     for (const finding of result.findings) {
       const findingKey = key(result.workspaceId,
@@ -1303,6 +1410,253 @@ implements FinancialCouncilRepository {
     return Object.freeze(results);
   }
 
+  async storeAuditGraph(
+    context: ActiveWorkspaceContext,
+    rawGraph: FinancialCouncilAuditGraph,
+    rawDispositions: readonly InitialFinancialCouncilFindingDisposition[]
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilAuditGraph>> {
+    const graph = immutableFinancialCouncilInput(rawGraph);
+    const dispositions = immutableFinancialCouncilInput(rawDispositions);
+    try {
+      exactObject(graph, ["graphId", "workspaceId", "runId", "snapshotId",
+        "snapshotHash", "edges", "graphHash"]);
+      if (!Array.isArray(graph.edges)) inputInvalid();
+      for (const edge of graph.edges) {
+        exactObject(edge, ["edgeId", "kind", "findingIds", "sharedRefs",
+          "status", "validatorReason"]);
+      }
+      for (const item of dispositions) {
+        exactObject(item, ["findingId", "role", "status",
+          "blockingConflictIds"]);
+      }
+    } catch {
+      throw financialCouncilError("financial_council_audit_invalid");
+    }
+    const verified = await this.getVerifiedRunSnapshot(context, graph.runId);
+    const expectedHash = financialCouncilCanonicalHash({
+      workspaceId: graph.workspaceId, runId: graph.runId,
+      snapshotId: graph.snapshotId, snapshotHash: graph.snapshotHash,
+      edges: graph.edges
+    });
+    if (!verified || graph.workspaceId !== context.workspaceId
+      || graph.snapshotId !== verified.snapshot.snapshotId
+      || graph.snapshotHash !== verified.snapshot.snapshotHash
+      || graph.graphId !== expectedHash || graph.graphHash !== expectedHash
+      || new Set(dispositions.map((item) => item.findingId)).size
+        !== dispositions.length
+      || dispositions.some((item) => item.status !== "unresolved"
+        || !SPECIALIST_ROLES.has(item.role)
+        || item.blockingConflictIds.some((id) => !graph.edges.some((edge) =>
+          edge.edgeId === id && edge.findingIds.includes(item.findingId))))) {
+      throw financialCouncilError("financial_council_audit_invalid");
+    }
+    const graphKey = key(context.workspaceId, graph.runId);
+    const existing = this.auditGraphs.get(graphKey);
+    if (existing) {
+      if (financialCouncilCanonicalJson(existing)
+          !== financialCouncilCanonicalJson(graph)
+        || financialCouncilCanonicalJson([...this.findingDispositions.values()]
+          .filter((item) => item.workspaceId === context.workspaceId
+            && item.runId === graph.runId)
+          .map((item) => ({ findingId: item.findingId, role: item.role,
+            status: "unresolved", blockingConflictIds:
+              item.blockingConflictIds }))
+          .sort((left, right) => utf8ByteCompare(
+            left.findingId, right.findingId
+          ))) !== financialCouncilCanonicalJson([...dispositions]
+          .sort((left, right) => utf8ByteCompare(
+            left.findingId, right.findingId
+          )))) {
+        throw financialCouncilError("financial_council_audit_conflict");
+      }
+      return { value: existing, replayed: true };
+    }
+    const nextGraphs = new Map(this.auditGraphs);
+    const nextDispositions = new Map(this.findingDispositions);
+    nextGraphs.set(graphKey, graph);
+    for (const item of dispositions) {
+      const stable = {
+        workspaceId: context.workspaceId, runId: graph.runId,
+        snapshotId: graph.snapshotId, snapshotHash: graph.snapshotHash,
+        graphId: graph.graphId, findingId: item.findingId, role: item.role,
+        status: item.status, blockingConflictIds: [...item.blockingConflictIds]
+          .sort(utf8ByteCompare), updatedAt: verified.run.updatedAt
+      };
+      nextDispositions.set(dispositionKey(context.workspaceId, graph.runId,
+        item.findingId), immutableFinancialCouncilValue({ ...stable,
+        dispositionHash: financialCouncilCanonicalHash(stable) }));
+    }
+    this.state = { ...this.state, auditGraphs: nextGraphs,
+      findingDispositions: nextDispositions };
+    return { value: graph, replayed: false };
+  }
+
+  async getAuditGraph(context: ActiveWorkspaceContext, runId: string):
+  Promise<FinancialCouncilAuditGraph | null> {
+    const graph = this.auditGraphs.get(key(context.workspaceId, runId)) ?? null;
+    return graph;
+  }
+
+  async reserveRebuttalAttempt(
+    context: ActiveWorkspaceContext,
+    rawAttempt: FinancialCouncilRebuttalAttempt
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>> {
+    const attempt = immutableFinancialCouncilInput(rawAttempt);
+    try {
+      exactObject(attempt, ["attemptId", "workspaceId", "runId",
+        "snapshotId", "snapshotHash", "graphId", "role", "round",
+        "edgeId", "targetFindingId", "inputHash", "input", "status",
+        "result", "outputHash", "createdAt", "completedAt", "attemptHash"]);
+      exactObject(attempt.input, ["ownerId", "teamId", "runId",
+        "snapshotId", "snapshotHash", "role", "attempt", "allowlist",
+        "businessData", "targetFindingId", "conflictData"]);
+      exactObject(attempt.input.allowlist, ["evidenceRefIds", "formulaRefIds",
+        "findingIds", "subjectRefs", "dataGapRefs"]);
+    } catch {
+      throw financialCouncilError("financial_council_rebuttal_invalid");
+    }
+    const graph = await this.getAuditGraph(context, attempt.runId);
+    const stable = { ...attempt, attemptHash: undefined };
+    delete (stable as { attemptHash?: unknown }).attemptHash;
+    if (!graph || attempt.workspaceId !== context.workspaceId
+      || attempt.snapshotId !== graph.snapshotId
+      || attempt.snapshotHash !== graph.snapshotHash
+      || attempt.graphId !== graph.graphId || attempt.round !== 1
+      || attempt.status !== "reserved" || attempt.result !== null
+      || attempt.outputHash !== null || attempt.completedAt !== null
+      || attempt.role !== attempt.input.role
+      || attempt.runId !== attempt.input.runId
+      || attempt.snapshotId !== attempt.input.snapshotId
+      || attempt.snapshotHash !== attempt.input.snapshotHash
+      || attempt.targetFindingId !== attempt.input.targetFindingId
+      || attempt.input.attempt !== 1
+      || attempt.inputHash !== financialCouncilCanonicalHash(attempt.input)
+      || attempt.attemptHash !== financialCouncilCanonicalHash(stable)
+      || !graph.edges.some((item) => item.edgeId === attempt.edgeId
+        && item.findingIds.includes(attempt.targetFindingId))) {
+      throw financialCouncilError("financial_council_rebuttal_invalid");
+    }
+    const attemptKey = rebuttalKey(context.workspaceId, attempt.runId,
+      attempt.role, attempt.round);
+    const existing = this.rebuttalAttempts.get(attemptKey);
+    if (existing) {
+      if (existing.inputHash !== attempt.inputHash
+        || existing.attemptId !== attempt.attemptId
+        || existing.edgeId !== attempt.edgeId) {
+        throw financialCouncilError("financial_council_rebuttal_conflict");
+      }
+      return { value: existing, replayed: true };
+    }
+    const next = new Map(this.rebuttalAttempts);
+    next.set(attemptKey, attempt);
+    this.state = { ...this.state, rebuttalAttempts: next };
+    return { value: attempt, replayed: false };
+  }
+
+  async getRebuttalAttempt(
+    context: ActiveWorkspaceContext, runId: string,
+    role: FinancialCouncilAgentRole, round: number
+  ): Promise<FinancialCouncilRebuttalAttempt | null> {
+    if (!SPECIALIST_ROLES.has(role) || round !== 1) {
+      throw financialCouncilError("financial_council_rebuttal_invalid");
+    }
+    return this.rebuttalAttempts.get(rebuttalKey(
+      context.workspaceId, runId, role, round
+    )) ?? null;
+  }
+
+  async listRebuttalAttempts(context: ActiveWorkspaceContext, runId: string):
+  Promise<readonly FinancialCouncilRebuttalAttempt[]> {
+    return Object.freeze([...this.rebuttalAttempts.values()].filter((item) =>
+      item.workspaceId === context.workspaceId && item.runId === runId)
+      .sort((left, right) => utf8ByteCompare(left.role, right.role)));
+  }
+
+  async completeRebuttalAttempt(
+    context: ActiveWorkspaceContext,
+    rawInput: CompleteFinancialCouncilRebuttalInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>> {
+    const input = immutableFinancialCouncilInput(rawInput);
+    const entry = [...this.rebuttalAttempts.entries()].find(([, item]) =>
+      item.workspaceId === context.workspaceId
+        && item.attemptId === input.attemptId);
+    if (!entry || entry[1].inputHash !== input.inputHash) {
+      throw financialCouncilError("financial_council_rebuttal_conflict");
+    }
+    const [attemptKey, current] = entry;
+    const outputHash = financialCouncilCanonicalHash(input.result.value);
+    if (current.status === "completed") {
+      if (current.outputHash !== outputHash
+        || financialCouncilCanonicalJson(current.result)
+          !== financialCouncilCanonicalJson(input.result)) {
+        throw financialCouncilError("financial_council_rebuttal_conflict");
+      }
+      return { value: current, replayed: true };
+    }
+    if (input.result.binding.jobId
+        !== `financial-council:${current.runId}:${current.role}:rebut:1`
+      || input.result.binding.contentHash !== rebuttalContentHash(current.input)
+      || input.result.binding.runId !== current.runId
+      || input.result.binding.snapshotId !== current.snapshotId
+      || input.result.binding.snapshotHash !== current.snapshotHash
+      || input.result.binding.role !== current.role
+      || input.result.binding.phase !== "rebut"
+      || input.result.binding.attempt !== 1
+      || input.result.value.findingId !== current.targetFindingId) {
+      throw financialCouncilError("financial_council_rebuttal_invalid");
+    }
+    const stable = { ...current, status: "completed" as const,
+      result: input.result, outputHash, completedAt: input.completedAt };
+    const { attemptHash: _oldHash, ...preimage } = stable;
+    const completed = immutableFinancialCouncilValue({ ...preimage,
+      attemptHash: financialCouncilCanonicalHash(preimage) });
+    const dispositionKeyValue = dispositionKey(context.workspaceId,
+      current.runId, current.targetFindingId);
+    const disposition = this.findingDispositions.get(dispositionKeyValue);
+    if (!disposition || disposition.graphId !== current.graphId) {
+      throw financialCouncilError("financial_council_integrity");
+    }
+    const expectedStatus = input.result.value.decision === "withdraw"
+      ? "withdrawn" : input.result.value.decision === "revise"
+        ? "revised" : "upheld";
+    const expectedBlocking = input.result.value.decision === "withdraw" ? []
+      : input.result.value.decision === "revise"
+        ? disposition.blockingConflictIds.filter((id) => id !== current.edgeId)
+        : [...disposition.blockingConflictIds];
+    if (input.disposition.status !== expectedStatus
+      || financialCouncilCanonicalJson([...input.disposition.blockingConflictIds]
+        .sort(utf8ByteCompare)) !== financialCouncilCanonicalJson(
+        expectedBlocking.sort(utf8ByteCompare))) {
+      throw financialCouncilError("financial_council_rebuttal_invalid");
+    }
+    const dispositionStable = { ...disposition,
+      status: input.disposition.status,
+      blockingConflictIds: [...input.disposition.blockingConflictIds]
+        .sort(utf8ByteCompare), updatedAt: input.completedAt };
+    const { dispositionHash: _oldDispositionHash, ...dispositionPreimage }
+      = dispositionStable;
+    const nextAttempts = new Map(this.rebuttalAttempts);
+    const nextDispositions = new Map(this.findingDispositions);
+    nextAttempts.set(attemptKey, completed);
+    nextDispositions.set(dispositionKeyValue, immutableFinancialCouncilValue({
+      ...dispositionPreimage,
+      dispositionHash: financialCouncilCanonicalHash(dispositionPreimage)
+    }));
+    this.state = { ...this.state, rebuttalAttempts: nextAttempts,
+      findingDispositions: nextDispositions };
+    return { value: completed, replayed: false };
+  }
+
+  async listFindingDispositions(
+    context: ActiveWorkspaceContext, runId: string
+  ): Promise<readonly FinancialCouncilFindingDisposition[]> {
+    return Object.freeze([...this.findingDispositions.values()].filter((item) =>
+      item.workspaceId === context.workspaceId && item.runId === runId)
+      .sort((left, right) => utf8ByteCompare(
+        left.findingId, right.findingId
+      )));
+  }
+
   private assertStoredSpecialistResult(
     raw: FinancialCouncilSpecialistResult
   ): FinancialCouncilSpecialistResult {
@@ -1361,6 +1715,33 @@ function specialistKey(
   phase: FinancialCouncilSpecialistPhase
 ): string {
   return `${workspaceId}\u0000${runId}\u0000${role}\u0000${phase}`;
+}
+
+function rebuttalKey(
+  workspaceId: string,
+  runId: string,
+  role: FinancialCouncilAgentRole,
+  round: number
+): string {
+  return `${workspaceId}\u0000${runId}\u0000${role}\u0000${round}`;
+}
+
+function dispositionKey(
+  workspaceId: string,
+  runId: string,
+  findingId: string
+): string {
+  return `${workspaceId}\u0000${runId}\u0000${findingId}`;
+}
+
+function rebuttalContentHash(input: FinancialCouncilRebutInput):
+`sha256:${string}` {
+  return financialCouncilCanonicalHash({
+    allowlist: input.allowlist,
+    businessData: input.businessData,
+    targetFindingId: input.targetFindingId,
+    conflictData: input.conflictData
+  });
 }
 
 function compareSpecialist(

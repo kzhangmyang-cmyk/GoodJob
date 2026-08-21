@@ -31,6 +31,10 @@ import {
   type FinancialCouncilCommandResult,
   type CreateAndFreezeFinancialCouncilRunInput,
   type FinancialCouncilRepository,
+  type FinancialCouncilFindingDisposition,
+  type FinancialCouncilRebuttalAttempt,
+  type InitialFinancialCouncilFindingDisposition,
+  type CompleteFinancialCouncilRebuttalInput,
   type FinancialCouncilSpecialistPhase,
   type FinancialCouncilSpecialistResult,
   type ListRunnableFinancialCouncilRunsInput,
@@ -38,6 +42,8 @@ import {
   type TransitionFinancialCouncilRunInput,
   type VerifiedFinancialCouncilRunSnapshot
 } from "./financial-council-repository.js";
+import type { FinancialCouncilAuditGraph } from
+  "./financial-council-audit.js";
 import {
   assertFinancialCouncilSpecialistResultAuthorized,
   type AuthorizedFinancialCouncilSpecialistResult
@@ -45,6 +51,8 @@ import {
 import { validateFinancialSnapshotForRun } from
   "./financial-council-snapshot.js";
 import type { FinancialCouncilAgentRole } from "./growth-contract-types.js";
+import type { FinancialCouncilRebutInput } from
+  "./financial-council-model-port.js";
 
 type MysqlRow = Record<string, unknown>;
 
@@ -169,6 +177,57 @@ export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
       ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT chk_financial_council_action_json
       CHECK (JSON_VALID(action_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_audit_graphs (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    snapshot_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    snapshot_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    graph_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    graph_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    graph_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    PRIMARY KEY (workspace_id, run_id),
+    UNIQUE KEY uk_financial_council_audit_graph (workspace_id, graph_id),
+    CONSTRAINT fk_financial_council_audit_run FOREIGN KEY (workspace_id, run_id)
+      REFERENCES financial_council_runs (workspace_id, run_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_audit_json CHECK (JSON_VALID(graph_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_rebuttal_attempts (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    role VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    round_number TINYINT UNSIGNED NOT NULL,
+    attempt_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    input_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    attempt_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    PRIMARY KEY (workspace_id, run_id, role, round_number),
+    UNIQUE KEY uk_financial_council_rebuttal_attempt (workspace_id, attempt_id),
+    CONSTRAINT fk_financial_council_rebuttal_graph FOREIGN KEY (workspace_id, run_id)
+      REFERENCES financial_council_audit_graphs (workspace_id, run_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_rebuttal_round CHECK (round_number = 1),
+    CONSTRAINT chk_financial_council_rebuttal_status
+      CHECK (status IN ('reserved','completed')),
+    CONSTRAINT chk_financial_council_rebuttal_json CHECK (JSON_VALID(attempt_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_finding_dispositions (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    run_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    finding_id VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    role VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    disposition_hash CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    disposition_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    PRIMARY KEY (workspace_id, run_id, finding_id),
+    CONSTRAINT fk_financial_council_disposition_graph FOREIGN KEY (workspace_id, run_id)
+      REFERENCES financial_council_audit_graphs (workspace_id, run_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_disposition_status
+      CHECK (status IN ('unresolved','upheld','revised','withdrawn')),
+    CONSTRAINT chk_financial_council_disposition_json
+      CHECK (JSON_VALID(disposition_json))
   ) ENGINE=InnoDB`
 ] as const);
 
@@ -584,6 +643,97 @@ function parseSpecialistResult(
   } catch {
     integrity();
   }
+}
+
+function utf8Compare(left: string, right: string): number {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+}
+
+function rebuttalContentHash(input: FinancialCouncilRebutInput):
+`sha256:${string}` {
+  return financialCouncilCanonicalHash({
+    allowlist: input.allowlist,
+    businessData: input.businessData,
+    targetFindingId: input.targetFindingId,
+    conflictData: input.conflictData
+  });
+}
+
+function parseAuditGraphRow(row: MysqlRow): FinancialCouncilAuditGraph {
+  const rawGraph = jsonObject(row.graph_json);
+  exactKeys(rawGraph, ["graphId", "workspaceId", "runId", "snapshotId",
+    "snapshotHash", "edges", "graphHash"]);
+  if (!Array.isArray(rawGraph.edges)) integrity();
+  for (const edge of rawGraph.edges) exactKeys(edge, ["edgeId", "kind",
+    "findingIds", "sharedRefs", "status", "validatorReason"]);
+  const graph = immutableFinancialCouncilValue(rawGraph) as
+    unknown as FinancialCouncilAuditGraph;
+  const expectedHash = financialCouncilCanonicalHash({
+    workspaceId: graph.workspaceId, runId: graph.runId,
+    snapshotId: graph.snapshotId, snapshotHash: graph.snapshotHash,
+    edges: graph.edges
+  });
+  if (rowString(row, "workspace_id") !== graph.workspaceId
+    || rowString(row, "run_id") !== graph.runId
+    || rowString(row, "snapshot_id") !== graph.snapshotId
+    || rowString(row, "snapshot_hash") !== graph.snapshotHash
+    || rowString(row, "graph_id") !== graph.graphId
+    || rowString(row, "graph_hash") !== graph.graphHash
+    || graph.graphId !== expectedHash || graph.graphHash !== expectedHash) {
+    integrity();
+  }
+  return graph;
+}
+
+function parseRebuttalAttemptRow(row: MysqlRow):
+FinancialCouncilRebuttalAttempt {
+  const rawAttempt = jsonObject(row.attempt_json);
+  exactKeys(rawAttempt, ["attemptId", "workspaceId", "runId", "snapshotId",
+    "snapshotHash", "graphId", "role", "round", "edgeId",
+    "targetFindingId", "inputHash", "input", "status", "result",
+    "outputHash", "createdAt", "completedAt", "attemptHash"]);
+  exactKeys(rawAttempt.input, ["ownerId", "teamId", "runId", "snapshotId",
+    "snapshotHash", "role", "attempt", "allowlist", "businessData",
+    "targetFindingId", "conflictData"]);
+  exactKeys((rawAttempt.input as Record<string, unknown>).allowlist,
+    ["evidenceRefIds", "formulaRefIds", "findingIds", "subjectRefs",
+      "dataGapRefs"]);
+  const attempt = immutableFinancialCouncilValue(rawAttempt) as unknown as
+    FinancialCouncilRebuttalAttempt;
+  const { attemptHash: _hash, ...preimage } = attempt;
+  if (rowString(row, "workspace_id") !== attempt.workspaceId
+    || rowString(row, "run_id") !== attempt.runId
+    || rowString(row, "role") !== attempt.role
+    || rowInteger(row, "round_number") !== attempt.round
+    || rowString(row, "attempt_id") !== attempt.attemptId
+    || rowString(row, "input_hash") !== attempt.inputHash
+    || rowString(row, "status") !== attempt.status
+    || attempt.round !== 1
+    || attempt.inputHash !== financialCouncilCanonicalHash(attempt.input)
+    || attempt.attemptHash !== financialCouncilCanonicalHash(preimage)) {
+    integrity();
+  }
+  return attempt;
+}
+
+function parseDispositionRow(row: MysqlRow): FinancialCouncilFindingDisposition {
+  const rawDisposition = jsonObject(row.disposition_json);
+  exactKeys(rawDisposition, ["workspaceId", "runId", "snapshotId",
+    "snapshotHash", "graphId", "findingId", "role", "status",
+    "blockingConflictIds", "updatedAt", "dispositionHash"]);
+  const disposition = immutableFinancialCouncilValue(rawDisposition) as
+    unknown as FinancialCouncilFindingDisposition;
+  const { dispositionHash: _hash, ...preimage } = disposition;
+  if (rowString(row, "workspace_id") !== disposition.workspaceId
+    || rowString(row, "run_id") !== disposition.runId
+    || rowString(row, "finding_id") !== disposition.findingId
+    || rowString(row, "role") !== disposition.role
+    || rowString(row, "status") !== disposition.status
+    || rowString(row, "disposition_hash") !== disposition.dispositionHash
+    || disposition.dispositionHash !== financialCouncilCanonicalHash(preimage)) {
+    integrity();
+  }
+  return disposition;
 }
 
 function expectedRevision(command: CommandContext): number {
@@ -1087,6 +1237,281 @@ implements FinancialCouncilRepository {
     }, true);
   }
 
+  async storeAuditGraph(
+    context: ActiveWorkspaceContext,
+    graph: FinancialCouncilAuditGraph,
+    dispositions: readonly InitialFinancialCouncilFindingDisposition[]
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilAuditGraph>> {
+    return this.transaction(async (connection) => {
+      const run = await this.findByRunId(
+        connection, context.workspaceId, graph.runId, true
+      );
+      if (!run) throw financialCouncilError("financial_council_run_not_found");
+      await this.verifyStoredRun(connection, run);
+      const expectedHash = financialCouncilCanonicalHash({
+        workspaceId: graph.workspaceId, runId: graph.runId,
+        snapshotId: graph.snapshotId, snapshotHash: graph.snapshotHash,
+        edges: graph.edges
+      });
+      if (graph.workspaceId !== context.workspaceId
+        || graph.snapshotId !== run.snapshotId
+        || graph.snapshotHash !== run.snapshotHash
+        || graph.graphId !== expectedHash || graph.graphHash !== expectedHash
+        || new Set(dispositions.map((item) => item.findingId)).size
+          !== dispositions.length
+        || dispositions.some((item) => item.status !== "unresolved"
+          || !SPECIALIST_ROLES.has(item.role)
+          || item.blockingConflictIds.some((id) => !graph.edges.some((edge) =>
+            edge.edgeId === id && edge.findingIds.includes(item.findingId))))) {
+        throw financialCouncilError("financial_council_audit_invalid");
+      }
+      const existing = await this.readAuditGraph(
+        connection, context.workspaceId, graph.runId, true
+      );
+      if (existing) {
+        const [storedDispositionRows] = await connection.query(
+          `SELECT * FROM financial_council_finding_dispositions
+           WHERE workspace_id = ? AND run_id = ? ORDER BY BINARY finding_id ASC`,
+          [context.workspaceId, graph.runId]
+        );
+        const storedDispositions = (storedDispositionRows as MysqlRow[])
+          .map(parseDispositionRow).map((item) => ({
+            findingId: item.findingId, role: item.role,
+            status: "unresolved", blockingConflictIds: item.blockingConflictIds
+          }));
+        if (canonical(existing) !== canonical(graph)
+          || canonical(storedDispositions) !== canonical([...dispositions]
+            .sort((left, right) => utf8Compare(
+              left.findingId, right.findingId
+            )))) {
+          throw financialCouncilError("financial_council_audit_conflict");
+        }
+        return { value: existing, replayed: true };
+      }
+      await connection.query(
+        `INSERT INTO financial_council_audit_graphs (
+           workspace_id, run_id, snapshot_id, snapshot_hash, graph_id,
+           graph_hash, graph_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [graph.workspaceId, graph.runId, graph.snapshotId, graph.snapshotHash,
+          graph.graphId, graph.graphHash, canonical(graph)]
+      );
+      for (const item of dispositions) {
+        const stable = { workspaceId: context.workspaceId, runId: graph.runId,
+          snapshotId: graph.snapshotId, snapshotHash: graph.snapshotHash,
+          graphId: graph.graphId, findingId: item.findingId, role: item.role,
+          status: item.status, blockingConflictIds: [...item.blockingConflictIds]
+            .sort(utf8Compare), updatedAt: run.updatedAt };
+        const disposition = { ...stable,
+          dispositionHash: financialCouncilCanonicalHash(stable) };
+        await connection.query(
+          `INSERT INTO financial_council_finding_dispositions (
+             workspace_id, run_id, finding_id, role, status,
+             disposition_hash, disposition_json
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [context.workspaceId, graph.runId, item.findingId, item.role,
+            item.status, disposition.dispositionHash, canonical(disposition)]
+        );
+      }
+      return { value: graph, replayed: false };
+    });
+  }
+
+  async getAuditGraph(context: ActiveWorkspaceContext, runId: string):
+  Promise<FinancialCouncilAuditGraph | null> {
+    return this.transaction((connection) => this.readAuditGraph(
+      connection, context.workspaceId, runId, false
+    ), true);
+  }
+
+  async reserveRebuttalAttempt(
+    context: ActiveWorkspaceContext,
+    attempt: FinancialCouncilRebuttalAttempt
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>> {
+    if (attempt.workspaceId !== context.workspaceId || attempt.round !== 1
+      || attempt.status !== "reserved" || attempt.result !== null
+      || attempt.outputHash !== null || attempt.completedAt !== null
+      || attempt.inputHash !== financialCouncilCanonicalHash(attempt.input)) {
+      throw financialCouncilError("financial_council_rebuttal_invalid");
+    }
+    const { attemptHash: _hash, ...preimage } = attempt;
+    if (attempt.attemptHash !== financialCouncilCanonicalHash(preimage)) {
+      throw financialCouncilError("financial_council_rebuttal_invalid");
+    }
+    try {
+      return await this.transaction(async (connection) => {
+      const graph = await this.readAuditGraph(
+        connection, context.workspaceId, attempt.runId, false
+      );
+      if (!graph || graph.graphId !== attempt.graphId
+        || graph.snapshotId !== attempt.snapshotId
+        || graph.snapshotHash !== attempt.snapshotHash
+        || !graph.edges.some((edge) => edge.edgeId === attempt.edgeId
+          && edge.findingIds.includes(attempt.targetFindingId))) {
+        throw financialCouncilError("financial_council_rebuttal_invalid");
+      }
+      const existing = await this.readRebuttalAttempt(connection,
+        context.workspaceId, attempt.runId, attempt.role, 1, true);
+      if (existing) {
+        if (existing.attemptId !== attempt.attemptId
+          || existing.inputHash !== attempt.inputHash
+          || existing.edgeId !== attempt.edgeId) {
+          throw financialCouncilError("financial_council_rebuttal_conflict");
+        }
+        return { value: existing, replayed: true };
+      }
+      await connection.query(
+        `INSERT INTO financial_council_rebuttal_attempts (
+           workspace_id, run_id, role, round_number, attempt_id, input_hash,
+           status, attempt_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [attempt.workspaceId, attempt.runId, attempt.role, 1,
+          attempt.attemptId, attempt.inputHash, attempt.status,
+          canonical(attempt)]
+      );
+        return { value: attempt, replayed: false };
+      });
+    } catch (error) {
+      if (!duplicateEntry(error)) throw error;
+      const existing = await this.getRebuttalAttempt(
+        context, attempt.runId, attempt.role, 1
+      );
+      if (existing && existing.attemptId === attempt.attemptId
+        && existing.inputHash === attempt.inputHash
+        && existing.edgeId === attempt.edgeId) {
+        return { value: existing, replayed: true };
+      }
+      throw financialCouncilError("financial_council_rebuttal_conflict");
+    }
+  }
+
+  async getRebuttalAttempt(
+    context: ActiveWorkspaceContext, runId: string,
+    role: FinancialCouncilAgentRole, round: number
+  ): Promise<FinancialCouncilRebuttalAttempt | null> {
+    if (!SPECIALIST_ROLES.has(role) || round !== 1) {
+      throw financialCouncilError("financial_council_rebuttal_invalid");
+    }
+    return this.transaction((connection) => this.readRebuttalAttempt(
+      connection, context.workspaceId, runId, role, round, false
+    ), true);
+  }
+
+  async listRebuttalAttempts(context: ActiveWorkspaceContext, runId: string):
+  Promise<readonly FinancialCouncilRebuttalAttempt[]> {
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(
+        `SELECT * FROM financial_council_rebuttal_attempts
+         WHERE workspace_id = ? AND run_id = ?
+         ORDER BY BINARY role ASC, round_number ASC`,
+        [context.workspaceId, runId]
+      );
+      return Object.freeze((rows as MysqlRow[]).map(parseRebuttalAttemptRow));
+    }, true);
+  }
+
+  async completeRebuttalAttempt(
+    context: ActiveWorkspaceContext,
+    input: CompleteFinancialCouncilRebuttalInput
+  ): Promise<FinancialCouncilCommandResult<FinancialCouncilRebuttalAttempt>> {
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(
+        `SELECT * FROM financial_council_rebuttal_attempts
+         WHERE workspace_id = ? AND attempt_id = ? FOR UPDATE`,
+        [context.workspaceId, input.attemptId]
+      );
+      const currentRow = (rows as MysqlRow[])[0];
+      if (!currentRow) {
+        throw financialCouncilError("financial_council_rebuttal_conflict");
+      }
+      const current = parseRebuttalAttemptRow(currentRow);
+      const outputHash = financialCouncilCanonicalHash(input.result.value);
+      if (current.inputHash !== input.inputHash) {
+        throw financialCouncilError("financial_council_rebuttal_conflict");
+      }
+      if (current.status === "completed") {
+        if (current.outputHash !== outputHash
+          || canonical(current.result) !== canonical(input.result)) {
+          throw financialCouncilError("financial_council_rebuttal_conflict");
+        }
+        return { value: current, replayed: true };
+      }
+      if (input.result.binding.jobId
+          !== `financial-council:${current.runId}:${current.role}:rebut:1`
+        || input.result.binding.contentHash !== rebuttalContentHash(current.input)
+        || input.result.binding.runId !== current.runId
+        || input.result.binding.snapshotId !== current.snapshotId
+        || input.result.binding.snapshotHash !== current.snapshotHash
+        || input.result.binding.role !== current.role
+        || input.result.binding.phase !== "rebut"
+        || input.result.binding.attempt !== 1
+        || input.result.value.findingId !== current.targetFindingId) {
+        throw financialCouncilError("financial_council_rebuttal_invalid");
+      }
+      const stable = { ...current, status: "completed" as const,
+        result: input.result, outputHash, completedAt: input.completedAt };
+      const { attemptHash: _oldAttemptHash, ...attemptPreimage } = stable;
+      const completed = { ...attemptPreimage,
+        attemptHash: financialCouncilCanonicalHash(attemptPreimage) };
+      const [dispositionRows] = await connection.query(
+        `SELECT * FROM financial_council_finding_dispositions
+         WHERE workspace_id = ? AND run_id = ? AND finding_id = ? FOR UPDATE`,
+        [context.workspaceId, current.runId, current.targetFindingId]
+      );
+      const dispositionRow = (dispositionRows as MysqlRow[])[0];
+      if (!dispositionRow) integrity();
+      const disposition = parseDispositionRow(dispositionRow);
+      const expectedStatus = input.result.value.decision === "withdraw"
+        ? "withdrawn" : input.result.value.decision === "revise"
+          ? "revised" : "upheld";
+      const expectedBlocking = input.result.value.decision === "withdraw" ? []
+        : input.result.value.decision === "revise"
+          ? disposition.blockingConflictIds.filter((id) => id !== current.edgeId)
+          : [...disposition.blockingConflictIds];
+      if (input.disposition.status !== expectedStatus
+        || canonical([...input.disposition.blockingConflictIds]
+          .sort(utf8Compare)) !== canonical(expectedBlocking.sort(utf8Compare))) {
+        throw financialCouncilError("financial_council_rebuttal_invalid");
+      }
+      const changed = { ...disposition, status: input.disposition.status,
+        blockingConflictIds: [...input.disposition.blockingConflictIds]
+          .sort(utf8Compare), updatedAt: input.completedAt };
+      const { dispositionHash: _oldDispositionHash, ...dispositionPreimage }
+        = changed;
+      const completedDisposition = { ...dispositionPreimage,
+        dispositionHash: financialCouncilCanonicalHash(dispositionPreimage) };
+      await connection.query(
+        `UPDATE financial_council_rebuttal_attempts
+         SET status = ?, attempt_json = ?
+         WHERE workspace_id = ? AND run_id = ? AND role = ? AND round_number = 1`,
+        ["completed", canonical(completed), context.workspaceId,
+          current.runId, current.role]
+      );
+      await connection.query(
+        `UPDATE financial_council_finding_dispositions
+         SET status = ?, disposition_hash = ?, disposition_json = ?
+         WHERE workspace_id = ? AND run_id = ? AND finding_id = ?`,
+        [completedDisposition.status, completedDisposition.dispositionHash,
+          canonical(completedDisposition), context.workspaceId, current.runId,
+          current.targetFindingId]
+      );
+      return { value: completed, replayed: false };
+    });
+  }
+
+  async listFindingDispositions(
+    context: ActiveWorkspaceContext, runId: string
+  ): Promise<readonly FinancialCouncilFindingDisposition[]> {
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(
+        `SELECT * FROM financial_council_finding_dispositions
+         WHERE workspace_id = ? AND run_id = ? ORDER BY BINARY finding_id ASC`,
+        [context.workspaceId, runId]
+      );
+      return Object.freeze((rows as MysqlRow[]).map(parseDispositionRow));
+    }, true);
+  }
+
   private replay(
     existing: FinancialCouncilRun,
     requestHash: string
@@ -1095,6 +1520,39 @@ implements FinancialCouncilRepository {
       throw financialCouncilError("financial_council_idempotency_conflict");
     }
     return { value: existing, replayed: true };
+  }
+
+  private async readAuditGraph(
+    source: Pick<mysql.Pool, "query">,
+    workspaceId: string,
+    runId: string,
+    lock: boolean
+  ): Promise<FinancialCouncilAuditGraph | null> {
+    const [rows] = await source.query(
+      `SELECT * FROM financial_council_audit_graphs
+       WHERE workspace_id = ? AND run_id = ?${lock ? " FOR UPDATE" : ""}`,
+      [workspaceId, runId]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseAuditGraphRow(row) : null;
+  }
+
+  private async readRebuttalAttempt(
+    source: Pick<mysql.Pool, "query">,
+    workspaceId: string,
+    runId: string,
+    role: FinancialCouncilAgentRole,
+    round: number,
+    lock: boolean
+  ): Promise<FinancialCouncilRebuttalAttempt | null> {
+    const [rows] = await source.query(
+      `SELECT * FROM financial_council_rebuttal_attempts
+       WHERE workspace_id = ? AND run_id = ? AND role = ?
+         AND round_number = ?${lock ? " FOR UPDATE" : ""}`,
+      [workspaceId, runId, role, round]
+    );
+    const row = (rows as MysqlRow[])[0];
+    return row ? parseRebuttalAttemptRow(row) : null;
   }
 
   private async readSpecialistResult(
