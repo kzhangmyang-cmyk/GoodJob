@@ -63,6 +63,16 @@ import {
   type FinancialCouncilApprovalRecord,
   type FinancialCouncilDispatchOutboxRow
 } from "./financial-council-approval.js";
+import {
+  claimFinancialCouncilDispatchOperation,
+  completeFinancialCouncilDispatchOperation,
+  createFinancialCouncilDispatchOperation,
+  failFinancialCouncilDispatchOperation,
+  type ClaimFinancialCouncilDispatchOperationInput,
+  type FinancialCouncilDispatchLease,
+  type FinancialCouncilDispatchOperation,
+  type FinancialCouncilDispatchReceipt
+} from "./financial-council-dispatch-operation.js";
 import { MysqlGrowthTemporalTransaction } from
   "./growth-temporal-barrier-mysql-repository.js";
 import type { FinancialCouncilAuditGraph } from
@@ -351,6 +361,26 @@ export const FINANCIAL_COUNCIL_MYSQL_SCHEMA_STATEMENTS = Object.freeze([
       CHECK (status IN ('queued')),
     CONSTRAINT chk_financial_council_dispatch_json
       CHECK (JSON_VALID(dispatch_json))
+  ) ENGINE=InnoDB`,
+  `CREATE TABLE IF NOT EXISTS financial_council_dispatch_operations (
+    workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    dispatch_id CHAR(71) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    status VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    attempt BIGINT UNSIGNED NOT NULL,
+    lease_token CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+    lease_expires_at DATETIME(3) NULL,
+    operation_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    receipt_json LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+    PRIMARY KEY (workspace_id, dispatch_id),
+    CONSTRAINT fk_financial_council_dispatch_operation_outbox
+      FOREIGN KEY (workspace_id, dispatch_id)
+      REFERENCES financial_council_dispatch_outbox (workspace_id, dispatch_id)
+      ON UPDATE RESTRICT ON DELETE RESTRICT,
+    CONSTRAINT chk_financial_council_dispatch_operation_status CHECK
+      (status IN ('queued','running','retry','succeeded','failed')),
+    CONSTRAINT chk_financial_council_dispatch_operation_json CHECK (JSON_VALID(operation_json)),
+    CONSTRAINT chk_financial_council_dispatch_receipt_json CHECK
+      (receipt_json IS NULL OR JSON_VALID(receipt_json))
   ) ENGINE=InnoDB`,
   `CREATE TABLE IF NOT EXISTS financial_council_analysis_controls (
     workspace_id VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
@@ -2443,6 +2473,143 @@ implements FinancialCouncilRepository {
       }
       return Object.freeze(outbox);
     }, true);
+  }
+
+  async claimDispatchOperation(input: ClaimFinancialCouncilDispatchOperationInput & {
+    readonly workspaceId: string; readonly dispatchId: string;
+  }): Promise<FinancialCouncilDispatchLease | null> {
+    return this.transaction(async (connection) => {
+      const [seedRows] = await connection.query(
+        `SELECT * FROM financial_council_dispatch_outbox
+         WHERE workspace_id = ? AND dispatch_id = ? FOR UPDATE`,
+        [input.workspaceId, input.dispatchId]
+      );
+      const seedRow = (seedRows as MysqlRow[])[0];
+      if (!seedRow) return null;
+      const seed = parseDispatch(seedRow);
+      const [approvalRows] = await connection.query(
+        `SELECT *, DATE_FORMAT(approved_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS approved_at FROM financial_council_approvals
+         WHERE workspace_id = ? AND approval_id = ? FOR UPDATE`,
+        [seed.workspaceId, seed.approvalId]
+      );
+      const approvalRow = (approvalRows as MysqlRow[])[0];
+      if (!approvalRow || parseApproval(approvalRow).status !== "approved") {
+        throw financialCouncilError("financial_council_dispatch_stale");
+      }
+      const [operationRows] = await connection.query(
+        `SELECT operation_json FROM financial_council_dispatch_operations
+         WHERE workspace_id = ? AND dispatch_id = ? FOR UPDATE`,
+        [seed.workspaceId, seed.dispatchId]
+      );
+      const row = (operationRows as MysqlRow[])[0];
+      const current = row ? jsonObject(row.operation_json) as unknown as FinancialCouncilDispatchOperation
+        : createFinancialCouncilDispatchOperation({
+            dispatchId: seed.dispatchId, workspaceId: seed.workspaceId,
+            runId: seed.runId, approvalId: seed.approvalId,
+            approvalHash: seed.approvalHash, portfolioRevision: seed.portfolioRevision,
+            portfolioKind: seed.portfolioKind, actionId: seed.actionId,
+            actionHash: seed.actionHash, resultHash: seed.resultHash,
+            portfolioOutputHash: seed.portfolioOutputHash, createdAt: seed.createdAt
+          });
+      const claimed = claimFinancialCouncilDispatchOperation(current, input);
+      if (!claimed) return null;
+      if (row) {
+        await connection.query(`UPDATE financial_council_dispatch_operations
+          SET status = ?, attempt = ?, lease_token = ?, lease_expires_at = ?, operation_json = ?
+          WHERE workspace_id = ? AND dispatch_id = ?`,
+        [claimed.operation.status, claimed.operation.attempt, claimed.operation.leaseToken,
+          sqlDate(claimed.operation.leaseExpiresAt!), canonical(claimed.operation),
+          seed.workspaceId, seed.dispatchId]);
+      } else {
+        await connection.query(`INSERT INTO financial_council_dispatch_operations
+          (workspace_id, dispatch_id, status, attempt, lease_token, lease_expires_at, operation_json, receipt_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [seed.workspaceId, seed.dispatchId, claimed.operation.status,
+          claimed.operation.attempt, claimed.operation.leaseToken,
+          sqlDate(claimed.operation.leaseExpiresAt!), canonical(claimed.operation)]);
+      }
+      return claimed.lease;
+    });
+  }
+
+  async getDispatchOperation(context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    dispatchId: string): Promise<FinancialCouncilDispatchOperation | null> {
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(`SELECT operation_json
+        FROM financial_council_dispatch_operations WHERE workspace_id = ? AND dispatch_id = ?`,
+      [context.workspaceId, dispatchId]);
+      const row = (rows as MysqlRow[])[0];
+      return row ? jsonObject(row.operation_json) as unknown as FinancialCouncilDispatchOperation : null;
+    }, true);
+  }
+
+  async completeDispatchOperation(lease: FinancialCouncilDispatchLease,
+    receipt: FinancialCouncilDispatchReceipt, completedAt: string): Promise<void> {
+    await this.transaction(async (connection) => {
+      const operation = await this.readDispatchOperation(connection, lease, true);
+      if (receipt.dispatchId !== operation.dispatchId || receipt.workspaceId !== operation.workspaceId
+        || receipt.dispatchHash !== operation.dispatchHash) {
+        throw financialCouncilError("financial_council_dispatch_receipt_invalid");
+      }
+      const next = completeFinancialCouncilDispatchOperation(operation, {
+        workerId: lease.workerId, leaseToken: lease.leaseToken, attempt: lease.attempt,
+        completedAt, receiptId: receipt.receiptId
+      });
+      await this.saveDispatchOperation(connection, next, receipt);
+    });
+  }
+
+  async failDispatchOperation(lease: FinancialCouncilDispatchLease, input: {
+    readonly errorCode: string; readonly retryable: boolean; readonly completedAt: string;
+  }): Promise<void> {
+    await this.transaction(async (connection) => {
+      const operation = await this.readDispatchOperation(connection, lease, true);
+      const next = failFinancialCouncilDispatchOperation(operation, {
+        workerId: lease.workerId, leaseToken: lease.leaseToken, attempt: lease.attempt,
+        ...input
+      });
+      await this.saveDispatchOperation(connection, next, null);
+    });
+  }
+
+  async listRecoverableDispatches(now: string, limit: number): Promise<readonly {
+    workspaceId: string; dispatchId: `sha256:${string}`;
+  }[]> {
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.query(`SELECT o.workspace_id, o.dispatch_id
+        FROM financial_council_dispatch_outbox o
+        LEFT JOIN financial_council_dispatch_operations p
+          ON p.workspace_id = o.workspace_id AND p.dispatch_id = o.dispatch_id
+        WHERE p.dispatch_id IS NULL OR p.status IN ('queued','retry')
+          OR (p.status = 'running' AND p.lease_expires_at <= ?)
+        ORDER BY BINARY o.workspace_id, BINARY o.dispatch_id LIMIT ?`,
+      [sqlDate(now), limit]);
+      return Object.freeze((rows as MysqlRow[]).map((row) => Object.freeze({
+        workspaceId: rowString(row, "workspace_id"),
+        dispatchId: rowString(row, "dispatch_id") as `sha256:${string}`
+      })));
+    }, true);
+  }
+
+  private async readDispatchOperation(connection: mysql.PoolConnection,
+    lease: FinancialCouncilDispatchLease, lock: boolean): Promise<FinancialCouncilDispatchOperation> {
+    const [rows] = await connection.query(`SELECT operation_json
+      FROM financial_council_dispatch_operations WHERE workspace_id = ? AND dispatch_id = ?${lock ? " FOR UPDATE" : ""}`,
+    [lease.workspaceId, lease.dispatchId]);
+    const row = (rows as MysqlRow[])[0];
+    if (!row) throw financialCouncilError("financial_council_dispatch_not_found");
+    return jsonObject(row.operation_json) as unknown as FinancialCouncilDispatchOperation;
+  }
+
+  private async saveDispatchOperation(connection: mysql.PoolConnection,
+    operation: FinancialCouncilDispatchOperation, receipt: FinancialCouncilDispatchReceipt | null): Promise<void> {
+    await connection.query(`UPDATE financial_council_dispatch_operations
+      SET status = ?, attempt = ?, lease_token = ?, lease_expires_at = ?, operation_json = ?, receipt_json = COALESCE(?, receipt_json)
+      WHERE workspace_id = ? AND dispatch_id = ?`,
+    [operation.status, operation.attempt, operation.leaseToken,
+      operation.leaseExpiresAt === null ? null : sqlDate(operation.leaseExpiresAt),
+      canonical(operation), receipt === null ? null : canonical(receipt),
+      operation.workspaceId, operation.dispatchId]);
   }
 
   async publishPortfolioRevisionWithLease(

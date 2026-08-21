@@ -1077,6 +1077,7 @@ async () => {
     "financial_council_portfolio_revisions",
     "financial_council_approvals",
     "financial_council_dispatch_outbox",
+    "financial_council_dispatch_operations",
     "financial_council_analysis_controls",
     "financial_council_analysis_gaps"
   ]);

@@ -56,6 +56,17 @@ import {
   type FinancialCouncilApprovalRecord,
   type FinancialCouncilDispatchOutboxRow
 } from "./financial-council-approval.js";
+import {
+  claimFinancialCouncilDispatchOperation,
+  completeFinancialCouncilDispatchOperation,
+  createFinancialCouncilDispatchOperation,
+  failFinancialCouncilDispatchOperation,
+  type ClaimFinancialCouncilDispatchOperationInput,
+  type CompleteFinancialCouncilDispatchOperationInput,
+  type FinancialCouncilDispatchLease,
+  type FinancialCouncilDispatchOperation,
+  type FinancialCouncilDispatchReceipt
+} from "./financial-council-dispatch-operation.js";
 
 export interface FinancialCouncilCommandResult<T> {
   readonly value: T;
@@ -508,6 +519,19 @@ export interface FinancialCouncilRepository {
     context: Pick<ActiveWorkspaceContext, "workspaceId">,
     runId: string
   ): Promise<readonly FinancialCouncilDispatchOutboxRow[]>;
+  claimDispatchOperation(input: ClaimFinancialCouncilDispatchOperationInput & {
+    readonly workspaceId: string; readonly dispatchId: string;
+  }): Promise<FinancialCouncilDispatchLease | null>;
+  getDispatchOperation(context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    dispatchId: string): Promise<FinancialCouncilDispatchOperation | null>;
+  completeDispatchOperation(lease: FinancialCouncilDispatchLease,
+    receipt: FinancialCouncilDispatchReceipt, completedAt: string): Promise<void>;
+  failDispatchOperation(lease: FinancialCouncilDispatchLease, input: {
+    readonly errorCode: string; readonly retryable: boolean; readonly completedAt: string;
+  }): Promise<void>;
+  listRecoverableDispatches(now: string, limit: number): Promise<readonly {
+    workspaceId: string; dispatchId: `sha256:${string}`;
+  }[]>;
   publishPortfolioRevisionWithLease(
     lease: FinancialCouncilAnalysisLease,
     input: PublishFinancialCouncilPortfolioRevisionInput
@@ -1455,6 +1479,8 @@ implements FinancialCouncilRepository {
     portfolioRevisions: new Map<string, FinancialCouncilPortfolioRevision>(),
     approvals: new Map<string, FinancialCouncilApprovalRecord>(),
     dispatchOutbox: new Map<string, FinancialCouncilDispatchOutboxRow>(),
+    dispatchOperations: new Map<string, FinancialCouncilDispatchOperation>(),
+    dispatchReceipts: new Map<string, FinancialCouncilDispatchReceipt>(),
     analysisControls: new Map<string, FinancialCouncilAnalysisControl>(),
     analysisGaps: new Map<string, FinancialCouncilAnalysisGap>()
   };
@@ -1473,6 +1499,8 @@ implements FinancialCouncilRepository {
   private get portfolioRevisions() { return this.state.portfolioRevisions; }
   private get approvals() { return this.state.approvals; }
   private get dispatchOutbox() { return this.state.dispatchOutbox; }
+  private get dispatchOperations() { return this.state.dispatchOperations; }
+  private get dispatchReceipts() { return this.state.dispatchReceipts; }
   private get analysisControls() { return this.state.analysisControls; }
   private get analysisGaps() { return this.state.analysisGaps; }
 
@@ -1531,6 +1559,8 @@ implements FinancialCouncilRepository {
       portfolioRevisions: new Map(this.portfolioRevisions),
       approvals: new Map(this.approvals),
       dispatchOutbox: new Map(this.dispatchOutbox),
+      dispatchOperations: new Map(this.dispatchOperations),
+      dispatchReceipts: new Map(this.dispatchReceipts),
       analysisControls: new Map(this.analysisControls),
       analysisGaps: new Map(this.analysisGaps)
     };
@@ -1964,6 +1994,8 @@ implements FinancialCouncilRepository {
       portfolioRevisions: new Map(this.portfolioRevisions),
       approvals: new Map(this.approvals),
       dispatchOutbox: new Map(this.dispatchOutbox),
+      dispatchOperations: new Map(this.dispatchOperations),
+      dispatchReceipts: new Map(this.dispatchReceipts),
       analysisControls: new Map(this.analysisControls),
       analysisGaps: new Map(this.analysisGaps)
     };
@@ -2623,6 +2655,96 @@ implements FinancialCouncilRepository {
     return Object.freeze([...this.dispatchOutbox.values()].filter((row) =>
       row.workspaceId === context.workspaceId && row.runId === runId)
       .sort((left, right) => utf8ByteCompare(left.actionId, right.actionId)));
+  }
+
+  private dispatchSeed(workspaceId: string, dispatchId: string): FinancialCouncilDispatchOutboxRow {
+    const outbox = this.dispatchOutbox.get(key(workspaceId, dispatchId));
+    if (!outbox) throw financialCouncilError("financial_council_dispatch_not_found");
+    const approval = this.approvals.get(key(workspaceId, outbox.approvalId));
+    const run = this.runs.get(key(workspaceId, outbox.runId));
+    if (!approval || !run || approval.status !== "approved" || run.status !== "approved"
+      || approval.approvalHash !== outbox.approvalHash
+      || !approval.approvedActionIds.includes(outbox.actionId)) {
+      throw financialCouncilError("financial_council_dispatch_stale");
+    }
+    return outbox;
+  }
+
+  async claimDispatchOperation(input: ClaimFinancialCouncilDispatchOperationInput & {
+    readonly workspaceId: string; readonly dispatchId: string;
+  }): Promise<FinancialCouncilDispatchLease | null> {
+    const seed = this.dispatchSeed(input.workspaceId, input.dispatchId);
+    const operationKey = key(seed.workspaceId, seed.dispatchId);
+    const current = this.dispatchOperations.get(operationKey)
+      ?? createFinancialCouncilDispatchOperation({
+        dispatchId: seed.dispatchId, workspaceId: seed.workspaceId,
+        runId: seed.runId, approvalId: seed.approvalId,
+        approvalHash: seed.approvalHash, portfolioRevision: seed.portfolioRevision,
+        portfolioKind: seed.portfolioKind, actionId: seed.actionId,
+        actionHash: seed.actionHash, resultHash: seed.resultHash,
+        portfolioOutputHash: seed.portfolioOutputHash, createdAt: seed.createdAt
+      });
+    const claimed = claimFinancialCouncilDispatchOperation(current, input);
+    if (!claimed) return null;
+    const operations = new Map(this.dispatchOperations);
+    operations.set(operationKey, claimed.operation);
+    this.state = { ...this.state, dispatchOperations: operations };
+    return claimed.lease;
+  }
+
+  async getDispatchOperation(context: Pick<ActiveWorkspaceContext, "workspaceId">,
+    dispatchId: string): Promise<FinancialCouncilDispatchOperation | null> {
+    return this.dispatchOperations.get(key(context.workspaceId, dispatchId)) ?? null;
+  }
+
+  async completeDispatchOperation(lease: FinancialCouncilDispatchLease,
+    receipt: FinancialCouncilDispatchReceipt, completedAt: string): Promise<void> {
+    const operationKey = key(lease.workspaceId, lease.dispatchId);
+    const current = this.dispatchOperations.get(operationKey);
+    if (!current || receipt.dispatchId !== current.dispatchId
+      || receipt.workspaceId !== current.workspaceId
+      || receipt.dispatchHash !== current.dispatchHash) {
+      throw financialCouncilError("financial_council_dispatch_receipt_invalid");
+    }
+    const next = completeFinancialCouncilDispatchOperation(current, {
+      workerId: lease.workerId, leaseToken: lease.leaseToken, attempt: lease.attempt,
+      completedAt, receiptId: receipt.receiptId
+    });
+    const operations = new Map(this.dispatchOperations);
+    const receipts = new Map(this.dispatchReceipts);
+    operations.set(operationKey, next);
+    receipts.set(operationKey, immutableFinancialCouncilValue(receipt));
+    this.state = { ...this.state, dispatchOperations: operations, dispatchReceipts: receipts };
+  }
+
+  async failDispatchOperation(lease: FinancialCouncilDispatchLease, input: {
+    readonly errorCode: string; readonly retryable: boolean; readonly completedAt: string;
+  }): Promise<void> {
+    const operationKey = key(lease.workspaceId, lease.dispatchId);
+    const current = this.dispatchOperations.get(operationKey);
+    if (!current) throw financialCouncilError("financial_council_dispatch_not_found");
+    const next = failFinancialCouncilDispatchOperation(current, {
+      workerId: lease.workerId, leaseToken: lease.leaseToken, attempt: lease.attempt,
+      ...input
+    });
+    const operations = new Map(this.dispatchOperations);
+    operations.set(operationKey, next);
+    this.state = { ...this.state, dispatchOperations: operations };
+  }
+
+  async listRecoverableDispatches(now: string, limit: number): Promise<readonly {
+    workspaceId: string; dispatchId: `sha256:${string}`;
+  }[]> {
+    const at = Date.parse(now);
+    return Object.freeze([...this.dispatchOutbox.values()].filter((seed) => {
+      const operation = this.dispatchOperations.get(key(seed.workspaceId, seed.dispatchId));
+      return !operation || operation.status === "queued" || operation.status === "retry"
+        || (operation.status === "running" && operation.leaseExpiresAt !== null
+          && Date.parse(operation.leaseExpiresAt) <= at);
+    }).sort((a, b) => utf8ByteCompare(a.workspaceId, b.workspaceId)
+      || utf8ByteCompare(a.dispatchId, b.dispatchId)).slice(0, limit)
+      .map((row) => Object.freeze({ workspaceId: row.workspaceId,
+        dispatchId: row.dispatchId })));
   }
 
   async publishPortfolioRevisionWithLease(

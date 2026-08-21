@@ -20,6 +20,8 @@ import {
   MysqlFinancialCouncilPolicyRepository,
   ensureFinancialCouncilPolicyMysqlSchema
 } from "./financial-council-policy-mysql-repository.js";
+import { ensureFinancialCouncilDraftMysqlSchema } from
+  "./financial-council-draft-mysql-repository.js";
 import {
   FinancialCouncilService,
   isFinancialCouncilService,
@@ -521,6 +523,7 @@ export function createGrowthFinancialCouncilModule(
           if (!options.pool) throw new Error("GROWTH_FINANCIAL_COUNCIL_POOL_REQUIRED");
           await ensureFinancialCouncilMysqlSchema(options.pool);
           await ensureFinancialCouncilPolicyMysqlSchema(options.pool);
+          await ensureFinancialCouncilDraftMysqlSchema(options.pool);
         }
         const createdResources = options.createResources
           ? await options.createResources({ foundation, advisor, finance })
