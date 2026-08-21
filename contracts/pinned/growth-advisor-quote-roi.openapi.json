@@ -8,6 +8,16 @@
           "pattern": "^\"[^\" ]+\"$",
           "type": "string"
         }
+      },
+      "IdempotencyReplayed": {
+        "description": "Present only when this exact command result was replayed.",
+        "required": false,
+        "schema": {
+          "enum": [
+            "true"
+          ],
+          "type": "string"
+        }
       }
     },
     "parameters": {
@@ -118,6 +128,25 @@
           "type": "string"
         }
       },
+      "revision": {
+        "in": "path",
+        "name": "revision",
+        "required": true,
+        "schema": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "runId": {
+        "in": "path",
+        "name": "runId",
+        "required": true,
+        "schema": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
       "sort": {
         "in": "query",
         "name": "sort",
@@ -210,6 +239,21 @@
           }
         },
         "description": "Acquisition cost estimate page"
+      },
+      "ActionPortfolio": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ActionPortfolio"
+            }
+          }
+        },
+        "description": "Re-optimized financial action portfolio revision",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        }
       },
       "AdvisorRecommendation": {
         "content": {
@@ -360,6 +404,92 @@
           }
         },
         "description": "Finance import row error page"
+      },
+      "FinancialCouncilApproval": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilApproval"
+            }
+          }
+        },
+        "description": "Human approval or rejection decision; approval queues only controlled drafts or todos",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          },
+          "Idempotency-Replayed": {
+            "$ref": "#/components/headers/IdempotencyReplayed"
+          }
+        }
+      },
+      "FinancialCouncilDispatches": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilDispatchPagedResult"
+            }
+          }
+        },
+        "description": "Controlled draft and todo dispatch projections"
+      },
+      "FinancialCouncilPolicyVersion": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPolicyVersion"
+            }
+          }
+        },
+        "description": "Immutable financial council policy version",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        }
+      },
+      "FinancialCouncilPortfolioRevision": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPortfolioRevisionView"
+            }
+          }
+        },
+        "description": "Immutable re-optimized financial council portfolio revision",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          },
+          "Idempotency-Replayed": {
+            "$ref": "#/components/headers/IdempotencyReplayed"
+          }
+        }
+      },
+      "FinancialCouncilRun": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/FinancialCouncilRun"
+            }
+          }
+        },
+        "description": "Financial council run projection",
+        "headers": {
+          "ETag": {
+            "$ref": "#/components/headers/ETag"
+          }
+        }
+      },
+      "FinancialCouncilRunEvents": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilRunEventPagedResult"
+            }
+          }
+        },
+        "description": "Immutable financial council run event stream"
       },
       "FinancialFact": {
         "content": {
@@ -1702,6 +1832,9 @@
         ],
         "type": "object"
       },
+      "ActionPortfolio": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ActionPortfolio"
+      },
       "ActualRoiCurrencyView": {
         "$ref": "#/components/schemas/GrowthPerformanceResponse/%24defs/ActualRoiCurrencyView"
       },
@@ -2548,24 +2681,6 @@
             ],
             "type": "object"
           },
-          "FinancialDataGapCode": {
-            "enum": [
-              "unverified_cost",
-              "unverified_financial_fact",
-              "missing_cogs",
-              "unmatched_payment",
-              "missing_commercial_binding",
-              "import_requires_review"
-            ]
-          },
-          "FinancialDataGapSourceType": {
-            "enum": [
-              "cost_entry",
-              "financial_fact",
-              "finance_import",
-              "commercial_binding"
-            ]
-          },
           "FinancialDataGapView": {
             "additionalProperties": false,
             "properties": {
@@ -2573,7 +2688,14 @@
                 "$ref": "#/components/schemas/AdvisorTodayResponse/%24defs/dateTime"
               },
               "code": {
-                "$ref": "#/components/schemas/AdvisorTodayResponse/%24defs/FinancialDataGapCode"
+                "enum": [
+                  "unverified_cost",
+                  "unverified_financial_fact",
+                  "missing_cogs",
+                  "unmatched_payment",
+                  "missing_commercial_binding",
+                  "import_requires_review"
+                ]
               },
               "cohortId": {
                 "$ref": "#/components/schemas/AdvisorTodayResponse/%24defs/nullableId"
@@ -2588,7 +2710,12 @@
                 "$ref": "#/components/schemas/AdvisorTodayResponse/%24defs/hash"
               },
               "sourceType": {
-                "$ref": "#/components/schemas/AdvisorTodayResponse/%24defs/FinancialDataGapSourceType"
+                "enum": [
+                  "cost_entry",
+                  "financial_fact",
+                  "finance_import",
+                  "commercial_binding"
+                ]
               }
             },
             "required": [
@@ -3485,6 +3612,9 @@
         ],
         "type": "object"
       },
+      "CandidateAction": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/CandidateAction"
+      },
       "CashCurrencyView": {
         "$ref": "#/components/schemas/GrowthPerformanceResponse/%24defs/CashCurrencyView"
       },
@@ -3722,6 +3852,9 @@
       },
       "CommercialBindingSnapshot": {
         "$ref": "#/components/schemas/QuoteCase/%24defs/CommercialBindingSnapshot"
+      },
+      "ConsensusReport": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ConsensusReport"
       },
       "CopilotMessage": {
         "$defs": {
@@ -4542,6 +4675,1846 @@
         ],
         "type": "object"
       },
+      "FinancialCouncilApproval": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilApproval"
+      },
+      "FinancialCouncilDispatchPagedResult": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilDispatchPagedResult"
+      },
+      "FinancialCouncilDispatchView": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilDispatchView"
+      },
+      "FinancialCouncilPolicyInput": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPolicyInput"
+      },
+      "FinancialCouncilPolicyVersion": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPolicyVersion"
+      },
+      "FinancialCouncilPortfolioRevision": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPortfolioRevisionView"
+      },
+      "FinancialCouncilPortfolioRevisionInput": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPortfolioRevisionInput"
+      },
+      "FinancialCouncilRun": {
+        "$defs": {
+          "ActionPortfolio": {
+            "additionalProperties": false,
+            "properties": {
+              "actionIds": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "type": "array"
+              },
+              "actions": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/CandidateAction"
+                },
+                "type": "array"
+              },
+              "createdAt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "expiresAt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "hardConstraints": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ConstraintResult"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/portfolioKind"
+              },
+              "objectiveScoreBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "portfolioId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "rejectedActions": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/RejectedAction"
+                },
+                "type": "array"
+              },
+              "requiredApprovalCapabilities": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "type": "array"
+              },
+              "revision": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              },
+              "runId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "scenarioForecast": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ScenarioForecast"
+              },
+              "sensitivityAnalysis": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/Sensitivity"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "portfolioId",
+              "runId",
+              "revision",
+              "kind",
+              "actionIds",
+              "actions",
+              "hardConstraints",
+              "objectiveScoreBps",
+              "scenarioForecast",
+              "sensitivityAnalysis",
+              "rejectedActions",
+              "requiredApprovalCapabilities",
+              "expiresAt",
+              "createdAt"
+            ],
+            "type": "object"
+          },
+          "BalanceSheetInput": {
+            "additionalProperties": false,
+            "properties": {
+              "accountsPayableMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "cashMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "currentLiabilitiesMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "inventoryMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "nonCurrentAssetsMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "nonCurrentLiabilitiesMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "otherCurrentAssetsMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "period": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+              },
+              "receivablesMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              }
+            },
+            "required": [
+              "period",
+              "cashMinor",
+              "receivablesMinor",
+              "inventoryMinor",
+              "otherCurrentAssetsMinor",
+              "nonCurrentAssetsMinor",
+              "currentLiabilitiesMinor",
+              "nonCurrentLiabilitiesMinor",
+              "accountsPayableMinor"
+            ],
+            "type": "object"
+          },
+          "BusinessReportInput": {
+            "additionalProperties": false,
+            "properties": {
+              "balanceSheet": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/BalanceSheetInput"
+              },
+              "cashFlow": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/CashFlowInput"
+                  }
+                ]
+              },
+              "companyName": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+              },
+              "costDetail": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/CostDetailInput"
+                  }
+                ]
+              },
+              "currency": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/currency"
+              },
+              "incomeStatement": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/IncomeStatementInput"
+              },
+              "period": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+              },
+              "taxRisk": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/TaxRiskInput"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "currency",
+              "companyName",
+              "period",
+              "balanceSheet",
+              "incomeStatement"
+            ],
+            "type": "object"
+          },
+          "CandidateAction": {
+            "additionalProperties": false,
+            "properties": {
+              "actionId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "budgetCostMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/safeInteger"
+              },
+              "capacityUnits": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "cashImpact": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ScenarioMoney"
+              },
+              "confidenceBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "durationDays": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "explanation": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "kind": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilActionKind"
+              },
+              "mutuallyExclusiveWith": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "type": "array"
+              },
+              "ownerRole": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/agentRole"
+              },
+              "prerequisites": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "type": "array"
+              },
+              "profitImpact": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ScenarioMoney"
+              },
+              "requiredCapabilities": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "type": "array"
+              },
+              "requiresHumanApproval": {
+                "const": true
+              },
+              "riskReductionBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ScenarioBps"
+              },
+              "sourceFindingIds": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "subjectRef": {
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "actionId",
+              "kind",
+              "sourceFindingIds",
+              "ownerRole",
+              "subjectRef",
+              "explanation",
+              "durationDays",
+              "prerequisites",
+              "mutuallyExclusiveWith",
+              "cashImpact",
+              "profitImpact",
+              "riskReductionBps",
+              "budgetCostMinor",
+              "capacityUnits",
+              "confidenceBps",
+              "requiredCapabilities",
+              "requiresHumanApproval"
+            ],
+            "type": "object"
+          },
+          "CashFlowInput": {
+            "additionalProperties": false,
+            "properties": {
+              "expectedInflowsNext30DaysMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "expectedInflowsNext31To90DaysMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "expectedOutflowsNext30DaysMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "expectedOutflowsNext31To90DaysMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "financingNetMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/safeInteger"
+              },
+              "investingNetMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/safeInteger"
+              },
+              "openingCashMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "operatingInflowMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "operatingOutflowMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "period": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+              },
+              "receivables": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ReceivableInput"
+                },
+                "maxItems": 100,
+                "type": "array"
+              }
+            },
+            "required": [
+              "period",
+              "openingCashMinor",
+              "operatingInflowMinor",
+              "operatingOutflowMinor",
+              "investingNetMinor",
+              "financingNetMinor",
+              "expectedInflowsNext30DaysMinor",
+              "expectedOutflowsNext30DaysMinor",
+              "expectedInflowsNext31To90DaysMinor",
+              "expectedOutflowsNext31To90DaysMinor"
+            ],
+            "type": "object"
+          },
+          "Conflict": {
+            "additionalProperties": false,
+            "properties": {
+              "conflictId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "findingIds": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              "status": {
+                "enum": [
+                  "unresolved",
+                  "resolved",
+                  "withdrawn"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "formula",
+                  "evidence",
+                  "definition",
+                  "action_exclusivity",
+                  "resource_competition",
+                  "risk_preference"
+                ]
+              }
+            },
+            "required": [
+              "conflictId",
+              "type",
+              "findingIds",
+              "status"
+            ],
+            "type": "object"
+          },
+          "ConsensusReport": {
+            "additionalProperties": false,
+            "properties": {
+              "acceptedFindings": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialFinding"
+                },
+                "type": "array"
+              },
+              "createdAt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "dataGaps": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/DataGap"
+                },
+                "type": "array"
+              },
+              "inputVersionHash": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/hash"
+              },
+              "minorityFindings": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialFinding"
+                },
+                "type": "array"
+              },
+              "overallDiagnosis": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "rejectedFindings": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialFinding"
+                },
+                "type": "array"
+              },
+              "reportId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "runId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "snapshotId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "unresolvedConflicts": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/Conflict"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "reportId",
+              "runId",
+              "snapshotId",
+              "acceptedFindings",
+              "minorityFindings",
+              "rejectedFindings",
+              "unresolvedConflicts",
+              "dataGaps",
+              "overallDiagnosis",
+              "inputVersionHash",
+              "createdAt"
+            ],
+            "type": "object"
+          },
+          "ConstraintResult": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "reason": {
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "satisfied": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "code",
+              "satisfied",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "CostDetailInput": {
+            "additionalProperties": false,
+            "properties": {
+              "fixedOverheadMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "laborCostMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "materialCostRateBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "previousMaterialCostRateBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "rawMaterialCostMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "salesCommissionRateBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              }
+            },
+            "required": [
+              "materialCostRateBps",
+              "laborCostMinor",
+              "rawMaterialCostMinor",
+              "salesCommissionRateBps",
+              "fixedOverheadMinor"
+            ],
+            "type": "object"
+          },
+          "CustomerProfitInput": {
+            "additionalProperties": false,
+            "properties": {
+              "grossProfitMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/safeInteger"
+              },
+              "name": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+              },
+              "outstandingReceivableMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "paymentDays": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "revenueMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "serviceCostMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              }
+            },
+            "required": [
+              "name",
+              "revenueMinor",
+              "grossProfitMinor",
+              "serviceCostMinor",
+              "paymentDays",
+              "outstandingReceivableMinor"
+            ],
+            "type": "object"
+          },
+          "DataGap": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "enum": [
+                  "unverified_cost",
+                  "unverified_financial_fact",
+                  "missing_cogs",
+                  "unmatched_payment",
+                  "missing_commercial_binding",
+                  "import_requires_review"
+                ]
+              },
+              "description": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "source": {
+                "enum": [
+                  "crm",
+                  "quote",
+                  "financial_fact",
+                  "acquisition_cost",
+                  "roi",
+                  "business_report"
+                ]
+              },
+              "sourceId": {
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "code",
+              "source",
+              "sourceId",
+              "description"
+            ],
+            "type": "object"
+          },
+          "EvidenceRef": {
+            "additionalProperties": false,
+            "properties": {
+              "contentHash": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/hash"
+              },
+              "source": {
+                "enum": [
+                  "crm",
+                  "quote",
+                  "financial_fact",
+                  "acquisition_cost",
+                  "roi",
+                  "business_report"
+                ]
+              },
+              "sourceId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              }
+            },
+            "required": [
+              "source",
+              "sourceId",
+              "contentHash"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilActionKind": {
+            "enum": [
+              "collect_receivable",
+              "review_loss_product_pricing",
+              "reduce_cost_anomaly",
+              "prepare_cash_reserve_budget",
+              "complete_financial_data",
+              "schedule_tax_review"
+            ]
+          },
+          "FinancialCouncilApproval": {
+            "additionalProperties": false,
+            "properties": {
+              "approvalId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "approvedActionIds": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "type": "array"
+              },
+              "approvedAt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "portfolioKind": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/portfolioKind"
+              },
+              "portfolioRevision": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              },
+              "reason": {
+                "maxLength": 10000,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requiredCapabilities": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "type": "array"
+              },
+              "runId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "status": {
+                "enum": [
+                  "approved",
+                  "rejected"
+                ]
+              }
+            },
+            "required": [
+              "approvalId",
+              "runId",
+              "portfolioRevision",
+              "portfolioKind",
+              "status",
+              "approvedActionIds",
+              "requiredCapabilities",
+              "reason",
+              "approvedAt"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilApprovalInput": {
+            "additionalProperties": false,
+            "properties": {
+              "portfolioKind": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/portfolioKind"
+              }
+            },
+            "required": [
+              "portfolioKind"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilCreateInput": {
+            "additionalProperties": false,
+            "properties": {
+              "businessReport": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/BusinessReportInput"
+              },
+              "currency": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/currency"
+              },
+              "dataAsOf": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "policyVersionId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/identifier"
+              }
+            },
+            "required": [
+              "currency",
+              "dataAsOf",
+              "businessReport",
+              "policyVersionId"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilDispatchPagedResult": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "type": "boolean"
+              },
+              "items": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilDispatchView"
+                },
+                "type": "array"
+              },
+              "nextAfter": {
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items",
+              "nextAfter",
+              "hasMore"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilDispatchView": {
+            "additionalProperties": false,
+            "properties": {
+              "actionId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "approvalId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "attempt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "createdAt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "dispatchId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "lastErrorCode": {
+                "maxLength": 96,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "portfolioKind": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/portfolioKind"
+              },
+              "portfolioRevision": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              },
+              "receiptId": {
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "runId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "status": {
+                "enum": [
+                  "queued",
+                  "running",
+                  "retry",
+                  "succeeded",
+                  "failed"
+                ]
+              },
+              "updatedAt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              }
+            },
+            "required": [
+              "dispatchId",
+              "runId",
+              "approvalId",
+              "portfolioRevision",
+              "portfolioKind",
+              "actionId",
+              "status",
+              "attempt",
+              "receiptId",
+              "lastErrorCode",
+              "createdAt",
+              "updatedAt"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilPolicyInput": {
+            "additionalProperties": false,
+            "properties": {
+              "actionCoefficientVersion": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "balancedWeightsBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ObjectiveWeights"
+              },
+              "budgetLimitMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "capacityLimitUnits": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "currency": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/currency"
+              },
+              "dueDebtMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "durationLimitDays": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "minimumActionConfidenceBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "minimumCashReserveMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/safeInteger"
+              },
+              "necessaryOutflowMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              }
+            },
+            "required": [
+              "currency",
+              "balancedWeightsBps",
+              "minimumCashReserveMinor",
+              "dueDebtMinor",
+              "necessaryOutflowMinor",
+              "budgetLimitMinor",
+              "capacityLimitUnits",
+              "durationLimitDays",
+              "minimumActionConfidenceBps",
+              "actionCoefficientVersion"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilPolicyVersion": {
+            "additionalProperties": false,
+            "properties": {
+              "actionCoefficientVersion": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "balancedWeightsBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ObjectiveWeights"
+              },
+              "budgetLimitMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "capacityLimitUnits": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "createdAt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "currency": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/currency"
+              },
+              "dueDebtMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "durationLimitDays": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "minimumActionConfidenceBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "minimumCashReserveMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/safeInteger"
+              },
+              "necessaryOutflowMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "policyHash": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/hash"
+              },
+              "policyVersionId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/identifier"
+              },
+              "revision": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              },
+              "version": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              },
+              "workspaceId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/workspace"
+              }
+            },
+            "required": [
+              "policyVersionId",
+              "workspaceId",
+              "version",
+              "revision",
+              "currency",
+              "balancedWeightsBps",
+              "minimumCashReserveMinor",
+              "dueDebtMinor",
+              "necessaryOutflowMinor",
+              "budgetLimitMinor",
+              "capacityLimitUnits",
+              "durationLimitDays",
+              "minimumActionConfidenceBps",
+              "actionCoefficientVersion",
+              "policyHash",
+              "createdAt"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilPortfolioRevisionInput": {
+            "additionalProperties": false,
+            "properties": {
+              "baseRevision": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              },
+              "operations": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialPortfolioEditOperation"
+                },
+                "maxItems": 100,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "baseRevision",
+              "operations"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilPortfolioRevisionView": {
+            "additionalProperties": false,
+            "properties": {
+              "baseRevision": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              },
+              "createdAt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "portfolios": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ActionPortfolio"
+                },
+                "maxItems": 3,
+                "minItems": 0,
+                "type": "array"
+              },
+              "revision": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              },
+              "runId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              }
+            },
+            "required": [
+              "runId",
+              "revision",
+              "baseRevision",
+              "portfolios",
+              "createdAt"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilRejectInput": {
+            "additionalProperties": false,
+            "properties": {
+              "portfolioKind": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/portfolioKind"
+              },
+              "portfolioRevision": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              }
+            },
+            "required": [
+              "portfolioRevision",
+              "portfolioKind",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilRunEvent": {
+            "additionalProperties": false,
+            "properties": {
+              "eventId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "fromStatus": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/runStatus"
+                  }
+                ]
+              },
+              "occurredAt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "reasonCode": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "revision": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              },
+              "runId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "toStatus": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/runStatus"
+              }
+            },
+            "required": [
+              "eventId",
+              "runId",
+              "revision",
+              "fromStatus",
+              "toStatus",
+              "reasonCode",
+              "occurredAt"
+            ],
+            "type": "object"
+          },
+          "FinancialCouncilRunEventPagedResult": {
+            "additionalProperties": false,
+            "properties": {
+              "hasMore": {
+                "type": "boolean"
+              },
+              "items": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilRunEvent"
+                },
+                "type": "array"
+              },
+              "nextAfter": {
+                "minLength": 1,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "items",
+              "nextAfter",
+              "hasMore"
+            ],
+            "type": "object"
+          },
+          "FinancialFinding": {
+            "additionalProperties": false,
+            "properties": {
+              "agentRole": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/agentRole"
+              },
+              "assumptions": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "type": "array"
+              },
+              "candidateActionIds": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+                },
+                "type": "array"
+              },
+              "conclusion": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "confidenceBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "evidenceRefs": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/EvidenceRef"
+                },
+                "type": "array"
+              },
+              "findingId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "formulaRef": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FormulaResultRef"
+                  }
+                ]
+              },
+              "missingData": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/DataGap"
+                },
+                "type": "array"
+              },
+              "runId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "severity": {
+                "enum": [
+                  "info",
+                  "warning",
+                  "critical"
+                ]
+              },
+              "snapshotId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              }
+            },
+            "required": [
+              "findingId",
+              "runId",
+              "snapshotId",
+              "agentRole",
+              "conclusion",
+              "evidenceRefs",
+              "formulaRef",
+              "confidenceBps",
+              "severity",
+              "assumptions",
+              "missingData",
+              "candidateActionIds"
+            ],
+            "type": "object"
+          },
+          "FinancialPortfolioEditOperation": {
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "const": "select_portfolio"
+                  },
+                  "portfolioKind": {
+                    "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/portfolioKind"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "portfolioKind"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "actionId": {
+                    "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/identifier"
+                  },
+                  "kind": {
+                    "enum": [
+                      "remove_action",
+                      "restore_action"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "actionId"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "actionId": {
+                    "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/identifier"
+                  },
+                  "kind": {
+                    "const": "replace_action_parameters"
+                  },
+                  "parameters": {
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "properties": {
+                      "durationDays": {
+                        "maximum": 365,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "ownerRole": {
+                        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/agentRole"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "actionId",
+                  "parameters"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "FinancialSnapshotView": {
+            "additionalProperties": false,
+            "properties": {
+              "businessReport": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/BusinessReportInput"
+              },
+              "createdAt": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "currency": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/currency"
+              },
+              "dataAsOf": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+              },
+              "dataGaps": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/DataGap"
+                },
+                "type": "array"
+              },
+              "redactionLevel": {
+                "enum": [
+                  "full",
+                  "redacted"
+                ]
+              },
+              "runId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "snapshotHash": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/hash"
+              },
+              "snapshotId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "sourceVersions": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/SourceVersion"
+                },
+                "type": "array"
+              },
+              "workspaceId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/workspace"
+              }
+            },
+            "required": [
+              "snapshotId",
+              "runId",
+              "workspaceId",
+              "dataAsOf",
+              "currency",
+              "businessReport",
+              "sourceVersions",
+              "dataGaps",
+              "redactionLevel",
+              "snapshotHash",
+              "createdAt"
+            ],
+            "type": "object"
+          },
+          "FormulaResultRef": {
+            "additionalProperties": false,
+            "properties": {
+              "formulaVersion": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "inputHash": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/hash"
+              },
+              "resultHash": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/hash"
+              }
+            },
+            "required": [
+              "formulaVersion",
+              "inputHash",
+              "resultHash"
+            ],
+            "type": "object"
+          },
+          "IncomeStatementInput": {
+            "additionalProperties": false,
+            "properties": {
+              "costOfGoodsSoldMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "customers": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/CustomerProfitInput"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "interestExpenseMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "operatingExpensesMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "period": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+              },
+              "productLines": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ProductLineInput"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "revenueMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "taxExpenseMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              }
+            },
+            "required": [
+              "period",
+              "revenueMinor",
+              "costOfGoodsSoldMinor",
+              "operatingExpensesMinor",
+              "interestExpenseMinor",
+              "taxExpenseMinor"
+            ],
+            "type": "object"
+          },
+          "ObjectiveWeights": {
+            "additionalProperties": false,
+            "properties": {
+              "cash": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "profit": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "risk": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              },
+              "strategic": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/bps"
+              }
+            },
+            "required": [
+              "cash",
+              "profit",
+              "risk",
+              "strategic"
+            ],
+            "type": "object"
+          },
+          "ProductLineInput": {
+            "additionalProperties": false,
+            "properties": {
+              "afterSalesCostMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "allocatedOverheadMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "costOfGoodsSoldMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "name": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+              },
+              "revenueMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "sellingExpenseMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "shippingCostMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              }
+            },
+            "required": [
+              "name",
+              "revenueMinor",
+              "costOfGoodsSoldMinor",
+              "afterSalesCostMinor",
+              "shippingCostMinor",
+              "sellingExpenseMinor",
+              "allocatedOverheadMinor"
+            ],
+            "type": "object"
+          },
+          "ReceivableInput": {
+            "additionalProperties": false,
+            "properties": {
+              "amountMinor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              },
+              "customer": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+              },
+              "daysOutstanding": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonNegativeInteger"
+              }
+            },
+            "required": [
+              "customer",
+              "amountMinor",
+              "daysOutstanding"
+            ],
+            "type": "object"
+          },
+          "RejectedAction": {
+            "additionalProperties": false,
+            "properties": {
+              "actionId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "reasonCode": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              }
+            },
+            "required": [
+              "actionId",
+              "reasonCode",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "ScenarioBps": {
+            "additionalProperties": false,
+            "properties": {
+              "base": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/signedBps"
+              },
+              "conservative": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/signedBps"
+              },
+              "optimistic": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/signedBps"
+              }
+            },
+            "required": [
+              "conservative",
+              "base",
+              "optimistic"
+            ],
+            "type": "object"
+          },
+          "ScenarioForecast": {
+            "additionalProperties": false,
+            "properties": {
+              "cashImpact": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ScenarioMoney"
+              },
+              "profitImpact": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ScenarioMoney"
+              },
+              "riskReductionBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ScenarioBps"
+              }
+            },
+            "required": [
+              "cashImpact",
+              "profitImpact",
+              "riskReductionBps"
+            ],
+            "type": "object"
+          },
+          "ScenarioMoney": {
+            "additionalProperties": false,
+            "properties": {
+              "base": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/safeInteger"
+              },
+              "conservative": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/safeInteger"
+              },
+              "optimistic": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/safeInteger"
+              }
+            },
+            "required": [
+              "conservative",
+              "base",
+              "optimistic"
+            ],
+            "type": "object"
+          },
+          "Sensitivity": {
+            "additionalProperties": false,
+            "properties": {
+              "factor": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "impactBps": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/signedBps"
+              }
+            },
+            "required": [
+              "factor",
+              "impactBps"
+            ],
+            "type": "object"
+          },
+          "SourceVersion": {
+            "additionalProperties": false,
+            "properties": {
+              "contentHash": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/hash"
+              },
+              "source": {
+                "enum": [
+                  "crm",
+                  "quote",
+                  "financial_fact",
+                  "acquisition_cost",
+                  "roi"
+                ]
+              },
+              "sourceId": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+              },
+              "version": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+              }
+            },
+            "required": [
+              "source",
+              "sourceId",
+              "version",
+              "contentHash"
+            ],
+            "type": "object"
+          },
+          "TaxRiskInput": {
+            "additionalProperties": false,
+            "properties": {
+              "costAuthenticityIssues": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "equityIssues": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "invoiceIssues": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "payrollIssues": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "revenueRecognitionIssues": {
+                "items": {
+                  "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/businessText"
+                },
+                "maxItems": 100,
+                "type": "array"
+              }
+            },
+            "required": [
+              "invoiceIssues",
+              "revenueRecognitionIssues",
+              "costAuthenticityIssues",
+              "payrollIssues",
+              "equityIssues"
+            ],
+            "type": "object"
+          },
+          "agentRole": {
+            "enum": [
+              "finance",
+              "profit",
+              "cost",
+              "cashflow",
+              "tax"
+            ]
+          },
+          "bps": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "businessText": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "currency": {
+            "enum": [
+              "CNY",
+              "USD"
+            ]
+          },
+          "dateTime": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "hash": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "identifier": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "nonNegativeInteger": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "nonempty": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "portfolioKind": {
+            "enum": [
+              "balanced",
+              "cash_first",
+              "growth_first"
+            ]
+          },
+          "publicRunStatus": {
+            "enum": [
+              "snapshot_frozen",
+              "analyzing",
+              "auditing",
+              "synthesizing",
+              "optimizing",
+              "awaiting_approval",
+              "approved",
+              "rejected",
+              "stale",
+              "expired",
+              "failed",
+              "not_computable"
+            ]
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "runStatus": {
+            "enum": [
+              "created",
+              "snapshot_frozen",
+              "analyzing",
+              "auditing",
+              "synthesizing",
+              "optimizing",
+              "awaiting_approval",
+              "approved",
+              "rejected",
+              "stale",
+              "expired",
+              "failed",
+              "not_computable"
+            ]
+          },
+          "safeInteger": {
+            "maximum": 9007199254740991,
+            "minimum": -9007199254740991,
+            "type": "integer"
+          },
+          "signedBps": {
+            "maximum": 10000,
+            "minimum": -10000,
+            "type": "integer"
+          },
+          "workspace": {
+            "minLength": 1,
+            "not": {
+              "const": "all"
+            },
+            "type": "string"
+          }
+        },
+        "$id": "https://goodjob.example/contracts/json-schema/financial-council.v1.schema.json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilApproval"
+              }
+            ]
+          },
+          "businessReport": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/BusinessReportInput"
+          },
+          "consensusReport": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ConsensusReport"
+              }
+            ]
+          },
+          "createdAt": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+          },
+          "currency": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/currency"
+          },
+          "dataAsOf": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+          },
+          "expiresAt": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+          },
+          "latestPortfolioRevision": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "policyVersionId": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/identifier"
+          },
+          "portfolios": {
+            "items": {
+              "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/ActionPortfolio"
+            },
+            "maxItems": 3,
+            "minItems": 0,
+            "type": "array"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/revision"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+          },
+          "snapshotHash": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/hash"
+          },
+          "snapshotId": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/nonempty"
+          },
+          "status": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/publicRunStatus"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/dateTime"
+          },
+          "workspaceId": {
+            "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/workspace"
+          }
+        },
+        "required": [
+          "runId",
+          "workspaceId",
+          "currency",
+          "status",
+          "revision",
+          "dataAsOf",
+          "businessReport",
+          "policyVersionId",
+          "snapshotId",
+          "snapshotHash",
+          "consensusReport",
+          "portfolios",
+          "latestPortfolioRevision",
+          "approval",
+          "createdAt",
+          "updatedAt",
+          "expiresAt"
+        ],
+        "title": "FinancialCouncilRun",
+        "type": "object"
+      },
+      "FinancialCouncilRunEvent": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilRunEvent"
+      },
+      "FinancialCouncilRunEventPagedResult": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilRunEventPagedResult"
+      },
       "FinancialDataGapView": {
         "$ref": "#/components/schemas/AdvisorTodayResponse/%24defs/FinancialDataGapView"
       },
@@ -5021,6 +6994,12 @@
         ],
         "type": "object"
       },
+      "FinancialFinding": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialFinding"
+      },
+      "FinancialSnapshotView": {
+        "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialSnapshotView"
+      },
       "FinancialSourceReport": {
         "$ref": "#/components/schemas/FinancialFact/%24defs/FinancialSourceReport"
       },
@@ -5067,6 +7046,9 @@
               "quote.exception.manual.approve",
               "ledger.pending.create",
               "ledger.verify",
+              "finance.council.run",
+              "finance.council.approve",
+              "finance.council.policy.manage",
               "roi.close",
               "growth.performance.team.read",
               "growth.performance.workspace.read"
@@ -8728,7 +10710,7 @@
   },
   "info": {
     "title": "GoodJob Growth Advisor, Quote and ROI API",
-    "version": "1.0.3"
+    "version": "1.0.10"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -12698,6 +14680,775 @@
             "description": "API error"
           },
           "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": [],
+            "csrfToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/finance/council-policy": {
+      "get": {
+        "operationId": "getFinancialCouncilPolicy",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/FinancialCouncilPolicyVersion"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ]
+      },
+      "put": {
+        "operationId": "updateFinancialCouncilPolicy",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/idempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ifMatch"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPolicyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/FinancialCouncilPolicyVersion"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": [],
+            "csrfToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/finance/council-runs": {
+      "post": {
+        "operationId": "createFinancialCouncilRun",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/idempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilCreateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/FinancialCouncilRun"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": [],
+            "csrfToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/finance/council-runs/{runId}": {
+      "get": {
+        "operationId": "getFinancialCouncilRun",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/FinancialCouncilRun"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/runId"
+        }
+      ]
+    },
+    "/api/v1/finance/council-runs/{runId}/dispatches": {
+      "get": {
+        "operationId": "listFinancialCouncilDispatches",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/FinancialCouncilDispatches"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/runId"
+        }
+      ]
+    },
+    "/api/v1/finance/council-runs/{runId}/events": {
+      "get": {
+        "operationId": "listFinancialCouncilRunEvents",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/FinancialCouncilRunEvents"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": []
+          }
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/runId"
+        }
+      ]
+    },
+    "/api/v1/finance/council-runs/{runId}/portfolio-revisions": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/runId"
+        }
+      ],
+      "post": {
+        "operationId": "createFinancialCouncilPortfolioRevision",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/idempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ifMatch"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilPortfolioRevisionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/FinancialCouncilPortfolioRevision"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": [],
+            "csrfToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/finance/council-runs/{runId}/portfolio-revisions/{revision}/approve": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/runId"
+        },
+        {
+          "$ref": "#/components/parameters/revision"
+        }
+      ],
+      "post": {
+        "operationId": "approveFinancialCouncilPortfolioRevision",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/idempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ifMatch"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilApprovalInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "$ref": "#/components/responses/FinancialCouncilApproval"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "cookieAuth": [],
+            "csrfToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/finance/council-runs/{runId}/reject": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/runId"
+        }
+      ],
+      "post": {
+        "operationId": "rejectFinancialCouncilRun",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/idempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ifMatch"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinancialCouncilRun/%24defs/FinancialCouncilRejectInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/FinancialCouncilApproval"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "API error"
+          },
+          "422": {
             "content": {
               "application/json": {
                 "schema": {

@@ -583,6 +583,147 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/finance/council-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getFinancialCouncilPolicy"];
+        put: operations["updateFinancialCouncilPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/finance/council-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createFinancialCouncilRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/finance/council-runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["runId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getFinancialCouncilRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/finance/council-runs/{runId}/dispatches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["runId"];
+            };
+            cookie?: never;
+        };
+        get: operations["listFinancialCouncilDispatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/finance/council-runs/{runId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["runId"];
+            };
+            cookie?: never;
+        };
+        get: operations["listFinancialCouncilRunEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/finance/council-runs/{runId}/portfolio-revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["runId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createFinancialCouncilPortfolioRevision"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/finance/council-runs/{runId}/portfolio-revisions/{revision}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["runId"];
+                revision: components["parameters"]["revision"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["approveFinancialCouncilPortfolioRevision"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/finance/council-runs/{runId}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["runId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["rejectFinancialCouncilRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/finance/facts": {
         parameters: {
             query?: never;
@@ -1378,6 +1519,7 @@ export interface components {
             items: components["schemas"]["AcquisitionCostEntry_AcquisitionCostEstimate"][];
             nextAfter: string | null;
         };
+        ActionPortfolio: components["schemas"]["FinancialCouncilRun_ActionPortfolio"];
         ActualRoiCurrencyView: components["schemas"]["GrowthPerformanceResponse_ActualRoiCurrencyView"];
         AdvisorCopilotTaskResult: components["schemas"]["AdvisorRecommendation_AdvisorCopilotTaskResult"];
         /** AdvisorRecommendation */
@@ -1595,18 +1737,16 @@ export interface components {
                     asOf: components["schemas"]["AdvisorTodayResponse_dateTime"];
                     currency: components["schemas"]["AdvisorTodayResponse_currency"];
                 };
-                /** @enum {unknown} */
-                FinancialDataGapCode: "unverified_cost" | "unverified_financial_fact" | "missing_cogs" | "unmatched_payment" | "missing_commercial_binding" | "import_requires_review";
-                /** @enum {unknown} */
-                FinancialDataGapSourceType: "cost_entry" | "financial_fact" | "finance_import" | "commercial_binding";
                 FinancialDataGapView: {
                     asOf: components["schemas"]["AdvisorTodayResponse_dateTime"];
-                    code: components["schemas"]["AdvisorTodayResponse_FinancialDataGapCode"];
+                    /** @enum {unknown} */
+                    code: "unverified_cost" | "unverified_financial_fact" | "missing_cogs" | "unmatched_payment" | "missing_commercial_binding" | "import_requires_review";
                     cohortId: components["schemas"]["AdvisorTodayResponse_nullableId"];
                     currency: components["schemas"]["AdvisorTodayResponse_currency"];
                     sourceId: components["schemas"]["AdvisorTodayResponse_nonempty"];
                     sourceSnapshotHash: components["schemas"]["AdvisorTodayResponse_hash"];
-                    sourceType: components["schemas"]["AdvisorTodayResponse_FinancialDataGapSourceType"];
+                    /** @enum {unknown} */
+                    sourceType: "cost_entry" | "financial_fact" | "finance_import" | "commercial_binding";
                 };
                 PendingQuoteApprovalView: {
                     approvalId: components["schemas"]["AdvisorTodayResponse_nonempty"];
@@ -1799,6 +1939,7 @@ export interface components {
             items: components["schemas"]["AttributionAllocationSet"][];
             nextAfter: string | null;
         };
+        CandidateAction: components["schemas"]["FinancialCouncilRun_CandidateAction"];
         CashCurrencyView: components["schemas"]["GrowthPerformanceResponse_CashCurrencyView"];
         CashSettlementAllocationSet: components["schemas"]["AttributionAllocationSet_CashSettlementAllocationSet"];
         CashSettlementAllocationSetPagedResult: {
@@ -1851,6 +1992,7 @@ export interface components {
             nextAfter: string | null;
         };
         CommercialBindingSnapshot: components["schemas"]["QuoteCase_CommercialBindingSnapshot"];
+        ConsensusReport: components["schemas"]["FinancialCouncilRun_ConsensusReport"];
         /** CopilotMessage */
         CopilotMessage: {
             /** Format: date-time */
@@ -2048,6 +2190,407 @@ export interface components {
             items: components["schemas"]["FinanceImportOperation_FinanceImportRowError"][];
             nextAfter: string | null;
         };
+        FinancialCouncilApproval: components["schemas"]["FinancialCouncilRun_FinancialCouncilApproval"];
+        FinancialCouncilDispatchPagedResult: components["schemas"]["FinancialCouncilRun_FinancialCouncilDispatchPagedResult"];
+        FinancialCouncilDispatchView: components["schemas"]["FinancialCouncilRun_FinancialCouncilDispatchView"];
+        FinancialCouncilPolicyInput: components["schemas"]["FinancialCouncilRun_FinancialCouncilPolicyInput"];
+        FinancialCouncilPolicyVersion: components["schemas"]["FinancialCouncilRun_FinancialCouncilPolicyVersion"];
+        FinancialCouncilPortfolioRevision: components["schemas"]["FinancialCouncilRun_FinancialCouncilPortfolioRevisionView"];
+        FinancialCouncilPortfolioRevisionInput: components["schemas"]["FinancialCouncilRun_FinancialCouncilPortfolioRevisionInput"];
+        /** FinancialCouncilRun */
+        FinancialCouncilRun: {
+            approval: null | components["schemas"]["FinancialCouncilRun_FinancialCouncilApproval"];
+            businessReport: components["schemas"]["FinancialCouncilRun_BusinessReportInput"];
+            consensusReport: null | components["schemas"]["FinancialCouncilRun_ConsensusReport"];
+            createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            currency: components["schemas"]["FinancialCouncilRun_currency"];
+            dataAsOf: components["schemas"]["FinancialCouncilRun_dateTime"];
+            expiresAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            latestPortfolioRevision: number | null;
+            policyVersionId: components["schemas"]["FinancialCouncilRun_identifier"];
+            portfolios: components["schemas"]["FinancialCouncilRun_ActionPortfolio"][];
+            revision: components["schemas"]["FinancialCouncilRun_revision"];
+            runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            snapshotHash: components["schemas"]["FinancialCouncilRun_hash"];
+            snapshotId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            status: components["schemas"]["FinancialCouncilRun_publicRunStatus"];
+            updatedAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            workspaceId: components["schemas"]["FinancialCouncilRun_workspace"];
+            $defs: {
+                ActionPortfolio: {
+                    actionIds: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    actions: components["schemas"]["FinancialCouncilRun_CandidateAction"][];
+                    createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    expiresAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    hardConstraints: components["schemas"]["FinancialCouncilRun_ConstraintResult"][];
+                    kind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+                    objectiveScoreBps: components["schemas"]["FinancialCouncilRun_bps"];
+                    portfolioId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    rejectedActions: components["schemas"]["FinancialCouncilRun_RejectedAction"][];
+                    requiredApprovalCapabilities: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    revision: components["schemas"]["FinancialCouncilRun_revision"];
+                    runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    scenarioForecast: components["schemas"]["FinancialCouncilRun_ScenarioForecast"];
+                    sensitivityAnalysis: components["schemas"]["FinancialCouncilRun_Sensitivity"][];
+                };
+                BalanceSheetInput: {
+                    accountsPayableMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    cashMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    currentLiabilitiesMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    inventoryMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    nonCurrentAssetsMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    nonCurrentLiabilitiesMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    otherCurrentAssetsMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    period: components["schemas"]["FinancialCouncilRun_businessText"];
+                    receivablesMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                };
+                BusinessReportInput: {
+                    balanceSheet: components["schemas"]["FinancialCouncilRun_BalanceSheetInput"];
+                    cashFlow?: null | components["schemas"]["FinancialCouncilRun_CashFlowInput"];
+                    companyName: components["schemas"]["FinancialCouncilRun_businessText"];
+                    costDetail?: null | components["schemas"]["FinancialCouncilRun_CostDetailInput"];
+                    currency: components["schemas"]["FinancialCouncilRun_currency"];
+                    incomeStatement: components["schemas"]["FinancialCouncilRun_IncomeStatementInput"];
+                    period: components["schemas"]["FinancialCouncilRun_businessText"];
+                    taxRisk?: null | components["schemas"]["FinancialCouncilRun_TaxRiskInput"];
+                };
+                CandidateAction: {
+                    actionId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    budgetCostMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+                    capacityUnits: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    cashImpact: components["schemas"]["FinancialCouncilRun_ScenarioMoney"];
+                    confidenceBps: components["schemas"]["FinancialCouncilRun_bps"];
+                    durationDays: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    explanation: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    kind: components["schemas"]["FinancialCouncilRun_FinancialCouncilActionKind"];
+                    mutuallyExclusiveWith: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    ownerRole: components["schemas"]["FinancialCouncilRun_agentRole"];
+                    prerequisites: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    profitImpact: components["schemas"]["FinancialCouncilRun_ScenarioMoney"];
+                    requiredCapabilities: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    /** @constant */
+                    requiresHumanApproval: true;
+                    riskReductionBps: components["schemas"]["FinancialCouncilRun_ScenarioBps"];
+                    sourceFindingIds: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    subjectRef: string | null;
+                };
+                CashFlowInput: {
+                    expectedInflowsNext30DaysMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    expectedInflowsNext31To90DaysMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    expectedOutflowsNext30DaysMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    expectedOutflowsNext31To90DaysMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    financingNetMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+                    investingNetMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+                    openingCashMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    operatingInflowMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    operatingOutflowMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    period: components["schemas"]["FinancialCouncilRun_businessText"];
+                    receivables?: components["schemas"]["FinancialCouncilRun_ReceivableInput"][];
+                };
+                Conflict: {
+                    conflictId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    findingIds: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    /** @enum {unknown} */
+                    status: "unresolved" | "resolved" | "withdrawn";
+                    /** @enum {unknown} */
+                    type: "formula" | "evidence" | "definition" | "action_exclusivity" | "resource_competition" | "risk_preference";
+                };
+                ConsensusReport: {
+                    acceptedFindings: components["schemas"]["FinancialCouncilRun_FinancialFinding"][];
+                    createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    dataGaps: components["schemas"]["FinancialCouncilRun_DataGap"][];
+                    inputVersionHash: components["schemas"]["FinancialCouncilRun_hash"];
+                    minorityFindings: components["schemas"]["FinancialCouncilRun_FinancialFinding"][];
+                    overallDiagnosis: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    rejectedFindings: components["schemas"]["FinancialCouncilRun_FinancialFinding"][];
+                    reportId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    snapshotId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    unresolvedConflicts: components["schemas"]["FinancialCouncilRun_Conflict"][];
+                };
+                ConstraintResult: {
+                    code: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    reason: string | null;
+                    satisfied: boolean;
+                };
+                CostDetailInput: {
+                    fixedOverheadMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    laborCostMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    materialCostRateBps: components["schemas"]["FinancialCouncilRun_bps"];
+                    previousMaterialCostRateBps?: components["schemas"]["FinancialCouncilRun_bps"];
+                    rawMaterialCostMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    salesCommissionRateBps: components["schemas"]["FinancialCouncilRun_bps"];
+                };
+                CustomerProfitInput: {
+                    grossProfitMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+                    name: components["schemas"]["FinancialCouncilRun_businessText"];
+                    outstandingReceivableMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    paymentDays: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    revenueMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    serviceCostMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                };
+                DataGap: {
+                    /** @enum {unknown} */
+                    code: "unverified_cost" | "unverified_financial_fact" | "missing_cogs" | "unmatched_payment" | "missing_commercial_binding" | "import_requires_review";
+                    description: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    /** @enum {unknown} */
+                    source: "crm" | "quote" | "financial_fact" | "acquisition_cost" | "roi" | "business_report";
+                    sourceId: string | null;
+                };
+                EvidenceRef: {
+                    contentHash: components["schemas"]["FinancialCouncilRun_hash"];
+                    /** @enum {unknown} */
+                    source: "crm" | "quote" | "financial_fact" | "acquisition_cost" | "roi" | "business_report";
+                    sourceId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                };
+                /** @enum {unknown} */
+                FinancialCouncilActionKind: "collect_receivable" | "review_loss_product_pricing" | "reduce_cost_anomaly" | "prepare_cash_reserve_budget" | "complete_financial_data" | "schedule_tax_review";
+                FinancialCouncilApproval: {
+                    approvalId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    approvedActionIds: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    approvedAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    portfolioKind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+                    portfolioRevision: components["schemas"]["FinancialCouncilRun_revision"];
+                    reason: string | null;
+                    requiredCapabilities: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    /** @enum {unknown} */
+                    status: "approved" | "rejected";
+                };
+                FinancialCouncilApprovalInput: {
+                    portfolioKind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+                };
+                FinancialCouncilCreateInput: {
+                    businessReport: components["schemas"]["FinancialCouncilRun_BusinessReportInput"];
+                    currency: components["schemas"]["FinancialCouncilRun_currency"];
+                    dataAsOf: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    policyVersionId: components["schemas"]["FinancialCouncilRun_identifier"];
+                };
+                FinancialCouncilDispatchPagedResult: {
+                    hasMore: boolean;
+                    items: components["schemas"]["FinancialCouncilRun_FinancialCouncilDispatchView"][];
+                    nextAfter: string | null;
+                };
+                FinancialCouncilDispatchView: {
+                    actionId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    approvalId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    attempt: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    dispatchId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    lastErrorCode: string | null;
+                    portfolioKind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+                    portfolioRevision: components["schemas"]["FinancialCouncilRun_revision"];
+                    receiptId: string | null;
+                    runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    /** @enum {unknown} */
+                    status: "queued" | "running" | "retry" | "succeeded" | "failed";
+                    updatedAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+                };
+                FinancialCouncilPolicyInput: {
+                    actionCoefficientVersion: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    balancedWeightsBps: components["schemas"]["FinancialCouncilRun_ObjectiveWeights"];
+                    budgetLimitMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    capacityLimitUnits: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    currency: components["schemas"]["FinancialCouncilRun_currency"];
+                    dueDebtMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    durationLimitDays: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    minimumActionConfidenceBps: components["schemas"]["FinancialCouncilRun_bps"];
+                    minimumCashReserveMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+                    necessaryOutflowMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                };
+                FinancialCouncilPolicyVersion: {
+                    actionCoefficientVersion: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    balancedWeightsBps: components["schemas"]["FinancialCouncilRun_ObjectiveWeights"];
+                    budgetLimitMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    capacityLimitUnits: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    currency: components["schemas"]["FinancialCouncilRun_currency"];
+                    dueDebtMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    durationLimitDays: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    minimumActionConfidenceBps: components["schemas"]["FinancialCouncilRun_bps"];
+                    minimumCashReserveMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+                    necessaryOutflowMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    policyHash: components["schemas"]["FinancialCouncilRun_hash"];
+                    policyVersionId: components["schemas"]["FinancialCouncilRun_identifier"];
+                    revision: components["schemas"]["FinancialCouncilRun_revision"];
+                    version: components["schemas"]["FinancialCouncilRun_revision"];
+                    workspaceId: components["schemas"]["FinancialCouncilRun_workspace"];
+                };
+                FinancialCouncilPortfolioRevisionInput: {
+                    baseRevision: components["schemas"]["FinancialCouncilRun_revision"];
+                    operations: components["schemas"]["FinancialCouncilRun_FinancialPortfolioEditOperation"][];
+                };
+                FinancialCouncilPortfolioRevisionView: {
+                    baseRevision: components["schemas"]["FinancialCouncilRun_revision"];
+                    createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    portfolios: components["schemas"]["FinancialCouncilRun_ActionPortfolio"][];
+                    revision: components["schemas"]["FinancialCouncilRun_revision"];
+                    runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                };
+                FinancialCouncilRejectInput: {
+                    portfolioKind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+                    portfolioRevision: components["schemas"]["FinancialCouncilRun_revision"];
+                    reason: components["schemas"]["FinancialCouncilRun_nonempty"];
+                };
+                FinancialCouncilRunEvent: {
+                    eventId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    fromStatus: null | components["schemas"]["FinancialCouncilRun_runStatus"];
+                    occurredAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    reasonCode: string | null;
+                    revision: components["schemas"]["FinancialCouncilRun_revision"];
+                    runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    toStatus: components["schemas"]["FinancialCouncilRun_runStatus"];
+                };
+                FinancialCouncilRunEventPagedResult: {
+                    hasMore: boolean;
+                    items: components["schemas"]["FinancialCouncilRun_FinancialCouncilRunEvent"][];
+                    nextAfter: string | null;
+                };
+                FinancialFinding: {
+                    agentRole: components["schemas"]["FinancialCouncilRun_agentRole"];
+                    assumptions: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    candidateActionIds: components["schemas"]["FinancialCouncilRun_nonempty"][];
+                    conclusion: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    confidenceBps: components["schemas"]["FinancialCouncilRun_bps"];
+                    evidenceRefs: components["schemas"]["FinancialCouncilRun_EvidenceRef"][];
+                    findingId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    formulaRef: null | components["schemas"]["FinancialCouncilRun_FormulaResultRef"];
+                    missingData: components["schemas"]["FinancialCouncilRun_DataGap"][];
+                    runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    /** @enum {unknown} */
+                    severity: "info" | "warning" | "critical";
+                    snapshotId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                };
+                FinancialPortfolioEditOperation: {
+                    /** @constant */
+                    kind: "select_portfolio";
+                    portfolioKind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+                } | {
+                    actionId: components["schemas"]["FinancialCouncilRun_identifier"];
+                    /** @enum {unknown} */
+                    kind: "remove_action" | "restore_action";
+                } | {
+                    actionId: components["schemas"]["FinancialCouncilRun_identifier"];
+                    /** @constant */
+                    kind: "replace_action_parameters";
+                    parameters: {
+                        durationDays?: number;
+                        ownerRole?: components["schemas"]["FinancialCouncilRun_agentRole"];
+                    };
+                };
+                FinancialSnapshotView: {
+                    businessReport: components["schemas"]["FinancialCouncilRun_BusinessReportInput"];
+                    createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    currency: components["schemas"]["FinancialCouncilRun_currency"];
+                    dataAsOf: components["schemas"]["FinancialCouncilRun_dateTime"];
+                    dataGaps: components["schemas"]["FinancialCouncilRun_DataGap"][];
+                    /** @enum {unknown} */
+                    redactionLevel: "full" | "redacted";
+                    runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    snapshotHash: components["schemas"]["FinancialCouncilRun_hash"];
+                    snapshotId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    sourceVersions: components["schemas"]["FinancialCouncilRun_SourceVersion"][];
+                    workspaceId: components["schemas"]["FinancialCouncilRun_workspace"];
+                };
+                FormulaResultRef: {
+                    formulaVersion: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    inputHash: components["schemas"]["FinancialCouncilRun_hash"];
+                    resultHash: components["schemas"]["FinancialCouncilRun_hash"];
+                };
+                IncomeStatementInput: {
+                    costOfGoodsSoldMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    customers?: components["schemas"]["FinancialCouncilRun_CustomerProfitInput"][];
+                    interestExpenseMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    operatingExpensesMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    period: components["schemas"]["FinancialCouncilRun_businessText"];
+                    productLines?: components["schemas"]["FinancialCouncilRun_ProductLineInput"][];
+                    revenueMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    taxExpenseMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                };
+                ObjectiveWeights: {
+                    cash: components["schemas"]["FinancialCouncilRun_bps"];
+                    profit: components["schemas"]["FinancialCouncilRun_bps"];
+                    risk: components["schemas"]["FinancialCouncilRun_bps"];
+                    strategic: components["schemas"]["FinancialCouncilRun_bps"];
+                };
+                ProductLineInput: {
+                    afterSalesCostMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    allocatedOverheadMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    costOfGoodsSoldMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    name: components["schemas"]["FinancialCouncilRun_businessText"];
+                    revenueMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    sellingExpenseMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    shippingCostMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                };
+                ReceivableInput: {
+                    amountMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                    customer: components["schemas"]["FinancialCouncilRun_businessText"];
+                    daysOutstanding: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+                };
+                RejectedAction: {
+                    actionId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    reason: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    reasonCode: components["schemas"]["FinancialCouncilRun_nonempty"];
+                };
+                ScenarioBps: {
+                    base: components["schemas"]["FinancialCouncilRun_signedBps"];
+                    conservative: components["schemas"]["FinancialCouncilRun_signedBps"];
+                    optimistic: components["schemas"]["FinancialCouncilRun_signedBps"];
+                };
+                ScenarioForecast: {
+                    cashImpact: components["schemas"]["FinancialCouncilRun_ScenarioMoney"];
+                    profitImpact: components["schemas"]["FinancialCouncilRun_ScenarioMoney"];
+                    riskReductionBps: components["schemas"]["FinancialCouncilRun_ScenarioBps"];
+                };
+                ScenarioMoney: {
+                    base: components["schemas"]["FinancialCouncilRun_safeInteger"];
+                    conservative: components["schemas"]["FinancialCouncilRun_safeInteger"];
+                    optimistic: components["schemas"]["FinancialCouncilRun_safeInteger"];
+                };
+                Sensitivity: {
+                    factor: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    impactBps: components["schemas"]["FinancialCouncilRun_signedBps"];
+                };
+                SourceVersion: {
+                    contentHash: components["schemas"]["FinancialCouncilRun_hash"];
+                    /** @enum {unknown} */
+                    source: "crm" | "quote" | "financial_fact" | "acquisition_cost" | "roi";
+                    sourceId: components["schemas"]["FinancialCouncilRun_nonempty"];
+                    version: components["schemas"]["FinancialCouncilRun_revision"];
+                };
+                TaxRiskInput: {
+                    costAuthenticityIssues: components["schemas"]["FinancialCouncilRun_businessText"][];
+                    equityIssues: components["schemas"]["FinancialCouncilRun_businessText"][];
+                    invoiceIssues: components["schemas"]["FinancialCouncilRun_businessText"][];
+                    payrollIssues: components["schemas"]["FinancialCouncilRun_businessText"][];
+                    revenueRecognitionIssues: components["schemas"]["FinancialCouncilRun_businessText"][];
+                };
+                /** @enum {unknown} */
+                agentRole: "finance" | "profit" | "cost" | "cashflow" | "tax";
+                bps: number;
+                businessText: string;
+                /** @enum {unknown} */
+                currency: "CNY" | "USD";
+                /** Format: date-time */
+                dateTime: string;
+                hash: string;
+                identifier: string;
+                nonNegativeInteger: number;
+                nonempty: string;
+                /** @enum {unknown} */
+                portfolioKind: "balanced" | "cash_first" | "growth_first";
+                /** @enum {unknown} */
+                publicRunStatus: "snapshot_frozen" | "analyzing" | "auditing" | "synthesizing" | "optimizing" | "awaiting_approval" | "approved" | "rejected" | "stale" | "expired" | "failed" | "not_computable";
+                revision: number;
+                /** @enum {unknown} */
+                runStatus: "created" | "snapshot_frozen" | "analyzing" | "auditing" | "synthesizing" | "optimizing" | "awaiting_approval" | "approved" | "rejected" | "stale" | "expired" | "failed" | "not_computable";
+                safeInteger: number;
+                signedBps: number;
+                workspace: string;
+            };
+        };
+        FinancialCouncilRunEvent: components["schemas"]["FinancialCouncilRun_FinancialCouncilRunEvent"];
+        FinancialCouncilRunEventPagedResult: components["schemas"]["FinancialCouncilRun_FinancialCouncilRunEventPagedResult"];
         FinancialDataGapView: components["schemas"]["AdvisorTodayResponse_FinancialDataGapView"];
         /** FinancialFact */
         FinancialFact: {
@@ -2160,6 +2703,8 @@ export interface components {
             items: components["schemas"]["FinancialFact"][];
             nextAfter: string | null;
         };
+        FinancialFinding: components["schemas"]["FinancialCouncilRun_FinancialFinding"];
+        FinancialSnapshotView: components["schemas"]["FinancialCouncilRun_FinancialSnapshotView"];
         FinancialSourceReport: components["schemas"]["FinancialFact_FinancialSourceReport"];
         FinancialSourceReportPagedResult: {
             hasMore: boolean;
@@ -2170,7 +2715,7 @@ export interface components {
         GrowthBootstrapResponse: {
             $defs: {
                 /** @enum {unknown} */
-                capability: "catalog.read" | "catalog.manage" | "pricing.sensitive.read" | "quote.draft.create" | "quote.confirm" | "quote.exception.discount.approve" | "quote.exception.margin.approve" | "quote.exception.payment_terms.approve" | "quote.exception.gift.approve" | "quote.exception.credit.approve" | "quote.exception.manual.approve" | "ledger.pending.create" | "ledger.verify" | "roi.close" | "growth.performance.team.read" | "growth.performance.workspace.read";
+                capability: "catalog.read" | "catalog.manage" | "pricing.sensitive.read" | "quote.draft.create" | "quote.confirm" | "quote.exception.discount.approve" | "quote.exception.margin.approve" | "quote.exception.payment_terms.approve" | "quote.exception.gift.approve" | "quote.exception.credit.approve" | "quote.exception.manual.approve" | "ledger.pending.create" | "ledger.verify" | "finance.council.run" | "finance.council.approve" | "finance.council.policy.manage" | "roi.close" | "growth.performance.team.read" | "growth.performance.workspace.read";
                 contractFields: {
                     capabilities: components["schemas"]["GrowthBootstrapResponse_capability"][];
                     capabilityRegistryVersion: string;
@@ -3325,18 +3870,16 @@ export interface components {
             asOf: components["schemas"]["AdvisorTodayResponse_dateTime"];
             currency: components["schemas"]["AdvisorTodayResponse_currency"];
         };
-        /** @enum {unknown} */
-        AdvisorTodayResponse_FinancialDataGapCode: "unverified_cost" | "unverified_financial_fact" | "missing_cogs" | "unmatched_payment" | "missing_commercial_binding" | "import_requires_review";
-        /** @enum {unknown} */
-        AdvisorTodayResponse_FinancialDataGapSourceType: "cost_entry" | "financial_fact" | "finance_import" | "commercial_binding";
         AdvisorTodayResponse_FinancialDataGapView: {
             asOf: components["schemas"]["AdvisorTodayResponse_dateTime"];
-            code: components["schemas"]["AdvisorTodayResponse_FinancialDataGapCode"];
+            /** @enum {unknown} */
+            code: "unverified_cost" | "unverified_financial_fact" | "missing_cogs" | "unmatched_payment" | "missing_commercial_binding" | "import_requires_review";
             cohortId: components["schemas"]["AdvisorTodayResponse_nullableId"];
             currency: components["schemas"]["AdvisorTodayResponse_currency"];
             sourceId: components["schemas"]["AdvisorTodayResponse_nonempty"];
             sourceSnapshotHash: components["schemas"]["AdvisorTodayResponse_hash"];
-            sourceType: components["schemas"]["AdvisorTodayResponse_FinancialDataGapSourceType"];
+            /** @enum {unknown} */
+            sourceType: "cost_entry" | "financial_fact" | "finance_import" | "commercial_binding";
         };
         AdvisorTodayResponse_PendingQuoteApprovalView: {
             approvalId: components["schemas"]["AdvisorTodayResponse_nonempty"];
@@ -3553,6 +4096,376 @@ export interface components {
         };
         /** @enum {unknown} */
         FinanceImportOperation_FinanceImportRowErrorCode: "spreadsheet_formula_forbidden" | "verified_import_forbidden" | "required_field_missing" | "money_invalid" | "currency_invalid" | "business_time_invalid" | "commercial_binding_invalid" | "row_identity_conflict" | "financial_fact_conflict" | "financial_fact_amount_invalid" | "amount_out_of_range";
+        FinancialCouncilRun_ActionPortfolio: {
+            actionIds: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            actions: components["schemas"]["FinancialCouncilRun_CandidateAction"][];
+            createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            expiresAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            hardConstraints: components["schemas"]["FinancialCouncilRun_ConstraintResult"][];
+            kind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+            objectiveScoreBps: components["schemas"]["FinancialCouncilRun_bps"];
+            portfolioId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            rejectedActions: components["schemas"]["FinancialCouncilRun_RejectedAction"][];
+            requiredApprovalCapabilities: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            revision: components["schemas"]["FinancialCouncilRun_revision"];
+            runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            scenarioForecast: components["schemas"]["FinancialCouncilRun_ScenarioForecast"];
+            sensitivityAnalysis: components["schemas"]["FinancialCouncilRun_Sensitivity"][];
+        };
+        FinancialCouncilRun_BalanceSheetInput: {
+            accountsPayableMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            cashMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            currentLiabilitiesMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            inventoryMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            nonCurrentAssetsMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            nonCurrentLiabilitiesMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            otherCurrentAssetsMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            period: components["schemas"]["FinancialCouncilRun_businessText"];
+            receivablesMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+        };
+        FinancialCouncilRun_BusinessReportInput: {
+            balanceSheet: components["schemas"]["FinancialCouncilRun_BalanceSheetInput"];
+            cashFlow?: null | components["schemas"]["FinancialCouncilRun_CashFlowInput"];
+            companyName: components["schemas"]["FinancialCouncilRun_businessText"];
+            costDetail?: null | components["schemas"]["FinancialCouncilRun_CostDetailInput"];
+            currency: components["schemas"]["FinancialCouncilRun_currency"];
+            incomeStatement: components["schemas"]["FinancialCouncilRun_IncomeStatementInput"];
+            period: components["schemas"]["FinancialCouncilRun_businessText"];
+            taxRisk?: null | components["schemas"]["FinancialCouncilRun_TaxRiskInput"];
+        };
+        FinancialCouncilRun_CandidateAction: {
+            actionId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            budgetCostMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+            capacityUnits: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            cashImpact: components["schemas"]["FinancialCouncilRun_ScenarioMoney"];
+            confidenceBps: components["schemas"]["FinancialCouncilRun_bps"];
+            durationDays: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            explanation: components["schemas"]["FinancialCouncilRun_nonempty"];
+            kind: components["schemas"]["FinancialCouncilRun_FinancialCouncilActionKind"];
+            mutuallyExclusiveWith: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            ownerRole: components["schemas"]["FinancialCouncilRun_agentRole"];
+            prerequisites: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            profitImpact: components["schemas"]["FinancialCouncilRun_ScenarioMoney"];
+            requiredCapabilities: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            /** @constant */
+            requiresHumanApproval: true;
+            riskReductionBps: components["schemas"]["FinancialCouncilRun_ScenarioBps"];
+            sourceFindingIds: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            subjectRef: string | null;
+        };
+        FinancialCouncilRun_CashFlowInput: {
+            expectedInflowsNext30DaysMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            expectedInflowsNext31To90DaysMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            expectedOutflowsNext30DaysMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            expectedOutflowsNext31To90DaysMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            financingNetMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+            investingNetMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+            openingCashMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            operatingInflowMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            operatingOutflowMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            period: components["schemas"]["FinancialCouncilRun_businessText"];
+            receivables?: components["schemas"]["FinancialCouncilRun_ReceivableInput"][];
+        };
+        FinancialCouncilRun_Conflict: {
+            conflictId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            findingIds: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            /** @enum {unknown} */
+            status: "unresolved" | "resolved" | "withdrawn";
+            /** @enum {unknown} */
+            type: "formula" | "evidence" | "definition" | "action_exclusivity" | "resource_competition" | "risk_preference";
+        };
+        FinancialCouncilRun_ConsensusReport: {
+            acceptedFindings: components["schemas"]["FinancialCouncilRun_FinancialFinding"][];
+            createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            dataGaps: components["schemas"]["FinancialCouncilRun_DataGap"][];
+            inputVersionHash: components["schemas"]["FinancialCouncilRun_hash"];
+            minorityFindings: components["schemas"]["FinancialCouncilRun_FinancialFinding"][];
+            overallDiagnosis: components["schemas"]["FinancialCouncilRun_nonempty"];
+            rejectedFindings: components["schemas"]["FinancialCouncilRun_FinancialFinding"][];
+            reportId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            snapshotId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            unresolvedConflicts: components["schemas"]["FinancialCouncilRun_Conflict"][];
+        };
+        FinancialCouncilRun_ConstraintResult: {
+            code: components["schemas"]["FinancialCouncilRun_nonempty"];
+            reason: string | null;
+            satisfied: boolean;
+        };
+        FinancialCouncilRun_CostDetailInput: {
+            fixedOverheadMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            laborCostMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            materialCostRateBps: components["schemas"]["FinancialCouncilRun_bps"];
+            previousMaterialCostRateBps?: components["schemas"]["FinancialCouncilRun_bps"];
+            rawMaterialCostMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            salesCommissionRateBps: components["schemas"]["FinancialCouncilRun_bps"];
+        };
+        FinancialCouncilRun_CustomerProfitInput: {
+            grossProfitMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+            name: components["schemas"]["FinancialCouncilRun_businessText"];
+            outstandingReceivableMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            paymentDays: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            revenueMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            serviceCostMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+        };
+        FinancialCouncilRun_DataGap: {
+            /** @enum {unknown} */
+            code: "unverified_cost" | "unverified_financial_fact" | "missing_cogs" | "unmatched_payment" | "missing_commercial_binding" | "import_requires_review";
+            description: components["schemas"]["FinancialCouncilRun_nonempty"];
+            /** @enum {unknown} */
+            source: "crm" | "quote" | "financial_fact" | "acquisition_cost" | "roi" | "business_report";
+            sourceId: string | null;
+        };
+        FinancialCouncilRun_EvidenceRef: {
+            contentHash: components["schemas"]["FinancialCouncilRun_hash"];
+            /** @enum {unknown} */
+            source: "crm" | "quote" | "financial_fact" | "acquisition_cost" | "roi" | "business_report";
+            sourceId: components["schemas"]["FinancialCouncilRun_nonempty"];
+        };
+        /** @enum {unknown} */
+        FinancialCouncilRun_FinancialCouncilActionKind: "collect_receivable" | "review_loss_product_pricing" | "reduce_cost_anomaly" | "prepare_cash_reserve_budget" | "complete_financial_data" | "schedule_tax_review";
+        FinancialCouncilRun_FinancialCouncilApproval: {
+            approvalId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            approvedActionIds: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            approvedAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            portfolioKind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+            portfolioRevision: components["schemas"]["FinancialCouncilRun_revision"];
+            reason: string | null;
+            requiredCapabilities: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            /** @enum {unknown} */
+            status: "approved" | "rejected";
+        };
+        FinancialCouncilRun_FinancialCouncilApprovalInput: {
+            portfolioKind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+        };
+        FinancialCouncilRun_FinancialCouncilCreateInput: {
+            businessReport: components["schemas"]["FinancialCouncilRun_BusinessReportInput"];
+            currency: components["schemas"]["FinancialCouncilRun_currency"];
+            dataAsOf: components["schemas"]["FinancialCouncilRun_dateTime"];
+            policyVersionId: components["schemas"]["FinancialCouncilRun_identifier"];
+        };
+        FinancialCouncilRun_FinancialCouncilDispatchPagedResult: {
+            hasMore: boolean;
+            items: components["schemas"]["FinancialCouncilRun_FinancialCouncilDispatchView"][];
+            nextAfter: string | null;
+        };
+        FinancialCouncilRun_FinancialCouncilDispatchView: {
+            actionId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            approvalId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            attempt: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            dispatchId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            lastErrorCode: string | null;
+            portfolioKind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+            portfolioRevision: components["schemas"]["FinancialCouncilRun_revision"];
+            receiptId: string | null;
+            runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            /** @enum {unknown} */
+            status: "queued" | "running" | "retry" | "succeeded" | "failed";
+            updatedAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+        };
+        FinancialCouncilRun_FinancialCouncilPolicyInput: {
+            actionCoefficientVersion: components["schemas"]["FinancialCouncilRun_nonempty"];
+            balancedWeightsBps: components["schemas"]["FinancialCouncilRun_ObjectiveWeights"];
+            budgetLimitMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            capacityLimitUnits: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            currency: components["schemas"]["FinancialCouncilRun_currency"];
+            dueDebtMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            durationLimitDays: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            minimumActionConfidenceBps: components["schemas"]["FinancialCouncilRun_bps"];
+            minimumCashReserveMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+            necessaryOutflowMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+        };
+        FinancialCouncilRun_FinancialCouncilPolicyVersion: {
+            actionCoefficientVersion: components["schemas"]["FinancialCouncilRun_nonempty"];
+            balancedWeightsBps: components["schemas"]["FinancialCouncilRun_ObjectiveWeights"];
+            budgetLimitMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            capacityLimitUnits: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            currency: components["schemas"]["FinancialCouncilRun_currency"];
+            dueDebtMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            durationLimitDays: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            minimumActionConfidenceBps: components["schemas"]["FinancialCouncilRun_bps"];
+            minimumCashReserveMinor: components["schemas"]["FinancialCouncilRun_safeInteger"];
+            necessaryOutflowMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            policyHash: components["schemas"]["FinancialCouncilRun_hash"];
+            policyVersionId: components["schemas"]["FinancialCouncilRun_identifier"];
+            revision: components["schemas"]["FinancialCouncilRun_revision"];
+            version: components["schemas"]["FinancialCouncilRun_revision"];
+            workspaceId: components["schemas"]["FinancialCouncilRun_workspace"];
+        };
+        FinancialCouncilRun_FinancialCouncilPortfolioRevisionInput: {
+            baseRevision: components["schemas"]["FinancialCouncilRun_revision"];
+            operations: components["schemas"]["FinancialCouncilRun_FinancialPortfolioEditOperation"][];
+        };
+        FinancialCouncilRun_FinancialCouncilPortfolioRevisionView: {
+            baseRevision: components["schemas"]["FinancialCouncilRun_revision"];
+            createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            portfolios: components["schemas"]["FinancialCouncilRun_ActionPortfolio"][];
+            revision: components["schemas"]["FinancialCouncilRun_revision"];
+            runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+        };
+        FinancialCouncilRun_FinancialCouncilRejectInput: {
+            portfolioKind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+            portfolioRevision: components["schemas"]["FinancialCouncilRun_revision"];
+            reason: components["schemas"]["FinancialCouncilRun_nonempty"];
+        };
+        FinancialCouncilRun_FinancialCouncilRunEvent: {
+            eventId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            fromStatus: null | components["schemas"]["FinancialCouncilRun_runStatus"];
+            occurredAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            reasonCode: string | null;
+            revision: components["schemas"]["FinancialCouncilRun_revision"];
+            runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            toStatus: components["schemas"]["FinancialCouncilRun_runStatus"];
+        };
+        FinancialCouncilRun_FinancialCouncilRunEventPagedResult: {
+            hasMore: boolean;
+            items: components["schemas"]["FinancialCouncilRun_FinancialCouncilRunEvent"][];
+            nextAfter: string | null;
+        };
+        FinancialCouncilRun_FinancialFinding: {
+            agentRole: components["schemas"]["FinancialCouncilRun_agentRole"];
+            assumptions: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            candidateActionIds: components["schemas"]["FinancialCouncilRun_nonempty"][];
+            conclusion: components["schemas"]["FinancialCouncilRun_nonempty"];
+            confidenceBps: components["schemas"]["FinancialCouncilRun_bps"];
+            evidenceRefs: components["schemas"]["FinancialCouncilRun_EvidenceRef"][];
+            findingId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            formulaRef: null | components["schemas"]["FinancialCouncilRun_FormulaResultRef"];
+            missingData: components["schemas"]["FinancialCouncilRun_DataGap"][];
+            runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            /** @enum {unknown} */
+            severity: "info" | "warning" | "critical";
+            snapshotId: components["schemas"]["FinancialCouncilRun_nonempty"];
+        };
+        FinancialCouncilRun_FinancialPortfolioEditOperation: {
+            /** @constant */
+            kind: "select_portfolio";
+            portfolioKind: components["schemas"]["FinancialCouncilRun_portfolioKind"];
+        } | {
+            actionId: components["schemas"]["FinancialCouncilRun_identifier"];
+            /** @enum {unknown} */
+            kind: "remove_action" | "restore_action";
+        } | {
+            actionId: components["schemas"]["FinancialCouncilRun_identifier"];
+            /** @constant */
+            kind: "replace_action_parameters";
+            parameters: {
+                durationDays?: number;
+                ownerRole?: components["schemas"]["FinancialCouncilRun_agentRole"];
+            };
+        };
+        FinancialCouncilRun_FinancialSnapshotView: {
+            businessReport: components["schemas"]["FinancialCouncilRun_BusinessReportInput"];
+            createdAt: components["schemas"]["FinancialCouncilRun_dateTime"];
+            currency: components["schemas"]["FinancialCouncilRun_currency"];
+            dataAsOf: components["schemas"]["FinancialCouncilRun_dateTime"];
+            dataGaps: components["schemas"]["FinancialCouncilRun_DataGap"][];
+            /** @enum {unknown} */
+            redactionLevel: "full" | "redacted";
+            runId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            snapshotHash: components["schemas"]["FinancialCouncilRun_hash"];
+            snapshotId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            sourceVersions: components["schemas"]["FinancialCouncilRun_SourceVersion"][];
+            workspaceId: components["schemas"]["FinancialCouncilRun_workspace"];
+        };
+        FinancialCouncilRun_FormulaResultRef: {
+            formulaVersion: components["schemas"]["FinancialCouncilRun_nonempty"];
+            inputHash: components["schemas"]["FinancialCouncilRun_hash"];
+            resultHash: components["schemas"]["FinancialCouncilRun_hash"];
+        };
+        FinancialCouncilRun_IncomeStatementInput: {
+            costOfGoodsSoldMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            customers?: components["schemas"]["FinancialCouncilRun_CustomerProfitInput"][];
+            interestExpenseMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            operatingExpensesMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            period: components["schemas"]["FinancialCouncilRun_businessText"];
+            productLines?: components["schemas"]["FinancialCouncilRun_ProductLineInput"][];
+            revenueMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            taxExpenseMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+        };
+        FinancialCouncilRun_ObjectiveWeights: {
+            cash: components["schemas"]["FinancialCouncilRun_bps"];
+            profit: components["schemas"]["FinancialCouncilRun_bps"];
+            risk: components["schemas"]["FinancialCouncilRun_bps"];
+            strategic: components["schemas"]["FinancialCouncilRun_bps"];
+        };
+        FinancialCouncilRun_ProductLineInput: {
+            afterSalesCostMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            allocatedOverheadMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            costOfGoodsSoldMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            name: components["schemas"]["FinancialCouncilRun_businessText"];
+            revenueMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            sellingExpenseMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            shippingCostMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+        };
+        FinancialCouncilRun_ReceivableInput: {
+            amountMinor: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+            customer: components["schemas"]["FinancialCouncilRun_businessText"];
+            daysOutstanding: components["schemas"]["FinancialCouncilRun_nonNegativeInteger"];
+        };
+        FinancialCouncilRun_RejectedAction: {
+            actionId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            reason: components["schemas"]["FinancialCouncilRun_nonempty"];
+            reasonCode: components["schemas"]["FinancialCouncilRun_nonempty"];
+        };
+        FinancialCouncilRun_ScenarioBps: {
+            base: components["schemas"]["FinancialCouncilRun_signedBps"];
+            conservative: components["schemas"]["FinancialCouncilRun_signedBps"];
+            optimistic: components["schemas"]["FinancialCouncilRun_signedBps"];
+        };
+        FinancialCouncilRun_ScenarioForecast: {
+            cashImpact: components["schemas"]["FinancialCouncilRun_ScenarioMoney"];
+            profitImpact: components["schemas"]["FinancialCouncilRun_ScenarioMoney"];
+            riskReductionBps: components["schemas"]["FinancialCouncilRun_ScenarioBps"];
+        };
+        FinancialCouncilRun_ScenarioMoney: {
+            base: components["schemas"]["FinancialCouncilRun_safeInteger"];
+            conservative: components["schemas"]["FinancialCouncilRun_safeInteger"];
+            optimistic: components["schemas"]["FinancialCouncilRun_safeInteger"];
+        };
+        FinancialCouncilRun_Sensitivity: {
+            factor: components["schemas"]["FinancialCouncilRun_nonempty"];
+            impactBps: components["schemas"]["FinancialCouncilRun_signedBps"];
+        };
+        FinancialCouncilRun_SourceVersion: {
+            contentHash: components["schemas"]["FinancialCouncilRun_hash"];
+            /** @enum {unknown} */
+            source: "crm" | "quote" | "financial_fact" | "acquisition_cost" | "roi";
+            sourceId: components["schemas"]["FinancialCouncilRun_nonempty"];
+            version: components["schemas"]["FinancialCouncilRun_revision"];
+        };
+        FinancialCouncilRun_TaxRiskInput: {
+            costAuthenticityIssues: components["schemas"]["FinancialCouncilRun_businessText"][];
+            equityIssues: components["schemas"]["FinancialCouncilRun_businessText"][];
+            invoiceIssues: components["schemas"]["FinancialCouncilRun_businessText"][];
+            payrollIssues: components["schemas"]["FinancialCouncilRun_businessText"][];
+            revenueRecognitionIssues: components["schemas"]["FinancialCouncilRun_businessText"][];
+        };
+        /** @enum {unknown} */
+        FinancialCouncilRun_agentRole: "finance" | "profit" | "cost" | "cashflow" | "tax";
+        FinancialCouncilRun_bps: number;
+        FinancialCouncilRun_businessText: string;
+        /** @enum {unknown} */
+        FinancialCouncilRun_currency: "CNY" | "USD";
+        /** Format: date-time */
+        FinancialCouncilRun_dateTime: string;
+        FinancialCouncilRun_hash: string;
+        FinancialCouncilRun_identifier: string;
+        FinancialCouncilRun_nonNegativeInteger: number;
+        FinancialCouncilRun_nonempty: string;
+        /** @enum {unknown} */
+        FinancialCouncilRun_portfolioKind: "balanced" | "cash_first" | "growth_first";
+        /** @enum {unknown} */
+        FinancialCouncilRun_publicRunStatus: "snapshot_frozen" | "analyzing" | "auditing" | "synthesizing" | "optimizing" | "awaiting_approval" | "approved" | "rejected" | "stale" | "expired" | "failed" | "not_computable";
+        FinancialCouncilRun_revision: number;
+        /** @enum {unknown} */
+        FinancialCouncilRun_runStatus: "created" | "snapshot_frozen" | "analyzing" | "auditing" | "synthesizing" | "optimizing" | "awaiting_approval" | "approved" | "rejected" | "stale" | "expired" | "failed" | "not_computable";
+        FinancialCouncilRun_safeInteger: number;
+        FinancialCouncilRun_signedBps: number;
+        FinancialCouncilRun_workspace: string;
         FinancialFact_FinancialFactCorrectionInput: {
             reason: string;
             replacement: components["schemas"]["FinancialFact_FinancialFactCreateInput"];
@@ -3626,7 +4539,7 @@ export interface components {
         FinancialFact_positiveMoney: number;
         FinancialFact_workspace: string;
         /** @enum {unknown} */
-        GrowthBootstrapResponse_capability: "catalog.read" | "catalog.manage" | "pricing.sensitive.read" | "quote.draft.create" | "quote.confirm" | "quote.exception.discount.approve" | "quote.exception.margin.approve" | "quote.exception.payment_terms.approve" | "quote.exception.gift.approve" | "quote.exception.credit.approve" | "quote.exception.manual.approve" | "ledger.pending.create" | "ledger.verify" | "roi.close" | "growth.performance.team.read" | "growth.performance.workspace.read";
+        GrowthBootstrapResponse_capability: "catalog.read" | "catalog.manage" | "pricing.sensitive.read" | "quote.draft.create" | "quote.confirm" | "quote.exception.discount.approve" | "quote.exception.margin.approve" | "quote.exception.payment_terms.approve" | "quote.exception.gift.approve" | "quote.exception.credit.approve" | "quote.exception.manual.approve" | "ledger.pending.create" | "ledger.verify" | "finance.council.run" | "finance.council.approve" | "finance.council.policy.manage" | "roi.close" | "growth.performance.team.read" | "growth.performance.workspace.read";
         GrowthBootstrapResponse_contractFields: {
             capabilities: components["schemas"]["GrowthBootstrapResponse_capability"][];
             capabilityRegistryVersion: string;
@@ -4313,6 +5226,16 @@ export interface components {
                 "application/json": components["schemas"]["AcquisitionCostEstimatePagedResult"];
             };
         };
+        /** @description Re-optimized financial action portfolio revision */
+        ActionPortfolio: {
+            headers: {
+                ETag: components["headers"]["ETag"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_ActionPortfolio"];
+            };
+        };
         /** @description Advisor recommendation */
         AdvisorRecommendation: {
             headers: {
@@ -4432,6 +5355,66 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["FinanceImportRowErrorPagedResult"];
+            };
+        };
+        /** @description Human approval or rejection decision; approval queues only controlled drafts or todos */
+        FinancialCouncilApproval: {
+            headers: {
+                ETag: components["headers"]["ETag"];
+                "Idempotency-Replayed": components["headers"]["IdempotencyReplayed"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_FinancialCouncilApproval"];
+            };
+        };
+        /** @description Controlled draft and todo dispatch projections */
+        FinancialCouncilDispatches: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_FinancialCouncilDispatchPagedResult"];
+            };
+        };
+        /** @description Immutable financial council policy version */
+        FinancialCouncilPolicyVersion: {
+            headers: {
+                ETag: components["headers"]["ETag"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_FinancialCouncilPolicyVersion"];
+            };
+        };
+        /** @description Immutable re-optimized financial council portfolio revision */
+        FinancialCouncilPortfolioRevision: {
+            headers: {
+                ETag: components["headers"]["ETag"];
+                "Idempotency-Replayed": components["headers"]["IdempotencyReplayed"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_FinancialCouncilPortfolioRevisionView"];
+            };
+        };
+        /** @description Financial council run projection */
+        FinancialCouncilRun: {
+            headers: {
+                ETag: components["headers"]["ETag"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun"];
+            };
+        };
+        /** @description Immutable financial council run event stream */
+        FinancialCouncilRunEvents: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_FinancialCouncilRunEventPagedResult"];
             };
         };
         /** @description Financial fact with server-frozen binding */
@@ -4678,6 +5661,8 @@ export interface components {
         limit: number;
         optionalWorkspaceHeader: string;
         previewId: string;
+        revision: number;
+        runId: string;
         sort: string;
         workspaceHeader: string;
     };
@@ -4685,6 +5670,8 @@ export interface components {
     headers: {
         /** @description Strong revision token for the returned resource state */
         ETag: string;
+        /** @description Present only when this exact command result was replayed. */
+        IdempotencyReplayed: "true";
     };
     pathItems: never;
 }
@@ -7534,6 +8521,593 @@ export interface operations {
             };
             /** @description API error */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getFinancialCouncilPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["FinancialCouncilPolicyVersion"];
+            /** @description API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    updateFinancialCouncilPolicy: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                "If-Match": components["parameters"]["ifMatch"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_FinancialCouncilPolicyInput"];
+            };
+        };
+        responses: {
+            200: components["responses"]["FinancialCouncilPolicyVersion"];
+            /** @description API error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    createFinancialCouncilRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["idempotencyKey"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_FinancialCouncilCreateInput"];
+            };
+        };
+        responses: {
+            202: components["responses"]["FinancialCouncilRun"];
+            /** @description API error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getFinancialCouncilRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["runId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["FinancialCouncilRun"];
+            /** @description API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listFinancialCouncilDispatches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["runId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["FinancialCouncilDispatches"];
+            /** @description API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    listFinancialCouncilRunEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["parameters"]["runId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["FinancialCouncilRunEvents"];
+            /** @description API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    createFinancialCouncilPortfolioRevision: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                "If-Match": components["parameters"]["ifMatch"];
+            };
+            path: {
+                runId: components["parameters"]["runId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_FinancialCouncilPortfolioRevisionInput"];
+            };
+        };
+        responses: {
+            200: components["responses"]["FinancialCouncilPortfolioRevision"];
+            /** @description API error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    approveFinancialCouncilPortfolioRevision: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                "If-Match": components["parameters"]["ifMatch"];
+            };
+            path: {
+                runId: components["parameters"]["runId"];
+                revision: components["parameters"]["revision"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_FinancialCouncilApprovalInput"];
+            };
+        };
+        responses: {
+            202: components["responses"]["FinancialCouncilApproval"];
+            /** @description API error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    rejectFinancialCouncilRun: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": components["parameters"]["idempotencyKey"];
+                "If-Match": components["parameters"]["ifMatch"];
+            };
+            path: {
+                runId: components["parameters"]["runId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FinancialCouncilRun_FinancialCouncilRejectInput"];
+            };
+        };
+        responses: {
+            200: components["responses"]["FinancialCouncilApproval"];
+            /** @description API error */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description API error */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

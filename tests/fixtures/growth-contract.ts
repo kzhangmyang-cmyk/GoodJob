@@ -23,6 +23,420 @@ const manifest = JSON.parse(readFileSync(
 
 type Schema<Name extends keyof components["schemas"]> =
   Omit<components["schemas"][Name], "$defs">;
+
+export interface FinancialCouncilFixtureContract {
+  readonly analyzing: Schema<"FinancialCouncilRun">;
+  readonly auditing: Schema<"FinancialCouncilRun">;
+  readonly awaitingApproval: Schema<"FinancialCouncilRun">;
+  readonly approved: Schema<"FinancialCouncilRun">;
+  readonly notComputable: Schema<"FinancialCouncilRun">;
+  readonly stale: Schema<"FinancialCouncilRun">;
+  readonly unresolvedConflict: Schema<"FinancialCouncilRun">;
+  readonly emptyFeasiblePortfolios: Schema<"FinancialCouncilRun">;
+  readonly partialDispatch: {
+    readonly run: Schema<"FinancialCouncilRun">;
+    readonly dispatches: Schema<"FinancialCouncilDispatchPagedResult">;
+  };
+}
+
+type FinancialCouncilRun = Schema<"FinancialCouncilRun">;
+type FinancialCouncilFinding =
+  components["schemas"]["FinancialCouncilRun_FinancialFinding"];
+type FinancialCouncilAgentRole =
+  components["schemas"]["FinancialCouncilRun_agentRole"];
+type FinancialCouncilCandidateAction = Schema<"CandidateAction">;
+type FinancialCouncilActionPortfolio = Schema<"ActionPortfolio">;
+
+const COUNCIL_NOW = "2026-08-16T08:00:00.000Z";
+const COUNCIL_EXPIRES_AT = "2026-08-23T08:00:00.000Z";
+const councilHash = (character: string) =>
+  `sha256:${character.repeat(64)}`;
+
+const financialCouncilBusinessReport = {
+  currency: "CNY",
+  companyName: "示例外贸企业",
+  period: "2026-08",
+  balanceSheet: {
+    period: "2026-08",
+    cashMinor: 1_200_000,
+    receivablesMinor: 680_000,
+    inventoryMinor: 320_000,
+    otherCurrentAssetsMinor: 90_000,
+    nonCurrentAssetsMinor: 750_000,
+    currentLiabilitiesMinor: 540_000,
+    nonCurrentLiabilitiesMinor: 200_000,
+    accountsPayableMinor: 180_000
+  },
+  incomeStatement: {
+    period: "2026-08",
+    revenueMinor: 2_400_000,
+    costOfGoodsSoldMinor: 1_320_000,
+    operatingExpensesMinor: 520_000,
+    interestExpenseMinor: 20_000,
+    taxExpenseMinor: 80_000
+  },
+  cashFlow: {
+    period: "2026-08",
+    openingCashMinor: 980_000,
+    operatingInflowMinor: 1_900_000,
+    operatingOutflowMinor: 1_680_000,
+    investingNetMinor: -40_000,
+    financingNetMinor: 40_000,
+    expectedInflowsNext30DaysMinor: 720_000,
+    expectedOutflowsNext30DaysMinor: 610_000,
+    expectedInflowsNext31To90DaysMinor: 1_450_000,
+    expectedOutflowsNext31To90DaysMinor: 1_180_000,
+    receivables: [{
+      customer: "客户甲",
+      amountMinor: 420_000,
+      daysOutstanding: 52
+    }]
+  },
+  costDetail: {
+    materialCostRateBps: 4_200,
+    previousMaterialCostRateBps: 3_900,
+    laborCostMinor: 210_000,
+    rawMaterialCostMinor: 760_000,
+    salesCommissionRateBps: 600,
+    fixedOverheadMinor: 180_000
+  },
+  taxRisk: {
+    invoiceIssues: ["两张进项发票待专业复核"],
+    revenueRecognitionIssues: [],
+    costAuthenticityIssues: [],
+    payrollIssues: [],
+    equityIssues: []
+  }
+} satisfies components["schemas"]["FinancialCouncilRun_BusinessReportInput"];
+
+function financialCouncilFinding(
+  agentRole: FinancialCouncilAgentRole,
+  index: number
+): FinancialCouncilFinding {
+  return {
+    findingId: `finding-${agentRole}`,
+    runId: "council-run-fixture",
+    snapshotId: "council-snapshot-fixture",
+    agentRole,
+    conclusion: `${agentRole} 专家已完成确定性分析`,
+    evidenceRefs: [{
+      source: "business_report",
+      sourceId: `business-report-${index}`,
+      contentHash: councilHash(String(index + 1))
+    }],
+    formulaRef: null,
+    confidenceBps: 8_000 - index * 200,
+    severity: index === 4 ? "warning" : "info",
+    assumptions: [],
+    missingData: [],
+    candidateActionIds: [`action-${index + 1}`]
+  };
+}
+
+const financialCouncilFindings = ([
+  "finance", "profit", "cost", "cashflow", "tax"
+] as const).map(financialCouncilFinding);
+
+const receivableAction = {
+  actionId: "action-1",
+  kind: "collect_receivable",
+  sourceFindingIds: ["finding-finance", "finding-cashflow"],
+  ownerRole: "cashflow",
+  subjectRef: "customer-1",
+  explanation: "优先跟进逾期应收，改善未来三十日现金安全垫。",
+  durationDays: 14,
+  prerequisites: [],
+  mutuallyExclusiveWith: [],
+  cashImpact: { conservative: 120_000, base: 240_000, optimistic: 360_000 },
+  profitImpact: { conservative: 0, base: 0, optimistic: 0 },
+  riskReductionBps: { conservative: 300, base: 600, optimistic: 900 },
+  budgetCostMinor: 5_000,
+  capacityUnits: 2,
+  confidenceBps: 8_800,
+  requiredCapabilities: ["finance.council.approve"],
+  requiresHumanApproval: true
+} satisfies FinancialCouncilCandidateAction;
+
+const pricingAction = {
+  actionId: "action-2",
+  kind: "review_loss_product_pricing",
+  sourceFindingIds: ["finding-profit"],
+  ownerRole: "profit",
+  subjectRef: "product-line-1",
+  explanation: "复核低毛利产品报价，不自动修改任何权威价格。",
+  durationDays: 21,
+  prerequisites: [],
+  mutuallyExclusiveWith: [],
+  cashImpact: { conservative: -20_000, base: 40_000, optimistic: 100_000 },
+  profitImpact: { conservative: 60_000, base: 140_000, optimistic: 220_000 },
+  riskReductionBps: { conservative: 100, base: 300, optimistic: 500 },
+  budgetCostMinor: 12_000,
+  capacityUnits: 3,
+  confidenceBps: 8_200,
+  requiredCapabilities: ["finance.council.approve"],
+  requiresHumanApproval: true
+} satisfies FinancialCouncilCandidateAction;
+
+const taxReviewAction = {
+  actionId: "action-3",
+  kind: "schedule_tax_review",
+  sourceFindingIds: ["finding-tax"],
+  ownerRole: "tax",
+  subjectRef: null,
+  explanation: "安排专业税务复核；该建议不构成税务意见。",
+  durationDays: 10,
+  prerequisites: [],
+  mutuallyExclusiveWith: [],
+  cashImpact: { conservative: -8_000, base: -8_000, optimistic: -8_000 },
+  profitImpact: { conservative: -8_000, base: -8_000, optimistic: -8_000 },
+  riskReductionBps: { conservative: 500, base: 900, optimistic: 1_200 },
+  budgetCostMinor: 8_000,
+  capacityUnits: 1,
+  confidenceBps: 7_600,
+  requiredCapabilities: ["finance.council.approve"],
+  requiresHumanApproval: true
+} satisfies FinancialCouncilCandidateAction;
+
+function financialCouncilPortfolio(
+  kind: components["schemas"]["FinancialCouncilRun_portfolioKind"],
+  actions: FinancialCouncilCandidateAction[],
+  objectiveScoreBps: number
+): FinancialCouncilActionPortfolio {
+  return {
+    portfolioId: `portfolio-${kind}-1`,
+    runId: "council-run-fixture",
+    revision: 1,
+    kind,
+    actionIds: actions.map((action) => action.actionId),
+    actions,
+    hardConstraints: [{
+      code: "minimum_cash_reserve",
+      satisfied: true,
+      reason: null
+    }],
+    objectiveScoreBps,
+    scenarioForecast: {
+      cashImpact: { conservative: 92_000, base: 272_000, optimistic: 452_000 },
+      profitImpact: { conservative: 52_000, base: 132_000, optimistic: 212_000 },
+      riskReductionBps: { conservative: 900, base: 1_800, optimistic: 2_600 }
+    },
+    sensitivityAnalysis: [{ factor: "collection_delay", impactBps: -450 }],
+    rejectedActions: [],
+    requiredApprovalCapabilities: ["finance.council.approve"],
+    expiresAt: COUNCIL_EXPIRES_AT,
+    createdAt: COUNCIL_NOW
+  };
+}
+
+const financialCouncilPortfolios = [
+  financialCouncilPortfolio(
+    "balanced", [receivableAction, pricingAction, taxReviewAction], 8_400
+  ),
+  financialCouncilPortfolio("cash_first", [receivableAction, taxReviewAction], 8_100),
+  financialCouncilPortfolio("growth_first", [pricingAction, taxReviewAction], 7_900)
+] satisfies FinancialCouncilActionPortfolio[];
+
+const financialCouncilConsensus = {
+  reportId: "consensus-report-fixture",
+  runId: "council-run-fixture",
+  snapshotId: "council-snapshot-fixture",
+  acceptedFindings: financialCouncilFindings,
+  minorityFindings: [financialCouncilFindings[4]],
+  rejectedFindings: [],
+  unresolvedConflicts: [],
+  dataGaps: [],
+  overallDiagnosis: "现金安全可控，但应收、低毛利产品与税务复核需并行推进。",
+  inputVersionHash: councilHash("a"),
+  createdAt: COUNCIL_NOW
+} satisfies components["schemas"]["FinancialCouncilRun_ConsensusReport"];
+
+const financialCouncilBaseRun = {
+  runId: "council-run-fixture",
+  workspaceId: "workspace-e2e",
+  currency: "CNY",
+  status: "awaiting_approval",
+  revision: 7,
+  dataAsOf: COUNCIL_NOW,
+  businessReport: financialCouncilBusinessReport,
+  policyVersionId: "council-policy-v1",
+  snapshotId: "council-snapshot-fixture",
+  snapshotHash: councilHash("b"),
+  consensusReport: financialCouncilConsensus,
+  portfolios: financialCouncilPortfolios,
+  latestPortfolioRevision: 1,
+  approval: null,
+  createdAt: COUNCIL_NOW,
+  updatedAt: COUNCIL_NOW,
+  expiresAt: COUNCIL_EXPIRES_AT
+} satisfies FinancialCouncilRun;
+
+function emptyFinancialCouncilPortfolio(
+  kind: components["schemas"]["FinancialCouncilRun_portfolioKind"]
+): FinancialCouncilActionPortfolio {
+  return {
+    ...financialCouncilPortfolio(kind, [], 0),
+    hardConstraints: [{
+      code: "minimum_cash_reserve",
+      satisfied: false,
+      reason: "没有候选动作能满足最低现金储备约束。"
+    }],
+    sensitivityAnalysis: [],
+    rejectedActions: [{
+      actionId: "action-1",
+      reasonCode: "cash_reserve_blocked",
+      reason: "保守场景会低于最低现金储备。"
+    }]
+  };
+}
+
+const approvedCouncilRun = {
+  ...financialCouncilBaseRun,
+  status: "approved",
+  revision: 8,
+  approval: {
+    approvalId: "approval-fixture",
+    runId: "council-run-fixture",
+    portfolioRevision: 1,
+    portfolioKind: "balanced",
+    status: "approved",
+    approvedActionIds: ["action-1", "action-2", "action-3"],
+    requiredCapabilities: ["finance.council.approve"],
+    reason: null,
+    approvedAt: COUNCIL_NOW
+  }
+} satisfies FinancialCouncilRun;
+
+const partialDispatches = {
+  items: (["queued", "running", "retry", "succeeded", "failed"] as const)
+    .map((status, index) => ({
+      dispatchId: `dispatch-${index + 1}`,
+      runId: "council-run-fixture",
+      approvalId: "approval-fixture",
+      portfolioRevision: 1,
+      portfolioKind: "balanced" as const,
+      actionId: `action-${(index % 3) + 1}`,
+      status,
+      attempt: status === "queued" ? 0 : index,
+      receiptId: status === "succeeded" ? "advisor-draft-receipt-1" : null,
+      lastErrorCode: status === "retry" || status === "failed"
+        ? "dispatch_temporarily_unavailable" : null,
+      createdAt: COUNCIL_NOW,
+      updatedAt: COUNCIL_NOW
+    })),
+  nextAfter: null,
+  hasMore: false
+} satisfies Schema<"FinancialCouncilDispatchPagedResult">;
+
+export const financialCouncilFixture = Object.freeze({
+  analyzing: {
+    ...financialCouncilBaseRun,
+    status: "analyzing",
+    revision: 3,
+    consensusReport: null,
+    portfolios: [],
+    latestPortfolioRevision: null
+  },
+  auditing: {
+    ...financialCouncilBaseRun,
+    status: "auditing",
+    revision: 4,
+    consensusReport: null,
+    portfolios: [],
+    latestPortfolioRevision: null
+  },
+  awaitingApproval: financialCouncilBaseRun,
+  approved: approvedCouncilRun,
+  notComputable: {
+    ...financialCouncilBaseRun,
+    status: "not_computable",
+    revision: 6,
+    consensusReport: {
+      ...financialCouncilConsensus,
+      acceptedFindings: [],
+      minorityFindings: [],
+      dataGaps: [{
+        code: "unverified_financial_fact",
+        source: "financial_fact",
+        sourceId: "financial-fact-1",
+        description: "关键财务事实尚未验证，不能计算权威组合。"
+      }],
+      overallDiagnosis: "关键事实缺失，当前结果不可计算。"
+    },
+    portfolios: [],
+    latestPortfolioRevision: null
+  },
+  stale: {
+    ...financialCouncilBaseRun,
+    status: "stale",
+    revision: 8
+  },
+  unresolvedConflict: {
+    ...financialCouncilBaseRun,
+    consensusReport: {
+      ...financialCouncilConsensus,
+      unresolvedConflicts: [{
+        conflictId: "conflict-fixture",
+        type: "risk_preference",
+        findingIds: ["finding-finance", "finding-profit"],
+        status: "unresolved"
+      }]
+    }
+  },
+  emptyFeasiblePortfolios: {
+    ...financialCouncilBaseRun,
+    portfolios: (["balanced", "cash_first", "growth_first"] as const)
+      .map(emptyFinancialCouncilPortfolio)
+  },
+  partialDispatch: {
+    run: approvedCouncilRun,
+    dispatches: partialDispatches
+  }
+} satisfies FinancialCouncilFixtureContract);
+
+export const financialCouncilPolicyFixture = {
+  policyVersionId: "council-policy-v1",
+  workspaceId: "workspace-e2e",
+  version: 1,
+  revision: 1,
+  currency: "CNY",
+  balancedWeightsBps: { cash: 3_000, profit: 3_000, risk: 2_500, strategic: 1_500 },
+  minimumCashReserveMinor: 500_000,
+  dueDebtMinor: 180_000,
+  necessaryOutflowMinor: 360_000,
+  budgetLimitMinor: 80_000,
+  capacityLimitUnits: 12,
+  durationLimitDays: 90,
+  minimumActionConfidenceBps: 6_000,
+  actionCoefficientVersion: "financial-action-coefficients.v1",
+  policyHash: councilHash("c"),
+  createdAt: COUNCIL_NOW
+} satisfies Schema<"FinancialCouncilPolicyVersion">;
+
+export const financialCouncilPortfolioRevisionFixture = {
+  runId: "council-run-fixture",
+  revision: 2,
+  baseRevision: 1,
+  portfolios: financialCouncilPortfolios.map((portfolio) => ({
+    ...portfolio,
+    revision: 2,
+    portfolioId: `portfolio-${portfolio.kind}-2`
+  })),
+  createdAt: COUNCIL_NOW
+} satisfies Schema<"FinancialCouncilPortfolioRevision">;
+
+export const financialCouncilRunEventsFixture = {
+  items: [{
+    eventId: "event-awaiting-approval",
+    runId: "council-run-fixture",
+    revision: 7,
+    fromStatus: "optimizing",
+    toStatus: "awaiting_approval",
+    reasonCode: null,
+    occurredAt: COUNCIL_NOW
+  }],
+  nextAfter: null,
+  hasMore: false
+} satisfies Schema<"FinancialCouncilRunEventPagedResult">;
 type CopilotMessage = Omit<components["schemas"]["CopilotMessage"], "$defs">;
 type CopilotSession = Omit<components["schemas"]["CopilotSession"], "$defs">;
 type CopilotTask = Omit<components["schemas"]["CopilotTask"], "$defs">;
@@ -76,6 +490,9 @@ const readyBootstrap = {
     "quote.exception.discount.approve",
     "ledger.pending.create",
     "ledger.verify",
+    "finance.council.run",
+    "finance.council.approve",
+    "finance.council.policy.manage",
     "roi.close",
     "growth.performance.workspace.read"
   ],

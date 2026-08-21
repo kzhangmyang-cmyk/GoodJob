@@ -5,7 +5,7 @@ import type {
 } from "../generated/growth-advisor-quote-roi.js";
 
 export const GROWTH_CONTRACT_NAME = "growth-advisor-quote-roi";
-export const GROWTH_CONTRACT_VERSION = "1.0.3";
+export const GROWTH_CONTRACT_VERSION = "1.0.10";
 
 export type GrowthPaths = paths;
 export type GrowthOperations = operations;
@@ -35,6 +35,38 @@ export type GrowthAdvisorRecommendationTransitionInput =
 export type GrowthAdvisorRecommendedAction =
   components["schemas"]["AdvisorRecommendation_AdvisorRecommendedAction"];
 
+export type FinancialCouncilRun = Omit<
+  components["schemas"]["FinancialCouncilRun"],
+  "$defs"
+>;
+export type FinancialCouncilRunEvent =
+  components["schemas"]["FinancialCouncilRunEvent"];
+export type FinancialCouncilRunEventPagedResult =
+  components["schemas"]["FinancialCouncilRunEventPagedResult"];
+export type FinancialCouncilRunEventPage =
+  FinancialCouncilRunEventPagedResult;
+export type FinancialCouncilPolicyInput =
+  components["schemas"]["FinancialCouncilPolicyInput"];
+export type FinancialCouncilPolicyVersion =
+  components["schemas"]["FinancialCouncilPolicyVersion"];
+export type FinancialCouncilPolicy = FinancialCouncilPolicyVersion;
+export type FinancialCouncilPortfolioRevisionInput =
+  components["schemas"]["FinancialCouncilPortfolioRevisionInput"];
+export type FinancialCouncilPortfolioRevision =
+  components["schemas"]["FinancialCouncilPortfolioRevision"];
+export type FinancialCouncilApproval =
+  components["schemas"]["FinancialCouncilApproval"];
+export type FinancialCouncilDispatchView =
+  components["schemas"]["FinancialCouncilDispatchView"];
+export type FinancialCouncilDispatchPagedResult =
+  components["schemas"]["FinancialCouncilDispatchPagedResult"];
+export type FinancialCouncilDispatchPage =
+  FinancialCouncilDispatchPagedResult;
+export type FinancialCouncilCandidateAction =
+  components["schemas"]["CandidateAction"];
+export type FinancialCouncilActionPortfolio =
+  components["schemas"]["ActionPortfolio"];
+
 export type GetAdvisorTodayOperation =
   operations["getAdvisorToday"];
 export type AcceptAdvisorRecommendationOperation =
@@ -43,3 +75,21 @@ export type IgnoreAdvisorRecommendationOperation =
   operations["ignoreAdvisorRecommendation"];
 export type CompleteAdvisorRecommendationOperation =
   operations["completeAdvisorRecommendation"];
+export type CreateFinancialCouncilRunOperation =
+  operations["createFinancialCouncilRun"];
+export type GetFinancialCouncilRunOperation =
+  operations["getFinancialCouncilRun"];
+export type ListFinancialCouncilRunEventsOperation =
+  operations["listFinancialCouncilRunEvents"];
+export type GetFinancialCouncilPolicyOperation =
+  operations["getFinancialCouncilPolicy"];
+export type UpdateFinancialCouncilPolicyOperation =
+  operations["updateFinancialCouncilPolicy"];
+export type CreateFinancialCouncilPortfolioRevisionOperation =
+  operations["createFinancialCouncilPortfolioRevision"];
+export type ApproveFinancialCouncilPortfolioRevisionOperation =
+  operations["approveFinancialCouncilPortfolioRevision"];
+export type RejectFinancialCouncilRunOperation =
+  operations["rejectFinancialCouncilRun"];
+export type ListFinancialCouncilDispatchesOperation =
+  operations["listFinancialCouncilDispatches"];

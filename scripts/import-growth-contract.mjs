@@ -2,7 +2,7 @@ import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  verifyPinnedGrowthContractAt
+  verifyGrowthContractReleaseAt
 } from "./check-growth-contract.mjs";
 
 const CONTRACT_NAME = "growth-advisor-quote-roi";
@@ -16,20 +16,23 @@ function pinnedDirectory() {
   );
 }
 
-export async function importGrowthContract(releaseDirectory) {
-  const manifest = await verifyPinnedGrowthContractAt(releaseDirectory);
+export async function importGrowthContract(
+  releaseDirectory,
+  destinationDirectory = pinnedDirectory()
+) {
+  const manifest = await verifyGrowthContractReleaseAt(releaseDirectory);
   if (manifest.name !== CONTRACT_NAME) {
     throw new Error("Pinned growth contract name mismatch");
   }
-  await mkdir(pinnedDirectory(), { recursive: true });
+  await mkdir(destinationDirectory, { recursive: true });
   await Promise.all([
     copyFile(
-      path.join(releaseDirectory, `${CONTRACT_NAME}.openapi.json`),
-      path.join(pinnedDirectory(), `${CONTRACT_NAME}.openapi.json`)
+      path.join(releaseDirectory, "openapi.json"),
+      path.join(destinationDirectory, `${CONTRACT_NAME}.openapi.json`)
     ),
     copyFile(
-      path.join(releaseDirectory, `${CONTRACT_NAME}.manifest.json`),
-      path.join(pinnedDirectory(), `${CONTRACT_NAME}.manifest.json`)
+      path.join(releaseDirectory, "manifest.json"),
+      path.join(destinationDirectory, `${CONTRACT_NAME}.manifest.json`)
     )
   ]);
   return manifest;

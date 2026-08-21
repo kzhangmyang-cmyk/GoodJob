@@ -3,7 +3,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { growthContractScenario } from "./growth-contract";
+import {
+  financialCouncilFixture,
+  growthContractScenario
+} from "./growth-contract";
 
 const pinnedManifest = JSON.parse(await readFile(
   path.join(
@@ -16,6 +19,64 @@ const pinnedManifest = JSON.parse(await readFile(
   ),
   "utf8"
 )) as { contractVersion: string; contractHash: string };
+
+test("financial council fixtures pin immutable release 1.0.10", () => {
+  assert.equal(pinnedManifest.contractVersion, "1.0.10");
+});
+
+test("financial council fixtures cover every required public state", () => {
+  const fixture = financialCouncilFixture;
+  assert.deepEqual(Object.keys(fixture), [
+    "analyzing",
+    "auditing",
+    "awaitingApproval",
+    "approved",
+    "notComputable",
+    "stale",
+    "unresolvedConflict",
+    "emptyFeasiblePortfolios",
+    "partialDispatch"
+  ]);
+  assert.equal(fixture.analyzing.status, "analyzing");
+  assert.equal(fixture.auditing.status, "auditing");
+  assert.deepEqual(
+    fixture.awaitingApproval.portfolios.map((portfolio) => portfolio.kind),
+    ["balanced", "cash_first", "growth_first"]
+  );
+  assert.equal(fixture.approved.status, "approved");
+  assert.equal(fixture.notComputable.status, "not_computable");
+  assert.equal(fixture.stale.status, "stale");
+  assert.equal(
+    fixture.unresolvedConflict.consensusReport.unresolvedConflicts[0].status,
+    "unresolved"
+  );
+  assert.equal(
+    fixture.emptyFeasiblePortfolios.portfolios.every(
+      (portfolio) => portfolio.actions.length === 0
+    ),
+    true
+  );
+  assert.deepEqual(
+    fixture.partialDispatch.dispatches.items.map(
+      (dispatch) => dispatch.status
+    ),
+    ["queued", "running", "retry", "succeeded", "failed"]
+  );
+});
+
+test("ready bootstrap grants the three closed financial council capabilities", () => {
+  const capabilities = growthContractScenario("happy_path").bootstrap.capabilities;
+  assert.deepEqual(
+    capabilities.filter((capability): capability is string =>
+      typeof capability === "string"
+      && capability.startsWith("finance.council.")),
+    [
+      "finance.council.run",
+      "finance.council.approve",
+      "finance.council.policy.manage"
+    ]
+  );
+});
 
 test("every named growth scenario carries the pinned bootstrap identity", () => {
   const names = [

@@ -14,13 +14,9 @@ function pinnedDirectory() {
   );
 }
 
-export async function verifyPinnedGrowthContractAt(directory) {
-  const openApiPath = path.join(
-    directory, `${CONTRACT_NAME}.openapi.json`
-  );
-  const manifestPath = path.join(
-    directory, `${CONTRACT_NAME}.manifest.json`
-  );
+async function verifyGrowthContractAt(directory, openApiName, manifestName) {
+  const openApiPath = path.join(directory, openApiName);
+  const manifestPath = path.join(directory, manifestName);
   const [bytes, manifestText] = await Promise.all([
     readFile(openApiPath),
     readFile(manifestPath, "utf8")
@@ -32,6 +28,18 @@ export async function verifyPinnedGrowthContractAt(directory) {
     throw new Error("Pinned growth contract hash mismatch");
   }
   return manifest;
+}
+
+export async function verifyPinnedGrowthContractAt(directory) {
+  return verifyGrowthContractAt(
+    directory,
+    `${CONTRACT_NAME}.openapi.json`,
+    `${CONTRACT_NAME}.manifest.json`
+  );
+}
+
+export async function verifyGrowthContractReleaseAt(directory) {
+  return verifyGrowthContractAt(directory, "openapi.json", "manifest.json");
 }
 
 export async function verifyPinnedGrowthContract() {
