@@ -123,4 +123,6 @@ MYSQL_TEST_ADMIN_URL="mysql://..." npm run test:financial-council:mysql --worksp
 
 `test:financial-council:mysql` 是真实 InnoDB 发布门禁；未配置 `MYSQL_TEST_ADMIN_URL` 时必须显式失败，不得将缺少证据记为通过。
 
+当前实现状态：财务委员会 P1–P5 已实现，Growth contract 固定为 `1.0.10`（`sha256:dcbbc8e43c0ba43cd8e628cb49bd43f8f1a77810d3f864c83e11f4ac2fa0aee3`）。已验证 Memory vertical（2/2）和前端 fixture E2E（10/10）；真实 MySQL/browser harness 已提交，但需要可用的 `MYSQL_TEST_ADMIN_URL` 才能执行。没有该环境证据时，不能称为 live verified 或 fully released。
+
 覆盖：金额换算、勾稽校验、指标计算、假利润/客户 ABC/现金流预警、知识库条目、诊断阈值（负债率/应收天数/利息保障/净现比）、两种报表格式解析与勾稽错误。

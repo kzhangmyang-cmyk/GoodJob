@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript、Express、MySQL 8、Zod、JSON Schema 2020-12、OpenAPI 3.1、现有 Model Gateway、Node test runner、Vite、vanilla controller/view、Playwright。
 
-**当前状态：** P1–P4 已完成；P5 前端 fixture 流程与后端 Memory vertical 已绿。Memory vertical 覆盖完整报表、五专家、同角色 `risk_preference`、恰好一次 rebuttal、三组合、revision 2、approve、draft receipt 与无权威投影变更。当前环境未配置 `MYSQL_TEST_ADMIN_URL`，真实 MySQL 门禁明确失败；无 route-intercept 浏览器 E2E 仍待 Phase B，所以整体功能尚未完成。
+**当前状态：** P1–P5 实现已完成。Growth contract 固定为 `1.0.10`（`sha256:dcbbc8e43c0ba43cd8e628cb49bd43f8f1a77810d3f864c83e11f4ac2fa0aee3`）；Memory vertical 覆盖完整报表、五专家、同角色 `risk_preference`、恰好一次 rebuttal、三组合、revision 2、approve、draft receipt 与无权威投影变更，前端 fixture E2E 10/10。真实 MySQL 与无 route-intercept 浏览器 harness 均已提交，但当前环境没有 `MYSQL_TEST_ADMIN_URL`（也没有本地 MySQL 或 Docker），所以它们尚未 live 执行；实现完成不等于 live verified 或 fully released。
 
 ## Global Constraints
 
@@ -52,7 +52,7 @@ P1 Contract + domain + immutable snapshot + run repository
                    +--> P5 Frontend + E2E + real MySQL + release
 ```
 
-`P1` 的公开合同冻结后，`P2` 的模型输出结构和 `P5` 的生成类型可以并行实现；其余按 DAG 顺序执行。只有 `P5` 可以宣布整体功能完成。
+`P1` 的公开合同冻结后，`P2` 的模型输出结构和 `P5` 的生成类型可以并行实现；其余按 DAG 顺序执行。P5 实现已完成；只有 P5 的真实 MySQL 和无 route-intercept 浏览器门禁也通过后，才能宣布整体 live release 完成。
 
 ## Public HTTP Surface
 
@@ -103,8 +103,11 @@ GET  /api/v1/finance/council-runs/{runId}/dispatches
 ### P5 Exit
 
 - [x] 前端 fixture 展示专家结论、冲突、统一判断、三组合、淘汰原因、敏感性、revision 和派发回执。
-- [ ] 三视口、键盘、错误态、轮询恢复和真实后端/MySQL E2E 通过。
-- [ ] 合同、生成类型、backend/frontend build、security、diff check 和双仓状态全部可复现。
+- [x] fixture Playwright 10/10 覆盖三视口、键盘、错误态和轮询恢复；后端 Memory vertical 2/2 通过。
+- [x] `1.0.10` 合同/生成类型、backend/frontend build 和 diff check 已重新执行并通过。
+- [ ] 真实 InnoDB 行为矩阵：等待具备 `MYSQL_TEST_ADMIN_URL` 的环境；缺失变量时门禁明确失败，不能用 Memory 结果替代。
+- [ ] 无 route-intercept 浏览器 E2E：harness 已提交，等待同一 MySQL 环境启动真实后端后执行。
+- [ ] 双仓 live release 验收：以上两项有 fresh 通过证据前不得完成。
 
 ## Final Verification
 

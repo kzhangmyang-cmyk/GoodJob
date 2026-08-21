@@ -459,6 +459,7 @@ Swagger 文档默认启用，但必须先使用管理员或超级管理员账号
 - 财务委员会 API：workspace 只由认证 active workspace 解析；不要发送 `X-Workspace-Id`
 - 财务委员会批准后只由后端 dispatch worker 写受控 draft；Memory vertical 发布门禁使用 `npm run test:financial-council:vertical --workspace backend`，真实 InnoDB 门禁必须显式提供 `MYSQL_TEST_ADMIN_URL`
 - 财务委员会真实浏览器门禁由 test-only server 提供：`MYSQL_TEST_ADMIN_URL=mysql://... npm run start:financial-council:real-e2e --workspace backend`。它只监听 `127.0.0.1:4288`，`GET /healthz` 就绪后使用真实 `/api/auth/login` session/CSRF 与真实 Growth application routes；启动 stdout 输出 `financial-council-real-e2e.v1` JSON（默认凭据 `admin@goodjob.com` / `goodjob123`、workspace `europe`、dataAsOf `2026-08-16T08:00:00.000Z`、隔离数据库名）。每次启动创建并在关闭时删除独立 MySQL database；缺少 `MYSQL_TEST_ADMIN_URL` 必须失败，不允许 memory fallback
+- 财务委员会 P1–P5 的实现已提交；当前固定 Growth contract 是 `1.0.10`（`sha256:dcbbc8e43c0ba43cd8e628cb49bd43f8f1a77810d3f864c83e11f4ac2fa0aee3`）。Memory vertical 与前端 fixture E2E 已验证，但真实 InnoDB 和无 route-intercept 浏览器 E2E 仍必须在提供 `MYSQL_TEST_ADMIN_URL` 的环境中执行；在此之前不得标记为 live verified 或 fully released。
 - Bearer 调试：调用 `/api/auth/login` 取得 `token`，在 Swagger 的 Authorize 中填写
 - 关闭文档：部署时设置 `ENABLE_API_DOCS=false`
 

@@ -2,7 +2,7 @@
 
 日期：2026-08-16
 
-状态：P1–P4 已完成；P5 的前端 fixture 验收和后端 Memory vertical 已通过，真实 MySQL 与无 route-intercept 浏览器发布证据待补齐，因此整体尚未完成
+状态：P1–P5 实现已完成。Growth contract 固定为 `1.0.10`（`sha256:dcbbc8e43c0ba43cd8e628cb49bd43f8f1a77810d3f864c83e11f4ac2fa0aee3`）；后端 Memory vertical 和前端 fixture E2E 已通过，真实 MySQL 与无 route-intercept 浏览器 harness 已提交但尚未在 live 环境执行。当前环境缺少 `MYSQL_TEST_ADMIN_URL`，因此整体不得标记为 live verified 或 fully released。
 
 ## 1. 背景
 
