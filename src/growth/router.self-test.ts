@@ -2,6 +2,13 @@ import { strict as assert } from "node:assert";
 import { growthHash, parseGrowthHash } from "./router";
 
 assert.deepEqual(parseGrowthHash("#growth/advisor"), { name: "advisor" });
+assert.deepEqual(parseGrowthHash("#financial-council"), {
+  name: "financial-council"
+});
+assert.deepEqual(parseGrowthHash("#financial-council/run/run%20%2F%201"), {
+  name: "financial-council",
+  runId: "run / 1"
+});
 assert.deepEqual(
   parseGrowthHash("#growth/quotes?case=case-1&deal=deal-1"),
   { name: "quote", quoteCaseId: "case-1", dealId: "deal-1" }
@@ -16,6 +23,10 @@ assert.deepEqual(
   }
 );
 assert.equal(growthHash({ name: "finance" }), "#growth/finance");
+assert.equal(
+  growthHash({ name: "financial-council", runId: "run / 1" }),
+  "#financial-council/run/run%20%2F%201"
+);
 assert.equal(parseGrowthHash("#acquisition"), null);
 assert.equal(parseGrowthHash("#growth/unknown"), null);
 assert.equal(

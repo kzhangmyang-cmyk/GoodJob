@@ -174,7 +174,7 @@ npm run test:e2e -- acquisition-visual-reader.spec.ts
 
 ## Growth 真实模式（Real Mode）
 
-仓库钉住了后端 Growth 合同发布（`contracts/pinned/`，当前 1.0.3），
+仓库钉住了后端 Growth 合同发布（`contracts/pinned/`，当前 1.0.10），
 `src/growth/` 提供独立增长工作区：
 
 - `#growth/advisor` 增长参谋今日视图与受控建议
@@ -183,6 +183,8 @@ npm run test:e2e -- acquisition-visual-reader.spec.ts
 - `#growth/quotes` 报价工作台
 - `#growth/finance` 成本、财务事实与 Excel 导入
 - `#growth/roi` 预计与已关账实际 ROI
+- `#financial-council` 财务委员会创建入口；使用当前已验证的 Business report 创建运行
+- `#financial-council/run/<runId>` 财务委员会工作台。审批只创建草稿和待办，不执行财务动作；税务内容须由专业人士复核。
 
 进入真实模式前，前端会调用 `GET /api/v1/growth/bootstrap` 做合同门禁：
 合同大版本或哈希与钉住 manifest 不一致时显示
@@ -192,7 +194,7 @@ npm run test:e2e -- acquisition-visual-reader.spec.ts
 演示模式不会发起任何 Growth API 请求。
 
 Growth API 与主应用共用同源 Cookie 登录态和 `gj_csrf` CSRF Cookie。
-未登录时可保留 `#growth/...` 目标路由；用户登录或恢复有效会话后，前端会
+未登录时可保留 `#growth/...` 或 `#financial-council/...` 目标路由；用户登录或恢复有效会话后，前端会
 自动重新执行 bootstrap，不会跳回 `#acquisition`。Growth 工作区显示时会
 隐藏旧演示壳层，避免两套页面同时出现。
 

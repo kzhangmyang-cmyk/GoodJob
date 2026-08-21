@@ -27,6 +27,11 @@ import { createAdvisorCopilotWorkflow } from "./advisor/copilot-workflow";
 import { createAdvisorController } from "./advisor/controller";
 import { renderAdvisorHome } from "./advisor/view";
 import { createAgentsController } from "./agents/controller";
+import type { AgentsSessionState } from "./agents/controller";
+import { createFinancialCouncilApi } from "./council/api";
+import { createFinancialCouncilController } from "./council/controller";
+import { createFinancialCouncilWorkbenchEntry } from "./council/entry";
+import type { FinancialCouncilCreateInput } from "./council/api";
 
 export type GrowthModeState = GrowthMode | GrowthUnavailable;
 
@@ -166,7 +171,7 @@ export async function startGrowthRuntime(
     return cachedRuntime.mode;
   }
   const registry = options.registry ?? new GrowthPageRegistry();
-  const agentsSession = {};
+  const agentsSession: AgentsSessionState = {};
   let agentsController: ReturnType<typeof createAgentsController> | null = null;
   registry.register("agents", {
     handlesOwnRouteChanges: true,
@@ -365,6 +370,43 @@ export async function startGrowthRuntime(
         host.innerHTML = renderAdvisorHome(state);
       },
       unmount() {
+        const host = growthWorkspaceHost();
+        if (host) clearGrowthContent(host);
+      }
+    });
+  }
+  if (registry.get("financial-council") === null && mode.kind === "real") {
+    const http = createGrowthHttpClient();
+    const api = createFinancialCouncilApi(http);
+    let councilEntry: ReturnType<typeof createFinancialCouncilWorkbenchEntry> | null = null;
+    registry.register("financial-council", {
+      async mount(context) {
+        const host = growthWorkspaceHost();
+        if (!host) return;
+        const controller = createFinancialCouncilController({ api });
+        councilEntry = createFinancialCouncilWorkbenchEntry({
+          host,
+          controller,
+          capabilities: mode.bootstrap.capabilities as readonly string[],
+          async createInput(dataAsOf) {
+            const businessReport = agentsSession.activeInput;
+            if (!businessReport) return null;
+            const policy = await api.getPolicy();
+            return {
+              currency: businessReport.currency,
+              dataAsOf,
+              businessReport: businessReport as unknown as FinancialCouncilCreateInput["businessReport"],
+              policyVersionId: policy.body.policyVersionId
+            };
+          }
+        });
+        const runId = context.route.name === "financial-council"
+          ? context.route.runId : undefined;
+        await councilEntry.mount(runId);
+      },
+      unmount() {
+        councilEntry?.dispose();
+        councilEntry = null;
         const host = growthWorkspaceHost();
         if (host) clearGrowthContent(host);
       }

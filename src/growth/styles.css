@@ -10,10 +10,138 @@
 
 .growth-nav {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.25rem;
   padding: 0.75rem 1rem;
   border-bottom: 1px solid #e5e7eb;
   background: #f9fafb;
+}
+
+.council-workbench {
+  max-width: 100%;
+}
+
+.council-workbench :is(ul, ol) {
+  margin: 0;
+  padding-left: 1.15rem;
+}
+
+.council-workbench li,
+.council-workbench p,
+.council-workbench span {
+  overflow-wrap: anywhere;
+}
+
+.council-section,
+.council-blockers,
+.council-create,
+.council-specialist-card {
+  min-width: 0;
+  margin: 0 0 0.9rem;
+  padding: 0.85rem;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+}
+
+.council-section h4,
+.council-blockers h3,
+.council-create h2 {
+  margin: 0 0 0.55rem;
+}
+
+.council-specialist-grid,
+.council-metric-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.council-portfolio-picker {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+}
+
+.council-portfolio-option,
+.council-edit-list > li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.45rem 0.65rem;
+  align-items: start;
+  min-width: 0;
+  padding: 0.7rem;
+  border: 1px solid #d1d5db;
+}
+
+.council-portfolio-option input {
+  margin-top: 0.22rem;
+}
+
+.council-edit-list > li {
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 0.55rem;
+}
+
+.council-edit-list label,
+.council-create label {
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.council-edit-list :is(input, select),
+.council-approval textarea,
+.council-create input {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.council-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.council-blockers {
+  border-left: 4px solid #b45309;
+}
+
+.council-status-blocked,
+.council-disclaimer {
+  font-weight: 600;
+}
+
+.council-live-region {
+  min-height: 1.25rem;
+  margin: 0 0 0.7rem;
+}
+
+.council-workbench :is(button, input, select, textarea):focus-visible,
+.growth-nav a:focus-visible {
+  outline: 2px solid #0f766e;
+  outline-offset: 3px;
+}
+
+@media (min-width: 1024px) {
+  .council-specialist-grid,
+  .council-metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 759px) {
+  .council-section,
+  .council-blockers,
+  .council-create {
+    padding: 0.7rem;
+  }
+
+  .council-button-row > button,
+  .council-create button {
+    width: 100%;
+  }
 }
 
 .growth-nav a {

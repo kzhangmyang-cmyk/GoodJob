@@ -55,6 +55,8 @@ import "./growth/advisor/view.self-test";
 import "./growth/agents/view.self-test";
 import "./growth/council/api.self-test";
 import "./growth/council/controller.self-test";
+import "./growth/council/view.self-test";
+import "./growth/council/entry.self-test";
 import "./connections/connection-view.self-test";
 
 assert.equal(getLeadFinderLayoutMode(0), "entry");

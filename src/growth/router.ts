@@ -3,6 +3,7 @@ export type GrowthRoute =
   | { name: "agents" }
   | { name: "catalog" }
   | { name: "finance" }
+  | { name: "financial-council"; runId?: string }
   | {
       name: "quote";
       quoteCaseId?: string;
@@ -26,6 +27,17 @@ export function parseGrowthHash(hash: string): GrowthRoute | null {
   }
   if (pathname === "growth/catalog") return { name: "catalog" };
   if (pathname === "growth/finance") return { name: "finance" };
+  if (pathname === "financial-council") return { name: "financial-council" };
+  if (pathname.startsWith("financial-council/run/")) {
+    const encodedRunId = pathname.slice("financial-council/run/".length);
+    if (!encodedRunId || encodedRunId.includes("/")) return null;
+    try {
+      const runId = decodeURIComponent(encodedRunId);
+      return runId ? { name: "financial-council", runId } : null;
+    } catch {
+      return null;
+    }
+  }
   if (pathname === "growth/quotes") {
     return Object.assign(
       { name: "quote" as const },
@@ -54,6 +66,10 @@ export function growthHash(route: GrowthRoute): string {
     case "catalog":
     case "finance":
       return `#growth/${route.name}`;
+    case "financial-council":
+      return route.runId
+        ? `#financial-council/run/${encodeURIComponent(route.runId)}`
+        : "#financial-council";
     case "quote": {
       const params = new URLSearchParams();
       if (route.quoteCaseId) params.set("case", route.quoteCaseId);
