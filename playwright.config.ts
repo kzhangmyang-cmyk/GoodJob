@@ -8,7 +8,8 @@ export default defineConfig({
     "acquisition-identity-resolution.spec.ts",
     "acquisition-comment-automation.spec.ts",
     "acquisition-visual-reader.spec.ts",
-    "growth-bootstrap.spec.ts"
+    "growth-bootstrap.spec.ts",
+    "growth-financial-council.spec.ts"
   ],
   timeout: 20_000,
   expect: { timeout: 5_000 },
