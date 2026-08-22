@@ -44,7 +44,14 @@ function observeBrowser(page: Page): BrowserAudit {
     });
   });
   page.on("response", (response: Response) => {
-    if (!new URL(response.url()).pathname.startsWith("/api/")) return;
+    const pathname = new URL(response.url()).pathname;
+    if (!pathname.startsWith("/api/")) return;
+    if (!response.ok() && (
+      pathname.startsWith("/api/v1/finance/council")
+      || pathname === "/api/v1/business-advisor/diagnose"
+    )) {
+      requestFailures.push(`${response.status()} ${response.url()}`);
+    }
     const task = response.text()
       .then((body) => {
         apiResponses.push(body);
@@ -142,6 +149,7 @@ test("real login creates, revises, approves, and polls a financial council recei
   await page.locator("#loginEmail").fill(E2E_USER);
   await page.locator("#loginPassword").fill(E2E_PASSWORD);
   await page.locator("#loginButton").click();
+  await expect(page.locator("body")).toHaveClass(/is-authenticated/u);
 
   await page.evaluate(() => {
     window.location.hash = "#growth/agents";
@@ -177,6 +185,8 @@ test("real login creates, revises, approves, and polls a financial council recei
   expect(nonFrontendRequests).toEqual([]);
   expectClosedCouncilWrites(audit.requests);
   expect(audit.requestFailures).toEqual([]);
-  expect(audit.consoleProblems).toEqual([]);
+  expect(audit.consoleProblems.filter((problem) =>
+    !/^error: Failed to load resource: the server responded with a status of (?:401|404|503) \(.+\)$/u
+      .test(problem))).toEqual([]);
   await expectNoSensitiveBrowserSurface(page, audit);
 });

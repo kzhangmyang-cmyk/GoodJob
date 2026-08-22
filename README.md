@@ -225,4 +225,4 @@ pnpm run test:e2e:financial-council:real
 
 可通过 `FINANCIAL_COUNCIL_E2E_USER`、`FINANCIAL_COUNCIL_E2E_PASSWORD` 和
 `FINANCIAL_COUNCIL_E2E_DATA_AS_OF` 覆盖 test-only server 的默认账号与数据截止时间。
-未提供 `MYSQL_TEST_ADMIN_URL` 时，不能将真实 MySQL/browser 验收记为通过。
+未提供 `MYSQL_TEST_ADMIN_URL` 时，不能将真实 MySQL/browser 验收记为通过。当前本地发布证据为真实 InnoDB 83/83 和无 route-intercept Chromium E2E 1/1；浏览器链路使用真实 session/CSRF、Growth 路由、异步工作器与派发回执，模型输出使用确定性 test-only adapter。

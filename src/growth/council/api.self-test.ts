@@ -107,3 +107,26 @@ await assert.rejects(
   (error: unknown) => error instanceof CouncilApiValidationError
     && error.code === "financial_council_response_invalid"
 );
+
+const lifecycle = await createFinancialCouncilApi({
+  async request() {
+    return {
+      status: 200,
+      etag: null,
+      body: {
+        items: [{
+          eventId: "run-1:1",
+          runId: "run-1",
+          revision: 1,
+          fromStatus: null,
+          toStatus: "created",
+          reasonCode: null,
+          occurredAt: "2026-08-16T08:00:00.000Z"
+        }],
+        nextAfter: null,
+        hasMore: false
+      }
+    } as never;
+  }
+} as GrowthHttpClient).listEvents("run-1");
+assert.equal(lifecycle.body.items[0]?.toStatus, "created");

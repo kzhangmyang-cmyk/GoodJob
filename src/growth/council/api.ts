@@ -41,6 +41,7 @@ const RUN_STATUSES = new Set([
   "awaiting_approval", "approved", "rejected", "stale", "expired", "failed",
   "not_computable"
 ]);
+const EVENT_STATUSES = new Set(["created", ...RUN_STATUSES]);
 const PORTFOLIO_KINDS = new Set(["balanced", "cash_first", "growth_first"]);
 const APPROVAL_STATUSES = new Set(["approved", "rejected"]);
 const DISPATCH_STATUSES = new Set([
@@ -124,8 +125,8 @@ function validateEvents(value: unknown): FinancialCouncilRunEventPage {
     ]);
     if (!nonempty(row.eventId) || !nonempty(row.runId) || !positiveInteger(row.revision)
       || !(row.fromStatus === null || (typeof row.fromStatus === "string"
-        && RUN_STATUSES.has(row.fromStatus)))
-      || typeof row.toStatus !== "string" || !RUN_STATUSES.has(row.toStatus)
+        && EVENT_STATUSES.has(row.fromStatus)))
+      || typeof row.toStatus !== "string" || !EVENT_STATUSES.has(row.toStatus)
       || !(row.reasonCode === null || nonempty(row.reasonCode))
       || !nonempty(row.occurredAt)) responseError();
   });
