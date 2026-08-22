@@ -2,16 +2,31 @@
   "name": "goodjob-crm",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.22.3 <23"
+  },
   "scripts": {
     "dev": "concurrently \"npm run dev:mysql --workspace backend\" \"npm run dev --workspace frontend\"",
     "dev:mysql": "concurrently \"npm run dev:mysql --workspace backend\" \"npm run dev --workspace frontend\"",
     "build": "npm run build --workspace backend && npm run build --workspace frontend",
-    "test": "npm run test --workspace backend && npm run test --workspace frontend",
+    "generate:frontend-contract-types": "npm run generate:types --workspace contracts",
+    "check:generated-acquisition-types": "npm run check:types --workspace contracts",
+    "build:growth-contract-release": "npm run build:growth-release --workspace contracts",
+    "check:growth-contract-release": "npm run check:growth-release --workspace contracts",
+    "check:growth-contracts": "npm run check:growth-contract-release && npm run test:growth-openapi --workspace backend",
+    "check:acquisition-contracts": "npm run test:contracts && npm run test:contract-drift --workspace backend && npm run test:security --workspace backend && npm run test:acquisition-openapi --workspace backend && npm run check:generated-acquisition-types && npm run build --workspace frontend && npm run test --workspace frontend && npm run test:baota-package",
+    "test:contracts": "npm run test --workspace contracts",
+    "test:baota-package": "node --test deploy/baota/build-package.test.mjs",
+    "test": "npm run test:contracts && npm run test --workspace backend && npm run test --workspace frontend && npm run test:baota-package",
     "test:e2e": "npm run test:e2e --workspace frontend"
+    ,
+    "test:growth-release-gate": "node --test tools/growth-dual-repo-release-gate.test.mjs",
+    "release:growth": "node tools/growth-dual-repo-release-gate.mjs"
   },
   "workspaces": [
     "backend",
-    "frontend"
+    "frontend",
+    "contracts"
   ],
   "devDependencies": {
     "concurrently": "^9.2.1"

@@ -219,6 +219,52 @@ GoodJob CRM 是一款面向外贸销售团队的网页版客户管理软件，�
 
 - AI 自动写跟进总结
 
+### 6.1 抖音公开评论自动化 Beta
+
+获客中心可以在抖音计划获批后，从两类入口读取公开可见的一级评论样本：
+
+- 客户启用的官方搜索 API 所发现的抖音公开视频链接；
+- 客户手工提交的公开抖音视频链接。
+
+这不是全站扫描或完整评论导出。计划必须显式选择 `targetPlatform=douyin`、启用
+`douyinPublicCommentSample`，并绑定服务端固定的只读内容来源：connection ID 为
+`douyin-public-comments`，Provider ID 为 `experimental_public_sample`，类型为
+`content_fetch`，状态为 `active`，凭据版本为 `1`。Beta Provider 只访问代码
+白名单中的 HTTPS 抖音公开主机，
+不接收自定义 endpoint，不使用 Cookie、登录态、私有签名、代理、验证码或浏览器
+模拟。当前只读取一级评论正文；二级回复只保留公开返回的数量，不读取回复正文，
+也不保存或展示评论者头像。
+
+页面默认上限为每次 `10` 个视频、每个视频 `30` 条评论、每个视频最多 `3` 页；
+合同硬上限分别为 `20 / 100 / 5`，并继续受 Run 的 `maxRequests`、`maxResults`、
+时长和费用预算约束。每条有效评论先保存为租户隔离的不可变平台事件和采集观测，
+再形成 Evidence、需求信号与候选。稳定 `sec_uid` 可用于同一公开主体聚合，但聚合
+不等于身份已核验；缺少一致的精确公开主页证据时，`sec_uid`、handle 或无法解析的
+主体都保持待研究。单条“多少钱”最多是潜在信号；未完成身份与资格门禁的强信号
+只显示“高潜需求信号”，不能写成已确认高意向客户。
+
+运行详情的七步时间线、视频数、样本数、有效信号数、未解析主体数和高潜信号数
+全部来自服务端持久化投影。单个视频失败不会丢弃同一 Run 已获得的结果：
+`partial_success` 表示部分成功，`no_public_comments` 只表示本次公开一级样本为空，
+不表示没有客户；`access_restricted`、`rate_limited`、
+`public_sample_unavailable`、`video_id_unresolved` 和
+`source_payload_invalid` 会保留为可审计错误。已批准计划的终态 Run 可以从任务
+详情点击“再次运行”创建新的独立 Run；历史事件和旧 Run 投影不会被覆盖。
+
+自动化测试使用固定 fixture，不访问真实抖音。只有明确提供数字视频 ID 并打开
+开关时，以下手工 smoke 才会发起一次受控 Beta 请求：
+
+```bash
+DOUYIN_VIDEO_ID='<公开视频数字 ID>' \
+DOUYIN_PUBLIC_COMMENT_SMOKE=1 \
+npm run smoke:douyin-public-comments --workspace backend
+```
+
+没有这两个环境变量时命令会明确退出且不发网络请求。smoke 只输出有界统计、覆盖
+语义、Provider 版本或稳定错误码，不应写入 CI 快照。若公开 endpoint 不可用，
+保持 Beta 熔断/受限状态，不改用 Cookie、签名或规避方案。客户授权的抖音官方
+连接器、持久化周期调度以及自动评论、私信、加好友和群发均未在本期实现。
+
 ## 7. 本地开发与验证
 
 启动：
@@ -236,8 +282,61 @@ npm run dev
 启用 MySQL 持久化：
 
 ```bash
-CRM_STORE=mysql DATABASE_URL="mysql://user:password@127.0.0.1:3306/goodjob_crm" npm run dev
+CRM_STORE=mysql CRM_SEED_DEVELOPMENT_DATA=false DATABASE_URL="mysql://user:password@127.0.0.1:3306/goodjob_crm" npm run dev
 ```
+
+MySQL 模式默认不会写入演示账号或演示业务数据。只有隔离的开发数据库需要演示数据时，才显式设置 `CRM_SEED_DEVELOPMENT_DATA=true`；不要在公测或生产数据库启用该开关。
+
+智能获客 Worker 默认使用 MySQL 权威状态和轮询执行。服务器已安装 Redis 时，可选配置：
+
+```bash
+PROSPECT_EXECUTION_DB_LOCK_TIMEOUT_MS=5000
+PROSPECT_CANDIDATE_DB_LOCK_TIMEOUT_MS=5000
+REDIS_URL=redis://127.0.0.1:6379/0
+PROSPECT_QUEUE_REQUIRED=false
+PROSPECT_QUEUE_SYNC_MS=5000
+```
+
+执行内核的 Run、任务、租约、Ledger 和原始来源状态通过独立 MySQL 事务通道写入；每次事务先回读数据库权威状态，并使用 `PROSPECT_EXECUTION_DB_LOCK_TIMEOUT_MS` 控制数据库互斥锁等待上限。候选清洗结果通过另一条独立事务通道写入，每次先回读最新网站候选，并使用 `PROSPECT_CANDIDATE_DB_LOCK_TIMEOUT_MS` 控制互斥锁等待上限；该通道只写 `website_opportunities`，不会改动线索、客户、商机或待办。启用 Redis 后，BullMQ 只负责即时唤醒、延迟重试信号和死信镜像，Redis 不保存团队、业务员、查询条件、密钥或 Provider 原始数据。MySQL 仍是唯一业务事实来源；Redis 临时不可用时自动回退到原有轮询。只有要求 Redis 不可用就禁止启动时，才设置 `PROSPECT_QUEUE_REQUIRED=true`。
+
+当前生产 Store 仍保持单后端实例约束：候选清洗管道、全局 Provider 限流和独立 Worker 生命周期尚未全部改造成跨进程原子路径，不能仅靠开启 Redis 或 MySQL 执行事务通道横向启动多个 API/Worker 进程。
+
+### 抖音授权可见评论读取 Beta
+
+已批准且正在运行的抖音获客计划可以由用户主动创建最长 120 秒的视觉读取会话。
+覆盖范围固定为 `authorized_visible_top_level_sample`：只接收用户当前选中公开
+视频页中已经显示的一级评论卡，不是全量评论、持续监听或抖音官方连接器。服务端
+拥有视频、评论、滚动、OCR、时长和制品预算；只有服务端接受观察后网页才会 ACK。
+
+DOM/ARIA 正文优先。OCR 仅在正文缺失或截断、制品上传已获授权时处理扩展本地裁剪并
+完成头像和非正文区域遮挡的单张 WebP。完整视口、Cookie、浏览器配置、页面 HTML、
+网络响应和私信/评论/点赞/关注/发布动作都不属于合同。低置信、冲突、截断、安全失败或
+用户接管只形成服务端人工复核事实，不会自动资格判定或转入 CRM。
+
+高置信观察可进入候选 Evidence；其 `authorized_visual_observation` provenance 保存
+观察、会话、方法、置信度、覆盖、hash 和可空 `artifactId`。同租户授权用户可以读取
+仍在保留期内的 `image/webp` 遮挡制品；404/到期后 Evidence 与证据哈希仍保留。
+确定性 E2E 使用本地页面消息和 API fixture，不安装真实扩展、不访问抖音或外网：
+
+```bash
+cd /path/to/GoodJob-marketing-system-frontend
+npm run test:e2e -- acquisition-visual-reader.spec.ts
+```
+
+真实 Chrome Beta smoke 只允许在人工设置 `GOODJOB_VISUAL_READER_SMOKE=1`、亲自选择
+自己的公开测试视频并点击开始后进行，不能加入 CI。输出只允许会话状态、有界数量、
+提取方法和稳定错误码，不得包含评论正文或个人字段。扩展可从 Chrome 扩展程序页面
+直接移除；卸载不会删除服务端 Evidence，遮挡制品按保留期到期。
+
+生产环境还必须配置至少 32 位的独立密钥：
+
+- `PROVIDER_CREDENTIAL_KEY`：加密自动搜客数据源连接密钥。
+- `TRADE_OBSERVATION_CURSOR_SECRET`：签名贸易观测列表分页游标。
+- `MARKET_OPPORTUNITY_CURSOR_SECRET`：签名市场机会事实列表分页游标。
+- `ORGANIZATION_IDENTITY_MASTER_SECRET`：派生企业强身份处理、查询、加密和完整性密钥。
+- `PROSPECT_SOURCE_RAW_ENVELOPE_SECRET`：解密 Provider 原始记录信封。
+
+以上密钥之间以及它们与 `JWT_SECRET` 之间都不要共用。一键部署脚本会分别生成并持久化；升级部署会优先沿用已有值，避免历史密文、完整性摘要或有效游标因服务重启而失效。
 
 若未配置 MySQL，系统自动使用内存模式。健康检查：
 
@@ -357,6 +456,10 @@ Swagger 文档默认启用，但必须先使用管理员或超级管理员账号
 - 页面入口：`/api/docs/`
 - OpenAPI JSON：`/api/docs/openapi.json`
 - 浏览器 Cookie 调试：自动携带登录会话，写请求自动附加 CSRF Token
+- 财务委员会 API：workspace 只由认证 active workspace 解析；不要发送 `X-Workspace-Id`
+- 财务委员会批准后只由后端 dispatch worker 写受控 draft；Memory vertical 发布门禁使用 `npm run test:financial-council:vertical --workspace backend`，真实 InnoDB 门禁必须显式提供 `MYSQL_TEST_ADMIN_URL`
+- 财务委员会真实浏览器门禁由 test-only server 提供：`MYSQL_TEST_ADMIN_URL=mysql://... npm run start:financial-council:real-e2e --workspace backend`。它只监听 `127.0.0.1:4288`，`GET /healthz` 就绪后使用真实 `/api/auth/login` session/CSRF 与真实 Growth application routes；启动 stdout 输出 `financial-council-real-e2e.v1` JSON（默认凭据 `admin@goodjob.com` / `goodjob123`、workspace `europe`、dataAsOf `2026-08-16T08:00:00.000Z`、隔离数据库名）。每次启动创建并在关闭时删除独立 MySQL database；缺少 `MYSQL_TEST_ADMIN_URL` 必须失败，不允许 memory fallback
+- 财务委员会 P1–P5 的实现已提交；当前固定 Growth contract 是 `1.0.10`（`sha256:dcbbc8e43c0ba43cd8e628cb49bd43f8f1a77810d3f864c83e11f4ac2fa0aee3`）。发布验证已覆盖 Memory vertical 2/2、前端 fixture E2E 10/10、真实 InnoDB 83/83 和无 route-intercept Chromium E2E 1/1；浏览器链路使用真实 session/CSRF、Growth 路由、异步工作器和派发回执，模型输出使用确定性 test-only adapter。
 - Bearer 调试：调用 `/api/auth/login` 取得 `token`，在 Swagger 的 Authorize 中填写
 - 关闭文档：部署时设置 `ENABLE_API_DOCS=false`
 

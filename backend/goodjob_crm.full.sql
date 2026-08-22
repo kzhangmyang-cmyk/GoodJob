@@ -287,9 +287,16 @@ CREATE TABLE ai_model_configs (
   protocol VARCHAR(40) NOT NULL DEFAULT 'openai-compatible',
   name VARCHAR(120) NOT NULL,
   base_url VARCHAR(255) NOT NULL,
+  endpoint_profile_id VARCHAR(80) NULL,
+  endpoint_region VARCHAR(80) NULL,
+  endpoint_workspace_id VARCHAR(120) NULL,
+  adapter_version VARCHAR(80) NULL,
   model VARCHAR(120) NOT NULL,
   api_key TEXT,
   enabled BOOLEAN DEFAULT FALSE,
+  credential_version INT NOT NULL DEFAULT 1,
+  capability_snapshot_json JSON,
+  capability_certification_hash VARCHAR(80) NULL,
   temperature DECIMAL(4,2) DEFAULT 0.10,
   use_lead_finder BOOLEAN DEFAULT TRUE,
   use_website_parse BOOLEAN DEFAULT TRUE,
@@ -301,8 +308,156 @@ CREATE TABLE ai_model_configs (
   last_test_message VARCHAR(255) DEFAULT '',
   owner_id VARCHAR(64) NOT NULL,
   team_id VARCHAR(64) NOT NULL,
+  active_owner_team_key VARCHAR(191) GENERATED ALWAYS AS (
+    CASE
+      WHEN enabled THEN
+        CONCAT(CHAR_LENGTH(owner_id), ':', owner_id, ':', team_id)
+      ELSE NULL
+    END
+  ) STORED,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_ai_model_active_owner_team(active_owner_team_key),
   INDEX idx_ai_model_owner(owner_id)
+);
+
+CREATE TABLE ai_model_credential_versions (
+  connection_id VARCHAR(64) NOT NULL,
+  credential_version INT NOT NULL,
+  provider VARCHAR(40) NOT NULL,
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  credential_ref VARCHAR(80) NOT NULL UNIQUE,
+  api_key_encrypted TEXT NOT NULL,
+  key_mask VARCHAR(8) NOT NULL DEFAULT '',
+  created_by VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY(connection_id, credential_version),
+  INDEX idx_ai_credential_owner(owner_id, connection_id)
+);
+
+CREATE TABLE ai_model_connection_activation_events (
+  id VARCHAR(90) PRIMARY KEY,
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  actor_id VARCHAR(64) NOT NULL,
+  previous_connection_id VARCHAR(64) NULL,
+  connection_id VARCHAR(64) NOT NULL,
+  reason VARCHAR(500) NOT NULL,
+  created_at DATETIME NOT NULL,
+  INDEX idx_ai_activation_owner(owner_id, created_at)
+);
+
+CREATE TABLE ai_model_connection_idempotency (
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  idempotency_key_hash CHAR(64) NOT NULL,
+  request_fingerprint CHAR(64) NOT NULL,
+  response_status SMALLINT UNSIGNED NOT NULL,
+  response_body_json JSON NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY(owner_id, team_id, idempotency_key_hash),
+  INDEX idx_ai_connection_idempotency_created(created_at)
+);
+
+CREATE TABLE ai_job_model_snapshots (
+  job_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  connection_id VARCHAR(64) NOT NULL,
+  credential_version INT NOT NULL,
+  provider VARCHAR(40) NOT NULL,
+  model VARCHAR(120) NOT NULL,
+  base_url VARCHAR(500) NOT NULL,
+  base_url_fingerprint VARCHAR(80) NOT NULL,
+  capability_snapshot_json JSON NOT NULL,
+  prompt_version VARCHAR(120) NOT NULL,
+  schema_version VARCHAR(120) NOT NULL,
+  prompt_hash VARCHAR(80) NOT NULL,
+  schema_hash VARCHAR(80) NOT NULL,
+  created_at DATETIME NOT NULL,
+  INDEX idx_ai_job_snapshot_connection(connection_id, credential_version)
+);
+
+CREATE TABLE ai_model_call_records (
+  id VARCHAR(100) NOT NULL,
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  job_id VARCHAR(255) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  attempt_id VARCHAR(100) NOT NULL,
+  connection_id VARCHAR(64) NOT NULL,
+  credential_version INT NOT NULL,
+  capability_snapshot_hash VARCHAR(80) NOT NULL,
+  provider VARCHAR(40) NOT NULL,
+  base_url_fingerprint VARCHAR(80) NOT NULL,
+  model VARCHAR(120) NOT NULL,
+  prompt_version VARCHAR(120) NOT NULL,
+  schema_version VARCHAR(120) NOT NULL,
+  request_id VARCHAR(100) NOT NULL,
+  provider_request_id VARCHAR(160) NULL,
+  input_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+  output_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+  reasoning_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+  latency_ms INT UNSIGNED NOT NULL DEFAULT 0,
+  call_status ENUM('succeeded','failed') NOT NULL,
+  error_json JSON NULL,
+  cost_json JSON NOT NULL,
+  parameter_hash VARCHAR(80) NOT NULL,
+  result_hash VARCHAR(80) NOT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY(id),
+  UNIQUE KEY uniq_ai_model_call_attempt(attempt_id),
+  INDEX idx_ai_model_call_owner(owner_id, created_at),
+  INDEX idx_ai_model_call_job(job_id, created_at)
+);
+
+CREATE TABLE provider_catalog (
+  id VARCHAR(64) PRIMARY KEY,
+  code VARCHAR(64) NOT NULL UNIQUE,
+  name VARCHAR(160) NOT NULL,
+  category VARCHAR(40) NOT NULL,
+  source_level VARCHAR(40) NOT NULL,
+  access_mode VARCHAR(40) NOT NULL,
+  base_url VARCHAR(255) DEFAULT '',
+  official_docs_url VARCHAR(255) DEFAULT '',
+  capability_json JSON NOT NULL,
+  allowed_fields_json JSON NOT NULL,
+  license_policy_json JSON NOT NULL,
+  default_rate_policy_json JSON NOT NULL,
+  retention_policy_json JSON NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  version VARCHAR(40) NOT NULL DEFAULT '1.0',
+  reviewed_at DATETIME NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  INDEX idx_provider_catalog_status(status)
+);
+
+CREATE TABLE provider_connections (
+  id VARCHAR(64) PRIMARY KEY,
+  provider_id VARCHAR(64) NOT NULL,
+  scope VARCHAR(20) NOT NULL DEFAULT 'personal',
+  credential_ref VARCHAR(80) NOT NULL UNIQUE,
+  credential_version BIGINT UNSIGNED NOT NULL DEFAULT 1,
+  configuration_encrypted TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'disabled',
+  quota_policy_json JSON NOT NULL,
+  budget_policy_json JSON NOT NULL,
+  last_health_at DATETIME NULL,
+  last_health_status VARCHAR(20) NOT NULL DEFAULT 'untested',
+  last_error_code VARCHAR(80) DEFAULT '',
+  last_health_message VARCHAR(255) DEFAULT '',
+  usage_text TEXT,
+  owner_id VARCHAR(64) NOT NULL,
+  team_id VARCHAR(64) NOT NULL,
+  created_by VARCHAR(64) NOT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  UNIQUE KEY uk_provider_connection_owner_team(
+    provider_id, owner_id, team_id
+  ),
+  INDEX idx_provider_connection_team(team_id),
+  INDEX idx_provider_connection_status(status)
 );
 
 CREATE TABLE import_export_jobs (
