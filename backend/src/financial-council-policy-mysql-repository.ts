@@ -5,6 +5,8 @@ import type { CommandContext } from "./growth-command-context.js";
 import type { ActiveWorkspaceContext } from "./growth-workspace-context.js";
 import { growthHttpIdempotencyKeyHash } from
   "./growth-http-idempotency-repository.js";
+import { growthMysqlDate } from
+  "./growth-temporal-barrier-mysql-repository.js";
 import {
   financialCouncilError,
   immutableFinancialCouncilValue
@@ -175,7 +177,8 @@ async function insertPolicy(
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     policy.workspaceId, policy.policyVersionId, policy.version, policy.revision,
-    policy.currency, JSON.stringify(policy), policy.policyHash, policy.createdAt
+    policy.currency, JSON.stringify(policy), policy.policyHash,
+    growthMysqlDate(policy.createdAt)
   ]);
 }
 

@@ -2,7 +2,7 @@
 
 日期：2026-08-16
 
-状态：P1–P5 实现已完成。Growth contract 固定为 `1.0.10`（`sha256:dcbbc8e43c0ba43cd8e628cb49bd43f8f1a77810d3f864c83e11f4ac2fa0aee3`）；后端 Memory vertical 和前端 fixture E2E 已通过，真实 MySQL 与无 route-intercept 浏览器 harness 已提交但尚未在 live 环境执行。当前环境缺少 `MYSQL_TEST_ADMIN_URL`，因此整体不得标记为 live verified 或 fully released。
+状态：P1–P5 实现和本地发布验证已完成。Growth contract 固定为 `1.0.10`（`sha256:dcbbc8e43c0ba43cd8e628cb49bd43f8f1a77810d3f864c83e11f4ac2fa0aee3`）；Memory vertical 2/2、前端 fixture E2E 10/10、真实 InnoDB 83/83 和无 route-intercept Chromium E2E 1/1 已通过。浏览器链路使用隔离 MySQL 库、真实 session/CSRF、Growth 路由、异步工作器与派发回执；模型输出使用确定性 test-only adapter。
 
 ## 1. 背景
 

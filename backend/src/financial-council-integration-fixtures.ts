@@ -229,6 +229,7 @@ type FormulaProjection = {
   readonly refId: string;
   readonly formulaId: string;
   readonly evidenceRefIds: readonly string[];
+  readonly value: unknown;
 };
 
 function formula(input: FinancialCouncilAnalyzeInput, formulaId: string):
@@ -238,6 +239,14 @@ FormulaProjection {
   }).formulas.find((candidate) => candidate.formulaId === formulaId);
   if (!row) throw new Error(`missing integration formula:${formulaId}`);
   return row;
+}
+
+function firstFormulaSubject(projected: FormulaProjection): string | null {
+  const value = projected.value as {
+    readonly bySubject?: readonly { readonly subjectRef?: unknown }[];
+  };
+  const subject = value.bySubject?.[0]?.subjectRef;
+  return typeof subject === "string" && subject.length > 0 ? subject : null;
 }
 
 function modelResult<Value>(
@@ -328,7 +337,7 @@ implements FinancialCouncilModelPort {
           kind: spec.action,
           sourceFindingIds: Object.freeze([findingDrafts[index]!.findingId]),
           subjectRef: spec.action === "review_loss_product_pricing"
-            ? "Loss Product" : null,
+            ? firstFormulaSubject(formula(input, spec.formulaId)) : null,
           explanation: explanations[spec.action]
         })] : []);
     return modelResult("analyze", input, Object.freeze({
@@ -381,6 +390,8 @@ export async function createFinancialCouncilIntegrationFixture(options: {
   workspaceId?: string;
   autoWake?: boolean;
   modelDelayMs?: number;
+  formulaMinimumCashReserveMinor?: number;
+  logger?: { error(event: Readonly<Record<string, unknown>>): void };
 } = {}): Promise<FinancialCouncilIntegrationFixture> {
   const repository = options.repository
     ?? new InMemoryFinancialCouncilRepository();
@@ -438,7 +449,8 @@ export async function createFinancialCouncilIntegrationFixture(options: {
     formulaPolicy: Object.freeze({
       formulaPolicyVersion: "financial-council-formula-policy.v1" as const,
       minimumProductMarginBps: 1_000,
-      minimumCashReserveMinor: 900_000
+      minimumCashReserveMinor:
+        options.formulaMinimumCashReserveMinor ?? 900_000
     }),
     actionPolicy: Object.freeze({
       actionCoefficientVersion: "financial-council-actions.v1" as const,
@@ -465,7 +477,8 @@ export async function createFinancialCouncilIntegrationFixture(options: {
       repository, specialists, rebuttals, resolvePolicy, now
     }),
     workerId: "council-integration-analysis", now,
-    leaseTokenFactory: () => "1".repeat(64)
+    leaseTokenFactory: () => "1".repeat(64),
+    logger: options.logger
   });
   const optimization = new FinancialCouncilOptimizationWorker({
     repository, policyRepository, cfo: model,
@@ -505,17 +518,7 @@ export async function advanceFinancialCouncilToApproval(
   const initialPolicy = await fixture.service.getPolicy(workspace);
   const policy = await fixture.service.updatePolicy(
     financialCouncilIntegrationCommand("policy", initialPolicy.revision),
-    {
-      currency: "CNY",
-      balancedWeightsBps: Object.freeze({
-        cash: 3_000, profit: 3_000, risk: 2_000, strategic: 2_000
-      }),
-      minimumCashReserveMinor: 0, dueDebtMinor: 0,
-      necessaryOutflowMinor: 0, budgetLimitMinor: 0,
-      capacityLimitUnits: 10, durationLimitDays: 180,
-      minimumActionConfidenceBps: 6_000,
-      actionCoefficientVersion: "financial-council-actions.v1"
-    }
+    financialCouncilIntegrationPolicyInput()
   );
   const created = await fixture.service.createRun(
     financialCouncilIntegrationCommand("create", null),
@@ -527,4 +530,18 @@ export async function advanceFinancialCouncilToApproval(
   );
   await fixture.pipeline.wake(created.value);
   return fixture.service.getRun(workspace, created.value.runId);
+}
+
+export function financialCouncilIntegrationPolicyInput() {
+  return Object.freeze({
+    currency: "CNY" as const,
+    balancedWeightsBps: Object.freeze({
+      cash: 3_000, profit: 3_000, risk: 2_000, strategic: 2_000
+    }),
+    minimumCashReserveMinor: 0, dueDebtMinor: 0,
+    necessaryOutflowMinor: 0, budgetLimitMinor: 1_000_000_000,
+    capacityLimitUnits: 10_000, durationLimitDays: 365,
+    minimumActionConfidenceBps: 6_000,
+    actionCoefficientVersion: "financial-council-actions.v1"
+  });
 }

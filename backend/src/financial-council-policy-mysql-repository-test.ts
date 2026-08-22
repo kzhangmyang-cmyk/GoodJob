@@ -121,6 +121,11 @@ test("MySQL policy repository matches default, activation and replay semantics",
     assert.deepEqual(await repository.findVersion(
       policyWorkspace(), initial.policyVersionId
     ), initial);
+    assert.equal(
+      pool.connection.versions.find((row) =>
+        row.policy_version_id === next.policyVersionId)?.created_at,
+      "2026-08-16 08:01:00.000"
+    );
     assert.equal(pool.connection.calls.includes("COMMIT"), true);
     assert.equal(pool.connection.calls.includes("RELEASE"), true);
   });

@@ -3,6 +3,7 @@ import express, { type Request } from "express";
 import type { Server } from "node:http";
 import { requireAuth, CSRF_COOKIE_NAME } from "./auth.js";
 import { createFinancialCouncilIntegrationFixture,
+  financialCouncilIntegrationPolicyInput,
   FINANCIAL_COUNCIL_INTEGRATION_AS_OF } from
   "./financial-council-integration-fixtures.js";
 import { createFinancialCouncilMysqlTestDatabase } from
@@ -30,6 +31,9 @@ import { createGrowthWorkspaceMiddleware } from
   "./growth-workspace-context.js";
 import type { ActiveWorkspaceContext } from
   "./growth-workspace-context.js";
+import { capabilitiesForHumanRole } from "./growth-capabilities.js";
+import { financialCouncilCanonicalHash } from
+  "./financial-council-domain.js";
 
 export const FINANCIAL_COUNCIL_REAL_E2E_HOST = "127.0.0.1";
 export const FINANCIAL_COUNCIL_REAL_E2E_PORT = 4_288;
@@ -132,12 +136,40 @@ Promise<FinancialCouncilRealE2eServer> {
       draftRepository: drafts,
       workspaceId: FINANCIAL_COUNCIL_REAL_E2E_WORKSPACE,
       autoWake: true,
-      modelDelayMs: 1_750
+      modelDelayMs: 1_750,
+      formulaMinimumCashReserveMinor: 150_000_000,
+      logger: {
+        error(event) {
+          console.error(JSON.stringify({
+            event: "financial_council_real_e2e_analysis_failed",
+            detail: event
+          }));
+        }
+      }
     });
   } catch (error) {
     await database.close().catch(() => undefined);
     throw error;
   }
+  const policyWorkspace = Object.freeze({
+    workspaceId: FINANCIAL_COUNCIL_REAL_E2E_WORKSPACE,
+    kind: "team" as const,
+    actorId: "u_admin",
+    role: "admin" as const,
+    teamId: FINANCIAL_COUNCIL_REAL_E2E_WORKSPACE,
+    capabilities: capabilitiesForHumanRole("admin"),
+    capabilityRegistryVersion: "growth-capabilities.v1" as const
+  });
+  const initialPolicy = await fixture.service.getPolicy(policyWorkspace);
+  await fixture.service.updatePolicy(Object.freeze({
+    workspace: policyWorkspace,
+    actorId: policyWorkspace.actorId,
+    idempotencyKey: "financial-council-real-e2e-policy",
+    requestHash: financialCouncilCanonicalHash({
+      purpose: "financial-council-real-e2e-policy"
+    }),
+    expectedRevision: initialPolicy.revision
+  }), financialCouncilIntegrationPolicyInput());
   fixture.dispatch.start();
   const httpIdempotency = new MysqlGrowthHttpIdempotencyRepository(
     database.pool
